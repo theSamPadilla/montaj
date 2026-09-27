@@ -56,7 +56,7 @@ export function Loader({ size = 'md', label, className = '' }: LoaderProps) {
           <path d="M43 14 l7 10 h7 l-7 -10 z" fill="#facc15" />
         </g>
       </svg>
-      {label && <span className="text-[11px] text-[var(--editor-text)]/50">{label}</span>}
+      {label && <span className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">{label}</span>}
     </div>
   )
 }

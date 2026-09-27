@@ -86,7 +86,7 @@ function VersionFramePane({
 
   return (
     <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-      <span className="text-[11px] font-medium text-[var(--editor-text)]/60 truncate" title={label}>
+      <span className="text-[11px] font-medium text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] truncate" title={label}>
         {label}
       </span>
       <div className="relative aspect-video w-full overflow-hidden rounded-lg border border-[var(--editor-border)] bg-[var(--editor-bg)] flex items-center justify-center">
@@ -101,7 +101,7 @@ function VersionFramePane({
           style={error ? { display: 'none' } : undefined}
         />
         {loading && !error && (
-          <span className="absolute inset-0 flex items-center justify-center text-xs text-[var(--editor-text)]/50">
+          <span className="absolute inset-0 flex items-center justify-center text-xs text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
             Loading…
           </span>
         )}
@@ -178,7 +178,7 @@ export default function VersionCompare({
           <button
             onClick={onClose}
             aria-label="Close"
-            className="text-[var(--editor-text)]/55 hover:text-[var(--editor-text)] transition-colors text-lg leading-none"
+            className="text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)] hover:text-[var(--editor-text)] transition-colors text-lg leading-none"
           >
             ×
           </button>
@@ -190,7 +190,7 @@ export default function VersionCompare({
           {/* Picker row */}
           <div className="flex flex-col sm:flex-row gap-3">
             <label className="flex-1 min-w-0 flex flex-col gap-1.5">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Left</span>
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">Left</span>
               <select
                 value={leftHash}
                 onChange={(e) => setLeftHash(e.target.value)}
@@ -202,7 +202,7 @@ export default function VersionCompare({
               </select>
             </label>
             <label className="flex-1 min-w-0 flex flex-col gap-1.5">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Right</span>
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">Right</span>
               <select
                 value={rightHash}
                 onChange={(e) => setRightHash(e.target.value)}
@@ -238,8 +238,8 @@ export default function VersionCompare({
           {/* Time-scrub slider */}
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Time</span>
-              <span className="text-xs text-[var(--editor-text)]/60 tabular-nums">{formatT(t)}</span>
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">Time</span>
+              <span className="text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] tabular-nums">{formatT(t)}</span>
             </div>
             <Slider
               min={0}

@@ -63,7 +63,7 @@ export default function ImageToneMenu({ value, onChange, variant = 'icon', mode 
           title="How photos and logos are converted for the HDR render"
           aria-haspopup="menu"
           aria-expanded={open}
-          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/80 hover:text-[var(--editor-text)] transition-colors"
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] hover:text-[var(--editor-text)] transition-colors"
         >
           <Palette size={12} className="opacity-70" />
           <span className="opacity-60">Image color:</span>
@@ -79,7 +79,7 @@ export default function ImageToneMenu({ value, onChange, variant = 'icon', mode 
           className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
             open
               ? (mode === 'light' ? 'text-violet-600 bg-violet-400/15 hover:bg-violet-400/25' : 'text-violet-400 bg-violet-400/15 hover:bg-violet-400/25')
-              : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
+              : 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]'
           }`}
         >
           <Palette size={12} />
@@ -91,9 +91,9 @@ export default function ImageToneMenu({ value, onChange, variant = 'icon', mode 
           role="menu"
           className={`${menuPosition} z-40 w-[300px] rounded-xl border border-[var(--editor-border)] bg-[var(--editor-surface)] shadow-2xl p-2 flex flex-col gap-1`}
         >
-          <p className="px-2 pt-1 pb-1.5 text-[11px] font-semibold text-[var(--editor-text)]/80">
+          <p className="px-2 pt-1 pb-1.5 text-[11px] font-semibold text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)]">
             Image color mapping
-            <span className="block font-normal text-[10px] text-[var(--editor-text)]/50">
+            <span className="block font-normal text-[10px] text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
               How photos and logos are converted for the HDR render.
             </span>
           </p>
@@ -108,7 +108,7 @@ export default function ImageToneMenu({ value, onChange, variant = 'icon', mode 
                 className={`flex items-start gap-2.5 rounded-lg p-2 text-left transition-colors border ${
                   active
                     ? 'border-violet-400/60 bg-violet-400/10'
-                    : 'border-transparent hover:bg-[var(--editor-text)]/5'
+                    : 'border-transparent hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)]'
                 }`}
               >
                 <img
@@ -120,10 +120,10 @@ export default function ImageToneMenu({ value, onChange, variant = 'icon', mode 
                   <span className="text-xs font-semibold text-[var(--editor-text)] flex items-center gap-1.5">
                     {tone.label}
                     {tone.id === DEFAULT_IMAGE_TONE && (
-                      <span className="text-[9px] font-normal px-1 py-px rounded bg-[var(--editor-text)]/10 text-[var(--editor-text)]/55">default</span>
+                      <span className="text-[9px] font-normal px-1 py-px rounded bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">default</span>
                     )}
                   </span>
-                  <span className="text-[10px] leading-snug text-[var(--editor-text)]/60">
+                  <span className="text-[10px] leading-snug text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">
                     {tone.summary}
                   </span>
                 </span>

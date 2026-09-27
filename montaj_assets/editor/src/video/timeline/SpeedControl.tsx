@@ -52,9 +52,9 @@ export default function SpeedControl({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className={`flex items-center text-[11px] text-[var(--editor-text)]/70 ${label ? 'justify-between' : 'justify-end'}`}>
+      <div className={`flex items-center text-[11px] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] ${label ? 'justify-between' : 'justify-end'}`}>
         {label && <span>{label}</span>}
-        <span className="font-mono text-[10px] text-[var(--editor-text)]/50">{value.toFixed(2)}×</span>
+        <span className="font-mono text-[10px] text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">{value.toFixed(2)}×</span>
       </div>
       <Slider
         id={sliderId}
@@ -82,7 +82,7 @@ export default function SpeedControl({
               className={`rounded-md border px-2 py-0.5 text-[11px] font-mono transition-colors focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)] ${
                 active
                   ? 'border-[var(--editor-accent)] bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)]'
-                  : 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/70 hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)]'
+                  : 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)]'
               }`}
             >
               {p}×

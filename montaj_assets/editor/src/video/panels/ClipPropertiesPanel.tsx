@@ -68,7 +68,7 @@ export interface ClipPropertiesPanelProps {
 }
 
 const SECTION_CLASS = 'shrink-0 border-b border-[var(--editor-border)] flex flex-col overflow-hidden'
-const ROW_LABEL_CLASS = 'w-16 shrink-0 text-[11px] text-[var(--editor-text)]/55'
+const ROW_LABEL_CLASS = 'w-16 shrink-0 text-[11px] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]'
 
 function basename(path: string): string {
   return path.split('/').pop() ?? path
@@ -107,7 +107,7 @@ function CollapsibleSection({
           type="button"
           aria-expanded={!collapsed}
           onClick={onToggle}
-          className="flex items-center gap-1 rounded px-1 py-0.5 text-[var(--editor-text)]/60 transition-colors hover:text-[var(--editor-text)]"
+          className="flex items-center gap-1 rounded px-1 py-0.5 text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] transition-colors hover:text-[var(--editor-text)]"
         >
           {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           <span className={nested ? 'text-[11px] font-medium' : 'text-xs font-medium uppercase tracking-wide'}>{label}</span>
@@ -358,7 +358,7 @@ function ClipTabs({ item, onPreviewClip, onCommitClip, onChangeClip, transformSl
                   <div className={`flex h-11 w-11 items-center justify-center rounded-full bg-indigo-500/10 ${mode === 'light' ? 'text-indigo-600' : 'text-indigo-400'}`}>
                     <Crop size={20} />
                   </div>
-                  <p className="max-w-[220px] text-xs leading-relaxed text-[var(--editor-text)]/60">
+                  <p className="max-w-[220px] text-xs leading-relaxed text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">
                     Reframe this clip by cropping its source video. Pick the part of the frame to keep.
                   </p>
                   <button
@@ -678,7 +678,7 @@ export default function ClipPropertiesPanel({
   if (!selection) {
     return (
       <div className={SECTION_CLASS}>
-        <div className="px-3 py-6 text-center text-[11px] text-[var(--editor-text)]/45">
+        <div className="px-3 py-6 text-center text-[11px] text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)]">
           Select a clip to edit its properties.
         </div>
       </div>

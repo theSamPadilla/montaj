@@ -182,7 +182,7 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
       {showPrompt && !disabled && (
         <div className="flex flex-col gap-2 p-3 bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-lg">
           <textarea
-            className="w-full bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded px-2 py-1.5 text-xs text-[var(--editor-text)] placeholder-[var(--editor-text)]/60 resize-none focus:outline-none focus:border-[var(--editor-accent)]"
+            className="w-full bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded px-2 py-1.5 text-xs text-[var(--editor-text)] placeholder-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] resize-none focus:outline-none focus:border-[var(--editor-accent)]"
             rows={3}
             placeholder="Describe the image to generate…"
             value={prompt}

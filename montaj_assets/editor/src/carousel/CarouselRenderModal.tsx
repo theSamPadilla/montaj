@@ -64,13 +64,13 @@ function slidesFromMedia(media: RenderMedia[]): SlideView[] {
 
 function LogLine({ text, mode = 'dark' }: { text: string; mode?: 'light' | 'dark' }) {
   const t = text.replace(/^\[render\]\s*/, '')
-  let color = 'text-[var(--editor-text)]/60'
+  let color = 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]'
   if (/done|complete|→/i.test(t))           color = mode === 'light' ? 'text-green-700' : 'text-green-400'
   else if (/rendering|launching|bundling/i.test(t)) color = mode === 'light' ? 'text-sky-700' : 'text-sky-400'
   else if (/error|fail/i.test(t))           color = mode === 'light' ? 'text-red-600' : 'text-red-400'
 
   const prefix = text.startsWith('[render]')
-    ? <span className="text-[var(--editor-text)]/40">[render] </span>
+    ? <span className="text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]">[render] </span>
     : null
 
   return (
@@ -266,13 +266,13 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
                     />
                     <div className="absolute bottom-0 left-0 right-0 px-2 py-1.5 bg-black text-[11px] text-[var(--editor-text)] font-mono flex justify-between">
                       <span>#{String(i + 1).padStart(2, '0')}</span>
-                      <span className="text-[var(--editor-text)]/60">{slide.filename}</span>
+                      <span className="text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">{slide.filename}</span>
                     </div>
                   </a>
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-[var(--editor-text)]/60">Render complete.</p>
+              <p className="text-sm text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">Render complete.</p>
             )}
           </div>
 
@@ -283,12 +283,12 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
                 <span className="w-2 h-2 rounded-full bg-green-400" />
                 <div>
                   <p className="text-sm font-semibold text-[var(--editor-text)]">Render complete</p>
-                  <p className="text-xs text-[var(--editor-text)]/60">
+                  <p className="text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">
                     {slides.length || slidesCount} slide{(slides.length || slidesCount) === 1 ? '' : 's'} ready.
                   </p>
                 </div>
               </div>
-              <button onClick={onClose} className="text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors text-lg leading-none">×</button>
+              <button onClick={onClose} className="text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:text-[var(--editor-text)] transition-colors text-lg leading-none">×</button>
             </div>
 
             <div className="flex flex-col gap-3 p-5 flex-1">
@@ -325,7 +325,7 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
             </div>
           </div>
           {status !== 'running' && (
-            <button onClick={onClose} className="text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors text-lg leading-none">×</button>
+            <button onClick={onClose} className="text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:text-[var(--editor-text)] transition-colors text-lg leading-none">×</button>
           )}
         </div>
 
@@ -334,8 +334,8 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
             {status === 'running' ? (
               <>
                 <Loader size="lg" />
-                <p className="text-sm text-[var(--editor-text)]/70">Rendering slides…</p>
-                <p className="text-xs text-[var(--editor-text)]/50">This can take a moment.</p>
+                <p className="text-sm text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)]">Rendering slides…</p>
+                <p className="text-xs text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">This can take a moment.</p>
               </>
             ) : (
               <p className={`text-sm whitespace-pre-wrap break-words text-center ${mode === 'light' ? 'text-red-600' : 'text-red-400'}`}>
@@ -347,7 +347,7 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
           <div className="relative">
             <button
               onClick={() => navigator.clipboard.writeText(logs.join('\n') + (errorMsg ? '\n' + errorMsg : ''))}
-              className="absolute top-2 right-2 z-10 text-[10px] px-2 py-0.5 rounded bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)] transition-colors"
+              className="absolute top-2 right-2 z-10 text-[10px] px-2 py-0.5 rounded bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)] transition-colors"
               title="Copy logs"
             >
               Copy
@@ -357,7 +357,7 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
               className="h-96 overflow-y-auto px-4 py-3 font-mono text-[11px] text-[var(--editor-text)] bg-[var(--editor-bg)] flex flex-col gap-0.5"
             >
               {logs.length === 0 && status === 'running' && (
-                <span className="text-[var(--editor-text)]/40 italic">Starting render engine…</span>
+                <span className="text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] italic">Starting render engine…</span>
               )}
               {logs.map((line, i) => (
                 <LogLine key={i} text={line} mode={mode} />

@@ -108,7 +108,7 @@ export default function OverlayPicker({ open, onClose, project, adapter, onPick,
           <h2 className="text-sm font-semibold text-[var(--editor-text)]">Add Overlay</h2>
           <button
             onClick={onClose}
-            className="text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors text-lg leading-none"
+            className="text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:text-[var(--editor-text)] transition-colors text-lg leading-none"
           >
             ×
           </button>
@@ -124,7 +124,7 @@ export default function OverlayPicker({ open, onClose, project, adapter, onPick,
             <div className={`text-center text-sm py-8 ${mode === 'light' ? 'text-red-600' : 'text-red-400'}`}>{error}</div>
           )}
           {!loading && !error && overlays.length === 0 && (
-            <div className="text-center text-[var(--editor-text)]/60 text-sm py-8">No overlays available</div>
+            <div className="text-center text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] text-sm py-8">No overlays available</div>
           )}
           {!loading && !error && overlays.length > 0 && (
             <div className="grid grid-cols-3 gap-3">
@@ -139,7 +139,7 @@ export default function OverlayPicker({ open, onClose, project, adapter, onPick,
                     <div className="text-xs text-[var(--editor-accent)] mt-0.5 truncate">{overlay.group}</div>
                   )}
                   {overlay.description && (
-                    <div className="text-xs text-[var(--editor-text)]/60 mt-1 line-clamp-2">{overlay.description}</div>
+                    <div className="text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] mt-1 line-clamp-2">{overlay.description}</div>
                   )}
                 </button>
               ))}

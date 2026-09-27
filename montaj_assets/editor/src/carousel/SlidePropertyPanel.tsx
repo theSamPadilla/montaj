@@ -14,11 +14,11 @@ import { Loader } from '../ui/Loader'
 import { TextFormattingToolbar } from '../text/TextFormattingToolbar'
 
 // Shared small muted label that sits just above an inspector control.
-const fieldLabelClass = 'text-[11px] uppercase tracking-wide text-[var(--editor-text)]/55'
+const fieldLabelClass = 'text-[11px] uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]'
 
 // Section header: SLIDE / OVERLAY / IMAGE.
 const sectionHeaderClass =
-  'text-xs font-semibold uppercase tracking-wider text-[var(--editor-text)]/70'
+  'text-xs font-semibold uppercase tracking-wider text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)]'
 
 interface Props {
   project: Project
@@ -71,7 +71,7 @@ function HideToggle({
       title={isHidden ? 'Show in editor' : 'Hide from editor'}
       aria-label={isHidden ? 'Show in editor' : 'Hide from editor'}
       aria-pressed={isHidden}
-      className="flex h-7 w-7 items-center justify-center rounded text-[var(--editor-text)]/60 hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]"
+      className="flex h-7 w-7 items-center justify-center rounded text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]"
     >
       {isHidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
     </button>
@@ -238,7 +238,7 @@ export default function SlidePropertyPanel({
 
   if (!slide) {
     return (
-      <div className={cn('w-80 flex-shrink-0 flex items-center justify-center text-[var(--editor-text)]/40 text-xs p-4', className)}>
+      <div className={cn('w-80 flex-shrink-0 flex items-center justify-center text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] text-xs p-4', className)}>
         Select a slide
       </div>
     )
@@ -295,14 +295,14 @@ export default function SlidePropertyPanel({
               />
               <button
                 onClick={() => onReorderElement(slide.id, element.id, 'forward')}
-                className="flex h-7 w-7 items-center justify-center rounded text-[var(--editor-text)]/60 hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]"
+                className="flex h-7 w-7 items-center justify-center rounded text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]"
                 title="Bring forward"
               >
                 ↑
               </button>
               <button
                 onClick={() => onReorderElement(slide.id, element.id, 'backward')}
-                className="flex h-7 w-7 items-center justify-center rounded text-[var(--editor-text)]/60 hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]"
+                className="flex h-7 w-7 items-center justify-center rounded text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]"
                 title="Send backward"
               >
                 ↓

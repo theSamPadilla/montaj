@@ -39,7 +39,7 @@ interface CaptionRegenModalProps<P extends Project = Project> {
 }
 
 function LogLine({ text, mode = 'dark' }: { text: string; mode?: 'light' | 'dark' }) {
-  let color = 'text-[var(--editor-text)]/60'
+  let color = 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]'
   if (/ready|complete|done|transcribed/i.test(text))      color = mode === 'light' ? 'text-green-700' : 'text-green-400'
   else if (/transcrib|detecting|loading|model/i.test(text)) color = mode === 'light' ? 'text-sky-700' : 'text-sky-400'
   else if (/extract|building|composing|mixing/i.test(text)) color = mode === 'light' ? 'text-amber-700' : 'text-amber-400'
@@ -165,13 +165,13 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
                   question about why a clip's audio showed up in the
                   captions. Read at generation time only: unmuting later just
                   means the next run sees it. */}
-              <p className="text-[11px] text-[var(--editor-text)]/50">
+              <p className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
                 Transcribes everything audible on the timeline. Muted clips and tracks are skipped.
               </p>
             </div>
           </div>
           {status !== 'running' && (
-            <button onClick={onClose} className="text-[var(--editor-text)]/55 hover:text-[var(--editor-text)] transition-colors text-lg leading-none">×</button>
+            <button onClick={onClose} className="text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)] hover:text-[var(--editor-text)] transition-colors text-lg leading-none">×</button>
           )}
         </div>
 
@@ -189,17 +189,17 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
         <div className="relative">
           <button
             onClick={() => navigator.clipboard.writeText(logs.join('\n') + (errorMsg ? '\n' + errorMsg : ''))}
-            className="absolute top-2 right-2 z-10 text-[10px] px-2 py-0.5 rounded bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] hover:border-[var(--editor-border)] transition-colors"
+            className="absolute top-2 right-2 z-10 text-[10px] px-2 py-0.5 rounded bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:text-[var(--editor-text)] hover:border-[var(--editor-border)] transition-colors"
             title="Copy logs"
           >
             Copy
           </button>
           <div
             ref={logRef}
-            className="h-96 overflow-y-auto px-4 py-3 font-mono text-[11px] text-[var(--editor-text)]/80 bg-[var(--editor-surface)] flex flex-col gap-0.5"
+            className="h-96 overflow-y-auto px-4 py-3 font-mono text-[11px] text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] bg-[var(--editor-surface)] flex flex-col gap-0.5"
           >
             {logs.length === 0 && status === 'running' && (
-              <span className="text-[var(--editor-text)]/40 italic">Starting transcription…</span>
+              <span className="text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] italic">Starting transcription…</span>
             )}
             {logs.map((line, i) => (
               <LogLine key={i} text={line} mode={mode} />
@@ -215,7 +215,7 @@ export default function CaptionRegenModal<P extends Project = Project>({ project
           {status === 'running' ? (
             <button
               onClick={handleCancel}
-              className={`text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 transition-colors ${mode === 'light' ? 'hover:bg-red-50 hover:border-red-300 hover:text-red-700' : 'hover:bg-red-900/40 hover:border-red-700 hover:text-red-300'}`}
+              className={`text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] transition-colors ${mode === 'light' ? 'hover:bg-red-50 hover:border-red-300 hover:text-red-700' : 'hover:bg-red-900/40 hover:border-red-700 hover:text-red-300'}`}
             >
               Cancel
             </button>

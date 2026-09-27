@@ -221,14 +221,14 @@ export function FontFamilyPicker({ value, onChange, disabled, className, buttonC
                       setOpen(false)
                     }}
                     style={{ fontFamily: opt.value }}
-                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-[15px] leading-tight text-[var(--editor-text)] hover:bg-[var(--editor-accent)]/20 focus:bg-[var(--editor-accent)]/20 focus:outline-none ${
-                      isActive ? 'bg-[var(--editor-accent)]/20 font-medium' : ''
+                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-[15px] leading-tight text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] focus:bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] focus:outline-none ${
+                      isActive ? 'bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] font-medium' : ''
                     }`}
                   >
                     <span className="truncate">{opt.label}</span>
                     {isActive && (
                       <span
-                        className="ml-2 shrink-0 text-xs text-[var(--editor-text)]/60"
+                        className="ml-2 shrink-0 text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]"
                         style={{ fontFamily: 'system-ui, sans-serif' }}
                       >
                         ✓

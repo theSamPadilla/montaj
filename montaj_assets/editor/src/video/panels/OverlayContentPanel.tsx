@@ -65,7 +65,7 @@ export interface OverlayContentPanelProps {
 }
 
 const SECTION_CLASS = 'shrink-0 border-b border-[var(--editor-border)] flex flex-col overflow-hidden'
-const FIELD_LABEL_CLASS = 'text-[11px] uppercase tracking-wide text-[var(--editor-text)]/55'
+const FIELD_LABEL_CLASS = 'text-[11px] uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]'
 
 /**
  * Image prop control: a thumbnail preview plus a file picker that uploads the
@@ -128,16 +128,16 @@ function ImageField({
           className="h-14 w-14 shrink-0 rounded-md border border-[var(--editor-border)] object-cover bg-black/20"
         />
       ) : (
-        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-dashed border-[var(--editor-border)] text-[10px] text-[var(--editor-text)]/40">
+        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-dashed border-[var(--editor-border)] text-[10px] text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]">
           none
         </div>
       )}
       <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <span className="truncate font-mono text-xs text-[var(--editor-text)]/70" title={value}>
+        <span className="truncate font-mono text-xs text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)]" title={value}>
           {value ? value.split('/').pop() : '—'}
         </span>
         {uploadFile ? (
-          <label className="inline-flex w-fit cursor-pointer items-center gap-1.5 rounded-md border border-[var(--editor-border)] px-2.5 py-1 text-xs text-[var(--editor-text)]/80 hover:bg-[var(--editor-text)]/5">
+          <label className="inline-flex w-fit cursor-pointer items-center gap-1.5 rounded-md border border-[var(--editor-border)] px-2.5 py-1 text-xs text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)]">
             {busy ? 'Uploading…' : 'Change…'}
             <input
               type="file"
@@ -324,7 +324,7 @@ export default function OverlayContentPanel({
     <div className={SECTION_CLASS}>
       <div className="flex flex-col gap-3 p-2">
         {fields.length === 0 ? (
-          <p className="px-1 py-4 text-center text-[11px] text-[var(--editor-text)]/45">
+          <p className="px-1 py-4 text-center text-[11px] text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)]">
             {item
               ? 'This overlay has no editable content.'
               : 'Select an overlay to edit its content.'}

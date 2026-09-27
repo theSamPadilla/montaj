@@ -691,7 +691,7 @@ export default function AudioPolishModal<P extends Project = Project>({
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--editor-border)]">
           <div className="flex flex-col gap-0.5">
             <h2 className="text-sm font-semibold text-[var(--editor-text)]">Polish audio</h2>
-            <p className="text-[11px] text-[var(--editor-text)]/55">
+            <p className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">
               {targets.length === 1
                 ? '1 clip in scope. Nothing is saved until you press Apply.'
                 : `${targets.length} clips in scope. Nothing is saved until you press Apply.`}
@@ -700,7 +700,7 @@ export default function AudioPolishModal<P extends Project = Project>({
           <button
             onClick={handleCancel}
             aria-label="Close"
-            className="text-[var(--editor-text)]/55 hover:text-[var(--editor-text)] transition-colors text-lg leading-none"
+            className="text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)] hover:text-[var(--editor-text)] transition-colors text-lg leading-none"
           >
             ×
           </button>
@@ -712,7 +712,7 @@ export default function AudioPolishModal<P extends Project = Project>({
             {PIECES.map(p => (
               <label
                 key={p.id}
-                className="flex items-start gap-2 rounded-lg border border-[var(--editor-border)] p-2.5 cursor-pointer hover:bg-[var(--editor-text)]/5 transition-colors"
+                className="flex items-start gap-2 rounded-lg border border-[var(--editor-border)] p-2.5 cursor-pointer hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)] transition-colors"
               >
                 <input
                   type="checkbox"
@@ -723,7 +723,7 @@ export default function AudioPolishModal<P extends Project = Project>({
                 />
                 <span className="flex flex-col gap-0.5 min-w-0">
                   <span className="text-xs font-semibold text-[var(--editor-text)]">{p.label}</span>
-                  <span className="text-[10px] leading-snug text-[var(--editor-text)]/55">{p.blurb}</span>
+                  <span className="text-[10px] leading-snug text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">{p.blurb}</span>
                   {phase === 'review' && pieces[p.id] && !analysedPieces[p.id] && (
                     <span className={`text-[10px] ${mode === 'light' ? 'text-amber-700' : 'text-amber-400'}`}>Not analysed yet. Run Analyse again.</span>
                   )}
@@ -734,7 +734,7 @@ export default function AudioPolishModal<P extends Project = Project>({
 
           <div className="flex flex-wrap items-end gap-4">
             <label className="flex flex-col gap-1.5">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
                 Spoken language
               </span>
               <select
@@ -747,13 +747,13 @@ export default function AudioPolishModal<P extends Project = Project>({
                   <option key={l.id} value={l.id}>{l.label}</option>
                 ))}
               </select>
-              <span className="text-[10px] text-[var(--editor-text)]/45 max-w-[15rem] leading-snug">
+              <span className="text-[10px] text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] max-w-[15rem] leading-snug">
                 Set this before analysing. The wrong language makes real speech look like silence.
               </span>
             </label>
 
             <label className="flex flex-col gap-1.5">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
                 Loudness target
               </span>
               <select
@@ -770,7 +770,7 @@ export default function AudioPolishModal<P extends Project = Project>({
 
             {targetId === 'custom' && (
               <label className="flex flex-col gap-1.5">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
                   Custom LUFS
                 </span>
                 <NumberField
@@ -803,7 +803,7 @@ export default function AudioPolishModal<P extends Project = Project>({
                 {busy ? 'Analysing…' : phase === 'review' ? 'Analyse again' : 'Analyse'}
               </button>
               {busy && (
-                <span className="text-[10px] text-[var(--editor-text)]/55">
+                <span className="text-[10px] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">
                   {`Analysing ${Math.min(progress.done + 1, progress.total)} of ${progress.total}. ${progress.label}`}
                 </span>
               )}
@@ -825,7 +825,7 @@ export default function AudioPolishModal<P extends Project = Project>({
         {/* Review */}
         <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-5 min-h-[12rem]">
           {phase === 'setup' && (
-            <p className="text-xs text-[var(--editor-text)]/50 italic">
+            <p className="text-xs text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)] italic">
               Pick the cleanups you want, set the language, then press Analyse. You see every proposed
               change on the timeline before anything is saved.
             </p>
@@ -841,7 +841,7 @@ export default function AudioPolishModal<P extends Project = Project>({
               <section key={clip.id} className="flex flex-col gap-2">
                 <header className="flex items-baseline justify-between gap-3 border-b border-[var(--editor-border)] pb-1">
                   <span className="text-xs font-semibold text-[var(--editor-text)] truncate">{clipLabel(clip)}</span>
-                  <span className="text-[10px] font-mono text-[var(--editor-text)]/45 shrink-0">
+                  <span className="text-[10px] font-mono text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] shrink-0">
                     {`${clock(clip.start)} to ${clock(clip.end)}`}
                   </span>
                 </header>
@@ -859,7 +859,7 @@ export default function AudioPolishModal<P extends Project = Project>({
 
                 {/* Loudness */}
                 {pieces.loudness && a?.loudness && gainDb !== undefined && (
-                  <p className="text-[11px] text-[var(--editor-text)]/70">
+                  <p className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)]">
                     {`Loudness: measured ${a.loudness.measuredI.toFixed(1)} LUFS, true peak ${a.loudness.measuredTP.toFixed(1)} dBTP. Gain ${signedDb(gainDb)} to reach ${targetLufs} LUFS.`}
                     {clamped && (
                       <span className={mode === 'light' ? 'text-amber-700' : 'text-amber-400'}>
@@ -885,12 +885,12 @@ export default function AudioPolishModal<P extends Project = Project>({
                 {pieces.voice && supports(clip, 'voice') && (
                   a?.vocalsUrl ? (
                     <div className="flex flex-col gap-1.5">
-                      <span className="text-[11px] text-[var(--editor-text)]/70">
+                      <span className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)]">
                         Isolated voice. Compare the two before you apply.
                       </span>
                       <div className="flex flex-wrap items-center gap-3">
                         <span className="flex items-center gap-1.5">
-                          <span className="text-[10px] text-[var(--editor-text)]/55">Original</span>
+                          <span className="text-[10px] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">Original</span>
                           <audio
                             controls
                             preload="none"
@@ -899,7 +899,7 @@ export default function AudioPolishModal<P extends Project = Project>({
                           />
                         </span>
                         <span className="flex items-center gap-1.5">
-                          <span className="text-[10px] text-[var(--editor-text)]/55">Isolated voice</span>
+                          <span className="text-[10px] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">Isolated voice</span>
                           <audio
                             controls
                             preload="none"
@@ -914,12 +914,12 @@ export default function AudioPolishModal<P extends Project = Project>({
 
                 {/* Removals */}
                 {rows.length === 0 ? (
-                  <p className="text-[11px] text-[var(--editor-text)]/45 italic">No removals proposed for this clip.</p>
+                  <p className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] italic">No removals proposed for this clip.</p>
                 ) : (
                   <ul className="flex flex-col gap-1">
                     {rows.map(row => (
                       <li key={row.key}>
-                        <label className="flex items-start gap-2 text-[11px] text-[var(--editor-text)]/80 cursor-pointer hover:bg-[var(--editor-text)]/5 rounded px-1 py-0.5">
+                        <label className="flex items-start gap-2 text-[11px] text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] cursor-pointer hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)] rounded px-1 py-0.5">
                           <input
                             type="checkbox"
                             checked={Boolean(approved[row.key])}
@@ -928,10 +928,10 @@ export default function AudioPolishModal<P extends Project = Project>({
                             className="mt-0.5"
                           />
                           <span className="font-mono shrink-0">{clock(row.tlStart)}</span>
-                          <span className="font-mono text-[var(--editor-text)]/50 shrink-0">
+                          <span className="font-mono text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)] shrink-0">
                             {`${(row.tlEnd - row.tlStart).toFixed(2)}s`}
                           </span>
-                          <span className="text-[var(--editor-text)]/50 shrink-0">
+                          <span className="text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)] shrink-0">
                             {row.piece === 'silence' ? 'silence' : 'filler'}
                           </span>
                           {row.text && <span className="italic truncate">{`"${row.text}"`}</span>}
@@ -952,7 +952,7 @@ export default function AudioPolishModal<P extends Project = Project>({
 
         {/* Footer */}
         <div className="flex items-center justify-between gap-2 px-5 py-3 border-t border-[var(--editor-border)]">
-          <span className="text-[11px] text-[var(--editor-text)]/50">
+          <span className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
             {phase === 'review'
               ? `${totalApproved} removal${totalApproved === 1 ? '' : 's'} ticked. The timeline is showing the result.`
               : 'Nothing is saved until you press Apply.'}
@@ -960,7 +960,7 @@ export default function AudioPolishModal<P extends Project = Project>({
           <div className="flex items-center gap-2">
             <button
               onClick={handleCancel}
-              className={`text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 transition-colors ${mode === 'light' ? 'hover:bg-red-50 hover:border-red-300 hover:text-red-700' : 'hover:bg-red-900/40 hover:border-red-700 hover:text-red-300'}`}
+              className={`text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] transition-colors ${mode === 'light' ? 'hover:bg-red-50 hover:border-red-300 hover:text-red-700' : 'hover:bg-red-900/40 hover:border-red-700 hover:text-red-300'}`}
             >
               Cancel
             </button>

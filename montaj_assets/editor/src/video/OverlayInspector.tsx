@@ -216,9 +216,9 @@ function normalizeDegrees(deg: number): number {
 
 // ── Shared chrome ────────────────────────────────────────────────────────
 
-const ROW_LABEL_CLASS = 'w-14 shrink-0 text-[11px] text-[var(--editor-text)]/55'
+const ROW_LABEL_CLASS = 'w-14 shrink-0 text-[11px] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]'
 const ICON_BUTTON_CLASS =
-  'flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--editor-text)]/45 transition-colors hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)] disabled:pointer-events-none disabled:opacity-25'
+  'flex h-5 w-5 shrink-0 items-center justify-center rounded text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] transition-colors hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)] disabled:pointer-events-none disabled:opacity-25'
 
 function IconButton({
   label,
@@ -282,10 +282,10 @@ function KeyframeNav({
           // invites a support question; one that is visibly unavailable and
           // says why reads as a limitation, which is what it is.
           diamondDisabled
-            ? 'cursor-not-allowed text-[var(--editor-text)]/20'
+            ? 'cursor-not-allowed text-[color-mix(in_srgb,var(--editor-text)_20%,transparent)]'
             : pressed
               ? 'text-[var(--editor-accent)]'
-              : 'text-[var(--editor-text)]/40 hover:text-[var(--editor-text)]/70',
+              : 'text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)]',
         )}
       >
         <Diamond size={11} fill={pressed ? 'currentColor' : 'none'} />
@@ -518,7 +518,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   if (!canKeyframe(item)) {
     return (
       <div className={SECTION_CLASS}>
-        <div className="px-3 py-6 text-center text-[11px] text-[var(--editor-text)]/45">
+        <div className="px-3 py-6 text-center text-[11px] text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)]">
           Select an overlay to edit its properties.
         </div>
       </div>
@@ -769,7 +769,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
           only hosts the ALL-properties actions (reset-all + keyframe-all); the
           muted "All" scopes them apart from each row's own per-property unit. */}
       <div className="shrink-0 flex items-center gap-1 border-b border-[var(--editor-border)] px-2 py-1.5">
-        <span className="px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--editor-text)]/40">
+        <span className="px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]">
           All
         </span>
         <div className="ml-auto flex items-center gap-1">
@@ -857,7 +857,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
             (Space/Enter both fire click), so it needs no key handler of its
             own — only a visible focus ring. */}
         <div className="flex items-center gap-2">
-          <span className="shrink-0 text-[11px] text-[var(--editor-text)]/55">Uniform scale</span>
+          <span className="shrink-0 text-[11px] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">Uniform scale</span>
           <button
             type="button"
             role="checkbox"

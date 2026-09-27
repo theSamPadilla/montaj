@@ -73,7 +73,7 @@ function SlideGrid({
   return (
     <div className="w-56 flex-shrink-0 flex flex-col border-r border-[var(--editor-border)] bg-[var(--editor-bg)] overflow-y-auto min-h-0 h-full">
       <div className="px-3 py-2 border-b border-[var(--editor-border)]">
-        <span className="text-xs font-semibold text-[var(--editor-text)]/60 uppercase tracking-wider">Slides</span>
+        <span className="text-xs font-semibold text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] uppercase tracking-wider">Slides</span>
       </div>
       <div className="flex-1 overflow-y-auto py-2 flex flex-col gap-2 px-2">
         {slides.map((slide, idx) => (
@@ -424,7 +424,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
               className={`flex items-center gap-2 px-3 py-2 rounded-md border transition-colors ${
                 refreshState === 'err'
                   ? (mode === 'light' ? 'text-red-700 border-red-300 bg-red-50 hover:bg-red-100' : 'text-red-300 border-red-500/40 bg-red-950/60 hover:bg-red-900/70')
-                  : 'text-[var(--editor-text)] border-[var(--editor-border)] bg-[var(--editor-surface)]/80 hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)]'
+                  : 'text-[var(--editor-text)] border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-surface)_80%,transparent)] hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)]'
               }`}
               title={refreshState === 'err' ? 'Refresh failed — check connection' : 'Refresh project'}
             >
@@ -434,7 +434,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             <button
               onClick={() => state.undo()}
               disabled={!state.canUndo}
-              className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)]/80 text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-surface)_80%,transparent)] text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
               title="Undo (Cmd/Ctrl+Z)"
               aria-label="Undo"
             >
@@ -443,7 +443,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             <button
               onClick={() => state.redo()}
               disabled={!state.canRedo}
-              className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)]/80 text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-surface)_80%,transparent)] text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
               title="Redo (Cmd/Ctrl+Shift+Z)"
               aria-label="Redo"
             >
@@ -479,11 +479,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             {slots?.pendingStatus ?? (
               <div className="flex flex-col items-center gap-2">
                 <p className="text-[var(--editor-text)] text-lg font-semibold">Message your agent to start</p>
-                <p className="text-[var(--editor-text)]/60 text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
+                <p className="text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
               </div>
             )}
             {!slots?.pendingStatus && skillPath && (
-              <div className="w-full rounded-xl border-2 border-[var(--editor-accent)] bg-[var(--editor-surface)] p-5 flex flex-col gap-3 text-left shadow-lg shadow-[var(--editor-accent)]/10">
+              <div className="w-full rounded-xl border-2 border-[var(--editor-accent)] bg-[var(--editor-surface)] p-5 flex flex-col gap-3 text-left shadow-lg shadow-[color-mix(in_srgb,var(--editor-accent)_10%,transparent)]">
                 {/* indigo-600 in light mode: the accent (indigo-500) is ~4.06:1 on
                     `--editor-surface`, and 12px bold is still NORMAL text under WCAG
                     (large starts at 18.66px bold), so it needs the 4.5:1 floor. The
@@ -527,7 +527,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 </div>
               </div>
             )}
-            <p className="text-[var(--editor-text)]/40 text-xs font-mono">project id: {project.id}</p>
+            <p className="text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] text-xs font-mono">project id: {project.id}</p>
           </div>
         ) : selectedSlide ? (
           <>
@@ -538,7 +538,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 instead, the same "tint with the foreground colour" idiom the rest
                 of the chrome uses, so it is a light ring on dark and a dark ring
                 on light at the same subtle strength. */}
-            <div className="flex-shrink-0 ring-1 ring-[var(--editor-text)]/10">
+            <div className="flex-shrink-0 ring-1 ring-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]">
               <SlideCanvas
                 slide={selectedSlide}
                 slideId={selectedSlide.id}
@@ -562,7 +562,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 hiddenElementIds={hiddenElementIds}
               />
             </div>
-            <div className="flex-shrink-0 flex items-center justify-center gap-1.5 text-xs text-[var(--editor-text)]/60 max-w-md">
+            <div className="flex-shrink-0 flex items-center justify-center gap-1.5 text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] max-w-md">
               <span className="text-center">
                 Drag to reposition, resize/rotate via handles, double-click text to edit. Cmd/Ctrl+Z to undo.
               </span>
@@ -578,7 +578,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             </div>
           </>
         ) : (
-          <div className="text-[var(--editor-text)]/40 text-sm">No slides yet. Add one in the left panel.</div>
+          <div className="text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] text-sm">No slides yet. Add one in the left panel.</div>
         )}
 
         {state.lastError && (

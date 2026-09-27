@@ -118,7 +118,7 @@ function RailCell({ height, accent, icon, label, action, dimmed, settingsButton 
           icons could be clicked — a decorative-looking glyph that happened to
           open a dialog. Settings moved to the gear beside it. */}
       <Tooltip label={label}>
-        <span aria-label={label} className="flex h-4 w-4 items-center justify-center text-[var(--editor-text)]/50">
+        <span aria-label={label} className="flex h-4 w-4 items-center justify-center text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
           {icon}
         </span>
       </Tooltip>
@@ -144,8 +144,8 @@ function RailCell({ height, accent, icon, label, action, dimmed, settingsButton 
               onClick={settingsButton.onClick}
               className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
                 settingsButton.open
-                  ? 'text-[var(--editor-text)]/90 bg-[var(--editor-text)]/10'
-                  : 'text-[var(--editor-text)]/40 hover:text-[var(--editor-text)]/90 hover:bg-[var(--editor-text)]/10'
+                  ? 'text-[color-mix(in_srgb,var(--editor-text)_90%,transparent)] bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]'
+                  : 'text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_90%,transparent)] hover:bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]'
               }`}
             >
               <Settings2 size={13} />
@@ -179,7 +179,7 @@ function MuteToggle({ muted, onToggle, trackLabel, mode }: { muted: boolean; onT
         className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
           muted
             ? (mode === 'light' ? 'text-amber-600 hover:text-amber-700' : 'text-amber-400/90 hover:text-amber-300')
-            : 'text-[var(--editor-text)]/35 hover:text-[var(--editor-text)]/80'
+            : 'text-[color-mix(in_srgb,var(--editor-text)_35%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)]'
         }`}
       >
         {muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
@@ -206,7 +206,7 @@ function MagnetToggle({ magnetic, onToggle, trackLabel, mode }: { magnetic: bool
         className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
           magnetic
             ? (mode === 'light' ? 'text-emerald-600 hover:text-emerald-700' : 'text-emerald-400/90 hover:text-emerald-300')
-            : 'text-[var(--editor-text)]/35 hover:text-[var(--editor-text)]/80'
+            : 'text-[color-mix(in_srgb,var(--editor-text)_35%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)]'
         }`}
       >
         <Magnet size={13} />
@@ -227,7 +227,7 @@ function SkipToggle({ enabled, onToggle, trackLabel, mode }: { enabled: boolean;
         onClick={onToggle}
         className={`flex h-3.5 w-3.5 items-center justify-center rounded transition-colors ${
           enabled
-            ? 'text-[var(--editor-text)]/35 hover:text-[var(--editor-text)]/80'
+            ? 'text-[color-mix(in_srgb,var(--editor-text)_35%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)]'
             : (mode === 'light' ? 'text-amber-600/90 hover:text-amber-700' : 'text-amber-400/80 hover:text-amber-300')
         }`}
       >

@@ -449,7 +449,7 @@ export function CaptionStyleCard({
         </div>
       )}
 
-      {/* NOT `text-[var(--editor-text)]/60` — Tailwind cannot generate an
+      {/* NOT `text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]` — Tailwind cannot generate an
           opacity modifier on an arbitrary var() colour, so that class is a
           silent no-op. See the long note in CaptionListPanel.tsx. */}
       <span

@@ -50,7 +50,7 @@ export function SwatchInput({
         />
       </label>
       {showValue && (
-        <span className="font-mono text-sm uppercase text-[var(--editor-text)]/80">{value}</span>
+        <span className="font-mono text-sm uppercase text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)]">{value}</span>
       )}
     </div>
   )

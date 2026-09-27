@@ -344,6 +344,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   video editor gains an **Undo** button in the track-controls bar, wired to the
   existing `handleUndo`/`canUndo` (video has no redo stack, so no Redo button).
   Keyboard shortcuts are unchanged.
+- **Fixed: ~260 more dead Tailwind `/NN` opacity modifiers on `--editor-*` CSS
+  vars, package-wide — the same silent no-op `LeftPanelTabs.tsx` had (above),
+  on toolbar icons, timeline controls, carousel panels, and shared `ui/`
+  primitives across both editors. Tailwind cannot parse an opaque `var(...)`
+  reference to inject an alpha channel, so it emits no rule at all and the
+  element falls back to an inherited/default color — invisible against the
+  editor's dark surface. Every instance, plain (`/60`) and bracketed
+  (`/[0.06]`), is rewritten to the same
+  `color-mix(in_srgb,var(--editor-X)_NN%,transparent)` form: 269 replacements
+  across 38 files. `VideoEditor.tsx`'s two root containers also gain an
+  explicit `text-[var(--editor-text)]`, so anything still uncolored inherits
+  a readable color instead of whatever a host's chrome happens to set. A new
+  source-level guard test greps the whole package for the dead pattern and
+  fails the suite if it comes back. (`ui/*`, `text/*`, `crop/*`,
+  `components/FilmstripScrubber.tsx`, `carousel/*`, `video/*` — 38 files in
+  all — plus `__tests__/no-opacity-modifier-on-editor-vars.test.ts`,
+  `__tests__/node-shims.d.ts`)
 
 ## 0.8.10 — 2026-07-20
 

@@ -145,13 +145,14 @@ describe('CaptionListPanel list', () => {
   // only a source-text check on the actual class string catches it.
   //
   // Scoped to just these two spans, not "no `/<number>` modifier anywhere in
-  // the file": ~12 OTHER `text-[var(--editor-text)]/N` uses remain elsewhere
-  // in this component (toolbar, buttons, search, empty states) and are
-  // equally no-ops, but they were individually measured to render legibly in
-  // their positions and are out of scope for this fix. A file-wide ban here
-  // would either force touching all of them unverified or need a fragile
-  // "count didn't grow" check that can't tell one class moving from banning
-  // one occurrence while a new one appears elsewhere.
+  // the file": the other `text-[var(--editor-text)]/N` uses elsewhere in this
+  // component (toolbar, buttons, search, empty states) were the same no-op at
+  // the time this guard was written. They're since converted to the
+  // equivalent `color-mix(in_srgb,var(--editor-text)_N%,transparent)` form
+  // package-wide (see the CHANGELOG), which a repo-wide grep test now
+  // enforces — this test stays narrow because it predates that fix and these
+  // two spans specifically were fixed with a plain `opacity-N` utility
+  // instead, not `color-mix`.
   it('the row index and timestamp spans do not use a no-op opacity-modifier color class', () => {
     const indexSpan = src.match(/<span className="[^"]*">\{index \+ 1\}<\/span>/)?.[0] ?? ''
     const timestampSpan = src.match(/<span className="[^"]*">\{formatTime\(seg\.start\)\}<\/span>/)?.[0] ?? ''

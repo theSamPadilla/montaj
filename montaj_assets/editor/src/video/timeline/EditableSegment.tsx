@@ -22,7 +22,7 @@ export function EditableSegment({ seg, onEdit }: { seg: CaptionSegment; onEdit: 
       suppressContentEditableWarning
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}
-      className="cursor-text rounded px-0.5 hover:bg-[var(--editor-text)]/5 focus:bg-[var(--editor-text)]/10 focus:outline-none focus:ring-1 focus:ring-purple-500/40"
+      className="cursor-text rounded px-0.5 hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)] focus:bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)] focus:outline-none focus:ring-1 focus:ring-purple-500/40"
     >
       {seg.text}
     </span>

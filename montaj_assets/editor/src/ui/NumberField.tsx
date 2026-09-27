@@ -196,7 +196,7 @@ export function NumberField({
   return (
     <div className="flex shrink-0 items-center gap-1">
       {prefix && (
-        <span aria-hidden="true" className="w-2 shrink-0 text-[10px] text-[var(--editor-text)]/40">
+        <span aria-hidden="true" className="w-2 shrink-0 text-[10px] text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]">
           {prefix}
         </span>
       )}
@@ -218,7 +218,7 @@ export function NumberField({
         className={cn(inspectorInputClass, 'text-right disabled:opacity-50 disabled:cursor-not-allowed', className)}
       />
       {unit && (
-        <span aria-hidden="true" className="text-[10px] text-[var(--editor-text)]/40">
+        <span aria-hidden="true" className="text-[10px] text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]">
           {unit}
         </span>
       )}
@@ -238,7 +238,7 @@ export function NumberField({
  *  than only being dimmed for show. */
 function Stepper({ name, onStep, disabled }: { name: string; onStep: (direction: 1 | -1) => void; disabled?: boolean }) {
   const btn = cn(
-    'flex h-3 w-4 items-center justify-center rounded-sm text-[var(--editor-text)]/45 transition-colors',
+    'flex h-3 w-4 items-center justify-center rounded-sm text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] transition-colors',
     disabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-[var(--editor-surface)] hover:text-[var(--editor-text)]',
   )
   return (

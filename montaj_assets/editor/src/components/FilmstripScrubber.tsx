@@ -266,7 +266,7 @@ export default function FilmstripScrubber({
       )}
       {phase === 'error' && (
         <div
-          className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[var(--editor-surface)] text-[10px] text-[var(--editor-text)]/40"
+          className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[var(--editor-surface)] text-[10px] text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]"
           role="status"
         >
           No preview

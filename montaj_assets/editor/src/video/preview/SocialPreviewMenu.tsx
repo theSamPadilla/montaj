@@ -157,8 +157,8 @@ export default function SocialPreviewMenu({ anchorRef, value, onChange, onClose,
       }}
     >
       <p className="px-2 pt-1 pb-1.5">
-        <span className="block text-[11px] font-semibold text-[var(--editor-text)]/90">Preview for social media</span>
-        <span className="block text-[10px] text-[var(--editor-text)]/50">What you see may vary depending on your device.</span>
+        <span className="block text-[11px] font-semibold text-[color-mix(in_srgb,var(--editor-text)_90%,transparent)]">Preview for social media</span>
+        <span className="block text-[10px] text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">What you see may vary depending on your device.</span>
       </p>
 
       {PLATFORM_OPTIONS.map(opt => {
@@ -175,7 +175,7 @@ export default function SocialPreviewMenu({ anchorRef, value, onChange, onClose,
             className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors ${
               active
                 ? 'text-[var(--editor-text)] bg-sky-400/10'
-                : 'text-[var(--editor-text)]/80 hover:bg-[var(--editor-text)]/5'
+                : 'text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)]'
             }`}
           >
             <span className="flex items-center gap-2">
@@ -199,11 +199,11 @@ export default function SocialPreviewMenu({ anchorRef, value, onChange, onClose,
         className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors ${
           value === null
             ? 'text-[var(--editor-text)] bg-sky-400/10'
-            : 'text-[var(--editor-text)]/80 hover:bg-[var(--editor-text)]/5'
+            : 'text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)]'
         }`}
       >
         <span className="flex items-center gap-2">
-          <PlatformGlyph icon={Slash} badgeClassName="bg-[var(--editor-text)]/15" />
+          <PlatformGlyph icon={Slash} badgeClassName="bg-[color-mix(in_srgb,var(--editor-text)_15%,transparent)]" />
           <span>None</span>
         </span>
         {value === null && <Check size={13} className={mode === 'light' ? 'text-sky-600' : 'text-sky-400'} />}

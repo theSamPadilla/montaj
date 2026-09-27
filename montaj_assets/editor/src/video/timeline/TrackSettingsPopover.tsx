@@ -186,7 +186,7 @@ export default function TrackSettingsPopover({
         transform: position?.flipped ? 'translateY(-100%)' : undefined,
       }}
     >
-      <p className="text-xs font-semibold text-[var(--editor-text)]/90">{title}</p>
+      <p className="text-xs font-semibold text-[color-mix(in_srgb,var(--editor-text)_90%,transparent)]">{title}</p>
 
       {showVolume && (
         <VolumeControl
@@ -211,14 +211,14 @@ export default function TrackSettingsPopover({
 
       {showMute && (
         <div className="flex items-center justify-between">
-          <span className="text-[11px] text-[var(--editor-text)]/70">Mute</span>
+          <span className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)]">Mute</span>
           <Switch checked={!!muted} onCheckedChange={onMutedChange!} aria-label={muteAriaLabel} mode={mode} />
         </div>
       )}
 
       {skip && (
         <div className="flex items-center justify-between">
-          <span className="text-[11px] text-[var(--editor-text)]/70">Skip</span>
+          <span className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)]">Skip</span>
           <Switch checked={skip.skipped} onCheckedChange={() => skip.onToggle()} aria-label={skip.ariaLabel} mode={mode} />
         </div>
       )}

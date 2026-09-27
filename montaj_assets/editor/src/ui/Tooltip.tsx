@@ -103,7 +103,7 @@ export function Tooltip({ label, keys, side = 'top', className, children }: Tool
           {keys?.map((k, i) => (
             <kbd
               key={i}
-              className="rounded border border-[var(--editor-border)] bg-[var(--editor-text)]/10 px-1 py-0.5 font-mono text-[9px] leading-none text-[var(--editor-text)]/70"
+              className="rounded border border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)] px-1 py-0.5 font-mono text-[9px] leading-none text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)]"
             >
               {k}
             </kbd>

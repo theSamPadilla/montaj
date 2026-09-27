@@ -87,7 +87,7 @@ export default function VersionPanel({ versions, restoring, onRestore, onSaveVer
           IS the list. The count sits on the right as an explicit "N versions"
           label so it reads as a quantity rather than part of the title. */}
       <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-[var(--editor-border)]">
-        <span className="text-xs font-medium text-[var(--editor-text)]/60 uppercase tracking-wide">Versions</span>
+        <span className="text-xs font-medium text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] uppercase tracking-wide">Versions</span>
         {rows.length > 0 && (
           <span className="text-[10px] text-[var(--editor-text)] opacity-50">
             {rows.length} {rows.length === 1 ? 'version' : 'versions'}
@@ -106,7 +106,7 @@ export default function VersionPanel({ versions, restoring, onRestore, onSaveVer
           onChange={e => setNameInput(e.target.value)}
           placeholder="Name (optional)"
           disabled={saving || !onSaveVersion}
-          className="min-w-0 flex-1 h-8 text-[11px] bg-[var(--editor-bg)] border border-[var(--editor-border)] rounded-md px-2 text-[var(--editor-text)] placeholder:text-[var(--editor-text)]/40 focus:outline-none focus:border-[var(--editor-accent)] disabled:opacity-40"
+          className="min-w-0 flex-1 h-8 text-[11px] bg-[var(--editor-bg)] border border-[var(--editor-border)] rounded-md px-2 text-[var(--editor-text)] placeholder:text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] focus:outline-none focus:border-[var(--editor-accent)] disabled:opacity-40"
         />
         <button
           onClick={handleSaveClick}

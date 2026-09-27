@@ -290,10 +290,10 @@ function PhaseStepper({ current, phases }: { current: RenderPhase; phases: Rende
             <span
               className={
                 complete
-                  ? 'text-sm text-[var(--editor-text)]/70'
+                  ? 'text-sm text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)]'
                   : active
                     ? 'text-sm font-semibold text-[var(--editor-text)]'
-                    : 'text-sm text-[var(--editor-text)]/35'
+                    : 'text-sm text-[color-mix(in_srgb,var(--editor-text)_35%,transparent)]'
               }
             >
               {phaseLabel(phase)}
@@ -309,15 +309,15 @@ function PhaseStepper({ current, phases }: { current: RenderPhase; phases: Rende
 
 function LogLine({ text }: { text: string }) {
   const t = text.replace(/^\[montaj render\]\s*/, '')
-  let color = 'text-[var(--editor-text)]/60'
+  let color = 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]'
   if (/ready|complete|done|encoded|assembled/i.test(t))  color = 'text-green-400'
   else if (/rendering|bundling|launching|browsers/i.test(t)) color = 'text-sky-400'
   else if (/trimming|building|composing/i.test(t))       color = 'text-amber-400'
-  else if (/frame\s+\d+\/\d+/i.test(t))                  color = 'text-[var(--editor-text)]/55'
+  else if (/frame\s+\d+\/\d+/i.test(t))                  color = 'text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]'
   else if (/error|fail|warn/i.test(t))                   color = 'text-red-400'
 
   const prefix = text.startsWith('[montaj render]')
-    ? <span className="text-[var(--editor-text)]/40">[render] </span>
+    ? <span className="text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]">[render] </span>
     : null
 
   return (
@@ -385,7 +385,7 @@ function ProgressBar({ value }: { value: number | null }) {
   return (
     <div className="w-full max-w-xs" role="progressbar" aria-label="Render progress"
       aria-valuenow={pct === null ? undefined : Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--editor-text)]/10">
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]">
         {pct === null ? (
           <>
             <style>{'@keyframes montajRenderIndet{0%{transform:translateX(-100%)}100%{transform:translateX(320%)}}'}</style>
@@ -801,7 +801,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
             <button
               onClick={handleCancel}
               aria-label="Close"
-              className="text-[var(--editor-text)]/55 hover:text-[var(--editor-text)] transition-colors text-lg leading-none"
+              className="text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)] hover:text-[var(--editor-text)] transition-colors text-lg leading-none"
             >
               ×
             </button>
@@ -827,7 +827,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                 ) : coverLoading ? (
                   <Loader size="md" label="Loading cover" />
                 ) : (
-                  <span className="text-[11px] text-[var(--editor-text)]/40">No preview</span>
+                  <span className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]">No preview</span>
                 )}
               </div>
               {adapter.getSampleFrame && (
@@ -835,7 +835,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                   <button
                     onClick={() => setCoverEditing(o => !o)}
                     aria-expanded={coverEditing}
-                    className="self-start text-xs text-[var(--editor-text)]/70 hover:text-[var(--editor-text)] transition-colors"
+                    className="self-start text-xs text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] hover:text-[var(--editor-text)] transition-colors"
                   >
                     {coverEditing ? 'Done' : 'Edit cover'}
                   </button>
@@ -869,7 +869,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                         })}
                       </div>
                     ) : (
-                      <p className="text-[11px] text-[var(--editor-text)]/40">No frames to pick from.</p>
+                      <p className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]">No frames to pick from.</p>
                     )
                   )}
                 </>
@@ -880,7 +880,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
             <div className="flex-1 min-w-0 flex flex-col gap-4">
               {/* Name */}
               <label className="flex flex-col gap-1.5">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Name</span>
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">Name</span>
                 <input
                   type="text"
                   value={name}
@@ -892,9 +892,9 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
 
               {/* Save to */}
               <div className="flex flex-col gap-1">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Save to</span>
-                <span className="text-xs font-mono text-[var(--editor-text)]/70 truncate">output/{outputName}.mp4</span>
-                <span className="text-[11px] text-[var(--editor-text)]/45">Download after export.</span>
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">Save to</span>
+                <span className="text-xs font-mono text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] truncate">output/{outputName}.mp4</span>
+                <span className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)]">Download after export.</span>
               </div>
 
               {/* Resolution — source-capped tier picker. Only rendered when the
@@ -908,7 +908,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                 const currentShort = Math.min(...res.value)
                 return (
                   <div className="flex flex-col gap-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Resolution</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">Resolution</p>
                     <div role="radiogroup" aria-label="Resolution" className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                       {res.available.map(([w, h]) => {
                         const short = Math.min(w, h)
@@ -922,11 +922,11 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                             className={`flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-colors ${
                               active
                                 ? 'border-violet-400/60 bg-violet-400/10'
-                                : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
+                                : 'border-[var(--editor-border)] hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)]'
                             }`}
                           >
                             <span className="text-xs font-semibold text-[var(--editor-text)]">{resLabel([w, h])}</span>
-                            <span className="text-[10px] leading-snug text-[var(--editor-text)]/55">{w} × {h}</span>
+                            <span className="text-[10px] leading-snug text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">{w} × {h}</span>
                           </button>
                         )
                       })}
@@ -940,7 +940,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                 const fps = preRenderOptions.fps
                 return (
                   <div className="flex flex-col gap-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Frame rate</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">Frame rate</p>
                     <div role="radiogroup" aria-label="Frame rate" className="grid grid-cols-3 gap-2">
                       {fps.available.map(f => {
                         const active = f === fps.value
@@ -954,11 +954,11 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                             className={`flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-colors ${
                               active
                                 ? 'border-violet-400/60 bg-violet-400/10'
-                                : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
+                                : 'border-[var(--editor-border)] hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)]'
                             }`}
                           >
                             <span className="text-xs font-semibold text-[var(--editor-text)]">{f} fps</span>
-                            <span className="text-[10px] leading-snug text-[var(--editor-text)]/55">{hint}</span>
+                            <span className="text-[10px] leading-snug text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">{hint}</span>
                           </button>
                         )
                       })}
@@ -972,7 +972,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                 <>
                   {/* Format */}
                   <div className="flex flex-col gap-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">Format</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">Format</p>
                     <div role="radiogroup" aria-label="Format" className="grid grid-cols-3 gap-2">
                       {EXPORT_CHOICES.map(choice => {
                         const active = choice.id === exportChoice
@@ -985,11 +985,11 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                             className={`flex flex-col gap-1 rounded-lg border p-2.5 text-left transition-colors ${
                               active
                                 ? 'border-violet-400/60 bg-violet-400/10'
-                                : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
+                                : 'border-[var(--editor-border)] hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)]'
                             }`}
                           >
                             <span className="text-xs font-semibold text-[var(--editor-text)]">{choice.label}</span>
-                            <span className="text-[10px] leading-snug text-[var(--editor-text)]/55">{choice.blurb}</span>
+                            <span className="text-[10px] leading-snug text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">{choice.blurb}</span>
                           </button>
                         )
                       })}
@@ -1010,7 +1010,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                         <button
                           onClick={() => setImageColor(o => !o)}
                           aria-expanded={imageColorOpen}
-                          className="flex items-center gap-1.5 self-start text-xs text-[var(--editor-text)]/70 hover:text-[var(--editor-text)] transition-colors"
+                          className="flex items-center gap-1.5 self-start text-xs text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] hover:text-[var(--editor-text)] transition-colors"
                         >
                           {imageColorOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                           Image color
@@ -1018,7 +1018,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
 
                         {imageColorOpen ? (
                           <div className="flex flex-col gap-2">
-                            <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
                               How photos and logos convert for HDR
                             </p>
                             <div role="radiogroup" aria-label="Image color" className="grid grid-cols-2 gap-2">
@@ -1033,7 +1033,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                                     className={`flex flex-col gap-1.5 rounded-lg border p-2 text-left transition-colors ${
                                       active
                                         ? 'border-violet-400/60 bg-violet-400/10'
-                                        : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
+                                        : 'border-[var(--editor-border)] hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)]'
                                     }`}
                                   >
                                     <img
@@ -1044,17 +1044,17 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                                     <span className="text-xs font-semibold text-[var(--editor-text)] flex items-center gap-1.5">
                                       {t.label}
                                       {t.id === DEFAULT_IMAGE_TONE && (
-                                        <span className="text-[9px] font-normal px-1 py-px rounded bg-[var(--editor-text)]/10 text-[var(--editor-text)]/55">default</span>
+                                        <span className="text-[9px] font-normal px-1 py-px rounded bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">default</span>
                                       )}
                                     </span>
-                                    <span className="text-[10px] leading-snug text-[var(--editor-text)]/60">{t.summary}</span>
+                                    <span className="text-[10px] leading-snug text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">{t.summary}</span>
                                   </button>
                                 )
                               })}
                             </div>
                           </div>
                         ) : (
-                          <p className="text-[11px] text-[var(--editor-text)]/45">
+                          <p className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)]">
                             Photos and logos use the {toneInfo.label} conversion. Open to change.
                           </p>
                         )}
@@ -1067,7 +1067,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                     <button
                       onClick={() => setAdvanced(o => !o)}
                       aria-expanded={advancedOpen}
-                      className="flex items-center gap-1.5 self-start text-xs text-[var(--editor-text)]/70 hover:text-[var(--editor-text)] transition-colors"
+                      className="flex items-center gap-1.5 self-start text-xs text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] hover:text-[var(--editor-text)] transition-colors"
                     >
                       {advancedOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                       Advanced
@@ -1075,7 +1075,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
 
                     {advancedOpen ? (
                       <div className="flex flex-col gap-2">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--editor-text)]/50">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
                           Tone curve for SDR
                         </p>
                         <div role="radiogroup" aria-label="Tone curve for SDR" className="grid grid-cols-2 gap-2">
@@ -1091,7 +1091,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                                 className={`flex flex-col gap-1.5 rounded-lg border p-2 text-left transition-colors ${
                                   active
                                     ? 'border-violet-400/60 bg-violet-400/10'
-                                    : 'border-[var(--editor-border)] hover:bg-[var(--editor-text)]/5'
+                                    : 'border-[var(--editor-border)] hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)]'
                                 }`}
                               >
                                 {thumb ? (
@@ -1120,17 +1120,17 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                                     </span>
                                   </span>
                                 ) : thumbsPending ? (
-                                  <span style={{ aspectRatio: coverAspect }} className="w-full rounded border border-[var(--editor-border)] bg-[var(--editor-text)]/5 flex items-center justify-center">
+                                  <span style={{ aspectRatio: coverAspect }} className="w-full rounded border border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)] flex items-center justify-center">
                                     <Loader size="sm" />
                                   </span>
                                 ) : null}
                                 <span className="text-xs font-semibold text-[var(--editor-text)] flex items-center gap-1.5">
                                   {curve.label}
                                   {curve.id === DEFAULT_SDR_CURVE && (
-                                    <span className="text-[9px] font-normal px-1 py-px rounded bg-[var(--editor-text)]/10 text-[var(--editor-text)]/55">default</span>
+                                    <span className="text-[9px] font-normal px-1 py-px rounded bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">default</span>
                                   )}
                                 </span>
-                                <span className="text-[10px] leading-snug text-[var(--editor-text)]/60">{curve.blurb}</span>
+                                <span className="text-[10px] leading-snug text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">{curve.blurb}</span>
                               </button>
                             )
                           })}
@@ -1139,7 +1139,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                           data-testid="sdr-honesty-line"
                           className={`text-[11px] leading-snug ${
                             sdrCurve === DEFAULT_SDR_CURVE
-                              ? 'text-[var(--editor-text)]/55'
+                              ? 'text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]'
                               : (mode === 'light' ? 'text-amber-700' : 'text-amber-400/90')
                           }`}
                         >
@@ -1147,7 +1147,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                         </p>
                       </div>
                     ) : (
-                      <p className="text-[11px] text-[var(--editor-text)]/45">
+                      <p className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)]">
                         SDR files use the {curveInfo.label} look. Open Advanced to compare curves.
                       </p>
                     )}
@@ -1159,13 +1159,13 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
 
           {/* Footer — duration on the left, actions on the right. */}
           <div className="flex items-center justify-between gap-2 px-5 py-3 border-t border-[var(--editor-border)]">
-            <span className="text-xs text-[var(--editor-text)]/50 tabular-nums">
+            <span className="text-xs text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)] tabular-nums">
               {durationSec > 0 ? formatTimecode(durationSec) : ''}
             </span>
             <div className="flex items-center gap-2">
               <button
                 onClick={handleCancel}
-                className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 hover:opacity-90 transition-colors"
+                className="text-sm px-4 py-1.5 rounded-md bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] hover:opacity-90 transition-colors"
               >
                 Cancel
               </button>
@@ -1257,7 +1257,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                 className="h-full w-full object-contain"
               />
             ) : (
-              <p className="text-sm text-[var(--editor-text)]/60">Render complete.</p>
+              <p className="text-sm text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">Render complete.</p>
             )}
           </div>
 
@@ -1268,10 +1268,10 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                 <span className="w-2 h-2 rounded-full bg-green-400" />
                 <div>
                   <p className="text-sm font-semibold text-[var(--editor-text)]">Render complete</p>
-                  <p className="text-xs text-[var(--editor-text)]/60">Saved to your library.</p>
+                  <p className="text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">Saved to your library.</p>
                 </div>
               </div>
-              <button onClick={onClose} className="text-[var(--editor-text)]/55 hover:text-[var(--editor-text)] transition-colors text-lg leading-none">×</button>
+              <button onClick={onClose} className="text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)] hover:text-[var(--editor-text)] transition-colors text-lg leading-none">×</button>
             </div>
 
             <div className="flex flex-col gap-3 p-5 flex-1">
@@ -1299,7 +1299,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
               ))}
               <button
                 onClick={onClose}
-                className="w-full text-center text-sm px-4 py-2.5 rounded-lg bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[var(--editor-text)]/80 hover:opacity-90 transition-colors"
+                className="w-full text-center text-sm px-4 py-2.5 rounded-lg bg-[var(--editor-surface)] border border-[var(--editor-border)] text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] hover:opacity-90 transition-colors"
               >
                 Close
               </button>
@@ -1325,7 +1325,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
             </h2>
           </div>
           {status !== 'running' && (
-            <button onClick={onClose} className="text-[var(--editor-text)]/55 hover:text-[var(--editor-text)] transition-colors text-lg leading-none">×</button>
+            <button onClick={onClose} className="text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)] hover:text-[var(--editor-text)] transition-colors text-lg leading-none">×</button>
           )}
         </div>
 
@@ -1336,7 +1336,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
 
             <div className="flex flex-col items-center gap-1 text-center">
               <h3 className="text-base font-semibold text-[var(--editor-text)]">Exporting your video</h3>
-              <p className="text-xs text-[var(--editor-text)]/50">This can take a few minutes for longer videos.</p>
+              <p className="text-xs text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">This can take a few minutes for longer videos.</p>
             </div>
 
             {/* Progress bar — always visible while rendering, above the stepper
@@ -1366,7 +1366,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                 <button
                   onClick={() => setShowLog(o => !o)}
                   aria-expanded={showLog}
-                  className="mx-auto flex items-center gap-1 text-[11px] text-[var(--editor-text)]/50 hover:text-[var(--editor-text)]/80 transition-colors"
+                  className="mx-auto flex items-center gap-1 text-[11px] text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] transition-colors"
                 >
                   {showLog ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                   {showLog ? 'Hide render log' : 'Show render log'}
@@ -1375,17 +1375,17 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                   <div className="relative mt-2">
                     <button
                       onClick={() => navigator.clipboard.writeText(logs.join('\n'))}
-                      className="absolute top-2 right-2 z-10 rounded border border-white/10 bg-[#0a0e17] px-2 py-0.5 text-[10px] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors"
+                      className="absolute top-2 right-2 z-10 rounded border border-white/10 bg-[#0a0e17] px-2 py-0.5 text-[10px] text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:text-[var(--editor-text)] transition-colors"
                       title="Copy logs"
                     >
                       Copy
                     </button>
                     <div
                       ref={logRef}
-                      className="flex h-52 flex-col gap-0.5 overflow-y-auto rounded-lg border border-white/10 bg-[#0a0e17] px-3 py-2 font-mono text-[11px] text-[var(--editor-text)]/80"
+                      className="flex h-52 flex-col gap-0.5 overflow-y-auto rounded-lg border border-white/10 bg-[#0a0e17] px-3 py-2 font-mono text-[11px] text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)]"
                     >
                       {logs.length === 0
-                        ? <span className="italic text-[var(--editor-text)]/40">Starting render engine…</span>
+                        ? <span className="italic text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]">Starting render engine…</span>
                         : logs.map((line, i) => <LogLine key={i} text={line} />)}
                     </div>
                   </div>
@@ -1400,14 +1400,14 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
               <div className="relative">
                 <button
                   onClick={() => navigator.clipboard.writeText(logs.join('\n') + (errorMsg ? '\n' + errorMsg : ''))}
-                  className="absolute top-2 right-2 z-10 rounded border border-white/10 bg-[#0a0e17] px-2 py-0.5 text-[10px] text-[var(--editor-text)]/60 hover:text-[var(--editor-text)] transition-colors"
+                  className="absolute top-2 right-2 z-10 rounded border border-white/10 bg-[#0a0e17] px-2 py-0.5 text-[10px] text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] hover:text-[var(--editor-text)] transition-colors"
                   title="Copy logs"
                 >
                   Copy
                 </button>
                 <div
                   ref={logRef}
-                  className="flex h-72 flex-col gap-0.5 overflow-y-auto rounded-lg border border-white/10 bg-[#0a0e17] px-3 py-2 font-mono text-[11px] text-[var(--editor-text)]/80"
+                  className="flex h-72 flex-col gap-0.5 overflow-y-auto rounded-lg border border-white/10 bg-[#0a0e17] px-3 py-2 font-mono text-[11px] text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)]"
                 >
                   {logs.map((line, i) => <LogLine key={i} text={line} />)}
                   {errorMsg && <span className="mt-1 text-red-400">{errorMsg}</span>}
@@ -1426,7 +1426,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
           {status === 'running' ? (
             <button
               onClick={handleCancel}
-              className={`text-sm px-4 py-1.5 rounded-md bg-[#0e131f] border border-white/10 text-[var(--editor-text)]/80 transition-colors ${mode === 'light' ? 'hover:bg-red-50 hover:border-red-300 hover:text-red-700' : 'hover:bg-red-900/40 hover:border-red-700 hover:text-red-300'}`}
+              className={`text-sm px-4 py-1.5 rounded-md bg-[#0e131f] border border-white/10 text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] transition-colors ${mode === 'light' ? 'hover:bg-red-50 hover:border-red-300 hover:text-red-700' : 'hover:bg-red-900/40 hover:border-red-700 hover:text-red-300'}`}
             >
               Cancel
             </button>

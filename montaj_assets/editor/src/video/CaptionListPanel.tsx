@@ -88,7 +88,7 @@ const ALIGNMENTS = [
 /** The panel's one chip look, worn by every toggle on the Format tab (Bold,
  *  case, alignment). The inactive foreground is
  *  `text-[var(--editor-text)] opacity-60` rather than
- *  `text-[var(--editor-text)]/60` — Tailwind cannot generate an opacity
+ *  `text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]` — Tailwind cannot generate an opacity
  *  modifier on an arbitrary var() color, so that class is a silent no-op (see
  *  the longer note on the row index span at the bottom of this file). The
  *  row-filter chips on the Captions tab hand-roll the same look with the older
@@ -96,7 +96,7 @@ const ALIGNMENTS = [
 const chipClass = (active: boolean): string =>
   `text-[10px] rounded px-2 py-0.5 transition-all border ${
     active
-      ? 'bg-[var(--editor-accent)]/20 border-[var(--editor-accent)]/60 text-[var(--editor-accent)]'
+      ? 'bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] border-[color-mix(in_srgb,var(--editor-accent)_60%,transparent)] text-[var(--editor-accent)]'
       : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[var(--editor-text)] opacity-60 hover:opacity-100'
   }`
 
@@ -111,7 +111,7 @@ const rowClass = 'flex items-center gap-1.5'
  *  ("Alignment") at this size and still leaves the ~300px rail enough room for
  *  the widest control (the font picker + Bold).
  *
- *  `opacity-60`, NOT `text-[var(--editor-text)]/60` — an opacity modifier on an
+ *  `opacity-60`, NOT `text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]` — an opacity modifier on an
  *  arbitrary var() color is a silent no-op; see the note on `chipClass` above.
  *
  *  These labels are PRESENTATIONAL: plain sibling spans, never a
@@ -559,10 +559,10 @@ function CaptionListPanelBody({
           control — so the left rail's panels share one tab language. ── */}
       <div className="shrink-0 border-b border-[var(--editor-border)] flex flex-col">
         <div className="px-3 pt-2 pb-1 flex items-center justify-between gap-2">
-          <span className="text-xs font-medium text-[var(--editor-text)]/60 uppercase tracking-wide">
+          <span className="text-xs font-medium text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] uppercase tracking-wide">
             Captions
             {segs.length > 0 && (
-              <span className="ml-1.5 text-[var(--editor-text)]/40 normal-case tracking-normal">{segs.length}</span>
+              <span className="ml-1.5 text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] normal-case tracking-normal">{segs.length}</span>
             )}
           </span>
         </div>
@@ -603,7 +603,7 @@ function CaptionListPanelBody({
             </div>
           ) : (
             <div className="flex flex-col items-center gap-2 text-center mt-4 px-2">
-              <p className="text-xs text-[var(--editor-text)]/50 leading-relaxed">
+              <p className="text-xs text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)] leading-relaxed">
                 {onRegenerateCaptions
                   ? "Captions are generated from the timeline's audio."
                   : 'No captions yet. Captions are generated during transcription.'}
@@ -920,14 +920,14 @@ function CaptionListPanelBody({
           <div className="shrink-0 border-b border-[var(--editor-border)] px-3 py-2 flex flex-col gap-2">
             {/* ── Search ── */}
             <div className="relative">
-              <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--editor-text)]/40 pointer-events-none" />
+              <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] pointer-events-none" />
               <input
                 type="text"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 placeholder="Search captions…"
                 aria-label="Search captions"
-                className="w-full h-7 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] pl-6 pr-2 text-xs text-[var(--editor-text)] placeholder-[var(--editor-text)]/40 focus:outline-none focus:border-[var(--editor-accent)]"
+                className="w-full h-7 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] pl-6 pr-2 text-xs text-[var(--editor-text)] placeholder-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] focus:outline-none focus:border-[var(--editor-accent)]"
               />
             </div>
 
@@ -946,8 +946,8 @@ function CaptionListPanelBody({
                   onClick={() => setRowFilter(null)}
                   className={`text-[10px] rounded px-2 py-0.5 transition-all border ${
                     rowFilter === null
-                      ? 'bg-[var(--editor-accent)]/20 border-[var(--editor-accent)]/60 text-[var(--editor-accent)]'
-                      : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[var(--editor-text)]/50 hover:text-[var(--editor-text)]/80 hover:border-[var(--editor-text)]/30'
+                      ? 'bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] border-[color-mix(in_srgb,var(--editor-accent)_60%,transparent)] text-[var(--editor-accent)]'
+                      : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] hover:border-[color-mix(in_srgb,var(--editor-text)_30%,transparent)]'
                   }`}
                 >
                   All
@@ -960,8 +960,8 @@ function CaptionListPanelBody({
                     onClick={() => setRowFilter(g.lane)}
                     className={`text-[10px] rounded px-2 py-0.5 transition-all border ${
                       rowFilter === g.lane
-                        ? 'bg-[var(--editor-accent)]/20 border-[var(--editor-accent)]/60 text-[var(--editor-accent)]'
-                        : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[var(--editor-text)]/50 hover:text-[var(--editor-text)]/80 hover:border-[var(--editor-text)]/30'
+                        ? 'bg-[color-mix(in_srgb,var(--editor-accent)_20%,transparent)] border-[color-mix(in_srgb,var(--editor-accent)_60%,transparent)] text-[var(--editor-accent)]'
+                        : 'bg-[var(--editor-surface)] border-[var(--editor-border)] text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] hover:border-[color-mix(in_srgb,var(--editor-text)_30%,transparent)]'
                     }`}
                   >
                     {`Row ${g.lane + 1}`}
@@ -974,7 +974,7 @@ function CaptionListPanelBody({
           {/* ── Scrollable numbered list ── */}
           <div role="list" aria-label="Caption segments" className="flex-1 min-h-0 overflow-y-auto px-2 py-2 flex flex-col gap-1">
         {totalVisible === 0 ? (
-          <p className="text-xs text-[var(--editor-text)]/50 italic text-center mt-4 px-2">No matching captions.</p>
+          <p className="text-xs text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)] italic text-center mt-4 px-2">No matching captions.</p>
         ) : (
           visibleGroups.map(group => (
             // A single-lane project has exactly one entry here, so this
@@ -989,7 +989,7 @@ function CaptionListPanelBody({
                 // resolveDropLane), and a sidebar dropdown doing the same
                 // move by a different mechanism invites the two to disagree
                 // about what a drag means. Follow-up, not YAGNI-scope here.
-                <div className="sticky top-0 z-10 -mx-2 px-2 py-1 bg-[var(--editor-surface)] border-b border-[var(--editor-border)] text-[10px] font-medium text-[var(--editor-text)]/50 uppercase tracking-wide">
+                <div className="sticky top-0 z-10 -mx-2 px-2 py-1 bg-[var(--editor-surface)] border-b border-[var(--editor-border)] text-[10px] font-medium text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)] uppercase tracking-wide">
                   {`Row ${group.lane + 1}`}
                 </div>
               )}
@@ -1050,7 +1050,7 @@ function CaptionListPanelBody({
                       />
                     </span>
                     <button
-                      className={`shrink-0 opacity-0 group-hover:opacity-100 text-[var(--editor-text)]/40 transition-opacity ${mode === 'light' ? 'hover:text-red-600' : 'hover:text-red-400'}`}
+                      className={`shrink-0 opacity-0 group-hover:opacity-100 text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] transition-opacity ${mode === 'light' ? 'hover:text-red-600' : 'hover:text-red-400'}`}
                       onClick={e => { e.stopPropagation(); handleDelete(seg.id) }}
                       title="Delete caption"
                       aria-label="Delete caption"
@@ -1090,8 +1090,8 @@ function CaptionListPanelBody({
                   confirmRemove
                     ? (mode === 'light' ? 'bg-red-50 border-red-400 text-red-700' : 'bg-red-500/15 border-red-500/60 text-red-400')
                     : (mode === 'light'
-                        ? 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/70 hover:border-red-400 hover:text-red-700'
-                        : 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/70 hover:border-red-500/50 hover:text-red-400')
+                        ? 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] hover:border-red-400 hover:text-red-700'
+                        : 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] hover:border-red-500/50 hover:text-red-400')
                 }`}
               >
                 <Trash2 size={13} />

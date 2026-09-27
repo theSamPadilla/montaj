@@ -6,7 +6,7 @@ export function Textarea({ className, ...props }: TextareaProps) {
   return (
     <textarea
       className={cn(
-        'flex w-full rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] px-3 py-2 text-sm text-[var(--editor-text)] placeholder:text-[var(--editor-text)]/60 focus:outline-none focus:ring-2 focus:ring-[var(--editor-accent)] disabled:opacity-50 resize-none',
+        'flex w-full rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] px-3 py-2 text-sm text-[var(--editor-text)] placeholder:text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] focus:outline-none focus:ring-2 focus:ring-[var(--editor-accent)] disabled:opacity-50 resize-none',
         className,
       )}
       {...props}

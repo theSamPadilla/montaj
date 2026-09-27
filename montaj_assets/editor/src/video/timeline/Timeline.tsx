@@ -940,7 +940,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
         <div className="flex items-center justify-end gap-0.5 -mb-1 cursor-pointer">
           <Tooltip label="Zoom out">
             <button
-              className="text-[11px] leading-none text-[var(--editor-text)]/45 hover:text-[var(--editor-text)]/80 w-5 h-5 flex items-center justify-center rounded hover:bg-[var(--editor-text)]/10 transition-colors"
+              className="text-[11px] leading-none text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] w-5 h-5 flex items-center justify-center rounded hover:bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)] transition-colors"
               aria-label="Zoom out"
               onClick={(e) => { e.stopPropagation(); zoomControls.zoomOut() }}
             >−</button>
@@ -948,7 +948,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
           {zoomControls.badge}
           <Tooltip label="Zoom in">
             <button
-              className="text-[11px] leading-none text-[var(--editor-text)]/45 hover:text-[var(--editor-text)]/80 w-5 h-5 flex items-center justify-center rounded hover:bg-[var(--editor-text)]/10 transition-colors"
+              className="text-[11px] leading-none text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] w-5 h-5 flex items-center justify-center rounded hover:bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)] transition-colors"
               aria-label="Zoom in"
               onClick={(e) => { e.stopPropagation(); zoomControls.zoomIn() }}
             >+</button>
@@ -956,7 +956,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
           {zoomControls.showFit && (
             <Tooltip label="Fit to view" className="ml-0.5">
               <button
-                className="text-[10px] text-[var(--editor-text)]/45 hover:text-[var(--editor-text)]/80 px-1.5 h-5 rounded hover:bg-[var(--editor-text)]/10 transition-colors"
+                className="text-[10px] text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] hover:text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)] px-1.5 h-5 rounded hover:bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)] transition-colors"
                 aria-label="Fit to view"
                 onClick={(e) => { e.stopPropagation(); zoomControls.fit() }}
               >fit</button>

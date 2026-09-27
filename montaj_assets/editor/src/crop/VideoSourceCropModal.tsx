@@ -165,7 +165,7 @@ export function VideoSourceCropModal({
       >
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-[var(--editor-text)]">Crop source</h2>
-          <span className="text-xs text-[var(--editor-text)]/50">Pick the part of the footage to keep — position &amp; zoom live on the canvas</span>
+          <span className="text-xs text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">Pick the part of the footage to keep — position &amp; zoom live on the canvas</span>
         </div>
 
         {/* Source frame + crop window */}
@@ -243,8 +243,8 @@ export function VideoSourceCropModal({
                 title={key === 'free' ? 'Free-form crop' : `Lock crop to ${label}`}
                 className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
                   active
-                    ? 'border-[var(--editor-selection)] bg-[var(--editor-selection)]/15 text-[var(--editor-text)]'
-                    : 'border-[var(--editor-border)] text-[var(--editor-text)]/70 hover:text-[var(--editor-text)]'
+                    ? 'border-[var(--editor-selection)] bg-[color-mix(in_srgb,var(--editor-selection)_15%,transparent)] text-[var(--editor-text)]'
+                    : 'border-[var(--editor-border)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] hover:text-[var(--editor-text)]'
                 }`}
               >
                 <Icon size={14} />
@@ -258,7 +258,7 @@ export function VideoSourceCropModal({
         <div className="flex items-center justify-end gap-2 pt-1">
           <button
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-xs font-medium text-[var(--editor-text)]/70 hover:text-[var(--editor-text)] transition-colors"
+            className="rounded-md px-3 py-1.5 text-xs font-medium text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] hover:text-[var(--editor-text)] transition-colors"
           >
             Cancel
           </button>

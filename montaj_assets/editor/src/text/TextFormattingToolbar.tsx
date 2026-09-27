@@ -106,7 +106,7 @@ export function TextFormattingToolbar({
   // toward the surface tone. One look for B / I / case / align across the bar.
   const toolbarBtnBase = 'flex h-7 min-w-[1.75rem] items-center justify-center rounded-md border px-1.5 text-sm transition-colors focus:outline-none focus:ring-1 focus:ring-[var(--editor-accent)]'
   const toolbarBtnActive = 'border-[var(--editor-accent)] bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)]'
-  const toolbarBtnInactive = 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/70 hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)]'
+  const toolbarBtnInactive = 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)]'
 
   // Segment visibility helpers — group toggles vs size/font vs alignment.
   const hasLeftGroup = supported.has('fontWeight') || supported.has('fontStyle') || supported.has('textTransform') || supported.has('color')
@@ -233,7 +233,7 @@ export function TextFormattingToolbar({
         )}
 
         {!hasAnyControlProp && (
-          <span className="px-1 py-1 text-xs text-[var(--editor-text)]/55">
+          <span className="px-1 py-1 text-xs text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">
             Edit via property panel
           </span>
         )}
@@ -243,7 +243,7 @@ export function TextFormattingToolbar({
             type="button"
             aria-label="Delete text overlay"
             onClick={onDelete}
-            className={`${toolbarBtnBase} border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)]/60 ${mode === 'light' ? 'hover:border-red-300 hover:bg-red-50 hover:text-red-700' : 'hover:border-red-500/50 hover:bg-red-900/30 hover:text-red-400'}`}
+            className={`${toolbarBtnBase} border-[var(--editor-border)] bg-[var(--editor-surface)] text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] ${mode === 'light' ? 'hover:border-red-300 hover:bg-red-50 hover:text-red-700' : 'hover:border-red-500/50 hover:bg-red-900/30 hover:text-red-400'}`}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>

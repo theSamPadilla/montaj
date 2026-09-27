@@ -377,7 +377,7 @@ export default function VideoEditor<P extends Project = Project>({
 
   if (isPending) {
     return (
-      <div ref={containerRef} className="flex flex-col h-full bg-[var(--editor-bg)]">
+      <div ref={containerRef} className="flex flex-col h-full bg-[var(--editor-bg)] text-[var(--editor-text)]">
         <PendingSurface
           sync={sync}
           adapter={adapter}
@@ -394,7 +394,7 @@ export default function VideoEditor<P extends Project = Project>({
   }
 
   return (
-    <div ref={containerRef} className="flex flex-col h-full bg-[var(--editor-bg)]">
+    <div ref={containerRef} className="flex flex-col h-full bg-[var(--editor-bg)] text-[var(--editor-text)]">
       <ReviewSurface
         sync={sync}
         captionGestureRef={captionGestureRef}
@@ -629,10 +629,10 @@ function PendingSurface<P extends Project>({
                 <>
                   <div className="flex flex-col items-center gap-2">
                     <p className="text-[var(--editor-text)] text-lg font-semibold">Message your agent to start</p>
-                    <p className="text-[var(--editor-text)]/60 text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
+                    <p className="text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] text-sm">Nothing will happen automatically. Copy this and send it to your agent.</p>
                   </div>
                   {skillPath && (
-                    <div className="w-full rounded-xl border-2 border-[var(--editor-accent)]/50 bg-[var(--editor-surface)] p-5 flex flex-col gap-3 text-left shadow-lg shadow-[var(--editor-accent)]/10">
+                    <div className="w-full rounded-xl border-2 border-[color-mix(in_srgb,var(--editor-accent)_50%,transparent)] bg-[var(--editor-surface)] p-5 flex flex-col gap-3 text-left shadow-lg shadow-[color-mix(in_srgb,var(--editor-accent)_10%,transparent)]">
                       {/* indigo-600 in light mode: the accent (indigo-500) is ~4.06:1 on
                           `--editor-surface`, and 12px bold is still NORMAL text under WCAG
                           (large starts at 18.66px bold), so it needs the 4.5:1 floor. The
@@ -2133,7 +2133,7 @@ function ReviewSurface<P extends Project>({
           <div className="shrink-0 flex items-center gap-1.5 px-3 py-1 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
             <span
               data-testid="preview-timecode"
-              className="mr-auto text-[10px] font-mono tabular-nums text-[var(--editor-text)]/60 select-none"
+              className="mr-auto text-[10px] font-mono tabular-nums text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] select-none"
             >
               {/* The playhead can sit past `previewDuration` while parked in
                   `getTotalDuration()`'s ~20% trailing headroom (drag room for
@@ -2155,7 +2155,7 @@ function ReviewSurface<P extends Project>({
                 className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
                   currentSocialPreview !== null
                     ? (timelineMode === 'light' ? 'text-sky-600 bg-sky-400/15 hover:bg-sky-400/25' : 'text-sky-400 bg-sky-400/15 hover:bg-sky-400/25')
-                    : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
+                    : 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]'
                 }`}
               >
                 {/* Trigger reflects the active selection: the platform's own
@@ -2180,7 +2180,7 @@ function ReviewSurface<P extends Project>({
                 onClick={toggleFullscreen}
                 aria-label="Toggle fullscreen"
                 aria-pressed={isFullscreen}
-                className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
+                className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]"
               >
                 {isFullscreen ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
               </button>
@@ -2189,7 +2189,7 @@ function ReviewSurface<P extends Project>({
         </>
       ) : (
         <div className="flex-1 min-h-0 flex items-center justify-center p-2">
-          <p className="text-[var(--editor-text)]/60 text-sm">No clips</p>
+          <p className="text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] text-sm">No clips</p>
         </div>
       )}
     </div>
@@ -2234,7 +2234,7 @@ function ReviewSurface<P extends Project>({
           <button
             onClick={() => setShowControls(true)}
             aria-label="Editor controls & shortcuts"
-            className="flex items-center gap-1 px-1.5 h-5 rounded transition-colors text-[var(--editor-text)]/75 bg-transparent hover:text-[var(--editor-text)] hover:bg-[var(--editor-text)]/10"
+            className="flex items-center gap-1 px-1.5 h-5 rounded transition-colors text-[color-mix(in_srgb,var(--editor-text)_75%,transparent)] bg-transparent hover:text-[var(--editor-text)] hover:bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)]"
           >
             <HelpCircle size={14} />
             <span className="text-[10px] leading-none">Controls</span>
@@ -2245,7 +2245,7 @@ function ReviewSurface<P extends Project>({
             onClick={sync.undo}
             disabled={!sync.canUndo}
             aria-label="Undo"
-            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] disabled:opacity-50 disabled:pointer-events-none"
+            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)] disabled:opacity-50 disabled:pointer-events-none"
           >
             <Undo2 size={12} />
           </button>
@@ -2255,7 +2255,7 @@ function ReviewSurface<P extends Project>({
             onClick={sync.redo}
             disabled={!sync.canRedo}
             aria-label="Redo"
-            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)] disabled:opacity-50 disabled:pointer-events-none"
+            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)] disabled:opacity-50 disabled:pointer-events-none"
           >
             <Redo2 size={12} />
           </button>
@@ -2268,7 +2268,7 @@ function ReviewSurface<P extends Project>({
             className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
               previewAxis
                 ? (timelineMode === 'light' ? 'text-yellow-700 bg-yellow-400/15 hover:bg-yellow-400/25' : 'text-yellow-400 bg-yellow-400/15 hover:bg-yellow-400/25')
-                : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
+                : 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]'
             }`}
           >
             <SeparatorVertical size={12} />
@@ -2282,7 +2282,7 @@ function ReviewSurface<P extends Project>({
             className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
               rippleMode
                 ? (timelineMode === 'light' ? 'text-teal-600 bg-teal-400/15 hover:bg-teal-400/25' : 'text-teal-400 bg-teal-400/15 hover:bg-teal-400/25')
-                : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
+                : 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]'
             }`}
           >
             <Magnet size={12} />
@@ -2299,7 +2299,7 @@ function ReviewSurface<P extends Project>({
             className={`flex items-center justify-center w-5 h-5 rounded transition-colors disabled:opacity-50 disabled:pointer-events-none ${
               cropMode
                 ? (timelineMode === 'light' ? 'text-amber-600 bg-amber-400/15 hover:bg-amber-400/25' : 'text-amber-400 bg-amber-400/15 hover:bg-amber-400/25')
-                : 'text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]'
+                : 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]'
             }`}
           >
             <Crop size={12} />
@@ -2328,7 +2328,7 @@ function ReviewSurface<P extends Project>({
             <button
               onClick={handleAudioPolish}
               aria-label="Polish audio"
-              className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
+              className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]"
             >
               <Wand2 size={12} />
             </button>
@@ -2342,7 +2342,7 @@ function ReviewSurface<P extends Project>({
             onClick={() => handleAudibleScrubChange(!currentAudibleScrub)}
             aria-label="Toggle audible drag-scrub"
             aria-pressed={currentAudibleScrub}
-            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[var(--editor-text)]/60 bg-transparent hover:text-[var(--editor-text)]"
+            className="flex items-center justify-center w-5 h-5 rounded transition-colors text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]"
           >
             {currentAudibleScrub ? <Ear size={12} /> : <EarOff size={12} />}
           </button>
@@ -2796,9 +2796,9 @@ function ReviewSurface<P extends Project>({
                package's generic centered default. */
             slots?.propertiesEmptyState ?? (
               <div className="flex-1 flex flex-col items-center justify-center gap-2.5 px-6 text-center">
-                <SquareDashedMousePointer size={26} className="text-[var(--editor-text)]/25" />
-                <p className="text-xs font-medium text-[var(--editor-text)]/60">Select an element</p>
-                <p className="text-[11px] text-[var(--editor-text)]/40">Choose a clip, overlay, or track to edit its properties.</p>
+                <SquareDashedMousePointer size={26} className="text-[color-mix(in_srgb,var(--editor-text)_25%,transparent)]" />
+                <p className="text-xs font-medium text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">Select an element</p>
+                <p className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]">Choose a clip, overlay, or track to edit its properties.</p>
               </div>
             )
           )}
