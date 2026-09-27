@@ -1,7 +1,9 @@
 """Dependency preflight checks shared across CLI commands."""
+import contextlib
 import shutil
 import os
 import sys
+import time
 
 # Single source of truth — re-export from cli.main so we don't keep two
 # definitions in sync. install.py and serve/server.py also import from cli.main.
@@ -9,6 +11,7 @@ from cli.main import MONTAJ_ROOT
 sys.path.insert(0, os.path.join(MONTAJ_ROOT, "lib"))
 import models as _models
 from common import ffmpeg_bin, ffprobe_bin, _exe
+from lib import proc
 
 LEGACY_WHISPER_MODELS_DIR = os.path.expanduser("~/.local/share/whisper.cpp/models")
 WHISPER_MODEL = "base.en"
@@ -112,6 +115,7 @@ def render_runtime_dir() -> str:
     """Where the Node render engine's node_modules + JSX templates live at runtime."""
     if is_dev_checkout():
         return os.path.join(MONTAJ_ROOT, "montaj_assets", "render")
+    _ensure_prod_cache_fresh()
     return os.path.join(BUILD_CACHE_DIR, "render")
 
 
@@ -119,7 +123,200 @@ def mcp_runtime_dir() -> str:
     """Where the MCP server's node_modules and server.js live at runtime."""
     if is_dev_checkout():
         return os.path.join(MONTAJ_ROOT, "montaj_assets", "mcp")
+    _ensure_prod_cache_fresh()
     return os.path.join(BUILD_CACHE_DIR, "mcp")
+
+
+# ---------------------------------------------------------------------------
+# Runtime cache freshness — auto-rebuild on the render/sample/MCP paths.
+#
+# `render_runtime_dir()`/`mcp_runtime_dir()` above used to hand back
+# `BUILD_CACHE_DIR/<sub>` unconditionally in prod mode, no matter how old it
+# was. The cache is only ever (re)built by `montaj install ui`'s
+# `_ensure_ui()` (cli/commands/install.py), which stamps `.version` with the
+# package version it built against. A `brew upgrade`/`pip install -U montaj`
+# bumps the installed package but leaves that stamp — and the cache tree it
+# describes — untouched, so render/sample/MCP silently kept running JS built
+# for the OLD version (`montaj doctor` is the only thing that ever compared
+# the stamp to the installed version, and it only warned).
+#
+# `ui_runtime_dir()`/`check_ui()`/`montaj doctor` are deliberately NOT
+# touched here: they already have their own (weaker) staleness message, and
+# folding them into this too would mean an auto-rebuild failure surfaces as
+# an unhandled exception out of `montaj doctor` — the one command whose job
+# is to explain a broken install, not join in crashing over it.
+# ---------------------------------------------------------------------------
+
+# NOT montaj's own stamp. This is written by the Montaj desktop app's
+# first-run staging (montaj-app's desktop/src/first-run.cjs, `stageCacheTree`
+# -> `.montaj-app-version`), into the very directory `render_runtime_dir()`/
+# `mcp_runtime_dir()` resolve to — that app redirects `HOME` to an
+# app-private `runtimeHome` (see its runtime-env.cjs) and stages
+# `<runtimeHome>/.cache/montaj` itself: its own vendored bundles, its own
+# version, on its own first-run schedule, never via `montaj install ui`. It
+# deliberately never writes montaj's `.version` (see that file's own comment:
+# "Deliberately NOT montaj's `.version`"), and the environment it hands the
+# `serve` child it spawns carries no dedicated flag announcing any of this —
+# checked directly against montaj-app's runtime-env.cjs/main.cjs: HOME
+# redirection is the ONLY signal. So, from here, an app-managed cache looks
+# exactly like a fresh install with a missing stamp — precisely the case
+# we'd otherwise rebuild into. This marker is the one cheap, reliable way to
+# tell the two apart: its presence means some embedder already owns this
+# cache tree and restages it on its own terms, so we must never rebuild
+# behind its back, stamp missing or not.
+_APP_MANAGED_MARKER = ".montaj-app-version"
+
+_LOCK_POLL_S = 0.2
+# Worst case: 5 `npm install`s (network-dependent) plus a `vite` build.
+# Generous on purpose, but bounded — a genuinely hung or crashed peer whose
+# lock survived it can't wedge every other montaj process on the machine
+# forever.
+_LOCK_MAX_WAIT_S = 300
+
+_cache_checked = False      # memoized: the check below runs at most once/process
+_cache_check_error = None   # the exception it raised that one time, if it did
+
+
+def _installed_version() -> str | None:
+    """The installed montaj package version, or None if it can't be read.
+
+    Not expected to ever be None once `is_dev_checkout()` is False — but
+    defensive rather than letting a packaging oddity crash every render,
+    sample and MCP resolution in a process."""
+    try:
+        from importlib.metadata import version as _pkg_version
+        return _pkg_version("montaj")
+    except Exception:
+        return None
+
+
+def _lock_path(cache_root: str) -> str:
+    # Sibling of cache_root, never inside it: `_ensure_ui()`'s prod path
+    # `shutil.rmtree(BUILD_CACHE_DIR)`s the whole directory on a stale stamp,
+    # which would delete a lock file living inside it out from under whoever
+    # is holding it.
+    return cache_root.rstrip(os.sep) + ".rebuild.lock"
+
+
+def _lock_is_stale(lock_path: str) -> bool:
+    """True if the pid that wrote this lock is gone — a crashed rebuild left
+    it behind. Same create-a-file-with-your-pid-in-it liveness idiom
+    serve/lockfile.py already uses for its own single-instance lock."""
+    try:
+        pid = int(open(lock_path).read().strip())
+    except (OSError, ValueError):
+        return True
+    try:
+        return not proc.pid_alive(pid)
+    except (OverflowError, ValueError):
+        return True
+
+
+@contextlib.contextmanager
+def _rebuild_lock(cache_root: str):
+    """Mutual exclusion so two processes that notice a stale cache at the
+    same instant don't both rebuild into it at once — `npm install`/`vite
+    build` writing the same directory from two processes concurrently can
+    corrupt it, not just duplicate work.
+
+    A plain lock FILE rather than `flock`: `os.open(..., O_CREAT|O_EXCL)` is
+    atomic across processes everywhere montaj runs and needs no extra
+    dependency. Waits, polling, for the current holder to release it; steals
+    the lock if that holder's pid is dead (crashed mid-rebuild) or if we've
+    already waited past `_LOCK_MAX_WAIT_S` (hung) — either way we proceed
+    holding a lock rather than never getting one. The caller re-checks the
+    stamp immediately after acquiring it (see `_check_and_rebuild_if_stale`),
+    so a stolen lock costs at most a redundant wait, never a redundant
+    rebuild.
+    """
+    lock_path = _lock_path(cache_root)
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    deadline = time.monotonic() + _LOCK_MAX_WAIT_S
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            if _lock_is_stale(lock_path) or time.monotonic() >= deadline:
+                try:
+                    os.remove(lock_path)
+                except OSError:
+                    pass
+                continue
+            time.sleep(_LOCK_POLL_S)
+            continue
+        with os.fdopen(fd, "w") as f:
+            f.write(str(os.getpid()))
+        break
+    try:
+        yield
+    finally:
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass
+
+
+def _check_and_rebuild_if_stale() -> None:
+    if is_dev_checkout():
+        return
+    if os.path.isfile(os.path.join(BUILD_CACHE_DIR, _APP_MANAGED_MARKER)):
+        return  # an embedding app owns and restages this cache itself
+
+    current = _installed_version()
+    if current is None:
+        return
+
+    # Lazy import: cli.commands.install imports from cli.deps (this module)
+    # at its own module scope, so importing it back at OUR module scope would
+    # be circular. Reusing its exact rebuild function is the point — this is
+    # `montaj install ui`'s own `_ensure_ui()`, not a re-implementation of it.
+    from cli.commands import install as _install
+
+    if not _install._cache_is_stale(BUILD_CACHE_DIR, current):
+        return
+
+    with _rebuild_lock(BUILD_CACHE_DIR):
+        # Another process may have finished rebuilding while we waited.
+        if not _install._cache_is_stale(BUILD_CACHE_DIR, current):
+            return
+        print(f"rebuilding montaj runtime cache for {current}", file=sys.stderr)
+        try:
+            ok = _install._ensure_ui()
+        except Exception as e:
+            raise RuntimeError(
+                "montaj runtime cache is out of date and could not be "
+                f"rebuilt; run `montaj install ui` ({e})"
+            ) from e
+        if not ok:
+            raise RuntimeError(
+                "montaj runtime cache is out of date and could not be "
+                "rebuilt; run `montaj install ui`"
+            )
+
+
+def _ensure_prod_cache_fresh() -> None:
+    """Entry point for `render_runtime_dir()`/`mcp_runtime_dir()`. Runs the
+    freshness check — and the rebuild, if the cache is stale — at most ONCE
+    per process. Cheap on every call after the first: the point of this
+    change is that checking used to cost nothing because nobody did it, not
+    that it should now cost an npm install on every single render.
+
+    A failed rebuild is remembered and re-raised on every later call in this
+    process, rather than silently retried (a retry storm against, say, a
+    dead network on every render) or silently swallowed (which would serve a
+    broken cache with no further warning after the first)."""
+    global _cache_checked, _cache_check_error
+    if _cache_checked:
+        if _cache_check_error is not None:
+            raise _cache_check_error
+        return
+    try:
+        _check_and_rebuild_if_stale()
+    except Exception as e:
+        _cache_check_error = e
+        raise
+    finally:
+        _cache_checked = True
 
 
 def check_ui() -> tuple[str, str | None]:
