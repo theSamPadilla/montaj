@@ -177,3 +177,11 @@ for (const params of [{ fps: 30 }, { fps: 60, stiffness: 220, damping: 16 }]) {
 }
 
 console.log('overlay-runtime: spring() parity OK')
+
+// Closed-form springs: present as plain functions in both contexts, then the
+// full suite in springs.test.js.
+for (const name of ['springStep', 'springSum']) {
+  assert.equal(typeof renderGlobals[name],  'function', `render.${name} must be a function`)
+  assert.equal(typeof previewGlobals[name], 'function', `preview.${name} must be a function`)
+}
+await import('./springs.test.js')
