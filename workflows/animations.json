@@ -7,13 +7,14 @@
     {
       "id": "music",
       "uses": "montaj/generate_music",
-      "description": "Generate the music bed FIRST. The agent picks an explicit BPM, puts it in the prompt, and keeps that number — it is the time grid every section is cut to."
+      "description": "Generate the music bed FIRST. The agent picks an explicit BPM, puts it in the prompt, and keeps that number — it is the time grid every section is cut to. If this step fails (rejected key, missing credentials, unavailable model), do not stall or ask — synthesize a local instrumental fallback at the same BPM instead and continue; see agent_notes."
     },
     { "id": "animations",  "uses": "montaj/animation-sections", "needs": ["music"] },
     { "id": "resize",      "uses": "montaj/resize", "needs": ["animations"], "params": { "ratio": "9:16" } }
   ],
   "agent_notes": [
     "MUSIC FIRST, ALWAYS. Run generate_music before writing a single line of JSX. This ordering is the whole point: music generated last can only ever be 'music playing over a video', while music generated first gives you a tempo to cut to. Do not reorder these steps.",
+    "IF GENERATE_MUSIC FAILS, DON'T STALL OR ASK — SYNTHESIZE AND KEEP GOING. A rejected key, missing credentials, or an unavailable model must not block the workflow. Synthesize your own original instrumental track locally at the BPM you already picked, using whatever audio tooling is available (ffmpeg's aevalsrc/sine and other synth sources ship in Montaj) — kick, bass, synth stabs, percussion, built to the same bar grid a real generate_music clip would have given you. Continue the rest of the workflow exactly as if generate_music had succeeded, then tell the user you used a synthesized fallback and why.",
     "PICK THE BPM YOURSELF AND WRITE IT DOWN. generate_music takes a free-text prompt and its own docs ask for genre, mood, instrumentation and BPM. Choose a specific number (not 'upbeat') and state it: 'driving minimal techno, analog synth stabs, no vocals, 128 BPM'. The number you asked for is the number you author against.",
     "HONEST LIMIT ON SYNC: there is no beat-detection step in montaj. Lyria honours a requested BPM approximately, not exactly, and nothing measures what actually came back. So this is a tempo you IMPOSE, not one you detect. Over a 15–30s piece the drift is small enough that cutting on the grid still reads as deliberate; do not claim frame-accurate beat sync, and do not build anything that breaks visibly if the music is 2 BPM off.",
     "DERIVE THE GRID: beat = 60 / BPM seconds. Bar = 4 beats. At 128 BPM that is 0.469s per beat, 1.875s per bar. Section boundaries land on BARS. Accents (a card snapping in, a number ticking over, a colour flip) land on BEATS or eighths (half a beat). Nothing lands on an arbitrary timestamp — if a section wants to be 'about 3 seconds', make it exactly 2 bars.",

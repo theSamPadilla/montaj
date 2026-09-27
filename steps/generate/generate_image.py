@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail, require_file
 from connectors import ConnectorError
-from connectors.gemini import INVALID_API_KEY_MESSAGE
+from connectors.gemini import invalid_api_key_message
 
 
 def main():
@@ -53,7 +53,7 @@ def main():
             fail("bad_provider", f"Unknown provider: {args.provider}")
     except ConnectorError as e:
         if e.reason == "invalid_api_key":
-            fail("invalid_api_key", INVALID_API_KEY_MESSAGE)
+            fail("invalid_api_key", invalid_api_key_message(e))
         fail("api_error", str(e))
 
     print(out_path)

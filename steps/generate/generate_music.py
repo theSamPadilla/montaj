@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, get_duration
 from connectors import ConnectorError
-from connectors.gemini import DEFAULT_MUSIC_MODEL, INVALID_API_KEY_MESSAGE
+from connectors.gemini import DEFAULT_MUSIC_MODEL, invalid_api_key_message
 
 
 def main():
@@ -40,7 +40,7 @@ def main():
         path = gemini.generate_music(**kwargs)
     except ConnectorError as e:
         if e.reason == "invalid_api_key":
-            fail("invalid_api_key", INVALID_API_KEY_MESSAGE)
+            fail("invalid_api_key", invalid_api_key_message(e))
         fail("api_error", str(e))
 
     duration = get_duration(path)

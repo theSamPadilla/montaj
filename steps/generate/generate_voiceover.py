@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, get_duration
 from connectors import ConnectorError
-from connectors.gemini import INVALID_API_KEY_MESSAGE
+from connectors.gemini import invalid_api_key_message
 
 
 def read_text(args) -> str:
@@ -64,7 +64,7 @@ def main():
             path = gemini.generate_speech(**kwargs)
     except ConnectorError as e:
         if e.reason == "invalid_api_key":
-            fail("invalid_api_key", INVALID_API_KEY_MESSAGE)
+            fail("invalid_api_key", invalid_api_key_message(e))
         fail("api_error", str(e))
 
     duration = get_duration(path)

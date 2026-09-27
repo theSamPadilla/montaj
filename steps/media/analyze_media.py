@@ -6,14 +6,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail, require_file
 from connectors import gemini, ConnectorError
-from connectors.gemini import INVALID_API_KEY_MESSAGE
+from connectors.gemini import invalid_api_key_message
 
 
 def main():
     p = argparse.ArgumentParser(description="Analyze a media file (video, audio, or image) with Gemini Flash")
     p.add_argument("--input", required=True)
     p.add_argument("--prompt", required=True)
-    p.add_argument("--model", default="gemini-2.5-flash")
+    p.add_argument("--model", default=gemini.DEFAULT_MODEL)
     p.add_argument("--json-output", dest="json_output", action="store_true",
                    help="Ask the model to return structured JSON")
     p.add_argument("--out")
@@ -30,7 +30,7 @@ def main():
         )
     except ConnectorError as e:
         if e.reason == "invalid_api_key":
-            fail("invalid_api_key", INVALID_API_KEY_MESSAGE)
+            fail("invalid_api_key", invalid_api_key_message(e))
         fail("api_error", str(e))
 
     if args.out:

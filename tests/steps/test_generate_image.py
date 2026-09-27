@@ -54,6 +54,32 @@ class TestGenerateImageConnectorErrorMapping:
         assert err["error"] == "invalid_api_key"
         assert "Integrations" in err["message"]
 
+    def test_gemini_invalid_key_appends_google_detail(
+        self, step_module, monkeypatch, capsys, tmp_path
+    ):
+        """`.google_detail` (set by `_wrap_sdk_error` — FQ1 #21) gets
+        appended to the operator-facing message as "Google said: ..."."""
+        def boom(**kwargs):
+            err = ConnectorError(
+                "Gemini image generation failed: Permission denied.",
+                reason="invalid_api_key",
+            )
+            err.google_detail = "API key expired. Please renew the API key."
+            raise err
+
+        monkeypatch.setattr(gemini_mod, "generate_image", boom)
+        monkeypatch.setattr(sys, "argv", [
+            "generate_image.py",
+            "--prompt", "a cat",
+            "--out", str(tmp_path / "out.png"),
+            "--provider", "gemini",
+        ])
+        with pytest.raises(SystemExit):
+            step_module.main()
+        err = json.loads(capsys.readouterr().err)
+        assert err["error"] == "invalid_api_key"
+        assert "Google said: API key expired. Please renew the API key." in err["message"]
+
     def test_openai_provider_error_keeps_api_error_code(
         self, step_module, monkeypatch, capsys, tmp_path
     ):

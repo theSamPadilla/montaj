@@ -30,7 +30,11 @@ import os, re, sys, time, wave
 from connectors import ConnectorError
 from lib.credentials import get_credential
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+# gemini-2.5-flash started 404ing for new API keys ("no longer available to
+# new users") — confirmed live against models.list + a real generate_content
+# call on 2026-09-26. gemini-3.8-flash is live on the same key as of that
+# date; re-check against models.list before ever changing this again.
+DEFAULT_MODEL = "gemini-3.8-flash"
 DEFAULT_IMAGE_MODEL = "gemini-3-pro-image-preview"
 UPLOAD_POLL_INTERVAL_S = 1.0
 UPLOAD_MAX_WAIT_S = 300.0
@@ -40,6 +44,11 @@ UPLOAD_MAX_WAIT_S = 300.0
 # this go through the Files API.
 INLINE_BYTE_LIMIT = 18 * 1024 * 1024  # 18 MB
 
+# Both still appear in models.list as of 2026-09-26 (not retired), but that
+# only proves the name is known to the API, not that a generate_content call
+# against it succeeds for this key — TTS/music generation costs money, so
+# that call is never made just to check. Unverified; revisit if either ever
+# 404s the way gemini-2.5-flash did.
 DEFAULT_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_TTS_VOICE = "Kore"  # default for generate_speech when caller omits voice
 DEFAULT_MUSIC_MODEL = "lyria-3-clip-preview"
@@ -181,19 +190,77 @@ def _is_invalid_api_key_error(e: Exception) -> bool:
     return False
 
 
+# Defensive scrub for anything that looks like a Google API key or an
+# AQ.-prefixed token, applied to any text sourced from an SDK exception
+# before it reaches a ConnectorError message, a step's fail() text, or a
+# terminal. Google's error bodies aren't expected to echo the key back, but
+# nothing guarantees that, and a key that leaked into an error message would
+# otherwise end up in exactly the places this connector is not allowed to
+# put one.
+_API_KEY_PATTERNS = (
+    re.compile(r"AIza[\w-]{10,}"),
+    re.compile(r"AQ\.[\w-]{10,}"),
+)
+
+_SDK_DETAIL_CHAR_LIMIT = 200
+
+
+def _sanitize_sdk_detail(text: str | None, limit: int = _SDK_DETAIL_CHAR_LIMIT) -> str:
+    """Redact API-key-shaped tokens and truncate to `limit` chars.
+
+    Applied to SDK-sourced error text before it is embedded in a
+    ConnectorError message or a step-facing fail() message.
+    """
+    text = (text or "").strip()
+    for pattern in _API_KEY_PATTERNS:
+        text = pattern.sub("[REDACTED]", text)
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "..."
+    return text
+
+
 def _wrap_sdk_error(e: Exception, prefix: str) -> ConnectorError:
     """Turn an SDK exception into the ConnectorError a step should see.
 
     A rejected API key gets reason="invalid_api_key" so step scripts can
-    give the operator a fix-it message instead of a generic api_error; every
-    other SDK failure keeps the existing `{prefix}: {e}` message untouched.
+    give the operator a fix-it message instead of a generic api_error;
+    every other SDK failure keeps the existing `{prefix}: {e}` shape. Either
+    way, the SDK-sourced detail text is redacted (no API-key-shaped token
+    survives) and truncated to ~200 chars before it lands in the message —
+    Google's own error body can be long and, in principle, could echo back
+    request contents.
+
+    The invalid-key ConnectorError also stashes the sanitized detail as
+    `.google_detail`, which `invalid_api_key_message()` uses to append
+    Google's own wording to the operator-facing fix-it message instead of
+    hiding it — see FQ1 #21. A ConnectorError built by hand (tests, or a
+    non-Gemini connector reusing reason="invalid_api_key") simply has no
+    such attribute.
     """
     if _is_invalid_api_key_error(e):
-        detail = getattr(e, "message", None) or str(e)
-        return ConnectorError(
+        detail = _sanitize_sdk_detail(getattr(e, "message", None) or str(e))
+        err = ConnectorError(
             f"Gemini rejected the API key: {detail}", reason="invalid_api_key"
         )
-    return ConnectorError(f"{prefix}: {e}")
+        err.google_detail = detail
+        return err
+    detail = _sanitize_sdk_detail(str(e))
+    return ConnectorError(f"{prefix}: {detail}")
+
+
+def invalid_api_key_message(e: ConnectorError) -> str:
+    """INVALID_API_KEY_MESSAGE, plus Google's own rejection text when known.
+
+    Without this, every Gemini-calling step showed identical wording for
+    every key rejection, hiding the actual cause (e.g. "API key not valid"
+    vs. an expired key vs. a billing/permission issue) even though the SDK
+    handed it to us. `e.google_detail` — set by `_wrap_sdk_error` — is
+    already redacted and truncated, so it's safe to show as-is.
+    """
+    detail = getattr(e, "google_detail", None)
+    if detail:
+        return f"{INVALID_API_KEY_MESSAGE} Google said: {detail}"
+    return INVALID_API_KEY_MESSAGE
 
 
 def upload_media(path: str):

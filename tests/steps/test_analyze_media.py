@@ -85,6 +85,31 @@ class TestAnalyzeMediaConnectorErrorMapping:
         assert "Integrations" in err["message"]
         assert "montaj credentials" in err["message"]
 
+    def test_invalid_api_key_appends_google_detail(
+        self, step_module, monkeypatch, capsys, media_path
+    ):
+        """When the ConnectorError carries `.google_detail` (as
+        `_wrap_sdk_error` sets it — FQ1 #21), the step's fail() message
+        appends Google's own wording instead of hiding it."""
+        def boom(**kwargs):
+            err = ConnectorError(
+                "Gemini rejected the API key: API key not valid.",
+                reason="invalid_api_key",
+            )
+            err.google_detail = "API key not valid. Please pass a valid API key."
+            raise err
+
+        monkeypatch.setattr(step_module.gemini, "analyze_media", boom)
+        monkeypatch.setattr(sys, "argv", [
+            "analyze_media.py", "--input", media_path, "--prompt", "describe this",
+        ])
+        with pytest.raises(SystemExit):
+            step_module.main()
+        err = json.loads(capsys.readouterr().err)
+        assert err["error"] == "invalid_api_key"
+        assert "Integrations" in err["message"]
+        assert "Google said: API key not valid. Please pass a valid API key." in err["message"]
+
     def test_generic_connector_error_keeps_api_error_code(
         self, step_module, monkeypatch, capsys, media_path
     ):

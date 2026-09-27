@@ -368,6 +368,89 @@ class TestInvalidApiKeyWrapping:
         assert ei.value.reason == "invalid_api_key"
 
 
+class TestSdkDetailSanitization:
+    """_sanitize_sdk_detail: API-key redaction + truncation, applied before
+    any SDK-sourced text reaches a ConnectorError message — FQ1 #21."""
+
+    def test_redacts_aiza_token(self):
+        from connectors.gemini import _sanitize_sdk_detail
+        text = "API key not valid: AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456"
+        result = _sanitize_sdk_detail(text)
+        assert "AIzaSy" not in result
+        assert "[REDACTED]" in result
+
+    def test_redacts_aq_token(self):
+        from connectors.gemini import _sanitize_sdk_detail
+        text = "token AQ.Ab8RN6abcdefghijklmnopqrstuvwxyz was rejected"
+        result = _sanitize_sdk_detail(text)
+        assert "AQ.Ab8RN6" not in result
+        assert "[REDACTED]" in result
+
+    def test_truncates_to_limit(self):
+        from connectors.gemini import _sanitize_sdk_detail
+        result = _sanitize_sdk_detail("x" * 500, limit=200)
+        assert len(result) <= 203  # 200 chars + "..."
+        assert result.endswith("...")
+
+    def test_short_text_untouched(self):
+        from connectors.gemini import _sanitize_sdk_detail
+        assert _sanitize_sdk_detail("API key not valid.") == "API key not valid."
+
+    def test_none_becomes_empty_string(self):
+        from connectors.gemini import _sanitize_sdk_detail
+        assert _sanitize_sdk_detail(None) == ""
+
+
+class TestWrapSdkErrorCarriesGoogleDetail:
+    """_wrap_sdk_error stashes a sanitized SDK detail for the invalid-key
+    path (`.google_detail`), and sanitizes the generic api_error path's
+    embedded SDK text too — FQ1 #21."""
+
+    def test_invalid_key_error_sets_google_detail_redacted(self):
+        from connectors.gemini import _wrap_sdk_error
+        e = _sdk_error(
+            real_genai_errors.ClientError, 400,
+            "API key not valid. Please pass a valid API key. "
+            "Key: AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456",
+            "INVALID_ARGUMENT",
+        )
+        err = _wrap_sdk_error(e, "Gemini generate_content failed")
+        assert err.reason == "invalid_api_key"
+        assert "AIzaSy" not in err.google_detail
+        assert "API key not valid" in err.google_detail
+
+    def test_generic_error_message_is_sanitized(self):
+        from connectors.gemini import _wrap_sdk_error
+        e = RuntimeError(
+            "boom AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456 and more " + "x" * 250
+        )
+        err = _wrap_sdk_error(e, "Gemini generate_content failed")
+        assert err.reason is None
+        assert "AIzaSy" not in str(err)
+        assert str(err).endswith("...")
+
+
+class TestInvalidApiKeyMessageAppendsGoogleText:
+    """invalid_api_key_message() — the operator-facing text, not just the
+    ConnectorError's own message — FQ1 #21."""
+
+    def test_appends_google_said_when_detail_present(self):
+        from connectors.gemini import invalid_api_key_message, INVALID_API_KEY_MESSAGE
+        err = ConnectorError(
+            "Gemini rejected the API key: API key not valid.",
+            reason="invalid_api_key",
+        )
+        err.google_detail = "API key not valid. Please pass a valid API key."
+        msg = invalid_api_key_message(err)
+        assert msg.startswith(INVALID_API_KEY_MESSAGE)
+        assert "Google said: API key not valid. Please pass a valid API key." in msg
+
+    def test_falls_back_when_no_detail(self):
+        from connectors.gemini import invalid_api_key_message, INVALID_API_KEY_MESSAGE
+        err = ConnectorError("some message", reason="invalid_api_key")
+        assert invalid_api_key_message(err) == INVALID_API_KEY_MESSAGE
+
+
 class TestUploadErrors:
     """SDK exceptions from files.upload → ConnectorError."""
 

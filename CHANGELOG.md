@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+- **Gemini's default model moved off `gemini-2.5-flash`, which now 404s for
+  new API keys ("no longer available to new users").** `analyze_media` (and
+  the `analyze-media` step's own `--model` default) now default to
+  `gemini-3.8-flash`, confirmed live against `models.list` and a real
+  `generate_content` call. `DEFAULT_IMAGE_MODEL`, `DEFAULT_TTS_MODEL`, and
+  `DEFAULT_MUSIC_MODEL` are unchanged — all three still resolve via
+  `models.get`, but that call can't prove `generate_content` availability,
+  and none of image/TTS/music generation is called live just to check, so
+  their status is unverified rather than confirmed. (`connectors/gemini.py`,
+  `steps/media/analyze_media.py`, `steps/media/analyze_media.json`,
+  `docs/CONNECTORS.md`)
+
+- **A rejected Gemini API key now shows Google's own error text, not just
+  our fixed fix-it message.** `_wrap_sdk_error` stashes a redacted,
+  ~200-char-truncated copy of the SDK's error detail as
+  `ConnectorError.google_detail`; `invalid_api_key_message()` appends it to
+  `INVALID_API_KEY_MESSAGE` as "... Google said: <detail>" in all four
+  Gemini-calling steps (`analyze_media`, `generate_image`,
+  `generate_voiceover`, `generate_music`). The generic `api_error` path's
+  embedded SDK text is now redacted and truncated the same way. Any
+  `AIza...`- or `AQ....`-shaped token is scrubbed defensively before any of
+  this text reaches a ConnectorError, a step's `fail()` message, or a
+  terminal. (`connectors/gemini.py`, `steps/media/analyze_media.py`,
+  `steps/generate/generate_image.py`, `steps/generate/generate_voiceover.py`,
+  `steps/generate/generate_music.py`)
+
+- **The `animations` workflow no longer stalls when `generate_music` fails.**
+  A rejected key, missing credentials, or an unavailable model used to leave
+  the agent stuck on the very first step. It now synthesizes an original
+  instrumental fallback locally at the BPM it already picked (ffmpeg's
+  `aevalsrc`/sine and other synth sources ship in Montaj) and continues the
+  rest of the workflow on the same bar grid, telling the user it used a
+  fallback and why. (`workflows/animations.json`,
+  `skills/animation-sections/SKILL.md`)
+
+- **No workflow or skill instructs the agent to render as its own QA step,
+  or to trigger a render at all — rendering is user-driven, full stop.**
+  `skills/animation-sections/SKILL.md` and `skills/write-overlay/MOTION.md`
+  used to tell the agent to render the whole project to `out.mp4` and
+  measure it with ffmpeg (motion energy, scene-cut detection) to check its
+  own work; both now use `sample_frame` at section/cut boundaries (grid
+  alignment) and close frame pairs ~0.2–0.3s apart within a section
+  (stillness), with `sample_overlay` still the tool for a single overlay
+  mid-authoring — neither renders anything. `skills/lyrics-video/SKILL.md`
+  and `workflows/lyrics_video.json` no longer tell the agent to trigger
+  `montaj lyrics-render` or the full `montaj render` itself; both now stop
+  at `project.status: "draft"` and leave the render (preview or full) to an
+  explicit user request. (`skills/animation-sections/SKILL.md`,
+  `skills/write-overlay/MOTION.md`, `skills/lyrics-video/SKILL.md`,
+  `workflows/lyrics_video.json`)
+
 ## v4.9.0
 
 - **`@bycrux/editor`: hosts can own the pending gate and hear user edits.**

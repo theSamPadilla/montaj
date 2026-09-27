@@ -15,7 +15,7 @@
       "model": {
         "description": "Gemini model ID",
         "type": "string",
-        "default": "gemini-2.5-flash"
+        "default": "gemini-3.8-flash"
       },
       "json_output": {
         "description": "Request structured JSON output from the model",

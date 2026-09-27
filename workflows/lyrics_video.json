@@ -20,6 +20,6 @@
     "PROXIES: a background video comes in through the prompt, not through init, so no editing proxy exists for it and there is no `sources` entry to copy one from. After writing tracks[0] and saving, POST /api/projects/{id}/proxies so the item gets a `proxySrc`; without one the WebCodecs engine refuses the project (montaj_assets/editor/src/engine/eligibility.ts:69) and preview decodes the master on every seek. In CLI mode leave the field off rather than guessing a path.",
     "AUDIO: Set audio.tracks to an array with one entry for the song: { id: 'music', src: <abs path to song>, start: 0, end: <song duration>, inPoint: <audioInPoint from lyrics_sync output>, volume: 1.0, label: 'song' }. Use montaj probe to get song duration.",
     "RESOLUTION: Default 1080x1920 (portrait). Use settings.resolution from project or let agent choose based on source video aspect ratio.",
-    "STATUS: Set project.status to 'final' before render. The render engine will reject non-final projects."
+    "STATUS: Leave project.status at 'draft' when you're done — do not set it to 'final' and do not render. The render engine requires 'final' before it will run, but that transition and the render itself are the user's call, triggered only when they ask; see skills/lyrics-video/SKILL.md."
   ]
 }

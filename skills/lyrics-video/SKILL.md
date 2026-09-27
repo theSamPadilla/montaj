@@ -122,7 +122,7 @@ Requires a background video in `tracks[0]`. Both paths always build `lyric-phras
       { "id": "music", "src": "/abs/path/to/song.mp3", "start": 0, "end": <song_duration_seconds>, "inPoint": <audioInPoint>, "volume": 1.0, "label": "song" }
     ]
   },
-  "status": "final"
+  "status": "draft"
 }
 ```
 
@@ -136,9 +136,9 @@ The overlays in `tracks[1]` serve as the UI preview — word-sync is visible in 
 | `color` | `white` | Any ffmpeg color string |
 | `fontsize` | `72` | Integer pixels |
 
-### Mini-preview before full render
+### Rendering is the user's call, not yours
 
-After setting up project.json and verifying overlay timing in the UI, run a short CLI preview before the full render:
+Both `montaj lyrics-render --preview-duration <n>` (a short, bounded preview) and `montaj render project.json` (the full render) produce a real render. Do not run either on your own initiative to check your work or to "finish" the task — rendering, at any length, is something the user triggers, not a QA step. Set up `project.json`, leave `status` at `"draft"`, and tell the user the captions are ready to preview. This is the preview command, for the user to ask for when they want a quick sanity check before committing to the full render — not for you to run automatically:
 
 ```bash
 montaj lyrics-render \
@@ -152,7 +152,7 @@ montaj lyrics-render \
   --out preview.mp4
 ```
 
-Verify the burned-in text looks correct, then trigger the full render with `montaj render project.json`.
+Only the user's own request moves the project to `"final"` and triggers the full render with `montaj render project.json`.
 
 ---
 
@@ -203,7 +203,7 @@ With no background video (`tracks[0].items` is `[]`) none of this applies — th
 
 ### Preview (mandatory)
 
-After setting up `project.json`, **open the project in the montaj UI and preview before rendering.** The PreviewPlayer scrubs through the overlay timing in real time — verify word sync looks correct and adjust any `start`/`end` values in the overlay entries if needed. Only trigger a full render once the preview looks right.
+After setting up `project.json`, **open the project in the montaj UI and preview it — this is not a render, and it's the check to run.** The PreviewPlayer scrubs through the overlay timing in real time — verify word sync looks correct and adjust any `start`/`end` values in the overlay entries if needed. Leave `status` at `"draft"` and stop there; rendering is the user's call, triggered only when they ask.
 
 ### tracks[0].items — With background video
 

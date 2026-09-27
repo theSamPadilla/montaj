@@ -271,7 +271,7 @@ Honest limit: montaj has no beat-detection step, and Lyria honours a requested B
 
 ## Verify the motion, don't eyeball it
 
-Render it and measure it. The same two numbers that exposed the gap will tell you whether you closed it.
+**Do not render to check this.** Rendering the project is the user's call, not a QA step for you to take — sampling is. Everything below uses `sample_overlay` (one overlay, isolated) or `sample_frame` (the composited project at a timestamp); neither encodes a video.
 
 ```bash
 # One frame, with the globals the render will actually use.
@@ -287,21 +287,18 @@ done
 
 Pass `--fps` to match the project. `spring()` is tuned in wall-clock time, so sampling a 60fps project at the 30 default shows springs settling twice as fast as they really will.
 
-On the finished render, **two different metrics for two different questions.** Do not substitute one for the other.
+**Once the overlay is placed in a project, two different questions — do not substitute one for the other.** Switch from `sample_overlay` (a frame number inside one isolated JSX) to `sample_frame --project <project.json> --at <seconds>` (a timestamp inside the whole composited timeline) once that distinction matters.
 
 ### Motion energy — "is anything actually moving?"
 
-Mean absolute luma change between consecutive frames. This is the dead-air detector.
+Sample two frames about 0.2–0.3s apart inside the span you're checking. If the pair looks identical, nothing in that span is moving — that's the dead-air detector, and it needs no ffmpeg pass over a rendered file:
 
 ```bash
-ffmpeg -hide_banner -i out.mp4 -vf "fps=30,scale=320:180,format=gray,\
-tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG" \
-  -f null - 2>&1 | grep -o "YAVG=[0-9.]*" | cut -d= -f2 > /tmp/y.txt
-python3 -c "import statistics; v=[float(x) for x in open('/tmp/y.txt') if x.strip()][1:]; \
-print(f'motion={statistics.mean(v):.3f} still={100*sum(1 for x in v if x<0.5)/len(v):.1f}%')"
+python steps/render/sample_frame.py --project /abs/path/to/project.json --at 4.00 --out /tmp/a.png
+python steps/render/sample_frame.py --project /abs/path/to/project.json --at 4.25 --out /tmp/b.png
 ```
 
-Measured benchmarks, all sampled at `fps=30`:
+For calibration, here is what this looked like measured against a real render, back when producing one for this check was still the method — ffmpeg's mean-luma-difference filter (`tblend=all_mode=difference` + `signalstats`), all sampled at `fps=30`:
 
 | | motion energy | still frames |
 |---|---|---|
@@ -309,23 +306,18 @@ Measured benchmarks, all sampled at `fps=30`:
 | A directed motion reel (what we're moving toward) | 8.958 | 15.0% |
 | A section set authored to the rules in this file | 10.612 | 0.0% |
 
-Target motion energy above ~7 and still frames near zero. The last row is reachable — it is a real render of four sections built with nothing but the techniques above.
+Motion energy above ~7 with still frames near zero is the target these numbers describe. The frame-pair check above answers the same question without requiring a render to exist in the first place — reach for the exact ffmpeg score only if a render happens to be on disk for some other (user-requested) reason.
 
 ### Cut rate and placement — "is it cut to the grid?"
 
-`scene_score` detects discrete visual change. Use it for cut placement only.
+Sample every section/cut boundary directly and check the timestamp against your bar grid (2 bars at 128 BPM = 3.75s, etc.) — no cut detector needed, since you already know where you put the cuts:
 
 ```bash
-ffmpeg -hide_banner -i out.mp4 -vf "select='gt(scene,0.2)',showinfo" -f null - 2>&1 \
-  | grep -o "pts_time:[0-9.]*"
+python steps/render/sample_frame.py --project /abs/path/to/project.json --at 3.75 --out /tmp/boundary.png
 ```
 
-Timestamps should be near-multiples of your bar length. The promo cut at 7.43 / 12.43 / 20.4s — three cuts in 26.9s, at no particular times. The reference reel cut 11 times in 15.1s, with a run at 0.233s intervals.
+A boundary off the grid is a math error in the section plan, not a rendering question.
 
 ### Do not use scene_score to detect dead air
 
-This was got wrong once already, so it is written down. `scene_score` is a **cut detector** — it compares histograms to find edits. Smooth motion of similarly-coloured elements barely moves a histogram, so a section that is sweeping full-frame gradients across the screen can score as "frozen." A test render measured at 63.6% "frozen" by scene_score had **zero** still frames and more motion energy than the reference reel.
-
-It separated the promo from the reference reel only because the reference *cuts* more often — which is a real difference, but a different one from the one it appeared to be measuring.
-
-**Comparisons must sample both videos at the same `fps=`.** Consecutive frames at 60fps are naturally more similar than at 30, so an unnormalised comparison flatters a 60fps render on both metrics.
+This was got wrong once already, so it is written down, even though it no longer describes the primary method: `scene_score` is a **cut detector** — it compares histograms to find edits. Smooth motion of similarly-coloured elements barely moves a histogram, so a section that is sweeping full-frame gradients across the screen can score as "frozen." Measured historically on a real render: the promo cut at 7.43 / 12.43 / 20.4s (three cuts in 26.9s, at no particular times) against the reference reel's 11 cuts in 15.1s with a run at 0.233s intervals, and a section that scene_score called 63.6% "frozen" had **zero** still frames and more motion energy than the reference reel. It separated the promo from the reference reel only because the reference *cuts* more often — a real difference, but a different one from the one it appeared to be measuring. If you ever do have a render on disk and reach for `scene_score`, use it for cut placement only, never for stillness — the frame-pair check above is what stillness needs, and it never required a render to begin with.
