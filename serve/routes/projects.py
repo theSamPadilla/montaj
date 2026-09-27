@@ -1886,7 +1886,7 @@ async def log_status(project_id: str, body: dict = Body(...), request: Request =
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     data = {"message": message}
     source = body.get("source")
-    if isinstance(source, str) and source != "unknown" and _LOG_SOURCE_RE.match(source):
+    if isinstance(source, str) and source != "unknown" and _LOG_SOURCE_RE.fullmatch(source):
         data["source"] = source
     frame = f"event: log\ndata: {json.dumps(data)}\n\n"
     broadcaster.publish(project_id, frame)

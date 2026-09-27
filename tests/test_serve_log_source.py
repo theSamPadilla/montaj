@@ -68,6 +68,7 @@ def test_valid_source_is_included(broadcaster):
         "a" * 65,  # over the length cap
         "",  # empty string
         "bad_name",  # underscore not allowed
+        "claude-desktop\n",  # trailing newline
     ],
 )
 def test_invalid_source_is_dropped_not_rejected(broadcaster, source):
