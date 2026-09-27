@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.1.0
+
 - Editor: the captions panel opens on the Captions list every time (no remembered sub-tab).
 
 - **Changed: `large-v3-turbo` (q5_0) is the default whisper model.** Every speech step (`transcribe`, `rm_fillers`, `rm_nonspeech`, `generate_captions`, `lyrics_sync`) and the caption route default to `large-v3-turbo-q5_0`, which is multilingual, so one model serves every language. A requested model that is not installed falls back to the first installed of turbo, `base.en` (English only) and `base`; non-English audio with only `*.en` weights installed says which model to install. `montaj install whisper` downloads turbo (checksum-verified), `montaj models list` offers `large-v3-turbo` and `large-v3-turbo-q5_0`, and `check_deps` accepts turbo or the older `base.en`. (`lib/common.py`, `cli/deps.py`, `cli/commands/{install,models,doctor}.py`, `steps/**`, `serve/routes/projects.py`)
