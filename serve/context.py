@@ -30,6 +30,9 @@ class ContextState:
     playhead_sec: float
     selected_ids: list[str] = field(default_factory=list)
     selected_caption_id: str | None = None
+    # None when the reporting editor predates the field; the answer then omits it
+    # rather than claiming the preview is paused.
+    playing: bool | None = None
     reported_at: float = field(default_factory=time.monotonic)
 
     def age_ms(self) -> int:
@@ -63,10 +66,15 @@ def report(project_id: str, body: dict) -> ContextState:
     if caption_id is not None and not isinstance(caption_id, str):
         raise ValueError("selectedCaptionId must be a string or null")
 
+    playing = body.get("playing")
+    if playing is not None and not isinstance(playing, bool):
+        raise ValueError("playing must be a boolean")
+
     state = ContextState(
         playhead_sec=max(0.0, playhead),
         selected_ids=list(ids),
         selected_caption_id=caption_id,
+        playing=playing,
     )
     # Drop anything nobody can read any more. Entries are tiny, but a
     # never-pruned dict keyed by project id is a leak on principle, and the one
@@ -324,7 +332,12 @@ def enrich(project_id: str, project: dict, state: ContextState) -> dict:
                 default=0.0,
             ),
         },
-        "playhead": {"sec": round(t, 4), "frame": int(round(t * fps))},
+        "playhead": {
+            "sec":   round(t, 4),
+            "frame": int(round(t * fps)),
+            "fps":   fps,
+            **({"playing": state.playing} if state.playing is not None else {}),
+        },
         "clipAtPlayhead":            _clip_at(project, t),
         "selection":                 selection,
         "selectedCaptionId":         state.selected_caption_id,

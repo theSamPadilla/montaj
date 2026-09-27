@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The editor reports whether it is playing, and serve hands it to agents.** The context the editor posts to `POST /api/projects/{id}/context` now carries `playing` (sent at once on play/pause, like selection), and `GET /api/context` returns it as `playhead.playing` beside a new `playhead.fps`. An editor that does not send `playing` gets no `playing` key back, never a guessed "paused". Still in memory only, never written to project.json. (`montaj_assets/editor/src/video/use-report-context.ts`, `montaj_assets/editor/src/video/preview/PreviewPlayer.tsx`, `serve/context.py`)
+
+- Fix: canvas and overlay-only motion-graphics exports (no video clips) now offer 60fps, not just 24/30. The fps cap only protects source video footage. (`montaj_assets/editor/src/video/export-limits.ts`)
+
+- **Editor dialogs and popovers are legible in any host theme.** Portalled dialogs (Export, Controls, Command palette, Crop, Version compare, menus) render outside the editor root, so text without a working colour inherited the host page's colour; in the desktop app that is the same dark as the dialog surface, which hid Export's Cancel label and resolution sub-lines. Every portal root now sets `--editor-text`, secondary text is 60% of it, export and image-colour selection use `--editor-accent` instead of violet, and the render log / done view read correctly in the light theme. A test fails if a portal root loses its text colour. (`montaj_assets/editor/src/**`)
+
 - **Overlay JSX examples no longer hardcode frame counts, which played
   animations at half speed on a 60fps project.** New motion-graphics
   projects default to 60fps, but `skills/write-overlay/SKILL.md`,

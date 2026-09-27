@@ -115,6 +115,30 @@ def test_enrich_reports_frame_from_project_fps():
     assert out["playhead"]["sec"] == 12.4
 
 
+def test_enrich_reports_fps_beside_the_frame():
+    state = context.report("p1", {"playheadSec": 1.0})
+    out = context.enrich("p1", _project(), state)
+    assert out["playhead"]["fps"] == 30.0
+
+
+def test_enrich_carries_playing_when_the_editor_reports_it():
+    state = context.report("p1", {"playheadSec": 3.0, "playing": True})
+    assert context.enrich("p1", _project(), state)["playhead"]["playing"] is True
+    state = context.report("p1", {"playheadSec": 3.0, "playing": False})
+    assert context.enrich("p1", _project(), state)["playhead"]["playing"] is False
+
+
+def test_enrich_omits_playing_from_an_editor_that_does_not_report_it():
+    """An older editor sends no `playing`; claiming "paused" would be a guess."""
+    state = context.report("p1", {"playheadSec": 3.0})
+    assert "playing" not in context.enrich("p1", _project(), state)["playhead"]
+
+
+def test_report_rejects_a_non_boolean_playing():
+    with pytest.raises(ValueError):
+        context.report("p1", {"playheadSec": 1.0, "playing": "yes"})
+
+
 def test_enrich_includes_the_caption_window_around_the_playhead():
     state = context.report("p1", {"playheadSec": 6.0, "selectedIds": []})
     out = context.enrich("p1", _project(), state)
@@ -279,6 +303,14 @@ def test_post_context_rejects_a_bad_playhead(tmp_path, monkeypatch):
     _use_workspace(tmp_path, monkeypatch)
     pid = _write_project(tmp_path, _project())
     resp = client.post(f"/api/projects/{pid}/context", json={"playheadSec": "twelve"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"] == "invalid_context"
+
+
+def test_post_context_rejects_a_bad_playing(tmp_path, monkeypatch):
+    _use_workspace(tmp_path, monkeypatch)
+    pid = _write_project(tmp_path, _project())
+    resp = client.post(f"/api/projects/{pid}/context", json={"playheadSec": 1.0, "playing": 1})
     assert resp.status_code == 400
     assert resp.json()["detail"]["error"] == "invalid_context"
 

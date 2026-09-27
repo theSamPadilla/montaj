@@ -844,6 +844,9 @@ function ReviewSurface<P extends Project>({
   // one caption id in `selectedIds` — taking the first is correct, the
   // preview only ever shows one box.
   const selectedCaptionId = selectedIds.find(id => captionIdSet.has(id)) ?? null
+  // Transport state for the context report. PreviewPlayer pushes it on a real
+  // play/pause change only, so this re-renders the surface per toggle, never per frame.
+  const [previewPlaying, setPreviewPlaying] = useState(false)
   // Publish what we are looking at, so an agent can resolve "this section".
   // No-ops entirely on a host that does not implement reportContext.
   useReportContext({
@@ -852,6 +855,7 @@ function ReviewSurface<P extends Project>({
     clock,
     selectedIds,
     selectedCaptionId,
+    playing: previewPlaying,
   })
   // Selecting a caption anywhere (timeline, preview box, or the caption list —
   // all funnel through `selectedIds` → `selectedCaptionId`) jumps the left
@@ -2115,6 +2119,7 @@ function ReviewSurface<P extends Project>({
                 onCaptionSegmentChange={handleCaptionSegmentChange}
                 engine={engine}
                 transportRef={transportRef}
+                onPlayingChange={setPreviewPlaying}
                 scrubHandleRef={scrubHandleRef}
                 hoverScrub={hoverScrub}
                 // Social-media preview chrome (mirrors CapCut's "Preview your

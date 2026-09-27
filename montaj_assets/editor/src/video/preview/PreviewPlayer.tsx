@@ -86,6 +86,11 @@ interface PreviewPlayerProps {
    */
   transportRef?: MutableRefObject<TransportHandle | null>
   /**
+   * Called with the transport's playing state whenever it changes (and once on
+   * mount), from whichever playback path is active. Absent → no-op.
+   */
+  onPlayingChange?: (playing: boolean) => void
+  /**
    * The audible drag-scrub source's engine seam — mirrors `transportRef`.
    * Absent → no-op; nothing reads or writes it.
    */
@@ -314,6 +319,7 @@ function PreviewSurface({
   onCaptionSegmentChange,
   engine,
   transportRef,
+  onPlayingChange,
   scrubHandleRef,
   socialPreview,
   muted,
@@ -377,6 +383,14 @@ function PreviewSurface({
     transportRef.current = { togglePlay, isPlaying: () => isPlaying, setRate }
     return () => { transportRef.current = null }
   }, [transportRef, togglePlay, isPlaying, setRate])
+
+  // Push play/pause to the host. Held in a ref so a new callback identity
+  // never re-fires it; only a real `isPlaying` change does.
+  const onPlayingChangeRef = useRef(onPlayingChange)
+  onPlayingChangeRef.current = onPlayingChange
+  useEffect(() => {
+    onPlayingChangeRef.current?.(isPlaying)
+  }, [isPlaying])
 
   // The scrub seam: only the engine path can decode a grain, so the legacy
   // `<video>` fallback simply never fills this — that absence is the audible

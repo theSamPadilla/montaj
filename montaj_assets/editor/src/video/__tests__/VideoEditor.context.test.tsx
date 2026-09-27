@@ -22,6 +22,12 @@ describe('VideoEditor context reporting', () => {
     expect(call).toMatch(/adapter/)
   })
 
+  it('reports the transport state PreviewPlayer pushes on play/pause', () => {
+    const call = src.match(/useReportContext\(\{[\s\S]*?\}\)/)?.[0] ?? ''
+    expect(call).toMatch(/playing: previewPlaying/)
+    expect(src).toMatch(/onPlayingChange=\{setPreviewPlaying\}/)
+  })
+
   // D1: captions share `selectedIds` with clips/audio now, so `selectedCaptionId`
   // must be DERIVED from that array rather than tracked as its own `useState` —
   // a second selection model is exactly the bug a future refactor could

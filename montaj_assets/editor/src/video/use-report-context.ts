@@ -23,6 +23,8 @@ interface Options {
   clock: PlaybackClock
   selectedIds: string[]
   selectedCaptionId: string | null
+  /** Transport state. Reported like selection: at once, on change. */
+  playing?: boolean
 }
 
 /**
@@ -36,12 +38,12 @@ interface Options {
  * selection.
  */
 export function useReportContext({
-  adapter, projectId, clock, selectedIds, selectedCaptionId,
+  adapter, projectId, clock, selectedIds, selectedCaptionId, playing = false,
 }: Options): void {
   // Kept in a ref so the interval effect never re-subscribes on a selection
   // change — it always reads the latest values without depending on them.
-  const latest = useRef({ selectedIds, selectedCaptionId })
-  latest.current = { selectedIds, selectedCaptionId }
+  const latest = useRef({ selectedIds, selectedCaptionId, playing })
+  latest.current = { selectedIds, selectedCaptionId, playing }
 
   const send = useRef<(ctx: EditorContext) => void>(() => {})
   send.current = (ctx: EditorContext) => {
@@ -58,18 +60,19 @@ export function useReportContext({
       playheadSec:       clock.get(),
       selectedIds:       latest.current.selectedIds,
       selectedCaptionId: latest.current.selectedCaptionId,
+      playing:           latest.current.playing,
     })
     emit()
     const id = setInterval(emit, REPORT_INTERVAL_MS)
     return () => clearInterval(id)
   }, [adapter, projectId, clock])
 
-  // Selection, immediately on change. Skips the mount emit above by comparing
-  // against what the interval effect already sent.
+  // Selection and play/pause, immediately on change. Skips the mount emit
+  // above by comparing against what the interval effect already sent.
   const mounted = useRef(false)
   useEffect(() => {
     if (!adapter.reportContext) return
     if (!mounted.current) { mounted.current = true; return }
-    send.current({ playheadSec: clock.get(), selectedIds, selectedCaptionId })
-  }, [adapter, clock, selectedIds, selectedCaptionId])
+    send.current({ playheadSec: clock.get(), selectedIds, selectedCaptionId, playing })
+  }, [adapter, clock, selectedIds, selectedCaptionId, playing])
 }

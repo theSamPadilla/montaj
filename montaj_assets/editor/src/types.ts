@@ -561,6 +561,8 @@ export interface EditorContext {
   selectedIds: string[]
   /** Selected caption segment id, if any. */
   selectedCaptionId: string | null
+  /** Whether the preview is playing. Absent from hosts that do not know. */
+  playing?: boolean
 }
 
 /**

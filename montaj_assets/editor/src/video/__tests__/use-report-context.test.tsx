@@ -26,7 +26,7 @@ describe('useReportContext', () => {
       selectedIds: [], selectedCaptionId: null,
     }))
     expect(reportContext).toHaveBeenCalledWith('p1', {
-      playheadSec: 4, selectedIds: [], selectedCaptionId: null,
+      playheadSec: 4, selectedIds: [], selectedCaptionId: null, playing: false,
     })
   })
 
@@ -69,6 +69,27 @@ describe('useReportContext', () => {
     rerender({ ids: ['c3'] })
     expect(reportContext).toHaveBeenCalledTimes(1)
     expect(reportContext.mock.calls[0][1].selectedIds).toEqual(['c3'])
+  })
+
+  it('reports play and pause immediately, carrying the playhead', () => {
+    const reportContext = vi.fn().mockResolvedValue(undefined)
+    const clock = createPlaybackClock()
+    const adapter = { reportContext } as never
+    const { rerender } = renderHook(
+      (props: { playing: boolean }) => useReportContext({
+        adapter, projectId: 'p1', clock,
+        selectedIds: [], selectedCaptionId: null, playing: props.playing,
+      }),
+      { initialProps: { playing: false } },
+    )
+    reportContext.mockClear()
+    rerender({ playing: true })
+    expect(reportContext).toHaveBeenCalledTimes(1)
+    expect(reportContext.mock.calls[0][1].playing).toBe(true)
+    act(() => { clock.set(2.5) })
+    rerender({ playing: false })
+    expect(reportContext).toHaveBeenCalledTimes(2)
+    expect(reportContext.mock.calls[1][1]).toMatchObject({ playing: false, playheadSec: 2.5 })
   })
 
   it('swallows a rejected report — context sync never breaks the editor', async () => {
