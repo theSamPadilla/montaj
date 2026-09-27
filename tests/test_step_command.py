@@ -400,14 +400,14 @@ def test_xor_precheck_rejects_both_and_neither(monkeypatch):
         neither.func(neither)
 
 
-@pytest.mark.parametrize("cmd", ["detect-shots", "shot-sheet"])
+@pytest.mark.parametrize("cmd", ["detect-shots", "shot-sheet", "detect-beats"])
 def test_new_step_commands_registered(cmd):
     from cli.main import _STEP_COMMANDS, _REGISTRATION_ORDER
     assert cmd in _STEP_COMMANDS
     assert cmd in _REGISTRATION_ORDER
 
 
-@pytest.mark.parametrize("cmd", ["detect-shots", "shot-sheet"])
+@pytest.mark.parametrize("cmd", ["detect-shots", "shot-sheet", "detect-beats"])
 def test_new_step_commands_are_hidden_from_top_level_help(cmd):
     """Every step command is hidden — discover them via `montaj step`."""
     from cli.main import _HIDDEN, _STEP_COMMANDS
@@ -416,7 +416,7 @@ def test_new_step_commands_are_hidden_from_top_level_help(cmd):
     assert set(_STEP_COMMANDS) <= set(_HIDDEN)
 
 
-@pytest.mark.parametrize("cmd", ["detect-shots", "shot-sheet"])
+@pytest.mark.parametrize("cmd", ["detect-shots", "shot-sheet", "detect-beats"])
 def test_new_steps_exported_to_mcp(cmd):
     from cli.mcp_schema import _EXPORTED_COMMANDS
     assert cmd in _EXPORTED_COMMANDS

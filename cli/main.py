@@ -66,6 +66,7 @@ _COMMANDS = {
 _STEP_COMMANDS = {
     "analyze-media":      {},
     "caption":            {},
+    "detect-beats":       {},
     "detect-shots":       {},
     "extract-audio":      {},
     "filler":             {"step_name": "rm_fillers"},
@@ -96,6 +97,7 @@ _REGISTRATION_ORDER = (
     "create-step", "validate", "install", "credentials", "update",
     "remove-bg", "kling-generate", "analyze-media", "generate-image",
     "generate-voiceover", "generate-music", "detect-shots", "shot-sheet",
+    "detect-beats",
 )
 
 # Individual step commands — available but not listed in top-level help.
@@ -109,6 +111,7 @@ _HIDDEN = {
     "remove-bg",
     "kling-generate", "analyze-media", "generate-image", "generate-voiceover",
     "generate-music", "detect-shots", "shot-sheet",
+    "detect-beats",
 }
 
 

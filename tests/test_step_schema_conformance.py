@@ -11,8 +11,11 @@ migrates to schema-driven wrappers, plus ``normalize`` (added by SP8c T1: its
 CLI wrapper stays hand-written — ``cli.commands.normalize`` in ``_COMMANDS``,
 not the schema-generated ``_STEP_COMMANDS`` — but its schema is still read by
 the server (``serve/routes/steps.py``) and the AI-tool layer, so drift there
-is exactly as real as for the schema-driven 16). The step's argparse is
-GROUND TRUTH; the schema must match it exactly, modulo:
+is exactly as real as for the schema-driven 16), plus ``detect_beats`` (added
+by the motion-film-craft plan's T2: schema-driven like the 16, but unlike its
+``detect_shots`` precedent, which never joined this tuple, it is held to
+bidirectional parity from the start). The step's argparse is GROUND TRUTH;
+the schema must match it exactly, modulo:
 
   * the global flags the CLI adds itself — ``--out`` / ``--quiet`` / ``--json``
     (see ``cli/main.add_global_flags``); a step may declare ``--out``/``--json``
@@ -49,7 +52,7 @@ MIGRATED_STEPS = (
     "rm_nonspeech", "stem_separation", "lyrics_sync", "lyrics_render",
     "generate_image", "generate_music", "generate_voiceover",
     "kling_generate", "analyze_media", "snapshot", "rm_fillers",
-    "normalize",
+    "normalize", "detect_beats",
 )
 
 # Global flags the CLI layer owns; never required to appear as schema params.
