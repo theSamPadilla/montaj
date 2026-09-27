@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v4.8.0
+
 - **Editor icons are visible again in Tailwind v3 hosts.** About 260
   `@bycrux/editor` classes used Tailwind's opacity modifier on opaque CSS vars
   (`text-[var(--editor-text)]/60`), which Tailwind v3 compiles to nothing, so
