@@ -41,6 +41,16 @@ export interface UseProjectSyncOptions<P extends Project> {
    * one here — it must be a pure function of its two arguments.
    */
   reconcile?: (prev: P, next: P) => P
+  /**
+   * Called on every local user edit: `mutate`, a `commit` that closes a
+   * gesture which actually changed something, and an `undo`/`redo` that popped
+   * a snapshot. Never for `mutateTransient`, `discardTransient`,
+   * `applyExternal`, `refetch` or SSE frames, so a host can tell its own
+   * user's edits from server-authored writes. Fired after the optimistic
+   * apply, before the save resolves. Read through a ref: identity changes are
+   * harmless and never re-create the returned callbacks.
+   */
+  onLocalEdit?: () => void
 }
 
 export interface UseProjectSync<P extends Project = Project> {
@@ -96,6 +106,10 @@ export function useProjectSync<P extends Project = Project>(
   // referentially stable regardless of whether the host memoises the option.
   const reconcileRef = useRef(options?.reconcile)
   reconcileRef.current = options?.reconcile
+
+  // `onLocalEdit` likewise, so the user-edit paths stay referentially stable.
+  const onLocalEditRef = useRef(options?.onLocalEdit)
+  onLocalEditRef.current = options?.onLocalEdit
 
   // Latest deferred external frame. Held while saves are in flight because an
   // echo for an earlier save can arrive while a later save is still mid-flight —
@@ -193,6 +207,7 @@ export function useProjectSync<P extends Project = Project>(
       // Non-transient mutations reset the baseline so any subsequent gesture
       // starts from the freshly committed state.
       transientBaseline.current = null
+      onLocalEditRef.current?.()
       return queue.current.enqueue(() =>
         save(next, snapshot).catch((err) => {
           setLastError(err instanceof Error ? err.message : String(err))
@@ -222,7 +237,10 @@ export function useProjectSync<P extends Project = Project>(
     const current = projectRef.current
     const baseline = transientBaseline.current
     transientBaseline.current = null
-    if (baseline !== null) pushUndo(baseline)
+    if (baseline !== null) {
+      pushUndo(baseline)
+      onLocalEditRef.current?.()
+    }
     const rollbackTo = baseline ?? current
     return queue.current.enqueue(() =>
       save(current, rollbackTo).catch((err) => {
@@ -261,6 +279,7 @@ export function useProjectSync<P extends Project = Project>(
     projectRef.current = prev
     transientBaseline.current = null
     setProject(prev)
+    onLocalEditRef.current?.()
     void queue.current.enqueue(() =>
       save(prev, current).catch((err) => {
         setLastError(err instanceof Error ? err.message : String(err))
@@ -279,6 +298,7 @@ export function useProjectSync<P extends Project = Project>(
     projectRef.current = next
     transientBaseline.current = null
     setProject(next)
+    onLocalEditRef.current?.()
     void queue.current.enqueue(() =>
       save(next, current).catch((err) => {
         setLastError(err instanceof Error ? err.message : String(err))

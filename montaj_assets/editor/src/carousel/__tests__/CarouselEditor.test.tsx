@@ -105,6 +105,18 @@ describe('CarouselEditor — editor-core integration', () => {
     expect(wrapper?.className).not.toContain('w-80')
   })
 
+  // The root sets the editor text colour (as VideoEditor's root does), so chrome
+  // that inherits colour reads --editor-text instead of the host page's colour.
+  it('sets the editor text colour on its root', async () => {
+    const adapter = makeFakeAdapter()
+    const { container } = render(
+      <CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} />,
+    )
+    const root = container.firstElementChild as HTMLElement
+    expect(root.className).toContain('bg-[var(--editor-bg)]')
+    expect(root.className).toContain('text-[var(--editor-text)]')
+  })
+
   // Regression: SlideGrid thumbnails must receive `compileOverlay` so overlay
   // elements render in the left rail. Before the fix the thumbnail used a
   // noopCompiler that always rejected → a red "overlay error" badge on every

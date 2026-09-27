@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Video editor
 
+- **Added: `pendingSurface` and `onUserEdit` on `VideoEditor`, for hosts that own the pending gate.** `pendingSurface="host"` renders the full editor while `status === 'pending'` and draws no pending UI of its own, so the host can put its own overlay over a visible, editable project; `onBackToSetup` and `slots.pendingStatus` are unused in that mode, and the skill-path `getInfo` fetch is skipped. `onUserEdit` fires on every edit the user makes (edits, finished gestures, undo, redo) and never on server frames, so a host can tell its own user's edits from an agent's writes; `onProjectChange` cannot, since it also fires on SSE frames. It is fed by a new `onLocalEdit` option on `useProjectSync`, read through a ref so its identity never re-creates the core's callbacks. Backward compatible: `pendingSurface` defaults to `'default'`, today's behaviour. (`types.ts`, `state/use-project-sync.ts`, `video/VideoEditor.tsx`, `state/__tests__/use-project-sync.test.tsx`, `video/__tests__/VideoEditor.pendingSurface.test.tsx`)
+
 - **Fixed: a failed save in the video editor rolled the edit back with no visible sign anything went wrong.** `sync.lastError` (`use-project-sync.ts`) was tracked but never rendered in `VideoEditor.tsx` — a rejected `saveProject` call reverted the optimistic edit silently, so the operator's change just vanished. `CarouselEditor.tsx` already surfaces the same field as a dismissible banner; `VideoEditor` now renders the identical pattern on its outermost container, above both layout branches, with a dismiss button that calls `sync.clearError`. (`video/VideoEditor.tsx`, `video/__tests__/VideoEditor.saveError.test.tsx`)
 
 - **Fixed: the left media rail's inactive items (everything but the selected tab, e.g. Media/Versions next to a selected Captions) were unreadable — near-invisible dark text on the editor's dark background.** `LeftPanelTabs.tsx` colored them with Tailwind's `/NN` opacity modifier on an arbitrary CSS-variable value (`text-[var(--editor-text)]/60`, plus the selected tab's `bg-[var(--editor-accent)]/10` tint and the hover tint). That modifier only works when Tailwind can parse the color itself to inject an alpha channel — it cannot do that for an opaque `var(...)` reference, so the utility silently emitted NO rule at all, in this package's own Tailwind build and in a consumer's alike (measured under a host app's Tailwind v3.4: zero `editor-text`/`editor-accent` rules generated for any `/NN`-modified class here). With no color rule, the button fell back to an inherited/default text color, invisible against the editor's near-black background. Replaced with the same math baked directly into the arbitrary value instead — `text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]` and so on — which compiles correctly in both builds since Tailwind never has to interpret the color at all, just emit it verbatim. (`video/panels/LeftPanelTabs.tsx`)
@@ -363,6 +365,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `components/FilmstripScrubber.tsx`, `carousel/*`, `video/*` — 38 files in
   all — plus `__tests__/no-opacity-modifier-on-editor-vars.test.ts`,
   `__tests__/node-shims.d.ts`)
+
+### Carousel editor
+
+- **Fixed: `CarouselEditor`'s root did not set the editor text colour**, so chrome that inherits colour picked up the host page's instead of `--editor-text`. The root now carries `text-[var(--editor-text)]`, as `VideoEditor`'s already did. (`carousel/CarouselEditor.tsx`, `carousel/__tests__/CarouselEditor.test.tsx`)
 
 ## 0.8.10 — 2026-07-20
 

@@ -392,7 +392,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const canvasScale = Math.min(availW / w, availH / h, 1)
 
   return (
-    <div ref={containerRef} className="flex flex-col h-full overflow-y-auto bg-[var(--editor-bg)]">
+    <div ref={containerRef} className="flex flex-col h-full overflow-y-auto bg-[var(--editor-bg)] text-[var(--editor-text)]">
       {/* TOP: slide rail | canvas | editing panel (right). Fixed viewport-relative
           height with min-h-0 so each of the three columns establishes its own
           independent scroll context; the project-media region flows beneath and

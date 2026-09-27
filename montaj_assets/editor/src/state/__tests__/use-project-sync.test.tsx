@@ -369,3 +369,79 @@ describe('useProjectSync — subscription lifecycle', () => {
     expect(adapter.unsub).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('useProjectSync — onLocalEdit', () => {
+  it('fires on the four user paths only (mutate, a real commit, undo, redo)', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const onLocalEdit = vi.fn()
+    const { result } = renderHook(() =>
+      useProjectSync(adapter, initial.id, initial, { onLocalEdit }),
+    )
+
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'A' })) })
+    expect(onLocalEdit).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      result.current.mutateTransient((p) => ({ ...p, name: 'B1' }))
+      result.current.mutateTransient((p) => ({ ...p, name: 'B2' }))
+      result.current.mutateTransient((p) => ({ ...p, name: 'B3' }))
+    })
+    expect(onLocalEdit).toHaveBeenCalledTimes(1)
+
+    await act(async () => { await result.current.commit() })
+    expect(onLocalEdit).toHaveBeenCalledTimes(2)
+
+    // A commit with no transient gesture in flight changed nothing.
+    await act(async () => { await result.current.commit() })
+    expect(onLocalEdit).toHaveBeenCalledTimes(2)
+
+    await act(async () => { result.current.undo() })
+    expect(onLocalEdit).toHaveBeenCalledTimes(3)
+
+    await act(async () => { result.current.redo() })
+    expect(onLocalEdit).toHaveBeenCalledTimes(4)
+
+    act(() => { result.current.applyExternal(makeProject({ name: 'Ext' })) })
+    expect(onLocalEdit).toHaveBeenCalledTimes(4)
+
+    act(() => { adapter.emit(makeProject({ name: 'SSE' })) })
+    expect(result.current.project.name).toBe('SSE')
+    expect(onLocalEdit).toHaveBeenCalledTimes(4)
+  })
+
+  it('does not fire for undo or redo on an empty stack, or for discardTransient', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const onLocalEdit = vi.fn()
+    const { result } = renderHook(() =>
+      useProjectSync(adapter, initial.id, initial, { onLocalEdit }),
+    )
+
+    act(() => { result.current.undo() })
+    act(() => { result.current.redo() })
+    act(() => {
+      result.current.mutateTransient((p) => ({ ...p, name: 'X' }))
+      result.current.discardTransient()
+    })
+    expect(onLocalEdit).not.toHaveBeenCalled()
+  })
+
+  it('calls the latest callback when the option identity changes', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const first = vi.fn()
+    const second = vi.fn()
+    const { result, rerender } = renderHook(
+      ({ cb }) => useProjectSync(adapter, initial.id, initial, { onLocalEdit: cb }),
+      { initialProps: { cb: first } },
+    )
+    const mutateBefore = result.current.mutate
+    rerender({ cb: second })
+    expect(result.current.mutate).toBe(mutateBefore)
+
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'A' })) })
+    expect(first).not.toHaveBeenCalled()
+    expect(second).toHaveBeenCalledTimes(1)
+  })
+})

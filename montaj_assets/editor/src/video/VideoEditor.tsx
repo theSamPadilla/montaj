@@ -212,6 +212,11 @@ export function exportDurationSec(project: { tracks?: unknown }): number {
  * prop, so a status transition (agent finishes → 'draft') must come from the
  * core's own stream, not the host re-rendering with a new prop.
  *
+ * `pendingSurface="host"` skips the pending surface: a pending project renders
+ * the review surface (which never branches on status), and the host draws its
+ * own gate over it. `onUserEdit` reports the user's own edits (never SSE frames)
+ * so such a host can react when the user edits while an agent is working.
+ *
  * ProjectHeader is lifted out (the host renders it in its shell). This component
  * renders: timeline + preview + version panel + render modal + the host-supplied
  * inspector/subcut render-prop seams + an optional back-to-setup affordance.
@@ -223,6 +228,8 @@ export default function VideoEditor<P extends Project = Project>({
   theme,
   slots,
   onBackToSetup,
+  pendingSurface = 'default',
+  onUserEdit,
   assetsPlacement = 'right',
   renderProgressView = 'phases',
   renderGenerationPanel,
@@ -245,7 +252,9 @@ export default function VideoEditor<P extends Project = Project>({
   // both the surface switch and the surface contents. `project` (the prop) is
   // only the initial value — after mount the core owns state and reconciles live
   // frames itself (video-shaped → default plain-replace reconcile).
-  const sync = useProjectSync<P>(adapter, project.id, project)
+  // `onUserEdit` rides the core's `onLocalEdit` (held in a ref there, so a new
+  // identity per render is harmless): fired for user edits only, never SSE.
+  const sync = useProjectSync<P>(adapter, project.id, project, { onLocalEdit: onUserEdit })
 
   // Set for the duration of a caption drag gesture (ReviewSurface's
   // `handleProjectChange` → `commitTimelineEdit`), read by the lane-
@@ -375,7 +384,7 @@ export default function VideoEditor<P extends Project = Project>({
   // T7 — canvas-timeline filmstrips + hover-scrub; absent → Timeline renders none (graceful).
   const getFilmstrip      = adapter.getFilmstrip
 
-  if (isPending) {
+  if (isPending && pendingSurface !== 'host') {
     return (
       <div ref={containerRef} className="flex flex-col h-full bg-[var(--editor-bg)] text-[var(--editor-text)]">
         <PendingSurface

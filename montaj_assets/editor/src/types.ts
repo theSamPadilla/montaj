@@ -1039,6 +1039,22 @@ export interface VideoEditorProps<P extends Project = Project> {
   readOnly?: boolean
   onBackToSetup?: () => void
   /**
+   * What renders while `project.status === 'pending'`:
+   * - `'default'` — the built-in pending surface (agent prompt, `slots.pendingStatus`,
+   *   project id, back-to-setup).
+   * - `'host'` — the full editor, exactly as for a draft. The editor draws no
+   *   pending UI of its own; any gate or overlay is the host's. `onBackToSetup`
+   *   and `slots.pendingStatus` are unused in this mode.
+   * Defaults to `'default'`.
+   */
+  pendingSurface?: 'default' | 'host'
+  /**
+   * Called on every edit the user makes (edits, finished gestures, undo, redo),
+   * never for server frames. Lets a host tell its own user's edits from an
+   * agent's writes. Fires on every edit; the host dedupes.
+   */
+  onUserEdit?: () => void
+  /**
    * Where the host's `slots.assetsPanel` is placed in the review layout:
    * - `'sidebar'` — stacked inside the right-hand version/run-history rail, below
    *   it, sharing one column. This is the historical Montaj-local OS layout
