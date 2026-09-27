@@ -512,6 +512,11 @@ montaj init --prompt "..." --proxy-inline-max 120
 montaj status
 # Show current project.json state (pending / draft / final) + step progress
 
+montaj log --project <id> "transcribing clip 3 of 6"
+# Post an operator-visible progress message. If `montaj serve` is running
+# for that project, it's broadcast live to the UI's activity feed
+# (POST /api/projects/<id>/log); otherwise it's printed to stderr.
+
 montaj approve
 # ai_video projects only — mark the storyboard as approved (writes
 # storyboard.approval). Prints the message to paste into your agent's

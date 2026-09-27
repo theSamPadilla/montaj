@@ -97,11 +97,11 @@ EXPECTED_HTTP_ONLY = frozenset({
     "virtual_to_original", "waveform_image", "waveform_peaks",
 })
 
-# MCP tools that name no step at all — run/render/status/upload/init are
+# MCP tools that name no step at all — run/render/status/upload/init/log are
 # general-purpose or admin commands, and workflow_*/profile_* are subcommands
 # of orchestration/asset-management commands, not single-step wrappers.
 EXPECTED_MCP_ONLY = frozenset({
-    "init", "profile_analyze", "profile_asset_add", "profile_asset_list",
+    "init", "log", "profile_analyze", "profile_asset_add", "profile_asset_list",
     "profile_asset_rm", "profile_asset_summary", "profile_list", "render",
     "run", "status", "upload", "workflow_list", "workflow_run",
 })

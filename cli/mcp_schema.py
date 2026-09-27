@@ -168,7 +168,7 @@ _EXPORTED_COMMANDS = frozenset({
     'run', 'render', 'workflow', 'fetch', 'profile',
     'probe', 'snapshot', 'sample', 'filler', 'waveform-trim', 'rm-nonspeech',
     'materialize-cut', 'resize', 'normalize', 'extract-audio',
-    'transcribe', 'caption', 'status', 'remove-bg', 'init',
+    'transcribe', 'caption', 'status', 'log', 'remove-bg', 'init',
     'kling-generate', 'analyze-media', 'generate-image', 'upload',
     'detect-shots', 'shot-sheet',
 })

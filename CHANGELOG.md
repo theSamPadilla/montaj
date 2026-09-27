@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **New `montaj log --project <id> "<message>"` CLI command, and a new `log`
+  MCP tool.** OSS MCP tools are generated from an allowlist of CLI commands
+  (`cli/mcp_schema.py`'s `_EXPORTED_COMMANDS`), and there was no `log`
+  command, so an agent driving Montaj through the raw OSS CLI/MCP surface had
+  no way to perform the `_contract` "log `<message>`" verb
+  (skills/_contract/SKILL.md) that `serve` already supports for the desktop
+  app's own interface skill. In HTTP mode (`montaj serve` running, detected
+  via `serve/lockfile.py` rather than the `MONTAJ_SERVE_PORT` env var, which
+  never reaches a sibling process) it POSTs `{"message": ...}` to
+  `/api/projects/<id>/log`, the existing endpoint that broadcasts to the UI's
+  SSE activity feed; otherwise it prints the message to stderr, matching
+  `skills/native/SKILL.md`'s CLI-mode mapping. `skills/mcp/SKILL.md` now
+  documents the tool. (`cli/commands/log.py`, `cli/main.py`,
+  `cli/mcp_schema.py`, `skills/mcp/SKILL.md`)
+
 ## v4.7.0
 
 - **Fixed: the MCP `init` tool rejected its `clips` argument (and, less
