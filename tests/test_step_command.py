@@ -152,8 +152,8 @@ PARITY = [
     #    forwarded to the child at its schema default (locks the Task-3 fix). ──
     ("rm-nonspeech-defaults", "rm-nonspeech",
      ["/in.mp4"],
-     ["--input", "/in.mp4", "--model", "base", "--max-word-gap", "0.18",
-      "--sentence-edge", "0.1", "--language", "en"], False, False),
+     ["--input", "/in.mp4", "--model", "base", "--max-word-gap", "0.1",
+      "--sentence-edge", "0.05", "--language", "en"], False, False),
 ]
 
 

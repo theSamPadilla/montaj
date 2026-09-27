@@ -1,6 +1,7 @@
 """Tests for steps/rm_nonspeech.py — uses fake whisper binary."""
 import json
 import os
+import textwrap
 import pytest
 from tests.conftest import run_step_env, assert_error
 
@@ -133,3 +134,68 @@ def test_rm_nonspeech_plain_trim_spec_has_no_cuts_key(tmp_path, test_video, fake
     assert proc.returncode == 0, f"stderr: {proc.stderr}"
     result = json.loads(proc.stdout)
     assert "cuts" not in result
+
+
+@pytest.fixture
+def fake_whisper_env_small_gap(tmp_path_factory):
+    """A two-word transcript with a 0.12s gap between words — bigger than the
+    step's own default --max-word-gap (0.10s) but smaller than the old,
+    looser default (0.18s). Built the same way as conftest's fake_whisper_env
+    (fake `main` + a `whisper-cpp` shadowing PATH), just with different word
+    offsets, so a caller relying purely on defaults gets separate keeps
+    rather than one giant merged region."""
+    d = tmp_path_factory.mktemp("whisper_small_gap")
+    models = d / "models"
+    models.mkdir()
+    (models / "ggml-base.en.bin").touch()
+    (models / "ggml-base.bin").touch()
+
+    fake_script = textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import sys, json
+
+        args = sys.argv[1:]
+        out_file = None
+        for i, a in enumerate(args):
+            if a == "--output-file" and i + 1 < len(args):
+                out_file = args[i + 1]
+
+        data = {
+            "transcription": [
+                {"text": "Hello", "offsets": {"from": 0,   "to": 400}},
+                {"text": "world", "offsets": {"from": 520, "to": 900}},
+            ]
+        }
+        if out_file:
+            with open(out_file + ".json", "w") as f:
+                json.dump(data, f)
+    """)
+
+    main = d / "main"
+    main.write_text(fake_script)
+    main.chmod(0o755)
+
+    bin_dir = d / "bin"
+    bin_dir.mkdir()
+    fake_bin = bin_dir / "whisper-cpp"
+    fake_bin.write_text(fake_script)
+    fake_bin.chmod(0o755)
+
+    original_path = os.environ.get("PATH", "")
+    return {
+        "WHISPER_DIR": str(d),
+        "PATH": f"{bin_dir}:{original_path}",
+    }
+
+
+def test_rm_nonspeech_default_max_word_gap_keeps_fine_cuts_separate(test_video, fake_whisper_env_small_gap):
+    """With no --max-word-gap override, a 0.12s gap between words must stay
+    two separate keeps under the step's own default (0.10s: 0.12 > 0.10, no
+    bridge). It would have merged into a single keep under the old, looser
+    default (0.18s: 0.12 <= 0.18, bridged) — this is the finer-cuts regression
+    the step's defaults must not reintroduce."""
+    proc = run_step_env("rm_nonspeech.py", fake_whisper_env_small_gap,
+                        "--input", str(test_video), "--model", "base")
+    assert proc.returncode == 0, f"stderr: {proc.stderr}"
+    result = json.loads(proc.stdout)
+    assert len(result["keeps"]) == 2, f"expected two separate keeps, got: {result['keeps']}"

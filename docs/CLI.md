@@ -361,7 +361,7 @@ montaj step waveform_trim --input clip.mp4
 montaj step waveform_trim --input clip.mp4 --threshold -30 --min-silence 0.3
 
 montaj step rm_nonspeech --input clip.mp4
-montaj step rm_nonspeech --input clip.mp4 --model base --max-word-gap 0.18 --sentence-edge 0.10
+montaj step rm_nonspeech --input clip.mp4 --model base --max-word-gap 0.10 --sentence-edge 0.05
 
 montaj step crop_spec --input spec.json --keep 8.5:14.8
 # → /path/to/spec_cropped.json  (crops trim spec to a virtual-timeline window, no encode)

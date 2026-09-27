@@ -10,11 +10,14 @@ def main():
     parser = argparse.ArgumentParser(description="Remove non-speech regions from a video")
     parser.add_argument("--input", required=True, help="Source video file or trim spec JSON")
     parser.add_argument("--model", default="base",
-                        help="Whisper model for speech detection")
-    parser.add_argument("--max-word-gap", type=float, default=0.18,
-                        help="Max gap between words to bridge in seconds (default: 0.18)")
-    parser.add_argument("--sentence-edge", type=float, default=0.10,
-                        help="Padding around sentence edges in seconds (default: 0.10)")
+                        help="Whisper model for speech detection. Larger = slower but more "
+                             "accurate word timings, which sharpens every cut this step makes.")
+    parser.add_argument("--max-word-gap", type=float, default=0.10,
+                        help="Max gap between words to bridge in seconds (default: 0.10). "
+                             "Smaller = more, finer keeps; larger = fewer, coarser keeps.")
+    parser.add_argument("--sentence-edge", type=float, default=0.05,
+                        help="Padding around sentence edges in seconds (default: 0.05). "
+                             "Smaller = tighter, finer keeps; larger = more padding, coarser keeps.")
     parser.add_argument("--language", default="en",
                         help="Whisper language code (e.g. es), or 'auto' to detect. A non-English "
                              "value auto-upgrades an *.en model to its multilingual sibling, so "

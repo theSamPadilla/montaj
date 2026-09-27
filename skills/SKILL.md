@@ -63,7 +63,7 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 | Step | What it does | Key params |
 |------|-------------|------------|
 | `waveform_trim` | Detect silence → trim spec (near-instant, no encode) | `--threshold -30 --min-silence 0.3` |
-| `rm_nonspeech` | Remove non-speech → trim spec. **Input: trim spec, not video.** | `--model base --max-word-gap 0.18 --sentence-edge 0.10` |
+| `rm_nonspeech` | Remove non-speech → trim spec. **Input: trim spec, not video.** | `--model base --max-word-gap 0.10 --sentence-edge 0.05` |
 | `rm_fillers` | Remove um/uh/hmm → trim spec. **Input: trim spec, not video.** | `--model base.en` |
 | `crop_spec` | Crop trim spec to virtual-timeline windows → refined trim spec, no encode | `--keep 8.5:14.8` (repeatable; `end` sentinel ok) |
 

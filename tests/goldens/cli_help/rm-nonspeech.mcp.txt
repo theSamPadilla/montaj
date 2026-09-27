@@ -9,19 +9,19 @@
         "type": "string"
       },
       "model": {
-        "description": "Whisper model for speech detection. Larger = slower + more accurate",
+        "description": "Whisper model for speech detection. Larger = slower but more accurate word timings, which sharpens every cut this step makes",
         "type": "string",
         "default": "base"
       },
       "max_word_gap": {
-        "description": "Maximum gap between words to bridge in seconds. Larger = fewer cuts",
-        "type": "number",
-        "default": 0.18
-      },
-      "sentence_edge": {
-        "description": "Padding to keep before and after each speech region in seconds",
+        "description": "Maximum gap between words to bridge in seconds. Smaller = more, finer keeps (more cuts); larger = fewer, coarser keeps (fewer cuts, more bridged silence)",
         "type": "number",
         "default": 0.1
+      },
+      "sentence_edge": {
+        "description": "Padding to keep before and after each speech region in seconds. Smaller = tighter (finer) keeps; larger = more breathing room around speech (coarser)",
+        "type": "number",
+        "default": 0.05
       },
       "language": {
         "description": "Whisper language code (e.g. es), or 'auto' to detect. A non-English value auto-upgrades an *.en model to its multilingual sibling \u2014 pass it for non-English audio, otherwise speech is mis-detected and cut as silence",

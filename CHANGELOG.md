@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **`rm_nonspeech`'s own defaults now match the finer cut settings every
+  shipped workflow already overrides to.** The step's schema and argparse
+  defaulted to `--max-word-gap 0.18 --sentence-edge 0.10`, while
+  `workflows/clean_cut.json` (and every other workflow that calls the step)
+  passed `--max-word-gap 0.10 --sentence-edge 0.05`. An agent calling
+  `rm_nonspeech` directly instead of through a workflow inherited the looser
+  defaults and got the whole clip merged into a couple of giant keeps.
+  `steps/speech/rm_nonspeech.json` and `steps/speech/rm_nonspeech.py` now both
+  default to `0.10`/`0.05`, and the `model`/`max-word-gap`/`sentence-edge`
+  descriptions explain how to get finer or coarser cuts. `docs/CLI.md` and
+  `skills/SKILL.md` no longer show the old defaults as an example.
+  (`steps/speech/rm_nonspeech.json`, `steps/speech/rm_nonspeech.py`,
+  `docs/CLI.md`, `skills/SKILL.md`, `tests/steps/test_rm_nonspeech.py`,
+  `tests/test_step_command.py`, `tests/goldens/cli_help/rm-nonspeech.*.txt`)
+
 - **`GET /api/workflows/{name}` now marks which steps are skill-backed.**
   `engine/resolve_workflow.py`'s `resolve_step` already tags each `uses`
   reference `kind: "step"` or `kind: "skill"` for the CLI, but `serve`'s
