@@ -15,10 +15,11 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
-from common import fail, require_file, check_output, run, find_whisper_bin, ffmpeg_bin
+from common import (fail, require_file, check_output, run, find_whisper_bin, ffmpeg_bin,
+                    resolve_whisper_model, whisper_weight_path, DEFAULT_WHISPER_MODEL)
 
 
-WHISPER_MODEL      = "base.en"
+WHISPER_MODEL      = DEFAULT_WHISPER_MODEL
 WINDOW_PRE_BUFFER  = 0.0
 WINDOW_POST_BUFFER = 0.0
 
@@ -166,8 +167,9 @@ def main():
                         help="Vocals WAV (output of stem_separation --stems vocals) or any audio/video")
     parser.add_argument("--lyrics",  required=True, help="Lyrics text file (one phrase per line)")
     parser.add_argument("--model",   default=WHISPER_MODEL,
-                        choices=["tiny.en", "base.en", "medium.en", "large"],
-                        help="Whisper model (default: base.en). medium.en improves window detection on noisy audio.")
+                        choices=["large-v3-turbo-q5_0", "large-v3-turbo", "tiny.en", "base.en", "medium.en", "large"],
+                        help=f"Whisper model (default: {WHISPER_MODEL}). A model that is not "
+                             "installed falls back to one that is.")
     parser.add_argument("--language", default="en", help="Language code passed to Whisper (default: en)")
     parser.add_argument("--start",   type=float, default=None,
                         help="Override: start time in seconds (skips auto-detection)")
@@ -179,9 +181,11 @@ def main():
     require_file(args.input)
     require_file(args.lyrics)
 
-    whisper_bin = find_whisper_bin()
-    model_path  = _models.model_path("whisper", f"ggml-{args.model}.bin")
+    model       = resolve_whisper_model(args.model, args.language)
+    # Managed dir first, then the legacy whisper.cpp dir, as transcribe does.
+    model_path  = whisper_weight_path(model) or _models.model_path("whisper", f"ggml-{model}.bin")
     require_file(model_path)
+    whisper_bin = find_whisper_bin()
 
     out = args.out or f"{os.path.splitext(args.input)[0]}_lyrics.json"
 

@@ -63,8 +63,8 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 | Step | What it does | Key params |
 |------|-------------|------------|
 | `waveform_trim` | Detect silence → trim spec (near-instant, no encode) | `--threshold -30 --min-silence 0.3`; add `--out <path>` to write the spec to a file and get back `{"path": ...}` instead of the inline JSON — pass that path as `rm_nonspeech`'s `--input` to chain (its own stdout is inline JSON too, so hold the path yourself between calls) |
-| `rm_nonspeech` | Remove non-speech → trim spec. **Input: trim spec, not video.** | `--model base --max-word-gap 0.10 --sentence-edge 0.05` |
-| `rm_fillers` | Remove um/uh/hmm → trim spec. **Input: trim spec, not video.** | `--model base.en` |
+| `rm_nonspeech` | Remove non-speech → trim spec. **Input: trim spec, not video.** | `--max-word-gap 0.10 --sentence-edge 0.05` |
+| `rm_fillers` | Remove um/uh/hmm → trim spec. **Input: trim spec, not video.** | `--language en` |
 | `crop_spec` | Crop trim spec to virtual-timeline windows → refined trim spec, no encode | `--keep 8.5:14.8` (repeatable; `end` sentinel ok) |
 
 ### Edit
@@ -77,13 +77,13 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 ### Enrich
 | Step | What it does | Key params |
 |------|-------------|------------|
-| `transcribe` | Word-level transcript (whisper.cpp) → SRT + JSON | `--model base.en --language en` |
+| `transcribe` | Word-level transcript (whisper.cpp) → SRT + JSON | `--language en` |
 | `caption` | Transcript → animated caption track (data, not pixels) | `--style word-by-word` (or `karaoke`, `pop`, `subtitle`, `highlight-box`, `outline`, `clean`) |
 | `normalize` | Loudness normalization (LUFS) | `--target youtube` (or `podcast`, `broadcast`) |
 
 **`caption` produces a data track, not pixels.** Rendered at review/final render time by the UI and render engine.
 
-**Language — non-English footage.** The speech steps (`transcribe`, `rm_nonspeech`, `rm_fillers`) default to the English-only `base.en` model. On non-English audio an English-only model emits sparse/garbage word timestamps — and `rm_nonspeech` then deletes the gaps as "silence", silently cutting most of the speech. **Always pass `--language <code>` to every speech step** (e.g. `--language es`), taken from `project.settings.language`. A non-English code auto-upgrades the `*.en` model to its multilingual sibling (`base.en` → `base`, same speed), so keep `--model base.en` and just set the language. Set the project language at init with `--language es` (stored in `settings.language`); if a project predates this field and the audio clearly isn't English, pass `--language` explicitly anyway. `rm_fillers` also switches to that language's hesitation-filler set.
+**Language — non-English footage.** The speech steps (`transcribe`, `rm_nonspeech`, `rm_fillers`) default to the multilingual `large-v3-turbo-q5_0` model, which handles every language; omit `--model`. A model that is not installed falls back to one that is. **Always pass `--language <code>` to every speech step** (e.g. `--language es`), taken from `project.settings.language`: whisper transcribes in the language it is told, and a wrong one emits sparse/garbage word timestamps that `rm_nonspeech` then deletes as "silence". If you do pass an English-only `*.en` model, a non-English code auto-upgrades it to its multilingual sibling. Set the project language at init with `--language es` (stored in `settings.language`); if a project predates this field and the audio clearly isn't English, pass `--language` explicitly anyway. `rm_fillers` also switches to that language's hesitation-filler set.
 
 **Transcribing a long source (e.g. a multi-minute source that `find_clips` will split)?** whisper can fall into a repetition-loop hallucination — one phrase repeated to EOF after a hard-to-decode stretch (music, a goal replay). Pass `--max-context 0` to `transcribe` to disable cross-window context, which reliably prevents the loop. Recommended for any multi-minute and/or non-English source transcription.
 

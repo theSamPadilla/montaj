@@ -3,13 +3,13 @@
 import json, os, sys, argparse, shutil, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, get_duration, transcribe_words, run
+from common import fail, require_file, get_duration, transcribe_words, run, DEFAULT_WHISPER_MODEL
 from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, audio_extract_cmd, remap_timestamp, from_window
 
 def main():
     parser = argparse.ArgumentParser(description="Remove non-speech regions from a video")
     parser.add_argument("--input", required=True, help="Source video file or trim spec JSON")
-    parser.add_argument("--model", default="base",
+    parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL,
                         help="Whisper model for speech detection. Larger = slower but more "
                              "accurate word timings, which sharpens every cut this step makes.")
     parser.add_argument("--max-word-gap", type=float, default=0.10,

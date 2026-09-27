@@ -113,6 +113,17 @@ PARITY = [
      ["/in.mp4", "--model", "medium", "--language", "es"],
      ["--input", "/in.mp4", "--model", "medium", "--language", "es"], False, False),
 
+    # ── turbo is the default whisper model and an accepted --model choice ────
+    ("transcribe-turbo", "transcribe",
+     ["/in.mp4", "--model", "large-v3-turbo-q5_0"],
+     ["--input", "/in.mp4", "--model", "large-v3-turbo-q5_0", "--language", "en"], False, False),
+    ("filler-turbo", "filler",
+     ["/in.mp4", "--model", "large-v3-turbo-q5_0"],
+     ["--input", "/in.mp4", "--model", "large-v3-turbo-q5_0", "--language", "en"], False, False),
+    ("filler-defaults", "filler",
+     ["/in.mp4"],
+     ["--input", "/in.mp4", "--model", "large-v3-turbo-q5_0", "--language", "en"], False, False),
+
     # ── --json variant rows: the six emit-quirk commands ─────────────────────
     # These invoke minimally, so they ALSO lock the default-forwarding behavior:
     # a defaulted optional flag the user omits is forwarded to the child at its
@@ -120,13 +131,13 @@ PARITY = [
     # IGNORE (accept --json, emit as_json=False, do NOT forward it to the child):
     ("transcribe+json", "transcribe",
      ["/in.mp4", "--json"],
-     ["--input", "/in.mp4", "--model", "base.en", "--language", "en"], False, False),
+     ["--input", "/in.mp4", "--model", "large-v3-turbo-q5_0", "--language", "en"], False, False),
     ("stem-separation+json", "stem-separation",
      ["/in.wav", "--json"],
      ["--input", "/in.wav", "--stems", "all", "--model", "htdemucs"], False, False),
     ("lyrics-sync+json", "lyrics-sync",
      ["/voc.wav", "--lyrics", "/lyr.txt", "--json"],
-     ["--input", "/voc.wav", "--lyrics", "/lyr.txt", "--model", "base.en", "--language", "en"], False, False),
+     ["--input", "/voc.wav", "--lyrics", "/lyr.txt", "--model", "large-v3-turbo-q5_0", "--language", "en"], False, False),
     ("lyrics-render+json", "lyrics-render",
      ["--captions", "/c.json", "--audio", "/a.mp3", "--json"],
      ["--captions", "/c.json", "--audio", "/a.mp3", "--bg-color", "black", "--width", "720",
@@ -152,7 +163,7 @@ PARITY = [
     #    forwarded to the child at its schema default (locks the Task-3 fix). ──
     ("rm-nonspeech-defaults", "rm-nonspeech",
      ["/in.mp4"],
-     ["--input", "/in.mp4", "--model", "base", "--max-word-gap", "0.1",
+     ["--input", "/in.mp4", "--model", "large-v3-turbo-q5_0", "--max-word-gap", "0.1",
       "--sentence-edge", "0.05", "--language", "en"], False, False),
 ]
 

@@ -13,7 +13,7 @@
     {
       "name": "model",
       "type": "string",
-      "default": "base",
+      "default": "large-v3-turbo-q5_0",
       "description": "Whisper model for speech detection. Larger = slower but more accurate word timings, which sharpens every cut this step makes."
     },
     {

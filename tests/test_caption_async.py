@@ -274,10 +274,9 @@ def test_async_kick_returns_202(tmp_path, monkeypatch):
     assert PID in projects_mod._active_caption_jobs
 
 
-def test_default_caption_model_is_base_en(tmp_path, monkeypatch):
-    """No `model` in the body resolves to steps/speech/transcribe.json's own
-    schema default (`base.en`), not a hardcoded `large` the route used to
-    apply on its own — the two must never drift apart."""
+def test_default_caption_model_is_turbo(tmp_path, monkeypatch):
+    """No `model` in the body resolves to lib.common.DEFAULT_WHISPER_MODEL
+    (`large-v3-turbo-q5_0`), the same default every transcription step uses."""
     project_dir, captured = _setup_caption_project(tmp_path, monkeypatch)
     req = _FakeRequest({"async": "1"})
 
@@ -288,7 +287,7 @@ def test_default_caption_model_is_base_en(tmp_path, monkeypatch):
 
     asyncio.run(generate_captions(PID, req, body={}, project_dir=project_dir))
 
-    assert captured["model"] == "base.en"
+    assert captured["model"] == "large-v3-turbo-q5_0"
 
 
 def test_async_kick_409_on_concurrent_job(tmp_path, monkeypatch):

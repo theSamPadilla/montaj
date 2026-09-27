@@ -11,7 +11,7 @@
       "model": {
         "description": "Whisper model for speech detection. Larger = slower but more accurate word timings, which sharpens every cut this step makes",
         "type": "string",
-        "default": "base"
+        "default": "large-v3-turbo-q5_0"
       },
       "max_word_gap": {
         "description": "Maximum gap between words to bridge in seconds. Smaller = more, finer keeps (more cuts); larger = fewer, coarser keeps (fewer cuts, more bridged silence)",

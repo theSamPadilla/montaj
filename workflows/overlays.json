@@ -6,11 +6,11 @@
     { "id": "probe",            "uses": "montaj/probe",          "foreach": "clips" },
     { "id": "snapshot",         "uses": "montaj/snapshot",       "foreach": "clips" },
     { "id": "silence",          "uses": "montaj/waveform_trim",  "foreach": "clips",                           "params": { "threshold": "-30", "min-silence": 0.3 } },
-    { "id": "nonspeech",        "uses": "montaj/rm_nonspeech",   "foreach": "clips", "needs": ["silence"],     "params": { "model": "base.en", "max-word-gap": 0.10, "sentence-edge": 0.05 } },
-    { "id": "transcribe",       "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["nonspeech"],   "params": { "model": "base.en" } },
+    { "id": "nonspeech",        "uses": "montaj/rm_nonspeech",   "foreach": "clips", "needs": ["silence"],     "params": { "model": "large-v3-turbo-q5_0", "max-word-gap": 0.10, "sentence-edge": 0.05 } },
+    { "id": "transcribe",       "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["nonspeech"],   "params": { "model": "large-v3-turbo-q5_0" } },
     { "id": "select-takes",     "uses": "montaj/select-takes",                       "needs": ["transcribe"] },
-    { "id": "fillers",          "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select-takes"], "params": { "model": "base.en" } },
-    { "id": "transcribe_final", "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["fillers"],     "params": { "model": "base.en" } },
+    { "id": "fillers",          "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select-takes"], "params": { "model": "large-v3-turbo-q5_0" } },
+    { "id": "transcribe_final", "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["fillers"],     "params": { "model": "large-v3-turbo-q5_0" } },
     { "id": "overlays",         "uses": "montaj/overlay",                            "needs": ["transcribe_final"], "params": { "style": "auto" } }
   ]
 }

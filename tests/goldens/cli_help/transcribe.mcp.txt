@@ -12,6 +12,8 @@
         "description": "Whisper model. Larger = slower + more accurate. English-only (*.en) models are auto-upgraded to a multilingual sibling when language is non-English",
         "type": "string",
         "enum": [
+          "large-v3-turbo-q5_0",
+          "large-v3-turbo",
           "tiny.en",
           "base.en",
           "medium.en",
@@ -21,7 +23,7 @@
           "large",
           "large-v3"
         ],
-        "default": "base.en"
+        "default": "large-v3-turbo-q5_0"
       },
       "language": {
         "description": "Language code (e.g. en, fr, de, es), or 'auto' for whisper-cli language auto-detection. A non-English value upgrades an *.en model to its multilingual sibling",

@@ -5,15 +5,15 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
-from common import fail, require_file, check_output, run, find_whisper_bin, resolve_whisper_model, ffmpeg_bin, whisper_weight_path
+from common import fail, require_file, check_output, run, find_whisper_bin, resolve_whisper_model, ffmpeg_bin, whisper_weight_path, DEFAULT_WHISPER_MODEL
 from trim_spec import is_trim_spec, load as load_spec, audio_extract_cmd, remap_timestamp
 
 def main():
     parser = argparse.ArgumentParser(description="Transcribe audio or video using whisper.cpp")
     parser.add_argument("--input", required=True, help="Audio or video file to transcribe")
     parser.add_argument("--out", help="Output file prefix (default: input without extension)")
-    parser.add_argument("--model", default="base.en",
-                        choices=["tiny.en", "base.en", "medium.en", "tiny", "base", "medium", "large", "large-v3"],
+    parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL,
+                        choices=["large-v3-turbo-q5_0", "large-v3-turbo", "tiny.en", "base.en", "medium.en", "tiny", "base", "medium", "large", "large-v3"],
                         help="Whisper model. Larger = slower + more accurate. "
                              "English-only (*.en) models are auto-upgraded to a multilingual "
                              "sibling when --language is non-English.")

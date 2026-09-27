@@ -14,7 +14,7 @@ Node.js is not installed automatically — install it separately (any install pa
 brew install theSamPadilla/montaj/montaj   # or: pip install montaj
 montaj doctor                              # diagnose what's missing — prints the exact next steps
 montaj install ui                          # build UI bundles into ~/.cache/montaj/ (brew + pip both need this)
-montaj install whisper                     # whisper-cpp binary + base.en model weights
+montaj install whisper                     # whisper-cpp binary + large-v3-turbo-q5_0 model weights
 montaj install ffmpeg                      # pinned static ffmpeg/ffprobe with zscale (libzimg) for HDR
 montaj install rvm                         # torch/torchvision/av (pip) + RVM model weights
 montaj install connectors                  # pyjwt, requests, google-genai, openai (for API steps)
@@ -30,7 +30,7 @@ First-run flow is identical for brew and pip: `montaj doctor` first to see what'
 
 | Group | What it installs | Required for |
 |-------|-----------------|--------------|
-| `whisper` | whisper-cli (via `brew install whisper-cpp` on macOS) + base.en model weights | `transcribe`, `rm_fillers`, `rm_nonspeech`, `waveform_trim`, render pipeline |
+| `whisper` | whisper-cli (via `brew install whisper-cpp` on macOS) + large-v3-turbo-q5_0 model weights | `transcribe`, `rm_fillers`, `rm_nonspeech`, `waveform_trim`, render pipeline |
 | `ui` | npm deps for `render/` and `ui/`; production UI build | `montaj serve`, render engine |
 | `ffmpeg` | pinned static ffmpeg + ffprobe (8.1.2, with libzimg/zscale) into the managed models dir | HDR normalization (`zscale`), all ffmpeg-backed steps, render engine |
 | `rvm` | torch, torchvision, av (pip) + rvm_mobilenetv3 (~15 MB) + rvm_resnet50 (~103 MB) | `remove_bg` |
@@ -46,7 +46,7 @@ montaj credentials --list                                     # show set/unset s
 
 ```bash
 montaj install whisper --model medium.en
-# Download a specific whisper model instead of the default base.en
+# Download a specific whisper model instead of the default large-v3-turbo-q5_0
 ```
 
 ### Dependency health check

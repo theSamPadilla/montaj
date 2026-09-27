@@ -28,7 +28,7 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 MONTAJ_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", ".."))
 
 sys.path.insert(0, os.path.join(MONTAJ_ROOT, "lib"))
-from common import fail, run  # noqa: E402
+from common import fail, run, DEFAULT_WHISPER_MODEL  # noqa: E402
 
 sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
@@ -66,7 +66,7 @@ def main():
         description="Generate a project's caption track from its audible timeline mix"
     )
     parser.add_argument("--project-id", required=True, help="Project id")
-    parser.add_argument("--model", default="large", help="Whisper model")
+    parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL, help="Whisper model")
     parser.add_argument("--language", default="auto",
                         help="Language code (e.g. en, es), or 'auto' to detect")
     parser.add_argument("--style", default=None, help="Caption animation style")

@@ -17,7 +17,7 @@ cd ui && npm install
 cd render && npm install
 ```
 
-System deps: `ffmpeg`, `ffprobe`, `whisper.cpp` (with at least `ggml-base.en.bin`).
+System deps: `ffmpeg`, `ffprobe`, `whisper.cpp` (with at least `ggml-large-v3-turbo-q5_0.bin`, or `ggml-base.en.bin` on older installs).
 
 ---
 

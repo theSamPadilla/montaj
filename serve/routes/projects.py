@@ -39,7 +39,7 @@ from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allow
 from project.init import _copy_into_workspace
 from serve.sse import SSEBroadcaster, sse_stream
 
-from lib.common import SAFE_NAME as _SAFE_NAME, ffmpeg_bin, ffprobe_bin, node_child_env
+from lib.common import SAFE_NAME as _SAFE_NAME, DEFAULT_WHISPER_MODEL, ffmpeg_bin, ffprobe_bin, node_child_env
 from lib.look import curve_ids
 from lib.profile_assets import FILENAME_RE, NAME_RE
 from lib.types.kling import ASPECT_RATIOS, is_valid_aspect_ratio
@@ -3383,7 +3383,7 @@ async def generate_captions(
     except Exception:
         raise not_found("project_not_found", f"project.json for {project_id} not found")
 
-    model = body.get("model") or "base.en"
+    model = body.get("model") or DEFAULT_WHISPER_MODEL
     language = body.get("language") or "auto"
     style = body.get("style") or (project.get("captions") or {}).get("style") or "pop"
 

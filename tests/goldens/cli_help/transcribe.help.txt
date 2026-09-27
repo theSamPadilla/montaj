@@ -1,5 +1,5 @@
 usage: montaj transcribe [-h]
-                         [--model {tiny.en,base.en,medium.en,tiny,base,medium,large,large-v3}]
+                         [--model {large-v3-turbo-q5_0,large-v3-turbo,tiny.en,base.en,medium.en,tiny,base,medium,large,large-v3}]
                          [--language LANGUAGE] [--max-context MAX_CONTEXT]
                          [--json] [--out PATH] [--quiet]
                          input
@@ -9,7 +9,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  --model {tiny.en,base.en,medium.en,tiny,base,medium,large,large-v3}
+  --model {large-v3-turbo-q5_0,large-v3-turbo,tiny.en,base.en,medium.en,tiny,base,medium,large,large-v3}
                         Whisper model. Larger = slower + more accurate.
                         English-only (*.en) models are auto-upgraded to a
                         multilingual sibling when language is non-English.
