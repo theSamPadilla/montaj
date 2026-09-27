@@ -6,8 +6,48 @@ from fastapi import APIRouter, Body, HTTPException
 
 from serve.common import MONTAJ_ROOT
 from lib.types.project import normalize_project_type
+from engine.resolve_workflow import resolve_step
 
 router = APIRouter(prefix="/api")
+
+
+def _annotate_steps(workflow: dict) -> None:
+    """Tag each entry in workflow["steps"] with `kind` (additive only).
+
+    An agent reading a workflow via get_workflow sees a bare `uses` string
+    like "montaj/select-takes" and has no way to tell a real step (has a
+    run_step executable) from a skill-backed one (agent follows
+    skills/<name>/SKILL.md itself, there is nothing to run_step) — see
+    engine.resolve_workflow.resolve_step, which already draws this
+    distinction for the CLI. This mirrors that here so the same distinction
+    reaches the MCP surface.
+
+    Every entry keeps all of its existing fields untouched and gains `kind`:
+    "step" or "skill" per resolve_step, or "unknown" if resolution itself
+    fails (bad scope prefix in `uses`, or nothing on disk for it — e.g. a
+    hand-edited or partially-installed workflow). "unknown" is used rather
+    than leaving the entry unannotated so every entry has a `kind` an agent
+    can branch on without a presence check. When kind is "skill", the
+    skill's bare name is also set as `skill` (e.g. "select-takes") — read off
+    the resolved skill_path rather than re-parsed from `uses`, so it stays
+    correct regardless of scope prefix.
+
+    resolve_step fails via lib.common.fail(), which does sys.exit(1) — a
+    SystemExit, not an Exception — so it must be caught explicitly here or
+    one bad entry would take down the whole serve process instead of just
+    leaving that entry unannotated.
+    """
+    project_dir = str(Path.cwd())
+    for entry in workflow.get("steps", []):
+        uses = entry.get("uses", "")
+        try:
+            ref = resolve_step(uses, project_dir)
+        except (SystemExit, Exception):
+            entry["kind"] = "unknown"
+            continue
+        entry["kind"] = ref["kind"]
+        if ref["kind"] == "skill":
+            entry["skill"] = Path(ref["skill_path"]).parent.name
 
 
 def _workflow_dirs() -> list[tuple[str, Path]]:
@@ -43,11 +83,19 @@ async def list_workflows():
 
 @router.get("/workflows/{name}")
 async def get_workflow(name: str):
-    """Return a workflow JSON. Resolves user-global first, then built-in."""
+    """Return a workflow JSON. Resolves user-global first, then built-in.
+
+    Each entry under "steps" is annotated with `kind` ("step" | "skill" |
+    "unknown") so a caller can tell a skill-backed entry (no run_step
+    executable — call get_skill and do it yourself) from a real step, without
+    guessing from list_steps. See _annotate_steps.
+    """
     for _scope, d in _workflow_dirs():
         path = d / f"{name}.json"
         if path.exists():
-            return json.loads(path.read_text())
+            workflow = json.loads(path.read_text())
+            _annotate_steps(workflow)
+            return workflow
     raise HTTPException(status_code=404, detail={"message": f"Workflow {name!r} not found"})
 
 

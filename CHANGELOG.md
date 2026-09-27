@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **`GET /api/workflows/{name}` now marks which steps are skill-backed.**
+  `engine/resolve_workflow.py`'s `resolve_step` already tags each `uses`
+  reference `kind: "step"` or `kind: "skill"` for the CLI, but `serve`'s
+  `get_workflow` returned the raw workflow JSON, so an agent reading a
+  workflow through MCP (e.g. `overlays.json`'s `select-takes` and `overlay`
+  entries, which are `skills/select-takes/SKILL.md` and
+  `skills/overlay/SKILL.md` — not `run_step`-able) had no way to tell a
+  skill-backed entry from a real step name and would go looking for it in
+  `list_steps`. Each entry now additionally carries `kind` ("step" | "skill"
+  | "unknown" — "unknown" only if `resolve_step` itself fails to resolve a
+  malformed `uses`, so the request still returns 200 rather than 500), and
+  `skill: <name>` when `kind` is "skill". Additive only — no existing field
+  changes. (`serve/routes/workflows.py`, `tests/test_server_workflows.py`)
+
 - **New `montaj log --project <id> "<message>"` CLI command, and a new `log`
   MCP tool.** OSS MCP tools are generated from an allowlist of CLI commands
   (`cli/mcp_schema.py`'s `_EXPORTED_COMMANDS`), and there was no `log`
