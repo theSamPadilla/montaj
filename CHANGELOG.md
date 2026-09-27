@@ -112,19 +112,32 @@
   `tests/test_connectors_gemini.py`, `tests/steps/test_analyze_media.py`,
   `tests/steps/test_generate_image.py`)
 
+- **Video editor now shows a failed save as a dismissible banner instead of
+  silently rolling back.** `sync.lastError` was tracked but never rendered in
+  `VideoEditor.tsx`, so a rejected `saveProject` call reverted the optimistic
+  edit with no visible sign anything went wrong. It now renders the same
+  dismissible banner `CarouselEditor.tsx` already shows for the identical
+  field. (`montaj_assets/editor/src/video/VideoEditor.tsx`)
+
 - **`PUT /api/projects/{id}` now validates overlay items and refuses a bad
   one with field-level errors.** `save_project` used to shallow-merge and write
   whatever it was sent, so an agent guessing the overlay item shape (a
   `googleFonts` of objects, a string `start`, a missing `src`) saved cleanly
   and either rendered in a fallback face or failed deep inside `render.js`.
-  A save that carries `tracks` now checks every `type: "overlay"` item
-  against the shape its consumers read (`render.js`, `bundle.js`, the
-  editor's `VisualItem`): `src` a non-empty string, `start`/`end` numbers,
-  and when present `id` a string, `props` an object, `googleFonts` an array
-  of strings, `opaque` a boolean, `keyframes` an array of objects, and the
-  geometry fields numbers. Unknown fields and `null` optionals are allowed,
-  image and video items are not checked, and a save without `tracks` does not
-  re-check what is already on disk. On failure it answers 400
+  A save that carries `tracks` now checks every NEW or CHANGED `type:
+  "overlay"` item against the shape its consumers read (`render.js`,
+  `bundle.js`, the editor's `VisualItem`): `src` a non-empty string,
+  `start`/`end` numbers, and when present `id` a string, `props` an object,
+  `googleFonts` an array of strings, `opaque` a boolean, `keyframes` an array
+  of objects, and the geometry fields numbers. An item unchanged from the
+  project's prior on-disk state (compared by content, not position) is
+  skipped, and an item whose `id` reappears with different content is
+  checked only on the fields that actually changed — so an item already
+  broken on disk before this validator existed, or broken by an earlier
+  save, does not block every later save of the project forever. Unknown
+  fields and `null` optionals are allowed, image and video items are not
+  checked, and a save without `tracks` does not re-check what is already on
+  disk. On failure it answers 400
   `invalid_overlay_items`, writes nothing, and lists every problem both in
   `errors` and in `message` (e.g. `tracks[1].items[0].googleFonts must be an
   array of strings`), since `message` is what MCP clients show the agent.

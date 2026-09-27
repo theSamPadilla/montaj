@@ -165,6 +165,81 @@ def test_save_without_tracks_does_not_revalidate_disk(project):
 
 
 # ---------------------------------------------------------------------------
+# Only NEW or CHANGED overlay items are checked (FQ1.1 final review). An item
+# already broken on disk — from before this validator existed, or from an
+# earlier save — must not block every later save of the project that leaves
+# that item alone.
+# ---------------------------------------------------------------------------
+
+def _seed_disk(project_dir, tracks):
+    """Write `tracks` straight to project.json, bypassing the PUT route (and
+    therefore its validation) — simulates an item that reached disk before
+    this validator existed, or from an earlier, since-fixed save."""
+    on_disk = _on_disk(project_dir)
+    on_disk["tracks"] = tracks
+    (project_dir / "project.json").write_text(json.dumps(on_disk))
+
+
+def test_unchanged_bad_item_plus_new_valid_item_saves(project):
+    client, project_dir = project
+    bad = _overlay(googleFonts="Anton")
+    _seed_disk(project_dir, _tracks(bad))
+    resp = _put(client, _tracks(bad, _overlay(id="ov-1")))
+    assert resp.status_code == 200, resp.text
+
+
+def test_only_start_changed_on_bad_item_saves(project):
+    client, project_dir = project
+    bad = _overlay(googleFonts="Anton")
+    _seed_disk(project_dir, _tracks(bad))
+    moved = {**bad, "start": 1.0}
+    resp = _put(client, _tracks(moved))
+    assert resp.status_code == 200, resp.text
+
+
+def test_google_fonts_changed_to_another_bad_value_gives_400(project):
+    client, project_dir = project
+    bad = _overlay(googleFonts="Anton")
+    _seed_disk(project_dir, _tracks(bad))
+    changed = {**bad, "googleFonts": "Impact"}
+    resp = _put(client, _tracks(changed))
+    assert resp.status_code == 400
+    assert "googleFonts" in resp.json()["detail"]["message"]
+
+
+def test_new_malformed_item_beside_unchanged_bad_item_names_only_the_new_one(project):
+    client, project_dir = project
+    bad = _overlay(googleFonts="Anton")
+    _seed_disk(project_dir, _tracks(bad))
+    new_bad = _overlay(id="ov-1", googleFonts="Impact")
+    resp = _put(client, _tracks(bad, new_bad))
+    assert resp.status_code == 400
+    errors = resp.json()["detail"]["errors"]
+    assert len(errors) == 1
+    assert "ov-1" in errors[0]
+    assert "ov-0" not in errors[0]
+
+
+def test_unchanged_id_less_bad_item_saves(project):
+    client, project_dir = project
+    bad = _overlay(googleFonts="Anton")
+    del bad["id"]
+    _seed_disk(project_dir, _tracks(dict(bad)))
+    resp = _put(client, _tracks(dict(bad)))
+    assert resp.status_code == 200, resp.text
+
+
+def test_two_identical_bad_items_on_disk_put_with_three_gives_400(project):
+    client, project_dir = project
+    bad = _overlay(googleFonts="Anton")
+    del bad["id"]
+    _seed_disk(project_dir, _tracks(dict(bad), dict(bad)))
+    resp = _put(client, _tracks(dict(bad), dict(bad), dict(bad)))
+    assert resp.status_code == 400
+    assert len(resp.json()["detail"]["errors"]) == 1
+
+
+# ---------------------------------------------------------------------------
 # The validator must not reject anything the repo itself ships as a project or
 # documents as an overlay item. A failure here means the schema is wrong.
 # ---------------------------------------------------------------------------

@@ -148,10 +148,18 @@ def _is_invalid_api_key_error(e: Exception) -> bool:
     A rejected key from Google's API most often comes back as a plain 400
     with status "INVALID_ARGUMENT" and a message containing "API key" (e.g.
     "API key not valid. Please pass a valid API key."), which is why the
-    message is checked, not just the status. 401/403 (UNAUTHENTICATED /
-    PERMISSION_DENIED) are auth failures regardless of message wording —
-    those are checked structurally instead. Anything not an APIError (a
-    network error, a timeout) is never treated as a key problem.
+    message is checked, not just the status. 401/UNAUTHENTICATED is an auth
+    failure regardless of message wording — the request carried no usable
+    credential at all, so it is checked structurally. 403/PERMISSION_DENIED
+    is NOT unconditional, unlike 401: that status also covers a perfectly
+    valid key whose project lacks a permission or whose billing isn't set up
+    (e.g. "The caller does not have permission" for an API not enabled on the
+    project) — reporting that as a bad key would send the operator to
+    re-enter a key that was never the problem. So 403/PERMISSION_DENIED is
+    only treated as a key problem when the message itself says so ("api key"
+    or "api_key", case-insensitive, e.g. "API key expired. Please renew the
+    API key."). Anything not an APIError (a network error, a timeout) is
+    never treated as a key problem.
     """
     try:
         from google.genai import errors
@@ -162,9 +170,11 @@ def _is_invalid_api_key_error(e: Exception) -> bool:
     code = getattr(e, "code", None)
     status = (getattr(e, "status", None) or "").upper()
     message = (getattr(e, "message", None) or str(e)).lower()
-    if code in (401, 403):
+    if code == 401 or status == "UNAUTHENTICATED":
         return True
-    if status in ("PERMISSION_DENIED", "UNAUTHENTICATED"):
+    if (code == 403 or status == "PERMISSION_DENIED") and (
+        "api key" in message or "api_key" in message
+    ):
         return True
     if code == 400 and "api key" in message:
         return True

@@ -55,12 +55,32 @@ def test_get_credential_raises_when_missing():
         get_credential("kling", "access_key")
 
 
+def test_get_credential_missing_hint_is_a_real_cli_command():
+    """`montaj install credentials` isn't a real command (the CLI verb is
+    `montaj credentials`, cli/commands/credentials.py) — the fix-it hint must
+    name a command that actually runs."""
+    with pytest.raises(CredentialError) as ei:
+        get_credential("kling", "access_key")
+    assert "montaj credentials --provider kling --key access_key --value <value>" in str(ei.value)
+    assert "install credentials" not in str(ei.value)
+
+
 def test_get_credential_raises_on_malformed_json(creds_path):
     os.makedirs(os.path.dirname(creds_path), exist_ok=True)
     with open(creds_path, "w") as f:
         f.write("{not valid}")
     with pytest.raises(CredentialError, match="not valid JSON"):
         get_credential("kling", "access_key")
+
+
+def test_malformed_json_hint_is_a_real_cli_command(creds_path):
+    os.makedirs(os.path.dirname(creds_path), exist_ok=True)
+    with open(creds_path, "w") as f:
+        f.write("{not valid}")
+    with pytest.raises(CredentialError) as ei:
+        get_credential("kling", "access_key")
+    assert "montaj credentials --provider <name> --key <key> --value <value>" in str(ei.value)
+    assert "install credentials" not in str(ei.value)
 
 
 # ── CredentialError hierarchy ───────────────────────────────────────

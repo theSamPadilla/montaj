@@ -274,6 +274,23 @@ def test_async_kick_returns_202(tmp_path, monkeypatch):
     assert PID in projects_mod._active_caption_jobs
 
 
+def test_default_caption_model_is_base_en(tmp_path, monkeypatch):
+    """No `model` in the body resolves to steps/speech/transcribe.json's own
+    schema default (`base.en`), not a hardcoded `large` the route used to
+    apply on its own — the two must never drift apart."""
+    project_dir, captured = _setup_caption_project(tmp_path, monkeypatch)
+    req = _FakeRequest({"async": "1"})
+
+    async def fake_detached(project_id, proj_dir, project, model, language, style, broadcaster, job):
+        captured["model"] = model
+
+    monkeypatch.setattr(projects_mod, "_run_caption_detached", fake_detached)
+
+    asyncio.run(generate_captions(PID, req, body={}, project_dir=project_dir))
+
+    assert captured["model"] == "base.en"
+
+
 def test_async_kick_409_on_concurrent_job(tmp_path, monkeypatch):
     from fastapi import HTTPException
     project_dir, _ = _setup_caption_project(tmp_path, monkeypatch)

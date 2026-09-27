@@ -36,9 +36,16 @@ def _annotate_steps(workflow: dict) -> None:
     SystemExit, not an Exception — so it must be caught explicitly here or
     one bad entry would take down the whole serve process instead of just
     leaving that entry unannotated.
+
+    An entry that isn't a dict at all (a hand-edited workflow can have
+    anything in `steps`) is skipped outright rather than passed to
+    `entry.get`, which would raise AttributeError and 500 the whole request
+    for every other, well-formed entry alongside it.
     """
     project_dir = str(Path.cwd())
     for entry in workflow.get("steps", []):
+        if not isinstance(entry, dict):
+            continue
         uses = entry.get("uses", "")
         try:
             ref = resolve_step(uses, project_dir)

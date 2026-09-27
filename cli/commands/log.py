@@ -20,7 +20,15 @@ serve's OWN os.environ (cli/commands/serve.py) — a sibling process never
 inherits it. montaj_assets/mcp/serve-client.js's docstring documents the
 identical problem on the Node/MCP side, solved the same way: a lockfile
 serve writes at startup and removes at shutdown.
+
+On top of the message itself, a JSON result is always printed to stdout so an
+MCP caller (which never sees this process's stderr) can tell what happened:
+`{"shown": true}` once the UI actually got it, or `{"shown": false, "reason":
+"serve_not_running"}` in CLI mode — the message still goes to stderr in that
+case, unchanged. A 404 from the log endpoint (no project with that id) is
+reported as `project_not_found` rather than the generic `log_failed`.
 """
+import json
 import sys
 
 import httpx
@@ -48,13 +56,22 @@ def register(subparsers):
 def handle(args):
     info = lockfile.read()
     if info is None:
-        # CLI mode: no live `montaj serve` to post to.
+        # CLI mode: no live `montaj serve` to post to. The message still goes
+        # to stderr; the JSON result on stdout lets an MCP caller (which
+        # never sees this process's stderr) tell that it wasn't shown.
         print(args.message, file=sys.stderr)
+        print(json.dumps({"shown": False, "reason": "serve_not_running"}))
         return
 
     url = f"http://127.0.0.1:{info['port']}/api/projects/{args.project}/log"
     try:
         resp = httpx.post(url, json={"message": args.message}, timeout=_TIMEOUT)
         resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            emit_error("project_not_found", "No project with that id.")
+        emit_error("log_failed", f"could not reach montaj serve on port {info['port']}: {exc}")
     except httpx.HTTPError as exc:
         emit_error("log_failed", f"could not reach montaj serve on port {info['port']}: {exc}")
+    else:
+        print(json.dumps({"shown": True}))

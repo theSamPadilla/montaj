@@ -271,10 +271,20 @@ class TestInvalidApiKeyDetection:
                         "UNAUTHENTICATED")
         assert _is_invalid_api_key_error(e) is True
 
-    def test_403_permission_denied(self):
+    def test_403_permission_denied_unrelated_to_key_not_flagged(self):
+        """403/PERMISSION_DENIED also covers a VALID key whose project lacks a
+        permission or enabled API — that must stay a generic api_error, not
+        send the operator to re-enter a key that was never the problem."""
         from connectors.gemini import _is_invalid_api_key_error
         e = _sdk_error(real_genai_errors.ClientError, 403,
-                        "Permission denied.", "PERMISSION_DENIED")
+                        "The caller does not have permission", "PERMISSION_DENIED")
+        assert _is_invalid_api_key_error(e) is False
+
+    def test_403_permission_denied_mentioning_api_key(self):
+        from connectors.gemini import _is_invalid_api_key_error
+        e = _sdk_error(real_genai_errors.ClientError, 403,
+                        "API key expired. Please renew the API key.",
+                        "PERMISSION_DENIED")
         assert _is_invalid_api_key_error(e) is True
 
     def test_400_invalid_argument_unrelated_to_key_not_flagged(self):
@@ -316,7 +326,8 @@ class TestInvalidApiKeyWrapping:
 
     def test_generate_image_invalid_key(self, monkeypatch, tmp_path):
         auth_error = _sdk_error(real_genai_errors.ClientError, 403,
-                                 "Permission denied.", "PERMISSION_DENIED")
+                                 "API key expired. Please renew the API key.",
+                                 "PERMISSION_DENIED")
         client = MagicMock()
         client.models.generate_content.side_effect = auth_error
         monkeypatch.setattr("connectors.gemini._client", lambda: client)

@@ -2075,9 +2075,12 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
     # that leaves tracks alone (a status flip, a rename) must not start failing
     # over an item already on disk. Nothing is written when an item is wrong,
     # and every problem is named in `message`, which is the one field the MCP
-    # clients show the agent.
+    # clients show the agent. Only NEW or CHANGED items are checked (against
+    # `existing`, the project as it was before this PUT) — otherwise an item
+    # already broken on disk before this validator existed would block every
+    # future save of the project forever, even one that doesn't touch it.
     if "tracks" in body:
-        overlay_errors = overlay_item_errors(merged)
+        overlay_errors = overlay_item_errors(merged, previous=normalize_tracks(existing))
         if overlay_errors:
             raise HTTPException(400, detail={
                 "error": "invalid_overlay_items",
@@ -3373,7 +3376,7 @@ async def generate_captions(
     except Exception:
         raise not_found("project_not_found", f"project.json for {project_id} not found")
 
-    model = body.get("model") or "large"
+    model = body.get("model") or "base.en"
     language = body.get("language") or "auto"
     style = body.get("style") or (project.get("captions") or {}).get("style") or "pop"
 

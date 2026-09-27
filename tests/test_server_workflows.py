@@ -92,6 +92,29 @@ def test_get_workflow_unknown_scope_prefix_does_not_500(tmp_path, monkeypatch):
     assert "skill" not in steps["bad"]
 
 
+def test_get_workflow_non_dict_step_entry_does_not_500(tmp_path, monkeypatch):
+    """A hand-edited workflow can have anything in `steps` — a bare string
+    entry used to reach `entry.get("uses", "")`, an AttributeError that took
+    the whole request down with a 500 instead of just leaving that one entry
+    alone. The malformed entry is skipped; every well-formed sibling is still
+    annotated normally."""
+    user_dir = tmp_path / ".montaj" / "workflows"
+    user_dir.mkdir(parents=True)
+    (user_dir / "malformed.json").write_text(
+        '{"name": "malformed", "steps": ['
+        '"not-a-step-object",'
+        '{"id": "ok", "uses": "montaj/probe"}'
+        ']}'
+    )
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    resp = client.get("/api/workflows/malformed")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["steps"][0] == "not-a-step-object"
+    assert body["steps"][1]["kind"] == "step"
+
+
 def test_get_workflow_still_404s_for_missing_workflow():
     resp = client.get("/api/workflows/does-not-exist-xyz")
     assert resp.status_code == 404

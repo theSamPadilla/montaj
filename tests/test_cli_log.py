@@ -9,7 +9,12 @@ tests/test_serve_lockfile.py for the same isolation fixture pattern):
   - HTTP mode (lockfile present, pid alive): POST {"message": ...} to
     /api/projects/<project>/log on the port the lockfile names.
   - CLI mode (no live lockfile): print the message to stderr.
+
+Both modes also always print a JSON result to stdout, so an MCP caller (which
+never sees this process's stderr) can tell what happened without relying on
+the stderr side channel.
 """
+import json
 from argparse import Namespace
 from unittest.mock import Mock
 
@@ -35,10 +40,10 @@ def test_cli_mode_prints_to_stderr_when_no_serve_is_running(capsys):
     log_cmd.handle(_ns(message="rendering clip 3 of 6"))
     captured = capsys.readouterr()
     assert captured.err.strip() == "rendering clip 3 of 6"
-    assert captured.out == ""
+    assert json.loads(captured.out) == {"shown": False, "reason": "serve_not_running"}
 
 
-def test_http_mode_posts_to_the_project_log_endpoint(tmp_path, monkeypatch):
+def test_http_mode_posts_to_the_project_log_endpoint(tmp_path, monkeypatch, capsys):
     lockfile.write(port=4321, workspace=tmp_path)
 
     mock_post = Mock(return_value=Mock(raise_for_status=Mock()))
@@ -51,10 +56,12 @@ def test_http_mode_posts_to_the_project_log_endpoint(tmp_path, monkeypatch):
         json={"message": "transcribing clip 1 of 3"},
         timeout=log_cmd._TIMEOUT,
     )
+    assert json.loads(capsys.readouterr().out) == {"shown": True}
 
 
 def test_http_mode_does_not_fall_back_to_stderr_on_success(tmp_path, monkeypatch, capsys):
-    """A successful POST is the whole job — nothing else is printed."""
+    """A successful POST never touches stderr — only the stdout JSON result
+    is printed."""
     lockfile.write(port=4321, workspace=tmp_path)
     monkeypatch.setattr(log_cmd.httpx, "post", Mock(return_value=Mock(raise_for_status=Mock())))
 
@@ -62,7 +69,7 @@ def test_http_mode_does_not_fall_back_to_stderr_on_success(tmp_path, monkeypatch
 
     captured = capsys.readouterr()
     assert captured.err == ""
-    assert captured.out == ""
+    assert json.loads(captured.out) == {"shown": True}
 
 
 def test_http_mode_errors_when_serve_is_unreachable(tmp_path, monkeypatch):
@@ -78,6 +85,26 @@ def test_http_mode_errors_when_serve_is_unreachable(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc_info:
         log_cmd.handle(_ns())
     assert exc_info.value.code == 1
+
+
+def test_http_mode_404_reports_project_not_found(tmp_path, monkeypatch, capsys):
+    """A 404 from the log endpoint means the project id itself is bad, which
+    is a different, more specific problem than "couldn't reach serve"."""
+    lockfile.write(port=4321, workspace=tmp_path)
+    response = Mock(status_code=404)
+    not_found = httpx.HTTPStatusError("Not Found", request=Mock(), response=response)
+    monkeypatch.setattr(
+        log_cmd.httpx, "post",
+        Mock(return_value=Mock(raise_for_status=Mock(side_effect=not_found))),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        log_cmd.handle(_ns())
+    assert exc_info.value.code == 1
+    assert json.loads(capsys.readouterr().err) == {
+        "error": "project_not_found",
+        "message": "No project with that id.",
+    }
 
 
 def test_log_is_exported_as_an_mcp_tool_with_project_and_message_args():

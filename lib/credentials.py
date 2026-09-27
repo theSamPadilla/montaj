@@ -10,7 +10,7 @@ from connectors import ConnectorError
 CREDENTIALS_PATH = os.path.expanduser("~/.montaj/credentials.json")
 
 # Single source of truth for which providers Montaj knows about and
-# which keys each one needs. `montaj install credentials` imports this.
+# which keys each one needs. `montaj credentials` imports this.
 # Adding a new connector → add it here first.
 KNOWN_PROVIDERS: dict[str, list[str]] = {
     "kling":   ["access_key", "secret_key"],
@@ -79,7 +79,8 @@ def _read_file() -> dict:
     except json.JSONDecodeError as e:
         raise CredentialError(
             f"{CREDENTIALS_PATH} is not valid JSON ({e.msg} at line {e.lineno}). "
-            f"Fix the file or delete it and re-run: montaj install credentials"
+            f"Fix the file or delete it, then run: "
+            f"montaj credentials --provider <name> --key <key> --value <value>"
         ) from e
     except OSError as e:
         raise CredentialError(f"Could not read {CREDENTIALS_PATH}: {e}") from e
@@ -102,7 +103,7 @@ def get_credential(provider: str, key: str) -> str:
     raise CredentialError(
         f"No {provider}.{key} credential found. "
         f"Set {_env_var_name(provider, key)} or run: "
-        f"montaj install credentials --provider {provider} --key {key}"
+        f"montaj credentials --provider {provider} --key {key} --value <value>"
     )
 
 
