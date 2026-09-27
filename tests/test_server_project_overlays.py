@@ -56,14 +56,14 @@ def workspace(tmp_path_factory):
 def project_id(workspace) -> str:
     """Create one lightweight project shared across all tests in this file.
 
-    Uses lyrics_video (canvas-eligible) to avoid the carousel init subprocess
+    Uses blank (canvas-eligible) to avoid the carousel init subprocess
     chain — the project just needs to exist on disk for /overlays writes.
     """
     pid = str(uuid.uuid4())
     res = client.post("/api/run", json={
         "id": pid,
         "prompt": "overlay test fixture",
-        "workflow": "lyrics_video",
+        "workflow": "blank",
         "clips": [],
         "projectPath": "overlay-test",
     })

@@ -30,11 +30,7 @@ Read the probe step's output for `duration`, `display_width`, and `display_heigh
 
 **From the prompt:** if the user specifies a number of clips (e.g. "5 clips", "top 3 moments"), use that as N. If they name specific moments, use those as windows directly.
 
-**By editorial judgment when unspecified:** scan the transcript for self-contained, hook-worthy moments. A good clip window is:
-- Narratively complete — it can stand alone without the surrounding context
-- Has a clear entry (no mid-sentence start) and a clean exit (sentence ends, thought resolves)
-- Between 15 seconds and 90 seconds long (sweet spot for short-form vertical)
-- Not a duplicate of another selected window
+**When the prompt doesn't specify:** choose N and the windows from the transcript yourself.
 
 For each window, record `[inPoint, outPoint]` in seconds (floating-point) relative to the original source file. These are NOT virtual-timeline timestamps — they are positions in the raw source video. Use the SRT timestamps directly (SRT timestamps from the `transcribe` step on a raw video input are original-file timestamps).
 

@@ -9,7 +9,7 @@ from lib.types.colorspace import ALL_COLOR_SPACES
 def register(subparsers):
     p = subparsers.add_parser("init", help="Create an empty project in the current directory")
     p.add_argument("--prompt",   required=True, help="Editing prompt")
-    p.add_argument("--workflow", default="clean_cut", help="Workflow name (default: clean_cut)")
+    p.add_argument("--workflow", default="overlays", help="Workflow name (default: overlays)")
     p.add_argument("--name",     help="Project name label")
     p.add_argument(
         "--project-path",

@@ -21,7 +21,7 @@ def _create_project(workspace: Path) -> str:
         "id": project_id,
         "status": "pending",
         "name": "test",
-        "workflow": "clean_cut",
+        "workflow": "overlays",
         "editingPrompt": "test",
         "settings": {"resolution": [1920, 1080], "fps": 30},
         "tracks": [[]],

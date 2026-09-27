@@ -110,14 +110,14 @@ The primary interface for most users.
 
 ```bash
 montaj run ./clips --prompt "tight cuts, remove filler, 9:16"
-# Runs workflows/default.json against all clips in the directory
+# Runs workflows/overlays.json (the default) against all clips in the directory
 # Pre-pass → project.json [pending] → agent pass → project.json [draft]
 
 montaj run ./clips --workflow tight-reel --prompt "..."
 # Runs a named workflow instead of the default
 
-montaj run --workflow animations --prompt "60s animated explainer, dark theme"
-# Animation project — no source footage required
+montaj run --workflow ai_video --prompt "30s product teaser, dark theme"
+# AI video project: no source footage required
 
 montaj serve
 # Start local HTTP server + open UI at http://localhost:3000

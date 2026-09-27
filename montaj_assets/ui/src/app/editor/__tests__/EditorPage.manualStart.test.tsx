@@ -22,7 +22,7 @@ const pendingProject = {
   version: '0.2',
   id: 'proj-manual-1',
   name: 'Manual Test',
-  workflow: 'clean_cut',
+  workflow: 'overlays',
   status: 'pending',
   projectType: 'editing',
   editingPrompt: 'do the thing',

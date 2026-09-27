@@ -283,34 +283,19 @@ For Google Fonts, add `"googleFonts": ["Font Name"]` on the overlay item alongsi
 
 `"bgAngle"` sets the starting angle for `"gradient"` (default `135`). The angle slowly drifts over time so adjacent phrases look slightly different even with the same colors.
 
-**Example — dark gradient with slow spin:**
-```json
-"bg1": "#0d0d0d",
-"bg2": "#1a0030",
-"bgStyle": "gradient",
-"bgAngle": 135
-```
-
-**Example — spotlight radial:**
-```json
-"bg1": "#1a1a2e",
-"bg2": "#000000",
-"bgStyle": "radial"
-```
-
 Set `"transparent": true` when a background video is in `tracks[0]`.
 
 ### Variant guide
 
-| Variant | Best for | Notes |
-|---------|----------|-------|
-| `"pop"` | Most lyrics, punchy phrases | One word at a time, bg flashes per word |
-| `"accumulate"` | Building phrases, emphasis | Words stack at full font size, wrapping across lines to use vertical space |
-| `"fade"` | Slow/emotional sections | Full phrase fades in/out |
-| `"typewriter"` | Dramatic reveals | Characters reveal progressively |
-| `"static"` | Match ffmpeg output exactly | All words shown immediately, `wordsPerLine` splits into N-word lines, auto font-sizing |
+| Variant | Notes |
+|---------|-------|
+| `"pop"` | One word at a time, bg flashes per word |
+| `"accumulate"` | Words stack at full font size, wrapping across lines to use vertical space |
+| `"fade"` | Full phrase fades in/out |
+| `"typewriter"` | Characters reveal progressively |
+| `"static"` | All words shown immediately, `wordsPerLine` splits into N-word lines, auto font-sizing; matches ffmpeg output exactly |
 
-**Creative tip:** vary `variant` per phrase. Chorus → `"pop"` + `"scale"` entrance, bridge → `"fade"`.
+`variant` can differ per phrase.
 
 ### Word entrance animations
 

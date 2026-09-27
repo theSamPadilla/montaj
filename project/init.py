@@ -281,7 +281,7 @@ def main():
                              "Pass several, in order, when narration was recorded "
                              "as one take per script section — they are concatenated.")
     parser.add_argument("--prompt", required=True, help="Editing prompt")
-    parser.add_argument("--workflow", default="clean_cut", help="Workflow name")
+    parser.add_argument("--workflow", default="overlays", help="Workflow name")
     parser.add_argument("--name", help="Project name (used as workspace directory suffix)")
     parser.add_argument(
         "--project-path",

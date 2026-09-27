@@ -132,7 +132,7 @@ const ITEM_FRAME = Math.round((16.70 - 16.52) * fps)  // 0.18s * fps
 
 ## Icons
 
-Use icons instead of emojis unless the user explicitly asks for emojis.
+Two icon libraries are available as globals, with no imports.
 
 ### Phosphor Icons — `Ph`
 

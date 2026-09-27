@@ -85,7 +85,7 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 
 **Language — non-English footage.** The speech steps (`transcribe`, `rm_nonspeech`, `rm_fillers`) default to the English-only `base.en` model. On non-English audio an English-only model emits sparse/garbage word timestamps — and `rm_nonspeech` then deletes the gaps as "silence", silently cutting most of the speech. **Always pass `--language <code>` to every speech step** (e.g. `--language es`), taken from `project.settings.language`. A non-English code auto-upgrades the `*.en` model to its multilingual sibling (`base.en` → `base`, same speed), so keep `--model base.en` and just set the language. Set the project language at init with `--language es` (stored in `settings.language`); if a project predates this field and the audio clearly isn't English, pass `--language` explicitly anyway. `rm_fillers` also switches to that language's hesitation-filler set.
 
-**Transcribing a long source (e.g. the `clips` workflow source pass)?** whisper can fall into a repetition-loop hallucination — one phrase repeated to EOF after a hard-to-decode stretch (music, a goal replay). Pass `--max-context 0` to `transcribe` to disable cross-window context, which reliably prevents the loop. Recommended for any multi-minute and/or non-English source transcription.
+**Transcribing a long source (e.g. a multi-minute source that `find_clips` will split)?** whisper can fall into a repetition-loop hallucination — one phrase repeated to EOF after a hard-to-decode stretch (music, a goal replay). Pass `--max-context 0` to `transcribe` to disable cross-window context, which reliably prevents the loop. Recommended for any multi-minute and/or non-English source transcription.
 
 ### VFX
 | Step | What it does | Key params |
@@ -100,7 +100,7 @@ These produce artifacts the **editor** reads. Render never reads either one.
 | Step | What it does | Key params |
 |------|-------------|------------|
 | `proxy` | Full-source, all-intra 720p editing proxy → the `proxySrc` field. One proxy covers a whole source file, never a window, so the same path is correct for every clip cut from it. | `--out <path>` (required) · `--tonemap` for an HDR source |
-| `normalize_window` | Conform just `[inpoint, outpoint)` of a source to the project's colour space → the `normalizedSrc` field. Used by the `clips` workflow under `settings.normalize: "lazy"`. | `--inpoint` · `--outpoint` · `--color-space` · `--out` |
+| `normalize_window` | Conform just `[inpoint, outpoint)` of a source to the project's colour space → the `normalizedSrc` field. Used for clip fan-out projects under `settings.normalize: "lazy"`. | `--inpoint` · `--outpoint` · `--color-space` · `--out` |
 
 **You almost never run `proxy` by hand.** `project/init.py` encodes one per source at import and records it on both `project.sources` and `tracks[0].items`. Where you do need one — an item you built yourself, or a source that moved — ask the server for it instead of computing the path: `POST /api/projects/{id}/proxies` backfills every video item in the project that has no current proxy, encodes in the background, and writes `proxySrc` back over SSE.
 
@@ -143,18 +143,13 @@ waveform_trim → trim spec → rm_nonspeech → trim spec → transcribe
 
 Read the assigned workflow from `workflows/{name}.json` (filesystem only — not served via API).
 
-**Available workflows:**
-- `clean_cut` — silence trim, remove non-speech, transcribe, select takes, remove fillers
-- `overlays` — clean_cut + transcribe + overlays
-- `animations` — no source footage; build entirely from animated JSX sections
+**Built-in workflows:**
+- `overlays` (the default): silence trim, remove non-speech, transcribe, select takes, remove fillers, overlays
 - `blank` — empty project, no steps; edit directly per the user's instructions
-- `explainer` — footage clips + animation sections combined
-- `floating_head` — trim + materialize + RVM background removal; presenter in tracks[1], background asset in tracks[0]
-- `broll` — voiceover-driven B-roll: clean the narration, index the footage at shot granularity, assemble visuals that illustrate it
-- `clips` — one long horizontal source → N vertical clip projects, each fanned out with its own `overlays` pass
 - `carousel` — N still slides at one fixed aspect ratio, rendered to PNGs; no time axis, no audio
-- `lyrics_video` — audio + lyrics → word-synced text video (ffmpeg drawtext or JSX overlays)
 - `ai_video` — director agent writes a storyboard from your prompt and references, you approve, scenes are generated via Kling
+
+A project can also name a project-local (`./workflows/`) or user-global (`~/.montaj/workflows/`) workflow; resolve it the same way. Skills such as `broll`, `find_clips`, `lyrics-video` and `animation-sections` stay available to those workflows even though no built-in workflow uses them.
 
 **Deviation Rules**
 You should deviate only under one conditions:
@@ -224,7 +219,7 @@ Refer to sub-skills by name; the reader resolves the name to a path.
 | `image-search` | Sourcing outside imagery (`search_images` + `fetch_image`) when the prompt asks for photos / logos / B-roll stills |
 | `style-profile` | Creating or updating a creator style profile |
 | `workflow-builder` | Creating or editing workflows |
-| `lyrics-video` | Working on a `lyrics_video` workflow project |
+| `lyrics-video` | Executing `montaj/lyrics-video` in a workflow (a `music_video` project) |
 | `broll` | Executing `montaj/broll` in a workflow |
 | `find_clips` | Executing `montaj/find_clips` in a workflow |
 | `carousel` | Executing `montaj/carousel` in a workflow |

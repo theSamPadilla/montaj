@@ -20,6 +20,21 @@ def run_init(*args, env_override=None):
     )
 
 
+def _user_workflow_env(tmp_path, name, project_type, ws=None):
+    """Env that makes `name` resolve as a user-global workflow of `project_type`.
+
+    The built-in broll and lyrics_video workflows moved to the Montaj app, but the
+    engine still honours those project types for any workflow that declares
+    them. Tests exercise that engine path through a user workflow under a fake
+    HOME instead of a shipped workflow file."""
+    home = tmp_path / "home"
+    wf_dir = home / ".montaj" / "workflows"
+    wf_dir.mkdir(parents=True, exist_ok=True)
+    (wf_dir / f"{name}.json").write_text(json.dumps(
+        {"name": name, "project_type": project_type, "steps": []}))
+    return {"MONTAJ_WORKSPACE_DIR": str(ws or tmp_path), "HOME": str(home)}
+
+
 def _project_path_from_stdout(stdout: str) -> Path:
     """init.py emits a single stdout line — the project.json path. This helper
     exists as a defensive layer in case any future change re-introduces extra
@@ -187,9 +202,9 @@ def test_multiple_clips_all_in_primary_track(tmp_path):
 # projectType propagation tests
 # ---------------------------------------------------------------------------
 
-def test_lyrics_video_gets_music_video_type(tmp_path):
-    result = run_init("--canvas", "--prompt", "test", "--workflow", "lyrics_video",
-                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+def test_music_video_workflow_gets_music_video_type(tmp_path):
+    result = run_init("--canvas", "--prompt", "test", "--workflow", "lyrics",
+                      env_override=_user_workflow_env(tmp_path, "lyrics", "music_video"))
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert project["projectType"] == "music_video"
@@ -206,10 +221,10 @@ def test_blank_workflow_creates_empty_editing_project(tmp_path):
     assert track_items(project)[0] == []
 
 
-def test_clean_cut_defaults_to_editing(tmp_path):
+def test_overlays_defaults_to_editing(tmp_path):
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")
-    result = run_init("--clips", str(clip), "--prompt", "test", "--workflow", "clean_cut",
+    result = run_init("--clips", str(clip), "--prompt", "test", "--workflow", "overlays",
                       env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
@@ -395,7 +410,7 @@ def test_image_ref_ignored_for_non_ai_video(tmp_path):
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")
     ref_json = json.dumps({"label": "Max", "text": "a dog"})
-    result = run_init("--clips", str(clip), "--prompt", "test", "--workflow", "clean_cut",
+    result = run_init("--clips", str(clip), "--prompt", "test", "--workflow", "overlays",
                       "--image-ref", ref_json,
                       env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
     assert result.returncode == 0, result.stderr
@@ -1319,7 +1334,7 @@ def test_symlink_clips_creates_symlink(tmp_path):
     ws = tmp_path / "ws"; ws.mkdir()
     src = tmp_path / "source.mp4"; src.write_bytes(b"\x00" * 1024)
     result = run_init(
-        "--prompt", "p", "--workflow", "clean_cut",
+        "--prompt", "p", "--workflow", "overlays",
         "--clips", str(src),
         "--symlink-clips",
         "--project-path", "proj",
@@ -1337,7 +1352,7 @@ def test_derived_from_written(tmp_path):
     ws = tmp_path / "ws"; ws.mkdir()
     src = tmp_path / "source.mp4"; src.write_bytes(b"\x00" * 1024)
     result = run_init(
-        "--prompt", "p", "--workflow", "clean_cut",
+        "--prompt", "p", "--workflow", "overlays",
         "--clips", str(src),
         "--derived-from", "src-123",
         "--project-path", "proj2",
@@ -1360,7 +1375,7 @@ def test_normalize_lazy_skips_transcode(tmp_path):
     src = tmp_path / "src.mp4"
     _make_clip(src, duration=1)
     result = run_init(
-        "--prompt", "p", "--workflow", "clean_cut", "--clips", str(src),
+        "--prompt", "p", "--workflow", "overlays", "--clips", str(src),
         "--normalize", "lazy",
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
@@ -1380,7 +1395,7 @@ def test_normalize_default_eager_unchanged(tmp_path):
     src = tmp_path / "src.mp4"
     _make_clip(src, duration=1)
     result = run_init(
-        "--prompt", "p", "--workflow", "clean_cut", "--clips", str(src),
+        "--prompt", "p", "--workflow", "overlays", "--clips", str(src),
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
     assert result.returncode == 0, result.stderr
@@ -1884,7 +1899,7 @@ def test_init_copies_voiceover_into_workspace(tmp_path):
     vo.write_bytes(b"RIFF....WAVEfake")
     result = run_init("--workflow", "broll", "--clips", str(clip), "--prompt", "test",
                       "--voiceover-asset", str(vo),
-                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+                      env_override=_user_workflow_env(tmp_path, "broll", "broll"))
     assert result.returncode == 0, result.stderr
 
     project_json = _project_path_from_stdout(result.stdout)
@@ -1905,7 +1920,7 @@ def test_init_voiceover_accepts_a_video_file(tmp_path):
     vo.write_bytes(b"\x00\x00\x00\x18ftypmp42fake")
     result = run_init("--workflow", "broll", "--clips", str(clip), "--prompt", "test",
                       "--voiceover-asset", str(vo),
-                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+                      env_override=_user_workflow_env(tmp_path, "broll", "broll"))
     assert result.returncode == 0, result.stderr
     data = json.loads(_project_path_from_stdout(result.stdout).read_text())
     assert Path(data["voiceover"]["src"]).suffix == ".mp4"
@@ -1915,7 +1930,7 @@ def test_init_broll_without_voiceover_fails(tmp_path):
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")
     result = run_init("--workflow", "broll", "--clips", str(clip), "--prompt", "test",
-                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+                      env_override=_user_workflow_env(tmp_path, "broll", "broll"))
     assert result.returncode == 1
     assert json.loads(result.stderr.strip().splitlines()[-1])["error"] == "missing_argument"
 
@@ -1925,7 +1940,7 @@ def test_init_voiceover_missing_file_fails(tmp_path):
     clip.write_bytes(b"fake")
     result = run_init("--workflow", "broll", "--clips", str(clip), "--prompt", "test",
                       "--voiceover-asset", "/nonexistent/vo.wav",
-                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+                      env_override=_user_workflow_env(tmp_path, "broll", "broll"))
     assert result.returncode == 1
     assert json.loads(result.stderr.strip().splitlines()[-1])["error"] == "file_not_found"
 
@@ -1935,7 +1950,7 @@ def test_voiceover_asset_rejected_for_non_broll_workflow(tmp_path):
     clip.write_bytes(b"fake")
     vo = tmp_path / "narration.wav"
     vo.write_bytes(b"RIFF....WAVEfake")
-    result = run_init("--workflow", "clean_cut", "--clips", str(clip), "--prompt", "test",
+    result = run_init("--workflow", "overlays", "--clips", str(clip), "--prompt", "test",
                       "--voiceover-asset", str(vo),
                       env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
     assert result.returncode == 1
@@ -1949,7 +1964,7 @@ def test_init_accepts_multiple_voiceover_takes(tmp_path):
     result = run_init(
         "--workflow", "broll", "--prompt", "p", "--clips", clip,
         "--voiceover-asset", *takes,
-        env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path / "ws")},
+        env_override=_user_workflow_env(tmp_path, "broll", "broll", ws=tmp_path / "ws"),
     )
     assert result.returncode == 0, result.stderr
     proj = json.loads(_project_path_from_stdout(result.stdout).read_text())
@@ -1968,7 +1983,7 @@ def test_init_single_take_is_unchanged(tmp_path):
     result = run_init(
         "--workflow", "broll", "--prompt", "p", "--clips", clip,
         "--voiceover-asset", take,
-        env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path / "ws")},
+        env_override=_user_workflow_env(tmp_path, "broll", "broll", ws=tmp_path / "ws"),
     )
     assert result.returncode == 0, result.stderr
     vo = json.loads(_project_path_from_stdout(result.stdout).read_text())["voiceover"]
@@ -1985,7 +2000,7 @@ def test_init_voiceover_takes_preserve_order(tmp_path):
     result = run_init(
         "--workflow", "broll", "--prompt", "p", "--clips", clip,
         "--voiceover-asset", b, a,
-        env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path / "ws")},
+        env_override=_user_workflow_env(tmp_path, "broll", "broll", ws=tmp_path / "ws"),
     )
     assert result.returncode == 0, result.stderr
     takes = json.loads(_project_path_from_stdout(result.stdout).read_text())["voiceover"]["takes"]
@@ -2000,7 +2015,7 @@ def test_init_rejects_missing_file_among_takes(tmp_path):
     result = run_init(
         "--workflow", "broll", "--prompt", "p", "--clips", clip,
         "--voiceover-asset", good, str(tmp_path / "nope.mov"),
-        env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path / "ws")},
+        env_override=_user_workflow_env(tmp_path, "broll", "broll", ws=tmp_path / "ws"),
     )
     assert result.returncode == 1
     # fail() writes the structured error to stderr, not stdout — matching the

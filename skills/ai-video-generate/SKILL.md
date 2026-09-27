@@ -146,13 +146,9 @@ State your model choices in chat alongside the dispatch mode. Record the actual 
 
 #### Transition style — hard cuts by default
 
-Each scene is generated from scratch via text-to-video. Shot-to-shot transitions are **hard cuts**. Do NOT use `--first-frame` to chain scene N's last frame into scene N+1's generation — this produces a morphy, dissolve-y feel that reads as AI-generated.
-
-**The only exception is a deliberate match-cut** — where the end of scene A and the start of scene B form an intentional visual rhyme (e.g. a ball rolling → a globe spinning). This is rare: 0-1 times per video, only when the user explicitly requests it. If you're unsure whether something qualifies as a match-cut, it doesn't — use a hard cut.
+Each scene is generated from scratch via text-to-video. Shot-to-shot transitions are **hard cuts**. Use `--first-frame` (chained mode) only when the user explicitly asks for visual continuity at a scene boundary.
 
 Identity consistency across hard cuts comes from **the same character specs and ref images being passed to every scene** — not from pixel handoff between frames. The `kling_generate` step appends character descriptions and `<<<image_N>>>` tokens to every prompt, so identity holds via the spec.
-
-**Note:** Chained dispatch mode (documented above) remains available for the rare match-cut case. It is no longer the recommended default — use independent dispatch with hard cuts unless the user specifically requests visual continuity at a scene boundary.
 
 ### Step C — prompt composition (handled by the step)
 
@@ -561,7 +557,7 @@ One table of every field you write, grouped by phase.
 - **Don't regenerate scenes that already have a clip** when the user re-approves. The skip-if-clip-exists check in Phase 6 Step A is mandatory — partial-approval retries depend on it.
 - **Don't put scenes on `tracks[0].items` before they've been generated.** `tracks[0].items` holds real clips only — no stubs, no empty-src items.
 - **Don't set `project.status` to `"draft"` until every `storyboard.scenes[i]` has a matching clip in `tracks[0].items`.**
-- **Don't chain scenes via `--first-frame` by default.** Hard cuts are the standard. Frame bridging produces morphy AI-slop transitions. Reserve `--first-frame` for deliberate match-cuts (rare, user-requested only).
+- **Don't chain scenes via `--first-frame` by default.** Hard cuts are the standard.
 - **Don't include `## Dialogue` in scene prompts when `storyboard.voiceover` is set.** Kling-generated dialogue competes with TTS voiceover — omit it so scenes only produce ambient SFX.
 - **Don't skip the Phase 6 re-run cleanup for audio tracks.** Always strip prior `music`, `music-*`, and `voiceover` tracks before appending new ones — prevents stale accumulation on re-approval.
 - **Don't invent fields outside the schema.** If you need to store something, ask the user.

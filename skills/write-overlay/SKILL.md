@@ -7,7 +7,7 @@ description: "Write a custom JSX overlay component and add it to the project's o
 
 An overlay is a React component rendered frame-by-frame by Puppeteer, composited over the footage at a specific timestamp. All overlays are custom JSX — there are no built-in templates.
 
-> **Read [MOTION.md](MOTION.md) alongside this file whenever the overlay actually moves.** This file covers getting an overlay on screen correctly; MOTION.md covers making it move like someone designed it — the easing catalog (`interpolate` is strictly linear and has no easing option, which is why untutored overlays look flat), directional motion blur, per-character stagger, the no-dead-air rule, and how to verify motion by measurement instead of by eye. Every technique in it was rendered through the real sandbox before it was written down.
+> See [MOTION.md](MOTION.md) for sandbox facts that matter once an overlay moves (SVG filters, the `duration` guard, beat math) and for how to verify motion by sampling.
 
 ---
 
@@ -71,37 +71,9 @@ export default function List() {
 
 ## Writing the JSX
 
-> **Expose text styling as props to make an overlay editable.** A text overlay is only restyleable in the editor's properties panel for the props it declares — see "Make text overlays editable in the properties panel" below, which applies to video overlays too. **Carousel text overlays follow a stricter, required version of that contract:** every text-bearing overlay must accept its font size, family, weight, style, color, alignment, transform, and background as props with string defaults — see skill `editable-text`. The "go large — for video" guidance below, and the hardcoded-style `Hook` example just under it, **do not apply** to carousel editable-text overlays.
+> **Expose text styling as props to make an overlay editable.** A text overlay is only restyleable in the editor's properties panel for the props it declares — see "Make text overlays editable in the properties panel" below, which applies to video overlays too. **Carousel text overlays follow a stricter, required version of that contract:** every text-bearing overlay must accept its font size, family, weight, style, color, alignment, transform, and background as props with string defaults — see skill `editable-text`.
 
-The default aesthetic is **plain bold text directly on video** — no card, no background, just a text shadow for legibility. Big text (96–160px) that covers the footage, including the speaker's face if needed.
-
-```jsx
-// overlays/hook.jsx — plain text on video, no background
-
-export default function Hook() {
-  const progress = interpolate(frame, [0, Math.round(fps * 0.27)], [0, 1])
-  const slideY   = interpolate(frame, [0, Math.round(fps * 0.33)], [40, 0])
-
-  return (
-    <div style={{
-      position: 'absolute', bottom: 180, left: 48, right: 48,
-      opacity: progress,
-      transform: `translateY(${slideY}px)`,
-    }}>
-      <div style={{
-        fontFamily: 'Anton, Impact, sans-serif', fontSize: 120, fontWeight: 900,
-        color: '#fff', lineHeight: 1.05, letterSpacing: '-1px',
-        textShadow: '0 2px 24px rgba(0,0,0,0.9), 0 0 60px rgba(0,0,0,0.5)',
-        textTransform: 'uppercase',
-      }}>
-        {props.text}
-      </div>
-    </div>
-  )
-}
-```
-
-Only add a card or background when the prompt explicitly asks, or when a specific overlay type genuinely requires it (e.g. a logo lockup, an opaque title card). When you do need a background, prefer a solid semi-transparent color over `backdropFilter: blur()` — see the track-splitting section below.
+When an overlay needs a background, prefer a solid semi-transparent color over `backdropFilter: blur()`. See the track-splitting section below.
 
 ### Rules
 
@@ -124,7 +96,7 @@ The editor's right-hand properties panel (and the floating text toolbar) can res
 
 A control appears for each of those that is present (non-null) on `props`; anything the overlay **hardcodes** in its JSX style instead of reading from `props` shows **no control at all**, and the operator can't change it. This is exactly why an overlay that writes `textTransform: 'uppercase'` straight into its style has no text-transform control in the editor.
 
-**So a text overlay you want a human to be able to restyle must READ its text styling from `props`, with sensible defaults — not hardcode it.** Same house style (big, bold, plain on video), just sourced from props:
+**So a text overlay you want a human to be able to restyle must READ its text styling from `props`, with sensible defaults — not hardcode it.** For example:
 
 ```jsx
 // Editable Hook — every text property is adjustable in the panel.
@@ -291,7 +263,7 @@ const x = interpolate(frame, [0, Math.round(fps * 0.67)], [-200, 0])
 
 One option: `extrapolate` — `'clamp'` (default) or `'extend'`. That is the whole options object; the runtime destructures `{ extrapolate = 'clamp' }` and ignores everything else. Earlier versions of this file used `extrapolateRight`, which does not exist and was silently dropped — harmless only because the default was already `'clamp'`.
 
-**`interpolate` is strictly linear** — `interpolate(5, [0,10], [0,1])` is exactly `0.5`. There is no easing parameter. For eased motion, ease the normalised value first: see **[MOTION.md](MOTION.md)** for the easing catalog, directional motion blur, per-character stagger, and the no-dead-air rule.
+**`interpolate` is strictly linear** — `interpolate(5, [0,10], [0,1])` is exactly `0.5`. There is no easing parameter; to shape a move, transform the normalised value before you map it to an output.
 
 ### `spring({ frame, fps, mass?, stiffness?, damping?, initialVelocity? })`
 
@@ -308,7 +280,7 @@ Defaults: `mass: 1`, `stiffness: 100`, `damping: 10`.
 
 ## Icons
 
-Use icons instead of emojis unless the prompt explicitly asks for emojis. Icons scale cleanly, render crisply at any resolution, and look intentional.
+Two icon libraries are available as globals, with no imports.
 
 ### Phosphor Icons — `Ph`
 
@@ -645,28 +617,14 @@ When a workflow calls for several overlays, write them concurrently — each JSX
 3. **Sample them all in one batch pass at the end** (see "Verify your overlays fit the canvas")
 4. Fix any overflow, then save the project (delta) adding all items to the overlay track in one update
 
-Common overlay set for a social reel:
-- Opening hook (0–3s) — text statement that earns the watch
-- Lower third (first speech moment) — speaker handle or title
-- CTA (final 3s) — follow / subscribe / link
-
 ---
 
 ## Authoring guidelines
 
-- **Use icons, not emojis** — use `Ph.*` or `FaIcon` for visual symbols. Emojis render inconsistently across platforms and look low-effort. Only use emojis if the prompt explicitly asks for them.
-- **Go large — for video.** On 1080×1920 video overlays carrying a short, glanceable hook (3–6 words) over moving footage, 96px is the floor, not the ceiling. 120–160px for hooks. Text should feel oversized; if it looks a little too big, it's probably right. This rule is calibrated to video viewing — a thumb-stop on TikTok/Reels. **Do NOT apply this rule to carousels, story panels, or other static formats** where the text is being *read* rather than *glanced at*, and where headlines run longer than a punchy hook. For carousels see skill `carousel` §6 (Typography). For other static formats, default to ~32–48px body, ~52–80px headline, and size down further as line length grows.
-- **No backgrounds by default** — plain text on video with `textShadow` for legibility is the house style. No dark cards, no frosted glass, no semi-transparent boxes unless the prompt asks. A well-placed `textShadow` works on any footage.
-- **Cover the face if needed** — text position and size take priority. Don't shrink or reposition to avoid the speaker.
-- **Tie to transcript** — use word timings from the transcript to sync text appearance with speech. An overlay that appears exactly when the speaker says the word it displays lands much harder.
-- **Match the energy of the speech** — fast, punchy delivery: 4–6 frame entrances. Slower delivery: 10–15 frame fades or slides.
-- **Short text** — 2–6 words for lower-thirds, 4–8 for hooks. Short + large beats long + small.
-- **One accent color max** — white text with one colored word or icon. Multi-color text reads as noise.
+- **Text size for static formats.** **Do NOT apply video text sizing to carousels, story panels, or other static formats** where the text is being *read* rather than *glanced at*, and where headlines run longer than a punchy hook. For carousels see skill `carousel` §6 (Typography). For other static formats, default to ~32–48px body, ~52–80px headline, and size down further as line length grows.
 - **Avoid the bottom ~350px** — captions render here, and platform UI (TikTok progress bar, Instagram controls) sits in this zone. Use `bottom: 350` or higher, or anchor from the top instead.
 - **Avoid the right ~200px** — TikTok/Instagram action buttons (like, comment, share) occupy the right edge. Keep text and icons within `right: 200` or use `left`-anchored layout.
 - **Don't overlap** — avoid two overlays occupying the same screen region at the same time
-- **Style to the prompt** — match font weight, color, and motion to the tone of the edit
-- **Opening hook** — almost always appropriate for social content; fires in the first 0–3s
 - **Persist after writing** — save the project (delta) with the new overlay items added to the track
 
 ---

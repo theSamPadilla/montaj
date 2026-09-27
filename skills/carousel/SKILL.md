@@ -143,7 +143,7 @@ Reference: `/Users/Sam/Work/ByCrux/dev/montaj/docs/plans/2026-05-04-image-carous
 
 ### Typography for carousels
 
-Carousels carry full sentences and paragraphs — the viewer is *reading*, not glancing past a video frame. **Do NOT apply `write-overlay`'s "Go large / 96px floor" rule.** That rule is calibrated for short hooks (3–6 words) on 1080×1920 video with moving footage; it produces unreadable wall-of-text on a 1080×1080 carousel.
+Carousels carry full sentences and paragraphs — the viewer is *reading*, not glancing past a video frame. **Do NOT apply video hook sizing (a 96px floor).** That sizing is calibrated for short hooks (3–6 words) on 1080×1920 video with moving footage; it produces unreadable wall-of-text on a 1080×1080 carousel.
 
 Use these defaults instead, sized to the carousel's `resolution[0]` (1080 for square/portrait, 1080 for vertical):
 
@@ -158,9 +158,6 @@ Rules of thumb:
 
 - **Measure your headline first.** Long headlines (the typical Idea title — 60–90 chars) need *small* type at carousel sizes, not big type. A 78px headline wrapping to 6+ lines is broken, not bold.
 - **Card-bound body text** (text inside a solid background card with padding) can run smaller — the card provides contrast, so 22–24px reads cleanly. Free-floating text on top of a base color needs more weight — 26–30px.
-- **Line height 1.1–1.25** for headlines, **1.35–1.5** for body. Tight lines compress headlines; loose lines breathe body.
-- **Letter-spacing** stays near `normal` for body, slightly negative (`-0.5px` to `-1.5px`) for large headlines, slightly positive (`2–6px`) for small all-caps labels.
-- **One accent color max** per slide. Inherit accent / primary / fg / cream from the brand palette via overlay props — don't hardcode hex values that drift from `hub.get_brand`.
 
 If a slide's text doesn't fit at these sizes, the copy is too long for that slide — split it, don't shrink past the lower bound. The viewer's eye still has to land.
 

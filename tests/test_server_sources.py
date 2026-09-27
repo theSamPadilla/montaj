@@ -265,7 +265,7 @@ def test_post_init_auto_queues_deferred_proxies(tmp_path, monkeypatch):
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")
     resp = client.post("/api/run", json={
-        "workflow": "clean_cut", "prompt": "clean it", "clips": [str(clip)],
+        "workflow": "overlays", "prompt": "clean it", "clips": [str(clip)],
     })
     assert resp.status_code == 201, resp.text
 
@@ -306,7 +306,7 @@ def test_post_init_background_normalize_only_when_unchosen(tmp_path, monkeypatch
 
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")
-    body = {"workflow": "clean_cut", "prompt": "clean it", "clips": [str(clip)]}
+    body = {"workflow": "overlays", "prompt": "clean it", "clips": [str(clip)]}
     if init_settings is not None:
         body["initSettings"] = init_settings
     resp = client.post("/api/run", json=body)

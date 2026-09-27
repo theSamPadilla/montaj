@@ -36,7 +36,7 @@ def _project_path_from_stdout(stdout: str) -> Path:
 def test_flat_project_path_creates_dir(tmp_path):
     """--project-path=my-proj creates <tmp>/my-proj/."""
     result = run_init(
-        "--canvas", "--prompt", "test", "--workflow", "clean_cut",
+        "--canvas", "--prompt", "test", "--workflow", "overlays",
         "--project-path", "my-proj",
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
@@ -50,7 +50,7 @@ def test_flat_project_path_creates_dir(tmp_path):
 def test_nested_project_path_creates_intermediate_dir(tmp_path):
     """--project-path=teamA/sub creates <tmp>/teamA/sub/ and parent on demand."""
     result = run_init(
-        "--canvas", "--prompt", "test", "--workflow", "clean_cut",
+        "--canvas", "--prompt", "test", "--workflow", "overlays",
         "--project-path", "teamA/sub",
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
@@ -68,7 +68,7 @@ def test_parent_exists_leaf_doesnt_succeeds(tmp_path):
     (tmp_path / "teamA").mkdir()
 
     result = run_init(
-        "--canvas", "--prompt", "test", "--workflow", "clean_cut",
+        "--canvas", "--prompt", "test", "--workflow", "overlays",
         "--project-path", "teamA/sub-proj",
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
@@ -80,13 +80,13 @@ def test_two_projects_under_same_parent_succeed(tmp_path):
     """teamA/proj-1 and teamA/proj-2 both create successfully — parent
     auto-creation must not blow up on second call."""
     r1 = run_init(
-        "--canvas", "--prompt", "test", "--workflow", "clean_cut",
+        "--canvas", "--prompt", "test", "--workflow", "overlays",
         "--project-path", "teamA/proj-1",
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
     assert r1.returncode == 0, r1.stderr
     r2 = run_init(
-        "--canvas", "--prompt", "test", "--workflow", "clean_cut",
+        "--canvas", "--prompt", "test", "--workflow", "overlays",
         "--project-path", "teamA/proj-2",
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
@@ -104,7 +104,7 @@ def test_existing_target_dir_raises_project_path_exists(tmp_path):
     project_path_exists — never silently land elsewhere."""
     (tmp_path / "already-here").mkdir()
     result = run_init(
-        "--canvas", "--prompt", "test", "--workflow", "clean_cut",
+        "--canvas", "--prompt", "test", "--workflow", "overlays",
         "--project-path", "already-here",
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
@@ -116,14 +116,14 @@ def test_existing_target_dir_raises_project_path_exists(tmp_path):
 def test_double_create_same_path_second_fails(tmp_path):
     """Re-running with the same --project-path errors on the second call."""
     r1 = run_init(
-        "--canvas", "--prompt", "test", "--workflow", "clean_cut",
+        "--canvas", "--prompt", "test", "--workflow", "overlays",
         "--project-path", "abc",
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
     assert r1.returncode == 0, r1.stderr
 
     r2 = run_init(
-        "--canvas", "--prompt", "test", "--workflow", "clean_cut",
+        "--canvas", "--prompt", "test", "--workflow", "overlays",
         "--project-path", "abc",
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
@@ -149,7 +149,7 @@ def test_double_create_same_path_second_fails(tmp_path):
 def test_invalid_project_path_rejected(tmp_path, bad_path, reason):
     """Validator rejects unsafe relative paths with invalid_project_path."""
     result = run_init(
-        "--canvas", "--prompt", "test", "--workflow", "clean_cut",
+        "--canvas", "--prompt", "test", "--workflow", "overlays",
         "--project-path", bad_path,
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
@@ -162,7 +162,7 @@ def test_invalid_project_path_rejected(tmp_path, bad_path, reason):
 def test_single_dot_segment_rejected(tmp_path):
     """A single '.' is not in [A-Za-z0-9_-], so SAFE_NAME rejects it."""
     result = run_init(
-        "--canvas", "--prompt", "test", "--workflow", "clean_cut",
+        "--canvas", "--prompt", "test", "--workflow", "overlays",
         "--project-path", ".",
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
@@ -178,7 +178,7 @@ def test_single_dot_segment_rejected(tmp_path):
 def test_absent_flag_preserves_date_slug_naming(tmp_path):
     """--name without --project-path → <date>-<slug> directory."""
     result = run_init(
-        "--canvas", "--prompt", "test", "--workflow", "clean_cut",
+        "--canvas", "--prompt", "test", "--workflow", "overlays",
         "--name", "My Cool Project",
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
@@ -192,7 +192,7 @@ def test_absent_flag_preserves_date_slug_naming(tmp_path):
 def test_absent_flag_no_name_uses_date_hhmmss(tmp_path):
     """No flags → <date>-<HHMMSS> directory."""
     result = run_init(
-        "--canvas", "--prompt", "test", "--workflow", "clean_cut",
+        "--canvas", "--prompt", "test", "--workflow", "overlays",
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
     assert result.returncode == 0, result.stderr
@@ -212,7 +212,7 @@ def test_absent_flag_no_name_uses_date_hhmmss(tmp_path):
 def test_name_and_project_path_are_orthogonal(tmp_path):
     """--name controls project.json['name'], --project-path controls dir."""
     result = run_init(
-        "--canvas", "--prompt", "test", "--workflow", "clean_cut",
+        "--canvas", "--prompt", "test", "--workflow", "overlays",
         "--name", "Display Name",
         "--project-path", "abc-uuid",
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},

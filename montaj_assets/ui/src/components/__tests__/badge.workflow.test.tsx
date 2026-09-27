@@ -12,8 +12,8 @@ import { StatusBadge, WorkflowBadge } from '../ui/badge'
 
 describe('WorkflowBadge', () => {
   it('shows the workflow name exactly as the picker and the CLI spell it', () => {
-    render(<WorkflowBadge workflow="clean_cut" />)
-    expect(screen.getByText('clean_cut')).toBeInTheDocument()
+    render(<WorkflowBadge workflow="overlays" />)
+    expect(screen.getByText('overlays')).toBeInTheDocument()
   })
 
   it('shows a custom workflow name it has never seen before', () => {

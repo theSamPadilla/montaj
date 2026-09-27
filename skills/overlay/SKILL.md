@@ -28,37 +28,27 @@ The prompt tells you the tone and intent. The transcript tells you the moments w
 
 ### 2. Decide what overlays to write
 
-Ask: what does this video need that isn't already in the footage? Common answers:
+Decide from the prompt and the transcript what the video needs that isn't already in the footage.
 
-- **Opening hook** (0–3s) — almost always right for social content. A punchy text statement that sells the video before the viewer decides to scroll.
-- **Lower-thirds** — speaker name, context, stat callouts. Tied to specific transcript moments.
-- **Logo/watermark** — if assets include a logo, add it as a persistent or bookend overlay.
-- **Stat cards** — when the speaker cites a number ("33 million views"), a card reinforces it visually.
-- **Image cards / B-roll stills** — when the speaker names a person, company, event, or thing the footage doesn't show ("Elon Musk", "the IPO", a specific welder), a real photo synced to that beat lands hard. **If the prompt asks you to source images** ("add a photo of X", "find images of the IPO"), load skill `image-search` to find them via `search_images` and download via `fetch_image`, then add each as an image-card overlay (pass the local fetched path via `props`).
+**If the prompt asks you to source images** ("add a photo of X", "find images of the IPO"), load skill `image-search` to find them via `search_images` and download via `fetch_image`, then add each as an image-card overlay (pass the local fetched path via `props`).
 
-If the prompt says "no overlays" — write nothing. Don't add an opening hook anyway.
+If the prompt says "no overlays" — write nothing.
 
-### Visual style defaults
+### Placement and timing constraints
 
-**Plain text directly on video is almost always the right call.** Skip the card. Skip the frosted glass. Big, bold text sitting right on the footage is more dynamic and feels native — not slapped on top.
-
-- **Go large** — 96–160px is a starting point, not a ceiling. If it looks a little too big, it's probably right. Small text gets scrolled past.
-- **No backgrounds** — avoid dark cards, frosted panels, and semi-transparent boxes unless the prompt asks for them. A text shadow (`textShadow: '0 2px 16px rgba(0,0,0,0.9)'`) is enough to ensure legibility on any footage without boxing the text in.
-- **Covering the face is fine** — text is more important than an unobstructed view of the speaker. Don't shrink or reposition text just to avoid the face.
-- **Match the energy of the speech** — fast, punchy delivery gets tight entrance animations (about 0.13–0.2s: `Math.round(fps * 0.13)` to `Math.round(fps * 0.2)`). Slower, deliberate speech gets a smoother slide or fade (about 0.33–0.5s). Never hardcode frame counts; projects can be 24, 30 or 60fps.
-- **Use color sparingly** — one accent color maximum. White text with a colored word or icon reads better than multi-color text.
+- **Never hardcode frame counts**; projects can be 24, 30 or 60fps. Derive durations from `fps` (for example `Math.round(fps * 0.2)`).
 - **Avoid the bottom ~350px** — that's where captions render and where platform UI lives (TikTok progress bar, Instagram controls). Keep `bottom` values above 350px, or use `top`-anchored placement instead.
 - **Avoid the right ~200px** — TikTok and Instagram stack action buttons (like, comment, share, follow) down the right edge. Don't push text or icons into that zone.
 
 ### 3. Tie overlays to the transcript
 
-Use word-level timings from the transcript JSON to sync overlays to speech. An overlay that appears when the speaker says the word it displays lands harder than one that floats at an arbitrary time.
+Use word-level timings from the transcript JSON to sync overlays to speech.
 
 ### 4. Write the JSX files
 
 One JSX file per overlay component. Save to `overlays/<name>.jsx` in the project directory.
 
-**There are no built-in templates.** Every overlay is custom JSX. Style it to match the editing prompt — a "dark, cinematic" prompt gets different typography than "energetic TikTok vibes."
+**There are no built-in templates.** Every overlay is custom JSX.
 
 See skill `write-overlay` for the full authoring reference.
 
@@ -95,14 +85,9 @@ When this is the last editorial pass before the render, the project must be `fin
 
 ## Rules
 
-- **Use icons, not emojis** — `Ph.*` (Phosphor) or `FaIcon` with `FaSolid`/`FaBrands` (Font Awesome). Both are available as globals — no imports needed. Only use emojis if the prompt asks.
 - **Always use absolute paths** for `src` — the render engine won't resolve relative paths
 - **Don't overlap items at the same position** at the same time
 - **To cover footage fully**, set `"opaque": true` on the item — the render engine removes transparency and lets the JSX root's CSS define the background. The audio track is unaffected.
-- **Go large** — 96px+ for most text, 120–160px for hooks. Big text beats small text every time
-- **No backgrounds by default** — plain text on video with a text shadow is the preferred style. Only use cards or panels when the prompt explicitly asks, or when legibility genuinely requires it
-- **Covering the face is acceptable** — don't compromise text size or position to avoid the speaker
-- **Keep text short** — 2–6 words for lower-thirds, 4–8 for hooks. Short + large beats long + small
 - **Leave `offsetX`, `offsetY`, `scale` at defaults** (`0`, `0`, `1`) — the human positions overlays via the UI drag tool after preview
 - **Use assets from `project.assets`** — pass asset `src` paths as `props`, don't hardcode paths inside JSX
 - **Expose text styling as props** — a text overlay you want editable in the editor's properties panel must READ its font, size, weight, style, color, alignment, transform, and background from `props` (the nine standard text props) with sensible defaults, not hardcode them in the JSX. A hardcoded style shows no control in the panel. See skill `write-overlay` → "Make text overlays editable in the properties panel"

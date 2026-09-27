@@ -420,11 +420,9 @@ Install the optional deps with `montaj install connectors`.
 | Workflow | Description |
 |----------|-------------|
 | `overlays` | Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, overlays. No captions. |
-| `short_captions` | Multi-clip edit — same as `overlays` plus caption and resize 9:16. |
-| `clean_cut` | Trim and clean only — silence, transcribe, select best takes, remove fillers. No captions, overlays, or resize. |
-| `animations` | Animation-only — no source footage required. Agent builds entirely from overlays and animation sections. |
-| `explainer` | Multi-clip edit with animation sections — same as `overlays` plus animation sections. No captions. |
-| `floating_head` | Talking-head presenter over a custom background — trim, materialize, RVM background removal. Background in `tracks[0]`, presenter in `tracks[1]`. |
+| `ai_video` | AI-generated video: storyboard, approval gate, Kling scene generation. No source footage required. |
+| `carousel` | Still slides at one fixed aspect ratio, rendered to PNGs. |
+| `blank` | Empty project with no steps. The user edits by hand. |
 
 `workflows/overlays.json` is used by `montaj run` when no `--workflow` is specified. All workflow files are equal — fork any of them, save under a new name, and it becomes available immediately.
 
@@ -538,7 +536,7 @@ All steps are agent-callable tools. The agent decides which to run, when, and wi
 |------|-------------|
 | `montaj/remove_bg` | Remove video background using RVM (Robust Video Matting). Outputs ProRes 4444 `.mov` with alpha channel (`nobg_src`) for final render and a VP9 WebM (`nobg_preview_src`) for browser preview. Requires `montaj install rvm`. |
 
-Used in the `floating_head` workflow. `remove_bg` requires an actual video file — pass the output of `materialize_cut`, not a trim spec. The step updates the project item with `remove_bg: true`, `nobg_src`, and `nobg_preview_src`. At render time the engine composites the alpha-channel `.mov` over the layers beneath it via ffmpeg.
+Used by talking-head-over-background edits. `remove_bg` requires an actual video file — pass the output of `materialize_cut`, not a trim spec. The step updates the project item with `remove_bg: true`, `nobg_src`, and `nobg_preview_src`. At render time the engine composites the alpha-channel `.mov` over the layers beneath it via ffmpeg.
 
 ---
 

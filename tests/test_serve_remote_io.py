@@ -41,7 +41,7 @@ def _make_project(workspace: Path, project_id: str = "proj-upload-test") -> Path
         "id": project_id,
         "status": "pending",
         "name": "test",
-        "workflow": "clean_cut",
+        "workflow": "overlays",
         "editingPrompt": "test",
         "settings": {"resolution": [1920, 1080], "fps": 30},
         "tracks": [],
@@ -62,7 +62,7 @@ class TestRunRemoteClipsValidation:
         """remoteClips that isn't a list → 400 invalid_field."""
         resp = client.post("/api/run", json={
             "prompt": "test",
-            "workflow": "clean_cut",
+            "workflow": "overlays",
             "remoteClips": "not-a-list",
         })
         assert resp.status_code == 400
@@ -74,7 +74,7 @@ class TestRunRemoteClipsValidation:
         """remoteAssets that isn't a list → 400 invalid_field."""
         resp = client.post("/api/run", json={
             "prompt": "test",
-            "workflow": "clean_cut",
+            "workflow": "overlays",
             "remoteAssets": {"url": "https://example.com/x.mp4"},
         })
         assert resp.status_code == 400
@@ -87,7 +87,7 @@ class TestRunRemoteClipsValidation:
         monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "example.com")
         resp = client.post("/api/run", json={
             "prompt": "test",
-            "workflow": "clean_cut",
+            "workflow": "overlays",
             "remoteClips": ["not-a-dict"],
         })
         assert resp.status_code == 400
@@ -102,7 +102,7 @@ class TestRunRemoteClipsValidation:
         # Missing contentType and sizeBytes
         resp = client.post("/api/run", json={
             "prompt": "test",
-            "workflow": "clean_cut",
+            "workflow": "overlays",
             "remoteClips": [{"url": "https://example.com/clip.mp4", "destPath": "clips/c.mp4"}],
         })
         assert resp.status_code == 400
@@ -117,7 +117,7 @@ class TestRunRemoteClipsValidation:
         monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "example.com")
         resp = client.post("/api/run", json={
             "prompt": "test",
-            "workflow": "clean_cut",
+            "workflow": "overlays",
             "remoteClips": [{"destPath": "clips/c.mp4", "contentType": "video/mp4", "sizeBytes": 100}],
         })
         assert resp.status_code == 400
@@ -130,7 +130,7 @@ class TestRunRemoteClipsValidation:
         monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "example.com")
         resp = client.post("/api/run", json={
             "prompt": "test",
-            "workflow": "clean_cut",
+            "workflow": "overlays",
             "remoteClips": [{
                 "url": "http://example.com/clip.mp4",
                 "destPath": "clips/c.mp4",
@@ -148,7 +148,7 @@ class TestRunRemoteClipsValidation:
         monkeypatch.delenv("MONTAJ_HTTP_ALLOWED_HOSTS", raising=False)
         resp = client.post("/api/run", json={
             "prompt": "test",
-            "workflow": "clean_cut",
+            "workflow": "overlays",
             "remoteClips": [{
                 "url": "https://example.com/clip.mp4",
                 "destPath": "clips/c.mp4",
@@ -166,7 +166,7 @@ class TestRunRemoteClipsValidation:
         monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "allowed.com")
         resp = client.post("/api/run", json={
             "prompt": "test",
-            "workflow": "clean_cut",
+            "workflow": "overlays",
             "remoteClips": [{
                 "url": "https://blocked.com/clip.mp4",
                 "destPath": "clips/c.mp4",
@@ -194,7 +194,7 @@ class TestRunRemoteClipsValidation:
         # This test confirms missing key (not even a valid object) is caught by shape check.
         resp = client.post("/api/run", json={
             "prompt": "test",
-            "workflow": "clean_cut",
+            "workflow": "overlays",
             "remoteClips": [{"destPath": "clips/c.mp4"}],  # missing url, contentType, sizeBytes
         })
         # Shape check fires (missing required key) — error is invalid_remote_item
@@ -207,7 +207,7 @@ class TestRunRemoteClipsValidation:
         monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "good.com")
         resp = client.post("/api/run", json={
             "prompt": "test",
-            "workflow": "clean_cut",
+            "workflow": "overlays",
             "remoteClips": [
                 {"url": "https://good.com/clip1.mp4", "destPath": "clips/c1.mp4",
                  "contentType": "video/mp4", "sizeBytes": 100},
@@ -246,7 +246,7 @@ class TestRunRemoteClipsSubprocess:
             project_json = tmp_path / "project.json"
             project_json.write_text(json.dumps({
                 "version": "0.2", "id": "test-proj", "status": "pending",
-                "name": "test", "workflow": "clean_cut", "editingPrompt": "test",
+                "name": "test", "workflow": "overlays", "editingPrompt": "test",
                 "settings": {"resolution": [1920, 1080], "fps": 30},
                 "tracks": [], "assets": [], "audio": {},
             }))
@@ -267,7 +267,7 @@ class TestRunRemoteClipsSubprocess:
                 project_json = tmp_path / "project.json"
                 project_json.write_text(json.dumps({
                     "version": "0.2", "id": "test-proj", "status": "pending",
-                    "name": "test", "workflow": "clean_cut", "editingPrompt": "test",
+                    "name": "test", "workflow": "overlays", "editingPrompt": "test",
                     "settings": {"resolution": [1920, 1080], "fps": 30},
                     "tracks": [], "assets": [], "audio": {},
                 }))
@@ -276,7 +276,7 @@ class TestRunRemoteClipsSubprocess:
             with patch("serve.routes.projects.run_subprocess", side_effect=_fake_run_subprocess):
                 resp = client.post("/api/run", json={
                     "prompt": "test remote clips",
-                    "workflow": "clean_cut",
+                    "workflow": "overlays",
                     "remoteClips": [item],
                 })
 
@@ -302,7 +302,7 @@ class TestRunRemoteClipsSubprocess:
             project_json = tmp_path / "project.json"
             project_json.write_text(json.dumps({
                 "version": "0.2", "id": "test-proj", "status": "pending",
-                "name": "test", "workflow": "clean_cut", "editingPrompt": "test",
+                "name": "test", "workflow": "overlays", "editingPrompt": "test",
                 "settings": {"resolution": [1920, 1080], "fps": 30},
                 "tracks": [], "assets": [], "audio": {},
             }))
@@ -311,7 +311,7 @@ class TestRunRemoteClipsSubprocess:
         with patch("serve.routes.projects.run_subprocess", side_effect=_fake_run_subprocess):
             resp = client.post("/api/run", json={
                 "prompt": "test mixed",
-                "workflow": "clean_cut",
+                "workflow": "overlays",
                 "clips": [str(local_clip)],
                 "remoteClips": [remote_item],
             })
@@ -335,7 +335,7 @@ class TestRunRemoteClipsSubprocess:
             project_json = tmp_path / "project.json"
             project_json.write_text(json.dumps({
                 "version": "0.2", "id": "test-proj", "status": "pending",
-                "name": "test", "workflow": "animations", "editingPrompt": "test",
+                "name": "test", "workflow": "ai_video", "editingPrompt": "test",
                 "settings": {"resolution": [1920, 1080], "fps": 30},
                 "tracks": [], "assets": [], "audio": {},
             }))
@@ -344,7 +344,7 @@ class TestRunRemoteClipsSubprocess:
         with patch("serve.routes.projects.run_subprocess", side_effect=_fake_run_subprocess):
             resp = client.post("/api/run", json={
                 "prompt": "test no canvas",
-                "workflow": "animations",  # requires_clips: false
+                "workflow": "ai_video",  # requires_clips: false
                 "remoteClips": [item],
             })
 
@@ -363,7 +363,7 @@ class TestRunRemoteClipsSubprocess:
             project_json = tmp_path / "project.json"
             project_json.write_text(json.dumps({
                 "version": "0.2", "id": "test-proj", "status": "pending",
-                "name": "test", "workflow": "animations", "editingPrompt": "test",
+                "name": "test", "workflow": "ai_video", "editingPrompt": "test",
                 "settings": {"resolution": [1920, 1080], "fps": 30},
                 "tracks": [], "assets": [], "audio": {},
             }))
@@ -372,7 +372,7 @@ class TestRunRemoteClipsSubprocess:
         with patch("serve.routes.projects.run_subprocess", side_effect=_fake_run_subprocess):
             resp = client.post("/api/run", json={
                 "prompt": "test canvas",
-                "workflow": "animations",  # requires_clips: false
+                "workflow": "ai_video",  # requires_clips: false
                 # No clips or remoteClips → should add --canvas
             })
 

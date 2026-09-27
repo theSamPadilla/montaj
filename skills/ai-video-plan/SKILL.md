@@ -181,8 +181,6 @@ Populate `storyboard.scenes[]` with one entry per intended scene.
 
   **Setting** is NOT a section — put environment details in `storyboard.styleAnchor` once. If a scene needs specific lighting, include it in `## Camera` (e.g. "Golden hour lighting, wide shot").
 
-  **No two adjacent scenes should use the same shot-size + camera-move pair.** Vary the camera across scenes for visual variety (wide → medium → close-up → medium-wide → wide).
-
   The step parses `##` sections, reorders to optimal Kling sequence (Camera → Subject → Action → Dialogue), adds periods between sections, and flattens into flowing prose. The agent can write sections in any order — the step normalizes.
 
   **Keep each scene's prompt under ~80 words** (excluding headers). Kling's sweet spot is 60-100 words for the scene-specific content. The step adds ~10 words of style prefix on top.
@@ -220,7 +218,7 @@ Given `T = targetDurationSeconds` and `N = intended scene count`:
 
 1. Baseline `b = round(T / N)`. Clamp to `[3, 15]`.
 2. Assign `b` to every scene. Running total: `N * b`.
-3. Distribute remainder `T - N*b` (positive or negative) one second at a time. Prefer adding/removing from scenes whose content allows — atmospheric establishing shots can absorb time; punchy action should stay short.
+3. Distribute remainder `T - N*b` (positive or negative) one second at a time.
 4. If you can't hit `T` without violating `[3, 15]`, land on the closest achievable total and mention the deviation to the user ("Targeting 27s across 4 scenes; closest clean fit is 28s — OK?").
 
 #### Examples

@@ -474,7 +474,7 @@ class TestRemoteClipsFile:
         import argparse
         args = argparse.Namespace(
             prompt="file expansion test",
-            workflow="clean_cut",
+            workflow="overlays",
             name=None,
             project_path=None,
             color_space="auto",
@@ -529,7 +529,7 @@ class TestRemoteClipsFile:
         import argparse
         args = argparse.Namespace(
             prompt="concat test",
-            workflow="clean_cut",
+            workflow="overlays",
             name=None,
             project_path=None,
             color_space="auto",

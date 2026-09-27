@@ -10,9 +10,7 @@ step: true
 
 **Before writing any JSX, load the write-overlay subskill** — it has the full authoring reference. Load it with `/write-overlay`.
 
-**Then read `skills/write-overlay/MOTION.md`.** An animation project is 100% motion graphics — there is no footage to carry it, so the motion *is* the product. MOTION.md has the easing catalog (`interpolate` is strictly linear, which is why untutored sections look flat), velocity-driven directional motion blur, per-character stagger, and the measurement commands this skill's verification step refers to.
-
-**This is your showreel, not a safe draft.** Research the actual subject first — the site, the repos/docs the prompt points to, any brand materials in the project — and use real specifics (names, products, numbers, the actual look), not generic filler. Use the full range of what these skills support: bold typographic scale, the brand's real colours and marks, a genuinely different kind of motion per section (no two sections move the same way), deliberate transitions, no static frames. If a section looks merely fine, push it further before moving on to the next one.
+**Then read `skills/write-overlay/MOTION.md`** for the `duration` guard and the sampling commands this skill's verification step refers to.
 
 ---
 
@@ -20,7 +18,7 @@ step: true
 
 Animation sections are the right tool when:
 
-- The project has **no source footage** (animations workflow) — you build the entire video as animated slides
+- The project has **no source footage** (a canvas project) — you build the entire video as animated slides
 - You want to **cover a section of existing footage** with a full-frame opaque overlay (stats card, pull quote, title card, transition)
 
 Animation sections are **not** for transparent lower-thirds or watermarks. Use `montaj/overlay` for those.
@@ -29,57 +27,15 @@ Animation sections are **not** for transparent lower-thirds or watermarks. Use `
 
 ## Process
 
-### 1. Plan the sections — in bars, not seconds
+### 1. Plan the sections
 
-Read the editing prompt. Decide what sections the video needs:
-
-- **Title card** — project/brand name, intro hook
-- **Stat cards** — one strong number per card
-- **Pull quotes** — impactful lines from the transcript or brief
-- **Transition slides** — between major chapters
-- **Outro** — CTA, social handle, end card
-
-**Length every one of them in bars.** The `animations` workflow generates the music bed first precisely so you have a tempo before you plan: `beat = 60 / BPM` seconds, `bar = 4 beats`. Two bars is the default section, four bars for a section that genuinely carries more information, one bar for a hit or flash cut. At 128 BPM a bar is 1.875s, so a 15-second piece is 8 bars — four 2-bar sections. If `generate_music` failed, the bed is a locally synthesized fallback at the same BPM instead of a Lyria clip — the grid you plan against does not change either way.
-
-This is not decoration. The difference between a motion-graphics piece that reads as designed and one that reads as a slideshow is almost entirely whether its cuts sit on a grid. "About 3 seconds" is a slideshow. "Two bars" is a cut.
+Read the editing prompt and decide what sections the video needs.
 
 For animation projects (no footage), plan the full sequence: every second must be covered by at least one overlay.
 
-### 1a. No dead air — the rule that matters most
-
-**Every section must keep something in continuous motion for its entire span.** Not "animate in, then hold." A section that eases in over ~0.33s (`Math.round(fps * 0.33)` frames — never a hardcoded frame count; projects can be 24, 30 or 60fps) and then sits perfectly still for the remaining two seconds is the single biggest quality defect this pipeline produces, and it is worth more to fix than any amount of styling.
-
-Measured on a real Montaj promo, against a professionally-directed reference reel sampled at the same rate: 44.5% of the promo's frames were still, versus 15.0% — and its motion energy was 2.32 against 8.96, about a quarter. Nearly half the video was a still image, and the rest barely moved.
-
-The fix is cheap. Every section gets at least one property under continuous motion across its whole duration, on top of whatever entrance animation it has:
-
-```jsx
-export default function StatCard() {
-  const t = frame / duration                      // 0 → 1 across the whole section
-  const enter = spring({ frame, fps, stiffness: 200, damping: 22 })
-
-  // Entrance — finishes early and stops.
-  const y = interpolate(enter, [0, 1], [40, 0])
-
-  // Continuous — never stops for as long as the section is on screen.
-  const drift = interpolate(t, [0, 1], [0, -28])        // slow parallax
-  const breathe = 1 + 0.012 * Math.sin(t * Math.PI * 2) // subtle scale pulse
-
-  return (
-    <div style={{ position: 'absolute', inset: 0, transform: `translateY(${drift}px)` }}>
-      <div style={{ transform: `translateY(${y}px) scale(${breathe})`, opacity: enter }}>
-        …
-      </div>
-    </div>
-  )
-}
-```
-
-Things that legitimately count as continuous motion: slow positional drift or parallax between layers, a number counting up, a progress arc filling, a gradient or hue rotating, a background pattern scrolling, a rule extending, per-character stagger that is still resolving. Things that do not: a static element with a drop shadow, a blur that already finished, anything driven by `enter` alone.
+### 1a. Section progress
 
 `frame / duration` is the workhorse — `duration` is a global holding the section's total frames, so `t` is a normalised 0 → 1 progress through the section regardless of how many bars it runs for.
-
-**Before you finish, check your work the way it will be judged** — see "Verify the motion" at the end of this skill.
 
 ### 2. Write the JSX files
 
@@ -180,7 +136,7 @@ The render engine requires `status: "final"` before it will run — see skill `n
 
 Do not judge an animation by reading its source, and do not judge it from one frame. **Do not render the project to check it, either — rendering is the user's call, not a QA step (see "Rules" below).** Use `sample_frame` instead: it composites one fully-rendered frame of `project.json` — video + image items + active overlay JSXs — at a given timestamp, with no video encode.
 
-**Cut placement.** Sample every section/cut boundary and confirm the timestamp lands on your bar grid (2 bars at 128 BPM = 3.75s, etc.):
+**Cut placement.** Sample every section/cut boundary and confirm the timestamp lands where your section plan put it (on the bar grid if you cut to one: 2 bars at 128 BPM = 3.75s, etc.):
 
 ```bash
 python steps/render/sample_frame.py --project /abs/path/to/project.json --at 3.75 --out /tmp/boundary.png
@@ -188,24 +144,21 @@ python steps/render/sample_frame.py --project /abs/path/to/project.json --at 3.7
 
 A boundary off the grid is a math error in the section plan — that's arithmetic, not something a render would have told you that the plan doesn't already say.
 
-**Dead air.** Inside each section, sample two frames about 0.2–0.3s apart:
+**Motion.** Inside each section, sample two frames about 0.2–0.3s apart:
 
 ```bash
 python steps/render/sample_frame.py --project /abs/path/to/project.json --at 4.00 --out /tmp/a.png
 python steps/render/sample_frame.py --project /abs/path/to/project.json --at 4.25 --out /tmp/b.png
 ```
 
-If the pair looks identical, nothing in that span is moving — go back to §1a and the three traps in MOTION.md § "Continuous motion" (large-area motion, rotationally-symmetric shapes, values that finish early).
+If the pair looks identical, nothing in that span is moving.
 
 For a single overlay mid-authoring, before it's even placed in `tracks`, use `sample_overlay` instead — with `--duration` and `--fps` set, see MOTION.md § "Verify the motion, don't eyeball it". Without `--duration` the `duration` global is undefined and everything driven by `frame / duration` sits frozen at 0, which looks exactly like the bug you are hunting.
-
-This replaces an earlier version of this rule that rendered the full project to `out.mp4` and measured it with ffmpeg (mean luma change between frames, for a motion-energy score; scene-cut detection, for placement). Those numbers were real and are worth knowing as calibration: a Montaj promo we were moving away from measured 2.320 motion energy and 44.5% still frames against a directed reference reel's 8.958 and 15.0%, and a section set built to this skill's rules reached 10.612 and 0.0%. Producing them meant rendering, though, and rendering the project is no longer something the agent does just to check its own work.
 
 ---
 
 ## Rules
 
-- **Use icons, not emojis** — `Ph.*` (Phosphor) or `FaIcon` with `FaSolid`/`FaBrands` (Font Awesome). Both are available as globals — no imports needed. Only use emojis if the prompt asks.
 - **Always use absolute paths** for `src`
 - **opaque items fill the full frame** — no `offsetX`, `offsetY`, or `scale` on opaque items (they're set to defaults)
 - **Source audio is untouched** — animation sections only affect video, never audio

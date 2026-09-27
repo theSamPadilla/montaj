@@ -46,7 +46,7 @@ def _create(project_path: str, prompt: str = "test"):
     """Helper: POST /api/run and return (status, body)."""
     resp = client.post("/api/run", json={
         "prompt": prompt,
-        "workflow": "lyrics_video",  # canvas-eligible workflow → no clips needed
+        "workflow": "blank",  # canvas-eligible workflow → no clips needed
         "clips": [],
         "projectPath": project_path,
     })
@@ -106,7 +106,7 @@ def test_post_run_with_invalid_project_path_returns_400(workspace):
     400 with error: invalid_project_path. Same contract as project_path_exists."""
     resp = client.post("/api/run", json={
         "prompt": "test",
-        "workflow": "lyrics_video",
+        "workflow": "blank",
         "clips": [],
         "projectPath": "../etc/passwd",
     })
@@ -268,16 +268,16 @@ def test_post_run_with_id_uses_supplied_value(workspace):
     assert on_disk["id"] == CANONICAL_ID_HTTP
 
 
-def test_post_run_with_id_animations_workflow(workspace):
-    """`animations` has requires_clips=false and exercises the general (non-
+def test_post_run_with_id_blank_workflow(workspace):
+    """`blank` has requires_clips=false and exercises the general (non-
     carousel) init path without needing clips. Confirms id passthrough wiring
     in the general branch of run_project."""
     fixed_id = "abcdef00-0000-0000-0000-000000000001"
     resp = client.post("/api/run", json={
         "prompt": "test",
-        "workflow": "animations",
+        "workflow": "blank",
         "id": fixed_id,
-        "projectPath": "explicit-id-animations",
+        "projectPath": "explicit-id-blank",
     })
     assert resp.status_code == 201, resp.text
     assert resp.json()["id"] == fixed_id

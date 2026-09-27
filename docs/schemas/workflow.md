@@ -114,6 +114,8 @@ Workflows are discovered the same way steps are. Resolution order: project-local
 
 ## Built-in workflows
 
+The `clean_cut`, `broll`, `clips`, `animations`, `explainer`, `floating_head` and `lyrics_video` workflows moved to the Montaj app. The skills they use (`broll`, `find_clips`, `lyrics-video`, `animation-sections`) and their project types stay in montaj, so a project-local or user-global workflow can still use them.
+
 ### `overlays`
 
 Multi-clip edit. Silence trim per clip, transcribe, select best takes, remove fillers, caption, overlays, resize to 9:16. Used by `montaj run` when no `--workflow` is specified.
@@ -133,54 +135,6 @@ Multi-clip edit. Silence trim per clip, transcribe, select best takes, remove fi
     { "id": "fillers",          "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select-takes"], "params": { "model": "base.en" } },
     { "id": "transcribe_final", "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["fillers"],     "params": { "model": "base.en" } },
     { "id": "overlays",         "uses": "montaj/overlay",                            "needs": ["transcribe_final"], "params": { "style": "auto" } }
-  ]
-}
-```
-
-### `floating_head`
-
-Talking-head presenter over a custom background. Trim silence, remove non-speech, select takes, remove fillers, materialize trimmed footage, background-remove with RVM, resize to 9:16. Background is provided as an asset (image or video) via the editing prompt.
-
-**Track ordering note:** background goes in `tracks[0]`; presenter (after `remove_bg`) goes in `tracks[1]`. This is the inverse of the default clip-in-tracks[0] convention — the `notes` field in the workflow JSON encodes this guidance for the agent.
-
-```json
-{
-  "name": "floating_head",
-  "description": "Talking-head presenter over a custom background — trim silence, remove non-speech, remove fillers, materialize trimmed footage, background-remove with RVM. The editing prompt should specify the background (image or video asset).",
-  "project_type": "editing",
-  "notes": "Track ordering is the inverse of the default. Background (from assets — image or video) goes in tracks[0] as the base layer. Presenter footage (clips, after remove_bg) goes in tracks[1] with remove_bg: true, nobg_src, and nobg_preview_src set from the remove_bg output. Do not place the presenter in tracks[0] — it renders behind the background. If no background asset is provided, use a solid-colour or animated animation section in tracks[0].",
-  "steps": [
-    { "id": "probe",        "uses": "montaj/probe",          "foreach": "clips" },
-    { "id": "snapshot",     "uses": "montaj/snapshot",       "foreach": "clips" },
-    { "id": "silence",      "uses": "montaj/waveform_trim",  "foreach": "clips",                             "params": { "threshold": "-30", "min-silence": 0.3 } },
-    { "id": "nonspeech",    "uses": "montaj/rm_nonspeech",   "foreach": "clips", "needs": ["silence"],      "params": { "model": "base.en", "max-word-gap": 0.10, "sentence-edge": 0.05 } },
-    { "id": "transcribe",   "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["nonspeech"],    "params": { "model": "base.en" } },
-    { "id": "select-takes", "uses": "montaj/select-takes",                        "needs": ["transcribe"] },
-    { "id": "fillers",      "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select-takes"], "params": { "model": "base.en" } },
-    { "id": "materialize",  "uses": "montaj/materialize_cut","foreach": "clips", "needs": ["fillers"] },
-    { "id": "remove_bg",    "uses": "montaj/remove_bg",      "foreach": "clips", "needs": ["materialize"] }
-  ]
-}
-```
-
-### `clean_cut`
-
-Trim and clean only. No captions, overlays, or resize. Useful when the output feeds another pipeline or when a clean cut is all that's needed.
-
-```json
-{
-  "name": "clean_cut",
-  "description": "Trim and clean only — silence trim, remove non-speech, transcribe, select best takes, remove fillers. No captions, overlays, or resize.",
-  "project_type": "editing",
-  "steps": [
-    { "id": "probe",        "uses": "montaj/probe",          "foreach": "clips" },
-    { "id": "snapshot",     "uses": "montaj/snapshot",       "foreach": "clips" },
-    { "id": "silence",      "uses": "montaj/waveform_trim",  "foreach": "clips", "params": { "threshold": "-30", "min-silence": 0.3 } },
-    { "id": "nonspeech",    "uses": "montaj/rm_nonspeech",   "foreach": "clips", "needs": ["silence"],       "params": { "model": "base.en", "max-word-gap": 0.10, "sentence-edge": 0.05 } },
-    { "id": "transcribe",   "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["nonspeech"],     "params": { "model": "base.en" } },
-    { "id": "select-takes", "uses": "montaj/select-takes",                       "needs": ["transcribe"] },
-    { "id": "fillers",      "uses": "montaj/rm_fillers",     "foreach": "clips", "needs": ["select-takes"],  "params": { "model": "base.en" } },
-    { "id": "review",       "uses": "montaj/transcribe",     "foreach": "clips", "needs": ["fillers"],       "params": { "model": "base.en" } }
   ]
 }
 ```
@@ -247,39 +201,19 @@ AI-generated video. No source clips required. A director agent (the `ai-video-pl
 
 `foreach` and `needs` are advisory — they document the pipeline shape for readers and UI introspection. The director skill handles iteration, skipping (e.g., `imageRefs` where `source !== "text"`), and the approval gate (no `kling_generate` before `storyboard.approval` is set).
 
-### `explainer`
-
-Multi-clip edit with animation sections — silence trim, remove non-speech, transcribe, select best takes, remove fillers, overlays, animation sections. No captions. `project_type: "editing"`.
-
-### `animations`
-
-Animation-only project — no source footage required. The agent builds the video entirely from overlays and audio. Use when the prompt describes a fully animated or motion-graphics video. `project_type: "editing"`, `requires_clips: false`.
-
 ### `blank`
 
 Empty editing project — no source footage and no steps. Hosts use it to open an editor with nothing in it; the user (or an agent following the user's direct instructions) builds the edit by hand. `project_type: "editing"`, `requires_clips: false`, `steps: []`.
-
-### `lyrics_video`
-
-Music lyrics video — word-synced text over a background (video or colour). JSX overlays are always used for preview; at render time `renderMode` selects Puppeteer (JSX) or ffmpeg `drawtext`. Build is delegated to the `montaj/lyrics-video` skill. `project_type: "music_video"`, `requires_clips: false`.
-
-### `clips`
-
-One long-form horizontal source → a series of short vertical (9:16) clips. Transcribes and frame-samples the source to find the best moments, then fans each out into its own vertical clip project. Unlike every other workflow, `clips` does not produce a finished video — it creates N child projects (each `project_type: "editing"`, linked by `derivedFrom`). Build is delegated to the `montaj/find_clips` skill. `project_type: "editing"`.
 
 ### `carousel`
 
 Image carousel for Instagram/TikTok. Slide-based design with image and overlay elements; renders to N PNGs rather than a video. Build is delegated to the `montaj/carousel` skill. `project_type: "carousel"`, `requires_clips: false`.
 
-### `broll`
-
-Voiceover-driven B-roll edit. The voiceover (audio file or video — audio only is used) is cleaned through the same silence/non-speech/take-selection/filler chain as `clean_cut`, then `materialize_cut --audio` produces the audio spine and `transcribe` gets its word timings. `detect_shots` and `shot_sheet` — pure ffmpeg, no credentials — index the footage library at shot granularity. Final assembly (beat segmentation, shot assignment, coverage report) is delegated to the `montaj/broll` skill, which writes muted footage on `tracks[0]` and the cleaned voiceover on `audio.tracks[0]`. Overlays are not part of assembly — `montaj/overlay` runs last and decides what, if anything, to add from the editing prompt. `project_type: "broll"`.
-
 > **Keeping this list honest.** These entries must match the files in `workflows/`. Verify with:
 > ```bash
 > ls workflows/*.json && grep -c '^### `' docs/schemas/workflow.md
 > ```
-> Full step arrays live in the JSON files and are not duplicated here for every workflow — only the oldest four inline theirs. Prefer reading the file over trusting an inlined copy.
+> Full step arrays live in the JSON files and are not duplicated here for every workflow — only `overlays` and `ai_video` inline theirs. Prefer reading the file over trusting an inlined copy.
 
 ---
 
@@ -297,7 +231,7 @@ Steps produce one of three output types:
 
 Steps that accept trim spec input detect it automatically — you do not need to change param names or add special flags. Pass the `.json` output path from one step as the `--input` to the next.
 
-**The engine does not wire this up for you.** `engine/resolve_workflow.py` only resolves each `uses` reference to its executable and schema and merges params — it never runs a step or threads one step's output into the next step's input; `needs` is metadata the agent reads, not something the resolver or any other runtime enforces. A trim-spec step's output is inline JSON on stdout by default, not a file, so there is no `.json` output path to pass along until you make one: write the JSON to a file yourself, or, for `waveform_trim`, pass `--out <path>` and read back `{"path": "<abs path>"}` instead of the spec. Either way, that path becomes the next step's `--input` (e.g. `waveform_trim --out spec.json` → `rm_nonspeech --input spec.json`, the `silence`/`nonspeech` hop in `clean_cut`).
+**The engine does not wire this up for you.** `engine/resolve_workflow.py` only resolves each `uses` reference to its executable and schema and merges params — it never runs a step or threads one step's output into the next step's input; `needs` is metadata the agent reads, not something the resolver or any other runtime enforces. A trim-spec step's output is inline JSON on stdout by default, not a file, so there is no `.json` output path to pass along until you make one: write the JSON to a file yourself, or, for `waveform_trim`, pass `--out <path>` and read back `{"path": "<abs path>"}` instead of the spec. Either way, that path becomes the next step's `--input` (e.g. `waveform_trim --out spec.json` → `rm_nonspeech --input spec.json`, the `silence`/`nonspeech` hop in `overlays`).
 
 ---
 

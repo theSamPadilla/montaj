@@ -5,8 +5,8 @@ Two kinds of steps:
   - "step"  — a regular step script (steps/<name>.py + steps/<name>.json).
   - "skill" — an agent-driven step backed by a skill file (skills/<name>/SKILL.md).
               No executable, no param schema; the agent is expected to follow
-              the skill's contract. Precedent: workflows/lyrics_video.json's
-              `build` step and workflows/clean_cut.json's `select-takes` step.
+              the skill's contract. Precedent: workflows/overlays.json's
+              `select-takes` and `overlays` steps.
 
 The resolver looks for a step script first; if neither the .py nor the .json
 is present it falls back to the skill path. Missing both paths is an error.

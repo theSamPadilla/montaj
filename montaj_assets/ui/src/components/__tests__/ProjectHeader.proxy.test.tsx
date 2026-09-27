@@ -26,7 +26,7 @@ function baseProject(overrides: Partial<Project> = {}): Project {
     version: '1',
     id: 'proj-1',
     name: 'Test project',
-    workflow: 'clean_cut',
+    workflow: 'overlays',
     status: 'draft',
     editingPrompt: '',
     settings: { resolution: [1920, 1080] },

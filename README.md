@@ -66,7 +66,7 @@ montaj serve   # then create an ai_video project in the UI
 
 ```
 steps/              Step executables + JSON schemas (probe, trim, transcribe, generate, etc.)
-workflows/          Editing plans (clean_cut, overlays, ai_video, lyrics_video, etc.)
+workflows/          Editing plans (overlays, ai_video, carousel, blank)
 skills/             Agent skill contracts (onboarding, edit-session, ai-video-plan, ai-video-generate, etc.)
 connectors/         API connectors (Kling, Gemini, OpenAI)
 
@@ -119,14 +119,10 @@ See the [CLI Reference](https://docs.montaj.ag/cli) for the full documentation.
 
 | Workflow | Description |
 |----------|-------------|
-| `clean_cut` | Trim, remove filler, clean audio |
-| `overlays` | Add animated overlays and titles |
+| `overlays` | Trim, remove filler, then add overlays (the default) |
 | `ai_video` | Generate video from text via Kling + storyboard |
-| `lyrics_video` | Sync lyrics to audio with animated captions |
-| `animations` | Custom JSX animation compositions |
-| `explainer` | Educational/explainer video style |
-| `floating_head` | Speaker overlay on background footage |
-| `clips` | Long-form horizontal source → series of short vertical clips with overlays; imports lazily (`settings.normalize: "lazy"`) so each clip-window is normalized on demand rather than re-encoding the entire source |
+| `carousel` | Image carousel of still slides, rendered to PNGs |
+| `blank` | Empty project with no steps; edit by hand |
 
 Custom steps and workflows are discovered automatically — no registration needed. See the [Steps Reference](https://docs.montaj.ag/steps) and [Core Concepts](https://docs.montaj.ag/concepts) for details.
 

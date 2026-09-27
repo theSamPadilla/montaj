@@ -37,7 +37,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     version: '0.2',
     id: 'proj-1',
     name: 'Test',
-    workflow: 'clean_cut',
+    workflow: 'overlays',
     status: 'draft',
     projectType: 'editing',
     editingPrompt: '',

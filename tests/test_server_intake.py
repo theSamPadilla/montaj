@@ -46,7 +46,7 @@ def init_spy(monkeypatch, tmp_path):
 def test_image_ref_missing_both_path_and_text():
     resp = client.post("/api/run", json={
         "prompt": "test",
-        "workflow": "clean_cut",
+        "workflow": "overlays",
         "clips": [],
         "aiVideoIntake": {
             "imageRefs": [{"label": "Max"}],
@@ -60,7 +60,7 @@ def test_image_ref_missing_both_path_and_text():
 def test_image_ref_has_both_path_and_text():
     resp = client.post("/api/run", json={
         "prompt": "test",
-        "workflow": "clean_cut",
+        "workflow": "overlays",
         "clips": [],
         "aiVideoIntake": {
             "imageRefs": [{"label": "Max", "path": "/tmp/x.png", "text": "a dog"}],
@@ -74,7 +74,7 @@ def test_image_ref_has_both_path_and_text():
 def test_style_ref_missing_path():
     resp = client.post("/api/run", json={
         "prompt": "test",
-        "workflow": "clean_cut",
+        "workflow": "overlays",
         "clips": [],
         "aiVideoIntake": {
             "imageRefs": [],
@@ -88,7 +88,7 @@ def test_style_ref_missing_path():
 def test_too_many_style_refs():
     resp = client.post("/api/run", json={
         "prompt": "test",
-        "workflow": "clean_cut",
+        "workflow": "overlays",
         "clips": [],
         "aiVideoIntake": {
             "imageRefs": [],
@@ -146,7 +146,7 @@ def test_run_without_voiceover_asset_is_unchanged(tmp_path, init_spy):
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")
     resp = client.post("/api/run", json={
-        "workflow": "clean_cut", "prompt": "clean it", "clips": [str(clip)],
+        "workflow": "overlays", "prompt": "clean it", "clips": [str(clip)],
     })
     assert resp.status_code == 201, resp.text
     assert "--voiceover-asset" not in init_spy["cmd"]
@@ -220,7 +220,7 @@ def _clip(tmp_path):
 def test_init_settings_resolution_alone(tmp_path, init_spy, capsys):
     """initSettings.resolution works on its own, and says nothing while doing it."""
     resp = client.post("/api/run", json={
-        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "prompt": "p", "workflow": "overlays", "clips": [_clip(tmp_path)],
         "initSettings": {"resolution": "1080x1920"},
     })
     assert resp.status_code == 201, resp.text
@@ -233,7 +233,7 @@ def test_init_settings_resolution_alone(tmp_path, init_spy, capsys):
 def test_ai_video_intake_resolution_still_works_and_warns(tmp_path, init_spy, capsys):
     """The legacy spelling keeps working — montaj's own UI sends it — and logs."""
     resp = client.post("/api/run", json={
-        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "prompt": "p", "workflow": "overlays", "clips": [_clip(tmp_path)],
         "aiVideoIntake": {"resolution": "1920x1080"},
     })
     assert resp.status_code == 201, resp.text
@@ -248,7 +248,7 @@ def test_ai_video_intake_resolution_still_works_and_warns(tmp_path, init_spy, ca
 def test_init_settings_resolution_beats_ai_video_intake(tmp_path, init_spy, capsys):
     """Precedence: both present -> initSettings wins, and only once."""
     resp = client.post("/api/run", json={
-        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "prompt": "p", "workflow": "overlays", "clips": [_clip(tmp_path)],
         "initSettings": {"resolution": "1080x1920"},
         "aiVideoIntake": {"resolution": "1920x1080"},
     })
@@ -262,7 +262,7 @@ def test_init_settings_resolution_beats_ai_video_intake(tmp_path, init_spy, caps
 
 def test_init_settings_forwards_normalize(tmp_path, init_spy):
     resp = client.post("/api/run", json={
-        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "prompt": "p", "workflow": "overlays", "clips": [_clip(tmp_path)],
         "initSettings": {"normalize": "lazy"},
     })
     assert resp.status_code == 201, resp.text
@@ -273,7 +273,7 @@ def test_init_settings_forwards_normalize(tmp_path, init_spy):
 def test_init_settings_rejects_unknown_normalize(tmp_path, init_spy):
     """400 naming the field, rather than an opaque nonzero exit from argparse."""
     resp = client.post("/api/run", json={
-        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "prompt": "p", "workflow": "overlays", "clips": [_clip(tmp_path)],
         "initSettings": {"normalize": "sometimes"},
     })
     assert resp.status_code == 400
@@ -285,7 +285,7 @@ def test_init_settings_rejects_unknown_normalize(tmp_path, init_spy):
 
 def test_init_settings_forwards_symlink_clips(tmp_path, init_spy):
     resp = client.post("/api/run", json={
-        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "prompt": "p", "workflow": "overlays", "clips": [_clip(tmp_path)],
         "initSettings": {"symlinkClips": True},
     })
     assert resp.status_code == 201, resp.text
@@ -295,7 +295,7 @@ def test_init_settings_forwards_symlink_clips(tmp_path, init_spy):
 def test_init_settings_symlink_clips_false_appends_nothing(tmp_path, init_spy):
     """store_true downstream: false must omit the flag, not pass a value."""
     resp = client.post("/api/run", json={
-        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "prompt": "p", "workflow": "overlays", "clips": [_clip(tmp_path)],
         "initSettings": {"symlinkClips": False},
     })
     assert resp.status_code == 201, resp.text
@@ -304,7 +304,7 @@ def test_init_settings_symlink_clips_false_appends_nothing(tmp_path, init_spy):
 
 def test_init_settings_forwards_derived_from(tmp_path, init_spy):
     resp = client.post("/api/run", json={
-        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "prompt": "p", "workflow": "overlays", "clips": [_clip(tmp_path)],
         "initSettings": {"derivedFrom": "e3f1c0de-0000-4000-8000-000000000001"},
     })
     assert resp.status_code == 201, resp.text
@@ -315,7 +315,7 @@ def test_init_settings_forwards_derived_from(tmp_path, init_spy):
 def test_init_settings_rejects_unknown_key(tmp_path, init_spy):
     """A typo must be loud. Silent acceptance is the failure this block exists to stop."""
     resp = client.post("/api/run", json={
-        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "prompt": "p", "workflow": "overlays", "clips": [_clip(tmp_path)],
         "initSettings": {"normalise": "lazy"},
     })
     assert resp.status_code == 400
@@ -329,7 +329,7 @@ def test_absent_init_settings_changes_nothing(tmp_path, init_spy):
     the caller or the workflow, init skips the colour conversion and serve runs
     it in the background (see serve/routes/projects.py `_ensure_background_normalize`)."""
     resp = client.post("/api/run", json={
-        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "prompt": "p", "workflow": "overlays", "clips": [_clip(tmp_path)],
     })
     assert resp.status_code == 201, resp.text
     cmd = init_spy["cmd"]
@@ -342,7 +342,7 @@ def test_absent_init_settings_changes_nothing(tmp_path, init_spy):
 def test_explicit_eager_is_not_turned_into_background(tmp_path, init_spy):
     """A caller that asks for eager gets eager: converted inline, no lazy flag."""
     resp = client.post("/api/run", json={
-        "prompt": "p", "workflow": "clean_cut", "clips": [_clip(tmp_path)],
+        "prompt": "p", "workflow": "overlays", "clips": [_clip(tmp_path)],
         "initSettings": {"normalize": "eager"},
     })
     assert resp.status_code == 201, resp.text

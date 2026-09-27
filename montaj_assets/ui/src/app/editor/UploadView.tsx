@@ -99,15 +99,8 @@ function NameProfileRow({
 // reading cleanly. Custom/unknown workflows fall back to a project-type line.
 const WORKFLOW_EXPLAINERS: Record<string, string> = {
   overlays: 'Trims and cleans your footage, then layers in captions and image overlays. The default for social videos.',
-  clean_cut: 'Trims silence and filler into a tight cut, with no overlays added.',
-  broll: 'Voiceover-led edit: cleans the narration, then covers it with B-roll shots from your footage.',
   ai_video: 'Generates a storyboard and AI video clips from your prompt and reference images.',
   carousel: 'Builds a multi-slide image carousel for social from a topic.',
-  lyrics_video: 'Turns a song into a lyric video with word-synced captions.',
-  animations: 'Builds a fully animated video from overlays and audio, with no source footage needed.',
-  clips: 'Turns one long horizontal video into a series of short vertical clips.',
-  explainer: 'Multi-clip edit with animated explainer sections and silence trimming.',
-  floating_head: 'Places a talking-head presenter over a custom background and trims silence.',
 }
 
 const TYPE_EXPLAINERS: Record<ProjectType, string> = {
