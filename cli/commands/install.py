@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
 from cli.main import MONTAJ_ROOT
 from cli.deps import whisper_bin_path
+from common import DEFAULT_WHISPER_MODEL
 from cli.help import bold, green, red, yellow, cyan, dim
 
 
@@ -19,9 +20,9 @@ def register(subparsers):
     sub = _parser.add_subparsers(dest="component", metavar="<component>")
 
     whisper_p = sub.add_parser("whisper", help="whisper-cpp binary + model weights")
-    whisper_p.add_argument("--model", default="base.en",
-                           help="English model to download (default: base.en). The multilingual "
-                                "'base' weight is always added too, for non-English audio.")
+    whisper_p.add_argument("--model", default=DEFAULT_WHISPER_MODEL,
+                           help=f"Model to download (default: {DEFAULT_WHISPER_MODEL}, multilingual). "
+                                f"The default weight is always added too.")
 
     sub.add_parser("rvm",    help="torch/torchvision/av + RVM weights")
     sub.add_parser("demucs", help="Demucs stem separation + htdemucs model weights")
@@ -39,14 +40,14 @@ def handle(args):
         return
     ok = True
     if args.component == "all":
-        ok &= _ensure_whisper(["base.en", "base"])
+        ok &= _ensure_whisper([DEFAULT_WHISPER_MODEL])
         ok &= _ensure_rvm()
         ok &= _ensure_demucs()
         ok &= _ensure_connectors()
         ok &= _ensure_ui()
         ok &= _ensure_ffmpeg_managed()
     elif args.component == "whisper":
-        ok &= _ensure_whisper(getattr(args, "model", "base.en"))
+        ok &= _ensure_whisper(getattr(args, "model", DEFAULT_WHISPER_MODEL))
     elif args.component == "rvm":
         ok &= _ensure_rvm()
     elif args.component == "demucs":
@@ -63,15 +64,14 @@ def handle(args):
         sys.exit(1)
 
 
-def _ensure_whisper(models="base.en") -> bool:
+def _ensure_whisper(models=DEFAULT_WHISPER_MODEL) -> bool:
     """Install the whisper-cli binary (via Homebrew on macOS) and download model weights.
 
-    *models* is a model name or a list of names. The multilingual ``base`` weight
-    is always included alongside whatever is requested: the speech steps
-    (transcribe / rm_nonspeech / rm_fillers) auto-upgrade an English-only ``*.en``
-    model to its multilingual sibling for non-English audio, and ``base`` is that
-    sibling for the default ``base.en``. Without it, the first non-English clip
-    fails with "model not installed".
+    *models* is a model name or a list of names. ``DEFAULT_WHISPER_MODEL``
+    (large-v3-turbo-q5_0) is always included alongside whatever is requested:
+    it is multilingual, so it serves every language, and it is what the speech
+    steps (transcribe / rm_nonspeech / rm_fillers) default to and fall back to
+    when a requested weight is not installed.
 
     Note: ggerganov/whisper.cpp moved to ggml-org/whisper.cpp and stopped
     publishing pre-built macOS/Linux tarballs. We delegate the binary install
@@ -86,8 +86,8 @@ def _ensure_whisper(models="base.en") -> bool:
 
     if isinstance(models, str):
         models = [models]
-    # Always guarantee the multilingual base weight so non-English audio works.
-    wanted = list(dict.fromkeys([*models, "base"]))
+    # Always guarantee the default (multilingual) weight.
+    wanted = list(dict.fromkeys([*models, DEFAULT_WHISPER_MODEL]))
 
     ok = True
     for model in wanted:

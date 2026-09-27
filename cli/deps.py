@@ -10,11 +10,13 @@ import time
 from cli.main import MONTAJ_ROOT
 sys.path.insert(0, os.path.join(MONTAJ_ROOT, "lib"))
 import models as _models
-from common import ffmpeg_bin, ffprobe_bin, _exe
+from common import ffmpeg_bin, ffprobe_bin, _exe, DEFAULT_WHISPER_MODEL
 from lib import proc
 
 LEGACY_WHISPER_MODELS_DIR = os.path.expanduser("~/.local/share/whisper.cpp/models")
-WHISPER_MODEL = "base.en"
+WHISPER_MODEL = DEFAULT_WHISPER_MODEL
+# Older CLI installs carry only base.en; resolve_whisper_model falls back to it.
+LEGACY_DEFAULT_WHISPER_MODEL = "base.en"
 
 # Build cache for Node.js bundles (render engine, Vite UI, MCP server). Keeps
 # `node_modules/` and `ui/dist/` out of site-packages so the install dir stays
@@ -43,7 +45,7 @@ def check_deps() -> list[str]:
     if not whisper_bin_path():
         missing.append("whisper.cpp binary not found")
 
-    if not whisper_model_path():
+    if not (whisper_model_path() or whisper_model_path(LEGACY_DEFAULT_WHISPER_MODEL)):
         missing.append(f"whisper model '{WHISPER_MODEL}' not downloaded")
 
     return missing

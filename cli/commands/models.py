@@ -12,12 +12,14 @@ AVAILABLE = {
     "small": 244, "small.en": 244,
     "medium": 769, "medium.en": 769,
     "large-v1": 1550, "large-v2": 1550, "large-v3": 1550,
+    "large-v3-turbo": 1624, "large-v3-turbo-q5_0": 574,
 }
 
 HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 
 # TODO: populate with real SHA-256 checksums per model
 CHECKSUMS: dict = {name: None for name in AVAILABLE}
+CHECKSUMS["large-v3-turbo-q5_0"] = "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
 
 
 def model_path(name: str) -> str:
@@ -45,11 +47,11 @@ def handle(args):
 
 
 def _list():
-    print(bold(f"{'MODEL':<12}  {'SIZE':>7}  STATUS"))
-    print(dim("-" * 32))
+    print(bold(f"{'MODEL':<19}  {'SIZE':>7}  STATUS"))
+    print(dim("-" * 39))
     for name, size_mb in AVAILABLE.items():
         status = green("downloaded") if is_downloaded(name) else yellow("not downloaded")
-        print(f"{bold(f'{name:<12}')}  {size_mb:>5} MB  {status}")
+        print(f"{bold(f'{name:<19}')}  {size_mb:>5} MB  {status}")
 
 
 def _download(name: str):

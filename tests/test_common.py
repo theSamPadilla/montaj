@@ -213,6 +213,59 @@ def test_resolve_finds_weight_in_legacy_dir(tmp_path, monkeypatch):
     assert common.resolve_whisper_model("base.en", "es") == "base"
 
 
+# ── DEFAULT_WHISPER_MODEL (large-v3-turbo-q5_0) fallback ─────────────────────
+
+TURBO = "large-v3-turbo-q5_0"
+
+
+def test_default_whisper_model_is_turbo():
+    from common import DEFAULT_WHISPER_MODEL
+    assert DEFAULT_WHISPER_MODEL == TURBO
+
+
+def test_missing_model_falls_back_to_installed_turbo(fake_models):
+    fake_models(TURBO)
+    assert common.resolve_whisper_model("base.en", "en") == TURBO
+    assert common.resolve_whisper_model("base", "es") == TURBO
+    assert common.resolve_whisper_model("base.en", "auto") == TURBO
+    assert common.resolve_whisper_model("small.en", "en") == TURBO
+
+
+def test_installed_model_is_used_as_requested(fake_models):
+    fake_models("base.en", TURBO)
+    assert common.resolve_whisper_model("base.en", "en") == "base.en"
+
+
+def test_non_english_prefers_turbo_over_same_size_sibling(fake_models):
+    fake_models("base.en", "base", TURBO)
+    assert common.resolve_whisper_model("base.en", "es") == TURBO
+
+
+def test_missing_model_without_turbo_keeps_old_behaviour(fake_models, capsys):
+    fake_models("base.en")
+    assert common.resolve_whisper_model("base.en", "en") == "base.en"
+    with pytest.raises(SystemExit):
+        common.resolve_whisper_model("base.en", "es")
+    err = json.loads(capsys.readouterr().err)
+    assert err["error"] == "missing_multilingual_model"
+
+
+def test_default_turbo_falls_back_to_base_en_for_older_cli_installs(fake_models):
+    fake_models("base.en")
+    assert common.resolve_whisper_model(TURBO, "en") == "base.en"
+
+
+def test_default_turbo_falls_back_to_base_for_non_english(fake_models):
+    fake_models("base.en", "base")
+    assert common.resolve_whisper_model(TURBO, "es") == "base"
+
+
+def test_nothing_installed_returns_requested_model(fake_models):
+    # No weights at all: resolution leaves the name alone so transcribe_words'
+    # require_file names the missing file.
+    assert common.resolve_whisper_model(TURBO, "en") == TURBO
+
+
 # ── ffmpeg/ffprobe resolver ──────────────────────────────────────────────────
 
 class TestFfmpegResolver:

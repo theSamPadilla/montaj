@@ -242,6 +242,10 @@ def find_whisper_bin() -> str:
 # asks for a non-English language we transparently swap the ".en" model for its
 # multilingual sibling (same size → same speed), falling back to whatever
 # multilingual weights are actually installed.
+# The Montaj App bundles only this weight (PV27, 2026-09-27): multilingual, so
+# it serves every language, and far more accurate than base at the same speed.
+DEFAULT_WHISPER_MODEL = "large-v3-turbo-q5_0"
+
 _EN_TO_MULTILINGUAL = {
     "tiny.en": "tiny", "base.en": "base", "small.en": "small", "medium.en": "medium",
 }
@@ -268,23 +272,36 @@ def whisper_weight_path(name: str):
 def resolve_whisper_model(model: str, language: str) -> str:
     """Pick the right whisper model for *language*.
 
-    English (or unspecified) → *model* unchanged. For any other language (or
-    ``auto``), an English-only ``*.en`` model is swapped for a multilingual one:
-    its same-size sibling when present, else the best installed multilingual
-    weight. If the audio is non-English but no multilingual weight is installed,
-    fail with an actionable message (instead of returning a model whose file is
-    missing, which would surface later as a cryptic file-not-found). Already-
-    multilingual models pass through untouched.
+    A requested model that is not installed falls back to the first installed
+    of ``DEFAULT_WHISPER_MODEL`` (turbo), ``base.en`` (English only) and
+    ``base``: callers that still ask for ``base.en`` keep working on installs
+    that only carry turbo, and older CLI installs (base.en only) keep working
+    now that turbo is the default. With nothing installed the name is returned
+    unchanged so ``transcribe_words``' require_file names the missing file.
+
+    Then: English (or unspecified) → the model unchanged. For any other
+    language (or ``auto``), an English-only ``*.en`` model is swapped for a
+    multilingual one: turbo when installed, else its same-size sibling, else
+    the best installed multilingual weight. If the audio is non-English but no
+    multilingual weight is installed, fail with an actionable message (instead
+    of returning a model whose file is missing, which would surface later as a
+    cryptic file-not-found). Already-multilingual models pass through untouched.
     """
     lang = (language or "en").strip().lower()
-    if lang in ("en", "english"):
+    english = lang in ("en", "english")
+    if whisper_weight_path(model) is None:
+        fallbacks = [DEFAULT_WHISPER_MODEL, *(["base.en"] if english else []), "base"]
+        for cand in fallbacks:
+            if cand != model and whisper_weight_path(cand) is not None:
+                return cand
+    if english:
         return model
     if not model.endswith(".en"):
         return model
     sibling = _EN_TO_MULTILINGUAL.get(model, model[:-3])
-    # Prefer the same-size sibling, then progressively more capable installed
-    # weights. dict.fromkeys dedups when the sibling already appears in the chain.
-    for cand in dict.fromkeys([sibling, "medium", "large-v3", "large", "base"]):
+    # Prefer turbo, then the same-size sibling, then progressively more capable
+    # installed weights. dict.fromkeys dedups repeats in the chain.
+    for cand in dict.fromkeys([DEFAULT_WHISPER_MODEL, sibling, "medium", "large-v3", "large", "base"]):
         if whisper_weight_path(cand) is not None:
             return cand
     fail("missing_multilingual_model",
@@ -293,7 +310,7 @@ def resolve_whisper_model(model: str, language: str) -> str:
          f"montaj models download {sibling}")
 
 
-def transcribe_words(input_path: str, model: str = "base.en", work_dir: str = None,
+def transcribe_words(input_path: str, model: str = DEFAULT_WHISPER_MODEL, work_dir: str = None,
                      language: str = "en") -> list:
     """Transcribe audio or video with whisper.cpp.
 

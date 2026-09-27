@@ -46,7 +46,47 @@ def test_whisper_model_path_returns_none_when_missing(tmp_path, monkeypatch):
     assert deps.whisper_model_path("base.en") is None
 
 
-def test_check_deps_accepts_managed_whisper_model(tmp_path, monkeypatch):
+TURBO_MISSING = "whisper model 'large-v3-turbo-q5_0' not downloaded"
+
+
+def _whisper_missing(missing):
+    return [m for m in missing if m.startswith("whisper model")]
+
+
+def test_default_whisper_model_is_turbo():
+    assert deps.WHISPER_MODEL == "large-v3-turbo-q5_0"
+    assert deps.LEGACY_DEFAULT_WHISPER_MODEL == "base.en"
+
+
+def test_check_deps_accepts_managed_turbo_model(tmp_path, monkeypatch):
+    managed_root = tmp_path / "managed"
+    legacy_root = tmp_path / "legacy"
+    monkeypatch.setattr(_models, "MONTAJ_MODELS_DIR", str(managed_root))
+    monkeypatch.setattr(deps, "LEGACY_WHISPER_MODELS_DIR", str(legacy_root))
+    monkeypatch.setattr(deps.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    managed = Path(_models.model_path("whisper", "ggml-large-v3-turbo-q5_0.bin"))
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"managed")
+
+    assert _whisper_missing(deps.check_deps()) == []
+
+
+def test_check_deps_accepts_legacy_dir_turbo_model(tmp_path, monkeypatch):
+    managed_root = tmp_path / "managed"
+    legacy_root = tmp_path / "legacy"
+    monkeypatch.setattr(_models, "MONTAJ_MODELS_DIR", str(managed_root))
+    monkeypatch.setattr(deps, "LEGACY_WHISPER_MODELS_DIR", str(legacy_root))
+    monkeypatch.setattr(deps.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    legacy = legacy_root / "ggml-large-v3-turbo-q5_0.bin"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"legacy")
+
+    assert _whisper_missing(deps.check_deps()) == []
+
+
+def test_check_deps_accepts_base_en_for_older_cli_installs(tmp_path, monkeypatch):
     managed_root = tmp_path / "managed"
     legacy_root = tmp_path / "legacy"
     monkeypatch.setattr(_models, "MONTAJ_MODELS_DIR", str(managed_root))
@@ -56,11 +96,10 @@ def test_check_deps_accepts_managed_whisper_model(tmp_path, monkeypatch):
     managed = Path(_models.model_path("whisper", "ggml-base.en.bin"))
     managed.parent.mkdir(parents=True)
     managed.write_bytes(b"managed")
+    assert _whisper_missing(deps.check_deps()) == []
 
-    assert "whisper model 'base.en' not downloaded" not in deps.check_deps()
 
-
-def test_check_deps_accepts_legacy_whisper_model(tmp_path, monkeypatch):
+def test_check_deps_accepts_legacy_dir_base_en(tmp_path, monkeypatch):
     managed_root = tmp_path / "managed"
     legacy_root = tmp_path / "legacy"
     monkeypatch.setattr(_models, "MONTAJ_MODELS_DIR", str(managed_root))
@@ -71,7 +110,7 @@ def test_check_deps_accepts_legacy_whisper_model(tmp_path, monkeypatch):
     legacy.parent.mkdir(parents=True)
     legacy.write_bytes(b"legacy")
 
-    assert "whisper model 'base.en' not downloaded" not in deps.check_deps()
+    assert _whisper_missing(deps.check_deps()) == []
 
 
 def test_check_deps_reports_missing_whisper_model(tmp_path, monkeypatch):
@@ -79,7 +118,7 @@ def test_check_deps_reports_missing_whisper_model(tmp_path, monkeypatch):
     monkeypatch.setattr(deps, "LEGACY_WHISPER_MODELS_DIR", str(tmp_path / "legacy"))
     monkeypatch.setattr(deps.shutil, "which", lambda name: f"/usr/bin/{name}")
 
-    assert "whisper model 'base.en' not downloaded" in deps.check_deps()
+    assert TURBO_MISSING in deps.check_deps()
 
 
 # ── whisper_bin_path() ────────────────────────────────────────────────────────

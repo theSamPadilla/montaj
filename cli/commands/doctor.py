@@ -9,7 +9,7 @@ import os, re, subprocess, sys, shutil
 from cli.main import add_global_flags
 from cli.deps import check_ui, whisper_bin_path, whisper_model_path, is_dev_checkout, BUILD_CACHE_DIR
 from cli.help import bold, green, red, yellow, cyan, dim
-from lib.common import ffmpeg_bin, ffprobe_bin, _managed_ffmpeg_dir, _bundled_av_dir
+from lib.common import ffmpeg_bin, ffprobe_bin, _managed_ffmpeg_dir, _bundled_av_dir, DEFAULT_WHISPER_MODEL
 
 
 REQUIRED_FFMPEG_FILTERS = ["zscale", "tonemap", "overlay", "scale", "format", "amix", "adelay", "lut3d"]
@@ -152,18 +152,16 @@ def handle(args):
     whisper_path = whisper_bin_path()
     if whisper_path:
         print(f"  {green('✓')} {bold('whisper-cli')}: {dim(whisper_path)}")
-        # Model weights. base.en is the English default; the multilingual `base`
-        # is what the speech steps auto-upgrade to for non-English audio — without
-        # it, the first non-English clip fails. Both are recommendations, not hard
-        # requirements (English-only setups don't need `base`), so neither flips `ok`.
+        # Model weights. DEFAULT_WHISPER_MODEL (turbo) is the default for every
+        # language. base.en is reported only when present: older CLI installs
+        # carry it and the speech steps fall back to it when turbo is missing.
+        # Recommendations, not hard requirements, so neither flips `ok`.
+        if whisper_model_path(DEFAULT_WHISPER_MODEL):
+            print(f"    {green('✓')} model: {DEFAULT_WHISPER_MODEL} {dim('(default)')}")
+        else:
+            print(f"    {yellow('○')} model: {DEFAULT_WHISPER_MODEL} {dim('— not downloaded; run')} {cyan('montaj install whisper')}")
         if whisper_model_path("base.en"):
-            print(f"    {green('✓')} model: base.en {dim('(English default)')}")
-        else:
-            print(f"    {yellow('○')} model: base.en {dim('— not downloaded; run')} {cyan('montaj install whisper')}")
-        if whisper_model_path("base"):
-            print(f"    {green('✓')} model: base {dim('(multilingual)')}")
-        else:
-            print(f"    {yellow('○')} model: base {dim('(multilingual) — needed for non-English audio; run')} {cyan('montaj models download base')}")
+            print(f"    {green('✓')} model: base.en {dim('(legacy, optional)')}")
     else:
         print(f"  {yellow('○')} {bold('whisper-cli')}: {dim('not installed (optional — run')} {cyan('montaj install whisper')}{dim(')')}")
 

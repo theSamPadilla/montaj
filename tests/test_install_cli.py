@@ -40,6 +40,50 @@ def test_models_list_output(capsys):
     assert "MODEL" in out
 
 
+def test_models_list_includes_turbo_with_checksum(capsys):
+    assert models_cmd.AVAILABLE["large-v3-turbo-q5_0"] == 574
+    assert models_cmd.AVAILABLE["large-v3-turbo"] == 1624
+    assert models_cmd.CHECKSUMS["large-v3-turbo-q5_0"] == (
+        "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2")
+    models_cmd._list()
+    out = capsys.readouterr().out
+    assert "large-v3-turbo-q5_0" in out
+    assert "574 MB" in out
+
+
+def _capture_whisper_downloads(monkeypatch):
+    downloaded = []
+    monkeypatch.setattr(install_cmd, "_ensure_whisper_binary", lambda: True)
+    monkeypatch.setattr(models_cmd, "is_downloaded", lambda name: False)
+    monkeypatch.setattr(models_cmd, "_download", lambda name: downloaded.append(name))
+    return downloaded
+
+
+def test_ensure_whisper_default_downloads_turbo_not_base(monkeypatch, capsys):
+    downloaded = _capture_whisper_downloads(monkeypatch)
+    assert install_cmd._ensure_whisper() is True
+    assert downloaded == ["large-v3-turbo-q5_0"]
+
+
+def test_ensure_whisper_adds_turbo_to_requested_model(monkeypatch, capsys):
+    downloaded = _capture_whisper_downloads(monkeypatch)
+    install_cmd._ensure_whisper("base.en")
+    assert downloaded == ["base.en", "large-v3-turbo-q5_0"]
+
+
+def test_install_whisper_model_flag_defaults_to_turbo():
+    import argparse
+    parser = argparse.ArgumentParser()
+    install_cmd.register(parser.add_subparsers())
+    assert parser.parse_args(["install", "whisper"]).model == "large-v3-turbo-q5_0"
+
+
+def test_handle_all_installs_turbo(mock_ensure, capsys):
+    whisper, *_ = mock_ensure
+    install_cmd.handle(_make_args(component="all"))
+    whisper.assert_called_once_with(["large-v3-turbo-q5_0"])
+
+
 # ---------------------------------------------------------------------------
 # handle() routing tests
 # ---------------------------------------------------------------------------
