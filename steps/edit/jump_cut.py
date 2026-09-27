@@ -68,6 +68,10 @@ def main():
     if clip is None:
         fail("not_found", f"Clip {args.clip_id} not found on tracks[0]")
 
+    if "inPoint" not in clip or "outPoint" not in clip:
+        fail("missing_fields",
+             f"Clip {args.clip_id} has no inPoint/outPoint yet. Run probe and set them before jump_cut.")
+
     clip_duration = clip["outPoint"] - clip["inPoint"]
 
     # Parse ranges

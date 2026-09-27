@@ -54,6 +54,11 @@ def main():
     if clip_b is None:
         fail("not_found", f"Clip {args.clip_b} not found on tracks[0]")
 
+    for cid, c in ((args.clip_a, clip_a), (args.clip_b, clip_b)):
+        if "inPoint" not in c or "outPoint" not in c:
+            fail("missing_fields",
+                 f"Clip {cid} has no inPoint/outPoint yet. Run probe and set them before cross_cut.")
+
     # Segment both clips
     segs_a = segment_clip(clip_a, args.segment_duration)
     segs_b = segment_clip(clip_b, args.segment_duration)

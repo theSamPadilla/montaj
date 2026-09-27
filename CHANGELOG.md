@@ -17,6 +17,17 @@
   documents the tool. (`cli/commands/log.py`, `cli/main.py`,
   `cli/mcp_schema.py`, `skills/mcp/SKILL.md`)
 
+- **Fixed: `jump_cut`, `cross_cut`, and `montage` crashed with an uncaught
+  `KeyError: 'outPoint'` on a clip that had not been probed yet.**
+  `project/init.py` creates fresh clips with only `{id, type, src, start,
+  end}` — no `inPoint`/`outPoint` — and expects the agent to run `probe` and
+  set those fields before editing (`skills/SKILL.md`). Each of these three
+  steps indexed `clip["outPoint"] - clip["inPoint"]` directly, so calling one
+  on a freshly-`init`'d project surfaced a raw traceback instead of a
+  structured error. They now check for the missing fields up front and
+  `fail("missing_fields", ...)` with a message naming the clip and the step.
+  (`steps/edit/jump_cut.py`, `steps/edit/cross_cut.py`, `steps/edit/montage.py`)
+
 ## v4.7.0
 
 - **Fixed: the MCP `init` tool rejected its `clips` argument (and, less

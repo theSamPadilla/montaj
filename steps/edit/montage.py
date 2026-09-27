@@ -47,6 +47,11 @@ def main():
         clips.append(clip)
         indices.append(idx)
 
+    for cid, c in zip(clip_ids, clips):
+        if "inPoint" not in c or "outPoint" not in c:
+            fail("missing_fields",
+                 f"Clip {cid} has no inPoint/outPoint yet. Run probe and set them before montage.")
+
     # Build montage beats: one beat per clip, round-robin
     # Each beat extracts beat_duration from the clip starting at offset
     new_clips = []
