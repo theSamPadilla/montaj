@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail, require_file
 from connectors import gemini, ConnectorError
+from connectors.gemini import INVALID_API_KEY_MESSAGE
 
 
 def main():
@@ -28,6 +29,8 @@ def main():
             json_output=args.json_output,
         )
     except ConnectorError as e:
+        if e.reason == "invalid_api_key":
+            fail("invalid_api_key", INVALID_API_KEY_MESSAGE)
         fail("api_error", str(e))
 
     if args.out:

@@ -195,6 +195,167 @@ class TestGenerateContentErrors:
             with pytest.raises(ConnectorError, match="generate_content failed"):
                 mod.analyze_media(video_path, "describe this")
 
+    def test_generic_exception_reason_is_none(self, monkeypatch, video_path):
+        """A non-auth SDK failure gets ConnectorError.reason == None (the
+        generic api_error path), not "invalid_api_key"."""
+        client = _make_mock_client(
+            generate_side_effect=RuntimeError("API quota exceeded")
+        )
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+
+        fake_types = MagicMock()
+        fake_genai = stdlib_types.ModuleType("google.genai")
+        fake_genai.types = fake_types
+        fake_google = stdlib_types.ModuleType("google")
+        fake_google.genai = fake_genai
+
+        import connectors.gemini as mod
+
+        with patch.dict("sys.modules", {
+            "google": fake_google,
+            "google.genai": fake_genai,
+        }):
+            with pytest.raises(ConnectorError) as ei:
+                mod.analyze_media(video_path, "describe this")
+        assert ei.value.reason is None
+
+
+# ---------------------------------------------------------------------------
+# Invalid API key detection and wrapping — FQ1.1 T10.
+#
+# `_is_invalid_api_key_error` is tested directly against the REAL
+# google-genai SDK's error classes (installed in .venv, imported here as
+# `real_errors`), not a fake shape, since the whole point of this check is
+# to match what the installed SDK actually raises.
+# ---------------------------------------------------------------------------
+
+from google.genai import errors as real_genai_errors  # noqa: E402
+
+
+def _sdk_error(cls, code, message, status):
+    """Build a real google.genai.errors ClientError/ServerError instance."""
+    return cls(code, {"error": {"code": code, "message": message, "status": status}})
+
+
+def _patch_genai_types_with_real_errors():
+    """Like the fake google.genai module used elsewhere in this file, but
+    with a real `.errors` attribute so `from google.genai import errors`
+    resolves to the SDK's actual error classes (a bare fake submodule has
+    no `__path__` and fails that import with ImportError — see
+    TestGenerateContentErrors.test_generic_exception_reason_is_none, which
+    relies on exactly that fallback)."""
+    fake_types = MagicMock()
+    fake_genai = stdlib_types.ModuleType("google.genai")
+    fake_genai.types = fake_types
+    fake_genai.errors = real_genai_errors
+    fake_google = stdlib_types.ModuleType("google")
+    fake_google.genai = fake_genai
+    modules = {"google": fake_google, "google.genai": fake_genai}
+    return fake_types, modules
+
+
+class TestInvalidApiKeyDetection:
+    """_is_invalid_api_key_error matches the installed SDK's real error shape."""
+
+    def test_400_invalid_argument_mentioning_api_key(self):
+        from connectors.gemini import _is_invalid_api_key_error
+        e = _sdk_error(real_genai_errors.ClientError, 400,
+                        "API key not valid. Please pass a valid API key.",
+                        "INVALID_ARGUMENT")
+        assert _is_invalid_api_key_error(e) is True
+
+    def test_401_unauthenticated(self):
+        from connectors.gemini import _is_invalid_api_key_error
+        e = _sdk_error(real_genai_errors.ClientError, 401,
+                        "Request had invalid authentication credentials.",
+                        "UNAUTHENTICATED")
+        assert _is_invalid_api_key_error(e) is True
+
+    def test_403_permission_denied(self):
+        from connectors.gemini import _is_invalid_api_key_error
+        e = _sdk_error(real_genai_errors.ClientError, 403,
+                        "Permission denied.", "PERMISSION_DENIED")
+        assert _is_invalid_api_key_error(e) is True
+
+    def test_400_invalid_argument_unrelated_to_key_not_flagged(self):
+        from connectors.gemini import _is_invalid_api_key_error
+        e = _sdk_error(real_genai_errors.ClientError, 400,
+                        "Invalid value at 'contents[0]'.", "INVALID_ARGUMENT")
+        assert _is_invalid_api_key_error(e) is False
+
+    def test_server_error_not_flagged(self):
+        from connectors.gemini import _is_invalid_api_key_error
+        e = _sdk_error(real_genai_errors.ServerError, 500,
+                        "Internal error", "SERVER_INTERNAL ERROR")
+        assert _is_invalid_api_key_error(e) is False
+
+    def test_non_sdk_exception_not_flagged(self):
+        from connectors.gemini import _is_invalid_api_key_error
+        assert _is_invalid_api_key_error(RuntimeError("network blip")) is False
+
+
+class TestInvalidApiKeyWrapping:
+    """A rejected key surfaces as ConnectorError(reason="invalid_api_key")
+    from every Gemini call path, not just generate_content."""
+
+    def test_analyze_media_generate_content_invalid_key(self, monkeypatch, video_path):
+        auth_error = _sdk_error(real_genai_errors.ClientError, 400,
+                                 "API key not valid. Please pass a valid API key.",
+                                 "INVALID_ARGUMENT")
+        client = _make_mock_client(generate_side_effect=auth_error)
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+
+        _, modules = _patch_genai_types_with_real_errors()
+
+        import connectors.gemini as mod
+        with patch.dict("sys.modules", modules):
+            with pytest.raises(ConnectorError) as ei:
+                mod.analyze_media(video_path, "describe this")
+        assert ei.value.reason == "invalid_api_key"
+        assert "API key" in str(ei.value)
+
+    def test_generate_image_invalid_key(self, monkeypatch, tmp_path):
+        auth_error = _sdk_error(real_genai_errors.ClientError, 403,
+                                 "Permission denied.", "PERMISSION_DENIED")
+        client = MagicMock()
+        client.models.generate_content.side_effect = auth_error
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+
+        _, modules = _patch_genai_types_with_real_errors()
+
+        import connectors.gemini as mod
+        with patch.dict("sys.modules", modules):
+            with pytest.raises(ConnectorError) as ei:
+                mod.generate_image("test", str(tmp_path / "out.png"))
+        assert ei.value.reason == "invalid_api_key"
+
+    def test_upload_media_invalid_key(self, monkeypatch):
+        auth_error = _sdk_error(real_genai_errors.ClientError, 401,
+                                 "Request had invalid authentication credentials.",
+                                 "UNAUTHENTICATED")
+        client = MagicMock()
+        client.files.upload.side_effect = auth_error
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+
+        import connectors.gemini as mod
+        with pytest.raises(ConnectorError) as ei:
+            mod.upload_media("/tmp/video.mp4")
+        assert ei.value.reason == "invalid_api_key"
+
+    def test_generate_music_audio_path_invalid_key(self, monkeypatch, tmp_path):
+        """_generate_audio (shared by generate_speech/generate_music) also wraps."""
+        auth_error = _sdk_error(real_genai_errors.ClientError, 400,
+                                 "API key not valid. Please pass a valid API key.",
+                                 "INVALID_ARGUMENT")
+        client = MagicMock()
+        client.models.generate_content.side_effect = auth_error
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+
+        import connectors.gemini as mod
+        with pytest.raises(ConnectorError) as ei:
+            mod.generate_music("a calm piano piece", str(tmp_path / "out.mp3"))
+        assert ei.value.reason == "invalid_api_key"
+
 
 class TestUploadErrors:
     """SDK exceptions from files.upload → ConnectorError."""

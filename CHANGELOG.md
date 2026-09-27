@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **A rejected Gemini API key now fails with its own code and a fix-it
+  message, instead of the generic `api_error` a bad key used to produce.**
+  `connectors/gemini.py` wrapped every SDK exception as `"Gemini
+  generate_content failed: <e>"` regardless of cause, so an invalid (but
+  present) key looked identical to a quota error or a network blip — the
+  operator's agent got `api_error` for both. `_is_invalid_api_key_error`
+  now inspects the installed google-genai SDK's real exception shape
+  (`google.genai.errors.ClientError`/`APIError`: `.code` the HTTP status,
+  `.status` the API's string status, `.message` the text) and matches 401,
+  403 `PERMISSION_DENIED`/`UNAUTHENTICATED`, or 400 `INVALID_ARGUMENT`
+  mentioning "API key" — Google's actual response shape for a bad key.
+  Every SDK call path in the connector (`upload_media`'s upload and poll,
+  both `generate_content` calls in `analyze_media`, `generate_image`,
+  and the `_generate_audio` helper shared by `generate_speech` /
+  `generate_music`) now routes its exception through the same
+  `_wrap_sdk_error`, which raises `ConnectorError(reason="invalid_api_key")`
+  for a rejected key and the old message for everything else.
+  `ConnectorError` gained an optional `reason` for this (default `None`,
+  so `kling.py`/`openai.py`/`_http.py`'s existing raises are unaffected).
+  Every step that calls the Gemini connector (`analyze_media`,
+  `generate_image`, `generate_voiceover`, `generate_music`) now checks
+  `reason == "invalid_api_key"` and answers `fail("invalid_api_key", ...)`
+  with one shared message (`connectors.gemini.INVALID_API_KEY_MESSAGE`)
+  naming both the Montaj app's Integrations settings and the bare `montaj
+  credentials` CLI command, since OSS montaj runs both with and without the
+  app. (`connectors/__init__.py`, `connectors/gemini.py`,
+  `steps/media/analyze_media.py`, `steps/generate/generate_image.py`,
+  `steps/generate/generate_voiceover.py`, `steps/generate/generate_music.py`,
+  `tests/test_connectors_gemini.py`, `tests/steps/test_analyze_media.py`,
+  `tests/steps/test_generate_image.py`)
+
 - **`PUT /api/projects/{id}` now validates overlay items and refuses a bad
   one with field-level errors.** `save_project` used to shallow-merge and write
   whatever it was sent, so an agent guessing the overlay item shape (a

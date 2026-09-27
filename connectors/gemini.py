@@ -44,6 +44,18 @@ DEFAULT_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_TTS_VOICE = "Kore"  # default for generate_speech when caller omits voice
 DEFAULT_MUSIC_MODEL = "lyria-3-clip-preview"
 
+# Shared fail() message for ConnectorError(reason="invalid_api_key"). One
+# constant so every Gemini-calling step (analyze_media, generate_image,
+# generate_voiceover, generate_music) shows the operator identical wording
+# instead of four hand-written copies drifting apart. Montaj also runs with
+# no app installed at all, so this names both the app's own settings page
+# and the bare-CLI path rather than assuming either is the current surface.
+INVALID_API_KEY_MESSAGE = (
+    "Your Gemini API key was rejected. Update it in the Montaj app under "
+    "Integrations, or on the CLI: montaj credentials --provider gemini "
+    "--key api_key --value <new key>."
+)
+
 _IMAGE_MIME_BY_EXT = {
     ".png":  "image/png",
     ".jpg":  "image/jpeg",
@@ -122,20 +134,72 @@ def _client():
     return genai.Client(api_key=get_credential("gemini", "api_key"))
 
 
+def _is_invalid_api_key_error(e: Exception) -> bool:
+    """True if `e` is a google-genai SDK error indicating a rejected API key.
+
+    Matched against the installed SDK's real shape (google/genai/errors.py):
+    `APIError.raise_error` raises `ClientError` for any 4xx and `ServerError`
+    for any 5xx, with `.code` the HTTP status (int), `.status` the API's
+    string status (e.g. "INVALID_ARGUMENT", "PERMISSION_DENIED",
+    "UNAUTHENTICATED"), and `.message` the human-readable text — all parsed
+    from the response body, so any of the three can be None on an odd
+    response shape.
+
+    A rejected key from Google's API most often comes back as a plain 400
+    with status "INVALID_ARGUMENT" and a message containing "API key" (e.g.
+    "API key not valid. Please pass a valid API key."), which is why the
+    message is checked, not just the status. 401/403 (UNAUTHENTICATED /
+    PERMISSION_DENIED) are auth failures regardless of message wording —
+    those are checked structurally instead. Anything not an APIError (a
+    network error, a timeout) is never treated as a key problem.
+    """
+    try:
+        from google.genai import errors
+    except ImportError:
+        return False
+    if not isinstance(e, errors.APIError):
+        return False
+    code = getattr(e, "code", None)
+    status = (getattr(e, "status", None) or "").upper()
+    message = (getattr(e, "message", None) or str(e)).lower()
+    if code in (401, 403):
+        return True
+    if status in ("PERMISSION_DENIED", "UNAUTHENTICATED"):
+        return True
+    if code == 400 and "api key" in message:
+        return True
+    return False
+
+
+def _wrap_sdk_error(e: Exception, prefix: str) -> ConnectorError:
+    """Turn an SDK exception into the ConnectorError a step should see.
+
+    A rejected API key gets reason="invalid_api_key" so step scripts can
+    give the operator a fix-it message instead of a generic api_error; every
+    other SDK failure keeps the existing `{prefix}: {e}` message untouched.
+    """
+    if _is_invalid_api_key_error(e):
+        detail = getattr(e, "message", None) or str(e)
+        return ConnectorError(
+            f"Gemini rejected the API key: {detail}", reason="invalid_api_key"
+        )
+    return ConnectorError(f"{prefix}: {e}")
+
+
 def upload_media(path: str):
     """Upload a media file (video, audio, or image) via Files API, poll until ACTIVE. Returns file object."""
     client = _client()
     try:
         media_file = client.files.upload(file=path)
     except Exception as e:
-        raise ConnectorError(f"Gemini file upload failed: {e}") from e
+        raise _wrap_sdk_error(e, "Gemini file upload failed") from e
 
     elapsed = 0.0
     while elapsed < UPLOAD_MAX_WAIT_S:
         try:
             media_file = client.files.get(name=media_file.name)
         except Exception as e:
-            raise ConnectorError(f"Gemini file status check failed: {e}") from e
+            raise _wrap_sdk_error(e, "Gemini file status check failed") from e
         if media_file.state.name == "ACTIVE":
             return media_file
         if media_file.state.name == "FAILED":
@@ -200,7 +264,7 @@ def analyze_media(
                 config=config_obj,
             )
         except Exception as e:
-            raise ConnectorError(f"Gemini generate_content failed: {e}") from e
+            raise _wrap_sdk_error(e, "Gemini generate_content failed") from e
         text = response.text
         return _strip_markdown_fences(text) if json_output else text
 
@@ -215,7 +279,7 @@ def analyze_media(
     except ConnectorError:
         raise
     except Exception as e:
-        raise ConnectorError(f"Gemini generate_content failed: {e}") from e
+        raise _wrap_sdk_error(e, "Gemini generate_content failed") from e
     finally:
         # Best-effort cleanup — but log failures: silently leaked uploads
         # accumulate against the account's Files API quota.
@@ -279,7 +343,7 @@ def generate_image(
     except ConnectorError:
         raise
     except Exception as e:
-        raise ConnectorError(f"Gemini image generation failed: {e}") from e
+        raise _wrap_sdk_error(e, "Gemini image generation failed") from e
 
     # Extract image bytes from response
     if not resp.candidates:
@@ -324,7 +388,7 @@ def _generate_audio(
             config=config,
         )
     except Exception as e:
-        raise ConnectorError(f"{error_prefix} request failed: {e}") from e
+        raise _wrap_sdk_error(e, f"{error_prefix} request failed") from e
 
     # Lyria returns multiple parts (text lyrics + audio); TTS returns one.
     # Iterate to find the part with inline_data rather than assuming parts[0].
