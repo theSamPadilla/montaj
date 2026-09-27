@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v4.9.0
+
 - **`@bycrux/editor`: hosts can own the pending gate and hear user edits.**
   `VideoEditor` takes `pendingSurface: 'default' | 'host'` (in `'host'` a
   pending project opens in the normal editor and the host draws its own
