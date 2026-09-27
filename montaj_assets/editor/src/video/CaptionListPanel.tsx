@@ -2,11 +2,11 @@
 // TranscriptPanel + its "Expand" TranscriptModal: instead of a two-line
 // vicinity strip at the bottom of the timeline pane, every caption segment
 // lives in a searchable, numbered list, under three sub-tabs — "Format" (the
-// track-level size/color/font controls, the default), "Styles" (the live
-// style gallery, CaptionStyleGallery.tsx) and "Captions" (the list itself) —
-// so the list stays the prominent thing in a ~300px-wide column. Mounted by
-// BOTH VideoEditor layouts: the CapCut left panel's Captions tab and the
-// classic right rail.
+// track-level size/color/font controls), "Styles" (the live style gallery,
+// CaptionStyleGallery.tsx) and "Captions" (the list itself, and the sub-tab
+// every mount opens on) — so the list stays the prominent thing in a
+// ~300px-wide column. Mounted by BOTH VideoEditor layouts: the CapCut left
+// panel's Captions tab and the classic right rail.
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { AlignCenter, AlignLeft, AlignRight, Loader2, RefreshCw, Search, Trash2 } from 'lucide-react'
 import type { Project, OverlayFactory } from '../types'
@@ -16,33 +16,23 @@ import type { CaptionEditPatch } from './timeline/makeCaptionEdit'
 import { EditableSegment } from './timeline/EditableSegment'
 import { formatTime } from './timeline/utils'
 import { NumberField, Slider, stepValue, SwatchInput } from '../ui'
-import { usePersistentState } from '../ui/usePersistentState'
 import { groupCaptionLanes, laneOf } from './captionLanes'
 import { FontFamilyPicker, findFontOption } from '../text/FontPicker'
 import CaptionStyleGallery from './CaptionStyleGallery'
 import TabNav from './panels/TabNav'
 import { CAPTION_STYLE_LETTER_SPACING, CAPTION_STYLE_LINE_HEIGHT, CAPTION_STYLE_TEXT_TRANSFORM } from './captionStyleDefaults'
 
-/** Which of the panel's three sub-tabs is showing: the fine formatting
- *  controls, the style gallery, or the caption transcript. 'format' is the
- *  default — you land on the size/colors/font/case controls, the thing an
- *  operator reaches for most once a style is chosen, with the gallery of live
- *  style previews one tab over and the full transcript one further. Replaces
- *  the retired collapsible "Caption style" subsection; a DIFFERENT key than
- *  that collapse's 'montaj.editor.captionListStyleExpanded' (a boolean) so a
- *  stale expanded/collapsed value can never be misread as a tab name. */
-const CAPTION_TAB_STORAGE_KEY = 'montaj.editor.captionPanelTab'
+/** Which of the panel's three sub-tabs is showing: the caption transcript,
+ *  the fine formatting controls, or the style gallery. Plain component state,
+ *  NOT persisted — every mount (a fresh project, a fresh session, a switch
+ *  back to this rail section after the browser tab was closed) opens on
+ *  'captions', the list itself, which is the thing an operator wants first.
+ *  Switching to Format or Styles still works for the rest of that session;
+ *  it just isn't remembered across a remount. (Previously persisted to
+ *  localStorage under 'montaj.editor.captionPanelTab', defaulting to
+ *  'format' — operator call, reverted so the panel always opens on the
+ *  list.) */
 type CaptionPanelTab = 'styles' | 'format' | 'captions'
-/** Anything unrecognised reads as "no stored preference" (→ the default), with
- *  ONE explicit migration: before the tab split a single 'style' tab held both
- *  the preset chips and the fine controls. A browser carrying that value lands
- *  on 'format' — the new default a returning user should see — rather than
- *  being silently reset, which is what a plain reject-to-default would do. */
-export const reviveCaptionTab = (raw: unknown): CaptionPanelTab | null => {
-  if (raw === 'styles' || raw === 'format' || raw === 'captions') return raw
-  if (raw === 'style') return 'format' // migrate the pre-split value
-  return null
-}
 const CAPTION_TABS: readonly { value: CaptionPanelTab; label: string }[] = [
   { value: 'format', label: 'Format' },
   { value: 'styles', label: 'Styles' },
@@ -329,7 +319,7 @@ function CaptionListPanelBody({
   // a "Row N" chip. Lives beside `search` rather than folded into it — they
   // compose (both apply) instead of one being a mode that disables the other.
   const [rowFilter, setRowFilter] = useState<number | null>(null)
-  const [tab, setTab] = usePersistentState<CaptionPanelTab>(CAPTION_TAB_STORAGE_KEY, 'format', reviveCaptionTab)
+  const [tab, setTab] = useState<CaptionPanelTab>('captions')
 
   // ── Remove all (confirm-twice, ported from TranscriptPanel) ──
   const [confirmRemove, setConfirmRemove] = useState(false)
@@ -568,8 +558,9 @@ function CaptionListPanelBody({
         </div>
 
         {/* Only mounts once there are captions to split between the gallery,
-            the format controls and the transcript; 'Format' is the default.
-            No `className` is passed: TabNav's own base is `flex items-center`,
+            the format controls and the transcript; 'Captions' (the list) is
+            the default. No `className` is passed: TabNav's own base is
+            `flex items-center`,
             which is exactly what this strip carried inline, and the header's
             bottom border (which the active tab's underline sits on) belongs to
             the wrapper ABOVE — not to the strip.

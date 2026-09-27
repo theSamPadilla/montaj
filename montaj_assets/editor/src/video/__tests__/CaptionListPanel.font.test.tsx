@@ -8,29 +8,25 @@
  * mirror that file's shape rather than importing from it, so neither test file
  * can silently change the other's setup.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import type { Project } from '../../types'
 import type { Captions, CaptionSegment } from '../../schema'
 import type { PlaybackClock } from '../playback-clock'
 import CaptionListPanel from '../CaptionListPanel'
 
-// The panel's active sub-tab persists to localStorage (usePersistentState).
-// Clear it, then seed 'captions' for consistency with the sibling suites;
-// every test here flips to the Format tab via `expandStyle()` anyway, since
-// the font and text-styling controls live there now (moved off the retired
-// "Style" tab, which split into "Styles" — a preset gallery, see
-// CaptionStyleGallery.test.tsx — and "Format" — these fine controls).
+// The panel's active sub-tab is plain component state, not persisted — every
+// mount defaults to 'captions'. Every test here flips to the Format tab via
+// `expandStyle()` anyway, since the font and text-styling controls live there
+// now (moved off the retired "Style" tab, which split into "Styles" — a
+// preset gallery, see CaptionStyleGallery.test.tsx — and "Format" — these
+// fine controls).
 //
 // No local ResizeObserver stub: the specimen strip observes its own width and
 // jsdom has no ResizeObserver, but src/test-setup.ts now installs a no-op one
 // globally. That also means these tests run the specimen's "measurement never
 // happens" floor-clamp path, which is why the size assertions below read the
 // reported figure rather than a computed px.
-beforeEach(() => {
-  window.localStorage.clear()
-  window.localStorage.setItem('montaj.editor.captionPanelTab', JSON.stringify('captions'))
-})
 afterEach(() => cleanup())
 
 Element.prototype.scrollIntoView = vi.fn()
@@ -91,8 +87,8 @@ function renderPanel(extra: Partial<Captions> = {}, currentTime = 0, selectedIds
 
 function expandStyle() {
   // Font/text-styling controls moved from a collapse toggle, then from a
-  // single "Style" tab, onto the "Format" tab; these suites seed 'captions',
-  // so this click flips there.
+  // single "Style" tab, onto the "Format" tab; the panel mounts on
+  // 'Captions', so this click flips there.
   fireEvent.click(screen.getByRole('button', { name: 'Format' }))
 }
 

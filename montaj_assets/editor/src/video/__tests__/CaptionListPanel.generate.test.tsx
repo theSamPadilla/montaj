@@ -8,21 +8,17 @@
  * `../CaptionListPanel.test.tsx` — its own render helpers and fixtures mirror
  * that file's shape independently, per the same convention.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import type { Project } from '../../types'
 import type { Captions, CaptionSegment } from '../../schema'
 import type { PlaybackClock } from '../playback-clock'
 import CaptionListPanel from '../CaptionListPanel'
 
-// The panel's active sub-tab persists to localStorage (usePersistentState).
-// Clear it, then seed 'captions' so the regenerate-trigger assertions render
-// on the tab the footer lives on; the Bold tests flip to the Format tab via
+// The panel's active sub-tab is plain component state, not persisted — every
+// mount defaults to 'captions', which is the tab the regenerate-trigger
+// assertions below need; the Bold tests flip to the Format tab via
 // `expandStyle()`.
-beforeEach(() => {
-  window.localStorage.clear()
-  window.localStorage.setItem('montaj.editor.captionPanelTab', JSON.stringify('captions'))
-})
 afterEach(() => cleanup())
 
 Element.prototype.scrollIntoView = vi.fn()
@@ -76,7 +72,7 @@ function renderPanel(opts: {
 
 function expandStyle() {
   // Bold moved from a collapse toggle, then from a single "Style" tab, onto
-  // the "Format" tab; these suites seed 'captions', so this click flips there.
+  // the "Format" tab; the panel mounts on 'Captions', so this click flips there.
   fireEvent.click(screen.getByRole('button', { name: 'Format' }))
 }
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Editor: the captions panel opens on the Captions list every time (no remembered sub-tab).
+
 ## v5.0.0
 
 - **Fix: a stale `~/.cache/montaj` runtime cache now rebuilds itself instead of silently running old JS.** Only `montaj install ui` ever rebuilt the render/UI/MCP Node cache, and only `montaj doctor` ever compared its `.version` stamp to the installed package, so a `pip`/Homebrew upgrade left render, `sample`, the MCP server and `montaj serve`'s UI running the PREVIOUS version's JS (e.g. a missing `useCanvas2DFrame`) until someone ran `montaj install ui` by hand. `render_runtime_dir()`/`mcp_runtime_dir()` and `montaj serve` startup now check the stamp once per process and, if it's missing or stale, log `rebuilding montaj runtime cache for X.Y.Z` to stderr and rebuild. The rebuild (shared with `montaj install ui`) builds into a fresh temp dir next to the cache and swaps it in only on success (old cache renamed aside, new dir renamed into place, old one deleted), so a failed or offline rebuild leaves the working cache untouched: montaj warns once (``montaj runtime cache is out of date and could not be rebuilt; run `montaj install ui` when online``) and keeps using it. It errors only when there is no previous cache at all. Concurrent rebuilds each use their own temp dir, so they cannot corrupt each other; a lock file just avoids duplicate work. Skipped in dev checkouts and whenever the cache carries an embedding app's own version marker (e.g. the Montaj desktop app's `.montaj-app-version`). `montaj doctor` does not rebuild. (`cli/deps.py`, `cli/commands/install.py`, `cli/commands/serve.py`)
