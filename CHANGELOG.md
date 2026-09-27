@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Editor icons are visible again in Tailwind v3 hosts.** About 260
+  `@bycrux/editor` classes used Tailwind's opacity modifier on opaque CSS vars
+  (`text-[var(--editor-text)]/60`), which Tailwind v3 compiles to nothing, so
+  toolbar, timeline and panel icons inherited the host's text colour and
+  vanished on the dark surface. They now use
+  `color-mix(in_srgb,var(--editor-X)_NN%,transparent)`, the editor root sets
+  `--editor-text` as its colour, and a source test fails if the dead pattern
+  returns. (`montaj_assets/editor/src/**`)
+
 - **Animation projects now cut to a generated music bed, and the overlay
   sandbox finally documents how to move.** Measured against a directed
   reference reel at matched sampling, a Montaj promo had 2.320 motion energy
