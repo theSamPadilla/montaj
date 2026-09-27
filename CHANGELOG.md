@@ -2,7 +2,13 @@
 
 ## Unreleased
 
-- **New `detect_beats` step measures a music bed's real grid.** It reports tempo (with `bpm_confidence`), every beat, the first downbeat (with its own confidence and which cue decided it; when no cue is sure, bar one falls back to the first beat and `downbeat_source` says `first_beat`), bar length, per-bar energy sections, and `drop` / `breakdown` events. `--bpm-hint` picks the octave without dragging the tempo. ffmpeg band split plus stdlib Python, no new dependency: exact tempo on synthetic 90/120/128/140 BPM tracks and 120-128 on real beds in about 0.2s for 30s of audio. (`steps/audio/detect_beats.py`, `steps/audio/detect_beats.json`)
+- **New `detect_beats` step measures a music bed's real grid.** It reports tempo (with `bpm_confidence`), every beat, the first downbeat (with its own confidence and which cue decided it; when no cue is sure, bar one falls back to the first beat and `downbeat_source` says `first_beat`), bar length, per-bar energy sections, and `drop` / `breakdown` events. `--bpm-hint` picks the octave without dragging the tempo. ffmpeg band split plus stdlib Python, no new dependency: exact tempo on synthetic 90/120/128/140 BPM tracks and 120-128 on real beds in about 0.2s for 30s of audio. It is available on the CLI as `montaj detect-beats` and exposed as an MCP tool for agents. (`steps/audio/detect_beats.py`, `steps/audio/detect_beats.json`, `cli/main.py`, `cli/mcp_schema.py`)
+
+- **New overlay globals `springStep` and `springSum` provide closed-form springs as pure functions of frame.** Unlike `spring()` which is semi-implicit Euler and context-dependent, these are deterministic and retargetable mid-animation. `springSum` sums one spring per target change, making it easier to compose springs for complex multi-target sequences. (`montaj_assets/overlay-runtime/springs.js`)
+
+- **`montaj sample diff` and the `sample_diff` step check single-frame pops, jumps, and loop seams.** Comparing frames at boundaries and within sections helps catch stutters in layered projects and loop-seam artifacts. `sample overlay --fps` accepts an optional fps to override the project frame rate for testing. (`cli/commands/sample.py`, `steps/render/sample_diff.py`, `steps/render/sample_diff.json`)
+
+- **Fix: `sample_frame` cache now keys on overlay source files, not just project.json.** Editing an overlay no longer returns a stale cached frame for up to 24h. Previously the cache key was only the project.json modification time, so overlay-only changes were invisible to the cache. (`montaj_assets/render/sample-frame.js`)
 
 ## v4.9.1
 
