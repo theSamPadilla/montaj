@@ -163,14 +163,39 @@ describe('availableResolutionTiers', () => {
 })
 
 describe('availableFpsTiers', () => {
-  it('returns [24, 30] when settings.fps is 30', () => {
-    expect(availableFpsTiers(makeProject({ settings: { resolution: [1080, 1920], fps: 30 } }))).toEqual([24, 30])
+  it('returns [24, 30] when settings.fps is 30 and the project has a video item', () => {
+    const p = makeProject({
+      settings: { resolution: [1080, 1920], fps: 30 },
+      tracks: vtracks([videoClip()]),
+    })
+    expect(availableFpsTiers(p)).toEqual([24, 30])
   })
 
   it('returns [24, 30, 60] when settings.fps is 60', () => {
     expect(availableFpsTiers(makeProject({ settings: { resolution: [1080, 1920], fps: 60 } }))).toEqual([
       24, 30, 60,
     ])
+  })
+
+  it('offers every tier at fps 30 when the project has no video items (overlay/canvas-only)', () => {
+    const p = makeProject({
+      settings: { resolution: [1080, 1920], fps: 30 },
+      tracks: vtracks([{ id: 'o1', type: 'overlay', start: 0, end: 5 }]),
+    })
+    expect(availableFpsTiers(p)).toEqual([24, 30, 60])
+  })
+
+  it('offers every tier at fps 30 when tracks is empty (no items of any kind)', () => {
+    const p = makeProject({ settings: { resolution: [1080, 1920], fps: 30 } })
+    expect(availableFpsTiers(p)).toEqual([24, 30, 60])
+  })
+
+  it('still caps to [24, 30] for a video item missing source dims (has-video check ignores dims)', () => {
+    const p = makeProject({
+      settings: { resolution: [1080, 1920], fps: 30 },
+      tracks: vtracks([videoClip()]),
+    })
+    expect(availableFpsTiers(p)).toEqual([24, 30])
   })
 })
 

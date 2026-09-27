@@ -31,6 +31,21 @@ function maxSourceShortSide(project: Project): number | undefined {
   return max
 }
 
+/** Whether the project has any video item at all (regardless of whether its
+ *  source dims are known). Canvas/animation projects — overlays, images,
+ *  audio, no footage — have no source fps to protect and render cleanly at
+ *  any fps, so `availableFpsTiers` uses this (not `maxSourceShortSide`, which
+ *  also returns undefined for a video item with unknown dims) to decide
+ *  whether the fps cap applies at all. */
+function hasVideoItem(project: Project): boolean {
+  for (const items of trackItems(project)) {
+    for (const item of items) {
+      if (item.type === 'video') return true
+    }
+  }
+  return false
+}
+
 /** Converts a short-side tier to [w,h], preserving the project's aspect and
  *  orientation. Long side is rounded to the nearest EVEN integer (encoders
  *  demand even dims). */
@@ -79,8 +94,14 @@ export function availableResolutionTiers(project: Project): Array<[number, numbe
 }
 
 /** Every fps tier offerable in the export dialog, filtered to the source cap
- *  and ordered ascending. Always non-empty. */
+ *  and ordered ascending. Always non-empty.
+ *
+ *  The cap only protects source footage, so a project with no video items at
+ *  all — overlays/images/audio only, e.g. a canvas/animation project — has
+ *  nothing to protect and offers every standard tier uncapped. */
 export function availableFpsTiers(project: Project): number[] {
+  if (!hasVideoItem(project)) return [...STANDARD_FPS_TIERS]
+
   const cap = maxExportFps(project)
   const tiers = STANDARD_FPS_TIERS.filter(f => f <= cap)
   return tiers.length > 0 ? tiers : [cap]
