@@ -118,6 +118,46 @@ def test_canvas_project_has_empty_primary_track(tmp_path):
     assert project["tracks"] == [{"id": "trk-0", "items": []}]
 
 
+def test_canvas_project_defaults_to_60fps(tmp_path):
+    """Canvas projects are authored frame-by-frame, so they get 60 rather than the
+    30 a footage project starts at before its clips are probed."""
+    result = run_init("--canvas", "--prompt", "test", "--workflow", "canvas",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["settings"]["fps"] == 60
+
+
+def test_clipless_project_gets_60fps_without_the_canvas_flag(tmp_path):
+    """The 60fps default keys on the ABSENCE OF FOOTAGE, not on --canvas.
+
+    `montaj init` does not expose --canvas, so a real animations project created
+    through the CLI arrives with args.canvas False and merely an empty clips list.
+    An earlier version of this keyed on the flag and silently left every
+    CLI-created animation project at 30fps — the exact case it existed to fix —
+    while the --canvas test above still passed. Hence this second test.
+    """
+    result = run_init("--prompt", "test", "--workflow", "animations",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["tracks"][0]["items"] == [], "expected a clipless project"
+    assert project["settings"]["fps"] == 60
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_footage_project_fps_comes_from_the_clip_not_the_canvas_default(tmp_path):
+    """A project WITH footage must still take its fps from the probe, so the
+    clipless default can never leak into a footage project."""
+    clip = tmp_path / "clip.mp4"
+    _make_clip(clip, fps=24)
+    result = run_init("--clips", str(clip), "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["settings"]["fps"] == 24
+
+
 def test_canvas_and_clips_are_mutually_exclusive(tmp_path):
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")
@@ -409,15 +449,16 @@ def test_assets_array_untouched_with_project_type(tmp_path):
 # (require ffmpeg)
 # ---------------------------------------------------------------------------
 
-def _make_clip(path: Path, *, width=640, height=480, sample_rate=48000, duration=1, rotation=0):
+def _make_clip(path: Path, *, width=640, height=480, sample_rate=48000, duration=1, rotation=0, fps=30):
     """Make a small synthetic video clip — used by parallel + modal-resolution tests.
 
     Pass `rotation` (e.g. -90) to simulate iPhone vertical recording — adds a
     displaymatrix rotation tag without changing the physical pixel dimensions.
+    Pass `fps` to prove fps detection reads the clip rather than a default.
     """
     cmd = [
         "ffmpeg", "-y",
-        "-f", "lavfi", "-i", f"color=red:size={width}x{height}:rate=30:duration={duration}",
+        "-f", "lavfi", "-i", f"color=red:size={width}x{height}:rate={fps}:duration={duration}",
         "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate={sample_rate}:duration={duration}",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
         "-pix_fmt", "yuv420p", "-g", "30", "-keyint_min", "30",

@@ -557,7 +557,20 @@ def main():
     ar = args.aspect_ratio or DEFAULT_ASPECT_RATIO
     default_resolution = list(ASPECT_RESOLUTIONS.get(ar, ASPECT_RESOLUTIONS[DEFAULT_ASPECT_RATIO]))
     detected_resolution = default_resolution
-    detected_fps = 30
+    # A project with no footage of any kind has nothing to probe, so this default is
+    # the FINAL answer for it — every frame is authored JSX rather than sampled
+    # footage, and motion graphics at 30 read visibly cheap (stepped easing, strobing
+    # on fast translates). Footage projects keep 30 as a placeholder only; the probe
+    # loop below overwrites it from the first clip, so the value chosen here never
+    # reaches them.
+    #
+    # Test on the absence of footage, NOT on args.canvas: `--canvas` is a flag on this
+    # module's own parser, but `montaj init` does not expose it, so a real animations
+    # project created through the CLI arrives with args.canvas False and merely an
+    # empty clips list. Keying this to the flag gave those projects 30fps, which is the
+    # exact case the change exists to fix.
+    has_footage = bool(args.clips) or bool(args.remote_clips)
+    detected_fps = 30 if has_footage else 60
 
     # Cache probe results so _normalize_one below doesn't re-ffprobe each clip.
     # Keyed by absolute source path. Populated below for non-canvas projects.
