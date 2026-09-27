@@ -145,7 +145,7 @@ export default function SocialPreviewMenu({ anchorRef, value, onChange, onClose,
       ref={popoverRef}
       role="menu"
       aria-label="Preview for social media"
-      className="fixed z-[100] w-64 rounded-xl border border-[var(--editor-border)] bg-[var(--editor-surface)] shadow-2xl p-2 flex flex-col gap-1"
+      className="fixed z-[100] w-64 rounded-xl border border-[var(--editor-border)] bg-[var(--editor-surface)] shadow-2xl p-2 flex flex-col gap-1 text-[var(--editor-text)]"
       style={{
         left: position?.left ?? -9999,
         top: position?.top ?? -9999,

@@ -94,7 +94,7 @@ export default function CommandPalette({ commands, initialMode = 'list', onGoToT
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/70 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/70 backdrop-blur-sm text-[var(--editor-text)]"
       onClick={onClose}
     >
       <div
@@ -131,7 +131,7 @@ export default function CommandPalette({ commands, initialMode = 'list', onGoToT
             </div>
             <div className="max-h-80 overflow-y-auto py-1">
               {filtered.length === 0 && (
-                <div className="px-4 py-3 text-xs text-[color-mix(in_srgb,var(--editor-text)_35%,transparent)]">No matching commands</div>
+                <div className="px-4 py-3 text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">No matching commands</div>
               )}
               {filtered.map((cmd, i) => (
                 <button

@@ -681,7 +681,7 @@ export default function AudioPolishModal<P extends Project = Project>({
   // ── Render ────────────────────────────────────────────────────────────────
 
   const panel = (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 text-[var(--editor-text)]">
       <div
         role="dialog"
         aria-label="Polish audio"
@@ -747,7 +747,7 @@ export default function AudioPolishModal<P extends Project = Project>({
                   <option key={l.id} value={l.id}>{l.label}</option>
                 ))}
               </select>
-              <span className="text-[10px] text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] max-w-[15rem] leading-snug">
+              <span className="text-[10px] text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] max-w-[15rem] leading-snug">
                 Set this before analysing. The wrong language makes real speech look like silence.
               </span>
             </label>
@@ -841,7 +841,7 @@ export default function AudioPolishModal<P extends Project = Project>({
               <section key={clip.id} className="flex flex-col gap-2">
                 <header className="flex items-baseline justify-between gap-3 border-b border-[var(--editor-border)] pb-1">
                   <span className="text-xs font-semibold text-[var(--editor-text)] truncate">{clipLabel(clip)}</span>
-                  <span className="text-[10px] font-mono text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] shrink-0">
+                  <span className="text-[10px] font-mono text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] shrink-0">
                     {`${clock(clip.start)} to ${clock(clip.end)}`}
                   </span>
                 </header>
@@ -914,7 +914,7 @@ export default function AudioPolishModal<P extends Project = Project>({
 
                 {/* Removals */}
                 {rows.length === 0 ? (
-                  <p className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)] italic">No removals proposed for this clip.</p>
+                  <p className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] italic">No removals proposed for this clip.</p>
                 ) : (
                   <ul className="flex flex-col gap-1">
                     {rows.map(row => (

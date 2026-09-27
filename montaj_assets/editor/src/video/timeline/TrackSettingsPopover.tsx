@@ -174,7 +174,7 @@ export default function TrackSettingsPopover({
       ref={popoverRef}
       role="dialog"
       aria-label={title}
-      className="fixed z-[100] w-64 rounded-lg border border-[var(--editor-border)] bg-[var(--editor-surface)] shadow-2xl p-3 flex flex-col gap-3"
+      className="fixed z-[100] w-64 rounded-lg border border-[var(--editor-border)] bg-[var(--editor-surface)] shadow-2xl p-3 flex flex-col gap-3 text-[var(--editor-text)]"
       style={{
         left: position?.left ?? -9999,
         top: position?.top ?? -9999,

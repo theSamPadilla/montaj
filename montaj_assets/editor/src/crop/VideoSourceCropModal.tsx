@@ -156,7 +156,7 @@ export function VideoSourceCropModal({
 
   return (
     <div
-      className="fixed inset-0 z-[300] flex items-center justify-center bg-black/70 p-6"
+      className="fixed inset-0 z-[300] flex items-center justify-center bg-black/70 p-6 text-[var(--editor-text)]"
       onPointerDown={onClose}
     >
       <div
@@ -165,7 +165,7 @@ export function VideoSourceCropModal({
       >
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-[var(--editor-text)]">Crop source</h2>
-          <span className="text-xs text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">Pick the part of the footage to keep — position &amp; zoom live on the canvas</span>
+          <span className="text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">Pick the part of the footage to keep. Position and zoom live on the canvas</span>
         </div>
 
         {/* Source frame + crop window */}

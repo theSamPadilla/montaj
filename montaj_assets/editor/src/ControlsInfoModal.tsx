@@ -110,7 +110,7 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
       role="dialog"
       aria-modal="true"
       aria-label={title}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm text-[var(--editor-text)]"
       onClick={onClose}
     >
       <div

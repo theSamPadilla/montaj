@@ -16,9 +16,8 @@ export interface ImageToneMenuProps {
    *              For host chrome at the top of the page.
    */
   variant?: 'icon' | 'header'
-  /** Editor theme mode — light/dark. Only affects the icon variant's active-
-   *  state hue (violet-400 is sub-AA on a light bottom toolbar). Absent ->
-   *  dark, matching every existing caller. */
+  /** Editor theme mode — light/dark. Kept for API compatibility; the active state now
+   *  reads the theme's accent tokens, which already adapt to light and dark. */
   mode?: 'light' | 'dark'
 }
 
@@ -29,7 +28,7 @@ export interface ImageToneMenuProps {
  * caller gates on settings.colorSpace). Each option shows an example: the same
  * generic photo converted through the actual render pipeline under that mode.
  */
-export default function ImageToneMenu({ value, onChange, variant = 'icon', mode = 'dark' }: ImageToneMenuProps) {
+export default function ImageToneMenu({ value, onChange, variant = 'icon' }: ImageToneMenuProps) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -78,7 +77,7 @@ export default function ImageToneMenu({ value, onChange, variant = 'icon', mode 
           aria-haspopup="menu"
           className={`flex items-center justify-center w-5 h-5 rounded transition-colors ${
             open
-              ? (mode === 'light' ? 'text-violet-600 bg-violet-400/15 hover:bg-violet-400/25' : 'text-violet-400 bg-violet-400/15 hover:bg-violet-400/25')
+              ? 'text-[var(--editor-accent-text)] bg-[color-mix(in_srgb,var(--editor-accent)_15%,transparent)] hover:bg-[color-mix(in_srgb,var(--editor-accent)_25%,transparent)]'
               : 'text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] bg-transparent hover:text-[var(--editor-text)]'
           }`}
         >
@@ -89,11 +88,11 @@ export default function ImageToneMenu({ value, onChange, variant = 'icon', mode 
       {open && (
         <div
           role="menu"
-          className={`${menuPosition} z-40 w-[300px] rounded-xl border border-[var(--editor-border)] bg-[var(--editor-surface)] shadow-2xl p-2 flex flex-col gap-1`}
+          className={`${menuPosition} z-40 w-[300px] rounded-xl border border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)] shadow-2xl p-2 flex flex-col gap-1`}
         >
           <p className="px-2 pt-1 pb-1.5 text-[11px] font-semibold text-[color-mix(in_srgb,var(--editor-text)_80%,transparent)]">
             Image color mapping
-            <span className="block font-normal text-[10px] text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
+            <span className="block font-normal text-[10px] text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">
               How photos and logos are converted for the HDR render.
             </span>
           </p>
@@ -107,7 +106,7 @@ export default function ImageToneMenu({ value, onChange, variant = 'icon', mode 
                 onClick={() => { onChange(tone.id); setOpen(false) }}
                 className={`flex items-start gap-2.5 rounded-lg p-2 text-left transition-colors border ${
                   active
-                    ? 'border-violet-400/60 bg-violet-400/10'
+                    ? 'border-[var(--editor-accent)] bg-[color-mix(in_srgb,var(--editor-accent)_12%,transparent)]'
                     : 'border-transparent hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)]'
                 }`}
               >

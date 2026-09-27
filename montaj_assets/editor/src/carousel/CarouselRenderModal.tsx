@@ -70,7 +70,7 @@ function LogLine({ text, mode = 'dark' }: { text: string; mode?: 'light' | 'dark
   else if (/error|fail/i.test(t))           color = mode === 'light' ? 'text-red-600' : 'text-red-400'
 
   const prefix = text.startsWith('[render]')
-    ? <span className="text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)]">[render] </span>
+    ? <span className="text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">[render] </span>
     : null
 
   return (
@@ -240,7 +240,7 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
     // Portal to document.body (see RenderModal): a transformed host ancestor
     // would otherwise trap this `fixed` overlay and center the panel off-screen.
     return createPortal(
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black text-[var(--editor-text)]">
         <div className="w-[96vw] h-[96vh] bg-[var(--editor-bg)] border border-[var(--editor-border)] rounded-2xl shadow-2xl flex overflow-hidden">
 
           {/* Left — slide gallery */}
@@ -264,15 +264,15 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
                       className="block w-full h-auto"
                       style={{ aspectRatio: `${resolution[0]} / ${resolution[1]}` }}
                     />
-                    <div className="absolute bottom-0 left-0 right-0 px-2 py-1.5 bg-black text-[11px] text-[var(--editor-text)] font-mono flex justify-between">
+                    <div className="absolute bottom-0 left-0 right-0 px-2 py-1.5 bg-black text-[11px] text-white/90 font-mono flex justify-between">
                       <span>#{String(i + 1).padStart(2, '0')}</span>
-                      <span className="text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">{slide.filename}</span>
+                      <span className="text-white/60">{slide.filename}</span>
                     </div>
                   </a>
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">Render complete.</p>
+              <p className="text-sm text-white/60">Render complete.</p>
             )}
           </div>
 
@@ -311,7 +311,7 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
   // Poll transport carries no per-line logs, so show a spinner + status text;
   // the SSE transport (montaj-native) streams logs into the log panel.
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black text-[var(--editor-text)]">
       <div className="w-full max-w-3xl bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl flex flex-col overflow-hidden">
 
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--editor-border)]">
@@ -357,7 +357,7 @@ export default function CarouselRenderModal({ projectId, adapter, slidesCount, r
               className="h-96 overflow-y-auto px-4 py-3 font-mono text-[11px] text-[var(--editor-text)] bg-[var(--editor-bg)] flex flex-col gap-0.5"
             >
               {logs.length === 0 && status === 'running' && (
-                <span className="text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] italic">Starting render engine…</span>
+                <span className="text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] italic">Starting render engine…</span>
               )}
               {logs.map((line, i) => (
                 <LogLine key={i} text={line} mode={mode} />
