@@ -31,6 +31,40 @@ declare module 'montaj-overlay-runtime' {
     initialVelocity?: number
   }): number
 
+  // Closed-form damped springs (montaj_assets/overlay-runtime/springs.js).
+  // Pure functions of (fractional) frame: no memo, no integration, no
+  // dependence on evaluation order, unlike `spring()` above, which is
+  // memoized semi-implicit Euler and cannot be retargeted.
+  export function springStep(
+    frame: number,
+    fps: number,
+    opts?: {
+      from?: number
+      to?: number
+      at?: number
+      mass?: number
+      stiffness?: number
+      damping?: number
+      initialVelocity?: number
+    },
+  ): number
+
+  export function springSum(opts: {
+    frame: number
+    fps: number
+    from?: number
+    changes?: Array<{
+      at: number
+      to: number
+      mass?: number
+      stiffness?: number
+      damping?: number
+    }>
+    mass?: number
+    stiffness?: number
+    damping?: number
+  }): number
+
   // Icon namespaces — Phosphor and FontAwesome icon objects.
   export const Ph: Record<string, ComponentType<unknown>>
   export const FaSolid: Record<string, unknown>
