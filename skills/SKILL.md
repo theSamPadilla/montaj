@@ -218,7 +218,6 @@ Refer to sub-skills by name; the reader resolves the name to a path.
 | `write-overlay` | Writing custom JSX overlay components |
 | `image-search` | Sourcing outside imagery (`search_images` + `fetch_image`) when the prompt asks for photos / logos / B-roll stills |
 | `style-profile` | Creating or updating a creator style profile |
-| `workflow-builder` | Creating or editing workflows |
 | `lyrics-video` | Executing `montaj/lyrics-video` in a workflow (a `music_video` project) |
 | `broll` | Executing `montaj/broll` in a workflow |
 | `find_clips` | Executing `montaj/find_clips` in a workflow |

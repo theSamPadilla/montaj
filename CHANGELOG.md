@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Removed: the `workflow-builder` skill (moved to the Montaj app).** Guiding an agent through creating or editing a workflow is now part of the Montaj app. Workflows themselves are unchanged: `montaj workflow new`, `list` and `edit` still work, and project-local and user-global workflows are still found automatically. (`skills/workflow-builder/`, `skills/SKILL.md`, `README.md`)
+
 ## v5.1.0
 
 - Editor: the captions panel opens on the Captions list every time (no remembered sub-tab).
