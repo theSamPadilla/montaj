@@ -27,6 +27,10 @@ def main():
     parser.add_argument("--duration",     type=int, default=None,
                         help="Overlay length in frames for the `duration` global. "
                              "Omit to preview steady state (end-of-life fades won't fire).")
+    parser.add_argument("--fps",          type=int, default=30,
+                        help="Frame rate for the `fps` global (default: 30). Pass the project's "
+                             "settings.fps — spring() is tuned in wall-clock time, so sampling a "
+                             "60fps project at 30 shows springs settling twice as fast as they will.")
     parser.add_argument("--width",        type=int, default=1080, help="Canvas width in pixels (default: 1080)")
     parser.add_argument("--height",       type=int, default=1920, help="Canvas height in pixels (default: 1920)")
     parser.add_argument("--props",        default="{}", help="Props JSON string (default: '{}')")
@@ -41,7 +45,7 @@ def main():
         "--mode", "overlay",
         "--component", args.overlay,
         "--frame", str(args.frame),
-        "--fps", "30",
+        "--fps", str(args.fps),
         "--width", str(args.width),
         "--height", str(args.height),
         "--props", args.props,

@@ -23,6 +23,18 @@
       "description": "Frame number to render"
     },
     {
+      "name": "duration",
+      "type": "int",
+      "required": false,
+      "description": "Overlay length in frames, for the `duration` global. Omit to preview steady state — end-of-life fades and anything driven by `frame / duration` will not animate without it."
+    },
+    {
+      "name": "fps",
+      "type": "int",
+      "default": 30,
+      "description": "Frame rate for the `fps` global. Pass the project's settings.fps — spring() is tuned in wall-clock time, so sampling a 60fps project at the 30 default shows springs settling twice as fast as they actually will."
+    },
+    {
       "name": "width",
       "type": "int",
       "default": 1080,
