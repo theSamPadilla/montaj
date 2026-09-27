@@ -297,6 +297,8 @@ Steps produce one of three output types:
 
 Steps that accept trim spec input detect it automatically — you do not need to change param names or add special flags. Pass the `.json` output path from one step as the `--input` to the next.
 
+**The engine does not wire this up for you.** `engine/resolve_workflow.py` only resolves each `uses` reference to its executable and schema and merges params — it never runs a step or threads one step's output into the next step's input; `needs` is metadata the agent reads, not something the resolver or any other runtime enforces. A trim-spec step's output is inline JSON on stdout by default, not a file, so there is no `.json` output path to pass along until you make one: write the JSON to a file yourself, or, for `waveform_trim`, pass `--out <path>` and read back `{"path": "<abs path>"}` instead of the spec. Either way, that path becomes the next step's `--input` (e.g. `waveform_trim --out spec.json` → `rm_nonspeech --input spec.json`, the `silence`/`nonspeech` hop in `clean_cut`).
+
 ---
 
 ## Using custom steps in a workflow

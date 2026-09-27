@@ -24,6 +24,12 @@
       "min": 0.1,
       "max": 5.0,
       "description": "Minimum silence duration to remove in seconds"
+    },
+    {
+      "name": "out",
+      "type": "path",
+      "required": false,
+      "description": "Write the trim spec JSON to this file (single input only) instead of printing it, and print {\"path\": \"<abs path>\"} instead. Pass that path as --input to a downstream step (e.g. rm_nonspeech) to chain. Not supported with 'inputs' (batch mode produces multiple specs)."
     }
   ]
 }

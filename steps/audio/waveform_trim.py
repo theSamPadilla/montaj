@@ -64,11 +64,28 @@ def main():
     parser.add_argument("--threshold",   default="-30", help="Silence threshold in dB (default: -30)")
     parser.add_argument("--min-silence", default="0.3", help="Minimum silence duration to remove in seconds (default: 0.3)")
     parser.add_argument("-P", "--parallel", type=int, default=0, help="Max parallel workers (default: number of inputs)")
+    parser.add_argument("--out",
+                        help="Write the trim spec JSON to this file (single --input only) instead of "
+                             "printing it, and print {\"path\": \"<abs path>\"} instead. Pass that path "
+                             "as --input to a downstream step (e.g. rm_nonspeech) to chain without an "
+                             "intermediate write_file.")
     args = parser.parse_args()
 
     if args.input:
-        print(json.dumps(process_one(args.input, args.threshold, args.min_silence)))
+        spec = process_one(args.input, args.threshold, args.min_silence)
+        if args.out:
+            out_path = os.path.abspath(args.out)
+            out_dir = os.path.dirname(out_path)
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+            with open(out_path, "w") as f:
+                json.dump(spec, f)
+            print(json.dumps({"path": out_path}))
+        else:
+            print(json.dumps(spec))
     else:
+        if args.out:
+            fail("invalid_args", "--out is not supported with --inputs (batch mode produces multiple specs)")
         workers = args.parallel or len(args.inputs)
         results: dict[int, dict] = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:

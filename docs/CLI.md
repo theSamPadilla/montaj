@@ -360,6 +360,11 @@ montaj step rm_fillers --input clip.mp4 --model medium.en    # higher accuracy, 
 montaj step waveform_trim --input clip.mp4
 montaj step waveform_trim --input clip.mp4 --threshold -30 --min-silence 0.3
 
+montaj step waveform_trim --input clip.mp4 --out spec.json
+# → {"path": "/abs/path/spec.json"}  (writes the trim spec instead of printing it)
+montaj step rm_nonspeech --input spec.json
+# Feed the written path straight in — no separate write_file needed to chain the two
+
 montaj step rm_nonspeech --input clip.mp4
 montaj step rm_nonspeech --input clip.mp4 --model base --max-word-gap 0.10 --sentence-edge 0.05
 

@@ -62,7 +62,7 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 ### Clean
 | Step | What it does | Key params |
 |------|-------------|------------|
-| `waveform_trim` | Detect silence → trim spec (near-instant, no encode) | `--threshold -30 --min-silence 0.3` |
+| `waveform_trim` | Detect silence → trim spec (near-instant, no encode) | `--threshold -30 --min-silence 0.3`; add `--out <path>` to write the spec to a file and get back `{"path": ...}` instead of the inline JSON — pass that path as `rm_nonspeech`'s `--input` to chain (its own stdout is inline JSON too, so hold the path yourself between calls) |
 | `rm_nonspeech` | Remove non-speech → trim spec. **Input: trim spec, not video.** | `--model base --max-word-gap 0.10 --sentence-edge 0.05` |
 | `rm_fillers` | Remove um/uh/hmm → trim spec. **Input: trim spec, not video.** | `--model base.en` |
 | `crop_spec` | Crop trim spec to virtual-timeline windows → refined trim spec, no encode | `--keep 8.5:14.8` (repeatable; `end` sentinel ok) |
@@ -120,16 +120,17 @@ Editing steps do not encode video. They output **trim specs** — JSON describin
 
 **Data flow:**
 ```
-waveform_trim → trim spec → transcribe
-                           → rm_fillers → refined spec → tracks[0] inPoint/outPoint/start/end
-                                                               ↓
-                                                       render engine (final assembly)
+waveform_trim → trim spec → rm_nonspeech → trim spec → transcribe
+                                                       → rm_fillers → refined spec → tracks[0] inPoint/outPoint/start/end
+                                                                           ↓
+                                                                   render engine (final assembly)
 ```
 
 **Rules:**
 - Pass original source files to editing steps — never pre-encode them
 - `rm_fillers`, `rm_nonspeech`, `crop_spec` take a trim spec as `input` and output a refined spec — never pass a video file to these
 - One encode per clip, then one render pass
+- **None of these steps write to disk on their own except `crop_spec`.** `waveform_trim`, `rm_nonspeech`, and `rm_fillers` each print the trim spec inline as JSON on stdout — there is no automatic wiring between one step's output and the next step's `--input` (`engine/resolve_workflow.py` only resolves each `uses` reference to its executable/schema; it never runs a step or threads data between them — see `docs/schemas/workflow.md`). You hold the JSON between calls: either write it to a file yourself (`write a file`, per `_contract`) or, for `waveform_trim` specifically, pass `--out <path>` and it does that for you, replying `{"path": "<abs path>"}` instead of the spec — feed that path straight into `rm_nonspeech --input`.
 
 > **CRITICAL — video clip `src` field:**
 > Any video clip item (in any track) MUST have `src` pointing to a **real video file** (`.MOV`, `.mp4`, etc.) — never a spec JSON file.

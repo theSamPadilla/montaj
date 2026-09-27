@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **`waveform_trim` can write its trim spec to a file instead of only
+  printing it.** `clean_cut.json` (and every workflow built on it) chains
+  `silence` (`waveform_trim`) into `nonspeech` (`rm_nonspeech`, `needs:
+  ["silence"]`), but `rm_nonspeech --input` requires an on-disk file
+  (`lib/trim_spec.py` opens it) and `waveform_trim` only ever printed its
+  spec inline — an agent driving the chain had to hold the inline JSON and
+  write it to a file itself before it could call `rm_nonspeech`. New optional
+  `--out <path>` (single `--input` only; rejected with `--inputs`, which
+  produces multiple specs) writes the spec JSON to that path and prints
+  `{"path": "<abs path>"}` instead; that path feeds straight into
+  `rm_nonspeech --input`. Without `--out`, behavior is unchanged. This is an
+  agent-driven chain, not an engine-driven one — `engine/resolve_workflow.py`
+  only resolves each `uses` reference to its executable/schema and never
+  threads one step's output into the next step's input, so
+  `docs/schemas/workflow.md` and `skills/SKILL.md` now say so explicitly and
+  point at `--out` for this hop. (`steps/audio/waveform_trim.py`,
+  `steps/audio/waveform_trim.json`, `tests/steps/test_waveform_trim.py`,
+  `docs/schemas/workflow.md`, `skills/SKILL.md`, `docs/CLI.md`)
+
 - **`rm_nonspeech`'s own defaults now match the finer cut settings every
   shipped workflow already overrides to.** The step's schema and argparse
   defaulted to `--max-word-gap 0.18 --sentence-edge 0.10`, while
