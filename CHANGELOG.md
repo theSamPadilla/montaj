@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`@bycrux/editor`: hosts can own the pending gate and hear user edits.**
+  `VideoEditor` takes `pendingSurface: 'default' | 'host'` (in `'host'` a
+  pending project opens in the normal editor and the host draws its own
+  overlay) and `onUserEdit`, which fires on user edits, finished gestures,
+  undo and redo but never on agent or server writes. The carousel editor root
+  now sets `--editor-text` as its colour. (`montaj_assets/editor/src/**`)
+
 - **`POST /api/projects/{id}/log` accepts an optional `source` (which
   assistant posted it) and passes it through on the SSE `log` event.**
   (`serve/routes/projects.py`)
