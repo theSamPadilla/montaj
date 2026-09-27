@@ -1160,7 +1160,68 @@ function buildOverlayCacheKey(componentPath, props, frame, width, height, google
   return createHash('sha256').update(raw).digest('hex')
 }
 
-/** Build a content-hash cache key for sampleFrame. */
+/**
+ * Absolute, deduplicated, sorted `path:mtimeMs` entries for every
+ * `type: "overlay"` item's `src` in the project — the component
+ * `buildFrameCacheKey` was missing (T6, 2026-09-27 motion-film-craft plan).
+ *
+ * Uses `trackItems(project)` — the same shape-tolerant iterator
+ * `resolveProjectPaths` uses below — so object-shape and array-shape `tracks`
+ * both work. A relative `src` is resolved against `dirname(projectPath)`,
+ * mirroring `resolveProjectPaths`'s own rebase; when no `projectPath` was
+ * given (the caller passed a parsed project object directly, as several
+ * existing tests and RenderModal-style previews do) there is no directory to
+ * resolve a relative path against, so only an already-absolute `src`
+ * resolves to a real file — a relative one, and any path that no longer
+ * exists, falls through to the `0` below rather than throwing. That
+ * degrades a bad/missing path to "always a cache miss", not a crash.
+ *
+ * @param {object} project
+ * @param {string | null} projectPath
+ * @returns {string} sorted, comma-joined `path:mtimeMs` entries (empty string
+ *   when the project has no overlay items)
+ */
+function overlaySourceCacheComponent(project, projectPath) {
+  const projectDir = projectPath ? dirname(projectPath) : null
+  const paths = new Set()
+  for (const track of trackItems(project)) {
+    for (const item of track ?? []) {
+      if (item?.type !== 'overlay' || !item.src) continue
+      paths.add(
+        item.src.startsWith('/')
+          ? item.src
+          : (projectDir ? resolve(projectDir, item.src) : item.src),
+      )
+    }
+  }
+  return [...paths].sort().map(p => {
+    let mtime = '0'
+    try { mtime = String(statSync(p).mtimeMs) } catch {}
+    return `${p}:${mtime}`
+  }).join(',')
+}
+
+/**
+ * Build a content-hash cache key for sampleFrame.
+ *
+ * Folds in every overlay item's resolved `src` mtime (see
+ * `overlaySourceCacheComponent`, immediately above) so that editing an
+ * overlay JSX — without touching `project.json` itself — busts this key
+ * instead of serving a stale cached PNG for up to `CACHE_TTL_MS` (24h). Before
+ * this fix, only `project.json`'s own mtime (or, with no `projectPath`, its
+ * JSON) was hashed, and `sampleFrame` returns the cached PNG **before** it
+ * ever reaches the per-overlay `sampleOverlay` calls — so a re-sample after
+ * editing only the overlay JSX served yesterday's pixels for a day, which
+ * breaks visual verification and lets a stale frame fool `sample_diff`'s pop
+ * scan. Adding this component changes every existing cache entry's key, so
+ * previously-cached frames become one-time misses; that's acceptable — this
+ * cache is a same-machine speed optimization, not a correctness dependency.
+ *
+ * Deliberately out of scope, same as before this fix: image/video item `src`
+ * edits and `MONTAJ_FONTS_DIR` are still absent from this key (see
+ * `buildOverlayCacheKey`'s own doc comment for why fonts base belongs in the
+ * per-overlay-render key instead).
+ */
 function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, preferProxy = false) {
   let mtime = '0'
   if (projectPath) {
@@ -1169,6 +1230,7 @@ function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, pr
     mtime = JSON.stringify(project)
   }
   const colorSpace = project?.settings?.colorSpace ?? 'sdr_bt709'
+  const overlaySources = overlaySourceCacheComponent(project, projectPath)
   // Salted with the resolver's own version so a semantic change in
   // @bycrux/timeline-core (e.g. this T9 alignment) invalidates any frame cached
   // by the pre-alignment logic instead of silently serving it back.
@@ -1180,7 +1242,8 @@ function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, pr
   // serve the pre-change frame back forever, since nothing else in the key
   // moves when the manifest does.
   const raw = [RESOLVER_VERSION, mtime, String(atSeconds), colorSpace,
-               MASTER_LOOK, sdrCurve ?? MASTER_LOOK, preferProxy ? 'proxy' : 'master'].join('|')
+               MASTER_LOOK, sdrCurve ?? MASTER_LOOK, preferProxy ? 'proxy' : 'master',
+               overlaySources].join('|')
   return createHash('sha256').update(raw).digest('hex')
 }
 

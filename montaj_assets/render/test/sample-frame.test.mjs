@@ -25,7 +25,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync,
-  existsSync, rmSync, statSync,
+  existsSync, rmSync, statSync, utimesSync,
 } from 'node:fs'
 import { join, dirname, basename } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -979,6 +979,128 @@ test('(q2) buildOverlayCacheKey: fontsBaseDir is part of the key, and unset is u
   assert.equal(baseA1, baseA2, 'the same base must produce the same key (deterministic, cacheable)')
   assert.notEqual(baseA1, unsetOmitted, 'a set base must differ from unset')
   assert.notEqual(baseA1, baseB, 'two different bases must produce different keys — the VALUE is hashed, not just whether a base was set')
+})
+
+// ---------------------------------------------------------------------------
+// (q3) buildFrameCacheKey: overlay item source mtimes are part of the key
+//
+// T6, 2026-09-27 motion-film-craft plan. Before this, buildFrameCacheKey
+// hashed only project.json's own mtime (or, with no projectPath, its JSON) —
+// nothing about the overlay JSX files a project's `type: "overlay"` items
+// point at. sampleFrame checks this key BEFORE it ever reaches the per-overlay
+// sampleOverlay calls, so re-sampling the same timestamp after editing an
+// overlay (without touching project.json) returned the stale cached PNG for
+// up to CACHE_TTL_MS (24h) — which breaks visual verification and lets a
+// stale frame fool sample_diff's pop scan. See overlaySourceCacheComponent's
+// doc comment in sample-frame.js.
+// ---------------------------------------------------------------------------
+test('(q3) buildFrameCacheKey: editing a referenced overlay file busts the key, an unedited one reuses it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-q3-'))
+  try {
+    const overlayPath = join(dir, 'overlay.jsx')
+    writeFileSync(overlayPath, 'export default function O() { return null }')
+
+    const project = {
+      settings: { colorSpace: 'sdr_bt709' },
+      tracks: [[{ id: 'ov', type: 'overlay', src: overlayPath, start: 0, end: 1 }]],
+    }
+
+    const before = buildFrameCacheKey(null, project, 1.5)
+
+    // Calling again with nothing changed must reproduce the same key — the
+    // "unchanged project reuses the cache" half of the fix. A cache is only
+    // useful if the common case (nothing edited) still hits it.
+    assert.equal(buildFrameCacheKey(null, project, 1.5), before,
+      'an unchanged project must keep producing the same key so a real cache hit still works')
+
+    // "Editing" the overlay: bump its mtime forward, same effect as saving a
+    // file — content doesn't matter to the key, only mtimeMs does.
+    const future = new Date(statSync(overlayPath).mtimeMs + 10_000)
+    utimesSync(overlayPath, future, future)
+
+    const after = buildFrameCacheKey(null, project, 1.5)
+    assert.notEqual(after, before,
+      'editing the overlay JSX referenced by the project must bust the frame cache key, '
+      + 'or a re-sample after the edit serves the stale PNG for up to 24h (CACHE_TTL_MS)')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('(q3) buildFrameCacheKey: editing a file the project does NOT reference as an overlay does not bust the key', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-q3b-'))
+  try {
+    const overlayPath = join(dir, 'overlay.jsx')
+    const unusedPath = join(dir, 'unused.jsx') // exists on disk; no item points at it
+    writeFileSync(overlayPath, 'export default function O() { return null }')
+    writeFileSync(unusedPath, 'export default function U() { return null }')
+
+    const project = {
+      settings: { colorSpace: 'sdr_bt709' },
+      tracks: [[{ id: 'ov', type: 'overlay', src: overlayPath, start: 0, end: 1 }]],
+    }
+
+    const before = buildFrameCacheKey(null, project, 1.5)
+
+    const future = new Date(statSync(unusedPath).mtimeMs + 10_000)
+    utimesSync(unusedPath, future, future)
+
+    assert.equal(buildFrameCacheKey(null, project, 1.5), before,
+      'touching a file the project does not reference as an overlay src must not bust the cache key — '
+      + 'only the sources the sampled frame actually depends on should invalidate it')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('(q3) buildFrameCacheKey: relative overlay src resolves against dirname(projectPath), like resolveProjectPaths', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-q3c-'))
+  try {
+    const projectPath = join(dir, 'project.json')
+    const overlayPath = join(dir, 'overlay.jsx')
+    writeFileSync(overlayPath, 'export default function O() { return null }')
+
+    const project = {
+      settings: { colorSpace: 'sdr_bt709' },
+      // Relative src, as a real project.json stores it on disk.
+      tracks: [[{ id: 'ov', type: 'overlay', src: 'overlay.jsx', start: 0, end: 1 }]],
+    }
+    writeFileSync(projectPath, JSON.stringify(project))
+
+    const before = buildFrameCacheKey(projectPath, project, 1.5)
+
+    const future = new Date(statSync(overlayPath).mtimeMs + 10_000)
+    utimesSync(overlayPath, future, future)
+
+    assert.notEqual(buildFrameCacheKey(projectPath, project, 1.5), before,
+      'a relative overlay src must resolve against dirname(projectPath) — the same directory '
+      + 'resolveProjectPaths rebases it against — or an edit to it is invisible to the key')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('(q3) buildFrameCacheKey: object-shape tracks see overlay edits too, not just the legacy array shape', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-q3d-'))
+  try {
+    const overlayPath = join(dir, 'overlay.jsx')
+    writeFileSync(overlayPath, 'export default function O() { return null }')
+
+    const objectShapeProject = {
+      settings: { colorSpace: 'sdr_bt709' },
+      tracks: [{ id: 'trk-0', items: [{ id: 'ov', type: 'overlay', src: overlayPath, start: 0, end: 1 }] }],
+    }
+
+    const before = buildFrameCacheKey(null, objectShapeProject, 1.5)
+    const future = new Date(statSync(overlayPath).mtimeMs + 10_000)
+    utimesSync(overlayPath, future, future)
+
+    assert.notEqual(buildFrameCacheKey(null, objectShapeProject, 1.5), before,
+      'trackItems() is shape-tolerant, so object-shape tracks must see the overlay edit exactly '
+      + 'like the legacy array shape does')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 // ---------------------------------------------------------------------------
