@@ -201,9 +201,21 @@ def test_matching_stamp_does_not_rebuild(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_rebuild_failure_raises_clear_error(tmp_path, monkeypatch, capsys):
+def test_rebuild_failure_with_old_cache_warns_and_keeps_it(tmp_path, monkeypatch, capsys):
     cache_dir = _prod_cache(tmp_path, monkeypatch)
     _write_stamp(cache_dir, "1.0.0")
+    monkeypatch.setattr(install_cmd, "_ensure_ui", lambda: False)
+
+    result = deps.render_runtime_dir()
+
+    assert result == str(cache_dir / "render")
+    err = capsys.readouterr().err
+    assert ("warning: montaj runtime cache is out of date and could not be rebuilt; "
+            "run `montaj install ui` when online") in err
+
+
+def test_rebuild_failure_without_any_cache_raises_clear_error(tmp_path, monkeypatch):
+    _prod_cache(tmp_path, monkeypatch)  # nothing on disk at all
     monkeypatch.setattr(install_cmd, "_ensure_ui", lambda: False)
 
     try:
@@ -211,13 +223,12 @@ def test_rebuild_failure_raises_clear_error(tmp_path, monkeypatch, capsys):
         assert False, "expected RuntimeError"
     except RuntimeError as e:
         msg = str(e)
-        assert "montaj runtime cache is out of date and could not be rebuilt" in msg
-        assert "montaj install ui" in msg
+        assert "montaj runtime cache is missing and could not be built" in msg
+        assert "montaj install ui" in msg and "when online" in msg
 
 
 def test_rebuild_exception_is_wrapped_in_clear_error(tmp_path, monkeypatch):
-    cache_dir = _prod_cache(tmp_path, monkeypatch)
-    _write_stamp(cache_dir, "1.0.0")
+    _prod_cache(tmp_path, monkeypatch)  # no previous cache to fall back to
 
     def _boom():
         raise OSError("npm not found")
@@ -229,7 +240,7 @@ def test_rebuild_exception_is_wrapped_in_clear_error(tmp_path, monkeypatch):
         assert False, "expected RuntimeError"
     except RuntimeError as e:
         msg = str(e)
-        assert "montaj runtime cache is out of date and could not be rebuilt" in msg
+        assert "montaj runtime cache is missing and could not be built" in msg
         assert "montaj install ui" in msg
         assert "npm not found" in msg
 
@@ -294,8 +305,7 @@ def test_check_is_memoized_within_a_process(tmp_path, monkeypatch, capsys):
 
 
 def test_memoized_failure_is_reraised_without_retrying(tmp_path, monkeypatch):
-    cache_dir = _prod_cache(tmp_path, monkeypatch)
-    _write_stamp(cache_dir, "1.0.0")
+    _prod_cache(tmp_path, monkeypatch)  # no previous cache: failure raises
     calls = []
     monkeypatch.setattr(install_cmd, "_ensure_ui", lambda: calls.append(1) or False)
 
@@ -372,4 +382,222 @@ def test_rebuild_lock_double_checks_stamp_after_acquiring(tmp_path, monkeypatch)
 
     deps.render_runtime_dir()
 
+    assert calls == []
+
+
+def test_old_cache_fallback_warns_once_per_process(tmp_path, monkeypatch, capsys):
+    cache_dir = _prod_cache(tmp_path, monkeypatch)
+    _write_stamp(cache_dir, "1.0.0")
+    calls = []
+    monkeypatch.setattr(install_cmd, "_ensure_ui", lambda: calls.append(1) or False)
+
+    for _ in range(3):
+        assert deps.render_runtime_dir() == str(cache_dir / "render")
+
+    assert len(calls) == 1
+    assert capsys.readouterr().err.count("warning: montaj runtime cache") == 1
+
+
+# ── build-then-swap (the real _ensure_ui, fake npm) ──────────────────────────
+# These run the real `_ensure_ui()` against a tiny fake source tree and a fake
+# `npm`, so they exercise the temp-dir build and the rename swap for real.
+
+import importlib.metadata as _im
+import subprocess as _sp
+import threading
+
+_SUBS = ["overlay-runtime", "render", "editor", "ui", "mcp",
+         "schemas", "timeline-core", "luts"]
+
+
+def _fake_source(tmp_path, monkeypatch, version):
+    root = tmp_path / "src"
+    for sub in _SUBS:
+        d = root / "montaj_assets" / sub
+        d.mkdir(parents=True)
+        (d / "marker.txt").write_text(version)
+    monkeypatch.setattr(install_cmd, "MONTAJ_ROOT", str(root))
+    real_version = _im.version
+    monkeypatch.setattr(_im, "version",
+                        lambda name: version if name == "montaj" else real_version(name))
+    monkeypatch.setattr(install_cmd.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+
+def _fake_npm(monkeypatch, *, fail=False, hook=None):
+    calls = []
+
+    def run(cmd, *a, **k):
+        calls.append(cmd)
+        if hook:
+            hook(cmd)
+        if fail and cmd[1] == "install":
+            return _sp.CompletedProcess(cmd, 1)  # e.g. offline
+        prefix = cmd[cmd.index("--prefix") + 1]
+        if cmd[1] == "install":
+            os.makedirs(os.path.join(prefix, "node_modules"), exist_ok=True)
+        else:
+            os.makedirs(os.path.join(prefix, "dist"), exist_ok=True)
+            with open(os.path.join(prefix, "dist", "index.html"), "w") as f:
+                f.write("<html>new</html>")
+        return _sp.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(install_cmd.subprocess, "run", run)
+    return calls
+
+
+def _old_cache(cache_dir):
+    (cache_dir / "ui" / "dist").mkdir(parents=True)
+    (cache_dir / "ui" / "dist" / "index.html").write_text("<html>old</html>")
+    (cache_dir / "render").mkdir()
+    (cache_dir / "render" / "marker.txt").write_text("1.0.0")
+    (cache_dir / "render" / "deleted-upstream.js").write_text("x")
+    (cache_dir / ".version").write_text("1.0.0")
+
+
+def _leftovers(cache_dir):
+    return [p.name for p in cache_dir.parent.iterdir()
+            if p.name.startswith((".montaj-build-", ".montaj-trash-"))]
+
+
+def test_failed_rebuild_leaves_old_cache_intact_and_warns(tmp_path, monkeypatch, capsys):
+    cache_dir = _prod_cache(tmp_path, monkeypatch)
+    _fake_source(tmp_path, monkeypatch, "9.9.9")
+    _old_cache(cache_dir)
+    _fake_npm(monkeypatch, fail=True)
+
+    result = deps.render_runtime_dir()
+
+    assert result == str(cache_dir / "render")
+    assert (cache_dir / ".version").read_text() == "1.0.0"
+    assert (cache_dir / "ui" / "dist" / "index.html").read_text() == "<html>old</html>"
+    assert (cache_dir / "render" / "deleted-upstream.js").exists()
+    assert _leftovers(cache_dir) == []
+    assert "run `montaj install ui` when online" in capsys.readouterr().err
+
+
+def test_successful_rebuild_swaps_and_old_dir_is_gone(tmp_path, monkeypatch):
+    cache_dir = _prod_cache(tmp_path, monkeypatch)
+    _fake_source(tmp_path, monkeypatch, "9.9.9")
+    _old_cache(cache_dir)
+    _fake_npm(monkeypatch)
+
+    deps.render_runtime_dir()
+
+    assert (cache_dir / ".version").read_text() == "9.9.9"
+    assert (cache_dir / "render" / "marker.txt").read_text() == "9.9.9"
+    assert not (cache_dir / "render" / "deleted-upstream.js").exists()
+    assert (cache_dir / "ui" / "dist" / "index.html").read_text() == "<html>new</html>"
+    assert _leftovers(cache_dir) == []
+
+
+def test_rebuild_never_builds_inside_the_live_cache(tmp_path, monkeypatch):
+    cache_dir = _prod_cache(tmp_path, monkeypatch)
+    _fake_source(tmp_path, monkeypatch, "9.9.9")
+    _old_cache(cache_dir)
+    calls = _fake_npm(monkeypatch)
+
+    assert install_cmd._ensure_ui() is True
+
+    prefixes = [c[c.index("--prefix") + 1] for c in calls]
+    assert prefixes and not any(p.startswith(str(cache_dir) + os.sep) for p in prefixes)
+
+
+def test_two_concurrent_rebuilds_end_with_one_valid_cache(tmp_path, monkeypatch):
+    cache_dir = _prod_cache(tmp_path, monkeypatch)
+    _fake_source(tmp_path, monkeypatch, "9.9.9")
+    _old_cache(cache_dir)
+    barrier = threading.Barrier(2, timeout=10)
+    local = threading.local()
+
+    def hook(cmd):
+        # Hold both builds mid-flight at once, each in its own temp dir.
+        if not getattr(local, "met", False):
+            local.met = True
+            barrier.wait()
+
+    _fake_npm(monkeypatch, hook=hook)
+    results = []
+
+    def worker():
+        results.append(install_cmd._ensure_ui())
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert results == [True, True]
+    assert (cache_dir / ".version").read_text() == "9.9.9"
+    assert (cache_dir / "ui" / "dist" / "index.html").read_text() == "<html>new</html>"
+    assert (cache_dir / "render" / "node_modules").is_dir()
+    assert not (cache_dir / "render" / "deleted-upstream.js").exists()
+    assert _leftovers(cache_dir) == []
+
+
+# ── serve startup ────────────────────────────────────────────────────────────
+
+import types
+import uvicorn
+from cli.commands import serve as serve_cmd
+
+
+def _serve(monkeypatch):
+    started = []
+    monkeypatch.setattr(serve_cmd, "check_deps", lambda: [])
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: started.append(1))
+    monkeypatch.delenv("MONTAJ_HEADLESS", raising=False)
+    monkeypatch.setenv("MONTAJ_SERVE_PORT", "3999")  # handle() sets it; restore after
+    args = types.SimpleNamespace(port=3999, network=False, debug=False, headless=False)
+    serve_cmd.handle(args)
+    return started
+
+
+def test_serve_startup_rebuilds_stale_cache(tmp_path, monkeypatch):
+    cache_dir = _prod_cache(tmp_path, monkeypatch)
+    _fake_source(tmp_path, monkeypatch, "9.9.9")
+    _old_cache(cache_dir)
+    _fake_npm(monkeypatch)
+
+    started = _serve(monkeypatch)
+
+    assert started == [1]
+    assert (cache_dir / ".version").read_text() == "9.9.9"
+    assert (cache_dir / "ui" / "dist" / "index.html").read_text() == "<html>new</html>"
+
+
+def test_serve_startup_rebuild_failure_keeps_serving_old_cache(tmp_path, monkeypatch, capsys):
+    cache_dir = _prod_cache(tmp_path, monkeypatch)
+    _fake_source(tmp_path, monkeypatch, "9.9.9")
+    _old_cache(cache_dir)
+    _fake_npm(monkeypatch, fail=True)
+
+    started = _serve(monkeypatch)
+
+    assert started == [1]
+    assert (cache_dir / "ui" / "dist" / "index.html").read_text() == "<html>old</html>"
+    err = capsys.readouterr().err
+    assert err.count("montaj runtime cache is out of date and could not be rebuilt; "
+                     "run `montaj install ui` when online") == 1
+
+
+def test_serve_startup_skips_app_managed_cache(tmp_path, monkeypatch):
+    cache_dir = _prod_cache(tmp_path, monkeypatch)
+    _old_cache(cache_dir)
+    (cache_dir / deps._APP_MANAGED_MARKER).write_text("4.9.1")
+    calls = []
+    monkeypatch.setattr(install_cmd, "_ensure_ui", lambda: calls.append(1) or True)
+
+    assert _serve(monkeypatch) == [1]
+    assert calls == []
+
+
+def test_serve_startup_skips_dev_checkout(tmp_path, monkeypatch):
+    _prod_cache(tmp_path, monkeypatch)
+    monkeypatch.setattr(deps, "is_dev_checkout", lambda: True)
+    monkeypatch.setattr(serve_cmd, "check_ui", lambda: ("dev", None))
+    calls = []
+    monkeypatch.setattr(install_cmd, "_ensure_ui", lambda: calls.append(1) or True)
+
+    assert _serve(monkeypatch) == [1]
     assert calls == []

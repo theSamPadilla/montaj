@@ -4,7 +4,7 @@ import os
 import sys
 
 from cli.main import add_global_flags
-from cli.deps import check_deps, check_ui
+from cli.deps import check_deps, check_ui, ensure_runtime_cache_fresh
 from cli.help import bold, green, yellow, cyan, dim, red
 
 
@@ -50,6 +50,14 @@ def handle(args):
     headless = args.headless or os.environ.get("MONTAJ_HEADLESS") == "1"
 
     if not headless:
+        # Rebuild a stale runtime cache (e.g. after an upgrade) before
+        # resolving the UI. A failed rebuild with an old cache keeps serving
+        # the old one (deps warns once). With no cache at all, check_ui()
+        # below reports what is missing.
+        try:
+            ensure_runtime_cache_fresh()
+        except RuntimeError as e:
+            print(yellow(f"warning: {e}"), file=sys.stderr)
         _, ui_error = check_ui()
         if ui_error:
             print(red(f"error: {ui_error}"), file=sys.stderr)

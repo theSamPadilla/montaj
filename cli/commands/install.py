@@ -254,35 +254,54 @@ def _ensure_ui() -> bool:
     if is_dev_checkout():
         # Dev: build in place so Vite HMR works against source.
         targets = [(name, os.path.join(src_root, sub)) for name, sub in bundles]
-        current = None
-    else:
-        # Prod: copy source → cache, build in cache. Site-packages stays immutable.
-        # `shutil.copytree(..., dirs_exist_ok=True)` overwrites changed files but
-        # never removes deleted ones — version-stamp the cache and clear it on
-        # mismatch so post-upgrade the cache mirrors the new source tree exactly.
-        current = _pkg_version("montaj")
-        if _cache_is_stale(BUILD_CACHE_DIR, current):
-            shutil.rmtree(BUILD_CACHE_DIR, ignore_errors=True)
-        os.makedirs(BUILD_CACHE_DIR, exist_ok=True)
+        return _npm_install_and_build(targets)
 
-        ignore = shutil.ignore_patterns("node_modules", "__pycache__", "*.pyc")
-        # Bundles + the shared schemas/ dir (loaded by render/color-space.js
-        # via ../schemas/color_space.json — must be copied alongside) + the
-        # shared timeline-core/ package (SP2; render and editor both declare
-        # `file:../timeline-core` — see the ordering note above for why it's
-        # copied here instead of added to `bundles`) + the shared luts/ dir
-        # (SP6b; render/look.js resolves ../luts/<file>.cube the same way
-        # color-space.js resolves ../schemas/color_space.json, so it has to
-        # exist in the cache alongside the render bundle in prod mode).
-        for sub in [s for _, s in bundles] + ["schemas", "timeline-core", "luts"]:
-            shutil.copytree(
-                os.path.join(src_root, sub),
-                os.path.join(BUILD_CACHE_DIR, sub),
-                dirs_exist_ok=True,
-                ignore=ignore,
-            )
-        targets = [(name, os.path.join(BUILD_CACHE_DIR, sub)) for name, sub in bundles]
+    current = _pkg_version("montaj")
+    if not _cache_is_stale(BUILD_CACHE_DIR, current):
+        # Cache already matches this version: refresh it in place (fast, keeps
+        # node_modules). Nothing is deleted, so a failure here cannot lose a
+        # working cache.
+        return _build_cache_tree(BUILD_CACHE_DIR, current, src_root, bundles)
 
+    # Stale or missing: build a complete new tree NEXT TO the cache and swap it
+    # in only once every step succeeded. The old cache is never touched before
+    # that point, so an offline or failed rebuild leaves it exactly as it was.
+    return _rebuild_and_swap(BUILD_CACHE_DIR, current, src_root, bundles)
+
+
+def _build_cache_tree(root: str, current: str, src_root: str, bundles) -> bool:
+    """Copy source -> `root`, npm install every bundle, build the UI, then
+    stamp `root/.version`. Site-packages stays immutable."""
+    import shutil
+    os.makedirs(root, exist_ok=True)
+    # `shutil.copytree(..., dirs_exist_ok=True)` overwrites changed files but
+    # never removes deleted ones, which is why a stale cache is rebuilt into
+    # a fresh directory (see `_rebuild_and_swap`) rather than refreshed here.
+    ignore = shutil.ignore_patterns("node_modules", "__pycache__", "*.pyc")
+    # Bundles + the shared schemas/ dir (loaded by render/color-space.js
+    # via ../schemas/color_space.json — must be copied alongside) + the
+    # shared timeline-core/ package (SP2; render and editor both declare
+    # `file:../timeline-core` — see the ordering note above for why it's
+    # copied here instead of added to `bundles`) + the shared luts/ dir
+    # (SP6b; render/look.js resolves ../luts/<file>.cube the same way
+    # color-space.js resolves ../schemas/color_space.json, so it has to
+    # exist in the cache alongside the render bundle in prod mode).
+    for sub in [s for _, s in bundles] + ["schemas", "timeline-core", "luts"]:
+        shutil.copytree(
+            os.path.join(src_root, sub),
+            os.path.join(root, sub),
+            dirs_exist_ok=True,
+            ignore=ignore,
+        )
+    targets = [(name, os.path.join(root, sub)) for name, sub in bundles]
+    if not _npm_install_and_build(targets):
+        return False
+    # Stamp only after every step succeeded — a partial build carries no stamp.
+    _write_stamp(root, current)
+    return True
+
+
+def _npm_install_and_build(targets) -> bool:
     for name, path in targets:
         print(f"{cyan('→')} npm install ({bold(name)})\u2026")
         r = subprocess.run(["npm", "install", "--prefix", path])
@@ -299,12 +318,61 @@ def _ensure_ui() -> bool:
         print(f"{red('error:')} npm run build failed for {dim(ui_target)}", file=sys.stderr)
         return False
     print(f"{green('✓')} UI built")
-
-    # Stamp the cache only after every step succeeded — partial installs leave
-    # the stamp absent so the next run starts from scratch.
-    if not is_dev_checkout():
-        _write_stamp(BUILD_CACHE_DIR, current)
     return True
+
+
+def _rebuild_and_swap(cache_root: str, current: str, src_root: str, bundles) -> bool:
+    """Build a complete cache in a private temp dir beside `cache_root`, then
+    swap it into place. On any failure the temp dir is deleted and the old
+    cache is left untouched.
+
+    Each caller gets its own temp dir, so two processes rebuilding at once
+    never write the same directory; whichever swaps last wins, and both
+    results are complete, stamped trees."""
+    import shutil, tempfile
+    parent = os.path.dirname(cache_root.rstrip(os.sep)) or "."
+    os.makedirs(parent, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix=f".montaj-build-{os.getpid()}-", dir=parent)
+    try:
+        if not _build_cache_tree(tmp, current, src_root, bundles):
+            if os.path.isdir(cache_root):
+                print(f"{yellow('⚠')} previous runtime cache left in place {dim(f'({cache_root})')}",
+                      file=sys.stderr)
+            return False
+        _swap_into_place(tmp, cache_root)
+        return True
+    finally:
+        # Gone already after a successful swap; a leftover after a failure.
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _swap_into_place(new_dir: str, cache_root: str, attempts: int = 5) -> None:
+    """Replace `cache_root` with `new_dir`: rename the old cache to a trash
+    name, rename `new_dir` to `cache_root`, then delete the trash. Both
+    renames are same-filesystem (siblings), so each is atomic.
+
+    Retries if a concurrent swap lands between our two renames (our second
+    rename then finds `cache_root` occupied again)."""
+    import shutil, uuid
+    parent = os.path.dirname(cache_root.rstrip(os.sep)) or "."
+    last_err = None
+    for _ in range(attempts):
+        trash = os.path.join(parent, f".montaj-trash-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+        try:
+            os.rename(cache_root, trash)
+        except FileNotFoundError:
+            trash = None
+        try:
+            os.rename(new_dir, cache_root)
+        except OSError as e:
+            last_err = e
+            if trash:
+                shutil.rmtree(trash, ignore_errors=True)
+            continue
+        if trash:
+            shutil.rmtree(trash, ignore_errors=True)
+        return
+    raise last_err
 
 
 def _ensure_ffmpeg_managed() -> bool:
