@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v4.9.1
+
 - **The editor reports whether it is playing, and serve hands it to agents.** The context the editor posts to `POST /api/projects/{id}/context` now carries `playing` (sent at once on play/pause, like selection), and `GET /api/context` returns it as `playhead.playing` beside a new `playhead.fps`. An editor that does not send `playing` gets no `playing` key back, never a guessed "paused". Still in memory only, never written to project.json. (`montaj_assets/editor/src/video/use-report-context.ts`, `montaj_assets/editor/src/video/preview/PreviewPlayer.tsx`, `serve/context.py`)
 
 - Fix: canvas and overlay-only motion-graphics exports (no video clips) now offer 60fps, not just 24/30. The fps cap only protects source video footage. (`montaj_assets/editor/src/video/export-limits.ts`)
