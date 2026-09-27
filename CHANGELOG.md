@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`POST /api/projects/{id}/log` accepts an optional `source` (which
+  assistant posted it) and passes it through on the SSE `log` event.**
+  (`serve/routes/projects.py`)
+
 ## v4.8.0
 
 - **Editor icons are visible again in Tailwind v3 hosts.** About 260

@@ -1875,13 +1875,20 @@ async def stream_project(project_id: str, request: Request, project_dir: Path = 
     )
 
 
+_LOG_SOURCE_RE = re.compile(r"^[a-z0-9-]{1,64}$")
+
+
 @router.post("/projects/{project_id}/log", status_code=204)
 async def log_status(project_id: str, body: dict = Body(...), request: Request = None):
     message = str(body.get("message", "")).strip()
     if not message:
         raise bad_request("missing_field", "'message' is required")
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
-    frame = f"event: log\ndata: {json.dumps({'message': message})}\n\n"
+    data = {"message": message}
+    source = body.get("source")
+    if isinstance(source, str) and source != "unknown" and _LOG_SOURCE_RE.match(source):
+        data["source"] = source
+    frame = f"event: log\ndata: {json.dumps(data)}\n\n"
     broadcaster.publish(project_id, frame)
 
 
