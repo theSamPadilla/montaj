@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **New `detect_beats` step measures a music bed's real grid.** It reports tempo (with `bpm_confidence`), every beat, the first downbeat (with its own confidence and which cue decided it; when no cue is sure, bar one falls back to the first beat and `downbeat_source` says `first_beat`), bar length, per-bar energy sections, and `drop` / `breakdown` events. `--bpm-hint` picks the octave without dragging the tempo. ffmpeg band split plus stdlib Python, no new dependency: exact tempo on synthetic 90/120/128/140 BPM tracks and 120-128 on real beds in about 0.2s for 30s of audio. (`steps/audio/detect_beats.py`, `steps/audio/detect_beats.json`)
+
 ## v4.9.1
 
 - **The editor reports whether it is playing, and serve hands it to agents.** The context the editor posts to `POST /api/projects/{id}/context` now carries `playing` (sent at once on play/pause, like selection), and `GET /api/context` returns it as `playhead.playing` beside a new `playhead.fps`. An editor that does not send `playing` gets no `playing` key back, never a guessed "paused". Still in memory only, never written to project.json. (`montaj_assets/editor/src/video/use-report-context.ts`, `montaj_assets/editor/src/video/preview/PreviewPlayer.tsx`, `serve/context.py`)

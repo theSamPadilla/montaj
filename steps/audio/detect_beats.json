@@ -1,0 +1,44 @@
+{
+  "name": "detect_beats",
+  "description": "Measure a music bed's tempo, beat grid, first downbeat and energy sections (drop, breakdown). Pure ffmpeg plus Python, no model or credentials. Assumes a steady tempo and reports how sure it is.",
+  "input": {
+    "type": "audio",
+    "description": "Music file, or a video whose first audio stream is the music"
+  },
+  "output": {
+    "type": "json",
+    "description": "{input, duration, method, bpm, bpm_confidence (0-1, on-beat vs sixteenth positions; below 0.3 sets warning no_clear_pulse), bpm_hint, beat_period (s), first_beat (first grid beat at or after the first audible sound), beats (every grid beat from first_beat; beats before downbeat are a pickup), beats_per_bar, downbeat (first bar one), downbeat_confidence (0-1), downbeat_source (energy_change | accent | first_beat; first_beat means no cue was sure and bar one is assumed to start on the first beat), bar_length (s), bars (bar starts, bars[0] == downbeat), sections [{start, end, bar_start, bar_end, energy: high|mid|low|silent, loudness_db}], events [{type: drop|breakdown|intro|outro, t, bar}], tempo_stability_ms (RMS deviation of detected beats from the grid), warning (null | no_clear_pulse | tempo_drift)}. Times are seconds in the input file; bar indices are 0-based from downbeat."
+  },
+  "params": [
+    {
+      "name": "bpm-hint",
+      "type": "float",
+      "description": "The BPM you requested or expect. Picks the octave (double or half time); a hint a few percent off does not move the measured tempo."
+    },
+    {
+      "name": "beats-per-bar",
+      "type": "int",
+      "default": 4,
+      "min": 1,
+      "description": "Beats per bar"
+    },
+    {
+      "name": "min-bpm",
+      "type": "float",
+      "default": 60.0,
+      "description": "Lowest tempo considered"
+    },
+    {
+      "name": "max-bpm",
+      "type": "float",
+      "default": 200.0,
+      "description": "Highest tempo considered"
+    },
+    {
+      "name": "out",
+      "type": "path",
+      "required": false,
+      "description": "Write the JSON to this file instead of printing it, and print {\"path\": \"<abs path>\"} instead"
+    }
+  ]
+}
