@@ -33,6 +33,7 @@ from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import save_upload
 from lib.ingest import ingest_source
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
+from lib.overlay_validation import overlay_item_errors
 from lib.project_tracks import normalize_tracks, track_items
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from project.init import _copy_into_workspace
@@ -2070,6 +2071,19 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
     # normalized or when `tracks` is absent/null, so the shallow-merge and
     # explicit-null-clears-a-field semantics above are untouched.
     merged = normalize_tracks(merged)
+    # Overlay items are checked only when this save carries `tracks`: a delta
+    # that leaves tracks alone (a status flip, a rename) must not start failing
+    # over an item already on disk. Nothing is written when an item is wrong,
+    # and every problem is named in `message`, which is the one field the MCP
+    # clients show the agent.
+    if "tracks" in body:
+        overlay_errors = overlay_item_errors(merged)
+        if overlay_errors:
+            raise HTTPException(400, detail={
+                "error": "invalid_overlay_items",
+                "message": "Project not saved. Fix these overlay items: " + "; ".join(overlay_errors),
+                "errors": overlay_errors,
+            })
     text = json.dumps(merged, indent=2)
     project_path.write_text(text)
     # Broadcast immediately — before the git commit so the UI update is instant.

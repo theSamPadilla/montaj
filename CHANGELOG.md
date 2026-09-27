@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **`PUT /api/projects/{id}` now validates overlay items and refuses a bad
+  one with field-level errors.** `save_project` used to shallow-merge and write
+  whatever it was sent, so an agent guessing the overlay item shape (a
+  `googleFonts` of objects, a string `start`, a missing `src`) saved cleanly
+  and either rendered in a fallback face or failed deep inside `render.js`.
+  A save that carries `tracks` now checks every `type: "overlay"` item
+  against the shape its consumers read (`render.js`, `bundle.js`, the
+  editor's `VisualItem`): `src` a non-empty string, `start`/`end` numbers,
+  and when present `id` a string, `props` an object, `googleFonts` an array
+  of strings, `opaque` a boolean, `keyframes` an array of objects, and the
+  geometry fields numbers. Unknown fields and `null` optionals are allowed,
+  image and video items are not checked, and a save without `tracks` does not
+  re-check what is already on disk. On failure it answers 400
+  `invalid_overlay_items`, writes nothing, and lists every problem both in
+  `errors` and in `message` (e.g. `tracks[1].items[0].googleFonts must be an
+  array of strings`), since `message` is what MCP clients show the agent.
+  Every shipped fixture project and every overlay item in a `docs/` or
+  `skills/` JSON example is asserted valid. (`lib/overlay_validation.py`,
+  `serve/routes/projects.py`, `tests/test_server_projects_save_validation.py`)
+
 - **`waveform_trim` can write its trim spec to a file instead of only
   printing it.** `clean_cut.json` (and every workflow built on it) chains
   `silence` (`waveform_trim`) into `nonspeech` (`rm_nonspeech`, `needs:
