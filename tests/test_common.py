@@ -260,6 +260,15 @@ def test_default_turbo_falls_back_to_base_for_non_english(fake_models):
     assert common.resolve_whisper_model(TURBO, "es") == "base"
 
 
+def test_default_turbo_non_english_with_only_en_weights_says_what_to_install(fake_models, capsys):
+    fake_models("base.en")
+    with pytest.raises(SystemExit):
+        common.resolve_whisper_model(TURBO, "auto")
+    err = json.loads(capsys.readouterr().err)
+    assert err["error"] == "missing_multilingual_model"
+    assert TURBO in err["message"]
+
+
 def test_nothing_installed_returns_requested_model(fake_models):
     # No weights at all: resolution leaves the name alone so transcribe_words'
     # require_file names the missing file.

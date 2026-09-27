@@ -294,6 +294,13 @@ def resolve_whisper_model(model: str, language: str) -> str:
         for cand in fallbacks:
             if cand != model and whisper_weight_path(cand) is not None:
                 return cand
+        if not english and any(whisper_weight_path(m) is not None for m in _EN_TO_MULTILINGUAL):
+            # Only English-only weights are installed (an older CLI install):
+            # say what to install rather than a bare file-not-found later.
+            fail("missing_multilingual_model",
+                 f"language={language!r} needs a multilingual whisper model, but only "
+                 f"English-only (*.en) weights are installed. Install one with: "
+                 f"montaj models download {DEFAULT_WHISPER_MODEL}")
     if english:
         return model
     if not model.endswith(".en"):
