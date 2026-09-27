@@ -11,10 +11,14 @@ declare module 'montaj-overlay-runtime' {
     frame: number,
     inputRange: number[],
     outputRange: number[],
+    // Only `extrapolate` exists. `extrapolateLeft`/`extrapolateRight` were
+    // declared here and used throughout the overlay docs, but the runtime
+    // destructures `{ extrapolate = 'clamp' }` and nothing else
+    // (montaj_assets/overlay-runtime/helpers.js), so those two were accepted by
+    // the type checker and then silently dropped at runtime — clamping
+    // regardless of what you passed. Declaring them made the lie type-safe.
     options?: {
       extrapolate?: 'clamp' | 'extend'
-      extrapolateLeft?: 'clamp' | 'extend'
-      extrapolateRight?: 'clamp' | 'extend'
     },
   ): number
 

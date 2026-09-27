@@ -48,7 +48,7 @@ pytestmark = pytest.mark.skipif(
 # duration — that's the regression these tests guard.
 FADE_JSX = """\
 export default function FadeOverlay() {
-  const out = interpolate(frame, [duration - 8, duration], [1, 0], { extrapolateLeft: 'clamp' });
+  const out = interpolate(frame, [duration - 8, duration], [1, 0]);
   return (
     <div style={{ position: 'absolute', inset: 0, background: 'white', opacity: out }} />
   );
