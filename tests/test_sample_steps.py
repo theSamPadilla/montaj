@@ -318,3 +318,125 @@ def test_sample_frame_hdr_filter_applies_vivid_lut():
         "expected at most one Hable fallback chain in sample-frame.js, found "
         f"{len(fallback_lines)}"
     )
+
+
+# ── (f) cli/commands/sample.py argv forwarding: --fps and sample diff ───────
+#
+# These monkeypatch cli.commands.sample.subprocess.run so no Puppeteer runs;
+# they assert exactly what argv the CLI layer hands to the step scripts,
+# mirroring the fake-node approach tests/steps/test_sample_frame.py uses one
+# layer down.
+
+import argparse
+
+import cli.commands.sample as sample_cmd
+
+
+class _FakeCompletedProcess:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _sample_parser():
+    parser = argparse.ArgumentParser(prog="montaj")
+    subparsers = parser.add_subparsers(dest="command")
+    sample_cmd.register(subparsers)
+    return parser
+
+
+def test_sample_overlay_forwards_explicit_fps_to_step_argv(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(stdout=str(tmp_path / "out.png") + "\n")
+
+    monkeypatch.setattr(sample_cmd.subprocess, "run", fake_run)
+
+    overlay = tmp_path / "overlay.jsx"
+    overlay.write_text("export default function O() { return null; }")
+    out = tmp_path / "out.png"
+
+    parser = _sample_parser()
+    args = parser.parse_args(
+        ["sample", "overlay", str(overlay), "--fps", "60", "--out", str(out)]
+    )
+    args.func(args)
+
+    cmd = captured["cmd"]
+    assert "--fps" in cmd
+    assert cmd[cmd.index("--fps") + 1] == "60"
+
+
+def test_sample_overlay_default_fps_is_30(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(stdout=str(tmp_path / "out.png") + "\n")
+
+    monkeypatch.setattr(sample_cmd.subprocess, "run", fake_run)
+
+    overlay = tmp_path / "overlay.jsx"
+    overlay.write_text("export default function O() { return null; }")
+    out = tmp_path / "out.png"
+
+    parser = _sample_parser()
+    args = parser.parse_args(["sample", "overlay", str(overlay), "--out", str(out)])
+    args.func(args)
+
+    cmd = captured["cmd"]
+    assert "--fps" in cmd
+    assert cmd[cmd.index("--fps") + 1] == "30"
+
+
+def test_sample_diff_forwards_all_frames_as_one_flag(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(stdout='{"diff": 0.0, "pops": [], "jumps": []}\n')
+
+    monkeypatch.setattr(sample_cmd.subprocess, "run", fake_run)
+
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.png"
+    c = tmp_path / "c.png"
+    for p in (a, b, c):
+        p.write_bytes(b"fake-png")
+
+    parser = _sample_parser()
+    args = parser.parse_args(["sample", "diff", str(a), str(b), str(c)])
+    args.func(args)
+
+    cmd = captured["cmd"]
+    assert "--frames" in cmd
+    i = cmd.index("--frames")
+    assert cmd[i + 1 : i + 4] == [str(a), str(b), str(c)]
+
+
+def test_sample_diff_forwards_spike_ratio_and_floor(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompletedProcess(stdout='{"diff": 0.0, "pops": [], "jumps": []}\n')
+
+    monkeypatch.setattr(sample_cmd.subprocess, "run", fake_run)
+
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.png"
+    for p in (a, b):
+        p.write_bytes(b"fake-png")
+
+    parser = _sample_parser()
+    args = parser.parse_args(
+        ["sample", "diff", str(a), str(b), "--spike-ratio", "4.5", "--floor", "1.0"]
+    )
+    args.func(args)
+
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--spike-ratio") + 1] == "4.5"
+    assert cmd[cmd.index("--floor") + 1] == "1.0"

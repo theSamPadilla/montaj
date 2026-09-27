@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""montaj sample — render a preview PNG without a full render.
+"""montaj sample: render a preview PNG without a full render, or compare
+sampled frames without rendering at all.
 
-Two subcommands:
+Three subcommands:
   montaj sample overlay <overlay.jsx> [options]  -- one frame, overlay only
   montaj sample frame   <project.json> --at <s>  -- fully composited frame
+  montaj sample diff    <a.png> <b.png> [...]    -- compare consecutive frames for pops/jumps
 """
 import os, subprocess, sys
 from cli.main import MONTAJ_ROOT, add_global_flags
@@ -17,7 +19,7 @@ def register(subparsers):
     )
 
     sub = p.add_subparsers(dest="subcommand", required=True,
-                           metavar="{overlay,frame}")
+                           metavar="{overlay,frame,diff}")
 
     # --- montaj sample overlay <overlay.jsx> [options] ---
     p_ov = sub.add_parser("overlay",
@@ -28,6 +30,11 @@ def register(subparsers):
     p_ov.add_argument("--duration",     type=int, default=None,
                       help="Overlay length in frames for the `duration` global. "
                            "Omit to preview steady state (end-of-life fades won't fire).")
+    p_ov.add_argument("--fps",          type=int, default=30,
+                      help="Frame rate for the `fps` global (default: 30). Pass the "
+                           "project's settings.fps -- spring() is tuned in wall-clock "
+                           "time, so sampling a 60fps project at the 30 default shows "
+                           "springs settling twice as fast as they actually will.")
     p_ov.add_argument("--width",        type=int, default=1080,
                       help="Canvas width in pixels (default: 1080)")
     p_ov.add_argument("--height",       type=int, default=1920,
@@ -50,6 +57,21 @@ def register(subparsers):
     add_global_flags(p_fr)
     p_fr.set_defaults(func=_handle_frame)
 
+    # --- montaj sample diff <a.png> <b.png> [...] ---
+    p_diff = sub.add_parser("diff",
+                            help="Compare consecutive sampled frame PNGs for single-frame pops and jump cuts")
+    p_diff.add_argument("frames", nargs="+",
+                        help="Sampled frame PNGs in time order (>= 2). With exactly two, "
+                             "reports that pair's diff only (the loop-seam check).")
+    p_diff.add_argument("--spike-ratio", type=float, default=3.0,
+                        help="How many times a pair's diff must exceed the comparison "
+                             "diff before it is flagged as a pop or jump (default: 3.0)")
+    p_diff.add_argument("--floor",       type=float, default=2.0,
+                        help="Minimum luma diff (0-255 scale) a pair must clear before "
+                             "it can be flagged as a pop or jump (default: 2.0)")
+    add_global_flags(p_diff)
+    p_diff.set_defaults(func=_handle_diff)
+
 
 def _handle_overlay(args):
     if not os.path.isfile(args.overlay):
@@ -64,6 +86,7 @@ def _handle_overlay(args):
         sys.executable, step_py,
         "--overlay", args.overlay,
         "--frame", str(args.frame),
+        "--fps", str(args.fps),
         "--width", str(args.width),
         "--height", str(args.height),
         "--props", args.props,
@@ -92,6 +115,24 @@ def _handle_frame(args):
         sys.executable, step_py,
         "--project", project_path,
         "--at", str(args.at),
+    ]
+    if args.out:
+        cmd += ["--out", args.out]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    emit(result, as_json=args.json, quiet=args.quiet)
+
+
+def _handle_diff(args):
+    if len(args.frames) < 2:
+        emit_error("invalid_args", "sample diff requires at least 2 frame paths")
+
+    step_py = os.path.join(MONTAJ_ROOT, "steps", "render", "sample_diff.py")
+    cmd = [
+        sys.executable, step_py,
+        "--frames", *args.frames,
+        "--spike-ratio", str(args.spike_ratio),
+        "--floor", str(args.floor),
     ]
     if args.out:
         cmd += ["--out", args.out]

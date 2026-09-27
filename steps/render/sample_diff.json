@@ -1,0 +1,35 @@
+{
+  "name": "sample_diff",
+  "description": "Compare consecutive sampled frame PNGs for single-frame pops (a frame unlike both neighbours) and jump cuts (one pair carrying far more change than the rest). With exactly two frames, reports that pair's diff only -- the loop-seam form (compare a looping piece's first and last sampled frames).",
+  "output": {
+    "type": "json",
+    "description": "With 3+ frames: {pairs: [{a, b, diff}], mean, max, pops: [{frame, path, d_prev, d_next, d_skip}], jumps: [{pair, diff, median_others}]}. With exactly 2 frames: {diff, pops: [], jumps: []}."
+  },
+  "params": [
+    {
+      "name": "frames",
+      "type": "path",
+      "required": true,
+      "repeatable": true,
+      "description": "Sampled frame PNGs in time order (>= 2)"
+    },
+    {
+      "name": "spike-ratio",
+      "type": "float",
+      "default": 3.0,
+      "description": "How many times a pair's diff must exceed the comparison diff before it is flagged as a pop or jump"
+    },
+    {
+      "name": "floor",
+      "type": "float",
+      "default": 2.0,
+      "description": "Minimum luma diff (0-255 scale) a pair must clear before it can be flagged as a pop or jump"
+    },
+    {
+      "name": "out",
+      "type": "path",
+      "required": false,
+      "description": "Write the JSON here and print {\"path\": ...} instead of the JSON to stdout"
+    }
+  ]
+}
