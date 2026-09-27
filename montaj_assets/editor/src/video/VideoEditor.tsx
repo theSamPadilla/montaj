@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import { Captions, Crop, Ear, EarOff, Film, HelpCircle, History, Magnet, Maximize2, Minimize2, Redo2, SeparatorVertical, Smartphone, SquareDashedMousePointer, Undo2, Wand2 } from 'lucide-react'
+import { AlertCircle, Captions, Crop, Ear, EarOff, Film, HelpCircle, History, Magnet, Maximize2, Minimize2, Redo2, SeparatorVertical, Smartphone, SquareDashedMousePointer, Undo2, Wand2 } from 'lucide-react'
 import type { Project, VideoEditorProps } from '../types'
 import type { AudioTrack, VisualItem } from '../schema'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
@@ -2808,7 +2808,18 @@ function ReviewSurface<P extends Project>({
   )
 
   return (
-    <div className="flex flex-col flex-1 overflow-hidden">
+    <div className="relative flex flex-col flex-1 overflow-hidden">
+      {/* Save-error banner — a failed sync.mutate/commit rolls the edit back
+          silently otherwise (see CarouselEditor's identical banner). Sits on
+          the outermost container so it is visible above BOTH layout branches
+          below (CapCut and classic) rather than needing its own copy in each. */}
+      {sync.lastError && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-2 rounded-md border border-red-500/40 bg-red-950/80 text-red-200 text-xs">
+          <AlertCircle size={14} />
+          <span>{sync.lastError}</span>
+          <button onClick={sync.clearError} className="ml-2 underline">dismiss</button>
+        </div>
+      )}
       {slots?.mediaPanel ? (
         /* CapCut layout (opt-in via slots.mediaPanel): three columns across the
            top — [left panel | preview | properties] — with a full-width timeline
