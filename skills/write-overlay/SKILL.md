@@ -32,6 +32,8 @@ Custom overlay JSX runs in a sandboxed evaluator. All identifiers below are inje
 | `useThreeFrame` | hook | Bridges r3f to Montaj's frame-stepped renderer. Mount exactly once inside any `<Canvas>`. |
 | `useCanvas2DFrame` | hook | Drives a plain `CanvasRenderingContext2D` from `frame` — for pixel-level 2D drawing HTML/CSS can't do (per-pixel effects, arbitrary paths, `drawImage` compositing). See "2D Canvas" section. |
 
+**Availability note:** `useCanvas2DFrame` is provided by the renderer. If your CLI's local cache (`~/.cache/montaj`) was populated before this hook was added, running `montaj install ui` updates it.
+
 **No imports.** All `import` statements are stripped before evaluation. Do not import anything — use the globals above instead.
 
 **Never hardcode frame counts; projects can be 24, 30 or 60fps.** A literal like `[0, 10]` means a different real-world duration on every project — 10 frames is 0.33s at 30fps but 0.17s at 60fps, so an overlay copied between projects (or a 30fps example copied into a 60fps project, which is the current default) plays at the wrong speed. Always derive the frame count from `fps`: `Math.round(fps * 0.33)` for "about a third of a second," not `10`.

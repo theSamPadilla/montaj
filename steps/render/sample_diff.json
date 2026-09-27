@@ -1,6 +1,6 @@
 {
   "name": "sample_diff",
-  "description": "Compare consecutive sampled frame PNGs for single-frame pops (a frame unlike both neighbours) and jump cuts (one pair carrying far more change than the rest). With exactly two frames, reports that pair's diff only -- the loop-seam form (compare a looping piece's first and last sampled frames).",
+  "description": "Compare consecutive sampled frame PNGs for single-frame pops (a frame unlike both neighbours) and jump cuts (one pair carrying far more change than the rest). With exactly two frames, reports that pair's diff only -- the loop-seam form (compare a looping piece's first and last sampled frames). A held or dropped frame in steady motion is not flagged: the next pair's diff is only about 2x, under the 3x ratio. Look for a near-zero pair between non-zero neighbours.",
   "output": {
     "type": "json",
     "description": "With 3+ frames: {pairs: [{a, b, diff}], mean, max, pops: [{frame, path, d_prev, d_next, d_skip}], jumps: [{pair, diff, median_others}]}. With exactly 2 frames: {diff, pops: [], jumps: []}."

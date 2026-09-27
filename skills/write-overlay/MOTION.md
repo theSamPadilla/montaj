@@ -70,6 +70,8 @@ python steps/render/sample_frame.py --project /abs/path/to/project.json --at 4.0
 python steps/render/sample_frame.py --project /abs/path/to/project.json --at 4.25 --out /tmp/b.png
 ```
 
+When checking a rendered video (not just overlays), use `steps/render/sample_diff.py` to flag frame differences quantitatively. A held or dropped frame in steady motion is not flagged: the next pair's diff is only about 2x, under the 3x ratio. Look for a near-zero pair between non-zero neighbours.
+
 ### Cut rate and placement — "is it cut to the grid?"
 
 Sample every section/cut boundary directly and check the timestamp against your bar grid (2 bars at 128 BPM = 3.75s, etc.) — no cut detector needed, since you already know where you put the cuts:
