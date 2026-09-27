@@ -10,6 +10,8 @@ step: true
 
 **Before writing any JSX, load the write-overlay subskill** — it has the full authoring reference. Load it with `/write-overlay`.
 
+**Then read `skills/write-overlay/MOTION.md`.** An animation project is 100% motion graphics — there is no footage to carry it, so the motion *is* the product. MOTION.md has the easing catalog (`interpolate` is strictly linear, which is why untutored sections look flat), velocity-driven directional motion blur, per-character stagger, and the measurement commands this skill's verification step refers to.
+
 ---
 
 ## When to use animation sections
@@ -25,17 +27,57 @@ Animation sections are **not** for transparent lower-thirds or watermarks. Use `
 
 ## Process
 
-### 1. Plan the sections
+### 1. Plan the sections — in bars, not seconds
 
 Read the editing prompt. Decide what sections the video needs:
 
 - **Title card** — project/brand name, intro hook
-- **Stat cards** — one strong number per card, 3–5 seconds each
+- **Stat cards** — one strong number per card
 - **Pull quotes** — impactful lines from the transcript or brief
 - **Transition slides** — between major chapters
 - **Outro** — CTA, social handle, end card
 
+**Length every one of them in bars.** The `animations` workflow generates the music bed first precisely so you have a tempo before you plan: `beat = 60 / BPM` seconds, `bar = 4 beats`. Two bars is the default section, four bars for a section that genuinely carries more information, one bar for a hit or flash cut. At 128 BPM a bar is 1.875s, so a 15-second piece is 8 bars — four 2-bar sections.
+
+This is not decoration. The difference between a motion-graphics piece that reads as designed and one that reads as a slideshow is almost entirely whether its cuts sit on a grid. "About 3 seconds" is a slideshow. "Two bars" is a cut.
+
 For animation projects (no footage), plan the full sequence: every second must be covered by at least one overlay.
+
+### 1a. No dead air — the rule that matters most
+
+**Every section must keep something in continuous motion for its entire span.** Not "animate in, then hold." A section that eases in over 10 frames and then sits perfectly still for the remaining two seconds is the single biggest quality defect this pipeline produces, and it is worth more to fix than any amount of styling.
+
+Measured on a real Montaj promo, against a professionally-directed reference reel sampled at the same rate: 44.5% of the promo's frames were still, versus 15.0% — and its motion energy was 2.32 against 8.96, about a quarter. Nearly half the video was a still image, and the rest barely moved.
+
+The fix is cheap. Every section gets at least one property under continuous motion across its whole duration, on top of whatever entrance animation it has:
+
+```jsx
+export default function StatCard() {
+  const t = frame / duration                      // 0 → 1 across the whole section
+  const enter = spring({ frame, fps, stiffness: 200, damping: 22 })
+
+  // Entrance — finishes early and stops.
+  const y = interpolate(enter, [0, 1], [40, 0])
+
+  // Continuous — never stops for as long as the section is on screen.
+  const drift = interpolate(t, [0, 1], [0, -28])        // slow parallax
+  const breathe = 1 + 0.012 * Math.sin(t * Math.PI * 2) // subtle scale pulse
+
+  return (
+    <div style={{ position: 'absolute', inset: 0, transform: `translateY(${drift}px)` }}>
+      <div style={{ transform: `translateY(${y}px) scale(${breathe})`, opacity: enter }}>
+        …
+      </div>
+    </div>
+  )
+}
+```
+
+Things that legitimately count as continuous motion: slow positional drift or parallax between layers, a number counting up, a progress arc filling, a gradient or hue rotating, a background pattern scrolling, a rule extending, per-character stagger that is still resolving. Things that do not: a static element with a drop shadow, a blur that already finished, anything driven by `enter` alone.
+
+`frame / duration` is the workhorse — `duration` is a global holding the section's total frames, so `t` is a normalised 0 → 1 progress through the section regardless of how many bars it runs for.
+
+**Before you finish, check your work the way it will be judged** — see "Verify the motion" at the end of this skill.
 
 ### 2. Write the JSX files
 
@@ -129,6 +171,41 @@ For animation projects (no footage), every timestamp must be covered by an item 
 Write `tracks` to `project.json` — `PUT /api/projects/{id}` (HTTP) or write directly (headless).
 
 When this is the last editorial pass before the render, the project must be `final` before the render will run — see skill `native` → "Project lifecycle — status, and the render gate".
+
+---
+
+## Verify the motion
+
+Do not judge an animation by reading its source, and do not judge it from one frame. Render it and measure it — the two numbers below are what exposed the quality gap this skill exists to close, and they are cheap to run.
+
+```bash
+# MOTION ENERGY — the dead-air detector. Mean abs luma change between frames.
+ffmpeg -hide_banner -i out.mp4 -vf "fps=30,scale=320:180,format=gray,\
+tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG" \
+  -f null - 2>&1 | grep -o "YAVG=[0-9.]*" | cut -d= -f2 > /tmp/y.txt
+python3 -c "import statistics; v=[float(x) for x in open('/tmp/y.txt') if x.strip()][1:]; \
+print(f'motion={statistics.mean(v):.3f} still={100*sum(1 for x in v if x<0.5)/len(v):.1f}%')"
+
+# CUT PLACEMENT — a different question. These should land on your bar grid.
+ffmpeg -hide_banner -i out.mp4 -vf "select='gt(scene,0.2)',showinfo" -f null - 2>&1 \
+  | grep -o "pts_time:[0-9.]*"
+```
+
+Benchmarks, all measured at `fps=30`:
+
+| | motion energy | still frames | cuts |
+|---|---|---|---|
+| A Montaj promo (what we're moving away from) | 2.320 | 44.5% | 3 in 26.9s |
+| A directed motion reel (what we're moving toward) | 8.958 | 15.0% | 11 in 15.1s |
+| A section set built to this skill's rules | 10.612 | 0.0% | 4 in 7.5s, on the bar |
+
+Target motion energy above ~7 with still frames near zero. Below ~4 you have dead air — go back to §1a, and check the three traps in MOTION.md § "Continuous motion" (large-area motion, rotationally-symmetric shapes, values that finish early).
+
+**Do not use `scene_score` to detect dead air.** It is a cut detector: it compares histograms to find edits, so smooth motion of similarly-coloured elements barely moves it. A test render that scene_score called 63.6% "frozen" had zero still frames and more motion energy than the reference reel. Use it for cut placement, and motion energy for stillness.
+
+**Always sample both videos at the same `fps=`.** Consecutive frames at 60fps are naturally more similar than at 30, so an unnormalised comparison flatters a 60fps render and will tell you that you succeeded when you have not.
+
+For single overlays mid-authoring, use `sample_overlay` with `--duration` and `--fps` set — see MOTION.md § "Verify the motion, don't eyeball it". Without `--duration` the `duration` global is undefined and everything driven by `frame / duration` sits frozen at 0, which looks exactly like the bug you are hunting.
 
 ---
 

@@ -7,6 +7,8 @@ description: "Write a custom JSX overlay component and add it to the project's o
 
 An overlay is a React component rendered frame-by-frame by Puppeteer, composited over the footage at a specific timestamp. All overlays are custom JSX — there are no built-in templates.
 
+> **Read [MOTION.md](MOTION.md) alongside this file whenever the overlay actually moves.** This file covers getting an overlay on screen correctly; MOTION.md covers making it move like someone designed it — the easing catalog (`interpolate` is strictly linear and has no easing option, which is why untutored overlays look flat), directional motion blur, per-character stagger, the no-dead-air rule, and how to verify motion by measurement instead of by eye. Every technique in it was rendered through the real sandbox before it was written down.
+
 ---
 
 ## Execution context
@@ -75,8 +77,8 @@ The default aesthetic is **plain bold text directly on video** — no card, no b
 // overlays/hook.jsx — plain text on video, no background
 
 export default function Hook() {
-  const progress = interpolate(frame, [0, 8], [0, 1], { extrapolateRight: 'clamp' })
-  const slideY   = interpolate(frame, [0, 10], [40, 0], { extrapolateRight: 'clamp' })
+  const progress = interpolate(frame, [0, 8], [0, 1])
+  const slideY   = interpolate(frame, [0, 10], [40, 0])
 
   return (
     <div style={{
@@ -125,8 +127,8 @@ A control appears for each of those that is present (non-null) on `props`; anyth
 ```jsx
 // Editable Hook — every text property is adjustable in the panel.
 export default function Hook() {
-  const progress = interpolate(frame, [0, 8], [0, 1], { extrapolateRight: 'clamp' })
-  const slideY   = interpolate(frame, [0, 10], [40, 0], { extrapolateRight: 'clamp' })
+  const progress = interpolate(frame, [0, 8], [0, 1])
+  const slideY   = interpolate(frame, [0, 10], [40, 0])
 
   return (
     <div style={{ position: 'absolute', bottom: 180, left: 48, right: 48, opacity: progress, transform: `translateY(${slideY}px)` }}>
@@ -216,7 +218,7 @@ The most reliable way to use frosted-glass / blurred card backgrounds is to **pu
 ```jsx
 // overlays/card-bg.jsx
 // Just a frosted card that fades in. No children that animate opacity.
-const opacity = interpolate(frame, [0, 8], [0, 1], { extrapolateRight: 'clamp' })
+const opacity = interpolate(frame, [0, 8], [0, 1])
 
 export default function CardBg() {
   return (
@@ -280,10 +282,12 @@ const fadeOut = interpolate(frame, [duration - 15, duration], [1, 0])
 const opacity = Math.min(fadeIn, fadeOut)
 
 // Slide in from left
-const x = interpolate(frame, [0, 20], [-200, 0], { extrapolateRight: 'clamp' })
+const x = interpolate(frame, [0, 20], [-200, 0])
 ```
 
-Options: `extrapolate`, `extrapolateLeft`, `extrapolateRight` — each `'clamp'` (default) or `'extend'`.
+One option: `extrapolate` — `'clamp'` (default) or `'extend'`. That is the whole options object; the runtime destructures `{ extrapolate = 'clamp' }` and ignores everything else. Earlier versions of this file used `extrapolateRight`, which does not exist and was silently dropped — harmless only because the default was already `'clamp'`.
+
+**`interpolate` is strictly linear** — `interpolate(5, [0,10], [0,1])` is exactly `0.5`. There is no easing parameter. For eased motion, ease the normalised value first: see **[MOTION.md](MOTION.md)** for the easing catalog, directional motion blur, per-character stagger, and the no-dead-air rule.
 
 ### `spring({ frame, fps, mass?, stiffness?, damping?, initialVelocity? })`
 

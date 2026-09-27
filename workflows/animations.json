@@ -1,10 +1,28 @@
 {
   "name": "animations",
-  "description": "Animation-only project — no source footage required. Agent builds the video entirely from overlays and audio. Use when the prompt describes a fully animated or motion-graphics video.",
+  "description": "Animation-only project — no source footage required. Agent generates a music bed, then builds the video entirely from overlays cut to that bed's tempo. Use when the prompt describes a fully animated or motion-graphics video.",
   "project_type": "editing",
   "requires_clips": false,
   "steps": [
-    { "id": "animations",  "uses": "montaj/animation-sections" },
+    {
+      "id": "music",
+      "uses": "montaj/generate_music",
+      "description": "Generate the music bed FIRST. The agent picks an explicit BPM, puts it in the prompt, and keeps that number — it is the time grid every section is cut to."
+    },
+    { "id": "animations",  "uses": "montaj/animation-sections", "needs": ["music"] },
     { "id": "resize",      "uses": "montaj/resize", "needs": ["animations"], "params": { "ratio": "9:16" } }
+  ],
+  "agent_notes": [
+    "MUSIC FIRST, ALWAYS. Run generate_music before writing a single line of JSX. This ordering is the whole point: music generated last can only ever be 'music playing over a video', while music generated first gives you a tempo to cut to. Do not reorder these steps.",
+    "PICK THE BPM YOURSELF AND WRITE IT DOWN. generate_music takes a free-text prompt and its own docs ask for genre, mood, instrumentation and BPM. Choose a specific number (not 'upbeat') and state it: 'driving minimal techno, analog synth stabs, no vocals, 128 BPM'. The number you asked for is the number you author against.",
+    "HONEST LIMIT ON SYNC: there is no beat-detection step in montaj. Lyria honours a requested BPM approximately, not exactly, and nothing measures what actually came back. So this is a tempo you IMPOSE, not one you detect. Over a 15–30s piece the drift is small enough that cutting on the grid still reads as deliberate; do not claim frame-accurate beat sync, and do not build anything that breaks visibly if the music is 2 BPM off.",
+    "DERIVE THE GRID: beat = 60 / BPM seconds. Bar = 4 beats. At 128 BPM that is 0.469s per beat, 1.875s per bar. Section boundaries land on BARS. Accents (a card snapping in, a number ticking over, a colour flip) land on BEATS or eighths (half a beat). Nothing lands on an arbitrary timestamp — if a section wants to be 'about 3 seconds', make it exactly 2 bars.",
+    "SECTION LENGTH IS IN BARS, NOT SECONDS. Two bars is the default section. Four bars only for a section that genuinely carries more information. One bar for a hit or a flash cut. A 15-second piece at 128 BPM is 8 bars total — that is four 2-bar sections, not three vague 5-second slides.",
+    "NO DEAD AIR. See skills/animation-sections — every section must keep something in continuous motion for its entire span. A section that animates in over 10 frames and then sits still for 2 seconds is the single biggest quality defect in this pipeline. Fixing it is worth more than any amount of styling.",
+    "CLIP LENGTH: lyria-3-clip-preview returns roughly 30s. For a piece longer than the returned clip, either generate a second clip and butt them on the audio track at a bar boundary, or loop the first — never let the bed run out mid-video. Read the emitted path from the step output; the extension is advisory and the file is whatever container Lyria returned (mp3 in practice).",
+    "ATTACH THE BED: set project.audio.tracks to one entry for the generated file — { id: 'music', src: <abs path from step output>, start: 0, end: <video duration>, volume: 1.0, label: 'music' }. Use montaj probe for the clip's real duration. An animations project has no dialogue, so no ducking is needed; leave it off unless the prompt adds narration.",
+    "60 FPS: canvas projects now init at 60fps (project/init.py). Author every interpolate() and spring() against the project's real fps — read it from settings.fps rather than assuming 30, or every animation runs at half the intended speed. A 10-frame ease at 60fps is 167ms, not 333ms.",
+    "SILENT PIECES: if the prompt explicitly asks for no music (a bed will be added later, or the piece is meant to sit silent in a feed), skip the music step — but STILL pick a notional BPM and cut to that grid. The rhythm is what makes it read as designed; the audio is what makes it read as finished.",
+    "TRACKS[0] stays empty — the schema requires tracks[0] items be type 'video' and an animation project has no footage. Primary visual layer is tracks[1]. See skills/animation-sections for the opaque/crossfade mechanics."
   ]
 }
