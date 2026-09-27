@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+- **Animation projects now cut to a generated music bed, and the overlay
+  sandbox finally documents how to move.** Measured against a directed
+  reference reel at matched sampling, a Montaj promo had 2.320 motion energy
+  to the reel's 8.958 and 44.5% still frames to its 15.0% — nearly half the
+  video was a still image. The cause was not the renderer: the only motion
+  vocabulary ever documented was `interpolate` and `spring`, and
+  `interpolate` is strictly linear with no easing parameter
+  (`interpolate(5, [0,10], [0,1])` is exactly `0.5`), so every untutored
+  overlay is a fade plus a constant-speed `translateY`. New
+  `skills/write-overlay/MOTION.md` carries an easing catalog, velocity-driven
+  directional motion blur via an SVG `feGaussianBlur` with asymmetric
+  `stdDeviation` (CSS `blur()` is isotropic and visibly wrong on a moving
+  object), per-character stagger, the no-dead-air rule, and verification by
+  measurement; every technique in it was rendered through the real sandbox
+  before being written down, and the three traps under "Continuous motion"
+  are ones a test render actually hit. `montaj/animation-sections` now
+  lengths sections in BARS rather than seconds and requires every section to
+  keep something in continuous motion for its whole span. The `animations`
+  workflow runs `generate_music` FIRST so the agent has a BPM before it
+  plans — music generated last can only ever be music over a video, music
+  first gives a grid to cut to — with notes that are honest that montaj has
+  no beat-detection step, so the tempo is imposed rather than measured. Dead
+  air is measured with mean absolute luma delta
+  (`tblend=all_mode=difference` + `signalstats` YAVG), NOT `scene_score`,
+  which is a cut detector: a test render `scene_score` called 63.6% "frozen"
+  had zero still frames and more motion energy than the reference reel. A
+  section set built to these rules measures 10.612 motion energy with 0.0%
+  still frames. (`skills/write-overlay/MOTION.md`,
+  `skills/write-overlay/SKILL.md`, `skills/animation-sections/SKILL.md`,
+  `workflows/animations.json`)
+
+- **A project with no footage now initialises at 60fps instead of 30.**
+  Every frame of an animation project is authored JSX rather than sampled
+  footage, and motion graphics at 30fps read visibly cheap. Footage projects
+  are unaffected — the probe loop overwrites the default from the first clip,
+  so the value chosen here never reaches them. Keyed on the absence of
+  footage rather than on `args.canvas`: `montaj init` does not expose
+  `--canvas`, so a real animations project created through the CLI arrives
+  with `args.canvas` False and merely an empty clips list, and an earlier
+  version of this keyed on the flag and silently left every CLI-created
+  animation project at 30fps — the exact case it existed to fix. Tests cover
+  the flag path, the CLI path, and that a project WITH footage still takes
+  its fps from the probe. (`project/init.py`, `tests/test_init.py`)
+
+- **`sample_overlay` takes `--fps`, and `--duration` reaches its step
+  schema.** `--fps` was hardcoded to `30` in the node invocation, so sampling
+  an overlay from a 60fps project showed every `spring()` settling in half
+  the wall-clock time it actually will — the verification render disagreed
+  with the real render, silently. It is now a parameter, still defaulting to
+  30. `--duration` already existed on the argparse but was missing from
+  `sample_overlay.json`, so an agent reading the step schema could not
+  discover it; without it the `duration` global is undefined and anything
+  keyed to `frame / duration` sits frozen at 0, which looks exactly like the
+  dead-air bug an agent would be sampling the overlay to hunt.
+  (`steps/render/sample_overlay.py`, `steps/render/sample_overlay.json`)
+
+- **`interpolate`'s phantom `extrapolateRight` / `extrapolateLeft` options
+  are gone.** The overlay runtime destructures `{ extrapolate = 'clamp' }`
+  and nothing else (`montaj_assets/overlay-runtime/helpers.js`), but
+  `vite-env.d.ts` declared two more alongside it. Passing either was accepted
+  by the type checker and then silently dropped at runtime —
+  `{ extrapolate: 'extend' }` returns 10 where `{ extrapolateRight: 'extend' }`
+  returns 1. It never surfaced as a bug because the default is already
+  `'clamp'`, so every call site got the right answer for the wrong reason,
+  but declaring the options made the lie type-safe and let the pattern spread
+  by example, including into an inline JSX fixture in
+  `tests/test_sample_steps.py` (removed here too; inert, since the option was
+  ignored and clamp is the default). (`montaj_assets/ui/src/vite-env.d.ts`,
+  `skills/write-overlay/SKILL.md`, `tests/test_sample_steps.py`)
+
 - **A rejected Gemini API key now fails with its own code and a fix-it
   message, instead of the generic `api_error` a bad key used to produce.**
   `connectors/gemini.py` wrapped every SDK exception as `"Gemini
