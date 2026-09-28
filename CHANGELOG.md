@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- **Fixed: exported video no longer shows black bars where the preview shows none.** A video whose box aspect differs from its footage is now padded transparently, as images are; alpha footage keeps its alpha.
+## v5.3.1
+
+- **Fixed: exported video no longer shows black bars where the preview shows none.** A video whose box aspect differs from its footage is now padded transparently, as images are; alpha footage keeps its alpha. One visible change: after a reframe, the 1 px strip at the top and bottom of the crop now shows what is underneath instead of a black line. A gap of exactly 1 px still shows the old black line, by design.
 - **Fixed: `validate` accepts image items on tracks[0]**, matching the renderer and editor.
 
 ## v5.3.0
