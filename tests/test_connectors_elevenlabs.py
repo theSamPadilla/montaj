@@ -1,5 +1,6 @@
 """Tests for connectors.elevenlabs — speech, sound effects and music (PV29 T6)."""
 import json as json_module
+import os
 
 import pytest
 
@@ -173,6 +174,27 @@ class TestGenerateSpeech:
         mod.generate_speech("hi", "id-george", str(tmp_path / "out.mp3"), model="eleven_multilingual_v2")
         assert captured["body"]["model_id"] == "eleven_multilingual_v2"
 
+    def test_wav_out_path_is_retargeted_to_mp3(self, monkeypatch, tmp_path):
+        """PV29 review item 10: `_post_audio` writes MP3 bytes to whatever
+        out_path says, so `--out bed.wav` wrote an MP3 named .wav. The
+        written file must actually be named .mp3, and the .wav path must
+        not exist."""
+        def fake_retry(method, url, **kwargs):
+            if url.endswith("/v1/voices"):
+                return _FakeResponse(200, _VOICES_BODY)
+            return _FakeResponse(200, content=b"mp3-bytes")
+
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod._http, "request_with_retry", fake_retry)
+
+        asked = str(tmp_path / "voiceover.wav")
+        result = mod.generate_speech("hi", "id-george", asked)
+
+        assert result == str(tmp_path / "voiceover.mp3")
+        assert not os.path.exists(asked)
+        with open(result, "rb") as f:
+            assert f.read() == b"mp3-bytes"
+
     def test_401_raises_invalid_api_key(self, monkeypatch, tmp_path):
         def fake_retry(method, url, **kwargs):
             if url.endswith("/v1/voices"):
@@ -272,6 +294,23 @@ class TestGenerateMusic:
 
         with pytest.raises(ConnectorError, match="length_ms must be at least"):
             mod.generate_music("ambient pad", str(tmp_path / "out.mp3"), length_ms=2999)
+
+    def test_wav_out_path_is_retargeted_to_mp3(self, monkeypatch, tmp_path):
+        """PV29 review item 10: `generate_music --out bed.wav` wrote an MP3
+        named .wav. The written file must actually be named .mp3."""
+        def fake_retry(method, url, **kwargs):
+            return _FakeResponse(200, content=b"music-bytes")
+
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod._http, "request_with_retry", fake_retry)
+
+        asked = str(tmp_path / "bed.wav")
+        result = mod.generate_music("ambient pad", asked, length_ms=5000)
+
+        assert result == str(tmp_path / "bed.mp3")
+        assert not os.path.exists(asked)
+        with open(result, "rb") as f:
+            assert f.read() == b"music-bytes"
 
     def test_request_shape_omits_model_id_by_default(self, monkeypatch, tmp_path):
         captured = {}

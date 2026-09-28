@@ -42,7 +42,10 @@ def _client():
         raise ConnectorError(
             "Missing connector dependencies. Run: montaj install connectors"
         )
-    return openai.OpenAI(api_key=get_credential("openai", "api_key"))
+    # max_retries=0: the SDK default (2) retries timeouts, 429s and 5xx on
+    # billed images.generate/images.edit calls underneath this connector's
+    # own error handling — a timed-out image could otherwise be charged twice.
+    return openai.OpenAI(api_key=get_credential("openai", "api_key"), max_retries=0)
 
 
 def generate_image(

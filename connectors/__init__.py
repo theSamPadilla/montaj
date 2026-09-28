@@ -3,6 +3,20 @@
 Each connector module wraps one vendor's API. Step scripts import from here
 and translate ConnectorError to fail().
 """
+import os
+
+
+def retarget_extension(path: str, ext: str) -> str:
+    """`path` with `ext` substituted; unchanged when it already matches.
+
+    Shared by connectors whose vendor call returns audio in a fixed
+    container regardless of what the caller's `out_path` extension asked
+    for (Gemini TTS/Lyria, ElevenLabs speech/sfx/music) — the file is named
+    after what the bytes actually are, never re-encoded to match the
+    request.
+    """
+    base, current = os.path.splitext(path)
+    return path if current.lower() == ext else base + ext
 
 
 class ConnectorError(Exception):

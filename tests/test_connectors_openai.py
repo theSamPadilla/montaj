@@ -220,6 +220,32 @@ class TestModuleImportsCleanly:
 
 
 # ---------------------------------------------------------------------------
+# _client: PV29 review item 9. The SDK default (max_retries=2) retries
+# timeouts, 429s and 5xx on billed images.generate/images.edit calls — a
+# timed-out image can be charged twice. This connector does its own retry
+# decisions (or none) at the ConnectorError layer, so the SDK must not retry
+# underneath it.
+# ---------------------------------------------------------------------------
+
+class TestClientDisablesSdkRetries:
+    def test_client_passes_max_retries_zero(self, monkeypatch):
+        captured = {}
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        import openai as openai_sdk
+        monkeypatch.setattr(openai_sdk, "OpenAI", _FakeOpenAI)
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        import connectors.openai as mod
+        mod._client()
+
+        assert captured.get("max_retries") == 0
+
+
+# ---------------------------------------------------------------------------
 # generate_image: SDK exceptions classified via classify_http_error — PV29 T3.
 #
 # openai.APIStatusError/.APIConnectionError are the REAL SDK classes (openai

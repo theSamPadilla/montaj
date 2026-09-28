@@ -32,7 +32,7 @@ Current functions:
 Library code — raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
-import base64, io, json, sys, time
+import base64, io, json, re, sys, time
 from connectors import ConnectorError, _http, classify_http_error, MODEL_RETIRED, UNREACHABLE
 from lib.credentials import get_credential, CredentialError
 
@@ -96,6 +96,20 @@ MAX_CONSECUTIVE_POLL_FAILURES = 5
 # A request ID that can't exist: a status lookup on it is free and tells a
 # valid key (404) from a rejected one (401).
 _KEY_CHECK_REQUEST_ID = "00000000-0000-0000-0000-000000000000"
+
+# Words that mark a 429 as an actual rate limit, worth waiting out. A 429
+# whose message doesn't say any of these is not assumed to be a rate limit —
+# retrying an unclassified 429 after a billed submit risks a second charge.
+_RATE_LIMIT_WORDS = ("too many requests", "rate limit", "concurren")
+
+_REQUEST_ID_RE = re.compile(r"/requests/([^/]+)")
+
+
+def _request_id_from_url(url: str) -> str:
+    """Best-effort request id parsed out of a status/response URL, for a
+    failure message — falls back to the full URL when it doesn't match."""
+    m = _REQUEST_ID_RE.search(url)
+    return m.group(1) if m else url
 
 
 def _headers() -> dict:
@@ -299,16 +313,20 @@ def submit(model_id: str, payload: dict) -> dict:
                 retry_statuses=frozenset(), retry_exceptions=False,
             )
         except ConnectorError as e:
+            # A timed-out/ambiguous submit may already be billed and queued —
+            # UNREACHABLE reads as "nothing happened" and invites a wrongful
+            # re-run, so this is reason=None, not UNREACHABLE (PV29 review).
             raise ConnectorError(
                 f"fal.ai submit failed: {e}. If it timed out, the job may still "
-                f"have been queued; check the fal.ai dashboard before retrying.",
-                reason=UNREACHABLE,
+                f"have been queued and may still finish on fal.ai; don't "
+                f"regenerate before checking the fal.ai dashboard.",
             ) from e
         if r.status_code < 400:
             return r.json()
         message = _error_message(r)
         reason = classify_http_error(r.status_code, message)
-        if r.status_code == 429 and reason is None and attempt < attempts - 1:
+        is_rate_limit = reason is None and any(w in message.lower() for w in _RATE_LIMIT_WORDS)
+        if r.status_code == 429 and is_rate_limit and attempt < attempts - 1:
             time.sleep(_http.RETRY_BACKOFF_S * (2 ** attempt))
             continue
         raise ConnectorError(f"fal.ai rejected the request (HTTP {r.status_code}): {message}",
@@ -345,10 +363,14 @@ def wait(status_url: str) -> dict:
         if data is None:
             failures += 1
             if failures >= MAX_CONSECUTIVE_POLL_FAILURES:
+                # The job is already submitted and billed by this point —
+                # UNREACHABLE reads as "nothing happened" and invites a
+                # wrongful re-run, so this is reason=None (PV29 review).
+                request_id = _request_id_from_url(status_url)
                 raise ConnectorError(
-                    f"fal.ai job {status_url}: {failures} status checks failed in a row, "
-                    f"giving up (it may still finish on fal.ai). Last error: {last}",
-                    reason=UNREACHABLE,
+                    f"fal.ai job {request_id}: {failures} status checks failed in a row, "
+                    f"giving up. It may still finish on fal.ai; don't regenerate. "
+                    f"Last error: {last}",
                 )
         else:
             failures = 0
@@ -364,7 +386,17 @@ def wait(status_url: str) -> dict:
 
 def fetch_result(response_url: str) -> dict:
     """GET the finished job's output: {"video": {"url", …}, "seed", …}."""
-    r = _get(response_url, _headers(), "result fetch", timeout=60)
+    try:
+        r = _get(response_url, _headers(), "result fetch", timeout=60)
+    except ConnectorError as e:
+        # The job is already submitted and billed by this point — UNREACHABLE
+        # (what _get raises) reads as "nothing happened" and invites a
+        # wrongful re-run, so this is re-raised as reason=None (PV29 review).
+        request_id = _request_id_from_url(response_url)
+        raise ConnectorError(
+            f"fal.ai result fetch failed for job {request_id}: {e}. It may "
+            f"still finish on fal.ai; don't regenerate.",
+        ) from e
     if r.status_code >= 400:
         message = _error_message(r)
         raise ConnectorError(f"Seedance job failed on fal.ai (HTTP {r.status_code}): {message}",

@@ -23,7 +23,7 @@ Step scripts catch ConnectorError and translate to fail().
 import os, time
 from connectors import (
     ConnectorError, INSUFFICIENT_CREDIT, INVALID_API_KEY, UNREACHABLE,
-    _http, classify_http_error,
+    _http, classify_http_error, retarget_extension,
 )
 from lib.credentials import get_credential
 
@@ -203,6 +203,12 @@ def _post_audio(path: str, body: dict, out_path: str, error_prefix: str) -> str:
     generation ran), never on a network exception, a 5xx, or a billing/abuse
     429 — mirrors kling.generate_speech, the other synchronous billed-audio
     call in this codebase.
+
+    ElevenLabs always returns MP3 bytes here, regardless of what out_path
+    asked for (a caller passing `--out bed.wav` used to get an MP3 named
+    .wav) — out_path is retargeted to `.mp3` before writing, same rule as
+    Gemini's TTS/Lyria output (connectors.retarget_extension). Returns the
+    path actually written, which may differ from out_path by extension.
     """
     try:
         r = _request(
@@ -214,6 +220,7 @@ def _post_audio(path: str, body: dict, out_path: str, error_prefix: str) -> str:
         raise ConnectorError(str(e), reason=UNREACHABLE) from e
     if r.status_code >= 400:
         raise _error_from_response(r, error_prefix)
+    out_path = retarget_extension(out_path, ".mp3")
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "wb") as f:
         f.write(r.content)
@@ -258,8 +265,9 @@ def generate_speech(
     model: str = DEFAULT_TTS_MODEL,
 ) -> str:
     """Generate speech audio via ElevenLabs TTS. Writes the response bytes
-    (audio/mpeg) to out_path. Raises ConnectorError on empty text/out_path,
-    an unresolvable voice, or a failed request."""
+    (audio/mpeg) to out_path, retargeted to a `.mp3` extension — use the
+    return value, not out_path, since they may differ. Raises ConnectorError
+    on empty text/out_path, an unresolvable voice, or a failed request."""
     if not text or not text.strip():
         raise ConnectorError("text must not be empty")
     if not out_path:
@@ -280,7 +288,8 @@ def generate_sfx(
     model: str = DEFAULT_SFX_MODEL,
 ) -> str:
     """Generate a sound effect via ElevenLabs. Writes the response bytes
-    (audio/mpeg) to out_path.
+    (audio/mpeg) to out_path, retargeted to a `.mp3` extension — use the
+    return value, not out_path, since they may differ.
 
     duration_seconds, if given, must be within [MIN_SFX_DURATION_S,
     MAX_SFX_DURATION_S] — validated before any HTTP call.
@@ -311,7 +320,8 @@ def generate_music(
     model: str = DEFAULT_MUSIC_MODEL,
 ) -> str:
     """Generate a music clip via ElevenLabs. Writes the response bytes
-    (audio/mpeg) to out_path.
+    (audio/mpeg) to out_path, retargeted to a `.mp3` extension — use the
+    return value, not out_path, since they may differ.
 
     length_ms must be at least MIN_MUSIC_LENGTH_MS — validated before any
     HTTP call. `model` is normally left unset: the verified /v1/music call

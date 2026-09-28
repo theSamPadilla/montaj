@@ -31,7 +31,7 @@ Step scripts catch ConnectorError and translate to fail().
 """
 import json as _json
 import os, re, sys, time, wave
-from connectors import ConnectorError, UNREACHABLE
+from connectors import ConnectorError, UNREACHABLE, retarget_extension as _retarget_extension
 from lib.credentials import get_credential
 
 # gemini-2.5-flash started 404ing for new API keys ("no longer available to
@@ -117,12 +117,6 @@ def _audio_ext_for_mime(mime_type: str | None) -> str | None:
         if token in lowered:
             return ext
     return None
-
-
-def _retarget_extension(path: str, ext: str) -> str:
-    """`path` with `ext` substituted; unchanged when it already matches."""
-    base, current = os.path.splitext(path)
-    return path if current.lower() == ext else base + ext
 
 
 def _strip_markdown_fences(text: str) -> str:

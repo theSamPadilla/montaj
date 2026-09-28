@@ -434,6 +434,25 @@ def test_submit_does_not_retry_billing_429(fake):
     assert len(fake.calls) == 1
 
 
+def test_submit_does_not_retry_unclassified_429(fake):
+    """A 429 that is neither a recognised rate-limit message nor a billing
+    one must not be retried — retrying against a positive rate-limit signal
+    is the rule; an unrecognised 429 is not assumed to be one."""
+    fake.script = [_FakeResponse(429, {"detail": "something else"})]
+    with pytest.raises(ConnectorError) as ei:
+        fal.submit("m/a/b", {"prompt": "x"})
+    assert ei.value.reason is None
+    assert len(fake.calls) == 1
+
+
+def test_submit_does_not_retry_unparseable_429(fake):
+    fake.script = [_FakeResponse(429, content=b"not json")]  # body=None -> .json() raises
+    with pytest.raises(ConnectorError) as ei:
+        fal.submit("m/a/b", {"prompt": "x"})
+    assert ei.value.reason is None
+    assert len(fake.calls) == 1
+
+
 def test_submit_does_not_retry_5xx_or_network(fake):
     fake.script = [_FakeResponse(503, {"detail": "unavailable"})]
     with pytest.raises(ConnectorError):
@@ -444,7 +463,12 @@ def test_submit_does_not_retry_5xx_or_network(fake):
     fake.script = [_FakeRequestException("timed out")]
     with pytest.raises(ConnectorError) as ei:
         fal.submit("m/a/b", {"prompt": "x"})
-    assert ei.value.reason == UNREACHABLE
+    # PV29 review item 15: a submit that timed out may already have been
+    # billed — UNREACHABLE reads as "nothing happened" and invites a
+    # wrongful re-run, so this must not be classified UNREACHABLE, and the
+    # message must say not to regenerate.
+    assert ei.value.reason is None
+    assert "don't regenerate" in str(ei.value)
     assert len(fake.calls) == 1
 
 
@@ -470,9 +494,27 @@ def test_wait_tolerates_transient_failures(fake, monkeypatch):
 def test_wait_gives_up_after_consecutive_failures(fake, monkeypatch):
     monkeypatch.setattr(_http, "RETRY_ATTEMPTS", 1)
     fake.script = [_FakeRequestException("reset")] * fal.MAX_CONSECUTIVE_POLL_FAILURES
-    with pytest.raises(ConnectorError, match="req-1"):
+    with pytest.raises(ConnectorError, match="req-1") as ei:
         fal.wait(QUEUED["status_url"])
     assert len(fake.calls) == fal.MAX_CONSECUTIVE_POLL_FAILURES
+    # PV29 review item 15: this is a post-submit failure (the job is
+    # already queued and billed) — reason must not be UNREACHABLE, which
+    # reads as "nothing happened", and the message must say not to
+    # regenerate.
+    assert ei.value.reason is None
+    assert "don't regenerate" in str(ei.value)
+
+
+def test_fetch_result_network_failure_is_not_unreachable(fake, monkeypatch):
+    """PV29 review item 15: same rule as wait() — the job was already
+    submitted and billed by the time fetch_result runs, so a network
+    failure here must not be classified UNREACHABLE."""
+    monkeypatch.setattr(_http, "RETRY_ATTEMPTS", 1)
+    fake.script = [_FakeRequestException("reset")]
+    with pytest.raises(ConnectorError, match="req-1") as ei:
+        fal.fetch_result(QUEUED["response_url"])
+    assert ei.value.reason is None
+    assert "don't regenerate" in str(ei.value)
 
 
 def test_wait_times_out(fake, monkeypatch):
