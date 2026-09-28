@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.4.0
+
 - **New credential providers: `fal` (Seedance video on fal.ai) and `elevenlabs` (voice, sound effects, music).** `montaj credentials` prompts for them and `--list` shows them.
 - **New step `check_key --provider <p>` tests an API key with one free call to the provider** (no billed generation): it reports whether the key works, the connector's default model, and whether that model is still available. Every generation provider (not SerpApi) is covered now: Gemini, OpenAI, Kling, `fal` and `elevenlabs`.
 - **Connector failures now carry a shared reason**: `invalid_api_key`, `model_retired`, `insufficient_credit` or `unreachable`, so steps can say "your key was rejected" or "this model is retired" instead of a generic API error. OpenAI image generation now reports a rejected key and a network failure distinctly (it used to raise one generic error for both).
