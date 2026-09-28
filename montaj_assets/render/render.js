@@ -21,7 +21,7 @@ import { compose, embedThumbnail }        from './compose.js'
 import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
 import { requireValidKey, detectFromTransfer, smartDetect, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { pMap }                           from './p-map.js'
-import { fileHasAudio }                   from './encode-segment.js'
+import { fileHasAudio, probeVideoGeometry } from './encode-segment.js'
 import { deriveSdr, probeColorTransfer }  from './derive-sdr.js'
 import { sourceWindow, transitionPairs }  from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
@@ -651,6 +651,27 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
 
   // 4. Run remove_bg on any video items that need it
   await processVideoItems(videoItems, workspaceDir)
+
+  // 4b. Probe each video item's display size and alpha, once per unique source,
+  //     the same pre-probe idiom as transferCache/audioCache above. It runs HERE
+  //     rather than beside them because it must read the FINAL `item.src`:
+  //     normalize (3), the audio strip (3b) and remove_bg (4) can each swap it,
+  //     and remove_bg's swap is to the alpha file whose alpha this records.
+  //     encode-segment.js reads these to decide whether a video's decrease-fit
+  //     leaves bars that must be transparent (see buildVideoItemFilterParts).
+  //     Stored on probed* fields, never on sourceWidth/sourceHeight: those are
+  //     project-authored and gate the sourceCrop step. A failed probe stamps
+  //     nulls, and the encoder then emits its opaque-pad string unchanged.
+  const geometryCache = new Map()
+  for (const item of videoItems) {
+    if (!geometryCache.has(item.src)) {
+      geometryCache.set(item.src, probeVideoGeometry(item.src))
+    }
+    const geom = geometryCache.get(item.src)
+    item.probedWidth  = geom?.width  ?? null
+    item.probedHeight = geom?.height ?? null
+    item.probedAlpha  = geom?.alpha  ?? null
+  }
 
   // 5. Bundle + render all overlay and caption segments
   // PHASE MARKERS: serve's `_render_phase_for` (serve/routes/projects.py) maps

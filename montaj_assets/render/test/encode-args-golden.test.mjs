@@ -93,6 +93,24 @@
 // ordering assertions in encode-segment.test.mjs, and the aspect-mismatched HLG
 // integration fixture in sample-frame.test.mjs, which proves letterbox bars
 // still come out black through the new order.
+//
+// ── 2026-09-27 · todo #6 (transparent video pad) — deliberate render change,
+//    expected/encode-args.source-crop.json REGENERATED, the other two UNCHANGED ─
+// The export used to fill a video's decrease-fit gap with pad's default opaque
+// black, where the editor preview and sample_frame show nothing. The pad now
+// fills that gap with `format=yuva420p,…:color=black@0.0` (yuva444p10le on a
+// converted or HDR item), but ONLY when the gap is known to exceed 1 px or the
+// footage has alpha; an item of unknown size keeps the old opaque string.
+//
+// `source-crop` is a genuinely padded case: its 1536x972 crop decrease-fits to
+// 1080x683 inside the 1080x1920 box, and the crop size is known without any
+// probe. So its golden changed, by exactly one step — `pad=…(oh-ih)/2` became
+// `format=yuva420p,pad=…(oh-ih)/2:color=black@0.0`, in filterParts[1] and in
+// the joined -filter_complex — and was rewritten through the override flag
+// below, deliberately. The other two carry no crop and are never probed in a
+// dry run, so their size is unknown and their bytes (and mtimes) did not move;
+// the compare-only regenerator reported both `unchanged — already current`.
+// The pixel proof lives in video-pad.integration.test.mjs.
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
@@ -225,6 +243,20 @@ describe('encode-args golden: post-swap render pipeline == pre-T7 legacy output'
     const golden = readGolden('source-crop')
     const filters = golden.segments.flatMap((s) => s.filterParts).join('\n')
     assert.match(filters, /crop=/, 'expected a crop= step in the frozen source-crop golden')
+  })
+
+  test('source-crop is the ONLY golden with the transparent video pad (todo #6)', async () => {
+    // Keeps the deliberate regeneration honest in both directions: the padded
+    // fixture must carry the transparent fill, and the two whose footage size
+    // is unknown in a dry run must still carry the old opaque pad and no alpha
+    // pin. See the todo #6 note at the top of this file.
+    const filters = (name) => readGolden(name).segments.flatMap((s) => s.filterParts).join('\n')
+    assert.match(filters('source-crop'),
+      /force_original_aspect_ratio=decrease,format=yuva420p,pad=1080:1920:\(ow-iw\)\/2:\(oh-ih\)\/2:color=black@0\.0\[vid1\]/)
+    for (const name of ['source-crop-missing-dims', 'geometry-non-identity']) {
+      assert.doesNotMatch(filters(name), /yuva|color=black@0\.0/, `${name}: unknown size must keep the opaque pad`)
+      assert.match(filters(name), /pad=\d+:\d+:\(ow-iw\)\/2:\(oh-ih\)\/2\[vid1\]/)
+    }
   })
 
   test('source-crop-missing-dims: NO crop filter — the silent drop, frozen [registry: sourcecrop-missing-dims-silent-drop]', async () => {
@@ -513,9 +545,11 @@ describe('freeze mechanism: identical is a no-op, changed is refused', () => {
     // Backstop. If a future edit points one of these tests at EXPECTED_DIR,
     // this fails loudly instead of the damage being discovered by mtime weeks
     // later. The hashes are the frozen pre-T7 artifacts, independently
-    // reconstructed from commit 0c5233c.
+    // reconstructed from commit 0c5233c — except source-crop's, which moved
+    // DELIBERATELY with the todo #6 transparent video pad (was 0c4a71dc…c042;
+    // see the note at the top of this file for the one-step diff and why).
     const HASHES = {
-      'source-crop': '0c4a71dce88f8ca9aebad5c51d265332d4c46d01003b354b9f101fbcc247c042',
+      'source-crop': '7edefa3ec3eb8b0668553d593b2b54d39e079fc69918119e3391f95f4e8d322b',
       'source-crop-missing-dims': '01df56ae0533552602f97299ab065059317f30012008a9e985c07f1f4cb93b57',
     }
     for (const [name, expected] of Object.entries(HASHES)) {

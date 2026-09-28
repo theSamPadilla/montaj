@@ -688,7 +688,11 @@ test('ordering: an SDR source in an SDR project emits no conversion step at all'
   const chain = result.filterParts.find((p) => p.includes('scale='))
   assert.ok(chain)
   assert.ok(!chain.includes('zscale='), `no conversion expected, got: ${chain}`)
-  assert.match(chain, /setpts=PTS-STARTPTS,crop=[^,]+,scale=[^,]+,pad=/,
+  // This 960x540 crop letterboxes inside the 1080x1920 box, so since todo #6
+  // its pad is the transparent one, behind a `format=yuva420p` alpha pin. That
+  // pin is a pixel-format step, not a colour conversion; the property this
+  // test guards (nothing between scale and pad converts colour) still holds.
+  assert.match(chain, /setpts=PTS-STARTPTS,crop=[^,]+,scale=[^,]+,(format=yuva420p,)?pad=/,
     `SDR chain must stay setpts,crop,scale,pad: ${chain}`)
 })
 

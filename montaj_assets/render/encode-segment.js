@@ -34,7 +34,7 @@ import { spawn, spawnSync } from 'child_process'
 import { mkdirSync } from 'fs'
 import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
-import { specFor, detectFromTransfer, DEFAULT_COLOR_SPACE } from './color-space.js'
+import { specFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
 import {
@@ -87,6 +87,88 @@ export function fileHasAudio(filePath) {
     '-of', 'csv=p=0', filePath,
   ], { encoding: 'utf8', timeout: 5000 })
   return result.status === 0 && result.stdout.trim().length > 0
+}
+
+// Pixel formats that carry an alpha plane: yuva*, gbrap*, rgba/bgra/argb/abgr
+// (8- and 16-bit), ya8/ya16, ayuv64/vuya/uyva. `rgb0`/`bgr0` have a padding
+// byte, not alpha, and are correctly excluded.
+const ALPHA_PIX_FMT = /^(yuva|gbrap|rgba|bgra|argb|abgr|ya\d|ayuv|vuya|uyva)/
+
+/**
+ * The display geometry of a probed video stream, from ffprobe's JSON.
+ *
+ * Pure (no spawn) so the rotation and alpha rules can be tested without a
+ * file. Display size is the coded size with a ±90/±270 displaymatrix applied,
+ * because ffmpeg autorotates on decode — the frame the segment encoder's
+ * `scale` step receives is the DISPLAY frame, the same convention
+ * lib/normalize.py's probe_video uses for display_width/display_height.
+ *
+ * @param {object} probe  parsed `ffprobe -of json` output for stream v:0
+ * @returns {{width: number, height: number, alpha: boolean} | null}
+ *   null when the stream carries no usable size.
+ */
+export function parseVideoGeometry(probe) {
+  const s = probe?.streams?.[0]
+  const w = s?.width
+  const h = s?.height
+  if (!(Number.isInteger(w) && w > 0 && Number.isInteger(h) && h > 0)) return null
+  let rotation = 0
+  for (const sd of s.side_data_list ?? []) {
+    if (sd && sd.rotation != null) { rotation = Number(sd.rotation) || 0; break }
+  }
+  const quarterTurn = Math.abs(Math.round(rotation)) % 180 === 90
+  return {
+    width: quarterTurn ? h : w,
+    height: quarterTurn ? w : h,
+    alpha: typeof s.pix_fmt === 'string' && ALPHA_PIX_FMT.test(s.pix_fmt),
+  }
+}
+
+/**
+ * Probe a video file's display size and whether its pixel format has alpha.
+ * One ffprobe; null on any failure. render.js calls this once per unique
+ * final `src` and stamps the result on `probedWidth` / `probedHeight` /
+ * `probedAlpha` — see buildVideoItemFilterParts for what they decide.
+ *
+ * @param {string} filePath
+ * @returns {{width: number, height: number, alpha: boolean} | null}
+ */
+export function probeVideoGeometry(filePath) {
+  const result = spawnSync(FFPROBE, [
+    '-v', 'quiet', '-select_streams', 'v:0',
+    '-show_entries', 'stream=width,height,pix_fmt:stream_side_data=rotation',
+    '-of', 'json', filePath,
+  ], { encoding: 'utf8', timeout: 30_000 })
+  if (result.status !== 0) return null
+  try {
+    return parseVideoGeometry(JSON.parse(result.stdout))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The size ffmpeg's `scale=boxW:boxH:force_original_aspect_ratio=decrease`
+ * (plus `:force_divisible_by=d` when given) produces from an inW×inH input.
+ *
+ * A mirror of libavfilter's `ff_scale_adjust_dimensions` for the decrease
+ * case, integer arithmetic included: `av_rescale` rounds half away from zero
+ * (`(a*b + c/2) / c` in integers), the result is clamped to the box, and a
+ * divisor > 1 then rounds each side DOWN to a multiple of it. Used only to
+ * decide whether the pad after that scale has anything to fill.
+ *
+ * @returns {{width: number, height: number}}
+ */
+export function decreaseFitSize(inW, inH, boxW, boxH, divisibleBy = 1) {
+  const d = divisibleBy > 1 ? divisibleBy : 1
+  const rescale = (a, b, c) => Math.floor((a * b + Math.floor(c / 2)) / c)
+  let width = Math.min(rescale(boxH, inW, inH * d) * d, boxW)
+  let height = Math.min(rescale(boxW, inH, inW * d) * d, boxH)
+  if (d > 1) {
+    width = Math.floor(width / d) * d
+    height = Math.floor(height / d) * d
+  }
+  return { width, height }
 }
 
 function isImageItem(item) {
@@ -691,6 +773,10 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // Optional source crop (clips workflow vertical reframe). Needs source pixel
   // dims; no-op without them. Even dims keep ffmpeg/x264 happy.
   let cropStep = ''
+  // The size the `scale` step below receives, when it is known: the crop's own
+  // output when a crop runs, otherwise the display size render.js probed.
+  let footageW = null
+  let footageH = null
   const sc = item.sourceCrop
   if (sc && item.sourceWidth && item.sourceHeight) {
     const cw = Math.round(item.sourceWidth  * sc.w / 2) * 2  // even: x264 needs even dims
@@ -698,6 +784,11 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     const cx = Math.round(item.sourceWidth  * sc.x)          // origin NOT even-rounded (offsets don't require it)
     const cy = Math.round(item.sourceHeight * sc.y)          // origin NOT even-rounded
     cropStep = `crop=${cw}:${ch}:${cx}:${cy},`
+    footageW = cw
+    footageH = ch
+  } else if (item.probedWidth > 0 && item.probedHeight > 0) {
+    footageW = item.probedWidth
+    footageH = item.probedHeight
   }
 
   // STEP ORDER IS LOAD-BEARING: crop → scale → convert → pad → rotate
@@ -711,10 +802,11 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // -sized frames.
   //
   // pad stays AFTER the conversion, exactly as before. Its bars are synthesized
-  // black, and synthesizing them post-conversion keeps them in the final SDR
-  // domain — black in, black out. Move pad ahead of the conversion and those
-  // bars get pushed through the LUT with everything else, which maps them to
-  // whatever the grade does to 0,0,0 and tints the letterbox.
+  // (opaque black, or transparent — see `padStep` below), and synthesizing them
+  // post-conversion keeps them in the final domain — black in, black out. Move
+  // pad ahead of the conversion and those bars get pushed through the LUT with
+  // everything else, which maps them to whatever the grade does to 0,0,0 and
+  // tints the letterbox.
   //
   // force_divisible_by=2, and ONLY when a conversion follows: decrease-fit
   // computes the un-pinned dimension from the aspect ratio and will happily
@@ -747,22 +839,73 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // speed S the S× extra source seconds consumed above play out over 1/S the
   // time. A no-op (bare setpts=PTS-STARTPTS) at speed undefined/1.
   const ptsStep = hasSpeed ? `setpts=(PTS-STARTPTS)/${speed}` : 'setpts=PTS-STARTPTS'
+
+  // ── The pad fill: transparent where the preview shows nothing ─────────────
+  //
+  // The pad fills the part of the box the decrease-fit footage does not cover.
+  // The editor preview and sample_frame (which composites a video frame through
+  // the image path's `contain` fit) show that area as EMPTY — whatever sits
+  // underneath shows through. `pad`'s default fill is opaque black, so before
+  // this fill existed the export drew black bars there instead, and on a
+  // remove_bg cutout they blacked out everything behind the presenter.
+  //
+  // The transparent fill is emitted only when it can change the picture: the
+  // fit leaves more than a 1 px gap (the tolerance absorbs rounding), or the
+  // footage has alpha of its own, which the pad must carry through untouched.
+  // Everything else — footage that fills its box, and every item whose size is
+  // unknown (no crop, no probe: dry runs, a failed ffprobe) — keeps the exact
+  // opaque-pad string it always had, so a render with nothing to fix is
+  // byte-identical.
+  //
+  // The explicit `format=` is what GUARANTEES `color=black@0.0` means
+  // transparent: pad draws in whatever format negotiation hands it, and an
+  // alpha-less one would silently drop the @0.0. (In the measured SDR chain
+  // negotiation happened to pick an alpha format anyway; the pin makes that a
+  // property instead of luck, as rotateFilterStep's pin does.) Which format:
+  //   • yuva420p — the SDR path. It is the format `overlay=format=yuv420`
+  //     converts its input to anyway, so the pin adds no conversion.
+  //   • yuva444p10le — whenever a colour conversion ran (the LUT chain works in
+  //     rgb48le/zscale) or the project is HDR (10-bit canvas). 10-bit keeps the
+  //     pad from becoming an 8-bit bottleneck ahead of the overlay; 4:4:4 keeps
+  //     it from making a chroma-subsampling decision the encoder makes anyway;
+  //     YUV rather than rgba64le because the conversion's output is already
+  //     tagged limited-range BT.709/2020 YUV, and a round trip through RGB would
+  //     re-apply a colour matrix swscale picks by default. The managed ffmpeg
+  //     8.1.2's trailing zscale writes yuva444p10le itself (measured: no
+  //     auto-inserted scaler); a build whose zscale lacks alpha formats gets a
+  //     lossless yuv→yuva conversion inserted instead.
+  // A rotated item still passes through rotateFilterStep's `format=yuva420p`
+  // pin after this, which narrows a converted item to 8 bits before `rotate`.
+  // That predates this fill and is left alone here.
+  const padW = anim?.needsAnimatedChain ? anim.peakW : scaledW
+  const padH = anim?.needsAnimatedChain ? anim.peakH : scaledH
+  let transparentPad = item.probedAlpha === true
+  if (!transparentPad && footageW && footageH) {
+    const fit = decreaseFitSize(footageW, footageH, padW, padH, conversionStep ? 2 : 1)
+    transparentPad = padW - fit.width > 1 || padH - fit.height > 1
+  }
+  const padAlphaFmt = (conversionStep || isHdr(projectColorSpace)) ? 'yuva444p10le' : 'yuva420p'
+  const padStep = transparentPad
+    ? `format=${padAlphaFmt},pad=${padW}:${padH}:(ow-iw)/2:(oh-ih)/2:color=black@0.0`
+    : `pad=${padW}:${padH}:(ow-iw)/2:(oh-ih)/2`
+
   // The animated branch sizes scale+pad to the PEAK box instead of the current
   // one and appends the varying resize AFTER the pad, so the conversion and
   // `rotate` only ever see a constant frame size — see animatedGeometry's header
-  // for why all three of them silently mis-render otherwise. The static branch
-  // below is byte-for-byte what it has always been; two frozen goldens say so.
+  // for why all three of them silently mis-render otherwise. With an opaque pad
+  // the static branch below is byte-for-byte what it has always been; the frozen
+  // goldens say so.
   filterParts.push(
     `[${idx}:v]${ptsStep},${cropStep}` +
     (anim?.needsAnimatedChain
       ? `scale=${anim.peakW}:${anim.peakH}:force_original_aspect_ratio=decrease${divisibleBy},` +
         `${conversionStep}` +
-        `pad=${anim.peakW}:${anim.peakH}:(ow-iw)/2:(oh-ih)/2,` +
+        `${padStep},` +
         `scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame` +
         `${animatedRotateStep(anim, true)}`
       : `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy},` +
         `${conversionStep}` +
-        `pad=${scaledW}:${scaledH}:(ow-iw)/2:(oh-ih)/2${rotateFilterStep(box, true)}`) +
+        `${padStep}${rotateFilterStep(box, true)}`) +
     `[vid${idx}]`
   )
   let src = `[vid${idx}]`

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fixed: exported video no longer shows black bars where the preview shows none.** A video whose box aspect differs from its footage is now padded transparently, as images are; alpha footage keeps its alpha.
 - **Fixed: `validate` accepts image items on tracks[0]**, matching the renderer and editor.
 
 ## v5.3.0
