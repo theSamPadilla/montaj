@@ -20,3 +20,31 @@ class ConnectorError(Exception):
     def __init__(self, message: str, reason: str | None = None):
         super().__init__(message)
         self.reason = reason
+
+
+INVALID_API_KEY = "invalid_api_key"
+MODEL_RETIRED = "model_retired"
+INSUFFICIENT_CREDIT = "insufficient_credit"
+UNREACHABLE = "unreachable"
+
+_KEY_WORDS = ("api key", "api_key", "apikey", "access key", "secret key", "invalid token",
+              "token is invalid", "token expired", "invalid authentication", "incorrect api key")
+_RETIRED_WORDS = ("no longer available", "deprecated", "retired", "model_not_found",
+                  "model not found", "unknown model", "does not exist")
+_CREDIT_WORDS = ("balance", "insufficient", "credit", "quota exceeded", "billing", "payment required")
+
+
+def classify_http_error(status: int, message: str) -> str | None:
+    """Map a vendor HTTP failure to a shared reason, or None for a generic error.
+    Word lists are deliberately narrow: a false None only costs a less specific
+    message, but a false invalid_api_key would tell the user their good key is bad."""
+    m = (message or "").lower()
+    if status == 401:
+        return INVALID_API_KEY
+    if status == 402 or any(w in m for w in _CREDIT_WORDS):
+        return INSUFFICIENT_CREDIT
+    if status in (400, 404) and "model" in m and any(w in m for w in _RETIRED_WORDS):
+        return MODEL_RETIRED
+    if status == 403 and any(w in m for w in _KEY_WORDS):
+        return INVALID_API_KEY
+    return None
