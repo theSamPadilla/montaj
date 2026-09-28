@@ -20,8 +20,11 @@ def main():
         fail("invalid_argument", "url must be http(s) or file")
     out = os.path.abspath(args.out_dir)
     os.makedirs(out, exist_ok=True)
-    proc = subprocess.run(["node", CAPTURE_JS, args.url, out], capture_output=True, text=True,
-                          env=node_child_env(), timeout=240)
+    try:
+        proc = subprocess.run(["node", CAPTURE_JS, args.url, out], capture_output=True, text=True,
+                              env=node_child_env(), timeout=240)
+    except subprocess.TimeoutExpired:
+        fail("capture_timeout", "capture-site.js exceeded 240s")
     manifest = os.path.join(out, "manifest.json")
     if proc.returncode != 0 or not os.path.isfile(manifest):
         fail("capture_failed", proc.stderr.strip()[-600:] or "capture-site.js wrote no manifest")
