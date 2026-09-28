@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
 import { Scissors } from 'lucide-react'
 import { EASING_NAMES } from '@bycrux/timeline-core'
-import type { FilmstripIndex, GetFilmstripArgs, GetWaveformPeaksArgs, PeaksData, PendingDrop, Project, ResolveFilePath, TimelineDropPlacement } from '../../types'
+import type { FilmstripIndex, GetFilmstripArgs, GetWaveformPeaksArgs, PeaksData, PendingDrop, Project, ResolveFilePath, TimelineDropPlacement, TimelinePin } from '../../types'
 import type { EasingName, KeyframeProp, VisualItem } from '../../schema'
 import { reflowMagneticLanes } from '../audioMagnet'
 import { normalizeCaptionLanes } from '../captionLanes'
@@ -130,6 +130,12 @@ interface TimelineProps {
   /** Ghost bands for the host's in-flight file imports. Passed straight to
    *  `TimelineCanvas`. Absent/empty → nothing extra is drawn. */
   pendingDrops?: readonly PendingDrop[]
+  /** The host's read-only pins in the marker strip, passed straight to
+   *  `TimelineCanvas` — Timeline does nothing with them, same as `pendingDrops`
+   *  above. Absent/empty → the strip is unchanged. See `TimelinePin`. */
+  pins?: readonly TimelinePin[]
+  /** A click on one of `pins`, by its id. Passed straight through. */
+  onPinClick?: (id: string) => void
 }
 
 /** Icon size for the fade-shape picker's buttons — small enough for a
@@ -345,7 +351,7 @@ const EASING_LABELS: Record<EasingName, string> = {
   hold: 'Hold',
 }
 
-export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, modalOpen = false, onOpenGoToTime, actionsRef, mode = 'dark', onImportFilesToTimeline, pendingDrops }: TimelineProps) {
+export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, modalOpen = false, onOpenGoToTime, actionsRef, mode = 'dark', onImportFilesToTimeline, pendingDrops, pins, onPinClick }: TimelineProps) {
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
   // Under D1, captions share `selectedIds` with everything else, so there is
@@ -1050,6 +1056,8 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               mode={mode}
               onImportFilesToTimeline={onImportFilesToTimeline}
               pendingDrops={pendingDrops}
+              pins={pins}
+              onPinClick={onPinClick}
             />
             {/* ── Per-clip HTML chrome over the canvas ──
                 The subcut-regenerate trigger and the "queued" badge, ported

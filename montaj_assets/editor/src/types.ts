@@ -547,6 +547,52 @@ export interface PendingDrop {
   label?: string
 }
 
+// ── Host pins in the marker strip (optional capability) ───────────────────────
+//
+// A pin is a HOST annotation on the timeline: a time the host wants flagged on
+// the ruler, which it owns entirely. The package paints it and reports a click
+// on it, and does nothing else with it — a pin is never created, moved, renamed
+// or deleted by the canvas, is never persisted, and never reaches the project
+// document.
+//
+// WHY THIS IS NOT `project.markers`. Markers look like the obvious home and are
+// the wrong one, for three separate reasons, each of which alone would rule it
+// out:
+//
+//   1. **Churn.** `project.markers` is part of the project document, so writing
+//      the host's annotations into it means a project write every time the host
+//      re-reads its own source of truth. A host that polls would rewrite the
+//      project on every poll.
+//   2. **They are not the user's.** The marker strip's flags are bookmarks the
+//      operator placed and can select, drag, rename and delete. Host
+//      annotations mixed into the same array become indistinguishable from the
+//      operator's own, and every marker mutation in `markers.ts` would then be
+//      able to move or destroy one.
+//   3. **The render.** Anything in the project document is part of what the
+//      project IS, so a host that hashes the document to decide whether its
+//      last render is still current would see the hash change every time an
+//      annotation arrived, and re-render a film whose frames are identical.
+//
+// So pins ride beside the markers rather than in them: a separate read-only
+// prop, painted in the same strip, hit-tested BEFORE the user's markers (a pin
+// cannot be dragged or renamed, so it must never fall through into marker
+// editing), and with no path into `markers.ts` at all.
+//
+// Montaj Studio's review comments are the only caller today.
+
+/** A host-owned read-only pin in the marker strip. Never persisted, never in
+ *  `project.markers`, never editable from the canvas. Montaj Studio's review
+ *  comments are the only caller today. */
+export interface TimelinePin {
+  /** Host-owned id. Reported back verbatim by `onPinClick`; the package never
+   *  parses or derives anything from it. */
+  id: string
+  /** Where the pin sits, in timeline seconds — the same scale as `Marker.t`. */
+  t: number
+  /** Drawn beside the flag, truncated exactly as a marker label is. */
+  label: string
+}
+
 // ── Adapter ────────────────────────────────────────────────────────────────
 
 /**
@@ -1277,4 +1323,34 @@ export interface VideoEditorProps<P extends Project = Project> {
    * editor guesses at. Absent or empty → nothing is drawn.
    */
   pendingDrops?: readonly PendingDrop[]
+
+  // ── Host pins in the marker strip (opt-in, read-only) ─────────────────────
+
+  /**
+   * Read-only host annotations painted as yellow flags in the marker strip
+   * above the ruler, beside the operator's own markers. See `TimelinePin` for
+   * why these are NOT `project.markers`.
+   *
+   * The host owns the list completely. The package paints it and reports a
+   * click on it; it never creates, moves, renames, deletes or persists a pin,
+   * and a pin never enters the project document, so passing pins can neither
+   * mark the project dirty nor change what a render of it produces.
+   *
+   * Absent or empty → the strip behaves exactly as it did before pins existed:
+   * a project with no markers and no pins has no strip at all, and one with
+   * markers only lays out, paints and hit-tests byte for byte as before.
+   */
+  pins?: readonly TimelinePin[]
+
+  /**
+   * A click on one of `pins`, by that pin's own `id`. The package's only
+   * output for a pin: there is no drag, no rename, no double-click action and
+   * no selection — a pin is not a marker and not an item, so none of the
+   * editor's editing vocabulary reaches it.
+   *
+   * Absent → a pin is inert ink: it still paints, and a click on it still
+   * consumes the press (it does not scrub, seek or select) rather than falling
+   * through to whatever is underneath.
+   */
+  onPinClick?: (id: string) => void
 }

@@ -23,6 +23,7 @@
  */
 
 import type { AudioTrack, CaptionSegment, Marker, VisualItem } from '../../../schema'
+import type { TimelinePin } from '../../../types'
 import { canKeyframe, isKeyframed } from '../../keyframeOps'
 import { AUDIO_ITEM_INSET_PX, type TimelineLayout } from './draw'
 import { KEYFRAME_HIT_HALF_WIDTH_PX, KEYFRAME_STRIP_ZONE_HEIGHT_PX, keyframeDiamondX, keyframeUnionTimes } from './keyframe-strip'
@@ -77,9 +78,21 @@ export interface HitTestOptions {
    *  to arrive here to be hit-testable. Absent means no marker hits are
    *  possible, which is what every caller that predates this gets. */
   markers?: readonly Marker[]
+  /** The host's read-only pins, threaded exactly as `markers` is and for the
+   *  same reason: the layout carries the strip's RECTANGLE but not what sits in
+   *  it. Absent means no pin hits are possible, which is what every caller that
+   *  predates pins gets. NOT read off the project — a pin is never in the
+   *  project document (see `TimelinePin`). */
+  pins?: readonly TimelinePin[]
 }
 
 export type HitKind =
+  /** On a HOST pin's flag or its label, in the strip above the ruler. Tested
+   *  BEFORE `'marker'`, so a pin and a marker at the same instant resolve to
+   *  the pin — see the strip branch in `hitTest` for why that ordering is
+   *  load-bearing rather than a preference. Only ever produced when the caller
+   *  passed pins through `HitTestOptions.pins`. */
+  | 'pin'
   /** On a marker's flag or its label, in the strip ABOVE the ruler. Only ever
    *  produced when the project HAS markers (the strip is absent otherwise) and
    *  the caller passed them through `HitTestOptions.markers`. */
@@ -128,6 +141,11 @@ export interface HitResult {
    *  reuse of `itemId`: a marker is not an item, and every caller that reads
    *  `itemId` means "a thing on a track" by it. */
   markerId?: string
+  /** The hit pin's id, on a `'pin'` hit. Its own field for the same reason
+   *  `markerId` is: a pin is neither an item nor a marker, and every caller
+   *  that reads `itemId` or `markerId` means something else by it. This is the
+   *  id the host passed in `TimelinePin.id`, verbatim. */
+  pinId?: string
   /** Which trim handle, on the two `*-edge` kinds. `in` is the left/start
    *  handle, `out` the right/end one — the vocabulary `cuts.ts` uses for source
    *  windows, rather than the DOM hook's `start`/`end`. */
@@ -165,6 +183,11 @@ export interface HitResult {
    *  pointer machine captures it at press time and reads its `t` for the whole
    *  gesture rather than re-scanning `project.markers` per move. */
   marker?: Marker
+  /** The hit pin itself, carried for the same convenience `marker` is — a
+   *  caller that wants its `label` or `t` does not have to re-scan the list.
+   *  Note NO gesture reads this: a pin has no drag, so unlike `marker` it is
+   *  never captured as a gesture origin. */
+  pin?: TimelinePin
   /** The hit caption segment, for the same reason `item`/`track` are here: the
    *  pointer machine captures it at press time and reads its `start`/`end` for
    *  the whole gesture, rather than re-scanning `project.captions` per move. */
@@ -340,6 +363,28 @@ export function hitTest(
   // ruler and scrub instead.
   const strip = layout.markers
   if (strip && point.y < strip.y + strip.height) {
+    // PINS FIRST, before the markers below. The ordering is the mechanism, not
+    // a preference: a pin is read-only host data with no drag, no rename and no
+    // selection, while a `'marker'` hit is the entry point to all three
+    // (`resolveGesture` turns it into `marker-move`, a double-click into
+    // `editMarker`). A pin that fell through to the marker branch would hand a
+    // press on the host's annotation to the operator's marker editing — a pin
+    // and a marker at the same instant is the ordinary case, not a corner one,
+    // because a host pins the times its own data is about and the operator
+    // bookmarks the same moments.
+    //
+    // Same right-to-left order and the same cull as the marker loop, for the
+    // same reasons — see that loop's comments, which apply here verbatim; the
+    // two regions are measured from one set of constants on purpose.
+    const pins = opts.pins ?? []
+    for (let i = pins.length - 1; i >= 0; i--) {
+      const pin = pins[i]
+      const x = timeToX(pin.t, viewport)
+      if (Math.round(x) + 0.5 < 0) continue
+      if (point.x >= x && point.x <= x + MARKER_HIT_WIDTH_PX) {
+        return { kind: 'pin', t, pinId: pin.id, pin }
+      }
+    }
     const markers = opts.markers ?? []
     // Right-to-left, matching draw order: a later marker paints OVER an earlier
     // one, so it must also win the click.
@@ -559,6 +604,15 @@ export function isItemHit(hit: HitResult): boolean {
 /** Is this a hit on a marker's flag or label in the strip? */
 export function isMarkerHit(hit: HitResult): boolean {
   return hit.kind === 'marker'
+}
+
+/** Is this a hit on a HOST pin's flag or label in the strip? Deliberately NOT
+ *  folded into `isMarkerHit`: every caller of that one means "the operator's
+ *  bookmark, which can be selected, dragged and renamed", and a pin is none of
+ *  those. A predicate that answered true for both would let a pin into every
+ *  marker-editing path in one step. */
+export function isPinHit(hit: HitResult): boolean {
+  return hit.kind === 'pin'
 }
 
 /** Is this a hit on a caption block (either body or edge)? */

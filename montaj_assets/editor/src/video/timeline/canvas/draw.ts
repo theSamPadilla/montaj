@@ -16,7 +16,7 @@
  */
 
 import type { AudioTrack, CaptionSegment, Marker, VisualItem } from '../../../schema'
-import type { Project } from '../../../types'
+import type { Project, TimelinePin } from '../../../types'
 import { groupCaptionLanes } from '../../captionLanes'
 import {
   AUDIO_LANE_HEIGHT_PX,
@@ -313,6 +313,28 @@ export const TIMELINE_COLORS = {
   /** The one marker in the current selection. White, the same selection
    *  vocabulary `clipSelectedOutline`/`handleFill` already use. */
   markerFlagSelected: '#f8fafc',
+  /** A HOST pin's flag stem, in the same strip (see `TimelinePin`). Yellow, so
+   *  it is unmistakably not one of the operator's own sky-blue flags — which is
+   *  the whole point: a pin cannot be selected, dragged or renamed, and the one
+   *  thing the picture has to say is "this flag is not yours".
+   *
+   *  Yellow is the one hue already claimed elsewhere on this surface (the
+   *  preview-axis `cursor`), and reusing it here is deliberate rather than an
+   *  oversight. They cannot be confused: the cursor is a full-height vertical
+   *  rule that only exists while the pointer is over the TRACK area and
+   *  disappears the moment it leaves, and the strip is above the ruler, where
+   *  no cursor line is ever drawn. Every hue that is free instead reads as
+   *  something the operator did (sky is a marker, emerald audio, amber a
+   *  keyframe, cyan an alignment, white selection), and a host annotation is
+   *  none of those. Stepped a shade off `cursor`'s own literal so no two
+   *  meanings share one value, per this palette's standing rule. */
+  pinFlag: '#fde047',
+  /** A pin's label. A shade down from the flag so the flag stays the mark and
+   *  the label reads as its caption — the same relationship `markerFlag` has
+   *  with the `rulerText` a marker's label is drawn in, except a pin's label
+   *  keeps the pin's hue: it has to be legible as belonging to the yellow flag
+   *  rather than to the strip. */
+  pinText: 'rgba(253,224,71,0.9)',
   /** The marquee (rubber-band) selection box. Same white as the selection
    *  vocabulary, since what it is doing IS selecting. */
   marqueeFill: 'rgba(255,255,255,0.08)',
@@ -477,6 +499,15 @@ export const LIGHT_TIMELINE_COLORS: TimelineColors = {
   /** The selected marker. Near-black, following `clipSelectedOutline` into
    *  the same "white becomes near-black here" rule. */
   markerFlagSelected: '#0f172a',
+  /** Still yellow, stepped from yellow-300 to yellow-600 for the same reason
+   *  `markerFlag` steps sky-400 to sky-600: the lighter tone is invisible on a
+   *  pale strip. */
+  pinFlag: '#ca8a04',
+  /** The label, stepped further down the same ramp (yellow-800) — on a pale
+   *  ground the flag's own tone is the LIGHTEST a mark can be and still read,
+   *  so the caption has to go darker rather than lighter to stay the quieter of
+   *  the two. */
+  pinText: 'rgba(133,77,14,0.95)',
   /** The marquee. Selection vocabulary again, so it follows the outline and
    *  the handles into near-black — at the dark set's own alphas, which were
    *  already tuned to "a wash you can see through and a border you can't miss". */
@@ -533,9 +564,11 @@ export const RULER_STEPS_SECONDS = [
  *      ruler's behaviour is untouched and a marker hit is simply a different
  *      rectangle.
  *
- * Present ONLY when the project has markers, the same discipline
- * `TimelineLayout.captions` follows: a marker-less project lays out exactly as
- * it did before this existed, so no existing layout expectation moves.
+ * Present ONLY when there is something to put in it — the project has markers,
+ * or the host passed pins (see `TimelinePin`) — the same discipline
+ * `TimelineLayout.captions` follows: a marker-less, pin-less project lays out
+ * exactly as it did before this existed, so no existing layout expectation
+ * moves.
  */
 export const MARKER_STRIP_HEIGHT_PX = 16
 /** Width of a marker's flag stem, and the gap before its label. */
@@ -733,8 +766,9 @@ export interface TimelineLayout {
    *  contract the rows have. Sits at y=0 when the project has no markers, and
    *  below the marker strip (see `MARKER_STRIP_HEIGHT_PX`) when it does. */
   ruler: { y: number; height: number }
-  /** The marker strip above the ruler. Absent — not a zero-height rect — when
-   *  the project has no markers; see `MARKER_STRIP_HEIGHT_PX`. */
+  /** The marker strip above the ruler — shared by the project's markers and
+   *  the host's pins. Absent — not a zero-height rect — when there are neither;
+   *  see `MARKER_STRIP_HEIGHT_PX`. */
   markers?: { y: number; height: number }
   /** Visual rows in DRAW order (top of the surface first). */
   rows: VisualRowLayout[]
@@ -761,7 +795,7 @@ export interface TimelineLayout {
  * T5's hit-testing should derive its rows from here rather than re-deriving
  * geometry — one layout, two readers.
  */
-export function computeTimelineLayout(project: Project): TimelineLayout {
+export function computeTimelineLayout(project: Project, pins: readonly TimelinePin[] = []): TimelineLayout {
   // Order-normalized (Part B): `trackItems` funnels through `normalizeTracks`,
   // which now groups tracks into the canonical video-block/overlay-block
   // stack (`normalizeTrackOrder`) before returning — so `allTracks` here is
@@ -778,7 +812,13 @@ export function computeTimelineLayout(project: Project): TimelineLayout {
   const rows: VisualRowLayout[] = []
   // The marker strip owns the very top when there is anything to put in it;
   // the ruler starts below it, and every row below that.
-  const hasMarkers = (project.markers?.length ?? 0) > 0
+  //
+  // "Anything" includes the host's PINS, not just the project's own markers: a
+  // pin is painted in this strip, so a project with pins and no markers still
+  // needs the band reserved or there is nowhere to draw them and nothing for
+  // `hitTest` to test against. `pins` defaults to empty, so every caller that
+  // predates pins gets exactly the layout it always got.
+  const hasMarkers = (project.markers?.length ?? 0) > 0 || pins.length > 0
   const markers = hasMarkers ? { y: 0, height: MARKER_STRIP_HEIGHT_PX } : undefined
   const stripHeight = hasMarkers ? MARKER_STRIP_HEIGHT_PX : 0
   const ruler = { y: stripHeight, height: RULER_HEIGHT_PX }
@@ -1774,6 +1814,11 @@ export interface TimelineScene {
    *  Absent → `'dark'`, so every caller that predates light mode — and every
    *  existing test — paints byte-identical pixels. */
   mode?: TimelineMode
+  /** The host's read-only pins (`TimelinePin`), painted in the marker strip.
+   *  NOT read off `project` — that is the entire point of the prop; see
+   *  `TimelinePin`'s own doc. Absent/empty → no pins are drawn, which is what
+   *  every caller that predates them gets. */
+  pins?: readonly TimelinePin[]
 }
 
 export interface DrawStats {
@@ -1923,6 +1968,53 @@ export function drawMarkers(
   ctx.restore()
 }
 
+/**
+ * The HOST's pins, as small yellow flags in the same strip (see `TimelinePin`).
+ *
+ * Deliberately the same geometry as `drawMarkers` — same stem, same gap, same
+ * baseline, same truncation, same cull — and nothing but the colour differs.
+ * Two reasons. The picture: a pin and a marker are both "a flag at a time", so
+ * making them different SHAPES would suggest a difference in kind that the
+ * strip does not have. And the mechanism: `hitTest`'s pin region is measured
+ * from the same constants, so a geometry that drifted from the marker's would
+ * drift from the hit region too, and a pin you can see would stop being a pin
+ * you can click.
+ *
+ * Painted AFTER the markers, so a pin and a marker at the same instant resolve
+ * the same way in ink as they do under the pointer: the pin is the flag you
+ * see, and the pin is the flag you hit (`hitTest` tests pins first). Reverse
+ * either and the picture stops agreeing with the pointer.
+ *
+ * No selected state, unlike `drawMarkers`: a pin is read-only host data and
+ * there is no gesture that could select one, so there is no second colour for
+ * it to be painted in.
+ */
+export function drawPins(
+  ctx: DrawContext,
+  pins: readonly TimelinePin[],
+  viewport: Viewport,
+  rect: { y: number; height: number },
+  surfaceWidth: number,
+  palette: TimelinePalette = DARK_TIMELINE_PALETTE,
+): void {
+  if (pins.length === 0) return
+  ctx.save()
+  ctx.font = LABEL_FONT
+  ctx.textBaseline = 'alphabetic'
+  for (const pin of pins) {
+    const x = Math.round(timeToX(pin.t, viewport)) + 0.5
+    if (x < 0 || x > surfaceWidth) continue
+    ctx.fillStyle = palette.colors.pinFlag
+    ctx.fillRect(x, rect.y + 2, MARKER_FLAG_WIDTH_PX, rect.height - 4)
+    ctx.fillStyle = palette.colors.pinText
+    const label = pin.label.length > MARKER_LABEL_MAX_CHARS
+      ? `${pin.label.slice(0, MARKER_LABEL_MAX_CHARS - 1)}…`
+      : pin.label
+    ctx.fillText(label, x + MARKER_FLAG_WIDTH_PX + MARKER_LABEL_GAP_PX, rect.y + MARKER_LABEL_BASELINE_PX)
+  }
+  ctx.restore()
+}
+
 // ── Pending-drop ghost ───────────────────────────────────────────────────
 
 /** Corner radius of a ghost band. The same 4px a clip uses — the band stands
@@ -2059,6 +2151,9 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
 
   if (layout.markers) {
     drawMarkers(ctx, scene.project.markers ?? [], viewport, layout.markers, surfaceWidth, selectedIds, themePalette)
+    // After the markers, so a pin and a marker at the same time resolve the
+    // same way in ink as they do under the pointer — see `drawPins`.
+    drawPins(ctx, scene.pins ?? [], viewport, layout.markers, surfaceWidth, themePalette)
   }
   drawRuler(ctx, viewport, layout.ruler, surfaceWidth, themePalette)
 

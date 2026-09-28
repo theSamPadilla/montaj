@@ -55,6 +55,7 @@ export type {
   FootageDropPayload,
   PendingDrop,
   TimelineDropPlacement,
+  TimelinePin,
   EditorAdapter,
   EditorContext,
   EditorTheme,

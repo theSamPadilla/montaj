@@ -244,6 +244,8 @@ export default function VideoEditor<P extends Project = Project>({
   captionsGenerating,
   onImportFilesToTimeline,
   pendingDrops,
+  pins,
+  onPinClick,
 }: Props<P>) {
   const emit = onProjectChange ?? (() => {})
 
@@ -427,6 +429,8 @@ export default function VideoEditor<P extends Project = Project>({
         captionsGenerating={captionsGenerating}
         onImportFilesToTimeline={onImportFilesToTimeline}
         pendingDrops={pendingDrops}
+        pins={pins}
+        onPinClick={onPinClick}
         timelineMode={timelineMode}
       />
     </div>
@@ -773,6 +777,8 @@ function ReviewSurface<P extends Project>({
   captionsGenerating,
   onImportFilesToTimeline,
   pendingDrops,
+  pins,
+  onPinClick,
   timelineMode,
 }: SurfaceProps<P> & {
   // See the definition beside `sync` in VideoEditor above — set for the
@@ -793,6 +799,12 @@ function ReviewSurface<P extends Project>({
   // nothing there for a dropped file to become.
   onImportFilesToTimeline?: VideoEditorProps<P>['onImportFilesToTimeline']
   pendingDrops?: VideoEditorProps<P>['pendingDrops']
+  // The host's read-only marker-strip pins. On the REVIEW surface only, for the
+  // same reason the file-drop seam above is: PendingSurface's timeline is a
+  // read-only preview of a project the agent is still building, and a pin is an
+  // annotation ON a finished edit.
+  pins?: VideoEditorProps<P>['pins']
+  onPinClick?: VideoEditorProps<P>['onPinClick']
 }) {
   const project = sync.project
   // Playhead in an external store, not useState — ~60Hz ticks re-render only the
@@ -2406,6 +2418,8 @@ function ReviewSurface<P extends Project>({
           mode={timelineMode}
           onImportFilesToTimeline={onImportFilesToTimeline}
           pendingDrops={pendingDrops}
+          pins={pins}
+          onPinClick={onPinClick}
         />
       </div>
     </div>

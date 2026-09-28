@@ -34,7 +34,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, PendingDrop, Project, FootageDropPayload, ResolveFilePath, TimelineDropPlacement } from '../../../types'
+import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, PendingDrop, Project, FootageDropPayload, ResolveFilePath, TimelineDropPlacement, TimelinePin } from '../../../types'
 import { FOOTAGE_DND_MIME } from '../../../types'
 import type { KeyframeProp, Marker } from '../../../schema'
 import type { PlaybackClock } from '../../playback-clock'
@@ -183,6 +183,14 @@ export interface TimelineCanvasProps {
   /** Ghost bands for the host's in-flight imports, drawn on the overlay layer.
    *  Absent/empty → nothing extra is painted. */
   pendingDrops?: readonly PendingDrop[]
+  /** The host's read-only pins (`TimelinePin`), painted as yellow flags in the
+   *  marker strip and hit-tested BEFORE the project's own markers. Threaded
+   *  straight from `VideoEditorProps.pins`; this surface does nothing with them
+   *  beyond drawing and addressing them. Absent/empty → the strip is exactly
+   *  what it was before pins existed. */
+  pins?: readonly TimelinePin[]
+  /** A click on one of `pins`, by its id. The only output a pin has. */
+  onPinClick?: (id: string) => void
 }
 
 /**
@@ -373,6 +381,12 @@ const NO_SNAP_BOUNDARIES: number[] = []
  *  `pendingDrops` must not hand the ghost memo a fresh array each render. */
 const NO_PENDING_DROPS: readonly PendingDrop[] = []
 
+/** Same reason again, and it matters more here than for either sibling: `pins`
+ *  is a dependency of the LAYOUT memo below, so a fresh array per render would
+ *  recompute the layout — and therefore every row rectangle — on every render
+ *  of the host. */
+const NO_PINS: readonly TimelinePin[] = []
+
 /**
  * How tall the surface must be to reach the bottom of the pane's visible area.
  *
@@ -436,6 +450,8 @@ export default function TimelineCanvas({
   mode = 'dark',
   onImportFilesToTimeline,
   pendingDrops = NO_PENDING_DROPS,
+  pins = NO_PINS,
+  onPinClick,
 }: TimelineCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -456,7 +472,12 @@ export default function TimelineCanvas({
   // `project.captions` is in here because the caption band is part of the
   // layout: without it a caption move or trim would change the project and
   // repaint the OLD band, so the block would spring back under the cursor.
-  const layout = useMemo(() => computeTimelineLayout(project), [project.tracks, project.audio, project.captions])
+  // `pins` is in here because the strip is part of the layout too: the band
+  // only exists when there is something to put in it, so the FIRST pin on a
+  // marker-less project adds 16px above the ruler and moves every row down by
+  // it. Without this dep the pins would be painted into a strip the layout says
+  // is not there, over the top of the ruler.
+  const layout = useMemo(() => computeTimelineLayout(project, pins), [project.tracks, project.audio, project.captions, pins])
 
   // How far the surface grows PAST the drawn tracks to fill the empty area at
   // the bottom of the resizable timeline pane. The tracks stay top-anchored;
@@ -483,8 +504,8 @@ export default function TimelineCanvas({
   // at the old one would float over the wrong track.
   const pendingDropBandList = useMemo(() => pendingDropBands(pendingDrops, layout), [pendingDrops, layout])
 
-  const sceneRef = useRef({ project, layout, selectedIds, selectedKeyframe, totalDuration, mode, pendingDropBandList })
-  sceneRef.current = { project, layout, selectedIds, selectedKeyframe, totalDuration, mode, pendingDropBandList }
+  const sceneRef = useRef({ project, layout, selectedIds, selectedKeyframe, totalDuration, mode, pendingDropBandList, pins })
+  sceneRef.current = { project, layout, selectedIds, selectedKeyframe, totalDuration, mode, pendingDropBandList, pins }
 
   // The preview-axis cursor, tracked imperatively for the same reason the
   // filmstrip hover thumb is: it moves with every mousemove, and a React state
@@ -591,6 +612,7 @@ export default function TimelineCanvas({
           waveforms,
           filmstrips,
           mode: scene.mode,
+          pins: scene.pins,
         })
       }
     }
@@ -738,7 +760,11 @@ export default function TimelineCanvas({
   const selectionKey = selectedIds.join('\0')
   // The selected keyframe is content too — the strip draws it filled — so a
   // change of diamond has to repaint that layer, same as a change of item.
-  useEffect(() => { requestRedraw('content') }, [project, layout, selectionKey, selectedKeyframe, requestRedraw])
+  // `pins` is content too. Listed explicitly even though it is already a
+  // dependency of `layout` above (so a new list always produces a new layout
+  // object): the redundancy is the point — it keeps this repaint correct if the
+  // layout memo's deps are ever narrowed.
+  useEffect(() => { requestRedraw('content') }, [project, layout, selectionKey, selectedKeyframe, pins, requestRedraw])
 
   // ── Overlay: the pending-import ghosts ──
   //
@@ -800,13 +826,13 @@ export default function TimelineCanvas({
   // Everything the machine's context and effects need, refreshed each render so
   // handlers bound once on mount never read a stale project or callback.
   const pointerRef = useRef({
-    project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
-    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu,
+    project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis, pins,
+    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu, onPinClick,
     onImportFilesToTimeline,
   })
   pointerRef.current = {
-    project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis,
-    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu,
+    project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis, pins,
+    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu, onPinClick,
     // Read by the drag handlers below, which are bound ONCE on mount — a
     // file-drop hook read from the closure instead of from here would be the
     // one the host passed on the very first render, forever.
@@ -826,6 +852,7 @@ export default function TimelineCanvas({
       fps: p.fps,
       rippleMode: p.rippleMode,
       playheadTime: clock.get(),
+      pins: p.pins,
     }
   }, [store, clock])
 
@@ -842,6 +869,7 @@ export default function TimelineCanvas({
         case 'inspect':       (effect.target === 'visual' ? p.onInspectClip : p.onInspectAudio)?.(effect.id); break
         case 'editCaption':   p.onEditCaption?.(effect.id); break
         case 'editMarker':    setEditingMarkerId(effect.id); break
+        case 'pinClick':      p.onPinClick?.(effect.id); break
         // Cursor is written straight to the node: an affordance that changes on
         // every hover must not cost a React render.
         case 'cursor':        if (containerRef.current) containerRef.current.style.cursor = effect.cursor; break
@@ -945,7 +973,11 @@ export default function TimelineCanvas({
     // precedence here, same as it does in the machine's own hit-test — a
     // trim handle must not light up underneath a diamond that would win the
     // actual press.
-    const hit = hitTest(point, p.layout, store.get(), { selectedIds: p.selectedIds, markers: p.project.markers })
+    // `pins` passed for the same reason `selectedIds` is: this hit-test has to
+    // resolve a point exactly as the machine's own does, or the cursor and the
+    // press disagree. A pin is not an edge hit, so this returns null for one —
+    // which is the point: no trim handle lights up under a pin.
+    const hit = hitTest(point, p.layout, store.get(), { selectedIds: p.selectedIds, markers: p.project.markers, pins: p.pins })
     if (!isEdgeHit(hit) || hit.itemId === undefined || hit.edge === undefined) return null
     return p.selectedIds.includes(hit.itemId) ? { itemId: hit.itemId, edge: hit.edge } : null
   }
@@ -1196,7 +1228,11 @@ export default function TimelineCanvas({
       if (!p.onFadeCurveMenu && !p.onKeyframeMenu) return
       const point = surfacePoint(e)
       if (!point) return
-      const hit = hitTest(point, p.layout, store.get(), { selectedIds: p.selectedIds, markers: p.project.markers })
+      // Same reason again. A right-click on a pin matches neither branch below,
+      // so it falls through to the browser's own menu — a pin has no
+      // context-menu action, and it must not inherit the one belonging to
+      // whatever sits under it.
+      const hit = hitTest(point, p.layout, store.get(), { selectedIds: p.selectedIds, markers: p.project.markers, pins: p.pins })
       if (p.onFadeCurveMenu && hit.kind === 'audio-fade' && hit.itemId !== undefined && hit.side) {
         e.preventDefault()
         p.onFadeCurveMenu({ trackId: hit.itemId, side: hit.side, x: e.clientX, y: e.clientY })

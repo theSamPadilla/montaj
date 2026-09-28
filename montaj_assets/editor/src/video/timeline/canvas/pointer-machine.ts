@@ -55,7 +55,7 @@
  */
 
 import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
-import type { Project } from '../../../types'
+import type { Project, TimelinePin } from '../../../types'
 import { reflowMagneticLanes } from '../../audioMagnet'
 import { laneOf, normalizeCaptionLanes, resolveDropLane, sameLaneNeighbours } from '../../captionLanes'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
@@ -127,6 +127,15 @@ export interface PointerContext {
    *  caption seeks half a frame INTO the segment rather than to its start —
    *  see the seek in `pointerUp`. No gesture's arithmetic uses it. */
   fps: number
+  /** The host's read-only pins (`TimelinePin`), merged into the hit-test the
+   *  same way `selectedIds` and `project.markers` are below — so a host that
+   *  passes pins gets pin hit-testing without also having to remember to put
+   *  them in `hitTestOptions`. Absent/empty → no pin can be hit, and the
+   *  machine behaves exactly as it did before pins existed.
+   *
+   *  NOT read off `ctx.project`: a pin is never in the project document, which
+   *  is the whole reason the prop exists (see `TimelinePin`). */
+  pins?: readonly TimelinePin[]
   snapConfig?: SnapConfig
   hitTestOptions?: HitTestOptions
   /** The host's current keyframe selection, or null/undefined for none. Read
@@ -172,6 +181,15 @@ export type PointerEffect =
    *  separately from `editCaption` because it routes somewhere else entirely —
    *  an overlay input on the canvas, not the transcript sidebar. */
   | { type: 'editMarker'; id: string }
+  /** A click on one of the host's pins — `onPinClick`, with the pin's own id.
+   *
+   *  This is the ONLY effect a pin can ever produce. It is not a `select` (a
+   *  pin is not selectable, and handing its id to the host's selection would
+   *  put a non-existent item id in `selectedIds`), it has no `seek` beside it
+   *  (a press on a flag is aimed at the flag, exactly as a marker press is),
+   *  and there is deliberately no double-click, drag or context-menu
+   *  counterpart: a pin is read-only host data. */
+  | { type: 'pinClick'; id: string }
   /** The surface's CSS cursor. Emitted only when it changes. */
   | { type: 'cursor'; cursor: Cursor }
   /** Where to draw the snap guide and how hard it is holding, or nulls to take
@@ -341,6 +359,13 @@ export function cursorForHit(hit: HitResult): Cursor {
     // retime-in-place gesture, same cursor.
     case 'marker':
       return 'ew-resize'
+    // A pin is the one thing on this surface that is purely a BUTTON: it cannot
+    // be dragged, trimmed or retimed, and clicking it is all it does. So it
+    // gets the hand cursor the doc above withholds from the empty track area,
+    // for exactly the reason stated there — here the promise is true. Note it
+    // is NOT `ew-resize`: that would promise a retime the host never gets.
+    case 'pin':
+      return 'pointer'
     case 'item-edge':
     case 'audio-edge':
     case 'caption-edge':
@@ -400,6 +425,14 @@ export function resolveGesture(hit: HitResult, modifiers: Modifiers): GestureKin
     // drag it in, so no modifiers of its own either.
     case 'marker':
       return 'marker-move'
+    // A PIN never becomes a gesture. Spelled out rather than left to the
+    // `default` below, because this is the line that makes a pin read-only:
+    // returning null here is what stops `pointerMove` from ever calling
+    // `applyGesture` for a pin, and therefore what guarantees no pin press can
+    // reach `markers.ts`, `cuts.ts` or any other mutation. There is nothing to
+    // retime — the host owns the time — so there is no gesture to resolve to.
+    case 'pin':
+      return null
     // Captions have no roll/slip/slide either — there is no source window to
     // slip and no neighbour to roll against — so modifiers fall through here
     // exactly as they do for audio.
@@ -591,10 +624,18 @@ function isOverPlayhead(point: Point, ctx: PointerContext): boolean {
  *  playhead: `M` places one at the current time, which puts it exactly on the
  *  line. Without this exclusion the freshest marker is always the one under the
  *  playhead, so the COMMONEST marker on the strip would be the one you can
- *  never pick up. */
+ *  never pick up.
+ *
+ *  PINS win for the same reason as markers and then some. A pin is a small
+ *  target aimed at deliberately (D1), it sits in the same strip a marker does,
+ *  and — the part that is specific to pins — a host pins the times its own data
+ *  is about, which is routinely wherever the operator has parked the playhead
+ *  while looking at it. Without this exclusion, clicking the pin you are
+ *  currently stopped on would scrub instead of reporting the click, and that is
+ *  the likeliest click there is. */
 function grabsPlayhead(hit: HitResult, point: Point, ctx: PointerContext): boolean {
   return !isEdgeHit(hit) && hit.kind !== 'audio-fade' && hit.kind !== 'keyframe'
-    && hit.kind !== 'marker'
+    && hit.kind !== 'marker' && hit.kind !== 'pin'
     && isOverPlayhead(point, ctx)
 }
 
@@ -1630,6 +1671,11 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
   // not an opt-in.
   const hit = hitTest(point, ctx.layout, ctx.viewport, {
     ...ctx.hitTestOptions, selectedIds: ctx.selectedIds, markers: ctx.project.markers,
+    // Merged here for the same reason `selectedIds` is: a host that has pins
+    // should not also have to remember to put them in `hitTestOptions`. Unlike
+    // `markers` this comes off the CONTEXT, never off the project — a pin is
+    // not project data.
+    pins: ctx.pins,
   })
 
   switch (event.type) {
@@ -1748,7 +1794,21 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
       if (state.kind === 'pressed') {
         const { hit: pressed, wasSelected } = state.press
         const effects: PointerEffect[] = []
-        if (pressed.kind === 'marker' && pressed.markerId !== undefined) {
+        if (pressed.kind === 'pin' && pressed.pinId !== undefined) {
+          // A pin click, and nothing else. Checked FIRST, above the marker
+          // branch, so the precedence `hitTest` establishes in the strip is not
+          // quietly undone one layer up: a pin carries no `markerId` and no
+          // `itemId`, so without its own branch here it would fall all the way
+          // through to `isEmptyHit` (false) and emit nothing at all.
+          //
+          // No `select` and no `seek` beside it, deliberately. A pin is not
+          // selectable — its id names nothing in the project, so handing it to
+          // the host's selection would put a phantom id in `selectedIds` and
+          // leave Delete pointed at it — and a press on a flag is aimed at the
+          // flag rather than at the time under it, which is the same rule the
+          // marker branch below states.
+          effects.push({ type: 'pinClick', id: pressed.pinId })
+        } else if (pressed.kind === 'marker' && pressed.markerId !== undefined) {
           // A marker click selects it, exactly as a clip click does — same
           // `select` effect, same host selection, which is what lets Delete
           // reach it. Its id lives in `markerId` rather than `itemId` (a marker
@@ -1881,6 +1941,12 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
       if (hit.kind === 'marker' && hit.markerId !== undefined) {
         return { state, effects: [{ type: 'editMarker', id: hit.markerId }] }
       }
+      // A PIN does nothing on a double-click, and that is asserted rather than
+      // assumed. It would reach no branch below anyway (it carries no `itemId`),
+      // but "nothing happens because nothing matched" is exactly the kind of
+      // silence a later branch can break without noticing: a pin must never
+      // open a rename box over host data the editor cannot write back to.
+      if (hit.kind === 'pin') return { state, effects: [] }
       // Key the SELECTED element, and only when the click landed ON it. Checked
       // against `ctx.selectedIds` rather than "is there a selection" so a
       // double-click on a different clip never keys the selected one.
