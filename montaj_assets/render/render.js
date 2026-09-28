@@ -26,6 +26,7 @@ import { deriveSdr, probeColorTransfer }  from './derive-sdr.js'
 import { sourceWindow, transitionPairs }  from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
 import { resolveMotionBlur }              from './motion-blur.js'
+import { loudnessFilter }                 from './mix-audio.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
@@ -363,6 +364,11 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   const fps    = settings.fps || 30
   // Validated here, before normalisation and bundling, so a bad value fails fast.
   const motionBlur = (() => { try { return resolveMotionBlur(settings.motionBlur) } catch (e) { fail('invalid_argument', e.message) } })()
+  // Same reasoning as motionBlur above: a bad settings.loudness should fail
+  // before any work starts, not surface as an opaque ffmpeg loudnorm error deep
+  // in the mix pass. loudnessFilter's own range/finiteness check is reused
+  // here; the built filter string is discarded.
+  try { loudnessFilter('[x]', settings.loudness) } catch (e) { fail('invalid_argument', e.message) }
 
   // See SHORT_EDGE_TARGET's module-level comment for why the overlay design
   // canvas is always 1080 on the short edge, independent of settings.resolution.

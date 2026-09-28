@@ -304,3 +304,105 @@ test('compose: an audio track that starts partway through is audible in the expo
 
   rmSync(outputPath, { force: true })
 })
+
+// ── Loudness with clip-only audio (no project.audio.tracks) ────────────────
+//
+// mixAudioIntoVideo's early-exit branch (zero unmuted project.audio.tracks)
+// used to always just stream-copy the video through — so a project with no
+// music bed / no voiceover track (audio coming entirely from the clips'
+// own baked-in soundtrack) silently skipped settings.loudness normalization
+// altogether, even though compose.js's step-4 comment claims the mix pass
+// runs whenever there's audio at all. Fixed: that branch now runs a final
+// loudnorm pass over the clip audio when settings.loudness is set.
+
+function sampleRateOf(path) {
+  const probe = spawnSync('ffprobe', [
+    '-v', 'error', '-select_streams', 'a:0',
+    '-show_entries', 'stream=sample_rate',
+    '-of', 'default=nw=1:nk=1', path,
+  ], { encoding: 'utf8', timeout: 30_000 })
+  return parseInt((probe.stdout || '').trim(), 10)
+}
+
+// Integrated loudness in LUFS, via ffmpeg's ebur128 filter — a measurement
+// pass; it does not alter the audio it measures.
+function integratedLoudnessOf(path) {
+  const probe = spawnSync('ffmpeg', [
+    '-hide_banner', '-i', path, '-af', 'ebur128=framelog=verbose', '-f', 'null', '-',
+  ], { encoding: 'utf8', timeout: 30_000 })
+  const err = probe.stderr ?? ''
+  const m = err.match(/Integrated loudness:\s*\n\s*I:\s*(-?[\d.]+) LUFS/)
+  assert.ok(m, `ebur128 produced no Integrated loudness summary for ${path}:\n${err.slice(-800)}`)
+  return parseFloat(m[1])
+}
+
+test('compose: settings.loudness normalizes clip audio even with zero project.audio.tracks', async () => {
+  const clip = '/tmp/montaj-test-loudness-clip.mp4'
+  const outputPath = '/tmp/montaj-compose-loudness.mp4'
+  rmSync(clip, { force: true })
+  rmSync(outputPath, { force: true })
+  // A quiet clip (well below -14 LUFS) so normalization toward -14 is unmistakable.
+  spawnSync('ffmpeg', [
+    '-y', '-f', 'lavfi', '-i', 'testsrc=duration=3:size=640x360:rate=30',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3:sample_rate=48000',
+    '-af', 'volume=0.02',
+    '-c:v', 'libx264', '-c:a', 'aac', '-shortest', clip,
+  ], { encoding: 'utf8', timeout: 30_000 })
+
+  await compose({
+    projectJson: { settings: { resolution: [640, 360], fps: 30, loudness: -14 }, audio: { tracks: [] } },
+    puppeteerSegments: [],
+    imageItems: [],
+    videoItems: [{
+      id: 'v', type: 'video', trackIdx: 0, src: clip, start: 0, end: 3,
+      inPoint: 0, outPoint: 3, offsetX: 0, offsetY: 0, scale: 1, opacity: 1, muted: false,
+    }],
+    outputPath,
+  })
+
+  assert.ok(existsSync(outputPath), 'output file should exist')
+  // loudnorm resamples internally to 192kHz; without the aresample=48000 fix
+  // this comes out at 96kHz instead of the pipeline's 48kHz.
+  assert.equal(sampleRateOf(outputPath), 48000, 'expected the AAC stream back at 48kHz, not loudnorm\'s internal working rate')
+
+  const measured = integratedLoudnessOf(outputPath)
+  assert.ok(Math.abs(measured - (-14)) < 2, `expected ~-14 LUFS after normalization, measured ${measured} LUFS`)
+
+  rmSync(clip, { force: true })
+  rmSync(outputPath, { force: true })
+})
+
+test('compose: settings.loudness absent and zero project.audio.tracks stays a plain stream copy', async () => {
+  // Companion to the test above: with no loudness target at all, hasAudio is
+  // false exactly as before the fix, mixAudioIntoVideo never runs, and
+  // concatSegments writes straight to outputPath — the pre-existing,
+  // unchanged path. This is the single-clip test at the top of this file in
+  // all but name; repeated here to sit next to its loudness counterpart.
+  const clip = '/tmp/montaj-test-loudness-copy-clip.mp4'
+  const outputPath = '/tmp/montaj-compose-no-loudness.mp4'
+  rmSync(clip, { force: true })
+  rmSync(outputPath, { force: true })
+  spawnSync('ffmpeg', [
+    '-y', '-f', 'lavfi', '-i', 'testsrc=duration=2:size=640x360:rate=30',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2:sample_rate=48000',
+    '-c:v', 'libx264', '-c:a', 'aac', '-shortest', clip,
+  ], { encoding: 'utf8', timeout: 30_000 })
+
+  await compose({
+    projectJson: { settings: { resolution: [640, 360], fps: 30 }, audio: { tracks: [] } },
+    puppeteerSegments: [],
+    imageItems: [],
+    videoItems: [{
+      id: 'v', type: 'video', trackIdx: 0, src: clip, start: 0, end: 2,
+      inPoint: 0, outPoint: 2, offsetX: 0, offsetY: 0, scale: 1, opacity: 1, muted: false,
+    }],
+    outputPath,
+  })
+
+  assert.ok(existsSync(outputPath))
+  const probe = spawnSync('ffprobe', ['-v', 'error', outputPath], { encoding: 'utf8' })
+  assert.equal(probe.status, 0, 'ffprobe should report no errors')
+
+  rmSync(clip, { force: true })
+  rmSync(outputPath, { force: true })
+})

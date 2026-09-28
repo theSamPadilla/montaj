@@ -44,6 +44,8 @@ Custom overlay JSX runs in a sandboxed evaluator. All identifiers below are inje
 
 **All calls to `interpolate`, `spring`, and any read of `frame`, `fps`, `duration`, or `props` must be inside the component function body.** The module's top-level code runs before the render shim sets up these globals — calling them outside a function will throw `interpolate is not defined` and crash the entire render.
 
+**With `settings.motionBlur` above 1, the renderer passes fractional `frame` values (sub-frames). Never index arrays by `frame` or branch on `frame % n`; derive everything as a continuous function of `frame`.**
+
 ```jsx
 // WRONG — crashes at render time
 const opacity = interpolate(frame, [0, Math.round(fps * 0.33)], [0, 1])
@@ -306,7 +308,7 @@ export default function Indicator() {
 }
 ```
 
-`spring()` integrates per whole frame and quantizes fractional frames up; prefer `springStep`/`springSum` when a value retargets or when `settings.motionBlur` is above 1.
+`spring()` interpolates linearly between whole frames at fractional frames; `springStep`/`springSum` are exact at any frame.
 
 ---
 

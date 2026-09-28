@@ -53,7 +53,7 @@ export function interpolate(frame, inputRange, outputRange, { extrapolate = 'cla
  */
 const _springCache = new Map()
 
-export function spring({
+function springAt({
   frame,
   fps,
   mass = 1,
@@ -78,4 +78,32 @@ export function spring({
     s.hist.push(x)
   }
   return s.hist[n]
+}
+
+/**
+ * `spring()` itself, fractional-frame aware.
+ *
+ * `springAt` (above) is indexed by `Math.ceil(frame)`, so every fractional
+ * frame used to quantize UP to the next whole frame's value. That's invisible
+ * at integer frames (normal playback/render), but with `settings.motionBlur`
+ * above 1 the renderer samples several fractional sub-frames per output frame
+ * — e.g. frame 10.25, 10.5, 10.75 — and quantizing every one of them up to
+ * frame 11's value collapses what should be 4 distinct positions into 2,
+ * producing a double image when the sub-frames are averaged.
+ *
+ * Linear interpolation between the two neighbouring whole frames fixes that
+ * while leaving every existing integer-frame call byte-identical — `spring()`
+ * called at an integer frame still goes straight to `springAt` below, so
+ * nothing about the memoized Euler integration changes for non-blurred
+ * renders.
+ */
+export function spring(params) {
+  const { frame } = params
+  if (Number.isFinite(frame) && frame > 0 && !Number.isInteger(frame)) {
+    const lo = Math.floor(frame)
+    const a = springAt({ ...params, frame: lo })
+    const b = springAt({ ...params, frame: lo + 1 })
+    return a + (b - a) * (frame - lo)
+  }
+  return springAt(params)
 }

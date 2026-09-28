@@ -395,11 +395,11 @@ export interface EditorProject {
      *  an explicit `true` persists the operator's opt-in. */
     audibleScrub?: boolean
     /** Sub-frame motion blur: N (1-8) evenly spaced sub-frames captured per
-     *  output frame and averaged. Absent or 1 = off. Render time scales ~N×. */
+     *  output frame and averaged. Absent or 1 = off. Render time and temp disk
+     *  scale ~N×. */
     motionBlur?: number
     /** Integrated loudness target in LUFS (-30 to -5) for the final audio mix,
-     *  e.g. -14 for social platforms. Absent = no normalization. Applies only
-     *  when project.audio.tracks is non-empty (the final mix pass). */
+     *  e.g. -14 for social platforms. Absent = no normalization. */
     loudness?: number
   }
   name?: string | null

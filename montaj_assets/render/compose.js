@@ -63,7 +63,13 @@ export async function compose({
   // color metadata. Falls back to sdr_bt709 for projects predating this field.
   const projectColorSpace = colorSpace ?? projectJson.settings?.colorSpace ?? 'sdr_bt709'
   const audioTracks = projectJson.audio?.tracks ?? []
-  const hasAudio = audioTracks.some(t => !t.muted)
+  const loudness = projectJson.settings?.loudness
+  // Also true with zero unmuted project.audio.tracks when settings.loudness is
+  // set: mixAudioIntoVideo's early-exit branch still needs to run a final
+  // loudnorm pass over the clips' own audio in that case (see mix-audio.js),
+  // so the premix/mix machinery below must engage for it exactly as it would
+  // for a real audio track.
+  const hasAudio = audioTracks.some(t => !t.muted) || (loudness !== undefined && loudness !== null)
 
   // 1. Plan segments — merge video + image items
   const allItems = [...imageItems, ...videoItems]
@@ -168,7 +174,7 @@ export async function compose({
   // 4. Mix independent audio tracks (concat output guaranteed to have audio
   //    because every segment produces AAC 48kHz — either from source or anullsrc)
   if (hasAudio) {
-    mixAudioIntoVideo(preMixPath, audioTracks, outputPath, { loudness: projectJson.settings?.loudness })
+    mixAudioIntoVideo(preMixPath, audioTracks, outputPath, { loudness })
     rmSync(preMixPath, { force: true })
   }
 

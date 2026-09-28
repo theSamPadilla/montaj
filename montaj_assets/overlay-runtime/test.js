@@ -137,8 +137,13 @@ for (const name of requiredChartGlobals) {
 console.log('overlay-runtime: contract symmetry OK')
 console.log(`  globals: ${renderKeys.join(', ')}`)
 
-// spring() parity — the memoized implementation must be bit-identical to the
-// original O(frame) Euler-integration loop it replaced.
+// spring() parity — at INTEGER frames the memoized implementation must stay
+// bit-identical to the original O(frame) Euler-integration loop it replaced.
+// (Fractional frames are exempt from this parity check on purpose — see the
+// "fractional frames" block below: spring() used to quantize a fractional
+// frame UP to the next whole frame's value, which this fix replaces with
+// linear interpolation between the two neighboring whole frames. Only integer
+// frames are required to match the pre-fix reference exactly.)
 // Reference implementation: the original O(frame) loop, for parity checks.
 function springReference({ frame, fps, mass = 1, stiffness = 100, damping = 10, initialVelocity = 0 }) {
   const dt = 1 / fps
@@ -151,13 +156,42 @@ function springReference({ frame, fps, mass = 1, stiffness = 100, damping = 10, 
   return x
 }
 
-const springCases = [0, 1, 7, 30, 7, 300, 2.5, 299]
+const springCases = [0, 1, 7, 30, 7, 300, 299]
 for (const params of [{ fps: 30 }, { fps: 60, stiffness: 220, damping: 16 }]) {
   for (const frame of springCases) {
     const got = spring({ frame, ...params })
     const want = springReference({ frame, ...params })
     assert.ok(Object.is(got, want), `spring(${frame}, ${JSON.stringify(params)}): ${got} !== ${want}`)
   }
+}
+
+// Fractional frames: linear interpolation between the two neighboring whole
+// frames, not a quantize-up to the next one. This matters under
+// `settings.motionBlur` above 1, where the renderer samples several
+// fractional sub-frames per output frame (e.g. 10.25, 10.5, 10.75) — the old
+// ceil-based quantization collapsed all of those to frame 11's value, giving
+// motion blur a double image instead of a smooth in-between sweep.
+{
+  for (const params of [{ fps: 30 }, { fps: 60, stiffness: 220, damping: 16 }]) {
+    const v10 = spring({ frame: 10, ...params })
+    const v105 = spring({ frame: 10.5, ...params })
+    const v11 = spring({ frame: 11, ...params })
+    assert.ok(
+      Math.min(v10, v11) < v105 && v105 < Math.max(v10, v11),
+      `spring(10.5) must lie strictly between spring(10) and spring(11): ${v10} ${v105} ${v11}`,
+    )
+    // Exact midpoint at frame + 0.5: the interpolation fraction is exactly 0.5.
+    assert.ok(
+      Math.abs(v105 - (v10 + v11) / 2) < 1e-12,
+      `spring(10.5) should be the exact midpoint of spring(10)/spring(11): ${v105} vs ${(v10 + v11) / 2}`,
+    )
+  }
+  // A quarter-frame off the midpoint, general fractional case.
+  const a = spring({ frame: 20, fps: 30 })
+  const b = spring({ frame: 21, fps: 30 })
+  const got = spring({ frame: 20.25, fps: 30 })
+  const want = a + (b - a) * 0.25
+  assert.ok(Math.abs(got - want) < 1e-12, `spring(20.25) mismatch: ${got} vs ${want}`)
 }
 
 // Perf sanity: after one priming call, repeated calls at a large frame are

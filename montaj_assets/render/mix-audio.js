@@ -167,13 +167,25 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
 }
 
 /** Final-pass loudness normalization. `lufs` is the integrated target
- *  (project settings.loudness); absent = no normalization. */
+ *  (project settings.loudness); absent = no normalization.
+ *
+ *  `aresample=48000` after `loudnorm` is load-bearing, not decoration:
+ *  loudnorm resamples internally to 192kHz to do its true-peak limiting, and
+ *  without an explicit resample back down, the AAC encode downstream inherits
+ *  that 192kHz stream and comes out at 96kHz instead — silently doubling the
+ *  project's working sample rate. Every other stage in this pipeline (segment
+ *  encode, concat) is 48kHz; this filter is the only one that would drift.
+ *
+ *  `!Number.isFinite(lufs)`, not `typeof lufs !== 'number'`: `typeof NaN` is
+ *  `'number'`, so the old check let a NaN settings.loudness sail through —
+ *  `NaN < -30` and `NaN > -5` are both false, so the range check never fired
+ *  either, and loudnorm would have received a literal `I=NaN`. */
 export function loudnessFilter(inLabel, lufs) {
   if (lufs === undefined || lufs === null) return null
-  if (typeof lufs !== 'number' || lufs < -30 || lufs > -5) {
+  if (!Number.isFinite(lufs) || lufs < -30 || lufs > -5) {
     throw new Error(`settings.loudness must be a number from -30 to -5 LUFS, got ${JSON.stringify(lufs)}`)
   }
-  return { part: `${inLabel}loudnorm=I=${lufs}:TP=-1:LRA=11[aloud]`, label: '[aloud]' }
+  return { part: `${inLabel}loudnorm=I=${lufs}:TP=-1:LRA=11,aresample=48000[aloud]`, label: '[aloud]' }
 }
 
 /**
@@ -191,6 +203,27 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness
   // count here for the early-exit branch and to avoid an empty filter graph.
   const unmuted = (audioTracks ?? []).filter(t => !t.muted)
   if (unmuted.length === 0) {
+    // No project.audio.tracks to mix, but the video's OWN clip audio (from
+    // compose.js's segment encode) still lives in `videoPath` and still needs
+    // normalizing when settings.loudness is set — otherwise a project with no
+    // music bed / no voiceover track silently skips loudness entirely, even
+    // though the caption in schema.ts used to promise it only "applies when
+    // project.audio.tracks is non-empty." `loudnessFilter` throws on an
+    // out-of-range/non-finite value, so call it here purely to reuse that
+    // validation before touching ffmpeg.
+    if (loudness !== undefined && loudness !== null) {
+      loudnessFilter('[a]', loudness)
+      const result = spawnSync(FFMPEG, [
+        '-y', '-i', videoPath,
+        '-c:v', 'copy',
+        '-af', `loudnorm=I=${loudness}:TP=-1:LRA=11,aresample=48000`,
+        '-c:a', 'aac', '-b:a', '192k',
+        '-movflags', '+faststart',
+        outputPath,
+      ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
+      if (result.status !== 0) throw new Error(`ffmpeg loudness normalize failed:\n${result.stderr}`)
+      return
+    }
     const result = spawnSync(FFMPEG, [
       '-y', '-i', videoPath, '-c', 'copy', outputPath,
     ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })

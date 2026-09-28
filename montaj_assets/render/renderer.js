@@ -32,6 +32,31 @@ const FFMPEG_TIMEOUT_MS  = 600_000
 
 
 /**
+ * Chunk size in OUTPUT frames for a render at `subframes` sub-frames/frame.
+ *
+ * Motion blur multiplies per-chunk work (N sub-frame captures + temp PNGs per
+ * output frame), so a chunk sized on output frames alone gets N× more
+ * expensive under blur without shrinking. Sizing on `longest * subframes`
+ * instead keeps a blurred chunk's actual rendered-image count in the same
+ * ballpark as an unblurred one, then converting back down to output frames
+ * (`/ subframes`) is what `renderAllSegments` actually chunks segments by.
+ *
+ * An explicit `configChunkSize` (the `chunkSize` config option) or
+ * `userConfigChunkSize` (`~/.montaj/config.json`'s `render.chunkSize`) always
+ * wins — this is only the adaptive default.
+ *
+ * With `subframes === 1` this returns exactly `adaptiveChunkSize(longest,
+ * targetWorkers)` — today's behavior, unchanged.
+ *
+ * Exported for unit testing; `renderAllSegments` is the only production caller.
+ */
+export function resolveChunkSize(longest, targetWorkers, subframes, configChunkSize, userConfigChunkSize) {
+  if (configChunkSize != null) return configChunkSize
+  if (userConfigChunkSize != null) return userConfigChunkSize
+  return Math.max(1, Math.floor(adaptiveChunkSize(longest * subframes, targetWorkers) / subframes))
+}
+
+/**
  * Render all segments using a Puppeteer worker pool.
  *
  * @param {Array<{
@@ -54,12 +79,14 @@ export async function renderAllSegments(segments, config = {}) {
   const userConfig    = readMontajConfig()
   const longest       = segments.reduce((m, s) => Math.max(m, s.frameCount), 0)
   const targetWorkers = config.workers ?? userConfig.render?.workers ?? os.cpus().length
-  const chunkSize     = config.chunkSize ?? userConfig.render?.chunkSize ?? adaptiveChunkSize(longest, targetWorkers)
+  // Computed before chunkSize so the default can size on sub-frames — see
+  // resolveChunkSize's doc comment.
+  const subframes     = config.motionBlur ?? 1
+  const chunkSize     = resolveChunkSize(longest, targetWorkers, subframes, config.chunkSize, userConfig.render?.chunkSize)
 
   // Expand segments into per-chunk jobs
   const colorSpace = config.colorSpace ?? null
   const imageTone  = config.imageTone ?? 'vivid'
-  const subframes  = config.motionBlur ?? 1
   const jobs = []
   for (const seg of segments) {
     const opaque = seg.opaque ?? false
