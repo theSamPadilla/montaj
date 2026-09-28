@@ -323,7 +323,7 @@ class _FakeResponse:
 
 class TestCheckKey:
     def test_ok_default_model_present(self, monkeypatch):
-        body = {"data": [{"id": "gpt-image-1"}, {"id": "gpt-4o"}]}
+        body = {"data": [{"id": "gpt-image-2.5-sunburst"}, {"id": "gpt-4o"}]}
         resp = _FakeResponse(200, body)
         monkeypatch.setattr("connectors.openai._http.request_with_retry", lambda *a, **kw: resp)
 
@@ -366,7 +366,7 @@ class TestCheckKey:
         def fail_if_called(*a, **kw):
             raise AssertionError("check_key must not call the real requests module")
         monkeypatch.setattr("connectors._http._require_requests", fail_if_called)
-        resp = _FakeResponse(200, {"data": [{"id": "gpt-image-1"}]})
+        resp = _FakeResponse(200, {"data": [{"id": "gpt-image-2.5-sunburst"}]})
         monkeypatch.setattr("connectors.openai._http.request_with_retry", lambda *a, **kw: resp)
 
         import connectors.openai as mod
@@ -374,16 +374,51 @@ class TestCheckKey:
 
 
 # ---------------------------------------------------------------------------
-# Best-model default — PV29 T4b. Literal copied by hand from
-# docs/plans/PV29-vendor-facts.md ("OpenAI: the stored key is rejected") so a
-# later change to either side is a deliberate diff, not silent drift.
+# Best-model default — PV29 T4b. gpt-image-1 was the original default here
+# (the stored OpenAI key returns 401, so it couldn't be verified live).
+# Controller decision (2026-09-28, operator): take the default from the
+# vendor docs (developers.openai.com/api/docs/models) instead of a live
+# probe — gpt-image-2.5-sunburst is GA there, "our most capable model for
+# image generation and editing," snapshot gpt-image-2.5-sunburst-2026-09-08,
+# serving both v1/images/generations and v1/images/edits (this connector
+# uses both paths). Never called by this connector — deliberate, per the
+# operator. gpt-image-1 ("previous-generation," not deprecated) is the
+# documented fallback via --model.
 # ---------------------------------------------------------------------------
 
 class TestBestModelDefault:
-    """The stored OpenAI key returns 401 (facts file), so the best current
-    image model could not be verified live this task. gpt-image-1 stays the
-    default until a working key lets Task 12 re-run the lookup."""
-
-    def test_default_image_model_matches_vendor_facts(self):
+    def test_default_image_model_matches_vendor_docs(self):
         import connectors.openai as mod
-        assert mod.DEFAULT_IMAGE_MODEL == "gpt-image-1"
+        assert mod.DEFAULT_IMAGE_MODEL == "gpt-image-2.5-sunburst"
+
+    def test_default_model_reaches_generate_without_refs(self, monkeypatch, tmp_path):
+        """The default must actually flow through to images.generate, and
+        this connector must never send a `quality` value gpt-image-2.5-sunburst
+        doesn't support — it sends none at all, so the vendor default
+        ('auto') applies, which every GPT-Image model accepts."""
+        b64 = base64.b64encode(b"fake-png-data").decode()
+        client = _make_mock_client(b64_json=b64)
+        monkeypatch.setattr("connectors.openai._client", lambda: client)
+
+        import connectors.openai as mod
+        mod.generate_image("a red apple", str(tmp_path / "out.png"))
+
+        call_kwargs = client.images.generate.call_args
+        assert call_kwargs.kwargs.get("model") == "gpt-image-2.5-sunburst"
+        assert "quality" not in call_kwargs.kwargs
+
+    def test_default_model_reaches_edit_with_refs(self, monkeypatch, tmp_path):
+        """gpt-image-2.5-sunburst also serves v1/images/edits — the ref-image
+        path must use the same default model."""
+        b64 = base64.b64encode(b"fake-png-data").decode()
+        client = _make_mock_client(b64_json=b64)
+        monkeypatch.setattr("connectors.openai._client", lambda: client)
+
+        ref = tmp_path / "ref.png"
+        ref.write_bytes(b"ref-data")
+
+        import connectors.openai as mod
+        mod.generate_image("same style", str(tmp_path / "out.png"), ref_images=[str(ref)])
+
+        call_kwargs = client.images.edit.call_args
+        assert call_kwargs.kwargs.get("model") == "gpt-image-2.5-sunburst"

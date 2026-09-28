@@ -17,7 +17,21 @@ import base64, os
 from connectors import ConnectorError, _http, classify_http_error, UNREACHABLE
 from lib.credentials import get_credential
 
-DEFAULT_IMAGE_MODEL = "gpt-image-1"
+# PV29 T4b, controller decision (2026-09-28, operator): taken from vendor
+# docs (developers.openai.com/api/docs/models), not verified by a live call
+# — the stored key returns 401 and the operator chose not to chase a working
+# one for this. gpt-image-2.5-sunburst (snapshot
+# gpt-image-2.5-sunburst-2026-09-08) is GA there: "our most capable model
+# for image generation and editing," serving both v1/images/generations and
+# v1/images/edits — this connector's generate_image() uses both (images.generate
+# / images.edit below). Its quality enum (low/medium/high/xhigh/max/auto) and
+# size enum are a superset of what this connector ever sends: only `size`
+# goes on the wire, never `quality`, so the vendor default `auto` applies —
+# no request-shape change needed for this default.
+# Old default, not deprecated ("previous-generation," still served), kept as
+# a documented fallback via --model:
+#   gpt-image-1
+DEFAULT_IMAGE_MODEL = "gpt-image-2.5-sunburst"
 
 
 def _client():
