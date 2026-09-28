@@ -20,6 +20,47 @@ DEFAULT_HZ = {"bass": 55.0, "sub": 55.0, "pad": 220.0, "pluck": 440.0, "click": 
 TAU = 2 * math.pi
 
 
+def _is_number(v):
+    """True for a finite, real number -- excludes bool (a bool IS an int in
+    Python) and numeric strings ("60" is not a number here, only 60 is)."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+# name -> (field, low, high); every cue field with a numeric range, checked
+# the same way. "t" and "dur" are handled separately: "t" is required and
+# "dur" defaults per-voice when absent.
+_CUE_RANGES = {
+    "note": (0, 127),
+    "freq": (1, 20000),
+    "gain": (0, 2),
+    "pan": (-1, 1),
+}
+
+
+def _validate_cues(spec):
+    """Reject a malformed cue list up front with a clear invalid_argument,
+    instead of letting a bad value surface later as a cryptic TypeError/
+    ValueError or a silently wrong render. Caps the reported total at 600s."""
+    cues = spec.get("cues")
+    if not isinstance(cues, list) or not cues:
+        fail("invalid_argument", "cues must be a non-empty list")
+    duration = spec.get("duration")
+    if duration is not None and (not _is_number(duration) or not (0 < duration <= 600)):
+        fail("invalid_argument", f"duration must be a number in (0, 600], got {duration!r}")
+    for i, c in enumerate(cues):
+        if not isinstance(c, dict):
+            fail("invalid_argument", f"cues[{i}] must be an object")
+        t = c.get("t")
+        if "t" not in c or not _is_number(t) or not (0 <= t <= 600):
+            fail("invalid_argument", f"cues[{i}].t must be a number in [0, 600], got {t!r}")
+        if "dur" in c and (not _is_number(c["dur"]) or not (0.001 <= c["dur"] <= 600)):
+            fail("invalid_argument", f"cues[{i}].dur must be a number in [0.001, 600], got {c['dur']!r}")
+        for field, (lo, hi) in _CUE_RANGES.items():
+            if field in c and (not _is_number(c[field]) or not (lo <= c[field] <= hi)):
+                fail("invalid_argument", f"cues[{i}].{field} must be a number in [{lo}, {hi}], got {c[field]!r}")
+    return cues
+
+
 def midi_hz(n):
     return 440.0 * 2 ** ((n - 69) / 12)
 
@@ -87,15 +128,14 @@ def voice(name, dur, hz, rnd):
 
 
 def synth(spec, peak_db=-1.0):
-    cues = spec.get("cues")
-    if not isinstance(cues, list) or not cues:
-        fail("invalid_argument", "cues must be a non-empty list")
+    cues = _validate_cues(spec)
     rnd = random.Random(spec.get("seed", 1))
     for c in cues:
         if c.get("voice") not in DEFAULT_DUR:
             fail("invalid_argument", f"unknown voice {c.get('voice')!r}; expected one of {sorted(DEFAULT_DUR)}")
     ends = [float(c["t"]) + float(c.get("dur", DEFAULT_DUR[c["voice"]])) for c in cues]
     total = float(spec.get("duration") or (max(ends) + TAIL))
+    total = min(total, 600.0)
     n = int(round(total * SR))
     left = [0.0] * n; right = [0.0] * n
     for c in sorted(cues, key=lambda c: float(c["t"])):

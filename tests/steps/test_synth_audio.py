@@ -53,3 +53,33 @@ def test_every_voice_renders(tmp_path):
 def test_unknown_voice_fails(tmp_path):
     proc, _ = _run(tmp_path, {"cues": [{"t": 0, "voice": "kazoo"}]})
     assert proc.returncode != 0 and "invalid_argument" in proc.stderr
+
+
+def test_negative_t_fails(tmp_path):
+    proc, _ = _run(tmp_path, {"cues": [{"t": -1, "voice": "kick"}]})
+    assert proc.returncode != 0 and "invalid_argument" in proc.stderr
+
+
+def test_missing_t_fails(tmp_path):
+    proc, _ = _run(tmp_path, {"cues": [{"voice": "kick"}]})
+    assert proc.returncode != 0 and "invalid_argument" in proc.stderr
+
+
+def test_non_number_t_fails(tmp_path):
+    proc, _ = _run(tmp_path, {"cues": [{"t": float("nan"), "voice": "kick"}]})
+    assert proc.returncode != 0 and "invalid_argument" in proc.stderr
+
+
+def test_string_note_fails(tmp_path):
+    proc, _ = _run(tmp_path, {"cues": [{"t": 0, "voice": "pad", "note": "60"}]})
+    assert proc.returncode != 0 and "invalid_argument" in proc.stderr
+
+
+def test_negative_duration_fails(tmp_path):
+    proc, _ = _run(tmp_path, {"duration": -1, "cues": [{"t": 0, "voice": "kick"}]})
+    assert proc.returncode != 0 and "invalid_argument" in proc.stderr
+
+
+def test_huge_t_fails(tmp_path):
+    proc, _ = _run(tmp_path, {"cues": [{"t": 1e6, "voice": "kick"}]})
+    assert proc.returncode != 0 and "invalid_argument" in proc.stderr
