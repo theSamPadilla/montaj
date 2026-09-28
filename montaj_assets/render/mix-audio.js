@@ -166,6 +166,16 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
   return { filterParts, audioLabel }
 }
 
+/** Final-pass loudness normalization. `lufs` is the integrated target
+ *  (project settings.loudness); absent = no normalization. */
+export function loudnessFilter(inLabel, lufs) {
+  if (lufs === undefined || lufs === null) return null
+  if (typeof lufs !== 'number' || lufs < -30 || lufs > -5) {
+    throw new Error(`settings.loudness must be a number from -30 to -5 LUFS, got ${JSON.stringify(lufs)}`)
+  }
+  return { part: `${inLabel}loudnorm=I=${lufs}:TP=-1:LRA=11[aloud]`, label: '[aloud]' }
+}
+
 /**
  * Mix audio tracks into a pre-rendered video file.
  * Used by compose.js after segment concat: video stream is copied, audio is re-encoded.
@@ -173,8 +183,10 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
  * @param {string} videoPath   — path to the pre-rendered video (no audio or silent)
  * @param {Array}  audioTracks — project.audio.tracks
  * @param {string} outputPath
+ * @param {object} [opts]
+ * @param {number} [opts.loudness] — project settings.loudness (integrated LUFS target)
  */
-export function mixAudioIntoVideo(videoPath, audioTracks, outputPath) {
+export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness } = {}) {
   // Pre-filter: helpers also skip muted tracks internally, but we need the
   // count here for the early-exit branch and to avoid an empty filter graph.
   const unmuted = (audioTracks ?? []).filter(t => !t.muted)
@@ -193,11 +205,15 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath) {
   // always produces a silent audio stream via anullsrc in compose.js)
   const { filterParts, audioLabel } = buildAudioTrackFilters(unmuted, 1, '[0:a]')
 
+  const ln = loudnessFilter(audioLabel, loudness)
+  const parts = ln ? [...filterParts, ln.part] : filterParts
+  const outLabel = ln ? ln.label : audioLabel
+
   const result = spawnSync(FFMPEG, [
     '-y', ...inputs,
-    '-filter_complex', filterParts.join(';'),
+    '-filter_complex', parts.join(';'),
     '-map', '0:v',
-    '-map', audioLabel,
+    '-map', outLabel,
     '-c:v', 'copy',
     '-c:a', 'aac', '-b:a', '192k',
     '-movflags', '+faststart',

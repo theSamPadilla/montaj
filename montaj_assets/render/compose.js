@@ -168,7 +168,7 @@ export async function compose({
   // 4. Mix independent audio tracks (concat output guaranteed to have audio
   //    because every segment produces AAC 48kHz — either from source or anullsrc)
   if (hasAudio) {
-    mixAudioIntoVideo(preMixPath, audioTracks, outputPath)
+    mixAudioIntoVideo(preMixPath, audioTracks, outputPath, { loudness: projectJson.settings?.loudness })
     rmSync(preMixPath, { force: true })
   }
 

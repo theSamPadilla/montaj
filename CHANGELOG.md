@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Sub-frame motion blur: settings.motionBlur (1-8).** The renderer captures N sub-frames per output frame and averages them; absent or 1 is off and renders exactly as before.
+- **settings.loudness normalizes the final mix to an integrated LUFS target** (loudnorm, -1 dBTP ceiling). Absent: no change.
 - **write-overlay documents springStep and springSum.** Both globals shipped in 5.0.0 but were missing from the skill's globals table.
 
 ## v5.2.0
