@@ -1,0 +1,9 @@
+{
+  "name": "capture_site",
+  "description": "Capture a website for a brand or product film: desktop (1440x900), mobile (390x844 @2x) and full-page screenshots, logo candidates (img/svg marked logo, icons, og:image) saved to logos/, the computed colour palette with roles (background, text, accent) and the font families in use. Writes manifest.json in out-dir.",
+  "output": { "type": "json", "description": "{path} of manifest.json: {url, title, screenshots, logos, palette, fonts}" },
+  "params": [
+    { "name": "url", "type": "string", "required": true, "description": "http(s) URL of the site" },
+    { "name": "out-dir", "type": "path", "required": true, "description": "Folder to write screenshots, logos/ and manifest.json" }
+  ]
+}
