@@ -65,7 +65,8 @@ def main():
     p.add_argument("--mode", default=kling.DEFAULT_MODE, choices=["std", "pro"])
     p.add_argument("--model", default="kling-v3-omni",
                    choices=["kling-v3-omni", "kling-video-o1"],
-                   help="Kling model. kling-video-o1 is newer but only supports 5s/10s durations and no multi-shot.")
+                   help="kling-v3-omni is the default and best model. kling-video-o1 is the earlier "
+                        "model: 5s/10s only, no multi-shot, no audio.")
     p.add_argument("--external-task-id", dest="external_task_id",
                    help="Caller correlation ID. Auto-generated in project-aware mode.")
     p.add_argument("--multi-shot", dest="multi_shot", action="store_true",

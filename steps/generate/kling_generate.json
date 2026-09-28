@@ -16,7 +16,7 @@
     {"name": "sound", "type": "enum", "required": false, "default": "on", "options": ["on", "off"], "description": "on|off"},
     {"name": "aspect-ratio", "type": "string", "required": false, "default": "16:9", "description": "16:9|9:16|1:1"},
     {"name": "mode", "type": "enum", "required": false, "default": "pro", "options": ["std", "pro"], "description": "std|pro"},
-    {"name": "model", "type": "enum", "required": false, "default": "kling-v3-omni", "options": ["kling-v3-omni", "kling-video-o1"], "description": "kling-v3-omni (flexible durations, multi-shot) | kling-video-o1 (newer, 5s/10s only, no multi-shot)"},
+    {"name": "model", "type": "enum", "required": false, "default": "kling-v3-omni", "options": ["kling-v3-omni", "kling-video-o1"], "description": "kling-v3-omni (default and best model: flexible durations, multi-shot, audio) | kling-video-o1 (earlier model: 5s/10s only, no multi-shot, no audio)"},
     {"name": "external-task-id", "type": "string", "required": false, "description": "Caller correlation ID echoed back by Kling on queries"},
     {"name": "multi-shot", "type": "bool", "required": false, "default": false, "description": "Enable multi-shot mode (up to 6 scenes in one API call)"},
     {"name": "shot-type", "type": "enum", "required": false, "options": ["customize", "intelligence"], "description": "customize|intelligence. Required when --multi-shot is set. customize = caller defines each shot via --multi-prompt; intelligence = Kling splits a single --prompt into shots."},
