@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Video editor
 
+- **Added: read-only host pins on the timeline ruler.** A new `pins` prop on `VideoEditorProps` takes `{ id, t, label }` entries and paints them as flags in the marker strip above the ruler, beside the user's own markers; `onPinClick` reports a click by the pin's id. Pins belong to the host alone: the editor never creates, moves, renames, deletes or persists one, and a pin never enters the project document, so passing pins cannot mark a project dirty or change a render. A pin is hit-tested before a user marker. Omitting the prop leaves the timeline exactly as it was. (`types.ts`, `index.ts`, `video/VideoEditor.tsx`, `video/timeline/Timeline.tsx`, `video/timeline/canvas/{TimelineCanvas.tsx,draw.ts,hit-test.ts,pointer-machine.ts}`, `video/timeline/canvas/__tests__/pins.test.tsx`)
+
+### Schema
+
+- **Added: `settings.motionBlur` and `settings.loudness` on the project type.** `motionBlur` (1 to 8 sub-frames per output frame, absent or 1 is off) and `loudness` (an integrated LUFS target, -30 to -5, absent is no normalization) mirror what the render engine now reads. Types only; the editor does not render either. (`schema.ts`)
+
+## 1.5.1 — 2026-09-27
+
+Everything below shipped between 1.0.0 and 1.5.1; per-version headings were not kept for that range.
+
+### Video editor
+
 - **Changed: the captions panel opens on the Captions list every time (no remembered sub-tab).** `CaptionListPanel`'s Format/Styles/Captions sub-tab used to default to Format and persist the last choice to localStorage; it now always mounts on Captions and the choice is plain component state, not read from or written to storage — switching tabs mid-session still works. (`video/CaptionListPanel.tsx`, `video/CaptionListPanel.test.tsx`, `video/__tests__/CaptionListPanel.generate.test.tsx`, `video/__tests__/CaptionListPanel.font.test.tsx`)
 
 - **Added: the context report carries `playing`.** `EditorContext` gains an optional `playing`, which `useReportContext` sends with every report and at once on play/pause, so a host's agent can tell a parked playhead from a moving one. `PreviewPlayer` takes an optional `onPlayingChange(playing)`, called on mount and on each real play/pause change from whichever playback path is active. (`types.ts`, `video/use-report-context.ts`, `video/preview/PreviewPlayer.tsx`, `video/VideoEditor.tsx`)
