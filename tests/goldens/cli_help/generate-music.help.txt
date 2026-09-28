@@ -12,7 +12,7 @@ options:
                         Music vendor to use. ElevenLabs music needs their paid
                         plan.
   --model MODEL         Override the vendor's default model (Gemini default:
-                        lyria-3.5, ~30s clips)
+                        lyria-3.5, ~68s tracks)
   --seed SEED           RNG seed for reproducible outputs. Gemini only;
                         ignored for ElevenLabs.
   --with-vocals         Allow vocals in the output. Gemini only; ElevenLabs
@@ -20,7 +20,7 @@ options:
                         recommended for background music under narration.
   --duration DURATION   Clip length in seconds. Required for --vendor
                         elevenlabs (minimum 3s); ignored for Gemini, whose
-                        Lyria model produces a fixed-length clip.
+                        Lyria picks the length (~68 s for lyria-3.5).
   --json                Output result as JSON
   --out PATH            Output file path
   --quiet               Suppress progress output

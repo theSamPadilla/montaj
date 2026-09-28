@@ -353,7 +353,7 @@ If `storyboard.music` is set:
 
 **Describe mode** (`storyboard.music.mode === 'describe'`):
 - Call `run_step('generate_music', { prompt: storyboard.music.prompt, out: '<project_dir>/assets/music.wav' })`.
-- Lyria Clip produces ~30s. If `total_duration > duration`, tile the track by creating multiple `AudioTrack` entries pointing to the same file at sequential start offsets:
+- Lyria returns a fixed-length track (~68 s for lyria-3.5). If `total_duration > duration`, tile the track by creating multiple `AudioTrack` entries pointing to the same file at sequential start offsets:
   ```python
   start = 0
   while start < total_duration:

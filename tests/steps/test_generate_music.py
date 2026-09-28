@@ -119,6 +119,20 @@ class TestElevenLabsVendorDispatch:
         assert "seed" not in seen
         assert "instrumental" not in seen
 
+    def test_reported_instrumental_is_none_not_true(self, step_module, monkeypatch, capsys, tmp_path):
+        """PV29 review item 16: nothing about ElevenLabs music forces
+        instrumental-only output (--with-vocals isn't even accepted for it —
+        see test above), so the result must report `instrumental: None`,
+        not the Gemini-only `not args.with_vocals` computation."""
+        monkeypatch.setattr(elevenlabs_mod, "generate_music", lambda **kw: kw["out_path"])
+        monkeypatch.setattr(sys, "argv", [
+            "generate_music.py", "--prompt", "x", "--out", str(tmp_path / "m.mp3"),
+            "--vendor", "elevenlabs", "--duration", "3", "--json",
+        ])
+        step_module.main()
+        out = json.loads(capsys.readouterr().out)
+        assert out["instrumental"] is None
+
 
 class TestConnectorErrorMapping:
     def test_gemini_invalid_api_key_uses_gemini_specific_message(

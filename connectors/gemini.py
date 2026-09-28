@@ -57,11 +57,9 @@ INLINE_BYTE_LIMIT = 18 * 1024 * 1024  # 18 MB
 # defaults (neither recorded as retired — still usable via --model):
 #   Old TTS default:   gemini-2.5-flash-preview-tts
 #   Old music default: lyria-3-clip-preview
-# Their request/response shape (voice names for TTS, the music call/response
-# shape) could not be confirmed live — this task's tests run with the
-# network poisoned and the stored key is never spent on a billed call just to
-# check. DEFAULT_TTS_VOICE is left at "Kore" rather than guessing a new
-# vendor-documented name. Needs a live call before shipping (PV29 Task 12).
+# Verified live 2026-09-28 (PV29 vendor facts, receipts 3 and 4):
+# gemini-3.8-flash-tts works with voice Kore; lyria-3.5 works with the
+# existing request shape and returns a ~68 s track.
 DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts"
 DEFAULT_TTS_VOICE = "Kore"  # default for generate_speech when caller omits voice
 DEFAULT_MUSIC_MODEL = "lyria-3.5"
@@ -661,7 +659,7 @@ def generate_music(
                    `cue.mp3`. The bytes are never re-encoded to match the request.
     instrumental — if True, ask Lyria to produce instrumental-only output
                    (suitable for background music under narration).
-    model        — Lyria model variant. Default: lyria-3.5 (30s clips).
+    model        — Lyria model variant. Default: lyria-3.5 (~68 s tracks).
     seed         — optional RNG seed for reproducible outputs.
 
     Returns THE PATH WRITTEN, which may differ from out_path by extension — use

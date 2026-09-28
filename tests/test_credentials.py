@@ -55,6 +55,16 @@ def test_get_credential_raises_when_missing():
         get_credential("kling", "access_key")
 
 
+def test_missing_credential_message_leads_with_the_app_fix():
+    """PV29 review item 18: the message used to tell the user only to run
+    `montaj credentials` — it must lead with where a non-CLI user actually
+    looks (the app's Integrations page), like Gemini's
+    INVALID_API_KEY_MESSAGE does for a rejected key."""
+    with pytest.raises(CredentialError) as ei:
+        get_credential("kling", "access_key")
+    assert "Add your kling key in Montaj under Integrations" in str(ei.value)
+
+
 def test_get_credential_missing_hint_is_a_real_cli_command():
     """`montaj install credentials` isn't a real command (the CLI verb is
     `montaj credentials`, cli/commands/credentials.py) — the fix-it hint must

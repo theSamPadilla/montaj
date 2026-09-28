@@ -29,7 +29,7 @@ def main():
                    help="Allow vocals (default: instrumental-only). Gemini only; ElevenLabs ignores this.")
     p.add_argument("--duration",     type=float,
                    help="Clip length in seconds. Required for --vendor elevenlabs (minimum 3s); "
-                        "ignored for Gemini, whose Lyria model produces a fixed-length clip.")
+                        "ignored for Gemini, whose Lyria picks the length (~68 s for lyria-3.5).")
     # --json on the step controls the step's own stdout format when invoked as a subprocess
     # by the CLI wrapper. The CLI wrapper has its own --json (via add_global_flags) which
     # controls emit() formatting. Two layers, two concerns — not a duplicate declaration.
@@ -73,7 +73,10 @@ def main():
         "duration_seconds": duration,
         "vendor": args.vendor,
         "model": model,
-        "instrumental": not args.with_vocals,
+        # Gemini's --with-vocals actually controls this; ElevenLabs takes no
+        # such flag and nothing forces instrumental-only output there, so
+        # reporting True for it would claim a guarantee that doesn't exist.
+        "instrumental": (not args.with_vocals) if args.vendor == "gemini" else None,
     }
 
     if args.json:
