@@ -104,6 +104,8 @@ verification run needs `--extra rvm` and a managed ffmpeg.
 
 ### 6. Export pads video items with opaque black; the preview does not
 
+**Fixed in 29f3a2e** (probe-driven transparent pad; unpadded video byte-identical). Kept for the record until 5.3.1 ships.
+
 Found 2026-09-27 building montaj-app's floating_head template. When a `video`
 item's box has a different aspect from its footage (after `sourceCrop`, or a
 `scaleX`/`scaleY` that isn't the source's own ratio), the export fills the gap
@@ -127,6 +129,8 @@ video branches, as the image branch does; check the encode-args goldens, which
 freeze the current strings.
 
 ### 7. `validate` rejects image items on tracks[0]; renderer and editor accept them
+
+**Fixed in bc26bb2.** Kept for the record until 5.3.1 ships.
 
 `engine/validate.py` (~line 434) fails any `tracks[0]` item whose type is not
 `video` (`invalid_primary_clip`), but the renderer composites image items on
