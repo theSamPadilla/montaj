@@ -48,3 +48,9 @@ docs/ideas/
 
 # Spikes — local prototypes (SP1 playback engine etc.); preserved on disk, never committed
 spikes/
+
+# Vite writes a transient config bundle beside vite.config.ts on every dev-server
+# start. It is disposable, but being untracked it makes the tree dirty, which
+# blocks scripts/release-montaj-skills.sh and any other release that refuses a
+# dirty tree (2026-09-28).
+**/vite.config.ts.timestamp-*.mjs
