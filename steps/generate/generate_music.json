@@ -11,7 +11,7 @@
     {"name": "out", "type": "string", "required": true,
      "description": "Output audio file path. The extension is advisory — the file is named after the container Lyria actually returns (mp3 in practice), never re-encoded to match. Read the emitted path rather than assuming this one."},
     {"name": "model", "type": "string", "required": false,
-     "description": "Override the Lyria model (default: lyria-3-clip-preview, ~30s clips)"},
+     "description": "Override the Lyria model (default: lyria-3.5, ~30s clips)"},
     {"name": "seed", "type": "int", "required": false,
      "description": "RNG seed for reproducible outputs"},
     {"name": "with-vocals", "type": "bool", "required": false, "default": false,

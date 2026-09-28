@@ -371,3 +371,19 @@ class TestCheckKey:
 
         import connectors.openai as mod
         mod.check_key()  # would raise via fail_if_called if it fell through to real requests
+
+
+# ---------------------------------------------------------------------------
+# Best-model default — PV29 T4b. Literal copied by hand from
+# docs/plans/PV29-vendor-facts.md ("OpenAI: the stored key is rejected") so a
+# later change to either side is a deliberate diff, not silent drift.
+# ---------------------------------------------------------------------------
+
+class TestBestModelDefault:
+    """The stored OpenAI key returns 401 (facts file), so the best current
+    image model could not be verified live this task. gpt-image-1 stays the
+    default until a working key lets Task 12 re-run the lookup."""
+
+    def test_default_image_model_matches_vendor_facts(self):
+        import connectors.openai as mod
+        assert mod.DEFAULT_IMAGE_MODEL == "gpt-image-1"

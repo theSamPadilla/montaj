@@ -1140,3 +1140,109 @@ class TestCheckKeyErrors:
         with pytest.raises(ConnectorError) as ei:
             mod.check_key()
         assert ei.value.reason is None
+
+
+# ---------------------------------------------------------------------------
+# Best-model defaults — PV29 T4b. Literals copied by hand from
+# docs/plans/PV29-vendor-facts.md (Gemini table) so a later change to either
+# side is a deliberate diff, not silent drift.
+# ---------------------------------------------------------------------------
+
+class TestBestModelDefaults:
+    def test_defaults_match_vendor_facts(self):
+        import connectors.gemini as mod
+        assert mod.DEFAULT_MODEL == "gemini-3.8-flash"
+        assert mod.DEFAULT_IMAGE_MODEL == "gemini-3-pro-image"
+        assert mod.DEFAULT_TTS_MODEL == "gemini-3.8-flash-tts"
+        assert mod.DEFAULT_MUSIC_MODEL == "lyria-3.5"
+
+    def test_default_image_model_reaches_request_without_refs(self, monkeypatch, tmp_path):
+        """The new default must actually flow through to generate_content,
+        not just exist as a constant — the no-ref path."""
+        client = MagicMock()
+        client.models.generate_content.return_value = _make_image_response()
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+
+        _, _, modules = _patch_genai_types()
+
+        import connectors.gemini as mod
+        with patch.dict("sys.modules", modules):
+            mod.generate_image("a sunset", str(tmp_path / "out.png"))
+
+        call_kwargs = client.models.generate_content.call_args
+        model_arg = call_kwargs.kwargs.get("model") or call_kwargs[1].get("model")
+        assert model_arg == "gemini-3-pro-image"
+
+    def test_default_image_model_reaches_request_with_refs(self, monkeypatch, tmp_path):
+        """Gemini has no separate edit endpoint — ref images become extra
+        multimodal parts on the same generate_content call, so the default
+        must reach the request on that path too."""
+        client = MagicMock()
+        client.models.generate_content.return_value = _make_image_response()
+        monkeypatch.setattr("connectors.gemini._client", lambda: client)
+
+        _, _, modules = _patch_genai_types()
+
+        ref = tmp_path / "ref.png"
+        ref.write_bytes(b"ref-image-data")
+
+        import connectors.gemini as mod
+        with patch.dict("sys.modules", modules):
+            mod.generate_image("same style", str(tmp_path / "out.png"), ref_images=[str(ref)])
+
+        call_kwargs = client.models.generate_content.call_args
+        model_arg = call_kwargs.kwargs.get("model") or call_kwargs[1].get("model")
+        assert model_arg == "gemini-3-pro-image"
+
+
+class TestCheckKeyCapabilityDefaults:
+    """One Gemini key backs four generation capabilities (text, image, TTS,
+    music), each with its own default model that can retire independently.
+    check_key must flag all four from the same models.list response, not
+    just the text default — PV29 T4b."""
+
+    def test_all_four_present(self, monkeypatch):
+        import connectors.gemini as mod
+        client = MagicMock()
+        client.models.list.return_value = [
+            _make_model(f"models/{mod.DEFAULT_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
+        ]
+        monkeypatch.setattr(mod, "_client", lambda: client)
+
+        result = mod.check_key()
+        assert result["default_model_ok"] is True
+        assert result["image_model_ok"] is True
+        assert result["tts_model_ok"] is True
+        assert result["music_model_ok"] is True
+
+    def test_image_model_missing_others_unaffected(self, monkeypatch):
+        import connectors.gemini as mod
+        client = MagicMock()
+        client.models.list.return_value = [
+            _make_model(f"models/{mod.DEFAULT_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
+        ]
+        monkeypatch.setattr(mod, "_client", lambda: client)
+
+        result = mod.check_key()
+        assert result["image_model_ok"] is False
+        assert result["tts_model_ok"] is True
+        assert result["music_model_ok"] is True
+
+    def test_tts_and_music_missing_text_default_still_ok(self, monkeypatch):
+        """The four flags are independent — a retired image/TTS/music
+        default must not be masked by, or mask, default_model_ok (text)."""
+        import connectors.gemini as mod
+        client = MagicMock()
+        client.models.list.return_value = [_make_model(f"models/{mod.DEFAULT_MODEL}")]
+        monkeypatch.setattr(mod, "_client", lambda: client)
+
+        result = mod.check_key()
+        assert result["default_model_ok"] is True
+        assert result["image_model_ok"] is False
+        assert result["tts_model_ok"] is False
+        assert result["music_model_ok"] is False

@@ -18,7 +18,7 @@ def main():
     p = argparse.ArgumentParser(description="Generate a music clip from a text prompt")
     p.add_argument("--prompt",       required=True, help="Music description (genre, mood, instrumentation)")
     p.add_argument("--out",          required=True, help="Output audio file path")
-    p.add_argument("--model",        help="Override Lyria model (default: lyria-3-clip-preview)")
+    p.add_argument("--model",        help="Override Lyria model (default: lyria-3.5)")
     p.add_argument("--seed",         type=int, help="RNG seed for reproducibility")
     p.add_argument("--with-vocals",  dest="with_vocals", action="store_true",
                    help="Allow vocals (default: instrumental-only)")

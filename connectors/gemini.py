@@ -17,8 +17,9 @@ Current functions:
     generate_speech(text, voice, out_path, model) -> str
     generate_music(prompt, out_path, instrumental, model, seed) -> str
     check_key() -> dict
-        One free call (models.list) to validate a key and confirm DEFAULT_MODEL
-        is still available, with no billed call.
+        One free call (models.list) to validate a key and confirm each of the
+        four default models (text, image, TTS, music) is still available,
+        with no billed call.
 
 Private helpers:
     _generate_audio(model, contents, config, out_path, ...) -> str
@@ -38,7 +39,11 @@ from lib.credentials import get_credential
 # call on 2026-09-26. gemini-3.8-flash is live on the same key as of that
 # date; re-check against models.list before ever changing this again.
 DEFAULT_MODEL = "gemini-3.8-flash"
-DEFAULT_IMAGE_MODEL = "gemini-3-pro-image-preview"
+# PV29 T4b (2026-09-28, docs/plans/PV29-vendor-facts.md): gemini-3-pro-image
+# ("Nano Banana Pro") went GA, replacing the preview default below. Not
+# recorded as retired — still usable via --model.
+#   Old default: gemini-3-pro-image-preview
+DEFAULT_IMAGE_MODEL = "gemini-3-pro-image"
 UPLOAD_POLL_INTERVAL_S = 1.0
 UPLOAD_MAX_WAIT_S = 300.0
 
@@ -47,14 +52,19 @@ UPLOAD_MAX_WAIT_S = 300.0
 # this go through the Files API.
 INLINE_BYTE_LIMIT = 18 * 1024 * 1024  # 18 MB
 
-# Both still appear in models.list as of 2026-09-26 (not retired), but that
-# only proves the name is known to the API, not that a generate_content call
-# against it succeeds for this key — TTS/music generation costs money, so
-# that call is never made just to check. Unverified; revisit if either ever
-# 404s the way gemini-2.5-flash did.
-DEFAULT_TTS_MODEL = "gemini-2.5-flash-preview-tts"
+# PV29 T4b (2026-09-28, docs/plans/PV29-vendor-facts.md): gemini-3.8-flash-tts
+# and lyria-3.5 are the GA replacements below for the two 2026-09-26 preview
+# defaults (neither recorded as retired — still usable via --model):
+#   Old TTS default:   gemini-2.5-flash-preview-tts
+#   Old music default: lyria-3-clip-preview
+# Their request/response shape (voice names for TTS, the music call/response
+# shape) could not be confirmed live — this task's tests run with the
+# network poisoned and the stored key is never spent on a billed call just to
+# check. DEFAULT_TTS_VOICE is left at "Kore" rather than guessing a new
+# vendor-documented name. Needs a live call before shipping (PV29 Task 12).
+DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts"
 DEFAULT_TTS_VOICE = "Kore"  # default for generate_speech when caller omits voice
-DEFAULT_MUSIC_MODEL = "lyria-3-clip-preview"
+DEFAULT_MUSIC_MODEL = "lyria-3.5"
 
 # Shared fail() message for ConnectorError(reason="invalid_api_key"). One
 # constant so every Gemini-calling step (analyze_media, generate_image,
@@ -270,9 +280,16 @@ def check_key() -> dict:
     """Validate the stored/overlaid Gemini key with one free call: models.list.
 
     No billed call — listing the models a key can see costs nothing.
-    default_model_ok is True when DEFAULT_MODEL is among them, which is how a
-    retirement like gemini-2.5-flash's shows up before any real generation
-    step ever runs against it.
+    default_model_ok is True when DEFAULT_MODEL (text/analysis) is among
+    them, which is how a retirement like gemini-2.5-flash's shows up before
+    any real generation step ever runs against it.
+
+    PV29 T4b: one Gemini key backs four generation capabilities under this
+    connector (text, image, TTS, music), each with its own default model
+    that can be retired independently of the others. image_model_ok /
+    tts_model_ok / music_model_ok run the same membership check against
+    DEFAULT_IMAGE_MODEL / DEFAULT_TTS_MODEL / DEFAULT_MUSIC_MODEL, off the
+    same models.list response — no extra call.
 
     A rejected key raises ConnectorError(reason="invalid_api_key") through the
     same detection every other Gemini call path uses (_wrap_sdk_error /
@@ -300,6 +317,9 @@ def check_key() -> dict:
         "ok": True,
         "default_model": DEFAULT_MODEL,
         "default_model_ok": DEFAULT_MODEL in model_names,
+        "image_model_ok": DEFAULT_IMAGE_MODEL in model_names,
+        "tts_model_ok": DEFAULT_TTS_MODEL in model_names,
+        "music_model_ok": DEFAULT_MUSIC_MODEL in model_names,
         "detail": f"{len(model_names)} models available to this key",
     }
 
@@ -615,7 +635,7 @@ def generate_music(
                    `cue.mp3`. The bytes are never re-encoded to match the request.
     instrumental — if True, ask Lyria to produce instrumental-only output
                    (suitable for background music under narration).
-    model        — Lyria model variant. Default: lyria-3-clip-preview (30s clips).
+    model        — Lyria model variant. Default: lyria-3.5 (30s clips).
     seed         — optional RNG seed for reproducible outputs.
 
     Returns THE PATH WRITTEN, which may differ from out_path by extension — use
