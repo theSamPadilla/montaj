@@ -437,6 +437,7 @@ from connectors import (  # noqa: E402
 )
 
 OUT_OF_CREDIT = "Your Kling account is out of credits. Top up a resource pack at kling.ai/dev."
+OUT_OF_CREDIT_1102 = f'{OUT_OF_CREDIT} Kling says: "Account balance not enough"'
 BALANCE_429 = {"code": 1102, "message": "Account balance not enough"}
 KEY_401 = {"code": 1002, "message": "access key not found"}
 RATE_429 = {"code": 1302, "message": "API request too fast"}
@@ -509,7 +510,7 @@ class TestCreateTaskErrors:
         with pytest.raises(ConnectorError) as ei:
             kling.create_task(_body())
         assert ei.value.reason == INSUFFICIENT_CREDIT
-        assert str(ei.value) == OUT_OF_CREDIT
+        assert str(ei.value) == OUT_OF_CREDIT_1102
         assert len(fake.calls) == 1
         assert fake.sleeps == []
 
@@ -528,12 +529,27 @@ class TestCreateTaskErrors:
         assert len(fake.calls) == 1
         assert fake.sleeps == []
 
-    def test_known_non_rate_limit_429_is_not_retried(self, wire):
-        # 1100 "account exception": waiting does not fix it.
-        fake = wire(_Resp(429, {"code": 1100, "message": "Account exception"}), _Resp(200, CREATED))
-        with pytest.raises(ConnectorError):
+    @pytest.mark.parametrize("code,msg", [
+        (1100, "Account exception"),
+        (1304, "Trigger the platform's IP whitelisting policy"),
+    ])
+    def test_known_non_rate_limit_429_is_not_retried(self, wire, code, msg):
+        fake = wire(_Resp(429, {"code": code, "message": msg}), _Resp(200, CREATED))
+        with pytest.raises(ConnectorError) as ei:
             kling.create_task(_body())
+        assert ei.value.reason is None
+        assert msg in str(ei.value)
         assert len(fake.calls) == 1
+
+    def test_unknown_code_429_is_not_retried(self, wire):
+        # A code we don't know is unclassifiable: raise it, don't wait it out.
+        fake = wire(_Resp(429, {"code": 1399, "message": "Something new"}), _Resp(200, CREATED))
+        with pytest.raises(ConnectorError) as ei:
+            kling.create_task(_body())
+        assert ei.value.reason is None
+        assert "Something new" in str(ei.value)
+        assert len(fake.calls) == 1
+        assert fake.sleeps == []
 
     def test_rate_limit_429_is_retried_then_succeeds(self, wire):
         fake = wire(_Resp(429, RATE_429), _Resp(200, CREATED))
@@ -541,8 +557,14 @@ class TestCreateTaskErrors:
         assert len(fake.calls) == 2
         assert len(fake.sleeps) == 1
 
-    def test_plain_parsed_429_without_balance_signal_is_retried(self, wire):
+    def test_429_without_a_code_is_not_retried(self, wire):
         fake = wire(_Resp(429, {"message": "Too many requests"}), _Resp(200, CREATED))
+        with pytest.raises(ConnectorError, match="Too many requests"):
+            kling.create_task(_body())
+        assert len(fake.calls) == 1
+
+    def test_1303_is_retried_too(self, wire):
+        fake = wire(_Resp(429, {"code": 1303, "message": "concurrency limit"}), _Resp(200, CREATED))
         assert kling.create_task(_body())["task_id"] == "t-1"
         assert len(fake.calls) == 2
 
@@ -607,7 +629,7 @@ class TestOtherCalls:
         with pytest.raises(ConnectorError) as ei:
             kling.generate_speech("hi", "sunny", str(tmp_path / "o.mp3"))
         assert ei.value.reason == INSUFFICIENT_CREDIT
-        assert str(ei.value) == OUT_OF_CREDIT
+        assert str(ei.value) == OUT_OF_CREDIT_1102
         assert len(fake.calls) == 1
 
     def test_speech_401_is_invalid_api_key(self, wire, tmp_path):
@@ -651,6 +673,9 @@ class TestCheckKey:
         assert result["ok"] is True
         assert result["default_model"] == DEFAULT_MODEL
         assert result["default_model_ok"] is True
+        # No model-list endpoint: the release guard names Kling as unverifiable.
+        assert result["default_model_verified"] is False
+        assert "no model-list endpoint" in result["detail"]
         assert len(fake.calls) == 1
         method, url, kwargs = fake.calls[0]
         assert method == "GET"
@@ -756,4 +781,25 @@ def test_step_mode_defaults_to_pro(step, monkeypatch):
     monkeypatch.setattr(step.kling, "generate", capture)
     monkeypatch.setattr(sys, "argv", ["kling_generate.py", *_STANDALONE])
     step.main()
+    assert seen["mode"] == "pro"
+
+
+def test_step_project_mode_never_switches_model(step, monkeypatch):
+    """sound=off at 5 s used to switch silently to kling-video-o1. The default
+    is the best model, so the step keeps it unless --model says otherwise."""
+    project = {"storyboard": {"scenes": [{"id": "s1", "duration": 5, "sound": "off"}]}}
+    seen = {}
+
+    def capture(**kw):
+        seen.update(kw)
+        return kw["out_path"]
+    monkeypatch.setattr(step, "find_project", lambda pid: ("p.json", project))
+    monkeypatch.setattr(step, "compose_prompt", lambda p, s: "a cat")
+    monkeypatch.setattr(step, "resolve_ref_paths", lambda p, s: [])
+    monkeypatch.setattr(step, "save_clip_to_project", lambda *a, **kw: None)
+    monkeypatch.setattr(step.kling, "generate", capture)
+    monkeypatch.setattr(sys, "argv", ["kling_generate.py", "--project-id", "p",
+                                      "--scene-id", "s1", "--out", "o.mp4"])
+    step.main()
+    assert seen["model"] == "kling-v3-omni"
     assert seen["mode"] == "pro"

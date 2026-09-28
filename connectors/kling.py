@@ -23,6 +23,9 @@ from lib.credentials import get_credential
 
 # api.klingai.com answers identically (verified 2026-09-28); keep Singapore.
 BASE_URL = "https://api-singapore.klingai.com"
+# Observed live 2026-09-28 as served to this account (the 4.0 family answered
+# "model is not supported") before the balance ran out. No generation has
+# been verified since: no Kling pack, by operator decision.
 DEFAULT_MODEL = "kling-v3-omni"
 DEFAULT_MODE = "pro"   # the higher-quality of std/pro; costs more per clip
 POLL_INTERVAL_S = 10.0
@@ -68,10 +71,10 @@ RETIRED_MODELS: dict[str, str] = {}
 
 OUT_OF_CREDIT_MESSAGE = "Your Kling account is out of credits. Top up a resource pack at kling.ai/dev."
 
-# Kling's body codes that change what we do with a 429.
+# Kling's 429 body codes. Only the rate limits are retried; every other 429
+# (1100 account exception, 1304 IP allow-list, anything unknown) is raised.
 _BALANCE_CODES = frozenset({1101, 1102})       # arrears (postpaid); pack empty or expired
 _RATE_LIMIT_CODES = frozenset({1302, 1303})    # too fast; over the pack's concurrency/QPS
-_NO_RETRY_429_CODES = _BALANCE_CODES | {1100, 1304}  # + account exception, IP allow-list
 
 # TTS — https://app.klingai.com/global/dev/document-api
 # Synchronous: create response includes task_result directly. No poll endpoint.
@@ -377,20 +380,12 @@ def _parse(r) -> dict | None:
 
 def _is_rate_limit(r) -> bool:
     """Whether a 429 is a rate limit worth waiting out. Kling also answers 429
-    for an empty balance (code 1102), which no retry can fix. Only a positive
-    rate limit retries: a rate-limit code, or a body with a code or message
-    that is neither a known non-rate-limit code nor about money. A body that
-    doesn't parse is not retried: wrongly retrying a billing error is worse
-    than wrongly abandoning a rate limit."""
+    for an empty balance (code 1102), which no retry can fix, so only a
+    rate-limit code retries. A body that doesn't parse or carries any other
+    code is not retried: wrongly retrying a billing error is worse than
+    wrongly abandoning a rate limit."""
     body = _parse(r)
-    if body is None:
-        return False
-    code, msg = body.get("code"), body.get("message") or body.get("msg")
-    if code in _RATE_LIMIT_CODES:
-        return True
-    if code in _NO_RETRY_429_CODES or (code is None and not msg):
-        return False
-    return classify_http_error(429, msg or "") != INSUFFICIENT_CREDIT
+    return body is not None and body.get("code") in _RATE_LIMIT_CODES
 
 
 def _request(method: str, url: str, *, retry_statuses: frozenset = frozenset(), **kwargs):
@@ -416,7 +411,7 @@ def _error(r, label: str, model: str = None) -> ConnectorError:
     if reason == INVALID_API_KEY:
         return ConnectorError(f"Kling rejected the key: {msg}", reason=reason)
     if reason == INSUFFICIENT_CREDIT:
-        return ConnectorError(OUT_OF_CREDIT_MESSAGE, reason=reason)
+        return ConnectorError(f'{OUT_OF_CREDIT_MESSAGE} Kling says: "{msg}"', reason=reason)
     if reason == MODEL_RETIRED:
         return ConnectorError(f'Kling no longer serves {model or "this model"}: "{msg}"',
                               reason=reason)
@@ -596,7 +591,8 @@ def check_key() -> dict:
     resource-pack costs for the last 7 days, GET /account/costs (no /v1; that
     path 404s). No billed call.
 
-    Kling has no model-list endpoint, so default_model_ok only says
+    Kling has no model-list endpoint, so the default model is not checked:
+    default_model_verified is always False, and default_model_ok only says
     DEFAULT_MODEL is not in RETIRED_MODELS. An unannounced retirement shows up
     on the next create as MODEL_RETIRED instead.
 
@@ -619,5 +615,6 @@ def check_key() -> dict:
         "ok": True,
         "default_model": DEFAULT_MODEL,
         "default_model_ok": DEFAULT_MODEL not in RETIRED_MODELS,
-        "detail": "Kling lists no models; the default is checked against known retirements",
+        "default_model_verified": False,
+        "detail": "Default model not checked: Kling has no model-list endpoint",
     }

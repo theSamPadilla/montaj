@@ -116,19 +116,9 @@ def main():
             "realistic, photographic, 3d render"
         )
 
-        # Auto-upgrade to best model when duration is compatible.
-        # kling-video-o1 is higher quality but only supports 5s/10s and
-        # does NOT generate audio — only upgrade if sound is off.
+        # The default is the best model; never switch silently. Another model
+        # only via --model.
         model = args.model
-        if (model == "kling-v3-omni"
-            and duration in kling.MODELS["kling-video-o1"]["durations"]
-            and sound == "off"):
-            model = "kling-video-o1"
-            progress(f"Auto-upgraded to kling-video-o1 (duration {duration}s, sound=off)")
-        elif (model == "kling-v3-omni"
-              and duration in kling.MODELS["kling-video-o1"]["durations"]
-              and sound == "on"):
-            progress(f"Staying on kling-v3-omni (sound=on requires v3-omni for audio generation)")
 
         # Generate a seed for reproducibility. Eval retries can offset from this.
         seed = random.randint(1, 2**31 - 1)
