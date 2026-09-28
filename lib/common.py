@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Shared helpers for video-toolkit scripts. All scripts import from here."""
-import json, os, re, shutil, subprocess, sys
+import json, math, os, re, shutil, subprocess, sys
 
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -250,6 +250,76 @@ _EN_TO_MULTILINGUAL = {
     "tiny.en": "tiny", "base.en": "base", "small.en": "small", "medium.en": "medium",
 }
 
+# Every model a whisper step's --model accepts: each weight `montaj models
+# download` can install (cli/commands/models.py AVAILABLE), plus "large" for
+# older installs that carry ggml-large.bin. The steps' schema `options` and
+# argparse `choices` are this list, and tests/test_whisper_models.py pins all
+# of them to it: a model that can be installed must always be selectable (it
+# was not: small.en downloaded fine and every step then refused it).
+WHISPER_MODEL_CHOICES = (
+    "large-v3-turbo-q5_0", "large-v3-turbo",
+    "tiny.en", "base.en", "small.en", "medium.en",
+    "tiny", "base", "small", "medium",
+    "large", "large-v1", "large-v2", "large-v3",
+)
+
+# Most capable first: the order a missing model falls back through when none of
+# the usual fallbacks is installed (see resolve_whisper_model).
+_WHISPER_BY_CAPABILITY = (
+    "large-v3-turbo-q5_0", "large-v3-turbo", "large-v3", "large-v2", "large-v1", "large",
+    "medium.en", "medium", "small.en", "small", "base.en", "base", "tiny.en", "tiny",
+)
+
+# ── Whisper runaway guard ────────────────────────────────────────────────────
+# NOT a performance budget. Nobody has measured whisper on a Windows CPU: the
+# only timing on record is Apple silicon with Metal, where the PV27 spike's 75 s
+# clip took ~4 s. Turbo runs on the CPU on Windows and is far slower there, and
+# the flat limits it used to run under (300 s for the whisper-cli call, 900 s
+# for the serve step) killed long transcriptions part-way through. These only
+# exist to stop a hung whisper from running forever: the limit is
+# WHISPER_RUNAWAY_FACTOR times the audio's duration, and never below the old
+# 900 s, so no clip that finished before can time out now. Do not tune them
+# down to "how long whisper should take": that number is unknown.
+WHISPER_RUNAWAY_FLOOR_S = 900
+WHISPER_RUNAWAY_FACTOR = 4
+
+
+def whisper_runaway_timeout(duration_s) -> int:
+    """Seconds whisper may run on audio of ``duration_s`` before it is treated
+    as hung: ``WHISPER_RUNAWAY_FACTOR`` x the duration, never below
+    ``WHISPER_RUNAWAY_FLOOR_S``. An unknown or unusable duration gets the floor."""
+    try:
+        d = float(duration_s)
+    except (TypeError, ValueError):
+        return WHISPER_RUNAWAY_FLOOR_S
+    if not d > 0 or d == float("inf"):
+        return WHISPER_RUNAWAY_FLOOR_S
+    return max(WHISPER_RUNAWAY_FLOOR_S, int(math.ceil(d * WHISPER_RUNAWAY_FACTOR)))
+
+
+def whisper_runaway_timeout_for(path: str) -> int:
+    """``whisper_runaway_timeout`` for a media file; the floor when it cannot be
+    probed (``get_duration`` exits through ``fail``, hence SystemExit)."""
+    try:
+        return whisper_runaway_timeout(get_duration(path))
+    except (Exception, SystemExit):
+        return WHISPER_RUNAWAY_FLOOR_S
+
+
+def run_whisper(cmd: list[str], audio_path: str, check: bool = False) -> subprocess.CompletedProcess:
+    """Run a whisper-cli command under the runaway guard (``check`` as in
+    ``run``). A run that outlives the guard is stopped and fails with
+    ``transcription_timeout``, naming the limit, rather than escaping as a raw
+    TimeoutExpired traceback that serve would pass on as the error message."""
+    timeout = whisper_runaway_timeout_for(audio_path)
+    try:
+        return run(cmd, timeout=timeout, check=check)
+    except subprocess.TimeoutExpired:
+        fail("transcription_timeout",
+             f"whisper.cpp was stopped after {timeout}s without finishing. The limit is a "
+             f"runaway guard: {WHISPER_RUNAWAY_FACTOR}x the audio's length, at least "
+             f"{WHISPER_RUNAWAY_FLOOR_S}s.")
+
 # Whisper weights live in the Montaj-managed model dir; older installs may still
 # have whisper.cpp's legacy directory, so both are checked. Module-level so tests
 # can point it at a scratch dir.
@@ -276,8 +346,10 @@ def resolve_whisper_model(model: str, language: str) -> str:
     of ``DEFAULT_WHISPER_MODEL`` (turbo), ``base.en`` (English only) and
     ``base``: callers that still ask for ``base.en`` keep working on installs
     that only carry turbo, and older CLI installs (base.en only) keep working
-    now that turbo is the default. With nothing installed the name is returned
-    unchanged so ``transcribe_words``' require_file names the missing file.
+    now that turbo is the default. Failing those, it takes the most capable
+    other installed weight (multilingual only, for a non-English language).
+    With nothing installed the name is returned unchanged so
+    ``transcribe_words``' require_file names the missing file.
 
     Then: English (or unspecified) → the model unchanged. For any other
     language (or ``auto``), an English-only ``*.en`` model is swapped for a
@@ -293,6 +365,16 @@ def resolve_whisper_model(model: str, language: str) -> str:
         fallbacks = [DEFAULT_WHISPER_MODEL, *(["base.en"] if english else []), "base"]
         for cand in fallbacks:
             if cand != model and whisper_weight_path(cand) is not None:
+                return cand
+        # None of the usual fallbacks is installed, but another weight is (a
+        # lone small.en, say): use the most capable one rather than return a
+        # name whose file is missing, which surfaced later as a bare
+        # file-not-found. English takes any weight; other languages only a
+        # multilingual one (an .en-only install still fails clearly below).
+        for cand in _WHISPER_BY_CAPABILITY:
+            if cand == model or (not english and cand.endswith(".en")):
+                continue
+            if whisper_weight_path(cand) is not None:
                 return cand
         if not english and any(whisper_weight_path(m) is not None for m in _EN_TO_MULTILINGUAL):
             # Only English-only weights are installed (an older CLI install):
@@ -348,9 +430,9 @@ def transcribe_words(input_path: str, model: str = DEFAULT_WHISPER_MODEL, work_d
         whisper_bin = find_whisper_bin()
 
         prefix = os.path.join(work_dir, "out")
-        r = run([whisper_bin, "-m", model_file, "-f", audio, "-l", language,
-                 "--split-on-word", "--max-len", "1", "--output-json", "--output-file", prefix],
-                check=False)
+        r = run_whisper([whisper_bin, "-m", model_file, "-f", audio, "-l", language,
+                         "--split-on-word", "--max-len", "1", "--output-json", "--output-file", prefix],
+                        audio)
 
         words = []
         json_path = f"{prefix}.json"

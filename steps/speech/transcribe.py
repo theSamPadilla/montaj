@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
-from common import fail, require_file, check_output, run, find_whisper_bin, resolve_whisper_model, ffmpeg_bin, whisper_weight_path, DEFAULT_WHISPER_MODEL
+from common import fail, require_file, check_output, run, run_whisper, find_whisper_bin, resolve_whisper_model, ffmpeg_bin, whisper_weight_path, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
 from trim_spec import is_trim_spec, load as load_spec, audio_extract_cmd, remap_timestamp
 
 def main():
@@ -13,7 +13,7 @@ def main():
     parser.add_argument("--input", required=True, help="Audio or video file to transcribe")
     parser.add_argument("--out", help="Output file prefix (default: input without extension)")
     parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL,
-                        choices=["large-v3-turbo-q5_0", "large-v3-turbo", "tiny.en", "base.en", "medium.en", "tiny", "base", "medium", "large", "large-v3"],
+                        choices=list(WHISPER_MODEL_CHOICES),
                         help="Whisper model. Larger = slower + more accurate. "
                              "English-only (*.en) models are auto-upgraded to a multilingual "
                              "sibling when --language is non-English.")
@@ -68,7 +68,7 @@ def main():
                        "--output-file", output_prefix]
         if args.max_context is not None:
             whisper_cmd += ["-mc", str(args.max_context)]
-        run(whisper_cmd)
+        run_whisper(whisper_cmd, audio_input, check=True)
     finally:
         if tmp_audio and os.path.exists(tmp_audio):
             os.unlink(tmp_audio)

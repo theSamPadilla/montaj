@@ -21,6 +21,51 @@ router = APIRouter(prefix="/api")
 
 STEP_TIMEOUT_S = int(os.environ.get("MONTAJ_STEP_TIMEOUT", "900"))
 
+# Whisper steps' outer ceiling (see _step_timeout). Runaway guards, like the
+# whisper guard in lib/common they sit on top of: not estimates of how long a
+# step should take. Audio extraction and model load get the overhead on top of
+# the whisper guard; a whisper step serve cannot size (generate_captions works
+# on a project, not a file) gets the flat backstop, since every stage inside it
+# has its own bounded timeout and the whisper stage's is sized to the real audio.
+WHISPER_STEP_OVERHEAD_S = 300
+WHISPER_STEP_NO_DURATION_S = 12 * 3600
+
+
+def _runs_whisper(schema: dict) -> bool:
+    """A step that transcribes with whisper: its `model` param defaults to the
+    whisper default (transcribe, rm_fillers, rm_nonspeech, lyrics_sync,
+    generate_captions)."""
+    from lib.common import DEFAULT_WHISPER_MODEL
+    return any(p.get("name") == "model" and p.get("default") == DEFAULT_WHISPER_MODEL
+               for p in schema.get("params", []))
+
+
+def _step_timeout(schema: dict, body: dict) -> int:
+    """The subprocess ceiling for one step run: the flat STEP_TIMEOUT_S, except
+    for a whisper step. Whisper on a CPU (Windows) runs far slower than on Apple
+    silicon, and the flat 900 s killed long transcriptions part-way, so a whisper
+    step's ceiling outlasts its own whisper runaway guard on the input's duration
+    (lib/common.whisper_runaway_timeout) plus WHISPER_STEP_OVERHEAD_S. A stuck
+    whisper then fails as the step's structured transcription_timeout, not as
+    this 504. A trim-spec input is sized by its source (an upper bound). Never
+    below STEP_TIMEOUT_S, so MONTAJ_STEP_TIMEOUT still raises every step."""
+    if not _runs_whisper(schema):
+        return STEP_TIMEOUT_S
+    from lib.common import get_duration, whisper_runaway_timeout
+    from lib.trim_spec import is_trim_spec, load as load_spec
+    path = body.get("input") or (body.get("inputs") or [None])[0]
+    duration = None
+    try:
+        if isinstance(path, str) and path:
+            if is_trim_spec(path):
+                path = load_spec(path)["input"]
+            duration = get_duration(path)
+    except (Exception, SystemExit):  # get_duration exits through fail()
+        duration = None
+    if duration is None:
+        return max(STEP_TIMEOUT_S, WHISPER_STEP_NO_DURATION_S)
+    return max(STEP_TIMEOUT_S, whisper_runaway_timeout(duration) + WHISPER_STEP_OVERHEAD_S)
+
 
 def scan_steps() -> dict[str, tuple[dict, Path]]:
     """Scan native (built-in) then custom (~/.montaj/steps). Later scope overwrites earlier.
@@ -177,16 +222,17 @@ async def list_steps():
     return [schema for schema, _ in scan_steps().values()]
 
 
-async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, timeout: int = STEP_TIMEOUT_S) -> dict:
+async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, timeout: int | None = None) -> dict:
     """Run one step subprocess and return its wrap_output payload.
 
     Raises HTTPException on credential/validation/subprocess error exactly as
     the sync route always has. The secret-scrub lives HERE (not in the caller)
     so both the sync 500 path and the async error-job path get scrubbed output.
 
-    `timeout` defaults to STEP_TIMEOUT_S for every caller except the proxy job
-    driver, which forwards a duration-scaled timeout (see proxy_video) so a
-    long-form source doesn't get killed mid-encode.
+    `timeout` defaults to `_step_timeout` (the flat STEP_TIMEOUT_S, or a
+    duration-scaled ceiling for a whisper step); the proxy job driver forwards
+    its own duration-scaled timeout (see proxy_video) so a long-form source
+    doesn't get killed mid-encode.
     """
     # Reserved field: per-request credentials become env vars for THIS one
     # subprocess and nothing else. Pop FIRST — before validate_params /
@@ -213,6 +259,8 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
 
     validate_params(schema, body)
     cli_args = build_cli_args(schema, body)
+    if timeout is None:
+        timeout = _step_timeout(schema, body)
 
     # Non-blocking subprocess — allows the server to keep serving UI, SSE,
     # and other API requests while long-running steps (kling_generate, etc.)

@@ -106,6 +106,8 @@ def test_transcribe_single_whisper_invocation(transcribe_module, monkeypatch, tm
             )
 
     monkeypatch.setattr(transcribe_module, "run", fake_run)
+    # whisper itself goes through run_whisper (the runaway guard, PV27 follow-up).
+    monkeypatch.setattr(transcribe_module, "run_whisper", lambda cmd, audio, check=False: fake_run(cmd))
     monkeypatch.setattr(transcribe_module, "find_whisper_bin", lambda: "whisper-cli")
     monkeypatch.setattr(transcribe_module._models, "model_path",
                         lambda family, name: str(tmp_path / name))
@@ -142,6 +144,8 @@ def _capture_whisper_cmd(transcribe_module, monkeypatch, tmp_path, argv):
                 '{"transcription": [{"text": "Hello", "offsets": {"from": 0, "to": 500}}]}')
 
     monkeypatch.setattr(transcribe_module, "run", fake_run)
+    # whisper itself goes through run_whisper (the runaway guard, PV27 follow-up).
+    monkeypatch.setattr(transcribe_module, "run_whisper", lambda cmd, audio, check=False: fake_run(cmd))
     monkeypatch.setattr(transcribe_module, "find_whisper_bin", lambda: "whisper-cli")
     monkeypatch.setattr(transcribe_module._models, "model_path",
                         lambda family, name: str(tmp_path / name))
@@ -183,3 +187,27 @@ def test_transcribe_english_keeps_en_model(transcribe_module, monkeypatch, tmp_p
                                ["--model", "base.en", "--language", "en"])
     model_path = cmd[cmd.index("-m") + 1]
     assert os.path.basename(model_path) == "ggml-base.en.bin"
+
+
+def test_transcribe_runs_whisper_under_the_runaway_guard(transcribe_module, monkeypatch, tmp_path):
+    """The whisper call goes through run_whisper with the audio it transcribes,
+    so the guard is sized from that audio (it used to be run()'s flat 300 s),
+    and a non-zero exit still fails the step (check=True)."""
+    seen = {}
+
+    def fake_run_whisper(cmd, audio, check=False):
+        seen.update(audio=audio, check=check)
+        prefix = cmd[cmd.index("--output-file") + 1]
+        Path(prefix + ".srt").write_text("1\n00:00:00,000 --> 00:00:00,500\nHello\n")
+        Path(prefix + ".json").write_text('{"transcription": []}')
+
+    monkeypatch.setattr(transcribe_module, "run_whisper", fake_run_whisper)
+    monkeypatch.setattr(transcribe_module, "find_whisper_bin", lambda: "whisper-cli")
+    monkeypatch.setattr(transcribe_module._models, "model_path",
+                        lambda family, name: str(tmp_path / name))
+    monkeypatch.setattr(transcribe_module, "require_file", lambda path: None)
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"\x00" * 16)
+    monkeypatch.setattr(sys, "argv", ["transcribe.py", "--input", str(audio), "--out", str(tmp_path / "out")])
+    transcribe_module.main()
+    assert seen == {"audio": str(audio), "check": True}

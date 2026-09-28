@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Whisper steps now accept every model `montaj models download` installs.** `small.en`, `small`, `large-v1` and `large-v2` downloaded fine, but `transcribe`, `filler`, `lyrics_sync` and `generate_captions` refused them (a 422 from serve, "invalid choice" from the CLI). The steps' choices and the downloadable models are now one list, pinned by a test.
+- **Whisper no longer stops part-way through long audio on a slow CPU.** It ran under flat limits: 300 s for the whisper-cli call itself (`run()`'s default) and 900 s for a serve step. Turbo runs on the CPU on Windows, so long transcriptions were killed mid-run. The limit is now a runaway guard of 4x the audio's length, never below 900 s, so nothing that finished before can time out now; serve's ceiling for whisper steps outlasts it. It guards against a hung whisper and is not a speed estimate: no Windows CPU timing has been measured.
+- **A whisper run that reaches that guard now fails with `transcription_timeout` and says why**, instead of a raw Python traceback that serve passed on as the step's error message.
+- **A lone installed model is now used when no usual fallback is installed.** With only, say, `small.en` installed, a step asking for the default model failed with a bare file-not-found. It now uses the most capable installed model (a multilingual one for a non-English language; an English-only install still fails with a clear message).
+- **`montaj models download base` and `base.en` now verify the download's SHA-256**, as `large-v3-turbo-q5_0` already did.
+
 ## v5.4.0
 
 - **New credential providers: `fal` (Seedance video on fal.ai) and `elevenlabs` (voice, sound effects, music).** `montaj credentials` prompts for them and `--list` shows them.

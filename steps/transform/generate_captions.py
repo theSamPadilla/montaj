@@ -28,7 +28,7 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 MONTAJ_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", ".."))
 
 sys.path.insert(0, os.path.join(MONTAJ_ROOT, "lib"))
-from common import fail, run, DEFAULT_WHISPER_MODEL  # noqa: E402
+from common import fail, run, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES, whisper_runaway_timeout_for  # noqa: E402
 
 sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
@@ -66,7 +66,8 @@ def main():
         description="Generate a project's caption track from its audible timeline mix"
     )
     parser.add_argument("--project-id", required=True, help="Project id")
-    parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL, help="Whisper model")
+    parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL, choices=list(WHISPER_MODEL_CHOICES),
+                        help="Whisper model")
     parser.add_argument("--language", default="auto",
                         help="Language code (e.g. en, es), or 'auto' to detect")
     parser.add_argument("--style", default=None, help="Caption animation style")
@@ -118,10 +119,14 @@ def main():
 
         # 3. Transcribe the mix as plain audio so word timings are
         #    output/project-time (NOT a trim spec).
+        #    Outlasts transcribe's own whisper runaway guard, so a stuck
+        #    whisper surfaces as its structured transcription_timeout rather
+        #    than this wrapper's bare TimeoutExpired.
         run([sys.executable, transcribe_py,
              "--input", mix_wav_path,
              "--model", args.model, "--language", args.language,
-             "--out", words_prefix])
+             "--out", words_prefix],
+            timeout=whisper_runaway_timeout_for(mix_wav_path) + 300)
 
         # 4. Group words into a styled caption track.
         run([sys.executable, caption_py,

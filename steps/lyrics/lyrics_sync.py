@@ -15,8 +15,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
-from common import (fail, require_file, check_output, run, find_whisper_bin, ffmpeg_bin,
-                    resolve_whisper_model, whisper_weight_path, DEFAULT_WHISPER_MODEL)
+from common import (fail, require_file, check_output, run, run_whisper, find_whisper_bin, ffmpeg_bin,
+                    resolve_whisper_model, whisper_weight_path, DEFAULT_WHISPER_MODEL,
+                    WHISPER_MODEL_CHOICES)
 
 
 WHISPER_MODEL      = DEFAULT_WHISPER_MODEL
@@ -41,9 +42,9 @@ def parse_lyrics(lyrics_path):
 
 def whisper_words(audio_path, model_path, whisper_bin, tmp_prefix, language="en"):
     """Run Whisper word-level transcription. Returns [{word, start, end}]."""
-    run([whisper_bin, "-m", model_path, "-f", audio_path, "-l", language,
-         "--split-on-word", "--max-len", "1", "--output-json",
-         "--output-file", tmp_prefix], check=False)
+    run_whisper([whisper_bin, "-m", model_path, "-f", audio_path, "-l", language,
+                 "--split-on-word", "--max-len", "1", "--output-json",
+                 "--output-file", tmp_prefix], audio_path)
     words_path = f"{tmp_prefix}.json"
     if not os.path.exists(words_path):
         fail("whisper_failed", "Whisper did not produce output JSON")
@@ -167,7 +168,7 @@ def main():
                         help="Vocals WAV (output of stem_separation --stems vocals) or any audio/video")
     parser.add_argument("--lyrics",  required=True, help="Lyrics text file (one phrase per line)")
     parser.add_argument("--model",   default=WHISPER_MODEL,
-                        choices=["large-v3-turbo-q5_0", "large-v3-turbo", "tiny.en", "base.en", "medium.en", "large"],
+                        choices=list(WHISPER_MODEL_CHOICES),
                         help=f"Whisper model (default: {WHISPER_MODEL}). A model that is not "
                              "installed falls back to one that is.")
     parser.add_argument("--language", default="en", help="Language code passed to Whisper (default: en)")

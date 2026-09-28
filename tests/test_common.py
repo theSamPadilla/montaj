@@ -456,3 +456,68 @@ def test_transcribe_words_fails_when_whisper_errors(tmp_path, monkeypatch, capsy
     err = capsys.readouterr().err
     assert "transcription_failed" in err
     assert "CUDA boom" in err
+
+
+# ── the lone non-fallback model (PV27 follow-up) ─────────────────────────────
+
+def test_resolve_uses_a_lone_non_fallback_model_for_english(fake_models):
+    # Only small.en is installed: neither turbo nor base.en nor base. It used to
+    # return the missing default, which failed later as a bare file-not-found.
+    fake_models("small.en")
+    assert common.resolve_whisper_model(common.DEFAULT_WHISPER_MODEL, "en") == "small.en"
+
+
+def test_resolve_prefers_the_most_capable_lone_model(fake_models):
+    fake_models("tiny.en", "large-v2")
+    assert common.resolve_whisper_model(common.DEFAULT_WHISPER_MODEL, "en") == "large-v2"
+
+
+def test_resolve_takes_a_lone_multilingual_model_for_other_languages(fake_models):
+    fake_models("medium")
+    assert common.resolve_whisper_model(common.DEFAULT_WHISPER_MODEL, "es") == "medium"
+
+
+def test_resolve_still_fails_clearly_when_only_english_weights_serve_another_language(fake_models, capsys):
+    fake_models("small.en")
+    with pytest.raises(SystemExit):
+        common.resolve_whisper_model(common.DEFAULT_WHISPER_MODEL, "es")
+    assert json.loads(capsys.readouterr().err)["error"] == "missing_multilingual_model"
+
+
+def test_resolve_with_nothing_installed_returns_the_name_unchanged(fake_models):
+    fake_models()
+    assert common.resolve_whisper_model(common.DEFAULT_WHISPER_MODEL, "en") == common.DEFAULT_WHISPER_MODEL
+
+
+# ── the whisper runaway guard (PV27 follow-up) ───────────────────────────────
+
+@pytest.mark.parametrize("duration", [None, "x", 0, -5, float("nan"), float("inf"), 10, 225])
+def test_runaway_timeout_never_drops_below_the_old_900s(duration):
+    assert common.whisper_runaway_timeout(duration) == common.WHISPER_RUNAWAY_FLOOR_S == 900
+
+
+def test_runaway_timeout_scales_with_long_audio():
+    # 10 minutes of audio: 4x = 2400 s, well past the flat 300 s / 900 s that
+    # used to kill a CPU transcription part-way.
+    assert common.whisper_runaway_timeout(600) == 600 * common.WHISPER_RUNAWAY_FACTOR == 2400
+
+
+def test_runaway_timeout_for_an_unprobeable_file_is_the_floor(tmp_path):
+    assert common.whisper_runaway_timeout_for(str(tmp_path / "missing.wav")) == 900
+
+
+def test_run_whisper_turns_a_timeout_into_a_structured_failure(monkeypatch, capsys):
+    # A stuck whisper used to escape as a raw TimeoutExpired traceback.
+    monkeypatch.setattr(common, "whisper_runaway_timeout_for", lambda _path: 1)
+    with pytest.raises(SystemExit) as exc:
+        common.run_whisper([sys.executable, "-c", "import time; time.sleep(10)"], "audio.wav")
+    assert exc.value.code == 1
+    err = json.loads(capsys.readouterr().err)
+    assert err["error"] == "transcription_timeout"
+    assert "1s" in err["message"] and "runaway guard" in err["message"]
+
+
+def test_run_whisper_passes_through_a_normal_run(monkeypatch):
+    monkeypatch.setattr(common, "whisper_runaway_timeout_for", lambda _path: 30)
+    r = common.run_whisper([sys.executable, "-c", "print('ok')"], "audio.wav")
+    assert r.returncode == 0 and r.stdout.strip() == "ok"

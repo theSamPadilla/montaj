@@ -4,7 +4,7 @@ Also trims pre-speech noise at the head by snapping the start to the first word 
 import json, os, re, sys, argparse, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, run, get_duration, transcribe_words, DEFAULT_WHISPER_MODEL
+from common import fail, require_file, run, get_duration, transcribe_words, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
 from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, audio_extract_cmd, remap_timestamp, from_window
 
 # Hesitation-sound fillers per language. Kept conservative: only non-lexical
@@ -29,7 +29,7 @@ def main():
     parser = argparse.ArgumentParser(description="Remove filler words from a clip")
     parser.add_argument("--input", required=True, help="Source video file")
     parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL,
-                        choices=["large-v3-turbo-q5_0", "large-v3-turbo", "tiny.en", "base.en", "medium.en", "tiny", "base", "medium", "large", "large-v3"],
+                        choices=list(WHISPER_MODEL_CHOICES),
                         help="Whisper model for filler detection. English-only (*.en) models are "
                              "auto-upgraded to a multilingual sibling when --language is non-English.")
     parser.add_argument("--language", default="en",

@@ -17,9 +17,15 @@ AVAILABLE = {
 
 HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 
-# TODO: populate with real SHA-256 checksums per model
+# SHA-256 per model, verified on download. Each is HuggingFace's LFS oid for
+# the file (which is its SHA-256), and each was re-hashed from a real download:
+# turbo q5_0 is the bundled default; base and base.en are resolve_whisper_model's
+# fallbacks, so they are the other weights an install most often fetches.
+# The rest are still unverified (None skips the check).
 CHECKSUMS: dict = {name: None for name in AVAILABLE}
 CHECKSUMS["large-v3-turbo-q5_0"] = "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+CHECKSUMS["base"] = "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+CHECKSUMS["base.en"] = "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"
 
 
 def model_path(name: str) -> str:
