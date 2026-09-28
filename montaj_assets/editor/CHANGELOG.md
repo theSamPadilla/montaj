@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 1.6.0 — 2026-09-28
+
 ### Video editor
 
 - **Added: read-only host pins on the timeline ruler.** A new `pins` prop on `VideoEditorProps` takes `{ id, t, label }` entries and paints them as flags in the marker strip above the ruler, beside the user's own markers; `onPinClick` reports a click by the pin's id. Pins belong to the host alone: the editor never creates, moves, renames, deletes or persists one, and a pin never enters the project document, so passing pins cannot mark a project dirty or change a render. A pin is hit-tested before a user marker. Omitting the prop leaves the timeline exactly as it was. (`types.ts`, `index.ts`, `video/VideoEditor.tsx`, `video/timeline/Timeline.tsx`, `video/timeline/canvas/{TimelineCanvas.tsx,draw.ts,hit-test.ts,pointer-machine.ts}`, `video/timeline/canvas/__tests__/pins.test.tsx`)
