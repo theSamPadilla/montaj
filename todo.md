@@ -99,3 +99,39 @@ pre-existing. Noting it because it makes any dependency work harder to verify:
 
 Either skip these when the extras/binary are absent, or document that a full
 verification run needs `--extra rvm` and a managed ffmpeg.
+
+## Render / validate
+
+### 6. Export pads video items with opaque black; the preview does not
+
+Found 2026-09-27 building montaj-app's floating_head template. When a `video`
+item's box has a different aspect from its footage (after `sourceCrop`, or a
+`scaleX`/`scaleY` that isn't the source's own ratio), the export fills the gap
+with **opaque black bars**, while the editor preview and `sample_frame` show it
+clean. The cause is the static video branch in
+`montaj_assets/render/encode-segment.js` (~line 763):
+`scale=W:H:force_original_aspect_ratio=decrease,…,pad=W:H:(ow-iw)/2:(oh-ih)/2`
+pads with ffmpeg's default colour, opaque black. The image branch (~line 575)
+already does it right: `format=rgba,…,pad=…:color=black@0.0`. The animated
+branch (~line 760) has the same default pad. It is worst on alpha footage
+(a `remove_bg` cutout), where the bars black out whatever sits behind the
+presenter.
+
+Minimal repro: tracks[0] = a full-frame image item (any solid colour); tracks[1] =
+a 16:9 video item at `scaleX: 1, scaleY: 1.5` (a box taller than the footage).
+Compare `sample_frame --at 0.5` with the same frame from a render: the render has
+black bars above and below the video, the sample does not.
+
+Fix: pad with `color=black@0.0` after a `format=rgba` (or `yuva420p`) step in both
+video branches, as the image branch does; check the encode-args goldens, which
+freeze the current strings.
+
+### 7. `validate` rejects image items on tracks[0]; renderer and editor accept them
+
+`engine/validate.py` (~line 434) fails any `tracks[0]` item whose type is not
+`video` (`invalid_primary_clip`), but the renderer composites image items on
+tracks[0] and the editor preview shows them. montaj-app's floating_head template
+now puts its background stills (photos, screenshot cards) on tracks[0] as image
+items, so a valid, renderable project fails `montaj validate project`. Either
+accept `image` on tracks[0] (with the same start/end checks) or document why
+not and make the renderer agree.
