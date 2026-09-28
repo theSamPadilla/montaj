@@ -34,6 +34,33 @@ pending → storyboard_ready → draft → final
 
 ---
 
+## Vendor
+
+Each scene generates through one of two vendors: **Kling** (`kling_generate`, default) or **Seedance** (`seedance_generate`, on fal.ai). Kling is project-aware (Steps B/C/D below); Seedance is not, so the mechanics differ enough to cover separately.
+
+**Picking the vendor.** Kling is the default for every scene. Generate a scene with Seedance instead when the storyboard or that scene sets `vendor: "seedance"`, or the user asks for it by name ("use Seedance for the drone shot"). Never pick a vendor the user didn't ask for.
+
+**Calling Seedance.** `seedance_generate` is standalone only, with no `--project-id`/`--scene-id` mode. Compose the prompt yourself first (same composition as Step C: styleAnchor prefix + scene prose + camera tags), then call:
+
+```
+seedance_generate --prompt <composed> --out <path> \
+  [--image <first_frame> [--end-image <last_frame>]] [--ref-image <path> ...] \
+  [--duration <n or auto>] [--sound]
+```
+
+- **Modes**, picked by which image flags you pass (mutually exclusive with each other):
+  - Text only: text-to-video.
+  - `--image` (optionally `--end-image`): image-to-video. Its **aspect ratio always follows the first frame**, so don't pass `--aspect-ratio`.
+  - `--ref-image` (repeatable): reference-to-video. The prompt refers to them as `@Image1`, `@Image2`… in list order, not Kling's `<<<image_N>>>` tokens.
+- **Duration:** the default model (`seedance-2.5`) takes `4`-`30` seconds, or `"auto"`.
+- **Sound is off unless you pass `--sound`**: it costs more, and Seedance's own default is on.
+- Seedance has no chained or batched mode. A scene routed to Seedance always generates independently, even when the rest of the storyboard is running chained or batched.
+- Append the clip to `tracks[0].items` and save `project.json` yourself, the same shape Step D uses for a Kling clip, but with `generation.provider: "fal"` and `generation.model` set to the Seedance model actually used (e.g. `seedance-2.5`). `seedance_generate` doesn't touch the project.
+
+**On failure:** a `ConnectorError` with reason `invalid_api_key` or `insufficient_credit`, from either vendor, means the integration itself needs fixing, not the prompt. Stop, tell the user which one to fix in Integrations (Kling, or Seedance/fal.ai), and **never fall back to the other vendor silently**. A scene the user asked to generate with Seedance failing over to Kling (or the reverse) changes what they asked for without telling them.
+
+---
+
 ## Phase 6 — Scene generation (status: `storyboard_ready`, `storyboard.approval` is set)
 
 ### Entry point — how you get here
@@ -132,15 +159,12 @@ State your chosen mode in chat once at the start — the user can redirect if wr
 
 Two Kling models are available. Pass `--model <name>` to `kling_generate`.
 
-- **`kling-video-o1`** (preferred for visual quality) — newest model. **Only 5s or 10s durations.** No multi-shot. End frame (`--last-frame`) requires `--mode pro`. **Does NOT generate audio** — clips are silent.
-- **`kling-v3-omni`** (required for audio) — flexible 3–15s durations, multi-shot support, start+end frame in both std/pro. **Generates audio** when `sound: "on"`. Use when scenes have dialogue or need sound.
+- **`kling-v3-omni`** (default and best model): flexible 3-15s durations, multi-shot support, start+end frame in both std/pro. **Generates audio** when `sound: "on"`. Use this unless a scene specifically needs o1.
+- **`kling-video-o1`** (earlier model): **Only 5s or 10s durations.** No multi-shot. End frame (`--last-frame`) requires `--mode pro`. **Does NOT generate audio**, clips are silent.
 
-**How to decide:** The model is **per-scene, not per-project** — you can mix and match. The step auto-upgrades to o1 when safe:
-- Duration is 5 or 10 AND `sound: "off"` → auto-upgrades to `kling-video-o1`.
-- Duration is 5 or 10 AND `sound: "on"` → stays on `kling-v3-omni` (needs audio).
-- Duration is anything else → `kling-v3-omni`.
+**How to decide:** The model is **per-scene, not per-project**, so you can mix and match, but the step never switches models on its own. Stay on `kling-v3-omni` unless a scene needs o1's look and can do without audio; then pass `--model kling-video-o1` explicitly. Kling generates in `--mode pro` by default (the higher-quality of std/pro).
 
-This lets you get the best quality where possible while keeping flexible pacing elsewhere. The connector snaps invalid durations to the nearest allowed value, but snapping changes your editorial pacing — better to pick the right model per scene than rely on snapping.
+The connector snaps invalid durations to the nearest allowed value, but snapping changes your editorial pacing, so pick the right model and duration per scene rather than rely on snapping.
 
 State your model choices in chat alongside the dispatch mode. Record the actual model used on `generation.model` for each clip.
 
@@ -160,7 +184,6 @@ In project-aware mode (`--project-id` + `--scene-id`), the `kling_generate` step
 4. Appends `[SHOT SCALE]` and `[CAMERA MOVE]` tags from the scene's structured fields.
 5. Auto-sets a default negative prompt targeting common Kling failure modes.
 6. Generates a random seed for reproducibility.
-7. Auto-upgrades to `kling-video-o1` when duration is 5/10 and sound is off.
 
 **The agent's only job is writing good `## Section` prompts in Phase 1.** Everything else is mechanical.
 

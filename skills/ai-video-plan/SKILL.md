@@ -201,8 +201,8 @@ The final video's length is the **sum of per-scene durations**. Kling generates 
 Three interacting constraints:
 
 1. **Per-scene duration depends on the model.** Two models are available:
-   - **`kling-v3-omni`** (default) — `3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15` seconds. Supports multi-shot. Start+end frames in both std and pro modes.
-   - **`kling-video-o1`** (newer, potentially higher quality) — **`5` or `10` only**. No multi-shot. End frame requires `--mode pro`.
+   - **`kling-v3-omni`** (default and best model): `3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15` seconds. Supports multi-shot. Start+end frames in both std and pro modes. Generates audio.
+   - **`kling-video-o1`** (earlier model): **`5` or `10` only**. No multi-shot. End frame requires `--mode pro`. Does not generate audio.
 
    No floats (`8.5` will be rejected or silently clamped). In multi-shot mode (v3-omni only) the floor drops to `1`.
 
