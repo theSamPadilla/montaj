@@ -21,3 +21,11 @@ test('filter averages each group of N and keeps one frame per group', () => {
   assert.equal(motionBlurFilter(1), null)
   assert.equal(motionBlurFilter(3), "tmix=frames=3,select='eq(mod(n\\,3)\\,2)',setpts=PTS-STARTPTS")
 })
+test('alpha capture averages premultiplied colour', () => {
+  assert.equal(motionBlurFilter(1, { alpha: true }), null)
+  assert.equal(motionBlurFilter(3, { alpha: false }), motionBlurFilter(3))
+  assert.equal(
+    motionBlurFilter(3, { alpha: true }),
+    "premultiply=inplace=1,tmix=frames=3,unpremultiply=inplace=1,select='eq(mod(n\\,3)\\,2)',setpts=PTS-STARTPTS",
+  )
+})

@@ -396,9 +396,9 @@ async function renderChunk(browser, job) {
   const chunkMkv = outputPath.replace(/\.\w+$/, '') + `-chunk-${chunkIndex}.mkv`
   mkdirSync(dirname(chunkMkv), { recursive: true })
 
-  const pixFmt = captureOptionsFor(job).pixFmt
+  const { pixFmt, omitBackground } = captureOptionsFor(job)
   // Motion blur off: args are exactly as before (render goldens depend on it).
-  const blurVf = motionBlurFilter(subframes)
+  const blurVf = motionBlurFilter(subframes, { alpha: omitBackground })
   const inputRate = blurVf ? String(fps * subframes) : String(fps)
   await spawnAsync(FFMPEG, [
     '-y',

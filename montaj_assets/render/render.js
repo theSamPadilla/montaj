@@ -361,6 +361,8 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
 
   const settings = projectJson.settings || {}
   const fps    = settings.fps || 30
+  // Validated here, before normalisation and bundling, so a bad value fails fast.
+  const motionBlur = (() => { try { return resolveMotionBlur(settings.motionBlur) } catch (e) { fail('invalid_argument', e.message) } })()
 
   // See SHORT_EDGE_TARGET's module-level comment for why the overlay design
   // canvas is always 1080 on the short edge, independent of settings.resolution.
@@ -694,7 +696,6 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   }
 
   const effectiveImageTone = resolveImageTone(imageTone, settings)
-  const motionBlur = (() => { try { return resolveMotionBlur(projectJson.settings?.motionBlur) } catch (e) { fail('invalid_argument', e.message) } })()
   const renderedSegments = await renderAllSegments(segmentSpecs, { workers, colorSpace: projectColorSpace, imageTone: effectiveImageTone, motionBlur })
 
   // Attach positioning offsets back onto rendered segments so compose.js can apply

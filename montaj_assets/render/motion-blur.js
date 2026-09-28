@@ -20,7 +20,13 @@ export function subframeTimes(frame, n) {
 // 1/fps apart; setpts=PTS-STARTPTS only removes the (n-1)/(fps*n) start
 // offset. Do NOT use setpts=N/FRAME_RATE/TB: FRAME_RATE is still the sub-frame
 // rate there, which would shorten the clip n times.
-export function motionBlurFilter(n) {
+//
+// alpha: the capture has a transparent background. Averaging straight-alpha
+// RGBA mixes the transparent pixels' black RGB into the edges (dark fringes on
+// composite), so average premultiplied colour and unpremultiply afterwards.
+export function motionBlurFilter(n, { alpha = false } = {}) {
   if (n <= 1) return null
-  return `tmix=frames=${n},select='eq(mod(n\\,${n})\\,${n - 1})',setpts=PTS-STARTPTS`
+  const select = `select='eq(mod(n\\,${n})\\,${n - 1})',setpts=PTS-STARTPTS`
+  if (alpha) return `premultiply=inplace=1,tmix=frames=${n},unpremultiply=inplace=1,${select}`
+  return `tmix=frames=${n},${select}`
 }
