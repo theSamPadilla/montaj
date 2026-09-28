@@ -23,6 +23,8 @@ Custom overlay JSX runs in a sandboxed evaluator. All identifiers below are inje
 | `props` | object | The `props` object from the project.json item |
 | `interpolate` | function | Map a frame number to any output value |
 | `spring` | function | Physics-based easing (0 → 1) |
+| `springStep` | function | Closed-form spring from `from` to `to` starting at frame `at`. A pure function of `frame` (exact at fractional frames, no cache), so it stays correct under sub-frame motion blur. |
+| `springSum` | function | A value that changes target several times: one closed-form spring per entry in `changes`, summed. Retargets mid-flight without restarting, and any frame renders without simulating the ones before it. |
 | `Ph` | object | All [Phosphor Icons](https://phosphoricons.com) — e.g. `Ph.House`, `Ph.ArrowRight` |
 | `FaIcon` | component | `FontAwesomeIcon` renderer — use with `FaSolid` / `FaBrands` icon objects |
 | `FaSolid` | object | All [FA Free Solid](https://fontawesome.com/icons?s=solid) icon objects — e.g. `FaSolid.faHouse` |
@@ -277,6 +279,34 @@ const scale = spring({ frame, fps, stiffness: 120, damping: 14 })
 ```
 
 Defaults: `mass: 1`, `stiffness: 100`, `damping: 10`.
+
+### `springStep(...)` / `springSum(...)`
+
+Closed-form damped springs, as pure functions of `frame` — no memo, no simulation, exact at fractional frames.
+
+```jsx
+springStep(frame, fps, { from, to, at, mass, stiffness, damping, initialVelocity })
+springSum({ frame, fps, from, changes: [{ at, to, mass?, stiffness?, damping? }], mass, stiffness, damping })
+```
+
+`springStep` releases one spring from `from` to `to` at frame `at` (holds `from` before it). `springSum` retargets several times: each entry in `changes` is a closed-form spring summed on top of the others, so the value can jump targets mid-flight without restarting the animation.
+
+```jsx
+export default function Indicator() {
+  const x = springSum({
+    frame, fps, from: 0,
+    changes: [
+      { at: Math.round(fps * 0.5), to: 240 },
+      { at: Math.round(fps * 1.2), to: 520 },
+      { at: Math.round(fps * 2.0), to: 120 },
+    ],
+    stiffness: 170, damping: 26,
+  })
+  return <div style={{ position: 'absolute', left: 100 + x, top: 500, width: 160, height: 8, background: '#fff' }} />
+}
+```
+
+`spring()` integrates per whole frame and quantizes fractional frames up; prefer `springStep`/`springSum` when a value retargets or when `settings.motionBlur` is above 1.
 
 ---
 
