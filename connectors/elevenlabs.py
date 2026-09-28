@@ -20,11 +20,30 @@ Current functions:
 Library code — raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
-import os
-from connectors import ConnectorError, INSUFFICIENT_CREDIT, UNREACHABLE, _http, classify_http_error
+import os, time
+from connectors import (
+    ConnectorError, INSUFFICIENT_CREDIT, INVALID_API_KEY, UNREACHABLE,
+    _http, classify_http_error,
+)
 from lib.credentials import get_credential
 
 BASE = "https://api.elevenlabs.io"
+
+OUT_OF_CREDIT_MESSAGE = "Your ElevenLabs account is out of credits."
+
+# ElevenLabs puts the real meaning of a 401 in detail.status, not just the
+# HTTP code (verified live, PV29 follow-up 2026-09-28):
+#   - "quota_exceeded"    -> out of characters/credits, not a bad key.
+#   - "missing_permissions" / "detected_unusual_activity" -> the key
+#     authenticated fine; the call itself was refused. Not a bad key either.
+#   - "invalid_api_key", or any status this connector doesn't recognise ->
+#     the only cases classified as a bad key.
+_NO_REASON_401_STATUSES = frozenset({"missing_permissions", "detected_unusual_activity"})
+
+# Only these 429 statuses are worth waiting out; anything else (including an
+# unparseable body) is raised without a retry — a wrongly retried billing
+# error is worse than a wrongly abandoned rate limit.
+_RATE_LIMIT_STATUSES = frozenset({"too_many_concurrent_requests", "system_busy"})
 
 # eleven_v3 is ElevenLabs' best current expressive TTS model (GA) — verified
 # live 2026-09-28 (PV29 Task 0). eleven_multilingual_v2 is the documented
@@ -46,43 +65,130 @@ def _headers() -> dict:
     return {"xi-api-key": get_credential("elevenlabs", "api_key")}
 
 
-def _error_from_response(r, error_prefix: str) -> ConnectorError:
-    """Build a ConnectorError from a >=400 ElevenLabs response.
-
-    ElevenLabs wraps its error body as {"detail": {...}} (a dict carrying
-    "message"/"code"/"status") or occasionally {"detail": "plain string"}.
-    A "code": "paid_plan_required" detail — verified on POST /v1/music on a
-    free-plan account (Task 0) — always means the same thing regardless of
-    which endpoint sent it, so it's checked before the generic classifier
-    and gets a fixed operator-facing message rather than the vendor's own
-    wording. Every other 4xx/5xx goes through classify_http_error same as
-    every other connector.
-    """
+def _parse(r) -> dict | None:
+    """The response body as a JSON object, or None when it isn't one."""
     try:
         body = r.json()
     except Exception:
-        body = None
-    detail = body.get("detail") if isinstance(body, dict) else None
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _detail(r):
+    """The `detail` field of a parsed error body: a dict, a string, or None."""
+    body = _parse(r)
+    return body.get("detail") if isinstance(body, dict) else None
+
+
+def _status_of(r) -> str | None:
+    """detail.status when `detail` is an object, else None (unparseable body,
+    or `detail` is a plain string). This is where ElevenLabs puts the real
+    meaning of a 401 or a 429 — see the module-level comments above."""
+    detail = _detail(r)
+    return detail.get("status") if isinstance(detail, dict) else None
+
+
+def _message_of(r) -> str:
+    """Best-effort vendor-facing message from a >=400 response."""
+    detail = _detail(r)
     if isinstance(detail, dict):
-        if detail.get("code") == "paid_plan_required":
-            return ConnectorError("ElevenLabs music needs a paid plan.", reason=INSUFFICIENT_CREDIT)
-        message = detail.get("message") or str(detail)
-    elif isinstance(detail, str):
-        message = detail
-    else:
-        message = (getattr(r, "text", None) or "")[:500]
+        return detail.get("message") or str(detail)
+    if isinstance(detail, str):
+        return detail
+    return (getattr(r, "text", None) or "")[:500]
+
+
+def _error_from_response(r, error_prefix: str) -> ConnectorError:
+    """Build a ConnectorError from a >=400 ElevenLabs response.
+
+    A "code": "paid_plan_required" detail — verified on POST /v1/music on a
+    free-plan account (Task 0) — always means the same thing regardless of
+    which endpoint sent it, so it's checked first and gets a fixed
+    operator-facing message rather than the vendor's own wording.
+
+    A 401 is then classified by detail.status, not the blanket "401 always
+    means a bad key" rule classify_http_error uses for other vendors:
+    "quota_exceeded" is INSUFFICIENT_CREDIT (never retried — billing, not
+    auth); "missing_permissions" / "detected_unusual_activity" mean the key
+    authenticated fine and the call itself was refused, so reason is None
+    (a plain api_error), never INVALID_API_KEY; "invalid_api_key", or any
+    status this connector doesn't recognise, is the only case classified as
+    a bad key.
+
+    Every other 4xx/5xx goes through classify_http_error same as every
+    other connector.
+    """
+    detail = _detail(r)
+    if isinstance(detail, dict) and detail.get("code") == "paid_plan_required":
+        return ConnectorError("ElevenLabs music needs a paid plan.", reason=INSUFFICIENT_CREDIT)
+
+    message = _message_of(r)
+
+    if r.status_code == 401:
+        status = _status_of(r)
+        if status == "quota_exceeded":
+            return ConnectorError(
+                f'{OUT_OF_CREDIT_MESSAGE} ElevenLabs says: "{message}"', reason=INSUFFICIENT_CREDIT
+            )
+        if status in _NO_REASON_401_STATUSES:
+            return ConnectorError(f"{error_prefix} (HTTP 401): {message}", reason=None)
+        # "invalid_api_key", or any other/unrecognised status, is a bad key.
+        return ConnectorError(f"{error_prefix} (HTTP 401): {message}", reason=INVALID_API_KEY)
+
     reason = classify_http_error(r.status_code, message)
     return ConnectorError(f"{error_prefix} (HTTP {r.status_code}): {message}", reason=reason)
 
 
+def _is_rate_limit(r) -> bool:
+    """Whether a 429 is a rate limit worth waiting out. Any other 429 (a
+    billing/abuse signal, or a body that doesn't parse) is not retried:
+    wrongly retrying a billing error is worse than wrongly abandoning a
+    rate limit."""
+    return _status_of(r) in _RATE_LIMIT_STATUSES
+
+
+def _request(method: str, url: str, *, retry_statuses: frozenset = frozenset(), **kwargs):
+    """_http.request_with_retry, but a 429 retries only if _is_rate_limit —
+    mirrors connectors/kling.py's _request/_is_rate_limit."""
+    for attempt in range(_http.RETRY_ATTEMPTS):
+        r = _http.request_with_retry(method, url, retry_statuses=retry_statuses - {429}, **kwargs)
+        if r.status_code != 429 or attempt == _http.RETRY_ATTEMPTS - 1 or not _is_rate_limit(r):
+            return r
+        time.sleep(_http.RETRY_BACKOFF_S * (2 ** attempt))
+
+
+# Sentinel: the key authenticated but this specific call was refused for
+# lacking a scope (401, detail.status == "missing_permissions"). Only
+# check_key treats this leniently — see _get_or_restricted.
+_RESTRICTED = object()
+
+
 def _get(path: str, *, error_prefix: str, timeout: int = 15):
-    """GET {BASE}{path} with the shared retry helper, raising ConnectorError
-    (reason=UNREACHABLE on a transport failure, else via _error_from_response)
-    on any non-2xx outcome."""
+    """GET {BASE}{path}, raising ConnectorError (reason=UNREACHABLE on a
+    transport failure, else via _error_from_response) on any non-2xx
+    outcome. A 429 retries only when the body says it's a rate limit."""
     try:
-        r = _http.request_with_retry("GET", f"{BASE}{path}", headers=_headers(), timeout=timeout)
+        r = _request("GET", f"{BASE}{path}", retry_statuses=_http.TRANSIENT_STATUS,
+                      headers=_headers(), timeout=timeout)
     except ConnectorError as e:
         raise ConnectorError(str(e), reason=UNREACHABLE) from e
+    if r.status_code >= 400:
+        raise _error_from_response(r, error_prefix)
+    return r
+
+
+def _get_or_restricted(path: str, *, error_prefix: str, timeout: int = 15):
+    """Like _get, but a 401/missing_permissions becomes the _RESTRICTED
+    sentinel instead of raising. check_key uses this: a key that
+    authenticates fine but was created with restricted scopes must never be
+    refused at save — it just can't report everything."""
+    try:
+        r = _request("GET", f"{BASE}{path}", retry_statuses=_http.TRANSIENT_STATUS,
+                      headers=_headers(), timeout=timeout)
+    except ConnectorError as e:
+        raise ConnectorError(str(e), reason=UNREACHABLE) from e
+    if r.status_code == 401 and _status_of(r) == "missing_permissions":
+        return _RESTRICTED
     if r.status_code >= 400:
         raise _error_from_response(r, error_prefix)
     return r
@@ -93,15 +199,16 @@ def _post_audio(path: str, body: dict, out_path: str, error_prefix: str) -> str:
 
     Generation here is synchronous — the audio comes back in this same
     response, so a timed-out/ambiguous POST may already be billed. Retry
-    only on 429 (the request was rejected before generation ran), never on
-    a network exception or 5xx — mirrors kling.generate_speech, the other
-    synchronous billed-audio call in this codebase.
+    only on a rate-limit-classified 429 (the request was rejected before
+    generation ran), never on a network exception, a 5xx, or a billing/abuse
+    429 — mirrors kling.generate_speech, the other synchronous billed-audio
+    call in this codebase.
     """
     try:
-        r = _http.request_with_retry(
+        r = _request(
             "POST", f"{BASE}{path}", json=body,
             headers={**_headers(), "Accept": "audio/mpeg"}, timeout=120,
-            retry_statuses=frozenset({429}), retry_exceptions=False,
+            retry_exceptions=False,
         )
     except ConnectorError as e:
         raise ConnectorError(str(e), reason=UNREACHABLE) from e
@@ -243,20 +350,55 @@ def check_key() -> dict:
     subscription tier is "free" (POST /v1/music 402s with
     code=paid_plan_required on that tier — verified Task 0).
 
+    A key that authenticates but was created with restricted scopes (401,
+    detail.status == "missing_permissions" on either call) is never refused
+    here — see _get_or_restricted. Instead:
+    - /v1/user restricted: music is None (unknown, can't read the plan) and
+      `detail` says so.
+    - /v1/models restricted too: default_model_ok is True (can't disprove
+      it) and default_model_verified is False, with a note appended to
+      `detail`. A working restricted key must never be refused at save.
+
     Raises ConnectorError with reason invalid_api_key / insufficient_credit /
-    None from classify_http_error on a 4xx/5xx response, or
+    None from classify_http_error on any other 4xx/5xx response, or
     reason=UNREACHABLE for a transport failure.
     """
-    user_resp = _get("/v1/user", error_prefix="ElevenLabs key check failed")
-    tier = (user_resp.json().get("subscription") or {}).get("tier")
+    user_resp = _get_or_restricted("/v1/user", error_prefix="ElevenLabs key check failed")
+    user_restricted = user_resp is _RESTRICTED
+    if user_restricted:
+        tier = None
+        music = None
+    else:
+        tier = (user_resp.json().get("subscription") or {}).get("tier")
+        music = tier != "free"
 
-    models_resp = _get("/v1/models", error_prefix="ElevenLabs key check failed")
-    model_ids = {m.get("model_id") for m in models_resp.json()}
+    models_resp = _get_or_restricted("/v1/models", error_prefix="ElevenLabs key check failed")
+    models_restricted = models_resp is _RESTRICTED
+    if models_restricted:
+        default_model_ok = True
+    else:
+        model_ids = {m.get("model_id") for m in models_resp.json()}
+        default_model_ok = DEFAULT_TTS_MODEL in model_ids
 
-    return {
+    result = {
         "ok": True,
         "default_model": DEFAULT_TTS_MODEL,
-        "default_model_ok": DEFAULT_TTS_MODEL in model_ids,
-        "music": tier != "free",
-        "detail": f"{len(model_ids)} models available to this key; plan tier {tier!r}",
+        "default_model_ok": default_model_ok,
+        "music": music,
     }
+    if models_restricted:
+        result["default_model_verified"] = False
+
+    if user_restricted:
+        detail = "Key works but can't read the account plan (missing user_read permission)"
+        if models_restricted:
+            detail += ("; could not verify the default model is still available "
+                       "(missing permission to list models)")
+    elif models_restricted:
+        detail = (f"plan tier {tier!r}; could not verify the default model is still available "
+                  "(missing permission to list models)")
+    else:
+        detail = f"{len(model_ids)} models available to this key; plan tier {tier!r}"
+    result["detail"] = detail
+
+    return result

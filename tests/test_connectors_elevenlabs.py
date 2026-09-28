@@ -34,6 +34,23 @@ class _FakeResponse:
         return self._body
 
 
+def _scripted(*responses):
+    """A request_with_retry fake that returns each response in order and
+    records every call. Used for retry-composition tests, where a single
+    canned-response function can't distinguish attempt 1 from attempt 2."""
+    remaining = list(responses)
+    calls = []
+
+    def fn(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        if not remaining:
+            raise AssertionError("unexpected extra HTTP call")
+        return remaining.pop(0)
+
+    fn.calls = calls
+    return fn
+
+
 _VOICES_BODY = {
     "voices": [
         {"voice_id": "id-george", "name": "George - Warm, Captivating Storyteller"},
@@ -418,6 +435,255 @@ class TestCheckKey:
         import connectors.elevenlabs as mod
         monkeypatch.setattr(mod._http, "request_with_retry", fake_retry)
         mod.check_key()  # would raise via fail_if_called if it fell through to real requests
+
+
+# ---------------------------------------------------------------------------
+# 401s: ElevenLabs puts the real meaning in detail.status, not just the HTTP
+# code — PV29 T6 follow-up.
+# ---------------------------------------------------------------------------
+
+class Test401StatusClassification:
+    def test_quota_exceeded_is_insufficient_credit(self, monkeypatch):
+        body = {"detail": {"status": "quota_exceeded",
+                            "message": "You have run out of credits."}}
+        calls = []
+
+        def fake_retry(method, url, **kwargs):
+            calls.append(1)
+            return _FakeResponse(401, body)
+
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod._http, "request_with_retry", fake_retry)
+
+        with pytest.raises(ConnectorError) as ei:
+            mod.check_key()
+        assert ei.value.reason == "insufficient_credit"
+        assert str(ei.value) == (
+            'Your ElevenLabs account is out of credits. '
+            'ElevenLabs says: "You have run out of credits."'
+        )
+        # Only the first (/v1/user) call happens — it raises before /v1/models,
+        # and a billing error is never retried.
+        assert len(calls) == 1
+
+    def test_missing_permissions_in_generation_is_reason_none_not_invalid_key(self, monkeypatch, tmp_path):
+        body = {"detail": {"status": "missing_permissions",
+                            "message": "The API key is missing the permission to access this endpoint"}}
+
+        def fake_retry(method, url, **kwargs):
+            if url.endswith("/v1/voices"):
+                return _FakeResponse(200, _VOICES_BODY)
+            return _FakeResponse(401, body)
+
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod._http, "request_with_retry", fake_retry)
+
+        with pytest.raises(ConnectorError) as ei:
+            mod.generate_speech("hi", "id-george", str(tmp_path / "out.mp3"))
+        assert ei.value.reason is None
+        assert "missing the permission" in str(ei.value)
+
+    def test_detected_unusual_activity_is_reason_none(self, monkeypatch):
+        body = {"detail": {"status": "detected_unusual_activity",
+                            "message": "Unusual activity detected. Please verify your identity."}}
+
+        def fake_retry(method, url, **kwargs):
+            return _FakeResponse(401, body)
+
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod._http, "request_with_retry", fake_retry)
+
+        with pytest.raises(ConnectorError) as ei:
+            mod.check_key()
+        assert ei.value.reason is None
+        assert "Unusual activity" in str(ei.value)
+
+    def test_invalid_api_key_status_is_invalid_api_key(self, monkeypatch):
+        body = {"detail": {"status": "invalid_api_key", "message": "Invalid API key"}}
+
+        def fake_retry(method, url, **kwargs):
+            return _FakeResponse(401, body)
+
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod._http, "request_with_retry", fake_retry)
+
+        with pytest.raises(ConnectorError) as ei:
+            mod.check_key()
+        assert ei.value.reason == "invalid_api_key"
+
+    def test_unrecognised_401_status_is_invalid_api_key(self, monkeypatch):
+        """Only a recognised non-key status (quota_exceeded,
+        missing_permissions, detected_unusual_activity) escapes the bad-key
+        classification. Anything else — including a status this connector
+        has never seen — falls back to invalid_api_key."""
+        body = {"detail": {"status": "some_future_status", "message": "no idea"}}
+
+        def fake_retry(method, url, **kwargs):
+            return _FakeResponse(401, body)
+
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod._http, "request_with_retry", fake_retry)
+
+        with pytest.raises(ConnectorError) as ei:
+            mod.check_key()
+        assert ei.value.reason == "invalid_api_key"
+
+    def test_401_with_no_parseable_status_is_invalid_api_key(self, monkeypatch):
+        def fake_retry(method, url, **kwargs):
+            return _FakeResponse(401, None)  # unparseable body
+
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod._http, "request_with_retry", fake_retry)
+
+        with pytest.raises(ConnectorError) as ei:
+            mod.check_key()
+        assert ei.value.reason == "invalid_api_key"
+
+
+# ---------------------------------------------------------------------------
+# 429: only a rate-limit status retries — PV29 T6 follow-up.
+# ---------------------------------------------------------------------------
+
+class Test429RateLimitClassification:
+    def test_too_many_concurrent_requests_is_retried_then_succeeds(self, monkeypatch, tmp_path):
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        fake = _scripted(
+            _FakeResponse(429, {"detail": {"status": "too_many_concurrent_requests",
+                                            "message": "slow down"}}),
+            _FakeResponse(200, content=b"sfx-bytes"),
+        )
+        monkeypatch.setattr(mod._http, "request_with_retry", fake)
+
+        out = str(tmp_path / "out.mp3")
+        result = mod.generate_sfx("glass breaking", out)
+        assert result == out
+        assert len(fake.calls) == 2
+
+    def test_system_busy_is_retried_then_succeeds(self, monkeypatch, tmp_path):
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        fake = _scripted(
+            _FakeResponse(429, {"detail": {"status": "system_busy", "message": "at capacity"}}),
+            _FakeResponse(200, content=b"sfx-bytes"),
+        )
+        monkeypatch.setattr(mod._http, "request_with_retry", fake)
+
+        result = mod.generate_sfx("glass breaking", str(tmp_path / "out.mp3"))
+        assert len(fake.calls) == 2
+
+    def test_other_429_status_is_not_retried(self, monkeypatch, tmp_path):
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        fake = _scripted(
+            _FakeResponse(429, {"detail": {"status": "some_abuse_signal", "message": "nope"}}),
+            _FakeResponse(200, content=b"sfx-bytes"),
+        )
+        monkeypatch.setattr(mod._http, "request_with_retry", fake)
+
+        with pytest.raises(ConnectorError, match="HTTP 429"):
+            mod.generate_sfx("glass breaking", str(tmp_path / "out.mp3"))
+        assert len(fake.calls) == 1
+
+    def test_unparseable_429_is_not_retried(self, monkeypatch, tmp_path):
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        fake = _scripted(
+            _FakeResponse(429, None),
+            _FakeResponse(200, content=b"sfx-bytes"),
+        )
+        monkeypatch.setattr(mod._http, "request_with_retry", fake)
+
+        with pytest.raises(ConnectorError, match="HTTP 429"):
+            mod.generate_sfx("glass breaking", str(tmp_path / "out.mp3"))
+        assert len(fake.calls) == 1
+
+    def test_rate_limit_retry_is_bounded(self, monkeypatch, tmp_path):
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        body = {"detail": {"status": "system_busy", "message": "still busy"}}
+        fake = _scripted(*[_FakeResponse(429, body) for _ in range(mod._http.RETRY_ATTEMPTS)])
+        monkeypatch.setattr(mod._http, "request_with_retry", fake)
+
+        with pytest.raises(ConnectorError, match="HTTP 429"):
+            mod.generate_sfx("glass breaking", str(tmp_path / "out.mp3"))
+        assert len(fake.calls) == mod._http.RETRY_ATTEMPTS
+
+    def test_never_retries_a_rate_limit_on_a_fresh_call_beyond_the_attempts_cap(self, monkeypatch, tmp_path):
+        """A GET (idempotent) also stops retrying at the bound, same as a POST."""
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        body = {"detail": {"status": "too_many_concurrent_requests", "message": "slow down"}}
+        fake = _scripted(*[_FakeResponse(429, body) for _ in range(mod._http.RETRY_ATTEMPTS)])
+        monkeypatch.setattr(mod._http, "request_with_retry", fake)
+
+        with pytest.raises(ConnectorError, match="HTTP 429"):
+            mod.check_key()
+        assert len(fake.calls) == mod._http.RETRY_ATTEMPTS
+
+
+# ---------------------------------------------------------------------------
+# check_key: a valid-but-scope-restricted key must never be refused at save
+# — PV29 T6 follow-up.
+# ---------------------------------------------------------------------------
+
+class TestCheckKeyRestrictedKey:
+    def test_user_missing_permissions_ok_with_music_unknown(self, monkeypatch):
+        def fake_retry(method, url, **kwargs):
+            if url.endswith("/v1/user"):
+                return _FakeResponse(401, {"detail": {"status": "missing_permissions",
+                                                        "message": "no user_read"}})
+            if url.endswith("/v1/models"):
+                return _FakeResponse(200, _MODELS_BODY)
+            raise AssertionError(f"unexpected URL {url}")
+
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod._http, "request_with_retry", fake_retry)
+
+        result = mod.check_key()  # must not raise
+        assert result["ok"] is True
+        assert result["music"] is None
+        assert result["default_model_ok"] is True
+        assert "default_model_verified" not in result
+        assert result["detail"] == (
+            "Key works but can't read the account plan (missing user_read permission)"
+        )
+
+    def test_user_restricted_default_model_still_computed_for_real(self, monkeypatch):
+        """default_model_ok is computed from the real /v1/models answer when
+        that call itself is not restricted — it is only forced True when
+        /v1/models is ALSO restricted."""
+        def fake_retry(method, url, **kwargs):
+            if url.endswith("/v1/user"):
+                return _FakeResponse(401, {"detail": {"status": "missing_permissions",
+                                                        "message": "no user_read"}})
+            if url.endswith("/v1/models"):
+                return _FakeResponse(200, [{"model_id": "eleven_multilingual_v2",
+                                             "can_do_text_to_speech": True}])
+            raise AssertionError(f"unexpected URL {url}")
+
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod._http, "request_with_retry", fake_retry)
+
+        result = mod.check_key()
+        assert result["default_model_ok"] is False  # eleven_v3 not in this list
+        assert "default_model_verified" not in result
+
+    def test_user_and_models_both_restricted(self, monkeypatch):
+        def fake_retry(method, url, **kwargs):
+            return _FakeResponse(401, {"detail": {"status": "missing_permissions",
+                                                    "message": "no permission"}})
+
+        import connectors.elevenlabs as mod
+        monkeypatch.setattr(mod._http, "request_with_retry", fake_retry)
+
+        result = mod.check_key()  # must not raise
+        assert result["ok"] is True
+        assert result["music"] is None
+        assert result["default_model_ok"] is True
+        assert result["default_model_verified"] is False
+        assert "Key works but can't read the account plan" in result["detail"]
+        assert "could not verify" in result["detail"].lower()
 
 
 # ---------------------------------------------------------------------------
