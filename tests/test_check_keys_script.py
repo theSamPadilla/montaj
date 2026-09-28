@@ -49,6 +49,15 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "check-keys.sh"
 
+# check-keys.sh is maintainer-only release tooling and, like the other release
+# scripts, is kept out of git (a4d06b6: scripts/ is gitignored). On a fresh clone
+# or in CI the script does not exist, so these tests skip rather than fail; they
+# run wherever the maintainer's copy is present.
+pytestmark = pytest.mark.skipif(
+    not SCRIPT.exists(),
+    reason="scripts/check-keys.sh is local release tooling, not tracked in git",
+)
+
 
 def _mirror_repo(tmp_path: Path) -> Path:
     """Build an isolated repo mirror with real production files copied
