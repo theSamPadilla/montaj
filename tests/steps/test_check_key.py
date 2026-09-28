@@ -57,6 +57,23 @@ class TestProvidersRegistered:
         assert "invalid choice" in capsys.readouterr().err
 
 
+class TestSchemaOptionsMatchProviders:
+    """PV29 review item 1: check_key.json's `provider` enum drifted from
+    PROVIDERS after T7 registered kling/fal/elevenlabs (74338ac updated the
+    step but not the JSON), so serve's validate_params rejected every
+    provider but gemini/openai with a 422 before the step ever ran."""
+
+    def test_options_match_providers(self, step_module):
+        schema = json.loads((_STEP_PATH.parent / "check_key.json").read_text())
+        assert schema["params"][0]["options"] == sorted(step_module.PROVIDERS)
+
+    def test_every_provider_passes_serve_validation(self, step_module):
+        from serve.routes.steps import validate_params
+        schema = json.loads((_STEP_PATH.parent / "check_key.json").read_text())
+        for provider in step_module.PROVIDERS:
+            validate_params(schema, {"provider": provider})  # must not raise
+
+
 class TestOkPath:
     def test_ok_result_printed_as_json(self, step_module, monkeypatch, capsys):
         monkeypatch.setattr(gemini_mod, "check_key", lambda: {
