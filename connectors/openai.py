@@ -6,12 +6,15 @@ use case. See docs/CONNECTORS.md for the layering rule.
 
 Current functions:
     generate_image(prompt, out_path, ref_images, size, model) -> str
+    check_key() -> dict
+        One free call (GET /v1/models) to validate a key and confirm
+        DEFAULT_IMAGE_MODEL is still available, with no billed call.
 
 Library code — raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
 import base64, os
-from connectors import ConnectorError, _http
+from connectors import ConnectorError, _http, classify_http_error, UNREACHABLE
 from lib.credentials import get_credential
 
 DEFAULT_IMAGE_MODEL = "gpt-image-1"
@@ -79,6 +82,14 @@ def generate_image(
     except ConnectorError:
         raise
     except Exception as e:
+        # _client() already succeeded, so the openai SDK is importable here —
+        # this is not a fresh dependency check, just a name lookup for isinstance.
+        import openai
+        if isinstance(e, openai.APIStatusError):
+            reason = classify_http_error(e.status_code, e.message)
+            raise ConnectorError(f"OpenAI image generation failed: {e.message}", reason=reason) from e
+        if isinstance(e, openai.APIConnectionError):
+            raise ConnectorError(f"OpenAI image generation failed: {e}", reason=UNREACHABLE) from e
         raise ConnectorError(f"OpenAI image generation failed: {e}") from e
 
     # gpt-image-1 only supports b64_json; DALL-E models may return url.
@@ -98,3 +109,57 @@ def generate_image(
     if not url:
         raise ConnectorError("OpenAI response has neither b64_json nor url")
     return _http.download_file(url, out_path, timeout=60)
+
+
+def _error_message(resp) -> str:
+    """Best-effort extraction of the vendor's error text from a failed OpenAI
+    HTTP response (``{"error": {"message": ...}}``), else the raw body."""
+    try:
+        body = resp.json()
+    except Exception:
+        return resp.text or ""
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict) and err.get("message"):
+            return err["message"]
+    return resp.text or ""
+
+
+def check_key() -> dict:
+    """Validate the stored/overlaid OpenAI key with one free call: GET
+    /v1/models. No billed call — listing models costs nothing.
+
+    default_model_ok is True when DEFAULT_IMAGE_MODEL is among the models
+    this key can see, which is how a retirement shows up before any real
+    generation step ever runs against it.
+
+    Raises ConnectorError with reason invalid_api_key / insufficient_credit /
+    None from classify_http_error on a 4xx/5xx response, or reason=UNREACHABLE
+    for an actual connection failure or timeout — the only case
+    _http.request_with_retry raises rather than returning a response, since
+    every HTTP status (including 4xx/5xx) comes back as a response object.
+    """
+    api_key = get_credential("openai", "api_key")
+    try:
+        resp = _http.request_with_retry(
+            "GET", "https://api.openai.com/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"}, timeout=15,
+        )
+    except ConnectorError as e:
+        raise ConnectorError(str(e), reason=UNREACHABLE) from e
+
+    if resp.status_code >= 400:
+        message = _error_message(resp)
+        reason = classify_http_error(resp.status_code, message)
+        raise ConnectorError(
+            f"OpenAI key check failed (HTTP {resp.status_code}): {message}", reason=reason
+        )
+
+    data = resp.json()
+    model_ids = {m.get("id") for m in data.get("data", [])}
+    return {
+        "ok": True,
+        "default_model": DEFAULT_IMAGE_MODEL,
+        "default_model_ok": DEFAULT_IMAGE_MODEL in model_ids,
+        "detail": f"{len(model_ids)} models available to this key",
+    }

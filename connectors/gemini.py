@@ -16,6 +16,9 @@ Current functions:
     generate_image(prompt, out_path, ref_images, size, model, aspect_ratio) -> str
     generate_speech(text, voice, out_path, model) -> str
     generate_music(prompt, out_path, instrumental, model, seed) -> str
+    check_key() -> dict
+        One free call (models.list) to validate a key and confirm DEFAULT_MODEL
+        is still available, with no billed call.
 
 Private helpers:
     _generate_audio(model, contents, config, out_path, ...) -> str
@@ -27,7 +30,7 @@ Step scripts catch ConnectorError and translate to fail().
 """
 import json as _json
 import os, re, sys, time, wave
-from connectors import ConnectorError
+from connectors import ConnectorError, UNREACHABLE
 from lib.credentials import get_credential
 
 # gemini-2.5-flash started 404ing for new API keys ("no longer available to
@@ -261,6 +264,44 @@ def invalid_api_key_message(e: ConnectorError) -> str:
     if detail:
         return f"{INVALID_API_KEY_MESSAGE} Google said: {detail}"
     return INVALID_API_KEY_MESSAGE
+
+
+def check_key() -> dict:
+    """Validate the stored/overlaid Gemini key with one free call: models.list.
+
+    No billed call — listing the models a key can see costs nothing.
+    default_model_ok is True when DEFAULT_MODEL is among them, which is how a
+    retirement like gemini-2.5-flash's shows up before any real generation
+    step ever runs against it.
+
+    A rejected key raises ConnectorError(reason="invalid_api_key") through the
+    same detection every other Gemini call path uses (_wrap_sdk_error /
+    _is_invalid_api_key_error). A network failure raises
+    ConnectorError(reason=UNREACHABLE) — SDK calls transit httpx, which raises
+    httpx.TransportError (connection refused, DNS failure, timeout) rather
+    than a genai.errors.APIError, so that's caught separately.
+    """
+    client = _client()
+    try:
+        import httpx
+    except ImportError:
+        raise ConnectorError("Missing connector dependencies. Run: montaj install connectors")
+
+    try:
+        model_names = {(m.name or "").removeprefix("models/") for m in client.models.list()}
+    except httpx.TransportError as e:
+        raise ConnectorError(
+            f"Gemini key check failed: could not reach the API: {e}", reason=UNREACHABLE
+        ) from e
+    except Exception as e:
+        raise _wrap_sdk_error(e, "Gemini key check failed") from e
+
+    return {
+        "ok": True,
+        "default_model": DEFAULT_MODEL,
+        "default_model_ok": DEFAULT_MODEL in model_names,
+        "detail": f"{len(model_names)} models available to this key",
+    }
 
 
 def upload_media(path: str):

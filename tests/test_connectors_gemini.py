@@ -1051,3 +1051,92 @@ class TestGenerateSpeechRawPCM:
             assert wf.getnchannels() == 1
             assert wf.getframerate() == 24000
             assert wf.getsampwidth() == 2
+
+
+# ---------------------------------------------------------------------------
+# check_key — PV29 T3. One free call: models.list.
+# ---------------------------------------------------------------------------
+
+def _make_model(name):
+    m = MagicMock()
+    m.name = name
+    return m
+
+
+class TestCheckKeyOk:
+    def test_default_model_present(self, monkeypatch):
+        import connectors.gemini as mod
+        client = MagicMock()
+        client.models.list.return_value = [
+            _make_model("models/gemini-3.8-flash"),
+            _make_model("models/gemini-2.5-flash"),
+        ]
+        monkeypatch.setattr(mod, "_client", lambda: client)
+
+        result = mod.check_key()
+        assert result["ok"] is True
+        assert result["default_model"] == mod.DEFAULT_MODEL
+        assert result["default_model_ok"] is True
+
+    def test_default_model_missing(self, monkeypatch):
+        import connectors.gemini as mod
+        client = MagicMock()
+        client.models.list.return_value = [_make_model("models/gemini-2.5-flash")]
+        monkeypatch.setattr(mod, "_client", lambda: client)
+
+        result = mod.check_key()
+        assert result["default_model_ok"] is False
+
+
+class TestCheckKeyErrors:
+    """check_key reuses the same invalid-key detection as every other Gemini
+    call path, and classifies a network failure separately (SDK calls
+    transit httpx, which raises httpx.TransportError, not a genai.errors.APIError,
+    for a connection failure)."""
+
+    def test_invalid_key_reason(self, monkeypatch):
+        import connectors.gemini as mod
+        auth_error = _sdk_error(real_genai_errors.ClientError, 401,
+                                 "Request had invalid authentication credentials.",
+                                 "UNAUTHENTICATED")
+        client = MagicMock()
+        client.models.list.side_effect = auth_error
+        monkeypatch.setattr(mod, "_client", lambda: client)
+
+        _, modules = _patch_genai_types_with_real_errors()
+        with patch.dict("sys.modules", modules):
+            with pytest.raises(ConnectorError) as ei:
+                mod.check_key()
+        assert ei.value.reason == "invalid_api_key"
+
+    def test_connection_failure_is_unreachable(self, monkeypatch):
+        import httpx
+        import connectors.gemini as mod
+        client = MagicMock()
+        client.models.list.side_effect = httpx.ConnectError("Connection refused")
+        monkeypatch.setattr(mod, "_client", lambda: client)
+
+        with pytest.raises(ConnectorError) as ei:
+            mod.check_key()
+        assert ei.value.reason == "unreachable"
+
+    def test_timeout_is_unreachable(self, monkeypatch):
+        import httpx
+        import connectors.gemini as mod
+        client = MagicMock()
+        client.models.list.side_effect = httpx.ConnectTimeout("timed out")
+        monkeypatch.setattr(mod, "_client", lambda: client)
+
+        with pytest.raises(ConnectorError) as ei:
+            mod.check_key()
+        assert ei.value.reason == "unreachable"
+
+    def test_generic_sdk_error_reason_is_none(self, monkeypatch):
+        import connectors.gemini as mod
+        client = MagicMock()
+        client.models.list.side_effect = RuntimeError("something else broke")
+        monkeypatch.setattr(mod, "_client", lambda: client)
+
+        with pytest.raises(ConnectorError) as ei:
+            mod.check_key()
+        assert ei.value.reason is None

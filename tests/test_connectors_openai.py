@@ -217,3 +217,157 @@ class TestModuleImportsCleanly:
         import connectors.openai  # noqa: F401
         assert hasattr(connectors.openai, "generate_image")
         assert hasattr(connectors.openai, "DEFAULT_IMAGE_MODEL")
+
+
+# ---------------------------------------------------------------------------
+# generate_image: SDK exceptions classified via classify_http_error — PV29 T3.
+#
+# openai.APIStatusError/.APIConnectionError are the REAL SDK classes (openai
+# is a real installed dependency), built the way the SDK itself does, not a
+# fake shape.
+# ---------------------------------------------------------------------------
+
+import httpx  # noqa: E402
+import openai as openai_sdk  # noqa: E402
+
+
+def _api_status_error(status_code, body, method="POST", url="https://api.openai.com/v1/images/generations"):
+    request = httpx.Request(method, url)
+    response = httpx.Response(status_code, request=request, json=body)
+    err_msg = f"Error code: {status_code} - {body}"
+    return openai_sdk.APIStatusError(err_msg, response=response, body=body)
+
+
+def _api_connection_error(method="GET", url="https://api.openai.com/v1/images/generations"):
+    request = httpx.Request(method, url)
+    return openai_sdk.APIConnectionError(request=request)
+
+
+class TestGenerateImageErrorClassification:
+    """A rejected key / no credit / a network failure get the shared reason,
+    instead of the old bare 'OpenAI image generation failed: {e}' with no
+    reason at all."""
+
+    def test_401_status_error_is_invalid_api_key(self, monkeypatch, tmp_path):
+        err = _api_status_error(401, {"error": {"message": "Invalid API key provided", "type": "invalid_request_error"}})
+        client = MagicMock()
+        client.images.generate.side_effect = err
+        monkeypatch.setattr("connectors.openai._client", lambda: client)
+
+        import connectors.openai as mod
+        with pytest.raises(ConnectorError) as ei:
+            mod.generate_image("a cat", str(tmp_path / "out.png"))
+        assert ei.value.reason == "invalid_api_key"
+
+    def test_402_status_error_is_insufficient_credit(self, monkeypatch, tmp_path):
+        err = _api_status_error(402, {"error": {"message": "You exceeded your current quota"}})
+        client = MagicMock()
+        client.images.generate.side_effect = err
+        monkeypatch.setattr("connectors.openai._client", lambda: client)
+
+        import connectors.openai as mod
+        with pytest.raises(ConnectorError) as ei:
+            mod.generate_image("a cat", str(tmp_path / "out.png"))
+        assert ei.value.reason == "insufficient_credit"
+
+    def test_unclassified_status_error_has_none_reason(self, monkeypatch, tmp_path):
+        err = _api_status_error(500, {"error": {"message": "internal error"}})
+        client = MagicMock()
+        client.images.generate.side_effect = err
+        monkeypatch.setattr("connectors.openai._client", lambda: client)
+
+        import connectors.openai as mod
+        with pytest.raises(ConnectorError) as ei:
+            mod.generate_image("a cat", str(tmp_path / "out.png"))
+        assert ei.value.reason is None
+
+    def test_connection_error_is_unreachable(self, monkeypatch, tmp_path):
+        client = MagicMock()
+        client.images.generate.side_effect = _api_connection_error()
+        monkeypatch.setattr("connectors.openai._client", lambda: client)
+
+        import connectors.openai as mod
+        with pytest.raises(ConnectorError) as ei:
+            mod.generate_image("a cat", str(tmp_path / "out.png"))
+        assert ei.value.reason == "unreachable"
+
+    def test_plain_exception_still_generic(self, monkeypatch, tmp_path):
+        """Non-SDK exceptions (e.g. a bug elsewhere) keep the old generic
+        shape — reason None — same as test_sdk_generate_error_becomes_connector_error."""
+        client = MagicMock()
+        client.images.generate.side_effect = RuntimeError("boom")
+        monkeypatch.setattr("connectors.openai._client", lambda: client)
+
+        import connectors.openai as mod
+        with pytest.raises(ConnectorError) as ei:
+            mod.generate_image("a cat", str(tmp_path / "out.png"))
+        assert ei.value.reason is None
+
+
+# ---------------------------------------------------------------------------
+# check_key — PV29 T3. One free call: GET /v1/models.
+# ---------------------------------------------------------------------------
+
+import json as json_module  # noqa: E402
+
+
+class _FakeResponse:
+    def __init__(self, status_code, body):
+        self.status_code = status_code
+        self._body = body
+        self.text = json_module.dumps(body) if body is not None else ""
+
+    def json(self):
+        return self._body
+
+
+class TestCheckKey:
+    def test_ok_default_model_present(self, monkeypatch):
+        body = {"data": [{"id": "gpt-image-1"}, {"id": "gpt-4o"}]}
+        resp = _FakeResponse(200, body)
+        monkeypatch.setattr("connectors.openai._http.request_with_retry", lambda *a, **kw: resp)
+
+        import connectors.openai as mod
+        result = mod.check_key()
+        assert result["ok"] is True
+        assert result["default_model"] == mod.DEFAULT_IMAGE_MODEL
+        assert result["default_model_ok"] is True
+
+    def test_default_model_missing(self, monkeypatch):
+        body = {"data": [{"id": "gpt-4o"}]}
+        resp = _FakeResponse(200, body)
+        monkeypatch.setattr("connectors.openai._http.request_with_retry", lambda *a, **kw: resp)
+
+        import connectors.openai as mod
+        result = mod.check_key()
+        assert result["default_model_ok"] is False
+
+    def test_401_raises_invalid_api_key(self, monkeypatch):
+        resp = _FakeResponse(401, {"error": {"message": "Invalid API key provided"}})
+        monkeypatch.setattr("connectors.openai._http.request_with_retry", lambda *a, **kw: resp)
+
+        import connectors.openai as mod
+        with pytest.raises(ConnectorError) as ei:
+            mod.check_key()
+        assert ei.value.reason == "invalid_api_key"
+
+    def test_connection_failure_raises_unreachable(self, monkeypatch):
+        def boom(*a, **kw):
+            raise ConnectorError("GET https://api.openai.com/v1/models failed after 3 attempts: timed out")
+        monkeypatch.setattr("connectors.openai._http.request_with_retry", boom)
+
+        import connectors.openai as mod
+        with pytest.raises(ConnectorError) as ei:
+            mod.check_key()
+        assert ei.value.reason == "unreachable"
+
+    def test_never_sends_a_real_request(self, monkeypatch):
+        """Guard: this test file must never let check_key reach the network."""
+        def fail_if_called(*a, **kw):
+            raise AssertionError("check_key must not call the real requests module")
+        monkeypatch.setattr("connectors._http._require_requests", fail_if_called)
+        resp = _FakeResponse(200, {"data": [{"id": "gpt-image-1"}]})
+        monkeypatch.setattr("connectors.openai._http.request_with_retry", lambda *a, **kw: resp)
+
+        import connectors.openai as mod
+        mod.check_key()  # would raise via fail_if_called if it fell through to real requests

@@ -80,22 +80,25 @@ _REMAP = {
 #   # generate-voiceover) — expanding MCP's surface is a separate decision. Commands
 #   # with subcommands (workflow, sample, profile) flatten into multiple tools.
 #
-# The 5 named above account for 5 of these 24; the rest (capture_site,
-# contact_sheet, crop_spec, cross_cut, fetch_image, filmstrip,
+# The 5 named above account for 5 of these 25; the rest (capture_site,
+# check_key, contact_sheet, crop_spec, cross_cut, fetch_image, filmstrip,
 # generate_captions, jump_cut, mix_timeline, montage, normalize_window, proxy,
 # reframe, search_images, search_news, synth_audio, virtual_to_original,
 # waveform_image, waveform_peaks) were never CLI commands at all — they're
 # HTTP/editor-only steps with no corresponding top-level command to allowlist.
 # `mix_timeline` is an internal leg of the caption pipeline (the caption route
 # and `generate_captions` both spawn it directly by path), so it stays off the
-# MCP surface for the same reason.
+# MCP surface for the same reason. `check_key` (PV29 T3) is called only
+# through serve's per-request credentials overlay, from the app's save-a-key
+# flow — testing a candidate key isn't something an AI chat agent should
+# trigger, so it's deliberately not MCP-exposed either.
 EXPECTED_HTTP_ONLY = frozenset({
-    "capture_site", "contact_sheet", "crop_spec", "cross_cut", "fetch_image",
-    "filmstrip", "generate_captions", "generate_music", "generate_voiceover",
-    "jump_cut", "lyrics_render", "lyrics_sync", "mix_timeline", "montage",
-    "normalize_window", "proxy", "reframe", "search_images", "search_news",
-    "stem_separation", "synth_audio", "virtual_to_original", "waveform_image",
-    "waveform_peaks",
+    "capture_site", "check_key", "contact_sheet", "crop_spec", "cross_cut",
+    "fetch_image", "filmstrip", "generate_captions", "generate_music",
+    "generate_voiceover", "jump_cut", "lyrics_render", "lyrics_sync",
+    "mix_timeline", "montage", "normalize_window", "proxy", "reframe",
+    "search_images", "search_news", "stem_separation", "synth_audio",
+    "virtual_to_original", "waveform_image", "waveform_peaks",
 })
 
 # MCP tools that name no step at all — run/render/status/upload/init/log are
