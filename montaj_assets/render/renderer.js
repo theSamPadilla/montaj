@@ -18,6 +18,7 @@ import { FFMPEG } from './ffmpeg-bin.js'
 import { isHdr } from './color-space.js'
 import { adaptiveChunkSize, workerCap } from './chunk-plan.js'
 import { toFileHref, fromFileHref } from './file-url.js'
+import { subframeTimes, motionBlurFilter } from './motion-blur.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // MONTAJ_ROOT is two levels above montaj_assets/render/ (i.e. the Python project root).
@@ -58,6 +59,7 @@ export async function renderAllSegments(segments, config = {}) {
   // Expand segments into per-chunk jobs
   const colorSpace = config.colorSpace ?? null
   const imageTone  = config.imageTone ?? 'vivid'
+  const subframes  = config.motionBlur ?? 1
   const jobs = []
   for (const seg of segments) {
     const opaque = seg.opaque ?? false
@@ -66,10 +68,10 @@ export async function renderAllSegments(segments, config = {}) {
       for (let i = 0; i < numChunks; i++) {
         const frameStart = i * chunkSize
         const frameEnd   = Math.min(frameStart + chunkSize, seg.frameCount)
-        jobs.push({ ...seg, opaque, colorSpace, imageTone, frameStart, frameEnd, chunkIndex: i, totalChunks: numChunks })
+        jobs.push({ ...seg, opaque, colorSpace, imageTone, subframes, frameStart, frameEnd, chunkIndex: i, totalChunks: numChunks })
       }
     } else {
-      jobs.push({ ...seg, opaque, colorSpace, imageTone, frameStart: 0, frameEnd: seg.frameCount, chunkIndex: 0, totalChunks: 1 })
+      jobs.push({ ...seg, opaque, colorSpace, imageTone, subframes, frameStart: 0, frameEnd: seg.frameCount, chunkIndex: 0, totalChunks: 1 })
     }
   }
 
@@ -178,7 +180,7 @@ export function captureOptionsFor(job) {
 }
 
 async function renderChunk(browser, job) {
-  const { id, htmlPath, fps, width, height, frameStart, frameEnd, chunkIndex, outputPath, colorSpace, imageTone, captureScale } = job
+  const { id, htmlPath, fps, width, height, frameStart, frameEnd, chunkIndex, outputPath, colorSpace, imageTone, captureScale, subframes = 1 } = job
 
   const frameDir = join(tmpdir(), `montaj-frames-${id}-c${chunkIndex}-${randomBytes(4).toString('hex')}`)
   mkdirSync(frameDir, { recursive: true })
@@ -344,23 +346,30 @@ async function renderChunk(browser, job) {
   const reportEvery = Math.max(1, Math.floor(totalFrames / 20))
   const renderStartMs = Date.now()
   for (let frame = frameStart; frame < frameEnd; frame++) {
-    // 1. Tell React to update to this frame (flushSync commits DOM synchronously
-    //    and stamps data-rendered-frame on <html> so we can verify below).
-    await page.evaluate((f) => window.__setFrame(f), frame)
-    // 2. Wait until the DOM attribute confirms this exact frame has been committed.
-    //    This is more reliable than rAF alone — rAF in headless Chrome can fire
-    //    before the compositor has flushed, producing stale screenshots.
-    await page.waitForFunction(
-      (f) => document.documentElement.dataset.renderedFrame === String(f),
-      { timeout: 10000 },
-      frame,
-    )
-    // 3. Double rAF: first fires after layout+paint, second fires after the result
-    //    has been composited — guarantees the screenshot sees the current frame.
-    await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
     const localIdx = frame - frameStart
-    const framePath = join(frameDir, `frame-${String(localIdx).padStart(6, '0')}.png`)
-    await page.screenshot({ path: framePath, omitBackground: captureOptionsFor(job).omitBackground })
+    // With motion blur on, each output frame captures `subframes` screenshots at
+    // f + i/subframes, numbered consecutively; the encode averages each group.
+    const times = subframeTimes(frame, subframes)
+    for (let s = 0; s < times.length; s++) {
+      const t = times[s]
+      // 1. Tell React to update to this frame (flushSync commits DOM synchronously
+      //    and stamps data-rendered-frame on <html> so we can verify below).
+      await page.evaluate((f) => window.__setFrame(f), t)
+      // 2. Wait until the DOM attribute confirms this exact frame has been committed.
+      //    This is more reliable than rAF alone — rAF in headless Chrome can fire
+      //    before the compositor has flushed, producing stale screenshots.
+      await page.waitForFunction(
+        (f) => document.documentElement.dataset.renderedFrame === String(f),
+        { timeout: 10000 },
+        t,
+      )
+      // 3. Double rAF: first fires after layout+paint, second fires after the result
+      //    has been composited — guarantees the screenshot sees the current frame.
+      await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
+      const shotIdx = localIdx * subframes + s
+      const framePath = join(frameDir, `frame-${String(shotIdx).padStart(6, '0')}.png`)
+      await page.screenshot({ path: framePath, omitBackground: captureOptionsFor(job).omitBackground })
+    }
     if ((localIdx + 1) % reportEvery === 0 || localIdx + 1 === totalFrames) {
       log(progressBar(id, localIdx + 1, totalFrames, renderStartMs))
     }
@@ -388,10 +397,14 @@ async function renderChunk(browser, job) {
   mkdirSync(dirname(chunkMkv), { recursive: true })
 
   const pixFmt = captureOptionsFor(job).pixFmt
+  // Motion blur off: args are exactly as before (render goldens depend on it).
+  const blurVf = motionBlurFilter(subframes)
+  const inputRate = blurVf ? String(fps * subframes) : String(fps)
   await spawnAsync(FFMPEG, [
     '-y',
-    '-framerate',           String(fps),
+    '-framerate',           inputRate,
     '-i',                   join(frameDir, 'frame-%06d.png'),
+    ...(blurVf ? ['-vf', blurVf, '-r', String(fps)] : []),
     '-c:v',                 'ffv1',
     '-g',                   '1',           // all-keyframe → MKV places cluster/cue at every frame
     '-pix_fmt',             pixFmt,

@@ -25,6 +25,7 @@ import { fileHasAudio }                   from './encode-segment.js'
 import { deriveSdr, probeColorTransfer }  from './derive-sdr.js'
 import { sourceWindow, transitionPairs }  from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
+import { resolveMotionBlur }              from './motion-blur.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
@@ -693,7 +694,8 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   }
 
   const effectiveImageTone = resolveImageTone(imageTone, settings)
-  const renderedSegments = await renderAllSegments(segmentSpecs, { workers, colorSpace: projectColorSpace, imageTone: effectiveImageTone })
+  const motionBlur = (() => { try { return resolveMotionBlur(projectJson.settings?.motionBlur) } catch (e) { fail('invalid_argument', e.message) } })()
+  const renderedSegments = await renderAllSegments(segmentSpecs, { workers, colorSpace: projectColorSpace, imageTone: effectiveImageTone, motionBlur })
 
   // Attach positioning offsets back onto rendered segments so compose.js can apply
   // x/y coordinates. Overlay size is derived from the output canvas at compose

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Sub-frame motion blur: settings.motionBlur (1-8).** The renderer captures N sub-frames per output frame and averages them; absent or 1 is off and renders exactly as before.
 - **write-overlay documents springStep and springSum.** Both globals shipped in 5.0.0 but were missing from the skill's globals table.
 
 ## v5.2.0

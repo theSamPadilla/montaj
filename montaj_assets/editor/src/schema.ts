@@ -394,6 +394,9 @@ export interface EditorProject {
      *  jog-wheel feel) — see engine/scrub-source.ts. Default false (opt-in);
      *  an explicit `true` persists the operator's opt-in. */
     audibleScrub?: boolean
+    /** Sub-frame motion blur: N (1-8) evenly spaced sub-frames captured per
+     *  output frame and averaged. Absent or 1 = off. Render time scales ~N×. */
+    motionBlur?: number
   }
   name?: string | null
   editingPrompt?: string
