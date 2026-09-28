@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.3.0
+
 - **Sub-frame motion blur: settings.motionBlur (1-8).** The renderer captures N sub-frames per output frame and averages them; absent or 1 is off and renders exactly as before.
 - **settings.loudness normalizes the final mix to an integrated LUFS target** (loudnorm, -1 dBTP ceiling). Absent: no change.
 - **New step contact_sheet** tiles sampled frames of a composited project (no encode), with time labels; covers whole-film sheets, phone views and frame strips.
