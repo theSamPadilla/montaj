@@ -213,6 +213,22 @@ _PROVIDER_INFO = {
             "api_key": "API key from OpenAI dashboard",
         },
     },
+    "fal": {
+        "display": "fal.ai",
+        "desc": "Video generation (Seedance)",
+        "url": "https://fal.ai/dashboard/keys",
+        "keys": {
+            "api_key": "API key from the fal.ai dashboard",
+        },
+    },
+    "elevenlabs": {
+        "display": "ElevenLabs",
+        "desc": "Voiceover, sound effects and music",
+        "url": "https://elevenlabs.io/app/settings/api-keys",
+        "keys": {
+            "api_key": "API key from ElevenLabs settings",
+        },
+    },
 }
 
 

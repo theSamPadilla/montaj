@@ -144,3 +144,16 @@ def test_known_providers_contains_expected_entries():
     assert set(KNOWN_PROVIDERS["kling"]) == {"access_key", "secret_key"}
     assert set(KNOWN_PROVIDERS["gemini"]) == {"api_key"}
     assert set(KNOWN_PROVIDERS["openai"]) == {"api_key"}
+
+
+def test_known_providers_include_fal_and_elevenlabs():
+    from lib.credentials import KNOWN_PROVIDERS
+    assert KNOWN_PROVIDERS["fal"] == ["api_key"]
+    assert KNOWN_PROVIDERS["elevenlabs"] == ["api_key"]
+
+
+def test_env_overlay_accepts_new_providers():
+    from lib.credentials import build_env_overlay
+    env = build_env_overlay({"fal": {"api_key": "test-key"}, "elevenlabs": {"api_key": "test-key-2"}})
+    assert env["FAL_API_KEY"] == "test-key"
+    assert env["ELEVENLABS_API_KEY"] == "test-key-2"
