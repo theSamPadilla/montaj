@@ -4,6 +4,9 @@
 
 - **Sub-frame motion blur: settings.motionBlur (1-8).** The renderer captures N sub-frames per output frame and averages them; absent or 1 is off and renders exactly as before.
 - **settings.loudness normalizes the final mix to an integrated LUFS target** (loudnorm, -1 dBTP ceiling). Absent: no change.
+- **New step contact_sheet** tiles sampled frames of a composited project (no encode), with time labels; covers whole-film sheets, phone views and frame strips.
+- **New step synth_audio** renders a cue list of generic voices (drums, bass, pad, pluck, whoosh, hit, click, riser) to a WAV, deterministic per seed.
+- **New step capture_site** screenshots a website (desktop, mobile, full page) and extracts logo candidates, the palette and font families.
 - **write-overlay documents springStep and springSum.** Both globals shipped in 5.0.0 but were missing from the skill's globals table.
 
 ## v5.2.0
