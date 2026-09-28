@@ -280,16 +280,26 @@ def check_key() -> dict:
     """Validate the stored/overlaid Gemini key with one free call: models.list.
 
     No billed call — listing the models a key can see costs nothing.
-    default_model_ok is True when DEFAULT_MODEL (text/analysis) is among
-    them, which is how a retirement like gemini-2.5-flash's shows up before
-    any real generation step ever runs against it.
 
-    PV29 T4b: one Gemini key backs four generation capabilities under this
-    connector (text, image, TTS, music), each with its own default model
-    that can be retired independently of the others. image_model_ok /
-    tts_model_ok / music_model_ok run the same membership check against
-    DEFAULT_IMAGE_MODEL / DEFAULT_TTS_MODEL / DEFAULT_MUSIC_MODEL, off the
-    same models.list response — no extra call.
+    One Gemini key backs four generation capabilities under this connector
+    (text, image, TTS, music), each with its own default model that can be
+    retired independently of the others. check_key() is new and unreleased
+    (PV29) with no backward compatibility to keep, and the app's
+    Integrations tile and the release guard read only default_model_ok — so
+    that field means ALL FOUR defaults are present in models.list, not just
+    the text one:
+      - default_model_ok is True only when DEFAULT_MODEL, DEFAULT_IMAGE_MODEL,
+        DEFAULT_TTS_MODEL, and DEFAULT_MUSIC_MODEL are all present.
+      - When any are missing, default_model is set to the first missing
+        one's id (checked in text, image, TTS, music order) instead of
+        DEFAULT_MODEL, and detail names every missing one — a caller reading
+        only {default_model, default_model_ok, detail} still sees which
+        model retired, not just that something did.
+      - image_model_ok / tts_model_ok / music_model_ok are kept as the
+        individual per-capability flags (same membership check, off the same
+        models.list response — no extra call), for a caller that wants to
+        know which capability specifically is affected rather than parse
+        detail's text.
 
     A rejected key raises ConnectorError(reason="invalid_api_key") through the
     same detection every other Gemini call path uses (_wrap_sdk_error /
@@ -313,14 +323,36 @@ def check_key() -> dict:
     except Exception as e:
         raise _wrap_sdk_error(e, "Gemini key check failed") from e
 
+    # Checked in this order — text, image, TTS, music — so that when more
+    # than one default is missing, the one surfaced through `default_model`
+    # (a single-value field) is deterministic rather than set-iteration order.
+    capability_defaults = (
+        ("image_model_ok", DEFAULT_IMAGE_MODEL),
+        ("tts_model_ok", DEFAULT_TTS_MODEL),
+        ("music_model_ok", DEFAULT_MUSIC_MODEL),
+    )
+    text_ok = DEFAULT_MODEL in model_names
+    missing = [] if text_ok else [DEFAULT_MODEL]
+    availability = {}
+    for flag_name, model in capability_defaults:
+        ok = model in model_names
+        availability[flag_name] = ok
+        if not ok:
+            missing.append(model)
+
+    default_model_ok = not missing
+    detail = f"{len(model_names)} models available to this key"
+    if missing:
+        detail += f"; missing default(s): {', '.join(missing)}"
+
     return {
         "ok": True,
-        "default_model": DEFAULT_MODEL,
-        "default_model_ok": DEFAULT_MODEL in model_names,
-        "image_model_ok": DEFAULT_IMAGE_MODEL in model_names,
-        "tts_model_ok": DEFAULT_TTS_MODEL in model_names,
-        "music_model_ok": DEFAULT_MUSIC_MODEL in model_names,
-        "detail": f"{len(model_names)} models available to this key",
+        "default_model": missing[0] if missing else DEFAULT_MODEL,
+        "default_model_ok": default_model_ok,
+        "image_model_ok": availability["image_model_ok"],
+        "tts_model_ok": availability["tts_model_ok"],
+        "music_model_ok": availability["music_model_ok"],
+        "detail": detail,
     }
 
 

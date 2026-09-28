@@ -1064,28 +1064,25 @@ def _make_model(name):
 
 
 class TestCheckKeyOk:
-    def test_default_model_present(self, monkeypatch):
+    """Basic plumbing: model-presence semantics (what default_model_ok means,
+    what default_model reports when something's missing) live in
+    TestCheckKeyCapabilityDefaults below."""
+
+    def test_ok_and_detail_report_model_count(self, monkeypatch):
         import connectors.gemini as mod
         client = MagicMock()
         client.models.list.return_value = [
-            _make_model("models/gemini-3.8-flash"),
+            _make_model(f"models/{mod.DEFAULT_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
             _make_model("models/gemini-2.5-flash"),
         ]
         monkeypatch.setattr(mod, "_client", lambda: client)
 
         result = mod.check_key()
         assert result["ok"] is True
-        assert result["default_model"] == mod.DEFAULT_MODEL
-        assert result["default_model_ok"] is True
-
-    def test_default_model_missing(self, monkeypatch):
-        import connectors.gemini as mod
-        client = MagicMock()
-        client.models.list.return_value = [_make_model("models/gemini-2.5-flash")]
-        monkeypatch.setattr(mod, "_client", lambda: client)
-
-        result = mod.check_key()
-        assert result["default_model_ok"] is False
+        assert "5 models" in result["detail"]
 
 
 class TestCheckKeyErrors:
@@ -1198,8 +1195,16 @@ class TestBestModelDefaults:
 class TestCheckKeyCapabilityDefaults:
     """One Gemini key backs four generation capabilities (text, image, TTS,
     music), each with its own default model that can retire independently.
-    check_key must flag all four from the same models.list response, not
-    just the text default — PV29 T4b."""
+
+    check_key() is new and unreleased (PV29 T4b, controller decision
+    2026-09-28) with no backward compatibility to keep, and the app's
+    Integrations tile and the release guard read only
+    {default_model, default_model_ok, detail} — so default_model_ok means
+    ALL FOUR defaults are present, not just the text one, and when any are
+    missing, default_model/detail name the missing one(s) instead of always
+    describing the text default. image_model_ok / tts_model_ok /
+    music_model_ok stay as the per-capability breakdown for a caller that
+    wants to know which capability, specifically, is affected."""
 
     def test_all_four_present(self, monkeypatch):
         import connectors.gemini as mod
@@ -1214,11 +1219,37 @@ class TestCheckKeyCapabilityDefaults:
 
         result = mod.check_key()
         assert result["default_model_ok"] is True
+        assert result["default_model"] == mod.DEFAULT_MODEL
         assert result["image_model_ok"] is True
         assert result["tts_model_ok"] is True
         assert result["music_model_ok"] is True
 
-    def test_image_model_missing_others_unaffected(self, monkeypatch):
+    def test_text_default_missing_is_named(self, monkeypatch):
+        """Only the text default missing: default_model_ok goes False even
+        though image/TTS/music are all fine, and default_model still names
+        the (now missing) text id."""
+        import connectors.gemini as mod
+        client = MagicMock()
+        client.models.list.return_value = [
+            _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
+        ]
+        monkeypatch.setattr(mod, "_client", lambda: client)
+
+        result = mod.check_key()
+        assert result["default_model_ok"] is False
+        assert result["default_model"] == mod.DEFAULT_MODEL
+        assert mod.DEFAULT_MODEL in result["detail"]
+        assert result["image_model_ok"] is True
+        assert result["tts_model_ok"] is True
+        assert result["music_model_ok"] is True
+
+    def test_image_model_missing_fails_default_model_ok_and_is_named(self, monkeypatch):
+        """A retired image default now fails default_model_ok too — no more
+        text-only exemption — and default_model reports the IMAGE id, not
+        the text one, so a caller reading only {default_model,
+        default_model_ok} still learns which model retired."""
         import connectors.gemini as mod
         client = MagicMock()
         client.models.list.return_value = [
@@ -1229,20 +1260,42 @@ class TestCheckKeyCapabilityDefaults:
         monkeypatch.setattr(mod, "_client", lambda: client)
 
         result = mod.check_key()
+        assert result["default_model_ok"] is False
+        assert result["default_model"] == mod.DEFAULT_IMAGE_MODEL
+        assert mod.DEFAULT_IMAGE_MODEL in result["detail"]
         assert result["image_model_ok"] is False
         assert result["tts_model_ok"] is True
         assert result["music_model_ok"] is True
 
-    def test_tts_and_music_missing_text_default_still_ok(self, monkeypatch):
-        """The four flags are independent — a retired image/TTS/music
-        default must not be masked by, or mask, default_model_ok (text)."""
+    def test_tts_and_music_missing_both_named_first_one_reported(self, monkeypatch):
+        """More than one default missing at once: default_model (a single
+        value) reports the first in text/image/TTS/music order, but detail
+        names every missing one so nothing is silently dropped."""
         import connectors.gemini as mod
         client = MagicMock()
-        client.models.list.return_value = [_make_model(f"models/{mod.DEFAULT_MODEL}")]
+        client.models.list.return_value = [
+            _make_model(f"models/{mod.DEFAULT_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
+        ]
         monkeypatch.setattr(mod, "_client", lambda: client)
 
         result = mod.check_key()
-        assert result["default_model_ok"] is True
+        assert result["default_model_ok"] is False
+        assert result["default_model"] == mod.DEFAULT_TTS_MODEL
+        assert mod.DEFAULT_TTS_MODEL in result["detail"]
+        assert mod.DEFAULT_MUSIC_MODEL in result["detail"]
+        assert result["tts_model_ok"] is False
+        assert result["music_model_ok"] is False
+
+    def test_all_missing(self, monkeypatch):
+        import connectors.gemini as mod
+        client = MagicMock()
+        client.models.list.return_value = [_make_model("models/some-unrelated-model")]
+        monkeypatch.setattr(mod, "_client", lambda: client)
+
+        result = mod.check_key()
+        assert result["default_model_ok"] is False
+        assert result["default_model"] == mod.DEFAULT_MODEL
         assert result["image_model_ok"] is False
         assert result["tts_model_ok"] is False
         assert result["music_model_ok"] is False
