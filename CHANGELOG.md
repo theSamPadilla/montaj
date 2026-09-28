@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **New credential providers: `fal` (Seedance video on fal.ai) and `elevenlabs` (voice, sound effects, music).** `montaj credentials` prompts for them and `--list` shows them; the connectors that use them land separately.
+- **New step `check_key --provider <p>` tests an API key with one free call to the provider** (no billed generation): it reports whether the key works, the connector's default model, and whether that model is still available. Gemini and OpenAI are supported now; other providers follow as their connectors gain a check.
+- **Connector failures now carry a shared reason**: `invalid_api_key`, `model_retired`, `insufficient_credit` or `unreachable`, so steps can say "your key was rejected" or "this model is retired" instead of a generic API error. OpenAI image generation now reports a rejected key and a network failure distinctly (it used to raise one generic error for both).
+
 ## v5.3.1
 
 - **Fixed: exported video no longer shows black bars where the preview shows none.** A video whose box aspect differs from its footage is now padded transparently, as images are; alpha footage keeps its alpha. One visible change: after a reframe, the 1 px strip at the top and bottom of the crop now shows what is underneath instead of a black line. A gap of exactly 1 px still shows the old black line, by design.
