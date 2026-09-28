@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed: `validate` accepts image items on tracks[0]**, matching the renderer and editor.
+
 ## v5.3.0
 
 - **Sub-frame motion blur: settings.motionBlur (1-8).** The renderer captures N sub-frames per output frame and averages them; absent or 1 is off and renders exactly as before.

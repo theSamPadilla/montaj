@@ -395,12 +395,50 @@ def test_validate_project_source_crop_is_checked_on_object_shape(tmp_path):
         v.validate_project(path)
 
 
-def test_validate_project_primary_clip_must_be_video_type(tmp_path):
+def test_validate_project_primary_clip_must_be_video_or_image_type(tmp_path):
     clip = {**VALID_PRIMARY_CLIP, "type": "overlay"}
     data = {**VALID_PROJECT, "tracks": [[clip]]}
     path = _write_project(tmp_path, "project.json", data)
     with pytest.raises(SystemExit):
         v.validate_project(path)
+
+
+def test_validate_project_accepts_an_image_item_on_track_0(tmp_path):
+    # The renderer composites image items on tracks[0] and the editor previews
+    # them, so a still background (a photo, a screenshot card) is a valid
+    # primary item. No inPoint/outPoint: a still has no source window.
+    image = {"id": "bg-0", "type": "image", "src": "./bg.png", "start": 0.0, "end": 3.0}
+    video = {**VALID_PRIMARY_CLIP, "id": "clip-1", "start": 3.0, "end": 5.0}
+    data = {**VALID_PROJECT, "tracks": [[image, video]]}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
+def test_validate_project_image_on_track_0_still_needs_start_end_order(tmp_path, capsys):
+    image = {"id": "bg-0", "type": "image", "src": "./bg.png", "start": 3.0, "end": 1.0}
+    data = {**VALID_PROJECT, "tracks": [[image]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+    assert "end (1.0) < start (3.0)" in capsys.readouterr().err
+
+
+def test_validate_project_image_on_track_0_still_needs_required_fields(tmp_path, capsys):
+    image = {"id": "bg-0", "type": "image", "start": 0.0, "end": 3.0}  # no src
+    data = {**VALID_PROJECT, "tracks": [[image]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+    assert "missing required field 'src'" in capsys.readouterr().err
+
+
+def test_validate_project_rejects_an_unknown_type_on_track_0(tmp_path, capsys):
+    clip = {**VALID_PRIMARY_CLIP, "type": "gif"}
+    data = {**VALID_PROJECT, "tracks": [[clip]]}
+    path = _write_project(tmp_path, "project.json", data)
+    with pytest.raises(SystemExit):
+        v.validate_project(path)
+    assert "invalid_primary_clip" in capsys.readouterr().err
 
 
 def test_validate_project_primary_clip_must_have_start(tmp_path):

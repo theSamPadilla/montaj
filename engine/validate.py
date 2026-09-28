@@ -24,6 +24,9 @@ FOREACH_PATH_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)
 # PRIMARY_CLIP_REQUIRED and VISUAL_ITEM_REQUIRED are currently the same set but kept
 # separate — primary clips and overlay items are expected to diverge in future parts.
 PRIMARY_CLIP_REQUIRED = {"id", "type", "src", "start", "end"}
+# tracks[0] item types: the renderer and editor composite both footage and stills
+# on the primary track.
+PRIMARY_CLIP_TYPES = ("video", "image")
 VISUAL_ITEM_REQUIRED = {"id", "type", "src", "start", "end"}
 
 
@@ -419,7 +422,14 @@ def validate_project(path):
                 fail("invalid_tracks", f"tracks[{i}] must be an array of items, or an object with an 'items' array")
 
             if i == 0:
-                # Primary track: items must be type "video" with start/end.
+                # Primary track: items must be type "video" or "image" with
+                # start/end. Images are accepted because the renderer composites
+                # them on tracks[0] and the editor previews them there; the checks
+                # below are the ones that hold for both (required fields and
+                # start/end order). Nothing in this block is video-only — the
+                # inPoint/outPoint window is not checked here, and the per-item
+                # speed/rotation/sourceCrop checks in `_validate_clip_extensions`
+                # already run on every track's items, images included.
                 # CONTAINMENT is intentionally NOT checked here — primary clips can
                 # overlap on the timeline; compose.js handles rendering order via
                 # itsoffset. THREE-OR-MORE-LIVE *is* checked below, shared with
@@ -431,8 +441,8 @@ def validate_project(path):
                     for field in PRIMARY_CLIP_REQUIRED:
                         if field not in item:
                             fail("missing_field", f"tracks[0] item missing required field '{field}': {item.get('id', '?')}")
-                    if item.get("type") != "video":
-                        fail("invalid_primary_clip", f"tracks[0] item '{item.get('id', '?')}' must have type 'video', got '{item.get('type')}'")
+                    if item.get("type") not in PRIMARY_CLIP_TYPES:
+                        fail("invalid_primary_clip", f"tracks[0] item '{item.get('id', '?')}' must have type 'video' or 'image', got '{item.get('type')}'")
                     s, e = item.get("start"), item.get("end")
                     if isinstance(s, (int, float)) and isinstance(e, (int, float)):
                         # Permit start == end == 0.0: init.py writes these as placeholders;
