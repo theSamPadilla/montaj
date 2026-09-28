@@ -139,3 +139,12 @@ now puts its background stills (photos, screenshot cards) on tracks[0] as image
 items, so a valid, renderable project fails `montaj validate project`. Either
 accept `image` on tracks[0] (with the same start/end checks) or document why
 not and make the renderer agree.
+
+### 8. `animation-sections` skill still says tracks[0] must be video
+
+`skills/animation-sections/SKILL.md` tells agents that tracks[0] holds only
+video items. Since 5.3.1 (`bc26bb2`) `validate` accepts image items there too,
+matching the renderer and editor, so the skill now contradicts the validator.
+Harmless today (the skill only tells agents to leave tracks[0] empty), but it is
+agent-facing and stale. Fix it opportunistically in the next release that
+touches the skill: say tracks[0] takes video or image items.
