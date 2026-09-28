@@ -1,10 +1,20 @@
-"""Tests for scripts/check-keys.sh — PV29 T8a.
+"""Tests for scripts/check-keys.sh — PV29 T8a, extended for the 2026-09-28
+"never block on what this machine can't verify" rule.
 
 check-keys.sh is the pre-release guard against FQ1 #22 (a retired connector
 default model reaching users unnoticed). It shells out to the real
 steps/credentials/check_key.py for every provider in lib/credentials.py's
 KNOWN_PROVIDERS, and must never make a real vendor call and never run
 against this machine's real ~/.montaj/credentials.json.
+
+Operator decision, 2026-09-28: a release must never be blocked because a
+provider can't be verified on this machine — no key, a rejected key, a key
+with no credit, a deliberately skipped provider, and a default model that
+can't be verified by a free call are all warnings, not failures. Only a
+confirmed retired default model or an unclassified error still blocks. The
+guard must still name every gap: a SUMMARY line with counts, and a
+NOT VERIFIED line listing every provider that wasn't fully verified with why
+(or "NOT VERIFIED: none").
 
 Test mechanism (documented per the task spec, which asks for whichever
 approach "needs no production code path for tests"): every test builds an
@@ -37,6 +47,12 @@ Every subprocess run gets an explicit, minimal env (never os.environ.copy())
 with HOME pointed at an empty tmp_path directory, so there is no path by
 which a real key from this machine's ~/.montaj/credentials.json or shell
 environment could reach the script.
+
+lib/credentials.py's real KNOWN_PROVIDERS (copied verbatim into the mirror)
+is {kling, gemini, openai, serpapi, fal, elevenlabs} — six providers — and
+the real check_key.py (also copied verbatim) supports only gemini/openai
+today. Tests that don't patch in more support therefore see the other four
+as "no check yet", which several assertions below account for explicitly.
 """
 import os
 import shutil
@@ -57,6 +73,9 @@ pytestmark = pytest.mark.skipif(
     not SCRIPT.exists(),
     reason="scripts/check-keys.sh is local release tooling, not tracked in git",
 )
+
+ALL_KNOWN_PROVIDERS = ("kling", "gemini", "openai", "serpapi", "fal", "elevenlabs")
+UNSUPPORTED_BY_DEFAULT = ("kling", "serpapi", "fal", "elevenlabs")
 
 
 def _mirror_repo(tmp_path: Path) -> Path:
@@ -99,6 +118,17 @@ def _add_provider_support(mirror: Path, provider: str, module: str) -> None:
     path.write_text(text.replace(old, new))
 
 
+def _add_all_provider_support(mirror: Path, providers: tuple[str, ...]) -> None:
+    """Like _add_provider_support but for several providers in one patch —
+    _add_provider_support's exact-substring match only survives one call."""
+    path = mirror / "steps" / "credentials" / "check_key.py"
+    text = path.read_text()
+    old = 'PROVIDERS = {"gemini": "connectors.gemini", "openai": "connectors.openai"}'
+    assert old in text, "check_key.py's PROVIDERS line changed shape — update this test"
+    extra = "".join(f', "{p}": "connectors.{p}"' for p in providers)
+    path.write_text(text.replace(old, old[:-1] + extra + "}"))
+
+
 def _run(mirror: Path, extra_env: dict | None = None) -> subprocess.CompletedProcess:
     home = mirror.parent / "home"
     home.mkdir(exist_ok=True)
@@ -115,6 +145,18 @@ def _run(mirror: Path, extra_env: dict | None = None) -> subprocess.CompletedPro
     )
 
 
+def _not_verified_line(stdout: str) -> str:
+    lines = [l for l in stdout.splitlines() if l.startswith("NOT VERIFIED:")]
+    assert lines, stdout
+    return lines[0]
+
+
+def _summary_line(stdout: str) -> str:
+    lines = [l for l in stdout.splitlines() if l.startswith("SUMMARY:")]
+    assert lines, stdout
+    return lines[0]
+
+
 OK_GEMINI = """
 def check_key():
     return {"ok": True, "default_model": "fake-gemini-model",
@@ -129,7 +171,7 @@ def check_key():
 
 
 class TestNoKeys:
-    def test_exits_zero_with_skip_warning(self, tmp_path):
+    def test_exits_zero_and_names_the_gap(self, tmp_path):
         mirror = _mirror_repo(tmp_path)
         # No connectors/gemini.py or connectors/openai.py needed at all —
         # has_key() short-circuits before check_key.py is ever invoked.
@@ -138,9 +180,9 @@ class TestNoKeys:
         assert result.returncode == 0, result.stderr
         assert "gemini: no key" in result.stdout
         assert "openai: no key" in result.stdout
-        assert "no key (skipped)" in result.stdout
-        assert "gemini" in result.stdout.split("no key (skipped):")[1]
-        assert "openai" in result.stdout.split("no key (skipped):")[1]
+        not_verified = _not_verified_line(result.stdout)
+        assert "gemini (no key)" in not_verified
+        assert "openai (no key)" in not_verified
 
 
 class TestUnsupportedProvidersToday:
@@ -151,12 +193,11 @@ class TestUnsupportedProvidersToday:
         result = _run(mirror)
 
         assert result.returncode == 0, result.stderr
-        for provider in ("kling", "serpapi", "fal", "elevenlabs"):
+        for provider in UNSUPPORTED_BY_DEFAULT:
             assert f"{provider}: no check yet" in result.stdout
-        skip_line = [l for l in result.stdout.splitlines() if l.startswith("not yet supported")]
-        assert skip_line, result.stdout
-        for provider in ("kling", "serpapi", "fal", "elevenlabs"):
-            assert provider in skip_line[0]
+        not_verified = _not_verified_line(result.stdout)
+        for provider in UNSUPPORTED_BY_DEFAULT:
+            assert f"{provider} (no check yet)" in not_verified
 
 
 class TestAllOk:
@@ -170,7 +211,14 @@ class TestAllOk:
         assert result.returncode == 0, result.stderr
         assert "gemini: ok" in result.stdout
         assert "openai: ok" in result.stdout
-        assert "SUMMARY: 2 ok, 0 retired model, 0 rejected, 0 insufficient credit, 0 unreachable" in result.stdout
+        assert f"SUMMARY: 2 of {len(ALL_KNOWN_PROVIDERS)} providers verified" in result.stdout
+        # gemini/openai are fully verified — not in the gap line. The other
+        # four are still unsupported and still named.
+        not_verified = _not_verified_line(result.stdout)
+        assert "gemini" not in not_verified
+        assert "openai" not in not_verified
+        for provider in UNSUPPORTED_BY_DEFAULT:
+            assert f"{provider} (no check yet)" in not_verified
 
 
 class TestRetiredDefaultModel:
@@ -187,11 +235,30 @@ def check_key():
 
         assert result.returncode != 0
         assert "openai: DEFAULT MODEL RETIRED: totally-retired-model-xyz" in result.stdout
-        assert "1 retired model" in result.stdout
+        assert "1 retired" in _summary_line(result.stdout)
+        assert "openai (default model retired)" in _not_verified_line(result.stdout)
 
 
-class TestRejectedKey:
-    def test_exits_nonzero(self, tmp_path):
+class TestUnclassifiedErrorStillBlocks:
+    def test_unknown_error_code_exits_nonzero(self, tmp_path):
+        mirror = _mirror_repo(tmp_path)
+        _write_connector(mirror, "gemini", OK_GEMINI)
+        _write_connector(mirror, "openai", """
+from connectors import ConnectorError
+def check_key():
+    raise ConnectorError("something weird happened", reason="mystery_error")
+""")
+
+        result = _run(mirror, {"GEMINI_API_KEY": "test-key", "OPENAI_API_KEY": "test-key"})
+
+        assert result.returncode != 0
+        assert "openai: error: check_failed" in result.stdout
+        assert "1 error" in _summary_line(result.stdout)
+        assert "openai (error: check_failed)" in _not_verified_line(result.stdout)
+
+
+class TestRejectedKeyIsAWarningNotABlock:
+    def test_exits_zero_and_is_named_unverifiable(self, tmp_path):
         mirror = _mirror_repo(tmp_path)
         _write_connector(mirror, "gemini", """
 from connectors import ConnectorError
@@ -202,13 +269,14 @@ def check_key():
 
         result = _run(mirror, {"GEMINI_API_KEY": "test-key", "OPENAI_API_KEY": "test-key"})
 
-        assert result.returncode != 0
-        assert "gemini: rejected" in result.stdout
-        assert "1 rejected" in result.stdout
+        assert result.returncode == 0, result.stderr
+        assert "gemini: unverifiable (key rejected)" in result.stdout
+        assert "1 unverifiable" in _summary_line(result.stdout)
+        assert "gemini (key rejected)" in _not_verified_line(result.stdout)
 
 
-class TestInsufficientCredit:
-    def test_exits_nonzero(self, tmp_path):
+class TestInsufficientCreditIsAWarningNotABlock:
+    def test_exits_zero_and_is_named_unverifiable(self, tmp_path):
         mirror = _mirror_repo(tmp_path)
         _write_connector(mirror, "gemini", OK_GEMINI)
         _write_connector(mirror, "openai", """
@@ -219,15 +287,16 @@ def check_key():
 
         result = _run(mirror, {"GEMINI_API_KEY": "test-key", "OPENAI_API_KEY": "test-key"})
 
-        assert result.returncode != 0
-        assert "openai: insufficient credit" in result.stdout
-        assert "1 insufficient credit" in result.stdout
+        assert result.returncode == 0, result.stderr
+        assert "openai: unverifiable (no credit)" in result.stdout
+        assert "1 unverifiable" in _summary_line(result.stdout)
+        assert "openai (no credit)" in _not_verified_line(result.stdout)
 
 
 class TestUnreachableDoesNotBlock:
     def test_unreachable_alone_exits_zero(self, tmp_path):
-        """A flaky network shouldn't block a release — only rejected /
-        insufficient_credit / a retired default model do."""
+        """A flaky network shouldn't block a release — only a retired default
+        model or an unclassified error do."""
         mirror = _mirror_repo(tmp_path)
         _write_connector(mirror, "gemini", OK_GEMINI)
         _write_connector(mirror, "openai", """
@@ -240,7 +309,78 @@ def check_key():
 
         assert result.returncode == 0, result.stderr
         assert "openai: unreachable" in result.stdout
-        assert "1 unreachable" in result.stdout
+        assert "1 unreachable" in _summary_line(result.stdout)
+        assert "openai (unreachable)" in _not_verified_line(result.stdout)
+
+
+class TestDefaultModelNotVerifiable:
+    def test_ok_but_unverified_model_does_not_block(self, tmp_path):
+        """Kling's case: the key is good but there is no free call that
+        confirms the default model specifically."""
+        mirror = _mirror_repo(tmp_path)
+        _write_connector(mirror, "gemini", OK_GEMINI)
+        _write_connector(mirror, "openai", """
+def check_key():
+    return {"ok": True, "default_model": "kling-v2", "default_model_ok": True,
+            "default_model_verified": False, "detail": "no free verification call"}
+""")
+
+        result = _run(mirror, {"GEMINI_API_KEY": "test-key", "OPENAI_API_KEY": "test-key"})
+
+        assert result.returncode == 0, result.stderr
+        assert "openai: ok, default model not verifiable (kling-v2)" in result.stdout
+        assert "1 model not verifiable" in _summary_line(result.stdout)
+        assert "openai (default model not verifiable)" in _not_verified_line(result.stdout)
+        # not fully verified, so not counted in the "N of M" verified count
+        assert "SUMMARY: 1 of" in _summary_line(result.stdout)
+
+
+class TestSkipList:
+    def test_skipped_providers_are_not_checked(self, tmp_path):
+        mirror = _mirror_repo(tmp_path)
+        _write_connector(mirror, "gemini", OK_GEMINI)
+        # Deliberately no connectors/openai.py — if the skip didn't take,
+        # check_key.py would import it and crash.
+
+        result = _run(mirror, {
+            "GEMINI_API_KEY": "test-key",
+            "CHECK_KEYS_SKIP": "openai,kling",
+        })
+
+        assert result.returncode == 0, result.stderr
+        assert "gemini: ok" in result.stdout
+        assert "openai: skipped (CHECK_KEYS_SKIP)" in result.stdout
+        assert "kling: skipped (CHECK_KEYS_SKIP)" in result.stdout
+        not_verified = _not_verified_line(result.stdout)
+        assert "openai (skipped)" in not_verified
+        assert "kling (skipped)" in not_verified
+        assert "2 skipped" in _summary_line(result.stdout)
+
+
+class TestAllVerifiedNoGaps:
+    def test_not_verified_is_none_when_everything_checks_out(self, tmp_path):
+        mirror = _mirror_repo(tmp_path)
+        extra_providers = ("kling", "serpapi", "fal", "elevenlabs")
+        _add_all_provider_support(mirror, extra_providers)
+
+        env = {"GEMINI_API_KEY": "test-key", "OPENAI_API_KEY": "test-key"}
+        for provider in ("gemini", "openai") + extra_providers:
+            _write_connector(mirror, provider, f"""
+def check_key():
+    return {{"ok": True, "default_model": "fake-{provider}-model",
+            "default_model_ok": True, "default_model_verified": True, "detail": "ok"}}
+""")
+        env.update({
+            "KLING_ACCESS_KEY": "test-key", "KLING_SECRET_KEY": "test-key",
+            "SERPAPI_API_KEY": "test-key", "FAL_API_KEY": "test-key",
+            "ELEVENLABS_API_KEY": "test-key",
+        })
+
+        result = _run(mirror, env)
+
+        assert result.returncode == 0, result.stderr
+        assert f"SUMMARY: {len(ALL_KNOWN_PROVIDERS)} of {len(ALL_KNOWN_PROVIDERS)} providers verified" in result.stdout
+        assert "NOT VERIFIED: none" in result.stdout
 
 
 class TestNeverPrintsKeyValue:
@@ -281,9 +421,8 @@ def check_key():
         assert result.returncode == 0, result.stderr
         assert "fal: ok" in result.stdout
         assert "fal: no check yet" not in result.stdout
-        no_check_lines = [l for l in result.stdout.splitlines() if l.startswith("not yet supported")]
-        if no_check_lines:
-            assert "fal" not in no_check_lines[0]
+        # fal is now fully verified, so it must not appear in the gap line.
+        assert "fal" not in _not_verified_line(result.stdout)
 
 
 class TestScriptExists:
