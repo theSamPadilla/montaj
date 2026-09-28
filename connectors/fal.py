@@ -11,13 +11,15 @@ poll status_url until COMPLETED; GET response_url → {"video": {"url": ...}}.
 Three modes, picked from the inputs:
     t2v  text only
     i2v  image_path (first frame), optional end_image_path (last frame)
-    r2v  reference_image_paths (1-10); the prompt names them @Image1, @Image2…
-         in list order. The connector does not touch the prompt, like Kling's
-         <<<image_N>>> tokens.
+    r2v  reference_image_paths (up to the model's max_refs); the prompt names
+         them @Image1, @Image2… in list order. The connector does not touch the
+         prompt, like Kling's <<<image_N>>> tokens.
 
 Images go in as JPEG data URIs (accepted live, no upload step), re-encoded
 through Pillow: EXIF-rotated, transparency flattened onto white, longest side
-capped at MAX_IMAGE_SIDE.
+capped at FRAME_MAX_SIDE for first/last frames and REF_MAX_SIDE for references.
+Inputs a mode doesn't take (seed, a fixed aspect ratio) are dropped with a
+{"warn": …} line on stderr rather than sent to a 422.
 
 Current functions:
     build_request(prompt, ...) -> (endpoint_id, body)   # pure, validates
@@ -30,7 +32,7 @@ Current functions:
 Library code — raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
-import base64, io, time
+import base64, io, json, sys, time
 from connectors import ConnectorError, _http, classify_http_error, MODEL_RETIRED, UNREACHABLE
 from lib.credentials import get_credential, CredentialError
 
@@ -38,25 +40,37 @@ QUEUE = "https://queue.fal.run"
 MODELS_API = "https://api.fal.ai/v1/models"
 
 MODES = ("t2v", "i2v", "r2v")
+ASPECT_RATIOS = ("auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16")
+DEFAULT_ASPECT_RATIO = "9:16"   # t2v and r2v; i2v defaults to "auto" (follow the first frame)
+
+# Input limits per model, read on 2026-09-28 from fal's public OpenAPI (free,
+# no key), one lookup per endpoint:
+#   https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<endpoint_id>
+# Re-read it there before changing anything below.
+#   durations    seconds; sent as strings, and "auto" is also valid in every mode
+#   aspect_ratios per mode; 2.5 image-to-video is const "auto"
+#   seed_modes   the modes whose input schema has a seed field
+#   max_refs     reference-to-video's image_urls cap
 MODELS = {
     "seedance-2.5": {
         "t2v": "bytedance/seedance-2.5/text-to-video",
         "i2v": "bytedance/seedance-2.5/image-to-video",
         "r2v": "bytedance/seedance-2.5/reference-to-video",
-        # Seconds; fal takes them as strings, plus "auto" in every mode.
-        "durations": {"t2v": list(range(4, 31)), "i2v": list(range(4, 15)),
-                      "r2v": list(range(4, 17))},
+        "durations": list(range(4, 31)),
         "resolutions": ("480p", "720p", "1080p"),
+        "aspect_ratios": {"t2v": ASPECT_RATIOS, "i2v": ("auto",), "r2v": ASPECT_RATIOS},
+        "seed_modes": ("r2v",),
+        "max_refs": 30,
     },
-    # Endpoint IDs verified active on 2026-09-28; the input limits were NOT
-    # (only 2.5's schema was read). 4-15 s at up to 720p is Seedance 2.0's
-    # published range; re-check with fal's free OpenAPI lookup before relying on it.
     "seedance-2.0": {
         "t2v": "bytedance/seedance-2.0/text-to-video",
         "i2v": "bytedance/seedance-2.0/image-to-video",
         "r2v": "bytedance/seedance-2.0/reference-to-video",
-        "durations": {m: list(range(4, 16)) for m in MODES},
-        "resolutions": ("480p", "720p"),
+        "durations": list(range(4, 16)),
+        "resolutions": ("480p", "720p", "1080p", "4k"),
+        "aspect_ratios": {m: ASPECT_RATIOS for m in MODES},
+        "seed_modes": (),
+        "max_refs": 9,
     },
 }
 DEFAULT_MODEL = "seedance-2.5"   # best current Seedance (Task 0 item 4)
@@ -67,9 +81,11 @@ RETIRED_MODELS: dict[str, str] = {
     "fal-ai/bytedance/seedance/v1/lite/image-to-video": "seedance-2.5",
     "fal-ai/bytedance/seedance/v1/lite/reference-to-video": "seedance-2.5",
 }
-ASPECT_RATIOS = ("auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16")
-MAX_REF_IMAGES = 10
-MAX_IMAGE_SIDE = 1024
+# fal's cap is 30 MB per image; a q88 JPEG at these sizes is far below it.
+# First/last frames get 2048 so 1080p output isn't softened; references stay
+# at 1024, the size proven live.
+FRAME_MAX_SIDE = 2048
+REF_MAX_SIDE = 1024
 JPEG_QUALITY = 88
 
 # A 5 s 720p clip took 199 s live, a 9 s one 314 s.
@@ -122,6 +138,10 @@ def _error_message(resp) -> str:
     return (resp.text or "")[:500]
 
 
+def _warn(message: str) -> None:
+    print(json.dumps({"warn": message}), file=sys.stderr)
+
+
 def _get(url: str, headers: dict, what: str, **kwargs):
     """Idempotent GET with transient retry; a network failure is UNREACHABLE."""
     try:
@@ -130,8 +150,8 @@ def _get(url: str, headers: dict, what: str, **kwargs):
         raise ConnectorError(f"fal.ai {what} failed: {e}", reason=UNREACHABLE) from e
 
 
-def _image_data_uri(path: str) -> str:
-    """Image file → `data:image/jpeg;base64,…`, downscaled to MAX_IMAGE_SIDE."""
+def _image_data_uri(path: str, max_side: int) -> str:
+    """Image file → `data:image/jpeg;base64,…`, longest side capped at max_side."""
     from PIL import Image, ImageOps
     try:
         with Image.open(path) as src:
@@ -143,8 +163,8 @@ def _image_data_uri(path: str) -> str:
                 im = flat
             else:
                 im = im.convert("RGB")
-            if max(im.size) > MAX_IMAGE_SIDE:
-                im.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.LANCZOS)
+            if max(im.size) > max_side:
+                im.thumbnail((max_side, max_side), Image.LANCZOS)
             buf = io.BytesIO()
             im.save(buf, format="JPEG", quality=JPEG_QUALITY)
     except OSError as e:
@@ -186,7 +206,7 @@ def build_request(
     prompt: str,
     image_path: str = None,
     duration=5,
-    aspect_ratio: str = "9:16",
+    aspect_ratio: str = None,
     resolution: str = "720p",
     model: str = DEFAULT_MODEL,
     seed: int = None,
@@ -198,11 +218,13 @@ def build_request(
     """Validate the inputs and build (endpoint_id, body). No HTTP.
 
     duration: int seconds, a digit string, or "auto"; checked against the
-    model's range for the mode. generate_audio defaults to False here (fal's
-    own default is True, which costs more): pass True only when the scene wants
-    Seedance's sound. Seedance has no negative-prompt field, so negative_prompt
-    is appended to the prompt as "Avoid: …". seed is sent only when given; 2.5's
-    published input schema does not list it, so fal may ignore it.
+    model's range. aspect_ratio None means "auto" for i2v (follow the first
+    frame) and DEFAULT_ASPECT_RATIO otherwise; a mode with a fixed ratio (2.5
+    i2v) drops any other value with a warning. seed is sent only to modes that
+    take one (2.5 r2v) and dropped with a warning elsewhere. generate_audio
+    defaults to False here (fal's own default is True, which costs more): pass
+    True only when the scene wants Seedance's sound. Seedance has no
+    negative-prompt field, so negative_prompt is appended as "Avoid: …".
     """
     retired = _retired_error(model)
     if retired:
@@ -217,32 +239,45 @@ def build_request(
         raise ConnectorError("Use either a first frame (image_path) or reference images, not both")
     if end_image_path and not image_path:
         raise ConnectorError("An end frame (end_image_path) needs a first frame (image_path)")
-    if reference_image_paths is not None and not 1 <= len(reference_image_paths) <= MAX_REF_IMAGES:
+    max_refs = caps["max_refs"]
+    if reference_image_paths is not None and not 1 <= len(reference_image_paths) <= max_refs:
         raise ConnectorError(
-            f"Seedance takes 1-{MAX_REF_IMAGES} reference images, got {len(reference_image_paths)}"
+            f"{model} takes 1-{max_refs} reference images, got {len(reference_image_paths)}"
         )
     mode = "i2v" if image_path else "r2v" if reference_image_paths else "t2v"
 
     body = {"prompt": prompt}
     if negative_prompt and negative_prompt.strip():
         body["prompt"] = f"{prompt.rstrip()}\n\nAvoid: {negative_prompt.strip()}"
-    body["duration"] = _duration_str(duration, caps["durations"][mode], mode)
+    body["duration"] = _duration_str(duration, caps["durations"], mode)
+
+    if aspect_ratio is None:
+        aspect_ratio = "auto" if mode == "i2v" else DEFAULT_ASPECT_RATIO
     if aspect_ratio not in ASPECT_RATIOS:
         raise ConnectorError(f"aspect_ratio must be one of {', '.join(ASPECT_RATIOS)}, got {aspect_ratio!r}")
+    mode_ratios = caps["aspect_ratios"][mode]
+    if aspect_ratio not in mode_ratios:
+        _warn(f"{model} {mode} ignores aspect_ratio {aspect_ratio!r} and uses "
+              f"{mode_ratios[0]!r}: the output follows the first frame")
+        aspect_ratio = mode_ratios[0]
+
     if resolution not in caps["resolutions"]:
         raise ConnectorError(
             f"{model} resolution must be one of {', '.join(caps['resolutions'])}, got {resolution!r}"
         )
     body.update(aspect_ratio=aspect_ratio, resolution=resolution, generate_audio=bool(generate_audio))
     if seed is not None:
-        body["seed"] = seed
+        if mode in caps["seed_modes"]:
+            body["seed"] = seed
+        else:
+            _warn(f"{model} {mode} takes no seed; ignoring seed={seed}")
 
     if mode == "i2v":
-        body["image_url"] = _image_data_uri(image_path)
+        body["image_url"] = _image_data_uri(image_path, FRAME_MAX_SIDE)
         if end_image_path:
-            body["end_image_url"] = _image_data_uri(end_image_path)
+            body["end_image_url"] = _image_data_uri(end_image_path, FRAME_MAX_SIDE)
     elif mode == "r2v":
-        body["image_urls"] = [_image_data_uri(p) for p in reference_image_paths]
+        body["image_urls"] = [_image_data_uri(p, REF_MAX_SIDE) for p in reference_image_paths]
 
     return caps[mode], body
 
@@ -342,7 +377,7 @@ def generate_video(
     out_path: str,
     image_path: str = None,
     duration=5,
-    aspect_ratio: str = "9:16",
+    aspect_ratio: str = None,
     resolution: str = "720p",
     model: str = DEFAULT_MODEL,
     seed: int = None,

@@ -129,6 +129,7 @@ def test_i2v_payload_uses_data_uri(tmp_path):
     decoded = _decode_data_uri(body["image_url"])
     assert decoded.format == "JPEG"
     assert decoded.size == (64, 32)
+    assert body["aspect_ratio"] == "auto"
     assert "end_image_url" not in body
     assert "image_urls" not in body
 
@@ -157,10 +158,17 @@ def test_model_choice_2_0(tmp_path):
     assert endpoint == "bytedance/seedance-2.0/text-to-video"
 
 
-def test_oversized_image_is_downscaled(tmp_path):
+def test_oversized_frames_capped_at_2048(tmp_path):
     img = _png(tmp_path / "big.png", size=(3000, 1500))
-    _, body = fal.build_request("x", image_path=img)
-    assert _decode_data_uri(body["image_url"]).size == (1024, 512)
+    _, body = fal.build_request("x", image_path=img, end_image_path=img)
+    assert _decode_data_uri(body["image_url"]).size == (2048, 1024)
+    assert _decode_data_uri(body["end_image_url"]).size == (2048, 1024)
+
+
+def test_oversized_references_capped_at_1024(tmp_path):
+    img = _png(tmp_path / "big.png", size=(3000, 1500))
+    _, body = fal.build_request("x", reference_image_paths=[img])
+    assert _decode_data_uri(body["image_urls"][0]).size == (1024, 512)
 
 
 def test_transparent_image_is_flattened(tmp_path):
@@ -184,10 +192,63 @@ def test_negative_prompt_appended():
     assert "negative_prompt" not in body
 
 
-def test_seed_and_audio_pass_through():
-    _, body = fal.build_request("x", seed=7, generate_audio=True)
+def _warns(capsys):
+    return [json.loads(line)["warn"] for line in capsys.readouterr().err.splitlines()
+            if line.startswith("{") and "warn" in json.loads(line)]
+
+
+def test_audio_passes_through():
+    assert fal.build_request("x", generate_audio=True)[1]["generate_audio"] is True
+
+
+def test_seed_sent_for_2_5_references(tmp_path, capsys):
+    img = _png(tmp_path / "i.png")
+    _, body = fal.build_request("x", reference_image_paths=[img], seed=7)
     assert body["seed"] == 7
-    assert body["generate_audio"] is True
+    assert _warns(capsys) == []
+
+
+@pytest.mark.parametrize("model, mode", [
+    ("seedance-2.5", "t2v"), ("seedance-2.5", "i2v"),
+    ("seedance-2.0", "t2v"), ("seedance-2.0", "i2v"), ("seedance-2.0", "r2v"),
+])
+def test_seed_dropped_with_note_elsewhere(tmp_path, capsys, model, mode):
+    img = _png(tmp_path / "i.png")
+    kw = {"i2v": {"image_path": img}, "r2v": {"reference_image_paths": [img]}}.get(mode, {})
+    _, body = fal.build_request("x", model=model, seed=7, **kw)
+    assert "seed" not in body
+    assert any("seed" in w for w in _warns(capsys))
+
+
+def test_2_5_i2v_aspect_ratio_forced_auto_with_note(tmp_path, capsys):
+    img = _png(tmp_path / "i.png")
+    _, body = fal.build_request("x", image_path=img, aspect_ratio="16:9")
+    assert body["aspect_ratio"] == "auto"
+    assert any("aspect" in w for w in _warns(capsys))
+
+
+def test_2_5_i2v_default_aspect_ratio_no_note(tmp_path, capsys):
+    img = _png(tmp_path / "i.png")
+    _, body = fal.build_request("x", image_path=img)
+    assert body["aspect_ratio"] == "auto"
+    assert _warns(capsys) == []
+
+
+def test_2_0_i2v_keeps_aspect_ratio(tmp_path, capsys):
+    img = _png(tmp_path / "i.png")
+    _, body = fal.build_request("x", image_path=img, aspect_ratio="16:9", model="seedance-2.0")
+    assert body["aspect_ratio"] == "16:9"
+    assert _warns(capsys) == []
+
+
+def test_t2v_and_r2v_default_aspect_ratio_is_vertical(tmp_path):
+    img = _png(tmp_path / "i.png")
+    assert fal.build_request("x")[1]["aspect_ratio"] == "9:16"
+    assert fal.build_request("x", reference_image_paths=[img])[1]["aspect_ratio"] == "9:16"
+
+
+def test_2_0_takes_4k():
+    assert fal.build_request("x", model="seedance-2.0", resolution="4k")[1]["resolution"] == "4k"
 
 
 def test_duration_auto_and_string():
@@ -195,22 +256,26 @@ def test_duration_auto_and_string():
     assert fal.build_request("x", duration="30")[1]["duration"] == "30"
 
 
-@pytest.mark.parametrize("duration, mode", [
-    (3, "t2v"), (31, "t2v"), (15, "i2v"), (17, "r2v"), ("five", "t2v"), (5.5, "t2v"), (True, "t2v"),
+@pytest.mark.parametrize("duration, mode, model", [
+    (3, "t2v", "seedance-2.5"), (31, "t2v", "seedance-2.5"), (31, "i2v", "seedance-2.5"),
+    (31, "r2v", "seedance-2.5"), (16, "t2v", "seedance-2.0"), (16, "i2v", "seedance-2.0"),
+    (16, "r2v", "seedance-2.0"), ("five", "t2v", "seedance-2.5"), (5.5, "t2v", "seedance-2.5"),
+    (True, "t2v", "seedance-2.5"),
 ])
-def test_unknown_duration_rejected_before_http(tmp_path, fake, duration, mode):
+def test_unknown_duration_rejected_before_http(tmp_path, fake, duration, mode, model):
     img = _png(tmp_path / "i.png")
     kw = {"i2v": {"image_path": img}, "r2v": {"reference_image_paths": [img]}}.get(mode, {})
     with pytest.raises(ConnectorError, match="duration"):
-        fal.generate_video("x", str(tmp_path / "out.mp4"), duration=duration, **kw)
+        fal.generate_video("x", str(tmp_path / "out.mp4"), duration=duration, model=model, **kw)
     assert fake.calls == []
 
 
-def test_mode_duration_upper_bounds_accepted(tmp_path):
+@pytest.mark.parametrize("model, top", [("seedance-2.5", 30), ("seedance-2.0", 15)])
+def test_duration_bounds_accepted_in_every_mode(tmp_path, model, top):
     img = _png(tmp_path / "i.png")
-    fal.build_request("x", duration=30)
-    fal.build_request("x", image_path=img, duration=14)
-    fal.build_request("x", reference_image_paths=[img], duration=16)
+    for kw in ({}, {"image_path": img}, {"reference_image_paths": [img]}):
+        for d in (4, top, "auto"):
+            fal.build_request("x", model=model, duration=d, **kw)
 
 
 @pytest.mark.parametrize("kw, match", [
@@ -250,10 +315,13 @@ def test_end_frame_needs_first_frame(tmp_path):
         fal.build_request("x", end_image_path=img)
 
 
-def test_too_many_references(tmp_path):
+@pytest.mark.parametrize("model, cap", [("seedance-2.5", 30), ("seedance-2.0", 9)])
+def test_reference_cap_per_model(tmp_path, model, cap):
     img = _png(tmp_path / "i.png")
-    with pytest.raises(ConnectorError, match="10"):
-        fal.build_request("x", reference_image_paths=[img] * 11)
+    assert len(fal.build_request("x", model=model,
+                                 reference_image_paths=[img] * cap)[1]["image_urls"]) == cap
+    with pytest.raises(ConnectorError, match=str(cap)):
+        fal.build_request("x", model=model, reference_image_paths=[img] * (cap + 1))
 
 
 # ---------------------------------------------------------------------------
