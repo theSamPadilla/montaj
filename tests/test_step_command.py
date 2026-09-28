@@ -90,7 +90,8 @@ PARITY = [
       "--size", "512x512", "--aspect-ratio", "1:1", "--model", "gpt-image-1", "--out", "/o.png"], False, False),
     ("generate-music", "generate-music",
      ["--prompt", "lofi", "--out", "/m.wav", "--model", "lyria-x", "--seed", "42", "--with-vocals"],
-     ["--prompt", "lofi", "--model", "lyria-x", "--seed", "42", "--with-vocals", "--out", "/m.wav"], False, False),
+     ["--prompt", "lofi", "--vendor", "gemini", "--model", "lyria-x", "--seed", "42",
+      "--with-vocals", "--out", "/m.wav"], False, False),
     ("generate-voiceover", "generate-voiceover",
      ["--text", "hello", "--voice", "Kore", "--out", "/v.mp3", "--vendor", "gemini",
       "--model", "tts-1", "--speed", "1.2", "--language", "en"],
@@ -144,9 +145,9 @@ PARITY = [
       "--height", "1280", "--fps", "30", "--fontsize", "72", "--color", "auto", "--position", "center",
       "--window-size", "1", "--words-per-line", "3"], False, False),
     # FORWARD (pass-through emit as_json=True AND forward --json to child, before --out):
-    ("generate-music+json", "generate-music",  # no defaulted scalar params
+    ("generate-music+json", "generate-music",  # vendor is the only defaulted scalar param
      ["--prompt", "lofi", "--out", "/m.wav", "--json"],
-     ["--prompt", "lofi", "--json", "--out", "/m.wav"], True, False),
+     ["--prompt", "lofi", "--vendor", "gemini", "--json", "--out", "/m.wav"], True, False),
     ("generate-voiceover+json", "generate-voiceover",
      ["--text", "hi", "--voice", "Kore", "--out", "/v.mp3", "--json"],
      ["--text", "hi", "--voice", "Kore", "--vendor", "kling", "--speed", "1.0", "--json", "--out", "/v.mp3"], True, False),

@@ -12,9 +12,11 @@ import argparse, json, os, sys
 # by going up two levels.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import fail, get_duration
 from connectors import ConnectorError
 from connectors.gemini import invalid_api_key_message
+from _fail_reasons import fail_for
 
 
 def read_text(args) -> str:
@@ -37,12 +39,12 @@ def main():
     p.add_argument("--text-file", dest="text_file", help="Path to a file containing the script")
     p.add_argument("--voice",     required=True, help="Voice identifier (vendor-specific)")
     p.add_argument("--out",       required=True, help="Output audio file path")
-    p.add_argument("--vendor",    default="kling", choices=["kling", "gemini"],
+    p.add_argument("--vendor",    default="kling", choices=["kling", "gemini", "elevenlabs"],
                    help="TTS vendor (default: kling)")
     p.add_argument("--model",     help="Override vendor default model")
     p.add_argument("--speed",     type=float, default=1.0,
-                   help="Playback speed (Kling only; ignored for Gemini)")
-    p.add_argument("--language",  help="Language hint (Kling only; ignored for Gemini)")
+                   help="Playback speed (Kling only; ignored for Gemini and ElevenLabs)")
+    p.add_argument("--language",  help="Language hint (Kling only; ignored for Gemini and ElevenLabs)")
     # --json on the step controls the step's own stdout format when invoked as a subprocess
     # by the CLI wrapper. The CLI wrapper has its own --json (via add_global_flags) which
     # controls emit() formatting. Two layers, two concerns — not a duplicate declaration.
@@ -57,15 +59,20 @@ def main():
             kwargs = {"text": text, "voice": args.voice, "out_path": args.out, "speed": args.speed}
             if args.language: kwargs["language"] = args.language
             path = kling.generate_speech(**kwargs)
-        else:  # gemini
+        elif args.vendor == "gemini":
             from connectors import gemini
             kwargs = {"text": text, "voice": args.voice, "out_path": args.out}
             if args.model: kwargs["model"] = args.model
             path = gemini.generate_speech(**kwargs)
+        else:  # elevenlabs
+            from connectors import elevenlabs
+            kwargs = {"text": text, "voice": args.voice, "out_path": args.out}
+            if args.model: kwargs["model"] = args.model
+            path = elevenlabs.generate_speech(**kwargs)
     except ConnectorError as e:
-        if e.reason == "invalid_api_key":
+        if args.vendor == "gemini" and e.reason == "invalid_api_key":
             fail("invalid_api_key", invalid_api_key_message(e))
-        fail("api_error", str(e))
+        fail_for(e, {"kling": "Kling", "gemini": "Gemini", "elevenlabs": "ElevenLabs"}[args.vendor])
 
     duration = get_duration(path)
 

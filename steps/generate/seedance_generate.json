@@ -1,0 +1,22 @@
+{
+  "name": "seedance_generate",
+  "description": "Generate video via Seedance (ByteDance) on fal.ai. Mode follows the inputs: text only (t2v), --image for image-to-video (i2v), --ref-image for reference-to-video (r2v). Standalone only.",
+  "output": {
+    "type": "video",
+    "description": "Path to the generated .mp4 file"
+  },
+  "params": [
+    {"name": "prompt", "type": "string", "required": true, "description": "Scene description"},
+    {"name": "out", "type": "path", "required": true, "description": "Output .mp4 path"},
+    {"name": "image", "type": "path", "required": false, "description": "Starting image (first frame). Mutually exclusive with --ref-image."},
+    {"name": "end-image", "type": "path", "required": false, "description": "Ending image. Requires --image."},
+    {"name": "ref-image", "type": "path", "required": false, "repeatable": true, "description": "Reference image (repeatable). Mutually exclusive with --image."},
+    {"name": "duration", "type": "string", "required": false, "default": "5", "description": "Clip length in seconds, or 'auto'. Range is model-dependent."},
+    {"name": "aspect-ratio", "type": "string", "required": false, "description": "e.g. '16:9', '9:16', 'auto'. Default: auto for --image, 9:16 otherwise."},
+    {"name": "resolution", "type": "enum", "required": false, "default": "720p", "options": ["480p", "720p", "1080p", "4k"], "description": "480p|720p|1080p|4k. Availability is model-dependent (4k is seedance-2.0 only)."},
+    {"name": "model", "type": "enum", "required": false, "default": "seedance-2.5", "options": ["seedance-2.0", "seedance-2.5"], "description": "seedance-2.5 is the default and best model."},
+    {"name": "seed", "type": "int", "required": false, "description": "RNG seed. Only used in modes that support one (2.5 reference-to-video); dropped with a warning elsewhere."},
+    {"name": "sound", "type": "bool", "required": false, "default": false, "description": "Generate audio with the clip (costs more). Off by default."},
+    {"name": "negative-prompt", "type": "string", "required": false, "description": "Things to avoid. Seedance has no negative-prompt field; appended to the prompt as 'Avoid: ...'."}
+  ]
+}

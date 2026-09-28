@@ -1,16 +1,26 @@
-usage: montaj generate-music [-h] --prompt PROMPT [--model MODEL]
-                             [--seed SEED] [--with-vocals] [--json]
-                             [--out PATH] [--quiet]
+usage: montaj generate-music [-h] --prompt PROMPT
+                             [--vendor {gemini,elevenlabs}] [--model MODEL]
+                             [--seed SEED] [--with-vocals]
+                             [--duration DURATION] [--json] [--out PATH]
+                             [--quiet]
 
 options:
-  -h, --help       show this help message and exit
-  --prompt PROMPT  Text description of the music (genre, mood,
-                   instrumentation, BPM)
-  --model MODEL    Override the Lyria model (default: lyria-3.5, ~30s clips)
-  --seed SEED      RNG seed for reproducible outputs
-  --with-vocals    Allow vocals in the output. Omit (default) for
-                   instrumental-only — recommended for background music under
-                   narration.
-  --json           Output result as JSON
-  --out PATH       Output file path
-  --quiet          Suppress progress output
+  -h, --help            show this help message and exit
+  --prompt PROMPT       Text description of the music (genre, mood,
+                        instrumentation, BPM)
+  --vendor {gemini,elevenlabs}
+                        Music vendor to use. ElevenLabs music needs their paid
+                        plan.
+  --model MODEL         Override the vendor's default model (Gemini default:
+                        lyria-3.5, ~30s clips)
+  --seed SEED           RNG seed for reproducible outputs. Gemini only;
+                        ignored for ElevenLabs.
+  --with-vocals         Allow vocals in the output. Gemini only; ElevenLabs
+                        ignores this. Omit (default) for instrumental-only —
+                        recommended for background music under narration.
+  --duration DURATION   Clip length in seconds. Required for --vendor
+                        elevenlabs (minimum 3s); ignored for Gemini, whose
+                        Lyria model produces a fixed-length clip.
+  --json                Output result as JSON
+  --out PATH            Output file path
+  --quiet               Suppress progress output

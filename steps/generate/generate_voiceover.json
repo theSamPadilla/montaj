@@ -11,17 +11,17 @@
     {"name": "text-file", "type": "string", "required": false,
      "description": "Path to a file containing the script. Mutually exclusive with --text."},
     {"name": "voice", "type": "string", "required": true,
-     "description": "Voice identifier (vendor-specific). For Kling: voice_id or alias from TTS_VOICES. For Gemini: prebuilt voice name (e.g. 'Kore', 'Puck')."},
+     "description": "Voice identifier (vendor-specific). For Kling: voice_id or alias from TTS_VOICES. For Gemini: prebuilt voice name (e.g. 'Kore', 'Puck'). For ElevenLabs: a voice_id or a premade voice name."},
     {"name": "out", "type": "string", "required": true,
      "description": "Output audio file path (.mp3 or .wav)"},
     {"name": "vendor", "type": "enum", "required": false, "default": "kling",
-     "options": ["kling", "gemini"],
+     "options": ["kling", "gemini", "elevenlabs"],
      "description": "TTS vendor to use"},
     {"name": "model", "type": "string", "required": false,
      "description": "Override the connector's default model for the chosen vendor"},
     {"name": "speed", "type": "float", "required": false, "default": 1.0,
-     "description": "Playback speed multiplier. Kling only; ignored for Gemini."},
+     "description": "Playback speed multiplier. Kling only; ignored for Gemini and ElevenLabs."},
     {"name": "language", "type": "string", "required": false,
-     "description": "Language hint (e.g. 'en', 'zh'). Kling only; ignored for Gemini."}
+     "description": "Language hint (e.g. 'en', 'zh'). Kling only; ignored for Gemini and ElevenLabs."}
   ]
 }

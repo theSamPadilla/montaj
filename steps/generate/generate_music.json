@@ -1,6 +1,6 @@
 {
   "name": "generate_music",
-  "description": "Generate a music clip from a text prompt via Gemini Lyria 3 Clip. Generation step — produces a file on disk; composition happens at render time.",
+  "description": "Generate a music clip from a text prompt via Gemini Lyria 3 Clip or ElevenLabs. Generation step — produces a file on disk; composition happens at render time.",
   "output": {
     "type": "audio",
     "description": "Path to the generated music clip (plus duration metadata when --json)"
@@ -9,12 +9,17 @@
     {"name": "prompt", "type": "string", "required": true,
      "description": "Text description of the music (genre, mood, instrumentation, BPM)"},
     {"name": "out", "type": "string", "required": true,
-     "description": "Output audio file path. The extension is advisory — the file is named after the container Lyria actually returns (mp3 in practice), never re-encoded to match. Read the emitted path rather than assuming this one."},
+     "description": "Output audio file path. The extension is advisory — the file is named after the container the vendor actually returns (mp3 in practice), never re-encoded to match. Read the emitted path rather than assuming this one."},
+    {"name": "vendor", "type": "enum", "required": false, "default": "gemini",
+     "options": ["gemini", "elevenlabs"],
+     "description": "Music vendor to use. ElevenLabs music needs their paid plan."},
     {"name": "model", "type": "string", "required": false,
-     "description": "Override the Lyria model (default: lyria-3.5, ~30s clips)"},
+     "description": "Override the vendor's default model (Gemini default: lyria-3.5, ~30s clips)"},
     {"name": "seed", "type": "int", "required": false,
-     "description": "RNG seed for reproducible outputs"},
+     "description": "RNG seed for reproducible outputs. Gemini only; ignored for ElevenLabs."},
     {"name": "with-vocals", "type": "bool", "required": false, "default": false,
-     "description": "Allow vocals in the output. Omit (default) for instrumental-only — recommended for background music under narration."}
+     "description": "Allow vocals in the output. Gemini only; ElevenLabs ignores this. Omit (default) for instrumental-only — recommended for background music under narration."},
+    {"name": "duration", "type": "float", "required": false,
+     "description": "Clip length in seconds. Required for --vendor elevenlabs (minimum 3s); ignored for Gemini, whose Lyria model produces a fixed-length clip."}
   ]
 }

@@ -75,12 +75,14 @@ _REMAP = {
 #
 #   # Explicit allowlist of top-level commands exported as MCP tools. A conscious
 #   # surface choice, NOT registry drift: this is exactly the set the previous
-#   # hardcoded import list registered. Notably it OMITS the 5 step commands
-#   # (stem-separation, lyrics-sync, lyrics-render, generate-music,
-#   # generate-voiceover) — expanding MCP's surface is a separate decision. Commands
-#   # with subcommands (workflow, sample, profile) flatten into multiple tools.
+#   # hardcoded import list registered. Notably it OMITS the step commands
+#   # stem-separation, lyrics-sync, lyrics-render, generate-music,
+#   # generate-voiceover, and (PV29 T7) generate-sfx — expanding MCP's surface is
+#   # a separate decision. seedance-generate IS included: it must be callable by
+#   # an agent exactly the way kling-generate is (PV29 T7). Commands with
+#   # subcommands (workflow, sample, profile) flatten into multiple tools.
 #
-# The 5 named above account for 5 of these 25; the rest (capture_site,
+# The 6 named above account for 6 of these 26; the rest (capture_site,
 # check_key, contact_sheet, crop_spec, cross_cut, fetch_image, filmstrip,
 # generate_captions, jump_cut, mix_timeline, montage, normalize_window, proxy,
 # reframe, search_images, search_news, synth_audio, virtual_to_original,
@@ -91,14 +93,16 @@ _REMAP = {
 # MCP surface for the same reason. `check_key` (PV29 T3) is called only
 # through serve's per-request credentials overlay, from the app's save-a-key
 # flow — testing a candidate key isn't something an AI chat agent should
-# trigger, so it's deliberately not MCP-exposed either.
+# trigger, so it's deliberately not MCP-exposed either. `generate_sfx` (PV29
+# T7) is exposed the same way generate_music/generate_voiceover are: a real
+# CLI command, but not MCP-exposed.
 EXPECTED_HTTP_ONLY = frozenset({
     "capture_site", "check_key", "contact_sheet", "crop_spec", "cross_cut",
     "fetch_image", "filmstrip", "generate_captions", "generate_music",
-    "generate_voiceover", "jump_cut", "lyrics_render", "lyrics_sync",
-    "mix_timeline", "montage", "normalize_window", "proxy", "reframe",
-    "search_images", "search_news", "stem_separation", "synth_audio",
-    "virtual_to_original", "waveform_image", "waveform_peaks",
+    "generate_sfx", "generate_voiceover", "jump_cut", "lyrics_render",
+    "lyrics_sync", "mix_timeline", "montage", "normalize_window", "proxy",
+    "reframe", "search_images", "search_news", "stem_separation",
+    "synth_audio", "virtual_to_original", "waveform_image", "waveform_peaks",
 })
 
 # MCP tools that name no step at all — run/render/status/upload/init/log are

@@ -160,17 +160,19 @@ def _collect(tokens, parser, out, description=None):
 
 # Explicit allowlist of top-level commands exported as MCP tools. A conscious
 # surface choice, NOT registry drift: this is exactly the set the previous
-# hardcoded import list registered. Notably it OMITS the 5 step commands
-# (stem-separation, lyrics-sync, lyrics-render, generate-music,
-# generate-voiceover) — expanding MCP's surface is a separate decision. Commands
-# with subcommands (workflow, sample, profile) flatten into multiple tools.
+# hardcoded import list registered. Notably it OMITS the step commands
+# stem-separation, lyrics-sync, lyrics-render, generate-music,
+# generate-voiceover, and (PV29 T7) generate-sfx — expanding MCP's surface is
+# a separate decision. seedance-generate IS included: it must be callable by
+# an agent exactly the way kling-generate is (PV29 T7). Commands with
+# subcommands (workflow, sample, profile) flatten into multiple tools.
 _EXPORTED_COMMANDS = frozenset({
     'run', 'render', 'workflow', 'fetch', 'profile',
     'probe', 'snapshot', 'sample', 'filler', 'waveform-trim', 'rm-nonspeech',
     'materialize-cut', 'resize', 'normalize', 'extract-audio',
     'transcribe', 'caption', 'status', 'log', 'remove-bg', 'init',
     'kling-generate', 'analyze-media', 'generate-image', 'upload',
-    'detect-shots', 'shot-sheet', 'detect-beats',
+    'detect-shots', 'shot-sheet', 'detect-beats', 'seedance-generate',
 })
 
 

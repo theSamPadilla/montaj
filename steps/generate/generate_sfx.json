@@ -1,0 +1,14 @@
+{
+  "name": "generate_sfx",
+  "description": "Generate a sound effect from a text description via ElevenLabs. Generation step — produces a file on disk; composition happens at render time.",
+  "output": {
+    "type": "audio",
+    "description": "Path to the generated sound effect (plus duration metadata when --json)"
+  },
+  "params": [
+    {"name": "text", "type": "string", "required": true, "description": "Sound effect description"},
+    {"name": "out", "type": "string", "required": true, "description": "Output audio file path"},
+    {"name": "duration", "type": "float", "required": false, "description": "Length in seconds (0.5-30). Omit to let ElevenLabs choose."},
+    {"name": "model", "type": "string", "required": false, "description": "Override the connector's default model (default: eleven_text_to_sound_v2)"}
+  ]
+}
