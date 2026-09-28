@@ -100,3 +100,68 @@ class TestGenerateImageConnectorErrorMapping:
         err = json.loads(capsys.readouterr().err)
         assert err["error"] == "api_error"
         assert "bad request" in err["message"]
+
+    def test_openai_insufficient_credit_no_longer_swallowed_into_api_error(
+        self, step_module, monkeypatch, capsys, tmp_path
+    ):
+        """PV29 T7 fix: the old code mapped every OpenAI reason but
+        invalid_api_key straight to api_error, discarding insufficient_credit
+        and model_retired. fail_for restores the real code."""
+        def boom(**kwargs):
+            raise ConnectorError("OpenAI image generation failed: exceeded quota",
+                                  reason="insufficient_credit")
+
+        monkeypatch.setattr(openai_mod, "generate_image", boom)
+        monkeypatch.setattr(sys, "argv", [
+            "generate_image.py",
+            "--prompt", "a cat",
+            "--out", str(tmp_path / "out.png"),
+            "--provider", "openai",
+        ])
+        with pytest.raises(SystemExit):
+            step_module.main()
+        err = json.loads(capsys.readouterr().err)
+        assert err["error"] == "insufficient_credit"
+        assert err["message"] == "OpenAI image generation failed: exceeded quota"
+
+    def test_openai_model_retired_maps_through(
+        self, step_module, monkeypatch, capsys, tmp_path
+    ):
+        def boom(**kwargs):
+            raise ConnectorError("model retired", reason="model_retired")
+
+        monkeypatch.setattr(openai_mod, "generate_image", boom)
+        monkeypatch.setattr(sys, "argv", [
+            "generate_image.py",
+            "--prompt", "a cat",
+            "--out", str(tmp_path / "out.png"),
+            "--provider", "openai",
+        ])
+        with pytest.raises(SystemExit):
+            step_module.main()
+        err = json.loads(capsys.readouterr().err)
+        assert err["error"] == "model_retired"
+        # "model retired" doesn't name OpenAI — fail_for prefixes it.
+        assert err["message"] == "OpenAI: model retired"
+
+    def test_gemini_insufficient_credit_no_longer_forced_to_api_error(
+        self, step_module, monkeypatch, capsys, tmp_path
+    ):
+        """Gemini's own connector can raise reasons other than
+        invalid_api_key too (e.g. a billing issue) — those must not be
+        forced through the api_error fallback either."""
+        def boom(**kwargs):
+            raise ConnectorError("Gemini image generation failed: no credit",
+                                  reason="insufficient_credit")
+
+        monkeypatch.setattr(gemini_mod, "generate_image", boom)
+        monkeypatch.setattr(sys, "argv", [
+            "generate_image.py",
+            "--prompt", "a cat",
+            "--out", str(tmp_path / "out.png"),
+            "--provider", "gemini",
+        ])
+        with pytest.raises(SystemExit):
+            step_module.main()
+        err = json.loads(capsys.readouterr().err)
+        assert err["error"] == "insufficient_credit"

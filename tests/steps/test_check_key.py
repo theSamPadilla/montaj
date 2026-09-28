@@ -1,14 +1,14 @@
-"""Tests for steps/credentials/check_key.py — PV29 T3.
+"""Tests for steps/credentials/check_key.py — PV29 T3, extended by T7.
 
 The step is a thin dispatcher: pick the connector module for --provider, call
 its check_key(), and map ConnectorError.reason to a fail() code. Every test
 here monkeypatches the connector's check_key() directly — the connectors'
-own SDK/HTTP-mocked tests (test_connectors_gemini.py, test_connectors_openai.py)
-cover what check_key() itself does. Nothing here makes a real network call.
+own SDK/HTTP-mocked tests (test_connectors_gemini.py, test_connectors_openai.py,
+etc.) cover what check_key() itself does. Nothing here makes a real network call.
 
-Also covers the ONE controller change on this task: PROVIDERS (and so
---provider's choices) lists only gemini and openai for now — kling, fal and
-elevenlabs are added by tasks 4/5/6 once their connectors gain check_key().
+T7 registers kling, fal and elevenlabs (PROVIDERS now lists five providers —
+serpapi has no check_key() and stays unsupported) and adds the model_retired
+fail code, which used to fall through to check_failed.
 """
 import importlib.util
 import json
@@ -36,17 +36,21 @@ def step_module():
     return mod
 
 
-class TestProvidersRestrictedToGeminiAndOpenai:
-    """The controller change for this task: only gemini/openai exist today."""
+class TestProvidersRegistered:
+    """T7: kling, fal and elevenlabs join gemini/openai. serpapi has no
+    check_key() and is not registered here."""
 
-    def test_providers_map_is_exactly_gemini_and_openai(self, step_module):
+    def test_providers_map_is_the_five_generation_vendors(self, step_module):
         assert step_module.PROVIDERS == {
             "gemini": "connectors.gemini",
             "openai": "connectors.openai",
+            "kling": "connectors.kling",
+            "fal": "connectors.fal",
+            "elevenlabs": "connectors.elevenlabs",
         }
 
     def test_unlisted_provider_rejected_by_argparse(self, step_module, monkeypatch, capsys):
-        monkeypatch.setattr(sys, "argv", ["check_key.py", "--provider", "kling"])
+        monkeypatch.setattr(sys, "argv", ["check_key.py", "--provider", "serpapi"])
         with pytest.raises(SystemExit) as ei:
             step_module.main()
         assert ei.value.code == 2  # argparse usage error, not fail()'s exit(1)
@@ -105,6 +109,20 @@ class TestErrorMapping:
         assert ei.value.code == 1
         err = json.loads(capsys.readouterr().err)
         assert err["error"] == "provider_unreachable"
+
+    def test_model_retired_reason_maps_to_fail_code(self, step_module, monkeypatch, capsys):
+        """T7: model_retired used to fall through to check_failed."""
+        def boom():
+            raise ConnectorError("kling-v2-old is retired; use kling-v3-omni", reason="model_retired")
+        monkeypatch.setattr(gemini_mod, "check_key", boom)
+        monkeypatch.setattr(sys, "argv", ["check_key.py", "--provider", "gemini"])
+
+        with pytest.raises(SystemExit) as ei:
+            step_module.main()
+        assert ei.value.code == 1
+        err = json.loads(capsys.readouterr().err)
+        assert err["error"] == "model_retired"
+        assert "kling-v3-omni" in err["message"]
 
     def test_insufficient_credit_reason_maps_through(self, step_module, monkeypatch, capsys):
         def boom():

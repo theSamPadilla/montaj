@@ -5,11 +5,17 @@ can test a key before saving it. Never prints the key."""
 import argparse, importlib, json, os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from lib.common import fail  # noqa: E402
-from connectors import ConnectorError, INVALID_API_KEY, INSUFFICIENT_CREDIT, UNREACHABLE  # noqa: E402
+from connectors import (  # noqa: E402
+    ConnectorError, INVALID_API_KEY, INSUFFICIENT_CREDIT, MODEL_RETIRED, UNREACHABLE,
+)
 
-# kling, fal and elevenlabs are added by tasks 4/5/6 once their connectors gain
-# check_key() — listing them here now would import modules that don't exist yet.
-PROVIDERS = {"gemini": "connectors.gemini", "openai": "connectors.openai"}
+PROVIDERS = {
+    "gemini": "connectors.gemini",
+    "openai": "connectors.openai",
+    "kling": "connectors.kling",
+    "fal": "connectors.fal",
+    "elevenlabs": "connectors.elevenlabs",
+}
 
 def main():
     ap = argparse.ArgumentParser(description="Check a provider API key with one free call")
@@ -20,6 +26,7 @@ def main():
         result = mod.check_key()
     except ConnectorError as e:
         code = {INVALID_API_KEY: "invalid_api_key", INSUFFICIENT_CREDIT: "insufficient_credit",
+                MODEL_RETIRED: "model_retired",
                 UNREACHABLE: "provider_unreachable"}.get(e.reason, "check_failed")
         fail(code, str(e))
     print(json.dumps({"provider": args.provider, **result}))

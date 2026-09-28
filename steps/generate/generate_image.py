@@ -5,9 +5,11 @@ import sys, os, argparse
 # Make lib/ importable (for common) and project root importable (for connectors/).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import fail, require_file
 from connectors import ConnectorError
 from connectors.gemini import invalid_api_key_message
+from _fail_reasons import fail_for
 
 
 def main():
@@ -52,9 +54,9 @@ def main():
         else:
             fail("bad_provider", f"Unknown provider: {args.provider}")
     except ConnectorError as e:
-        if e.reason == "invalid_api_key":
+        if args.provider == "gemini" and e.reason == "invalid_api_key":
             fail("invalid_api_key", invalid_api_key_message(e))
-        fail("api_error", str(e))
+        fail_for(e, "OpenAI" if args.provider == "openai" else "Gemini")
 
     print(out_path)
 

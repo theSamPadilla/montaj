@@ -322,6 +322,16 @@ class _FakeResponse:
 
 
 class TestCheckKey:
+    @pytest.fixture(autouse=True)
+    def _fake_key(self, monkeypatch):
+        # PV29 T7: check_key() calls get_credential("openai", "api_key") for
+        # real — without this, these tests silently pass or fail depending
+        # on whatever OPENAI_API_KEY / ~/.montaj/credentials.json happen to
+        # be on the machine running them. Under a fresh HOME with no env key
+        # (the standing rule for this suite), get_credential would raise
+        # CredentialError before ever reaching the mocked HTTP call below.
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
     def test_ok_default_model_present(self, monkeypatch):
         body = {"data": [{"id": "gpt-image-2.5-sunburst"}, {"id": "gpt-4o"}]}
         resp = _FakeResponse(200, body)

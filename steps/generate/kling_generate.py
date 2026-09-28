@@ -19,8 +19,10 @@ import sys, os, argparse, json, random, uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import fail, require_file, progress
-from connectors import kling, ConnectorError, INVALID_API_KEY, INSUFFICIENT_CREDIT, MODEL_RETIRED
+from connectors import kling, ConnectorError
+from _fail_reasons import fail_for
 from pathlib import Path
 from lib.ai_video import (
     find_project, save_project, compose_prompt,
@@ -28,17 +30,8 @@ from lib.ai_video import (
 )
 
 
-# ConnectorError.reason -> fail() code; anything else is api_error. The
-# message is always the connector's, verbatim.
-_FAIL_CODES = {
-    INVALID_API_KEY: "invalid_api_key",
-    INSUFFICIENT_CREDIT: "insufficient_credit",
-    MODEL_RETIRED: "model_retired",
-}
-
-
 def _fail(e: ConnectorError):
-    fail(_FAIL_CODES.get(e.reason, "api_error"), str(e))
+    fail_for(e, "Kling")
 
 
 # ---------------------------------------------------------------------------

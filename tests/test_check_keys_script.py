@@ -49,12 +49,14 @@ which a real key from this machine's ~/.montaj/credentials.json or shell
 environment could reach the script.
 
 lib/credentials.py's real KNOWN_PROVIDERS (copied verbatim into the mirror)
-is {kling, gemini, openai, serpapi, fal, elevenlabs} — six providers — and
-the real check_key.py (also copied verbatim) supports only gemini/openai
-today. Tests that don't patch in more support therefore see the other four
-as "no check yet", which several assertions below account for explicitly.
+is {kling, gemini, openai, serpapi, fal, elevenlabs} — six providers. As of
+PV29 T7 the real check_key.py (also copied verbatim) supports five of those —
+gemini, openai, kling, fal and elevenlabs — leaving only serpapi (a search
+API, not a generation vendor) as "no check yet", which several assertions
+below account for explicitly.
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -75,7 +77,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 ALL_KNOWN_PROVIDERS = ("kling", "gemini", "openai", "serpapi", "fal", "elevenlabs")
-UNSUPPORTED_BY_DEFAULT = ("kling", "serpapi", "fal", "elevenlabs")
+UNSUPPORTED_BY_DEFAULT = ("serpapi",)
 
 
 def _mirror_repo(tmp_path: Path) -> Path:
@@ -106,27 +108,34 @@ def _write_connector(mirror: Path, provider: str, source: str) -> None:
     (mirror / "connectors" / f"{provider}.py").write_text(source)
 
 
+# Matches the whole `PROVIDERS = { ... }` dict literal regardless of how it's
+# laid out on disk (one line or several) — robust to check_key.py's PROVIDERS
+# growing from a single-line dict (T3) to a multi-line one (T7). Values are
+# plain strings with no braces of their own, so a non-greedy match up to the
+# FIRST "}" always lands on the real closing brace.
+_PROVIDERS_RE = re.compile(r"PROVIDERS = \{.*?\}", re.DOTALL)
+
+
+def _patch_providers(mirror: Path, extra: str) -> None:
+    path = mirror / "steps" / "credentials" / "check_key.py"
+    text = path.read_text()
+    m = _PROVIDERS_RE.search(text)
+    assert m, "check_key.py's PROVIDERS dict not found — update this test"
+    block = m.group(0)
+    new_block = block[:-1].rstrip().rstrip(",") + extra + "}"
+    path.write_text(text[:m.start()] + new_block + text[m.end():])
+
+
 def _add_provider_support(mirror: Path, provider: str, module: str) -> None:
     """Patch the MIRROR's copy of check_key.py to support one more provider
     — proves check-keys.sh reads the supported list at runtime rather than
     carrying its own hardcoded copy. Never touches the real repo file."""
-    path = mirror / "steps" / "credentials" / "check_key.py"
-    text = path.read_text()
-    old = 'PROVIDERS = {"gemini": "connectors.gemini", "openai": "connectors.openai"}'
-    assert old in text, "check_key.py's PROVIDERS line changed shape — update this test"
-    new = old[:-1] + f', "{provider}": "{module}"}}'
-    path.write_text(text.replace(old, new))
+    _patch_providers(mirror, f', "{provider}": "{module}"')
 
 
 def _add_all_provider_support(mirror: Path, providers: tuple[str, ...]) -> None:
-    """Like _add_provider_support but for several providers in one patch —
-    _add_provider_support's exact-substring match only survives one call."""
-    path = mirror / "steps" / "credentials" / "check_key.py"
-    text = path.read_text()
-    old = 'PROVIDERS = {"gemini": "connectors.gemini", "openai": "connectors.openai"}'
-    assert old in text, "check_key.py's PROVIDERS line changed shape — update this test"
-    extra = "".join(f', "{p}": "connectors.{p}"' for p in providers)
-    path.write_text(text.replace(old, old[:-1] + extra + "}"))
+    """Like _add_provider_support but for several providers in one patch."""
+    _patch_providers(mirror, "".join(f', "{p}": "connectors.{p}"' for p in providers))
 
 
 def _run(mirror: Path, extra_env: dict | None = None) -> subprocess.CompletedProcess:
@@ -186,9 +195,10 @@ class TestNoKeys:
 
 
 class TestUnsupportedProvidersToday:
-    def test_kling_serpapi_fal_elevenlabs_are_no_check_yet(self, tmp_path):
-        """Controller clarification: check_key only supports gemini/openai
-        today. Every other KNOWN_PROVIDERS entry must warn, not fail."""
+    def test_serpapi_is_no_check_yet(self, tmp_path):
+        """serpapi is a search API, not a generation vendor, and has no
+        check_key() (T7 added kling/fal/elevenlabs but not serpapi). Every
+        KNOWN_PROVIDERS entry check_key doesn't support must warn, not fail."""
         mirror = _mirror_repo(tmp_path)
         result = _run(mirror)
 
@@ -360,8 +370,10 @@ class TestSkipList:
 class TestAllVerifiedNoGaps:
     def test_not_verified_is_none_when_everything_checks_out(self, tmp_path):
         mirror = _mirror_repo(tmp_path)
+        # kling/fal/elevenlabs are real support in the copied check_key.py
+        # (T7) — only serpapi still needs the runtime patch.
         extra_providers = ("kling", "serpapi", "fal", "elevenlabs")
-        _add_all_provider_support(mirror, extra_providers)
+        _add_all_provider_support(mirror, ("serpapi",))
 
         env = {"GEMINI_API_KEY": "test-key", "OPENAI_API_KEY": "test-key"}
         for provider in ("gemini", "openai") + extra_providers:
@@ -403,26 +415,28 @@ class TestReadsSupportedListAtRuntime:
         not carry its own copy of which providers check_key supports. Patch
         ONLY the mirror's copy of check_key.py to add a provider, add no
         matching branch to check-keys.sh, and confirm it starts checking
-        that provider for real instead of printing 'no check yet'."""
+        that provider for real instead of printing 'no check yet'. Uses
+        serpapi — the one KNOWN_PROVIDERS entry check_key.py genuinely
+        doesn't support after T7 — so the "newly supported" premise is real."""
         mirror = _mirror_repo(tmp_path)
-        _add_provider_support(mirror, "fal", "connectors.fal")
+        _add_provider_support(mirror, "serpapi", "connectors.serpapi")
         _write_connector(mirror, "gemini", OK_GEMINI)
         _write_connector(mirror, "openai", OK_OPENAI)
-        _write_connector(mirror, "fal", """
+        _write_connector(mirror, "serpapi", """
 def check_key():
-    return {"ok": True, "default_model": "fake-fal-model",
+    return {"ok": True, "default_model": "fake-serpapi-model",
             "default_model_ok": True, "detail": "ok"}
 """)
 
         result = _run(mirror, {
-            "GEMINI_API_KEY": "test-key", "OPENAI_API_KEY": "test-key", "FAL_API_KEY": "test-key",
+            "GEMINI_API_KEY": "test-key", "OPENAI_API_KEY": "test-key", "SERPAPI_API_KEY": "test-key",
         })
 
         assert result.returncode == 0, result.stderr
-        assert "fal: ok" in result.stdout
-        assert "fal: no check yet" not in result.stdout
-        # fal is now fully verified, so it must not appear in the gap line.
-        assert "fal" not in _not_verified_line(result.stdout)
+        assert "serpapi: ok" in result.stdout
+        assert "serpapi: no check yet" not in result.stdout
+        # serpapi is now fully verified, so it must not appear in the gap line.
+        assert "serpapi" not in _not_verified_line(result.stdout)
 
 
 class TestScriptExists:
