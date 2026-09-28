@@ -51,7 +51,7 @@
           "std",
           "pro"
         ],
-        "default": "std"
+        "default": "pro"
       },
       "model": {
         "description": "kling-v3-omni (flexible durations, multi-shot) | kling-video-o1 (newer, 5s/10s only, no multi-shot)",

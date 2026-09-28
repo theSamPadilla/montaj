@@ -20,12 +20,25 @@ import sys, os, argparse, json, random, uuid
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail, require_file, progress
-from connectors import kling, ConnectorError
+from connectors import kling, ConnectorError, INVALID_API_KEY, INSUFFICIENT_CREDIT, MODEL_RETIRED
 from pathlib import Path
 from lib.ai_video import (
     find_project, save_project, compose_prompt,
     resolve_ref_paths, save_clip_to_project, save_error_to_project,
 )
+
+
+# ConnectorError.reason -> fail() code; anything else is api_error. The
+# message is always the connector's, verbatim.
+_FAIL_CODES = {
+    INVALID_API_KEY: "invalid_api_key",
+    INSUFFICIENT_CREDIT: "insufficient_credit",
+    MODEL_RETIRED: "model_retired",
+}
+
+
+def _fail(e: ConnectorError):
+    fail(_FAIL_CODES.get(e.reason, "api_error"), str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +62,7 @@ def main():
     p.add_argument("--negative-prompt", dest="negative_prompt")
     p.add_argument("--sound", default="on", choices=["on", "off"])
     p.add_argument("--aspect-ratio", dest="aspect_ratio", default="16:9")
-    p.add_argument("--mode", default="std", choices=["std", "pro"])
+    p.add_argument("--mode", default=kling.DEFAULT_MODE, choices=["std", "pro"])
     p.add_argument("--model", default="kling-v3-omni",
                    choices=["kling-v3-omni", "kling-video-o1"],
                    help="Kling model. kling-video-o1 is newer but only supports 5s/10s durations and no multi-shot.")
@@ -144,7 +157,7 @@ def main():
             # Re-read project in case another scene wrote concurrently
             project_path, project = find_project(args.project_id)
             save_error_to_project(project_path, project, args.scene_id, str(e))
-            fail("api_error", str(e))
+            _fail(e)
 
         progress(f"Done {args.scene_id} -> {out_path}")
 
@@ -235,7 +248,7 @@ def main():
             model=args.model,
         )
     except ConnectorError as e:
-        fail("api_error", str(e))
+        _fail(e)
 
     print(out_path)
 

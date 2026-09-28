@@ -7,16 +7,24 @@ Kling endpoints get wrapped. See docs/CONNECTORS.md for the layering rule.
 Current functions:
     generate(prompt, out_path, ...) -> str       # path to downloaded .mp4
     generate_speech(text, voice, out_path, ...) -> str  # path to downloaded audio
+    check_key() -> dict
+        One free call (GET /account/costs) to validate the key pair, with no
+        billed call.
 
 Library code — raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
 import base64, os, time
-from connectors import ConnectorError, _http
+from connectors import (
+    ConnectorError, _http, classify_http_error,
+    INVALID_API_KEY, INSUFFICIENT_CREDIT, MODEL_RETIRED, UNREACHABLE,
+)
 from lib.credentials import get_credential
 
+# api.klingai.com answers identically (verified 2026-09-28); keep Singapore.
 BASE_URL = "https://api-singapore.klingai.com"
 DEFAULT_MODEL = "kling-v3-omni"
+DEFAULT_MODE = "pro"   # the higher-quality of std/pro; costs more per clip
 POLL_INTERVAL_S = 10.0
 MAX_POLL_S = 600.0
 MAX_PROMPT_CHARS = 2500
@@ -32,6 +40,11 @@ VALID_SHOT_TYPES = ("customize", "intelligence")
 MAX_REF_IMAGES = 7
 
 # Model capabilities — the connector validates constraints per model.
+# Probed live 2026-09-28 (PV29): the omni-video model enum also lists
+# kling-4.0, kling-4.0-flash and kling-3.0-turbo, but Kling answers them with
+# 1201 "model is not supported", so kling-v3-omni is the best model the
+# account can run. Re-probe at each release: with an empty balance a served
+# model answers 1102 and an unserved one 1201, both for free.
 MODELS = {
     "kling-v3-omni": {
         "durations": list(range(3, 16)),       # 3–15, any integer
@@ -46,6 +59,19 @@ MODELS = {
         "sound": False,                        # does NOT generate audio
     },
 }
+
+# Retired model -> its replacement. build_payload refuses these before any
+# HTTP call. Kling has no model-list endpoint and announces nothing, so a
+# retirement first shows up as 1201 "model is not supported" for a model in
+# MODELS (raised as MODEL_RETIRED); move the name from MODELS to here then.
+RETIRED_MODELS: dict[str, str] = {}
+
+OUT_OF_CREDIT_MESSAGE = "Your Kling account is out of credits. Top up a resource pack at kling.ai/dev."
+
+# Kling's body codes that change what we do with a 429.
+_BALANCE_CODES = frozenset({1101, 1102})       # arrears (postpaid); pack empty or expired
+_RATE_LIMIT_CODES = frozenset({1302, 1303})    # too fast; over the pack's concurrency/QPS
+_NO_RETRY_429_CODES = _BALANCE_CODES | {1100, 1304}  # + account exception, IP allow-list
 
 # TTS — https://app.klingai.com/global/dev/document-api
 # Synchronous: create response includes task_result directly. No poll endpoint.
@@ -176,7 +202,7 @@ def build_payload(
     negative_prompt: str = None,
     sound: str = "on",
     aspect_ratio: str = "16:9",
-    mode: str = "std",
+    mode: str = DEFAULT_MODE,
     external_task_id: str = None,
     multi_shot: bool = False,
     shot_type: str = None,
@@ -200,6 +226,9 @@ def build_payload(
     (per Kling docs). Total `duration` is computed from the sum of shot durations.
     """
     # ---- Model validation ----
+    if model in RETIRED_MODELS:
+        raise ConnectorError(f"{model} is retired; use {RETIRED_MODELS[model]}",
+                             reason=MODEL_RETIRED)
     if model not in MODELS:
         raise ConnectorError(
             f"Unknown model {model!r}; supported: {', '.join(MODELS)}"
@@ -337,41 +366,89 @@ def build_payload(
     }
 
 
+def _parse(r) -> dict | None:
+    """The response body as a JSON object, or None when it isn't one."""
+    try:
+        body = r.json()
+    except Exception:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _is_rate_limit(r) -> bool:
+    """Whether a 429 is a rate limit worth waiting out. Kling also answers 429
+    for an empty balance (code 1102), which no retry can fix. Only a positive
+    rate limit retries: a rate-limit code, or a body with a code or message
+    that is neither a known non-rate-limit code nor about money. A body that
+    doesn't parse is not retried: wrongly retrying a billing error is worse
+    than wrongly abandoning a rate limit."""
+    body = _parse(r)
+    if body is None:
+        return False
+    code, msg = body.get("code"), body.get("message") or body.get("msg")
+    if code in _RATE_LIMIT_CODES:
+        return True
+    if code in _NO_RETRY_429_CODES or (code is None and not msg):
+        return False
+    return classify_http_error(429, msg or "") != INSUFFICIENT_CREDIT
+
+
+def _request(method: str, url: str, *, retry_statuses: frozenset = frozenset(), **kwargs):
+    """_http.request_with_retry, but a 429 retries only if _is_rate_limit."""
+    for attempt in range(_http.RETRY_ATTEMPTS):
+        r = _http.request_with_retry(method, url, retry_statuses=retry_statuses - {429}, **kwargs)
+        if r.status_code != 429 or attempt == _http.RETRY_ATTEMPTS - 1 or not _is_rate_limit(r):
+            return r
+        time.sleep(_http.RETRY_BACKOFF_S * (2 ** attempt))
+
+
+def _error(r, label: str, model: str = None) -> ConnectorError:
+    """A failed Kling response as a ConnectorError with a shared reason.
+    Kling puts useful detail in the JSON body even on 4xx/5xx."""
+    body = _parse(r) or {}
+    code = body.get("code")
+    msg = body.get("message") or body.get("msg") or (r.text or "")[:500] or "unknown error"
+    reason = classify_http_error(r.status_code, msg)
+    if code in _BALANCE_CODES:
+        reason = INSUFFICIENT_CREDIT
+    elif code == 1201 and model in MODELS and "model is not supported" in msg.lower():
+        reason = MODEL_RETIRED
+    if reason == INVALID_API_KEY:
+        return ConnectorError(f"Kling rejected the key: {msg}", reason=reason)
+    if reason == INSUFFICIENT_CREDIT:
+        return ConnectorError(OUT_OF_CREDIT_MESSAGE, reason=reason)
+    if reason == MODEL_RETIRED:
+        return ConnectorError(f'Kling no longer serves {model or "this model"}: "{msg}"',
+                              reason=reason)
+    status = f" (HTTP {r.status_code})" if r.status_code >= 400 else ""
+    return ConnectorError(f"{label} error{status}: {msg}", reason=reason)
+
+
+def _ok_body(r, label: str, model: str = None) -> dict:
+    """The parsed body of a successful response (HTTP < 400, code 0), else raise."""
+    body = _parse(r) if r.status_code < 400 else None
+    if body is None or body.get("code") != 0:
+        raise _error(r, label, model)
+    return body
+
+
 def create_task(body: dict) -> dict:
     """POST /v1/videos/omni-video. Returns response data."""
     url = f"{BASE_URL}/v1/videos/omni-video"
-    # 429 is safe to retry (request was rejected, no task created). Network
+    # Only a rate-limit 429 is retried (rejected, no task created). Network
     # errors and 5xx are NOT retried here: a timed-out/ambiguous POST may have
     # created a paid task server-side, and a duplicate submission costs money.
-    r = _http.request_with_retry(
-        "POST", url, json=body, headers=_auth_headers(), timeout=120,
-        retry_statuses=frozenset({429}), retry_exceptions=False,
-    )
-    # Capture response body before raising on HTTP errors — Kling returns
-    # useful error details in JSON even on 4xx/5xx responses.
-    if r.status_code >= 400:
-        try:
-            err_data = r.json()
-            msg = err_data.get("message") or err_data.get("msg") or r.text[:500]
-        except Exception:
-            msg = r.text[:500]
-        raise ConnectorError(f"Kling API error (HTTP {r.status_code}): {msg}")
-    data = r.json()
-    if data.get("code") != 0:
-        raise ConnectorError(f"Kling API error: {data.get('message', 'unknown error')}")
-    return data["data"]
+    r = _request("POST", url, json=body, headers=_auth_headers(), timeout=120,
+                 retry_exceptions=False)
+    return _ok_body(r, "Kling API", model=body.get("model_name"))["data"]
 
 
 def query_task(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict:
     """GET task status by ID. Idempotent — transient failures are retried."""
     url = f"{BASE_URL}{path_template.format(task_id=task_id)}"
-    r = _http.request_with_retry("GET", url, headers=_auth_headers(), timeout=30)
-    if r.status_code >= 400:
-        raise ConnectorError(f"Kling API error (HTTP {r.status_code}): {r.text[:500]}")
-    data = r.json()
-    if data.get("code") != 0:
-        raise ConnectorError(f"Kling API error: {data.get('message', 'unknown error')}")
-    return data["data"]
+    r = _request("GET", url, headers=_auth_headers(), timeout=30,
+                 retry_statuses=_http.TRANSIENT_STATUS)
+    return _ok_body(r, "Kling API")["data"]
 
 
 # A transient error mid-poll must not abandon the task: generation is already
@@ -392,7 +469,8 @@ def poll_until_done(task_id: str, path_template: str = VIDEO_QUERY_PATH) -> dict
             if failures >= MAX_CONSECUTIVE_POLL_FAILURES:
                 raise ConnectorError(
                     f"Kling task {task_id}: {failures} consecutive status-check "
-                    f"failures, giving up. Last error: {e}"
+                    f"failures, giving up. Last error: {e}",
+                    reason=e.reason,
                 ) from e
         else:
             failures = 0
@@ -422,7 +500,7 @@ def generate(
     negative_prompt: str = None,
     sound: str = "on",
     aspect_ratio: str = "16:9",
-    mode: str = "std",
+    mode: str = DEFAULT_MODE,
     external_task_id: str = None,
     multi_shot: bool = False,
     shot_type: str = None,
@@ -492,25 +570,12 @@ def generate_speech(
     # TTS is synchronous — the API blocks and returns the audio in the
     # create response. No separate query/poll endpoint exists.
     # Longer timeout since the API may block for the full synthesis. Like
-    # create_task: only 429 retried (a timed-out POST may have been billed).
-    r = _http.request_with_retry(
-        "POST", url, json=body, headers=_auth_headers(), timeout=120,
-        retry_statuses=frozenset({429}), retry_exceptions=False,
-    )
+    # create_task: only a rate-limit 429 is retried (a timed-out POST may have
+    # been billed).
+    r = _request("POST", url, json=body, headers=_auth_headers(), timeout=120,
+                 retry_exceptions=False)
+    result = _ok_body(r, "Kling TTS")["data"]
 
-    if r.status_code >= 400:
-        try:
-            err_data = r.json()
-            msg = err_data.get("message") or err_data.get("msg") or r.text[:500]
-        except Exception:
-            msg = r.text[:500]
-        raise ConnectorError(f"Kling TTS error (HTTP {r.status_code}): {msg}")
-
-    data = r.json()
-    if data.get("code") != 0:
-        raise ConnectorError(f"Kling TTS error: {data.get('message', 'unknown error')}")
-
-    result = data["data"]
     status = result.get("task_status")
     if status == "failed":
         msg = result.get("task_status_msg", "unknown error")
@@ -524,3 +589,35 @@ def generate_speech(
         ) from e
 
     return _download_file(audio_url, out_path)
+
+
+def check_key() -> dict:
+    """Validate the stored/overlaid key pair with one free call: the account's
+    resource-pack costs for the last 7 days, GET /account/costs (no /v1; that
+    path 404s). No billed call.
+
+    Kling has no model-list endpoint, so default_model_ok only says
+    DEFAULT_MODEL is not in RETIRED_MODELS. An unannounced retirement shows up
+    on the next create as MODEL_RETIRED instead.
+
+    The endpoint allows about 1 QPS, so nothing is retried: not a 429, not a
+    dropped connection. Raises ConnectorError with the reason _error gives, or
+    UNREACHABLE when no response came back.
+    """
+    headers = _auth_headers()  # a missing credential raises here, not as UNREACHABLE
+    now_ms = int(time.time() * 1000)
+    params = {"start_time": now_ms - 7 * 24 * 3600 * 1000, "end_time": now_ms}
+    try:
+        r = _http.request_with_retry(
+            "GET", f"{BASE_URL}/account/costs", params=params, headers=headers,
+            timeout=15, retry_statuses=frozenset(), retry_exceptions=False,
+        )
+    except ConnectorError as e:
+        raise ConnectorError(f"Could not reach Kling: {e}", reason=UNREACHABLE) from e
+    _ok_body(r, "Kling key check")
+    return {
+        "ok": True,
+        "default_model": DEFAULT_MODEL,
+        "default_model_ok": DEFAULT_MODEL not in RETIRED_MODELS,
+        "detail": "Kling lists no models; the default is checked against known retirements",
+    }

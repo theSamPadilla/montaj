@@ -15,7 +15,7 @@
     {"name": "negative-prompt", "type": "string", "required": false, "description": "Things to avoid"},
     {"name": "sound", "type": "enum", "required": false, "default": "on", "options": ["on", "off"], "description": "on|off"},
     {"name": "aspect-ratio", "type": "string", "required": false, "default": "16:9", "description": "16:9|9:16|1:1"},
-    {"name": "mode", "type": "enum", "required": false, "default": "std", "options": ["std", "pro"], "description": "std|pro"},
+    {"name": "mode", "type": "enum", "required": false, "default": "pro", "options": ["std", "pro"], "description": "std|pro"},
     {"name": "model", "type": "enum", "required": false, "default": "kling-v3-omni", "options": ["kling-v3-omni", "kling-video-o1"], "description": "kling-v3-omni (flexible durations, multi-shot) | kling-video-o1 (newer, 5s/10s only, no multi-shot)"},
     {"name": "external-task-id", "type": "string", "required": false, "description": "Caller correlation ID echoed back by Kling on queries"},
     {"name": "multi-shot", "type": "bool", "required": false, "default": false, "description": "Enable multi-shot mode (up to 6 scenes in one API call)"},

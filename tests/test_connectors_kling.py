@@ -1,4 +1,5 @@
-"""Tests for connectors.kling — pure functions only, no network."""
+"""Tests for connectors.kling — no network. HTTP paths run against a fake
+requests module; nothing here can reach Kling."""
 import base64
 import pytest
 
@@ -414,3 +415,345 @@ def test_model_v3_omni_allows_any_duration():
     for dur in [3, 7, 12, 15]:
         result = build_payload(prompt="test", model="kling-v3-omni", duration_seconds=dur)
         assert result["body"]["duration"] == str(dur)
+
+
+def test_mode_defaults_to_pro():
+    assert build_payload(prompt="test")["body"]["mode"] == "pro"
+
+
+# ---------------------------------------------------------------------------
+# HTTP paths — PV29 T4. Error reasons, the 429 split, retired models,
+# check_key. Every call hits _FakeRequests; the bodies are the ones Kling
+# returned live (docs/plans/PV29-vendor-facts.md in montaj-app).
+# ---------------------------------------------------------------------------
+
+import importlib.util  # noqa: E402
+import json  # noqa: E402
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from connectors import (  # noqa: E402
+    _http, kling, INVALID_API_KEY, INSUFFICIENT_CREDIT, MODEL_RETIRED, UNREACHABLE,
+)
+
+OUT_OF_CREDIT = "Your Kling account is out of credits. Top up a resource pack at kling.ai/dev."
+BALANCE_429 = {"code": 1102, "message": "Account balance not enough"}
+KEY_401 = {"code": 1002, "message": "access key not found"}
+RATE_429 = {"code": 1302, "message": "API request too fast"}
+CREATED = {"code": 0, "message": "SUCCEED", "data": {"task_id": "t-1", "task_status": "submitted"}}
+
+
+class _Resp:
+    def __init__(self, status_code, body=None, text=None):
+        self.status_code = status_code
+        self._body = body
+        self.text = text if text is not None else json.dumps(body)
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("not JSON")
+        return self._body
+
+
+class _FakeRequests:
+    """Stands in for the requests module; replays a script, records calls."""
+
+    class RequestException(Exception):
+        pass
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = []
+
+    def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        if not self.script:
+            raise AssertionError(f"unexpected HTTP call: {method} {url}")
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+@pytest.fixture
+def wire(monkeypatch):
+    """wire(*responses) -> fake. Fake credentials, no sleeping, no network."""
+    monkeypatch.setenv("KLING_ACCESS_KEY", "test-access-key-0000000000000000")
+    monkeypatch.setenv("KLING_SECRET_KEY", "test-secret-key-0000000000000000")
+    sleeps = []
+    monkeypatch.setattr(_http.time, "sleep", sleeps.append)
+
+    def _wire(*script):
+        fake = _FakeRequests(script)
+        fake.sleeps = sleeps
+        monkeypatch.setattr(_http, "_require_requests", lambda: fake)
+        return fake
+    return _wire
+
+
+def _body(model=DEFAULT_MODEL):
+    return build_payload(prompt="a cat", model=model)["body"]
+
+
+class TestCreateTaskErrors:
+    def test_401_is_invalid_api_key(self, wire):
+        fake = wire(_Resp(401, KEY_401))
+        with pytest.raises(ConnectorError) as ei:
+            kling.create_task(_body())
+        assert ei.value.reason == INVALID_API_KEY
+        assert str(ei.value) == "Kling rejected the key: access key not found"
+        assert len(fake.calls) == 1
+
+    def test_balance_429_is_insufficient_credit_and_not_retried(self, wire):
+        fake = wire(_Resp(429, BALANCE_429), _Resp(200, CREATED))
+        with pytest.raises(ConnectorError) as ei:
+            kling.create_task(_body())
+        assert ei.value.reason == INSUFFICIENT_CREDIT
+        assert str(ei.value) == OUT_OF_CREDIT
+        assert len(fake.calls) == 1
+        assert fake.sleeps == []
+
+    def test_balance_words_without_a_code_are_not_retried(self, wire):
+        fake = wire(_Resp(429, {"message": "Account balance not enough"}), _Resp(200, CREATED))
+        with pytest.raises(ConnectorError) as ei:
+            kling.create_task(_body())
+        assert ei.value.reason == INSUFFICIENT_CREDIT
+        assert len(fake.calls) == 1
+
+    def test_unparseable_429_is_not_retried(self, wire):
+        fake = wire(_Resp(429, None, text="<html>busy</html>"), _Resp(200, CREATED))
+        with pytest.raises(ConnectorError, match="HTTP 429") as ei:
+            kling.create_task(_body())
+        assert ei.value.reason is None
+        assert len(fake.calls) == 1
+        assert fake.sleeps == []
+
+    def test_known_non_rate_limit_429_is_not_retried(self, wire):
+        # 1100 "account exception": waiting does not fix it.
+        fake = wire(_Resp(429, {"code": 1100, "message": "Account exception"}), _Resp(200, CREATED))
+        with pytest.raises(ConnectorError):
+            kling.create_task(_body())
+        assert len(fake.calls) == 1
+
+    def test_rate_limit_429_is_retried_then_succeeds(self, wire):
+        fake = wire(_Resp(429, RATE_429), _Resp(200, CREATED))
+        assert kling.create_task(_body())["task_id"] == "t-1"
+        assert len(fake.calls) == 2
+        assert len(fake.sleeps) == 1
+
+    def test_plain_parsed_429_without_balance_signal_is_retried(self, wire):
+        fake = wire(_Resp(429, {"message": "Too many requests"}), _Resp(200, CREATED))
+        assert kling.create_task(_body())["task_id"] == "t-1"
+        assert len(fake.calls) == 2
+
+    def test_rate_limit_retry_is_bounded(self, wire):
+        fake = wire(*[_Resp(429, RATE_429)] * _http.RETRY_ATTEMPTS)
+        with pytest.raises(ConnectorError, match="HTTP 429"):
+            kling.create_task(_body())
+        assert len(fake.calls) == _http.RETRY_ATTEMPTS
+
+    def test_5xx_is_not_retried_on_create(self, wire):
+        # A 5xx POST may have created a paid task; resubmitting could bill twice.
+        fake = wire(_Resp(500, {"code": 5000, "message": "server error"}), _Resp(200, CREATED))
+        with pytest.raises(ConnectorError, match="HTTP 500"):
+            kling.create_task(_body())
+        assert len(fake.calls) == 1
+
+    def test_model_not_supported_is_model_retired(self, wire):
+        wire(_Resp(400, {"code": 1201, "message": "model is not supported"}))
+        with pytest.raises(ConnectorError) as ei:
+            kling.create_task(_body("kling-v3-omni"))
+        assert ei.value.reason == MODEL_RETIRED
+        assert "kling-v3-omni" in str(ei.value)
+        assert '"model is not supported"' in str(ei.value)
+
+    def test_other_1201_stays_generic(self, wire):
+        msg = "aspect_ratio value '4:5' is invalid, allowed values: 16:9, 9:16, 1:1"
+        wire(_Resp(400, {"code": 1201, "message": msg}))
+        with pytest.raises(ConnectorError) as ei:
+            kling.create_task(_body())
+        assert ei.value.reason is None
+        assert msg in str(ei.value)
+
+    def test_200_with_nonzero_code_is_classified(self, wire):
+        wire(_Resp(200, BALANCE_429))
+        with pytest.raises(ConnectorError) as ei:
+            kling.create_task(_body())
+        assert ei.value.reason == INSUFFICIENT_CREDIT
+
+
+class TestRetiredModels:
+    def test_retired_model_raises_before_any_http(self, wire, monkeypatch, tmp_path):
+        monkeypatch.setitem(kling.RETIRED_MODELS, "kling-v2-old", "kling-v3-omni")
+        fake = wire()  # any call fails the test
+        with pytest.raises(ConnectorError) as ei:
+            kling.generate(prompt="a cat", out_path=str(tmp_path / "o.mp4"), model="kling-v2-old")
+        assert ei.value.reason == MODEL_RETIRED
+        assert str(ei.value) == "kling-v2-old is retired; use kling-v3-omni"
+        assert fake.calls == []
+
+    def test_retired_names_are_not_offered(self):
+        assert not set(kling.RETIRED_MODELS) & set(MODELS)
+
+    def test_default_model_is_current(self):
+        assert DEFAULT_MODEL == "kling-v3-omni"
+        assert DEFAULT_MODEL in MODELS
+        assert DEFAULT_MODEL not in kling.RETIRED_MODELS
+
+
+class TestOtherCalls:
+    def test_speech_balance_429_is_not_retried(self, wire, tmp_path):
+        fake = wire(_Resp(429, BALANCE_429), _Resp(200, CREATED))
+        with pytest.raises(ConnectorError) as ei:
+            kling.generate_speech("hi", "sunny", str(tmp_path / "o.mp3"))
+        assert ei.value.reason == INSUFFICIENT_CREDIT
+        assert str(ei.value) == OUT_OF_CREDIT
+        assert len(fake.calls) == 1
+
+    def test_speech_401_is_invalid_api_key(self, wire, tmp_path):
+        wire(_Resp(401, KEY_401))
+        with pytest.raises(ConnectorError) as ei:
+            kling.generate_speech("hi", "sunny", str(tmp_path / "o.mp3"))
+        assert ei.value.reason == INVALID_API_KEY
+
+    def test_query_balance_429_is_not_retried(self, wire):
+        fake = wire(_Resp(429, BALANCE_429), _Resp(200, CREATED))
+        with pytest.raises(ConnectorError) as ei:
+            kling.query_task("t-1")
+        assert ei.value.reason == INSUFFICIENT_CREDIT
+        assert len(fake.calls) == 1
+
+    def test_query_5xx_is_still_retried(self, wire):
+        # Status checks are idempotent: transient 5xx keeps its retry.
+        done = {"code": 0, "data": {"task_status": "processing"}}
+        fake = wire(_Resp(502, None, text="bad gateway"), _Resp(200, done))
+        assert kling.query_task("t-1")["task_status"] == "processing"
+        assert len(fake.calls) == 2
+
+    def test_poll_give_up_keeps_the_reason(self, monkeypatch):
+        monkeypatch.setattr(kling.time, "sleep", lambda s: None)
+
+        def rejected(task_id, path_template=kling.VIDEO_QUERY_PATH):
+            raise ConnectorError("Kling rejected the key: access key not found", reason=INVALID_API_KEY)
+
+        monkeypatch.setattr(kling, "query_task", rejected)
+        with pytest.raises(ConnectorError, match="consecutive") as ei:
+            kling.poll_until_done("t-1")
+        assert ei.value.reason == INVALID_API_KEY
+
+
+class TestCheckKey:
+    OK = {"code": 0, "message": "SUCCEED", "data": {"code": 0, "msg": "success"}}
+
+    def test_ok_calls_account_costs_once(self, wire):
+        fake = wire(_Resp(200, self.OK))
+        result = kling.check_key()
+        assert result["ok"] is True
+        assert result["default_model"] == DEFAULT_MODEL
+        assert result["default_model_ok"] is True
+        assert len(fake.calls) == 1
+        method, url, kwargs = fake.calls[0]
+        assert method == "GET"
+        assert url == f"{kling.BASE_URL}/account/costs"  # no /v1: that path 404s
+        params = kwargs["params"]
+        assert params["end_time"] - params["start_time"] == 7 * 24 * 3600 * 1000
+        assert kwargs["headers"]["Authorization"].startswith("Bearer ")
+
+    def test_401_is_invalid_api_key(self, wire):
+        fake = wire(_Resp(401, KEY_401))
+        with pytest.raises(ConnectorError) as ei:
+            kling.check_key()
+        assert ei.value.reason == INVALID_API_KEY
+        assert "access key not found" in str(ei.value)
+        assert len(fake.calls) == 1
+
+    def test_429_is_not_retried(self, wire):
+        # The endpoint allows about 1 QPS; a retry would only add to it.
+        fake = wire(_Resp(429, RATE_429), _Resp(200, self.OK))
+        with pytest.raises(ConnectorError):
+            kling.check_key()
+        assert len(fake.calls) == 1
+
+    def test_connection_failure_is_unreachable(self, wire):
+        fake = wire(_FakeRequests.RequestException("connection refused"), _Resp(200, self.OK))
+        with pytest.raises(ConnectorError) as ei:
+            kling.check_key()
+        assert ei.value.reason == UNREACHABLE
+        assert len(fake.calls) == 1
+
+    def test_retired_default_is_reported(self, wire, monkeypatch):
+        monkeypatch.setitem(kling.RETIRED_MODELS, DEFAULT_MODEL, "kling-next")
+        wire(_Resp(200, self.OK))
+        result = kling.check_key()
+        assert result["ok"] is True
+        assert result["default_model_ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# steps/generate/kling_generate.py — reason → fail() code, message verbatim.
+# ---------------------------------------------------------------------------
+
+_STEP = Path(__file__).parent.parent / "steps" / "generate" / "kling_generate.py"
+
+
+@pytest.fixture
+def step():
+    spec = importlib.util.spec_from_file_location("kling_generate_step", _STEP)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _run_failing(step, monkeypatch, capsys, argv, error):
+    def boom(**kw):
+        raise error
+    monkeypatch.setattr(step.kling, "generate", boom)
+    monkeypatch.setattr(sys, "argv", ["kling_generate.py", *argv])
+    with pytest.raises(SystemExit) as ei:
+        step.main()
+    assert ei.value.code == 1
+    return json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+
+
+_STANDALONE = ["--prompt", "a cat", "--out", "o.mp4"]
+_CASES = [
+    (ConnectorError("Kling rejected the key: access key not found", reason=INVALID_API_KEY),
+     "invalid_api_key"),
+    (ConnectorError(OUT_OF_CREDIT, reason=INSUFFICIENT_CREDIT), "insufficient_credit"),
+    (ConnectorError("kling-v2-old is retired; use kling-v3-omni", reason=MODEL_RETIRED),
+     "model_retired"),
+    (ConnectorError("Kling API error (HTTP 500): boom"), "api_error"),
+]
+
+
+@pytest.mark.parametrize("error,code", _CASES)
+def test_step_standalone_maps_reason(step, monkeypatch, capsys, error, code):
+    err = _run_failing(step, monkeypatch, capsys, _STANDALONE, error)
+    assert err == {"error": code, "message": str(error)}
+
+
+@pytest.mark.parametrize("error,code", _CASES)
+def test_step_project_mode_maps_reason(step, monkeypatch, capsys, error, code):
+    project = {"storyboard": {"scenes": [{"id": "s1", "duration": 5}]}}
+    saved = []
+    monkeypatch.setattr(step, "find_project", lambda pid: ("p.json", project))
+    monkeypatch.setattr(step, "compose_prompt", lambda p, s: "a cat")
+    monkeypatch.setattr(step, "resolve_ref_paths", lambda p, s: [])
+    monkeypatch.setattr(step, "save_error_to_project",
+                        lambda path, proj, sid, msg: saved.append((sid, msg)))
+    err = _run_failing(step, monkeypatch, capsys,
+                       ["--project-id", "p", "--scene-id", "s1", "--out", "o.mp4"], error)
+    assert err == {"error": code, "message": str(error)}
+    assert saved == [("s1", str(error))]
+
+
+def test_step_mode_defaults_to_pro(step, monkeypatch):
+    seen = {}
+
+    def capture(**kw):
+        seen.update(kw)
+        return kw["out_path"]
+    monkeypatch.setattr(step.kling, "generate", capture)
+    monkeypatch.setattr(sys, "argv", ["kling_generate.py", *_STANDALONE])
+    step.main()
+    assert seen["mode"] == "pro"
