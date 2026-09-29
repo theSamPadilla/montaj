@@ -29,6 +29,7 @@ from serve.common import (
 )
 from serve import context as context_store
 from serve.caption_job import build_audio_mix_spec
+from serve.caption_theme import sanitize_theme, seed_prev
 from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import save_upload
 from lib.ingest import ingest_source
@@ -272,6 +273,7 @@ async def _run_caption_detached(
     style: str,
     broadcaster: "SSEBroadcaster",
     job: _CaptionJob,
+    theme: dict = None,
 ) -> None:
     """Run the caption pipeline to completion regardless of any client. Owns the
     `_active_caption_jobs` slot until the pipeline actually finishes, so a dropped
@@ -287,6 +289,7 @@ async def _run_caption_detached(
             broadcaster=broadcaster,
             on_log=None,
             is_disconnected=None,
+            theme=theme,
         )
         job.status, job.result = "done", track
     except CaptionPipelineError as e:
@@ -3449,11 +3452,14 @@ async def _run_caption_pipeline(
     broadcaster: "SSEBroadcaster",
     on_log=None,
     is_disconnected=None,
+    theme: dict = None,
 ):
     """Core caption pipeline, shared by the SSE route and (later) a detached
     async caller. Runs build_audio_mix_spec → write mix spec → mix_timeline →
-    transcribe → caption, then persists project["captions"] (carrying prior
-    theme keys forward), writes project.json, and broadcasts the update.
+    transcribe → caption, then persists project["captions"] (seeding `theme`
+    — a style profile's fontFamily/googleFonts and emphasis colour — into the
+    prior track where it lacks a value, then carrying every remaining prior
+    theme key forward), writes project.json, and broadcasts the update.
 
     Returns the final caption `track` dict on success.
 
@@ -3565,7 +3571,7 @@ async def _run_caption_pipeline(
 
     # Persist the caption track onto the project and broadcast.
     track = json.loads(track_path.read_text())
-    prev = project.get("captions") or {}
+    prev = seed_prev(project.get("captions") or {}, theme)
     track = _merge_caption_theme(prev, track)
     project["captions"] = track
     text = json.dumps(project, indent=2)
@@ -3618,6 +3624,10 @@ async def generate_captions(
     model = body.get("model") or DEFAULT_WHISPER_MODEL
     language = body.get("language") or "auto"
     style = body.get("style") or (project.get("captions") or {}).get("style") or "pop"
+    # A style profile's caption look (fontFamily/googleFonts + the style's
+    # emphasis colour), seeded into the saved track where it doesn't already
+    # have a value — see serve/caption_theme.py.
+    theme = sanitize_theme(body.get("theme"))
 
     # Temp paths the pipeline writes; mirrored here so the generator's `finally`
     # can unlink them (kept identical to the pipeline's own paths).
@@ -3636,7 +3646,10 @@ async def generate_captions(
         job = _CaptionJob()
         _caption_jobs[project_id] = job
         task = asyncio.create_task(
-            _run_caption_detached(project_id, project_dir, project, model, language, style, broadcaster, job)
+            _run_caption_detached(
+                project_id, project_dir, project, model, language, style, broadcaster, job,
+                theme=theme,
+            )
         )
         _caption_task_refs.add(task)
         task.add_done_callback(_caption_task_refs.discard)
@@ -3670,6 +3683,7 @@ async def generate_captions(
                 broadcaster=broadcaster,
                 on_log=on_log,
                 is_disconnected=request.is_disconnected,
+                theme=theme,
             ))
 
             # Drain log frames until the pipeline task completes, then flush any

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Caption regeneration accepts a `theme` (font and the style's emphasis colour) in its request body and seeds it into the saved track where the prior track has no value; the track's own values still win.
+
 ## v5.5.6
 
 - Workflows can name host-app skills with the `app/` scope; `get_workflow` marks them `kind: "skill"` with the full `app/<name>`.

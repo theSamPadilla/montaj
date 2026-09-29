@@ -252,7 +252,7 @@ def _setup_caption_project(tmp_path, monkeypatch):
 
     captured = {}
 
-    async def fake_detached(project_id, proj_dir, project, model, language, style, broadcaster, job):
+    async def fake_detached(project_id, proj_dir, project, model, language, style, broadcaster, job, theme=None):
         captured["called"] = True
         # leave job in running state (simulates in-flight caption)
 
@@ -280,7 +280,7 @@ def test_default_caption_model_is_turbo(tmp_path, monkeypatch):
     project_dir, captured = _setup_caption_project(tmp_path, monkeypatch)
     req = _FakeRequest({"async": "1"})
 
-    async def fake_detached(project_id, proj_dir, project, model, language, style, broadcaster, job):
+    async def fake_detached(project_id, proj_dir, project, model, language, style, broadcaster, job, theme=None):
         captured["model"] = model
 
     monkeypatch.setattr(projects_mod, "_run_caption_detached", fake_detached)
