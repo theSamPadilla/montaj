@@ -27,7 +27,9 @@
  * Called once per project-load; the call-site semantics (a React effect,
  * re-evaluated only on project identity change, with per-clip Preparing-
  * placeholder fallback rather than a whole-project revert) land in T6. This
- * module is the pure/async logic T6 calls into.
+ * module is the pure/async logic T6 calls into. The one later call: a project
+ * that failed on SHAPE at load is re-evaluated once its shape passes, for a
+ * one-way, paused upgrade to the engine (`PreviewPlayer.tsx`'s `useEngineMode`).
  */
 import { transitionPairs } from '@bycrux/timeline-core'
 import type { EditorProject as Project } from '../schema'

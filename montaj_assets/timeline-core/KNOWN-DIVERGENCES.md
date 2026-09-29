@@ -1082,9 +1082,9 @@ crossfades at all: `checkProjectShapeEligibility` requires every `tracks[0]`
 video item to carry `proxySrc` (`eligibility.ts:77-78`), and `proxySrc` is
 written best-effort at import and can still be mid-encode. A project with one
 freshly-imported, not-yet-proxied clip is legacy-bound for that reason alone
-— and, per `useEngineMode`'s "evaluated once per project LOAD" rule, STAYS
-legacy-bound for the rest of the session even once the proxy finishes, a
-reload being the only way back onto the engine. Folding crossfade detection
+— until the proxy finishes, when `useEngineMode` makes its one-way upgrade to
+the engine at the next pause (it used to stay legacy-bound for the rest of the
+session, a reload being the only way back). Folding crossfade detection
 into eligibility would mean a project in exactly that ordinary transient
 state — proxy still encoding, nothing wrong with the project — could become
 unpreviewable in ANY player the moment it also contained a crossfade, which

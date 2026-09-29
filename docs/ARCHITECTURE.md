@@ -745,9 +745,11 @@ with the prop untouched. `{enabled: true}` only asks the editor to *try*:
 per-project eligibility (every track-0 video item already `proxySrc`'d, none
 needing `nobg_preview_src`, plus the WebCodecs capability probe) is evaluated
 once per project **load** (`PreviewPlayer.tsx`'s `useEngineMode`) and never
-re-run on an edit — a project that fails stays on the legacy player, with a
-one-line console reason, for its whole session even if it becomes eligible a
-minute later; a project that passes stays on the engine for its whole session
+re-run on an edit — a project that fails starts on the legacy player, with a
+one-line console reason. If it failed only on shape (a proxy still encoding)
+and becomes eligible later, it makes ONE one-way move to the engine, deferred
+until playback is paused, with the playhead and selection kept; it never moves
+back. A project that passes stays on the engine for its whole session
 even if a clip added afterward isn't proxied yet. That one clip alone shows
 the **Preparing** picture state instead — `scheduler.ts`'s `picture` state
 machine has a value distinct from `video`/`black`/`opaque` that covers a proxy

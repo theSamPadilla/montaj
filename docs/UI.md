@@ -542,10 +542,11 @@ internally.
   codecs (av01 video + Opus audio), every track-0 video item must already
   carry a `proxySrc`, and none may need `nobg_preview_src` (the WebM alpha
   preview for background-removed clips — the engine's demuxer is MP4-only). A
-  project that fails stays on the `<video>` player for its whole session even
-  if it becomes eligible moments later (a proxy finishes encoding); a project
-  that passes stays on the engine for its whole session even if a clip added
-  afterward has no proxy yet.
+  project that fails starts on the `<video>` player. If a proxy finishing
+  encoding makes it eligible later, it switches to the engine once, at the
+  next pause, keeping the playhead and selection; it never switches back. A
+  project that passes stays on the engine for its whole session even if a clip
+  added afterward has no proxy yet.
 - **Automatic fallback.** Whenever eligibility fails, the console prints one
   line — `[montaj] playback engine unavailable for this project — using the
   legacy player (<reason>)` — and playback is otherwise indistinguishable from

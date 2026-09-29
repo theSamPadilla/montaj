@@ -1217,9 +1217,10 @@ export interface VideoEditorProps<P extends Project = Project> {
    * avc1/opus decode support, plus every track-0 video item proxied and none
    * requiring the WebM `nobg_preview_src` alpha path) once per project load,
    * and falls back to the legacy player, reasoned via console, whenever a
-   * project doesn't pass. `debugHud` additionally renders the
-   * fps/drops/buffer/clock-kind readout; it has no effect while `enabled` is
-   * false.
+   * project doesn't pass. A project that failed only for want of proxies moves
+   * to the engine once they land (one way, at the next pause). `debugHud`
+   * additionally renders the fps/drops/buffer/clock-kind readout; it has no
+   * effect while `enabled` is false.
    *
    * No flag mechanism existed before this — hosts opt in explicitly, and this
    * prop stays absent-by-default for every consumer of the package. The montaj

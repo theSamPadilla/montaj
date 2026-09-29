@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
 import { containsTime } from '@bycrux/timeline-core'
 import { videoTransformContainerStyle, videoTransformBoxPct, type VideoTransform } from './transformStyle'
 import type { EditorProject as Project } from '../../schema'
@@ -12,7 +12,7 @@ import OverlayItemsLayer from './OverlayItemsLayer'
 import { useVideoPlayback } from './useVideoPlayback'
 import { useEnginePlayback, type EnginePlayback } from './useEnginePlayback'
 import EngineSurface from './EngineSurface'
-import { evaluateEngineEligibility, engineRequiredReason } from '../../engine/eligibility'
+import { checkProjectShapeEligibility, evaluateEngineEligibility, engineRequiredReason } from '../../engine/eligibility'
 import type { AcquiredDemux } from '../../engine'
 import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } from '../hover-scrub'
@@ -180,37 +180,63 @@ export default function PreviewPlayer(props: PreviewPlayerProps) {
 
 type EngineMode = 'legacy' | 'engine'
 
+/** `upgradable`: a legacy decision that may still make the one-way move to the
+ *  engine (see `useEngineMode`). Always false for an engine decision. */
+interface EngineDecision { id: string; mode: EngineMode; upgradable: boolean }
+
 /**
  * Plan decision 2, at its call site.
  *
  * Eligibility is evaluated ONCE per project LOAD — re-run only when the project
- * IDENTITY changes (a different `project.id`), never on an edit. Two
- * consequences the plan states explicitly and this hook is the enforcement of:
+ * IDENTITY changes (a different `project.id`), never on an edit. The decision
+ * exists to forbid mode-FLAPPING: swapping playback engines back and forth
+ * under a playing editor. What this hook enforces:
  *
  *   - a project that was eligible stays on the engine for the whole session,
  *     even if a clip added later has no proxy yet (that clip alone shows
  *     `EngineSurface`'s Preparing placeholder — the engine never hands a
  *     running project back to the legacy player);
- *   - a project that was INELIGIBLE stays on the legacy player for the whole
- *     session, even if its proxies finish encoding a minute later. A reload
- *     picks up engine mode. The alternative — swapping playback engines under a
- *     playing editor — is the mode-flapping the decision exists to forbid.
+ *   - a project that was INELIGIBLE starts on the legacy player, and makes ONE
+ *     one-way upgrade to the engine if it becomes eligible later. The case
+ *     this exists for: a host mounts the editor while an agent is still
+ *     building the project, before any proxy exists, and the proxies land a
+ *     minute later. Before this, that project stayed on legacy (no crossfades,
+ *     no audible scrub) until a reload. The upgrade cannot flap, because nothing
+ *     ever moves a project back from the engine; and it never happens under a
+ *     playing editor, because it waits for the transport to be paused.
+ *
+ * The upgrade, precisely:
+ *   - it is re-checked only when the SHAPE verdict (`checkProjectShapeEligibility`,
+ *     proxies and `nobg_preview_src`) flips to eligible, not on every edit, and
+ *     then runs the full `evaluateEngineEligibility` (the capability probe, which
+ *     a load-time shape failure never reached);
+ *   - while `playing`, it is deferred until the next pause;
+ *   - the playhead survives it: the clock is the host's, and the engine is built
+ *     paused AT the current time (`useEnginePlayback`'s `startProjectS`);
+ *   - selection survives it: it is host state, passed in as props.
  *
  * Returns `null` while the (async) capability probe is still outstanding, which
  * can only happen with the flag ON: with it off the answer is `'legacy'`
- * synchronously, on the first render, with no probe and no console line.
+ * synchronously, on the first render, with no probe and no console line. The
+ * upgrade's probe never yields `null`: the hook keeps answering `'legacy'`
+ * until the probe resolves and the transport is paused.
  */
 function useEngineMode(
   engine: PreviewPlayerProps['engine'],
   project: Project,
+  playing: boolean,
 ): EngineMode | null {
   const enabled = !!engine?.enabled
   const projectId = project.id
-  const [decision, setDecision] = useState<{ id: string; mode: EngineMode } | null>(null)
+  const [decision, setDecision] = useState<EngineDecision | null>(null)
 
   useEffect(() => {
     if (!enabled) return
     let cancelled = false
+    // Only a SHAPE failure (a missing proxy, a WebM-alpha clip) can clear up
+    // later. A capability failure is session-cached and final, so a project
+    // that failed on it is never re-probed.
+    const shapeFailed = !checkProjectShapeEligibility(project).eligible
     void evaluateEngineEligibility(project).then((result) => {
       if (cancelled) return
       if (!result.eligible) {
@@ -220,13 +246,55 @@ function useEngineMode(
           `[montaj] playback engine unavailable for this project — using the legacy player (${result.reason ?? 'ineligible'})`,
         )
       }
-      setDecision({ id: projectId, mode: result.eligible ? 'engine' : 'legacy' })
+      setDecision({
+        id: projectId,
+        mode: result.eligible ? 'engine' : 'legacy',
+        upgradable: !result.eligible && shapeFailed,
+      })
     })
     return () => { cancelled = true }
   // Deliberately NOT `[project]`: an edit must not re-evaluate. The `project`
   // captured here is the one loaded under this id, which is what "evaluated
   // once per project-load" means.
   }, [enabled, projectId])
+
+  // ── The one-way upgrade (legacy → engine) ──────────────────────────────────
+  const upgradable = enabled && decision?.id === projectId && decision.mode === 'legacy' && decision.upgradable
+  // Cheap and sync (a walk over track 0). Memoized on `project` so the probe
+  // effect below keys off this BOOLEAN, which changes only when a proxy lands
+  // or a clip loses one, never on an ordinary edit.
+  const shapeEligible = useMemo(() => checkProjectShapeEligibility(project).eligible, [project])
+  // The project id whose full eligibility (shape AND capability) the upgrade
+  // probe confirmed. Separate from `decision` so a probe that resolves while
+  // playing can wait for the pause without being re-run.
+  const [upgradeReadyFor, setUpgradeReadyFor] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!upgradable || !shapeEligible) return
+    let cancelled = false
+    void evaluateEngineEligibility(project).then((result) => {
+      if (cancelled) return
+      if (!result.eligible) {
+        // The shape passed, so this is the capability probe, which the
+        // load-time failure never reached. Final for the session: log it once
+        // and stop trying.
+        console.info(
+          `[montaj] playback engine unavailable for this project — staying on the legacy player (${result.reason ?? 'ineligible'})`,
+        )
+        setDecision({ id: projectId, mode: 'legacy', upgradable: false })
+        return
+      }
+      setUpgradeReadyFor(projectId)
+    })
+    return () => { cancelled = true }
+  // Deliberately NOT `[project]`, same as the load-time effect: re-run when the
+  // shape verdict flips, not on every edit.
+  }, [upgradable, shapeEligible, projectId])
+
+  useEffect(() => {
+    if (!upgradable || !shapeEligible || playing || upgradeReadyFor !== projectId) return
+    setDecision({ id: projectId, mode: 'engine', upgradable: false })
+  }, [upgradable, shapeEligible, playing, upgradeReadyFor, projectId])
 
   if (!enabled) return 'legacy'
   if (!decision || decision.id !== projectId) return null
@@ -245,7 +313,19 @@ function VideoPreviewPlayer(props: PreviewPlayerProps) {
   // the highlighted caption all describe the same instant.
   const hoverTime = useHoverScrubTime(props.hoverScrub)
   const currentTime = hoverTime ?? playheadTime
-  const mode = useEngineMode(engine, project)
+
+  // The ACTIVE path's transport, for `useEngineMode`'s upgrade to wait on. Read
+  // off the same `onPlayingChange` push the host gets (every path reports on
+  // mount and on every change), then forwarded to the host unchanged.
+  const [playing, setPlaying] = useState(false)
+  const hostOnPlayingChangeRef = useRef(props.onPlayingChange)
+  hostOnPlayingChangeRef.current = props.onPlayingChange
+  const onPlayingChange = useCallback((next: boolean) => {
+    setPlaying(next)
+    hostOnPlayingChangeRef.current?.(next)
+  }, [])
+
+  const mode = useEngineMode(engine, project, playing)
 
   // See `gateTimeSink` — never hand the hooks `clock.set` directly, or seeking
   // to show a hovered frame writes that position back and the red playhead
@@ -270,8 +350,8 @@ function VideoPreviewPlayer(props: PreviewPlayerProps) {
   }
 
   return mode === 'engine'
-    ? <EnginePreview {...props} currentTime={currentTime} timeSink={timeSink} />
-    : <LegacyPreview {...props} currentTime={currentTime} timeSink={timeSink} />
+    ? <EnginePreview {...props} currentTime={currentTime} timeSink={timeSink} onPlayingChange={onPlayingChange} />
+    : <LegacyPreview {...props} currentTime={currentTime} timeSink={timeSink} onPlayingChange={onPlayingChange} />
 }
 
 /**
@@ -706,11 +786,12 @@ function PreviewSurface({
 
           Deliberately NOT folded into `useEngineMode`/`mode` above: that hook
           evaluates once per project LOAD, on purpose, so the PLAYER never
-          remounts mid-edit (the anti-flapping rule — see its comment). This
-          check is the opposite by design: cheap, synchronous, recomputed on
-          every render, so the banner appears the instant an operator drags
-          two clips into overlap and disappears the instant they pull them
-          apart, without ever touching which player is mounted. */}
+          flaps mid-edit (the anti-flapping rule, and its one paused, one-way
+          upgrade — see its comment). This check is the opposite by design:
+          cheap, synchronous, recomputed on every render, so the banner appears
+          the instant an operator drags two clips into overlap and disappears
+          the instant they pull them apart, without ever touching which player
+          is mounted. */}
       {playback.mode === 'legacy' && engineRequiredReason(project) !== null && (
         <div
           className="montaj-legacy-crossfade-banner absolute inset-x-0 bottom-0 flex justify-center pointer-events-none"
