@@ -117,6 +117,10 @@ const SHORT_EDGE_TARGET = 1080
  *    must not rely on another change's key edit landing in the same release.
  * 6: PV54, an overlay reads nothing outside the allowed folders. A PNG cached
  *    before could hold what it read there, and must not be served again.
+ * 7: PV55, a still's `sourceCrop` (static or keyframed) is applied in samples.
+ *    A frame cached before holds the UNCROPPED image. RESOLVER_VERSION 5 does
+ *    not retire it: that bump shipped in 5.7.0, before samples cropped, so
+ *    5.7.0 and 5.8.0 wrote uncropped frames under it.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -124,7 +128,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 6
+const SAMPLE_CACHE_VERSION = 7
 
 // ---------------------------------------------------------------------------
 // Input manifests
