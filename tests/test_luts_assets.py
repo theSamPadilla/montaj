@@ -69,14 +69,24 @@ def test_looks_json_exactly_one_default():
 # montaj-vivid-v1 (the winner) — byte-identical to the spike original
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not SPIKE_DIR.exists(), reason="spikes/tone-mapping/ not present")
+# Guard on the FILE, not the directory: spikes/tone-mapping/ exists here with its
+# scripts while the generated .cube does not, so a directory guard let this fail
+# with FileNotFoundError instead of skipping (e7, 2026-09-29). Same shape as the
+# c17-detail-max guard below, which always did it this way.
+@pytest.mark.skipif(
+    not (SPIKE_DIR / "montaj-vivid-v1.cube").exists(),
+    reason="spikes/tone-mapping/montaj-vivid-v1.cube not present",
+)
 def test_winner_cube_byte_identical_to_spike():
     packaged = (LUTS_DIR / "montaj-vivid-v1.cube").read_bytes()
     spike = (SPIKE_DIR / "montaj-vivid-v1.cube").read_bytes()
     assert packaged == spike
 
 
-@pytest.mark.skipif(not SPIKE_DIR.exists(), reason="spikes/tone-mapping/ not present")
+@pytest.mark.skipif(
+    not (SPIKE_DIR / "montaj-vivid-v1.params.json").exists(),
+    reason="spikes/tone-mapping/montaj-vivid-v1.params.json not present",
+)
 def test_winner_params_byte_identical_to_spike():
     packaged = (LUTS_DIR / "montaj-vivid-v1.params.json").read_bytes()
     spike = (SPIKE_DIR / "montaj-vivid-v1.params.json").read_bytes()
