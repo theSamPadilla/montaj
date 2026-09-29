@@ -27,8 +27,9 @@
  * scale and pad steps (see the step-order note in buildVideoItemFilterParts —
  * geometry first so the conversion runs on canvas-sized frames, pad after it so
  * its bars are synthesized in the destination color space). The source's
- * color_transfer is read from item.colorTransfer (stamped by render.js during
- * the videoItems collection pass) — no per-segment ffprobe.
+ * color_transfer is read from item.colorTransfer, which render.js stamps from
+ * the file this encoder will decode (after normalize has swapped `src`) — no
+ * per-segment ffprobe.
  */
 import { spawn, spawnSync } from 'child_process'
 import { mkdirSync } from 'fs'
@@ -1323,8 +1324,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // Video clip
       // Per-item color conversion: when the source's color space differs from
       // the project's, inject the conversion filter (tonemap / inverse-stretch /
-      // HDR cross). item.colorTransfer is stamped during render.js's videoItems
-      // collection pass — no per-segment ffprobe.
+      // HDR cross). item.colorTransfer is stamped by render.js from the final
+      // src, the file decoded here — no per-segment ffprobe.
       //
       // EXCEPTION: skip color conversion for remove_bg items. Their `src` is a
       // ProRes 4444 alpha file (yuva422p10le / yuva444p10le) and zscale (libzimg)

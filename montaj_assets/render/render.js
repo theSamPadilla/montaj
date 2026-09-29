@@ -534,6 +534,11 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   // build per-item conversion filters without re-probing per segment. A typical
   // project breaks one clip into many segments — without this cache, a 50-segment
   // project with 5 items would do 250 ffprobes.
+  //
+  // This first stamp is the ORIGINAL source's transfer. It is what the
+  // colorSpace smart-detect and the normalize pass (3) need. It is NOT what the
+  // segment encoder needs: normalize swaps `item.src` for an already-converted
+  // master, so 4b re-stamps from the final src. See the note there.
   const transferCache = new Map()
   for (const item of videoItems) {
     if (!transferCache.has(item.src)) {
@@ -662,6 +667,16 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   //     Stored on probed* fields, never on sourceWidth/sourceHeight: those are
   //     project-authored and gate the sourceCrop step. A failed probe stamps
   //     nulls, and the encoder then emits its opaque-pad string unchanged.
+  //
+  //     colorTransfer is re-stamped here for the same reason. The encoder
+  //     converts every item whose transfer differs from the project's, so it
+  //     must see the transfer of the file it decodes. Normalize hands an HLG
+  //     source in an SDR project a master already graded through the Montaj
+  //     Vivid LUT; the source's stale `arib-std-b67` sent that master through
+  //     the LUT a second time (orange skin, neon colours) while sample_frame,
+  //     which decodes the same master untouched, looked right. Pinned by
+  //     test/hdr-normalize-parity.integration.test.mjs. A normalize that failed
+  //     leaves the HDR source in place, and the encoder still converts it.
   const geometryCache = new Map()
   for (const item of videoItems) {
     if (!geometryCache.has(item.src)) {
@@ -671,6 +686,10 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
     item.probedWidth  = geom?.width  ?? null
     item.probedHeight = geom?.height ?? null
     item.probedAlpha  = geom?.alpha  ?? null
+    if (!transferCache.has(item.src)) {
+      transferCache.set(item.src, probeColorTransfer(item.src))
+    }
+    item.colorTransfer = transferCache.get(item.src) ?? 'unknown'
   }
 
   // 5. Bundle + render all overlay and caption segments
