@@ -7,14 +7,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
   SDR_ORIGIN_MARKER, originOf, sdrLayerFor, gradeKeyFor, sameFingerprint, fpsValue,
-  probeMedia, defaultDeps,
+  probeMedia, defaultDeps, ProbeError, PROBE_TIMEOUT_MS,
 } from '../sdr-layer.js'
 import { FFMPEG } from '../ffmpeg-bin.js'
 
@@ -139,4 +139,163 @@ test('probeMedia: an untagged file has transfer unknown and an empty comment', {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('probeMedia: an existing file that is not media throws a named error, it is not "SDR"', { skip: !HAS_FFMPEG }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sdr-layer-'))
+  try {
+    const f = join(dir, 'not-a-video.mp4')
+    writeFileSync(f, 'this is not a video')
+    assert.throws(() => probeMedia(f), (e) => e instanceof ProbeError && e.path === f && e.reason === 'exit'
+      && e.message.includes(f) && /Invalid data/.test(e.message))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ── a failed probe, by kind (a fake spawn; shapes measured from node 24's spawnSync) ──
+
+const ORIGINAL = '/proj/media/source.mp4'
+const MARKED = '/proj/media/source_hlg.mp4'
+const OK_JSON = (transfer, comment = '') => JSON.stringify({
+  streams: [{ width: 64, height: 64, r_frame_rate: '30/1', color_transfer: transfer }],
+  format: { duration: '1.000000', tags: comment ? { comment } : {} },
+})
+const ok = (transfer, comment) => ({ pid: 1, status: 0, signal: null, stdout: OK_JSON(transfer, comment), stderr: '' })
+const timedOut = () => ({ pid: 1, status: null, signal: 'SIGTERM', stdout: '', stderr: '',
+  error: Object.assign(new Error('spawnSync ffprobe ETIMEDOUT'), { code: 'ETIMEDOUT' }) })
+const killed = () => ({ pid: 1, status: null, signal: 'SIGKILL', stdout: '', stderr: '' })
+const spawnFailed = (code) => ({ pid: 0, status: null, signal: null,
+  error: Object.assign(new Error(`spawnSync ffprobe ${code}`), { code }) })
+const exited = (stderr) => ({ pid: 1, status: 1, signal: null, stdout: '', stderr })
+
+/** probeMedia's options with a spawn that answers from `script` per call, recording each call. */
+function fakeProbe(script, { exists = () => true } = {}) {
+  const calls = []
+  const sleeps = []
+  const spawn = (bin, args, opts) => {
+    calls.push({ bin, args, opts })
+    const next = script.length > 1 ? script.shift() : script[0]
+    return next()
+  }
+  return { calls, sleeps, opts: { spawn, exists, sleep: (ms) => sleeps.push(ms) } }
+}
+
+const isProbeError = (path, reason) => (e) => {
+  assert.ok(e instanceof ProbeError, `a ProbeError, got ${e}`)
+  assert.equal(e.path, path)
+  assert.equal(e.reason, reason)
+  assert.ok(e.message.includes(path), `the message names the file: ${e.message}`)
+  return true
+}
+
+test('probeMedia: a timeout is retried once, and a second one throws "timeout"', () => {
+  const once = fakeProbe([timedOut, () => ok('bt709')])
+  assert.equal(probeMedia(ORIGINAL, once.opts).transfer, 'bt709')
+  assert.equal(once.calls.length, 2)
+  assert.equal(once.calls[0].opts.timeout, PROBE_TIMEOUT_MS)
+
+  const twice = fakeProbe([timedOut])
+  assert.throws(() => probeMedia(ORIGINAL, twice.opts), isProbeError(ORIGINAL, 'timeout'))
+  assert.equal(twice.calls.length, 2)
+})
+
+test('probeMedia: killed by a signal (jetsam, a crash) is retried once, then throws "killed"', () => {
+  const once = fakeProbe([killed, () => ok('bt709')])
+  assert.equal(probeMedia(ORIGINAL, once.opts).transfer, 'bt709')
+  const twice = fakeProbe([killed])
+  assert.throws(() => probeMedia(ORIGINAL, twice.opts), isProbeError(ORIGINAL, 'killed'))
+  assert.equal(twice.calls.length, 2)
+})
+
+for (const code of ['EAGAIN', 'ENOMEM']) {
+  test(`probeMedia: a ${code} spawn failure is retried once after a backoff, then throws "spawn"`, () => {
+    const once = fakeProbe([() => spawnFailed(code), () => ok('bt709')])
+    assert.equal(probeMedia(ORIGINAL, once.opts).transfer, 'bt709')
+    assert.equal(once.calls.length, 2)
+    assert.equal(once.sleeps.length, 1)
+    assert.ok(once.sleeps[0] > 0)
+
+    const twice = fakeProbe([() => spawnFailed(code)])
+    assert.throws(() => probeMedia(ORIGINAL, twice.opts), (e) => isProbeError(ORIGINAL, 'spawn')(e) && e.message.includes(code))
+    assert.equal(twice.calls.length, 2)
+  })
+}
+
+test('probeMedia: no ffprobe at all (ENOENT) throws at once, even for a missing file', () => {
+  const f = fakeProbe([() => spawnFailed('ENOENT')])
+  assert.throws(() => probeMedia(ORIGINAL, f.opts), (e) => isProbeError(ORIGINAL, 'spawn')(e) && e.message.includes('ENOENT'))
+  assert.equal(f.calls.length, 1, 'never retried')
+  const gone = fakeProbe([() => spawnFailed('ENOENT')], { exists: () => false })
+  assert.throws(() => probeMedia(ORIGINAL, gone.opts), isProbeError(ORIGINAL, 'spawn'))
+})
+
+test('probeMedia: a non-zero exit on an existing file throws "exit" with stderr, trimmed and capped; never retried', () => {
+  const f = fakeProbe([() => exited(`\n${ORIGINAL}: Invalid data found when processing input\n\n`)])
+  assert.throws(() => probeMedia(ORIGINAL, f.opts),
+    (e) => isProbeError(ORIGINAL, 'exit')(e) && e.message.includes('Invalid data found when processing input')
+      && !e.message.endsWith('\n'))
+  assert.equal(f.calls.length, 1)
+  assert.ok(f.calls[0].args.includes('error'), 'ffprobe runs at -v error, so a failure says why')
+
+  const long = fakeProbe([() => exited('x'.repeat(10_000))])
+  assert.throws(() => probeMedia(ORIGINAL, long.opts), (e) => e.message.length < 1000)
+})
+
+test('probeMedia: unparseable output and no video stream throw "parse" and "no-stream"; never retried', () => {
+  const garbage = fakeProbe([() => ({ pid: 1, status: 0, signal: null, stdout: '{"streams": [', stderr: '' })])
+  assert.throws(() => probeMedia(ORIGINAL, garbage.opts), isProbeError(ORIGINAL, 'parse'))
+  assert.equal(garbage.calls.length, 1)
+  const empty = fakeProbe([() => ({ pid: 1, status: 0, signal: null, stdout: '{"streams": [], "format": {}}', stderr: '' })])
+  assert.throws(() => probeMedia(ORIGINAL, empty.opts), isProbeError(ORIGINAL, 'no-stream'))
+  assert.equal(empty.calls.length, 1)
+})
+
+test('probeMedia: a file that is not there keeps the failure shape (no throw)', () => {
+  const gone = fakeProbe([() => exited(`${ORIGINAL}: No such file or directory`)], { exists: () => false })
+  assert.deepEqual(probeMedia(ORIGINAL, gone.opts), FAILED)
+})
+
+// ── the defect: the provenance probe of an SDR original fails ─────────────────
+
+/** originOf's deps over the real probeMedia and a fake spawn; `original` answers from `script`. */
+function provenanceDeps(script, { originalExists = true } = {}) {
+  const exists = (p) => p === MARKED || (p === ORIGINAL && originalExists)
+  const probedOriginal = []
+  const spawn = (bin, args, opts) => {
+    const path = args[args.length - 1]
+    if (path === MARKED) return ok('arib-std-b67', `${SDR_ORIGIN_MARKER}source.mp4`)
+    probedOriginal.push(path)
+    const next = script.length > 1 ? script.shift() : script[0]
+    return next()
+  }
+  const probe = (p) => probeMedia(p, { spawn, exists, sleep: () => {} })
+  return { deps: { probe, exists }, probedOriginal }
+}
+
+test('originOf: an SDR original whose probe keeps failing throws, never "HDR, graded"', () => {
+  for (const fail of [timedOut, killed, () => spawnFailed('EAGAIN'), () => exited('boom'),
+    () => ({ pid: 1, status: 0, signal: null, stdout: 'nope', stderr: '' })]) {
+    const { deps } = provenanceDeps([fail])
+    assert.throws(() => originOf(MARKED, deps), (e) => e instanceof ProbeError && e.path === ORIGINAL)
+    assert.throws(() => sdrLayerFor({ type: 'video', src: MARKED }, deps), (e) => e instanceof ProbeError)
+  }
+})
+
+test('originOf: a transient failure of the original\'s probe that clears on retry gives the right answer', () => {
+  for (const fail of [timedOut, killed, () => spawnFailed('EAGAIN'), () => spawnFailed('ENOMEM')]) {
+    const { deps, probedOriginal } = provenanceDeps([fail, () => ok('bt709')])
+    assert.deepEqual(originOf(MARKED, deps), { colorSpace: 'sdr_bt709', original: ORIGINAL })
+    assert.equal(probedOriginal.length, 2)
+    const layer = sdrLayerFor({ type: 'video', src: MARKED }, provenanceDeps([fail, () => ok('bt709')]).deps)
+    assert.equal(layer.grade, false)
+    assert.equal(layer.item.src, ORIGINAL)
+  }
+})
+
+test('originOf: a marked src whose original is gone stays HDR, graded (Q1), without probing it', () => {
+  const { deps, probedOriginal } = provenanceDeps([() => exited('unreachable')], { originalExists: false })
+  assert.deepEqual(originOf(MARKED, deps), { colorSpace: 'hdr_hlg', original: null })
+  assert.equal(sdrLayerFor({ type: 'video', src: MARKED }, deps).grade, true)
+  assert.equal(probedOriginal.length, 0)
 })

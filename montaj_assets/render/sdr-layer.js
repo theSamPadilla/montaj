@@ -12,12 +12,14 @@
  * original's basename) still names where it came from.
  *
  * probe(path) -> { transfer, comment, width, height, fps, duration }
- *   ('unknown' / '' / null on failure; width and height are display dims, after
- *   rotation; fps is the r_frame_rate string, e.g. '30000/1001'). `duration` is
- *   the container's (`format=duration`), not the stream's: stream duration is
- *   N/A in Matroska/WebM, and normalize carries every stream, so container
- *   against container is like for like (ScreenRecording 36.652 vs 36.631,
- *   inside tolerance).
+ *   (width and height are display dims, after rotation; fps is the
+ *   r_frame_rate string, e.g. '30000/1001'). `duration` is the container's
+ *   (`format=duration`), not the stream's: stream duration is N/A in
+ *   Matroska/WebM, and normalize carries every stream, so container against
+ *   container is like for like (ScreenRecording 36.652 vs 36.631, inside
+ *   tolerance). The failure shape ('unknown' / '' / null) means only "no file
+ *   there": a file that exists and cannot be probed throws ProbeError, because
+ *   every answer this module could give for it picks a grade.
  */
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -37,20 +39,88 @@ const PROBE_ENTRIES =
   'stream=width,height,r_frame_rate,color_transfer:stream_side_data=rotation:format=duration:format_tags=comment'
 
 /**
- * One ffprobe of the first video stream. Never throws: any failure (missing
- * file, no video stream, unparseable output) returns the failure shape.
+ * Per attempt. The probe reads headers only: under 50 ms on 240-290 MB 4K
+ * HEVC iPhone masters with 10.6 of 12 GB swap in use (measured 2026-09-29), so
+ * 30 s is over 600x headroom. It stays bounded, because an unbounded probe of a
+ * stalled volume would hang a sample or an export with no error at all.
  */
-export function probeMedia(path) {
-  if (typeof path !== 'string' || !path) return { ...FAILED_PROBE }
-  const r = spawnSync(FFPROBE, [
-    '-v', 'quiet', '-select_streams', 'v:0', '-show_entries', PROBE_ENTRIES, '-of', 'json', path,
-  ], { encoding: 'utf8', timeout: 30_000 })
-  if (r.status !== 0) return { ...FAILED_PROBE }
+export const PROBE_TIMEOUT_MS = 30_000
+const PROBE_ATTEMPTS = 2
+const RETRY_BACKOFF_MS = 250
+const STDERR_CAP = 400
+/** spawn errnos that mean "the machine is short right now", not "cannot ever work". */
+const TRANSIENT_SPAWN = new Set(['EAGAIN', 'ENOMEM', 'EMFILE', 'ENFILE'])
+
+/**
+ * An existing file ffprobe could not read. `reason`: 'timeout' (no answer in
+ * PROBE_TIMEOUT_MS), 'killed' (a signal: jetsam, a crash), 'spawn' (ffprobe
+ * never started: EAGAIN/ENOMEM under load, ENOENT when there is no ffprobe),
+ * 'exit' (non-zero, with its stderr), 'parse' (not JSON) or 'no-stream'.
+ */
+export class ProbeError extends Error {
+  constructor(path, reason, detail) {
+    super(`ffprobe could not read ${path} (${reason}): ${detail}. Its colour, and so its grade, is unknown`)
+    this.name = 'ProbeError'
+    this.code = 'MONTAJ_PROBE_FAILED'
+    this.path = path
+    this.reason = reason
+    this.detail = detail
+  }
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+/** One ffprobe run: { data } or { reason, detail, transient, hard }. */
+function probeOnce(path, spawn, timeoutMs) {
+  const r = spawn(FFPROBE, [
+    '-v', 'error', '-select_streams', 'v:0', '-show_entries', PROBE_ENTRIES, '-of', 'json', path,
+  ], { encoding: 'utf8', timeout: timeoutMs })
+  // Node sets r.error AND r.signal on its own timeout, so ETIMEDOUT goes first.
+  if (r.error?.code === 'ETIMEDOUT') {
+    return { reason: 'timeout', detail: `no answer in ${timeoutMs / 1000} s`, transient: true }
+  }
+  if (r.error) {
+    const code = r.error.code || 'unknown error'
+    const transient = TRANSIENT_SPAWN.has(code)
+    return { reason: 'spawn', detail: `${FFPROBE} did not start (${code})`, transient, hard: !transient }
+  }
+  if (r.signal) return { reason: 'killed', detail: `killed by ${r.signal}`, transient: true }
+  if (r.status !== 0) {
+    const err = String(r.stderr ?? '').trim()
+    const said = err.length > STDERR_CAP ? `${err.slice(0, STDERR_CAP)}...` : err
+    return { reason: 'exit', detail: `exit ${r.status}${said ? `: ${said}` : ''}` }
+  }
   let data
-  try { data = JSON.parse(r.stdout) } catch { return { ...FAILED_PROBE } }
-  const s = (data.streams || [])[0]
-  if (!s) return { ...FAILED_PROBE }
-  const fmt = data.format || {}
+  try { data = JSON.parse(r.stdout) } catch { return { reason: 'parse', detail: 'its output is not JSON' } }
+  if (!(data?.streams || [])[0]) return { reason: 'no-stream', detail: 'no video stream' }
+  return { data }
+}
+
+/**
+ * One ffprobe of the first video stream. A file that is not there, or a bad
+ * argument, gives the failure shape. A file that IS there and cannot be probed
+ * throws ProbeError; a timeout, a kill or a spawn failure under load (EAGAIN,
+ * ENOMEM) is tried once more first. No ffprobe at all (ENOENT) throws at once,
+ * whatever the path: otherwise every clip would probe as "not there". `opts`
+ * is for tests: spawn (spawnSync), exists (existsSync), sleep, timeoutMs.
+ */
+export function probeMedia(path, {
+  spawn = spawnSync, exists = existsSync, sleep = sleepSync, timeoutMs = PROBE_TIMEOUT_MS,
+} = {}) {
+  if (typeof path !== 'string' || !path) return { ...FAILED_PROBE }
+  let r
+  for (let attempt = 1; !(r = probeOnce(path, spawn, timeoutMs)).data; attempt++) {
+    if (r.hard) throw new ProbeError(path, r.reason, r.detail)
+    if (!exists(path)) return { ...FAILED_PROBE }
+    if (!r.transient || attempt >= PROBE_ATTEMPTS) {
+      throw new ProbeError(path, r.reason, attempt > 1 ? `${r.detail}, ${attempt} tries` : r.detail)
+    }
+    sleep(RETRY_BACKOFF_MS)
+  }
+  const s = r.data.streams[0]
+  const fmt = r.data.format || {}
 
   let width = Number.isInteger(s.width) ? s.width : null
   let height = Number.isInteger(s.height) ? s.height : null
