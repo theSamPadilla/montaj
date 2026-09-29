@@ -17,7 +17,7 @@ import { maxCaptionLane, normalizeCaptionLanes } from './captionLanes'
 import { mergeCaptionProfileDefaults } from './captionProfileDefaults'
 import Timeline, { type TimelineActions, type TimelineMode } from './timeline/Timeline'
 import { visualDuration } from '@bycrux/timeline-core'
-import { audioEnd, computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, enabledTrackItems, mapTrackItems, normalizeAudioTracks, trackItems, withEnabledItemTracks } from './timeline/timeline-model'
+import { audioEnd, computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, effectiveItemAudio, enabledTrackItems, enabledTracks, mapTrackItems, normalizeAudioTracks, trackItems, withEnabledItemTracks } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle, type ScrubHandle } from './preview/PreviewPlayer'
 import SocialPreviewMenu, { PlatformGlyph, platformOption } from './preview/SocialPreviewMenu'
@@ -210,10 +210,15 @@ function projectHasContent(project: Project): boolean {
 
 /**
  * Whether the timeline has something to transcribe: an audio track with a
- * window, or any video clip. "Generate captions" waits for this.
+ * window, or an audible video clip. "Generate captions" waits for this.
+ * Mirrors `_visual_segments` in `serve/caption_job.py`: muted clips, muted
+ * tracks and disabled tracks contribute nothing, so counting them would enable
+ * a button whose job fails with `no_audio`.
  */
 function timelineHasAudio(project: Project): boolean {
-  return audioEnd(project) > 0 || trackItems(project).flat().some(item => item.type === 'video')
+  if (audioEnd(project) > 0) return true
+  return enabledTracks(project).some(track =>
+    track.items.some(item => item.type === 'video' && !effectiveItemAudio(track, item).muted))
 }
 
 /**

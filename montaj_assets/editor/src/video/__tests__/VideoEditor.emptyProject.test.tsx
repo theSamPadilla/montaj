@@ -208,6 +208,27 @@ describe('VideoEditor — Generate captions waits for audio', () => {
     expect(screen.queryByText('Add a clip with sound first.')).toBeNull()
   })
 
+  const videoOnly = (item: Record<string, unknown>, track: Record<string, unknown> = {}) =>
+    makeBlankProject({
+      tracks: [{ id: 'trk-0', ...track, items: [{ id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4, ...item }] }],
+    } as unknown as Partial<Project>)
+
+  it.each([
+    ['a muted clip', videoOnly({ muted: true })],
+    ['a muted track', videoOnly({}, { muted: true })],
+    ['a disabled track', videoOnly({}, { enabled: false })],
+  ])('stays disabled with the reason when the only video is %s', async (_name, project) => {
+    renderEditor(project, { canGenerateCaptions: true })
+    const button = await openCaptionsTab()
+    expect(button).toBeDisabled()
+    expect(screen.getByText('Add a clip with sound first.')).toBeTruthy()
+  })
+
+  it('is enabled for an audible video on an object-shaped track', async () => {
+    renderEditor(videoOnly({}), { canGenerateCaptions: true })
+    expect(await openCaptionsTab()).toBeEnabled()
+  })
+
   it('is enabled once the timeline has a video clip', async () => {
     renderEditor(makeClipProject(), { canGenerateCaptions: true })
     const button = await openCaptionsTab()
