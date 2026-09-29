@@ -54,8 +54,8 @@ describe('visualItemLabel', () => {
     expect(visualItemLabel(overlay({ src, props: { lines: [{ accent: 'x' }] } }))).toBe('text_line')
   })
 
-  it('gives video clips no label — the track rail names the row, the filmstrip names the shot', () => {
-    expect(visualItemLabel({ id: 'c', type: 'video', src: '/p/IMG_9401.MOV', start: 0, end: 1 })).toBe('')
+  it('gives video clips with a proxy no label — the track rail names the row, the filmstrip names the shot', () => {
+    expect(visualItemLabel({ id: 'c', type: 'video', src: '/p/IMG_9401.MOV', proxySrc: '/p/proxy.mp4', start: 0, end: 1 })).toBe('')
   })
 
   it('names an image by its file', () => {
