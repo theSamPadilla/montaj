@@ -51,6 +51,7 @@ const CAPABLE =
   /^[A-Z. ]+ lut3d\b/m.test(FILTERS) &&
   /\blibx265\b/.test(ENCODERS)
 const SKIP = CAPABLE ? false : 'ffmpeg lacks zscale + lut3d + libx265'
+if (SKIP && process.env.MONTAJ_REQUIRE_HDR_FFMPEG === '1') throw new Error(`MONTAJ_REQUIRE_HDR_FFMPEG=1 but ${SKIP}`)
 
 // ---------------------------------------------------------------------------
 // Fixture

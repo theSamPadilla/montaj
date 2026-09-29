@@ -40,6 +40,12 @@ const SQ = 160           // one square in the output: 360 design px * S/1080
 const COLORS = [[200, 50, 100], [40, 160, 80], [60, 90, 220]]
 
 function capabilitySkip() {
+  const reason = capabilityReason()
+  // Opt-in loud mode: a skipped PV42 proof must fail, not pass by omission.
+  if (reason && process.env.MONTAJ_REQUIRE_HDR_FFMPEG === '1') throw new Error(`MONTAJ_REQUIRE_HDR_FFMPEG=1 but ${reason}`)
+  return reason
+}
+function capabilityReason() {
   const filters = spawnSync(FFMPEG, ['-hide_banner', '-filters'], { encoding: 'utf8', timeout: 10_000 }).stdout || ''
   const encoders = spawnSync(FFMPEG, ['-hide_banner', '-encoders'], { encoding: 'utf8', timeout: 10_000 }).stdout || ''
   if (!/^[A-Z. ]+ zscale\b/m.test(filters) || !/^[A-Z. ]+ lut3d\b/m.test(filters) || !/\blibx265\b/.test(encoders)) {
