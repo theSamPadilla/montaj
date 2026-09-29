@@ -198,6 +198,25 @@ export function exportDurationSec(project: { tracks?: unknown }): number {
 }
 
 /**
+ * Whether the project has anything the preview can show. Gates the preview
+ * region (see `hasContent` in ReviewSurface for why each term is there) and
+ * decides whether a freshly mounted editor opens its left rail on Media.
+ */
+function projectHasContent(project: Project): boolean {
+  return trackItems(project).flat().length > 0
+    || (project.captions?.segments?.length ?? 0) > 0
+    || audioEnd(project) > 0
+}
+
+/**
+ * Whether the timeline has something to transcribe: an audio track with a
+ * window, or any video clip. "Generate captions" waits for this.
+ */
+function timelineHasAudio(project: Project): boolean {
+  return audioEnd(project) > 0 || trackItems(project).flat().some(item => item.type === 'video')
+}
+
+/**
  * `<VideoEditor>` — the assembled, host-agnostic video editor.
  *
  * Absorbs Montaj's former LiveView (pending/processing surface) and ReviewView
@@ -869,14 +888,24 @@ function ReviewSurface<P extends Project>({
     selectedCaptionId,
     playing: previewPlaying,
   })
+  // Tab switches the editor asks of the left panel (LeftPanelTabs'
+  // `activationRequest`), one nonce shared by every target so each request is
+  // fresh whatever it names.
+  //
+  // A blank project opens on Media, even over a persisted tab: importing
+  // footage is the only thing to do there. Decided once, at mount; a project
+  // with content starts at nonce 0, which forces nothing, so its persisted tab
+  // wins as before.
+  //
   // Selecting a caption anywhere (timeline, preview box, or the caption list —
   // all funnel through `selectedIds` → `selectedCaptionId`) jumps the left
   // panel to its Captions tab. A per-selection nonce, not the id itself, so
   // re-selecting the same caption after the user switched tabs still snaps
   // back; only a truthy selection bumps it, so deselecting never yanks the tab.
-  const [captionTabNonce, setCaptionTabNonce] = useState(0)
+  const [leftTabRequest, setLeftTabRequest] = useState(() =>
+    projectHasContent(project) ? { id: 'captions', nonce: 0 } : { id: 'media', nonce: 1 })
   useEffect(() => {
-    if (selectedCaptionId) setCaptionTabNonce(n => n + 1)
+    if (selectedCaptionId) setLeftTabRequest(r => ({ id: 'captions', nonce: r.nonce + 1 }))
   }, [selectedCaptionId])
   const [rippleMode, setRippleMode]   = useState(false)
   // CapCut's "preview axis", off by default. Off changes nothing: clicking the
@@ -1347,11 +1376,7 @@ function ReviewSurface<P extends Project>({
   // ONE track holding nothing but overlays — and `clips` only counts track-0
   // *video* items, so a track-0 overlay fell through both terms. Same blind
   // spot `transportEndFor` and `canvasMaxEndRef` were fixed for.
-  const hasContent =
-    clips.length > 0
-    || trackItems(project).flat().length > 0
-    || (project.captions?.segments?.length ?? 0) > 0
-    || audioEnd(project) > 0
+  const hasContent = projectHasContent(project)
 
   // Preview controls row's timecode readout. `currentTime` is the same
   // `usePlaybackTime(clock)` subscription `CaptionListPanelWithClock` uses
@@ -2213,6 +2238,10 @@ function ReviewSurface<P extends Project>({
             </Tooltip>
           </div>
         </>
+      ) : slots?.previewEmptyState ? (
+        // The host's empty state gets the whole region, so it can be the
+        // footage drop target rather than a label inside one.
+        <div className="flex-1 min-h-0 flex flex-col">{slots.previewEmptyState}</div>
       ) : (
         <div className="flex-1 min-h-0 flex items-center justify-center p-2">
           <p className="text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] text-sm">No clips</p>
@@ -2460,6 +2489,9 @@ function ReviewSurface<P extends Project>({
       // leaves a permanently dead button. The host half is load-bearing:
       // it's the editor's only signal that an off-component job is running.
       captionsGenerating={captionsGenerating || regenCaptionsOpen}
+      // Captions are transcribed from the timeline's audio, so on a timeline
+      // with none the empty state's Generate button waits.
+      generateCaptionsDisabledReason={timelineHasAudio(project) ? undefined : 'Add a clip with sound first.'}
       fps={project.settings?.fps ?? 30}
       clock={clock}
       editFocusId={editFocusId}
@@ -2678,7 +2710,7 @@ function ReviewSurface<P extends Project>({
         style={{ width: mediaPanelWidth }}
         className="shrink-0 border-r border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden min-h-0"
       >
-        <LeftPanelTabs tabs={leftPanelTabs} defaultTabId="captions" activationRequest={{ id: 'captions', nonce: captionTabNonce }} className="flex-1 min-h-0" />
+        <LeftPanelTabs tabs={leftPanelTabs} defaultTabId={hasContent ? 'captions' : 'media'} activationRequest={leftTabRequest} className="flex-1 min-h-0" />
       </div>
       {/* Divider on the left panel's RIGHT edge — drag right widens the column.
           Kept under its original "Resize media panel" name: it is the same

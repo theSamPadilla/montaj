@@ -1019,6 +1019,13 @@ export interface EditorSlots {
    */
   propertiesEmptyState?: ReactNode
   /**
+   * Rendered in the preview region while the project has no content (no
+   * items, captions or audio), in place of the default "No clips" label. It
+   * fills the whole region, so a host can make it the footage drop target.
+   * Absent → "No clips" shows. Both layouts.
+   */
+  previewEmptyState?: ReactNode
+  /**
    * Rendered in the pending/empty view in place of the default
    * "Message your agent to start" copy. Hosts use this to surface live agent
    * progress (Montaj feeds its SSE log line here); absent → default copy shows.

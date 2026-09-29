@@ -36,13 +36,14 @@ function renderPanel(opts: {
   captions?: Captions | undefined
   withRegenerate?: boolean
   captionsGenerating?: boolean
+  generateCaptionsDisabledReason?: string
 } = {}) {
   // `'captions' in opts`, not a destructured default: a destructured default
   // also kicks in for an explicitly-passed `captions: undefined`, which is
   // exactly the "no captionTrack at all" case several tests below need to
   // construct on purpose.
   const captions = 'captions' in opts ? opts.captions : { style: 'pop', fontsize: 46, segments: SEGS }
-  const { withRegenerate = true, captionsGenerating } = opts
+  const { withRegenerate = true, captionsGenerating, generateCaptionsDisabledReason } = opts
 
   const project = { id: 'p1', captions } as unknown as Project
   const onCaptionEdit = vi.fn()
@@ -62,6 +63,7 @@ function renderPanel(opts: {
       onCaptionSegmentDelete={vi.fn()}
       onRegenerateCaptions={onRegenerateCaptions}
       captionsGenerating={captionsGenerating}
+      generateCaptionsDisabledReason={generateCaptionsDisabledReason}
       fps={30}
       clock={makeClock()}
       editFocusId={null}
@@ -140,6 +142,28 @@ describe('CaptionListPanel generate/regenerate trigger', () => {
     // no generation capability, no button anywhere at all.
     expect(screen.queryByRole('list', { name: 'Caption segments' })).toBeNull()
     expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('with a disabled reason, the empty state shows it and its button is disabled', () => {
+    const { onRegenerateCaptions } = renderPanel({
+      captions: undefined,
+      generateCaptionsDisabledReason: 'Add a clip with sound first.',
+    })
+
+    const btn = screen.getByRole('button', { name: 'Generate captions' })
+    expect(btn).toBeDisabled()
+    expect(screen.getByText('Add a clip with sound first.')).toBeTruthy()
+    fireEvent.click(btn)
+    expect(onRegenerateCaptions).not.toHaveBeenCalled()
+  })
+
+  it('a disabled reason leaves the footer Regenerate trigger alone', () => {
+    renderPanel({
+      captions: { style: 'pop', fontsize: 46, segments: SEGS },
+      generateCaptionsDisabledReason: 'Add a clip with sound first.',
+    })
+    expect(screen.getByRole('button', { name: 'Regenerate captions' })).toBeEnabled()
+    expect(screen.queryByText('Add a clip with sound first.')).toBeNull()
   })
 
   it('disables the trigger while a job is running', () => {

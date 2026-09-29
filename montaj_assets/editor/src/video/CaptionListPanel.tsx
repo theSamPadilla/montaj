@@ -219,6 +219,11 @@ export interface CaptionListPanelProps {
    *  passing `true` once a job ends, including a failed one) leaves the
    *  trigger enabled exactly as it is today. */
   captionsGenerating?: boolean
+  /** Why the empty state's "Generate captions" button can't run yet (the
+   *  editor passes one while the timeline has no audio). Set → the button is
+   *  disabled and this line replaces the empty state's copy. Absent → enabled
+   *  as before. The footer's "Regenerate captions" ignores it. */
+  generateCaptionsDisabledReason?: string
   fps: number
   /** Imperative seek target for a row click (see the half-frame comment
    *  below) — separate from `currentTime`, which only drives the highlight. */
@@ -255,6 +260,7 @@ export default function CaptionListPanel({
   onCaptionSegmentDelete,
   onRegenerateCaptions,
   captionsGenerating,
+  generateCaptionsDisabledReason,
   fps,
   clock,
   editFocusId,
@@ -281,6 +287,7 @@ export default function CaptionListPanel({
       onCaptionSegmentDelete={onCaptionSegmentDelete}
       onRegenerateCaptions={onRegenerateCaptions}
       captionsGenerating={captionsGenerating}
+      generateCaptionsDisabledReason={generateCaptionsDisabledReason}
       fps={fps}
       clock={clock}
       editFocusId={editFocusId}
@@ -306,6 +313,7 @@ function CaptionListPanelBody({
   onCaptionSegmentDelete,
   onRegenerateCaptions,
   captionsGenerating,
+  generateCaptionsDisabledReason,
   fps,
   clock,
   editFocusId,
@@ -596,7 +604,7 @@ function CaptionListPanelBody({
             <div className="flex flex-col items-center gap-2 text-center mt-4 px-2">
               <p className="text-xs text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)] leading-relaxed">
                 {onRegenerateCaptions
-                  ? "Captions are generated from the timeline's audio."
+                  ? (generateCaptionsDisabledReason ?? "Captions are generated from the timeline's audio.")
                   : 'No captions yet. Captions are generated during transcription.'}
               </p>
               {/* Primary action — the only thing to do on an otherwise empty
@@ -608,7 +616,8 @@ function CaptionListPanelBody({
                 <button
                   type="button"
                   onClick={onRegenerateCaptions}
-                  className="text-xs font-medium rounded-md px-3 py-1.5 bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-opacity"
+                  disabled={!!generateCaptionsDisabledReason}
+                  className="text-xs font-medium rounded-md px-3 py-1.5 bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Generate captions
                 </button>
