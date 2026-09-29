@@ -44,7 +44,7 @@ def test_jsx_write_publishes_to_per_path_and_global_channels():
 def test_non_jsx_write_does_not_hit_global_channel():
     b = SSEBroadcaster()
     global_q = b.subscribe(JSX_GLOBAL_CHANNEL)
-    _Handler(b, _SyncLoop())._handle(_FakeEvent("/tmp/ws/notes.txt"))
+    _Handler(b, _SyncLoop())._handle(_FakeEvent("/tmp/ws/notes.md"))
     assert global_q.empty()
 
 
