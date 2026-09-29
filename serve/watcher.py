@@ -1,8 +1,9 @@
 """Watchdog file watcher. Detects project.json writes and overlay source writes
-(.jsx plus the .js/.mjs/.ts/.tsx/.json files they import), including atomic-rename
+(.jsx plus the .js/.mjs/.cjs/.ts/.mts/.cts/.tsx/.json/.txt files they import), including atomic-rename
 saves (on_moved), and pushes to the SSE broadcaster."""
 import asyncio
 import json
+import os
 from pathlib import Path
 
 from watchdog.events import FileSystemEventHandler
@@ -12,7 +13,7 @@ from serve.sse import SSEBroadcaster, JSX_GLOBAL_CHANNEL
 
 
 # Overlay sources and the files they import (helpers, data).
-_SOURCE_EXTS = (".jsx", ".js", ".mjs", ".ts", ".tsx", ".json")
+_SOURCE_EXTS = (".jsx", ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx", ".json", ".txt")
 
 
 class _Handler(FileSystemEventHandler):
@@ -37,7 +38,7 @@ class _Handler(FileSystemEventHandler):
         self._handle_path(event.src_path)
 
     def _handle_path(self, path):
-        if path.endswith("project.json"):
+        if os.path.basename(path) == "project.json":
             try:
                 data = json.loads(Path(path).read_text())
                 project_id = data.get("id")

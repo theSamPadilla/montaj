@@ -184,7 +184,7 @@ class _MovedEvent:
         self.is_directory = is_directory
 
 
-@pytest.mark.parametrize("ext", [".jsx", ".js", ".mjs", ".ts", ".tsx", ".json"])
+@pytest.mark.parametrize("ext", [".jsx", ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx", ".json", ".txt"])
 def test_source_extensions_publish_on_both_channels(ext):
     b = SSEBroadcaster()
     p = f"/tmp/ws/helper{ext}"
@@ -200,6 +200,17 @@ def test_png_publishes_nothing():
     global_q = b.subscribe(JSX_GLOBAL_CHANNEL)
     _Handler(b, _SyncLoop())._handle(_FakeEvent("/tmp/ws/a.png"))
     assert global_q.empty()
+
+
+def test_project_json_lookalike_is_a_source_file(tmp_path):
+    f = tmp_path / "foo-project.json"
+    f.write_text(json.dumps({"id": "proj1"}))
+    b = SSEBroadcaster()
+    proj_q = b.subscribe("proj1")
+    global_q = b.subscribe(JSX_GLOBAL_CHANNEL)
+    _Handler(b, _SyncLoop())._handle(_FakeEvent(str(f)))
+    assert proj_q.empty()
+    assert json.loads(global_q.get_nowait()[len("data: "):]) == {"path": str(f)}
 
 
 def test_project_json_stays_on_project_channel_only(tmp_path):
@@ -255,6 +266,21 @@ def test_real_watchdog_helper_write_and_atomic_rename(tmp_path):
         helper = tmp_path / "helper.js"
         helper.write_text("export const a = 1\n")
         assert _wait_for_path(q, str(helper)), "no frame for helper.js write"
+        while not q.empty():
+            q.get_nowait()
+
+        # Rename phase: FSEvents coalescing adds created/modified events for the
+        # target, so only a handler with those muted proves on_moved publishes.
+        class _MovedOnly(_Handler):
+            def on_created(self, event):
+                pass
+
+            def on_modified(self, event):
+                pass
+
+        obs.unschedule_all()
+        obs.schedule(_MovedOnly(b, _SyncLoop()), str(tmp_path), recursive=True)
+        time.sleep(0.2)
         while not q.empty():
             q.get_nowait()
 
