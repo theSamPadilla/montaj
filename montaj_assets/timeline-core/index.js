@@ -85,4 +85,6 @@ export * from './src/transitions.js'
  */
 // '4': `transitionPairs` stopped pairing overlaps <= TRANSITION_EPSILON_S, so a
 // float-noise overlap resolves with no `crossfade` stamp.
-export const RESOLVER_VERSION = '4'
+// '5': geometryAt samples an image's crop keyframes (cropX/cropY/cropW/cropH) into
+// sourceCrop and resolves such an image's fit as 'cover' (PV55).
+export const RESOLVER_VERSION = '5'

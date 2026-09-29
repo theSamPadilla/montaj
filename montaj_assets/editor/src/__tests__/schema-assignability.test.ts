@@ -54,6 +54,13 @@ describe('editor schema Keyframe types <-> @bycrux/timeline-core Keyframe types'
     const asEditor: EditorKeyframeTrack = asCore
     expect(asEditor.prop).toBe('scale')
   })
+
+  it('the crop props are KeyframeProps on both sides (PV55)', () => {
+    const editorCrop: EditorKeyframeProp[] = ['cropX', 'cropY', 'cropW', 'cropH']
+    const coreCrop: CoreKeyframeProp[] = editorCrop
+    const back: EditorKeyframeProp[] = coreCrop
+    expect(back).toHaveLength(4)
+  })
 })
 
 // The assignability checks above are type-level ONLY, so they fire under

@@ -82,15 +82,17 @@
  */
 
 /**
- * The item properties that can be keyframed. Deliberately the seven that
- * `geometryFor` already understands — animating anything else is out of
- * scope, and a track naming an unknown prop is simply never consulted.
+ * The item properties that can be keyframed: the seven transform props that
+ * `geometryFor` already understands, plus the four crop props (`cropX`,
+ * `cropY`, `cropW`, `cropH`) that `geometryAt` folds into `sourceCrop` (PV55).
+ * Animating anything else is out of scope, and a track naming an unknown prop
+ * is simply never consulted.
  *
  * `scale` is the legacy UNIFORM knob and `scaleX`/`scaleY` are its per-axis
  * siblings; an item with no per-axis track follows the `scale` one on both
  * axes, so adding these two did not change what a `scale`-only track does.
  *
- * @typedef {'offsetX' | 'offsetY' | 'scale' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity'} KeyframeProp
+ * @typedef {'offsetX' | 'offsetY' | 'scale' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity' | 'cropX' | 'cropY' | 'cropW' | 'cropH'} KeyframeProp
  */
 
 /**

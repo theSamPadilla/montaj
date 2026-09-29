@@ -128,6 +128,11 @@ export interface Captions {
  *  the value is held until the next keyframe's `t`, then jumps. */
 export type EasingName = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold'
 
+/** The transform props: what the Transform tab and "keyframe all" walk. */
+export type TransformKeyframeProp = 'offsetX' | 'offsetY' | 'scale' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity'
+/** The keyframed source crop (PV55): `sourceCrop`'s x/y/w/h, one track each. */
+export type CropKeyframeProp = 'cropX' | 'cropY' | 'cropW' | 'cropH'
+
 /** The transform properties that can be keyframed. Which item KINDS support
  *  which of them is decided by `canKeyframe` / `canKeyframeProp`
  *  (`montaj_assets/editor/src/video/keyframeOps.ts`) — the runtime source of
@@ -145,8 +150,13 @@ export type EasingName = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'ease-in-o
  *  clip cannot be faded through that path in any form. Overlays escape it by
  *  being captured frame-by-frame in a browser, where opacity is just CSS.
  *  See `canKeyframeProp` for the full reasoning and `docs/RENDER.md` for the
- *  measured cost of the alternative. */
-export type KeyframeProp = 'offsetX' | 'offsetY' | 'scale' | 'scaleX' | 'scaleY' | 'rotation' | 'opacity'
+ *  measured cost of the alternative.
+ *
+ *  The four CROP props (PV55) are not geometry of the box: `geometryAt`
+ *  (`@bycrux/timeline-core`) samples `cropX`/`cropY`/`cropW`/`cropH` and folds
+ *  them back into ONE `sourceCrop`, so every reader keeps reading `sourceCrop`.
+ *  They are image-only today (`canKeyframeProp`). */
+export type KeyframeProp = TransformKeyframeProp | CropKeyframeProp
 
 export interface Keyframe {
   t: number               // ITEM-relative seconds — 0 is the item's own `start`, not timeline zero
@@ -219,7 +229,7 @@ export interface VisualItem {
   proxySrc?: string         // video type only
   muted?: boolean         // video type only — suppress audio in preview and render
   speed?: number          // video type only — playback speed, default 1.0, range 0.25–4
-  sourceCrop?: { x: number; y: number; w: number; h: number }  // video type only — non-destructive crop of the source clip (0–1 fractions)
+  sourceCrop?: { x: number; y: number; w: number; h: number }  // video and image: the source region to show (0–1 fractions of its DISPLAY size). An image crops before its fit; a video needs sourceWidth/sourceHeight. Keyframed on images by cropX/cropY/cropW/cropH.
   sourceWidth?: number    // video type only — intrinsic width of the source clip in pixels
   sourceHeight?: number   // video type only — intrinsic height of the source clip in pixels
   generation?: {            // ai_video only — frozen provenance from Kling generation

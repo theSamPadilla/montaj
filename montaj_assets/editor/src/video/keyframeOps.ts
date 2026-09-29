@@ -1,4 +1,4 @@
-import type { EasingName, Keyframe, KeyframeProp, KeyframeTrack, VisualItem } from '../schema'
+import type { CropKeyframeProp, EasingName, Keyframe, KeyframeProp, KeyframeTrack, TransformKeyframeProp, VisualItem } from '../schema'
 import { geometryAt, normalizeTrack } from '@bycrux/timeline-core'
 
 /**
@@ -82,8 +82,22 @@ export function canKeyframe(item: VisualItem | null | undefined): item is Visual
  */
 export function canKeyframeProp(item: VisualItem | null | undefined, prop: KeyframeProp): boolean {
   if (!canKeyframe(item)) return false
+  // PV55: the crop animates on images only. The video export applies
+  // `sourceCrop` statically until phase 2, and an overlay has no source.
+  if (isCropProp(prop)) return item.type === 'image'
   if (item.type === 'overlay') return true
   return prop !== 'opacity'
+}
+
+/** The keyframed crop's four props, x, y, w, h (PV55). Keyed as ONE set by the
+ *  Crop tab and the crop tool; never part of `transformProps`. */
+export const CROP_PROPS: readonly CropKeyframeProp[] = ['cropX', 'cropY', 'cropW', 'cropH']
+const CROP_FIELD = { cropX: 'x', cropY: 'y', cropW: 'w', cropH: 'h' } as const satisfies Record<CropKeyframeProp, 'x' | 'y' | 'w' | 'h'>
+const FULL_CROP = { x: 0, y: 0, w: 1, h: 1 }
+type CropRect = { x: number; y: number; w: number; h: number }
+
+export function isCropProp(prop: KeyframeProp): prop is CropKeyframeProp {
+  return prop === 'cropX' || prop === 'cropY' || prop === 'cropW' || prop === 'cropH'
 }
 
 // ── Reading ──────────────────────────────────────────────────────────────
@@ -129,8 +143,8 @@ export function isUniformScale(item: VisualItem): boolean {
 /** The two orders {@link transformProps} chooses between. Position first,
  *  scale, then rotation and opacity — the order the inspector header's
  *  all-props actions walk them, kept identical for both shapes. */
-const UNIFORM_TRANSFORM_PROPS: readonly KeyframeProp[] = ['offsetX', 'offsetY', 'scale', 'rotation', 'opacity']
-const PER_AXIS_TRANSFORM_PROPS: readonly KeyframeProp[] = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 'opacity']
+const UNIFORM_TRANSFORM_PROPS: readonly TransformKeyframeProp[] = ['offsetX', 'offsetY', 'scale', 'rotation', 'opacity']
+const PER_AXIS_TRANSFORM_PROPS: readonly TransformKeyframeProp[] = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 'opacity']
 
 /**
  * The transform props that are AUTHORITATIVE for `item` — the set that any
@@ -164,7 +178,7 @@ const PER_AXIS_TRANSFORM_PROPS: readonly KeyframeProp[] = ['offsetX', 'offsetY',
  * EVERY prop in this list is keyed at the playhead — could then never light on a
  * clip at all, because the one prop it waits for can never be keyed.
  */
-export function transformProps(item: VisualItem): readonly KeyframeProp[] {
+export function transformProps(item: VisualItem): readonly TransformKeyframeProp[] {
   const base = isUniformScale(item) ? UNIFORM_TRANSFORM_PROPS : PER_AXIS_TRANSFORM_PROPS
   return base.filter(prop => canKeyframeProp(item, prop))
 }
@@ -183,7 +197,9 @@ export function transformProps(item: VisualItem): readonly KeyframeProp[] {
  * kind of item it's reading.
  */
 export function valueAt(item: VisualItem, prop: KeyframeProp, localT: number): number {
-  return geometryAt(item, item.type, localT)[prop]
+  const g = geometryAt(item, item.type, localT)
+  if (isCropProp(prop)) return (g.sourceCrop ?? FULL_CROP)[CROP_FIELD[prop]]
+  return g[prop]
 }
 
 /**
@@ -270,6 +286,11 @@ function withStaticValue(item: VisualItem, prop: KeyframeProp, value: number): V
     case 'scaleY': return { ...item, scaleY: value }
     case 'rotation': return { ...item, rotation: value }
     case 'opacity': return { ...item, opacity: value }
+    case 'cropX':
+    case 'cropY':
+    case 'cropW':
+    case 'cropH':
+      return { ...item, sourceCrop: { ...(item.sourceCrop ?? FULL_CROP), [CROP_FIELD[prop]]: value } }
   }
 }
 
@@ -476,6 +497,50 @@ export function toggleKeyframeAt(item: VisualItem, prop: KeyframeProp, t: number
   return keyframeTimeAt(item, prop, t) !== undefined
     ? removeKeyframeAt(item, prop, t)
     : addKeyframeAt(item, prop, t)
+}
+
+/** True when any crop prop has keyframes. */
+export function isCropKeyframed(item: VisualItem): boolean {
+  return CROP_PROPS.some(prop => hasKeyframes(item, prop))
+}
+
+/** The crop at item-relative `localT`, as a fresh object: sampled when
+ *  keyframed, else the static `sourceCrop`, else the full frame. */
+export function cropAt(item: VisualItem, localT: number): CropRect {
+  const c = geometryAt(item, item.type, localT).sourceCrop
+  return c ? { x: c.x, y: c.y, w: c.w, h: c.h } : { ...FULL_CROP }
+}
+
+/**
+ * The crop tool's Apply: THE auto-keyframe rule (see `writeProp`) for the crop
+ * as a set. An animated crop gets a keyframe at `localT` on all four props
+ * (updating any already there), so the framing at the playhead is exactly
+ * `rect`. A crop that is not animated takes the static `sourceCrop`. Writing
+ * the static field under an animated crop would be silently discarded.
+ */
+export function writeCrop(item: VisualItem, localT: number, rect: CropRect): VisualItem {
+  if (!isCropKeyframed(item)) return { ...item, sourceCrop: { x: rect.x, y: rect.y, w: rect.w, h: rect.h } }
+  let next = item
+  for (const prop of CROP_PROPS) {
+    next = setKeyframe(next, prop, keyframeTimeAt(next, prop, localT) ?? localT, rect[CROP_FIELD[prop]])
+  }
+  return next
+}
+
+/** Whether any crop prop has a keyframe at `t`: what the Crop tab's diamond shows. */
+export function cropKeyedAt(item: VisualItem, t: number): boolean {
+  return CROP_PROPS.some(prop => keyframeTimeAt(item, prop, t) !== undefined)
+}
+
+/** The Crop tab's diamond. Remove the crop keyframe at `t` from every crop
+ *  prop, or add one to all four holding the current framing. Per prop it is
+ *  exactly `toggleKeyframeAt`'s rule, so removing the last keyframe writes its
+ *  value into `sourceCrop` and nothing moves. */
+export function toggleCropKeyframeAt(item: VisualItem, t: number): VisualItem {
+  const keyed = cropKeyedAt(item, t)
+  let next = item
+  for (const prop of CROP_PROPS) next = keyed ? removeKeyframeAt(next, prop, t) : addKeyframeAt(next, prop, t)
+  return next
 }
 
 /** Scale props compose by multiplication, so moving a scale animation keeps

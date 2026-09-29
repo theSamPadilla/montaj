@@ -11,7 +11,7 @@ import {
   Diamond,
   RotateCcw,
 } from 'lucide-react'
-import type { KeyframeProp, VisualItem } from '../schema'
+import type { TransformKeyframeProp, VisualItem } from '../schema'
 import {
   KEYFRAME_TIME_EPSILON,
   addKeyframeAt,
@@ -94,7 +94,7 @@ export interface OverlayInspectorProps {
 }
 
 interface RowSpec {
-  prop: KeyframeProp
+  prop: TransformKeyframeProp
   /** The control's ACCESSIBLE name (`aria-label` on the number box, and the
    *  `${name}` in every diamond/arrow/stepper label built from this row).
    *  Deliberately separate from the VISIBLE label, which the redesign changed
@@ -111,7 +111,7 @@ interface RowSpec {
 // Offsets/rotation are unbounded (percent of frame / degrees, can go negative
 // or past 100/360 for effects); scale only needs a floor above zero; opacity
 // is clamped to the 0–1 range the renderer expects.
-const ROWS: Record<KeyframeProp, RowSpec> = {
+const ROWS: Record<TransformKeyframeProp, RowSpec> = {
   offsetX:  { prop: 'offsetX',  name: 'Offset X', step: 1 },
   offsetY:  { prop: 'offsetY',  name: 'Offset Y', step: 1 },
   scale:    { prop: 'scale',    name: 'Scale',    step: 0.01, min: 0.01 },
@@ -124,7 +124,7 @@ const ROWS: Record<KeyframeProp, RowSpec> = {
 /** Identity transform. Kept in step with `geometryAt`'s defaults in
  *  `@bycrux/timeline-core` — the same values `valueAt` falls back to when a
  *  prop has neither a track nor a static scalar. */
-const DEFAULTS: Record<KeyframeProp, number> = {
+const DEFAULTS: Record<TransformKeyframeProp, number> = {
   offsetX: 0,
   offsetY: 0,
   scale: 1,
@@ -254,7 +254,7 @@ interface KeyframeNavProps {
 /** The `‹ ◇ ›` unit: step to the previous/next keyframe, and toggle the
  *  keyframe at the playhead. One component so every row — and the header's
  *  all-props variant — lays out and labels the three controls identically. */
-function KeyframeNav({
+export function KeyframeNav({
   prevLabel, nextLabel, diamondLabel, pressed, canPrev, canNext, onPrev, onNext, onDiamond,
   diamondDisabled = false, diamondReason,
 }: KeyframeNavProps) {
@@ -539,7 +539,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   // perturb another's value. `scaleX`/`scaleY` are always populated even on a uniform
   // item: `geometryAt` resolves them through `scale`, so they read as the
   // overlay's actual per-axis size whether or not it carries the fields.
-  const sampled: Record<KeyframeProp, number> = {
+  const sampled: Record<TransformKeyframeProp, number> = {
     offsetX: valueAt(target, 'offsetX', localT),
     offsetY: valueAt(target, 'offsetY', localT),
     scale: valueAt(target, 'scale', localT),
@@ -560,18 +560,18 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   const allProps = transformProps(target)
 
   /** Continuous gesture step — no undo entry yet. */
-  function preview(prop: KeyframeProp, value: number) {
+  function preview(prop: TransformKeyframeProp, value: number) {
     onPreview(writeProp(target, prop, localT, value))
   }
 
   /** A discrete, already-final edit — one undo entry, no separate commit. */
-  function commitDiscrete(prop: KeyframeProp, value: number) {
+  function commitDiscrete(prop: TransformKeyframeProp, value: number) {
     onChange(writeProp(target, prop, localT, value))
   }
 
   /** Whether a keyframe on `prop` sits at the playhead: what every diamond
    *  shows. Not "is `prop` animated at all", which it used to be. */
-  function keyedHere(prop: KeyframeProp): boolean {
+  function keyedHere(prop: TransformKeyframeProp): boolean {
     return keyframeTimeAt(target, prop, localT) !== undefined
   }
 
@@ -579,7 +579,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
    *  there. Never the whole animation. It used to call `disableKeyframing`,
    *  which deleted every keyframe of the prop under a label that said "at
    *  playhead". */
-  function handleToggle(prop: KeyframeProp) {
+  function handleToggle(prop: TransformKeyframeProp) {
     onChange(toggleKeyframeAt(target, prop, localT))
   }
 
@@ -588,7 +588,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   }
 
   /** Ascending, de-duplicated keyframe times across `props`. */
-  function keyframeTimes(props: readonly KeyframeProp[]): number[] {
+  function keyframeTimes(props: readonly TransformKeyframeProp[]): number[] {
     const times = new Set<number>()
     for (const prop of props) for (const point of trackFor(target, prop)?.points ?? []) times.add(point.t)
     return [...times].sort((a, b) => a - b)
@@ -598,7 +598,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
    *  ABSOLUTE timeline time (`item.start + t`) — keyframe `t` is item-relative
    *  (see Keyframe.t) and the clock is not. Without `onSeek` they render
    *  disabled rather than silently doing nothing. */
-  function navFor(props: readonly KeyframeProp[]) {
+  function navFor(props: readonly TransformKeyframeProp[]) {
     const times = keyframeTimes(props)
     // Strictly before/after the playhead by more than the keyframe epsilon, so
     // the keyframe the playhead is ON (after an arrow seek's float noise) is
@@ -641,7 +641,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   // axes. Kept separate from handleKeyframeAll so that the all-props path
   // (`transformProps(item)`, which varies with the uniform-scale lock) is
   // untouched.
-  const positionProps: KeyframeProp[] = ['offsetX', 'offsetY']
+  const positionProps: TransformKeyframeProp[] = ['offsetX', 'offsetY']
   const positionKeyed = positionProps.some(keyedHere)
 
   function handlePositionToggle() {
@@ -716,7 +716,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   const positionNav = navFor(positionProps)
 
   /** The `‹ ◇ ›` unit for one row. */
-  function rowNav(prop: KeyframeProp) {
+  function rowNav(prop: TransformKeyframeProp) {
     const row = ROWS[prop]
     const nav = navFor([prop])
     const keyframed = keyedHere(prop)

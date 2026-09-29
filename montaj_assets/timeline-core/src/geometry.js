@@ -310,11 +310,12 @@
 //   geometryFor(item, kind)          — the STATIC path. Its body is untouched
 //                                      by SP9b, deliberately: see below.
 //   geometryAt(item, kind, localT)   — the animated path. For each of the seven
-//                                      keyframeable props it prefers
+//                                      transform props it prefers
 //                                      `sampleTrack(track, localT)` and falls
-//                                      back to the item's static scalar; every
-//                                      other field is built exactly as
-//                                      `geometryFor` builds it.
+//                                      back to the item's static scalar; the
+//                                      four crop props fold into `sourceCrop`
+//                                      (below); every other field is built
+//                                      exactly as `geometryFor` builds it.
 //
 // NO-KEYFRAME IDENTITY, BY CONSTRUCTION. An item with no `keyframes` does not
 // take a parallel code path through `geometryAt` — it is handed to
@@ -324,11 +325,15 @@
 // valid. Do not "simplify" that short-circuit into a duplicated object
 // literal, and do not reroute `geometryFor` through `geometryAt`.
 //
-// Only the seven props src/curves.js names (`offsetX`, `offsetY`, `scale`,
-// `scaleX`, `scaleY`, `rotation`, `opacity`) are animatable. `fit`,
-// `sourceCrop`, `sourceWidth` and `sourceHeight` are NOT keyframeable and are
-// forwarded exactly as the static path forwards them — `sourceCrop` still BY
-// REFERENCE, never cloned. A track naming any other prop is simply never
+// Only the eleven props src/curves.js names are animatable: the seven
+// transform props (`offsetX`, `offsetY`, `scale`, `scaleX`, `scaleY`,
+// `rotation`, `opacity`) and the four crop props (`cropX`, `cropY`, `cropW`,
+// `cropH`, PV55). The crop four are folded back into ONE `sourceCrop` object,
+// and only for the kinds in `CROP_KEYFRAME_KINDS` (images today); such an
+// image resolves `fit: 'cover'`. For every other kind, and for an image with
+// no crop track, `sourceCrop` is forwarded exactly as the static path forwards
+// it — BY REFERENCE, never cloned. `fit`, `sourceWidth` and `sourceHeight` are
+// still NOT keyframeable. A track naming any other prop is simply never
 // consulted.
 //
 // The scale trio has one wrinkle worth stating explicitly, because getting it
@@ -406,9 +411,12 @@ import { sampleTrack } from './curves.js'
  * @property {number} opacity  0-1.
  * @property {'cover' | 'contain' | 'fill' | undefined} fit
  *   'contain' ALWAYS for video (never `item.fit`); the item's own tri-state
- *   (default 'cover') for image; `undefined` for overlay and anything else —
+ *   (default 'cover') for image, or 'cover' from `geometryAt` when its crop is
+ *   keyframed (`imageFitFor`); `undefined` for overlay and anything else —
  *   see the module header for why each of these is honest, not fabricated.
- * @property {{x: number, y: number, w: number, h: number} | undefined} sourceCrop Forwarded verbatim, by reference.
+ * @property {{x: number, y: number, w: number, h: number} | undefined} sourceCrop
+ *   Forwarded verbatim, by reference; from `geometryAt`, a fresh object
+ *   sampled from the crop tracks when an image's crop is keyframed.
  * @property {number | undefined} sourceWidth  Forwarded verbatim.
  * @property {number | undefined} sourceHeight Forwarded verbatim.
  * @property {number} rotation Degrees, as authored (NOT normalized here).
@@ -425,6 +433,55 @@ function fitFor(item, kind) {
   if (kind === 'video') return 'contain'
   if (kind === 'image') return item.fit ?? 'cover'
   return undefined
+}
+
+/**
+ * The four crop props (PV55): keyframed `sourceCrop.x/.y/.w/.h`, one track
+ * each. `geometryAt` folds them back into ONE `sourceCrop` object, so every
+ * reader of a resolved geometry keeps reading `sourceCrop` and nothing else.
+ * @type {ReadonlyArray<'cropX' | 'cropY' | 'cropW' | 'cropH'>}
+ */
+export const CROP_KEYFRAME_PROPS = Object.freeze(/** @type {const} */ (['cropX', 'cropY', 'cropW', 'cropH']))
+
+/** @type {ReadonlySet<string>} */
+const CROP_PROP_SET = new Set(CROP_KEYFRAME_PROPS)
+
+/**
+ * Which kinds `geometryAt` samples crop tracks for. Images only in PV55 phase 1:
+ * the video export applies `sourceCrop` statically, so sampling a video's crop
+ * tracks here would move the preview and the frame samples while the export
+ * stood still. Phase 2 adds 'video' here, in `canKeyframeProp` and in
+ * `engine/validate.py`, together.
+ * @type {ReadonlySet<string>}
+ */
+const CROP_KEYFRAME_KINDS = new Set(['image'])
+
+const FULL_CROP = Object.freeze({ x: 0, y: 0, w: 1, h: 1 })
+
+/**
+ * @param {{ keyframes?: import('./curves.js').KeyframeTrack[] } | null | undefined} item
+ * @returns {boolean}
+ */
+export function hasCropKeyframes(item) {
+  const tracks = item?.keyframes
+  if (!Array.isArray(tracks)) return false
+  for (let i = 0; i < tracks.length; i++) {
+    const tr = tracks[i]
+    if (tr && CROP_PROP_SET.has(tr.prop) && Array.isArray(tr.points) && tr.points.length > 0) return true
+  }
+  return false
+}
+
+/**
+ * The fit an IMAGE is drawn with. An image whose crop is keyframed always
+ * covers its box: the animated export can only cover (a per-frame contain or
+ * fill of a changing crop needs per-frame bars, which ffmpeg cannot draw from
+ * an expression). Otherwise the item's own tri-state, default 'cover'.
+ * @param {GeometryItem} item
+ * @returns {'cover' | 'contain' | 'fill'}
+ */
+export function imageFitFor(item) {
+  return hasCropKeyframes(item) ? 'cover' : (item.fit ?? 'cover')
 }
 
 /**
@@ -465,10 +522,10 @@ export function geometryFor(item, kind) {
  *
  * FIRST wins if a malformed item somehow carries two tracks for one prop — the
  * `.find()` reading, which is what a reader expects. Written as a plain indexed
- * loop rather than `.find()` because this is called seven times per item per
- * frame on both the preview and the bake path, and `.find()` allocates a
- * closure every call. Tracks are tiny (at most seven, one per animatable prop),
- * so seven scans of the array cost less than the closures would.
+ * loop rather than `.find()` because this is called up to eleven times per
+ * item per frame on both the preview and the bake path, and `.find()` allocates
+ * a closure every call. Tracks are tiny (at most eleven, one per animatable
+ * prop), so a few scans of the array cost less than the closures would.
  *
  * @param {import('./curves.js').KeyframeTrack[]} tracks
  * @param {import('./curves.js').KeyframeProp} prop
@@ -503,9 +560,12 @@ function trackFor(tracks, prop) {
  * An item with no keyframes is handed to {@link geometryFor} ITSELF — the same
  * function, not a copy of its body — so the static path is identical BY
  * CONSTRUCTION and a keyframe-free project keeps producing a byte-identical
- * filter graph. Only the seven props src/curves.js names can be animated;
- * `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are forwarded exactly as the
- * static path forwards them (`sourceCrop` by reference, never cloned).
+ * filter graph. Only the eleven props src/curves.js names can be animated.
+ * The four crop props are folded into ONE `sourceCrop` for the kinds in
+ * `CROP_KEYFRAME_KINDS` (images today), and such an image resolves `fit:
+ * 'cover'`; otherwise `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are
+ * forwarded exactly as the static path forwards them (`sourceCrop` by
+ * reference, never cloned).
  *
  * `scaleX`/`scaleY` fall back to the RESOLVED (i.e. possibly animated) `scale`,
  * never to the static `item.scale` — a legacy item that keyframes uniform
@@ -529,6 +589,22 @@ export function geometryAt(item, kind, localT) {
   // overlay keyframing plain `scale` therefore keeps animating on both axes.
   const s = sampleTrack(trackFor(tracks, 'scale'), localT) ?? item.scale ?? 1
 
+  // PV55: the keyframed crop, sampled only for kinds whose export honours it
+  // (CROP_KEYFRAME_KINDS). Otherwise `sourceCrop` is forwarded by reference,
+  // exactly as before. A crop prop with no track falls back to the static
+  // `sourceCrop`, then to the full frame.
+  const animatedCrop = CROP_KEYFRAME_KINDS.has(kind) && hasCropKeyframes(item)
+  let sourceCrop = item.sourceCrop
+  if (animatedCrop) {
+    const base = item.sourceCrop ?? FULL_CROP
+    sourceCrop = {
+      x: sampleTrack(trackFor(tracks, 'cropX'), localT) ?? base.x,
+      y: sampleTrack(trackFor(tracks, 'cropY'), localT) ?? base.y,
+      w: sampleTrack(trackFor(tracks, 'cropW'), localT) ?? base.w,
+      h: sampleTrack(trackFor(tracks, 'cropH'), localT) ?? base.h,
+    }
+  }
+
   // `??`, never `||`: `sampleTrack`'s "no track" sentinel is `undefined`, and a
   // sampled 0 (opacity 0, offset 0) is an ordinary value that must survive.
   return {
@@ -538,8 +614,8 @@ export function geometryAt(item, kind, localT) {
     offsetX: sampleTrack(trackFor(tracks, 'offsetX'), localT) ?? item.offsetX ?? 0,
     offsetY: sampleTrack(trackFor(tracks, 'offsetY'), localT) ?? item.offsetY ?? 0,
     opacity: sampleTrack(trackFor(tracks, 'opacity'), localT) ?? item.opacity ?? 1,
-    fit: fitFor(item, kind),
-    sourceCrop: item.sourceCrop,
+    fit: animatedCrop ? 'cover' : fitFor(item, kind),
+    sourceCrop,
     sourceWidth: item.sourceWidth,
     sourceHeight: item.sourceHeight,
     rotation: sampleTrack(trackFor(tracks, 'rotation'), localT) ?? item.rotation ?? 0,

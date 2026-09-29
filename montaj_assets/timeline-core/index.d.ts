@@ -489,11 +489,17 @@ export interface Geometry {
   opacity: number
   /**
    * `'contain'` ALWAYS for video (never reads `item.fit`); the item's own
-   * tri-state (default `'cover'`) for image; `undefined` for overlay and any
-   * other kind — a JSX overlay has no fit concept to fabricate.
+   * tri-state (default `'cover'`) for image, or `'cover'` from
+   * {@link geometryAt} when its crop is keyframed ({@link imageFitFor});
+   * `undefined` for overlay and any other kind — a JSX overlay has no fit
+   * concept to fabricate.
    */
   fit: 'cover' | 'contain' | 'fill' | undefined
-  /** Forwarded verbatim, by reference — never cloned. */
+  /**
+   * Forwarded verbatim, by reference — never cloned. From {@link geometryAt},
+   * a fresh object sampled from the crop tracks when an image's crop is
+   * keyframed (PV55).
+   */
   sourceCrop: { x: number; y: number; w: number; h: number } | undefined
   /** Forwarded verbatim. */
   sourceWidth: number | undefined
@@ -535,18 +541,27 @@ export declare function geometryFor(item: GeometryItem, kind: ItemKind): Geometr
  * An item with no `keyframes` is handed to {@link geometryFor} ITSELF — the
  * same function, not a copy of its body — so the static path is identical BY
  * CONSTRUCTION and a keyframe-free project keeps producing a byte-identical
- * ffmpeg filter graph. Only the seven {@link KeyframeProp} values can be
- * animated; `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are forwarded
- * exactly as the static path forwards them (`sourceCrop` by reference, never
- * cloned). The per-prop fallback is `??` and never `||`, so a legitimately
- * animated 0 (opacity 0, offset 0) survives instead of snapping back to the
- * item's static scalar.
+ * ffmpeg filter graph. Only the eleven {@link KeyframeProp} values can be
+ * animated. The four crop props are folded into ONE `sourceCrop` for images
+ * (PV55), and such an image resolves `fit: 'cover'`; otherwise
+ * `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are forwarded exactly as the
+ * static path forwards them (`sourceCrop` by reference, never cloned). The
+ * per-prop fallback is `??` and never `||`, so a legitimately animated 0
+ * (opacity 0, offset 0) survives instead of snapping back to the item's static
+ * scalar.
  *
  * `scaleX`/`scaleY` fall back to the RESOLVED — i.e. possibly animated —
  * `scale`, never to the static `item.scale`, so an item that keyframes plain
  * uniform `scale` keeps animating on both axes.
  */
 export declare function geometryAt(item: GeometryItem, kind: ItemKind, localT: number): Geometry
+
+/** The four keyframeable crop props, in x, y, w, h order (PV55). */
+export declare const CROP_KEYFRAME_PROPS: ReadonlyArray<'cropX' | 'cropY' | 'cropW' | 'cropH'>
+/** True when the item carries a non-empty track for any crop prop. */
+export declare function hasCropKeyframes(item: GeometryItem | null | undefined): boolean
+/** The fit an image is drawn with: 'cover' whenever its crop is keyframed, else `item.fit ?? 'cover'`. */
+export declare function imageFitFor(item: GeometryItem): 'cover' | 'contain' | 'fill'
 
 /**
  * The editor-CSS adapter. Verbatim port of `videoTransformBoxPct`
@@ -818,9 +833,10 @@ export declare function audioWindow(track: AudioTrack, t: number): AudioWindow
 export type EasingName = 'linear' | 'ease' | 'ease-in' | 'ease-out' | 'ease-in-out' | 'hold'
 
 /**
- * The item properties that can be keyframed — deliberately the seven
- * {@link geometryFor} already understands. A track naming anything else is
- * simply never consulted.
+ * The item properties that can be keyframed: the seven transform props
+ * {@link geometryFor} already understands, plus the four crop props that
+ * {@link geometryAt} folds into `sourceCrop` (PV55). A track naming anything
+ * else is simply never consulted.
  *
  * `scale` is the legacy UNIFORM knob and `scaleX`/`scaleY` are its per-axis
  * siblings; an item with no per-axis track follows the `scale` track on both
@@ -834,6 +850,10 @@ export type KeyframeProp =
   | 'scaleY'
   | 'rotation'
   | 'opacity'
+  | 'cropX'
+  | 'cropY'
+  | 'cropW'
+  | 'cropH'
 
 /** One keyframe. */
 export interface Keyframe {
