@@ -1174,6 +1174,11 @@ export async function sampleFrame({
           rotation: ri.geometry.rotation,
           opacity, // the shared rule — see the note above the branch
           fit:      ri.geometry.fit, // image's own tri-state, default 'cover'
+          // PV55: the crop at THIS instant (geometryAt samples a keyframed one and
+          // resolves its fit to 'cover', carried by `fit` below). Applied before
+          // the fit exactly as the export applies it. Never `keyframes`: see the
+          // video branch's note above.
+          sourceCrop: ri.geometry.sourceCrop,
         }
       }
       const { inputArgs, filterParts: fp, newVideoLabel } =

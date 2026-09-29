@@ -35,6 +35,7 @@ import { createHash } from 'node:crypto'
 
 import { sampleOverlay, sampleFrame, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION } from '../sample-frame.js'
 import { buildOverlayFilterParts } from '../encode-segment.js'
+import { FFMPEG } from '../ffmpeg-bin.js'
 import { MASTER_LOOK } from '../look.js'
 import { normalizeTracks } from '../project-tracks.js'
 import { resolveAt } from '@bycrux/timeline-core'
@@ -1267,6 +1268,76 @@ test('(m) sampleFrame: image-only project produces a frame (no video crash)', { 
     const center = readPixelRgba(result.pngPath, 540, 960)
     // Blue: R < 50, G < 50, B > 100
     assert.ok(center.b > 80, `center pixel should be blue-ish, got R=${center.r} G=${center.g} B=${center.b}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// (pv55) sampleFrame crops a still by its sampled sourceCrop
+// ---------------------------------------------------------------------------
+// Source 640x360: four 160px stripes, red | lime | blue | white. Built with the
+// code under test's own ffmpeg (PV52: fail, do not skip, when it is missing).
+function pv55Stripes(dir) {
+  if (spawnSync(FFMPEG, ['-version']).status !== 0) {
+    if (process.env.MONTAJ_TEST_ALLOW_MISSING_CAPS === '1') return null
+    assert.fail(`${FFMPEG} is not runnable; set MONTAJ_TEST_ALLOW_MISSING_CAPS=1 to skip`)
+  }
+  const out = join(dir, 'stripes.png')
+  const r = spawnSync(FFMPEG, ['-y', '-v', 'error',
+    '-f', 'lavfi', '-i', 'color=red:size=160x360', '-f', 'lavfi', '-i', 'color=lime:size=160x360',
+    '-f', 'lavfi', '-i', 'color=blue:size=160x360', '-f', 'lavfi', '-i', 'color=white:size=160x360',
+    '-filter_complex', '[0:v][1:v][2:v][3:v]hstack=inputs=4,format=rgba[out]',
+    '-map', '[out]', '-frames:v', '1', out], { encoding: 'utf8' })
+  if (r.status !== 0) throw new Error(r.stderr)
+  return out
+}
+
+function pv55Project(src, extra) {
+  return {
+    version: '0.2', status: 'final', name: 'pv55-crop',
+    settings: { resolution: [180, 320], fps: 30, colorSpace: 'sdr_bt709' },
+    tracks: [[{ id: 'img-0', type: 'image', src, start: 0, end: 2, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, ...extra }]],
+    audio: { tracks: [] },
+  }
+}
+
+test('(pv55-a) sampleFrame: a still sourceCrop shows the cropped region', { timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-pv55a-'))
+  try {
+    const src = pv55Stripes(dir)
+    if (!src) return
+    const outPath = join(dir, 'frame.png')
+    const result = await sampleFrame({
+      projectJson: pv55Project(src, { sourceCrop: { x: 0.5, y: 0, w: 0.5, h: 1 } }),
+      atSeconds: 1, outPath,
+    })
+    const dims = pngDimensions(result.pngPath)
+    const px = readPixelRgba(result.pngPath, dims.w >> 2, dims.h >> 1)
+    assert.ok(px.b > 150 && px.r < 100 && px.g < 100, `left-quarter pixel should be blue, got R=${px.r} G=${px.g} B=${px.b}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('(pv55-b) sampleFrame: a keyframed crop is sampled at the requested time', { timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-pv55b-'))
+  try {
+    const src = pv55Stripes(dir)
+    if (!src) return
+    const lin = (prop, a, b) => ({ prop, points: [{ t: 0, value: a }, { t: 0.5, value: b }] })
+    const keyframes = [lin('cropX', 0, 0.68359375), lin('cropY', 0, 0), lin('cropW', 0.31640625, 0.31640625), lin('cropH', 1, 1)]
+    const at = async (s) => {
+      const result = await sampleFrame({
+        projectJson: pv55Project(src, { keyframes }), atSeconds: s, outPath: join(dir, `frame-${s}.png`),
+      })
+      const dims = pngDimensions(result.pngPath)
+      return readPixelRgba(result.pngPath, dims.w >> 1, dims.h >> 1)
+    }
+    const p0 = await at(0)
+    assert.ok(p0.r > 200 && p0.g < 80 && p0.b < 80, `t=0 centre should be red, got R=${p0.r} G=${p0.g} B=${p0.b}`)
+    const p1 = await at(1)
+    assert.ok(p1.r > 200 && p1.g > 200 && p1.b > 200, `t=1 centre should be white, got R=${p1.r} G=${p1.g} B=${p1.b}`)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
