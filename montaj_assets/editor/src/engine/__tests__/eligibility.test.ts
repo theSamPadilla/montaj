@@ -15,6 +15,7 @@ import {
   __setEngineCapabilityForTests,
 } from '../eligibility'
 import type { EditorProject as Project, VisualItem } from '../../schema'
+import { TRANSITION_EPSILON_S } from '@bycrux/timeline-core'
 
 function project(clips: VisualItem[]): Project {
   return {
@@ -239,5 +240,29 @@ describe('engineRequiredReason', () => {
       ],
     }
     expect(engineRequiredReason(clipPairOnOverlayTrack)).toBeNull()
+  })
+
+  // Two track-0 clips whose `from` ends at `fromEnd` and whose `to` starts at
+  // `toStart` — the overlap is the difference.
+  const touching = (fromEnd: number, toStart: number) => project([
+    clip({ id: 'IMG_0706-speech-0', start: 20, end: fromEnd }),
+    clip({ id: 'IMG_0708-speech-0', start: toStart, end: 40, proxySrc: '/a/orig_proxy_hable2.mp4' }),
+  ])
+
+  it('a float-noise overlap is two clips touching, not a crossfade (no banner)', () => {
+    // The operator's project, verbatim: 30.355900000000002 - 30.3559 = 3.6e-15 s.
+    expect(30.355900000000002).toBeGreaterThan(30.3559)
+    expect(engineRequiredReason(touching(30.355900000000002, 30.3559))).toBeNull()
+  })
+
+  it('a real 0.5 s overlap still reports the crossfade', () => {
+    expect(engineRequiredReason(touching(30.5, 30))).toBe('clip-crossfade')
+  })
+
+  it('flips at the shared TRANSITION_EPSILON_S, the same threshold render uses', () => {
+    // render/test/transition-epsilon-parity.test.mjs pins the export side to
+    // this same constant; a private epsilon here would disagree at one of these.
+    expect(engineRequiredReason(touching(30 + TRANSITION_EPSILON_S / 2, 30))).toBeNull()
+    expect(engineRequiredReason(touching(30 + TRANSITION_EPSILON_S * 2, 30))).toBe('clip-crossfade')
   })
 })

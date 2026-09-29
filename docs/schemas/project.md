@@ -366,7 +366,9 @@ Two neighbouring items on the same track — either `tracks[0]` or an overlay
 track — may partially overlap: the incoming item starts before the outgoing
 one ends. Where the overlap is legal, that overlap **is** the transition: the
 render and the editor's preview both dissolve from one item to the other
-across the shared span, from the same blend factor.
+across the shared span, from the same blend factor. An overlap of 1 ms or
+less (`@bycrux/timeline-core`'s `TRANSITION_EPSILON_S`) is not a transition:
+the two items only touch, and hard-cut.
 
 **The bounded-overlap rule.** A partial overlap between two neighbours is
 always legal. Two shapes are not, and `engine/validate.py` rejects both under

@@ -62,7 +62,8 @@ export * from './src/curves.js'
 // why translating the beziers into ffmpeg's expression language was rejected.
 export * from './src/expr.js'
 
-// SP9d-T3 — crossfade math: transitionPairs, transitionProgress, fadeShape.
+// SP9d-T3 — crossfade math: transitionPairs, transitionProgress, fadeShape,
+// and TRANSITION_EPSILON_S (the overlap at or below which two items only touch).
 // THE single definition of "what a crossfade is", shared by the editor's
 // derived keyframes, the resolver's `crossfade` stamp and the segment
 // encoder's `blend` expression — see the src/transitions.js header.
@@ -81,4 +82,6 @@ export * from './src/transitions.js'
  * or new function with no effect on existing outputs does not need a bump.
  * @type {string}
  */
-export const RESOLVER_VERSION = '3'
+// '4': `transitionPairs` stopped pairing overlaps <= TRANSITION_EPSILON_S, so a
+// float-noise overlap resolves with no `crossfade` stamp.
+export const RESOLVER_VERSION = '4'

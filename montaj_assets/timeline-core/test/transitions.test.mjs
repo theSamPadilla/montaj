@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { transitionPairs, transitionProgress, fadeShape } from '../index.js'
+import { transitionPairs, transitionProgress, fadeShape, TRANSITION_EPSILON_S } from '../index.js'
 
 const item = (id, start, end, extra = {}) => ({ id, start, end, ...extra })
 
@@ -30,6 +30,36 @@ test('transitionPairs ignores identical spans — mutual containment, not pinned
   // `to.end === from.end`), but nothing exercised the identical-span case
   // directly until now — a reviewer finding, not a code change.
   assert.deepEqual(transitionPairs([item('a', 0, 4), item('b', 0, 4)]), [])
+})
+
+test('transitionPairs ignores a float-noise overlap — two clips that merely touch', () => {
+  // The operator's project, verbatim: 30.355900000000002 - 30.3559 is a
+  // 3.6e-15 s "overlap" left by arithmetic on timeline seconds, not a
+  // transition anyone asked for.
+  const a = item('IMG_0706-speech-0', 20, 30.355900000000002)
+  const b = item('IMG_0708-speech-0', 30.3559, 40)
+  assert.ok(a.end > b.start, 'the fixture must really overlap, or this test proves nothing')
+  assert.deepEqual(transitionPairs([a, b]), [])
+})
+
+test('transitionPairs still pairs a real overlap next to a float-noise one', () => {
+  const pairs = transitionPairs([
+    item('a', 0, 30.355900000000002),
+    item('b', 30.3559, 40),
+    item('c', 39.5, 50),
+  ])
+  assert.deepEqual(pairs.map(p => [p.from.id, p.to.id, p.start, p.end]), [['b', 'c', 39.5, 40]])
+})
+
+test('TRANSITION_EPSILON_S is the exact threshold: at or under it touches, over it is a crossfade', () => {
+  const at = (overlap) => transitionPairs([item('a', 0, 10), item('b', 10 - overlap, 20)]).length
+  assert.equal(at(TRANSITION_EPSILON_S / 2), 0)
+  assert.equal(at(TRANSITION_EPSILON_S * 2), 1)
+})
+
+test('TRANSITION_EPSILON_S is positive and well under one frame at any output rate', () => {
+  assert.ok(TRANSITION_EPSILON_S > 0)
+  assert.ok(TRANSITION_EPSILON_S <= (1 / 240) / 4)
 })
 
 test('transitionPairs is order-independent — it sorts by start', () => {

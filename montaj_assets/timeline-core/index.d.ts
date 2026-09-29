@@ -1017,14 +1017,23 @@ export interface TransitionPair {
 }
 
 /**
+ * The longest overlap, in timeline seconds, that is still NOT a crossfade
+ * (1 ms). Two neighbours overlapping by this much or less touch and hard-cut:
+ * float noise such as `30.355900000000002` vs `30.3559` is not a transition.
+ * The one threshold every consumer shares, via {@link transitionPairs}.
+ */
+export declare const TRANSITION_EPSILON_S: number
+
+/**
  * Every crossfade on ONE track's items, earliest first.
  *
  * Sorts a COPY by `start` then `end`, so the caller's array is never reordered
  * and the items may be passed in any order. Only CONSECUTIVE pairs in that
- * order are considered. A pair is skipped when the two are butt-joined or
- * gapped (`to.start >= from.end`) and when one CONTAINS the other
- * (`to.end <= from.end`) — containment has no "from" and "to" to blend along,
- * and `engine/validate.py` rejects it outright.
+ * order are considered. A pair is skipped when the two are butt-joined,
+ * gapped or overlap by no more than {@link TRANSITION_EPSILON_S}
+ * (`from.end - to.start <= TRANSITION_EPSILON_S`), and when one CONTAINS the
+ * other (`to.end <= from.end`) — containment has no "from" and "to" to blend
+ * along, and `engine/validate.py` rejects it outright.
  */
 export declare function transitionPairs(
   items: ReadonlyArray<TransitionItem> | null | undefined,

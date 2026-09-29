@@ -50,12 +50,35 @@
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
 
 /**
+ * The longest overlap, in timeline seconds, that is still NOT a crossfade.
+ *
+ * Two neighbours whose overlap is at or below this TOUCH; they hard-cut. Real
+ * projects produce exactly this: an agent's edit left one clip ending at
+ * `30.355900000000002` and the next starting at `30.3559`, a 3.6e-15 s
+ * "overlap" that is float noise, not an intended transition. Paired, it made
+ * the legacy preview announce a crossfade it could not show and handed render
+ * a blend no frame could ever sample.
+ *
+ * 1 ms, the tolerance the editor already uses to call two clips butt-joined
+ * rather than overlapping (`cuts.ts`'s `EPSILON`, read by `overlapsAny`), so an
+ * edit the editor treats as a clean cut is never read as a transition here. It
+ * is well under one frame at any output rate (a quarter of a frame at 240 fps).
+ *
+ * ONE value for every consumer. Nothing compares overlaps itself: preview,
+ * eligibility and render all get their pairs from {@link transitionPairs}, and
+ * `render/test/transition-epsilon-parity.test.mjs` fails if any path stops
+ * flipping at this exact threshold.
+ */
+export const TRANSITION_EPSILON_S = 0.001
+
+/**
  * Every crossfade on one track's items, earliest first.
  *
  * Items are sorted by `start` (then `end`) first, so the caller may pass them
  * in any order. Only CONSECUTIVE pairs in that order are considered: a
  * three-way overlap is a validator error, and silently blending some subset of
- * it would hide the mistake.
+ * it would hide the mistake. An overlap no longer than
+ * {@link TRANSITION_EPSILON_S} is not a pair.
  *
  * @param {ReadonlyArray<TransitionItem>} items
  * @returns {TransitionPair[]}
@@ -70,8 +93,8 @@ export function transitionPairs(items) {
     const to = sorted[i + 1]
     const start = num(to.start)
     const end = num(from.end)
-    if (start >= end) continue                       // butt-joined or a gap
-    if (num(to.end) <= end) continue                 // containment — see the header
+    if (end - start <= TRANSITION_EPSILON_S) continue // butt-joined, a gap, or float noise
+    if (num(to.end) <= end) continue                  // containment — see the header
     pairs.push({ from, to, start, end })
   }
   return pairs

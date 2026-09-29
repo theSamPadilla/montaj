@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../types'
 import type { AudioTrack, VisualItem, VisualTrack } from '../../../schema'
+import { TRANSITION_EPSILON_S } from '@bycrux/timeline-core'
 import {
   AUDIO_FALLBACK_SPAN_SECONDS,
   resolveAudioWindow,
@@ -825,6 +826,15 @@ describe('computeVisualCrossfade', () => {
 
   it('returns null when nothing overlaps', () => {
     expect(computeVisualCrossfade(proj([ov('a', 0, 4), ov('b', 4, 8)]))).toBeNull()
+  })
+
+  it('writes no fade for a float-noise overlap — the two overlays only touch', () => {
+    expect(computeVisualCrossfade(proj([ov('a', 20, 30.355900000000002), ov('b', 30.3559, 40)]))).toBeNull()
+  })
+
+  it('flips at the shared TRANSITION_EPSILON_S, the same threshold render uses', () => {
+    expect(computeVisualCrossfade(proj([ov('a', 0, 4 + TRANSITION_EPSILON_S / 2), ov('b', 4, 8)]))).toBeNull()
+    expect(computeVisualCrossfade(proj([ov('a', 0, 4 + TRANSITION_EPSILON_S * 2), ov('b', 4, 8)]))).not.toBeNull()
   })
 
   it('never touches an item whose opacity was keyframed by hand', () => {
