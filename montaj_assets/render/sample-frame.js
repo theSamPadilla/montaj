@@ -40,10 +40,43 @@ import {
   buildVideoItemFilterParts,
   buildOverlayFilterParts,
   buildVividLutChain,
+  buildCutoutGradeFilter,
   hasZscale,
   hasLut3d,
 } from './encode-segment.js'
 import { resolveAt, sourceWindow, RESOLVER_VERSION } from '@bycrux/timeline-core'
+
+/**
+ * The pre-SP6b Hable chain: the ONLY place this file tonemaps with Hable, used
+ * only when ffmpeg lacks zscale or lut3d (buildSampleGradeVf's else arm).
+ * tests/test_sample_steps.py scans for exactly that.
+ */
+const HABLE_FALLBACK_VF = 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,'
+
+/**
+ * Inline HDR -> SDR grade for a camera-origin layer, ending in rgb24 (the PNG
+ * encoder rejects yuv420p). The healthy path is the render's own
+ * buildVividLutChain.
+ */
+export function buildSampleGradeVf(key, sdrCurve = null) {
+  if (hasZscale() && hasLut3d()) {
+    return `${buildVividLutChain(key, sdrCurve)},format=rgb24`
+  } else {
+    return `${HABLE_FALLBACK_VF}format=rgb24`
+  }
+}
+
+/**
+ * Graph for a remove_bg cutout (untagged ProRes 4444 alpha holding HLG/PQ
+ * signal in BT.601 YUV). zscale takes no alpha format, so the colour is graded
+ * on a split and the matte merged back, ending in rgba. The grade is the
+ * export's own buildCutoutGradeFilter (which declares the file BT.601), so the
+ * still and the export cannot drift.
+ */
+export function buildCutoutSampleVf(key, sdrCurve = null) {
+  const grade = buildCutoutGradeFilter(key, hasZscale(), { sdrCurve, hasLut3d: hasLut3d() })
+  return `split=2[c][a];[a]alphaextract[al];[c]${grade},format=yuv444p[cg];[cg][al]alphamerge,format=rgba`
+}
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -827,24 +860,11 @@ export async function sampleFrame({
         const isCutout = !!(item.remove_bg && item.nobg_src)
         const key = gradeKeyFor(layer, isCutout ? null : decodedTransferOf(src))
         if (key) {
-          let grade
-          if (hasZscale() && hasLut3d()) {
-            grade = isCutout
-              ? `${buildVividLutChain(key, sdrCurve)},format=yuv420p`
-              : `${buildVividLutChain(key, sdrCurve)},format=rgb24`
-          } else {
+          if (!(hasZscale() && hasLut3d())) {
             log('WARNING: ffmpeg lacks zscale and/or lut3d — sampling with the legacy '
               + 'Hable tonemap; this frame will NOT match the render. Run `montaj doctor`.')
-            grade = 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,'
-              + (isCutout ? 'format=yuv420p' : 'format=rgb24')
           }
-          vfParts.push(isCutout
-            // The cutout file is untagged (zscale: "no path between
-            // colorspaces"), so tag it with the transfer it was cut from.
-            ? `split=2[c][a];[a]alphaextract[al];[c]setparams=colorspace=bt2020nc:color_primaries=bt2020:`
-              + `color_trc=${key === 'hdr_pq' ? 'smpte2084' : 'arib-std-b67'},${grade},format=yuva420p[cg];`
-              + '[cg][al]alphamerge,format=rgba'
-            : grade)
+          vfParts.push(isCutout ? buildCutoutSampleVf(key, sdrCurve) : buildSampleGradeVf(key, sdrCurve))
         }
       }
       if (vfParts.length) ffmpegExtractArgs.push('-vf', vfParts.join(','))

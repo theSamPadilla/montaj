@@ -307,16 +307,31 @@ def test_sample_frame_hdr_filter_applies_vivid_lut():
         "the HDR extract chain must terminate in format=rgb24 for the PNG encoder"
     )
 
-    # The Hable chain may still appear, but only as the no-lut3d fallback — never
-    # as the path a healthy ffmpeg build takes.
-    fallback_lines = [l for l in src.splitlines() if "tonemap=hable" in l]
-    for line in fallback_lines:
-        assert "vfParts.push" in line, (
-            f"unexpected tonemap=hable outside the fallback arm: {line.strip()}"
-        )
-    assert len(fallback_lines) <= 1, (
-        "expected at most one Hable fallback chain in sample-frame.js, found "
-        f"{len(fallback_lines)}"
+    # The Hable chain may still appear, but only as the no-lut3d fallback: one
+    # named constant, defined once, used once, in the else arm of the
+    # zscale+lut3d check, whose if arm is the healthy buildVividLutChain path.
+    lines = src.splitlines()
+    hable_lines = [l for l in lines if "tonemap=hable" in l]
+    assert len(hable_lines) == 1, (
+        f"expected exactly one tonemap=hable chain in sample-frame.js, found {len(hable_lines)}"
+    )
+    assert hable_lines[0].lstrip().startswith("const HABLE_FALLBACK_VF"), (
+        f"tonemap=hable outside HABLE_FALLBACK_VF: {hable_lines[0].strip()}"
+    )
+    uses = [i for i, l in enumerate(lines)
+            if "HABLE_FALLBACK_VF" in l and not l.lstrip().startswith(("const HABLE_FALLBACK_VF", "*", "//"))]
+    assert len(uses) == 1, f"HABLE_FALLBACK_VF must be used exactly once, found {len(uses)}"
+    use = uses[0]
+    # Walk back to the enclosing arm: the nearest earlier line that opens a
+    # branch must be the else, and the arm before it must be the healthy path.
+    arm = next(i for i in range(use, -1, -1) if "else" in lines[i] or lines[i].lstrip().startswith("if ("))
+    assert "} else {" in lines[arm], (
+        f"the Hable fallback must sit in the else arm, not {lines[arm].strip()!r}"
+    )
+    healthy = "\n".join(lines[max(0, arm - 6):arm])
+    assert "hasLut3d()" in "\n".join(lines[max(0, arm - 8):arm]), "the arm's condition must test hasLut3d()"
+    assert "buildVividLutChain" in healthy and "format=rgb24" in healthy, (
+        "the if arm before the Hable fallback must be the buildVividLutChain path ending in rgb24"
     )
 
 

@@ -228,20 +228,45 @@ t('9b. --prefer-proxy with an identity crop and a smaller proxy succeeds', async
 
 // --- Cutouts ---------------------------------------------------------------
 
-t('10. an HDR-origin cutout is graded through the split graph and keeps its alpha', async (dir) => {
-  const hlg = makeClip(join(dir, 'hlg.mp4'), '0x5090c0', HLG)
-  // Alpha cutout: opaque left half, transparent right half, untagged (as the
-  // remove_bg step writes it).
+t('10. an HDR-origin cutout decodes as BT.601 YUV, is graded to the ideal Vivid, and keeps its alpha', async (dir) => {
+  const hlg = makeClip(join(dir, 'hlg.mp4'), '0xe0ac69', HLG)
+  // The cutout the way steps/transform/remove_bg.py makes one (T8 measured it):
+  // the HLG frame decoded to RGB with the BT.2020 matrix, alpha opaque on the
+  // left half and clear on the right, then RGB to 10-bit YUV with BT.601
+  // limited (PyAV's default), ProRes 4444, colour tags left unknown.
   const cut = join(dir, 'cutout.mov')
-  run('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=0x5090c0:size=64x64:rate=30:duration=1',
-    '-vf', 'format=yuva444p10le,geq=lum=\'lum(X,Y)\':cb=\'cb(X,Y)\':cr=\'cr(X,Y)\':a=\'if(lt(X,32),1023,0)\'',
-    '-c:v', 'prores_ks', '-profile:v', '4444', '-pix_fmt', 'yuva444p10le', cut])
+  run('ffmpeg', ['-y', '-v', 'error', '-i', hlg,
+    '-f', 'lavfi', '-i', 'color=c=black:size=64x64:rate=30:duration=1',
+    '-filter_complex',
+    '[0:v]scale=in_color_matrix=bt2020:in_range=tv:out_range=pc:flags=accurate_rnd+full_chroma_int,'
+      + 'format=rgb24,format=rgba[c];'
+      + "[1:v]format=gray,geq=lum='if(lt(X\\,32)\\,255\\,0)'[m];"
+      + '[c][m]alphamerge,'
+      + 'scale=out_color_matrix=bt601:out_range=tv:flags=accurate_rnd+full_chroma_int,format=yuva444p10le,'
+      + 'setparams=colorspace=unknown:color_trc=unknown:color_primaries=unknown:range=tv[out]',
+    '-map', '[out]', '-c:v', 'prores_ks', '-profile:v', '4444', '-pix_fmt', 'yuva444p10le', cut])
+  assert.equal(transferOf(cut), 'unknown', 'the cutout must be untagged, as remove_bg writes it')
   const project = projectOf('hdr_hlg', { src: hlg, remove_bg: true, nobg_src: cut })
   const out = join(dir, 'cut-out.png')
   await sampleFrame({ projectJson: project, atSeconds: 0.2, outPath: out })
   const opaque = centre(out, 0.25)
   const clear = centre(out, 0.75)
   assert.deepEqual(clear, [0, 0, 0], 'the transparent half shows the black canvas')
-  assert.ok(opaque[2] > 100, `the opaque half carries the colour, got ${opaque}`)
   assert.notDeepEqual(opaque, plainDecode(dir, hlg, '10'), 'and it is graded')
+  // The export declares this file BT.601 (T8); so must the still. Declared
+  // BT.2020 it measured 3-5 levels off on skin.
+  const ideal = idealVivid(dir, hlg, '10')
+  assert.ok(maxDiff(opaque, ideal) <= 1.5, `cutout ${opaque}, ideal Vivid of its source ${ideal}`)
+})
+
+t('10b. the still builds its cutout grade with the export\'s builder, so they cannot drift', async () => {
+  const { buildCutoutSampleVf } = await import('../sample-frame.js')
+  const { buildCutoutGradeFilter, hasZscale, hasLut3d } = await import('../encode-segment.js')
+  for (const key of ['hdr_hlg', 'hdr_pq']) {
+    const want = buildCutoutGradeFilter(key, hasZscale(), { sdrCurve: null, hasLut3d: hasLut3d() })
+    const vf = buildCutoutSampleVf(key, null)
+    assert.ok(vf.includes(want), `the still's cutout graph must contain the export's grade:\n${vf}\nwant ${want}`)
+    assert.ok(vf.includes('matrixin=170m'), 'BT.601 matrix')
+    assert.match(vf, /alphamerge,format=rgba$/)
+  }
 })
