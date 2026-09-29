@@ -2,6 +2,12 @@
 /**
  * derive-sdr.js — HDR master → SDR rendition, in one ffmpeg pass.
  *
+ * NOT what render.js does any more (PV42). Grading the finished master graded
+ * every layer, so SDR clips came out dark and overlays shifted; render.js now
+ * composes the SDR rendition per layer (its step 7b) and never calls deriveSdr.
+ * This module stays for probeColorTransfer, which render.js imports, and for its
+ * tests. The rest of this comment describes the derive pass as it was used.
+ *
  * `--export both` / `--export sdr` do NOT render the project twice. The project
  * renders once at its own working color space (HLG or PQ), and this module
  * converts that finished master into a Rec.709 SDR sibling through the same

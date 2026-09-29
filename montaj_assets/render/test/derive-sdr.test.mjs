@@ -215,7 +215,6 @@ test('planExport: auto on an HDR project is byte-for-byte the old flow', () => {
     mode: 'auto',
     composePath: '/w/render/Clip.mp4',
     derivePath: null,
-    tempMaster: null,
     outputs: ['/w/render/Clip.mp4'],
     notice: null,
   })
@@ -226,19 +225,18 @@ test('planExport: both — master keeps its name, SDR lands on the -sdr sibling'
   assert.equal(plan.mode, 'both')
   assert.equal(plan.composePath, '/w/render/My Clip.mp4')
   assert.equal(plan.derivePath, '/w/render/My Clip-sdr.mp4')
-  assert.equal(plan.tempMaster, null)
   assert.deepEqual(plan.outputs, ['/w/render/My Clip.mp4', '/w/render/My Clip-sdr.mp4'])
   assert.equal(plan.notice, null)
 })
 
-test('planExport: sdr — the HDR master is scratch, the user\'s name goes to the SDR file', () => {
+test('planExport: sdr on an HDR project: no HDR compose, the user\'s name goes to the SDR file', () => {
+  // PV42: the SDR file is a per-layer compose of its own, so there is no HDR
+  // master to render first, derive from, or clean up afterwards.
   const plan = planExport({ exportMode: 'sdr', projectColorSpace: 'hdr_pq', outputPath: '/w/render/Clip.mp4' })
   assert.equal(plan.mode, 'sdr')
-  assert.equal(plan.composePath, '/w/render/Clip-hdrmaster.tmp.mp4')
+  assert.equal(plan.composePath, null)
   assert.equal(plan.derivePath, '/w/render/Clip.mp4')
-  assert.equal(plan.tempMaster, '/w/render/Clip-hdrmaster.tmp.mp4')
-  assert.deepEqual(plan.outputs, ['/w/render/Clip.mp4'], 'the temp master is not an output')
-  assert.notEqual(plan.composePath, plan.derivePath, 'compose must not write over its own derive target')
+  assert.deepEqual(plan.outputs, ['/w/render/Clip.mp4'])
 })
 
 test('planExport: sdr/both on an already-SDR project fall back to auto with one notice', () => {
@@ -267,8 +265,8 @@ test('planExport: an extensionless --out still gets distinct sibling names', () 
   assert.notEqual(both.derivePath, both.composePath)
 
   const sdr = planExport({ exportMode: 'sdr', projectColorSpace: 'hdr_hlg', outputPath: '/tmp/clip' })
-  assert.equal(sdr.composePath, '/tmp/clip-hdrmaster.tmp')
-  assert.notEqual(sdr.composePath, sdr.derivePath)
+  assert.equal(sdr.composePath, null)
+  assert.equal(sdr.derivePath, '/tmp/clip')
 })
 
 test('planExport: naming only touches the trailing extension, whatever the path', () => {

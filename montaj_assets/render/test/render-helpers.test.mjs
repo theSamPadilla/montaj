@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { getTotalDurationSeconds, collectAllItems, collectPuppeteerSegments, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath } from '../render.js'
+import { getTotalDurationSeconds, collectAllItems, collectPuppeteerSegments, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath, planExport } from '../render.js'
 import { MASTER_LOOK } from '../look.js'
 
 test('getTotalDurationSeconds: returns 0 for empty tracks', () => {
@@ -725,4 +725,16 @@ test('collectAllItems: legacy array-of-arrays tracks (no track settings possible
   const { videoItems } = collectAllItems(project)
   assert.equal(videoItems[0].volume, 1)
   assert.equal(videoItems[0].muted, false)
+})
+
+test('planExport: --export sdr on an HDR project composes no HDR master at all (PV42)', () => {
+  // The SDR file is its own per-layer compose now. There is no temp master to
+  // write, derive from or delete: compose runs once, straight into the name the
+  // user asked for.
+  const out = '/w/render/Clip.mp4'
+  const plan = planExport({ exportMode: 'sdr', projectColorSpace: 'hdr_hlg', outputPath: out })
+  assert.equal(plan.composePath, null)
+  assert.equal(plan.derivePath, out)
+  assert.deepEqual(plan.outputs, [out])
+  assert.doesNotMatch(JSON.stringify(plan), /hdrmaster/)
 })

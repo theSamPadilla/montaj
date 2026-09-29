@@ -153,6 +153,30 @@ def test_detached_render_phase_reflects_last_marker_mid_run(monkeypatch, tmp_pat
     assert job.phase == "captions"
 
 
+def test_detached_render_phase_stays_sdr_derive_through_the_sdr_compose(monkeypatch, tmp_path):
+    # PV42: the SDR rendition is a second compose, and compose logs
+    # "concatenating", which _render_phase_for maps to "encoding". Once the
+    # render has reached sdr_derive, later phase lines must not walk the
+    # stepper back (returncode nonzero so the done override never runs).
+    proc = _FakeProc(
+        stderr_lines=[
+            b"[montaj render] composing final video...\n",
+            b"[montaj render] deriving SDR rendition \xe2\x86\x92 x-sdr.mp4 (per layer)...\n",
+            b"[montaj compose] concatenating 3 segment(s)...\n",
+        ],
+        returncode=1,
+    )
+    _patch_spawn(monkeypatch, proc)
+    job = _RenderJob()
+    _reserve(job)
+    pp = tmp_path / "project.json"
+
+    asyncio.run(_run_render_detached(PID, ["node", "render.js"], {}, pp, pp, job))
+
+    assert job.status == "error"
+    assert job.phase == "sdr_derive"
+
+
 # ---------------------------------------------------------------------------
 # render_status endpoint
 # ---------------------------------------------------------------------------

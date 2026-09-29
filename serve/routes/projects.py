@@ -210,7 +210,10 @@ async def _run_render_detached(project_id: str, cmd: list[str], env: dict,
             if text:
                 job.lines.append(text)
                 p = _render_phase_for(text)
-                if p:
+                # sdr_derive is the last phase before done. The SDR rendition
+                # is a compose of its own (PV42), so its "concatenating" line
+                # would otherwise walk the stepper back to encoding.
+                if p and job.phase != "sdr_derive":
                     job.phase = p
         stdout = await proc.stdout.read()
         await proc.wait()

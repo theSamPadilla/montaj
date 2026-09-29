@@ -767,10 +767,21 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const ovFmt = item.src.endsWith('.mov') ? ':format=auto' : ':format=yuv420'
 
   const itemColorSpace = detectFromTransfer(item.colorTransfer)
+  // The key this item's conversion starts from. render.js's per-layer SDR pass
+  // (PV42) stamps `gradeFrom` on every video item it prepares: the Vivid source
+  // key for an HDR-origin layer, taken from the file it decodes, or null for a
+  // layer the SDR output does not grade (converting from the project's own key
+  // is no conversion at all). Whether a layer is graded is provenance, decided
+  // once by sdr-layer.js, never re-derived here from the transfer. An item
+  // without the field (every SDR project, the HDR pass) converts from its
+  // decoded transfer, exactly as before.
+  const convertFrom = item.gradeFrom !== undefined
+    ? (item.gradeFrom ?? projectColorSpace)
+    : itemColorSpace
   const skipConversionForAlpha = item.remove_bg && item.nobg_src
   const conversionFilter = skipConversionForAlpha
     ? ''
-    : buildColorConversionFilter(itemColorSpace, projectColorSpace, zscaleAvailable,
+    : buildColorConversionFilter(convertFrom, projectColorSpace, zscaleAvailable,
         { sdrCurve, hasLut3d: lut3dAvailable, srcUntagged: item.colorTransfer === 'unknown' })
   // An HDR→SDR grade ends pinned to yuv420p, as derive-sdr.js and
   // lib/normalize.py already pin it, so the Vivid chain's own last zscale
@@ -782,7 +793,8 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // subsampled: on a letterboxed item (transparent pad) the unpinned grade
   // drifted from the pinned one at colour edges (measured: max 56 / mean abs
   // 0.57, pinned 21 / 0.29). Pinned by composite-matrix.integration.test.mjs.
-  const gradePin = conversionFilter && isHdr(itemColorSpace) && projectColorSpace === 'sdr_bt709'
+  // Keyed on the same effective key as the conversion (convertFrom, above).
+  const gradePin = conversionFilter && isHdr(convertFrom) && projectColorSpace === 'sdr_bt709'
     ? 'format=yuv420p,' : ''
   const conversionStep = conversionFilter ? `${conversionFilter},${gradePin}` : ''
 

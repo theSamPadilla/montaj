@@ -1658,3 +1658,35 @@ test('a lone INCOMING clip gets no audio ramp either', async () => {
   assert.doesNotMatch(graph, /split=2|blend=all_expr=/)
   assert.doesNotMatch(graph, /:eval=frame/)
 })
+
+// ---------------------------------------------------------------------------
+// PV42 SDR pass: item.gradeFrom, not the decoded transfer, picks the grade
+// ---------------------------------------------------------------------------
+//
+// render.js's SDR pass stamps `gradeFrom` on every video item once it is
+// prepared: the Vivid source key for an HDR-origin layer, null for a layer that
+// is not graded. Items without the field (SDR projects, the HDR pass) must build
+// exactly what they always built.
+
+test('gradeFrom: the stamped key picks the grade and the pin; null means no conversion', () => {
+  const opts = {
+    segStart: 0, duration: 3, projectColorSpace: 'sdr_bt709',
+    zscaleAvailable: true, lut3dAvailable: true,
+  }
+  const base = { type: 'video', src: '/clip.mp4', start: 0, end: 3, inPoint: 0 }
+  const chainOf = (item) => buildVideoItemFilterParts(item, 1080, 1920, 0, '[base]', opts).filterParts[0]
+
+  const pq = chainOf({ ...base, colorTransfer: 'arib-std-b67', gradeFrom: 'hdr_pq' })
+  assert.ok(pq.includes(`${buildVividLutChain('hdr_pq')},format=yuv420p,`),
+    `a PQ key must grade from PQ and pin the grade, whatever the transfer says, got: ${pq}`)
+
+  const none = chainOf({ ...base, colorTransfer: 'arib-std-b67', gradeFrom: null })
+  assert.ok(!none.includes('lut3d=') && !none.includes('zscale'),
+    `an explicit null key must not grade, got: ${none}`)
+  assert.equal(none, chainOf({ ...base, colorTransfer: 'bt709' }),
+    'an ungraded layer composites like any SDR clip')
+
+  assert.equal(chainOf({ ...base, colorTransfer: 'arib-std-b67', gradeFrom: 'hdr_hlg' }),
+    chainOf({ ...base, colorTransfer: 'arib-std-b67' }),
+    'an HLG key on an HLG file is the chain an HLG clip in an SDR project always got')
+})

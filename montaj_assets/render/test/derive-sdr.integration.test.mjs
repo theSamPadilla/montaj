@@ -4,10 +4,10 @@
 // of a real (tiny, synthetic) HLG project through real ffmpeg, then ffprobe on
 // what came out.
 //
-// The unit suite (derive-sdr.test.mjs) pins the ffmpeg arguments; only a real
-// run can show that those arguments actually produce a Rec.709 file whose audio
-// survived untouched, that the master is left alone in `both` mode, and that
-// `sdr` mode leaves no scratch behind.
+// Since PV42 the SDR rendition is not derived from the master: render.js
+// composes it per layer (step 7b), and per-layer-sdr.integration.test.mjs pins
+// its pixels. This file pins the file-level contract of each mode: names, stdout,
+// colour tags, codecs, audio, posters, and that `sdr` mode leaves one file.
 //
 // GATING: skipped unless this ffmpeg has zscale + lut3d (the Montaj Vivid
 // chain) and libx265 (the HDR project's segment encoder). Same policy as
@@ -17,7 +17,7 @@
 // COST: the fixture is 64×64 and 6s long, and the project is marked
 // `normalize: lazy` with each clip pointing at itself as its own normalized
 // cache — so the render skips the `python3 -m lib.normalize` spawn entirely and
-// the whole file runs in a few seconds. The derive pass is what's under test,
+// the whole file runs in a few seconds. The export modes are what's under test,
 // not intake.
 
 import { test } from 'node:test'
@@ -160,7 +160,7 @@ function withWorkspace(fn) {
 // Tests
 // ---------------------------------------------------------------------------
 
-test('render --export both: HDR master untouched + Rec.709 sibling with copied audio',
+test('render --export both: HDR master untouched + Rec.709 sibling with the master\'s audio',
   { skip: SKIP, timeout: 300_000 }, () => {
     withWorkspace((dir) => {
       const fixture = makeHlgFixture(dir, 'Derive Both')
@@ -179,7 +179,7 @@ test('render --export both: HDR master untouched + Rec.709 sibling with copied a
       // stdout: master first (single-path readers keep working), sibling second.
       assert.deepEqual(run.outputs, [master, derived])
 
-      // The master is still HDR — the derive must not have touched it.
+      // The master is still HDR: the SDR pass must not have touched it.
       assert.equal(probeField(master, 'v:0', 'color_transfer'), 'arib-std-b67')
       assert.equal(probeField(master, 'v:0', 'codec_name'), 'hevc')
 
@@ -192,14 +192,16 @@ test('render --export both: HDR master untouched + Rec.709 sibling with copied a
       assert.equal(probeField(derived, 'v:0', 'codec_name'), 'h264')
       assert.equal(probeField(derived, 'v:0', 'pix_fmt'), 'yuv420p')
 
-      // Audio was copied, not re-encoded: same codec, same bytes.
+      // Same codec, same bytes. The SDR compose encodes its own audio, from the
+      // same files as the master here (both clips are HDR origin, so both passes
+      // decode the same sources) and with the same settings.
       assert.equal(probeField(derived, 'a:0', 'codec_name'), probeField(master, 'a:0', 'codec_name'))
       const masterAudio = audioBitstreamMd5(master)
       assert.ok(masterAudio, 'master should have an audio stream to compare')
       assert.equal(audioBitstreamMd5(derived), masterAudio,
-        'audio bitstream differs — the derive re-encoded it instead of copying')
+        'audio bitstream differs between the master and the SDR rendition')
 
-      // Both files carry a poster; the derived one gets its own SDR extract.
+      // Both files carry a poster; compose embeds the SDR file's own, as SDR.
       assert.equal(probeField(derived, 'v:1', 'codec_name'), 'mjpeg')
 
       // The progress phase the serve layer maps to `sdr_derive`.
@@ -211,7 +213,7 @@ test('render --export both: HDR master untouched + Rec.709 sibling with copied a
     })
   })
 
-test('render --export sdr: one Rec.709 file under the project name, temp master removed',
+test('render --export sdr: one Rec.709 file under the project name, no HDR master',
   { skip: SKIP, timeout: 300_000 }, () => {
     withWorkspace((dir) => {
       const fixture = makeHlgFixture(dir, 'Derive Sdr')
@@ -227,7 +229,7 @@ test('render --export sdr: one Rec.709 file under the project name, temp master 
       assert.equal(probeField(output, 'v:0', 'color_transfer'), 'bt709')
       assert.equal(probeField(output, 'v:0', 'codec_name'), 'h264')
 
-      // The HDR master was scaffolding: no temp, and no -sdr sibling either —
+      // No HDR master is composed at all (PV42), and no -sdr sibling either:
       // the user asked for one file and gets one file, under their own name.
       const files = readdirSync(fixture.renderDir).filter(f => f.endsWith('.mp4'))
       assert.deepEqual(files, ['Derive Sdr.mp4'],

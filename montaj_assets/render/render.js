@@ -22,7 +22,8 @@ import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
 import { requireValidKey, detectFromTransfer, smartDetect, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { pMap }                           from './p-map.js'
 import { fileHasAudio, probeVideoGeometry } from './encode-segment.js'
-import { deriveSdr, probeColorTransfer }  from './derive-sdr.js'
+import { probeColorTransfer }             from './derive-sdr.js'
+import { sdrLayerFor, gradeKeyFor }      from './sdr-layer.js'
 import { sourceWindow, transitionPairs }  from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
 import { resolveMotionBlur }              from './motion-blur.js'
@@ -49,12 +50,12 @@ const C = { cyan: TTY ? '\x1b[96m' : '', reset: TTY ? '\x1b[0m' : '' }
 // ---------------------------------------------------------------------------
 // Export modes (SP6b Task T7)
 //
-// auto — render the project at its own working color space. Exactly the
-//        pre-SP6b behavior, and the default: one file, no derive pass.
-// sdr  — emit only a Rec.709 SDR file. An HDR project still renders its HDR
-//        master first (that's the only way to get the edit), but the master is
-//        scratch: it lands on a temp name and is deleted once derived.
-// both — emit the HDR master AND an SDR sibling derived from it.
+// auto: render the project at its own working color space. Exactly the
+//       pre-SP6b behavior, and the default: one file, no SDR pass.
+// sdr:  emit only a Rec.709 SDR file. On an HDR project that file is the
+//       per-layer SDR pass alone (PV42): no HDR master is composed at all.
+// both: emit the HDR master, then (sequentially) an SDR sibling composed per
+//       layer. Neither file is derived from the other.
 //
 // Declared above the CLI block rather than beside its resolvers below because
 // the flag is validated during module evaluation — a `const` further down the
@@ -94,6 +95,19 @@ const DROPPED_PREVIEW_FIELDS = ['proxySrc', 'nobg_preview_src']
 const UNTAGGED_MASTER_MARKER = 'montaj: untagged source read as BT.709'
 const SDR_MASTER_SUFFIX = '_normalized_sdr_bt709.mp4'
 const VIDEO_EXT = /^\.(mp4|mov|m4v|mkv|webm|avi|mts|m2ts|ts|3gp|mxf|mpg|mpeg|wmv|flv)$/i
+
+// The SDR pass's layer (sdr-layer.js's sdrLayerFor) for one video item, carried
+// on the item under a symbol. collectAllItems copies an item with object spread,
+// which copies symbol keys too, so each render item keeps the layer its source
+// item was given; JSON never sees it.
+const SDR_LAYER = Symbol('montaj.sdrLayer')
+
+// Image tone modes for HDR overlay-image conversion. Keep in sync with
+// lib/normalize_image.py::TONE_MODES and the editor's imageTone.ts. Up here for
+// the same TDZ reason: under --export sdr on an HDR project (no HDR prepare)
+// main() reaches resolveImageTone before its first await.
+const IMAGE_TONE_MODES = ['vivid', 'broadcast', 'punchy', 'raw']
+const DEFAULT_IMAGE_TONE = 'vivid'
 
 // ---------------------------------------------------------------------------
 // Design resolution for overlay capture — always 1080 on the short edge,
@@ -234,11 +248,6 @@ if (isMain) {
   })
 }
 
-// Image tone modes for HDR overlay-image conversion. Keep in sync with
-// lib/normalize_image.py::TONE_MODES and the editor's imageTone.ts.
-const IMAGE_TONE_MODES = ['vivid', 'broadcast', 'punchy', 'raw']
-const DEFAULT_IMAGE_TONE = 'vivid'
-
 /**
  * Resolve the effective image tone: CLI flag > project settings > default.
  * Fails fast on an invalid value from either source — a typo silently falling
@@ -280,22 +289,6 @@ function resolveSdrCurve(value) {
 }
 
 /**
- * Decide what this render emits and where the compose pass writes.
- *
- * @param {object} args
- * @param {string} args.exportMode          'auto' | 'sdr' | 'both'
- * @param {string} args.projectColorSpace   the project's working color space
- * @param {string} args.outputPath          the file the user asked for
- * @returns {{
- *   mode: string,            effective mode — 'auto' once an SDR project downgrades
- *   composePath: string,     where compose writes the render
- *   derivePath: string|null, the SDR rendition to derive, or null for no derive
- *   tempMaster: string|null, composePath when it is scratch to delete afterwards
- *   outputs: string[],       files this render emits, primary first
- *   notice: string|null,     one-line explanation of a downgraded request
- * }}
- */
-/**
  * `<name>.mp4` + '-sdr' → `<name>-sdr.mp4`, the compose.js `.replace(/(\.\w+)$/,…)`
  * idiom. Falls back to plain appending when the path has no extension (`--out
  * /tmp/clip`): the point of a sibling name is that it is a DIFFERENT file, and
@@ -307,10 +300,26 @@ function siblingPath(path, suffix) {
     : `${path}${suffix}`
 }
 
+/**
+ * Decide what this render emits and where each compose writes.
+ *
+ * @param {object} args
+ * @param {string} args.exportMode          'auto' | 'sdr' | 'both'
+ * @param {string} args.projectColorSpace   the project's working color space
+ * @param {string} args.outputPath          the file the user asked for
+ * @returns {{
+ *   mode: string,              effective mode: 'auto' once an SDR project downgrades
+ *   composePath: string|null,  where the project-colour-space compose writes, or
+ *                              null when there is none (--export sdr on HDR)
+ *   derivePath: string|null,   where the per-layer SDR pass writes, or null for none
+ *   outputs: string[],         files this render emits, primary first
+ *   notice: string|null,       one-line explanation of a downgraded request
+ * }}
+ */
 function planExport({ exportMode, projectColorSpace, outputPath }) {
-  // An SDR project's render already IS the SDR rendition — there is no HDR
-  // master to derive from and nothing to convert. Say so once, then behave
-  // exactly like auto rather than emitting a pointless second identical file.
+  // An SDR project's render already IS the SDR rendition, so there is no second
+  // pass to run. Say so once, then behave exactly like auto rather than emitting
+  // a pointless second identical file.
   if (exportMode === 'auto' || !isHdr(projectColorSpace)) {
     const notice = exportMode === 'auto' ? null
       : `--export ${exportMode}: this project is already SDR (${projectColorSpace}) — `
@@ -319,7 +328,6 @@ function planExport({ exportMode, projectColorSpace, outputPath }) {
       mode: 'auto',
       composePath: outputPath,
       derivePath: null,
-      tempMaster: null,
       outputs: [outputPath],
       notice,
     }
@@ -331,21 +339,18 @@ function planExport({ exportMode, projectColorSpace, outputPath }) {
       mode: 'both',
       composePath: outputPath,
       derivePath,
-      tempMaster: null,
       outputs: [outputPath, derivePath],
       notice: null,
     }
   }
 
-  // 'sdr' on an HDR project: the user's name belongs to the SDR file, so the
-  // HDR master renders to a temp sibling (same directory — compose writes its
-  // scratch beside its output) and is removed once the derive succeeds.
-  const tempMaster = siblingPath(outputPath, '-hdrmaster.tmp')
+  // 'sdr' on an HDR project: the SDR pass composes the project per layer
+  // straight into the user's name (PV42). Nothing needs an HDR master, so none
+  // is composed: no scratch file, nothing to clean up.
   return {
     mode: 'sdr',
-    composePath: tempMaster,
+    composePath: null,
     derivePath: outputPath,
-    tempMaster,
     outputs: [outputPath],
     notice: null,
   }
@@ -369,6 +374,11 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   const projectDir = dirname(absProjectPath)
   resolveProjectPaths(projectJson, projectDir)
   validateProjectFiles(projectJson)
+  // The project as the user wrote it (paths resolved), for the per-layer SDR
+  // pass (7b). Taken before anything below mutates projectJson: the repoint
+  // right after this, collectAllItems' cache swaps and every src the HDR pass
+  // rewrites all act on projectJson, never on this copy.
+  const pristineProject = structuredClone(projectJson)
   // Before collectAllItems swaps in any cache: an SDR master an older montaj
   // built from an untagged source is sent back to its source, so the normalize
   // pass (3) rebuilds it. See repointStaleUntaggedMasters.
@@ -544,33 +554,9 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   const captureScale = captureScaleFor(settings.resolution)
   for (const spec of segmentSpecs) spec.captureScale = captureScale
 
-  // Pre-probe color_transfer once per unique source so the segment encoder can
-  // build per-item conversion filters without re-probing per segment. A typical
-  // project breaks one clip into many segments — without this cache, a 50-segment
-  // project with 5 items would do 250 ffprobes.
-  //
-  // This first stamp is the ORIGINAL source's transfer. It is what the
-  // colorSpace smart-detect and the normalize pass (3) need. It is NOT what the
-  // segment encoder needs: normalize swaps `item.src` for an already-converted
-  // master, so 4b re-stamps from the final src. See the note there.
+  // colorTransfer and hasAudio, once per unique source (see stampSourceProbes).
   const transferCache = new Map()
-  for (const item of videoItems) {
-    if (!transferCache.has(item.src)) {
-      transferCache.set(item.src, probeColorTransfer(item.src))
-    }
-    item.colorTransfer = transferCache.get(item.src) ?? 'unknown'
-  }
-
-  // Pre-probe audio presence once per unique source, same rationale as
-  // transferCache above — without it, a 50-segment project with 5 items
-  // would run fileHasAudio's ffprobe up to 250 times instead of 5.
-  const audioCache = new Map()
-  for (const item of videoItems) {
-    if (!audioCache.has(item.src)) {
-      audioCache.set(item.src, fileHasAudio(item.src))
-    }
-    item.hasAudio = audioCache.get(item.src)
-  }
+  stampSourceProbes(videoItems, transferCache)
 
   // Project working color space — drives normalize CLI flag, segment encoder
   // codec/pix_fmt, and per-item conversion filter.
@@ -610,104 +596,12 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   const exportPlan = planExport({ exportMode, projectColorSpace, outputPath })
   if (exportPlan.notice) log(exportPlan.notice)
 
-  // 3. Normalize non-conformant video items to project format (parallel, cap=2)
-  //    Cap matches materialize_cut.py's libx264 worker count — memory-heavy at 4K.
-  //    Requires normalizeIfNeeded to be async (see below) — pMap with a sync mapper
-  //    runs sequentially.
-  //
-  //    Skip remove_bg outputs (nobg_src). collectAllItems swaps `item.src` to
-  //    `item.nobg_src` for items with remove_bg: true so downstream stages read
-  //    the alpha-channel ProRes file directly. Those nobg files are render-only
-  //    artifacts (yuva* pix_fmt, BT.709 SDR) — running them through the
-  //    HLG/PQ normalize path fails (libx265 can't open with the resulting
-  //    pix_fmt + transfer combination) and would be wrong even if it worked
-  //    (we don't want to lose the alpha channel).
-  const NORMALIZE_WORKERS = 2
-  await pMap(videoItems, async (item) => {
-    if (item.remove_bg && item.nobg_src && item.src === item.nobg_src) return
-    // Lazy normalize: a pre-built normalizedSrc cache already conforms — skip the
-    // python spawn. collectAllItems already substituted it as item.src and
-    // rebased inPoint. Without a cache (lazy or eager), fall through to normalize.
-    if (shouldSkipNormalize(settings, item)) return
-    // tonemapped: this item's own probed transfer is HDR and the project is
-    // SDR — the one case normalizeIfNeeded's ffmpeg chain (via lib.normalize)
-    // actually runs the HDR→SDR Montaj Vivid LUT. Mirrors the Python sites'
-    // `is_hdr(detect_from_transfer(...)) and color_space == "sdr_bt709"` check.
-    const tonemapped = isHdr(detectFromTransfer(item.colorTransfer)) && projectColorSpace === 'sdr_bt709'
-    // sdrStretch: an SDR source into an HDR project (lib.normalize's stretch at
-    // 203 nits). Mirrors the Python sites' `sdr_stretch`.
-    const sdrStretch = !isHdr(detectFromTransfer(item.colorTransfer)) && isHdr(projectColorSpace)
-    const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace, tonemapped,
-      { untaggedSource: item.colorTransfer === 'unknown', sdrStretch })
-    if (normalizedPath !== item.src) {
-      log(`normalized ${item.src.split('/').pop()} → ${normalizedPath.split('/').pop()}`)
-      item.src = normalizedPath
-    }
-  }, NORMALIZE_WORKERS)
-
-  // 3b. Strip extra (non-AAC) audio streams via stream-copy. iPhone .MOV files
-  //     ship TWO audio streams: stream 1 = clean stereo AAC, stream 2 = APAC
-  //     (Apple Positional Audio Codec, codec_name=unknown). Even when our
-  //     filter graph only references [idx:a:0] (the AAC), ffmpeg's demuxer
-  //     still reads the apac packets, and under certain timing / memory
-  //     conditions those packets contaminate the AAC decoder context —
-  //     producing AAC bitstream output that decodes with "Prediction is not
-  //     allowed in AAC-LC" / "channel element X.Y is not allocated" /
-  //     "Reserved bit set" errors at concat time, eventually aborting with
-  //     "Rematrix is needed between N channels and stereo". The contamination
-  //     is non-deterministic — sometimes the same input renders cleanly,
-  //     sometimes it produces 400+ decode errors per segment.
-  //
-  //     Defensive fix: produce a `_audioclean.mov` per source that contains
-  //     only video + the first audio stream (`-map 0:v -map 0:a:0 -c copy`).
-  //     Stream-copy, no re-encode, ~1s per clip. After this runs, encode-segment
-  //     reads a file that ffmpeg cannot possibly mis-demux because the apac
-  //     stream literally does not exist in the input. Eliminates the class.
-  await pMap(videoItems, async (item) => {
-    if (item.remove_bg && item.nobg_src && item.src === item.nobg_src) return
-    const cleanPath = await stripExtraAudioStreams(item.src)
-    if (cleanPath !== item.src) {
-      log(`audio-stripped ${item.src.split('/').pop()} → ${cleanPath.split('/').pop()}`)
-      item.src = cleanPath
-    }
-  }, NORMALIZE_WORKERS)
-
-  // 4. Run remove_bg on any video items that need it
-  await processVideoItems(videoItems, workspaceDir)
-
-  // 4b. Probe each video item's display size and alpha, once per unique source,
-  //     the same pre-probe idiom as transferCache/audioCache above. It runs HERE
-  //     rather than beside them because it must read the FINAL `item.src`:
-  //     normalize (3), the audio strip (3b) and remove_bg (4) can each swap it,
-  //     and remove_bg's swap is to the alpha file whose alpha this records.
-  //     encode-segment.js reads these to decide whether a video's decrease-fit
-  //     leaves bars that must be transparent (see buildVideoItemFilterParts).
-  //     Stored on probed* fields, never on sourceWidth/sourceHeight: those are
-  //     project-authored and gate the sourceCrop step. A failed probe stamps
-  //     nulls, and the encoder then emits its opaque-pad string unchanged.
-  //
-  //     colorTransfer is re-stamped here for the same reason. The encoder
-  //     converts every item whose transfer differs from the project's, so it
-  //     must see the transfer of the file it decodes. Normalize hands an HLG
-  //     source in an SDR project a master already graded through the Montaj
-  //     Vivid LUT; the source's stale `arib-std-b67` sent that master through
-  //     the LUT a second time (orange skin, neon colours) while sample_frame,
-  //     which decodes the same master untouched, looked right. Pinned by
-  //     test/hdr-normalize-parity.integration.test.mjs. A normalize that failed
-  //     leaves the HDR source in place, and the encoder still converts it.
-  const geometryCache = new Map()
-  for (const item of videoItems) {
-    if (!geometryCache.has(item.src)) {
-      geometryCache.set(item.src, probeVideoGeometry(item.src))
-    }
-    const geom = geometryCache.get(item.src)
-    item.probedWidth  = geom?.width  ?? null
-    item.probedHeight = geom?.height ?? null
-    item.probedAlpha  = geom?.alpha  ?? null
-    if (!transferCache.has(item.src)) {
-      transferCache.set(item.src, probeColorTransfer(item.src))
-    }
-    item.colorTransfer = transferCache.get(item.src) ?? 'unknown'
+  // 3 to 4b. Conform every video item to the project's own colour space: the
+  //     HDR pass, exactly what it always was. Skipped under --export sdr on
+  //     an HDR project, which composes no HDR master; the SDR pass (7b) prepares
+  //     its own items instead.
+  if (exportPlan.composePath) {
+    await prepareVideoItems(videoItems, () => projectColorSpace, { settings, workspaceDir, transferCache })
   }
 
   // 5. Bundle + render all overlay and caption segments
@@ -760,7 +654,12 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   }
 
   const effectiveImageTone = resolveImageTone(imageTone, settings)
-  const renderedSegments = await renderAllSegments(segmentSpecs, { workers, colorSpace: projectColorSpace, imageTone: effectiveImageTone, motionBlur })
+  // Captured in the colour space of the first compose that composites them: the
+  // project's, or sdr_bt709 when --export sdr on an HDR project composes only
+  // the SDR pass. (Colour space reaches a capture only through the <img>
+  // interceptor in renderer.js.)
+  const captureColorSpace = exportPlan.composePath ? projectColorSpace : 'sdr_bt709'
+  const renderedSegments = await renderAllSegments(segmentSpecs, { workers, colorSpace: captureColorSpace, imageTone: effectiveImageTone, motionBlur })
 
   // Attach positioning offsets back onto rendered segments so compose.js can apply
   // x/y coordinates. Overlay size is derived from the output canvas at compose
@@ -805,58 +704,66 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
     }
   }
 
-  // 6. Use settings.resolution when explicitly set; otherwise detect from first video item.
-  let actualWidth  = settings.resolution?.[0] ?? renderWidth
-  let actualHeight = settings.resolution?.[1] ?? renderHeight
-  if (!settings.resolution) {
-    const firstVideo = [...videoItems].sort((a, b) => a.trackIdx - b.trackIdx)[0]
-    if (firstVideo) {
-      const dims = probeVideoDimensions(firstVideo.src)
-      if (dims) { [actualWidth, actualHeight] = dims }
-    }
-  }
-  // Overlays are composited by scaling the 1080-design canvas to the actual
-  // output dimensions (actualWidth×actualHeight) at compose time — see
-  // buildOverlayFilterParts in encode-segment.js. No per-segment scale factor is
+  // 6. Output size: see outputSize. Overlays are composited by scaling the
+  // 1080-design canvas to the actual output dimensions at compose time (see
+  // buildOverlayFilterParts in encode-segment.js). No per-segment scale factor is
   // stamped here; the compositor derives the size from the output canvas
   // directly, so overlays fit any resolution (4K up, sub-1080 down, non-integer
   // multiples) instead of being cropped onto smaller canvases.
+  let outputDims = null
 
-  // 7. Compose final MP4
-  // PHASE MARKER: "composing final video" → encoding in serve's _render_phase_for.
-  log('composing final video...')
-  const { leadingGap } = await compose({
-    projectJson,
-    puppeteerSegments: renderedSegments,
-    imageItems,
-    videoItems,
-    outputPath: exportPlan.composePath,
-    videoWidth:  actualWidth,
-    videoHeight: actualHeight,
-    colorSpace:  projectColorSpace,
-    sdrCurve,
-  })
+  // 7. Compose final MP4 at the project's colour space (every mode but --export
+  //    sdr on an HDR project).
+  if (exportPlan.composePath) {
+    outputDims = outputSize(settings, videoItems, renderWidth, renderHeight)
+    // PHASE MARKER: "composing final video" → encoding in serve's _render_phase_for.
+    log('composing final video...')
+    await compose({
+      projectJson,
+      puppeteerSegments: renderedSegments,
+      imageItems,
+      videoItems,
+      outputPath: exportPlan.composePath,
+      videoWidth:  outputDims[0],
+      videoHeight: outputDims[1],
+      colorSpace:  projectColorSpace,
+      sdrCurve,
+    })
+  }
 
-  // 7b. Derive the SDR rendition from the finished HDR master — one ffmpeg pass
-  //     through the Montaj Vivid LUT, audio stream-copied, not a second render.
-  //     Only reached for an HDR project under --export sdr|both; auto skips it
-  //     entirely and this whole block is a no-op.
+  // 7b. The SDR rendition of an HDR project (--export sdr|both), composed per
+  //     layer (PV42): a second compose at sdr_bt709 in which each video layer is
+  //     brought to SDR on its own. HDR-origin clips are graded once, in the
+  //     segment encoder; SDR-origin clips come from their SDR original,
+  //     ungraded; overlays and images composite as authored. The HDR master is
+  //     neither read nor touched. For `both` it runs after the HDR compose,
+  //     never beside it (Sam, PV42 Q3). auto skips this block entirely.
   if (exportPlan.derivePath) {
     // PHASE MARKER: "deriving SDR rendition" → `sdr_derive` in serve's
     // _render_phase_for (serve/routes/projects.py); the editor's render stepper
-    // keys off that phase name. Keep this substring in sync if you reword.
-    log(`deriving SDR rendition → ${basename(exportPlan.derivePath)}...`)
-    await deriveSdr(exportPlan.composePath, exportPlan.derivePath, { sdrCurve })
-    // The derived file is Rec.709 already, so its poster needs no tone-map —
-    // passing sdr_bt709 (not the project's HDR key) is what keeps the extract
-    // from running the LUT a second time over already-graded pixels.
-    embedThumbnail(exportPlan.derivePath, 'sdr_bt709', { leadingGap })
-    if (exportPlan.tempMaster) {
-      // --export sdr: the HDR master was scaffolding. Removed only on success —
-      // if the derive threw, the master is the one salvageable artifact of a
-      // long render and is worth more on disk than a tidy directory.
-      rmSync(exportPlan.tempMaster, { force: true })
-    }
+    // keys off that phase name, and serve keeps it once reached, through this
+    // pass's own compose lines. Keep this substring in sync if you reword.
+    log(`deriving SDR rendition → ${basename(exportPlan.derivePath)} (per layer)...`)
+    const sdr = await prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir })
+    // One size for both files: the HDR pass's, when there is one.
+    const [sdrWidth, sdrHeight] = outputDims ?? outputSize(settings, sdr.videoItems, renderWidth, renderHeight)
+    // The overlay captures the SDR pass composites: the ones above, as they are
+    // (under --export sdr they were taken at sdr_bt709 already). Only a capture
+    // whose <img> went through the HDR interceptor (renderer.js) differs in
+    // SDR; PV42 T7 swaps re-captured segments in here.
+    const sdrOverlaySegments = renderedSegments
+    // compose embeds this file's poster itself, as SDR: no LUT on the extract.
+    await compose({
+      projectJson: sdr.project,
+      puppeteerSegments: sdrOverlaySegments,
+      imageItems:  sdr.imageItems,
+      videoItems:  sdr.videoItems,
+      outputPath:  exportPlan.derivePath,
+      videoWidth:  sdrWidth,
+      videoHeight: sdrHeight,
+      colorSpace:  'sdr_bt709',
+      sdrCurve,
+    })
   }
 
   // 8. Cleanup temp bundles (always); intermediate segments only if --clean
@@ -869,9 +776,262 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
 
   // Step output convention: final path on stdout. --export both emits two files;
   // the master keeps line 1 so every single-path reader (montaj render, Hub,
-  // serve's job.result) still sees the same thing it always has, and the derived
-  // SDR sibling follows on line 2.
+  // serve's job.result) still sees the same thing it always has, and the SDR
+  // sibling follows on line 2.
   process.stdout.write(exportPlan.outputs.join('\n') + '\n')
+}
+
+// ---------------------------------------------------------------------------
+// Video item preparation: steps 3 to 4b, and the per-layer SDR pass (PV42)
+// ---------------------------------------------------------------------------
+
+/**
+ * Stamp each video item's `colorTransfer` and `hasAudio`, probing each unique
+ * path once. A typical project breaks one clip into many segments; without the
+ * caches, a 50-segment project with 5 items would run each ffprobe 250 times
+ * instead of 5.
+ *
+ * This first transfer stamp is the transfer of the file an item points at
+ * BEFORE preparation. It is what the colorSpace smart-detect and the normalize
+ * pass (3) need. It is NOT what the segment encoder needs: normalize swaps
+ * `item.src` for an already-converted master, so 4b re-stamps from the final
+ * src. See the note there.
+ */
+function stampSourceProbes(videoItems, transferCache, audioCache = new Map()) {
+  for (const item of videoItems) {
+    if (!transferCache.has(item.src)) {
+      transferCache.set(item.src, probeColorTransfer(item.src))
+    }
+    item.colorTransfer = transferCache.get(item.src) ?? 'unknown'
+  }
+  for (const item of videoItems) {
+    if (!audioCache.has(item.src)) {
+      audioCache.set(item.src, fileHasAudio(item.src))
+    }
+    item.hasAudio = audioCache.get(item.src)
+  }
+}
+
+/**
+ * Steps 3 to 4b for one pass, mutating the items: normalize each video item into
+ * `targetFor(item)`, strip extra audio streams, run remove_bg, then probe the
+ * file each item will actually decode (display size, alpha, and its transfer
+ * again). The HDR pass passes `() => projectColorSpace`, which is exactly what
+ * main() ran here before PV42; the SDR pass passes a per-layer target (see
+ * prepareSdrPass).
+ *
+ * @param {object[]} videoItems  collectAllItems' video items, stamped by stampSourceProbes
+ * @param {(item: object) => string} targetFor  the colour space to normalize an item into
+ * @param {object} opts
+ * @param {object} opts.settings         the project's settings (lazy normalize)
+ * @param {string} opts.workspaceDir     where remove_bg writes
+ * @param {Map}    [opts.transferCache]  path → transfer, shared with stampSourceProbes
+ * @param {string|null} [opts.timingLabel]  when set, each normalize call logs its duration
+ */
+async function prepareVideoItems(videoItems, targetFor,
+  { settings, workspaceDir, transferCache = new Map(), timingLabel = null }) {
+  // 3. Normalize non-conformant video items to their target (parallel, cap=2)
+  //    Cap matches materialize_cut.py's libx264 worker count — memory-heavy at 4K.
+  //    Requires normalizeIfNeeded to be async (see below) — pMap with a sync mapper
+  //    runs sequentially.
+  //
+  //    Skip remove_bg outputs (nobg_src). collectAllItems swaps `item.src` to
+  //    `item.nobg_src` for items with remove_bg: true so downstream stages read
+  //    the alpha-channel ProRes file directly. Those nobg files are render-only
+  //    artifacts (yuva* pix_fmt, BT.709 SDR) — running them through the
+  //    HLG/PQ normalize path fails (libx265 can't open with the resulting
+  //    pix_fmt + transfer combination) and would be wrong even if it worked
+  //    (we don't want to lose the alpha channel).
+  const NORMALIZE_WORKERS = 2
+  await pMap(videoItems, async (item) => {
+    if (item.remove_bg && item.nobg_src && item.src === item.nobg_src) return
+    // Lazy normalize: a pre-built normalizedSrc cache already conforms — skip the
+    // python spawn. collectAllItems already substituted it as item.src and
+    // rebased inPoint. Without a cache (lazy or eager), fall through to normalize.
+    if (shouldSkipNormalize(settings, item)) return
+    const target = targetFor(item)
+    // tonemapped: this item's own probed transfer is HDR and the target is
+    // SDR: the one case normalizeIfNeeded's ffmpeg chain (via lib.normalize)
+    // actually runs the HDR→SDR Montaj Vivid LUT. Mirrors the Python sites'
+    // `is_hdr(detect_from_transfer(...)) and color_space == "sdr_bt709"` check.
+    const tonemapped = isHdr(detectFromTransfer(item.colorTransfer)) && target === 'sdr_bt709'
+    // sdrStretch: an SDR source into an HDR target (lib.normalize's stretch at
+    // 203 nits). Mirrors the Python sites' `sdr_stretch`.
+    const sdrStretch = !isHdr(detectFromTransfer(item.colorTransfer)) && isHdr(target)
+    const startedAt = Date.now()
+    const normalizedPath = await normalizeIfNeeded(item.src, target, tonemapped,
+      { untaggedSource: item.colorTransfer === 'unknown', sdrStretch })
+    // Every call, changed path or not: a normalize killed at normalizeIfNeeded's
+    // 600 s limit falls back to the unconformed source SILENTLY, and this line is
+    // the one place its duration shows.
+    if (timingLabel) {
+      log(`${timingLabel}: normalized ${basename(item.src)} in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`)
+    }
+    if (normalizedPath !== item.src) {
+      log(`normalized ${item.src.split('/').pop()} → ${normalizedPath.split('/').pop()}`)
+      item.src = normalizedPath
+    }
+  }, NORMALIZE_WORKERS)
+
+  // 3b. Strip extra (non-AAC) audio streams via stream-copy. iPhone .MOV files
+  //     ship TWO audio streams: stream 1 = clean stereo AAC, stream 2 = APAC
+  //     (Apple Positional Audio Codec, codec_name=unknown). Even when our
+  //     filter graph only references [idx:a:0] (the AAC), ffmpeg's demuxer
+  //     still reads the apac packets, and under certain timing / memory
+  //     conditions those packets contaminate the AAC decoder context —
+  //     producing AAC bitstream output that decodes with "Prediction is not
+  //     allowed in AAC-LC" / "channel element X.Y is not allocated" /
+  //     "Reserved bit set" errors at concat time, eventually aborting with
+  //     "Rematrix is needed between N channels and stereo". The contamination
+  //     is non-deterministic — sometimes the same input renders cleanly,
+  //     sometimes it produces 400+ decode errors per segment.
+  //
+  //     Defensive fix: produce a `_audioclean.mov` per source that contains
+  //     only video + the first audio stream (`-map 0:v -map 0:a:0 -c copy`).
+  //     Stream-copy, no re-encode, ~1s per clip. After this runs, encode-segment
+  //     reads a file that ffmpeg cannot possibly mis-demux because the apac
+  //     stream literally does not exist in the input. Eliminates the class.
+  await pMap(videoItems, async (item) => {
+    if (item.remove_bg && item.nobg_src && item.src === item.nobg_src) return
+    const cleanPath = await stripExtraAudioStreams(item.src)
+    if (cleanPath !== item.src) {
+      log(`audio-stripped ${item.src.split('/').pop()} → ${cleanPath.split('/').pop()}`)
+      item.src = cleanPath
+    }
+  }, NORMALIZE_WORKERS)
+
+  // 4. Run remove_bg on any video items that need it
+  await processVideoItems(videoItems, workspaceDir)
+
+  // 4b. Probe each video item's display size and alpha, once per unique source,
+  //     the same pre-probe idiom as stampSourceProbes. It runs HERE rather than
+  //     beside that because it must read the FINAL `item.src`:
+  //     normalize (3), the audio strip (3b) and remove_bg (4) can each swap it,
+  //     and remove_bg's swap is to the alpha file whose alpha this records.
+  //     encode-segment.js reads these to decide whether a video's decrease-fit
+  //     leaves bars that must be transparent (see buildVideoItemFilterParts).
+  //     Stored on probed* fields, never on sourceWidth/sourceHeight: those are
+  //     project-authored and gate the sourceCrop step. A failed probe stamps
+  //     nulls, and the encoder then emits its opaque-pad string unchanged.
+  //
+  //     colorTransfer is re-stamped here for the same reason. The encoder
+  //     converts every item whose transfer differs from the project's, so it
+  //     must see the transfer of the file it decodes (and the SDR pass takes
+  //     its grade key from this stamp; see prepareSdrPass). Normalize hands an HLG
+  //     source in an SDR project a master already graded through the Montaj
+  //     Vivid LUT; the source's stale `arib-std-b67` sent that master through
+  //     the LUT a second time (orange skin, neon colours) while sample_frame,
+  //     which decodes the same master untouched, looked right. Pinned by
+  //     test/hdr-normalize-parity.integration.test.mjs. A normalize that failed
+  //     leaves the HDR source in place, and the encoder still converts it.
+  const geometryCache = new Map()
+  for (const item of videoItems) {
+    if (!geometryCache.has(item.src)) {
+      geometryCache.set(item.src, probeVideoGeometry(item.src))
+    }
+    const geom = geometryCache.get(item.src)
+    item.probedWidth  = geom?.width  ?? null
+    item.probedHeight = geom?.height ?? null
+    item.probedAlpha  = geom?.alpha  ?? null
+    if (!transferCache.has(item.src)) {
+      transferCache.set(item.src, probeColorTransfer(item.src))
+    }
+    item.colorTransfer = transferCache.get(item.src) ?? 'unknown'
+  }
+}
+
+/**
+ * The SDR pass's project and items (PV42), ready to compose at sdr_bt709.
+ *
+ * Starts from the pristine project, never the HDR pass's mutated one, forces
+ * sdr_bt709, and replaces each video item with its SDR layer (applySdrLayers):
+ * sdr-layer.js's sdrLayerFor is the one place that decides whether a layer is
+ * graded, and an SDR-origin item may come back on its SDR original with its HDR
+ * conversion cache dropped. Then 5.5.5's repointStaleUntaggedMasters (this is
+ * an SDR project now, so a stale unmarked SDR master is rebuilt as it would be
+ * in one) and collectAllItems.
+ *
+ * What each layer is prepared into:
+ *   - HDR origin: the project's HDR space, exactly as the HDR pass conformed it,
+ *     so both passes decode the same file (a cache hit after the HDR pass). An
+ *     HLG clip in a PQ project is converted to PQ here too. Never tone-mapped by
+ *     normalize: the grade runs in the segment encoder, after scale. A file that
+ *     is already SDR (an HLG clip whose normalizedSrc is a graded SDR master) is
+ *     conformed as SDR instead: stretching it into HDR only for the encoder to
+ *     grade it back down would grade it twice.
+ *   - SDR origin: sdr_bt709, which only conforms (GOP, an untagged file read as
+ *     BT.709) and never converts colour.
+ *   - a cutout: as the HDR pass prepares it (remove_bg; normalize skips it).
+ *
+ * After preparation, when 4b has re-stamped colorTransfer from the file each
+ * item decodes, every item gets `gradeFrom` (gradeKeyFor: the Vivid source key,
+ * or null for no grade) and `alphaGrade` (a cutout of HDR footage). The key is
+ * never taken from a probe made before normalize.
+ */
+async function prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir }) {
+  const project = structuredClone(pristineProject)
+  project.settings = { ...(project.settings ?? {}), colorSpace: 'sdr_bt709' }
+  applySdrLayers(project)
+  repointStaleUntaggedMasters(project)
+  const { imageItems, videoItems } = collectAllItems(project)
+
+  const transferCache = new Map()
+  stampSourceProbes(videoItems, transferCache)
+
+  const targetFor = (item) => {
+    const layer = item[SDR_LAYER]
+    const hdrOrigin = layer.grade && layer.cutoutKey === null
+    return hdrOrigin && isHdr(detectFromTransfer(item.colorTransfer)) ? projectColorSpace : 'sdr_bt709'
+  }
+  await prepareVideoItems(videoItems, targetFor,
+    { settings: project.settings, workspaceDir, transferCache, timingLabel: 'SDR pass' })
+
+  for (const item of videoItems) {
+    const layer = item[SDR_LAYER]
+    item.gradeFrom  = gradeKeyFor(layer, item.colorTransfer)
+    item.alphaGrade = layer.cutoutKey !== null
+  }
+  return { project, imageItems, videoItems }
+}
+
+/**
+ * Replace each video item on an enabled track of `project` with its SDR layer's
+ * item (sdrLayerFor), carrying the layer under SDR_LAYER. Disabled tracks render
+ * nothing and are left alone. Rewrites project.tracks, keeping its shape; the
+ * raw items are never mutated.
+ */
+function applySdrLayers(project) {
+  if (!Array.isArray(project.tracks)) return
+  const toLayer = (item) => {
+    if (item?.type !== 'video') return item
+    const layer = sdrLayerFor(item)
+    layer.item[SDR_LAYER] = layer
+    return layer.item
+  }
+  project.tracks = project.tracks.map((track) => {
+    if (Array.isArray(track)) return track.map(toLayer)
+    if (track && Array.isArray(track.items) && track.enabled !== false) {
+      return { ...track, items: track.items.map(toLayer) }
+    }
+    return track
+  })
+}
+
+/**
+ * The output frame size: settings.resolution when set, otherwise the coded size
+ * of the first video item's prepared file, otherwise the design canvas.
+ */
+function outputSize(settings, videoItems, renderWidth, renderHeight) {
+  let width  = settings.resolution?.[0] ?? renderWidth
+  let height = settings.resolution?.[1] ?? renderHeight
+  if (!settings.resolution) {
+    const firstVideo = [...videoItems].sort((a, b) => a.trackIdx - b.trackIdx)[0]
+    if (firstVideo) {
+      const dims = probeVideoDimensions(firstVideo.src)
+      if (dims) { [width, height] = dims }
+    }
+  }
+  return [width, height]
 }
 
 // ---------------------------------------------------------------------------
@@ -892,9 +1052,10 @@ function probeVideoDimensions(filePath) {
   return null
 }
 
-// probeColorTransfer lives in derive-sdr.js — the derive pass needs the same
-// "what color space is this file, really" read, and one implementation beats
-// two copies of the trailing-comma workaround its doc comment explains.
+// probeColorTransfer lives in derive-sdr.js, which render.js no longer uses for
+// the SDR rendition (PV42: it is composed per layer, 7b) but which keeps this
+// read: one implementation beats two copies of the trailing-comma workaround its
+// doc comment explains.
 
 // ---------------------------------------------------------------------------
 // Segment collection: Puppeteer segments (overlay + captions)
