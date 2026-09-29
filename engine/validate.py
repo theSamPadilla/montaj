@@ -110,7 +110,10 @@ def _validate_clip_extensions(data, project_dir=None):
     check alone would let either through to poison the geometry math
     downstream — `math.isfinite()` catches what isinstance can't. Range is
     intentionally unchecked here: a helper elsewhere normalizes any finite
-    value into [0,360)."""
+    value into [0,360).
+
+    Also checks keyframed crop props (cropX/cropY/cropW/cropH): image items
+    only, values in range (PV55)."""
     df = data.get("derivedFrom")
     if df is not None and not isinstance(df, str):
         fail("invalid_field", "derivedFrom must be a string")
@@ -137,6 +140,24 @@ def _validate_clip_extensions(data, project_dir=None):
                 # bool is a subclass of int — reject it, as the speed check above does.
                 if isinstance(rotation, bool) or not isinstance(rotation, (int, float)) or not math.isfinite(rotation):
                     fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': rotation must be a finite number")
+
+            # PV55: keyframed source crop. Image-only until phase 2 (the video
+            # export applies sourceCrop statically, so a video's crop track would
+            # be silently ignored). x/y in [0, 1]; w/h in (0, 1] because the
+            # renderer divides by them.
+            for tr in item.get("keyframes") or []:
+                prop = tr.get("prop") if isinstance(tr, dict) else None
+                if prop not in ("cropX", "cropY", "cropW", "cropH"):
+                    continue
+                if item.get("type") != "image":
+                    fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': {prop} keyframes are for image items only")
+                for p in tr.get("points") or []:
+                    val = p.get("value") if isinstance(p, dict) else None
+                    ok = (isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val)
+                          and val <= 1.0 and (val > 0.0 if prop in ("cropW", "cropH") else val >= 0.0))
+                    if not ok:
+                        fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': {prop} keyframe values must be numbers in "
+                             + ("(0,1]" if prop in ("cropW", "cropH") else "[0,1]"))
 
             sc = item.get("sourceCrop")
             if sc is None:
