@@ -34,8 +34,6 @@ import common  # noqa: E402 — lib/ lands on sys.path as a side effect of the i
 # (serve.routes.projects imports lib.normalize, whose own sys.path.insert adds lib/ — see
 # lib/normalize.py's module docstring; same pattern as tests/test_open_gop_two_stage_seek.py)
 
-np = pytest.importorskip("numpy")
-
 FPS = 30
 SIZE = "320x240"
 SOURCE_DURATION_S = 4  # several full 1s GOPs
@@ -49,6 +47,17 @@ def _skip_or_fail(reason: str) -> None:
     if REQUIRE_HDR_FFMPEG:
         pytest.fail(reason)
     pytest.skip(reason)
+
+
+# numpy is declared in pyproject.toml's `test` extra (PV48 review), but a
+# clean env can still lack it — under MONTAJ_REQUIRE_HDR_FFMPEG=1 that must
+# fail the run, not silently skip this pixel-comparison test.
+try:
+    import numpy as np
+except ImportError:
+    if REQUIRE_HDR_FFMPEG:
+        pytest.fail("numpy is required under MONTAJ_REQUIRE_HDR_FFMPEG=1 but is not installed")
+    pytest.skip("numpy not installed", allow_module_level=True)
 
 
 def _has_libx265() -> bool:

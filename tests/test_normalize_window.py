@@ -183,17 +183,34 @@ def test_normalize_window_ss_and_t_before_input(tmp_path):
     near = max(0.0, in_point - nm.SEEK_PREROLL_S)
     fine = in_point - near
     expected_duration = max(0.0, out_point - in_point)
+    has_trim = fine > 0 and expected_duration > 0
     assert cmd[ss_idx + 1] == f"{near:.4f}"
-    assert cmd[t_idx + 1] == f"{fine + expected_duration:.4f}"
+    # PV48 review: -t is a generous upper bound (fine + duration + 1s) when
+    # the trim filters below do the exact cut, not fine + duration itself —
+    # that was measured to let the window run past its end on an open-GOP
+    # source (see lib/normalize.py's normalize_window docstring/comment).
+    assert has_trim, "test fixture must exercise the trim-filter arm"
+    assert cmd[t_idx + 1] == f"{fine + expected_duration + 1:.4f}"
 
     # -i must be followed by the input path
     assert cmd[i_idx + 1] == str(src)
 
-    # A second, accurate -ss (the "fine" decode-side trim) must appear right
-    # after -i <input>, since `fine` > 0 here (in_point=1.0 < SEEK_PREROLL_S=2.0).
+    # A second, accurate -ss (the "fine" decode-side seek, re-basing the
+    # output's start) must appear right after -i <input>, since `fine` > 0
+    # here (in_point=1.0 < SEEK_PREROLL_S=2.0).
     assert fine > 0, "test fixture must exercise the post-input seek arm"
     assert cmd[i_idx + 2] == "-ss"
     assert cmd[i_idx + 3] == f"{fine:.4f}"
+
+    # The exact-end bound: trim/atrim filters carrying both `start` and
+    # `duration`, so the window's END no longer depends on -t's own drift.
+    # 6 decimals, not 4 (PV48 review) — see lib/normalize.py's comment above
+    # video_trim/audio_trim in normalize_window.
+    vf_idx = cmd.index("-vf")
+    assert cmd[vf_idx + 1].startswith(f"trim=start={fine:.6f}:duration={expected_duration:.6f}")
+    assert "-af" in cmd, "audio_trim must be passed as -af when the source has audio"
+    af_idx = cmd.index("-af")
+    assert cmd[af_idx + 1] == f"atrim=start={fine:.6f}:duration={expected_duration:.6f}"
 
     # GOP and pix_fmt must be present
     assert "-g" in cmd

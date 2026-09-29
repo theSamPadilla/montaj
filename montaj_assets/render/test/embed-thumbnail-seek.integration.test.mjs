@@ -139,6 +139,24 @@ test(
       assert.ok(refFrames.length > Math.max(wantIdx, wrongIdx),
         `need reference frames past ${Math.max(wantIdx, wrongIdx)}, got ${refFrames.length}`)
 
+      // Positive control: the OLD single input seek (embedThumbnail's
+      // pre-PV48 form, `-ss t -i clip -frames:v 1`) must really return the
+      // keyframe on THIS ffmpeg/x265 build — otherwise the fix assertion
+      // below could pass vacuously (same method as the Python two-stage-seek
+      // tests' test_naive_single_stage_seek_reproduces_the_bug).
+      const naiveJpg = path.join(dir, 'naive.jpg')
+      ff(['-ss', String(targetPts), '-i', src, '-frames:v', '1', naiveJpg])
+      const naiveRaw = spawnSync(FFMPEG, ['-v', 'error', '-nostdin', '-i', naiveJpg,
+        '-vf', `scale=${GW}:${GH}:flags=area,format=gray`, '-f', 'rawvideo', 'pipe:1'],
+      { encoding: 'buffer', timeout: 30_000, maxBuffer: 4 * 1024 * 1024 })
+      assert.equal(naiveRaw.status, 0, `decode of the naive-seek frame failed: ${naiveRaw.stderr}`)
+      const naiveErrRight = meanAbs(naiveRaw.stdout, refFrames[wantIdx])
+      const naiveErrWrong = meanAbs(naiveRaw.stdout, refFrames[wrongIdx])
+      assert.ok(naiveErrWrong < naiveErrRight,
+        `fixture did not reproduce the open-GOP drop at t=${targetPts}: the naive single-stage seek ` +
+        `already matched the wanted frame (err ${naiveErrRight}) better than the keyframe (err ${naiveErrWrong}). ` +
+        'Adjust the fixture so the bug is exercised.')
+
       const poster = decodePoster(renderOut)
       // testsrc2 moves smoothly, so neighbouring frames are close too (same
       // method as T1's detector: min mean-abs-diff against an exact decode).
