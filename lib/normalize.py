@@ -53,7 +53,7 @@ tag (montaj_assets/render/encode-segment.js)."""
 SDR_WHITE_NITS = 203
 """Where SDR reference white lands in an HDR output, per ITU-R BT.2408 (203 nits;
 HLG Y10 721 and PQ Y10 572 for a white SDR frame). Twin: SDR_WHITE_NITS in
-montaj_assets/render/encode-segment.js — keep the two equal."""
+montaj_assets/render/encode-segment.js; keep the two equal."""
 
 SDR_ORIGIN_MARKER = "montaj: converted from SDR source "
 """Written (as the container `comment`, followed by the original's basename)

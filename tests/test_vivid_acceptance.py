@@ -2,11 +2,12 @@
 
 MASTER SP6's gate: a golden-frame preview-vs-render comparison within a defined
 tolerance. The editor preview of an HDR project plays the SDR vivid1 proxy; the
-SDR export is derived from the HDR master through the same LUT (derive-sdr.js).
+SDR export is composed per layer, and an HDR clip's grade is encode-segment.js's
+buildColorConversionFilter('hdr_hlg', 'sdr_bt709') through the same LUT.
 Both sides tone-map through montaj-vivid-v1.cube, one in Python's proxy encode
-and one in the JS derive pass, so a frame sampled from each at the same
+and one in the JS export filter, so a frame sampled from each at the same
 timestamp must agree to SSIM >= 0.93 at matched resolution — the tolerance
-absorbs scaler/encoder drift (AV1 proxy vs x264 derive), nothing else.
+absorbs scaler/encoder drift (AV1 proxy vs x264 export), nothing else.
 
 The fixture is deliberately saturated, structured content (smptehdbars): the
 vivid1 and vivid1-neutral cubes are byte-identical on neutral tones (the delta
@@ -14,7 +15,6 @@ is Helmholtz-Kohlrausch chroma handling), and a flat gray fixture would also
 make the SSIM gate trivially weak.
 """
 
-import json
 import re
 import shutil
 import subprocess
@@ -36,7 +36,7 @@ HAS_NODE = shutil.which("node") is not None
 pytestmark = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 
 REPO = Path(__file__).resolve().parent.parent
-DERIVE_SDR_JS = REPO / "montaj_assets" / "render" / "derive-sdr.js"
+ENCODE_SEGMENT_JS = REPO / "montaj_assets" / "render" / "encode-segment.js"
 
 
 def _make_hlg_bars(path: Path, *, duration=2):
@@ -86,7 +86,7 @@ def _ssim(a: Path, b: Path) -> float:
 
 @pytest.mark.slow
 def test_vivid_preview_matches_derived_sdr_render(tmp_path):
-    """Proxy frame (preview) vs derive-sdr.js frame (export): SSIM >= 0.93."""
+    """Proxy frame (preview) vs the export grade frame: SSIM >= 0.93."""
     if not (_has_zscale() and _has_lut3d()):
         pytest.skip("ffmpeg lacks zscale/lut3d")
     if not HAS_NODE:
@@ -106,20 +106,20 @@ def test_vivid_preview_matches_derived_sdr_render(tmp_path):
     assert not used_fallback
     subprocess.run(proxy_cmd, check=True, capture_output=True, timeout=300)
 
-    # Export side: the derived SDR rendition, via the real JS argv builder
-    # (the same argv `montaj render --export sdr|both` runs).
+    # Export side: the grade the per-layer SDR compose applies to an HDR clip,
+    # from the real JS filter builder, then the compose's yuv420p output format.
     derived = tmp_path / "bars-sdr.mp4"
-    argv_json = subprocess.run(
+    chain = subprocess.run(
         ["node", "-e",
-         "import(process.argv[1]).then(m => console.log(JSON.stringify("
-         "m.buildDeriveSdrArgs(process.argv[2], process.argv[3], "
-         "{srcColorSpace: 'hdr_hlg'}))))",
-         str(DERIVE_SDR_JS), str(master), str(derived)],
+         "import(process.argv[1]).then(m => console.log("
+         "m.buildColorConversionFilter('hdr_hlg', 'sdr_bt709', true, {hasLut3d: true})))",
+         str(ENCODE_SEGMENT_JS)],
         check=True, capture_output=True, text=True, timeout=60,
     ).stdout.strip()
-    derive_args = json.loads(argv_json)
-    subprocess.run(["ffmpeg", *derive_args], check=True, capture_output=True,
-                   timeout=300)
+    assert chain
+    subprocess.run(["ffmpeg", "-y", "-i", str(master), "-vf", f"{chain},format=yuv420p",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", str(derived)],
+                   check=True, capture_output=True, timeout=300)
 
     probe = subprocess.run([
         "ffprobe", "-v", "error", "-select_streams", "v:0",

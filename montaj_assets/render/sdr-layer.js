@@ -13,7 +13,11 @@
  *
  * probe(path) -> { transfer, comment, width, height, fps, duration }
  *   ('unknown' / '' / null on failure; width and height are display dims, after
- *   rotation; fps is the r_frame_rate string, e.g. '30000/1001').
+ *   rotation; fps is the r_frame_rate string, e.g. '30000/1001'). `duration` is
+ *   the container's (`format=duration`), not the stream's: stream duration is
+ *   N/A in Matroska/WebM, and normalize carries every stream, so container
+ *   against container is like for like (ScreenRecording 36.652 vs 36.631,
+ *   inside tolerance).
  */
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -53,6 +57,7 @@ export function probeMedia(path) {
   const rot = (s.side_data_list || []).find((d) => d && d.rotation != null)?.rotation
   if (Math.abs(Math.round(Number(rot) || 0)) % 180 === 90) [width, height] = [height, width]
 
+  // Container duration on purpose (see the header): stream duration is N/A in Matroska/WebM.
   const duration = Number.parseFloat(fmt.duration)
   const comment = fmt.tags?.comment
   return {
@@ -106,7 +111,7 @@ export function originOf(src, { probe, exists } = defaultDeps) {
   if (comment.startsWith(SDR_ORIGIN_MARKER)) {
     const name = comment.slice(SDR_ORIGIN_MARKER.length)
     // normalize writes a basename; anything else was not written by montaj.
-    if (name && !/[/\\]/.test(name)) {
+    if (name && name !== '.' && name !== '..' && !/[/\\]/.test(name)) {
       const original = join(dirname(src), name)
       if (exists(original)) {
         const o = probe(original)

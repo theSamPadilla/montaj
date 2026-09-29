@@ -765,6 +765,14 @@ def test_denoise_absent_from_proxy_cmd(monkeypatch):
 # ffmpeg actually shipping zscale + lut3d, per doctor's REQUIRED_FFMPEG_FILTERS.
 # Skipped by default; run explicitly with `pytest tests/test_normalize.py -m slow`.
 
+def _skip_or_fail(reason: str) -> None:
+    """Skip, or fail loudly under MONTAJ_REQUIRE_HDR_FFMPEG=1 (an environment
+    that is meant to have the HDR ffmpeg must not skip these silently)."""
+    if os.environ.get("MONTAJ_REQUIRE_HDR_FFMPEG") == "1":
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
 def _ffmpeg_has_filters(*names) -> bool:
     """Checks the SAME ffmpeg binary normalize() will actually invoke
     (nm.ffmpeg_bin() — managed static build when present, else bare PATH)."""
@@ -778,7 +786,7 @@ def test_normalize_hlg_lut_chain_reports_bt709_transfer(tmp_path):
     """Synthetic HLG source through normalize() → ffprobe reports color_transfer
     bt709 on the output (the LUT chain's trailing zscale RGB→YUV709 tag)."""
     if not _ffmpeg_has_filters("zscale", "lut3d"):
-        pytest.skip("managed ffmpeg missing zscale/lut3d")
+        _skip_or_fail("managed ffmpeg missing zscale/lut3d")
     src = tmp_path / "hlg.mp4"
     out = tmp_path / "out.mp4"
     _make_hdr_like_video(src, transfer="arib-std-b67")
@@ -794,7 +802,7 @@ def test_normalize_pq_lut_chain_reports_bt709_transfer(tmp_path):
     """Synthetic PQ source through normalize() → PQ→HLG pre-step + shared LUT
     chain → ffprobe reports color_transfer bt709 on the output."""
     if not _ffmpeg_has_filters("zscale", "lut3d"):
-        pytest.skip("managed ffmpeg missing zscale/lut3d")
+        _skip_or_fail("managed ffmpeg missing zscale/lut3d")
     src = tmp_path / "pq.mp4"
     out = tmp_path / "out.mp4"
     _make_hdr_like_video(src, transfer="smpte2084")
@@ -822,7 +830,7 @@ def test_normalize_hdr_to_sdr_denoise_reduces_flat_patch_variance(tmp_path):
     output's, and prints both numbers.
     """
     if not _ffmpeg_has_filters("zscale", "lut3d"):
-        pytest.skip("managed ffmpeg missing zscale/lut3d")
+        _skip_or_fail("managed ffmpeg missing zscale/lut3d")
     import numpy as np
 
     src = tmp_path / "hlg_noisy.mp4"
@@ -905,7 +913,7 @@ def test_normalize_silent_hdr_source_succeeds_with_silent_audio_track(tmp_path):
     the output carries the contract's conformant AAC track (from anullsrc).
     This exact input made normalize() fail outright before the fix."""
     if not _ffmpeg_has_filters("zscale", "lut3d"):
-        pytest.skip("managed ffmpeg missing zscale/lut3d")
+        _skip_or_fail("managed ffmpeg missing zscale/lut3d")
     src = tmp_path / "silent_hlg.mp4"
     out = tmp_path / "out.mp4"
     subprocess.run([

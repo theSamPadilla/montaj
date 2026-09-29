@@ -1794,6 +1794,12 @@ async def _migrate_project_look(
     return result[0] if result is not None else None
 
 
+_color_provenance_locks: dict[str, asyncio.Lock] = {}
+"""One lock per project folder: open, render and a burst of version_frame calls
+can all reach the heal at once, and the first-open legacy pass must run once.
+The second caller waits, then re-plans from disk, which is cheap."""
+
+
 async def ensure_project_color_provenance(
     project_id: str,
     project_dir: Path,
@@ -1831,28 +1837,29 @@ async def _ensure_project_color_provenance(
     settings = project.get("settings") or {}
     if not is_hdr(settings.get("colorSpace")):
         return None  # SDR: no probe, no thread
-    plan = await asyncio.to_thread(plan_color_provenance, project_dir)
-    if not plan["edits"] and not plan["settings"]:
-        return None
-    if plan["edits"]:
-        await asyncio.to_thread(_git_commit_sync, project_dir, "version: before colour provenance")
-    result = _apply_project_edits(project_dir / "project.json", plan["edits"], settings=plan["settings"])
-    if result is None:
-        return None
-    if broadcaster is not None:
-        broadcaster.publish(project_id, _sse_data_frame(result[1]))
+    async with _color_provenance_locks.setdefault(str(project_dir), asyncio.Lock()):
+        plan = await asyncio.to_thread(plan_color_provenance, project_dir)
+        if not plan["edits"] and not plan["settings"]:
+            return None
+        if plan["edits"]:
+            await asyncio.to_thread(_git_commit_sync, project_dir, "version: before colour provenance")
+        result = _apply_project_edits(project_dir / "project.json", plan["edits"], settings=plan["settings"])
+        if result is None:
+            return None
+        if broadcaster is not None:
+            broadcaster.publish(project_id, _sse_data_frame(result[1]))
 
-    new_units: list[_LookMigrationUnit] = []
-    for owed in plan["proxiesOwed"]:
-        unit = _look_migration_pending("proxy", owed["out"]) \
-            or next((u for u in new_units if u.out == owed["out"]), None)
-        if unit is None:
-            unit = _LookMigrationUnit("proxy", owed["input"], owed["out"], settings.get("colorSpace"))
-            new_units.append(unit)
-        unit.targets.append((project_id, str(project_dir), "proxySrc", owed["id"], owed["src"], broadcaster))
-    for unit in new_units:
-        _look_migration_enqueue(unit)
-    return result[0]
+        new_units: list[_LookMigrationUnit] = []
+        for owed in plan["proxiesOwed"]:
+            unit = _look_migration_pending("proxy", owed["out"]) \
+                or next((u for u in new_units if u.out == owed["out"]), None)
+            if unit is None:
+                unit = _LookMigrationUnit("proxy", owed["input"], owed["out"], settings.get("colorSpace"))
+                new_units.append(unit)
+            unit.targets.append((project_id, str(project_dir), "proxySrc", owed["id"], owed["src"], broadcaster))
+        for unit in new_units:
+            _look_migration_enqueue(unit)
+        return result[0]
 
 
 def _ensure_current_proxies(
@@ -2557,14 +2564,14 @@ async def version_frame(
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
-    # Heal the live project first (an HDR project whose SDR clips were
+    # Heal the live project first, for the working copy only (an HDR project whose SDR clips were
     # converted in place before PV42), so a working-copy frame grades each
     # layer by its origin. Never raises.
     try:
         live = json.loads((project_dir / "project.json").read_text())
     except (OSError, ValueError):
         live = None
-    if isinstance(live, dict):
+    if is_working and isinstance(live, dict):
         broadcaster = getattr(getattr(getattr(request, "app", None), "state", None), "broadcaster", None)
         await ensure_project_color_provenance(project_id, project_dir, live, broadcaster)
 

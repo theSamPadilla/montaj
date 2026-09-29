@@ -475,11 +475,12 @@ def test_render_conforms_inline_to_the_same_path():
     this module's conversion writes, so an in-flight or finished background
     conversion and an export share one artifact."""
     render_js = (Path(projects_mod.MONTAJ_ROOT) / "montaj_assets" / "render" / "render.js").read_text()
-    # The call carries a trailing options object ({ untaggedSource }) since the
-    # untagged-master rebuild; the path it writes is still the one asserted below.
-    assert "const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace, tonemapped," in render_js
+    assert "await prepareVideoItems(videoItems, () => projectColorSpace," in render_js
+    assert "const sdrStretch = !isHdr(detectFromTransfer(item.colorTransfer)) && isHdr(target)" in render_js
+    assert "const normalizedPath = await normalizeIfNeeded(item.src, target, tonemapped," in render_js
+    assert "{ untaggedSource: item.colorTransfer === 'unknown', sdrStretch })" in render_js
+    assert "const out = buildNormalizedOutputPath(src, projectColorSpace, tonemapped, sdrStretch)" in render_js
     assert "return settings.normalize === 'lazy' && !!item.normalizedSrc" in render_js
     assert "`_normalized_${projectColorSpace}${lookSuffix}.mp4`" in render_js
-    # The SDR-to-HDR name carries `_w203`; render.js appends it from sdrStretch.
-    assert "_w203" in render_js
+    assert "if (sdrStretch) lookSuffix += '_w203'" in render_js
     assert normalized_output_path("/a/clip.MOV", "hdr_hlg", tonemapped=False, sdr_stretch=True) == "/a/clip_normalized_hdr_hlg_w203.mp4"

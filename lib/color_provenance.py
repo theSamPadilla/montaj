@@ -55,7 +55,10 @@ class Probe(NamedTuple):
     dims (after rotation); fps is the r_frame_rate string, e.g. '30000/1001'.
     encoder is the container's `encoder` tag ('Lavf62.12.102' for anything
     ffmpeg wrote, '' when absent); only the legacy matcher reads it, so the JS
-    twin does not carry it."""
+    twin does not carry it. `duration` is the container's (`format=duration`),
+    not the stream's: stream duration is N/A in Matroska/WebM, and normalize
+    carries every stream, so container against container is like for like
+    (ScreenRecording 36.652 vs 36.631, inside tolerance)."""
     transfer: str
     comment: str
     width: Optional[int]
@@ -118,6 +121,7 @@ def _ffprobe(path: str) -> Probe:
     if abs(rot) % 180 == 90:
         width, height = height, width
 
+    # Container duration on purpose (see Probe): stream duration is N/A in Matroska/WebM.
     try:
         duration = float(fmt.get("duration"))
     except (TypeError, ValueError):
@@ -197,7 +201,7 @@ def origin_of(path, *, probe: Optional[Callable] = None, exists: Optional[Callab
     if comment.startswith(SDR_ORIGIN_MARKER):
         name = comment[len(SDR_ORIGIN_MARKER):]
         # normalize writes a basename; anything else was not written by montaj.
-        if name and "/" not in name and "\\" not in name:
+        if name and name not in (".", "..") and "/" not in name and "\\" not in name:
             original = os.path.join(os.path.dirname(path), name)
             if exists(original):
                 o = probe(original)
@@ -219,9 +223,14 @@ def proxy_source_for(src, *, probe: Optional[Callable] = None,
 # ── healing projects made before PV42 ────────────────────────────────────────
 #
 # Before PV42 an SDR clip in an HDR project had `src` swapped onto its converted
-# file (`<stem>_normalized_hdr_hlg.mp4`, `<stem>_compatible_hlg.mp4`, ...), and
-# that file carries no marker, so it probes as camera HLG and would be graded as
-# camera footage. ensure_color_provenance runs two passes on HDR projects:
+# file, and that file carries no marker, so it probes as camera HLG and would be
+# graded as camera footage. The file name proves nothing. A candidate is an HDR
+# `src` with no SDR_ORIGIN_MARKER whose container `encoder` starts with
+# LEGACY_ENCODER_PREFIX ('Lavf'; camera files carry none); it matches a pool
+# file only by same_fingerprint and by pixel content under the legacy stretch.
+# Names do two small jobs only: POOL_EXCLUDED_NAMES keeps montaj artifacts out
+# of the pool, and the rank breaks ties between content matches.
+# ensure_color_provenance runs two passes on HDR projects:
 #
 #   1. marker pass, every call: switch an item whose `src` is a marked
 #      conversion (origin_of names its original) back to that original, and
@@ -251,6 +260,14 @@ converted files carry Lavf62.12.102."""
 
 THUMB_W, THUMB_H = 64, 36
 THUMB_POINTS = (0.25, 0.5, 0.75)
+THUMB_PHASE_OFFSETS = (-1, 0, 1)
+"""Frame offsets, in candidate frames, tried around each thumbnail time; the
+best of the three is the point's score. Real Essay, xtXouo5hHxM3LO46 at 25 %
+(4.65 s, a half-frame point at 10 fps): a same-time seek scored 6.2 mean abs,
+while frame-index-aligned the pair differs by only 0.23-0.35, because the two
+files' frame phases differ by about half a frame. Exactly three points, not a
+wider window: the artefact corrected is a frame-phase offset, bounded at one
+frame by construction."""
 CONTENT_MAX_MEAN_ABS = 8
 """Mean abs difference, in limited-range Y10 codes, allowed at every point."""
 CONTENT_MIN_STD = 24
@@ -407,12 +424,15 @@ def match_legacy_conversion(candidate: str, pool, *, sources=(), probe: Optional
             cand = thumbnails(candidate, times) or []
             stds = [_std(t) for t in cand]
             entry["thumbStd"] = [round(v, 1) for v in stds] if stds else None
-        planes = thumbnails(path, times, legacy_stretch_vf(key, untagged=p.transfer == "unknown")) \
+        n = len(THUMB_PHASE_OFFSETS)
+        step = 1 / fps_value(c.fps)  # non-zero: same_fingerprint passed
+        pool_times = [max(0.0, t + k * step) for t in times for k in THUMB_PHASE_OFFSETS]
+        planes = thumbnails(path, pool_times, legacy_stretch_vf(key, untagged=p.transfer == "unknown")) \
             if cand else None
-        if not cand or not planes or len(planes) != len(cand):
+        if not cand or not planes or len(planes) != n * len(cand):
             row["rejected"] = "content"
             continue
-        mad = [_mean_abs(a, b) for a, b in zip(cand, planes)]
+        mad = [min(_mean_abs(a, b) for b in planes[i * n:(i + 1) * n]) for i, a in enumerate(cand)]
         row["meanAbs"] = [round(v, 2) for v in mad]
         if sum(v >= CONTENT_MIN_STD for v in stds) < CONTENT_MIN_STD_COUNT:
             row["rejected"] = "std-dev floor"
@@ -581,8 +601,8 @@ def _plan(project_dir: Path, result: dict) -> None:
                         switch(item, original, "legacy")
         result["settings"][PROVENANCE_KEY] = PROVENANCE_VERSION
         if result["kept"]:
-            line = (f"colour provenance: kept {len(result['kept'])} converted clip(s) with no original: "
-                    f"{', '.join(result['kept'])}")
+            line = (f"colour provenance: no SDR original matched {len(result['kept'])} "
+                    f"ffmpeg-written HDR clip(s): {', '.join(result['kept'])}")
             result["log"].append(line)
             progress(line)
 

@@ -452,6 +452,38 @@
         "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
         "proxy": { "input": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "tonemap": true }
       }
+    },
+    {
+      "name": "marker naming the parent directory (..): ignored, HDR",
+      "item": { "id": "v31", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source ..", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 },
+        "/proj/media/..": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 },
+        "/proj": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": ["/proj/media/..", "/proj"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "tonemap": true }
+      }
+    },
+    {
+      "name": "marker naming the same directory (.): ignored, HDR",
+      "item": { "id": "v32", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source .", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 },
+        "/proj/media/.": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 },
+        "/proj/media": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": ["/proj/media/.", "/proj/media"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "tonemap": true }
+      }
     }
   ]
 }

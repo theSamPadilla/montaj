@@ -6,6 +6,7 @@ resolvers cannot drift apart without one of the two suites failing.
 """
 import asyncio
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -181,7 +182,10 @@ def test_real_normalize_output_resolves_to_its_original_and_a_trimmed_copy_does_
 # module, then copied into each test's project folder with explicit mtimes.
 
 HAS_ZSCALE = HAS_FFMPEG and nm._has_zscale()
-needs_media = pytest.mark.skipif(not HAS_ZSCALE, reason="ffmpeg with zscale not available")
+REQUIRE_HDR_FFMPEG = os.environ.get("MONTAJ_REQUIRE_HDR_FFMPEG") == "1"
+# Under MONTAJ_REQUIRE_HDR_FFMPEG=1 the media fixture fails instead of skipping.
+needs_media = pytest.mark.skipif(not HAS_ZSCALE and not REQUIRE_HDR_FFMPEG,
+                                 reason="ffmpeg with zscale not available")
 
 PID = "5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a5a"
 _SIZE, _RATE, _DUR = "160x284", "30", "3"
@@ -221,6 +225,8 @@ def _dark(out, x_expr):
 @pytest.fixture(scope="module")
 def media(tmp_path_factory):
     if not HAS_ZSCALE:
+        if REQUIRE_HDR_FFMPEG:
+            pytest.fail("ffmpeg with zscale not available (MONTAJ_REQUIRE_HDR_FFMPEG=1)")
         pytest.skip("ffmpeg with zscale not available")
     d = Path(os.path.realpath(tmp_path_factory.mktemp("cpmedia")))
     testsrc = f"testsrc2=size={_SIZE}:rate={_RATE}:duration={_DUR}"
@@ -417,7 +423,7 @@ def test_6_no_original_keeps_the_clip_logs_it_and_runs_once(media, workspace, ca
     result = cp.ensure_color_provenance(workspace)
 
     assert result["kept"] == ["gone_normalized_hdr_hlg.mp4"]
-    line = "colour provenance: kept 1 converted clip(s) with no original: gone_normalized_hdr_hlg.mp4"
+    line = "colour provenance: no SDR original matched 1 ffmpeg-written HDR clip(s): gone_normalized_hdr_hlg.mp4"
     assert line in result["log"]
     assert line in capsys.readouterr().err
     project = _read(workspace)
@@ -864,3 +870,144 @@ def test_cli_render_does_not_heal_a_carousel(tmp_path, monkeypatch):
     render_mod.main(project_path=str(proj / "project.json"))
 
     assert calls == ["exec"]
+
+
+# ── legacy matcher: frame-phase window (PV42 review) ─────────────────────────
+
+
+def _phase_case(tmp_path, phase):
+    """A 10 fps, 18.6 s candidate and pool file whose frame phases differ by
+    `phase` seconds. Frame j is a bright 8-column bar starting at column j % 56,
+    so neighbouring frames disagree by far more than CONTENT_MAX_MEAN_ABS."""
+    cand = tmp_path / "clip_normalized_hdr_hlg.mp4"
+    pool = tmp_path / "clip.mp4"
+    for path, mtime in ((pool, _T0), (cand, _T0 + 100)):
+        path.write_bytes(b"x")
+        os.utime(path, (mtime, mtime))
+    hdr = cp.Probe("arib-std-b67", "", 160, 284, "10/1", 18.6, "Lavf62.12.102")
+    sdr = cp.Probe("bt709", "", 160, 284, "10/1", 18.6, "")
+
+    def probe(path):
+        return hdr if str(path) == str(cand) else sdr
+
+    def frame(j):
+        col = j % 56
+        return tuple(900 if col <= x < col + 8 else 64
+                     for _ in range(cp.THUMB_H) for x in range(cp.THUMB_W))
+
+    def thumbnails(path, times, pre_vf=""):
+        shift = phase if str(path) == str(cand) else 0.0
+        return [frame(math.ceil(round((t - shift) * 10, 6))) for t in times]
+
+    return str(cand), str(pool), probe, thumbnails
+
+
+def test_matcher_tolerates_a_half_frame_phase_offset(tmp_path):
+    cand, pool, probe, thumbnails = _phase_case(tmp_path, 0.05)
+    # A plain same-time seek at 25 % (4.65 s, a half-frame point) disagrees.
+    t = 18.6 * 0.25
+    same_time = cp._mean_abs(thumbnails(cand, [t])[0], thumbnails(pool, [t])[0])
+    assert same_time > cp.CONTENT_MAX_MEAN_ABS
+
+    entry = cp.match_legacy_conversion(cand, [pool], probe=probe, thumbnails=thumbnails)
+
+    assert entry["original"] == pool
+    assert entry["pool"][0]["meanAbs"] == [0, 0, 0]
+
+
+def test_matcher_still_rejects_a_quarter_second_offset(tmp_path):
+    cand, pool, probe, thumbnails = _phase_case(tmp_path, 0.25)
+
+    entry = cp.match_legacy_conversion(cand, [pool], probe=probe, thumbnails=thumbnails)
+
+    assert entry["original"] is None
+    assert entry["pool"][0]["rejected"] == "content"
+
+
+# ── serve: heal scope and concurrency (PV42 review) ──────────────────────────
+
+
+def test_version_frame_of_a_historical_commit_does_not_heal(tmp_path, monkeypatch):
+    import serve.routes.projects as pm
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _write_project(proj, [], cs="hdr_hlg")
+    _git(proj, "init", "-q")
+    _git(proj, "add", "project.json")
+    _git(proj, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "v1")
+    commit = _git(proj, "rev-parse", "HEAD").strip()
+    calls = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def _fake_heal(project_id, project_dir, project, broadcaster=None):
+        calls.append("heal")
+        return project
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_exec(*args, **kwargs):
+        if args[0] == "git":
+            return await real_exec(*args, **kwargs)
+        calls.append("render")
+        out = Path(args[list(args).index("--out") + 1])
+        out.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return _Proc()
+
+    monkeypatch.setattr(pm, "ensure_project_color_provenance", _fake_heal)
+    monkeypatch.setattr(pm.asyncio, "create_subprocess_exec", _fake_exec)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "sample-frame.js").write_text("// stub")
+    monkeypatch.setattr(pm, "render_runtime_dir", lambda: str(runtime))
+    monkeypatch.setattr(pm.shutil, "which", lambda b: "/usr/bin/node")
+
+    asyncio.run(pm.version_frame(PID, commit, 1.0, request=None, project_dir=proj))
+
+    assert calls == ["render"]
+
+
+@needs_media
+def test_concurrent_heals_run_the_first_open_pass_once(media, workspace, serve_state, monkeypatch):
+    import lib.color_provenance as cpm
+    import serve.routes.projects as pm
+
+    _place(media, "testsrc.mp4", workspace / "X.mp4", 10)
+    conv = _place(media, "legacy.mp4", workspace / "X_normalized_hdr_hlg.mp4", 100)
+    _write_project(workspace, [_item(conv)])
+    _git(workspace, "init", "-q")
+    _git(workspace, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "t")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "t@t")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "t")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@t")
+
+    real_plan = cpm.plan_color_provenance
+    with_edits = []
+
+    def _counting_plan(project_dir):
+        plan = real_plan(project_dir)
+        if plan["edits"]:
+            with_edits.append(1)
+        return plan
+
+    monkeypatch.setattr(cpm, "plan_color_provenance", _counting_plan)
+    project = _read(workspace)
+
+    async def _run():
+        while pm._look_migration_worker is not None:
+            await pm._look_migration_worker
+        await asyncio.gather(*[pm.ensure_project_color_provenance(PID, workspace, project, None)
+                               for _ in range(3)])
+        while pm._look_migration_worker is not None:
+            await pm._look_migration_worker
+
+    asyncio.run(_run())
+
+    subjects = _git(workspace, "log", "--format=%s").splitlines()
+    assert subjects.count("version: before colour provenance") == 1
+    assert len(with_edits) == 1
