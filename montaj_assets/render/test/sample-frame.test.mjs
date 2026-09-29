@@ -33,7 +33,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 
-import { sampleOverlay, sampleFrame, buildFrameCacheKey, buildOverlayCacheKey } from '../sample-frame.js'
+import { sampleOverlay, sampleFrame, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION } from '../sample-frame.js'
 import { buildOverlayFilterParts } from '../encode-segment.js'
 import { MASTER_LOOK } from '../look.js'
 import { normalizeTracks } from '../project-tracks.js'
@@ -946,9 +946,11 @@ test('(q2) buildOverlayCacheKey: fontsBaseDir is part of the key, and unset is u
   const args = [componentPath, props, 0, 1080, 1920, ['Figtree:wght@700'], false, 30]
 
   // Reference re-implementation of the PRE-fontsBaseDir raw-string build, byte
-  // for byte, so "unset reproduces today's key" is checked against the actual
+  // for byte, so "unset adds nothing for the base" is checked against the actual
   // old algorithm rather than merely against buildOverlayCacheKey calling
-  // itself twice.
+  // itself twice. From SAMPLE_CACHE_VERSION 5 (PV50) the version is appended
+  // always, so the reference appends it too; that part retires old entries on
+  // purpose (see (q2b)).
   function oldStyleKey(componentPath, props, frame, width, height, googleFonts, measure, durationFrames) {
     let mtime = '0'
     try { mtime = String(statSync(componentPath).mtimeMs) } catch {}
@@ -961,7 +963,7 @@ test('(q2) buildOverlayCacheKey: fontsBaseDir is part of the key, and unset is u
       googleFonts.join(','),
       measure ? 'measure' : '',
       String(durationFrames),
-    ].join('|')
+    ].join('|') + `|sample-v${SAMPLE_CACHE_VERSION}`
     return createHash('sha256').update(raw).digest('hex')
   }
 
@@ -973,12 +975,24 @@ test('(q2) buildOverlayCacheKey: fontsBaseDir is part of the key, and unset is u
   const baseB  = buildOverlayCacheKey(...args, '/Users/x/fonts/b')
 
   assert.equal(unsetOmitted, preChangeKey,
-    'omitting fontsBaseDir must reproduce the pre-change key byte-for-byte, so existing cache entries do not go stale')
+    'omitting fontsBaseDir must add nothing to the key for the base')
   assert.equal(unsetExplicit, preChangeKey,
     'an explicit empty string must behave identically to omitting the argument')
   assert.equal(baseA1, baseA2, 'the same base must produce the same key (deterministic, cacheable)')
   assert.notEqual(baseA1, unsetOmitted, 'a set base must differ from unset')
   assert.notEqual(baseA1, baseB, 'two different bases must produce different keys — the VALUE is hashed, not just whether a base was set')
+})
+
+test('(q2b) buildOverlayCacheKey: SAMPLE_CACHE_VERSION is part of the key', () => {
+  // PV50: a frame-key miss re-composites through the per-overlay cache, so a
+  // bump that reached only buildFrameCacheKey re-served pre-fix overlay PNGs.
+  const componentPath = fileURLToPath(import.meta.url)
+  const args = [componentPath, {}, 0, 1080, 1920, [], false, 30]
+  assert.equal(SAMPLE_CACHE_VERSION, 5)
+  assert.equal(buildOverlayCacheKey(...args, '', SAMPLE_CACHE_VERSION), buildOverlayCacheKey(...args))
+  assert.notEqual(buildOverlayCacheKey(...args, '', SAMPLE_CACHE_VERSION - 1), buildOverlayCacheKey(...args))
+  assert.notEqual(buildOverlayCacheKey(...args, '/Users/x/fonts/a', SAMPLE_CACHE_VERSION - 1),
+                  buildOverlayCacheKey(...args, '/Users/x/fonts/a'))
 })
 
 // ---------------------------------------------------------------------------

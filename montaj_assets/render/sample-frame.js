@@ -105,7 +105,9 @@ const SHORT_EDGE_TARGET = 1080
 
 /**
  * Bump when a change alters the pixels a sampled frame shows for the same
- * project file, so the 24 h on-disk cache cannot serve the old picture.
+ * project file, so the 24 h on-disk cache cannot serve the old picture. It keys
+ * both caches: the composited frame (`buildFrameCacheKey`) and the per-overlay
+ * PNG (`buildOverlayCacheKey`, from 5 on).
  * 2: PV42, HDR projects grade each clip by its own origin.
  * 3: PV42 review, an untagged SDR clip in an HDR project is read as BT.709.
  * 4: PV42 acceptance, an untagged proxy is read as BT.709.
@@ -1329,8 +1331,15 @@ function getTotalDurationSeconds(projectJson) {
  * same raw string — and therefore the exact same key — as before this field
  * was added. Existing cache entries for users who never set the var do not go
  * stale. Pinned by test/sample-frame.test.mjs.
+ *
+ * `version` (SAMPLE_CACHE_VERSION) is appended always. This is the key for the
+ * per-overlay PNG, and a frame-key miss re-composites through it, so a bump
+ * that reached only `buildFrameCacheKey` would re-serve the old overlay pixels.
+ * PV50 changed the render shim, not the user's component, so the component's
+ * mtime did not move either. Only the version retires those entries.
  */
-function buildOverlayCacheKey(componentPath, props, frame, width, height, googleFonts, measure, durationFrames, fontsBaseDir = '') {
+function buildOverlayCacheKey(componentPath, props, frame, width, height, googleFonts, measure, durationFrames, fontsBaseDir = '',
+                              version = SAMPLE_CACHE_VERSION) {
   let mtime = '0'
   try { mtime = String(statSync(componentPath).mtimeMs) } catch {}
   const raw = [
@@ -1342,7 +1351,7 @@ function buildOverlayCacheKey(componentPath, props, frame, width, height, google
     googleFonts.join(','),
     measure ? 'measure' : '',
     String(durationFrames),
-  ].join('|') + (fontsBaseDir ? `|fontsBaseDir:${fontsBaseDir}` : '')
+  ].join('|') + (fontsBaseDir ? `|fontsBaseDir:${fontsBaseDir}` : '') + `|sample-v${version}`
   return createHash('sha256').update(raw).digest('hex')
 }
 
