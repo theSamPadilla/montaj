@@ -30,7 +30,7 @@ project.json
     ├─ 6. Probe source video dimensions → pixelRatio
     ├─ 7. compose()  →  segments joined via concat
     ├─ 7a. mix-audio.js  →  final.mp4
-    └─ 7b. deriveSdr()  (--export sdr|both on an HDR project only)  →  <name>-sdr.mp4
+    └─ 7b. per-layer SDR compose  (--export sdr|both on an HDR project only)  →  <name>-sdr.mp4
 ```
 
 ### Step 4 — JSX bundling (bundle.js)
@@ -476,17 +476,19 @@ HDR projects render an HDR master by default, untouched. `montaj render`
 | Mode | HDR project | SDR project |
 |---|---|---|
 | `auto` (default) | HDR master at `<name>.mp4` — today's behavior, byte-identical | unchanged |
-| `sdr` | master rendered to a temp name, SDR rendition derived to `<name>.mp4`, temp removed on success | one notice, behaves as `auto` |
-| `both` | HDR master at `<name>.mp4` + derived sibling `<name>-sdr.mp4` | one notice, behaves as `auto` |
+| `sdr` | no HDR master: a single SDR compose (`sdr_bt709`) written to `<name>.mp4` | one notice, behaves as `auto` |
+| `both` | HDR master at `<name>.mp4`, then the SDR compose to sibling `<name>-sdr.mp4` | one notice, behaves as `auto` |
 
-The SDR rendition is **derived from the HDR master** (`derive-sdr.js`): one
-ffmpeg pass through the Vivid LUT chain, `sdr_bt709` spec encode, audio
-stream-copied (never re-encoded), `+faststart`. One full render either way —
-not a second compose. The derive emits a `sdr_derive` progress phase between
-compose and done (`_render_phase_for` maps the `deriving SDR rendition` log
-line); in `both` mode render.js prints one output path per stdout line
-(master first) and the serve status route surfaces `outputPaths[]` alongside
-the first-line `outputPath`. Thumbnails are embedded in every emitted file.
+The SDR rendition is a **second compose** at `sdr_bt709`, not a conversion of
+the HDR master, and there is no temp master. Each layer is graded once from its
+origin: HDR-origin clips through the Vivid LUT chain, SDR-origin clips from
+their original file, ungraded. Overlays and photos are as authored, and `<img>`
+overlays are re-captured for SDR. `both` runs this compose after the HDR
+compose. Audio is mixed by the SDR compose, not stream-copied from the master.
+The compose emits a `sdr_derive` progress phase (`_render_phase_for` maps the
+`deriving SDR rendition` log line); in `both` mode render.js prints one output
+path per stdout line (master first) and the serve status route surfaces
+`outputPaths[]` alongside the first-line `outputPath`. Thumbnails are embedded in every emitted file.
 
 `--sdr-curve <id>` selects the curve from the `looks.json` registry
 (`vivid1` default, `vivid1-neutral` for restrained brights) — it affects the

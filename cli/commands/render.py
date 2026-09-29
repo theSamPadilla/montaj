@@ -38,8 +38,8 @@ def register(subparsers):
         help=(
             "Which deliverable(s) an HDR project renders. "
             "auto: HDR master only (default); "
-            "sdr: a single SDR file tone-mapped through --sdr-curve; "
-            "both: the HDR master plus a derived SDR sibling. "
+            "sdr: a single SDR file, composed per layer through --sdr-curve; "
+            "both: the HDR master plus an SDR sibling composed the same way. "
             "Ignored for SDR projects."
         ),
     )
@@ -48,7 +48,7 @@ def register(subparsers):
         choices=curve_ids(),
         default=None,
         help=(
-            "Look curve used to derive the SDR rendition (with --export sdr|both). "
+            "Look curve used for the SDR rendition (with --export sdr|both). "
             "Defaults to the project's master look."
         ),
     )

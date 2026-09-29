@@ -150,12 +150,13 @@ montaj render --image-tone vivid
 
 montaj render --export sdr
 # Which deliverable(s) an HDR project renders (auto | sdr | both).
-# auto (default): HDR master only. sdr: a single SDR file tone-mapped
-# through --sdr-curve. both: the HDR master plus a derived SDR sibling.
+# auto (default): HDR master only. sdr: a single SDR file, composed per
+# layer through --sdr-curve. both: the HDR master plus an SDR sibling
+# composed the same way.
 # Ignored for SDR projects.
 
 montaj render --sdr-curve vivid1-neutral
-# Look curve used to derive the SDR rendition (with --export sdr|both).
+# Look curve used for the SDR rendition (with --export sdr|both).
 # Choices: vivid1 | vivid1-neutral. Defaults to the project's master look.
 ```
 

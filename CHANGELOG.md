@@ -9,6 +9,7 @@
 - **Fixed: the Export dialog's cover preview stayed blank for any clip with a crop.** Preview stills now also grade each clip by its own origin.
 - **Fixed: `remove_bg` cutouts of iPhone footage came out flat and grey in the SDR export.** They now get the same Vivid look as the rest of the footage.
 - **Changed: `--export sdr` on an HDR project is faster.** It no longer renders a hidden HDR master first.
+- **Changed: an SDR clip in an HDR project keeps its original file as `src`.** The converted copy is its `normalizedSrc` (with `normalizedInPoint: 0`).
 
 ## v5.5.6
 

@@ -81,7 +81,7 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 | `caption` | Transcript → animated caption track (data, not pixels) | `--style word-by-word` (or `karaoke`, `pop`, `subtitle`, `highlight-box`, `outline`, `clean`) |
 | `normalize` | Audio loudness to a LUFS target. Not colour. | `--target youtube` (or `podcast`, `broadcast`) |
 
-**Never convert a clip's colour yourself** (the `normalize` tool or `montaj normalize`). Put the original file in `src`; Montaj converts it for each output and keeps the original for the SDR export. If you point `src` at a different file, delete `normalizedSrc` and `normalizedInPoint` in the same edit: they are a conversion of the old file, and render and preview prefer them.
+**Never convert a clip's colour yourself** (`montaj normalize` or `POST /api/normalize`; the `normalize` step above is audio only). Put the original file in `src`; Montaj converts it for each output and keeps the original for the SDR export. If you point `src` at a different file, delete `normalizedSrc` and `normalizedInPoint` in the same edit: they are a conversion of the old file, and render and preview prefer them.
 
 **`caption` produces a data track, not pixels.** Rendered at review/final render time by the UI and render engine.
 
