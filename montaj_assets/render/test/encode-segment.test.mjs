@@ -1690,3 +1690,96 @@ test('gradeFrom: the stamped key picks the grade and the pin; null means no conv
     chainOf({ ...base, colorTransfer: 'arib-std-b67' }),
     'an HLG key on an HLG file is the chain an HLG clip in an SDR project always got')
 })
+
+// ---------------------------------------------------------------------------
+// PV42 T8: a remove_bg cutout of HDR footage is graded in the SDR pass
+// ---------------------------------------------------------------------------
+//
+// render.js's SDR pass stamps `alphaGrade` on a cutout whose footage is HDR, and
+// `gradeFrom` with the provenance key. Its _nobg.mov holds HLG (or PQ) signal,
+// so the grade runs on the colour of the cutout only: split, alphaextract, grade,
+// alphamerge. Everywhere else a cutout composites exactly as it always has.
+
+const cutout = {
+  type: 'video', src: '/w/render/talk_nobg.mov', nobg_src: '/w/render/talk_nobg.mov', remove_bg: true,
+  start: 0, end: 3, inPoint: 0, colorTransfer: 'unknown',
+  probedWidth: 1080, probedHeight: 1920, probedAlpha: true,
+}
+const cutoutOpts = (projectColorSpace) => ({
+  segStart: 0, duration: 3, projectColorSpace, zscaleAvailable: true, lut3dAvailable: true,
+})
+const cutoutGraph = (item, projectColorSpace) =>
+  buildVideoItemFilterParts(item, 1080, 1920, 1, '[canvas]', cutoutOpts(projectColorSpace)).filterParts
+
+test('alphaGrade cutout in an SDR segment: alphaextract, then the LUT, then alphamerge; no bt709 tag', () => {
+  const graph = cutoutGraph({ ...cutout, gradeFrom: 'hdr_hlg', alphaGrade: true }, 'sdr_bt709').join(';')
+  const extract = graph.indexOf('alphaextract')
+  const lut = graph.indexOf('lut3d=')
+  const merge = graph.indexOf('alphamerge')
+  assert.ok(extract >= 0 && lut >= 0 && merge >= 0, `alphaextract, lut3d and alphamerge must all be there, got: ${graph}`)
+  assert.ok(extract < lut && lut < merge, `order must be alphaextract, lut3d, alphamerge, got: ${graph}`)
+  // 5.5.5's untaggedTag would declare the HLG signal as BT.709.
+  assert.ok(!graph.includes('setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709'),
+    `an alphaGrade cutout must not be tagged bt709, got: ${graph}`)
+  // The declaration the measurement chose: the YUV remove_bg wrote is BT.601
+  // (PyAV's default RGB to YUV matrix), the signal under it HLG.
+  assert.ok(graph.includes('setparams=colorspace=smpte170m:color_trc=arib-std-b67:color_primaries=bt2020:range=tv,'),
+    `the cutout must be declared as the BT.601 YUV of HLG signal, got: ${graph}`)
+  assert.ok(graph.includes('zscale=matrixin=170m:rangein=limited:range=full,') && !graph.includes('2020_ncl'),
+    `the grade must decode the cutout with the matrix it was encoded with, got: ${graph}`)
+  // The grade pinned to yuv420p, as every HDR to SDR grade is, then an alpha plane for alphamerge.
+  assert.match(graph, /interp=tetrahedral,zscale=[^,;]*,format=yuv420p,format=yuva420p\[cg1\]/)
+  // Geometry first, then the split, on a format both branches can take; pad
+  // and overlay as for any cutout.
+  assert.match(graph, /^\[1:v\]setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuva444p12le,split=2\[c1\]\[ca1\];/)
+  assert.match(graph, /\[cg1\]\[al1\]alphamerge,format=yuva420p,pad=1080:1920:\(ow-iw\)\/2:\(oh-ih\)\/2:color=black@0\.0\[vid1\];/)
+  assert.match(graph, /\[canvas\]\[vid1\]overlay=x=0:y=0:format=auto:shortest=0\[iv1\]$/)
+  // `[a1]` is this item's audio label (encodeSegment's Step 5); the split must not take it.
+  assert.ok(!graph.includes('[a1]'), `the cutout graph must not use the audio label [a1], got: ${graph}`)
+})
+
+test('alphaGrade cutout of PQ footage: the PQ pre-step, declared as PQ', () => {
+  const graph = cutoutGraph({ ...cutout, gradeFrom: 'hdr_pq', alphaGrade: true }, 'sdr_bt709').join(';')
+  assert.ok(graph.includes('setparams=colorspace=smpte170m:color_trc=smpte2084:color_primaries=bt2020:range=tv,'
+    + 'zscale=tin=smpte2084:t=arib-std-b67:npl=1000,zscale=matrixin=170m:rangein=limited:range=full,'),
+  `a PQ cutout must be declared PQ and take the PQ to HLG pre-step, got: ${graph}`)
+})
+
+test('alphaGrade cutout, whole segment: every filter label is defined once', async () => {
+  const seg = {
+    start: 0, end: 3, vw: 1080, vh: 1920, fps: 30, colorSpace: 'sdr_bt709', overlays: [],
+    items: [{ ...cutout, trackIdx: 0, hasAudio: true, muted: false, gradeFrom: 'hdr_hlg', alphaGrade: true }],
+  }
+  const { filterParts } = await encodeSegment(seg, '/tmp/x.mp4', { _dryRun: true })
+  const graph = filterParts.join(';')
+  assert.ok(graph.includes('alphamerge'), `the dry run must build the alpha grade, got: ${graph}`)
+  // A label is an output where it follows a filter, i.e. at the end of a chain
+  // or before the next input label; count every label that closes a chain.
+  const outputs = filterParts.flatMap((p) => (p.match(/(?:\[[^\]]+\])+$/)?.[0].match(/\[[^\]]+\]/g) ?? []))
+  const dup = outputs.filter((l, i) => outputs.indexOf(l) !== i)
+  assert.deepEqual(dup, [], `labels defined twice: ${dup.join(', ')} in ${graph}`)
+})
+
+test('a remove_bg cutout in an HLG or PQ segment is byte-identical to 5.5.6, alphaGrade or not', () => {
+  const frozen = [
+    '[1:v]setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,format=yuva444p10le,'
+      + 'pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0.0[vid1]',
+    '[canvas][vid1]overlay=x=0:y=0:format=auto:shortest=0[iv1]',
+  ]
+  for (const cs of ['hdr_hlg', 'hdr_pq']) {
+    assert.deepEqual(cutoutGraph(cutout, cs), frozen, `${cs}: a plain cutout moved`)
+    assert.deepEqual(cutoutGraph({ ...cutout, gradeFrom: 'hdr_hlg', alphaGrade: true }, cs), frozen,
+      `${cs}: alphaGrade must not touch an HDR segment`)
+  }
+})
+
+test('an SDR-origin cutout (no alphaGrade) in an SDR segment is byte-identical to 5.5.6', () => {
+  const frozen = [
+    '[1:v]setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709,setpts=PTS-STARTPTS,'
+      + 'scale=1080:1920:force_original_aspect_ratio=decrease,format=yuva420p,'
+      + 'pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0.0[vid1]',
+    '[canvas][vid1]overlay=x=0:y=0:format=auto:shortest=0[iv1]',
+  ]
+  assert.deepEqual(cutoutGraph(cutout, 'sdr_bt709'), frozen)
+  assert.deepEqual(cutoutGraph({ ...cutout, gradeFrom: null, alphaGrade: false }, 'sdr_bt709'), frozen)
+})

@@ -234,16 +234,23 @@ export function hasLut3d() {
  * The LUT is graded for HLG input, so PQ sources get a PQ→HLG pre-step at the
  * LUT's 1000-nit design white — the same value SP6a's generator OOTF used.
  *
+ * `matrixIn` is the YUV matrix the source was ENCODED with, which is BT.2020
+ * NCL for every camera HDR file. The one exception is a remove_bg cutout,
+ * whose YUV is BT.601 (buildCutoutGradeFilter). Omitted, the chain is
+ * byte-identical to lib/normalize.py's, which has no such parameter.
+ *
  * @param {string} srcKey     'hdr_hlg' or 'hdr_pq'
  * @param {string|null} [sdrCurve]  curve id from looks.json; null → MASTER_LOOK
+ * @param {object} [opts]
+ * @param {string} [opts.matrixIn='2020_ncl']  zscale matrix name of the source's YUV
  * @returns {string}
  */
-export function buildVividLutChain(srcKey, sdrCurve = null) {
+export function buildVividLutChain(srcKey, sdrCurve = null, { matrixIn = '2020_ncl' } = {}) {
   const prestep = srcKey === 'hdr_pq'
     ? 'zscale=tin=smpte2084:t=arib-std-b67:npl=1000,'
     : ''
   return prestep
-       + 'zscale=matrixin=2020_ncl:rangein=limited:range=full,'
+       + `zscale=matrixin=${matrixIn}:rangein=limited:range=full,`
        + 'format=rgb48le,'
        + `lut3d=file=${ffmpegFilterPath(lutPath(sdrCurve))}:interp=tetrahedral,`
        + 'zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv'
@@ -273,6 +280,8 @@ export function buildVividLutChain(srcKey, sdrCurve = null) {
  * @param {boolean} [opts.hasLut3d]  defaults to the real probe, so a caller that
  *   forgets it gets a chain this ffmpeg can actually run rather than one naming
  *   a missing filter. Deterministic callers (dry-run) pass it explicitly.
+ * @param {string} [opts.matrixIn]  the Vivid LUT arm's input matrix; see
+ *   buildVividLutChain. Only buildCutoutGradeFilter passes it.
  */
 /**
  * Where SDR reference white lands in an HDR output, per ITU-R BT.2408 (203
@@ -285,11 +294,11 @@ const UNTAGGED_AS_BT709_VF = 'setparams=colorspace=bt709:color_trc=bt709:color_p
 
 export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag, opts = {}) {
   if (srcKey === dstKey) return ''
-  const { sdrCurve = null, hasLut3d: hasLut3dFlag = hasLut3d(), srcUntagged = false } = opts
+  const { sdrCurve = null, hasLut3d: hasLut3dFlag = hasLut3d(), srcUntagged = false, matrixIn } = opts
   // HDR → SDR
   if ((srcKey === 'hdr_hlg' || srcKey === 'hdr_pq') && dstKey === 'sdr_bt709') {
     if (hasZscaleFlag && hasLut3dFlag) {
-      return buildVividLutChain(srcKey, sdrCurve)
+      return buildVividLutChain(srcKey, sdrCurve, { matrixIn })
     }
     if (hasZscaleFlag) {
       return 'zscale=t=linear:npl=100,format=gbrpf32le,'
@@ -311,6 +320,41 @@ export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag, opts =
     return `zscale=t=${dstTransfer}`
   }
   return ''
+}
+
+/**
+ * The HDR to SDR grade for the COLOUR of a remove_bg cutout (PV42 T8), from
+ * its input declaration to the chain's trailing zscale. The caller splits the
+ * alpha off first and merges it back after (buildVideoItemFilterParts).
+ *
+ * What the _nobg.mov holds (steps/transform/remove_bg.py): PyAV decodes the
+ * HDR source to rgb24 with the source's own matrix (BT.2020 NCL, limited to
+ * full), the model returns that RGB plus alpha, and PyAV's default RGB to YUV
+ * conversion writes it as BT.601 limited, with no colour tags. So the file is
+ * HLG (or PQ) signal in BT.601 YUV: measured on PyAV 17, pure red encodes to
+ * Y 327 of 1023 (BT.601 326, BT.709 250, BT.2020 294).
+ *
+ * The declaration below says exactly that, so zscale has a transfer and
+ * primaries to work from (with none it fails: "no path between colorspaces"),
+ * and the LUT chain decodes the YUV with the matrix it was encoded with.
+ * Measured on a real iPhone cutout (IMG_0679_cut_nobg.mov against its HLG
+ * source through the Vivid chain, no encode, alpha = max boxes, mean abs of
+ * rgb24), declared BT.2020 NCL (the chain as is) vs BT.601 (this):
+ *   frame 10: face 4.35 vs 1.72, torso 1.94 vs 0.95
+ *   frame 40: face 3.68 vs 1.51, torso 2.03 vs 1.04
+ *   frame 70: face 3.34 vs 1.40, torso 2.23 vs 1.10
+ * BT.2020 NCL pulls skin green down 3 to 5 levels. Ungraded (5.5.6) was 24 to
+ * 25 on the face and 48 to 53 on the torso.
+ *
+ * @param {string} srcKey  the cutout's provenance key, 'hdr_hlg' or 'hdr_pq'
+ * @param {boolean} hasZscaleFlag
+ * @param {object} [opts]  sdrCurve and hasLut3d, as buildColorConversionFilter
+ * @returns {string}
+ */
+export function buildCutoutGradeFilter(srcKey, hasZscaleFlag, opts = {}) {
+  const trc = srcKey === 'hdr_pq' ? 'smpte2084' : 'arib-std-b67'
+  return `setparams=colorspace=smpte170m:color_trc=${trc}:color_primaries=bt2020:range=tv,`
+       + buildColorConversionFilter(srcKey, 'sdr_bt709', hasZscaleFlag, { ...opts, matrixIn: '170m' })
 }
 
 // ---------------------------------------------------------------------------
@@ -783,6 +827,18 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     ? ''
     : buildColorConversionFilter(convertFrom, projectColorSpace, zscaleAvailable,
         { sdrCurve, hasLut3d: lut3dAvailable, srcUntagged: item.colorTransfer === 'unknown' })
+  // A remove_bg cutout of HDR footage in the SDR pass (PV42 T8): render.js
+  // stamps `alphaGrade`, and `gradeFrom` with the provenance key, since the
+  // alpha file it decodes is untagged. Its colour is graded on a split branch
+  // (buildCutoutGradeFilter) and its alpha merged back, after crop and scale,
+  // before pad; the pin to yuv420p is the same as gradePin's below, and
+  // yuva420p gives alphamerge a plane to write. Every other cutout, and every
+  // cutout in an HLG or PQ segment, keeps skipConversionForAlpha untouched.
+  const cutoutGrade = skipConversionForAlpha && item.alphaGrade === true
+    && projectColorSpace === 'sdr_bt709' && isHdr(convertFrom)
+    ? `${buildCutoutGradeFilter(convertFrom, zscaleAvailable, { sdrCurve, hasLut3d: lut3dAvailable })},`
+      + 'format=yuv420p,format=yuva420p'
+    : ''
   // An HDR→SDR grade ends pinned to yuv420p, as derive-sdr.js and
   // lib/normalize.py already pin it, so the Vivid chain's own last zscale
   // (m=bt709:r=tv) does the RGB→YUV step and the 4:2:0 subsampling, exactly as
@@ -871,7 +927,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // expensive stretch in this graph. Same instinct as the crop → scale →
   // convert ordering above: never make the color chain pay for pixels the
   // geometry chain could have settled first.
-  const divisibleBy = conversionStep ? ':force_divisible_by=2' : ''
+  const divisibleBy = (conversionStep || cutoutGrade) ? ':force_divisible_by=2' : ''
   // setpts time-compresses the sped-up source back to timeline-real-time: at
   // speed S the S× extra source seconds consumed above play out over 1/S the
   // time. A no-op (bare setpts=PTS-STARTPTS) at speed undefined/1.
@@ -884,7 +940,9 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // was tagged. Keyed on the probed transfer, which render.js stamps 'unknown'
   // for an untagged file. Overlay captures and images are NOT tagged: those are
   // encoded from RGB with ffmpeg's BT.601 default, and converting them is right.
-  const untaggedTag = !isHdr(projectColorSpace) && item.colorTransfer === 'unknown'
+  // A graded cutout is the exception: its alpha file holds HDR signal, and the
+  // grade's own declaration says so (buildCutoutGradeFilter).
+  const untaggedTag = !isHdr(projectColorSpace) && item.colorTransfer === 'unknown' && !cutoutGrade
     ? 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709,' : ''
 
   // ── The pad fill: transparent where the preview shows nothing ─────────────
@@ -930,7 +988,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const padH = anim?.needsAnimatedChain ? anim.peakH : scaledH
   let transparentPad = item.probedAlpha === true
   if (!transparentPad && footageW && footageH) {
-    const fit = decreaseFitSize(footageW, footageH, padW, padH, conversionStep ? 2 : 1)
+    const fit = decreaseFitSize(footageW, footageH, padW, padH, (conversionStep || cutoutGrade) ? 2 : 1)
     transparentPad = padW - fit.width > 1 || padH - fit.height > 1
   }
   const padAlphaFmt = (conversionStep || isHdr(projectColorSpace)) ? 'yuva444p10le' : 'yuva420p'
@@ -944,19 +1002,34 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // for why all three of them silently mis-render otherwise. With an opaque pad
   // the static branch below is byte-for-byte what it has always been; the frozen
   // goldens say so.
-  filterParts.push(
-    `[${idx}:v]${untaggedTag}${ptsStep},${cropStep}` +
+  const head = `[${idx}:v]${untaggedTag}${ptsStep},${cropStep}` +
     (anim?.needsAnimatedChain
-      ? `scale=${anim.peakW}:${anim.peakH}:force_original_aspect_ratio=decrease${divisibleBy},` +
-        `${conversionStep}` +
-        `${padStep},` +
-        `scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame` +
-        `${animatedRotateStep(anim, true)}`
-      : `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy},` +
-        `${conversionStep}` +
-        `${padStep}${rotateFilterStep(box, true)}`) +
-    `[vid${idx}]`
-  )
+      ? `scale=${anim.peakW}:${anim.peakH}:force_original_aspect_ratio=decrease${divisibleBy},`
+      : `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy},`)
+  const tail = anim?.needsAnimatedChain
+    ? `${padStep},` +
+      `scale=w='${anim.boxWExpr}':h='${anim.boxHExpr}':eval=frame` +
+      `${animatedRotateStep(anim, true)}`
+    : `${padStep}${rotateFilterStep(box, true)}`
+  if (cutoutGrade) {
+    // The graded cutout: colour and alpha split after scale, the colour graded,
+    // the alpha merged back, then the same pad (yuva420p: the SDR path's pin,
+    // a no-op on alphamerge's output) and rotate as any other item. `[a${idx}]`
+    // is this item's audio label (encodeSegment's Step 5), hence `ca`.
+    // The pin before split is load-bearing: split gives both outputs one
+    // format, and without it the grade's branch negotiates an alpha-less one
+    // that alphaextract cannot read ("could not choose their formats",
+    // measured on ffmpeg 8.1.2). yuva444p12le is what ProRes 4444 decodes to,
+    // so the pin adds no conversion.
+    filterParts.push(
+      `${head}format=yuva444p12le,split=2[c${idx}][ca${idx}]`,
+      `[ca${idx}]alphaextract[al${idx}]`,
+      `[c${idx}]${cutoutGrade}[cg${idx}]`,
+      `[cg${idx}][al${idx}]alphamerge,${tail}[vid${idx}]`,
+    )
+  } else {
+    filterParts.push(`${head}${conversionStep}${tail}[vid${idx}]`)
+  }
   let src = `[vid${idx}]`
   if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
     filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[vidop${idx}]`)
@@ -1414,6 +1487,9 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // still tagged HLG/PQ at the container level, so players treat the cutout
       // pixels as SDR-on-HDR-canvas (slightly lifted highlights but watchable).
       // Sources that aren't bg-removed go through the normal conversion path.
+      // The one split that does exist: in an HDR project's SDR export, a cutout
+      // of HDR footage (item.alphaGrade) is graded through an alpha split
+      // (PV42 T8, buildVideoItemFilterParts / buildCutoutGradeFilter).
       const { inputArgs, filterParts: fp, newVideoLabel } =
         buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, {
           segStart: start,
