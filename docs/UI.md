@@ -134,7 +134,7 @@ View and manage creator style profiles.
 - List of all profiles in `~/.montaj/profiles/`
 - Each card shows name, dominant color palette, and source count
 - Click a profile to inspect pacing, editorial direction, caption style, and color analysis
-- Profiles are created and updated via `skills/style-profile/SKILL.md`
+- Profiles are created and updated via the Montaj app's `app/style-profile` skill
 
 ---
 

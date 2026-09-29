@@ -83,7 +83,7 @@ A style profile captures the visual and editorial identity of a social media acc
 
 Profiles live at `~/.montaj/profiles/<name>/style_profile.md` and are loaded into your agent context when tagged selected in the UI or manually seeked on the prompt.
 
-To create or update one: load `skills/style-profile/SKILL.md`.
+To create or update one: call get_skill with `app/style-profile`. It is a Montaj Hub skill, served by the Montaj app.
 
 ---
 
@@ -111,5 +111,5 @@ Ask the user:
 >
 > **Edit a video:** Tell me the location of your clips or drop them in the UI, and I'll run the full edit pipeline for whatever content style you pick. You can always add a style profile later."
 
-- If **style profile**: load `skills/style-profile/SKILL.md` and follow it.
+- If **style profile**: call get_skill with `app/style-profile` and follow it.
 - If **edit a video**: load `skills/SKILL.md` and follow it.

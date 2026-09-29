@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Removed: the `style-profile` skill.** Style profiles are a Montaj Hub feature, and the app serves the skill as `app/style-profile`.
+
 ## v5.6.0
 
 - **Removed: the `animation-sections`, `broll`, `find_clips` and `lyrics-video` skills.** Only the Montaj app's paid templates used them, and the app serves them now as `app/<name>`.

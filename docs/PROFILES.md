@@ -126,7 +126,7 @@ montaj fetch "https://www.tiktok.com/@techbyjaz" \
 montaj profile analyze --name techbyjaz
 
 # Step 3 — agent writes style_profile.md
-# (done conversationally via the style-profile skill)
+# (done conversationally via the Montaj app's app/style-profile skill)
 ```
 
 ### Analyze with explicit video paths

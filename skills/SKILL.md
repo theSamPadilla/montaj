@@ -218,7 +218,6 @@ Refer to sub-skills by name; the reader resolves the name to a path.
 | `overlay` | Executing `montaj/overlay` in a workflow |
 | `write-overlay` | Writing custom JSX overlay components |
 | `image-search` | Sourcing outside imagery (`search_images` + `fetch_image`) when the prompt asks for photos / logos / B-roll stills |
-| `style-profile` | Creating or updating a creator style profile |
 | `carousel` | Executing `montaj/carousel` in a workflow |
 | `ai-video-plan` | Working on an `ai_video` project (Phases 0-2: story clarification, storyboard planning) |
 | `ai-video-generate` | Working on an `ai_video` project (Phases 6-7: scene generation, audio assembly, regenQueue) |

@@ -130,7 +130,7 @@ Custom steps and workflows are discovered automatically — no registration need
 
 Skills are agent-readable contracts that teach the agent how to approach a specific editing task. Each skill describes the goal, the steps to use, the parameter choices, and the quality criteria.
 
-Available skills: `onboarding`, `edit-session`, `ai-video-plan`, `ai-video-generate`, `eval-scenes`, `overlay`, `write-overlay`, `style-profile`, `serve`, `parallel`, `select-takes`, `waveform-silence`, `camera-vocabulary`, `mcp`.
+Available skills: `onboarding`, `edit-session`, `ai-video-plan`, `ai-video-generate`, `eval-scenes`, `overlay`, `write-overlay`, `serve`, `parallel`, `select-takes`, `waveform-silence`, `camera-vocabulary`, `mcp`.
 
 ## Connectors
 
