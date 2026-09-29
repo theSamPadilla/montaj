@@ -13,7 +13,9 @@ import pytest
 import lib.normalize as nm
 from serve.routes.steps import _normalize_sync
 
-pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not available")
+from tests.conftest import HAS_FFMPEG  # the ffmpeg the code runs (PV52)
+
+pytestmark = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 
 
 def _sdr_clip(path):

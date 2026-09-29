@@ -30,7 +30,7 @@ from lib.normalize import (
 )
 from lib.proxy import _build_proxy_cmd
 
-HAS_FFMPEG = shutil.which("ffmpeg") is not None
+from tests.conftest import HAS_FFMPEG, FFMPEG_BIN  # the ffmpeg the code runs (PV52)
 HAS_NODE = shutil.which("node") is not None
 
 pytestmark = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
@@ -47,7 +47,7 @@ def _make_hlg_bars(path: Path, *, duration=2):
     writes transfer= into the bitstream and ffprobe reads it back.
     """
     subprocess.run([
-        "ffmpeg", "-y", "-v", "error",
+        FFMPEG_BIN, "-y", "-v", "error",
         "-f", "lavfi", "-i", f"smptehdbars=size=1280x720:rate=30:duration={duration}",
         "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={duration}",
         "-c:v", "libx265", "-preset", "ultrafast", "-crf", "22",
@@ -64,7 +64,7 @@ def _make_hlg_bars(path: Path, *, duration=2):
 
 def _extract_frame(video: Path, png: Path, *, at=1.0):
     subprocess.run([
-        "ffmpeg", "-y", "-v", "error",
+        FFMPEG_BIN, "-y", "-v", "error",
         "-i", str(video), "-ss", str(at),
         "-frames:v", "1", "-update", "1",
         "-vf", "scale=1280:720",
@@ -74,7 +74,7 @@ def _extract_frame(video: Path, png: Path, *, at=1.0):
 
 def _ssim(a: Path, b: Path) -> float:
     out = subprocess.run([
-        "ffmpeg", "-v", "info",
+        FFMPEG_BIN, "-v", "info",
         "-i", str(a), "-i", str(b),
         "-filter_complex", "[0:v][1:v]ssim",
         "-f", "null", "-",
@@ -117,7 +117,7 @@ def test_vivid_preview_matches_derived_sdr_render(tmp_path):
         check=True, capture_output=True, text=True, timeout=60,
     ).stdout.strip()
     assert chain
-    subprocess.run(["ffmpeg", "-y", "-i", str(master), "-vf", f"{chain},format=yuv420p",
+    subprocess.run([FFMPEG_BIN, "-y", "-i", str(master), "-vf", f"{chain},format=yuv420p",
                     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", str(derived)],
                    check=True, capture_output=True, timeout=300)
 
@@ -182,7 +182,7 @@ def test_tonemap_chain_output_matches_the_lut_grade(tmp_path):
     out_png = tmp_path / "out.png"
     for png, chain in ((ref_png, graded), (out_png, vf)):
         subprocess.run([
-            "ffmpeg", "-y", "-v", "error", "-i", str(master),
+            FFMPEG_BIN, "-y", "-v", "error", "-i", str(master),
             "-frames:v", "1", "-update", "1",
             "-vf", f"{chain},format=rgb24", str(png),
         ], check=True, capture_output=True, timeout=120)

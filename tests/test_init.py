@@ -5,7 +5,12 @@ import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
 INIT_PY   = str(REPO_ROOT / "project" / "init.py")
-HAS_FFMPEG = shutil.which("ffmpeg") is not None
+from tests.conftest import HAS_FFMPEG, FFMPEG_BIN, skip_or_fail  # the ffmpeg the code runs (PV52)
+# lib/proxy.py deliberately falls back to a bare tonemap (with a loud warning)
+# when the resolved ffmpeg lacks zscale, so the tonemap-chain assertions below
+# need a zscale ffmpeg; without one they fail (default) or skip, with the fix.
+HAS_ZSCALE = HAS_FFMPEG and "zscale" in subprocess.run(
+    [FFMPEG_BIN, "-hide_banner", "-filters"], capture_output=True, text=True).stdout
 
 sys.path.insert(0, str(REPO_ROOT))
 from lib.project_tracks import track_items
@@ -1447,13 +1452,12 @@ def _make_ffmpeg_spy(tmp_path: Path, *, fail: bool, real_ffmpeg: str | None = No
     Only MONTAJ_FFMPEG is overridden — ffprobe (probing) is untouched, so
     color-space detection and is_normalized() checks behave normally.
 
-    `real_ffmpeg` is the binary the spy runs; the default is the `ffmpeg` on
-    PATH, which may have no zscale.
+    `real_ffmpeg` is the binary the spy runs; the default is the ffmpeg the
+    code resolves (tests.conftest.FFMPEG_BIN), not a bare PATH lookup.
     """
     log = tmp_path / "ffmpeg_calls.log"
     wrapper = tmp_path / "fake_ffmpeg.sh"
-    real_ffmpeg = real_ffmpeg or \
-        subprocess.run(["which", "ffmpeg"], capture_output=True, text=True).stdout.strip()
+    real_ffmpeg = real_ffmpeg or FFMPEG_BIN  # the ffmpeg the code runs, not PATH's (PV52)
     assert real_ffmpeg, "could not locate real ffmpeg"
     body = (
         "#!/bin/bash\n"
@@ -1671,6 +1675,8 @@ def test_init_eager_proxy_command_tonemaps_for_hdr_project(tmp_path):
     color space. Command-level assertion only (spy exits 1 immediately, same
     rationale as test_init_lazy_proxy_command_uses_tonemap_for_hdr_source
     above — a real HDR encode depends on the box having zscale)."""
+    if not HAS_ZSCALE:
+        skip_or_fail("ffmpeg with zscale not available (the tonemap chain needs it)")
     wrapper, log = _make_ffmpeg_spy(tmp_path, fail=True)
     src = tmp_path / "clip.mp4"
     _make_hlg_clip(src, duration=1)
@@ -1878,6 +1884,8 @@ def test_init_lazy_proxy_command_uses_tonemap_for_hdr_source(tmp_path):
     lazy proxy path inherits it automatically. Assertion updated to match
     (the "tonemap=hable" substring only appears in the degraded fallback arm
     now, not the real LUT arm this spy exercises)."""
+    if not HAS_ZSCALE:
+        skip_or_fail("ffmpeg with zscale not available (the tonemap chain needs it)")
     wrapper, log = _make_ffmpeg_spy(tmp_path, fail=True)
     src = tmp_path / "clip.mp4"
     _make_hlg_clip(src, duration=1)

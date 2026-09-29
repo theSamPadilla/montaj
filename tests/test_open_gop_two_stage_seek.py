@@ -42,27 +42,25 @@ SOURCE_DURATION_S = 4  # several full 1s GOPs
 WINDOW_FRAMES = 8
 WINDOW_S = WINDOW_FRAMES / FPS
 
-REQUIRE_HDR_FFMPEG = os.environ.get("MONTAJ_REQUIRE_HDR_FFMPEG") == "1"
+from tests.conftest import REQUIRE_CAPS as REQUIRE_HDR_FFMPEG, skip_or_fail as _conftest_skip_or_fail  # PV52: required by default
 
 
 def _skip_or_fail(reason: str) -> None:
-    """Skip, or fail loudly under MONTAJ_REQUIRE_HDR_FFMPEG=1 — same pattern
+    """Fail (default), or skip under MONTAJ_TEST_ALLOW_MISSING_CAPS=1 — same pattern
     as tests/test_normalize.py's _skip_or_fail and tests/test_color_provenance.py."""
-    if REQUIRE_HDR_FFMPEG:
-        pytest.fail(reason)
-    pytest.skip(reason)
+    _conftest_skip_or_fail(reason)
 
 
 # numpy is declared in pyproject.toml's `test` extra (PV48 review), but a
 # clean env can still lack it (extras aren't force-installed) — under
-# MONTAJ_REQUIRE_HDR_FFMPEG=1 that must fail the run, not silently skip these
+# default (PV52) that must fail the run, not silently skip these
 # pixel-comparison tests, same as every other HDR-ffmpeg-dependent guard in
 # this file (_skip_or_fail above).
 try:
     import numpy as np
 except ImportError:
     if REQUIRE_HDR_FFMPEG:
-        pytest.fail("numpy is required under MONTAJ_REQUIRE_HDR_FFMPEG=1 but is not installed")
+        pytest.fail("numpy is required (pyproject test extra) but is not installed; install it, or set MONTAJ_TEST_ALLOW_MISSING_CAPS=1 to skip")
     pytest.skip("numpy not installed", allow_module_level=True)
 
 

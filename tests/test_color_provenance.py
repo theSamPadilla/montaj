@@ -182,8 +182,8 @@ def test_real_normalize_output_resolves_to_its_original_and_a_trimmed_copy_does_
 # module, then copied into each test's project folder with explicit mtimes.
 
 HAS_ZSCALE = HAS_FFMPEG and nm._has_zscale()
-REQUIRE_HDR_FFMPEG = os.environ.get("MONTAJ_REQUIRE_HDR_FFMPEG") == "1"
-# Under MONTAJ_REQUIRE_HDR_FFMPEG=1 the media fixture fails instead of skipping.
+from tests.conftest import REQUIRE_CAPS as REQUIRE_HDR_FFMPEG, skip_or_fail as _conftest_skip_or_fail  # PV52: required by default
+# Unless MONTAJ_TEST_ALLOW_MISSING_CAPS=1, the media fixture fails instead of skipping (PV52).
 needs_media = pytest.mark.skipif(not HAS_ZSCALE and not REQUIRE_HDR_FFMPEG,
                                  reason="ffmpeg with zscale not available")
 
@@ -225,9 +225,7 @@ def _dark(out, x_expr):
 @pytest.fixture(scope="module")
 def media(tmp_path_factory):
     if not HAS_ZSCALE:
-        if REQUIRE_HDR_FFMPEG:
-            pytest.fail("ffmpeg with zscale not available (MONTAJ_REQUIRE_HDR_FFMPEG=1)")
-        pytest.skip("ffmpeg with zscale not available")
+        _conftest_skip_or_fail("ffmpeg with zscale not available")
     d = Path(os.path.realpath(tmp_path_factory.mktemp("cpmedia")))
     testsrc = f"testsrc2=size={_SIZE}:rate={_RATE}:duration={_DUR}"
     _sdr(d / "testsrc.mp4", testsrc)
@@ -908,9 +906,7 @@ def _keyframe_window(path):
 @pytest.fixture(scope="module")
 def open_gop(tmp_path_factory):
     if not HAS_ZSCALE:
-        if REQUIRE_HDR_FFMPEG:
-            pytest.fail("ffmpeg with zscale not available (MONTAJ_REQUIRE_HDR_FFMPEG=1)")
-        pytest.skip("ffmpeg with zscale not available")
+        _conftest_skip_or_fail("ffmpeg with zscale not available")
     d = Path(os.path.realpath(tmp_path_factory.mktemp("opengop")))
     orig, conv = _open_gop_clips(d)
     return d, orig, conv

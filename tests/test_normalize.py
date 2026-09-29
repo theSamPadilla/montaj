@@ -30,7 +30,7 @@ from lib.normalize import (
 )
 from lib.look import lut_path
 
-HAS_FFMPEG = shutil.which("ffmpeg") is not None
+from tests.conftest import HAS_FFMPEG  # the ffmpeg the code runs (PV52)
 pytestmark = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 
 
@@ -766,11 +766,10 @@ def test_denoise_absent_from_proxy_cmd(monkeypatch):
 # Skipped by default; run explicitly with `pytest tests/test_normalize.py -m slow`.
 
 def _skip_or_fail(reason: str) -> None:
-    """Skip, or fail loudly under MONTAJ_REQUIRE_HDR_FFMPEG=1 (an environment
+    """Fail (default), or skip under MONTAJ_TEST_ALLOW_MISSING_CAPS=1 (an environment
     that is meant to have the HDR ffmpeg must not skip these silently)."""
-    if os.environ.get("MONTAJ_REQUIRE_HDR_FFMPEG") == "1":
-        pytest.fail(reason)
-    pytest.skip(reason)
+    from tests.conftest import skip_or_fail
+    skip_or_fail(reason)
 
 
 def _ffmpeg_has_filters(*names) -> bool:

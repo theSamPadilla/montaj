@@ -136,7 +136,8 @@ def test_remove_bg_output_is_prores_4444(tmp_path):
     import subprocess as _sp
     import shutil
 
-    if shutil.which("ffmpeg") is None:
+    from tests.conftest import HAS_FFMPEG  # the ffmpeg the code runs (PV52)
+    if not HAS_FFMPEG:
         pytest.skip("ffmpeg not available")
 
     # Create a tiny synthetic video using ffmpeg

@@ -23,7 +23,7 @@ import validate as v  # noqa: E402
 import normalize  # noqa: E402  — patched directly; validate imports it lazily
 from tests.conftest import run_step, assert_json_output  # noqa: E402
 
-HAS_FFMPEG = shutil.which("ffmpeg") is not None
+from tests.conftest import HAS_FFMPEG  # the ffmpeg the code runs (PV52)
 
 VALID_PROJECT = {
     "version": "0.2",

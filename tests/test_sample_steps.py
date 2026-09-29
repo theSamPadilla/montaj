@@ -28,7 +28,7 @@ FIXTURE_PROJECT = Path("/Users/Sam/Montaj/2026-05-28-opus-4-8/project.json")
 import shutil
 
 HAS_NODE = shutil.which("node") is not None
-HAS_FFMPEG = shutil.which("ffmpeg") is not None
+from tests.conftest import HAS_FFMPEG  # the ffmpeg the code runs (PV52)
 
 try:
     from PIL import Image  # noqa: F401

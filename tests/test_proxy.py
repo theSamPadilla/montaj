@@ -35,7 +35,7 @@ from lib.proxy import (
     proxy_path_for,
 )
 
-HAS_FFMPEG = shutil.which("ffmpeg") is not None
+from tests.conftest import HAS_FFMPEG  # the ffmpeg the code runs (PV52)
 pytestmark = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 
 

@@ -11,7 +11,33 @@ import pytest
 
 REPO_ROOT  = Path(__file__).parent.parent
 STEPS_DIR  = REPO_ROOT / "steps"
-HAS_FFMPEG = shutil.which("ffmpeg") is not None
+# Probe the SAME ffmpeg the code runs (lib/common.py: env -> managed build ->
+# Homebrew -> PATH), not a bare PATH lookup. Tests used to probe PATH while the
+# code resolved the managed build first, so every skip decision was made about
+# a binary the code would not use (PV52).
+from lib.common import ffmpeg_bin as _ffmpeg_bin  # noqa: E402
+FFMPEG_BIN = _ffmpeg_bin()
+HAS_FFMPEG = shutil.which(FFMPEG_BIN) is not None or os.access(FFMPEG_BIN, os.X_OK)
+
+# A missing capability FAILS by default (PV52). MONTAJ_TEST_ALLOW_MISSING_CAPS=1
+# skips instead, with the reason; a run that skips never meets the release
+# gate's 0-skipped bar. MONTAJ_REQUIRE_HDR_FFMPEG is no longer needed.
+REQUIRE_CAPS = os.environ.get("MONTAJ_TEST_ALLOW_MISSING_CAPS") != "1"
+CAPS_FIX = ("point MONTAJ_FFMPEG/MONTAJ_FFPROBE at the managed build "
+            "(~/.local/share/montaj/models/ffmpeg is a directory; the binaries are inside), "
+            "or set MONTAJ_TEST_ALLOW_MISSING_CAPS=1 to skip")
+
+
+def skip_or_fail(reason: str) -> None:
+    """Fail (default) or, under MONTAJ_TEST_ALLOW_MISSING_CAPS=1, skip for a
+    missing capability. The failure names the probed ffmpeg and the fix."""
+    if REQUIRE_CAPS:
+        pytest.fail(f"{reason} [ffmpeg: {FFMPEG_BIN}]; to fix, {CAPS_FIX}")
+    pytest.skip(f"{reason} (MONTAJ_TEST_ALLOW_MISSING_CAPS=1)")
+
+
+def pytest_report_header(config):
+    return f"ffmpeg: {FFMPEG_BIN} | missing capabilities: {'FAIL' if REQUIRE_CAPS else 'skip (MONTAJ_TEST_ALLOW_MISSING_CAPS=1)'}"
 
 
 def _find_step(script: str) -> Path:

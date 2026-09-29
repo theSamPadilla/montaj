@@ -30,11 +30,11 @@ import shutil
 
 from lib.normalize_image import convert_image
 
-HAS_FFMPEG = shutil.which("ffmpeg") is not None
+from tests.conftest import HAS_FFMPEG, FFMPEG_BIN  # the ffmpeg the code runs (PV52)
 HAS_ZSCALE = False
 if HAS_FFMPEG:
     _r = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-filters"],
+        [FFMPEG_BIN, "-hide_banner", "-filters"],
         capture_output=True, text=True, timeout=5,
     )
     HAS_ZSCALE = _r.returncode == 0 and "zscale" in (_r.stdout or "")
@@ -51,7 +51,7 @@ def _make_srgb_png(path: Path, width: int = 64, height: int = 64,
                    color: str = "0x804040") -> None:
     """Create a small sRGB PNG via ffmpeg lavfi with no ICC profile."""
     subprocess.run([
-        "ffmpeg", "-y",
+        FFMPEG_BIN, "-y",
         "-f", "lavfi", "-i", f"color=c={color}:size={width}x{height}:rate=1:duration=1",
         "-frames:v", "1",
         "-pix_fmt", "rgba",
@@ -68,7 +68,7 @@ def _make_hlg_png(path: Path, width: int = 64, height: int = 64) -> None:
     zscale needs declared input colorspace to find the conversion path.
     """
     subprocess.run([
-        "ffmpeg", "-y",
+        FFMPEG_BIN, "-y",
         "-f", "lavfi", "-i", f"color=c=0x804040:size={width}x{height}:rate=1:duration=1",
         "-frames:v", "1",
         "-vf", (
@@ -111,14 +111,14 @@ def _read_center_pixel(path: Path) -> tuple[int, int, int]:
         tmp_name = tmp.name
     try:
         subprocess.run([
-            "ffmpeg", "-y", "-i", str(path),
+            FFMPEG_BIN, "-y", "-i", str(path),
             "-frames:v", "1",
             "-update", "1",
             tmp_name,
         ], check=True, capture_output=True, timeout=10)
         # Use ffprobe to get pixel format info and rawvideo for actual pixels
         r2 = subprocess.run([
-            "ffmpeg", "-y", "-i", tmp_name,
+            FFMPEG_BIN, "-y", "-i", tmp_name,
             "-vf", "crop=1:1:iw/2:ih/2",
             "-frames:v", "1",
             "-pix_fmt", "rgb24",
