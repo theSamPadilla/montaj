@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.5.6
+
 - Workflows can name host-app skills with the `app/` scope; `get_workflow` marks them `kind: "skill"` with the full `app/<name>`.
 - **Fixed: an HDR project that contained a video with no colour information could not be exported at all.** Most web downloads, X saves and browser saves carry no colour information. In an HDR project (iPhone footage makes a project HDR), one such clip made every export stop with an error and write no file, on every earlier version. The clip is now read as standard HD colour and converted like any other.
 - **Changed: SDR clips (screen recordings, downloads) are brighter in an HDR project: their white now sits at 203 nits, the BT.2408 reference level, instead of 100.** An existing HDR project converts its SDR clips again, once, on its next export. The new file is named `<clip>_normalized_hdr_hlg_w203.mp4`, and the old one stays on disk. The SDR export of an HDR project changes with it. Measured on a downloaded clip, its SDR clips come out about half again as bright as in 5.5.5, but still darker than the clip itself: about 60% of its brightness, up from about 40%. iPhone footage is unchanged in both exports.
