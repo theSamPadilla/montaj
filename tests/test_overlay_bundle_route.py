@@ -202,12 +202,83 @@ def test_exit_1_is_500_with_stderr(env):
 
 
 def test_exit_2_is_422(env):
-    out = json.dumps({"ok": False, "error": "build_failed", "message": "/x.jsx:1:2: bad"}).encode()
+    _, _, ws = env
+    loc = str(ws / "ov" / "helper.js")
+    out = json.dumps({"ok": False, "error": "build_failed", "message": f"{loc}:1:2: bad"}).encode()
     r = _run_mocked(env, _FakeProc(rc=2, out=out))
     assert r.status_code == 422
-    assert r.json()["detail"] == {"error": "build_failed", "message": "/x.jsx:1:2: bad"}
+    assert r.json()["detail"] == {"error": "build_failed", "message": f"{loc}:1:2: bad"}
+
+
+def test_exit_2_message_without_location_unchanged(env):
+    out = json.dumps({"ok": False, "error": "build_failed", "message": "no location here"}).encode()
+    r = _run_mocked(env, _FakeProc(rc=2, out=out))
+    assert r.status_code == 422
+    assert r.json()["detail"]["message"] == "no location here"
+
+
+def test_exit_2_outside_roots_is_403_without_esbuild_text(env):
+    base, _, _ = env
+    out = json.dumps({"ok": False, "error": "build_failed",
+                      "message": f'{base}/outside/s.js:1:23: Expected ";" but found "hunter2"'}).encode()
+    r = _run_mocked(env, _FakeProc(rc=2, out=out))
+    assert r.status_code == 403
+    assert "hunter2" not in r.text
+
+
+def test_cancellation_kills_and_reaps_child(env):
+    _, _, ws = env
+    entry = _chain(ws)
+    proc = _FakeProc(hang=True)
+    waited = []
+    orig_wait = proc.wait
+
+    async def wait():
+        waited.append(True)
+        return await orig_wait()
+    proc.wait = wait
+
+    async def fake_exec(*a, **k):
+        return proc
+
+    async def go():
+        with patch.object(overlays_route.asyncio, "create_subprocess_exec", fake_exec):
+            t = asyncio.ensure_future(overlays_route.bundle_overlay(path=str(entry)))
+            await asyncio.sleep(0.1)
+            t.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await t
+
+    asyncio.run(go())
+    assert proc.killed and waited
 
 
 def test_exit_0_garbage_is_500(env):
     r = _run_mocked(env, _FakeProc(rc=0, out=b"not json"))
     assert r.status_code == 500
+
+
+def test_real_syntax_error_outside_roots_403_no_leak(env):
+    base, _, ws = env
+    outside = base / "outside"; outside.mkdir()
+    (outside / "s.js").write_text('export const S = "a" "hunter2-SECRET"\n')
+    d = ws / "ov"; d.mkdir()
+    (d / "ov.jsx").write_text(
+        f"import {{ S }} from '{outside / 's.js'}'\nexport default function O() {{ return <b>{{S}}</b> }}\n"
+    )
+    r = _get(d / "ov.jsx")
+    assert r.status_code == 403, r.text
+    assert "hunter2" not in r.text
+    assert "s.js" in r.json()["detail"]["message"]
+
+
+def test_real_syntax_error_in_imported_helper_inside_roots_422(env):
+    _, _, ws = env
+    d = ws / "ov"; d.mkdir()
+    (d / "h.js").write_text("export const S = = 1\n")
+    (d / "ov.jsx").write_text(
+        "import { S } from './h.js'\nexport default function O() { return <b>{S}</b> }\n"
+    )
+    r = _get(d / "ov.jsx")
+    assert r.status_code == 422, r.text
+    assert "h.js" in r.json()["detail"]["message"]

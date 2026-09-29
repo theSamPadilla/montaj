@@ -5,6 +5,7 @@ overlay-scoped (not profile-scoped) so they share scan_overlays.
 """
 import asyncio
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -122,6 +123,8 @@ async def create_profile_overlay_group(name: str, body: dict = Body(...)):
 _BUNDLE_TIMEOUT_S = 30
 # An editor opening many overlays must not spawn one node per overlay at once.
 _BUNDLE_SEMAPHORE = asyncio.Semaphore(4)
+# esbuild message prefix: an absolute POSIX path, then :line:col:
+_ESBUILD_LOC = re.compile(r"^(/.+?):(\d+):(\d+): ")
 
 
 def _watcher_roots() -> list[Path]:
@@ -194,16 +197,20 @@ async def bundle_overlay(path: str = Query(default="")):
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), _BUNDLE_TIMEOUT_S)
-        except asyncio.TimeoutError:
+        except BaseException as exc:
+            # Timeout, client disconnect (CancelledError) or anything else: the
+            # node child must not outlive the request.
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
             await proc.wait()
-            raise HTTPException(504, detail={
-                "error": "bundle_timeout",
-                "message": f"preview-bundle.js exceeded {_BUNDLE_TIMEOUT_S}s",
-            })
+            if isinstance(exc, asyncio.TimeoutError):
+                raise HTTPException(504, detail={
+                    "error": "bundle_timeout",
+                    "message": f"preview-bundle.js exceeded {_BUNDLE_TIMEOUT_S}s",
+                })
+            raise
 
     stdout = (stdout_b or b"").decode("utf-8", errors="replace")
     stderr = (stderr_b or b"").decode("utf-8", errors="replace")
@@ -217,10 +224,19 @@ async def bundle_overlay(path: str = Query(default="")):
 
     if proc.returncode == 2:
         data = _parse() or {}
-        raise HTTPException(422, detail={
-            "error": "build_failed",
-            "message": data.get("message") or stderr[-500:] or "build failed",
-        })
+        message = data.get("message") or stderr[-500:] or "build failed"
+        m = _ESBUILD_LOC.match(message)
+        if m:
+            # esbuild echoes the offending token, so a syntax error in a file
+            # outside the allowed roots would leak that file's text.
+            real = Path(m.group(1)).resolve()
+            if not any(_is_under(real, r.resolve()) for r in roots):
+                raise forbidden(
+                    "import_outside_roots",
+                    f"Overlay imports a file outside the allowed roots: {m.group(1)}",
+                )
+            message = _watcher_spelling(real) + message[len(m.group(1)):]
+        raise HTTPException(422, detail={"error": "build_failed", "message": message})
     if proc.returncode != 0:
         raise server_error(
             "bundle_failed",
