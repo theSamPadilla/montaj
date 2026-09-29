@@ -16,7 +16,7 @@ import { dirname, join } from 'path'
 import { randomBytes } from 'crypto'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { planSegments } from './segment-plan.js'
-import { encodeSegment, buildVividLutChain, hasLut3d } from './encode-segment.js'
+import { encodeSegment, buildVividLutChain, hasLut3d, twoStageSeek } from './encode-segment.js'
 import { mixAudioIntoVideo } from './mix-audio.js'
 import { pMap } from './p-map.js'
 
@@ -237,8 +237,19 @@ export function embedThumbnail(outputPath, colorSpace, opts = {}) {
       : `zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p`
   }
 
+  // Two-stage seek (PV48, see encode-segment.js's twoStageSeek): our own HDR
+  // render outputs are open-GOP libx265 (same as every HDR/HLG conversion), so
+  // a single input seek (`-ss t -i`) into a keyframe's leading-picture window
+  // returns the keyframe instead of the frame at `t` (1-3 frames late,
+  // measured PV48 T3 audit). `near` seeks the input close, `fine` finishes the
+  // seek on the output side after decoding, which is always exact.
   function extractAt(seekSeconds) {
-    const args = ['-y', '-v', 'error', '-ss', String(seekSeconds), '-i', outputPath, '-frames:v', '1']
+    const seek = twoStageSeek(seekSeconds)
+    const args = ['-y', '-v', 'error',
+      ...(seek
+        ? [...(seek.near > 0 ? ['-ss', String(seek.near)] : []), '-i', outputPath, '-ss', seek.fine]
+        : ['-ss', String(seekSeconds), '-i', outputPath]),
+      '-frames:v', '1']
     if (vf) args.push('-vf', vf)
     args.push('-q:v', '2', tmpJpg)
     return spawnSync(FFMPEG, args, { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
