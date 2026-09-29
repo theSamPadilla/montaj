@@ -456,7 +456,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
   })
 
   // ── Tab set varies with the selection ───────────────────────────────────
-  it('offers only Transform and Volume for a selected image clip', async () => {
+  it('offers only Transform for a selected image clip', async () => {
     onTestFinished(installCanvasHarness())
     const project = makeProject({
       tracks: [[{ id: 'img-0', type: 'image', src: 'photo.jpg', start: 0, end: 4 }]],
@@ -467,9 +467,9 @@ describe('VideoEditor — CapCut right properties panel', () => {
     selectCanvasItem(container, project, { type: 'image' })
 
     const strip = await screen.findByRole('group', { name: 'Clip panel view' })
-    // No Speed (image, not video), no Crop (not a tracks[0] video), no
+    // No Speed or Volume (image, not video: a still has no audio), no Crop (not a tracks[0] video), no
     // Generate (generation is video-only).
-    expect(clipTabNames(strip)).toEqual(['Transform', 'Volume'])
+    expect(clipTabNames(strip)).toEqual(['Transform'])
   })
 
   it('offers no Generate tab for an ordinary video clip with no generation provenance', async () => {

@@ -236,8 +236,8 @@ interface ClipTabsProps {
 /**
  * A selected clip's properties, tabbed: **Transform · Speed · Volume · Crop
  * · Generate**, in that fixed order. A tab appears only when it has
- * something to show for THIS selection — an image clip with no generation
- * slot offers only Transform and Volume; a main-track video with both slots
+ * something to show for THIS selection — an image clip (a still, no audio)
+ * offers only Transform; a main-track video with both slots
  * offers all five. Replaces the old flat `ClipSection` (Volume + Mute +
  * video-only Speed stacked above the host's `generationSlot`).
  */
@@ -249,7 +249,9 @@ function ClipTabs({ item, onPreviewClip, onCommitClip, onChangeClip, transformSl
   // `item.type !== 'video'` early return), so offering the tab for an image
   // would give the operator a slider that silently does nothing.
   if (item.type === 'video') tabs.push({ value: 'speed', label: 'Speed' })
-  tabs.push({ value: 'volume', label: 'Volume' })
+  // Volume is video-only too: a still has no audio. Audio tracks are a
+  // separate selection kind (`kind: 'audio'`), not a clip in these tabs.
+  if (item.type === 'video') tabs.push({ value: 'volume', label: 'Volume' })
   if (onOpenCrop) tabs.push({ value: 'crop', label: 'Crop' })
   if (generationSlot !== undefined) tabs.push({ value: 'generate', label: 'Generate' })
 
@@ -271,7 +273,7 @@ function ClipTabs({ item, onPreviewClip, onCommitClip, onChangeClip, transformSl
     ? persistedTab
     : tabs.some(t => t.value === 'transform')
       ? 'transform'
-      : (tabs[0]?.value ?? 'volume')
+      : (tabs[0]?.value ?? 'transform')
 
   // Lazy mount, then KEEP MOUNTED: a tab body isn't rendered until first
   // activated, but once mounted it stays mounted and is only hidden on

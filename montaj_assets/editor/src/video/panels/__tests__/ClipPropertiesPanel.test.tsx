@@ -479,11 +479,9 @@ describe('ClipPropertiesPanel — speed is video-only', () => {
 
     expect(screen.queryByRole('button', { name: 'Speed' })).toBeNull()
     expect(screen.queryByLabelText('Speed')).toBeNull()
-    // The video-agnostic controls are still there, on the Volume tab (the
-    // only tab this image selection offers besides Transform, so it's also
-    // the default active tab here).
-    openClipTab('Volume')
-    expect(screen.getByLabelText('Mute clip')).toBeTruthy()
+    // A still has no audio, so it has no Volume tab either.
+    expect(screen.queryByRole('button', { name: 'Volume' })).toBeNull()
+    expect(screen.queryByLabelText('Mute clip')).toBeNull()
   })
 })
 
@@ -495,7 +493,7 @@ describe('ClipPropertiesPanel — clip tabs', () => {
     expect(screen.getByRole('button', { name: 'Transform' })).toHaveAttribute('aria-pressed', 'true')
   })
 
-  it('an image clip offers no Speed, Crop, or Generate tabs', () => {
+  it('an image clip offers no Speed, Volume, Crop, or Generate tabs', () => {
     // Crop/Generate are gated on the CALLER supplying onOpenCrop/
     // generationSlot at all (the host encodes the "images don't generate or
     // crop" rule) — this fixture mirrors a host that, for an image, simply
@@ -503,10 +501,15 @@ describe('ClipPropertiesPanel — clip tabs', () => {
     renderPanel({ kind: 'clip', item: clipItem({ type: 'image' }) }, { transformSlot: <div>T</div> })
 
     expect(screen.getByRole('button', { name: 'Transform' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Volume' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Volume' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Speed' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Crop' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Generate' })).toBeNull()
+  })
+
+  it('a video clip keeps its Volume tab', () => {
+    renderPanel({ kind: 'clip', item: clipItem({ type: 'video' }) }, { transformSlot: <div>T</div> })
+    expect(screen.getByRole('button', { name: 'Volume' })).toBeTruthy()
   })
 
   it('a main-track video with both slots offers all five tabs, in order', () => {
