@@ -172,6 +172,24 @@ export function exportPlacement(item: VisualItem, vw: number, vh: number, mediaW
   const box: Rect = { x: b.x, y: b.y, w: b.width, h: b.height }
   const canvas: Rect = { x: 0, y: 0, w: vw, h: vh }
   if (kind === 'image') {
+    // PV55: the export crops the image BEFORE fitting it (encode-segment.js),
+    // rounding the crop to whole source pixels; a contain crop is clipped to
+    // itself (the pad is transparent), a cover crop to the box.
+    const sc = item.sourceCrop
+    if (sc && sc.w > 0 && sc.h > 0 && !(sc.x === 0 && sc.y === 0 && sc.w === 1 && sc.h === 1)) {
+      const cw = Math.round(mediaW * sc.w)
+      const ch = Math.round(mediaH * sc.h)
+      const cx = Math.round(mediaW * sc.x)
+      const cy = Math.round(mediaH * sc.y)
+      const f = fitInto(cw, ch, box.w, box.h, item.fit ?? 'cover')
+      const kx = f.w / cw
+      const ky = f.h / ch
+      const cropRect: Rect = { x: box.x + f.x, y: box.y + f.y, w: f.w, h: f.h }
+      return {
+        content: { x: cropRect.x - cx * kx, y: cropRect.y - cy * ky, w: mediaW * kx, h: mediaH * ky },
+        clip: intersect(intersect(canvas, box), cropRect),
+      }
+    }
     const f = fitInto(mediaW, mediaH, box.w, box.h, item.fit ?? 'cover')
     return { content: { ...f, x: box.x + f.x, y: box.y + f.y }, clip: intersect(canvas, box) }
   }

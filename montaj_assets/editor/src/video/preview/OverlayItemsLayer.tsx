@@ -3,6 +3,7 @@ import { containsTime, geometryAt, geometryFor, resolveAt } from '@bycrux/timeli
 import { isProxyUsable, markProxyFailed } from './proxySupport'
 import { mediaBoxStyle, perAxisRatio } from './transformStyle'
 import { sourceCropVideoStyle } from './sourceCropStyle'
+import CroppedImage from './CroppedImage'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
@@ -617,11 +618,12 @@ export default function OverlayItemsLayer({
         return (
           <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
             <MediaBox scaleX={scaleX} scaleY={scaleY}>
-              <img
+              <CroppedImage
                 src={fileUrl(item.src)}
-                draggable={false}
-                className="absolute inset-0 w-full h-full pointer-events-none"
-                style={{ objectFit: fit }}
+                crop={g.sourceCrop}
+                fit={fit}
+                boxWidth={RENDER_W * scaleX}
+                boxHeight={RENDER_H * scaleY}
               />
             </MediaBox>
             {handles}
@@ -790,11 +792,12 @@ export default function OverlayItemsLayer({
             return (
               <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
                 <MediaBox scaleX={scaleX} scaleY={scaleY}>
-                  <img
+                  <CroppedImage
                     src={fileUrl(item.src)}
-                    draggable={false}
-                    className="absolute inset-0 w-full h-full pointer-events-none"
-                    style={{ objectFit: fit }}
+                    crop={g.sourceCrop}
+                    fit={fit}
+                    boxWidth={RENDER_W * scaleX}
+                    boxHeight={RENDER_H * scaleY}
                   />
                 </MediaBox>
                 {handles}
