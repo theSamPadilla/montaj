@@ -104,7 +104,7 @@ def get_credential(provider: str, key: str) -> str:
 
     raise CredentialError(
         f"No {provider}.{key} credential found. Add your {provider} key in "
-        f"Montaj under Integrations, or on the CLI: "
+        f"Montaj under Connectors, or on the CLI: "
         f"montaj credentials --provider {provider} --key {key} --value <value> "
         f"(or set {_env_var_name(provider, key)})."
     )

@@ -62,7 +62,7 @@ def test_missing_credential_message_leads_with_the_app_fix():
     INVALID_API_KEY_MESSAGE does for a rejected key."""
     with pytest.raises(CredentialError) as ei:
         get_credential("kling", "access_key")
-    assert "Add your kling key in Montaj under Integrations" in str(ei.value)
+    assert "Add your kling key in Montaj under Connectors" in str(ei.value)
 
 
 def test_get_credential_missing_hint_is_a_real_cli_command():
