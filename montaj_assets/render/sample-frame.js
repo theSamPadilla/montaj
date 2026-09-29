@@ -33,6 +33,7 @@ import { toFileHref } from './file-url.js'
 import { pMap } from './p-map.js'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { isHdr } from './color-space.js'
+import { sdrLayerFor, gradeKeyFor, probeMedia } from './sdr-layer.js'
 import { curveIds, lutPath, MASTER_LOOK } from './look.js'
 import {
   buildImageItemFilterParts,
@@ -42,7 +43,7 @@ import {
   hasZscale,
   hasLut3d,
 } from './encode-segment.js'
-import { resolveAt, RESOLVER_VERSION } from '@bycrux/timeline-core'
+import { resolveAt, sourceWindow, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -66,6 +67,20 @@ const CACHE_DIR = join(tmpdir(), 'montaj-sample-cache')
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000  // 24 hours
 const OVERLAY_CONCURRENCY = 4
 const SHORT_EDGE_TARGET = 1080
+
+/**
+ * Bump when a change alters the pixels a sampled frame shows for the same
+ * project file, so the 24 h on-disk cache cannot serve the old picture.
+ * 2: PV42, HDR projects grade each clip by its own origin.
+ */
+const SAMPLE_CACHE_VERSION = 2
+
+// Transfer of the file actually decoded, probed once per path per process.
+const transferCache = new Map()
+function decodedTransferOf(path) {
+  if (!transferCache.has(path)) transferCache.set(path, probeMedia(path).transfer)
+  return transferCache.get(path)
+}
 // Accurate-decode window for the two-stage frame seek below. A coarse `-ss`
 // before `-i` jumps to the nearest keyframe near the target (near-instant, no
 // decode), then this many seconds are decoded accurately after `-i` to land on
@@ -706,7 +721,7 @@ export async function sampleFrame({
       // choice (normalizedSrc/nobg_src/original) with in/outPoint rebased for a
       // normalizedSrc cache. Use normalized/audioclean cached file if present and
       // fresh on top of that (read-only — never triggers normalization).
-      const window = ri.window
+      let window = ri.window
       // Fast-preview path: decode the clip's SDR proxy instead of the master
       // when `preferProxy` is set and one exists. The proxy is full-source (the
       // item's own coords, no normalizedSrc rebase) and already SDR, so it needs
@@ -714,13 +729,31 @@ export async function sampleFrame({
       // per clip: a clip with no proxy quietly falls back to the master.
       const item = ri.item
       const useProxy = preferProxy && !!item.proxySrc && existsSync(item.proxySrc)
-      const src = useProxy ? item.proxySrc : resolveVideoSource(window.src)
+
+      // PV42: in an HDR project each layer is graded by its ORIGIN, decided by
+      // sdr-layer.js and nothing else here. An SDR-origin layer (screen
+      // recording, download, or a marked conversion of one) is decoded as
+      // authored from its original; its `src` may differ from the resolver's
+      // pick, so the window is re-resolved for the layer's item. The proxy is
+      // SDR and ungraded, so a proxy decode skips all of it. SDR projects never
+      // reach this: no provenance probe, no change in output.
+      let layer = null
+      let seekOffsetFromRi = 0
+      if (hdrProject && !useProxy) {
+        layer = sdrLayerFor(item)
+        window = sourceWindow(layer.item, 'render')
+        // Keep whatever elapsed-time term the resolver used for ri.seek.
+        seekOffsetFromRi = ri.seek - ri.window.inPoint
+      }
+      const src = useProxy
+        ? item.proxySrc
+        : resolveVideoSource(window.src, { sdrOrigin: layer !== null && !layer.grade && !layer.cutoutKey })
       // ri.seek is the resolver's speed-aware seekTime, but rebased for a
       // normalizedSrc cache. The proxy is un-rebased, so recompute in the item's
       // own source coords (still speed-aware) when using it.
       const seekTime = useProxy
         ? (item.inPoint ?? 0) + (item.speed ?? 1) * Math.max(0, atSeconds - item.start)
-        : ri.seek
+        : (layer ? window.inPoint + seekOffsetFromRi : ri.seek)
       const framePng = join(workDir, `video-${vi}.png`)
 
       log(`extracting video frame at t=${seekTime.toFixed(3)}s from ${src ? basename(src) : '(no src)'}${useProxy ? ' (proxy)' : ''}`)
@@ -760,44 +793,58 @@ export async function sampleFrame({
       const vfParts = []
       const sc = ri.geometry.sourceCrop
       if (sc && ri.geometry.sourceWidth && ri.geometry.sourceHeight) {
-        const cw = Math.round(ri.geometry.sourceWidth  * sc.w / 2) * 2  // even: x264 needs even dims
-        const ch = Math.round(ri.geometry.sourceHeight * sc.h / 2) * 2  // even: x264 needs even dims
-        const cx = Math.round(ri.geometry.sourceWidth  * sc.x)          // origin NOT even-rounded
-        const cy = Math.round(ri.geometry.sourceHeight * sc.y)          // origin NOT even-rounded
-        vfParts.push(`crop=${cw}:${ch}:${cx}:${cy}`)
+        if (useProxy) {
+          // The proxy is smaller than the master, so a crop in master pixels
+          // falls outside it. Same rounding as below, from the decoded size.
+          const cw = `2*round(iw*${sc.w}/2)`   // even: x264 needs even dims
+          const ch = `2*round(ih*${sc.h}/2)`
+          vfParts.push(`crop=w=${cw}:h=${ch}:x=round(iw*${sc.x}):y=round(ih*${sc.y})`)
+        } else {
+          const cw = Math.round(ri.geometry.sourceWidth  * sc.w / 2) * 2  // even: x264 needs even dims
+          const ch = Math.round(ri.geometry.sourceHeight * sc.h / 2) * 2  // even: x264 needs even dims
+          const cx = Math.round(ri.geometry.sourceWidth  * sc.x)          // origin NOT even-rounded
+          const cy = Math.round(ri.geometry.sourceHeight * sc.y)          // origin NOT even-rounded
+          vfParts.push(`crop=${cw}:${ch}:${cx}:${cy}`)
+        }
       }
-      if (hdrProject && !useProxy) {
-        // Grade HLG/PQ → SDR BT.709 inline so the PNG lands as a normal SDR
-        // image, through the same Montaj Vivid LUT the render and the proxies
-        // use — that shared LUT is what lets the preview claim to match the SDR
-        // export. Mirrors lib/normalize.py's _build_tonemap_vf_to_sdr and
-        // encode-segment.js's buildColorConversionFilter; buildVividLutChain is
-        // literally the same builder the segment encoder calls.
+      if (layer) {
+        // Grade HLG/PQ -> SDR BT.709 inline, through the same Montaj Vivid LUT
+        // the render and the proxies use, ONLY when sdr-layer.js says so for
+        // the transfer of the file actually decoded (probed once per path).
+        // Mirrors encode-segment.js's buildVividLutChain, the builder the
+        // segment encoder calls.
         //
         // The chain ends in rgb24, NOT yuv420p: this frame is encoded straight
-        // to PNG (`-frames:v 1 ... framePng` below) and ffmpeg's png encoder
-        // only accepts rgb24/rgba/gray/pal8-family pixel formats (confirmed via
-        // `ffmpeg -h encoder=png`); yuv420p made the encoder fail outright
-        // ("Could not open encoder before EOF"). The t=/m=/p=/r= flags on the
-        // step before it are still worth setting even though a PNG carries no
-        // meaningful transfer tag — they are what makes the RGB→BT.709
-        // conversion math right, not just the metadata.
+        // to PNG and ffmpeg's png encoder only accepts rgb24/rgba/gray/pal8
+        // family formats; yuv420p made the encoder fail outright.
         //
-        // Which source transfer to feed the chain comes from the PROJECT's color
-        // space, not a per-item probe: this file has no ffprobe pass (render.js
-        // stamps item.colorTransfer, sample-frame never does), and an HDR
-        // project's video sources are in that project's HDR space by
-        // construction — masters are normalized into it at intake.
+        // A cutout (remove_bg + nobg_src) is an untagged alpha file: zscale
+        // takes no alpha format, so its colour is graded on a split and the
+        // alpha is merged back, ending in rgba.
         //
-        // lut3d can be missing from an older ffmpeg build (`montaj doctor` asks
-        // for it, but this must not hard-fail a preview), so fall back to the
-        // pre-SP6b Hable chain and say so once per extract.
-        if (hasZscale() && hasLut3d()) {
-          vfParts.push(`${buildVividLutChain(projectColorSpace, sdrCurve)},format=rgb24`)
-        } else {
-          log('WARNING: ffmpeg lacks zscale and/or lut3d — sampling with the legacy '
-            + 'Hable tonemap; this frame will NOT match the render. Run `montaj doctor`.')
-          vfParts.push('zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=rgb24')
+        // lut3d can be missing from an older ffmpeg build, so a graded layer
+        // falls back to the pre-SP6b Hable chain and says so once per extract.
+        const isCutout = !!(item.remove_bg && item.nobg_src)
+        const key = gradeKeyFor(layer, isCutout ? null : decodedTransferOf(src))
+        if (key) {
+          let grade
+          if (hasZscale() && hasLut3d()) {
+            grade = isCutout
+              ? `${buildVividLutChain(key, sdrCurve)},format=yuv420p`
+              : `${buildVividLutChain(key, sdrCurve)},format=rgb24`
+          } else {
+            log('WARNING: ffmpeg lacks zscale and/or lut3d — sampling with the legacy '
+              + 'Hable tonemap; this frame will NOT match the render. Run `montaj doctor`.')
+            grade = 'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,'
+              + (isCutout ? 'format=yuv420p' : 'format=rgb24')
+          }
+          vfParts.push(isCutout
+            // The cutout file is untagged (zscale: "no path between
+            // colorspaces"), so tag it with the transfer it was cut from.
+            ? `split=2[c][a];[a]alphaextract[al];[c]setparams=colorspace=bt2020nc:color_primaries=bt2020:`
+              + `color_trc=${key === 'hdr_pq' ? 'smpte2084' : 'arib-std-b67'},${grade},format=yuva420p[cg];`
+              + '[cg][al]alphamerge,format=rgba'
+            : grade)
         }
       }
       if (vfParts.length) ffmpegExtractArgs.push('-vf', vfParts.join(','))
@@ -1041,7 +1088,7 @@ export async function sampleFrame({
  * sample-frame-only, read-only cache-freshness check on top of that choice; it
  * never triggers normalization itself.
  */
-function resolveVideoSource(src) {
+function resolveVideoSource(src, { sdrOrigin = false } = {}) {
   if (!src) return src
   // Check for _audioclean variant (read-only — don't trigger normalization)
   const audiocleanPath = src.replace(/(\.\w+)$/, '_audioclean.mp4')
@@ -1052,6 +1099,9 @@ function resolveVideoSource(src) {
       if (outStat.mtimeMs >= srcStat.mtimeMs) return audiocleanPath
     } catch { /* fall through */ }
   }
+  // An SDR-origin layer is shown as authored: its HDR conversion (a
+  // _normalized_hdr_* sibling) is only a cache and must never be picked up.
+  if (sdrOrigin) return src
   // Check for _normalized_<colorSpace>[_<look>] variants. We don't know the
   // project's colorSpace here, so match by pattern: <stem>_normalized_*.mp4.
   //
@@ -1222,7 +1272,8 @@ function overlaySourceCacheComponent(project, projectPath) {
  * `buildOverlayCacheKey`'s own doc comment for why fonts base belongs in the
  * per-overlay-render key instead).
  */
-function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, preferProxy = false) {
+function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, preferProxy = false,
+                            version = SAMPLE_CACHE_VERSION) {
   let mtime = '0'
   if (projectPath) {
     try { mtime = String(statSync(projectPath).mtimeMs) } catch {}
@@ -1241,7 +1292,7 @@ function buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve = null, pr
   // side-by-side thumbnails — must not collide. Without them a LUT change would
   // serve the pre-change frame back forever, since nothing else in the key
   // moves when the manifest does.
-  const raw = [RESOLVER_VERSION, mtime, String(atSeconds), colorSpace,
+  const raw = [RESOLVER_VERSION, `sample-v${version}`, mtime, String(atSeconds), colorSpace,
                MASTER_LOOK, sdrCurve ?? MASTER_LOOK, preferProxy ? 'proxy' : 'master',
                overlaySources].join('|')
   return createHash('sha256').update(raw).digest('hex')
@@ -1294,4 +1345,4 @@ function fail(code, message) {
 // so the property under test — different key for different base, same key
 // for unset vs. the pre-fontsBaseDir key — has to be asserted on the key
 // itself, not inferred from rendered output.
-export { resolveVideoSource, buildFrameCacheKey, buildOverlayCacheKey }
+export { resolveVideoSource, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION }

@@ -1,0 +1,247 @@
+// render/test/sample-frame-per-layer.integration.test.mjs
+//
+// PV42 T9: in an HDR project the still grades each video layer by its ORIGIN
+// (sdr-layer.js decides), not by the project's colour space, and the proxy
+// crop is computed from the decoded frame's own size. Real ffmpeg, no overlays
+// (so no Puppeteer), tiny synthetic clips.
+//
+// Every SDR/HDR expectation is a pixel read from a file the test itself
+// decodes or grades with ffmpeg, never a hand-typed number.
+//
+// The sample cache is pointed at a private dir BEFORE sample-frame.js loads
+// (CACHE_DIR is fixed at import), so a stale PNG from an earlier run cannot
+// answer for this one.
+
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, writeFileSync, existsSync, rmSync, utimesSync, copyFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const MONTAJ_ROOT = join(__dirname, '..', '..', '..')
+const PYTHON = process.env.MONTAJ_TEST_PYTHON || 'python3'
+
+process.env.TMPDIR = mkdtempSync(join(tmpdir(), 'montaj-t9-cache-'))
+
+const { sampleFrame, buildFrameCacheKey, SAMPLE_CACHE_VERSION } = await import('../sample-frame.js')
+const { buildVividLutChain } = await import('../encode-segment.js')
+
+const FILTERS = spawnSync('ffmpeg', ['-hide_banner', '-filters'], { encoding: 'utf8' }).stdout || ''
+const SKIP = /\bzscale\b/.test(FILTERS) && /\blut3d\b/.test(FILTERS)
+  ? false : 'ffmpeg lacks zscale + lut3d'
+
+const HLG = ['-c:v', 'libx264', '-x264-params', 'colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc']
+const BT709 = ['-c:v', 'libx264', '-x264-params', 'colorprim=bt709:transfer=bt709:colormatrix=bt709']
+const UNTAGGED = ['-c:v', 'libx264']
+
+function run(cmd, args, opts = {}) {
+  const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 60_000, ...opts })
+  if (r.status !== 0) throw new Error(`${cmd} failed: ${(r.stderr || '').slice(-400)}`)
+  return r
+}
+
+/** A 64x64, 30 fps, 1 s solid clip. */
+function makeClip(path, color, codecArgs) {
+  run('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', `color=c=${color}:size=64x64:rate=30:duration=1`,
+    '-pix_fmt', 'yuv420p', ...codecArgs, path])
+  return path
+}
+
+function transferOf(path) {
+  const r = run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=color_transfer',
+    '-of', 'csv=p=0', path])
+  return r.stdout.trim()
+}
+
+/** Centre pixel [r,g,b] of a PNG. */
+function centre(png, fx = 0.5) {
+  const r = spawnSync('ffmpeg', ['-y', '-v', 'error', '-i', png, '-vf', `crop=1:1:iw*${fx}:ih/2,format=rgb24`,
+    '-f', 'rawvideo', '-frames:v', '1', 'pipe:1'], { encoding: 'buffer', timeout: 20_000 })
+  if (r.status !== 0) throw new Error('pixel read failed')
+  return [r.stdout[0], r.stdout[1], r.stdout[2]]
+}
+
+function maxDiff(a, b) { return Math.max(...a.map((v, i) => Math.abs(v - b[i]))) }
+
+/** ffmpeg's plain decode of frame 0, centre pixel. */
+function plainDecode(dir, clip, tag) {
+  const png = join(dir, `plain-${tag}.png`)
+  run('ffmpeg', ['-y', '-v', 'error', '-i', clip, '-frames:v', '1', '-update', '1', png])
+  return centre(png)
+}
+
+/** The ideal Vivid grade of frame 0, centre pixel (no encode in between). */
+function idealVivid(dir, clip, tag) {
+  const png = join(dir, `vivid-${tag}.png`)
+  run('ffmpeg', ['-y', '-v', 'error', '-i', clip, '-vf', `${buildVividLutChain('hdr_hlg')},format=rgb24`,
+    '-frames:v', '1', '-update', '1', png])
+  return centre(png)
+}
+
+function projectOf(colorSpace, item, resolution = [64, 64]) {
+  return {
+    version: '0.2', status: 'final', name: 't9',
+    settings: { resolution, fps: 30, colorSpace },
+    tracks: [[{ id: 'c0', type: 'video', start: 0, end: 1, inPoint: 0, ...item }]],
+    audio: { tracks: [] },
+  }
+}
+
+let n = 0
+async function sample(dir, project, extra = {}, fx = 0.5) {
+  const out = join(dir, `out-${n++}.png`)
+  await sampleFrame({ projectJson: project, atSeconds: 0.2, outPath: out, ...extra })
+  return centre(out, fx)
+}
+
+const t = (name, fn) => test(name, { skip: SKIP, timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-t9-'))
+  try { await fn(dir) } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// --- HLG project -----------------------------------------------------------
+
+t('1. raw untagged SDR clip in an HLG project is shown as authored', async (dir) => {
+  const sdr = makeClip(join(dir, 'raw.mp4'), '0x5090c0', UNTAGGED)
+  assert.ok(['', 'unknown'].includes(transferOf(sdr)), `fixture must be untagged, got ${transferOf(sdr)}`)
+  const want = await sample(dir, projectOf('sdr_bt709', { src: sdr }))
+  const got = await sample(dir, projectOf('hdr_hlg', { src: sdr }))
+  assert.ok(maxDiff(got, want) <= 1.0, `got ${got}, as authored ${want}`)
+})
+
+t('2. SDR original with an HLG normalizedSrc: the original is decoded, ungraded', async (dir) => {
+  const sdr = makeClip(join(dir, 'orig.mp4'), '0x5090c0', BT709)
+  const hlg = makeClip(join(dir, 'orig-hlg-cache.mp4'), '0xc07030', HLG)
+  const want = await sample(dir, projectOf('sdr_bt709', { src: sdr }))
+  const got = await sample(dir, projectOf('hdr_hlg', { src: sdr, normalizedSrc: hlg, normalizedInPoint: 0 }))
+  assert.ok(maxDiff(got, want) <= 1.0, `got ${got}, as authored ${want}`)
+})
+
+t('3. a fresh _normalized_hdr_hlg_w203 sibling of an SDR original is not used', async (dir) => {
+  const sdr = makeClip(join(dir, 'clip.mp4'), '0x5090c0', BT709)
+  const sib = makeClip(join(dir, 'clip_normalized_hdr_hlg_w203.mp4'), '0xc07030', HLG)
+  const future = new Date(Date.now() + 60_000)
+  utimesSync(sib, future, future)
+  // (An SDR project would pick the sibling up itself, so the reference is the
+  // original's own decode.)
+  const want = plainDecode(dir, sdr, '3')
+  const got = await sample(dir, projectOf('hdr_hlg', { src: sdr }))
+  assert.ok(maxDiff(got, want) <= 1.0, `got ${got}, as authored ${want}`)
+})
+
+t('4. a marked HLG src (lib.normalize) decodes the original, ungraded', async (dir) => {
+  const sdr = makeClip(join(dir, 'source.mp4'), '0x5090c0', BT709)
+  const marked = join(dir, 'source_hlg.mp4')
+  run(PYTHON, ['-m', 'lib.normalize', '--input', sdr, '--color-space', 'hdr_hlg', '--out', marked], { cwd: MONTAJ_ROOT })
+  assert.equal(transferOf(marked), 'arib-std-b67', 'fixture: the conversion is HLG')
+  const want = await sample(dir, projectOf('sdr_bt709', { src: sdr }))
+  const got = await sample(dir, projectOf('hdr_hlg', { src: marked }))
+  assert.ok(maxDiff(got, want) <= 1.0, `got ${got}, as authored ${want}`)
+})
+
+t('5. an HLG clip is graded: the ideal Vivid within 1', async (dir) => {
+  const hlg = makeClip(join(dir, 'hlg.mp4'), '0x5090c0', HLG)
+  const want = idealVivid(dir, hlg, '5')
+  const ungraded = plainDecode(dir, hlg, '5')
+  assert.ok(maxDiff(want, ungraded) > 8, 'fixture: the grade must visibly change this colour')
+  const got = await sample(dir, projectOf('hdr_hlg', { src: hlg }))
+  // 1, not 0.5: the composite step alone moves a plain image by 1 in one channel
+  // (measured: an image item in an SDR project, 0x79 in, 0x78 out), so integer
+  // pixels cannot land closer than that. The ungraded pixel is >8 away.
+  assert.ok(maxDiff(got, want) <= 1.0, `got ${got}, ideal ${want}`)
+})
+
+t('6. an HLG item whose normalizedSrc is a graded SDR master is not graded again', async (dir) => {
+  const hlg = makeClip(join(dir, 'hlg.mp4'), '0x5090c0', HLG)
+  const master = makeClip(join(dir, 'graded-master.mp4'), '0xc07030', BT709)
+  const want = await sample(dir, projectOf('sdr_bt709', { src: master }))
+  const got = await sample(dir, projectOf('hdr_hlg', { src: hlg, normalizedSrc: master, normalizedInPoint: 0 }))
+  assert.ok(maxDiff(got, want) <= 1.0, `got ${got}, as decoded ${want}`)
+})
+
+t('7. the cache key carries the sample cache version', () => {
+  assert.equal(SAMPLE_CACHE_VERSION, 2)
+  const p = { settings: { colorSpace: 'hdr_hlg' } }
+  const now = buildFrameCacheKey(null, p, 1)
+  assert.equal(buildFrameCacheKey(null, p, 1, null, false, SAMPLE_CACHE_VERSION), now)
+  assert.notEqual(buildFrameCacheKey(null, p, 1, null, false, SAMPLE_CACHE_VERSION - 1), now)
+})
+
+// --- SDR project: unchanged ------------------------------------------------
+
+t('8. SDR project: frames equal ffmpeg\'s plain decode', async (dir) => {
+  const sdr = makeClip(join(dir, 'sdr.mp4'), '0x5090c0', BT709)
+  const hlg = makeClip(join(dir, 'hlg.mp4'), '0x60a0d0', HLG)
+  const cache = makeClip(join(dir, 'cache.mp4'), '0xc07030', BT709)
+  const cases = [
+    [{ src: sdr }, sdr],
+    [{ src: hlg, normalizedSrc: cache, normalizedInPoint: 0 }, cache],
+    [{ src: hlg }, hlg],
+  ]
+  for (const [i, [item, decoded]] of cases.entries()) {
+    const got = await sample(dir, projectOf('sdr_bt709', item))
+    const want = plainDecode(dir, decoded, `8-${i}`)
+    assert.ok(maxDiff(got, want) <= 1.0, `case ${i}: got ${got}, plain ${want}`)
+  }
+})
+
+// --- Proxy crop ------------------------------------------------------------
+
+/** 320x180 master, left half red and right half blue, plus a 160x90 proxy of it. */
+function makeCropFixture(dir) {
+  const master = join(dir, 'master.mp4')
+  const proxy = join(dir, 'proxy.mp4')
+  run('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:size=320x180:rate=30:duration=1',
+    '-vf', 'drawbox=x=160:y=0:w=160:h=180:color=blue:t=fill', '-pix_fmt', 'yuv420p', ...BT709, master])
+  run('ffmpeg', ['-y', '-v', 'error', '-i', master, '-vf', 'scale=160:90', '-pix_fmt', 'yuv420p', ...BT709, proxy])
+  return { master, proxy }
+}
+
+t('9a. --prefer-proxy with a source crop: works, and matches the master path', async (dir) => {
+  const { master, proxy } = makeCropFixture(dir)
+  const item = {
+    src: master, proxySrc: proxy, sourceWidth: 320, sourceHeight: 180,
+    sourceCrop: { x: 0.5, y: 0, w: 0.5, h: 1 },
+  }
+  const project = projectOf('sdr_bt709', item, [160, 180])
+  const viaMaster = await sample(dir, project)
+  const viaProxy = await sample(dir, project, { preferProxy: true })
+  // The proxy is a 2x downscale of the master, so an interior pixel of a flat
+  // region differs only by codec noise.
+  assert.ok(maxDiff(viaProxy, viaMaster) <= 6, `proxy ${viaProxy}, master ${viaMaster}`)
+  assert.ok(viaMaster[2] > 150 && viaMaster[0] < 100, `the crop is the blue half, got ${viaMaster}`)
+})
+
+t('9b. --prefer-proxy with an identity crop and a smaller proxy succeeds', async (dir) => {
+  const { master, proxy } = makeCropFixture(dir)
+  const item = {
+    src: master, proxySrc: proxy, sourceWidth: 320, sourceHeight: 180,
+    sourceCrop: { x: 0, y: 0, w: 1, h: 1 },
+  }
+  const viaMaster = await sample(dir, projectOf('sdr_bt709', item, [320, 180]), {}, 0.75)
+  const viaProxy = await sample(dir, projectOf('sdr_bt709', item, [320, 180]), { preferProxy: true }, 0.75)
+  assert.ok(maxDiff(viaProxy, viaMaster) <= 6, `proxy ${viaProxy}, master ${viaMaster}`)
+})
+
+// --- Cutouts ---------------------------------------------------------------
+
+t('10. an HDR-origin cutout is graded through the split graph and keeps its alpha', async (dir) => {
+  const hlg = makeClip(join(dir, 'hlg.mp4'), '0x5090c0', HLG)
+  // Alpha cutout: opaque left half, transparent right half, untagged (as the
+  // remove_bg step writes it).
+  const cut = join(dir, 'cutout.mov')
+  run('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=0x5090c0:size=64x64:rate=30:duration=1',
+    '-vf', 'format=yuva444p10le,geq=lum=\'lum(X,Y)\':cb=\'cb(X,Y)\':cr=\'cr(X,Y)\':a=\'if(lt(X,32),1023,0)\'',
+    '-c:v', 'prores_ks', '-profile:v', '4444', '-pix_fmt', 'yuva444p10le', cut])
+  const project = projectOf('hdr_hlg', { src: hlg, remove_bg: true, nobg_src: cut })
+  const out = join(dir, 'cut-out.png')
+  await sampleFrame({ projectJson: project, atSeconds: 0.2, outPath: out })
+  const opaque = centre(out, 0.25)
+  const clear = centre(out, 0.75)
+  assert.deepEqual(clear, [0, 0, 0], 'the transparent half shows the black canvas')
+  assert.ok(opaque[2] > 100, `the opaque half carries the colour, got ${opaque}`)
+  assert.notDeepEqual(opaque, plainDecode(dir, hlg, '10'), 'and it is graded')
+})
