@@ -1175,7 +1175,7 @@ export async function sampleFrame({
           opacity, // the shared rule — see the note above the branch
           fit:      ri.geometry.fit, // image's own tri-state, default 'cover'
           // PV55: the crop at THIS instant (geometryAt samples a keyframed one and
-          // resolves its fit to 'cover', carried by `fit` below). Applied before
+          // resolves its fit to 'cover', carried by `fit` above). Applied before
           // the fit exactly as the export applies it. Never `keyframes`: see the
           // video branch's note above.
           sourceCrop: ri.geometry.sourceCrop,
