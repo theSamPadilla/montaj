@@ -607,7 +607,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
     const key = (prop: string, value: number) => ({ prop, points: [{ t: 0, value, easing: 'linear' }] })
     const project = makeProject({
       tracks: [[{
-        id: 'img-0', type: 'image', src: 'photo.jpg', start: 0, end: 4,
+        id: 'img-0', type: 'image', src: 'photo.jpg', start: 1, end: 5,
         keyframes: [key('cropX', 0), key('cropY', 0), key('cropW', 1), key('cropH', 1)],
       }]],
     } as unknown as Partial<Project>)
