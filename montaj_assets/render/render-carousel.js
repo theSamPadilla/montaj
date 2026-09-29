@@ -347,7 +347,10 @@ ${assetResolverSource(projectDir)}
 // the slide remounts, and measures again, with the real metrics. A slide that
 // loads no font never remounts.
 let fontsDirty = false
-document.fonts?.addEventListener('loadingdone', () => { fontsDirty = true })
+document.fonts?.addEventListener('loadingdone', (e) => {
+  if (e.fontfaces?.length === 0) return  // a failed load changed nothing
+  fontsDirty = true
+})
 let setEpoch
 
 function Root() {

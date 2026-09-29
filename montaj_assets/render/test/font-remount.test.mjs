@@ -189,3 +189,54 @@ test('(e) a Three.js overlay remounted for its font still draws on frame 0', { t
     await chunk.close()
   }
 })
+
+test('(f) a font file that fails to load does not remount the overlay', { timeout: 120_000 }, async () => {
+  // The stylesheet names Bebas Neue but the file is missing: Chromium fires
+  // loadingdone with no fontfaces, which changed nothing to re-measure.
+  const { htmlPath, workDir } = await bundleComponent({
+    componentPath: join(OVERLAYS, 'BebasMounts.jsx'), props: {}, fps: 30, durationFrames: 90,
+    width: WIDTH, height: HEIGHT, googleFonts: ['Bebas+Neue'], fontsBaseDir: join(__dirname, 'fixtures', 'fonts-broken'),
+  })
+  const page = await browser.newPage()
+  try {
+    await page.setViewport({ width: WIDTH, height: HEIGHT, deviceScaleFactor: 1 })
+    await page.goto(toFileHref(htmlPath), { waitUntil: 'networkidle0' })
+    for (const f of [0, 1, 2]) {
+      await page.evaluate((f) => window.__setFrame(f), f)
+      await page.waitForFunction((f) => document.documentElement.dataset.renderedFrame === String(f), { timeout: 10000 }, f)
+    }
+    assert.equal(await page.evaluate(() => document.fonts.check("160px 'Bebas Neue'")), false,
+      'the face must really have failed, or this checks nothing')
+    assert.equal(await page.evaluate(() => window.__mounts), 1, 'a failed load must not remount the overlay')
+  } finally {
+    await page.close()
+    cleanupBundle(workDir)
+  }
+})
+
+// Frame 10 is where a face first used late forces the wait for its load.
+test('(g) a Three canvas that leaves on the late-face frame does not stall the frame', { timeout: 120_000 }, async () => {
+  const chunk = await openChunk('ThreeGone.jsx', ['Oswald'])
+  try {
+    for (const f of [0, 9]) await chunk.frame(f)
+    const t0 = Date.now()
+    await chunk.frame(10)
+    const ms = Date.now() - t0
+    assert.ok(await chunk.page.evaluate(() => document.fonts.check("120px 'Oswald'")), 'Oswald must load on frame 10')
+    assert.ok(ms < 1500, `frame 10 took ${ms} ms: the shim waited for a Three re-registration that never comes`)
+  } finally {
+    await chunk.close()
+  }
+})
+
+test('(h) a Three canvas still present on the late-face frame is drawn', { timeout: 120_000 }, async () => {
+  const chunk = await openChunk('ThreeLate.jsx', ['Oswald'])
+  try {
+    for (const f of [0, 9, 10]) await chunk.frame(f)
+    assert.ok(await chunk.page.evaluate(() => document.fonts.check("120px 'Oswald'")), 'Oswald must load on frame 10')
+    const [r, g, b] = await screenshotPixel(chunk.page, WIDTH / 2, HEIGHT / 2)
+    assert.ok(r > 200 && g < 50 && b < 50, `the Three scene must be drawn on frame 10, got rgb(${r}, ${g}, ${b})`)
+  } finally {
+    await chunk.close()
+  }
+})

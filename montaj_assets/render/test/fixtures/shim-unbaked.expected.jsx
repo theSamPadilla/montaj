@@ -28,7 +28,11 @@ let __setEpoch
 // the overlay. Registered before the first mount so the mount's own font
 // loads count.
 let __fontsDirty = false
-document.fonts?.addEventListener('loadingdone', () => { __fontsDirty = true })
+// A failed load also fires loadingdone, with no fontfaces: nothing changed.
+document.fonts?.addEventListener('loadingdone', (e) => {
+  if (e.fontfaces?.length === 0) return
+  __fontsDirty = true
+})
 
 function App() {
   const [frame, setFrame] = useState(0)
@@ -153,7 +157,9 @@ window.__setFrame = async (n) => {
   document.documentElement.getBoundingClientRect()
   if (document.fonts?.status === 'loading' && document.fonts.ready !== __fontsWaitedOn) {
     await __fontsReadyOrTimeout()
-    three = window.__renderThree ?? three
+    // Only fall back to the pre-commit registration when step 2's remount
+    // deleted it; a Canvas that left the tree on this frame must not be waited on.
+    if (!remounted) three = window.__renderThree
     flushSync(__remount)
     remounted = true
   }
