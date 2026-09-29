@@ -46,6 +46,7 @@ from lib.profile_assets import FILENAME_RE, NAME_RE
 from lib.types.kling import ASPECT_RATIOS, is_valid_aspect_ratio
 from lib.types.carousel import CAROUSEL_ASPECTS
 from lib.workflow import read_workflow
+from lib.normalize import SEEK_PREROLL_S
 from cli.deps import render_runtime_dir
 from project.carousel_normalize import normalize_carousel_assets
 
@@ -157,13 +158,27 @@ async def _extract_cover_frame(output_path: "Path", cover: float, job: _RenderJo
     frame at ``cover`` seconds into a sidecar JPEG next to ``output_path``.
     Any failure here is logged to the job's line buffer and swallowed — the
     render itself already succeeded and must not be flipped to error over a
-    missing thumbnail."""
+    missing thumbnail.
+
+    Two-stage seek (PV48 T3, see SEEK_PREROLL_S): the finished render is our
+    own HDR output when the project's color space is HDR, which is open-GOP
+    HEVC (libx265 default GOP) — a plain input seek (`-ss cover -i`) into a
+    keyframe's leading-picture window returns the keyframe instead of the
+    frame at ``cover`` (1-3 frames late, measured PV48 T3 audit). ``cover``
+    is caller-supplied and arbitrary (not rounded), so it is routinely at
+    risk. Same pattern as ``lib/color_provenance.py``'s ``_thumbnails``: seek
+    ``near`` at the input (fast) when it is a positive number of seconds,
+    then finish the remaining ``cover - near`` seconds as an output-side
+    ``-ss`` before ``-frames:v 1`` — exact, and still cheap since ffmpeg
+    decodes and discards only up to the target, not the whole file."""
     cover_path = output_path.with_suffix(".jpg")
     try:
+        near = max(0.0, cover - SEEK_PREROLL_S)
         cmd = [
             ffmpeg_bin(), "-y",
-            "-ss", str(cover),
+            *(["-ss", f"{near:.3f}"] if near > 0 else []),
             "-i", str(output_path),
+            "-ss", f"{cover - near:.3f}",
             "-frames:v", "1",
             "-update", "1",
             str(cover_path),

@@ -115,6 +115,9 @@ def test_sanitize_output_name(raw, expected):
 # ---------------------------------------------------------------------------
 
 def test_cover_extraction_invokes_ffmpeg_with_seek_and_paths(monkeypatch, tmp_path):
+    # PV48 T3: two-stage seek. cover=12.5, SEEK_PREROLL_S=2.0 -> near=10.5
+    # (input, fast), fine=2.0 (output, exact). near > 0 here, so BOTH an
+    # input -ss (before -i) and an output -ss (after -i) appear.
     render_proc = _FakeProc(stdout_blob=b"/out/render.mp4\n", returncode=0)
     cover_proc = _FakeProc(returncode=0)
     calls = _patch_spawn_sequence(monkeypatch, [render_proc, cover_proc])
@@ -134,11 +137,39 @@ def test_cover_extraction_invokes_ffmpeg_with_seek_and_paths(monkeypatch, tmp_pa
     assert len(calls) == 2  # render process, then the ffmpeg cover extraction
     cover_cmd = calls[1]
     assert cover_cmd[0] == "/usr/bin/ffmpeg"
-    assert cover_cmd[cover_cmd.index("-ss") + 1] == "12.5"
+    ss_indices = [i for i, a in enumerate(cover_cmd) if a == "-ss"]
+    assert len(ss_indices) == 2, "both the input pre-seek (near) and the output finish (fine) are -ss"
+    assert cover_cmd[ss_indices[0] + 1] == "10.500", "near = max(0, 12.5 - SEEK_PREROLL_S)"
+    assert cover_cmd[ss_indices[1] + 1] == "2.000", "fine = cover - near"
     assert cover_cmd[cover_cmd.index("-i") + 1] == str(output_path)
     assert cover_cmd[-1] == str(output_path.with_suffix(".jpg"))
-    # -ss must precede -i for a fast seek
-    assert cover_cmd.index("-ss") < cover_cmd.index("-i")
+    # The input pre-seek must precede -i (fast); the output finish must follow it (exact).
+    assert ss_indices[0] < cover_cmd.index("-i") < ss_indices[1]
+
+
+def test_cover_extraction_under_preroll_is_output_seek_only(monkeypatch, tmp_path):
+    # cover=1.0 < SEEK_PREROLL_S(2.0) -> near=0, so there is no input pre-seek
+    # at all: the whole seek is an exact output-side -ss after -i.
+    render_proc = _FakeProc(stdout_blob=b"/out/render.mp4\n", returncode=0)
+    cover_proc = _FakeProc(returncode=0)
+    calls = _patch_spawn_sequence(monkeypatch, [render_proc, cover_proc])
+    monkeypatch.setattr(projects_mod, "ffmpeg_bin", lambda: "/usr/bin/ffmpeg")
+
+    job = _RenderJob()
+    _reserve(job)
+    pp = tmp_path / "project.json"
+    output_path = tmp_path / "output" / "my-video.mp4"
+
+    asyncio.run(_run_render_detached(
+        PID, ["node", "render.js"], {}, pp, pp, job,
+        cover=1.0, output_path=output_path,
+    ))
+
+    cover_cmd = calls[1]
+    ss_indices = [i for i, a in enumerate(cover_cmd) if a == "-ss"]
+    assert len(ss_indices) == 1, "near=0: no input pre-seek, just one output -ss"
+    assert cover_cmd[ss_indices[0] + 1] == "1.000"
+    assert ss_indices[0] > cover_cmd.index("-i"), "-ss must follow -i (output seek) when near is 0"
 
 
 def test_cover_extraction_failure_is_swallowed(monkeypatch, tmp_path):
