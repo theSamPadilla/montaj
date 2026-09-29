@@ -3,6 +3,12 @@
 ## Unreleased
 
 - Caption regeneration accepts a `theme` (font and the style's emphasis colour) in its request body and seeds it into the saved track where the prior track has no value; the track's own values still win.
+- **Changed: the SDR export of an HDR project keeps SDR clips, overlays and photos in their own colours.** Screen recordings, downloads, overlays and photos no longer come out dark and colour-shifted. iPhone and camera footage looks as before. Every HDR project's SDR export changes on its next export.
+- **Fixed: clips that earlier versions converted in place now switch back to their original.** When the original is in the project folder, the project uses it again on open and render. A converted clip whose original is gone keeps its look.
+- **Fixed: in an HDR project the editor preview showed SDR clips darker and graded.** It now shows them as they are.
+- **Fixed: the Export dialog's cover preview stayed blank for any clip with a crop.** Preview stills now also grade each clip by its own origin.
+- **Fixed: `remove_bg` cutouts of iPhone footage came out flat and grey in the SDR export.** They now get the same Vivid look as the rest of the footage.
+- **Changed: `--export sdr` on an HDR project is faster.** It no longer renders a hidden HDR master first.
 
 ## v5.5.6
 

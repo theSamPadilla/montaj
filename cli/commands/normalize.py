@@ -6,7 +6,7 @@ from lib.types.colorspace import ALL_COLOR_SPACES, DEFAULT_COLOR_SPACE
 
 
 def register(subparsers):
-    p = subparsers.add_parser("normalize", help="Normalize a video clip to the project's working color space + codec")
+    p = subparsers.add_parser("normalize", help="Convert a clip to a colour space. Montaj converts clips itself and keeps the original: do not run this on clips you add to a project.")
     p.add_argument("input", metavar="INPUT", help="Path to video file")
     p.add_argument("--color-space", dest="color_space",
                    choices=ALL_COLOR_SPACES, default=DEFAULT_COLOR_SPACE,

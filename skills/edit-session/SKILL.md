@@ -64,7 +64,7 @@ Rules that are easy to get wrong:
 - **Never trim an edge past the source.** An `inPoint` below `0` or an `outPoint` beyond the source's duration is the same fault by a different route.
 - **Overlay tracks are absolute.** `tracks[1+]` items carry timeline positions that do not move when you cut `tracks[0]`, which is deliberate — an overlay is meant to sit over whatever ends up underneath it. If a cut should carry its overlays with it, move them yourself.
 - **Captions follow the primary track.** A cut that removes a span of `tracks[0]` must remove or shift the caption segments inside it, or the words desynchronise from the picture.
-- **`src` never changes.** Cutting does not produce a new file, so the item keeps pointing at the original source — and keeps its `proxySrc` and `normalizedSrc` with it. If you rebuild an item from scratch instead of editing it in place, copy those two fields across or you will silently disable the preview engine.
+- **`src` never changes.** Cutting does not produce a new file, so the item keeps pointing at the original source — and keeps its `proxySrc` and `normalizedSrc` with it. If you rebuild an item from scratch instead of editing it in place, copy those two fields across or you will silently disable the preview engine. If you point `src` at a different file, delete `normalizedSrc` and `normalizedInPoint` in the same edit: they are a conversion of the old file, and render and preview prefer them.
 
 **When you do need a real file** — `remove_bg` needs one, for instance — that is `materialize_cut`, and it is a deliberate step out of the non-destructive model, not part of ordinary cutting:
 
