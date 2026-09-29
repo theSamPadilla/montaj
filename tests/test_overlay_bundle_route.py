@@ -195,10 +195,10 @@ def test_timeout_kills_child_504(env):
     assert proc.killed
 
 
-def test_exit_1_is_500_with_stderr(env):
-    r = _run_mocked(env, _FakeProc(rc=1, err=b"boom detail"))
+def test_exit_1_is_500_without_stderr_in_body(env):
+    r = _run_mocked(env, _FakeProc(rc=1, err=b'/x/s.js:1:2: Expected ";" but found "hunter2-SECRET"'))
     assert r.status_code == 500
-    assert "boom detail" in r.json()["detail"]["message"]
+    assert "hunter2" not in r.text
 
 
 def test_exit_2_is_422(env):
@@ -210,11 +210,12 @@ def test_exit_2_is_422(env):
     assert r.json()["detail"] == {"error": "build_failed", "message": f"{loc}:1:2: bad"}
 
 
-def test_exit_2_message_without_location_unchanged(env):
-    out = json.dumps({"ok": False, "error": "build_failed", "message": "no location here"}).encode()
+def test_exit_2_message_without_location_is_generic(env):
+    out = json.dumps({"ok": False, "error": "build_failed", "message": 'oops "hunter2-SECRET"'}).encode()
     r = _run_mocked(env, _FakeProc(rc=2, out=out))
     assert r.status_code == 422
-    assert r.json()["detail"]["message"] == "no location here"
+    assert r.json()["detail"]["message"] == "build failed"
+    assert "hunter2" not in r.text
 
 
 def test_exit_2_outside_roots_is_403_without_esbuild_text(env):
@@ -254,22 +255,27 @@ def test_cancellation_kills_and_reaps_child(env):
 
 
 def test_exit_0_garbage_is_500(env):
-    r = _run_mocked(env, _FakeProc(rc=0, out=b"not json"))
+    r = _run_mocked(env, _FakeProc(rc=0, out=b"not json hunter2-SECRET"))
     assert r.status_code == 500
+    assert "hunter2" not in r.text
 
 
-def test_real_syntax_error_outside_roots_403_no_leak(env):
+@pytest.mark.parametrize("name,body", [
+    ("s.js", 'export const S = "a" "hunter2-SECRET"\n'),
+    ("s.json", '{"k": 1 "hunter2-SECRET"}\n'),
+])
+def test_real_syntax_error_outside_roots_403_no_leak(env, name, body):
     base, _, ws = env
     outside = base / "outside"; outside.mkdir()
-    (outside / "s.js").write_text('export const S = "a" "hunter2-SECRET"\n')
+    (outside / name).write_text(body)
     d = ws / "ov"; d.mkdir()
     (d / "ov.jsx").write_text(
-        f"import {{ S }} from '{outside / 's.js'}'\nexport default function O() {{ return <b>{{S}}</b> }}\n"
+        f"import S from '{outside / name}'\nexport default function O() {{ return <b>{{String(S)}}</b> }}\n"
     )
     r = _get(d / "ov.jsx")
     assert r.status_code == 403, r.text
     assert "hunter2" not in r.text
-    assert "s.js" in r.json()["detail"]["message"]
+    assert name in r.json()["detail"]["message"]
 
 
 def test_real_syntax_error_in_imported_helper_inside_roots_422(env):

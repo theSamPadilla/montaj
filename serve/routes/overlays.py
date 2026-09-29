@@ -5,6 +5,7 @@ overlay-scoped (not profile-scoped) so they share scan_overlays.
 """
 import asyncio
 import json
+import logging
 import re
 import shutil
 import sys
@@ -123,6 +124,7 @@ async def create_profile_overlay_group(name: str, body: dict = Body(...)):
 _BUNDLE_TIMEOUT_S = 30
 # An editor opening many overlays must not spawn one node per overlay at once.
 _BUNDLE_SEMAPHORE = asyncio.Semaphore(4)
+_log = logging.getLogger(__name__)
 # esbuild message prefix: an absolute POSIX path, then :line:col:
 _ESBUILD_LOC = re.compile(r"^(/.+?):(\d+):(\d+): ")
 
@@ -222,31 +224,35 @@ async def bundle_overlay(path: str = Query(default="")):
         except (IndexError, ValueError):
             return None
 
+    # Node/esbuild output can quote the text of the file that failed, so no raw
+    # stderr or unlocated message ever reaches the response: it goes to the
+    # server log, and the client gets a generic message.
     if proc.returncode == 2:
         data = _parse() or {}
-        message = data.get("message") or stderr[-500:] or "build failed"
+        message = data.get("message") or ""
         m = _ESBUILD_LOC.match(message)
-        if m:
-            # esbuild echoes the offending token, so a syntax error in a file
-            # outside the allowed roots would leak that file's text.
-            real = Path(m.group(1)).resolve()
-            if not any(_is_under(real, r.resolve()) for r in roots):
-                raise forbidden(
-                    "import_outside_roots",
-                    f"Overlay imports a file outside the allowed roots: {m.group(1)}",
-                )
-            message = _watcher_spelling(real) + message[len(m.group(1)):]
+        if not m:
+            _log.warning("overlay bundle build failed with no parseable location: %s", (message or stderr)[-500:])
+            raise HTTPException(422, detail={"error": "build_failed", "message": "build failed"})
+        # esbuild echoes the offending token, so a syntax error in a file
+        # outside the allowed roots would leak that file's text.
+        real = Path(m.group(1)).resolve()
+        if not any(_is_under(real, r.resolve()) for r in roots):
+            raise forbidden(
+                "import_outside_roots",
+                f"Overlay imports a file outside the allowed roots: {m.group(1)}",
+            )
+        message = _watcher_spelling(real) + message[len(m.group(1)):]
         raise HTTPException(422, detail={"error": "build_failed", "message": message})
     if proc.returncode != 0:
-        raise server_error(
-            "bundle_failed",
-            f"preview-bundle.js exit {proc.returncode}: {stderr[-500:]}",
-        )
+        _log.error("preview-bundle.js exit %s: %s", proc.returncode, stderr[-500:])
+        raise server_error("bundle_failed", "preview bundle failed")
 
     data = _parse()
     if not data or not data.get("ok") or not isinstance(data.get("code"), str) \
             or not isinstance(data.get("inputs"), list):
-        raise server_error("bundle_failed", "preview-bundle.js returned unparseable output")
+        _log.error("preview-bundle.js returned unparseable output: %s", stdout[-500:])
+        raise server_error("bundle_failed", "preview bundle failed")
 
     real_roots = [r.resolve() for r in roots]
     inputs: list[str] = []
