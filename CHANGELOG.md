@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fixed: in an HDR project, a screen recording or downloaded clip could play up to 100 ms ahead of its own sound.** Where an overlay or caption started or ended over the clip, or where the clip was trimmed, about 1 start in 10 landed so that its picture ran 1 to 3 frames early until the next such point, skipping frames going in and repeating them coming out. The export now starts decoding each clip 2 s earlier and trims to the exact frame. Clips that were already exact render the same frames as before. It costs some decoding: a 2 s segment of 4K iPhone footage took about a quarter more CPU time.
 - **Added: `GET /api/overlays/bundle` bundles an overlay for a host editor's preview.** It uses the renderer's own esbuild config and returns the code plus every file the overlay imports, so a preview can follow imports the way export always has. The file watcher now also reports `.js`, `.mjs`, `.ts`, `.tsx` and `.json` changes and atomic-rename saves. The bundled OSS UI's preview does not use it yet and still strips imports.
 - **Fixed: frame samples went stale after a file an overlay imports was edited.** The sample cache now records every file an overlay was built from, plus every file its props point to, and re-renders when any of them changes.
 - **Added: the Editor controls modal shows the editor's version.** The footer's bottom right reads `vX.Y.Z`, taken from `@bycrux/editor`'s own `package.json`.
