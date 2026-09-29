@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.8.0
+
 - **Fixed: overlay code could read any file you can read and send it off the machine.** Every overlay page (export, frame sample, carousel slide) now reads only inside the allowed folders: the workspace, `~/.montaj/overlays`, `~/.montaj/profiles` and render's templates. It can also read the exact files its props name, wherever they are. It reaches the network only for the Google Fonts it links and the image, video, audio, font or data URLs its props name. Those are fetched before the page loads, and one the overlay loads that cannot be fetched fails the render, naming it. Other URLs in props, such as a link shown as text, are never fetched. An import outside those folders fails the build, naming the file. An overlay that hardcodes a `file://` path outside the workspace in its JSX now gets its fallback instead: pass the path in `props`. A project saved outside the workspace keeps its overlay files and the files its props name, but not their neighbours.
 
 ## v5.7.0
