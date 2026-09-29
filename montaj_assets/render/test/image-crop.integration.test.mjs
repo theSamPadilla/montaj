@@ -44,8 +44,8 @@ function stripes(dir, ext) {
 }
 
 /** Luma of canvas pixel (x, y) at segment time `at`, through the REAL chain. */
-function probeY(item, x, y, at = 0) {
-  const { inputArgs, filterParts, newVideoLabel } = buildImageItemFilterParts(item, CW, CH, 1, '[canvas]', 1, 0)
+function probeY(item, x, y, at = 0, opts) {
+  const { inputArgs, filterParts, newVideoLabel } = buildImageItemFilterParts(item, CW, CH, 1, '[canvas]', 1, 0, opts)
   const fc = ['[0:v]format=rgba[canvas]', ...filterParts,
     `${newVideoLabel}trim=start=${at},format=gray,crop=1:1:${x}:${y}:exact=1,signalstats,metadata=mode=print:file=-`].join(';')
   const r = spawnSync(FFMPEG, ['-y', '-v', 'info', '-f', 'lavfi', '-i', `color=black:size=${CW}x${CH}`,
@@ -58,6 +58,20 @@ function probeY(item, x, y, at = 0) {
 
 const W916 = 0.31640625 // a 9:16 window, full height, out of 16:9
 const lin = (prop, a, b) => ({ prop, points: [{ t: 0, value: a }, { t: 0.5, value: b }] })
+// A thousandth of the real budget, so both animated cases below exceed it on the
+// 640x360 stripes (pan S ~1.69, zoom S ~3.01) and render at 1/S, then upscale.
+const TINY = { cropBudgetPx: 64_000 }
+/** The chain must really be the 1/S branch, or a tiny-budget test proves nothing.
+ *  Branch only: what sits between the scale and the crop is for the PIXELS to judge. */
+function assertDownscaled(item) {
+  const warn = console.warn
+  console.warn = () => {}
+  try {
+    const c = buildImageItemFilterParts(item, CW, CH, 1, '[canvas]', 1, 0, TINY).filterParts.find((p) => p.includes('[img1]'))
+    assert.match(c, new RegExp(`crop=\\d+:\\d+:x='[^']*':y='[^']*':exact=1,scale=${CW}:${CH},format=rgba,`), c)
+    assert.doesNotMatch(c, new RegExp(`crop=${CW}:${CH}:x=`), c)
+  } finally { console.warn = warn }
+}
 
 for (const ext of ['png', 'jpg']) {
   test(`${ext}: a keyframed pan shows the left stripe at t0 and the right stripe after the last key`, { timeout: 60_000 }, (t) => {
@@ -92,6 +106,36 @@ for (const ext of ['png', 'jpg']) {
       assert.ok(isBlue(probeY(item, 135, 160, 0)), 'right quarter is blue at t0')
       assert.ok(isBlue(probeY(item, 45, 160, 0.6)), 'left quarter is blue once zoomed')
       assert.ok(isBlue(probeY(item, 135, 160, 0.6)), 'right quarter is blue once zoomed')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  test(`${ext}: past the pixel budget the pan renders at 1/S and still shows the same stripes`, { timeout: 60_000 }, (t) => {
+    if (!haveFfmpeg(t)) return
+    const dir = mkdtempSync(join(tmpdir(), 'pv55-pan-small-'))
+    try {
+      const item = { src: stripes(dir, ext), scale: 1, probedWidth: 640, probedHeight: 360,
+        keyframes: [lin('cropX', 0, 1 - W916), lin('cropY', 0, 0), lin('cropW', W916, W916), lin('cropH', 1, 1)] }
+      assertDownscaled(item)
+      assert.ok(isRed(probeY(item, 90, 160, 0, TINY)), 'centre is red at t0')
+      assert.ok(isWhite(probeY(item, 90, 160, 0.6, TINY)), 'centre is white after the last key')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  test(`${ext}: past the pixel budget the zoom renders at 1/S and still narrows into blue (the stale-clamp guard, 1/S branch)`, { timeout: 60_000 }, (t) => {
+    if (!haveFfmpeg(t)) return
+    const dir = mkdtempSync(join(tmpdir(), 'pv55-zoom-small-'))
+    try {
+      // The SAME geometry as the zoom test above, for the same reason (read its comment).
+      // At 1/S the first frame's clamp is ~2 px of a ~61 px wide union and the t1 crop x
+      // is ~113 px, so a stale clamp reads lime once zoomed. MEASURED (PV55 F9): with
+      // `format=rgba` between the eval=frame scale and the fixed crop, this test fails.
+      const item = { src: stripes(dir, ext), scale: 1, probedWidth: 640, probedHeight: 360,
+        keyframes: [lin('cropX', 0.341796875, 0.53), lin('cropY', 0, 0.342), lin('cropW', W916, 0.1), lin('cropH', 1, 0.31605)] }
+      assertDownscaled(item)
+      assert.ok(isLime(probeY(item, 45, 160, 0, TINY)), 'left quarter is lime at t0')
+      assert.ok(isBlue(probeY(item, 135, 160, 0, TINY)), 'right quarter is blue at t0')
+      assert.ok(isBlue(probeY(item, 45, 160, 0.6, TINY)), 'left quarter is blue once zoomed')
+      assert.ok(isBlue(probeY(item, 135, 160, 0.6, TINY)), 'right quarter is blue once zoomed')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 

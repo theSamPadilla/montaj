@@ -55,16 +55,35 @@ describe('PV55: a keyframed crop animates', () => {
       assert.ok(warn.mock.calls.some((call) => String(call.arguments[0]).includes('animated crop')))
     } finally { warn.mock.restore() }
   })
-  test('a zoom too deep to render holds the crop instead of failing the export', () => {
+  test('past the pixel budget a deep zoom still ANIMATES, at 1/S resolution, upscaled to the box', () => {
     // 9:16 framing of a 4032x3024 photo zoomed to the crop tool's 2% limit: the
-    // scaled union would be ~22.8k x 40.5k px (measured to fail, PV55 T13).
+    // scaled union would be ~22.8k x 40.5k px (measured to fail, PV55 T13). The
+    // framing must still follow the preview; only sharpness may give.
     const deep = [lin('cropX', 0.2890625, 0.49), lin('cropY', 0, 0.4763), lin('cropW', 0.421875, 0.02), lin('cropH', 1, 0.0474)]
+    // What animatedImageCrop derives: the union of the rects shown (x from
+    // 0.2890625 to 0.7109375 of 4032, origin on even pixels; full height), the
+    // deepest zoom's cover factor, the peak frame, and S = sqrt(peak / budget).
+    const ux = Math.floor((0.2890625 * 4032) / 2) * 2
+    const uw = Math.ceil(0.7109375 * 4032) - ux
+    const uh = 3024
+    const kMax = Math.max(1080 / (0.02 * 4032), 1920 / (0.0474 * 3024))
+    const S = Math.sqrt((Math.ceil(uw * kMax) * Math.ceil(uh * kMax)) / 64_000_000)
+    const bw = Math.floor(1080 / S)
+    const bh = Math.floor(1920 / S)
+    assert.ok(S > 1, `fixture must exceed the budget: S=${S}`)
     const warn = mock.method(console, 'warn', () => {})
     try {
       const c = chainOf(build(img({ probedWidth: 4032, probedHeight: 3024, keyframes: deep })))
-      assert.doesNotMatch(c, /eval=frame/)
-      assert.ok(c.startsWith("[1:v]crop=w='round(iw*0.421875)':h='round(ih*1)':x='round(iw*0.2890625)':y='round(ih*0)':exact=1,"), c)
-      assert.ok(warn.mock.calls.some((call) => String(call.arguments[0]).includes('too deep')))
+      assert.ok(c.startsWith(`[1:v]crop=${uw}:${uh}:${ux}:0:exact=1,scale=w='`), c)
+      // The fixed crop sits DIRECTLY after the eval=frame scale, then the upscale.
+      assert.match(c, new RegExp(`':eval=frame,crop=${bw}:${bh}:x='[^']*\\bt\\b[^']*':y='[^']*':exact=1,scale=1080:1920,format=rgba,setpts=`))
+      // S reaches the filter text as a plain decimal (never exponent notation).
+      const s = /\)\/([^)']+)\)':h='/.exec(c)?.[1]
+      assert.match(s ?? '', /^\d+\.\d+$/, c)
+      assert.ok(Math.abs(Number(s) - S) < 1e-5, `S in the graph ${s} vs ${S}`)
+      const said = warn.mock.calls.map((call) => String(call.arguments[0]))
+      assert.ok(said.some((m) => m.includes('resolution')), said.join('\n'))
+      assert.ok(!said.some((m) => /too deep|held/.test(m)), said.join('\n'))
     } finally { warn.mock.restore() }
   })
   test('a non-numeric sourceCrop never reaches the filter graph', () => {
