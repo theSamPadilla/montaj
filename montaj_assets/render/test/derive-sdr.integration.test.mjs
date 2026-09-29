@@ -28,6 +28,9 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
+// Probe the ffmpeg the render code runs (ffmpeg-bin.js), not a bare PATH name (PV52).
+import { FFMPEG } from '../ffmpeg-bin.js'
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const RENDER_JS = join(__dirname, '..', 'render.js')
 
@@ -36,11 +39,11 @@ const RENDER_JS = join(__dirname, '..', 'render.js')
 // ---------------------------------------------------------------------------
 
 function ffmpegFilters() {
-  const r = spawnSync('ffmpeg', ['-hide_banner', '-filters'], { encoding: 'utf8', timeout: 10_000 })
+  const r = spawnSync(FFMPEG, ['-hide_banner', '-filters'], { encoding: 'utf8', timeout: 10_000 })
   return r.status === 0 ? (r.stdout || '') : ''
 }
 function ffmpegEncoders() {
-  const r = spawnSync('ffmpeg', ['-hide_banner', '-encoders'], { encoding: 'utf8', timeout: 10_000 })
+  const r = spawnSync(FFMPEG, ['-hide_banner', '-encoders'], { encoding: 'utf8', timeout: 10_000 })
   return r.status === 0 ? (r.stdout || '') : ''
 }
 
@@ -50,8 +53,8 @@ const CAPABLE =
   /^[A-Z. ]+ zscale\b/m.test(FILTERS) &&
   /^[A-Z. ]+ lut3d\b/m.test(FILTERS) &&
   /\blibx265\b/.test(ENCODERS)
-const SKIP = CAPABLE ? false : 'ffmpeg lacks zscale + lut3d + libx265'
-if (SKIP && process.env.MONTAJ_REQUIRE_HDR_FFMPEG === '1') throw new Error(`MONTAJ_REQUIRE_HDR_FFMPEG=1 but ${SKIP}`)
+const SKIP = CAPABLE ? false : `${FFMPEG} lacks zscale + lut3d + libx265`
+if (SKIP && process.env.MONTAJ_TEST_ALLOW_MISSING_CAPS !== '1') throw new Error(`${SKIP}. Point MONTAJ_FFMPEG/MONTAJ_FFPROBE at the managed build (~/.local/share/montaj/models/ffmpeg is a directory; the binaries are inside), or set MONTAJ_TEST_ALLOW_MISSING_CAPS=1 to skip.`)
 
 // ---------------------------------------------------------------------------
 // Fixture

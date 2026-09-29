@@ -18,7 +18,7 @@
 // is always reachable through the public API.
 //
 // GATING: skipped without libx265 (MONTAJ_FFMPEG picks the binary), loud
-// under MONTAJ_REQUIRE_HDR_FFMPEG=1 (test/per-layer-sdr.integration.test.mjs).
+// unless MONTAJ_TEST_ALLOW_MISSING_CAPS=1 (test/per-layer-sdr.integration.test.mjs).
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -36,7 +36,7 @@ function capabilityReason() {
 }
 function capabilitySkip() {
   const reason = capabilityReason()
-  if (reason && process.env.MONTAJ_REQUIRE_HDR_FFMPEG === '1') throw new Error(`MONTAJ_REQUIRE_HDR_FFMPEG=1 but ${reason}`)
+  if (reason && process.env.MONTAJ_TEST_ALLOW_MISSING_CAPS !== '1') throw new Error(`${reason}. Point MONTAJ_FFMPEG/MONTAJ_FFPROBE at the managed build (~/.local/share/montaj/models/ffmpeg is a directory; the binaries are inside), or set MONTAJ_TEST_ALLOW_MISSING_CAPS=1 to skip.`)
   return reason
 }
 const SKIP = capabilitySkip()

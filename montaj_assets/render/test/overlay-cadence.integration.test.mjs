@@ -70,7 +70,7 @@ test('(a) every overlay frame is composited exactly once', { timeout: 300_000 },
     const out = join(dir, 'out.mp4')
     const r = spawnSync('node', [RENDER_JS, projectPath, '--out', out],
       { encoding: 'utf8', timeout: 280_000 })
-    if (r.status !== 0) { t.skip(`render unavailable in this environment: ${r.stderr?.slice(-400)}`); return }
+    assert.equal(r.status, 0, `render failed (a failed render is a failure, not a skip): ${r.stderr?.slice(-400)}`)
     assert.ok(existsSync(out), 'render produced no output')
 
     const luma = frameLuma(out).slice(1, N_FRAMES - 2)
@@ -106,7 +106,7 @@ test('(b) overlay chunks are captured on the output pixel grid, not always at 2x
 
     const r = spawnSync('node', [RENDER_JS, projectPath, '--out', join(dir, 'out.mp4')],
       { encoding: 'utf8', timeout: 280_000 })
-    if (r.status !== 0) { t.skip(`render unavailable: ${r.stderr?.slice(-400)}`); return }
+    assert.equal(r.status, 0, `render failed (a failed render is a failure, not a skip): ${r.stderr?.slice(-400)}`)
 
     // Overlay chunks survive because --clean is never passed.
     const segDir = join(dir, 'render', 'segments')

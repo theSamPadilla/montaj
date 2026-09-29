@@ -43,7 +43,7 @@ const DECODE_709 = 'scale=in_color_matrix=bt709:in_range=tv:out_range=pc:flags=a
 function capabilitySkip() {
   const reason = capabilityReason()
   // Opt-in loud mode: a skipped PV42 proof must fail, not pass by omission.
-  if (reason && process.env.MONTAJ_REQUIRE_HDR_FFMPEG === '1') throw new Error(`MONTAJ_REQUIRE_HDR_FFMPEG=1 but ${reason}`)
+  if (reason && process.env.MONTAJ_TEST_ALLOW_MISSING_CAPS !== '1') throw new Error(`${reason}. Point MONTAJ_FFMPEG/MONTAJ_FFPROBE at the managed build (~/.local/share/montaj/models/ffmpeg is a directory; the binaries are inside), or set MONTAJ_TEST_ALLOW_MISSING_CAPS=1 to skip.`)
   return reason
 }
 function capabilityReason() {

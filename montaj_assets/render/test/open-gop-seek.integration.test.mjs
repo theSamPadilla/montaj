@@ -20,7 +20,7 @@
 // test fails as proving nothing. Audio is a chirp, so its lag is unambiguous.
 //
 // GATING: skipped without libx265 + libx264 (MONTAJ_FFMPEG picks the binary);
-// MONTAJ_REQUIRE_HDR_FFMPEG=1 turns the skip into a failure.
+// A missing capability fails unless MONTAJ_TEST_ALLOW_MISSING_CAPS=1 (PV52).
 
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -44,7 +44,7 @@ const SEG = 0.5 // seconds per encoded segment: 15 frames
 function capabilitySkip() {
   const reason = capabilityReason()
   // Opt-in loud mode: a skipped PV48 proof must fail, not pass by omission.
-  if (reason && process.env.MONTAJ_REQUIRE_HDR_FFMPEG === '1') throw new Error(`MONTAJ_REQUIRE_HDR_FFMPEG=1 but ${reason}`)
+  if (reason && process.env.MONTAJ_TEST_ALLOW_MISSING_CAPS !== '1') throw new Error(`${reason}. Point MONTAJ_FFMPEG/MONTAJ_FFPROBE at the managed build (~/.local/share/montaj/models/ffmpeg is a directory; the binaries are inside), or set MONTAJ_TEST_ALLOW_MISSING_CAPS=1 to skip.`)
   return reason
 }
 function capabilityReason() {
