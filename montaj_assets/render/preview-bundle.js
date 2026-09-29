@@ -35,7 +35,8 @@
  * Returns `{ code, inputs }`. `inputs` is every file of the user's own the
  * bundle read, absolute and sorted: the files the preview must watch. Engine
  * files (render's node_modules and core/, overlay-runtime, and any package
- * render's node_modules links to) and the virtual modules are left out.
+ * render's node_modules links to) and the virtual modules are left out, by
+ * overlay-build.js's overlayInputsFromMetafile, which render shares.
  *
  * CLI: `node preview-bundle.js <absolute path>` prints exactly one JSON line.
  *   success       {"ok":true,"code":"…","inputs":[…]}                          exit 0
@@ -45,16 +46,14 @@
  * `<col>` is 0-based, both exactly as esbuild reports them.
  */
 import esbuild from 'esbuild'
-import { resolve, join, dirname, isAbsolute, sep } from 'path'
-import { realpathSync, readdirSync, lstatSync, statSync } from 'fs'
-import { fileURLToPath } from 'url'
-import { overlayEsbuildOptions } from './overlay-build.js'
+import { resolve, isAbsolute } from 'path'
+import { statSync } from 'fs'
+import { overlayEsbuildOptions, overlayInputsFromMetafile, PREVIEW_NAMESPACE } from './overlay-build.js'
 import { isMain } from './is-main.js'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-
 export const PREVIEW_GLOBAL_NAME = '__montajOverlay'
-export const PREVIEW_NAMESPACE   = 'montaj-preview-globals'
+// Defined in overlay-build.js, whose input filter drops this namespace's keys.
+export { PREVIEW_NAMESPACE }
 
 // WHICH SPECIFIERS ARE SHIMMED, AND WHY EXACTLY THESE
 //
@@ -196,58 +195,6 @@ function previewGlobalsPlugin() {
 }
 
 // ---------------------------------------------------------------------------
-// inputs: the user's own files
-// ---------------------------------------------------------------------------
-
-let engineRootsCache = null
-
-/**
- * Directories whose files are montaj's, not the user's: render's node_modules
- * and core/, overlay-runtime, and the real target of every package render's
- * node_modules links to (`montaj-overlay-runtime`, `@bycrux/timeline-core` are
- * `file:` symlinks in both a dev checkout and the app's install). Each is
- * listed as spelled and as its realpath, since esbuild reports realpaths.
- */
-export function engineRoots() {
-  if (engineRootsCache) return engineRootsCache
-  const roots = new Set()
-  const add = p => {
-    roots.add(p)
-    try { roots.add(realpathSync(p)) } catch { /* absent in this install */ }
-  }
-  const nodeModules = join(__dirname, 'node_modules')
-  add(nodeModules)
-  add(join(__dirname, 'core'))
-  add(join(__dirname, '..', 'overlay-runtime'))
-  const addLinks = dir => {
-    let names
-    try { names = readdirSync(dir) } catch { return }
-    for (const name of names) {
-      const p = join(dir, name)
-      if (name.startsWith('@')) { addLinks(p); continue }
-      try { if (lstatSync(p).isSymbolicLink()) add(p) } catch { /* raced away */ }
-    }
-  }
-  addLinks(nodeModules)
-  engineRootsCache = [...roots]
-  return engineRootsCache
-}
-
-const isUnder = (p, root) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep)
-
-function collectInputs(metafile, absWorkingDir) {
-  const roots = engineRoots()
-  const out = new Set()
-  for (const key of Object.keys(metafile.inputs)) {
-    if (key.startsWith(`${PREVIEW_NAMESPACE}:`)) continue
-    const abs = resolve(absWorkingDir, key)
-    if (roots.some(r => isUnder(abs, r))) continue
-    out.add(abs)
-  }
-  return [...out].sort()
-}
-
-// ---------------------------------------------------------------------------
 // build
 // ---------------------------------------------------------------------------
 
@@ -304,7 +251,7 @@ export async function bundleOverlayForPreview(entryPath) {
   }
   return {
     code:   result.outputFiles[0].text,
-    inputs: collectInputs(result.metafile, absWorkingDir),
+    inputs: overlayInputsFromMetafile(result.metafile, absWorkingDir),
   }
 }
 

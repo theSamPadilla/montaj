@@ -8,12 +8,12 @@
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'crypto'
-import { mkdtempSync, writeFileSync, rmSync } from 'fs'
-import { join, dirname } from 'path'
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, realpathSync } from 'fs'
+import { join, dirname, relative } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 import esbuild from 'esbuild'
-import { overlayEsbuildOptions } from '../overlay-build.js'
+import { overlayEsbuildOptions, overlayInputsFromMetafile, PREVIEW_NAMESPACE } from '../overlay-build.js'
 import { generateShim } from '../bundle.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -144,5 +144,51 @@ describe('overlayEsbuildOptions: esbuild output is byte-identical to the literal
     const changed = await buildWith(
       { ...overlayEsbuildOptions(), define: { 'process.env.NODE_ENV': '"development"' } }, shims.plain)
     assert.notEqual(sha(changed.outputFiles[0].contents), sha(legacy.outputFiles[0].contents))
+  })
+})
+
+describe('overlayInputsFromMetafile', () => {
+  // Metafile keys are paths relative to the build's working dir, as esbuild
+  // writes them. `dir` is a realpath, so the keys below are what esbuild would
+  // report for these files.
+  let dir
+  before(() => { dir = realpathSync(mkdtempSync(join(tmpdir(), 'montaj-overlay-inputs-'))) })
+  after(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
+
+  const metafileOf = (cwd, files) => ({ inputs: Object.fromEntries(files.map(f => [relative(cwd, f), {}])) })
+
+  test('a file under an excluded dir is dropped and its sibling is kept', () => {
+    const work    = join(dir, 'work')
+    const shim    = join(work, 'shim.jsx')
+    const overlay = join(dir, 'overlay.jsx')
+    const nearby  = join(dir, 'work2', 'helper.js')   // shares the prefix "work", is not under it
+    const metafile = metafileOf(dir, [shim, overlay, nearby])
+    assert.deepEqual(overlayInputsFromMetafile(metafile, dir, { exclude: [work] }), [overlay, nearby])
+    assert.deepEqual(overlayInputsFromMetafile(metafile, dir), [overlay, shim, nearby].sort(),
+      'without exclude, the same file is kept')
+  })
+
+  test('an excluded dir given through a symlink still drops the realpath esbuild reports', () => {
+    // bundle.js's work dir is join(tmpdir(), …): /var/folders/… on macOS,
+    // which esbuild reports as /private/var/folders/….
+    const real = join(dir, 'real')
+    const link = join(dir, 'link')
+    mkdirSync(join(real, 'work'), { recursive: true })
+    symlinkSync(real, link)
+    const shim    = join(real, 'work', 'shim.jsx')
+    const overlay = join(real, 'overlay.jsx')
+    const metafile = metafileOf(dir, [shim, overlay])
+    assert.deepEqual(overlayInputsFromMetafile(metafile, dir, { exclude: [join(link, 'work')] }), [overlay])
+  })
+
+  test('drops the preview\'s virtual modules and engine files, keeps the rest', () => {
+    const overlay = join(dir, 'overlay.jsx')
+    const metafile = { inputs: {
+      [relative(dir, overlay)]: {},
+      [`${PREVIEW_NAMESPACE}:react`]: {},
+      [relative(dir, join(RENDER, 'node_modules', 'react', 'index.js'))]: {},
+      [relative(dir, join(RENDER, 'core', 'index.js'))]: {},
+    } }
+    assert.deepEqual(overlayInputsFromMetafile(metafile, dir), [overlay])
   })
 })
