@@ -109,8 +109,11 @@ const SHORT_EDGE_TARGET = 1080
  * 2: PV42, HDR projects grade each clip by its own origin.
  * 3: PV42 review, an untagged SDR clip in an HDR project is read as BT.709.
  * 4: PV42 acceptance, an untagged proxy is read as BT.709.
+ * 5: PV50, an overlay remounts once its webfont loads, so text it positions by
+ *    measuring is no longer placed with fallback metrics. Unconditional: it
+ *    must not rely on another change's key edit landing in the same release.
  */
-const SAMPLE_CACHE_VERSION = 4
+const SAMPLE_CACHE_VERSION = 5
 
 // Transfer of the file actually decoded, probed once per path per process.
 const transferCache = new Map()
