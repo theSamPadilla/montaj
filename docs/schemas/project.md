@@ -174,7 +174,7 @@ overlapping clips.
 | `inPoint` | number | Start time in the source file (seconds). Set by clean/trim steps. |
 | `outPoint` | number | End time in the source file (seconds). Set by clean/trim steps. |
 | `transition` | object | **Dead — nothing reads this field.** Round-tripped for backward compatibility only; a project written years ago may still carry it. It described the shape of a per-clip transition, but a real crossfade mechanism now exists and does not use it — see [Transitions](#transitions) below for what actually drives a blend between two overlapping clips. |
-| `sourceCrop` | object | Optional. `{x, y, w, h}` as fractions of the source's DISPLAY dimensions — rotation-corrected, not the coded/stored dimensions (`[0, 1]`). Defines the visible region for vertical reframing (e.g. auto-reframe from landscape to portrait). All four keys required when present. |
+| `sourceCrop` | object | Optional. `{x, y, w, h}` as fractions of the source's DISPLAY dimensions — rotation-corrected, not the coded/stored dimensions (`[0, 1]`). Defines the visible region for vertical reframing (e.g. auto-reframe from landscape to portrait). All four keys required when present. A `tracks[0]` image takes `sourceCrop` too, cropped before its fit, with no stored size needed. |
 | `sourceWidth` | number | Optional. The source's DISPLAY pixel width (post-rotation) — required for `sourceCrop` to render correctly. Written by the `montaj/reframe` step; a raw `probe` reports CODED dimensions instead (e.g. a rotated iPhone clip codes 1920x1080 but displays 1080x1920), and using those here crops the wrong axis. `engine/validate.py` rejects a `sourceCrop`ped item whose recorded dims disagree with the source's real display dimensions. |
 | `sourceHeight` | number | Optional. The source's DISPLAY pixel height (post-rotation) — see `sourceWidth` above; same source, same validation. |
 | `normalizedSrc` | string | Optional. Path to a per-window normalized cache produced by `montaj step normalize_window`. Covers exactly `[inPoint, outPoint]` of the original source — dense-keyframe, conformant. Render and preview prefer `normalizedSrc` over `src` when present; `src` always stays the original file. `inPoint`/`outPoint` remain original-source timestamps; the render engine rebases them automatically when reading from the cache (cache always starts at 0). Written by the `clips` workflow under `settings.normalize: "lazy"`. `normalizedSrc` also holds a full-source colour conversion of an SDR `src` into an HDR project, with `normalizedInPoint: 0`. |
@@ -272,7 +272,9 @@ All timed graphical elements live in `tracks[1+]`'s `items` arrays. Each track i
 | `scale` | number | all | Size multiplier from center |
 | `rotation` | number | all | Clockwise rotation in degrees. Optional; default 0. Any finite number — values outside [0,360) are normalized at render. |
 | `opacity` | number | all | Opacity 0.0–1.0 (default 1.0). Applied at compose time. An overlapping OVERLAY pair may carry editor-derived `opacity` *keyframes* that dissolve between the two — see [Transitions](#transitions) below. |
-| `keyframes` | array | overlay | Animate `offsetX`/`offsetY`/`scale`/`rotation`/`opacity` over the item's own lifetime instead of holding them fixed. Ignored on `image`/`video` items by the final render even if present — see "Overlay keyframes" below for the one narrower exception. |
+| `fit` | string | image | `cover` (default), `contain` or `fill`: how the image, or its `sourceCrop`, fills its box. An image whose crop is keyframed always covers. |
+| `sourceCrop` | object | image, video | `{x, y, w, h}`, fractions in `[0, 1]` of the source as DISPLAYED (EXIF or rotation applied). An image is cropped before its `fit` and needs no stored size; a video needs `sourceWidth`/`sourceHeight` (see the tracks[0] table). |
+| `keyframes` | array | all | Animate `offsetX`/`offsetY`/`scale`/`scaleX`/`scaleY`/`rotation` over the item's own lifetime (overlays also `opacity`). An image also takes `cropX`/`cropY`/`cropW`/`cropH`, its source crop: see "Image crop keyframes". |
 | `props` | object | overlay | Arbitrary props passed to the JSX component |
 | `opaque` | boolean | overlay | When `true`, render engine skips alpha — JSX controls full frame |
 | `googleFonts` | array | overlay | Google Font names to load before rendering |
@@ -359,6 +361,26 @@ Closing the opacity gap for real would need the per-frame browser bake extended
 to video: decode every frame of the animated span and composite it the way
 overlays already are. That was measured at 14–33× the expression path's render
 time and is out of scope; see `docs/RENDER.md`.
+
+### Image crop keyframes
+
+An `image` item may animate its source crop, pan and zoom inside its box, with
+four more `keyframes` tracks:
+
+- `cropX`, `cropY`: the crop's top-left corner, in `[0, 1]`.
+- `cropW`, `cropH`: the crop's size, in `(0, 1]`.
+
+A prop with no track falls back to the static `sourceCrop`, then to the full
+frame. Key all four at the same times with the same easing (the editor does),
+so the rect keeps its shape. Image items only: `validate` rejects crop tracks
+on any other kind. An image whose crop is keyframed always covers its box.
+
+```json
+"keyframes": [
+  { "prop": "cropX", "points": [{ "t": 0, "value": 0.1 }, { "t": 4, "value": 0.4, "easing": "ease-in-out" }] },
+  { "prop": "cropW", "points": [{ "t": 0, "value": 0.5 }, { "t": 4, "value": 0.3, "easing": "ease-in-out" }] }
+]
+```
 
 ### Transitions
 

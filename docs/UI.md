@@ -463,8 +463,8 @@ Which tabs show depends on the selected clip, not a fixed set:
 |---|---|---|
 | **Transform** | Always | The same `OverlayInspector` scale/position/rotate/opacity/align controls overlays use — see "Overlay properties" above. Section header has no fold/unfold chevron; it's always open |
 | **Speed** | Video clips only | The speed control; ripples the timeline the same way a speed change always has |
-| **Volume** | Always | Volume slider and Mute |
-| **Crop** | The clip is the main-track video with a source | Opens the dedicated crop tool |
+| **Volume** | Video clips only | Volume slider and Mute |
+| **Crop** | The main-track video with a source, or any image | Opens the crop tool. For an image it is locked to the box's shape, opens on the crop at the playhead, and the tab's ◇ keys the crop there (pan and zoom inside the box) |
 | **Generate** | The clip is a generated clip | The host's regenerate flow (prompt, model, attempt history), supplied through the `renderGenerationPanel` seam, same as the Generate row described above |
 
 The active tab is remembered per browser (`localStorage`, key
