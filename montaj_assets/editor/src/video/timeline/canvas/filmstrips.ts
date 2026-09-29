@@ -17,12 +17,18 @@
  *   error.
  *
  * ── Fetch policy (SP5 plan decision 6 + T7 task) ──────────────────────────
- * Proxy-only: input is `item.proxySrc` ONLY, never `item.src` — no proxy, no
- * filmstrip, no fallback decode of the original, no error, no spinner (same
- * shape as T6's clip waveforms). Fetch identity includes `proxySrc`, so an
- * SSE-delivered proxy arriving mid-session re-keys and fetches automatically.
- * On top of that, the index fetch is gated on the clip actually intersecting
- * the viewport's visible time range.
+ * Proxy-only for VIDEO: input is `item.proxySrc` ONLY, never `item.src` — no
+ * proxy, no filmstrip, no fallback decode of the original, no error, no
+ * spinner (same shape as T6's clip waveforms). Fetch identity includes
+ * `proxySrc`, so an SSE-delivered proxy arriving mid-session re-keys and
+ * fetches automatically. On top of that, the index fetch is gated on the clip
+ * actually intersecting the viewport's visible time range.
+ *
+ * An IMAGE item has no proxy and no per-frame step to fetch from — a still is
+ * already exactly one frame. It reads `item.src` directly (the same field and
+ * the same `fileUrl` path `OverlayItemsLayer.tsx` uses to draw it in the
+ * preview) and repeats that one decoded image across every cell; see
+ * `clipTiles` below.
  *
  * There is no longer a ZOOM gate. Filmstrips used to fetch and draw only above
  * 160 px/s, because a cell was sized at one tile-interval and below that
@@ -295,13 +301,25 @@ export class FilmstripStore {
 
   /**
    * Background tile strip for a clip's rect. `null` whenever there's nothing
-   * to draw: non-video items, no proxy yet, no adapter support, off the
-   * visible range, a zero-height frames band, or the index/sheets not ready
-   * yet — all graceful, never an error state the caller has to handle
-   * specially.
+   * to draw: an item that is neither a video with a proxy nor an image with a
+   * source, no adapter support, off the visible range, a zero-height frames
+   * band, or the image/sheets not decoded yet — all graceful, never an error
+   * state the caller has to handle specially.
+   *
+   * Video and image items share the same cell grid (sized off the frames
+   * band, aligned to the clip's own start — see below) and the same
+   * center-crop math, but differ in what fills a cell: a video walks its
+   * fetched sheet index for the tile nearest each cell's source time, while a
+   * still has no per-frame step at all — every cell repeats the SAME decoded
+   * image (`resolveSheetImage`, keyed by `item.src` exactly as a video sheet
+   * is keyed by its path), loaded the same way the preview draws it
+   * (`OverlayItemsLayer.tsx`'s `fileUrl(item.src)`). One decode serves every
+   * cell and every future repaint, never one decode per tile.
    */
   clipTiles(item: VisualItem, rect: Rect, ctx: FilmstripQueryContext): FilmstripTileDraw[] | null {
-    if (item.type !== 'video' || !item.proxySrc || !ctx.getFilmstrip || !ctx.fileUrl) return null
+    const isVideo = item.type === 'video' && !!item.proxySrc && !!ctx.getFilmstrip
+    const isImage = item.type === 'image' && !!item.src
+    if ((!isVideo && !isImage) || !ctx.fileUrl) return null
     if (rect.width <= 0 || rect.height <= 0) return null
     const range = visibleRange(ctx.viewport)
     if (item.end < range.start || item.start > range.end) return null
@@ -309,9 +327,14 @@ export class FilmstripStore {
     const band = clipBands(rect).frames
     if (band.height <= 0) return null
 
-    const resolved = this.resolveIndex(item.proxySrc, ctx)
-    if (!resolved || resolved.tiles.length === 0) return null
-    const { data: index, tiles } = resolved
+    // For a video, no sheet index yet means nothing to draw at all — bail
+    // before doing any cell-grid work. An image has no index to wait on.
+    const resolved = isVideo ? this.resolveIndex(item.proxySrc!, ctx) : null
+    if (isVideo && (!resolved || resolved.tiles.length === 0)) return null
+
+    // An image's one photo, decoded once and reused for every cell below.
+    const stillImage = isImage ? this.resolveSheetImage(item.src!, ctx) : null
+    if (isImage && !stillImage) return null // not decoded yet — cells stay blank until onReady fires
 
     // Cell width comes from the BAND HEIGHT, not from the index's tile
     // interval — that is what makes the strip re-derive itself as you zoom.
@@ -340,7 +363,17 @@ export class FilmstripStore {
       const cellLeft = Math.max(x, drawLeft)
       const cellRight = Math.min(x + cellPx, drawRight)
       if (cellRight <= cellLeft) continue
+      const dest: Rect = { x: cellLeft, y: band.y, width: cellRight - cellLeft, height: band.height }
 
+      if (stillImage) {
+        // The same photo in every cell — there is only ever one frame.
+        const full: TileSourceRect = { sx: 0, sy: 0, sw: stillImage.width, sh: stillImage.height }
+        const src = centerCropTo(full, dest.width / dest.height)
+        out.push({ image: stillImage.image, sx: src.sx, sy: src.sy, sw: src.sw, sh: src.sh, rect: dest })
+        continue
+      }
+
+      const { data: index, tiles } = resolved!
       const cellCenterTime = xToTime((cellLeft + cellRight) / 2, ctx.viewport)
       const sourceTime = clipTimeToSourceTime(item, cellCenterTime)
       const tile = nearestTile(tiles, sourceTime)
@@ -350,7 +383,6 @@ export class FilmstripStore {
       const img = this.resolveSheetImage(sheet.path, ctx)
       if (!img) continue // sheet not decoded yet — this cell just stays blank until onReady fires
 
-      const dest: Rect = { x: cellLeft, y: band.y, width: cellRight - cellLeft, height: band.height }
       const src = centerCropTo(tileSourceRect(sheet, tile, img.width, img.height), dest.width / dest.height)
       out.push({ image: img.image, sx: src.sx, sy: src.sy, sw: src.sw, sh: src.sh, rect: dest })
     }

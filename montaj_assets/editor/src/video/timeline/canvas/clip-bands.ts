@@ -9,8 +9,10 @@
  * One function owning the split is the point: `filmstrips.ts` sizes its tile
  * grid from `frames.height` and `waveforms.ts` scales its bars to
  * `waveform.height`, so the two bands cannot drift out of alignment or
- * overlap at any row height. Non-video items (overlays, images) ask for
- * neither band and are unaffected.
+ * overlap at any row height. Overlays ask for neither band and are
+ * unaffected. Images ask for the frames band only — a still has no audio, so
+ * `filmstrips.ts` tiles its one decoded photo into `frames` the same way a
+ * video's sheet tiles go there, and the waveform band stays empty.
  */
 import type { Rect } from './draw'
 

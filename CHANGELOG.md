@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed: a photo placed on a video track showed only a plain grey block with its filename, not the photo.** The timeline's filmstrip only ever looked for video frames, so a still — which has no frames to extract — always fell through to the empty block. It now shows the photo itself, tiled across the clip the same way a video's frames are.
+
 ## v5.5.4
 
 - **Fixed: a clip an agent placed into a project by saving (not by dragging it in through import) never got an editor preview, so the editor showed "Preparing preview…" forever until someone clicked "Generate previews" by hand.** Saving a project now queues a preview for any video item whose id or source is new or changed since what was last on disk; an item that already has a current preview, or one that didn't change, is never re-queued, so resaving an existing project doesn't start re-encoding its whole library.

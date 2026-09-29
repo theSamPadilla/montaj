@@ -357,6 +357,102 @@ describe('FilmstripStore.clipTiles fetch policy', () => {
   })
 })
 
+// ── Image items (stills on a visual track) ─────────────────────────────────
+//
+// Images have no video-frame step at all: there is no proxy, no index, no
+// sheets — `getFilmstrip` must never be called for one. What SHOULD happen is
+// the still itself, loaded the same way the preview loads it
+// (`OverlayItemsLayer.tsx`'s `fileUrl(item.src)`), tiled across the clip the
+// way a video's frames are. Before this fix `clipTiles` bailed at the
+// `item.type !== 'video'` guard for every image, so a still drew as a flat
+// fill with no `drawImage` call at all — indistinguishable, at the canvas
+// level, from an item with no content lookup wired up.
+describe('FilmstripStore.clipTiles image items', () => {
+  const zoomedIn: Viewport = { pxPerSecond: 200, scrollSeconds: 0, widthPx: 1000 }
+
+  function imageItem(over: Partial<VisualItem> = {}): VisualItem {
+    return { id: 'i0', type: 'image', src: 'photo.jpg', start: 0, end: 5, ...over } as VisualItem
+  }
+
+  it('never calls getFilmstrip for an image — there is no per-frame step for a still', () => {
+    const store = new FilmstripStore()
+    const fetcher = vi.fn()
+    store.clipTiles(imageItem(), rect({ width: 1000 }), queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('does not load an off-screen image — same visibility gate a video filmstrip uses', () => {
+    const store = new FilmstripStore()
+    const loader = fakeLoader()
+    store.clipTiles(imageItem({ start: 100, end: 105 }), rect({ width: 1000 }), queryCtx({ viewport: zoomedIn, loader }))
+    expect(loader).not.toHaveBeenCalled()
+  })
+
+  it('draws the loaded photo itself into the frames band, not a contentless fallback', async () => {
+    const store = new FilmstripStore()
+    const image = loadedImage(1080, 1920) // a vertical still, same shape as the footage this edits
+    const loader = fakeLoader(image)
+    const item = imageItem()
+    const r = rect({ width: 1000 })
+    const ctx = () => queryCtx({ viewport: zoomedIn, loader })
+
+    // First call only kicks off the (async) decode — nothing to draw yet, same
+    // as a video whose sheet hasn't loaded.
+    expect(store.clipTiles(item, r, ctx())).toBeNull()
+    await flush()
+
+    const tiles = store.clipTiles(item, r, ctx())
+    expect(tiles).not.toBeNull()
+    expect(tiles!.length).toBeGreaterThan(0)
+    // Every cell must actually reference the decoded photo and a non-degenerate
+    // source/destination rect — an element merely existing proves nothing; this
+    // is exactly what a real `ctx.drawImage(image.image, sx, sy, sw, sh, ...)`
+    // call needs to paint something other than blank canvas.
+    for (const tile of tiles!) {
+      expect(tile.image).toBe(image.image)
+      expect(tile.sw).toBeGreaterThan(0)
+      expect(tile.sh).toBeGreaterThan(0)
+      expect(tile.rect.width).toBeGreaterThan(0)
+      expect(tile.rect.height).toBeGreaterThan(0)
+    }
+    // Loaded once and reused across every cell — decoding a full-size photo
+    // per tile is exactly what this must NOT do.
+    expect(loader).toHaveBeenCalledTimes(1)
+    expect(loader).toHaveBeenCalledWith('/files/photo.jpg')
+  })
+
+  it('center-crops the still to each square cell, same math a video tile gets', async () => {
+    const store = new FilmstripStore()
+    const image = loadedImage(1080, 1920)
+    const item = imageItem()
+    const r = rect({ width: 1000 })
+    const ctx = () => queryCtx({ viewport: zoomedIn, loader: fakeLoader(image) })
+
+    store.clipTiles(item, r, ctx())
+    await flush()
+    const tiles = store.clipTiles(item, r, ctx())!
+    const band = clipBands(r).frames
+
+    const first = tiles[0]
+    expect(first.sw).toBe(1080)               // full width kept
+    expect(first.sh).toBe(1080)               // height cropped down to a square
+    expect(first.sy).toBe((1920 - 1080) / 2)  // centered crop
+    expect(first.rect.width).toBe(band.height)
+    expect(first.rect.height).toBe(band.height)
+  })
+
+  it('still never fetches getFilmstrip for an image even once its photo is loaded', async () => {
+    const store = new FilmstripStore()
+    const fetcher = vi.fn()
+    const item = imageItem()
+    const r = rect({ width: 1000 })
+    store.clipTiles(item, r, queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
+    await flush()
+    store.clipTiles(item, r, queryCtx({ getFilmstrip: fetcher, viewport: zoomedIn }))
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+})
+
 // ── Sheet-load laziness ────────────────────────────────────────────────────
 
 describe('FilmstripStore.clipTiles geometry', () => {
@@ -538,6 +634,33 @@ describe('drawTimelineContent filmstrip + waveform composition', () => {
     expect(r.of('drawImage')).toHaveLength(1) // the filmstrip tile
     // fill + border + 2 waveform bars, at minimum.
     expect(r.of('fillRect').length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('paints an image clip via a real drawImage call, not the grey-fill-only fallback (end to end through FilmstripStore)', async () => {
+    const store = new FilmstripStore()
+    const image = loadedImage(1080, 1920)
+    const loader = fakeLoader(image)
+    const p = project({ tracks: [{ id: 'trk-0', items: [{ id: 'img0', type: 'image', src: 'photo.jpg', start: 0, end: 4 } as VisualItem] }] })
+    const makeCtx = () => ({ projectId: 'p1', fileUrl: (path: string) => `/files/${path}`, viewport: viewport(), onReady: () => {}, loader })
+    const filmstrips = { clipTiles: (item: VisualItem, r: Rect) => store.clipTiles(item, r, makeCtx()) }
+    const sceneArgs = { project: p, layout: computeTimelineLayout(p), filmstrips, waveforms: { clipColumns: () => null, audioColumns: () => null } }
+
+    // First paint only kicks off the async decode of the still.
+    drawTimelineContent(recordingContext().ctx, scene(sceneArgs))
+    await flush()
+
+    const r = recordingContext()
+    drawTimelineContent(r.ctx, scene(sceneArgs))
+
+    // The distinguishing signal: real ctx.drawImage calls carrying the
+    // decoded photo — one per tiled cell across the clip's width, exactly like
+    // a video filmstrip — not merely "some element was drawn". Before the fix
+    // this is empty: the image item fell through `FilmstripStore.clipTiles`'s
+    // `item.type !== 'video'` guard, drawContent was undefined, and the clip
+    // painted as its plain palette fill with no drawImage call at all.
+    const drawImageCalls = r.of('drawImage')
+    expect(drawImageCalls.length).toBeGreaterThan(0)
+    for (const call of drawImageCalls) expect(call.args[0]).toBe(image.image)
   })
 
   it('degrades to exactly T6\'s original waveform-only draw-call count when no filmstrip provider is set', () => {
