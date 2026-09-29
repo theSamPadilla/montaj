@@ -15,6 +15,7 @@ import {
   normalizeTracks,
   trackItems,
   updateAudioTrack,
+  visualItemLabel,
 } from '../timeline-model'
 
 function track(overrides: Partial<AudioTrack> = {}): AudioTrack {
@@ -889,5 +890,22 @@ describe('computeVisualCrossfade', () => {
     expect(out).not.toBeNull()
     expect(opacityTrack(out, 1, 0)).toBeUndefined()
     expect(opacityTrack(out, 1, 1)).toBeUndefined()
+  })
+})
+
+describe('visualItemLabel — video items', () => {
+  const video = (overrides: Partial<VisualItem> = {}): VisualItem =>
+    ({ id: 'v0', type: 'video', src: 'clips/beach_shot.mp4', start: 0, end: 4, ...overrides } as VisualItem)
+
+  it('shows the filename label when there is no proxy yet (no filmstrip can draw)', () => {
+    expect(visualItemLabel(video({ proxySrc: undefined }))).toBe('beach_shot')
+  })
+
+  it('goes blank once proxySrc arrives — the filmstrip identifies the shot instead', () => {
+    expect(visualItemLabel(video({ proxySrc: 'clips/beach_shot_proxy_v1.mp4' }))).toBe('')
+  })
+
+  it('falls back to a generic label when a proxy-less video has no src either', () => {
+    expect(visualItemLabel(video({ src: undefined, proxySrc: undefined }))).toBe('video')
   })
 })

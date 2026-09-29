@@ -229,12 +229,26 @@ function overlayText(props: Record<string, unknown> | undefined): string | null 
  *   `photo_hero · ex-googler`
  *   `cold_open`                      (no text of its own)
  *
- * Video clips get NO label: the track rail already says the row is video, and
- * the filmstrip inside the clip identifies which shot it is far better than a
- * word would. Images fall back to their own filename.
+ * Video clips get NO label ONCE THEY HAVE A FILMSTRIP TO DRAW INSTEAD: the
+ * track rail already says the row is video, and the filmstrip inside the clip
+ * identifies which shot it is far better than a word would. But a freshly
+ * placed clip has no filmstrip for a while — `filmstrips.ts`'s `clipTiles`
+ * draws nothing for a video until `item.proxySrc` exists, and the proxy is
+ * still encoding (~20s after a save) — so until then the clip would draw as a
+ * blank grey rectangle with nothing identifying it at all. `proxySrc`
+ * presence is what actually gates the filmstrip in the real app: the
+ * production adapter (`montajAdapter.ts`) always implements `getFilmstrip`
+ * and `fileUrl` unconditionally, so `proxySrc` is the only one of
+ * `clipTiles`' guards that varies per item; the rest (off-screen, index still
+ * loading, etc.) are the same brief async gaps every filmstrip/waveform
+ * already tolerates without a compensating label. Images fall back to their
+ * own filename unconditionally, since an image never grows a filmstrip that
+ * would make the label redundant. Do NOT delete the video branch below as
+ * "always blank" — that reintroduces the blank-block bug for the whole
+ * proxy-encoding window.
  */
 export function visualItemLabel(item: VisualItem): string {
-  if (item.type === 'video') return ''
+  if (item.type === 'video') return item.proxySrc ? '' : (item.src ? stem(item.src) : 'video')
   if (item.type === 'image') return item.src ? stem(item.src) : 'image'
 
   const kind = item.src ? stem(item.src) : 'overlay'

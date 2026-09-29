@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Fixed: a photo placed on a video track showed only a plain grey block with its filename, not the photo.** The timeline's filmstrip only ever looked for video frames, so a still — which has no frames to extract — always fell through to the empty block. It now shows the photo itself, tiled across the clip the same way a video's frames are.
+- **Fixed: a video clip with no proxy yet drew as a blank grey rectangle with no label and no filmstrip on the timeline.** Video clips were designed to show no label at all, on the assumption that their filmstrip always identifies the shot — but a clip has no filmstrip until its proxy finishes encoding (tens of seconds after a save), and until then it had nothing identifying it either. It now shows its filename label while there is no proxy, and goes back to blank once the filmstrip can draw.
 
 ## v5.5.4
 
