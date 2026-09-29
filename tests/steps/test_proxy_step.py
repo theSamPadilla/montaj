@@ -139,3 +139,107 @@ def test_proxy_endpoint_fresh_skip_returns_200_no_job(client, test_video, tmp_pa
     assert resp.json() == {"path": out, "skipped": True}
     # Untouched — the fresh short-circuit never re-encodes.
     assert Path(out).read_bytes() == b"fake-fresh-proxy"
+
+
+# ── provenance: a marked SDR-origin conversion's proxy comes from its original (PV42) ──
+
+def _media_ffmpeg(*args):
+    from lib.common import ffmpeg_bin
+    subprocess.run([ffmpeg_bin(), "-y", "-v", "error", *args], check=True, capture_output=True, timeout=60)
+
+
+@pytest.fixture(scope="module")
+def marked_media(tmp_path_factory):
+    """screen.mp4 (SDR bt709), its marked HLG conversion by lib.normalize, and
+    a trimmed re-encode of the conversion that inherits the marker but not the
+    fingerprint. Returns their names in a module-scoped folder."""
+    import os
+    import lib.normalize as nm
+
+    if not nm._has_zscale():
+        pytest.skip("ffmpeg with zscale not available")
+    d = Path(os.path.realpath(tmp_path_factory.mktemp("marked")))
+    _media_ffmpeg("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=1",
+                  "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
+                  "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30",
+                  "-bsf:v", "h264_metadata=transfer_characteristics=1:colour_primaries=1:matrix_coefficients=1",
+                  "-c:a", "aac", "-shortest", str(d / "screen.mp4"))
+    marked = Path(nm.normalized_output_path(str(d / "screen.mp4"), "hdr_hlg", tonemapped=False, sdr_stretch=True))
+    nm.normalize(str(d / "screen.mp4"), str(marked), "hdr_hlg")
+    _media_ffmpeg("-ss", "0.5", "-t", "0.5", "-i", str(marked),
+                  "-c:v", "libx265", "-preset", "ultrafast", "-pix_fmt", "yuv420p10le",
+                  "-x265-params", "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:log-level=error",
+                  "-color_primaries", "bt2020", "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc",
+                  "-c:a", "copy", str(d / "screen_trim.mp4"))
+    return d, "screen.mp4", marked.name, "screen_trim.mp4"
+
+
+def _place(marked_media, dest: Path) -> tuple[str, str, str]:
+    """Copy the three files into `dest` (the marker names a sibling), and
+    return (original, marked, trimmed) there."""
+    d, *names = marked_media
+    for name in names:
+        shutil.copy2(d / name, dest / name)
+    return tuple(str(dest / name) for name in names)
+
+
+def _step_bodies(monkeypatch) -> list:
+    import serve.routes.steps as steps_mod
+    seen = []
+
+    async def _fake(job_id, schema, py_path, body, *, timeout=None):
+        seen.append(dict(body))
+
+    monkeypatch.setattr(steps_mod, "_run_proxy_to_job", _fake)
+    return seen
+
+
+def test_run_proxy_job_encodes_a_marked_conversion_from_its_original_ungraded(marked_media, tmp_path, monkeypatch):
+    import asyncio
+    import serve.routes.steps as steps_mod
+
+    original, marked, _ = _place(marked_media, tmp_path)
+    seen = _step_bodies(monkeypatch)
+    asyncio.run(steps_mod.run_proxy_job("job", marked, out="/given/out.mp4", tonemap=None))
+    assert seen == [{"input": original, "out": "/given/out.mp4"}]
+
+
+def test_run_proxy_job_grades_a_trimmed_marked_copy_as_today(marked_media, tmp_path, monkeypatch):
+    """The trimmed copy inherited the marker but is not a conversion of the
+    original (fingerprint differs), so it is HDR and graded."""
+    import asyncio
+    import serve.routes.steps as steps_mod
+
+    _, _, trimmed = _place(marked_media, tmp_path)
+    seen = _step_bodies(monkeypatch)
+    asyncio.run(steps_mod.run_proxy_job("job", trimmed, out="/given/out.mp4", tonemap=None))
+    assert seen == [{"input": trimmed, "out": "/given/out.mp4", "tonemap": True}]
+
+
+@pytest.mark.parametrize("tonemap", [True, False])
+def test_run_proxy_job_explicit_tonemap_keeps_the_input(marked_media, tmp_path, monkeypatch, tonemap):
+    import asyncio
+    import serve.routes.steps as steps_mod
+
+    _, marked, _ = _place(marked_media, tmp_path)
+    seen = _step_bodies(monkeypatch)
+    asyncio.run(steps_mod.run_proxy_job("job", marked, out="/given/out.mp4", tonemap=tonemap))
+    assert seen == [{"input": marked, "out": "/given/out.mp4", **({"tonemap": True} if tonemap else {})}]
+
+
+def test_proxy_endpoint_names_a_marked_conversions_proxy_after_its_original(client, marked_media, tmp_path,
+                                                                             monkeypatch):
+    """POST /api/proxy with no `out`: the proxy is named after the file it is
+    encoded from, the original, not after the marked conversion it was given."""
+    from lib.proxy import proxy_path_for
+
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
+    original, marked, _ = _place(marked_media, tmp_path)
+
+    resp = client.post("/api/proxy", json={"input": marked})
+    assert resp.status_code == 202, resp.text
+    done = _poll_job(client, resp.json()["job_id"])
+    assert done.json()["status"] == "done", done.json()
+    assert done.json()["result"]["path"] == proxy_path_for(original)
+    assert Path(proxy_path_for(original)).is_file()
+    assert not Path(proxy_path_for(marked)).exists()

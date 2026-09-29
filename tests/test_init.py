@@ -797,20 +797,24 @@ def test_init_probe_cache_is_consumed_by_normalize_loop(tmp_path):
     #                           no duration, so make_proxy's timeout sizing does
     #                           its own cheap get_duration() — accepted per SP3
     #                           T1 review rather than reshaping probe_cache)
+    #   - proxy_source_for()  = 1 ffprobe call (the proxy's provenance, PV42:
+    #                           the container comment and fingerprint, which
+    #                           probe_video does not read)
     #
     # Detection runs probe_video for each clip = 3 × n_clips.
     # _normalize_one reads from probe_cache (0 extra) and passes the cached
     # `info` into normalize() (which skips its internal probe = 0 extra).
-    # Then get_duration is called once = 1 × n_clips, and the proxy encode's
-    # own duration probe adds another 1 × n_clips.
-    # Expected total: 5 × n_clips.
+    # Then get_duration is called once = 1 × n_clips, the proxy's provenance
+    # adds 1 × n_clips, and the proxy encode's own duration probe adds another
+    # 1 × n_clips.
+    # Expected total: 6 × n_clips.
     #
     # Without cache OR without info-passthrough, we'd see:
     #   - cache miss in _normalize_one: +3 × n_clips
     #   - normalize() internal probe:   +3 × n_clips
-    #   → 11 × n_clips total.
-    expected = 5 * n_clips
-    expected_no_caching = 11 * n_clips
+    #   → 12 × n_clips total.
+    expected = 6 * n_clips
+    expected_no_caching = 12 * n_clips
     assert ffprobe_count == expected, (
         f"probe caching appears bypassed: ffprobe ran {ffprobe_count} times for "
         f"{n_clips} clips. Expected {expected} (cache hit + info passthrough), "
@@ -1428,7 +1432,7 @@ def test_normalize_default_eager_unchanged(tmp_path):
 # Editing proxy scheduling (SP3) — full-source AV1 preview asset
 # ---------------------------------------------------------------------------
 
-def _make_ffmpeg_spy(tmp_path: Path, *, fail: bool) -> tuple:
+def _make_ffmpeg_spy(tmp_path: Path, *, fail: bool, real_ffmpeg: str | None = None) -> tuple:
     """Write an ffmpeg wrapper that appends its argv (one arg per line, a lone
     '---' line between invocations) to a log file.
 
@@ -1442,10 +1446,14 @@ def _make_ffmpeg_spy(tmp_path: Path, *, fail: bool) -> tuple:
 
     Only MONTAJ_FFMPEG is overridden — ffprobe (probing) is untouched, so
     color-space detection and is_normalized() checks behave normally.
+
+    `real_ffmpeg` is the binary the spy runs; the default is the `ffmpeg` on
+    PATH, which may have no zscale.
     """
     log = tmp_path / "ffmpeg_calls.log"
     wrapper = tmp_path / "fake_ffmpeg.sh"
-    real_ffmpeg = subprocess.run(["which", "ffmpeg"], capture_output=True, text=True).stdout.strip()
+    real_ffmpeg = real_ffmpeg or \
+        subprocess.run(["which", "ffmpeg"], capture_output=True, text=True).stdout.strip()
     assert real_ffmpeg, "could not locate real ffmpeg"
     body = (
         "#!/bin/bash\n"
@@ -1465,6 +1473,28 @@ def _make_ffmpeg_spy(tmp_path: Path, *, fail: bool) -> tuple:
     wrapper.write_text(body)
     wrapper.chmod(0o755)
     return wrapper, log
+
+
+def _proxy_encodes(log: Path) -> list[tuple[str, str]]:
+    """(input, -vf) of every proxy encode in an ffmpeg-spy log: the proxy is
+    the only encode with libopus audio."""
+    out = []
+    for block in (b for b in log.read_text().split("---\n") if b.strip()):
+        args = block.strip("\n").split("\n")
+        if "libopus" in args:
+            out.append((args[args.index("-i") + 1], args[args.index("-vf") + 1]))
+    return out
+
+
+def _zscale_ffmpeg() -> str | None:
+    """The ffmpeg montaj resolves, when it has zscale and lut3d (so a proxy
+    that is wrongly graded really is graded)."""
+    from lib.common import ffmpeg_bin
+    import lib.normalize as nm
+    return ffmpeg_bin() if nm._has_zscale() and nm._has_lut3d() else None
+
+
+PLAIN_PROXY_VF = "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p"
 
 
 def _last_ffmpeg_vf(log: Path) -> str:
@@ -1660,6 +1690,68 @@ def test_init_eager_proxy_command_tonemaps_for_hdr_project(tmp_path):
     zscale_idx = vf.index("zscale=")
     assert scale_idx < zscale_idx, f"scale must precede the zscale chain: {vf!r}"
     assert vf.index("format=rgb48le") < vf.index("lut3d=")
+
+
+@pytest.mark.skipif(not HAS_FFMPEG or not _zscale_ffmpeg(), reason="ffmpeg with zscale not available")
+def test_init_eager_sdr_into_hdr_proxy_comes_from_the_original_ungraded(tmp_path):
+    """PV42: an SDR clip converted into an HDR project keeps its original as
+    `src`, and its proxy is encoded from that original with no grade (the
+    grade is for HDR-origin footage only, whatever the project is)."""
+    wrapper, log = _make_ffmpeg_spy(tmp_path, fail=False, real_ffmpeg=_zscale_ffmpeg())
+    src = tmp_path / "sdr.mp4"
+    _make_clip(src, duration=1)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init(
+        "--clips", str(src), "--prompt", "test", "--color-space", "hdr_hlg",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "MONTAJ_FFMPEG": str(wrapper)},
+    )
+    assert result.returncode == 0, result.stderr
+    item = track_items(json.loads(_project_path_from_stdout(result.stdout).read_text()))[0][0]
+    assert item["normalizedSrc"]  # converted, as a cache
+    assert _proxy_encodes(log) == [(item["src"], PLAIN_PROXY_VF)]
+    assert item["proxySrc"]
+
+
+def _make_marked_conversion(tmp_path: Path) -> tuple[Path, Path]:
+    """An SDR bt709 clip and its SDR-to-HLG conversion by lib.normalize, which
+    carries the marker naming the clip. Returns (original, conversion)."""
+    from lib.common import ffmpeg_bin
+    import lib.normalize as nm
+
+    original = tmp_path / "screen.mp4"
+    subprocess.run([
+        ffmpeg_bin(), "-y", "-v", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30",
+        "-bsf:v", "h264_metadata=transfer_characteristics=1:colour_primaries=1:matrix_coefficients=1",
+        "-c:a", "aac", "-shortest", str(original),
+    ], check=True, capture_output=True, timeout=60)
+    conversion = Path(nm.normalized_output_path(str(original), "hdr_hlg", tonemapped=False, sdr_stretch=True))
+    nm.normalize(str(original), str(conversion), "hdr_hlg")
+    return original, conversion
+
+
+@pytest.mark.skipif(not HAS_FFMPEG or not _zscale_ffmpeg(), reason="ffmpeg with zscale not available")
+def test_init_lazy_marked_conversion_proxy_comes_from_its_original(tmp_path):
+    """Lazy import of an SDR clip and its marked HLG conversion: the
+    conversion's proxy is the original's proxy (one encode, from the original,
+    no grade), since provenance says its colour came from the original."""
+    original, conversion = _make_marked_conversion(tmp_path)
+    wrapper, log = _make_ffmpeg_spy(tmp_path, fail=False, real_ffmpeg=_zscale_ffmpeg())
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = run_init(
+        "--clips", str(original), str(conversion), "--prompt", "test", "--normalize", "lazy",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws), "MONTAJ_FFMPEG": str(wrapper)},
+    )
+    assert result.returncode == 0, result.stderr
+    items = track_items(json.loads(_project_path_from_stdout(result.stdout).read_text()))[0]
+    staged_original = next(i["src"] for i in items if Path(i["src"]).name == "screen.mp4")
+    assert _proxy_encodes(log) == [(os.path.realpath(staged_original), PLAIN_PROXY_VF)]
+    assert items[0]["proxySrc"] == items[1]["proxySrc"]
+    assert Path(items[0]["proxySrc"]).name.startswith("screen_proxy_")
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")

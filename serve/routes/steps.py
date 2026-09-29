@@ -465,10 +465,13 @@ async def proxy_video(body: dict = Body(...)):
     """Encode the full-source, 720p, all-intra AV1+Opus editing proxy for `input`.
 
     Request:  { "input": "/abs/path/to/video.mp4", "out": "/abs/path/to/video_proxy_vivid1.mp4", "tonemap": false }
-    ("out" defaults to lib.proxy.proxy_path_for(input). "tonemap" defaults to a
-    PROBE of the source's transfer function — HDR in, tonemap on — so backfilling
-    a lazy HDR project can't silently produce an un-tone-mapped proxy; passing an
-    explicit true/false overrides the probe. SP3 fix S3.)
+    ("tonemap" defaults to the input's provenance
+    (lib.color_provenance.proxy_source_for): HDR-origin footage is graded, so
+    backfilling a lazy HDR project can't silently produce an un-tone-mapped
+    proxy (SP3 fix S3), and a marked SDR-origin conversion is encoded from its
+    SDR original, ungraded (PV42). An explicit true/false overrides that and
+    encodes `input` itself. "out" defaults to lib.proxy.proxy_path_for of the
+    file the proxy is encoded from.)
 
     Proxy encodes run for minutes, so — unlike /api/normalize's blocking
     asyncio.to_thread shape — this is the async job pattern: a fresh proxy
@@ -493,16 +496,19 @@ async def proxy_video(body: dict = Body(...)):
     if not input_path or not Path(input_path).is_file():
         raise bad_request("missing_input", "'input' must be an absolute path to an existing file")
 
-    out = body.get("out") or proxy_path_for(input_path)
+    tonemap = body.get("tonemap") if "tonemap" in body else None
+    source = input_path  # the file the proxy is encoded from (run_proxy_job's rule)
+    if tonemap is None:
+        from lib.color_provenance import proxy_source_for
+        source, _ = await asyncio.to_thread(proxy_source_for, input_path)
 
-    if is_proxy_fresh(out, input_path):
+    out = body.get("out") or proxy_path_for(source)
+
+    if is_proxy_fresh(out, source):
         return {"path": out, "skipped": True}
 
     job_id = create_job()
-    task = asyncio.create_task(
-        run_proxy_job(job_id, input_path, out=out,
-                      tonemap=body.get("tonemap") if "tonemap" in body else None)
-    )
+    task = asyncio.create_task(run_proxy_job(job_id, input_path, out=out, tonemap=tonemap))
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
     return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)
@@ -518,8 +524,11 @@ async def run_proxy_job(job_id: str, input_path: str, *, out: str, tonemap: bool
     awaits completion so it can write the fresh path back into project.json,
     neither of which the route's fire-and-forget 202 shape allows.
 
-    `tonemap=None` means "probe and decide" (the route's default); True/False is
-    an explicit override.
+    `tonemap=None` means "ask the provenance resolver" (the route's default):
+    lib.color_provenance.proxy_source_for picks both the file encoded and the
+    grade, so a marked SDR-origin conversion is encoded from its original,
+    ungraded (PV42). True/False is an explicit override that encodes
+    `input_path` itself. `out` is used as given.
     """
     try:
         steps = scan_steps()
@@ -528,19 +537,16 @@ async def run_proxy_job(job_id: str, input_path: str, *, out: str, tonemap: bool
         schema, py_path = steps["proxy"]
         step_body = {"input": input_path, "out": out}
         # tonemap (SP3 fix S3): an explicit value (true OR false) wins; otherwise
-        # derive from the source's transfer function exactly like init.py's lazy
-        # arm — HDR source ⇒ tonemap on.
+        # the input's provenance decides, exactly like init.py: HDR-origin
+        # footage is graded, and a marked SDR-origin conversion is encoded from
+        # its original, ungraded (PV42).
         if tonemap is not None:
             if tonemap:
                 step_body["tonemap"] = True
         else:
-            from lib.normalize import probe_video
-            from lib.types.colorspace import detect_from_transfer, is_hdr
-            try:
-                info = probe_video(input_path)
-            except (Exception, SystemExit):
-                info = None
-            if info is not None and is_hdr(detect_from_transfer(info.get("color_transfer"))):
+            from lib.color_provenance import proxy_source_for
+            step_body["input"], graded = await asyncio.to_thread(proxy_source_for, input_path)
+            if graded:
                 step_body["tonemap"] = True
 
         # lib/proxy.py's own timeout (max(900, duration * 2)) is duration-scaled so
@@ -553,7 +559,7 @@ async def run_proxy_job(job_id: str, input_path: str, *, out: str, tonemap: bool
         # instead of taking down the request.
         from lib.common import get_duration
         try:
-            proxy_timeout = max(STEP_TIMEOUT_S, int(get_duration(input_path) * 3))
+            proxy_timeout = max(STEP_TIMEOUT_S, int(get_duration(step_body["input"]) * 3))
         except (Exception, SystemExit):
             proxy_timeout = STEP_TIMEOUT_S
     except HTTPException as e:

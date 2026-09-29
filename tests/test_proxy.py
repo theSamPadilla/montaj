@@ -24,6 +24,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import lib.normalize as nm
 import lib.proxy as proxy_mod
+from lib.common import ffmpeg_bin
 from lib.normalize import _run_atomic_encode, probe_video
 from lib.proxy import (
     PROXY_FORMAT,
@@ -248,6 +249,85 @@ def test_build_proxy_cmd_lazy_arm_falls_back_without_zscale(monkeypatch):
     vf = cmd[cmd.index("-vf") + 1]
     assert "zscale" not in vf
     assert "tonemap=hable:desat=0" in vf
+
+
+PLAIN_VF = "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p"
+
+
+@pytest.mark.parametrize("transfer", ["bt709", "smpte170m", "unknown", None])
+def test_build_proxy_cmd_never_grades_an_input_that_is_not_hdr(transfer, monkeypatch, capsys):
+    """PV42: the Montaj Vivid grade is for HDR-origin footage only. A caller
+    that still asks for tonemap on an SDR input gets the plain arm, and one
+    warning line naming the file."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    info = {"has_audio": True, **({"color_transfer": transfer} if transfer else {})}
+    cmd, used_fallback = _build_proxy_cmd("screen.mp4", "out.mp4", tonemap=True, info=info)
+    assert used_fallback is False
+    assert cmd[cmd.index("-vf") + 1] == PLAIN_VF
+    lines = [ln for ln in capsys.readouterr().err.splitlines() if "screen.mp4" in ln]
+    assert len(lines) == 1 and "not HDR" in lines[0]
+
+
+def _make_bt709_clip(path, *, duration=1):
+    """An 8-bit 4:2:0 SDR clip, bt709-tagged in the bitstream, one flat colour."""
+    subprocess.run([
+        ffmpeg_bin(), "-y", "-v", "error",
+        "-f", "lavfi", "-i", f"color=c=0x3c78b4:size=320x180:rate=30:duration={duration}",
+        "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=48000:duration={duration}",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "30",
+        "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+        "-bsf:v", "h264_metadata=transfer_characteristics=1:colour_primaries=1:matrix_coefficients=1",
+        "-c:a", "aac", "-shortest", str(path),
+    ], check=True, capture_output=True, timeout=60)
+
+
+def _rgb_means(path):
+    """Per-channel mean of the first frame, decoded as BT.709 limited range."""
+    w, h = 64, 36
+    r = subprocess.run([
+        ffmpeg_bin(), "-v", "error", "-i", str(path), "-frames:v", "1", "-an",
+        "-vf", f"scale={w}:{h}:flags=area:in_color_matrix=bt709:in_range=tv,format=rgb24",
+        "-f", "rawvideo", "-",
+    ], capture_output=True, check=True, timeout=60)
+    data = r.stdout[:w * h * 3]
+    assert len(data) == w * h * 3
+    return [sum(data[c::3]) / (w * h) for c in range(3)]
+
+
+def test_make_proxy_with_tonemap_on_a_bt709_clip_builds_no_lut(tmp_path, monkeypatch):
+    """Command level: make_proxy(tonemap=True) on a probed bt709 clip runs the
+    plain arm, even on a box that has the whole LUT chain."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    src = tmp_path / "screen.mp4"
+    _make_bt709_clip(src)
+    info = probe_video(str(src))
+    assert info["color_transfer"] == "bt709"
+    seen = {}
+
+    def fake_run_atomic_encode(cmd, tmp_path_, out_path, *, label, timeout=600):
+        seen["cmd"] = cmd
+        Path(out_path).write_bytes(b"fake")
+
+    monkeypatch.setattr(proxy_mod, "_run_atomic_encode", fake_run_atomic_encode)
+    make_proxy(str(src), str(tmp_path / "proxy.mp4"), tonemap=True, info=info)
+    vf = seen["cmd"][seen["cmd"].index("-vf") + 1]
+    assert "lut3d" not in vf and "zscale" not in vf
+    assert vf == PLAIN_VF
+
+
+@pytest.mark.skipif(not (nm._has_zscale() and nm._has_lut3d()),
+                    reason="needs an ffmpeg with zscale and lut3d, so the grade would otherwise run")
+def test_make_proxy_with_tonemap_on_a_bt709_clip_keeps_its_colour(tmp_path):
+    """Real ffmpeg: the proxy of an SDR clip made with tonemap=True has the
+    source's colour (per-channel frame mean within 1.0), not the Vivid grade's."""
+    src = tmp_path / "screen.mp4"
+    _make_bt709_clip(src)
+    out = tmp_path / "proxy.mp4"
+    make_proxy(str(src), str(out), tonemap=True, info=probe_video(str(src)))
+    for s, p in zip(_rgb_means(src), _rgb_means(out)):
+        assert abs(s - p) <= 1.0, (_rgb_means(src), _rgb_means(out))
 
 
 def test_build_proxy_cmd_format_yuv420p_in_both_arms():

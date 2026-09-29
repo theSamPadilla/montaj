@@ -418,6 +418,7 @@ async def _run_ingest_detached(
         # already usable, and the editor's manual migration is the fallback.
         job.phase = "queueing proxy"
         try:
+            await _warm_proxy_inputs(_video_srcs(project))
             queued = _ensure_current_proxies(
                 project_id, Path(project_dir), project, broadcaster
             )["scheduled"]
@@ -635,6 +636,7 @@ async def _run_init_subprocess(
     # was created successfully must never fail because housekeeping couldn't be
     # scheduled (the editor's manual migration remains the fallback).
     try:
+        await _warm_proxy_inputs(_video_srcs(project))
         _ensure_current_proxies(project.get("id"), project_path.parent, project, broadcaster)
     except Exception:
         pass
@@ -1118,6 +1120,7 @@ async def _look_migration_drain() -> None:
                 _look_migration_current = None
             if path:
                 try:
+                    await _warm_proxy_inputs(_look_migration_target_srcs(unit, path))
                     _apply_look_migration_result(unit, path)
                 except Exception:
                     pass  # one bad write-back must not stop the rest of the queue
@@ -1140,8 +1143,9 @@ async def _run_look_migration_unit(unit: _LookMigrationUnit) -> str | None:
 
     unit.job_id = create_job()
     if unit.kind == "proxy":
-        # tonemap=None: the proxy driver probes the source and tone-maps HDR,
-        # exactly as a fresh import would — this pass must not second-guess it.
+        # tonemap=None: the proxy driver asks the source's provenance whether
+        # to grade it, exactly as a fresh import would; this pass must not
+        # second-guess it. unit.src is already the file _proxy_input_for chose.
         await run_proxy_job(unit.job_id, unit.src, out=unit.out, tonemap=None)
     else:
         await run_normalize_job(unit.job_id, unit.src, unit.color_space, out=unit.out)
@@ -1271,12 +1275,63 @@ def _proxy_items_for(project_path: Path, out: str, path: str) -> list[tuple]:
         if item.get("proxySrc") == path or not os.path.isabs(src):
             continue
         try:
-            if proxy_path_for(os.path.realpath(src)) != out:
+            if proxy_path_for(_proxy_input_for(src)) != out:
                 continue
         except Exception:
             continue
         edits.append((item.get("id"), src, "proxySrc", path))
     return edits
+
+
+def _proxy_input_for(src: str) -> str:
+    """The realpath of the file that the editing proxy of an item whose `src`
+    is `src` is encoded from, which also names that proxy. The item's
+    provenance decides (lib.color_provenance.proxy_source_for, PV42): a marked
+    SDR-origin conversion's proxy comes from its original, anything else's
+    from `src`. realpath so every child of a shared lazy source names, and
+    races on, the one proxy that serves them all (project/init.py's lazy arm
+    does the same). Probes are cached per (file, mtime)."""
+    from lib.color_provenance import proxy_source_for
+
+    return os.path.realpath(proxy_source_for(src)[0])
+
+
+async def _warm_proxy_inputs(srcs) -> None:
+    """Resolve `_proxy_input_for` for each of `srcs` off the event loop, a few
+    at a time, so the synchronous calls that follow hit the probe cache instead
+    of blocking the loop (one ffprobe is about 0.1 s on a phone clip). Never
+    raises: a miss only means the later call probes."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    srcs = sorted({s for s in srcs if isinstance(s, str) and os.path.isabs(s)})
+    if not srcs:
+        return
+
+    def _resolve() -> None:
+        with ThreadPoolExecutor(max_workers=min(8, len(srcs))) as pool:
+            list(pool.map(_proxy_input_for, srcs))
+
+    try:
+        await asyncio.to_thread(_resolve)
+    except Exception:
+        pass
+
+
+def _video_srcs(project: dict) -> list[str]:
+    return [item["src"] for item in _look_migration_items(project)]
+
+
+def _look_migration_target_srcs(unit: _LookMigrationUnit, path: str) -> list[str]:
+    """Every video `src` in the projects `unit` writes back to, plus `path`
+    (a conversion swaps items onto it before their proxies are queued). Never
+    raises: an unreadable project contributes nothing."""
+    srcs = [path]
+    for project_dir in {t[1] for t in unit.targets}:
+        try:
+            srcs += _video_srcs(json.loads((Path(project_dir) / "project.json").read_text()))
+        except Exception:
+            continue
+    return srcs
 
 
 # ---------------------------------------------------------------------------
@@ -1505,6 +1560,7 @@ async def _ensure_background_normalize(
 
     if swapped_now:
         try:
+            await _warm_proxy_inputs(_video_srcs(latest[0]))
             _ensure_current_proxies(project_id, project_dir, latest[0], broadcaster)
         except Exception:
             pass
@@ -1660,6 +1716,9 @@ async def _migrate_project_look(
     })
     for src in to_probe:
         transfer_cache[src] = await asyncio.to_thread(_probe_is_hdr, src)
+    # The proxy's input (and so its name) is the item's provenance; resolve
+    # it off the event loop for the items that need a proxy.
+    await _warm_proxy_inputs(item["src"] for item in proxy_stale + proxy_missing)
 
     # Pass 3 — repoint what already exists, clear + queue what doesn't. Both maps
     # are keyed so the `tracks` item and its `sources` twin (same id, same src)
@@ -1679,23 +1738,22 @@ async def _migrate_project_look(
         key = (item.get("id"), item["src"], "proxySrc")
         if key in edits:
             continue
-        # realpath so every child of a shared lazy source names — and races on —
-        # the ONE proxy that serves them all (project/init.py's lazy arm does the
-        # same before calling proxy_path_for).
-        real_src = os.path.realpath(item["src"])
-        out = proxy_path_for(real_src)
-        if is_proxy_fresh(out, real_src):
+        # The file the proxy is encoded from (the item's provenance), as a
+        # realpath: see _proxy_input_for.
+        real_in = _proxy_input_for(item["src"])
+        out = proxy_path_for(real_in)
+        if is_proxy_fresh(out, real_in):
             edits[key] = out  # already encoded — just repoint
         else:
-            _schedule("proxy", key, real_src, out)
+            _schedule("proxy", key, real_in, out)
 
     for item in proxy_missing:
         key = (item.get("id"), item["src"], "proxySrc")
         if key in edits:
             continue
-        real_src = os.path.realpath(item["src"])
-        out = proxy_path_for(real_src)
-        if is_proxy_fresh(out, real_src):
+        real_in = _proxy_input_for(item["src"])
+        out = proxy_path_for(real_in)
+        if is_proxy_fresh(out, real_in):
             edits[key] = out
             continue
         pending = units.get(("proxy", out)) or _look_migration_pending("proxy", out)
@@ -1832,17 +1890,19 @@ def _ensure_current_proxies(
     color_space = settings.get("colorSpace") or DEFAULT_COLOR_SPACE
 
     # Group every present, absolute-sourced video item by the ONE proxy path it
-    # would use (realpath so a shared lazy source's children collapse to one).
+    # would use: named after the file it is encoded from, the item's provenance
+    # (_proxy_input_for; realpath so a shared lazy source's children collapse
+    # to one).
     by_out: dict[str, list[dict]] = {}
     real_by_out: dict[str, str] = {}
     for item in _look_migration_items(project):
         src = item["src"]
         if not (os.path.isabs(src) and os.path.isfile(src)):
             continue
-        real_src = os.path.realpath(src)
-        out = proxy_path_for(real_src)
+        real_in = _proxy_input_for(src)
+        out = proxy_path_for(real_in)
         by_out.setdefault(out, []).append(item)
-        real_by_out[out] = real_src
+        real_by_out[out] = real_in
 
     edits: list[tuple] = []
     units: dict[str, _LookMigrationUnit] = {}
@@ -1893,6 +1953,7 @@ async def ensure_project_proxies(project_id: str, request: Request, project_dir:
     project = json.loads((project_dir / "project.json").read_text())
     broadcaster = getattr(request.app.state, "broadcaster", None) if request is not None else None
     try:
+        await _warm_proxy_inputs(_video_srcs(project))
         result = _ensure_current_proxies(project_id, project_dir, project, broadcaster)
     except Exception:
         result = {"scheduled": 0, "alreadyFresh": 0}

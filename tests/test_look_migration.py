@@ -689,3 +689,99 @@ def test_open_attaches_item_without_proxy_to_queued_encode(workspace, encodes, p
 
     assert len(encodes.proxy) == 1
     assert _item(_read(project_dir))["proxySrc"] == encodes.proxy[0][1]
+
+
+# ---------------------------------------------------------------------------
+# Provenance (PV42): a proxy is named after the file it is encoded from, and a
+# marked SDR-origin conversion's proxy is encoded from its original. These use
+# real (tiny) media, since provenance is read from the files.
+# ---------------------------------------------------------------------------
+
+def _media_ffmpeg(*args):
+    import subprocess
+    from lib.common import ffmpeg_bin
+    subprocess.run([ffmpeg_bin(), "-y", "-v", "error", *args], check=True, capture_output=True, timeout=60)
+
+
+@pytest.fixture(scope="module")
+def marked_media(tmp_path_factory):
+    """screen.mp4 (SDR bt709) and its marked HLG conversion by lib.normalize."""
+    import lib.normalize as nm
+
+    if not nm._has_zscale():
+        pytest.skip("ffmpeg with zscale not available")
+    d = Path(os.path.realpath(tmp_path_factory.mktemp("marked")))
+    _media_ffmpeg("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=1",
+                  "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "30",
+                  "-bsf:v", "h264_metadata=transfer_characteristics=1:colour_primaries=1:matrix_coefficients=1",
+                  str(d / "screen.mp4"))
+    marked = nm.normalized_output_path(str(d / "screen.mp4"), "hdr_hlg", tonemapped=False, sdr_stretch=True)
+    nm.normalize(str(d / "screen.mp4"), marked, "hdr_hlg")
+    return d, "screen.mp4", os.path.basename(marked)
+
+
+def _marked_project(workspace: Path, marked_media, **fields) -> tuple[Path, str, str]:
+    """A project whose one item has the marked conversion as `src`, with the
+    original beside it. Returns (project_dir, original, marked)."""
+    import shutil
+
+    d, original_name, marked_name = marked_media
+    project_dir = workspace / "proj"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    for name in (original_name, marked_name):
+        shutil.copy2(d / name, project_dir / name)
+    original, marked = str(project_dir / original_name), str(project_dir / marked_name)
+    item = {"id": "clip-0", "type": "video", "src": marked, "start": 0.0, "end": 1.0,
+            "inPoint": 0.0, "outPoint": 1.0, **fields}
+    _write(project_dir, {
+        "id": PID, "version": "0.2", "status": "draft", "projectType": "video",
+        "settings": {"colorSpace": "sdr_bt709", "resolution": [1080, 1920], "fps": 30},
+        "tracks": [[item]], "sources": [dict(item)],
+    })
+    return project_dir, original, marked
+
+
+def test_ensure_current_proxies_names_a_marked_src_proxy_after_its_original(workspace, encodes, marked_media):
+    from lib.proxy import proxy_path_for
+
+    project_dir, original, marked = _marked_project(workspace, marked_media)
+
+    async def _run():
+        result = projects_mod._ensure_current_proxies(PID, project_dir, _read(project_dir), None)
+        await _settle()
+        return result
+
+    assert asyncio.run(_run()) == {"scheduled": 1, "alreadyFresh": 0}
+    real = os.path.realpath(original)
+    assert encodes.proxy == [(real, proxy_path_for(real))]
+    project = _read(project_dir)
+    assert _item(project)["proxySrc"] == proxy_path_for(real)
+    assert project["sources"][0]["proxySrc"] == proxy_path_for(real)
+
+
+def test_look_migration_encodes_a_marked_src_stale_proxy_from_its_original(workspace, encodes, marked_media):
+    from lib.proxy import proxy_path_for
+
+    old_look = workspace / "proj" / "screen_normalized_hdr_hlg_w203_proxy_hable1_h264.mp4"
+    project_dir, original, marked = _marked_project(workspace, marked_media, proxySrc=str(old_look))
+    old_look.write_bytes(b"old look")
+
+    async def _run():
+        await projects_mod._migrate_project_look(PID, project_dir, _read(project_dir), None)
+        await _settle()
+
+    asyncio.run(_run())
+    real = os.path.realpath(original)
+    assert encodes.proxy == [(real, proxy_path_for(real))]
+    assert _item(_read(project_dir))["proxySrc"] == proxy_path_for(real)
+
+
+def test_proxy_write_back_reaches_an_item_whose_marked_src_maps_to_that_proxy(workspace, marked_media):
+    from lib.proxy import proxy_path_for
+
+    project_dir, original, marked = _marked_project(workspace, marked_media)
+    out = proxy_path_for(os.path.realpath(original))
+
+    edits = projects_mod._proxy_items_for(project_dir / "project.json", out, out)
+
+    assert ("clip-0", marked, "proxySrc", out) in edits

@@ -20,9 +20,11 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+import lib.color_provenance as cp
 import lib.ingest as ing
 from lib.ingest import ingest_source
 from lib.normalize import normalized_output_path
+from lib.proxy import proxy_path_for
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 
@@ -87,6 +89,18 @@ def _sdr_conformant_info():
         "display_width": 1920,
         "display_height": 1080,
     }
+
+
+def _provenance_probes(monkeypatch, *, default, by_path=None):
+    """Make lib.color_provenance (the proxy's provenance resolver) probe the
+    fake files these tests stage: `by_path` maps a path to its color_transfer,
+    anything else probes as `default`. No marker, one fingerprint."""
+    by_path = by_path or {}
+
+    def probe(path):
+        return cp.Probe(by_path.get(str(path), default), "", 1920, 1080, "30/1", 5.0)
+
+    monkeypatch.setattr(cp, "probe_media", probe)
 
 
 # ── validation ────────────────────────────────────────────────────────────────
@@ -189,7 +203,7 @@ def test_eager_hdr_into_sdr_transcodes_with_tonemapped_master(tmp_path, monkeypa
     assert clip["proxySrc"] == proxy_calls[0]["out"]
 
 
-def _sdr_into_hdr(tmp_path, monkeypatch, *, fail=False):
+def _sdr_into_hdr(tmp_path, monkeypatch, *, fail=False, proxy=False):
     """Eager-ingest an SDR source into an hdr_hlg project with normalize()
     stubbed. Returns (clip, staged, normalize calls, get_duration paths)."""
     monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
@@ -212,7 +226,7 @@ def _sdr_into_hdr(tmp_path, monkeypatch, *, fail=False):
         return out
 
     monkeypatch.setattr(ing, "normalize", fake_normalize)
-    clip = ingest_source(str(proj), str(src), "hdr_hlg", proxy=False)
+    clip = ingest_source(str(proj), str(src), "hdr_hlg", proxy=proxy)
     return clip, str(proj / "screen.mp4"), normalize_calls, durations
 
 
@@ -238,6 +252,59 @@ def test_eager_sdr_into_hdr_failed_conversion_records_no_cache(tmp_path, monkeyp
     assert "normalizedInPoint" not in clip
 
 
+def test_eager_sdr_into_hdr_proxy_comes_from_the_original_ungraded(tmp_path, monkeypatch):
+    """PV42: the SDR clip keeps its original as `src`, so the proxy is encoded
+    from that original with no grade. The project being HDR is no reason to
+    grade it: the grade is for HDR-origin footage only."""
+    _provenance_probes(monkeypatch, default="bt709")
+    proxy_calls = []
+
+    def fake_make_proxy(src_, out, *, tonemap, info):
+        proxy_calls.append((src_, out, tonemap))
+        return out
+
+    monkeypatch.setattr(ing, "make_proxy", fake_make_proxy)
+    clip, staged, calls, _ = _sdr_into_hdr(tmp_path, monkeypatch, proxy=True)
+
+    assert len(calls) == 1 and clip["src"] == staged and clip["normalizedSrc"]
+    assert proxy_calls == [(staged, proxy_path_for(staged), False)]
+    assert clip["proxySrc"] == proxy_path_for(staged)
+
+
+def test_eager_hdr_cross_conversion_proxy_reads_the_masters_own_probe(tmp_path, monkeypatch):
+    """An HLG source into an hdr_pq project: the proxy is encoded from the PQ
+    master, so the `info` it is built from is the master's probe (the grade's
+    PQ pre-step depends on it), not the HLG original's."""
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
+    src = tmp_path / "cam.mov"
+    src.write_bytes(b"fake")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    staged = str(proj / "cam.mov")
+    master = normalized_output_path(staged, "hdr_pq", tonemapped=False)
+    infos = {staged: _hdr_info("arib-std-b67"), master: _hdr_info("smpte2084")}
+    monkeypatch.setattr(ing, "probe_video", lambda p: infos[p])
+    monkeypatch.setattr(ing, "get_duration", lambda _p: 5.0)
+    _provenance_probes(monkeypatch, default="smpte2084", by_path={staged: "arib-std-b67"})
+
+    def fake_normalize(inp, out, cs, info=None):
+        Path(out).write_bytes(b"master")
+        return out
+
+    proxy_calls = []
+
+    def fake_make_proxy(src_, out, *, tonemap, info):
+        proxy_calls.append((src_, tonemap, info["color_transfer"]))
+        return out
+
+    monkeypatch.setattr(ing, "normalize", fake_normalize)
+    monkeypatch.setattr(ing, "make_proxy", fake_make_proxy)
+    clip = ingest_source(str(proj), str(src), "hdr_pq")
+
+    assert clip["src"] == master
+    assert proxy_calls == [(master, True, "smpte2084")]
+
+
 def test_lazy_hdr_into_sdr_proxy_tonemaps_no_transcode(tmp_path, monkeypatch):
     """HDR source into an sdr_bt709 project (lazy): no transcode; the proxy is
     built from the untouched HDR original with tonemap=True."""
@@ -250,6 +317,7 @@ def test_lazy_hdr_into_sdr_proxy_tonemaps_no_transcode(tmp_path, monkeypatch):
     info = _hdr_info("smpte2084")
     monkeypatch.setattr(ing, "probe_video", lambda _p: info)
     monkeypatch.setattr(ing, "get_duration", lambda _p: 5.0)
+    _provenance_probes(monkeypatch, default="smpte2084")
 
     def fail_normalize(*a, **k):
         raise AssertionError("lazy mode must not transcode")

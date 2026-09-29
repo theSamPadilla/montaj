@@ -8,11 +8,17 @@ Render never touches proxies — this module only ever produces a preview-track
 artifact (``proxySrc`` on the project item), never anything render reads.
 
 Two arms, selected by the caller via `tonemap`:
-  - Eager (``tonemap=False``): source is already an SDR master (post-
-    normalize.py conform pass) — plain scale, no color conversion.
-  - Lazy (``tonemap=True``): source is the original HDR file — scale is
+  - Plain (``tonemap=False``): the input is SDR (an SDR original, or a master
+    conformed to SDR): plain scale, no color conversion.
+  - Graded (``tonemap=True``): the input is HDR-origin footage; scale is
     composed AHEAD of the HDR→SDR tonemap chain (SP1's scale-first finding:
     tonemapping a smaller frame is faster and produces the same result).
+
+Callers take both the input and `tonemap` from
+lib/color_provenance.proxy_source_for (PV42): the grade is for HDR-origin
+footage only, and an SDR clip converted into an HDR project is encoded from its
+SDR original, ungraded. The graded arm also runs only when `info` says the
+input itself is HDR, which catches a caller that still asks wrongly.
 
 Reuses lib/normalize.py's tonemap filter builder and atomic-write/temp-file
 machinery rather than reinventing either.
@@ -28,7 +34,7 @@ from common import ffmpeg_bin, get_duration, progress
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types.colorspace` works
 from lib.normalize import _build_tonemap_vf_to_sdr, _run_atomic_encode, _sweep_stale_temps, _tmp_for
 from lib.look import MASTER_LOOK
-from lib.types.colorspace import detect_from_transfer
+from lib.types.colorspace import detect_from_transfer, is_hdr
 
 PROXY_LOOK = MASTER_LOOK
 """Look-version tag stamped into every proxy filename. Re-exports lib/look.py's
@@ -127,7 +133,9 @@ def _build_proxy_cmd(input_path: str, out_path: str, *, tonemap: bool, info: dic
     """Build the ffmpeg command for the h264-crf20-fast proxy encode.
 
     `tonemap=True` composes the scale filter AHEAD of
-    `_build_tonemap_vf_to_sdr()`'s zscale chain (scale-first ordering).
+    `_build_tonemap_vf_to_sdr()`'s zscale chain (scale-first ordering), when
+    `info["color_transfer"]` is HDR. On an input that is not HDR it logs one
+    warning and takes the plain arm: the grade is for HDR-origin footage only.
     `tonemap=False` is a plain scale plus a pix_fmt normalize — the source is
     already SDR (no color conversion needed) but may still be 10-bit/4:2:2.
 
@@ -138,8 +146,12 @@ def _build_proxy_cmd(input_path: str, out_path: str, *, tonemap: bool, info: dic
     scale = "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'"
 
     used_fallback_tonemap = False
+    source_color_space = detect_from_transfer(info.get("color_transfer"))
+    if tonemap and not is_hdr(source_color_space):
+        progress(f"proxy: {os.path.basename(input_path)} is not HDR "
+                 f"({info.get('color_transfer') or 'untagged'}), encoding it without the grade")
+        tonemap = False
     if tonemap:
-        source_color_space = detect_from_transfer(info.get("color_transfer"))
         tonemap_vf, used_fallback_tonemap = _build_tonemap_vf_to_sdr(source_color_space)
         vf = f"{scale},{tonemap_vf},format=yuv420p"
     else:
@@ -194,10 +206,11 @@ def _source_duration(src: str, info: dict) -> float:
 def make_proxy(src: str, out: str, *, tonemap: bool, info: dict) -> str:
     """Encode the full-source editing proxy for `src` to `out`.
 
-    `tonemap`: False for an already-SDR master (eager path, no second color
-    decision); True for an HDR original (lazy path, scale-first tonemap).
-    `info`: ffprobe info dict (probe_video()'s shape) — used for has_audio
-    (silent-source handling) and color_transfer (tonemap arm only).
+    `tonemap`: from lib/color_provenance.proxy_source_for, with `src` the
+    input it names: True only for HDR-origin footage (scale-first tonemap),
+    False for SDR. The graded arm also needs `info` to say `src` is HDR.
+    `info`: ffprobe info dict (probe_video()'s shape) of `src` itself, used
+    for has_audio (silent-source handling) and color_transfer (the grade).
 
     Writes atomically (per-pid temp + os.replace, via normalize.py's
     machinery) so a killed/timed-out encode never poisons `out`. Timeout

@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works
 from common import get_duration
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types...` works
+from lib.color_provenance import proxy_source_for
 from lib.normalize import probe_video, is_normalized, normalized_output_path, normalize
 from lib.proxy import proxy_path_for, is_proxy_fresh, make_proxy
 from lib.types.colorspace import detect_from_transfer, is_hdr, require_valid_key
@@ -129,16 +130,9 @@ def ingest_source(
     clip["start"] = 0.0
     clip["end"] = 0.0
 
-    if normalize_mode == "lazy":
-        # No transcode — src stays the staged original; the proxy tonemaps from
-        # the original's own (possibly HDR) transfer, encoded from its realpath
-        # so symlinked fan-out children converge on one shared proxy (init's
-        # lazy-arm contract).
-        proxy_src = os.path.realpath(staged_src)
-        proxy_tonemap = is_hdr(detect_from_transfer(info.get("color_transfer"))) if info else False
-    else:
+    # Lazy mode never transcodes: `src` stays the staged original.
+    if normalize_mode != "lazy":
         # Eager: conform non-normalized sources to the project color space.
-        master_color_space = color_space
         if info is not None and not is_normalized(staged_src, info, color_space):
             tonemapped = (
                 is_hdr(detect_from_transfer(info.get("color_transfer")))
@@ -160,14 +154,8 @@ def ingest_source(
                 else:
                     clip["src"] = out
             except SystemExit:
-                # normalize() fails via fail() -> SystemExit; keep the original
-                # src and tag the proxy from the source's real (HDR) color.
-                master_color_space = detect_from_transfer(info.get("color_transfer"))
-        # Proxy is encoded from the post-normalize master, so it only tonemaps
-        # when that master is itself HDR (an eager HDR-native project, or a
-        # transcode that fell back to the untouched HDR original).
-        proxy_src = clip["src"]
-        proxy_tonemap = is_hdr(master_color_space)
+                # normalize() fails via fail() -> SystemExit; keep the original src.
+                pass
 
     # Source duration — computed against the final src (post-normalize in eager).
     try:
@@ -185,10 +173,26 @@ def ingest_source(
             clip["sourceCreatedAt"] = info["creation_time"]
 
     if proxy and info is not None:
+        # The proxy's input and grade come from the provenance of the final
+        # `src` (PV42): an SDR original (an SDR clip in an HDR project keeps it
+        # as `src`, T3) or a master conformed to SDR is encoded ungraded; HDR-
+        # origin footage is graded. A marked SDR-origin conversion is encoded
+        # from its original. The proxy is named after the file it reads.
+        # Lazy encodes from the realpath so symlinked fan-out children converge
+        # on one shared proxy (init's lazy-arm contract).
+        proxy_src, proxy_tonemap = proxy_source_for(clip["src"])
+        if normalize_mode == "lazy":
+            proxy_src = os.path.realpath(proxy_src)
         proxy_out = proxy_path_for(proxy_src)
         try:
             if not is_proxy_fresh(proxy_out, proxy_src):
-                make_proxy(proxy_src, proxy_out, tonemap=proxy_tonemap, info=info)
+                # `info` must describe the file the proxy reads (its
+                # color_transfer builds the grade): re-probe when that is not
+                # the staged file.
+                proxy_info = info
+                if os.path.realpath(proxy_src) != os.path.realpath(staged_src):
+                    proxy_info = probe_video(proxy_src) or info
+                make_proxy(proxy_src, proxy_out, tonemap=proxy_tonemap, info=proxy_info)
             clip["proxySrc"] = proxy_out
         except (Exception, SystemExit):
             pass  # proxies are an enhancement, never a blocker (mirrors init)

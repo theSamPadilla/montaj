@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.common import SAFE_NAME, fail, ffprobe_bin, progress
 from lib.remote_io import fetch_to_disk, parse_allowed_hosts
+from lib.color_provenance import proxy_source_for
 from lib.normalize import normalize, normalized_output_path, is_normalized, probe_video
 from lib.proxy import is_proxy_fresh, make_proxy, proxy_path_for
 from lib.types.project import normalize_project_type
@@ -767,9 +768,19 @@ def main():
             progress(f"[{clip_id}] duration unknown for {os.path.basename(probe_path)}"
                      f": the editor will offer a retry")
 
-    def _schedule_proxy(clip: dict, clip_id: str, src: str, *, tonemap: bool, info: dict) -> None:
-        """Encode (or reuse) the full-source editing proxy for `src`, writing
-        `clip["proxySrc"]` on success.
+    def _schedule_proxy(clip: dict, clip_id: str, src: str, *, info: dict, probed: str,
+                        by_realpath: bool = False) -> None:
+        """Encode (or reuse) the full-source editing proxy for an item whose
+        `src` is `src`, writing `clip["proxySrc"]` on success.
+
+        What the proxy is encoded from, and whether it is graded, is `src`'s
+        provenance (lib/color_provenance.proxy_source_for, PV42): HDR-origin
+        footage is graded, SDR footage is not (whatever the project's colour
+        space), and a marked SDR-origin conversion is encoded from its
+        original. The proxy is named after the file it reads (that file's
+        realpath when `by_realpath`). `info` is the probe of `probed`, the
+        staged file; when the proxy reads another file it is re-probed, since
+        `info`'s color_transfer builds the grade.
 
         Proxies are an enhancement, never a blocker: any failure here is
         reported via progress() and swallowed — the clip simply keeps no
@@ -792,14 +803,20 @@ def main():
         """
         if not proxy_enabled:
             return
-        proxy_out = proxy_path_for(src)
         try:
-            if defer_proxies and not is_proxy_fresh(proxy_out, src):
+            proxy_in, tonemap = proxy_source_for(src)
+            if by_realpath:
+                proxy_in = os.path.realpath(proxy_in)
+            proxy_out = proxy_path_for(proxy_in)
+            if defer_proxies and not is_proxy_fresh(proxy_out, proxy_in):
                 return
             with _proxy_lock_for(proxy_out):
-                if not is_proxy_fresh(proxy_out, src):
+                if not is_proxy_fresh(proxy_out, proxy_in):
+                    proxy_info = info
+                    if os.path.realpath(proxy_in) != os.path.realpath(probed):
+                        proxy_info = probe_video(proxy_in) or info
                     with _proxy_encode_sem:
-                        make_proxy(src, proxy_out, tonemap=tonemap, info=info)
+                        make_proxy(proxy_in, proxy_out, tonemap=tonemap, info=proxy_info)
             clip["proxySrc"] = proxy_out
         except (Exception, SystemExit):
             progress(f"[{clip_id}] proxy FAILED — editor will play the master")
@@ -834,7 +851,9 @@ def main():
             # conforms a master, so there's no post-normalize src to encode
             # from. Reuse the unconditional probe pass above (init.py's single
             # ffprobe-per-clip contract); only re-probe on an earlier probe
-            # failure (cache miss), same idiom as the eager path below.
+            # failure (cache miss), same idiom as the eager path below. The
+            # provenance resolver in _schedule_proxy reads its own (cached)
+            # probe: the container comment and fingerprint probe_video lacks.
             info = probe_cache.get(clip_path) or probe_video(clip_path)
             if info is not None:
                 # Recording timestamp (ISO 8601), when the container carries
@@ -844,15 +863,14 @@ def main():
                 # silently degrades to a no-op.
                 if info.get("creation_time"):
                     clip["sourceCreatedAt"] = info["creation_time"]
-                tonemap = is_hdr(detect_from_transfer(info.get("color_transfer")))
                 # Lazy clips are commonly --symlink-clips'd into a shared
                 # source (clips-workflow fan-out — see skills/find_clips):
                 # each child project stages its OWN local symlink under its
                 # own basename-collision-avoided name, so clip_path differs
                 # per child even though the underlying file is identical.
-                # Resolve to the real file so every child names (and races
-                # on) the SAME proxy path — that's what lets is_proxy_fresh()
-                # + make_proxy()'s atomic os.replace (see lib/proxy.py)
+                # Resolve to the real file (by_realpath) so every child names
+                # (and races on) the SAME proxy path: that's what lets
+                # is_proxy_fresh() + make_proxy()'s atomic os.replace (see lib/proxy.py)
                 # converge on ONE shared proxy instead of one redundant proxy
                 # per child, per the one-proxy-serves-every-child contract on
                 # lib/proxy.proxy_path_for. _proxy_encode_sem/_proxy_locks
@@ -874,8 +892,8 @@ def main():
                 # ad-hoc `--clips <outside path> --symlink-clips` call never
                 # litters the user's own footage folders and clean --proxies
                 # can always find the artifact (SP3 fix S7).
-                _schedule_proxy(clip, clip_id, os.path.realpath(clip_path), tonemap=tonemap,
-                                info=info)
+                _schedule_proxy(clip, clip_id, clip_path, info=info, probed=clip_path,
+                                by_realpath=True)
             return
 
         t0 = time.monotonic()
@@ -904,16 +922,6 @@ def main():
                  f"{info.get('color_transfer', '?') if info else '?'} "
                  f"{info['pix_fmt'] if info else '?'} "
                  f"audio={info.get('audio_sample_rate') if info else '?'})")
-
-        # The color space of whatever clip["src"] ends up pointing at below —
-        # used to decide the preview proxy's tonemap arm. In the normal
-        # "skip"/"transcode" cases this equals project_color_space by
-        # construction: is_normalized() only lets "skip" through when the
-        # source already matches the project's color space, and normalize()
-        # conforms a "transcode" source to it. Only the transcode-FAILED
-        # fallback below (still the untouched original) can disagree, so it's
-        # corrected there.
-        master_color_space = project_color_space
 
         if path_kind == "transcode":
             tonemapped = (
@@ -945,20 +953,16 @@ def main():
             except SystemExit:
                 # normalize calls fail() which raises SystemExit — fall back to original
                 progress(f"[{clip_id}] normalize FAILED, falling back to original src")
-                master_color_space = detect_from_transfer(info.get("color_transfer"))
 
-        # Full-source editing proxy, encoded from the current (post-normalize)
-        # clip["src"]. Policy v3: the editor preview must ALWAYS show montaj's
-        # own SDR curve, never the browser's own ad-hoc HDR tone-mapping — so
-        # the proxy tone-maps whenever the master feeding it is HDR, regardless
-        # of the project's own working color space. Previously this was
-        # unconditionally tonemap=False, which left an EAGER-HDR project (an
-        # HDR-native master, e.g. all-iPhone-HLG import) with an un-tone-mapped
-        # HDR AV1 proxy, leaving the browser to improvise its own tone-mapping
-        # for preview. Mirrors the lazy arm's tonemap decision above — just
-        # derived from master_color_space instead of a fresh probe, since the
-        # master here may be the post-normalize conformed file rather than the
-        # original.
+        # Full-source editing proxy for the final clip["src"]: the master
+        # normalize conformed, or the staged original (the skip path, a failed
+        # transcode, or an SDR clip in an HDR project, which keeps its original
+        # as `src` under PV42). Policy v3: the editor preview must ALWAYS show montaj's
+        # own SDR curve, never the browser's own ad-hoc HDR tone-mapping, so
+        # HDR-origin footage is graded whatever the project's working colour
+        # space. Whether the footage is HDR-origin is its provenance, not the
+        # project's colour space: an SDR original in an HDR project is encoded
+        # ungraded (_schedule_proxy asks lib/color_provenance).
         # Skipped when probing failed (no info to build the encode from).
 
         # Cache source duration so the UI can clamp edits against it. Taken from
@@ -969,7 +973,7 @@ def main():
         _resolve_source_duration(clip, clip_id, clip_path, clip["src"])
 
         if info is not None:
-            _schedule_proxy(clip, clip_id, clip["src"], tonemap=is_hdr(master_color_space), info=info)
+            _schedule_proxy(clip, clip_id, clip["src"], info=info, probed=clip_path)
 
         elapsed = time.monotonic() - t0
         progress(f"[{clip_id}] {path_kind} done in {elapsed:.2f}s")
