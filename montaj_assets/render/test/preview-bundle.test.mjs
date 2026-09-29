@@ -6,14 +6,17 @@
 // esbuild options so imports work there too. These tests run the bundle inside
 // a copy of that wrapper, with real React 19 and real
 // makeOverlayGlobals('preview'), and render the result with react-dom/server.
-import { test, describe, before } from 'node:test'
+import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'child_process'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, realpathSync } from 'fs'
 import { join, dirname } from 'path'
+import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { makeOverlayGlobals } from 'montaj-overlay-runtime'
+import { bundleComponent, cleanupBundle } from '../bundle.js'
 import {
   bundleOverlayForPreview,
   PreviewBuildError,
@@ -57,6 +60,50 @@ async function buildError(rel) {
   }
   assert.fail(`${rel} was expected to fail to build`)
 }
+
+// Render's side of a parity check: bundle `componentPath` exactly as render
+// does, through bundleComponent. Resolves on success (and cleans up), rejects
+// with esbuild's error on failure. bundleComponent leaves its work dir behind
+// when esbuild fails, so TMPDIR points into a dir this file owns and removes;
+// os.tmpdir() reads TMPDIR on every call, and node --test gives each test file
+// its own process, so no other file sees the change.
+let renderTmp
+async function renderBundle(componentPath) {
+  renderTmp ??= mkdtempSync(join(tmpdir(), 'montaj-preview-parity-'))
+  const prev = process.env.TMPDIR
+  process.env.TMPDIR = renderTmp
+  try {
+    const { workDir } = await bundleComponent({
+      componentPath, props: {}, fps: 30, durationFrames: 30, width: 64, height: 64,
+    })
+    cleanupBundle(workDir)
+  } finally {
+    if (prev === undefined) delete process.env.TMPDIR
+    else process.env.TMPDIR = prev
+  }
+}
+after(() => { if (renderTmp) rmSync(renderTmp, { recursive: true, force: true }) })
+
+async function renderError(componentPath) {
+  try {
+    await renderBundle(componentPath)
+  } catch (err) {
+    return err
+  }
+  assert.fail(`render was expected to reject ${componentPath}`)
+}
+
+// The seven packages overlay-runtime depends on that render cannot resolve
+// from a user's overlay (they are not in render's node_modules).
+const RENDER_UNRESOLVABLE = [
+  'three',
+  '@react-three/fiber',
+  'recharts',
+  '@phosphor-icons/react',
+  '@fortawesome/react-fontawesome',
+  '@fortawesome/free-solid-svg-icons',
+  '@fortawesome/free-brands-svg-icons',
+]
 
 describe('preview bundle: the import chain', () => {
   let out
@@ -155,23 +202,38 @@ describe('preview bundle: shimmed packages map onto the preview globals', () => 
     const html = renderToStaticMarkup(makeFactory(code)(0, { seen: s => { seen = s } }))
     assert.equal(html, '<div>2</div>')
     const g = GLOBALS
-    assert.equal(seen.THREE.Vector3, g.THREE.Vector3, 'import * as THREE from three')
-    assert.equal(seen.Vector3, g.THREE.Vector3, 'import { Vector3 } from three')
+    assert.equal(seen.React, React, 'react default')
+    assert.equal(seen.useMemo, React.useMemo, 'react named')
+    assert.equal(typeof seen.jsx, 'function', 'react/jsx-runtime')
+    assert.equal(typeof seen.jsxDEV, 'function', 'react/jsx-dev-runtime')
     assert.equal(seen.interpolate, g.interpolate, 'montaj/render')
     assert.equal(seen.useThreeFrame, g.useThreeFrame, 'montaj/render useThreeFrame is the preview one')
-    assert.equal(seen.springStep, g.springStep, 'montaj-overlay-runtime')
-    assert.equal(seen.RuntimeCanvas, g.Canvas, 'montaj-overlay-runtime Canvas')
-    assert.equal(seen.FaIcon, g.FaIcon, 'montaj-overlay-runtime FaIcon')
-    assert.equal(seen.Canvas, g.Canvas, '@react-three/fiber Canvas is the preview wrapper')
-    assert.equal(seen.BarChart, g.BarChart, 'recharts')
-    assert.equal(seen.ResponsiveContainer, g.ResponsiveContainer, 'recharts')
-    assert.equal(seen.Star, g.Ph.Star, '@phosphor-icons/react named')
-    assert.equal(seen.Phosphor.Star, g.Ph.Star, '@phosphor-icons/react namespace')
-    assert.equal(seen.FontAwesomeIcon, g.FaIcon, '@fortawesome/react-fontawesome')
-    assert.equal(seen.faStar, g.FaSolid.faStar, 'free-solid-svg-icons')
-    assert.equal(seen.faGithub, g.FaBrands.faGithub, 'free-brands-svg-icons')
+    for (const name of ['springStep', 'Canvas', 'FaIcon', 'THREE', 'Ph', 'FaSolid', 'FaBrands', 'BarChart']) {
+      assert.equal(seen[name], g[name], `montaj-overlay-runtime ${name}`)
+    }
     assert.deepEqual(inputs, [join(FIX, 'shims.jsx')], 'no virtual module and no engine file is an input')
     assert.ok(code.length < 20_000, `no library source bundled (${code.length} bytes)`)
+  })
+
+  test('the shimmed specifiers are exactly the ones render resolves', () => {
+    assert.deepEqual([...SHIMMED_SPECIFIERS].sort(), [
+      'montaj-overlay-runtime',
+      'montaj/render',
+      'react',
+      'react-dom',
+      'react-dom/client',
+      'react/jsx-dev-runtime',
+      'react/jsx-runtime',
+    ])
+    for (const spec of RENDER_UNRESOLVABLE) assert.ok(!SHIMMED_SPECIFIERS.includes(spec), spec)
+  })
+
+  test('render resolves every shimmed specifier (shims.jsx builds through bundleComponent)', async () => {
+    // shims.jsx must import every shimmed specifier, or this proves less than it says.
+    const src = readFileSync(join(FIX, 'shims.jsx'), 'utf8')
+    const imported = [...src.matchAll(/^import\s[^'"]*['"]([^'"]+)['"]/gm)].map(m => m[1]).sort()
+    assert.deepEqual(imported, [...SHIMMED_SPECIFIERS].sort())
+    await renderBundle(join(FIX, 'shims.jsx'))
   })
 
   test('the shim tables match what the wrapper really has in scope', async () => {
@@ -197,11 +259,42 @@ describe('preview bundle: build failures', () => {
     assert.equal(err.message, `${join(FIX, 'remotion.jsx')}:1:32: Could not resolve "remotion"`)
   })
 
-  test('a name the preview lacks from a subset package fails, naming it', async () => {
-    const err = await buildError('fiber-missing.jsx')
+  test('`import * as THREE from \'three\'` fails in the preview naming three, and render rejects it too', async () => {
+    const file = join(FIX, 'three-import.jsx')
+    const err = await buildError('three-import.jsx')
     assert.ok(err instanceof PreviewBuildError, String(err))
-    assert.match(err.message, /fiber-missing\.jsx:1:9: /)
-    assert.match(err.message, /No matching export in "montaj-preview-globals:@react-three\/fiber" for import "useFrame"/)
+    assert.equal(err.message, `${file}:4:23: Could not resolve "three"`)
+    const renderErr = await renderError(file)
+    assert.equal(renderErr.errors?.[0]?.text, 'Could not resolve "three"', String(renderErr))
+    assert.match(renderErr.errors[0].location.file, /three-import\.jsx$/)
+  })
+
+  test('every package render cannot resolve fails the same way in both', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'montaj-preview-unresolvable-'))
+    try {
+      for (const spec of RENDER_UNRESOLVABLE) {
+        const file = join(realpathSync(dir), `${spec.replace(/[@/]/g, '_')}.jsx`)
+        writeFileSync(file, `import * as M from '${spec}'\nexport default function P() { return <div>{Object.keys(M).length}</div> }\n`)
+        let previewErr
+        try { await bundleOverlayForPreview(file) } catch (e) { previewErr = e }
+        assert.ok(previewErr instanceof PreviewBuildError, `${spec}: preview built it`)
+        assert.equal(previewErr.message, `${file}:1:19: Could not resolve "${spec}"`)
+        const renderErr = await renderError(file)
+        assert.equal(renderErr.errors?.[0]?.text, `Could not resolve "${spec}"`, `${spec}: ${renderErr}`)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a name the preview lacks from a shimmed package fails naming it, and render rejects it too', async () => {
+    const file = join(FIX, 'missing-export.jsx')
+    const err = await buildError('missing-export.jsx')
+    assert.ok(err instanceof PreviewBuildError, String(err))
+    assert.match(err.message, /missing-export\.jsx:3:9: /)
+    assert.match(err.message, /No matching export in "montaj-preview-globals:montaj\/render" for import "springStep"/)
+    const renderErr = await renderError(file)
+    assert.match(renderErr.errors?.[0]?.text ?? String(renderErr), /No matching export in ".*core\/index\.js" for import "springStep"/)
   })
 
   test('a relative path is refused before esbuild sees it', async () => {

@@ -21,10 +21,11 @@
  *     existing wrapper and reads `__montajOverlay.default`.
  *   - Classic JSX against the wrapper's `React` parameter.
  *   - The `montaj-preview-globals` plugin: the packages the wrapper already has
- *     in scope (React, THREE, the icon sets, the charts, the montaj helpers)
- *     become virtual modules that read those in-scope identifiers. The bundle
- *     therefore never carries a second React (hooks would break) and never
- *     re-evaluates a library on every frame call.
+ *     in scope (React, the JSX runtimes, `montaj/render`,
+ *     `montaj-overlay-runtime`) become virtual modules that read those in-scope
+ *     identifiers. The bundle therefore never carries a second React (hooks
+ *     would break) and never re-evaluates the runtime on every frame call.
+ *     The list is exactly the set render can resolve; see SHIMMED_SPECIFIERS.
  *
  * The free identifiers the overlay reads (`frame`, `React`, `THREE`, …) are
  * left unbound by the bundle, so they bind to the wrapper's parameters. esbuild
@@ -55,23 +56,35 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 export const PREVIEW_GLOBAL_NAME = '__montajOverlay'
 export const PREVIEW_NAMESPACE   = 'montaj-preview-globals'
 
+// WHICH SPECIFIERS ARE SHIMMED, AND WHY EXACTLY THESE
+//
+// The preview shims a specifier only when render resolves it too, so that an
+// import behaves the same in both: it works in both, or it fails in both with
+// the same "Could not resolve" error. From a user's overlay, render resolves
+// `react` and its subpaths, `react-dom` and `react-dom/client` (render's own
+// node_modules, and its aliases), `montaj/render` (its alias onto core/) and
+// `montaj-overlay-runtime` (a package linked into render's node_modules).
+//
+// It does NOT resolve three, @react-three/fiber, recharts, @phosphor-icons/react
+// or the @fortawesome packages: they are dependencies of overlay-runtime and
+// live in overlay-runtime/node_modules, which is not on render's search path.
+// So they are deliberately NOT shimmed here, and an overlay importing one fails
+// in the preview exactly as its export would. Overlays reach those libraries
+// through the globals (THREE, Canvas, Ph, FaIcon, FaSolid, FaBrands, the chart
+// components) or through `montaj-overlay-runtime`, which carries the same
+// objects. test/preview-bundle.test.mjs builds both sides with bundleComponent
+// to pin this; if render ever learns to resolve one of those packages, add it
+// here in the same change.
+
 /**
  * Packages whose preview global IS the whole package. Each becomes a CommonJS
  * virtual module (`module.exports = <global>`), so default, namespace and
  * named imports all work, as they do against the real package.
  *
  *   React     the wrapper's first parameter
- *   THREE     overlay-runtime: `import * as THREE from 'three'`
- *   Ph        overlay-runtime/icons.js: `export * as Ph from '@phosphor-icons/react'`
- *   FaSolid   overlay-runtime/icons.js: `export * as FaSolid from '@fortawesome/free-solid-svg-icons'`
- *   FaBrands  overlay-runtime/icons.js: `export * as FaBrands from '@fortawesome/free-brands-svg-icons'`
  */
 export const WHOLE_PACKAGE_GLOBALS = Object.freeze({
-  'react':                              'React',
-  'three':                              'THREE',
-  '@phosphor-icons/react':              'Ph',
-  '@fortawesome/free-solid-svg-icons':  'FaSolid',
-  '@fortawesome/free-brands-svg-icons': 'FaBrands',
+  'react': 'React',
 })
 
 // Every key of overlay-runtime's makeOverlayGlobals('preview'). A drift test
@@ -81,11 +94,6 @@ const OVERLAY_GLOBAL_NAMES = [
   'captionOuterStyle', 'captionInnerStyle',
   'useThreeFrame', 'Canvas', 'useCanvas2DFrame',
   'THREE', 'Ph', 'FaIcon', 'FaSolid', 'FaBrands',
-  'BarChart', 'Bar', 'LineChart', 'Line', 'PieChart', 'Pie', 'Cell',
-  'XAxis', 'YAxis', 'CartesianGrid', 'Tooltip', 'Legend', 'ResponsiveContainer',
-]
-
-const RECHARTS_NAMES = [
   'BarChart', 'Bar', 'LineChart', 'Line', 'PieChart', 'Pie', 'Cell',
   'XAxis', 'YAxis', 'CartesianGrid', 'Tooltip', 'Legend', 'ResponsiveContainer',
 ]
@@ -100,19 +108,13 @@ const identity = names => Object.freeze(Object.fromEntries(names.map(n => [n, n]
  *
  *   montaj/render           exactly what render's core/index.js exports
  *   montaj-overlay-runtime  the preview globals (not the make* factories)
- *   @react-three/fiber      only `Canvas`, and it is the preview's wrapper
- *   recharts                the chart components the globals carry
- *   @fortawesome/react-fontawesome  `FontAwesomeIcon`, which is `FaIcon`
- *   react-dom, react-dom/client     nothing: the wrapper has no ReactDOM
+ *   react-dom, react-dom/client  nothing: the wrapper has no ReactDOM
  */
 export const SUBSET_PACKAGE_GLOBALS = Object.freeze({
-  'montaj/render': identity(['interpolate', 'spring', 'useThreeFrame', 'captionOuterStyle', 'captionInnerStyle']),
-  'montaj-overlay-runtime':         identity(OVERLAY_GLOBAL_NAMES),
-  '@react-three/fiber':             identity(['Canvas']),
-  'recharts':                       identity(RECHARTS_NAMES),
-  '@fortawesome/react-fontawesome': Object.freeze({ FontAwesomeIcon: 'FaIcon' }),
-  'react-dom':                      Object.freeze({}),
-  'react-dom/client':               Object.freeze({}),
+  'montaj/render':          identity(['interpolate', 'spring', 'useThreeFrame', 'captionOuterStyle', 'captionInnerStyle']),
+  'montaj-overlay-runtime': identity(OVERLAY_GLOBAL_NAMES),
+  'react-dom':              Object.freeze({}),
+  'react-dom/client':       Object.freeze({}),
 })
 
 // The automatic JSX runtime, built on the wrapper's React. Only reached when a
