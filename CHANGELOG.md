@@ -2,8 +2,7 @@
 
 ## Unreleased
 
-- **Added: overlays can import shared files.** The editor preview now follows an overlay's imports the way export always did, and refreshes when an imported file changes.
-- **Fixed: frame samples went stale after a file an overlay imports was edited.** The sample cache now checks every imported file.
+- **Added: `GET /api/overlays/bundle` bundles an overlay for a host editor's preview.** It uses the renderer's own esbuild config and returns the code plus every file the overlay imports, so a preview can follow imports the way export always has. The file watcher now also reports `.js`, `.mjs`, `.ts`, `.tsx` and `.json` changes and atomic-rename saves. The bundled OSS UI's preview does not use it yet and still strips imports.
 - **Added: the Editor controls modal shows the editor's version.** The footer's bottom right reads `vX.Y.Z`, taken from `@bycrux/editor`'s own `package.json`.
 - **Changed: the editor's "Generate captions" counts only clips the server can hear.** A timeline whose only video is muted, or on a muted or disabled track, no longer enables the button, matching what the caption job transcribes.
 - **Fixed: a regression from the previous release's blank-project change, which saved Media as the left rail's tab for every later project.** The switch to Media no longer writes to storage.
