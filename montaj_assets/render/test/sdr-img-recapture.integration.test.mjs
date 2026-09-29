@@ -32,6 +32,11 @@ const RENDER_JS = process.env.MONTAJ_RENDER_JS || path.join(HERE, '..', 'render.
 const MONTAJ_ROOT = path.resolve(HERE, '..', '..', '..')
 const PYTHON = process.env.MONTAJ_PYTHON || 'python3'
 
+// The overlay loads its image by literal file:// path, which the read boundary
+// (PV54, overlay-build.js) allows only under one of its roots: the scratch
+// tmpdir stands in for the workspace, and render.js inherits it.
+process.env.MONTAJ_WORKSPACE_DIR = tmpdir()
+
 const S = 480            // output is S x S; the 1080 design canvas scales by S/1080
 const FPS = 30
 const N = 15

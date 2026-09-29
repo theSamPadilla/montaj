@@ -17,6 +17,8 @@ import { spawnSync, spawn } from 'child_process'
 import { bundleComponent, cleanupBundle } from './bundle.js'
 import { isMain as isMainModule }        from './is-main.js'
 import { renderAllSegments }              from './renderer.js'
+import { prefetchPropsUrls }              from './page-guard.js'
+import { namedPropsUrls }                 from './overlay-build.js'
 import { compose, embedThumbnail }        from './compose.js'
 import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
 import { requireValidKey, detectFromTransfer, smartDetect, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
@@ -544,6 +546,12 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
   const { imageItems, videoItems } = collectAllItems(projectJson)
 
+  // Every http(s) URL an overlay's props name, fetched once, now, by Node: the
+  // pages are served from this cache and reach nothing themselves (PV54,
+  // page-guard.js). A failure is logged here and fails the render only if a
+  // page asks for that URL (props also hold URLs shown only as text).
+  await prefetchPropsUrls(segmentSpecs.flatMap(spec => namedPropsUrls(spec.props)))
+
   // Puppeteer overlay capture scale — derived from settings.resolution alone
   // (not the eventual actualWidth/actualHeight below, which for a project with
   // no settings.resolution isn't resolved until AFTER normalize/remove_bg have
@@ -628,7 +636,7 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
     // composite time. The un-baked shim is byte-identical to the pre-keyframes
     // one, deliberately, which is what keeps the render goldens valid. Don't
     // "fix" that apparent omission for a static overlay: it isn't one.
-    const { htmlPath, workDir } = await bundleComponent({
+    const { htmlPath, workDir, boundary, needsGoogleFonts } = await bundleComponent({
       componentPath:  spec.componentPath,
       props:          spec.props,
       fps,
@@ -648,8 +656,15 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
       keyframes:      spec.keyframes   ?? null,
       googleFonts:    spec.googleFonts ?? [],
       fontsBaseDir:   MONTAJ_FONTS_DIR,
+      projectDir,
     })
     spec.htmlPath = htmlPath
+    // The page guard's inputs (page-guard.js), carried on the spec so the SDR
+    // re-capture's `{ ...spec }` keeps them too. The cache is this page's own
+    // props URLs, all fetched above.
+    spec.boundary = boundary
+    spec.needsGoogleFonts = needsGoogleFonts
+    spec.propsCache = await prefetchPropsUrls(boundary.urls)
     workDirs.push(workDir)
   }
 

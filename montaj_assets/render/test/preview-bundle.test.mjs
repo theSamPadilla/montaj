@@ -32,6 +32,12 @@ const RENDER    = join(__dirname, '..')
 const FIX       = join(__dirname, 'fixtures', 'preview-bundle')
 const CLI       = join(RENDER, 'preview-bundle.js')
 
+// The fixtures stand in for the user's workspace (PV54): their imports of one
+// another are allowed only under a root of the read boundary (overlay-build.js),
+// and an overlay's own folder is not one. Read at each build, and inherited by
+// the CLI children below; node --test runs each file in its own process.
+process.env.MONTAJ_WORKSPACE_DIR = FIX
+
 // The same globals the preview injects (overlay-eval.ts getOverlayGlobals).
 const GLOBALS      = makeOverlayGlobals('preview')
 const GLOBAL_NAMES = Object.keys(GLOBALS)

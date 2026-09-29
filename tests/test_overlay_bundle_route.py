@@ -104,7 +104,44 @@ def test_helper_outside_roots(env):
     assert r.status_code == 403
     detail = r.json()["detail"]
     assert detail["error"] == "import_outside_roots"
-    assert "secret.js" in detail["message"]
+    # PV54: the read boundary refuses the import unread, and the route names
+    # the refused file and nothing else.
+    assert detail["message"] == f"Overlay imports a file outside the allowed roots: {outside / 'secret.js'}"
+
+
+def test_relative_import_climbing_out_403_names_the_file(env):
+    base, _, ws = env
+    outside = base / "outside"; outside.mkdir()
+    (outside / "palette.json").write_text('{"accent": "#c0ffee"}\n')
+    d = ws / "ov"; d.mkdir()
+    (d / "ov.jsx").write_text(
+        "import p from '../../outside/palette.json'\nexport default function O() { return <b>{p.accent}</b> }\n"
+    )
+    r = _get(d / "ov.jsx")
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == {
+        "error": "import_outside_roots",
+        "message": f"Overlay imports a file outside the allowed roots: {outside / 'palette.json'}",
+    }
+    assert "c0ffee" not in r.text
+
+
+def test_directory_import_outside_403_names_the_directory_not_its_main(env):
+    # PV54: refused before esbuild resolves it, so esbuild never reads the
+    # folder's package.json. Its `main` is package.json content, so a message
+    # naming `lib/entry.js` would mean the file had been read.
+    base, _, ws = env
+    lib = base / "outside" / "lib"; lib.mkdir(parents=True)
+    (lib / "package.json").write_text('{"name": "lib", "main": "entry.js"}\n')
+    (lib / "entry.js").write_text("export const accent = 1\n")
+    d = ws / "ov"; d.mkdir()
+    (d / "ov.jsx").write_text(
+        f"import {{ accent }} from '{lib}'\nexport default function O() {{ return <b>{{accent}}</b> }}\n"
+    )
+    r = _get(d / "ov.jsx")
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["message"] == f"Overlay imports a file outside the allowed roots: {lib}"
+    assert "entry.js" not in r.text
 
 
 def test_syntax_error_422(env):
@@ -225,6 +262,57 @@ def test_exit_2_outside_roots_is_403_without_esbuild_text(env):
     r = _run_mocked(env, _FakeProc(rc=2, out=out))
     assert r.status_code == 403
     assert "hunter2" not in r.text
+
+
+def test_import_from_a_missing_folder_in_the_workspace_is_422_not_403(env):
+    # A typo is a plain not-found, not a refusal: a missing path inside the
+    # roots is judged by its nearest existing folder (PV54 T3).
+    _, _, ws = env
+    d = ws / "ov"; d.mkdir()
+    (d / "ov.jsx").write_text(
+        "import { H } from './lib/helpers.js'\nexport default function O() { return <b>{H}</b> }\n"
+    )
+    r = _get(d / "ov.jsx")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "build_failed"
+    assert "Could not resolve" in r.json()["detail"]["message"]
+
+
+def test_exit_2_read_boundary_refusal_is_403_naming_only_the_refused_path(env):
+    # The guard's refusal is an esbuild plugin error located at the IMPORTER,
+    # which is inside the roots (measured shape, PV54). Classified by the
+    # marker, not by the location, or it would be a 422 without the path.
+    base, _, ws = env
+    importer = ws / "ov" / "ov.jsx"
+    out = json.dumps({"ok": False, "error": "build_failed",
+                      "message": f"{importer}:1:18: {overlays_route._IMPORT_REFUSED} {base}/outside/s.js"}).encode()
+    r = _run_mocked(env, _FakeProc(rc=2, out=out))
+    assert r.status_code == 403
+    assert r.json()["detail"] == {
+        "error": "import_outside_roots",
+        "message": f"Overlay imports a file outside the allowed roots: {base}/outside/s.js",
+    }
+
+
+def test_exit_2_read_boundary_refusal_without_location_is_403(env):
+    base, _, _ = env
+    out = json.dumps({"ok": False, "error": "build_failed",
+                      "message": f"{overlays_route._IMPORT_REFUSED} {base}/outside/s.js"}).encode()
+    r = _run_mocked(env, _FakeProc(rc=2, out=out))
+    assert r.status_code == 403
+    assert r.json()["detail"]["message"] == f"Overlay imports a file outside the allowed roots: {base}/outside/s.js"
+
+
+def test_exit_2_marker_quoted_inside_a_syntax_error_is_not_a_refusal(env):
+    # Only the guard's own error STARTS with the marker after the location; a
+    # syntax error that merely quotes it is an ordinary 422 in an inside file.
+    _, _, ws = env
+    loc = str(ws / "ov" / "helper.js")
+    message = f'{loc}:1:2: Expected ";" but found "{overlays_route._IMPORT_REFUSED} /x"'
+    out = json.dumps({"ok": False, "error": "build_failed", "message": message}).encode()
+    r = _run_mocked(env, _FakeProc(rc=2, out=out))
+    assert r.status_code == 422
+    assert r.json()["detail"]["error"] == "build_failed"
 
 
 def test_cancellation_kills_and_reaps_child(env):

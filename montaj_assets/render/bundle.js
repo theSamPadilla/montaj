@@ -9,13 +9,18 @@
  *     before Puppeteer takes the next screenshot
  */
 import esbuild from 'esbuild'
-import { writeFileSync, readFileSync, mkdirSync, rmSync, existsSync, readdirSync } from 'fs'
-import { join, dirname, basename } from 'path'
+import { writeFileSync, readFileSync, mkdirSync, rmSync } from 'fs'
+import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
 import { isAbsPath, toFileHref, fontsCssHref } from './file-url.js'
-import { overlayEsbuildOptions, overlayInputsFromMetafile } from './overlay-build.js'
+import { overlayEsbuildOptions, overlayInputsFromMetafile, overlayReadBoundary, resolveFilePath } from './overlay-build.js'
+import { overlayPageCspMeta, pageNeedsGoogleFonts } from './page-guard.js'
+
+// resolveFilePath lives in overlay-build.js now (the read boundary resolves
+// props paths with it too); re-exported for this file's existing importers.
+export { resolveFilePath }
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // `core/` and `node_modules/` are siblings of bundle.js — always resolve via
@@ -51,16 +56,26 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
  *   page links that one stylesheet over `file://` instead of reaching
  *   fonts.googleapis.com. Unset (the default, and every OSS caller) ⇒ the page is
  *   byte-identical to before. See `vendoredFontsHref` for the shape and the why.
- * @returns {Promise<{ htmlPath: string, workDir: string }>}
+ * @param {string} [opts.projectDir]
+ *   The project's directory, a root of the read boundary (overlay-build.js).
+ * @returns {Promise<{ htmlPath: string, workDir: string, inputs: string[],
+ *   boundary: object, needsGoogleFonts: boolean }>}
+ *   `boundary` is this page's read boundary (overlayReadBoundary): the bundle
+ *   was built under it, and the page must be loaded under it too (page-guard.js
+ *   installPageGuard). `needsGoogleFonts` is whether the page links
+ *   fonts.googleapis.com, the one case its guard lets the font hosts through.
  */
 // `scaleX`/`scaleY` default to `scale` (a destructuring default may read an
 // earlier binding), which is the same `?? scale ?? 1` fallback the resolver in
 // @bycrux/timeline-core applies — so a caller that knows only about uniform
 // `scale`, or passes `scaleX: undefined`, still bakes the legacy numbers.
-export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, scaleX = scale, scaleY = scale, rotation = 0, opacity = 1, keyframes = null, opaque = false, googleFonts = [], fontsBaseDir = '' }) {
+export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, scaleX = scale, scaleY = scale, rotation = 0, opacity = 1, keyframes = null, opaque = false, googleFonts = [], fontsBaseDir = '', projectDir = null }) {
   const id      = randomBytes(8).toString('hex')
   const workDir = join(tmpdir(), `montaj-bundle-${id}`)
   mkdirSync(workDir, { recursive: true })
+  // What this overlay may read, at bundle time (the esbuild guard below) and at
+  // run time (the page guard its caller installs): see overlayReadBoundary.
+  const boundary = overlayReadBoundary({ projectDir, workDir, fontsDir: fontsBaseDir, props, files: [componentPath] })
 
   const shimPath   = join(workDir, 'shim.jsx')
   const bundlePath = join(workDir, 'bundle.js')
@@ -86,21 +101,30 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
   // Same resolution as every other overlay bundle (overlay-build.js): the
   // carousel renderer and the editor preview (preview-bundle.js) share these
   // options, so an overlay's imports resolve the same way in all three.
-  // metafile lists every file the bundle read. esbuild's absWorkingDir is left
-  // at its default (process.cwd()), which is what metafile keys are relative
-  // to. `inputs` is the user's own files only (no engine, no generated shim);
-  // the sample cache records them so it can notice an edited import.
-  const result = await esbuild.build({
-    ...overlayEsbuildOptions(),
-    entryPoints: [shimPath],
-    outfile:     bundlePath,
-    metafile:    true,
-  })
-  const inputs = overlayInputsFromMetafile(result.metafile, process.cwd(), { exclude: [workDir] })
+  // metafile lists every file the bundle read. Its keys are relative to the
+  // options' absWorkingDir (render's own dir, not the caller's cwd), so that is
+  // what they resolve against. `inputs` is the user's own files only (no
+  // engine, no generated shim); the sample cache records them so it can notice
+  // an edited import.
+  const options = overlayEsbuildOptions({ boundary })
+  let result
+  try {
+    result = await esbuild.build({
+      ...options,
+      entryPoints: [shimPath],
+      outfile:     bundlePath,
+      metafile:    true,
+    })
+  } catch (err) {
+    cleanupBundle(workDir)
+    throw err
+  }
+  const inputs = overlayInputsFromMetafile(result.metafile, options.absWorkingDir, { exclude: [workDir] })
 
-  writeFileSync(htmlPath, generateHtml(width, height, opaque, googleFonts, fontsBaseDir))
+  const html = generateHtml(width, height, opaque, googleFonts, fontsBaseDir, [...boundary.urls])
+  writeFileSync(htmlPath, html)
 
-  return { htmlPath, workDir, inputs }
+  return { htmlPath, workDir, inputs, boundary, needsGoogleFonts: pageNeedsGoogleFonts(html) }
 }
 
 /** Remove the temp directory for a bundle. Call after the WebM segment is encoded. */
@@ -111,20 +135,6 @@ export function cleanupBundle(workDir) {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/** Resolve a path that may contain macOS narrow no-break spaces (\u202f). */
-export function resolveFilePath(p) {
-  if (existsSync(p)) return p
-  const dn = dirname(p)
-  const bn = basename(p)
-  const target = bn.replace(/\u202f/g, ' ')
-  try {
-    for (const name of readdirSync(dn)) {
-      if (name.replace(/\u202f/g, ' ') === target) return join(dn, name)
-    }
-  } catch { /* parent dir missing */ }
-  return null
-}
 
 /**
  * Recursively rewrite absolute filesystem path strings in props to file:// URLs
@@ -739,7 +749,9 @@ function reportVendoredFonts(vendoredKeys, fellThrough, faceIndex) {
   }
 }
 
-export function generateHtml(width, height, opaque = false, googleFonts = [], fontsBaseDir = '') {
+// `connectUrls` are the page's props URLs (its boundary's `urls`): the CSP's
+// connect-src names them, so an overlay can still fetch() a URL its props name.
+export function generateHtml(width, height, opaque = false, googleFonts = [], fontsBaseDir = '', connectUrls = []) {
   const bgRule = opaque ? '' : 'background: transparent;'
   // Each entry in googleFonts is appended as a `family=...` parameter on the
   // Google Fonts CSS2 API URL. Callers format entries as "Anton" /
@@ -802,10 +814,14 @@ export function generateHtml(width, height, opaque = false, googleFonts = [], fo
     googleFonts.length === 0 ? ''
     : (vendored.length ? `
 <link rel="stylesheet" href="${vendoredHref}">` : '') + googleFontLinks
+  // The page's CSP (page-guard.js): first in <head>, since a meta policy covers
+  // only what follows it. Shared with render-carousel.js's page, not copied.
+  const csp = overlayPageCspMeta({ needsGoogleFonts: fellThrough.length > 0, connectUrls })
   return `<!DOCTYPE html>
 <html>
 <head>
-<meta charset="utf-8">${fontLinks}
+<meta charset="utf-8">
+${csp}${fontLinks}
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body, #root {

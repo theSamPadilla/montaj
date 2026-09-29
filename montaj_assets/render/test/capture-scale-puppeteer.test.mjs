@@ -30,6 +30,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import puppeteer from 'puppeteer'
 import { captureScaleFor } from '../render.js'
+import { overlayPageLaunchOptions } from '../page-guard.js'
 
 // Parse actual pixel dimensions out of a PNG buffer's IHDR chunk.
 // Signature check first so a non-PNG failure reads as what it is rather than
@@ -75,12 +76,8 @@ test('Chrome honours captureScaleFor deviceScaleFactor exactly (plan item 4)', {
     + '<style>html,body{margin:0;width:100%;height:100%;background:#123456}</style>'
     + '</head><body></body></html>')
 
-  // Same args as launchBrowser() in renderer.js — kept in sync by hand.
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-web-security', '--allow-file-access-from-files'],
-    protocolTimeout: 300000,
-  })
+  // The options launchBrowser() in renderer.js uses (page-guard.js, PV54).
+  const browser = await puppeteer.launch(overlayPageLaunchOptions({ disableWebSecurity: true }))
 
   try {
     for (const c of CASES) {

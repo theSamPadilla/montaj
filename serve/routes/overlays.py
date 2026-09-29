@@ -128,6 +128,29 @@ _log = logging.getLogger(__name__)
 # esbuild message prefix: an absolute POSIX path, then :line:col:
 _ESBUILD_LOC = re.compile(r"^(/.+?):(\d+):(\d+): ")
 
+# Must equal IMPORT_REFUSED in montaj_assets/render/overlay-build.js. If the two
+# spellings ever drift, an import refusal silently degrades to a generic 422
+# "build failed" and this route stops answering 403 import_outside_roots.
+_IMPORT_REFUSED = "import outside the allowed folders:"
+
+
+def _refused_import(message: str) -> str | None:
+    """The path the read-boundary guard refused, or None if this isn't a refusal.
+
+    The guard's error is an esbuild plugin error, so it is located at the
+    IMPORTER and the marker follows that location:
+
+        /abs/entry.jsx:1:18: import outside the allowed folders: /abs/outside.js
+
+    Accepts the marker with or without a leading location, because a refusal
+    raised outside a build (no importer) has no location to report.
+    """
+    m = _ESBUILD_LOC.match(message)
+    rest = message[m.end():] if m else message
+    if not rest.startswith(_IMPORT_REFUSED):
+        return None
+    return rest[len(_IMPORT_REFUSED):].strip() or None
+
 
 def _watcher_roots() -> list[Path]:
     """Directories serve/watcher.py schedules, spelled as it schedules them."""
@@ -230,6 +253,22 @@ async def bundle_overlay(path: str = Query(default="")):
     if proc.returncode == 2:
         data = _parse() or {}
         message = data.get("message") or ""
+        # The read-boundary guard refuses the import before esbuild reads it, so
+        # what arrives is an esbuild PLUGIN error located at the importer, not a
+        # syntax error located in the refused file. Measured shape:
+        #   <importer>:1:18: import outside the allowed folders: <refused path>
+        # _ESBUILD_LOC therefore matches the importer, which IS inside the roots,
+        # so without this branch the refusal degrades to a generic 422
+        # build_failed and the route stops answering 403 import_outside_roots at
+        # all — the case its own docstring documents and
+        # tests/test_overlay_bundle_route.py asserts.
+        # The marker is IMPORT_REFUSED in montaj_assets/render/overlay-build.js.
+        refusal = _refused_import(message)
+        if refusal is not None:
+            raise forbidden(
+                "import_outside_roots",
+                f"Overlay imports a file outside the allowed roots: {refusal}",
+            )
         m = _ESBUILD_LOC.match(message)
         if not m:
             _log.warning("overlay bundle build failed with no parseable location: %s", (message or stderr)[-500:])

@@ -28,6 +28,7 @@ import { tmpdir } from 'os'
 import { createHash } from 'crypto'
 
 import { bundleComponent, cleanupBundle, resolveFilePath } from './bundle.js'
+import { overlayPageLaunchOptions, installPageGuard, prefetchPropsUrls } from './page-guard.js'
 import { isMain as isMainModule } from './is-main.js'
 import { toFileHref, isAbsPath } from './file-url.js'
 import { pMap } from './p-map.js'
@@ -114,6 +115,8 @@ const SHORT_EDGE_TARGET = 1080
  * 5: PV50, an overlay remounts once its webfont loads, so text it positions by
  *    measuring is no longer placed with fallback metrics. Unconditional: it
  *    must not rely on another change's key edit landing in the same release.
+ * 6: PV54, an overlay reads nothing outside the allowed folders. A PNG cached
+ *    before could hold what it read there, and must not be served again.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -121,7 +124,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 5
+const SAMPLE_CACHE_VERSION = 6
 
 // ---------------------------------------------------------------------------
 // Input manifests
@@ -358,6 +361,8 @@ if (isMain) {
  * @param {string[]} [opts.googleFonts]  Google Fonts entries
  * @param {boolean}  [opts.measure]      If true, walk DOM and return measurements
  * @param {string}   opts.outPath        Where to write the PNG (required)
+ * @param {string}   [opts.projectDir]   The project's directory, a root of the
+ *   read boundary (overlay-build.js); sampleFrame passes it
  * @returns {Promise<{ pngPath: string, measurements?: object }>}
  *
  * Takes no `fontsBaseDir` parameter — it reads the module-scope
@@ -378,6 +383,7 @@ export async function sampleOverlay({
   measure = false,
   durationFrames = null,
   outPath,
+  projectDir = null,
 }) {
   if (!outPath) throw Object.assign(new Error('outPath is required'), { sampleError: 'missing_argument' })
   if (!componentPath) throw Object.assign(new Error('componentPath is required'), { sampleError: 'missing_argument' })
@@ -414,7 +420,7 @@ export async function sampleOverlay({
 
   log(`sampling overlay ${basename(componentPath)} at frame ${frame}${measure ? ' (measure)' : ''}`)
 
-  const { htmlPath, workDir, inputs: bundleInputs } = await bundleComponent({
+  const { htmlPath, workDir, inputs: bundleInputs, boundary, needsGoogleFonts } = await bundleComponent({
     componentPath,
     props,
     fps,
@@ -423,6 +429,7 @@ export async function sampleOverlay({
     height,
     googleFonts,
     fontsBaseDir: MONTAJ_FONTS_DIR,
+    projectDir,
   })
   // Record mtimes now, right after the bundle. A file edited DURING the bundle
   // (after esbuild read it, before this stat) is recorded with its new mtime
@@ -432,23 +439,32 @@ export async function sampleOverlay({
 
   let browser = null
   let measurements = undefined
+  // A sample the page guard blocked anything in is not cached: what it shows
+  // may depend on things outside the cache key (the workspace, the network).
+  let degraded = false
 
   try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      // --disable-dev-shm-usage: use /tmp instead of the container's 64MB /dev/shm
-      // (Docker default) so heavy renders don't crash Chromium on shm exhaustion.
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-web-security', '--allow-file-access-from-files'],
-      protocolTimeout: 300000,
-    })
+    // The props' http(s) URLs, fetched by Node before the page loads; the page
+    // is served from this and reaches nothing itself (page-guard.js). One the
+    // page asks for and could not be fetched fails the sample, below.
+    const propsCache = await prefetchPropsUrls(boundary.urls)
+
+    // Every overlay page's flags (page-guard.js), --disable-dev-shm-usage
+    // included: the container's 64MB /dev/shm crashes Chromium on heavy pages.
+    browser = await puppeteer.launch(overlayPageLaunchOptions({ needsGoogleFonts, disableWebSecurity: true }))
 
     const page = await browser.newPage()
     await page.setViewport({ width, height, deviceScaleFactor: 1 })
 
-    // Capture page errors so we can surface them on failure
+    // Before the page loads: what it may read, and that it sends nothing out.
+    const guard = await installPageGuard(page, { boundary, propsCache, needsGoogleFonts })
+
+    // Capture page errors so we can surface them on failure. Chromium's console
+    // line for a request the guard blocked is not one: the guard logs the block,
+    // and the overlay's own fallback is what the sample shows.
     const pageErrors = []
     page.on('pageerror', err => pageErrors.push(err.message))
-    page.on('console', msg => { if (msg.type() === 'error') pageErrors.push(msg.text()) })
+    page.on('console', msg => { if (msg.type() === 'error' && !guard.isBlockNoise(msg)) pageErrors.push(msg.text()) })
 
     // networkidle0 is critical for font loading — fonts are not loaded until
     // React commits to DOM, and we need the woff2 fetches to complete before
@@ -616,6 +632,16 @@ export async function sampleOverlay({
       }, width, height)
     }
 
+    // A props image the page asked for and could not get fails the sample,
+    // naming it, rather than sampling without it.
+    try {
+      guard.assertPropsServed()
+    } catch (err) {
+      err.sampleError = 'props_fetch_failed'
+      throw err
+    }
+    degraded = guard.blocked.size > 0
+
     // Screenshot — transparent PNG (omitBackground: true matches the renderer)
     mkdirSync(dirname(outPath), { recursive: true })
     await page.screenshot({ path: outPath, omitBackground: true })
@@ -633,7 +659,7 @@ export async function sampleOverlay({
   }
 
   // Write to cache
-  try {
+  if (!degraded) try {
     mkdirSync(CACHE_DIR, { recursive: true })
     // Manifest goes first out and last in: a reader that sees the new PNG
     // beside the old manifest would validate stale pixels.
@@ -649,9 +675,9 @@ export async function sampleOverlay({
   }
 
   if (measure) {
-    return { pngPath: outPath, measurements, inputs: recordedInputs }
+    return { pngPath: outPath, measurements, inputs: recordedInputs, degraded }
   }
-  return { pngPath: outPath, inputs: recordedInputs }
+  return { pngPath: outPath, inputs: recordedInputs, degraded }
 }
 
 // ---------------------------------------------------------------------------
@@ -772,6 +798,9 @@ export async function sampleFrame({
   // --- Step 1: Render overlay PNGs in parallel (cap=4) ---
   // Each overlay PNG has transparent background, same design resolution as canvas
   const overlayInputLists = []
+  // Any overlay sample the page guard blocked something in: the frame is not
+  // cached either (sampleOverlay's `degraded`).
+  let degraded = false
   const overlayPngs = await pMap(overlayItems, async (ri) => {
     const ov = ri.item
     // ri.seek is the resolver's elapsed-since-start for a non-video item —
@@ -793,8 +822,10 @@ export async function sampleFrame({
       measure: false,
       durationFrames: overlayDurationFrames,
       outPath: tmpOverlayOut,
+      projectDir,
     })
     overlayInputLists.push(result.inputs)
+    if (result.degraded) degraded = true
     return {
       // Shape expected by buildOverlayFilterParts: webmPath, startSeconds, offsetX, offsetY, scale/scaleX/scaleY
       //
@@ -1208,7 +1239,7 @@ export async function sampleFrame({
   }
 
   // Write to cache
-  try {
+  if (!degraded) try {
     mkdirSync(CACHE_DIR, { recursive: true })
     rmSync(cacheInputs, { force: true })
     copyFileSync(outPath, cachePng)

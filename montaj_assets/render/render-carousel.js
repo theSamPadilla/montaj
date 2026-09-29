@@ -23,7 +23,8 @@ import { fileURLToPath }                                  from 'url'
 import { tmpdir }                                         from 'os'
 import { randomBytes }                                    from 'crypto'
 import { toFileHref, fontsCssHref, assetResolverSource } from './file-url.js'
-import { overlayEsbuildOptions }                          from './overlay-build.js'
+import { overlayEsbuildOptions, overlayReadBoundary }     from './overlay-build.js'
+import { overlayPageLaunchOptions, installPageGuard, prefetchPropsUrls, overlayPageCspMeta, pageNeedsGoogleFonts } from './page-guard.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -142,14 +143,18 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
   }
   mkdirSync(outDir, { recursive: true })
 
-  // 3. Launch Puppeteer once for the whole run
-  log('launching browser...')
-  const browser = await puppeteer.launch({
-    headless:  'new',
-    // --disable-dev-shm-usage: use /tmp instead of the container's 64MB /dev/shm
-    // (Docker default) so heavy renders don't crash Chromium on shm exhaustion.
-    args:      ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--allow-file-access-from-files'],
-  })
+  // 3. Launch Puppeteer once for the whole run: once per resolver rule, since
+  //    a browser opens the Google Fonts hosts or does not (page-guard.js). A
+  //    run whose slides all use vendored fonts, or none, launches one browser
+  //    that resolves no host at all.
+  const browsers = new Map()
+  const browserFor = (needsGoogleFonts) => {
+    if (!browsers.has(needsGoogleFonts)) {
+      log('launching browser...')
+      browsers.set(needsGoogleFonts, puppeteer.launch(overlayPageLaunchOptions({ needsGoogleFonts })))
+    }
+    return browsers.get(needsGoogleFonts)
+  }
 
   const manifestSlides = []
   // Per-slide failures are recorded here and the loop CONTINUES — one bad slide
@@ -168,14 +173,20 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
       log(`rendering slide ${i + 1}/${slides.length} (id: ${slide.id ?? i})...`)
 
       try {
-        const workDir = await bundleSlide({ slide, width, height, projectDir, fontsBaseDir: MONTAJ_FONTS_DIR })
+        const { workDir, boundary, needsGoogleFonts } = await bundleSlide({ slide, width, height, projectDir, fontsBaseDir: MONTAJ_FONTS_DIR })
 
         try {
+          // The slide's http(s) URLs, fetched by Node before the page loads; one
+          // the page asks for and could not be fetched fails this slide, below.
+          const propsCache = await prefetchPropsUrls(boundary.urls)
           const htmlPath = join(workDir, 'index.html')
+          const browser  = await browserFor(needsGoogleFonts)
           const page     = await browser.newPage()
 
           try {
             await page.setViewport({ width, height, deviceScaleFactor: scale })
+            // Before the page loads: what it may read, and that it sends nothing out.
+            const guard = await installPageGuard(page, { boundary, propsCache, needsGoogleFonts })
             await page.goto(toFileHref(htmlPath), { waitUntil: 'networkidle0', timeout: 30_000 })
 
             // Belt-and-suspenders: wait for all images to finish loading
@@ -212,6 +223,10 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
               await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
             }
 
+            // A slide image the page asked for and could not get fails the
+            // slide, naming it, rather than rendering without it.
+            guard.assertPropsServed()
+
             await page.screenshot({
               path:            outFile,
               type:            'png',
@@ -234,7 +249,9 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
       }
     }
   } finally {
-    await browser.close()
+    for (const launched of browsers.values()) {
+      try { await (await launched).close() } catch { /* a failed launch has nothing to close */ }
+    }
   }
 
   // 4. Write manifest
@@ -274,6 +291,8 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
 // Bundle one slide into a temp directory (index.html + bundle.js)
 // ---------------------------------------------------------------------------
 
+// Returns `{ workDir, boundary, needsGoogleFonts }`: the page's read boundary
+// (overlay-build.js) and whether it links Google Fonts, for its page guard.
 async function bundleSlide({ slide, width, height, projectDir, fontsBaseDir = '' }) {
   const id      = randomBytes(8).toString('hex')
   const workDir = join(tmpdir(), `montaj-carousel-${id}`)
@@ -283,6 +302,20 @@ async function bundleSlide({ slide, width, height, projectDir, fontsBaseDir = ''
   const elements        = slide.elements ?? []
   const overlayElements = elements.filter(el => el.type === 'overlay' && el.overlay?.template)
   const uniqueTemplates = [...new Set(overlayElements.map(el => el.overlay.template))]
+
+  // What this slide may read: the usual roots (the project dir among them when
+  // it is inside the workspace), plus the exact files and URLs the slide
+  // names, and its overlay templates. An image element's RELATIVE src loads
+  // from the project dir (resolveAsset, below), so it is named too: a project
+  // outside the workspace keeps its slide images, as it keeps absolute ones.
+  const relativeImages = elements
+    .filter(el => el.type === 'image' && typeof el.src === 'string' && el.src
+      && !/^(https?:|data:|\/|[A-Za-z]:[\\/])/.test(el.src))
+    .map(el => join(projectDir, el.src))
+  const boundary = overlayReadBoundary({
+    projectDir, workDir, fontsDir: fontsBaseDir, props: slide,
+    files: [...uniqueTemplates.map(tpl => resolve(tpl)), ...relativeImages],
+  })
 
   // Collect the Google Fonts every element on this slide declares. Mirrors the
   // video renderer (bundle.js) and the editor preview (SlideCanvas →
@@ -389,15 +422,21 @@ createRoot(document.getElementById('root')).render(<Root />)
 
   // Same resolution as every other overlay bundle (overlay-build.js), so a
   // slide's overlays resolve imports exactly as render and the preview do.
-  await esbuild.build({
-    ...overlayEsbuildOptions(),
-    entryPoints: [shimPath],
-    outfile:     bundlePath,
-  })
+  try {
+    await esbuild.build({
+      ...overlayEsbuildOptions({ boundary }),
+      entryPoints: [shimPath],
+      outfile:     bundlePath,
+    })
+  } catch (err) {
+    rmSync(workDir, { recursive: true, force: true })
+    throw err
+  }
 
-  writeFileSync(htmlPath, generateHtml(width, height, googleFonts, fontsBaseDir))
+  const html = generateHtml(width, height, googleFonts, fontsBaseDir, [...boundary.urls])
+  writeFileSync(htmlPath, html)
 
-  return workDir
+  return { workDir, boundary, needsGoogleFonts: pageNeedsGoogleFonts(html) }
 }
 
 // ---------------------------------------------------------------------------
@@ -702,7 +741,8 @@ function reportVendoredFonts(vendoredKeys, fellThrough, faceIndex) {
   }
 }
 
-function generateHtml(width, height, googleFonts = [], fontsBaseDir = '') {
+// `connectUrls`: the slide's props URLs, which the CSP's connect-src names.
+function generateHtml(width, height, googleFonts = [], fontsBaseDir = '', connectUrls = []) {
   // Each entry is appended verbatim as a `family=...` parameter on the Google
   // Fonts CSS2 API URL (entries are pre-formatted, e.g. "Archivo+Black" /
   // "Inter:wght@400;600;700;800" — spaces as '+'). We intentionally do NOT
@@ -754,10 +794,13 @@ function generateHtml(width, height, googleFonts = [], fontsBaseDir = '') {
     googleFonts.length === 0 ? ''
     : (vendored.length ? `
 <link rel="stylesheet" href="${vendoredHref}">` : '') + googleFontLinks
+  // The page's CSP (page-guard.js), the same one bundle.js's page carries.
+  const csp = overlayPageCspMeta({ needsGoogleFonts: fellThrough.length > 0, connectUrls })
   return `<!DOCTYPE html>
 <html>
 <head>
-<meta charset="utf-8">${fontLinks}
+<meta charset="utf-8">
+${csp}${fontLinks}
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body, #root {

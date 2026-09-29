@@ -23,9 +23,16 @@ const MAX_LOGO_BYTES = 5 * 1024 * 1024
 const LOGO_FETCH_TIMEOUT_MS = 10000
 const STYLE_WALK_LIMIT = 5000
 
-// Same puppeteer.launch options as sample-frame.js (~line 286). No shared
-// helper exists (renderer.js's launchBrowser is private) — the codebase
-// copies these args at each call site.
+// NOT the overlay pages' launch options (page-guard.js overlayPageLaunchOptions),
+// on purpose, and never copy their file-access flags in. This browser loads a
+// remote page whoever runs the capture pointed it at, so the page is
+// attacker-controlled. Overlay pages run with --allow-file-access-from-files
+// (and renderer/sample with --disable-web-security) because they are file://
+// pages that load the user's own files; given either flag here, a website could
+// read local files and send them back to itself. Without them, an http(s) page
+// gets "Not allowed to load local resource" for fetch and <img> on file:
+// (measured, PV54). test/page-guard.test.mjs pins that these args stay free of
+// both flags.
 async function launchBrowser() {
   return puppeteer.launch({
     headless: 'new',

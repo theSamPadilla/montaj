@@ -596,7 +596,7 @@ Place overlay items in `tracks[1+]` in `project.json`. Each item must have `type
 
 ## Using assets
 
-Assets (logos, images) are declared in `project.assets`. Reference them by passing their `src` path in `props`, then use it in the component:
+Assets (logos, images) are declared in `project.assets`. Reference them by passing their `src` path in `props`, then use it in the component. A file path in `props` may be anywhere on disk (a folder outside the workspace opens nothing in it). A `file://` path hardcoded in the JSX must be inside the workspace, or render refuses it (logged as `blocked a read outside the allowed folders`). A remote URL in `props` is fetched before render only when it ends in an image, video, audio, font or data extension, and one the overlay loads that cannot be fetched fails the render:
 
 ```json
 {

@@ -67,6 +67,8 @@ const HARNESS = join(tmpdir(), `carousel-fonts-harness-${process.pid}`)
 // in tmpdir, so it imports that by absolute URL.
 const FONTS_CSS_HREF_IMPORT =
   `import { fontsCssHref } from ${JSON.stringify(pathToFileURL(join(__dirname, '..', 'file-url.js')).href)}\n`
+  // generateHtml's CSP comes from page-guard.js (PV54), likewise by absolute URL.
+  + `import { overlayPageCspMeta } from ${JSON.stringify(pathToFileURL(join(__dirname, '..', 'page-guard.js')).href)}\n`
 
 function extractCarouselHtml() {
   const src = readFileSync(join(__dirname, '..', 'render-carousel.js'), 'utf8')
@@ -145,6 +147,13 @@ const RENDERERS = () => [
 
 const hasGoogleEgress = (html) => /fonts\.(googleapis|gstatic)\.com|preconnect/.test(html)
 
+// PV54 added the page CSP (page-guard.js) to both renderers' pages, ON PURPOSE:
+// it is the one line these byte-identity checks let move. It is compared with
+// the CSP line taken out of both sides, and required present on today's side,
+// so the rest of the page is still held to the byte.
+const CSP_LINE = /\n<meta http-equiv="Content-Security-Policy" content="[^"]*">/
+const withoutCsp = (html) => html.replace(CSP_LINE, '')
+
 // ---------------------------------------------------------------------------
 // (1) No base: byte-identical
 // ---------------------------------------------------------------------------
@@ -190,14 +199,17 @@ describe('fonts: with no base, the page is byte-identical to the pre-fall-throug
       symlinkSync(join(__dirname, '..', 'file-url.js'), join(HARNESS, 'file-url.js'))
     }
     // Likewise './overlay-build.js', which bundle.js has imported since PV49
-    // (the shared esbuild options).
-    if (!existsSync(join(HARNESS, 'overlay-build.js'))) {
-      symlinkSync(join(__dirname, '..', 'overlay-build.js'), join(HARNESS, 'overlay-build.js'))
+    // (the shared esbuild options), and './page-guard.js' since PV54 (the CSP).
+    for (const sibling of ['overlay-build.js', 'page-guard.js']) {
+      if (!existsSync(join(HARNESS, sibling))) {
+        symlinkSync(join(__dirname, '..', sibling), join(HARNESS, sibling))
+      }
     }
     const { generateHtml: head } = await import(baseline)
     for (const [fonts, base] of CASES) {
       const [now] = capturingStderr(() => bundleHtml(1080, 1920, false, fonts, base))
-      assert.equal(now, head(1080, 1920, false, fonts, base),
+      assert.match(now, CSP_LINE, 'every page carries the CSP')
+      assert.equal(withoutCsp(now), withoutCsp(head(1080, 1920, false, fonts, base)),
         `no-base output moved for ${JSON.stringify([fonts, base])} — every OSS consumer depends on it not moving`)
     }
   })
@@ -225,7 +237,8 @@ describe('fonts: with no base, the page is byte-identical to the pre-fall-throug
     const { generateHtml: head } = await import(out)
     for (const [fonts, base] of CASES) {
       const [now] = capturingStderr(() => carouselHtml(1080, 1350, fonts, base))
-      assert.equal(now, head(1080, 1350, fonts, base),
+      assert.match(now, CSP_LINE, 'every page carries the CSP')
+      assert.equal(withoutCsp(now), withoutCsp(head(1080, 1350, fonts, base)),
         `no-base output moved for ${JSON.stringify([fonts, base])}`)
     }
   })

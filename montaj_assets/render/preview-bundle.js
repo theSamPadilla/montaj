@@ -17,6 +17,10 @@
  *     the loaders, `nodePaths` and `define`, so a relative import resolves here
  *     exactly as it does in render, and an unresolvable one (`from 'remotion'`)
  *     fails here with the error render would give.
+ *   - The same read boundary (PV54): an import outside the allowed folders is
+ *     refused unread, with render's `import outside the allowed folders: <path>`.
+ *     serve's bundle route checks the entry and every input against its roots
+ *     as well; this is the layer that keeps the file from being read at all.
  *   - An IIFE assigned to `__montajOverlay`, so the preview runs `code` in its
  *     existing wrapper and reads `__montajOverlay.default`.
  *   - Classic JSX against the wrapper's `React` parameter.
@@ -48,7 +52,7 @@
 import esbuild from 'esbuild'
 import { resolve, isAbsolute } from 'path'
 import { statSync } from 'fs'
-import { overlayEsbuildOptions, overlayInputsFromMetafile, PREVIEW_NAMESPACE } from './overlay-build.js'
+import { overlayEsbuildOptions, overlayInputsFromMetafile, overlayReadBoundary, PREVIEW_NAMESPACE } from './overlay-build.js'
 import { isMain } from './is-main.js'
 
 export const PREVIEW_GLOBAL_NAME = '__montajOverlay'
@@ -216,8 +220,11 @@ function formatBuildMessage(msg, absWorkingDir) {
 
 /** The esbuild options for one preview build. Exported for tests. */
 export function previewEsbuildOptions(entryPath, absWorkingDir = process.cwd()) {
+  // The entry is named exactly: the caller chose it (serve checks it is under
+  // its roots); what it imports must be under the boundary's.
+  const base = overlayEsbuildOptions({ boundary: overlayReadBoundary({ files: [entryPath] }) })
   return {
-    ...overlayEsbuildOptions(),
+    ...base,
     entryPoints:   [entryPath],
     absWorkingDir,
     format:        'iife',
@@ -227,7 +234,8 @@ export function previewEsbuildOptions(entryPath, absWorkingDir = process.cwd()) 
     jsx:           'transform',
     jsxFactory:    'React.createElement',
     jsxFragment:   'React.Fragment',
-    plugins:       [previewGlobalsPlugin()],
+    // The read-boundary guard first, kept: replacing `plugins` would drop it.
+    plugins:       [...base.plugins, previewGlobalsPlugin()],
   }
 }
 

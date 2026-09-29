@@ -19,6 +19,7 @@ import { isHdr } from './color-space.js'
 import { adaptiveChunkSize, workerCap } from './chunk-plan.js'
 import { toFileHref, fromFileHref } from './file-url.js'
 import { subframeTimes, motionBlurFilter } from './motion-blur.js'
+import { overlayPageLaunchOptions, installPageGuard } from './page-guard.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // MONTAJ_ROOT is two levels above montaj_assets/render/ (i.e. the Python project root).
@@ -69,12 +70,23 @@ export function resolveChunkSize(longest, targetWorkers, subframes, configChunkS
  *   startSeconds: number,
  *   endSeconds:   number,
  *   outputPath:   string,
+ *   boundary:     object,
+ *   needsGoogleFonts?: boolean,
+ *   propsCache?:  Map<string, { contentType: string, body: Buffer }>,
  * }>} segments
+ *   `boundary`, `needsGoogleFonts` and `propsCache` are the page guard's
+ *   (page-guard.js): bundleComponent returns the first two, prefetchPropsUrls
+ *   the third. A segment with no boundary is refused.
  * @param {{ workers?: number, chunkSize?: number }} [config]
  * @returns {Promise<Array<{ id: string, webmPath: string, startSeconds: number, endSeconds: number, hdrImages: number }>>}
  */
 export async function renderAllSegments(segments, config = {}) {
   if (segments.length === 0) return []
+  for (const seg of segments) {
+    if (!seg.boundary || typeof seg.boundary.allows !== 'function') {
+      throw new TypeError(`renderAllSegments: segment ${seg.id} has no read boundary (bundleComponent returns one)`)
+    }
+  }
 
   const userConfig    = readMontajConfig()
   const longest       = segments.reduce((m, s) => Math.max(m, s.frameCount), 0)
@@ -103,6 +115,10 @@ export async function renderAllSegments(segments, config = {}) {
   }
 
   const workerCount = Math.min(workerCap(targetWorkers, os.totalmem()), jobs.length)
+  // The resolver rule is per browser, and one pool renders every segment, so
+  // the font hosts resolve when ANY page links Google Fonts. Each page's guard
+  // still lets them through only for a page that links them.
+  const needsGoogleFonts = segments.some(s => s.needsGoogleFonts)
 
   log(`launching ${workerCount} browser worker(s) for ${jobs.length} job(s)...`)
 
@@ -123,15 +139,10 @@ export async function renderAllSegments(segments, config = {}) {
   const RECYCLE_AFTER = 5  // restart browser every N jobs to prevent memory bloat
 
   async function launchBrowser() {
-    return puppeteer.launch({
-      headless: 'new',
-      // --disable-dev-shm-usage: write Chromium's shared memory to /tmp instead of
-      // /dev/shm. The sidecar container's /dev/shm is the 64MB Docker default, which
-      // a 4K (2160x3840) render overruns -> Chromium crashes mid-render. /tmp is
-      // disk-backed and effectively unbounded, so renders survive any container shm.
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-web-security', '--allow-file-access-from-files'],
-      protocolTimeout: 300000,
-    })
+    // Every overlay page's flags (page-guard.js), --disable-dev-shm-usage
+    // included: the sidecar container's /dev/shm is the 64MB Docker default,
+    // which a 4K (2160x3840) render overruns.
+    return puppeteer.launch(overlayPageLaunchOptions({ needsGoogleFonts, disableWebSecurity: true }))
   }
 
   await Promise.all(
@@ -238,7 +249,10 @@ async function renderChunk(browser, job) {
   // Capture page-level JS errors so we can surface them in the render log
   const pageErrors = []
   page.on('pageerror', err => pageErrors.push(err.message))
-  page.on('console', msg => { if (msg.type() === 'error') pageErrors.push(msg.text()) })
+  // A request the page guard aborted is logged by the guard; Chromium's own
+  // console line for it is not a page error.
+  let isBlockNoise = () => false
+  page.on('console', msg => { if (msg.type() === 'error' && !isBlockNoise(msg)) pageErrors.push(msg.text()) })
 
   // HDR image interception: rewrite sRGB image fetches to pre-converted HDR versions
   // so that images embedded in JSX overlays composite correctly against HDR footage.
@@ -247,98 +261,99 @@ async function renderChunk(browser, job) {
   // those pixels are wrong for an SDR output, so render.js re-captures such a
   // segment for the SDR pass (PV42 T7).
   let hdrImages = 0
-  if (isHdr(colorSpace)) {
-    await page.setRequestInterception(true)
-    page.on('request', async (request) => {
-      // Defensive wrapper: a bug here must never deadlock the render.
-      try {
-        const resourceType = request.resourceType()
-        // Pass through non-image resources unchanged.
-        if (resourceType !== 'image') {
-          request.continue()
-          return
-        }
-
-        const url = request.url()
-
-        // SVG: vector, no colour conversion meaningful.
-        // We use URL extension matching because the MIME type isn't known at
-        // request time (only from the response headers we haven't received yet).
-        if (/\.svg$/i.test(url)) {
-          request.continue()
-          return
-        }
-
-        // Remote URLs (not file://): pass through with a one-time per-host warning.
-        if (!url.startsWith('file://')) {
-          try {
-            const host = new URL(url).hostname
-            if (!warnedHosts.has(host)) {
-              warnedHosts.add(host)
-              process.stderr.write(
-                `[montaj render] WARNING: HDR project references remote image from ${host} — `
-                + `passing through unchanged (will render as sRGB reinterpreted as HDR).\n`
-              )
-            }
-          } catch { /* malformed URL — just continue */ }
-          request.continue()
-          return
-        }
-
-        // Local file:// image — decode path (handle percent-encoding).
-        // file:// URLs from bundle.js use encodeURI so decode it back.
-        let srcPath
-        try {
-          srcPath = fromFileHref(url)
-        } catch {
-          request.continue()
-          return
-        }
-
-        if (!existsSync(srcPath)) {
-          request.continue()
-          return
-        }
-
-        // Compute deterministic cache path: <stem>_<colorspace>_<tone>.png
-        // e.g. /abs/logo.png → /abs/logo_hdr_hlg_vivid.png. The tone suffix
-        // keeps the four tone modes from ever sharing a cache file, and
-        // orphans any pre-tone `<stem>_hdr_hlg.png` caches (which carried
-        // cICP chunks and must not be served — see lib/normalize_image.py).
-        const dir = dirname(srcPath)
-        const stem = basename(srcPath, extname(srcPath))
-        const outPath = join(dir, `${stem}_${colorSpace}_${imageTone}.png`)
-
-        // Try cache hit first. We replicate the Python module's mtime check
-        // here rather than spawning Python just to short-circuit — but the
-        // check must compare to the SOURCE mtime, not just check existence,
-        // otherwise replacing the source PNG on disk between renders would
-        // silently serve a stale converted file.
-        if (existsSync(outPath) && statSync(outPath).mtimeMs >= statSync(srcPath).mtimeMs) {
-          const body = readFileSync(outPath)
-          request.respond({ status: 200, contentType: 'image/png', body })
-          hdrImages++
-          return
-        }
-
-        // Cache miss — spawn lib.normalize_image asynchronously (not spawnSync)
-        // so the event loop stays unblocked while ffmpeg runs.
-        const converted = await spawnNormalizeImage(srcPath, colorSpace, outPath, imageTone)
-        if (converted) {
-          const body = readFileSync(outPath)
-          request.respond({ status: 200, contentType: 'image/png', body })
-          hdrImages++
-        } else {
-          // Conversion failed — degrade to the v2.5.7 reinterpret-as-HDR path
-          // rather than breaking the render.
-          request.continue()
-        }
-      } catch (err) {
-        process.stderr.write(`[montaj render] WARNING: HDR image interceptor threw — falling back: ${err.message}\n`)
-        try { request.continue() } catch { /* page may have closed */ }
+  // The page guard (page-guard.js) decides every request first: a read outside
+  // the boundary or a request off the machine is aborted, a props URL is served
+  // from the cache. Only what it allows reaches the HDR handler below, so each
+  // request gets exactly one of continue, respond or abort.
+  const hdrImageHandler = async (request) => {
+    // Defensive wrapper: a bug here must never deadlock the render.
+    try {
+      const resourceType = request.resourceType()
+      // Pass through non-image resources unchanged.
+      if (resourceType !== 'image') {
+        request.continue()
+        return
       }
-    })
+
+      const url = request.url()
+
+      // SVG: vector, no colour conversion meaningful.
+      // We use URL extension matching because the MIME type isn't known at
+      // request time (only from the response headers we haven't received yet).
+      if (/\.svg$/i.test(url)) {
+        request.continue()
+        return
+      }
+
+      // Remote URLs (not file://): pass through with a one-time per-host warning.
+      if (!url.startsWith('file://')) {
+        warnRemoteHdrImage(url)
+        request.continue()
+        return
+      }
+
+      // Local file:// image — decode path (handle percent-encoding).
+      // file:// URLs from bundle.js use encodeURI so decode it back.
+      let srcPath
+      try {
+        srcPath = fromFileHref(url)
+      } catch {
+        request.continue()
+        return
+      }
+
+      if (!existsSync(srcPath)) {
+        request.continue()
+        return
+      }
+
+      // Compute deterministic cache path: <stem>_<colorspace>_<tone>.png
+      // e.g. /abs/logo.png → /abs/logo_hdr_hlg_vivid.png. The tone suffix
+      // keeps the four tone modes from ever sharing a cache file, and
+      // orphans any pre-tone `<stem>_hdr_hlg.png` caches (which carried
+      // cICP chunks and must not be served — see lib/normalize_image.py).
+      const dir = dirname(srcPath)
+      const stem = basename(srcPath, extname(srcPath))
+      const outPath = join(dir, `${stem}_${colorSpace}_${imageTone}.png`)
+
+      // Try cache hit first. We replicate the Python module's mtime check
+      // here rather than spawning Python just to short-circuit — but the
+      // check must compare to the SOURCE mtime, not just check existence,
+      // otherwise replacing the source PNG on disk between renders would
+      // silently serve a stale converted file.
+      if (existsSync(outPath) && statSync(outPath).mtimeMs >= statSync(srcPath).mtimeMs) {
+        const body = readFileSync(outPath)
+        request.respond({ status: 200, contentType: 'image/png', body })
+        hdrImages++
+        return
+      }
+
+      // Cache miss — spawn lib.normalize_image asynchronously (not spawnSync)
+      // so the event loop stays unblocked while ffmpeg runs.
+      const converted = await spawnNormalizeImage(srcPath, colorSpace, outPath, imageTone)
+      if (converted) {
+        const body = readFileSync(outPath)
+        request.respond({ status: 200, contentType: 'image/png', body })
+        hdrImages++
+      } else {
+        // Conversion failed — degrade to the v2.5.7 reinterpret-as-HDR path
+        // rather than breaking the render.
+        request.continue()
+      }
+    } catch (err) {
+      process.stderr.write(`[montaj render] WARNING: HDR image interceptor threw — falling back: ${err.message}\n`)
+      try { request.continue() } catch { /* page may have closed */ }
+    }
   }
+  const guard = await installPageGuard(page, {
+    boundary:         job.boundary,
+    propsCache:       job.propsCache,
+    needsGoogleFonts: job.needsGoogleFonts,
+    onAllowed:        isHdr(colorSpace) ? hdrImageHandler : null,
+    // A remote props image is served as fetched, never converted.
+    onCached:         isHdr(colorSpace) ? request => { if (request.resourceType() === 'image') warnRemoteHdrImage(request.url()) } : null,
+  })
+  isBlockNoise = guard.isBlockNoise
 
   // Load the bundled component page (file:// URL).
   //
@@ -412,6 +427,9 @@ async function renderChunk(browser, job) {
   }
 
   await page.close()
+  // A props image the page asked for and could not get fails the render,
+  // naming it, rather than exporting without it (page-guard.js).
+  guard.assertPropsServed()
 
   // Encode PNG sequence → FFV1 in MKV.
   // yuva420p for transparent overlays; yuv420p for opaque (no alpha needed).
@@ -453,6 +471,20 @@ async function renderChunk(browser, job) {
   rmSync(frameDir, { recursive: true, force: true })
 
   return { webmPath: chunkMkv, hdrImages }
+}
+
+// One warning per host: an HDR project's remote image is not converted.
+function warnRemoteHdrImage(url) {
+  try {
+    const host = new URL(url).hostname
+    if (!warnedHosts.has(host)) {
+      warnedHosts.add(host)
+      process.stderr.write(
+        `[montaj render] WARNING: HDR project references remote image from ${host} — `
+        + `passing through unchanged (will render as sRGB reinterpreted as HDR).\n`
+      )
+    }
+  } catch { /* malformed URL — nothing to name */ }
 }
 
 const TTY = process.stderr.isTTY

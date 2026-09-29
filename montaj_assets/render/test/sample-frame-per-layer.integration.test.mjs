@@ -33,7 +33,8 @@ const { FFMPEG } = await import('../ffmpeg-bin.js')
 const FILTERS = spawnSync(FFMPEG, ['-hide_banner', '-filters'], { encoding: 'utf8' }).stdout || ''
 const SKIP = /\bzscale\b/.test(FILTERS) && /\blut3d\b/.test(FILTERS)
   ? false : 'ffmpeg lacks zscale + lut3d'
-if (SKIP && process.env.MONTAJ_REQUIRE_HDR_FFMPEG === '1') throw new Error(`MONTAJ_REQUIRE_HDR_FFMPEG=1 but ${SKIP}`)
+// A missing capability FAILS by default (PV52); MONTAJ_TEST_ALLOW_MISSING_CAPS=1 skips instead.
+if (SKIP && process.env.MONTAJ_TEST_ALLOW_MISSING_CAPS !== '1') throw new Error(`${SKIP}. Point MONTAJ_FFMPEG/MONTAJ_FFPROBE at the managed build (~/.local/share/montaj/models/ffmpeg is a directory; the binaries are inside), or set MONTAJ_TEST_ALLOW_MISSING_CAPS=1 to skip.`)
 
 const HLG = ['-c:v', 'libx264', '-x264-params', 'colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc']
 const BT709 = ['-c:v', 'libx264', '-x264-params', 'colorprim=bt709:transfer=bt709:colormatrix=bt709']
@@ -186,7 +187,7 @@ t('6. an HLG item whose normalizedSrc is a graded SDR master is not graded again
 })
 
 t('7. the cache key carries the sample cache version', () => {
-  assert.equal(SAMPLE_CACHE_VERSION, 5)
+  assert.equal(SAMPLE_CACHE_VERSION, 6)  // PV54
   const p = { settings: { colorSpace: 'hdr_hlg' } }
   const now = buildFrameCacheKey(null, p, 1)
   assert.equal(buildFrameCacheKey(null, p, 1, null, false, SAMPLE_CACHE_VERSION), now)

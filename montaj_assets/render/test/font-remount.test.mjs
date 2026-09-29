@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import puppeteer from 'puppeteer'
 import { bundleComponent, cleanupBundle } from '../bundle.js'
 import { toFileHref } from '../file-url.js'
+import { overlayPageLaunchOptions } from '../page-guard.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const FONTS    = join(__dirname, 'fixtures', 'fonts')
@@ -37,12 +38,8 @@ const HEIGHT   = 600
 
 let browser
 before(async () => {
-  // Same args as launchBrowser() in renderer.js, kept in sync by hand.
-  browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-web-security', '--allow-file-access-from-files'],
-    protocolTimeout: 300000,
-  })
+  // The options launchBrowser() in renderer.js uses (page-guard.js, PV54).
+  browser = await puppeteer.launch(overlayPageLaunchOptions({ disableWebSecurity: true }))
 })
 after(async () => { await browser?.close() })
 

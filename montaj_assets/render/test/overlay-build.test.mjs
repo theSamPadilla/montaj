@@ -13,7 +13,9 @@ import { join, dirname, relative } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 import esbuild from 'esbuild'
-import { overlayEsbuildOptions, overlayInputsFromMetafile, PREVIEW_NAMESPACE } from '../overlay-build.js'
+import {
+  overlayEsbuildOptions, overlayInputsFromMetafile, overlayReadBoundary, PREVIEW_NAMESPACE, READ_BOUNDARY_PLUGIN,
+} from '../overlay-build.js'
 import { generateShim } from '../bundle.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -75,19 +77,55 @@ const BAKE = {
 
 const sha = buf => createHash('sha256').update(buf).digest('hex')
 
+// PV54 added one field on purpose: `plugins`, holding the read-boundary guard.
+// Everything else is still the literal, and the byte-identity tests below build
+// with the REAL guard in place, so an allowed file must still build unchanged.
+const ANY_BOUNDARY = { allows: () => true }
+const withoutGuard = ({ plugins, ...rest }) => rest
+
+// esbuild reads config files while RESOLVING, before any hook runs: it walks up
+// from each input for tsconfig.json and reads package.json for main/module/
+// browser. Those walks can leave the read boundary, so the shared options pin
+// them. Stripped here rather than added to LEGACY_OPTIONS, which is frozen as
+// the pre-guard baseline the bundle output must keep reproducing — and it still
+// does: the byte-identical suite below covers exactly that.
+const withoutResolutionScoping = ({ tsconfigRaw, absWorkingDir, ...rest }) => rest
+
 describe('overlayEsbuildOptions', () => {
-  test('equals the literal it replaces', () => {
-    assert.deepEqual(overlayEsbuildOptions(), LEGACY_OPTIONS)
+  test('equals the literal it replaces, plus the read-boundary guard', () => {
+    const options = overlayEsbuildOptions({ boundary: ANY_BOUNDARY })
+    assert.deepEqual(withoutResolutionScoping(withoutGuard(options)), LEGACY_OPTIONS)
+    assert.deepEqual(options.plugins.map(p => p.name), [READ_BOUNDARY_PLUGIN])
+  })
+
+  test('pins esbuild config discovery so resolution cannot leave the boundary', () => {
+    const options = overlayEsbuildOptions({ boundary: ANY_BOUNDARY })
+    // Supplied inline, so no tsconfig.json is ever searched for up the tree.
+    assert.deepEqual(options.tsconfigRaw, {})
+    // Relative resolution starts at render's own dir, not the caller's cwd.
+    assert.equal(options.absWorkingDir, RENDER)
   })
 
   test('returns a fresh object each call', () => {
-    const a = overlayEsbuildOptions()
+    const a = overlayEsbuildOptions({ boundary: ANY_BOUNDARY })
     a.alias.react = '/elsewhere'
     a.loader['.jsx'] = 'js'
     a.nodePaths.push('/elsewhere')
     a.define['process.env.NODE_ENV'] = '"development"'
     a.format = 'iife'
-    assert.deepEqual(overlayEsbuildOptions(), LEGACY_OPTIONS)
+    a.plugins.length = 0
+    a.tsconfigRaw.compilerOptions = { jsx: 'preserve' }
+    const b = overlayEsbuildOptions({ boundary: ANY_BOUNDARY })
+    assert.deepEqual(withoutResolutionScoping(withoutGuard(b)), LEGACY_OPTIONS)
+    assert.deepEqual(b.tsconfigRaw, {})
+    assert.equal(b.plugins.length, 1)
+  })
+
+  test('(c) refuses to build options without a read boundary', () => {
+    // Required, so no caller can bundle an overlay with its imports unbounded.
+    for (const args of [[], [{}], [{ boundary: null }], [{ boundary: {} }]]) {
+      assert.throws(() => overlayEsbuildOptions(...args), /read boundary is required/)
+    }
   })
 })
 
@@ -113,7 +151,11 @@ describe('overlayEsbuildOptions: esbuild output is byte-identical to the literal
   })
   after(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
 
+  // The legacy literal gets the shared options' absWorkingDir, which esbuild's
+  // `// path` comments are relative to: without it the two builds differ
+  // whenever the cwd is not render's dir, whatever the options.
   const buildWith = (options, shim) => esbuild.build({
+    absWorkingDir: RENDER,
     ...options,
     entryPoints: [shim],
     outfile:     join(dir, 'bundle.js'),
@@ -123,7 +165,9 @@ describe('overlayEsbuildOptions: esbuild output is byte-identical to the literal
   for (const name of ['plain', 'keyframed', 'three']) {
     test(`${name} shim`, async () => {
       const legacy = await buildWith(LEGACY_OPTIONS, shims[name])
-      const shared = await buildWith(overlayEsbuildOptions(), shims[name])
+      // The real guard: the shim and the overlay are in `dir`, the bundle's
+      // work dir, and everything else they load is engine.
+      const shared = await buildWith(overlayEsbuildOptions({ boundary: overlayReadBoundary({ workDir: dir }) }), shims[name])
       assert.equal(legacy.outputFiles.length, 1)
       assert.equal(shared.outputFiles.length, 1)
       const a = legacy.outputFiles[0].contents
@@ -142,7 +186,7 @@ describe('overlayEsbuildOptions: esbuild output is byte-identical to the literal
     // the options ignored) would pass the three tests above just the same.
     const legacy  = await buildWith(LEGACY_OPTIONS, shims.plain)
     const changed = await buildWith(
-      { ...overlayEsbuildOptions(), define: { 'process.env.NODE_ENV': '"development"' } }, shims.plain)
+      { ...overlayEsbuildOptions({ boundary: overlayReadBoundary({ workDir: dir }) }), define: { 'process.env.NODE_ENV': '"development"' } }, shims.plain)
     assert.notEqual(sha(changed.outputFiles[0].contents), sha(legacy.outputFiles[0].contents))
   })
 })

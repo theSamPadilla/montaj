@@ -2,19 +2,25 @@
 // Point TMPDIR at a scratch dir: the cache lives under tmpdir().
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, utimesSync, statSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync, utimesSync, statSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { FFMPEG } from '../ffmpeg-bin.js'
 
+import { bundleComponent, cleanupBundle } from '../bundle.js'
 import {
   sampleOverlay, sampleFrame, buildOverlayCacheKey,
   statInputs, mergeInputs, writeInputsManifest, readValidInputsManifest, collectPropFilePaths,
 } from '../sample-frame.js'
 
 const md5 = p => createHash('md5').update(readFileSync(p)).digest('hex')
+
+// The fixtures below import their siblings, which the read boundary allows only
+// under one of its roots (PV54, overlay-build.js): the scratch tmpdir stands in
+// for the workspace. node --test runs each file in its own process.
+process.env.MONTAJ_WORKSPACE_DIR = tmpdir()
 
 /** Run fn while capturing stderr; returns the text written. */
 async function captureStderr(fn) {
@@ -93,6 +99,35 @@ test('manifest hit-path cost, 10 inputs', () => {
 })
 
 // ---------------------------------------------------------------------------
+// the bundle's inputs (esbuild, no browser)
+// ---------------------------------------------------------------------------
+test('bundleComponent: inputs are the overlay and its import whatever the caller\'s cwd', async () => {
+  // The shared esbuild options pin absWorkingDir to render's own dir (PV54), so
+  // metafile keys are relative to THAT, not to process.cwd(). Resolving them
+  // against the cwd gives paths that do not exist whenever the two differ,
+  // which is every sample step Python spawns, and the manifest then never
+  // validates. node --test runs this file with cwd == render's dir, so the
+  // rest of this suite could not tell the two apart: this test moves the cwd.
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sci-cwd-'))
+  const elsewhere = mkdtempSync(join(tmpdir(), 'montaj-sci-cwd-other-'))
+  const home = process.cwd()
+  let bundled
+  try {
+    const helper = join(dir, 'helper.js'), comp = join(dir, 'overlay.jsx')
+    writeFileSync(helper, helperSrc('#ff0000')); writeFileSync(comp, overlaySrc)
+    process.chdir(elsewhere)
+    try {
+      bundled = await bundleComponent({ componentPath: comp, props: {}, fps: 30, durationFrames: 30, width: 64, height: 64 })
+    } finally { process.chdir(home) }
+    assert.deepEqual(bundled.inputs, [realpathSync(helper), realpathSync(comp)].sort())
+  } finally {
+    if (bundled) cleanupBundle(bundled.workDir)
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(elsewhere, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // integration: real Chromium
 // ---------------------------------------------------------------------------
 const base = { frame: 0, fps: 30, width: 200, height: 200 }
@@ -127,6 +162,67 @@ test('overlay: imported helper edit busts the cache; props asset edit busts it',
     edit(asset, 'v2')
     assert.equal((await run(5)).hit, false, 'props asset edit is a miss')
     assert.equal((await run(6)).hit, true)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('overlay: from a cwd that is not render\'s dir, the manifest lists the helper and a helper edit misses',
+  { timeout: 180_000 }, async () => {
+  // Production never runs with cwd == render's dir (serve spawns node from
+  // MONTAJ_ROOT, the CLI from wherever the user is), and this suite always
+  // does. A path resolved against the wrong base fails SILENTLY here:
+  // statInputs drops paths that do not exist, so the manifest loses the helper
+  // and a helper edit is served the stale PNG, the bug PV49 exists to fix.
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sci-w-'))
+  const elsewhere = mkdtempSync(join(tmpdir(), 'montaj-sci-w-other-'))
+  const home = process.cwd()
+  try {
+    const helper = join(dir, 'helper.js'), comp = join(dir, 'overlay.jsx')
+    writeFileSync(helper, helperSrc('#ff0000')); writeFileSync(comp, overlaySrc)
+    const run = async n => {
+      const out = join(dir, `out${n}.png`)
+      process.chdir(elsewhere)
+      try {
+        const log = await captureStderr(() => sampleOverlay({ componentPath: comp, props: {}, ...base, outPath: out }))
+        return { out, hit: /cache hit/.test(log) }
+      } finally { process.chdir(home) }
+    }
+    const listing = () => {
+      const cache = join(tmpdir(), 'montaj-sample-cache')
+      return readdirSync(cache).filter(n => n.endsWith('.inputs.json'))
+        .flatMap(n => JSON.parse(readFileSync(join(cache, n), 'utf8')).map(([p]) => p))
+    }
+
+    const r1 = await run(1)
+    assert.equal(r1.hit, false, 'first is a miss')
+    assert.ok(listing().includes(realpathSync(helper)), 'the manifest lists the imported helper')
+    assert.equal((await run(2)).hit, true, 'an untouched re-sample hits')
+
+    edit(helper, helperSrc('#0000ff'))
+    const r3 = await run(3)
+    assert.equal(r3.hit, false, 'a helper edit is a miss')
+    assert.notEqual(md5(r3.out), md5(r1.out), 'and the pixels changed')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(elsewhere, { recursive: true, force: true })
+  }
+})
+
+test('overlay: a sample the page guard blocked something in is not cached', { timeout: 120_000 }, async () => {
+  // What it shows may depend on things outside the cache key (the workspace,
+  // the network), so the next sample renders again.
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sci-b-'))
+  try {
+    const comp = join(dir, 'overlay.jsx')
+    writeFileSync(comp, `export default function O() {
+  return <img src="https://example.com/logo.png" style={{ width: 10, height: 10 }} />
+}
+`)
+    const run = async n => {
+      const log = await captureStderr(() => sampleOverlay({ componentPath: comp, props: {}, ...base, outPath: join(dir, `b${n}.png`) }))
+      return { blocked: /blocked a network request to example\.com/.test(log), hit: /cache hit/.test(log) }
+    }
+    assert.deepEqual(await run(1), { blocked: true, hit: false })
+    assert.deepEqual(await run(2), { blocked: true, hit: false }, 'not served from the cache')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

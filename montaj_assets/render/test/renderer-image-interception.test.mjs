@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync, spawn } from 'node:child_process'
 import puppeteer from 'puppeteer'
 import { isHdr } from '../color-space.js'
+import { FFMPEG } from '../ffmpeg-bin.js'
 import { bundleComponent, cleanupBundle } from '../bundle.js'
 import { renderAllSegments } from '../renderer.js'
 import { sdrRecaptureSpecs, mergeSdrCaptures } from '../render.js'
@@ -37,13 +38,20 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const MONTAJ_ROOT = join(__dirname, '..', '..', '..')
 const PYTHON = process.env.MONTAJ_PYTHON || 'python3'
 
+// The fixtures' overlays load images by literal file:// path, which the read
+// boundary (PV54, overlay-build.js) allows only under one of its roots: the
+// scratch tmpdir stands in for the workspace. node --test runs each file in
+// its own process.
+process.env.MONTAJ_WORKSPACE_DIR = tmpdir()
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /** Returns true if ffmpeg has the zscale filter available. */
+// Probes the ffmpeg the code runs (ffmpeg-bin.js), not whatever PATH finds (PV52).
 function hasZscale() {
-  const r = spawnSync('ffmpeg', ['-filters'], { encoding: 'utf8', timeout: 10_000 })
+  const r = spawnSync(FFMPEG, ['-filters'], { encoding: 'utf8', timeout: 10_000 })
   return r.status === 0 && r.stdout.includes('zscale')
 }
 
@@ -113,9 +121,10 @@ function readPixelRgb(pngPath, x, y) {
 // Test
 // ---------------------------------------------------------------------------
 
-// MONTAJ_REQUIRE_HDR_FFMPEG=1: a missing capability fails instead of skipping.
+// A missing capability FAILS by default (PV52); MONTAJ_TEST_ALLOW_MISSING_CAPS=1
+// skips it instead, with the reason named.
 function skipOrThrow(t, reason) {
-  if (process.env.MONTAJ_REQUIRE_HDR_FFMPEG === '1') throw new Error(`MONTAJ_REQUIRE_HDR_FFMPEG=1 but ${reason}`)
+  if (process.env.MONTAJ_TEST_ALLOW_MISSING_CAPS !== '1') throw new Error(`${reason}. Point MONTAJ_FFMPEG/MONTAJ_FFPROBE at the managed build (~/.local/share/montaj/models/ffmpeg is a directory; the binaries are inside), or set MONTAJ_TEST_ALLOW_MISSING_CAPS=1 to skip.`)
   t.skip(reason)
 }
 
@@ -273,14 +282,17 @@ async function renderImgOverlay(dir, imgSrc, colorSpace, tag) {
   return <div style={{ width: 200, height: 200 }}><img src="${imgSrc}" style={{ width: 100, height: 100 }} /></div>
 }
 `)
-  const { htmlPath, workDir } = await bundleComponent({
-    componentPath: jsx, props: {}, fps: 10, durationFrames: 2, width: 200, height: 200,
+  // The image is a literal in the JSX, not a prop, so the read boundary (PV54)
+  // allows it only because `dir` is inside the workspace (tmpdir, above).
+  const { htmlPath, workDir, boundary, needsGoogleFonts } = await bundleComponent({
+    componentPath: jsx, props: {}, fps: 10, durationFrames: 2, width: 200, height: 200, projectDir: dir,
   })
   try {
     const [seg] = await renderAllSegments([{
       id: `seg-${tag}`, htmlPath, fps: 10, width: 200, height: 200,
       frameCount: 2, startSeconds: 0, endSeconds: 0.2,
       outputPath: join(dir, `seg-${tag}.mkv`),
+      boundary, needsGoogleFonts,
     }], { workers: 1, colorSpace })
     return seg
   } finally {
