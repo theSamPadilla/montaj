@@ -33,7 +33,7 @@ export default function MyOverlay({ frame, fps, duration, ...props }) {
 }
 ```
 
-**Imports.** Overlay JSX may import your own files: relative paths (`./lib/palette.js`, `../_shared/ease.ts`, `.json` data) and `montaj/render` resolve in render and in the editor preview, and `react` resolves to the editor's React. The preview only follows files under the workspace, `~/.montaj/overlays` and profile folders. An import that doesn't resolve fails at render and shows an error in the preview.
+**Imports.** Overlay JSX may import your own files: relative paths (`./lib/palette.js`, `../_shared/ease.ts`, `.json` data) and `montaj/render` resolve in render everywhere, and in the editor preview in the Montaj app, where `react` resolves to the editor's React. montaj's own browser UI still strips imports, so its preview shows nothing for an overlay that relies on one. The app's preview only follows files under the workspace, `~/.montaj/overlays` and profile folders. An import that doesn't resolve fails at render and shows an error in the preview.
 
 `frame`, `fps`, `duration`, `props`, `interpolate`, `spring` and the rest are injected as globals, and that stays the way to use them. Do not import `three`, `@react-three/fiber`, `recharts`, Phosphor or FontAwesome: render cannot resolve them from overlay code. A shared module must export functions and read the globals only inside them, because its top level runs before render sets them.
 
