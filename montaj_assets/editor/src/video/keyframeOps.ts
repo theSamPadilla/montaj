@@ -186,6 +186,45 @@ export function valueAt(item: VisualItem, prop: KeyframeProp, localT: number): n
   return geometryAt(item, item.type, localT)[prop]
 }
 
+/**
+ * Two keyframe times closer than this are the same instant.
+ *
+ * Exact equality is not enough, because of the inspector's own arrows: they
+ * seek to `item.start + t` and the panel reads back `playhead - item.start`,
+ * which floating point does not always return as `t` ((0.1 + 0.2) - 0.1 is
+ * 0.20000000000000004). Compared exactly, the keyframe the arrow just landed
+ * on would read as "not at the playhead": its diamond would show empty, a
+ * click would add a near-duplicate beside it, and the previous-arrow would
+ * jump to the keyframe the playhead is already on. A microsecond is far below
+ * one frame at any frame rate.
+ */
+export const KEYFRAME_TIME_EPSILON = 1e-6
+
+/**
+ * Item-relative time for absolute timeline `time`, clamped to the item's own
+ * span `[0, end - start]`.
+ *
+ * The clamp matters because selecting an item does not move the playhead: a
+ * playhead parked outside the item would otherwise hand a keyframe write a
+ * negative or over-long `t`, outside the span every other keyframe consumer
+ * (draw, hit-test, this module) assumes points stay within. Matches
+ * `applyKeyframeMove`'s clamp in pointer-machine.ts. Shared by the inspector
+ * and the preview drag commit so the two key at the same instant.
+ */
+export function localTimeOf(item: VisualItem, time: number): number {
+  return Math.min(Math.max(0, time - item.start), Math.max(0, item.end - item.start))
+}
+
+/**
+ * The `t` of `prop`'s keyframe sitting at `t` (within
+ * {@link KEYFRAME_TIME_EPSILON}), or `undefined` when none does. Returns the
+ * STORED time, not `t`, so a caller that goes on to update or remove that
+ * keyframe addresses the point that actually exists.
+ */
+export function keyframeTimeAt(item: VisualItem, prop: KeyframeProp, t: number): number | undefined {
+  return trackFor(item, prop)?.points.find(p => Math.abs(p.t - t) <= KEYFRAME_TIME_EPSILON)?.t
+}
+
 // ── Writing ──────────────────────────────────────────────────────────────
 
 /**
@@ -217,8 +256,9 @@ function withTrack(item: VisualItem, prop: KeyframeProp, track: KeyframeTrack | 
   return { ...item, keyframes: next }
 }
 
-/** Write `value` into `prop`'s own static scalar field on a new item. Used
- *  only by `disableKeyframing`, once keyframing is turned off. An exhaustive
+/** Write `value` into `prop`'s own static scalar field on a new item. Used by
+ *  `disableKeyframing`, once keyframing is turned off, and by `writeProp` for a
+ *  prop that is not animated. An exhaustive
  *  switch (no `default`) rather than a computed property, so adding a new
  *  `KeyframeProp` without a case here is a compile error, not a silent gap. */
 function withStaticValue(item: VisualItem, prop: KeyframeProp, value: number): VisualItem {
@@ -381,4 +421,94 @@ export function disableKeyframing(item: VisualItem, prop: KeyframeProp, atT: num
 
   const value = valueAt(item, prop, atT)
   return withStaticValue(withTrack(item, prop, undefined), prop, value)
+}
+
+// ── Editing at the playhead ──────────────────────────────────────────────
+//
+// What the inspector and the preview drag do to a property at the playhead.
+// Both used to carry their own copy of these rules, and the drag's copy was
+// missing: it wrote static scalars that a keyframed property hides.
+
+/**
+ * THE auto-keyframe write rule (CapCut-style). A prop that is already animated
+ * gets a keyframe at `localT` (updating the one already there, if any), so an
+ * edit mid-animation refines the curve instead of detaching from it. A prop
+ * that is not animated takes the static scalar.
+ *
+ * Every edit to a transform value routes through here: the inspector's typed
+ * boxes, slider, dial, steppers, align and reset, and every preview gesture
+ * commit (via {@link writeGestureProp}). Writing a static scalar onto an
+ * animated prop is never right: the keyframes win on every frame and in the
+ * export, so the edit would be silently discarded.
+ */
+export function writeProp(item: VisualItem, prop: KeyframeProp, localT: number, value: number): VisualItem {
+  if (!hasKeyframes(item, prop)) return withStaticValue(item, prop, value)
+  return setKeyframe(item, prop, keyframeTimeAt(item, prop, localT) ?? localT, value)
+}
+
+/** Scale props compose by multiplication, so moving a scale animation keeps
+ *  its proportions (a 0.5 -> 1 zoom doubled is 1 -> 2, not 1 -> 1.5). */
+const MULTIPLICATIVE_PROPS: ReadonlySet<KeyframeProp> = new Set(['scale', 'scaleX', 'scaleY'])
+
+/**
+ * Move `prop`'s WHOLE animation so it reads `value` at `localT`: every keyframe
+ * shifts by the same amount, so the motion keeps its shape and only its
+ * position changes. The Option-drag gesture.
+ *
+ * Additive for offsets and rotation (every point + `value - current`),
+ * multiplicative for scale (every point x `value / current`). A scale that
+ * reads 0 at `localT` has no ratio, so it falls back to additive. Easing and
+ * times are kept; the static scalar is untouched (the track hides it). Returns
+ * the SAME item for a prop with no animation.
+ */
+export function offsetTrack(item: VisualItem, prop: KeyframeProp, localT: number, value: number): VisualItem {
+  const track = trackFor(item, prop)
+  if (!track || track.points.length === 0 || !Number.isFinite(localT) || !Number.isFinite(value)) return item
+
+  const current = valueAt(item, prop, localT)
+  const ratio = value / current
+  const shift = MULTIPLICATIVE_PROPS.has(prop) && current !== 0 && Number.isFinite(ratio)
+    ? (v: number) => v * ratio
+    : (v: number) => v + (value - current)
+  return withTrack(item, prop, normalizeTrack({ prop, points: track.points.map(p => ({ ...p, value: shift(p.value) })) }))
+}
+
+/** `deg`, moved by whole turns to the equivalent angle nearest `near`. */
+function nearestTurn(deg: number, near: number): number {
+  return near + ((((deg - near) % 360) + 540) % 360 - 180)
+}
+
+/**
+ * How a PREVIEW GESTURE (move, resize, rotate) commits one transform prop.
+ *
+ *   - Not animated: the static scalar, exactly as before ({@link writeProp}).
+ *   - Animated, `'key'` (the default drag): a keyframe at `localT`
+ *     ({@link writeProp}), the same rule every inspector control follows.
+ *   - Animated, `'shift'` (Option held at release): the whole animation moves
+ *     by the drag ({@link offsetTrack}).
+ *
+ * Two gesture-specific rules on top:
+ *   - An animated prop the gesture did not change is left alone. A move
+ *     commits both axes and a resize commits the uniform `scale` even when only
+ *     one axis moved; keying those unchanged would add keyframes the operator
+ *     never made.
+ *   - Rotation arrives normalized to [0, 360) (the drag handle's convention),
+ *     so on an animated rotation it is first moved to the turn nearest the
+ *     curve's current value. Mid-way through a 0 -> 720 spin the curve reads
+ *     360; a 10 degree nudge reports 10, and keying a literal 10 would unwind
+ *     the spin.
+ */
+export function writeGestureProp(
+  item: VisualItem,
+  prop: KeyframeProp,
+  localT: number,
+  value: number,
+  mode: 'key' | 'shift',
+): VisualItem {
+  if (!hasKeyframes(item, prop)) return writeProp(item, prop, localT, value)
+
+  const current = valueAt(item, prop, localT)
+  const target = prop === 'rotation' ? nearestTurn(value, current) : value
+  if (target === current) return item
+  return mode === 'shift' ? offsetTrack(item, prop, localT, target) : writeProp(item, prop, localT, target)
 }

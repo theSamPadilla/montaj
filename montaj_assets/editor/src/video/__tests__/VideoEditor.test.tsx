@@ -10,7 +10,7 @@ import type {
   WaveformChunk,
 } from '../../types'
 import type { Captions, VisualItem } from '../../schema'
-import type { OverlayChanges } from '../preview/useDragOverlay'
+import { applyOverlayChanges, type OverlayChanges } from '../preview/useDragOverlay'
 import VideoEditor from '../VideoEditor'
 import { CROSSFADE_COMMIT_DELAY_MS } from '../timeline/Timeline'
 import { trackItems } from '../timeline/timeline-model'
@@ -241,16 +241,16 @@ describe('VideoEditor — editor-package integration', () => {
   })
 
   // `handleOverlayChange` (VideoEditor.tsx) is a private closure whose `changes`
-  // param is typed as `OverlayChanges` (useDragOverlay.ts) and whose body is
-  // exactly `{ ...item, ...changes }`. No control in the preview layer currently
-  // drives a `props` payload through it — the crop modal only ever sends
-  // sourceCrop/sourceWidth/sourceHeight, and drag/resize/rotate only ever send
-  // offsetX/offsetY/scale/rotation — so there is no DOM path in this harness
-  // that reaches a `props` change via a mounted <VideoEditor>. This test instead
-  // exercises the real merge contract directly: `changes` is typed against the
-  // actual `OverlayChanges` export (so `props` only compiles once useDragOverlay
-  // declares it), and the assertion applies the identical spread
-  // `handleOverlayChange` performs.
+  // param is typed as `OverlayChanges` (useDragOverlay.ts) and whose per-item
+  // body is `applyOverlayChanges(item, changes, clock.get(), options)`. No
+  // control in the preview layer currently drives a `props` payload through
+  // it — the crop modal only ever sends sourceCrop/sourceWidth/sourceHeight,
+  // and drag/resize/rotate only ever send offsetX/offsetY/scale/rotation — so
+  // there is no DOM path in this harness that reaches a `props` change via a
+  // mounted <VideoEditor>. This test instead exercises the real merge contract
+  // directly: `changes` is typed against the actual `OverlayChanges` export (so
+  // `props` only compiles once useDragOverlay declares it), and the assertion
+  // runs the same function `handleOverlayChange` does.
   it('handleOverlayChange merges a props payload into the matching item without touching other fields', () => {
     const item: VisualItem = {
       id: 'overlay-1',
@@ -264,8 +264,8 @@ describe('VideoEditor — editor-package integration', () => {
     }
     const changes: OverlayChanges = { props: { text: 'New text' } }
 
-    // Mirrors VideoEditor.tsx handleOverlayChange's item-update line exactly.
-    const merged = { ...item, ...changes }
+    // The function VideoEditor.tsx handleOverlayChange applies to the item.
+    const merged = applyOverlayChanges(item, changes, 0)
 
     expect(merged.props).toEqual({ text: 'New text' })
     expect(merged.offsetX).toBe(5)

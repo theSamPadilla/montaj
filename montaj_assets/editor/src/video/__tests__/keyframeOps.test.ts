@@ -17,6 +17,10 @@ import {
   removeKeyframesAt,
   isUniformScale,
   transformProps,
+  localTimeOf,
+  keyframeTimeAt,
+  writeProp,
+  offsetTrack,
 } from '../keyframeOps'
 
 function overlay(over: Partial<VisualItem> = {}): VisualItem {
@@ -639,5 +643,102 @@ describe('transformProps — the set an all-props action may walk', () => {
     expect(trackFor(next, 'scaleX')!.points).toEqual([{ t: 5, value: 1.5 }])
     expect(trackFor(next, 'scaleY')!.points).toEqual([{ t: 5, value: 0.5 }])
     expect(trackFor(next, 'scale')).toBeUndefined()
+  })
+})
+
+// ── The playhead-keyframe surface shared by the inspector and the preview drag ──
+
+// What the inspector's keyframe arrows produce: they seek to `item.start + t`,
+// and the panel reads back `playhead - item.start`, which floating point does
+// not always return as `t`.
+const NOISY_T = (0.1 + 0.2) - 0.1 // 0.20000000000000004, not 0.2
+
+describe('localTimeOf — item-relative time, clamped to the item span', () => {
+  it('subtracts the item start', () => {
+    expect(localTimeOf(overlay(), 8)).toBe(3)
+  })
+
+  it('clamps before the start to 0 and after the end to the span', () => {
+    expect(localTimeOf(overlay(), 0)).toBe(0)
+    expect(localTimeOf(overlay(), 99)).toBe(10)
+  })
+})
+
+describe('keyframeTimeAt — "a keyframe sits at the playhead"', () => {
+  const item = overlay({ keyframes: [{ prop: 'offsetX', points: [{ t: 0.2, value: 1 }, { t: 4, value: 2 }] }] })
+
+  it('returns the keyframe time on an exact hit', () => {
+    expect(keyframeTimeAt(item, 'offsetX', 4)).toBe(4)
+  })
+
+  it('finds the keyframe the arrow just landed on despite float noise', () => {
+    expect(NOISY_T).not.toBe(0.2)
+    expect(keyframeTimeAt(item, 'offsetX', NOISY_T)).toBe(0.2)
+  })
+
+  it('is undefined between keyframes and on an unanimated prop', () => {
+    expect(keyframeTimeAt(item, 'offsetX', 2)).toBeUndefined()
+    expect(keyframeTimeAt(item, 'offsetY', 4)).toBeUndefined()
+  })
+})
+
+describe('writeProp — the one auto-keyframe rule every edit follows', () => {
+  it('writes the static scalar when the prop is not animated', () => {
+    const next = writeProp(overlay({ offsetX: 10 }), 'offsetX', 3, 42)
+    expect(next.offsetX).toBe(42)
+    expect(next.keyframes).toBeUndefined()
+  })
+
+  it('adds a keyframe at localT when the prop is animated, leaving the static scalar alone', () => {
+    const item = overlay({ offsetX: 10, keyframes: [{ prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 10, value: 100 }] }] })
+    const next = writeProp(item, 'offsetX', 3, 42)
+    expect(trackFor(next, 'offsetX')!.points).toEqual([{ t: 0, value: 0 }, { t: 3, value: 42 }, { t: 10, value: 100 }])
+    expect(next.offsetX).toBe(10)
+  })
+
+  it('updates the keyframe at the playhead rather than adding a near-duplicate beside it', () => {
+    const item = overlay({ keyframes: [{ prop: 'offsetX', points: [{ t: 0.2, value: 1 }, { t: 4, value: 2 }] }] })
+    const next = writeProp(item, 'offsetX', NOISY_T, 9)
+    expect(trackFor(next, 'offsetX')!.points).toEqual([{ t: 0.2, value: 9 }, { t: 4, value: 2 }])
+  })
+})
+
+describe('offsetTrack — move the whole animation so it reads `value` at localT', () => {
+  it('adds the delta to every keyframe of an offset, and leaves the static scalar alone', () => {
+    const item = overlay({ offsetX: 7, keyframes: [{ prop: 'offsetX', points: [{ t: 0, value: -20 }, { t: 10, value: 20 }] }] })
+    // Reads 0 at t = 5; moving it to 10 is a +10 shift.
+    const next = offsetTrack(item, 'offsetX', 5, 10)
+    expect(trackFor(next, 'offsetX')!.points).toEqual([{ t: 0, value: -10 }, { t: 10, value: 30 }])
+    expect(next.offsetX).toBe(7)
+  })
+
+  it('adds the delta for rotation', () => {
+    const item = overlay({ keyframes: [{ prop: 'rotation', points: [{ t: 0, value: 0 }, { t: 10, value: 90 }] }] })
+    const next = offsetTrack(item, 'rotation', 0, 30)
+    expect(trackFor(next, 'rotation')!.points).toEqual([{ t: 0, value: 30 }, { t: 10, value: 120 }])
+  })
+
+  it('MULTIPLIES every keyframe of a scale by the ratio at localT', () => {
+    const item = overlay({ scale: 1, keyframes: [{ prop: 'scale', points: [{ t: 0, value: 0.5 }, { t: 10, value: 1 }] }] })
+    const next = offsetTrack(item, 'scale', 0, 1) // 0.5 -> 1 is x2
+    expect(trackFor(next, 'scale')!.points).toEqual([{ t: 0, value: 1 }, { t: 10, value: 2 }])
+    expect(next.scale).toBe(1)
+  })
+
+  it('multiplies per-axis scale the same way', () => {
+    const item = overlay({ keyframes: [{ prop: 'scaleY', points: [{ t: 0, value: 2 }, { t: 10, value: 4 }] }] })
+    const next = offsetTrack(item, 'scaleY', 0, 1)
+    expect(trackFor(next, 'scaleY')!.points).toEqual([{ t: 0, value: 1 }, { t: 10, value: 2 }])
+  })
+
+  it('keeps easing on every point', () => {
+    const item = overlay({ keyframes: [{ prop: 'offsetY', points: [{ t: 0, value: 0, easing: 'ease-in' }, { t: 10, value: 10 }] }] })
+    const next = offsetTrack(item, 'offsetY', 0, 5)
+    expect(trackFor(next, 'offsetY')!.points).toEqual([{ t: 0, value: 5, easing: 'ease-in' }, { t: 10, value: 15 }])
+  })
+
+  it('returns the SAME item for a prop with no animation', () => {
+    const item = overlay({ offsetX: 3 })
+    expect(offsetTrack(item, 'offsetX', 0, 10)).toBe(item)
   })
 })

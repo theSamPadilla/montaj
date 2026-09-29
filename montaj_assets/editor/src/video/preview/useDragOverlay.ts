@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { VisualItem } from '../../schema'
+import type { KeyframeProp, VisualItem } from '../../schema'
+import { localTimeOf, writeGestureProp } from '../keyframeOps'
 
 export type Corner = 'nw' | 'ne' | 'sw' | 'se'
 /**
@@ -14,7 +15,8 @@ export type DragType = 'move' | `resize-${Corner}` | `resize-${Edge}` | 'rotate'
 // Shared shape for `onOverlayChange` across the preview layer: drag/resize/rotate
 // gestures (useDragOverlay) only ever populate the geometric subset; content-editing
 // callers (crop modal, future props/text editors) populate the rest. Callers pass a
-// partial — VideoEditor.handleOverlayChange merges whatever arrives into the item.
+// partial; VideoEditor.handleOverlayChange applies it with `applyOverlayChanges`
+// below, which keys animated transform props and merges everything else.
 export interface OverlayChanges {
   offsetX?: number
   offsetY?: number
@@ -33,6 +35,56 @@ export interface OverlayChanges {
   props?: Record<string, unknown>
   /** Legacy text overlay items only. */
   text?: string
+}
+
+/** How a gesture's commit treats an ANIMATED property. */
+export interface OverlayCommitOptions {
+  /**
+   * Option (Alt) was held when the gesture ended: move the WHOLE animation by
+   * the drag instead of keying the playhead. See `writeGestureProp`.
+   */
+  shiftAnimation?: boolean
+}
+
+/** The `OverlayChanges` fields that are keyframeable transform props. */
+const TRANSFORM_PROPS = ['offsetX', 'offsetY', 'scale', 'scaleX', 'scaleY', 'rotation'] as const satisfies readonly KeyframeProp[]
+
+/**
+ * Apply one committed `OverlayChanges` to `item` with the playhead at absolute
+ * timeline time `playhead`. This is VideoEditor's `handleOverlayChange` body,
+ * and so the commit of every preview gesture: this hook's move, resize and
+ * rotate, and PreviewPlayer's base-clip drag and wheel zoom.
+ *
+ * Transform props go through `writeGestureProp`, the inspector's own
+ * auto-keyframe rule: an animated prop gets a keyframe at the playhead (or,
+ * with `shiftAnimation`, its whole animation moves), and a prop that is not
+ * animated takes the static value exactly as before. Everything else (fit,
+ * crop, props, text) is merged as-is.
+ *
+ * It used to be a plain `{ ...item, ...changes }`, which wrote static scalars
+ * onto keyframed props. Keyframes win on every frame and in the export, so the
+ * drag was discarded: the item snapped back on release and rendered unmoved.
+ *
+ * The playhead is clamped into the item's span (`localTimeOf`), matching the
+ * inspector, so both key the same instant.
+ */
+export function applyOverlayChanges(
+  item: VisualItem,
+  changes: OverlayChanges,
+  playhead: number,
+  options: OverlayCommitOptions = {},
+): VisualItem {
+  const localT = localTimeOf(item, playhead)
+  const mode = options.shiftAnimation ? 'shift' : 'key'
+  const rest: OverlayChanges = { ...changes }
+  let next = item
+  for (const prop of TRANSFORM_PROPS) {
+    const value = changes[prop]
+    delete rest[prop]
+    if (value === undefined) continue
+    next = writeGestureProp(next, prop, localT, value, mode)
+  }
+  return { ...next, ...rest }
 }
 
 const SNAP_THRESHOLD = 2.5  // % of container
@@ -70,7 +122,10 @@ interface DragState {
 
 export function useDragOverlay(
   containerRef: React.RefObject<HTMLDivElement | null>,
-  onOverlayChange?: (id: string, changes: OverlayChanges) => void,
+  // PreviewPlayer passes its `onOverlayChange` prop straight through, so the
+  // host (VideoEditor.handleOverlayChange) receives the options argument even
+  // though PreviewPlayer's own prop type only names the first two.
+  onOverlayChange?: (id: string, changes: OverlayChanges, options?: OverlayCommitOptions) => void,
 ) {
   const [dragState, setDragState] = useState<DragState | null>(null)
 
@@ -209,7 +264,7 @@ export function useDragOverlay(
       }
     }
 
-    function onUp() {
+    function onUp(e: MouseEvent) {
       const lo = liveOffsetRef.current
       const ls = liveScaleRef.current
       const lr = liveRotationRef.current
@@ -234,7 +289,10 @@ export function useDragOverlay(
         }
       }
       if (lr) { changes.rotation = lr.rotation }
-      if (Object.keys(changes).length) onOverlayChange?.(dragState!.id, changes)
+      // Option (Alt) is read off the RELEASE, so the operator can decide
+      // mid-drag. The live preview is the same either way: the item follows the
+      // pointer at the current frame, and both commits put it exactly there.
+      if (Object.keys(changes).length) onOverlayChange?.(dragState!.id, changes, { shiftAnimation: e.altKey })
       setDragState(null)
       setLiveOffset(null)
       setLiveScale(null)

@@ -28,7 +28,7 @@ import { createScrubSource, type ScrubSource } from '../engine/scrub-source'
 import { createScrubResolver } from '../engine/scrub-resolve'
 import { useSourcePreview, type SourcePreviewStore } from './source-preview'
 import { formatTimecode } from './timecode'
-import type { OverlayChanges } from './preview/useDragOverlay'
+import { applyOverlayChanges, type OverlayChanges, type OverlayCommitOptions } from './preview/useDragOverlay'
 import VersionPanel, { listVersions } from './VersionPanel'
 import OverlayInspector from './OverlayInspector'
 import LeftPanelTabs, { type LeftPanelTab } from './panels/LeftPanelTabs'
@@ -1550,11 +1550,16 @@ function ReviewSurface<P extends Project>({
     void sync.commit()
   }
 
-  function handleOverlayChange(id: string, changes: OverlayChanges) {
+  // A preview gesture's commit (drag, resize, rotate, the base clip's zoom) or
+  // the crop modal's. An ANIMATED transform prop is keyed at the playhead, or
+  // with Option its whole animation shifts, by the same rule as the inspector:
+  // see `applyOverlayChanges`. The playhead is read once, at commit time.
+  function handleOverlayChange(id: string, changes: OverlayChanges, options?: OverlayCommitOptions) {
+    const playhead = clock.get()
     void sync.mutate(p => ({
       ...p,
       tracks: mapTrackItems(p, items =>
-        items.map(item => item.id !== id ? item : { ...item, ...changes })
+        items.map(item => item.id !== id ? item : applyOverlayChanges(item, changes, playhead, options))
       ),
     } as P))
   }

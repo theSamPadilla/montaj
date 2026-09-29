@@ -18,11 +18,13 @@ import {
   enableKeyframing,
   hasKeyframes,
   isUniformScale,
+  localTimeOf,
   removeKeyframe,
   setKeyframe,
   trackFor,
   transformProps,
   valueAt,
+  writeProp,
   canKeyframeProp,
 } from './keyframeOps'
 import { usePlaybackTime, type PlaybackClock } from './playback-clock'
@@ -42,12 +44,15 @@ import { NumberField, Slider, cn, stepValue } from '../ui'
  * `allProps` below — that split runs through the header actions as well as
  * the Scale row itself.
  *
- * Every control obeys the SAME CapCut-style auto-keyframe rule, factored into
+ * Every control obeys the SAME CapCut-style auto-keyframe rule, keyframeOps'
  * {@link writeProp}: editing a prop that's already keyframed drops a keyframe
  * at the playhead instead of overwriting the static scalar; editing an
- * unkeyframed prop writes the scalar. Continuous gestures (typing, slider
- * drag, dial drag) preview per change and commit once when the gesture ends;
- * discrete actions (steppers, align, reset, diamonds) fire one `onChange`.
+ * unkeyframed prop writes the scalar. The preview's drag, resize and rotate
+ * commit through the same function (useDragOverlay's `applyOverlayChanges`),
+ * so a value set here and one set by dragging land the same way. Continuous
+ * gestures (typing, slider drag, dial drag) preview per change and commit once
+ * when the gesture ends; discrete actions (steppers, align, reset, diamonds)
+ * fire one `onChange`.
  *
  * Deliberately the ONLY place opacity is editable at all — the preview's drag
  * gestures (useDragOverlay) cover offset/scale/rotation but never opacity, so
@@ -128,22 +133,6 @@ const DEFAULTS: Record<KeyframeProp, number> = {
  *  the way to reach a value outside it (they only carry ROWS.scale's floor). */
 const SCALE_SLIDER_MIN = 0.05
 const SCALE_SLIDER_MAX = 4
-
-/**
- * The single write rule this whole panel obeys. Auto-keyframe: a prop that is
- * already animated gets a NEW keyframe at the playhead, so editing it mid-
- * animation refines the curve instead of silently detaching the value from
- * it; a prop that isn't animated just takes the static scalar.
- *
- * Every control routes through here — typing, slider, dial, steppers, align,
- * reset — so there is exactly one place that decision is made and none of
- * them can drift from the others.
- */
-function writeProp(item: VisualItem, prop: KeyframeProp, localT: number, value: number): VisualItem {
-  return hasKeyframes(item, prop)
-    ? setKeyframe(item, prop, localT, value)
-    : { ...item, [prop]: value }
-}
 
 /**
  * Remove one per-axis scale from `item` ENTIRELY — the static scalar AND any
@@ -530,15 +519,12 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   // reassignable parameter into a nested function).
   const target = item
 
-  // Clamped to the item's own span, matching `applyKeyframeMove`'s clamp in
-  // pointer-machine.ts. This panel renders whenever an overlay is SELECTED,
-  // and selecting an item does not move the playhead — so a playhead sitting
-  // outside the item's [start, end] (e.g. the overlay was selected while
-  // parked elsewhere on the timeline) would otherwise hand `setKeyframe`/
-  // `enableKeyframing` a negative or over-long `t`, writing a keyframe
-  // outside the span every OTHER keyframe consumer (draw, hit-test,
-  // keyframeOps) assumes points stay within.
-  const localT = Math.min(Math.max(0, playhead - target.start), Math.max(0, target.end - target.start))
+  // Clamped to the item's own span (see `localTimeOf`). This panel renders
+  // whenever an overlay is SELECTED, and selecting an item does not move the
+  // playhead, so a playhead parked outside the item's [start, end] would
+  // otherwise key outside the span. The preview drag's commit clamps with the
+  // same function, so the two key the same instant.
+  const localT = localTimeOf(target, playhead)
 
   // Every prop's value at the playhead, sampled ONCE off the incoming item.
   // The header's all-props actions thread five or six writes through one
