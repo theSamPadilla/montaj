@@ -1150,10 +1150,12 @@ async def _run_look_migration_unit(unit: _LookMigrationUnit) -> str | None:
     return path if path == unit.out else None
 
 
-def _apply_project_edits(project_path: Path, edits: list[tuple]) -> tuple[dict, str] | None:
+def _apply_project_edits(project_path: Path, edits: list[tuple],
+                         *, settings: dict | None = None) -> tuple[dict, str] | None:
     """Apply `(item_id, item_src, field, value)` edits to a project.json — a
-    `None` value deletes the field. Returns the updated (project, json text), or
-    None when nothing changed or the file can't be read.
+    `None` value deletes the field. Each key of `settings` is set in the
+    project's `settings` in the same write. Returns the updated (project, json
+    text), or None when nothing changed or the file can't be read.
 
     Serialization: read-modify-write with NO await between the read and the
     write, so under the single asyncio loop that serves this process it cannot
@@ -1181,6 +1183,12 @@ def _apply_project_edits(project_path: Path, edits: list[tuple]) -> tuple[dict, 
                     changed = True
             elif item.get(field) != value:
                 item[field] = value
+                changed = True
+    current = project.get("settings")
+    if settings and isinstance(current, dict):
+        for key, value in settings.items():
+            if current.get(key) != value:
+                current[key] = value
                 changed = True
     if not changed:
         return None
@@ -1722,6 +1730,67 @@ async def _migrate_project_look(
     return result[0] if result is not None else None
 
 
+async def ensure_project_color_provenance(
+    project_id: str,
+    project_dir: Path,
+    project: dict,
+    broadcaster: "SSEBroadcaster | None" = None,
+) -> dict:
+    """Heal an HDR project whose SDR clips were converted in place before PV42
+    (lib.color_provenance.ensure_color_provenance), and return the project to
+    serve: `project` itself when nothing changed, otherwise the healed copy.
+
+    The plan (probes and thumbnails) runs off the event loop. When an item will
+    change, project.json is first snapshotted into git ("version: before colour
+    provenance"); the edits then land in one `_apply_project_edits` write, which
+    is broadcast over SSE. A switched item whose original has no fresh proxy
+    had `proxySrc` cleared, and its proxy is queued on the look-migration queue.
+    `normalizeInBackground`, set when an item was switched, makes the open path
+    convert each original into its `normalizedSrc` cache.
+
+    Never raises: a project must always open, and always render."""
+    try:
+        return await _ensure_project_color_provenance(project_id, project_dir, project, broadcaster) or project
+    except Exception:
+        return project
+
+
+async def _ensure_project_color_provenance(
+    project_id: str,
+    project_dir: Path,
+    project: dict,
+    broadcaster: "SSEBroadcaster | None",
+) -> dict | None:
+    from lib.color_provenance import plan_color_provenance
+    from lib.types.colorspace import is_hdr
+
+    settings = project.get("settings") or {}
+    if not is_hdr(settings.get("colorSpace")):
+        return None  # SDR: no probe, no thread
+    plan = await asyncio.to_thread(plan_color_provenance, project_dir)
+    if not plan["edits"] and not plan["settings"]:
+        return None
+    if plan["edits"]:
+        await asyncio.to_thread(_git_commit_sync, project_dir, "version: before colour provenance")
+    result = _apply_project_edits(project_dir / "project.json", plan["edits"], settings=plan["settings"])
+    if result is None:
+        return None
+    if broadcaster is not None:
+        broadcaster.publish(project_id, _sse_data_frame(result[1]))
+
+    new_units: list[_LookMigrationUnit] = []
+    for owed in plan["proxiesOwed"]:
+        unit = _look_migration_pending("proxy", owed["out"]) \
+            or next((u for u in new_units if u.out == owed["out"]), None)
+        if unit is None:
+            unit = _LookMigrationUnit("proxy", owed["input"], owed["out"], settings.get("colorSpace"))
+            new_units.append(unit)
+        unit.targets.append((project_id, str(project_dir), "proxySrc", owed["id"], owed["src"], broadcaster))
+    for unit in new_units:
+        _look_migration_enqueue(unit)
+    return result[0]
+
+
 def _ensure_current_proxies(
     project_id: str,
     project_dir: Path,
@@ -1891,6 +1960,11 @@ async def get_project(project_id: str, request: Request = None, project_dir: Pat
     # response is the MIGRATED body — the pass only ever does name/stat work
     # plus a bounded ffprobe pass; every re-encode is queued, never awaited.
     project = await migrate_project_look(project_id, project_dir, project, broadcaster)
+
+    # An HDR project whose SDR clips were converted in place before PV42: put
+    # each back on its original. Before the block below, which then converts
+    # the originals it switched to. Best-effort, never raises.
+    project = await ensure_project_color_provenance(project_id, project_dir, project, broadcaster)
 
     # A project still owed background colour conversions (see
     # `_ensure_background_normalize`): join what is queued, restart what a serve
@@ -2370,6 +2444,7 @@ async def version_frame(
     project_id: str,
     commit: str,
     t: float,
+    request: Request = None,
     project_dir: Path = Depends(get_project_dir),
 ):
     """Render a single composited PNG frame at time ``t`` from a past version of
@@ -2414,6 +2489,17 @@ async def version_frame(
             media_type="image/png",
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
+
+    # Heal the live project first (an HDR project whose SDR clips were
+    # converted in place before PV42), so a working-copy frame grades each
+    # layer by its origin. Never raises.
+    try:
+        live = json.loads((project_dir / "project.json").read_text())
+    except (OSError, ValueError):
+        live = None
+    if isinstance(live, dict):
+        broadcaster = getattr(getattr(getattr(request, "app", None), "state", None), "broadcaster", None)
+        await ensure_project_color_provenance(project_id, project_dir, live, broadcaster)
 
     # Materialize the project.json input the render will read. For a real
     # commit we `git show` it into render/versions/<commit>/project.json (kept
@@ -3190,6 +3276,11 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
         # _git_commit_sync is no-op-safe on a clean tree, so back-to-back
         # renders don't spam the history. Carousel already commits on →final;
         # this covers the video path.
+        #
+        # First heal an HDR project whose SDR clips were converted in place
+        # before PV42, so the export grades each layer by its origin.
+        broadcaster = getattr(getattr(getattr(request, "app", None), "state", None), "broadcaster", None)
+        project = await ensure_project_color_provenance(project_id, project_dir, project, broadcaster)
         run_count = project.get("runCount", 1)
         await asyncio.to_thread(_git_commit_sync, project_dir, f"version: run {run_count} — export")
 

@@ -35,6 +35,11 @@ def main(project_path=None, out=None, workers=None, clean=False, scale=None, mon
         if clean:  cmd.append("--clean")
         if scale is not None: cmd += ["--scale", str(scale)]
     else:
+        # Heal an HDR project whose SDR clips were converted in place before
+        # PV42, so the export grades each layer by its origin. Never raises.
+        if project_path and os.path.basename(project_path) == "project.json":
+            from lib.color_provenance import ensure_color_provenance
+            ensure_color_provenance(os.path.dirname(os.path.abspath(project_path)))
         render_js = os.path.join(render_dir, "render.js")
         cmd = ["node", render_js]
         if project_path: cmd.append(project_path)
