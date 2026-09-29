@@ -23,6 +23,7 @@ import { fileURLToPath }                                  from 'url'
 import { tmpdir }                                         from 'os'
 import { randomBytes }                                    from 'crypto'
 import { toFileHref, fontsCssHref, assetResolverSource } from './file-url.js'
+import { overlayEsbuildOptions }                          from './overlay-build.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -339,30 +340,12 @@ createRoot(document.getElementById('root')).render(
 
   writeFileSync(shimPath, shim)
 
+  // Same resolution as every other overlay bundle (overlay-build.js), so a
+  // slide's overlays resolve imports exactly as render and the preview do.
   await esbuild.build({
+    ...overlayEsbuildOptions(),
     entryPoints: [shimPath],
-    bundle:      true,
-    format:      'esm',
-    platform:    'browser',
     outfile:     bundlePath,
-    jsx:         'automatic',
-    loader:      { '.jsx': 'jsx', '.js': 'js', '.tsx': 'tsx', '.ts': 'ts' },
-    alias: {
-      'montaj/render':    join(__dirname, 'core', 'index.js'),
-      // Force all transitive imports of React to resolve from render's own
-      // node_modules, not from overlay-runtime's nested copy. montaj-overlay-runtime
-      // is a `file:` symlink, so esbuild follows the symlink and would otherwise
-      // pick up react from overlay-runtime/node_modules, producing two React
-      // instances which breaks r3f's reconciler.
-      'react':            join(__dirname, 'node_modules', 'react'),
-      'react-dom':        join(__dirname, 'node_modules', 'react-dom'),
-      'react-dom/client': join(__dirname, 'node_modules', 'react-dom', 'client'),
-    },
-    nodePaths: [join(__dirname, 'node_modules')],
-    define: {
-      'process.env.NODE_ENV': '"production"',
-    },
-    logLevel: 'silent',
   })
 
   writeFileSync(htmlPath, generateHtml(width, height, googleFonts, fontsBaseDir))
