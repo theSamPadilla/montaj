@@ -41,10 +41,12 @@ import {
   buildOverlayFilterParts,
   buildVividLutChain,
   buildCutoutGradeFilter,
+  UNTAGGED_AS_BT709_VF,
   hasZscale,
   hasLut3d,
 } from './encode-segment.js'
 import { resolveAt, sourceWindow, RESOLVER_VERSION } from '@bycrux/timeline-core'
+import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 
 /**
  * The pre-SP6b Hable chain: the ONLY place this file tonemaps with Hable, used
@@ -77,7 +79,6 @@ export function buildCutoutSampleVf(key, sdrCurve = null) {
   const grade = buildCutoutGradeFilter(key, hasZscale(), { sdrCurve, hasLut3d: hasLut3d() })
   return `split=2[c][a];[a]alphaextract[al];[c]${grade},format=yuv444p[cg];[cg][al]alphamerge,format=rgba`
 }
-import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const isMain = isMainModule(import.meta.url, process.argv[1])
@@ -105,8 +106,9 @@ const SHORT_EDGE_TARGET = 1080
  * Bump when a change alters the pixels a sampled frame shows for the same
  * project file, so the 24 h on-disk cache cannot serve the old picture.
  * 2: PV42, HDR projects grade each clip by its own origin.
+ * 3: PV42 review, an untagged SDR clip in an HDR project is read as BT.709.
  */
-const SAMPLE_CACHE_VERSION = 2
+const SAMPLE_CACHE_VERSION = 3
 
 // Transfer of the file actually decoded, probed once per path per process.
 const transferCache = new Map()
@@ -866,6 +868,10 @@ export async function sampleFrame({
           }
           vfParts.push(isCutout ? buildCutoutSampleVf(key, sdrCurve) : buildSampleGradeVf(key, sdrCurve))
         }
+        // An untagged SDR clip is read as BT.709 by the HDR export (its stretch),
+        // where ffmpeg's own default would decode it as BT.601. Only this block
+        // is HDR-only, so SDR projects stay byte-identical.
+        else if (!isCutout && decodedTransferOf(src) === 'unknown') vfParts.unshift(UNTAGGED_AS_BT709_VF)
       }
       if (vfParts.length) ffmpegExtractArgs.push('-vf', vfParts.join(','))
 

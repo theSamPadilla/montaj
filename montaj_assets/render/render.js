@@ -23,7 +23,7 @@ import { requireValidKey, detectFromTransfer, smartDetect, isHdr, DEFAULT_COLOR_
 import { pMap }                           from './p-map.js'
 import { fileHasAudio, probeVideoGeometry } from './encode-segment.js'
 import { probeColorTransfer }             from './derive-sdr.js'
-import { sdrLayerFor, gradeKeyFor }      from './sdr-layer.js'
+import { sdrLayerFor, gradeKeyFor, probeMedia, defaultDeps } from './sdr-layer.js'
 import { sourceWindow, transitionPairs }  from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
 import { resolveMotionBlur }              from './motion-blur.js'
@@ -800,7 +800,9 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
 export function sdrRecaptureSpecs(recapture, segmentSpecs) {
   return recapture.map(r => {
     const spec = segmentSpecs.find(s => s.id === r.id)
-    return { ...spec, outputPath: spec.outputPath.replace(/(\.\w+)?$/, m => `-sdr${m}`) }
+    // A sibling `sdr/` dir, not a `-sdr` suffix: overlay `foo`'s suffixed capture
+    // (`overlay-N--foo-sdr.mkv`) is overlay `foo-sdr`'s own capture path.
+    return { ...spec, outputPath: join(dirname(spec.outputPath), 'sdr', basename(spec.outputPath)) }
   })
 }
 
@@ -836,6 +838,10 @@ function stampSourceProbes(videoItems, transferCache, audioCache = new Map()) {
       transferCache.set(item.src, probeColorTransfer(item.src))
     }
     item.colorTransfer = transferCache.get(item.src) ?? 'unknown'
+    // Derived by prepareSdrPass only; a stray project.json field must not
+    // change the HDR pass's conversion.
+    delete item.gradeFrom
+    delete item.alphaGrade
   }
   for (const item of videoItems) {
     if (!audioCache.has(item.src)) {
@@ -895,8 +901,8 @@ async function prepareVideoItems(videoItems, targetFor,
     const normalizedPath = await normalizeIfNeeded(item.src, target, tonemapped,
       { untaggedSource: item.colorTransfer === 'unknown', sdrStretch })
     // Every call, changed path or not: a normalize killed at normalizeIfNeeded's
-    // 600 s limit falls back to the unconformed source SILENTLY, and this line is
-    // the one place its duration shows.
+    // 600 s limit falls back to the unconformed source (normalizeIfNeeded logs the
+    // failure), and this line is the one place its duration shows.
     if (timingLabel) {
       log(`${timingLabel}: normalized ${basename(item.src)} in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`)
     }
@@ -1008,6 +1014,14 @@ async function prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir
   repointStaleUntaggedMasters(project)
   const { imageItems, videoItems } = collectAllItems(project)
 
+  // A remove_bg item with no cached cutout has nothing to grade as a cutout, so
+  // the SDR export shows it as its plain source: say so rather than diverge quietly.
+  for (const item of videoItems) {
+    if (item.remove_bg && !item.nobg_src) {
+      log(`WARNING: ${basename(item.src)} has remove_bg but no nobg_src; it is rendered ungraded in the SDR export`)
+    }
+  }
+
   const transferCache = new Map()
   stampSourceProbes(videoItems, transferCache)
 
@@ -1035,9 +1049,18 @@ async function prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir
  */
 function applySdrLayers(project) {
   if (!Array.isArray(project.tracks)) return
+  // One ffprobe per distinct path per call, not one per item.
+  const probed = new Map()
+  const deps = {
+    ...defaultDeps,
+    probe: (path) => {
+      if (!probed.has(path)) probed.set(path, probeMedia(path))
+      return probed.get(path)
+    },
+  }
   const toLayer = (item) => {
     if (item?.type !== 'video') return item
-    const layer = sdrLayerFor(item)
+    const layer = sdrLayerFor(item, deps)
     layer.item[SDR_LAYER] = layer
     return layer.item
   }
@@ -1741,7 +1764,7 @@ async function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedS
     // Match the original 600s timeout — kill the process if it overruns
     const timer = setTimeout(() => proc.kill('SIGKILL'), 600_000)
 
-    proc.on('close', (code) => {
+    proc.on('close', (code, signal) => {
       clearTimeout(timer)
       // `code` is null when the process was killed by signal (e.g. our SIGKILL on
       // the 600s timeout). The `code !== 0` check correctly treats null as failure
@@ -1751,6 +1774,7 @@ async function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedS
       if (code !== 0) {
         // Preserve original behaviour: on failure, fall back to the source path.
         // Surface stderr to render's log so the user sees what went wrong.
+        log(`normalize of ${basename(src)} failed (${signal ? `killed by ${signal}` : `exit ${code}`}); rendering the unconformed source`)
         if (stderr.trim()) log(`normalize stderr: ${stderr.trim().slice(-500)}`)
         resolve(src)
         return
@@ -1856,6 +1880,6 @@ function fail(code, message) {
   process.exit(1)
 }
 
-export { getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
+export { stampSourceProbes, getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
          EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport, captureScaleFor,
          UNTAGGED_MASTER_MARKER, originalOfSdrMaster }

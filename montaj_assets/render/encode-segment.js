@@ -257,6 +257,15 @@ export function buildVividLutChain(srcKey, sdrCurve = null, { matrixIn = '2020_n
 }
 
 /**
+ * Where SDR reference white lands in an HDR output, per ITU-R BT.2408 (203
+ * nits; HLG Y10 721, PQ Y10 572). Twin: SDR_WHITE_NITS in lib/normalize.py.
+ */
+export const SDR_WHITE_NITS = 203
+
+/** Twin of lib/normalize.py UNTAGGED_AS_BT709_VF. */
+export const UNTAGGED_AS_BT709_VF = 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709'
+
+/**
  * Build the ffmpeg filter chain to convert a source's color space to the project's.
  * Returns an empty string when src === dst (no conversion needed). Mirrors the
  * Python _build_color_conversion_vf() in lib/normalize.py.
@@ -283,15 +292,6 @@ export function buildVividLutChain(srcKey, sdrCurve = null, { matrixIn = '2020_n
  * @param {string} [opts.matrixIn]  the Vivid LUT arm's input matrix; see
  *   buildVividLutChain. Only buildCutoutGradeFilter passes it.
  */
-/**
- * Where SDR reference white lands in an HDR output, per ITU-R BT.2408 (203
- * nits; HLG Y10 721, PQ Y10 572). Twin: SDR_WHITE_NITS in lib/normalize.py.
- */
-export const SDR_WHITE_NITS = 203
-
-/** Twin of lib/normalize.py UNTAGGED_AS_BT709_VF. */
-const UNTAGGED_AS_BT709_VF = 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709'
-
 export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag, opts = {}) {
   if (srcKey === dstKey) return ''
   const { sdrCurve = null, hasLut3d: hasLut3dFlag = hasLut3d(), srcUntagged = false, matrixIn } = opts

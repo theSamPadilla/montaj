@@ -113,9 +113,15 @@ function readPixelRgb(pngPath, x, y) {
 // Test
 // ---------------------------------------------------------------------------
 
+// MONTAJ_REQUIRE_HDR_FFMPEG=1: a missing capability fails instead of skipping.
+function skipOrThrow(t, reason) {
+  if (process.env.MONTAJ_REQUIRE_HDR_FFMPEG === '1') throw new Error(`MONTAJ_REQUIRE_HDR_FFMPEG=1 but ${reason}`)
+  t.skip(reason)
+}
+
 test('HDR image interceptor converts sRGB PNG to HDR-encoded values', { timeout: 60_000 }, async (t) => {
   if (!hasZscale()) {
-    t.skip('zscale not available in ffmpeg — skipping HDR interception test')
+    skipOrThrow(t, 'zscale not available in ffmpeg — skipping HDR interception test')
     return
   }
 
@@ -283,7 +289,7 @@ async function renderImgOverlay(dir, imgSrc, colorSpace, tag) {
 }
 
 test('renderAllSegments reports hdrImages: HDR local PNG = 1, SVG-only and SDR = 0', { timeout: 120_000 }, async (t) => {
-  if (!hasZscale()) { t.skip('zscale not available in ffmpeg'); return }
+  if (!hasZscale()) { skipOrThrow(t, 'zscale not available in ffmpeg'); return }
   const dir = mkdtempSync(join(tmpdir(), 'montaj-hdrimages-'))
   try {
     const png = join(dir, 'logo.png')
@@ -318,11 +324,18 @@ test('SDR pass re-captures only segments with hdrImages > 0 and keeps the rest',
   ]
   const recapture = rendered.filter(s => s.hdrImages > 0)
   const respecs = sdrRecaptureSpecs(recapture, specs)
-  assert.deepEqual(respecs.map(s => [s.id, s.outputPath]), [['a', '/s/a-sdr.mkv']])
+  assert.deepEqual(respecs.map(s => [s.id, s.outputPath]), [['a', '/s/sdr/a.mkv']])
   assert.equal(specs[0].outputPath, '/s/a.mkv', 'input spec not mutated')
 
-  const merged = mergeSdrCaptures(rendered, [{ id: 'a', webmPath: '/s/a-sdr-chunk-0.mkv' }])
-  assert.equal(merged[0].webmPath, '/s/a-sdr-chunk-0.mkv')
+  // Overlays `a` and `a-sdr` must not share a re-capture path.
+  const both = sdrRecaptureSpecs(
+    [{ id: 'a' }, { id: 'a-sdr' }],
+    [{ id: 'a', outputPath: '/s/a.mkv' }, { id: 'a-sdr', outputPath: '/s/a-sdr.mkv' }])
+  assert.notEqual(both[0].outputPath, both[1].outputPath)
+  assert.notEqual(both[0].outputPath, '/s/a-sdr.mkv', 'a re-capture never lands on another overlay\'s own path')
+
+  const merged = mergeSdrCaptures(rendered, [{ id: 'a', webmPath: '/s/sdr/a-chunk-0.mkv' }])
+  assert.equal(merged[0].webmPath, '/s/sdr/a-chunk-0.mkv')
   assert.equal(merged[0].offsetX, 5, 'geometry carries over')
   assert.equal(merged[0].opacity, 0.5)
   assert.equal(merged[0].keyframes.length, 1)

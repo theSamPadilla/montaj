@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { getTotalDurationSeconds, collectAllItems, collectPuppeteerSegments, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath, planExport } from '../render.js'
+import { getTotalDurationSeconds, collectAllItems, collectPuppeteerSegments, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath, planExport, stampSourceProbes } from '../render.js'
 import { MASTER_LOOK } from '../look.js'
 
 test('getTotalDurationSeconds: returns 0 for empty tracks', () => {
@@ -737,4 +737,12 @@ test('planExport: --export sdr on an HDR project composes no HDR master at all (
   assert.equal(plan.derivePath, out)
   assert.deepEqual(plan.outputs, [out])
   assert.doesNotMatch(JSON.stringify(plan), /hdrmaster/)
+})
+
+test('stampSourceProbes: drops gradeFrom/alphaGrade so a stray project field cannot steer the HDR pass', () => {
+  const item = { id: 'c0', type: 'video', src: '/nope/a.mp4', gradeFrom: 'hdr_hlg', alphaGrade: true }
+  stampSourceProbes([item], new Map([['/nope/a.mp4', 'arib-std-b67']]), new Map([['/nope/a.mp4', true]]))
+  assert.equal(item.colorTransfer, 'arib-std-b67')
+  assert.equal('gradeFrom' in item, false)
+  assert.equal('alphaGrade' in item, false)
 })

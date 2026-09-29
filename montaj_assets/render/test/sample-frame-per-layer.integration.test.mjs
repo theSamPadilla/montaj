@@ -28,10 +28,12 @@ process.env.TMPDIR = mkdtempSync(join(tmpdir(), 'montaj-t9-cache-'))
 
 const { sampleFrame, buildFrameCacheKey, SAMPLE_CACHE_VERSION } = await import('../sample-frame.js')
 const { buildVividLutChain } = await import('../encode-segment.js')
+const { FFMPEG } = await import('../ffmpeg-bin.js')
 
-const FILTERS = spawnSync('ffmpeg', ['-hide_banner', '-filters'], { encoding: 'utf8' }).stdout || ''
+const FILTERS = spawnSync(FFMPEG, ['-hide_banner', '-filters'], { encoding: 'utf8' }).stdout || ''
 const SKIP = /\bzscale\b/.test(FILTERS) && /\blut3d\b/.test(FILTERS)
   ? false : 'ffmpeg lacks zscale + lut3d'
+if (SKIP && process.env.MONTAJ_REQUIRE_HDR_FFMPEG === '1') throw new Error(`MONTAJ_REQUIRE_HDR_FFMPEG=1 but ${SKIP}`)
 
 const HLG = ['-c:v', 'libx264', '-x264-params', 'colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc']
 const BT709 = ['-c:v', 'libx264', '-x264-params', 'colorprim=bt709:transfer=bt709:colormatrix=bt709']
@@ -104,12 +106,33 @@ const t = (name, fn) => test(name, { skip: SKIP, timeout: 120_000 }, async () =>
 
 // --- HLG project -----------------------------------------------------------
 
-t('1. raw untagged SDR clip in an HLG project is shown as authored', async (dir) => {
-  const sdr = makeClip(join(dir, 'raw.mp4'), '0x5090c0', UNTAGGED)
+/** A 64x64, 30 fps, 1 s clip of saturated colour bars (BT.601 and BT.709 disagree on these). */
+function makeBars(path, codecArgs) {
+  run('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'smptebars=size=64x64:rate=30:duration=1',
+    '-pix_fmt', 'yuv420p', ...codecArgs, path])
+  return path
+}
+
+/** ffmpeg's decode of frame 0 with the source declared BT.709 (as the export reads an untagged clip). */
+function decodeAs709(dir, clip, tag, fx) {
+  const png = join(dir, `as709-${tag}.png`)
+  run('ffmpeg', ['-y', '-v', 'error', '-i', clip, '-vf',
+    'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709', '-frames:v', '1', '-update', '1', png])
+  return centre(png, fx)
+}
+
+t('1. raw untagged SDR clip in an HLG project is read as BT.709, like the export', async (dir) => {
+  const sdr = makeBars(join(dir, 'raw.mp4'), UNTAGGED)
   assert.ok(['', 'unknown'].includes(transferOf(sdr)), `fixture must be untagged, got ${transferOf(sdr)}`)
-  const want = await sample(dir, projectOf('sdr_bt709', { src: sdr }))
-  const got = await sample(dir, projectOf('hdr_hlg', { src: sdr }))
-  assert.ok(maxDiff(got, want) <= 1.0, `got ${got}, as authored ${want}`)
+  const project = projectOf('hdr_hlg', { src: sdr })
+  // Bars 1, 3 and 5 of 7 (yellow, green, red-ish): saturated, so 601 vs 709 shows.
+  let worst = 0
+  for (const fx of [0.2, 0.4, 0.6]) {
+    const want = decodeAs709(dir, sdr, `1-${fx}`, fx)
+    const got = await sample(dir, project, {}, fx)
+    worst = Math.max(worst, maxDiff(got, want))
+  }
+  assert.ok(worst <= 1.0, `worst channel diff vs the BT.709 decode: ${worst}`)
 })
 
 t('2. SDR original with an HLG normalizedSrc: the original is decoded, ungraded', async (dir) => {
@@ -163,7 +186,7 @@ t('6. an HLG item whose normalizedSrc is a graded SDR master is not graded again
 })
 
 t('7. the cache key carries the sample cache version', () => {
-  assert.equal(SAMPLE_CACHE_VERSION, 2)
+  assert.equal(SAMPLE_CACHE_VERSION, 3)
   const p = { settings: { colorSpace: 'hdr_hlg' } }
   const now = buildFrameCacheKey(null, p, 1)
   assert.equal(buildFrameCacheKey(null, p, 1, null, false, SAMPLE_CACHE_VERSION), now)
