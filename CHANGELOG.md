@@ -10,6 +10,9 @@
 - **Fixed: `remove_bg` cutouts of iPhone footage came out flat and grey in the SDR export.** They now get the same Vivid look as the rest of the footage.
 - **Changed: `--export sdr` on an HDR project is faster.** It no longer renders a hidden HDR master first.
 - **Changed: an SDR clip in an HDR project keeps its original file as `src`.** The converted copy is its `normalizedSrc` (with `normalizedInPoint: 0`).
+- **Fixed: in an HDR project, clips from the web showed the wrong colours in the editor preview and the Export dialog cover.** Untagged footage is now read as BT.709 in the preview, the same way the export already read it. New proxies of untagged clips are tagged, so the editor plays them the same way.
+- **Fixed: a rejected API key told you to update it under "Integrations".** That page is called Connectors.
+- **Changed: a blank project opens on Media instead of Captions, and "Generate captions" waits until the timeline has audio.** A host can also fill an empty project's preview through the new `slots.previewEmptyState`.
 
 ## v5.5.6
 
