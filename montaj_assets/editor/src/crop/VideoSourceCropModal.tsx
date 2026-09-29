@@ -7,6 +7,7 @@ import {
   applyCropHandleDrag,
   aspectLockedCornerResize,
   translateCropPx,
+  trimToAspect,
   type CropFraction,
   type CropHandle,
 } from './crop-math'
@@ -19,6 +20,11 @@ import {
 // Controls: drag the crop window to move it; drag handles to resize. "Free" gives
 // 8-handle free-form resize; the aspect presets lock the crop's shape (corner
 // handles only, aspect maintained). Commits `sourceCrop` on Apply; Cancel discards.
+//
+// Still mode (PV55): for an image item it draws the photo instead of a <video>,
+// locks the crop to `lockAspect` (the item's box shape) with no shape row, and
+// opens on `initialCrop` (the crop at the playhead) trimmed to that shape, which
+// is exactly what the box currently shows.
 
 const FREE_HANDLES: CropHandle[] = ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se']
 const CORNER_HANDLES: CropHandle[] = ['nw', 'ne', 'sw', 'se']
@@ -63,6 +69,11 @@ export type VideoSourceCropModalProps = {
   onSrcDimsLoaded: (dims: { width: number; height: number }) => void
   /** Close without committing. */
   onClose: () => void
+  /** Still mode (PV55): the crop is locked to this pixel aspect, the item's box.
+   *  Absent for a video, which keeps its free and preset shapes. */
+  lockAspect?: number
+  /** The crop to open on: the crop at the playhead. Defaults to `item.sourceCrop`. */
+  initialCrop?: CropFraction
 }
 
 export function VideoSourceCropModal({
@@ -71,16 +82,25 @@ export function VideoSourceCropModal({
   onApply,
   onSrcDimsLoaded,
   onClose,
+  lockAspect,
+  initialCrop,
 }: VideoSourceCropModalProps) {
   const srcUrl = resolveSrc(item)
 
   const [loadedDims, setLoadedDims] = React.useState<{ width: number; height: number } | null>(null)
-  const srcDims =
-    item.sourceWidth && item.sourceHeight
-      ? { width: item.sourceWidth, height: item.sourceHeight }
-      : loadedDims
+  const isImage = item.type === 'image'
+  const srcDims = !isImage && item.sourceWidth && item.sourceHeight
+    ? { width: item.sourceWidth, height: item.sourceHeight }
+    : loadedDims
 
-  const [crop, setCrop] = React.useState<CropFraction>(item.sourceCrop ?? DEFAULT_CROP)
+  const startCrop = initialCrop ?? item.sourceCrop ?? DEFAULT_CROP
+  // A still opens on what its box SHOWS: the crop trimmed to the box shape, which
+  // needs the natural size, so it is derived until the operator first moves it.
+  const [edited, setCrop] = React.useState<CropFraction | null>(isImage ? null : startCrop)
+  const crop: CropFraction | null = edited
+    ?? (isImage && srcDims && lockAspect
+      ? trimToAspect({ crop: startCrop, aspect: lockAspect, srcWidth: srcDims.width, srcHeight: srcDims.height })
+      : null)
   const [shape, setShape] = React.useState<ShapeKey>('free')
 
   const frameRef = React.useRef<HTMLDivElement>(null)
@@ -97,12 +117,14 @@ export function VideoSourceCropModal({
     srcDims && frameBox.w > 0 && frameBox.h > 0
       ? renderedSourceRect({ wrapperW: frameBox.w, wrapperH: frameBox.h, srcWidth: srcDims.width, srcHeight: srcDims.height })
       : null
-  const windowPx = rendered ? fractionToWrapperPx({ crop, rendered }) : null
+  const windowPx = rendered && crop ? fractionToWrapperPx({ crop, rendered }) : null
 
   const aspectOf = (k: ShapeKey) => SHAPES.find(s => s.key === k)?.aspect ?? null
-  const lockedAspect = aspectOf(shape)
+  const lockedAspect = isImage ? (lockAspect ?? null) : aspectOf(shape)
 
+  // Reachable for a video only: a still has no shape row.
   function selectShape(key: ShapeKey) {
+    if (!crop) return
     const aspect = aspectOf(key)
     setShape(key)
     if (aspect == null || !srcDims) return // free: keep current crop
@@ -127,16 +149,19 @@ export function VideoSourceCropModal({
   >(null)
 
   const onPanDown = (e: React.PointerEvent) => {
+    if (!crop) return
     e.stopPropagation()
     e.currentTarget.setPointerCapture?.(e.pointerId)
     drag.current = { kind: 'pan', startClient: { x: e.clientX, y: e.clientY }, startCrop: crop }
   }
   const onHandleDown = (handle: CropHandle) => (e: React.PointerEvent) => {
+    if (!crop) return
     e.stopPropagation()
     e.currentTarget.setPointerCapture?.(e.pointerId)
     drag.current = { kind: 'handle', handle, startClient: { x: e.clientX, y: e.clientY }, startCrop: crop }
   }
   const onPointerMove = (e: React.PointerEvent) => {
+    if (!crop) return
     const d = drag.current
     if (!d || !srcDims) return
     const deltaPx = { x: e.clientX - d.startClient.x, y: e.clientY - d.startClient.y }
@@ -165,7 +190,9 @@ export function VideoSourceCropModal({
       >
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-[var(--editor-text)]">Crop source</h2>
-          <span className="text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">Pick the part of the footage to keep. Position and zoom live on the canvas</span>
+          {!isImage && (
+            <span className="text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">Pick the part of the footage to keep. Position and zoom live on the canvas</span>
+          )}
         </div>
 
         {/* Source frame + crop window */}
@@ -176,19 +203,33 @@ export function VideoSourceCropModal({
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
         >
-          <video
-            src={srcUrl}
-            muted
-            playsInline
-            preload="auto"
-            onLoadedMetadata={(e) => {
-              const v = e.currentTarget
-              const dims = { width: v.videoWidth, height: v.videoHeight }
-              setLoadedDims(dims)
-              onSrcDimsLoaded(dims)
-            }}
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none' }}
-          />
+          {isImage ? (
+            <img
+              src={srcUrl}
+              draggable={false}
+              onLoad={(e) => {
+                const i = e.currentTarget
+                const dims = { width: i.naturalWidth, height: i.naturalHeight }
+                setLoadedDims(dims)
+                onSrcDimsLoaded(dims)
+              }}
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none' }}
+            />
+          ) : (
+            <video
+              src={srcUrl}
+              muted
+              playsInline
+              preload="auto"
+              onLoadedMetadata={(e) => {
+                const v = e.currentTarget
+                const dims = { width: v.videoWidth, height: v.videoHeight }
+                setLoadedDims(dims)
+                onSrcDimsLoaded(dims)
+              }}
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none' }}
+            />
+          )}
 
           {ready && windowPx && (
             <>
@@ -232,27 +273,30 @@ export function VideoSourceCropModal({
           )}
         </div>
 
-        {/* Shape locks (constrain the crop rectangle; not output framing) */}
-        <div className="flex items-center gap-2">
-          {SHAPES.map(({ key, label, Icon }) => {
-            const active = shape === key
-            return (
-              <button
-                key={key}
-                onClick={() => selectShape(key)}
-                title={key === 'free' ? 'Free-form crop' : `Lock crop to ${label}`}
-                className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
-                  active
-                    ? 'border-[var(--editor-selection)] bg-[color-mix(in_srgb,var(--editor-selection)_15%,transparent)] text-[var(--editor-text)]'
-                    : 'border-[var(--editor-border)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] hover:text-[var(--editor-text)]'
-                }`}
-              >
-                <Icon size={14} />
-                {label}
-              </button>
-            )
-          })}
-        </div>
+        {/* Shape locks (constrain the crop rectangle; not output framing). Video only:
+            a still is locked to its box. */}
+        {!isImage && (
+          <div className="flex items-center gap-2">
+            {SHAPES.map(({ key, label, Icon }) => {
+              const active = shape === key
+              return (
+                <button
+                  key={key}
+                  onClick={() => selectShape(key)}
+                  title={key === 'free' ? 'Free-form crop' : `Lock crop to ${label}`}
+                  className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+                    active
+                      ? 'border-[var(--editor-selection)] bg-[color-mix(in_srgb,var(--editor-selection)_15%,transparent)] text-[var(--editor-text)]'
+                      : 'border-[var(--editor-border)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] hover:text-[var(--editor-text)]'
+                  }`}
+                >
+                  <Icon size={14} />
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+        )}
 
         {/* Actions */}
         <div className="flex items-center justify-end gap-2 pt-1">
@@ -263,7 +307,7 @@ export function VideoSourceCropModal({
             Cancel
           </button>
           <button
-            onClick={() => { onApply(clampFraction(crop)); onClose() }}
+            onClick={() => { if (crop) { onApply(clampFraction(crop)); onClose() } }}
             disabled={!ready}
             className="rounded-md bg-[var(--editor-accent)] px-3.5 py-1.5 text-xs font-medium text-[var(--editor-accent-foreground)] hover:opacity-90 disabled:opacity-40 transition-colors"
           >

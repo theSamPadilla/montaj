@@ -248,3 +248,16 @@ export function maxZoomForAspect(args: {
   const zByH = base.h / MIN_FRACTION
   return Math.max(1, Math.min(zByW, zByH))
 }
+
+// `crop` trimmed about its centre to pixel aspect `aspect` (width/height): the
+// part a cover fit of `crop` into a box of that aspect actually shows (PV55).
+export function trimToAspect(args: { crop: CropFraction; aspect: number; srcWidth: number; srcHeight: number }): CropFraction {
+  const { crop, aspect, srcWidth, srcHeight } = args
+  const cropAspect = (crop.w * srcWidth) / (crop.h * srcHeight)
+  if (cropAspect > aspect) {
+    const w = (crop.h * srcHeight * aspect) / srcWidth
+    return { x: crop.x + (crop.w - w) / 2, y: crop.y, w, h: crop.h }
+  }
+  const h = (crop.w * srcWidth) / (aspect * srcHeight)
+  return { x: crop.x, y: crop.y + (crop.h - h) / 2, w: crop.w, h }
+}

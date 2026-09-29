@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import { renderedSourceRect, translateCropPx, cropForAspect, maxZoomForAspect, aspectLockedCornerResize } from '../crop-math'
+import { renderedSourceRect, translateCropPx, cropForAspect, maxZoomForAspect, aspectLockedCornerResize, trimToAspect } from '../crop-math'
 import { fractionToWrapperPx, wrapperPxToFraction } from '../crop-math'
 
 describe('renderedSourceRect', () => {
@@ -278,5 +278,25 @@ describe('aspectLockedCornerResize', () => {
     expect(next.x + next.w).toBeLessThanOrEqual(1.0001)
     expect(next.y + next.h).toBeLessThanOrEqual(1.0001)
     expect((next.w * 1000) / (next.h * 1000)).toBeCloseTo(16 / 9, 2)
+  })
+})
+
+describe('trimToAspect (PV55)', () => {
+  it('the full frame of a landscape photo, trimmed to 9:16, is the centred cover window', () => {
+    const c = trimToAspect({ crop: { x: 0, y: 0, w: 1, h: 1 }, aspect: 9 / 16, srcWidth: 2696, srcHeight: 1524 })
+    expect(c.h).toBe(1)
+    expect(c.y).toBe(0)
+    expect(c.w).toBeCloseTo((1524 * 9) / 16 / 2696, 12)
+    expect(c.x).toBeCloseTo((1 - c.w) / 2, 12)
+  })
+  it('a crop taller than the aspect trims top and bottom about its centre', () => {
+    const c = trimToAspect({ crop: { x: 0.2, y: 0, w: 0.2, h: 1 }, aspect: 1, srcWidth: 1000, srcHeight: 1000 })
+    const want = { x: 0.2, y: 0.4, w: 0.2, h: 0.2 }
+    for (const k of ['x', 'y', 'w', 'h'] as const) expect(c[k]).toBeCloseTo(want[k], 12)
+  })
+  it('a crop already at the aspect is unchanged', () => {
+    const crop = { x: 0.1, y: 0.1, w: 0.5, h: 0.5 }
+    const c = trimToAspect({ crop, aspect: 1, srcWidth: 1000, srcHeight: 1000 })
+    for (const k of ['x', 'y', 'w', 'h'] as const) expect(c[k]).toBeCloseTo(crop[k], 12)
   })
 })
