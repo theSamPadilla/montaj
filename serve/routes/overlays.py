@@ -3,13 +3,27 @@
 Owns both /overlays* and /profiles/{name}/overlays* — the second pair is
 overlay-scoped (not profile-scoped) so they share scan_overlays.
 """
+import asyncio
 import json
+import shutil
+import sys
 from pathlib import Path
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from cli.deps import render_runtime_dir
-from serve.common import bad_request
+from lib.common import node_child_env
+from serve.common import (
+    MONTAJ_ROOT,
+    _allowed_file_roots,
+    _is_under,
+    bad_request,
+    forbidden,
+    not_found,
+    resolve_workspace,
+    server_error,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -101,3 +115,135 @@ async def create_profile_overlay_group(name: str, body: dict = Body(...)):
     group_dir = Path.home() / ".montaj" / "profiles" / name / "overlays" / group
     group_dir.mkdir(parents=True, exist_ok=True)
     return {"name": group}
+
+
+# ── GET /api/overlays/bundle ──────────────────────────────────────────────────
+
+_BUNDLE_TIMEOUT_S = 30
+# An editor opening many overlays must not spawn one node per overlay at once.
+_BUNDLE_SEMAPHORE = asyncio.Semaphore(4)
+
+
+def _watcher_roots() -> list[Path]:
+    """Directories serve/watcher.py schedules, spelled as it schedules them."""
+    home = Path.home()
+    return [resolve_workspace(), home / ".montaj" / "overlays", home / ".montaj" / "profiles"]
+
+
+def _watcher_spelling(real: Path) -> str:
+    """Spell `real` (a realpath) the way the serve watcher reports that file.
+
+    The editor subscribes to each input by string and the SSE match is exact.
+    MEASURED 2026-09-29 on macOS 26 (Darwin 25.6, watchdog 6.0.0, FSEvents):
+    an Observer scheduled on symlink `/Users/Shared/montaj-pv49/t2/meas/link`
+    (-> `real`) and a write to `link/a/b/x.jsx` reported `event.src_path` as
+    `/Users/Shared/montaj-pv49/t2/meas/real/a/b/x.jsx`, the REAL spelling. So
+    on darwin the realpath is already what the watcher emits. Elsewhere
+    (inotify) the scheduled spelling is what is reported, so rebase the real
+    path from `realpath(root)` back onto `root` as scheduled (inferred, not
+    measured on this machine).
+    """
+    if sys.platform == "darwin":
+        return str(real)
+    for root in _watcher_roots():
+        try:
+            rel = real.relative_to(root.resolve())
+        except ValueError:
+            continue
+        return str(root / rel)
+    return str(real)
+
+
+@router.get("/overlays/bundle")
+async def bundle_overlay(path: str = Query(default="")):
+    """Bundle one overlay (and what it imports) for the editor preview.
+
+    Runs montaj_assets/render/preview-bundle.js and returns {code, inputs}.
+    Errors: 400 bad_request (missing/relative path), 404 not_found, 403
+    forbidden (entry outside the allowed roots) or import_outside_roots (an
+    input outside them), 422 build_failed (esbuild message), 504
+    bundle_timeout (node exceeded 30 s; the child is killed), 500 otherwise.
+    """
+    if not path or not Path(path).is_absolute():
+        raise bad_request("bad_request", "path must be an absolute file path")
+    entry = Path(path)
+    if not entry.is_file():
+        raise not_found("not_found", f"File not found: {path}")
+
+    roots = _allowed_file_roots()
+    if not any(_is_under(entry.resolve(), r) for r in roots):
+        raise forbidden("forbidden", f"Path is outside the allowed roots: {path}")
+
+    script = Path(render_runtime_dir()) / "preview-bundle.js"
+    if not script.is_file():
+        raise server_error("not_found", f"{script.name} not found")
+    node_bin = shutil.which("node")
+    if not node_bin:
+        raise server_error("not_found", "node not found in PATH")
+
+    env = node_child_env()
+    env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
+
+    async with _BUNDLE_SEMAPHORE:
+        proc = await asyncio.create_subprocess_exec(
+            node_bin, str(script), str(entry),
+            cwd=str(MONTAJ_ROOT),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), _BUNDLE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            raise HTTPException(504, detail={
+                "error": "bundle_timeout",
+                "message": f"preview-bundle.js exceeded {_BUNDLE_TIMEOUT_S}s",
+            })
+
+    stdout = (stdout_b or b"").decode("utf-8", errors="replace")
+    stderr = (stderr_b or b"").decode("utf-8", errors="replace")
+
+    def _parse() -> dict | None:
+        try:
+            data = json.loads(stdout.strip().splitlines()[-1])
+            return data if isinstance(data, dict) else None
+        except (IndexError, ValueError):
+            return None
+
+    if proc.returncode == 2:
+        data = _parse() or {}
+        raise HTTPException(422, detail={
+            "error": "build_failed",
+            "message": data.get("message") or stderr[-500:] or "build failed",
+        })
+    if proc.returncode != 0:
+        raise server_error(
+            "bundle_failed",
+            f"preview-bundle.js exit {proc.returncode}: {stderr[-500:]}",
+        )
+
+    data = _parse()
+    if not data or not data.get("ok") or not isinstance(data.get("code"), str) \
+            or not isinstance(data.get("inputs"), list):
+        raise server_error("bundle_failed", "preview-bundle.js returned unparseable output")
+
+    real_roots = [r.resolve() for r in roots]
+    inputs: list[str] = []
+    for raw in data["inputs"]:
+        real = Path(raw).resolve()
+        if not any(_is_under(real, r) for r in real_roots):
+            raise forbidden(
+                "import_outside_roots",
+                f"Overlay imports a file outside the allowed roots: {raw}",
+            )
+        inputs.append(_watcher_spelling(real))
+
+    return JSONResponse(
+        {"code": data["code"], "inputs": inputs},
+        headers={"Cache-Control": "no-store"},
+    )
