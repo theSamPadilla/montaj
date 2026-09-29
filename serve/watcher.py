@@ -1,4 +1,6 @@
-"""Watchdog file watcher. Detects project.json and .jsx writes and pushes to SSE broadcaster."""
+"""Watchdog file watcher. Detects project.json writes and overlay source writes
+(.jsx plus the .js/.mjs/.ts/.tsx/.json files they import), including atomic-rename
+saves (on_moved), and pushes to the SSE broadcaster."""
 import asyncio
 import json
 from pathlib import Path
@@ -7,6 +9,10 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from serve.sse import SSEBroadcaster, JSX_GLOBAL_CHANNEL
+
+
+# Overlay sources and the files they import (helpers, data).
+_SOURCE_EXTS = (".jsx", ".js", ".mjs", ".ts", ".tsx", ".json")
 
 
 class _Handler(FileSystemEventHandler):
@@ -20,10 +26,17 @@ class _Handler(FileSystemEventHandler):
     def on_created(self, event):
         self._handle(event)
 
+    def on_moved(self, event):
+        if event.is_directory:
+            return
+        self._handle_path(event.dest_path)
+
     def _handle(self, event):
         if event.is_directory:
             return
-        path = event.src_path
+        self._handle_path(event.src_path)
+
+    def _handle_path(self, path):
         if path.endswith("project.json"):
             try:
                 data = json.loads(Path(path).read_text())
@@ -36,7 +49,7 @@ class _Handler(FileSystemEventHandler):
                 )
             except Exception:
                 pass
-        elif path.endswith(".jsx"):
+        elif path.endswith(_SOURCE_EXTS):
             frame = f"data: {json.dumps({'path': path})}\n\n"
             self._loop.call_soon_threadsafe(
                 self._broadcaster.publish, f"jsx:{path}", frame
@@ -63,7 +76,7 @@ class GlobalOverlayWatcher:
 
         # Watch the profiles root recursively so profiles created after startup
         # (CLI `profile analyze`, or POST /profiles/{name}/overlays/groups) still
-        # emit .jsx change events. _Handler ignores non-.jsx paths, so watching
+        # emit change events. _Handler ignores non-source paths, so watching
         # the whole tree (assets/, frames/, transcripts/) is just filtered noise.
         profiles_dir = montaj_dir / "profiles"
         profiles_dir.mkdir(parents=True, exist_ok=True)

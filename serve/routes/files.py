@@ -237,7 +237,8 @@ async def stream_file(request: Request, path: str | None = None):
     With ?path=<abs path>: fires only when that one file changes (legacy
     per-file channel — kept for external consumers, e.g. the Overlays page's
     single-file preview).
-    Without ?path=: fires on every watched .jsx change; each frame carries
+    Without ?path=: fires on every watched overlay source change
+    (.jsx, .js, .mjs, .ts, .tsx, .json); each frame carries
     {"path": ...} so the client filters. One connection serves every watcher
     in a tab — see docs/plans/2026-07-22-editor-connection-pool.md.
     """
