@@ -15,6 +15,7 @@ import { fileURLToPath } from 'url'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
 import { isAbsPath, toFileHref, fontsCssHref } from './file-url.js'
+import { overlayEsbuildOptions } from './overlay-build.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // `core/` and `node_modules/` are siblings of bundle.js — always resolve via
@@ -82,30 +83,13 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
 
   writeFileSync(shimPath, generateShim(componentPath, props, fps, durationFrames, bakeGeometry))
 
+  // Same resolution as every other overlay bundle (overlay-build.js): the
+  // carousel renderer and the editor preview (preview-bundle.js) share these
+  // options, so an overlay's imports resolve the same way in all three.
   await esbuild.build({
+    ...overlayEsbuildOptions(),
     entryPoints: [shimPath],
-    bundle:      true,
-    format:      'esm',
-    platform:    'browser',
     outfile:     bundlePath,
-    jsx:         'automatic',
-    loader:      { '.jsx': 'jsx', '.js': 'js', '.tsx': 'tsx', '.ts': 'ts' },
-    alias: {
-      'montaj/render':  join(__dirname, 'core', 'index.js'),
-      // Force all transitive imports of React to resolve from render's own
-      // node_modules, not from overlay-runtime's nested copy. montaj-overlay-runtime
-      // is a `file:` symlink, so esbuild follows the symlink and would otherwise
-      // pick up react from overlay-runtime/node_modules, producing two React
-      // instances which breaks r3f's reconciler.
-      'react':          join(__dirname, 'node_modules', 'react'),
-      'react-dom':      join(__dirname, 'node_modules', 'react-dom'),
-      'react-dom/client': join(__dirname, 'node_modules', 'react-dom', 'client'),
-    },
-    nodePaths: [join(__dirname, 'node_modules')],
-    define: {
-      'process.env.NODE_ENV': '"production"',
-    },
-    logLevel: 'silent',
   })
 
   writeFileSync(htmlPath, generateHtml(width, height, opaque, googleFonts, fontsBaseDir))
