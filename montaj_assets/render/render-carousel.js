@@ -306,7 +306,7 @@ async function bundleSlide({ slide, width, height, projectDir, fontsBaseDir = ''
   const projDirStr = JSON.stringify(projectDir)
 
   const shim = `
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
 import { makeOverlayGlobals } from 'montaj-overlay-runtime'
@@ -320,6 +320,9 @@ const __overlayGlobals = makeOverlayGlobals('render')
 for (const [__k, __v] of Object.entries(__overlayGlobals)) {
   window[__k] = __v
 }
+// React too, as bundle.js's shim does: the editor preview hands React to every
+// overlay, so a slide overlay calling React.x with no import must not fail here.
+window.React = React
 
 // Carousel-specific defaults (slide-instance fields, NOT part of the
 // overlay JSX contract — slides set these per-instance externally).

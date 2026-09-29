@@ -1,5 +1,5 @@
 
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
 import { makeOverlayGlobals } from 'montaj-overlay-runtime'
@@ -15,6 +15,11 @@ const __overlayGlobals = makeOverlayGlobals('render')
 for (const [__k, __v] of Object.entries(__overlayGlobals)) {
   window[__k] = __v
 }
+// React too: the editor preview passes React to every overlay, so an overlay
+// calling React.useMemo(...) with no import works there. Without this it drew in
+// the editor and failed here, at sample and export. 'react' is aliased to
+// render's own copy for the whole bundle, so this is the one instance.
+window.React       = React
 window.fps         = 30
 window.duration    = 90
 window.props       = {"title":"hi","img":"file:///abs/pic.png"}

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fixed: an overlay calling `React.useMemo(...)` (or any `React.x`) without importing React drew in the editor and failed at sample and export with "React is not defined".** Render now provides `React` like the other overlay globals, in both the video and the carousel renderer.
 - **Fixed: in the editor, dragging or zooming an animated base video clip snapped back.** The preview drew the clip at its static position while the export animated it, and the drag started from there. The clip now animates in the preview, a drag or wheel zoom starts from where it is on screen and sets a keyframe at the playhead, and Option (Alt) moves the whole animation, as it does for every other item.
 - **Fixed: the editor's keyframe diamond deleted the whole animation instead of the keyframe at the playhead.** It is now filled only when a keyframe sits at the playhead, and a click adds or removes just that one.
 - **Fixed: in the editor, a drag, resize or rotate on an animated clip or overlay was thrown away.** The item snapped back on release and the export ignored it. The gesture now sets a keyframe at the playhead. Hold Option (Alt) on release to move the whole animation instead.
