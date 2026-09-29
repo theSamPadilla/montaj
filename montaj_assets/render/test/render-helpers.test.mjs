@@ -139,6 +139,21 @@ test('collectAllItems: normalizedSrc with normalizedInPoint rebases by origin (t
   assert.ok(Math.abs(videoItems[0].outPoint - 16.97)  < 0.0001)
 })
 
+test('collectAllItems: a full-source conversion cache (normalizedInPoint 0) plays from the item\'s own inPoint', () => {
+  // PV42: an SDR clip in an HDR project keeps its original as src; the whole-file
+  // conversion is its normalizedSrc with normalizedInPoint 0. Render uses the
+  // cache, and origin 0 leaves the item's own in/outPoint as they are.
+  const project = {
+    tracks: [
+      [{ id: 'v', type: 'video', src: '/sdr.mp4', normalizedSrc: '/conv.mp4', normalizedInPoint: 0, start: 0, end: 4, inPoint: 5, outPoint: 9 }],
+    ],
+  }
+  const { videoItems } = collectAllItems(project)
+  assert.equal(videoItems[0].src, '/conv.mp4')
+  assert.equal(videoItems[0].inPoint, 5)
+  assert.equal(videoItems[0].outPoint, 9)
+})
+
 test('collectAllItems: without normalizedSrc, src and inPoint are unchanged', () => {
   const project = {
     tracks: [

@@ -960,6 +960,27 @@ def test_init_color_space_override_via_cli(tmp_path):
     assert project["settings"]["colorSpace"] == "hdr_hlg"
 
 
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_eager_sdr_into_hdr_keeps_src_on_the_staged_original(tmp_path):
+    """An SDR clip converted into an HDR project (PV42): `src` stays the staged
+    original and the full-source `_w203` conversion is its `normalizedSrc`
+    cache, on both the track item and the `sources` entry."""
+    a = tmp_path / "sdr.mp4"; _make_clip(a, duration=1)
+    ws = tmp_path / "ws"; ws.mkdir()
+    result = run_init("--clips", str(a), "--prompt", "test",
+                      "--color-space", "hdr_hlg", "--no-proxy",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert project["settings"]["colorSpace"] == "hdr_hlg"
+    for item in (track_items(project)[0][0], project["sources"][0]):
+        staged = Path(item["src"])
+        assert staged.name == "sdr.mp4" and staged.parent != tmp_path
+        assert item["normalizedSrc"] == str(staged.with_name("sdr_normalized_hdr_hlg_w203.mp4"))
+        assert Path(item["normalizedSrc"]).is_file()
+        assert item["normalizedInPoint"] == 0
+
+
 def test_init_no_clips_uses_default_color_space(tmp_path):
     """Canvas projects (no clips) get the SDR default color space."""
     user_wf = Path.home() / ".montaj" / "workflows"

@@ -2,10 +2,12 @@
 
 With no normalize mode chosen, POST /api/run runs init lazy (no transcode) and
 serve queues eager's conversions on the look-migration queue. A finished
-conversion swaps `src` on every item using that source and queues the new
-file's proxy; opening the project joins a queued conversion instead of starting
-another; export never waits, because render.js conforms inline anything still on
-its original.
+conversion of an SDR source into an HDR project is recorded as a cache
+(`normalizedSrc`, `normalizedInPoint: 0`) on every item using that source, whose
+`src` and `proxySrc` stay on the original (PV42). Every other conversion swaps
+`src` on those items and queues the new file's proxy. Opening the project joins a
+queued conversion instead of starting another; export never waits, because
+render.js conforms inline anything still on its original.
 
 Harness mirrors tests/test_look_migration.py: encodes and probes are mocked
 (nothing spawns ffmpeg), the module-level queue is reset by an autouse fixture,
@@ -81,14 +83,15 @@ def encodes(monkeypatch) -> _Encodes:
 @pytest.fixture
 def probes(monkeypatch) -> dict:
     """Every source probes as SDR and NON-conformant (an SDR screen recording in
-    an HLG project) unless a test lists it in `conformant`. Counts probes."""
+    an HLG project) unless a test lists it in `conformant`, or sets `transfer`
+    (e.g. "arib-std-b67" for an HLG source). Counts probes."""
     import lib.normalize as normalize_mod
 
-    state = {"conformant": set(), "count": 0}
+    state = {"conformant": set(), "count": 0, "transfer": "bt709"}
 
     def _fake_probe(path):
         state["count"] += 1
-        return {"color_transfer": "bt709", "codec": "h264", "pix_fmt": "yuv420p"}
+        return {"color_transfer": state["transfer"], "codec": "h264", "pix_fmt": "yuv420p"}
 
     def _fake_is_normalized(path, info, color_space):
         return str(path) in state["conformant"]
@@ -106,16 +109,17 @@ def workspace(tmp_path, monkeypatch) -> Path:
     return ws
 
 
-def _make_project(workspace: Path, *, lazy: bool = True) -> tuple[Path, Path]:
-    """A freshly created (init --normalize lazy) HLG project with one clip whose
-    original proxy already landed."""
+def _make_project(workspace: Path, *, lazy: bool = True,
+                  color_space: str = "hdr_hlg") -> tuple[Path, Path]:
+    """A freshly created (init --normalize lazy) project, HLG unless told
+    otherwise, with one clip whose original proxy already landed."""
     project_dir = workspace / "proj"
     project_dir.mkdir(parents=True, exist_ok=True)
     src = project_dir / "screen.MP4"
     src.write_bytes(b"source")
     old_proxy = Path(proxy_path_for(str(src)))
     old_proxy.write_bytes(b"proxy")
-    settings = {"colorSpace": "hdr_hlg", "resolution": [3840, 2160], "fps": 30}
+    settings = {"colorSpace": color_space, "resolution": [3840, 2160], "fps": 30}
     if lazy:
         settings["normalize"] = "lazy"
     item = {"id": "clip-0", "type": "video", "src": str(src), "proxySrc": str(old_proxy),
@@ -141,6 +145,27 @@ def _write(project_dir: Path, project: dict) -> None:
 def _converted(src: Path) -> str:
     # SDR source in an HLG project: the _w203 name (SDR white at 203 nits).
     return normalized_output_path(str(src), "hdr_hlg", tonemapped=False, sdr_stretch=True)
+
+
+def _swapped(src: Path, color_space: str) -> str:
+    """The converted file of an HLG source in a `color_space` project, the case
+    whose conversion still becomes the item's `src`."""
+    return normalized_output_path(str(src), color_space,
+                                  tonemapped=color_space == "sdr_bt709")
+
+
+def _assert_cached(item: dict, src: Path, proxy: str) -> None:
+    """SDR into HDR: the conversion is a cache; `src` and `proxySrc` are the
+    original's (PV42)."""
+    assert item["src"] == str(src)
+    assert item["normalizedSrc"] == _converted(src)
+    assert item["normalizedInPoint"] == 0
+    assert item["proxySrc"] == proxy
+
+
+# The two conversions that still swap `src`: an HDR source tone-mapped into an
+# SDR project, and an HLG source into a PQ project.
+SWAPPING = pytest.mark.parametrize("color_space", ["sdr_bt709", "hdr_pq"])
 
 
 async def _settle() -> None:
@@ -176,7 +201,10 @@ def test_create_queues_conversion_and_marks_project(workspace, encodes, probes):
     assert encodes.normalize == [(str(src), _converted(src))]
 
 
-def test_finished_conversion_swaps_every_item_then_queues_its_proxy(workspace, encodes, probes):
+def test_finished_sdr_to_hdr_conversion_is_a_cache_on_every_item(workspace, encodes, probes):
+    """An SDR clip in an HLG project keeps its original as `src`: the finished
+    conversion lands as `normalizedSrc` on every item using the source (tracks
+    and the `sources` mirror), and the proxy, made from the original, stays."""
     project_dir, src = _make_project(workspace)
     old_proxy = proxy_path_for(str(src))
 
@@ -193,12 +221,44 @@ def test_finished_conversion_swaps_every_item_then_queues_its_proxy(workspace, e
 
     asyncio.run(_run())
 
-    converted = _converted(src)
+    project = _read(project_dir)
+    item = track_items(project)[0][0]
+    assert item["id"] == "clip_relaid"
+    _assert_cached(item, src, old_proxy)
+    _assert_cached(project["sources"][0], src, old_proxy)
+    # The proxy is unchanged, so no new one is encoded.
+    assert encodes.proxy == []
+    assert BACKGROUND_NORMALIZE_KEY not in project["settings"]
+
+
+@SWAPPING
+def test_finished_conversion_swaps_every_item_then_queues_its_proxy(workspace, encodes, probes, color_space):
+    """HDR into SDR, and HLG into PQ, keep today's `src` swap."""
+    probes["transfer"] = "arib-std-b67"
+    project_dir, src = _make_project(workspace, color_space=color_space)
+    old_proxy = proxy_path_for(str(src))
+
+    async def _run():
+        encodes.gate = asyncio.Event()
+        await _ensure_background_normalize(PID, project_dir, _read(project_dir), None, created=True)
+        # A host re-lays the timeline meanwhile (new item id, same source).
+        project = _read(project_dir)
+        relaid = dict(track_items(project)[0][0], id="clip_relaid")
+        project["tracks"][0]["items"] = [relaid]
+        _write(project_dir, project)
+        encodes.gate.set()
+        await _settle()
+
+    asyncio.run(_run())
+
+    converted = _swapped(src, color_space)
+    assert encodes.normalize == [(str(src), converted)]
     project = _read(project_dir)
     item = track_items(project)[0][0]
     assert item["id"] == "clip_relaid"
     assert item["src"] == converted
     assert project["sources"][0]["src"] == converted
+    assert "normalizedSrc" not in item
     # The converted file's own proxy was queued and landed on both.
     new_proxy = proxy_path_for(converted)
     assert (converted, new_proxy) in [(i, o) for i, o in encodes.proxy]
@@ -207,9 +267,12 @@ def test_finished_conversion_swaps_every_item_then_queues_its_proxy(workspace, e
     assert BACKGROUND_NORMALIZE_KEY not in project["settings"]
 
 
-def test_swapped_item_keeps_old_proxy_until_new_one_lands(workspace, encodes, probes, monkeypatch):
+@SWAPPING
+def test_swapped_item_keeps_old_proxy_until_new_one_lands(workspace, encodes, probes, monkeypatch,
+                                                          color_space):
     """Between the swap and the new proxy, preview must stay on a proxy — never
-    fall back to the 4K converted master."""
+    fall back to the 4K converted master. (An SDR source into an HDR project is
+    never swapped; its proxy never changes.)"""
     import serve.routes.steps as steps_mod
     from serve.jobs import set_error
 
@@ -217,7 +280,8 @@ def test_swapped_item_keeps_old_proxy_until_new_one_lands(workspace, encodes, pr
         set_error(job_id, {"error": "step_failed", "message": "boom"})
 
     monkeypatch.setattr(steps_mod, "run_proxy_job", _failing_proxy)
-    project_dir, src = _make_project(workspace)
+    probes["transfer"] = "arib-std-b67"
+    project_dir, src = _make_project(workspace, color_space=color_space)
 
     async def _run():
         await _ensure_background_normalize(PID, project_dir, _read(project_dir), None, created=True)
@@ -226,7 +290,7 @@ def test_swapped_item_keeps_old_proxy_until_new_one_lands(workspace, encodes, pr
     asyncio.run(_run())
 
     item = track_items(_read(project_dir))[0][0]
-    assert item["src"] == _converted(src)
+    assert item["src"] == _swapped(src, color_space)
     assert item["proxySrc"] == proxy_path_for(str(src))
 
 
@@ -258,7 +322,7 @@ def test_open_joins_the_queued_conversion(workspace, encodes, probes):
     asyncio.run(_run())
 
     assert len(encodes.normalize) == 1
-    assert track_items(_read(project_dir))[0][0]["src"] == _converted(src)
+    _assert_cached(track_items(_read(project_dir))[0][0], src, proxy_path_for(str(src)))
 
 
 def test_open_restarts_a_conversion_a_restart_dropped(workspace, encodes, probes):
@@ -276,7 +340,7 @@ def test_open_restarts_a_conversion_a_restart_dropped(workspace, encodes, probes
 
     assert len(encodes.normalize) == 1
     project = _read(project_dir)
-    assert track_items(project)[0][0]["src"] == _converted(src)
+    _assert_cached(track_items(project)[0][0], src, proxy_path_for(str(src)))
     assert BACKGROUND_NORMALIZE_KEY not in project["settings"]
 
 
@@ -294,7 +358,7 @@ def test_open_without_marker_does_nothing(workspace, encodes, probes):
     assert encodes.normalize == []
 
 
-def test_fresh_converted_file_is_swapped_without_encoding(workspace, encodes, probes):
+def test_fresh_sdr_to_hdr_conversion_is_recorded_without_encoding(workspace, encodes, probes):
     project_dir, src = _make_project(workspace)
     Path(_converted(src)).write_bytes(b"converted")
 
@@ -306,8 +370,86 @@ def test_fresh_converted_file_is_swapped_without_encoding(workspace, encodes, pr
 
     project = _read(project_dir)
     assert encodes.normalize == []
-    assert track_items(project)[0][0]["src"] == _converted(src)
+    assert encodes.proxy == []
+    _assert_cached(track_items(project)[0][0], src, proxy_path_for(str(src)))
+    _assert_cached(project["sources"][0], src, proxy_path_for(str(src)))
     assert BACKGROUND_NORMALIZE_KEY not in project["settings"]
+
+
+@SWAPPING
+def test_fresh_converted_file_is_swapped_without_encoding(workspace, encodes, probes, color_space):
+    probes["transfer"] = "arib-std-b67"
+    project_dir, src = _make_project(workspace, color_space=color_space)
+    converted = _swapped(src, color_space)
+    Path(converted).write_bytes(b"converted")
+
+    async def _run():
+        await _ensure_background_normalize(PID, project_dir, _read(project_dir), None, created=True)
+        await _settle()
+
+    asyncio.run(_run())
+
+    project = _read(project_dir)
+    assert encodes.normalize == []
+    assert track_items(project)[0][0]["src"] == converted
+    assert "normalizedSrc" not in track_items(project)[0][0]
+    # The swap owes the converted file a proxy.
+    assert encodes.proxy == [(converted, proxy_path_for(converted))]
+    assert BACKGROUND_NORMALIZE_KEY not in project["settings"]
+
+
+def test_reopen_with_the_cache_fresh_queues_nothing(workspace, encodes, probes):
+    """An item already carrying this source's fresh `_w203` conversion as its
+    cache is skipped before any probe, as a swapped `src` is skipped by name."""
+    project_dir, src = _make_project(workspace)
+    Path(_converted(src)).write_bytes(b"converted")
+    project = _read(project_dir)
+    for item in [track_items(project)[0][0], project["sources"][0]]:
+        item["normalizedSrc"] = _converted(src)
+        item["normalizedInPoint"] = 0
+    project["settings"][BACKGROUND_NORMALIZE_KEY] = True
+    _write(project_dir, project)
+
+    async def _run():
+        await get_project(PID, project_dir=project_dir)
+        await _settle()
+
+    asyncio.run(_run())
+
+    assert probes["count"] == 0
+    assert encodes.normalize == []
+    assert projects_mod._look_migration_queue == []
+    project = _read(project_dir)
+    _assert_cached(track_items(project)[0][0], src, proxy_path_for(str(src)))
+    assert BACKGROUND_NORMALIZE_KEY not in project["settings"]
+
+
+def test_hdr_source_in_sdr_project_is_swapped_then_skipped_by_name_on_reopen(workspace, encodes, probes):
+    probes["transfer"] = "arib-std-b67"
+    project_dir, src = _make_project(workspace, color_space="sdr_bt709")
+
+    async def _run():
+        await _ensure_background_normalize(PID, project_dir, _read(project_dir), None, created=True)
+        await _settle()
+
+    asyncio.run(_run())
+
+    converted = _swapped(src, "sdr_bt709")
+    project = _read(project_dir)
+    assert track_items(project)[0][0]["src"] == converted
+    probed = probes["count"]
+    project["settings"][BACKGROUND_NORMALIZE_KEY] = True
+    _write(project_dir, project)
+
+    async def _reopen():
+        await get_project(PID, project_dir=project_dir)
+        await _settle()
+
+    asyncio.run(_reopen())
+
+    assert probes["count"] == probed
+    assert len(encodes.normalize) == 1
+    assert BACKGROUND_NORMALIZE_KEY not in _read(project_dir)["settings"]
 
 
 def test_failed_conversion_clears_marker_and_leaves_original(workspace, encodes, probes):

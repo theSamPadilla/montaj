@@ -1052,13 +1052,17 @@ class _LookMigrationUnit:
     workflow fans N child projects out over one shared lazy source, so opening
     all N asks for the same proxy path.
     """
-    __slots__ = ("kind", "src", "out", "color_space", "targets", "job_id")
+    __slots__ = ("kind", "src", "out", "color_space", "sdr_stretch", "targets", "job_id")
 
-    def __init__(self, kind: str, src: str, out: str, color_space: str) -> None:
+    def __init__(self, kind: str, src: str, out: str, color_space: str,
+                 *, sdr_stretch: bool = False) -> None:
         self.kind = kind                  # "proxy" | "normalize"
         self.src = src                    # encode input
         self.out = out                    # artifact this unit produces
         self.color_space = color_space
+        # A conversion of an SDR source into an HDR project (PV42). Its output
+        # is written back as the items' `normalizedSrc` cache, never as `src`.
+        self.sdr_stretch = sdr_stretch
         self.targets: list[tuple] = []
         self.job_id: str | None = None
 
@@ -1201,10 +1205,13 @@ def _apply_look_migration_result(unit: _LookMigrationUnit, path: str) -> None:
     bin. Without this those items would never get the proxy that was encoded
     for them.
 
-    A `src` target is a background colour conversion (`_ensure_background_normalize`):
-    every item on the unconverted source is swapped to the converted file, then
-    that file's proxy is queued. The swapped items keep their old `proxySrc`
-    until the new proxy lands, so the preview never drops to the 4K master."""
+    A `src` target is a background colour conversion (`_ensure_background_normalize`).
+    For an SDR source in an HDR project (`unit.sdr_stretch`) the converted file
+    becomes the `normalizedSrc` cache of every item on the source, and `src` and
+    `proxySrc` stay on the original, so no proxy is owed. Any other conversion
+    swaps every item on the unconverted source to the converted file, then
+    queues that file's proxy. The swapped items keep their old `proxySrc` until
+    the new proxy lands, so the preview never drops to the 4K master."""
     seen: set[str] = set()
     swapped: set[str] = set()
     for project_id, project_dir, field, item_id, item_src, broadcaster in unit.targets:
@@ -1213,6 +1220,11 @@ def _apply_look_migration_result(unit: _LookMigrationUnit, path: str) -> None:
             if str(project_path) in swapped:
                 continue
             swapped.add(str(project_path))
+            if unit.sdr_stretch:
+                result = _apply_project_edits(project_path, _cache_items_for(project_path, unit.src, path))
+                if result is not None and broadcaster is not None:
+                    broadcaster.publish(project_id, _sse_data_frame(result[1]))
+                continue
             result = _apply_project_edits(project_path, _src_items_for(project_path, unit.src, path))
             if result is None:
                 continue
@@ -1263,9 +1275,12 @@ def _proxy_items_for(project_path: Path, out: str, path: str) -> list[tuple]:
 # inside the create request, which is minutes for one 4K SDR->HLG clip. When a
 # create names no normalize mode, serve runs init LAZY instead (clips staged and
 # probed, nothing transcoded, `src` left on the original) and does eager's
-# conversions here, on the look-migration queue: each finished conversion swaps
-# `src` to the converted file on every item using that source, exactly the end
-# state eager would have written, then queues that file's proxy.
+# conversions here, on the look-migration queue, writing the end state eager
+# would have written on every item using that source. For an SDR source in an
+# HDR project that is a cache: `normalizedSrc` names the converted file,
+# `normalizedInPoint` is 0 (a full-source conversion), and `src` stays the file
+# the user brought in (PV42). Any other conversion swaps `src` to the converted
+# file, then queues that file's proxy.
 #
 # `settings.normalizeInBackground` marks a project that still owes conversions.
 # While it is set, opening the project re-runs the pass, which joins a queued
@@ -1296,6 +1311,25 @@ def _src_items_for(project_path: Path, src: str, path: str) -> list[tuple]:
             continue
         if os.path.realpath(item_src) == real:
             edits.append((item.get("id"), item_src, "src", path))
+    return edits
+
+
+def _cache_items_for(project_path: Path, src: str, path: str) -> list[tuple]:
+    """Edits recording `path`, a full-source conversion of `src`, as the
+    `normalizedSrc` cache (with `normalizedInPoint` 0) of every video item whose
+    source is `src` (compared by realpath). `src` and `proxySrc` are untouched."""
+    try:
+        project = json.loads(project_path.read_text())
+    except (OSError, ValueError):
+        return []
+    real = os.path.realpath(src)
+    edits: list[tuple] = []
+    for item in _look_migration_items(project):
+        item_src = item["src"]
+        if not os.path.isabs(item_src) or os.path.realpath(item_src) != real:
+            continue
+        edits.append((item.get("id"), item_src, "normalizedSrc", path))
+        edits.append((item.get("id"), item_src, "normalizedInPoint", 0))
     return edits
 
 
@@ -1377,8 +1411,9 @@ async def _ensure_background_normalize(
     created: bool = False,
 ) -> dict | None:
     """Queue the colour conversion for every video source that is not conformant
-    to the project colour space, or swap it at once when the converted file is
-    already fresh on disk. Runs at create (`created=True`) and on every open of a
+    to the project colour space, or write it back at once when the converted file
+    is already fresh on disk (see `_apply_look_migration_result` for what the
+    write-back is). Runs at create (`created=True`) and on every open of a
     project still carrying the marker. Never awaits an encode. Returns the
     project as last written, or None when nothing changed."""
     from lib.normalize import is_normalized, normalized_output_path, probe_video
@@ -1390,17 +1425,29 @@ async def _ensure_background_normalize(
     color_space = settings.get("colorSpace") or DEFAULT_COLOR_SPACE
     converted_tag = f"_normalized_{color_space}"
 
-    # A source already swapped onto a converted file is skipped by name, so a
+    def _cached(item: dict) -> bool:
+        """The item already carries its source's fresh SDR-to-HDR conversion as
+        its full-source `normalizedSrc` cache."""
+        if not is_hdr(color_space):
+            return False
+        cache = normalized_output_path(item["src"], color_space, tonemapped=False, sdr_stretch=True)
+        return item.get("normalizedSrc") == cache and item.get("normalizedInPoint") == 0 \
+            and _is_fresh(cache, item["src"])
+
+    # A source already swapped onto a converted file is skipped by name, and an
+    # item already carrying its fresh SDR-to-HDR cache is skipped too, so a
     # finished project costs no ffprobe at all.
     srcs = sorted({
         item["src"] for item in _look_migration_items(project)
         if os.path.isabs(item["src"]) and os.path.isfile(item["src"])
         and converted_tag not in os.path.basename(item["src"])
+        and not _cached(item)
     })
 
-    def _plan(src: str) -> str | None:
-        """The converted output `src` needs, or None when it needs none (or
-        can't be read — export will try again, and report it)."""
+    def _plan(src: str) -> tuple[str, bool] | None:
+        """The converted output `src` needs and whether it is an SDR source
+        into this HDR project, or None when it needs none (or can't be read —
+        export will try again, and report it)."""
         try:
             info = probe_video(src)
             if info is None or is_normalized(src, info, color_space):
@@ -1410,27 +1457,34 @@ async def _ensure_background_normalize(
             sdr_stretch = not is_hdr(detect_from_transfer(info.get("color_transfer"))) \
                 and is_hdr(color_space)
             return normalized_output_path(src, color_space, tonemapped=tonemapped,
-                                          sdr_stretch=sdr_stretch)
+                                          sdr_stretch=sdr_stretch), sdr_stretch
         except (Exception, SystemExit):
             return None
 
-    outs = await asyncio.gather(*(asyncio.to_thread(_plan, s) for s in srcs))
+    plans = await asyncio.gather(*(asyncio.to_thread(_plan, s) for s in srcs))
 
     project_path = project_dir / "project.json"
     latest: tuple[dict, str] | None = None
     swapped_now = False
     new_units: list[_LookMigrationUnit] = []
-    for src, out in zip(srcs, outs):
-        if out is None:
+    for src, plan in zip(srcs, plans):
+        if plan is None:
             continue
+        out, sdr_stretch = plan
         if _is_fresh(out, src):
+            if sdr_stretch:
+                # A cache, not a new `src`: the proxy is unchanged, none is owed.
+                result = _apply_project_edits(project_path, _cache_items_for(project_path, src, out))
+                if result is not None:
+                    latest = result
+                continue
             result = _apply_project_edits(project_path, _src_items_for(project_path, src, out))
             if result is not None:
                 latest, swapped_now = result, True
             continue
         unit = _look_migration_pending("normalize", out)
         if unit is None:
-            unit = _LookMigrationUnit("normalize", src, out, color_space)
+            unit = _LookMigrationUnit("normalize", src, out, color_space, sdr_stretch=sdr_stretch)
             new_units.append(unit)
         if not any(t[2] == "src" and t[1] == str(project_dir) for t in unit.targets):
             unit.targets.append((project_id, str(project_dir), "src", None, src, broadcaster))

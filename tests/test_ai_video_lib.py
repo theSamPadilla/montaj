@@ -233,22 +233,48 @@ def test_save_clip_to_project_accepts_a_project_with_no_tracks(tmp_path, monkeyp
     assert out["tracks"] == [{"id": "trk-0", "items": [out["tracks"][0]["items"][0]]}]
 
 
-def test_sdr_clip_in_an_hdr_project_is_normalized_to_a_w203_master(tmp_path, monkeypatch):
-    """SDR white moved from 100 to 203 nits (PV42): the SDR-to-HDR master is
-    named `_w203` so no old 100-nit file is reused."""
+def _save_normalized_clip(tmp_path, monkeypatch, color_space, transfer="bt709"):
+    """Drive save_clip_to_project with a non-conformant clip and normalize()
+    stubbed. Returns (clip, normalize calls, get_duration paths)."""
     import lib.ai_video as av
 
     calls = []
-    monkeypatch.setattr(av, "probe_video", lambda p: {"color_transfer": "bt709"})
+    durations = []
+    monkeypatch.setattr(av, "probe_video", lambda p: {"color_transfer": transfer})
     monkeypatch.setattr(av, "is_normalized", lambda p, info, cs: False)
     monkeypatch.setattr(av, "normalize", lambda src, out, cs, info=None: calls.append((src, out, cs)))
-    monkeypatch.setattr(av, "get_duration", lambda p: 5.0)
+    monkeypatch.setattr(av, "get_duration", lambda p: durations.append(p) or 5.0)
     monkeypatch.setattr(av, "save_project", lambda p, proj: None)
     project = _storyboard_project([{"id": "trk-0", "items": []}])
-    project["settings"] = {"colorSpace": "hdr_hlg"}
+    project["settings"] = {"colorSpace": color_space}
     scene = project["storyboard"]["scenes"][0]
     av.save_clip_to_project(tmp_path / "project.json", project, scene,
                             str(tmp_path / "out.mp4"), "a prompt")
+    return project["tracks"][0]["items"][0], calls, durations
+
+
+def test_sdr_clip_in_an_hdr_project_keeps_src_and_caches_a_w203_master(tmp_path, monkeypatch):
+    """SDR white moved from 100 to 203 nits (PV42): the SDR-to-HDR master is
+    named `_w203` so no old 100-nit file is reused. It is a cache: `src` stays
+    the AI clip itself."""
+    clip, calls, durations = _save_normalized_clip(tmp_path, monkeypatch, "hdr_hlg")
+
+    original = str(tmp_path / "out.mp4")
     out = str(tmp_path / "out_normalized_hdr_hlg_w203.mp4")
-    assert calls == [(str(tmp_path / "out.mp4"), out, "hdr_hlg")]
-    assert project["tracks"][0]["items"][0]["src"] == out
+    assert calls == [(original, out, "hdr_hlg")]
+    assert clip["src"] == original
+    assert clip["normalizedSrc"] == out
+    assert clip["normalizedInPoint"] == 0
+    assert durations == [original]
+
+
+def test_clip_conversion_in_an_sdr_project_still_swaps_src(tmp_path, monkeypatch):
+    """Only an SDR clip converted into an HDR project is a cache; any other
+    conversion (here a non-conformant SDR clip in an SDR project) swaps `src`."""
+    clip, calls, _ = _save_normalized_clip(tmp_path, monkeypatch, "sdr_bt709")
+
+    out = str(tmp_path / "out_normalized_sdr_bt709.mp4")
+    assert calls == [(str(tmp_path / "out.mp4"), out, "sdr_bt709")]
+    assert clip["src"] == out
+    assert "normalizedSrc" not in clip
+    assert "normalizedInPoint" not in clip

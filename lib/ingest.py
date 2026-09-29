@@ -152,7 +152,13 @@ def ingest_source(
                                          sdr_stretch=sdr_stretch)
             try:
                 normalize(staged_src, out, color_space, info=info)
-                clip["src"] = out
+                if sdr_stretch:
+                    # An SDR source into an HDR project (PV42): the conversion is
+                    # a full-source cache, and `src` stays the staged original.
+                    clip["normalizedSrc"] = out
+                    clip["normalizedInPoint"] = 0
+                else:
+                    clip["src"] = out
             except SystemExit:
                 # normalize() fails via fail() -> SystemExit; keep the original
                 # src and tag the proxy from the source's real (HDR) color.

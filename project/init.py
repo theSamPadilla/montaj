@@ -935,7 +935,13 @@ def main():
                     # Pass `info` through so normalize() doesn't re-probe — saves
                     # 2 redundant ffprobe calls per clip on heavy footage.
                     normalize(clip_path, normalized_path, project_color_space, info=info)
-                clip["src"] = normalized_path
+                if sdr_stretch:
+                    # An SDR source into an HDR project (PV42): the conversion is
+                    # a full-source cache, and `src` stays the staged original.
+                    clip["normalizedSrc"] = normalized_path
+                    clip["normalizedInPoint"] = 0
+                else:
+                    clip["src"] = normalized_path
             except SystemExit:
                 # normalize calls fail() which raises SystemExit — fall back to original
                 progress(f"[{clip_id}] normalize FAILED, falling back to original src")

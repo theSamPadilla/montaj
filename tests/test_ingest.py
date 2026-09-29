@@ -182,10 +182,60 @@ def test_eager_hdr_into_sdr_transcodes_with_tonemapped_master(tmp_path, monkeypa
     # the proxy reads the already-SDR master.
     assert expected_out != normalized_output_path(staged, "sdr_bt709", tonemapped=False)
     assert clip["src"] == expected_out
+    assert "normalizedSrc" not in clip  # only an SDR-into-HDR conversion is a cache
     assert len(proxy_calls) == 1
     assert proxy_calls[0]["tonemap"] is False
     assert proxy_calls[0]["src"] == expected_out
     assert clip["proxySrc"] == proxy_calls[0]["out"]
+
+
+def _sdr_into_hdr(tmp_path, monkeypatch, *, fail=False):
+    """Eager-ingest an SDR source into an hdr_hlg project with normalize()
+    stubbed. Returns (clip, staged, normalize calls, get_duration paths)."""
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path))
+    src = tmp_path / "screen.mp4"
+    src.write_bytes(b"fake")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    monkeypatch.setattr(ing, "probe_video", lambda _p: _sdr_conformant_info())
+    durations = []
+    monkeypatch.setattr(ing, "get_duration", lambda p: durations.append(p) or 5.0)
+
+    normalize_calls = []
+
+    def fake_normalize(inp, out, cs, info=None):
+        normalize_calls.append((inp, out, cs))
+        if fail:
+            raise SystemExit(1)
+        Path(out).write_bytes(b"master")
+        return out
+
+    monkeypatch.setattr(ing, "normalize", fake_normalize)
+    clip = ingest_source(str(proj), str(src), "hdr_hlg", proxy=False)
+    return clip, str(proj / "screen.mp4"), normalize_calls, durations
+
+
+def test_eager_sdr_into_hdr_keeps_src_and_caches_the_conversion(tmp_path, monkeypatch):
+    """An SDR source into an HDR project (PV42): `src` stays the staged
+    original, and the full-source conversion is its `normalizedSrc` cache."""
+    clip, staged, calls, durations = _sdr_into_hdr(tmp_path, monkeypatch)
+
+    expected_out = normalized_output_path(staged, "hdr_hlg", tonemapped=False, sdr_stretch=True)
+    assert calls == [(staged, expected_out, "hdr_hlg")]
+    assert clip["src"] == staged
+    assert clip["normalizedSrc"] == expected_out
+    assert clip["normalizedInPoint"] == 0
+    assert durations == [staged]
+
+
+def test_eager_sdr_into_hdr_failed_conversion_records_no_cache(tmp_path, monkeypatch):
+    clip, staged, calls, _ = _sdr_into_hdr(tmp_path, monkeypatch, fail=True)
+
+    assert len(calls) == 1
+    assert clip["src"] == staged
+    assert "normalizedSrc" not in clip
+    assert "normalizedInPoint" not in clip
 
 
 def test_lazy_hdr_into_sdr_proxy_tonemaps_no_transcode(tmp_path, monkeypatch):

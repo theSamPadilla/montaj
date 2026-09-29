@@ -271,7 +271,13 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
                                                  tonemapped=tonemapped, sdr_stretch=sdr_stretch)
         try:
             normalize(out_path, normalized_path, project_color_space, info=info)
-            clip["src"] = normalized_path
+            if sdr_stretch:
+                # An SDR clip into an HDR project (PV42): the conversion is a
+                # full-source cache, and `src` stays the generated clip itself.
+                clip["normalizedSrc"] = normalized_path
+                clip["normalizedInPoint"] = 0
+            else:
+                clip["src"] = normalized_path
         except SystemExit:
             clip["src"] = out_path
 
