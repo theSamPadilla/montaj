@@ -20,6 +20,9 @@ import {
   localTimeOf,
   keyframeTimeAt,
   writeProp,
+  addKeyframeAt,
+  removeKeyframeAt,
+  toggleKeyframeAt,
   offsetTrack,
 } from '../keyframeOps'
 
@@ -700,6 +703,72 @@ describe('writeProp — the one auto-keyframe rule every edit follows', () => {
     const item = overlay({ keyframes: [{ prop: 'offsetX', points: [{ t: 0.2, value: 1 }, { t: 4, value: 2 }] }] })
     const next = writeProp(item, 'offsetX', NOISY_T, 9)
     expect(trackFor(next, 'offsetX')!.points).toEqual([{ t: 0.2, value: 9 }, { t: 4, value: 2 }])
+  })
+})
+
+describe('removeKeyframeAt — removes ONE keyframe, never the animation', () => {
+  const threePoint = () => overlay({
+    rotation: 999, // stale static value
+    keyframes: [{ prop: 'rotation', points: [{ t: 0, value: 0 }, { t: 5, value: 45 }, { t: 10, value: 90 }] }],
+  })
+
+  it('removes only the keyframe at t; the others survive', () => {
+    const next = removeKeyframeAt(threePoint(), 'rotation', 5)
+    expect(trackFor(next, 'rotation')!.points).toEqual([{ t: 0, value: 0 }, { t: 10, value: 90 }])
+  })
+
+  it('leaves a single remaining keyframe as a one-point track', () => {
+    const item = overlay({ keyframes: [{ prop: 'rotation', points: [{ t: 0, value: 0 }, { t: 10, value: 90 }] }] })
+    const next = removeKeyframeAt(item, 'rotation', 0)
+    expect(trackFor(next, 'rotation')!.points).toEqual([{ t: 10, value: 90 }])
+  })
+
+  it('removing the LAST keyframe drops the track and keeps its value as the static scalar', () => {
+    const item = overlay({ rotation: 999, keyframes: [{ prop: 'rotation', points: [{ t: 3, value: 30 }] }] })
+    const next = removeKeyframeAt(item, 'rotation', 3)
+    expect(next.keyframes).toBeUndefined()
+    expect(next.rotation).toBe(30) // nothing jumps back to the stale 999
+  })
+
+  it('finds the keyframe under float noise', () => {
+    const item = overlay({ keyframes: [{ prop: 'offsetX', points: [{ t: 0.2, value: 1 }, { t: 4, value: 2 }] }] })
+    expect(trackFor(removeKeyframeAt(item, 'offsetX', NOISY_T), 'offsetX')!.points).toEqual([{ t: 4, value: 2 }])
+  })
+
+  it('returns the SAME item when no keyframe sits at t', () => {
+    const item = threePoint()
+    expect(removeKeyframeAt(item, 'rotation', 2)).toBe(item)
+    expect(removeKeyframeAt(item, 'offsetX', 5)).toBe(item)
+  })
+})
+
+describe('addKeyframeAt / toggleKeyframeAt — the per-row diamond', () => {
+  const animated = () => overlay({ keyframes: [{ prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 10, value: 100 }] }] })
+
+  it('adds a keyframe at t holding the current value, so nothing moves', () => {
+    const item = animated()
+    const next = addKeyframeAt(item, 'offsetX', 3)
+    expect(trackFor(next, 'offsetX')!.points).toEqual([{ t: 0, value: 0 }, { t: 3, value: 30 }, { t: 10, value: 100 }])
+  })
+
+  it('toggle adds when no keyframe sits at t, keeping every other keyframe', () => {
+    const next = toggleKeyframeAt(animated(), 'offsetX', 3)
+    expect(trackFor(next, 'offsetX')!.points.map(p => p.t)).toEqual([0, 3, 10])
+  })
+
+  it('toggle removes just the keyframe at t when one sits there', () => {
+    const next = toggleKeyframeAt(animated(), 'offsetX', 10)
+    expect(trackFor(next, 'offsetX')!.points).toEqual([{ t: 0, value: 0 }])
+  })
+
+  it('toggle on an unanimated prop starts an animation at its current value', () => {
+    const next = toggleKeyframeAt(overlay({ scale: 1.2 }), 'scale', 3)
+    expect(trackFor(next, 'scale')!.points).toEqual([{ t: 3, value: 1.2 }])
+  })
+
+  it('toggling twice on an unanimated prop returns the original item', () => {
+    const item = overlay({ scale: 1.2 })
+    expect(toggleKeyframeAt(toggleKeyframeAt(item, 'scale', 3), 'scale', 3)).toEqual(item)
   })
 })
 

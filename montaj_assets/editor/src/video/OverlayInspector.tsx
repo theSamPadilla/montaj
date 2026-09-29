@@ -13,14 +13,15 @@ import {
 } from 'lucide-react'
 import type { KeyframeProp, VisualItem } from '../schema'
 import {
+  KEYFRAME_TIME_EPSILON,
+  addKeyframeAt,
   canKeyframe,
-  disableKeyframing,
-  enableKeyframing,
-  hasKeyframes,
   isUniformScale,
+  keyframeTimeAt,
   localTimeOf,
   removeKeyframe,
-  setKeyframe,
+  removeKeyframeAt,
+  toggleKeyframeAt,
   trackFor,
   transformProps,
   valueAt,
@@ -53,6 +54,11 @@ import { NumberField, Slider, cn, stepValue } from '../ui'
  * gestures (typing, slider drag, dial drag) preview per change and commit once
  * when the gesture ends; discrete actions (steppers, align, reset, diamonds)
  * fire one `onChange`.
+ *
+ * Each diamond means "a keyframe sits at the playhead" (CapCut): filled only
+ * when one does, and a click adds or removes that ONE keyframe. It never
+ * deletes the animation; see keyframeOps' `removeKeyframeAt` for what removing
+ * the last keyframe leaves behind.
  *
  * Deliberately the ONLY place opacity is editable at all — the preview's drag
  * gestures (useDragOverlay) cover offset/scale/rotation but never opacity, so
@@ -527,10 +533,10 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   const localT = localTimeOf(target, playhead)
 
   // Every prop's value at the playhead, sampled ONCE off the incoming item.
-  // The header's all-props actions thread five or six writes through one
-  // another, so they must read from this snapshot rather than re-sampling a
-  // partially written item — otherwise one prop's write could perturb
-  // another's value. `scaleX`/`scaleY` are always populated even on a uniform
+  // Actions that thread several writes through one another (the uniform-scale
+  // toggle seeds two axes from one scale) must read from this snapshot rather
+  // than re-sampling a partially written item, or one prop's write could
+  // perturb another's value. `scaleX`/`scaleY` are always populated even on a uniform
   // item: `geometryAt` resolves them through `scale`, so they read as the
   // overlay's actual per-axis size whether or not it carries the fields.
   const sampled: Record<KeyframeProp, number> = {
@@ -563,11 +569,18 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     onChange(writeProp(target, prop, localT, value))
   }
 
+  /** Whether a keyframe on `prop` sits at the playhead: what every diamond
+   *  shows. Not "is `prop` animated at all", which it used to be. */
+  function keyedHere(prop: KeyframeProp): boolean {
+    return keyframeTimeAt(target, prop, localT) !== undefined
+  }
+
+  /** The per-row diamond: add a keyframe at the playhead, or remove the one
+   *  there. Never the whole animation. It used to call `disableKeyframing`,
+   *  which deleted every keyframe of the prop under a label that said "at
+   *  playhead". */
   function handleToggle(prop: KeyframeProp) {
-    const next = hasKeyframes(target, prop)
-      ? disableKeyframing(target, prop, localT)
-      : enableKeyframing(target, prop, localT)
-    onChange(next)
+    onChange(toggleKeyframeAt(target, prop, localT))
   }
 
   function handleStep(row: RowSpec, direction: 1 | -1) {
@@ -587,9 +600,12 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
    *  disabled rather than silently doing nothing. */
   function navFor(props: readonly KeyframeProp[]) {
     const times = keyframeTimes(props)
+    // Strictly before/after the playhead by more than the keyframe epsilon, so
+    // the keyframe the playhead is ON (after an arrow seek's float noise) is
+    // neither "previous" nor "next".
     let prev: number | undefined
-    for (const t of times) if (t < localT) prev = t // ascending, so the last one under localT wins
-    const next = times.find(t => t > localT)
+    for (const t of times) if (t < localT - KEYFRAME_TIME_EPSILON) prev = t // ascending, so the last one wins
+    const next = times.find(t => t > localT + KEYFRAME_TIME_EPSILON)
     return {
       canPrev: !!onSeek && prev !== undefined,
       canNext: !!onSeek && next !== undefined,
@@ -598,54 +614,40 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     }
   }
 
-  /** True when EVERY transform prop has a keyframe at exactly the playhead —
-   *  what the header diamond reflects, and the branch its click takes. Note
-   *  this is a stricter test than the per-row diamonds' `hasKeyframes`, which
-   *  only asks whether the prop is animated at all. */
-  const allKeyed = allProps.every(prop => (trackFor(target, prop)?.points ?? []).some(p => p.t === localT))
+  /** True when EVERY transform prop has a keyframe at the playhead: what the
+   *  header diamond reflects, and the branch its click takes. The same "a
+   *  keyframe sits at the playhead" test as each row's diamond, over all of
+   *  `allProps` at once. */
+  const allKeyed = allProps.every(keyedHere)
 
+  /** The header diamond. Pressed: remove the keyframe at the playhead from
+   *  every prop (each through `removeKeyframeAt`, so a prop whose ONLY
+   *  keyframe that was keeps its value and nothing moves). Not pressed: add
+   *  one at the playhead to every prop that lacks one, holding its current
+   *  value. Adding a keyframe where the curve already reads that value changes
+   *  no prop's value at the playhead, so the order of the writes is free. */
   function handleKeyframeAll() {
     let next = target
-    if (allKeyed) {
-      for (const prop of allProps) {
-        const points = trackFor(next, prop)?.points ?? []
-        // The distinction matters. `removeKeyframe` on a track's LAST point
-        // drops the track WITHOUT writing the sampled value into the static
-        // scalar, so the overlay would jump back to whatever stale
-        // `item.scale`/`item.rotation`/… was left behind when keyframing was
-        // first switched on. `disableKeyframing` writes that value first, so
-        // nothing moves. Multi-point tracks keep animating, so they only lose
-        // the one point.
-        next = points.length > 1
-          ? removeKeyframe(next, prop, localT)
-          : disableKeyframing(next, prop, localT)
-      }
-    } else {
-      for (const prop of allProps) {
-        // `enableKeyframing` is a documented NO-OP on an already-keyframed
-        // prop, so it is safe to run across the whole list unconditionally; it
-        // only seeds a track for the ones that had none. `setKeyframe` then pins
-        // the CURRENT value at the playhead on every prop, animated or not.
-        // Values come from `sampled` (read off the original item), so nothing
-        // on screen moves and no write perturbs another's sample.
-        next = setKeyframe(enableKeyframing(next, prop, localT), prop, localT, sampled[prop])
-      }
+    for (const prop of allProps) {
+      next = allKeyed ? removeKeyframeAt(next, prop, localT) : addKeyframeAt(next, prop, localT)
     }
     onChange(next)
   }
 
-  // Position (offsetX + offsetY) keyed as a pair — CapCut shows one diamond for
-  // Position, so the row animates/toggles both axes together, with the same
-  // enable/disable rule the per-row diamonds use (handleToggle). Kept separate
-  // from handleKeyframeAll so that the all-props path (`transformProps(item)`,
-  // which varies with the uniform-scale lock) is untouched.
+  // Position (offsetX + offsetY) keyed as a pair: CapCut shows one diamond for
+  // Position. Filled when EITHER axis has a keyframe at the playhead (a typed
+  // X edit or a horizontal drag keys only offsetX, and that is still a
+  // position keyframe). A click removes those keyframes, or adds one to both
+  // axes. Kept separate from handleKeyframeAll so that the all-props path
+  // (`transformProps(item)`, which varies with the uniform-scale lock) is
+  // untouched.
   const positionProps: KeyframeProp[] = ['offsetX', 'offsetY']
-  const positionKeyed = positionProps.every(prop => hasKeyframes(target, prop))
+  const positionKeyed = positionProps.some(keyedHere)
 
   function handlePositionToggle() {
     let next = target
     for (const prop of positionProps) {
-      next = positionKeyed ? disableKeyframing(next, prop, localT) : enableKeyframing(next, prop, localT)
+      next = positionKeyed ? removeKeyframeAt(next, prop, localT) : addKeyframeAt(next, prop, localT)
     }
     onChange(next)
   }
@@ -700,7 +702,8 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     // drops a default-valued keyframe at the playhead — the same
     // non-destructive rule every other control in this panel follows, and it
     // keeps "reset" from silently discarding an animation the operator spent
-    // real time on. Clearing a track is the per-row diamond's job.
+    // real time on. Nothing in this panel deletes a whole track in one click:
+    // a diamond removes one keyframe at a time.
     // Walks `allProps`, so an unlocked item resets `scaleX`/`scaleY` to 1 and
     // leaves the shadowed `scale` alone. Reset does not re-lock: the lock is
     // the operator's own choice about how this overlay is authored, not a
@@ -716,7 +719,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
   function rowNav(prop: KeyframeProp) {
     const row = ROWS[prop]
     const nav = navFor([prop])
-    const keyframed = hasKeyframes(target, prop)
+    const keyframed = keyedHere(prop)
     // Per-property, per-kind: a clip animates position/scale/rotation but not
     // opacity, because ffmpeg's `colorchannelmixer aa` takes a <double> and no
     // expression. See canKeyframeProp for the full reason.

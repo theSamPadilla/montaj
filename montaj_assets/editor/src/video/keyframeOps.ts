@@ -322,14 +322,11 @@ export function removeKeyframe(item: VisualItem, prop: KeyframeProp, t: number):
  * the operator sees, since one diamond on the strip is the UNION of every prop
  * keyed at that instant (`keyframeUnionTimes`).
  *
- * The last-point branch is the reason this exists rather than callers looping
- * `removeKeyframe`. `removeKeyframe` on a track's ONLY point drops the track
- * without writing the sampled value into the item's static scalar, so the
- * overlay snaps back to whatever stale value was sitting there from before
- * keyframing was switched on. `disableKeyframing` samples the curve FIRST and
- * writes it, so nothing moves. Every removal path must take that branch, or
- * the two disagree — which is exactly what happened between the canvas
- * right-click menu and the properties panel before this helper existed.
+ * Each prop goes through {@link removeKeyframeAt}, which owns the last-point
+ * branch: removing a track's ONLY point writes the curve's value into the
+ * static scalar so nothing moves. The canvas right-click menu, the timeline's
+ * Delete key and every inspector diamond share that one rule; they disagreed
+ * before it was shared.
  *
  * Returns the SAME item when no prop has a point at `t`, so callers can use
  * reference equality to skip a no-op commit.
@@ -343,12 +340,7 @@ export function removeKeyframesAt(item: VisualItem, t: number): VisualItem {
   if (props.length === 0) return item
 
   let next = item
-  for (const prop of props) {
-    const points = trackFor(next, prop)?.points ?? []
-    next = points.length > 1
-      ? removeKeyframe(next, prop, t)
-      : disableKeyframing(next, prop, t)
-  }
+  for (const prop of props) next = removeKeyframeAt(next, prop, t)
   return next
 }
 
@@ -444,6 +436,46 @@ export function disableKeyframing(item: VisualItem, prop: KeyframeProp, atT: num
 export function writeProp(item: VisualItem, prop: KeyframeProp, localT: number, value: number): VisualItem {
   if (!hasKeyframes(item, prop)) return withStaticValue(item, prop, value)
   return setKeyframe(item, prop, keyframeTimeAt(item, prop, localT) ?? localT, value)
+}
+
+/**
+ * Add a keyframe on `prop` at `t` holding the value it already has there, so
+ * nothing moves. Starts an animation on a prop that had none. No-op (the SAME
+ * item) when a keyframe already sits at `t`.
+ */
+export function addKeyframeAt(item: VisualItem, prop: KeyframeProp, t: number): VisualItem {
+  if (keyframeTimeAt(item, prop, t) !== undefined) return item
+  return setKeyframe(item, prop, t, valueAt(item, prop, t))
+}
+
+/**
+ * Remove the ONE keyframe on `prop` sitting at `t`. Never the animation.
+ *
+ * End states, chosen so nothing on screen jumps:
+ *   - other keyframes remain: they keep animating, only this point goes;
+ *   - ONE keyframe remains: it stays, as a one-point (constant) track. That is
+ *     exactly what a first "add" creates, so add and remove are inverses;
+ *   - it was the ONLY keyframe: the track goes, and the value it held is
+ *     written into the static scalar (via `disableKeyframing`). Plain
+ *     `removeKeyframe` would drop the track without that write, and the item
+ *     would snap back to whatever stale scalar predates the animation.
+ *
+ * Returns the SAME item when no keyframe sits at `t`.
+ */
+export function removeKeyframeAt(item: VisualItem, prop: KeyframeProp, t: number): VisualItem {
+  const at = keyframeTimeAt(item, prop, t)
+  if (at === undefined) return item
+  return (trackFor(item, prop)?.points.length ?? 0) > 1
+    ? removeKeyframe(item, prop, at)
+    : disableKeyframing(item, prop, at)
+}
+
+/** The per-property diamond: remove the keyframe at `t` if one sits there,
+ *  else add one holding the current value. */
+export function toggleKeyframeAt(item: VisualItem, prop: KeyframeProp, t: number): VisualItem {
+  return keyframeTimeAt(item, prop, t) !== undefined
+    ? removeKeyframeAt(item, prop, t)
+    : addKeyframeAt(item, prop, t)
 }
 
 /** Scale props compose by multiplication, so moving a scale animation keeps

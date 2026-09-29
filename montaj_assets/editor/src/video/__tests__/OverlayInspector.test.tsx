@@ -187,18 +187,121 @@ describe('OverlayInspector — keyframe diamond', () => {
     expect(valueAt(next, 'scale', 0)).toBe(1.2)
   })
 
-  it('toggling a keyframed property disables keyframing and freezes the current value', () => {
+  // The diamond means "a keyframe sits at the playhead" (CapCut). It used to
+  // mean "this property is animated at all", and its click deleted the whole
+  // animation under a label that said "at playhead".
+  it('is filled only when a keyframe sits at the playhead, not whenever the prop is animated', () => {
     const item = overlayItem({
-      rotation: 999, // stale static field — disableKeyframing must overwrite it from the curve
       keyframes: [{ prop: 'rotation', points: [{ t: 0, value: 0 }, { t: 10, value: 90 }] }],
     })
-    const { onChange } = renderInspector(item, 5) // localT = 0 -> curve value 0
+    renderInspector(item, 8) // localT = 3, between the two keyframes
 
-    fireEvent.click(screen.getByRole('button', { name: /Remove Rotation keyframe/ }))
+    const diamond = screen.getByRole('button', { name: 'Add Rotation keyframe at playhead' })
+    expect(diamond).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('a filled diamond removes ONLY the keyframe at the playhead; the rest of the animation survives', () => {
+    const item = overlayItem({
+      keyframes: [{ prop: 'rotation', points: [{ t: 0, value: 0 }, { t: 5, value: 45 }, { t: 10, value: 90 }] }],
+    })
+    const { onChange } = renderInspector(item, 10) // localT = 5
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Rotation keyframe at playhead' }))
+
+    const next = onChange.mock.calls[0][0] as VisualItem
+    expect(trackFor(next, 'rotation')!.points).toEqual([{ t: 0, value: 0 }, { t: 10, value: 90 }])
+  })
+
+  it('an empty diamond on an animated prop adds a keyframe at the playhead without moving anything', () => {
+    const item = overlayItem({
+      keyframes: [{ prop: 'rotation', points: [{ t: 0, value: 0 }, { t: 10, value: 90 }] }],
+    })
+    const { onChange } = renderInspector(item, 8) // localT = 3, curve value 27
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Rotation keyframe at playhead' }))
+
+    const next = onChange.mock.calls[0][0] as VisualItem
+    expect(trackFor(next, 'rotation')!.points).toEqual([{ t: 0, value: 0 }, { t: 3, value: 27 }, { t: 10, value: 90 }])
+  })
+
+  it('removing the ONLY keyframe keeps its value as the static scalar, so nothing jumps', () => {
+    const item = overlayItem({
+      rotation: 999, // stale static field, left from before keyframing
+      keyframes: [{ prop: 'rotation', points: [{ t: 0, value: 30 }] }],
+    })
+    const { onChange } = renderInspector(item, 5) // localT = 0
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Rotation keyframe at playhead' }))
 
     const next = onChange.mock.calls[0][0] as VisualItem
     expect(hasKeyframes(next, 'rotation')).toBe(false)
-    expect(next.rotation).toBe(0)
+    expect(next.rotation).toBe(30)
+  })
+
+  it('is filled on the keyframe the arrows just landed on, despite float noise', () => {
+    // start 0.1, keyframe at t 0.2: the arrow seeks to 0.1 + 0.2, and the panel
+    // reads back (0.1 + 0.2) - 0.1 = 0.20000000000000004.
+    const item = overlayItem({
+      start: 0.1,
+      end: 10,
+      keyframes: [{ prop: 'rotation', points: [{ t: 0.2, value: 10 }, { t: 5, value: 90 }] }],
+    })
+    const onSeek = vi.fn()
+    renderInspector(item, 0.1 + 0.2, { onSeek })
+
+    expect(screen.getByRole('button', { name: 'Remove Rotation keyframe at playhead' })).toHaveAttribute('aria-pressed', 'true')
+    // And the arrows treat it as the current keyframe, not one behind.
+    expect(screen.getByRole('button', { name: 'Previous Rotation keyframe' })).toBeDisabled()
+  })
+})
+
+describe('OverlayInspector — Position diamond (offsetX + offsetY as one unit)', () => {
+  const positionItem = () => overlayItem({
+    keyframes: [
+      { prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: 10, value: 100 }] },
+      { prop: 'offsetY', points: [{ t: 0, value: 0 }, { t: 10, value: 50 }] },
+    ],
+  })
+
+  it('is empty between keyframes and filled on one', () => {
+    renderInspector(positionItem(), 8) // localT = 3
+    expect(screen.getByRole('button', { name: 'Add Position keyframe at playhead' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('is filled when either axis has a keyframe at the playhead', () => {
+    const item = overlayItem({ keyframes: [{ prop: 'offsetX', points: [{ t: 3, value: 30 }, { t: 10, value: 100 }] }] })
+    renderInspector(item, 8) // localT = 3
+    expect(screen.getByRole('button', { name: 'Remove Position keyframe at playhead' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('adds a keyframe to BOTH axes at the playhead, keeping every other keyframe', () => {
+    const { onChange } = renderInspector(positionItem(), 8) // localT = 3
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Position keyframe at playhead' }))
+
+    const next = onChange.mock.calls[0][0] as VisualItem
+    expect(trackFor(next, 'offsetX')!.points).toEqual([{ t: 0, value: 0 }, { t: 3, value: 30 }, { t: 10, value: 100 }])
+    expect(trackFor(next, 'offsetY')!.points).toEqual([{ t: 0, value: 0 }, { t: 3, value: 15 }, { t: 10, value: 50 }])
+  })
+
+  it('removes only the keyframes at the playhead; the animation survives', () => {
+    const { onChange } = renderInspector(positionItem(), 15) // localT = 10
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Position keyframe at playhead' }))
+
+    const next = onChange.mock.calls[0][0] as VisualItem
+    expect(trackFor(next, 'offsetX')!.points).toEqual([{ t: 0, value: 0 }])
+    expect(trackFor(next, 'offsetY')!.points).toEqual([{ t: 0, value: 0 }])
+  })
+
+  it('starts animating a static position at its current value', () => {
+    const { onChange } = renderInspector(overlayItem(), 8) // offsetX 10, offsetY -5 static; localT = 3
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Position keyframe at playhead' }))
+
+    const next = onChange.mock.calls[0][0] as VisualItem
+    expect(trackFor(next, 'offsetX')!.points).toEqual([{ t: 3, value: 10 }])
+    expect(trackFor(next, 'offsetY')!.points).toEqual([{ t: 3, value: -5 }])
   })
 })
 
@@ -1305,6 +1408,17 @@ describe('OverlayInspector — keyframe all transform properties', () => {
     renderInspector(allKeyedItem(), 8) // localT = 3, no track has a point there
 
     expect(screen.getByRole('button', { name: HEADER_DIAMOND })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('is pressed on the keyframe the arrows just landed on, despite float noise', () => {
+    const item = overlayItem({
+      start: 0.1,
+      end: 10,
+      keyframes: ALL_PROPS.map(prop => ({ prop, points: [{ t: 0.2, value: 1 }, { t: 5, value: 2 }] })),
+    })
+    renderInspector(item, 0.1 + 0.2) // localT = 0.20000000000000004
+
+    expect(screen.getByRole('button', { name: HEADER_DIAMOND })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('adds a point at the playhead to all five without moving anything', () => {

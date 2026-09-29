@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fixed: the editor's keyframe diamond deleted the whole animation instead of the keyframe at the playhead.** It is now filled only when a keyframe sits at the playhead, and a click adds or removes just that one.
 - **Fixed: in the editor, a drag, resize or rotate on an animated clip or overlay was thrown away.** The item snapped back on release and the export ignored it. The gesture now sets a keyframe at the playhead. Hold Option (Alt) on release to move the whole animation instead.
 - **Fixed: in an HDR project, a screen recording or downloaded clip could play up to 100 ms ahead of its own sound.** Where an overlay or caption started or ended over the clip, or where the clip was trimmed, about 1 start in 10 landed so that its picture ran 1 to 3 frames early until the next such point, skipping frames going in and repeating them coming out. The export now starts decoding each clip 2 s earlier and trims to the exact frame. Clips that were already exact render the same frames as before. It costs some decoding: a 2 s segment of 4K iPhone footage took about a quarter more CPU time.
 - **Fixed: a window normalized on demand (`normalize: "lazy"`), or a cut made for background removal, could start 1 to 3 frames late and run ahead of its sound.** This happened only on HEVC files with open GOPs, such as a Montaj HDR export imported again as a source. Both now start decoding 2 s early and trim to the exact frame. A window starting at 0 is cut exactly as before.
