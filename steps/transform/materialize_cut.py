@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin
 from trim_spec import is_trim_spec, is_cut_spec, load as load_spec, merge as merge_keeps
+from normalize import SEEK_PREROLL_S
 
 
 EDGE_THRESHOLD = 0.05  # seconds — cuts within 50ms of edges are treated as edge cuts
@@ -65,29 +66,50 @@ def build_ffmpeg_args(spec: dict, audio_only: bool = False) -> tuple:
 
     This avoids the trim/split filter pattern which forces a full file decode
     regardless of the requested segment position.
+
+    Two-stage seek (PV48 T3, see lib/normalize.SEEK_PREROLL_S): a single
+    input-level -ss straight to a segment's start can land inside an
+    open-GOP source's leading-picture window and drop frames (PV48 T1). Each
+    segment instead seeks (fast) to near = max(0, s - SEEK_PREROLL_S), widens
+    -t by the remaining `fine = s - near` seconds, and — when fine > 0 —
+    trims that decode-only remainder back off at the head of its own filter
+    chain (trim=start=fine / atrim=start=fine, before setpts/asetpts rebases
+    to 0). At fine == 0 (segment start within SEEK_PREROLL_S of 0, or exactly
+    0) no trim filter is added and the args match today's exactly.
     """
     segs  = _spec_segments(spec)
     n     = len(segs)
     scale = spec.get("scale")  # None or [W, H]
 
     input_args = []
+    fines = []  # per-segment decode-only remainder (seconds) left to trim
     for src, s, e in segs:
-        input_args += ["-ss", f"{s:.4f}", "-t", f"{e - s:.4f}", "-i", src]
+        near = max(0.0, s - SEEK_PREROLL_S)
+        fine = s - near
+        fines.append(fine)
+        input_args += ["-ss", f"{near:.4f}", "-t", f"{fine + (e - s):.4f}", "-i", src]
 
     def _vchain(idx):
-        parts = [f"[{idx}:v]setpts=PTS-STARTPTS", "fps=30"]
+        parts = []
+        if fines[idx] > 0:
+            parts.append(f"trim=start={fines[idx]:.4f}")
+        parts.append("setpts=PTS-STARTPTS")
+        parts.append("fps=30")
         if scale:
             W, H = int(scale[0]), int(scale[1])
             parts.append(f"scale={W}:{H}:force_original_aspect_ratio=decrease")
             parts.append(f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2")
         parts.append("setsar=1")
         parts.append("format=yuv420p")
-        return ",".join(parts) + f"[vc{idx}]"
+        return f"[{idx}:v]" + ",".join(parts) + f"[vc{idx}]"
 
     def _achain(idx):
-        return (f"[{idx}:a]asetpts=PTS-STARTPTS,"
-                "aformat=sample_rates=48000:channel_layouts=stereo:sample_fmts=fltp"
-                f"[ac{idx}]")
+        parts = []
+        if fines[idx] > 0:
+            parts.append(f"atrim=start={fines[idx]:.4f}")
+        parts.append("asetpts=PTS-STARTPTS")
+        parts.append("aformat=sample_rates=48000:channel_layouts=stereo:sample_fmts=fltp")
+        return f"[{idx}:a]" + ",".join(parts) + f"[ac{idx}]"
 
     filter_parts = []
     if n == 1:

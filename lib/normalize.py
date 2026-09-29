@@ -68,6 +68,21 @@ reuse check rebuilds it (montaj_assets/render/render.js, UNTAGGED_MASTER_MARKER
 — keep the two strings identical). Masters of tagged or HDR sources carry no
 marker and are never checked."""
 
+SEEK_PREROLL_S = 2.0
+"""Two-stage-seek preroll for windowed reads of a source that may be open-GOP
+HEVC (libx265 default GOP — montaj's own SDR-to-HDR conversions, legacy
+`*_compatible_hlg.mp4`, and montaj HDR render outputs, all ~1s GOP). A single
+input-level `-ss t -i` into one of these can land inside a keyframe's
+leading-picture window and start decoding AT that keyframe, dropping 1-3
+leading frames — the re-encode then rebases PTS from the dropped-frame point,
+so picture runs ahead of exactly-seeked audio for the rest of the window
+(measured, PV48 T1). Fix: seek near = max(0, t - SEEK_PREROLL_S) at the input
+(fast), then trim the remaining `t - near` seconds by decoding (PV48 T3).
+Twin of THUMB_SEEK_PREROLL_S in lib/color_provenance.py — kept here, not
+there, because color_provenance already imports from this module and a
+reverse import would cycle. Also mirrored by SEEK_PREROLL_S in
+montaj_assets/render/sample-frame.js — keep all three equal (2.0)."""
+
 
 def probe_video(path):
     """Return dict with codec, width, height, pix_fmt, color_transfer, fps, has_audio,
@@ -424,12 +439,24 @@ def _build_ffmpeg_cmd(
     project_color_space: ColorSpaceKey,
     info: dict,
     pre_input_args: list | None = None,
+    post_input_seek: str | None = None,
 ) -> tuple[list, bool]:
     """Build the ffmpeg command list for a normalize encode.
 
     `pre_input_args`: optional list inserted immediately before ``["-i", input_path]``.
     Used by normalize_window() to add ``-ss``/``-t`` input-seek args; normalize()
     passes nothing (or an empty list) so its command is byte-identical to before.
+
+    `post_input_seek`: optional accurate (decode-and-discard) seek, in seconds
+    as a string, inserted as ``-ss <value>`` immediately after the primary
+    input. This is an OUTPUT-side seek (ffmpeg semantics: `-ss` after the last
+    `-i` applies to the output, decoding and discarding until that timestamp)
+    that trims the remainder a fast `pre_input_args` seek couldn't reach
+    exactly. Used by normalize_window()'s two-stage seek (PV48 T3, see
+    SEEK_PREROLL_S); normalize() passes None so its command is unchanged.
+    When the video has no audio track, the anullsrc input spliced in below
+    lands BEFORE this seek in the arg list (i.e. still after all `-i`s), so it
+    stays a valid output option either way.
 
     Returns (cmd, used_fallback_tonemap).  Callers that don't need the flag can
     ignore the second element.
@@ -499,6 +526,7 @@ def _build_ffmpeg_cmd(
         ffmpeg_bin(), "-y",
         *pre_input_args,
         "-i", input_path,
+        *(["-ss", post_input_seek] if post_input_seek else []),
         "-vf", vf,
         # Stream-level color metadata flags — written to the container so
         # downstream consumers (segment encoder, players) read the right color.
@@ -693,10 +721,10 @@ def normalize_window(
 ):
     """Normalize a windowed segment [in_point, out_point) of a video clip.
 
-    Uses input-level fast seek (-ss before -i) so the output starts at time 0
-    and is dense-keyframe (re-encode resets GOP via the same -g/-keyint_min args
-    as normalize()). All conformance args (codec, pix_fmt, color, GOP) are
-    identical to normalize().
+    Uses a two-stage seek (PV48 T3, see SEEK_PREROLL_S) so the output starts
+    at time 0 and is dense-keyframe (re-encode resets GOP via the same
+    -g/-keyint_min args as normalize()). All conformance args (codec, pix_fmt,
+    color, GOP) are identical to normalize().
 
     `in_point` / `out_point`: seconds into the source. Duration is clamped to
     max(0.0, out_point - in_point) — reversed windows produce a zero-duration
@@ -711,10 +739,20 @@ def normalize_window(
         fail("probe_error", f"Cannot probe {input_path}")
 
     duration = max(0.0, out_point - in_point)
+
+    # Two-stage seek: fast input-level seek to `near`, then an accurate
+    # output-side seek decodes and discards the remaining `fine` seconds. A
+    # single input seek straight to in_point can land inside an open-GOP
+    # source's leading-picture window and drop frames (PV48 T1/T3). At
+    # in_point == 0, near == fine == 0.0 and this reduces to exactly today's
+    # args (no post_input_seek emitted), so unaffected callers are unchanged.
+    near = max(0.0, in_point - SEEK_PREROLL_S)
+    fine = in_point - near
     pre_input_args = [
-        "-ss", f"{in_point:.4f}",
-        "-t", f"{duration:.4f}",
+        "-ss", f"{near:.4f}",
+        "-t", f"{fine + duration:.4f}",
     ]
+    post_input_seek = f"{fine:.4f}" if fine > 0 else None
 
     out_path = os.path.abspath(out_path)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -722,7 +760,8 @@ def normalize_window(
     tmp_path = _tmp_for(out_path)
 
     cmd, used_fallback_tonemap = _build_ffmpeg_cmd(
-        input_path, tmp_path, project_color_space, info, pre_input_args=pre_input_args
+        input_path, tmp_path, project_color_space, info,
+        pre_input_args=pre_input_args, post_input_seek=post_input_seek,
     )
 
     if used_fallback_tonemap:

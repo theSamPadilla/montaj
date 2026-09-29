@@ -125,7 +125,10 @@ def test_build_ffmpeg_cmd_includes_pix_fmt(tmp_path):
 
 
 def test_normalize_window_ss_and_t_before_input(tmp_path):
-    """normalize_window places -ss <in_point> and -t <duration> before -i <input>."""
+    """normalize_window places a two-stage seek around -i <input> (PV48 T3):
+    a fast -ss/-t pair before -i, then an accurate output-side -ss right
+    after it, for the 'fine' remainder a single input seek could drop frames
+    from on an open-GOP source."""
     src = tmp_path / "src.mp4"
     out = tmp_path / "out.mp4"
     _make_conformant_sdr_video(src, duration=6)
@@ -164,30 +167,80 @@ def test_normalize_window_ss_and_t_before_input(tmp_path):
     assert "cmd" in captured, "ffmpeg was never called"
     cmd = captured["cmd"]
 
-    # -ss must appear before -i
+    # -ss must appear before -i (the fast, input-level seek to `near`)
     assert "-ss" in cmd
     assert "-i" in cmd
     ss_idx = cmd.index("-ss")
     i_idx = cmd.index("-i")
     assert ss_idx < i_idx, f"-ss ({ss_idx}) must be before -i ({i_idx})"
 
-    # -t must appear before -i
+    # -t must appear before -i, widened by the decode-only remainder
     assert "-t" in cmd
     t_idx = cmd.index("-t")
     assert t_idx < i_idx, f"-t ({t_idx}) must be before -i ({i_idx})"
 
-    # Values must be formatted as floats
-    assert cmd[ss_idx + 1] == f"{in_point:.4f}"
+    # near = max(0, in_point - SEEK_PREROLL_S), fine = in_point - near
+    near = max(0.0, in_point - nm.SEEK_PREROLL_S)
+    fine = in_point - near
     expected_duration = max(0.0, out_point - in_point)
-    assert cmd[t_idx + 1] == f"{expected_duration:.4f}"
+    assert cmd[ss_idx + 1] == f"{near:.4f}"
+    assert cmd[t_idx + 1] == f"{fine + expected_duration:.4f}"
 
     # -i must be followed by the input path
     assert cmd[i_idx + 1] == str(src)
+
+    # A second, accurate -ss (the "fine" decode-side trim) must appear right
+    # after -i <input>, since `fine` > 0 here (in_point=1.0 < SEEK_PREROLL_S=2.0).
+    assert fine > 0, "test fixture must exercise the post-input seek arm"
+    assert cmd[i_idx + 2] == "-ss"
+    assert cmd[i_idx + 3] == f"{fine:.4f}"
 
     # GOP and pix_fmt must be present
     assert "-g" in cmd
     assert "-keyint_min" in cmd
     assert "-pix_fmt" in cmd
+
+
+def test_normalize_window_at_zero_matches_today_exactly(tmp_path):
+    """At in_point == 0.0, near == fine == 0.0: no post-input seek is emitted
+    and the pre-input args are byte-identical to the pre-PV48-T3 form."""
+    src = tmp_path / "src.mp4"
+    out = tmp_path / "out.mp4"
+    _make_conformant_sdr_video(src, duration=6)
+    info = probe_video(str(src))
+    assert info is not None
+
+    in_point = 0.0
+    out_point = 2.0
+
+    captured = {}
+    original_run = subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == common.ffmpeg_bin():
+            captured["cmd"] = list(cmd)
+            with open(cmd[-1], "wb"):
+                pass
+            class FakeResult:
+                returncode = 0
+                stderr = ""
+                stdout = ""
+            return FakeResult()
+        return original_run(cmd, **kwargs)
+
+    import unittest.mock as mock
+    with mock.patch("subprocess.run", side_effect=fake_run):
+        normalize_window(str(src), str(out), "sdr_bt709", in_point, out_point, info=info)
+
+    cmd = captured["cmd"]
+    ss_idx = cmd.index("-ss")
+    i_idx = cmd.index("-i")
+    t_idx = cmd.index("-t")
+    assert cmd[ss_idx + 1] == "0.0000"
+    assert cmd[t_idx + 1] == f"{out_point - in_point:.4f}"
+    # No second -ss: cmd has exactly one "-ss" occurrence.
+    assert cmd.count("-ss") == 1
+    assert cmd[i_idx + 1] == str(src)
 
 
 # ── integration tests: real ffmpeg output ────────────────────────────────────
@@ -237,7 +290,11 @@ def test_normalize_window_output_duration(tmp_path):
 
 
 def test_normalize_window_zero_duration_clamp(tmp_path):
-    """normalize_window clamps negative window (out <= in) to 0.0 duration without crash."""
+    """normalize_window clamps negative window (out <= in) to 0.0 duration
+    without crash. The pre-input -t is widened by the two-stage seek's `fine`
+    remainder (PV48 T3), so it is no longer 0.0000 by itself — the *net*
+    output duration (widened -t minus the post-input -ss trim) is what stays
+    zero. in_point=3.0 > SEEK_PREROLL_S=2.0, so fine == SEEK_PREROLL_S here."""
     src = tmp_path / "src.mp4"
     out = tmp_path / "out.mp4"
     _make_conformant_sdr_video(src, duration=6)
@@ -268,8 +325,16 @@ def test_normalize_window_zero_duration_clamp(tmp_path):
         normalize_window(str(src), str(out), "sdr_bt709", 3.0, 1.0, info=info)
 
     cmd = captured["cmd"]
+    in_point = 3.0
+    near = max(0.0, in_point - nm.SEEK_PREROLL_S)
+    fine = in_point - near
     t_idx = cmd.index("-t")
-    assert cmd[t_idx + 1] == "0.0000"
+    assert cmd[t_idx + 1] == f"{fine + 0.0:.4f}"  # duration clamped to 0.0
+
+    i_idx = cmd.index("-i")
+    assert fine > 0
+    assert cmd[i_idx + 2] == "-ss"
+    assert cmd[i_idx + 3] == f"{fine:.4f}"  # net output duration is still 0
 
 
 def test_normalize_window_output_starts_at_zero(tmp_path):
