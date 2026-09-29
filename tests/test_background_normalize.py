@@ -332,7 +332,9 @@ def test_render_conforms_inline_to_the_same_path():
     this module's conversion writes, so an in-flight or finished background
     conversion and an export share one artifact."""
     render_js = (Path(projects_mod.MONTAJ_ROOT) / "montaj_assets" / "render" / "render.js").read_text()
-    assert "const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace, tonemapped)" in render_js
+    # The call carries a trailing options object ({ untaggedSource }) since the
+    # untagged-master rebuild; the path it writes is still the one asserted below.
+    assert "const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace, tonemapped," in render_js
     assert "return settings.normalize === 'lazy' && !!item.normalizedSrc" in render_js
     assert "`_normalized_${projectColorSpace}${lookSuffix}.mp4`" in render_js
     assert normalized_output_path("/a/clip.MOV", "hdr_hlg", tonemapped=False) == "/a/clip_normalized_hdr_hlg.mp4"

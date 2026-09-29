@@ -31,7 +31,7 @@
         "/corpus/geomImage.png"
       ],
       "filterParts": [
-        "[0:v]format=yuv420p[canvas]",
+        "[0:v]format=yuv420p,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv[canvas]",
         "[1:v]setpts=PTS-STARTPTS,scale=670:1190:force_original_aspect_ratio=decrease,pad=670:1190:(ow-iw)/2:(oh-ih)/2[vid1]",
         "[canvas][vid1]overlay=x=340:y=226:format=yuv420:shortest=0[iv1]",
         "[1:a:0]atrim=0:5,asetpts=PTS-STARTPTS,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1]",
@@ -62,7 +62,7 @@
         "-i",
         "/corpus/geomImage.png",
         "-filter_complex",
-        "[0:v]format=yuv420p[canvas];[1:v]setpts=PTS-STARTPTS,scale=670:1190:force_original_aspect_ratio=decrease,pad=670:1190:(ow-iw)/2:(oh-ih)/2[vid1];[canvas][vid1]overlay=x=340:y=226:format=yuv420:shortest=0[iv1];[1:a:0]atrim=0:5,asetpts=PTS-STARTPTS,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1];[2:v]scale=1458:2592:force_original_aspect_ratio=increase,crop=1458:2592,format=rgba,setpts=PTS-STARTPTS[img2];[iv1][img2]overlay=x=-405:y=-182:shortest=0[iv2];[iv2]setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout]",
+        "[0:v]format=yuv420p,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv[canvas];[1:v]setpts=PTS-STARTPTS,scale=670:1190:force_original_aspect_ratio=decrease,pad=670:1190:(ow-iw)/2:(oh-ih)/2[vid1];[canvas][vid1]overlay=x=340:y=226:format=yuv420:shortest=0[iv1];[1:a:0]atrim=0:5,asetpts=PTS-STARTPTS,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1];[2:v]scale=1458:2592:force_original_aspect_ratio=increase,crop=1458:2592,format=rgba,setpts=PTS-STARTPTS[img2];[iv1][img2]overlay=x=-405:y=-182:shortest=0[iv2];[iv2]setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout]",
         "-map",
         "[vout]",
         "-map",

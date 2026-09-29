@@ -760,7 +760,19 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     ? ''
     : buildColorConversionFilter(itemColorSpace, projectColorSpace, zscaleAvailable,
         { sdrCurve, hasLut3d: lut3dAvailable })
-  const conversionStep = conversionFilter ? `${conversionFilter},` : ''
+  // An HDR→SDR grade ends pinned to yuv420p, as derive-sdr.js and
+  // lib/normalize.py already pin it, so the Vivid chain's own last zscale
+  // (m=bt709:r=tv) does the RGB→YUV step and the 4:2:0 subsampling, exactly as
+  // on those two paths. Unpinned, that step fell to whatever scaler ffmpeg
+  // inserted downstream. Under the old untagged canvas it used the BT.601
+  // matrix. With the canvas tagged (Step 1 of encodeSegment) the matrix comes
+  // out right either way, and what the pin still decides is where chroma is
+  // subsampled: on a letterboxed item (transparent pad) the unpinned grade
+  // drifted from the pinned one at colour edges (measured: max 56 / mean abs
+  // 0.57, pinned 21 / 0.29). Pinned by composite-matrix.integration.test.mjs.
+  const gradePin = conversionFilter && isHdr(itemColorSpace) && projectColorSpace === 'sdr_bt709'
+    ? 'format=yuv420p,' : ''
+  const conversionStep = conversionFilter ? `${conversionFilter},${gradePin}` : ''
 
   // -err_detect ignore_err + -max_error_rate 1.0: tolerate broken audio
   // packets from iPhone .MOV sources (see encodeSegment for full comment).
@@ -840,6 +852,16 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // speed S the S× extra source seconds consumed above play out over 1/S the
   // time. A no-op (bare setpts=PTS-STARTPTS) at speed undefined/1.
   const ptsStep = hasSpeed ? `setpts=(PTS-STARTPTS)/${speed}` : 'setpts=PTS-STARTPTS'
+  // An untagged video is taken as BT.709, which is what it is underneath in
+  // practice (web downloads such as X exports; remove_bg's ProRes, which keeps
+  // its source's YUV). Against the tagged SDR canvas an untagged layer would be
+  // read as "unknown" (BT.601) and converted: measured red -19/-25, green
+  // +8/+19. Tagged here, it composites unchanged, as it did before the canvas
+  // was tagged. Keyed on the probed transfer, which render.js stamps 'unknown'
+  // for an untagged file. Overlay captures and images are NOT tagged: those are
+  // encoded from RGB with ffmpeg's BT.601 default, and converting them is right.
+  const untaggedTag = !isHdr(projectColorSpace) && item.colorTransfer === 'unknown'
+    ? 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709,' : ''
 
   // ── The pad fill: transparent where the preview shows nothing ─────────────
   //
@@ -875,6 +897,8 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   //     8.1.2's trailing zscale writes yuva444p10le itself (measured: no
   //     auto-inserted scaler); a build whose zscale lacks alpha formats gets a
   //     lossless yuv→yuva conversion inserted instead.
+  // An HDR→SDR grade reaches this pad already pinned to yuv420p (gradePin,
+  // above), so for it the 10-bit pin only adds the alpha plane.
   // A rotated item still passes through rotateFilterStep's `format=yuva420p`
   // pin after this, which narrows a converted item to 8 bits before `rotate`.
   // That predates this fill and is left alone here.
@@ -897,7 +921,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // the static branch below is byte-for-byte what it has always been; the frozen
   // goldens say so.
   filterParts.push(
-    `[${idx}:v]${ptsStep},${cropStep}` +
+    `[${idx}:v]${untaggedTag}${ptsStep},${cropStep}` +
     (anim?.needsAnimatedChain
       ? `scale=${anim.peakW}:${anim.peakH}:force_original_aspect_ratio=decrease${divisibleBy},` +
         `${conversionStep}` +
@@ -957,6 +981,10 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
  *   input args instead of the default `-ss <seek> -t <duration> -i` pair. Use for
  *   single-frame PNG overlay inputs (sample-frame.js's overlay path); leave false for
  *   VP9/MKV overlay segments coming from the production renderer chunk pipeline.
+ * @param {boolean} [opts.captureToBt709=false] — convert the capture from BT.601
+ *   (what renderer.js's untagged PNG→FFV1 encode writes) to bt709 inside the scale
+ *   step, with accurate rounding. encodeSegment sets it for an SDR segment, whose
+ *   canvas is tagged bt709; see the note at the scale step. PNG callers leave it off.
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
  */
 export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart, duration, opts = {}) {
@@ -1027,7 +1055,19 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   // targetW×targetH box rotation turns within. No alpha pin needed here: the
   // `format=${inputFormatFlag}` step above already put this chain in yuva420p
   // (or rgba for the PNG callers), so `c=black@0.0` is representable.
-  filterParts.push(`${ovSrc}scale=${targetW}:${targetH}${rotateFilterStep(ovBox)}[ovsc${ovIdx}]`)
+  //
+  // captureToBt709: the capture is BT.601 (renderer.js encodes its RGB PNGs
+  // with ffmpeg's default for an untagged stream) and the SDR canvas is bt709.
+  // Left to the scaler ffmpeg inserts before `overlay`, that conversion is
+  // correct in colour but not in level on a width that is not a multiple of 16
+  // (1080, the usual vertical canvas): measured white Y 235 → 233, grey
+  // 126 → 124. Done here, with accurate_rnd+full_chroma_int, it is exact at
+  // every width, and the output is tagged so the overlay has nothing to convert.
+  const to709 = opts.captureToBt709
+    ? ':flags=bicubic+accurate_rnd+full_chroma_int:in_color_matrix=bt601:out_color_matrix=bt709'
+      + ':in_range=tv:out_range=tv,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv'
+    : ''
+  filterParts.push(`${ovSrc}scale=${targetW}:${targetH}${to709}${rotateFilterStep(ovBox)}[ovsc${ovIdx}]`)
   ovSrc = `[ovsc${ovIdx}]`
 
   // Item-level opacity, in the same position and the same shape the image path
@@ -1250,9 +1290,22 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   // --- Step 1: Black canvas base (always present — items layer on top) ---
   // Canvas format follows the project's working pix_fmt so item layers can
   // composite without forced bit-depth conversion.
+  //
+  // The SDR canvas is TAGGED bt709, limited range. ffmpeg 8 negotiates colour
+  // space across the graph, and an untagged canvas made `overlay` convert every
+  // layer to "unknown", i.e. the BT.601 matrix, while Step 4's setparams labels
+  // the file bt709: a bt709 video layer was re-matrixed and an untagged overlay
+  // capture or image (601-encoded) went through unconverted. Neutrals have no
+  // chroma, so only saturated colours moved (measured: red swatch R +16 / G +22).
+  // Tagged, the composite is bit-exact to a bt709 layer and images convert
+  // correctly; overlay captures convert in their own scale step
+  // (buildOverlayFilterParts' captureToBt709). The HDR canvas is left as it
+  // was, so the HLG master stays byte-identical. Pinned by
+  // composite-matrix.integration.test.mjs.
   inputs.push('-f', 'lavfi', '-i',
     `color=black:size=${vw}x${vh}:rate=${fps}:duration=${duration}`)
-  filterParts.push(`[0:v]format=${spec.outputPixFmt}[canvas]`)
+  const canvasTag = isHdr(projectColorSpace) ? '' : `,${spec.setparams}:range=tv`
+  filterParts.push(`[0:v]format=${spec.outputPixFmt}${canvasTag}[canvas]`)
   videoLabel = '[canvas]'
   inputIdx++
 
@@ -1471,7 +1524,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   for (const ov of overlays) {
     const ovIdx = inputIdx
     const { inputArgs, filterParts: fp, newVideoLabel } =
-      buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration, { fps })
+      buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration,
+        { fps, captureToBt709: !isHdr(projectColorSpace) })
     inputs.push(...inputArgs)
     filterParts.push(...fp)
     videoLabel = newVideoLabel

@@ -86,6 +86,16 @@ const EXPORT_MODES = ['auto', 'sdr', 'both']
 const DROPPED_PREVIEW_FIELDS = ['proxySrc', 'nobg_preview_src']
 
 // ---------------------------------------------------------------------------
+// SDR masters of untagged sources (see repointStaleUntaggedMasters). Up here
+// for the same temporal-dead-zone reason as DROPPED_PREVIEW_FIELDS: main()
+// reads them before its first await.
+// ---------------------------------------------------------------------------
+/** Keep identical to lib/normalize.py's UNTAGGED_MASTER_MARKER. */
+const UNTAGGED_MASTER_MARKER = 'montaj: untagged source read as BT.709'
+const SDR_MASTER_SUFFIX = '_normalized_sdr_bt709.mp4'
+const VIDEO_EXT = /^\.(mp4|mov|m4v|mkv|webm|avi|mts|m2ts|ts|3gp|mxf|mpg|mpeg|wmv|flv)$/i
+
+// ---------------------------------------------------------------------------
 // Design resolution for overlay capture — always 1080 on the short edge,
 // with the aspect ratio of settings.resolution (or 9:16 portrait by default).
 //
@@ -359,6 +369,10 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   const projectDir = dirname(absProjectPath)
   resolveProjectPaths(projectJson, projectDir)
   validateProjectFiles(projectJson)
+  // Before collectAllItems swaps in any cache: an SDR master an older montaj
+  // built from an untagged source is sent back to its source, so the normalize
+  // pass (3) rebuilds it. See repointStaleUntaggedMasters.
+  repointStaleUntaggedMasters(projectJson)
 
   const settings = projectJson.settings || {}
   const fps    = settings.fps || 30
@@ -620,7 +634,8 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
     // actually runs the HDR→SDR Montaj Vivid LUT. Mirrors the Python sites'
     // `is_hdr(detect_from_transfer(...)) and color_space == "sdr_bt709"` check.
     const tonemapped = isHdr(detectFromTransfer(item.colorTransfer)) && projectColorSpace === 'sdr_bt709'
-    const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace, tonemapped)
+    const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace, tonemapped,
+      { untaggedSource: item.colorTransfer === 'unknown' })
     if (normalizedPath !== item.src) {
       log(`normalized ${item.src.split('/').pop()} → ${normalizedPath.split('/').pop()}`)
       item.src = normalizedPath
@@ -1400,7 +1415,87 @@ function buildNormalizedOutputPath(src, projectColorSpace, tonemapped) {
   return src.replace(/(\.\w+)$/, `_normalized_${projectColorSpace}${lookSuffix}.mp4`)
 }
 
-async function normalizeIfNeeded(src, projectColorSpace, tonemapped) {
+// ---------------------------------------------------------------------------
+// SDR masters of untagged sources
+// ---------------------------------------------------------------------------
+//
+// An untagged source (most web downloads) is BT.709 underneath. montaj up to
+// 5.5.4 normalized one reading it as BT.601 and converting to bt709, and the
+// segment encoder's then-untagged canvas converted it most of the way back, so
+// the error mostly cancelled. The canvas is tagged now, which exposes any
+// master still carrying that conversion (measured cloth patch: source
+// 158/50/102, old master 149/35/98). lib/normalize.py now reads an untagged
+// source as BT.709 and marks the master; a master of an untagged source
+// without the mark is rebuilt, once, in place.
+
+/** Whether `master` carries UNTAGGED_MASTER_MARKER. One ffprobe; false on any failure. */
+function hasUntaggedMasterMarker(master) {
+  const r = spawnSync(FFPROBE, [
+    '-v', 'quiet', '-show_entries', 'format_tags=comment', '-of', 'default=nw=1:nk=1', master,
+  ], { encoding: 'utf8', timeout: 30_000 })
+  return r.status === 0 && r.stdout.trim() === UNTAGGED_MASTER_MARKER
+}
+
+/**
+ * The source an untagged-look SDR master (`<stem>_normalized_sdr_bt709.mp4`)
+ * was built from: the one video `<stem>.<ext>` beside it. null when the path is
+ * not such a master or the source is missing or ambiguous (two candidates).
+ */
+function originalOfSdrMaster(path) {
+  const name = basename(path)
+  if (!name.endsWith(SDR_MASTER_SUFFIX)) return null
+  const stem = name.slice(0, -SDR_MASTER_SUFFIX.length)
+  let names
+  try { names = readdirSync(dirname(path)) } catch { return null }
+  const found = names.filter((n) => n.startsWith(`${stem}.`) && VIDEO_EXT.test(n.slice(stem.length)))
+  return found.length === 1 ? join(dirname(path), found[0]) : null
+}
+
+/**
+ * Send every video item that would render an unmarked SDR master of an
+ * untagged source back to that source, in the in-memory project only
+ * (project.json is not rewritten). The normalize pass then rebuilds the master
+ * at its usual path, which heals every pointer serve holds to it. Two shapes:
+ *
+ *   - `normalizedSrc` (a lazy cache) built from the item's untagged `src`:
+ *     dropped, so the item renders from `src` and is normalized in full.
+ *   - `src` itself is the master: serve's background normalize swaps `src`
+ *     onto `<stem>_normalized_sdr_bt709.mp4`. Pointed back at `<stem>.<ext>`.
+ *
+ * SDR projects only (or no colorSpace yet): an HDR master is never touched.
+ * The probes are paid only by items that have a cache to judge, and the
+ * marker only by untagged sources; an iPhone (HLG) or tagged source costs one
+ * transfer probe and is left alone.
+ */
+function repointStaleUntaggedMasters(projectJson) {
+  const colorSpace = projectJson.settings?.colorSpace
+  if (colorSpace != null && colorSpace !== 'sdr_bt709') return
+  const untagged = new Map()
+  const isUntagged = (p) => {
+    if (!untagged.has(p)) untagged.set(p, (probeColorTransfer(p) ?? 'unknown') === 'unknown')
+    return untagged.get(p)
+  }
+  for (const items of enabledTrackItems(projectJson)) {
+    for (const item of items ?? []) {
+      if (item?.type !== 'video' || typeof item.src !== 'string') continue
+      if (item.remove_bg && item.nobg_src) continue  // renders nobg_src; no master involved
+      if (item.normalizedSrc && existsSync(item.src) && isUntagged(item.src)
+          && !hasUntaggedMasterMarker(item.normalizedSrc)) {
+        log(`not using ${basename(item.normalizedSrc)}: it was built before untagged sources were read as BT.709`)
+        delete item.normalizedSrc
+        delete item.normalizedInPoint
+        continue
+      }
+      const original = originalOfSdrMaster(item.src)
+      if (original && !hasUntaggedMasterMarker(item.src) && isUntagged(original)) {
+        log(`${basename(item.src)} was built before untagged sources were read as BT.709; rebuilding it from ${basename(original)}`)
+        item.src = original
+      }
+    }
+  }
+}
+
+async function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedSource = false } = {}) {
   const out = buildNormalizedOutputPath(src, projectColorSpace, tonemapped)
 
   // Idempotency cache: if the deterministic output already exists and is
@@ -1410,12 +1505,22 @@ async function normalizeIfNeeded(src, projectColorSpace, tonemapped) {
   // re-encodes every clip from scratch (minutes per clip on a 4K HEVC source).
   // mtime check (not just existsSync) means re-recording or replacing a source
   // file correctly invalidates the cached output.
+  //
+  // One more condition, for an UNTAGGED source's SDR master only: it must carry
+  // UNTAGGED_MASTER_MARKER. Without it the master was built reading the source
+  // as BT.601 and has that conversion baked in, so it is rebuilt here, in
+  // place. Every other master (tagged or HDR sources, the iPhone `_vivid1`
+  // ones) is reused on mtime alone and costs no probe.
   if (existsSync(out)) {
     try {
       const srcStat = statSync(src)
       const outStat = statSync(out)
       if (outStat.mtimeMs >= srcStat.mtimeMs) {
-        return out
+        if (!(untaggedSource && projectColorSpace === 'sdr_bt709' && !tonemapped)
+            || hasUntaggedMasterMarker(out)) {
+          return out
+        }
+        log(`rebuilding ${basename(out)}: it was built before untagged sources were read as BT.709`)
       }
     } catch { /* fall through to re-encode */ }
   }
@@ -1552,4 +1657,5 @@ function fail(code, message) {
 }
 
 export { getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
-         EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport, captureScaleFor }
+         EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport, captureScaleFor,
+         UNTAGGED_MASTER_MARKER, originalOfSdrMaster }

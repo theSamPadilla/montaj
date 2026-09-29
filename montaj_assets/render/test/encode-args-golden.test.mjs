@@ -111,6 +111,27 @@
 // dry run, so their size is unknown and their bytes (and mtimes) did not move;
 // the compare-only regenerator reported both `unchanged — already current`.
 // The pixel proof lives in video-pad.integration.test.mjs.
+//
+// ── 2026-09-28 · SDR canvas tagged bt709 — deliberate render change, ALL THREE
+//    expected/encode-args.*.json REGENERATED, because they held a bug ─────────
+// Every SDR segment's black canvas used to be `[0:v]format=yuv420p[canvas]`,
+// with no colour tags. ffmpeg 8 negotiates colour space across the graph, so
+// that untagged canvas made `overlay` convert every layer to "unknown" (the
+// BT.601 matrix) while the final setparams labelled the file bt709. The
+// goldens froze that wrong graph. Measured on decoded pixels
+// (composite-matrix.integration.test.mjs, managed ffmpeg 8.1.2), 5.5.4 → now:
+//   overlay capture / image, red e6194b (230,25,75): 246,47,75 → 230,25,74
+//   overlay capture / image, green 3cb44b (60,180,75): 51,161,72 → 60,179,75
+//   bt709 video layer, red (230,25,74 in): 245,46,71 → 230,25,74 (bit-exact)
+//   neutral grey 808080: 128 → 128 (a neutral has no chroma; the matrix
+//   cannot move it, which is how the bug hid)
+// Each golden changed by exactly one string, in filterParts[0] and in the
+// joined -filter_complex: the canvas became
+// `[0:v]format=yuv420p,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv[canvas]`.
+// Nothing else moved (git diff --word-diff: 3 x 2 lines, all the canvas). The
+// corpus items carry no probed `colorTransfer`, so the untagged-video tag and
+// the pin after the Vivid chain (same change) never appear in them. Rewritten
+// through the override flag, deliberately.
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
@@ -322,7 +343,7 @@ describe('encode-args golden: post-swap render pipeline == pre-T7 legacy output'
 // and the clip would die to silence three seconds before the transition began.
 
 describe('transition golden: a clip crossfade, end to end through the real pipeline', () => {
-  const CANVAS = '[0:v]format=yuv420p[canvas]'
+  const CANVAS = '[0:v]format=yuv420p,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv[canvas]'
   const SETPARAMS = 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout]'
   const fit = (i) =>
     `[${i}:v]setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,` +
@@ -545,12 +566,14 @@ describe('freeze mechanism: identical is a no-op, changed is refused', () => {
     // Backstop. If a future edit points one of these tests at EXPECTED_DIR,
     // this fails loudly instead of the damage being discovered by mtime weeks
     // later. The hashes are the frozen pre-T7 artifacts, independently
-    // reconstructed from commit 0c5233c — except source-crop's, which moved
-    // DELIBERATELY with the todo #6 transparent video pad (was 0c4a71dc…c042;
-    // see the note at the top of this file for the one-step diff and why).
+    // reconstructed from commit 0c5233c — except that source-crop's moved
+    // DELIBERATELY with the todo #6 transparent video pad (was 0c4a71dc…c042),
+    // and both moved again with the 2026-09-28 bt709 canvas tag (source-crop
+    // was 7edefa3e…322b, source-crop-missing-dims was 01df56ae…3b57); see the
+    // notes at the top of this file for each one-string diff and why.
     const HASHES = {
-      'source-crop': '7edefa3ec3eb8b0668553d593b2b54d39e079fc69918119e3391f95f4e8d322b',
-      'source-crop-missing-dims': '01df56ae0533552602f97299ab065059317f30012008a9e985c07f1f4cb93b57',
+      'source-crop': 'f5886f57e1c2c4e1f4c8bf0746d5c9b48db83aba6732c29c31eb8c6c18271f6f',
+      'source-crop-missing-dims': '8d7bc3f844bd92f1e1b4d16dd14f7442c76ff8614469eadef1b7df91ed30c7a1',
     }
     for (const [name, expected] of Object.entries(HASHES)) {
       const bytes = readFileSync(join(EXPECTED_DIR, `encode-args.${name}.json`))

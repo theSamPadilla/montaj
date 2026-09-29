@@ -928,3 +928,99 @@ def test_normalize_silent_hdr_source_succeeds_with_silent_audio_track(tmp_path):
     assert v.get("color_transfer") == "bt709"
     a = _ffprobe_stream(out, "a")
     assert a is not None and a.get("codec_name") == "aac"
+
+
+# ── Untagged SDR sources are read as BT.709 ───────────────────────────────────
+#
+# Most web downloads carry no colour tags and are BT.709 underneath. ffmpeg
+# reads an untagged input as "unknown", i.e. BT.601, and the output args ask
+# for bt709, so the old normalize converted every such clip between the two
+# matrices: saturated colours moved (measured on an untagged 1080p download,
+# cloth patch 158/50/102 → 149/35/98). The segment encoder's untagged canvas
+# used to convert most of it back; that canvas is tagged now, so the master
+# has to be right on its own. The marker lets render.js tell a master built
+# this way from one an older montaj built.
+
+_SWATCHES = ["e6194b", "3cb44b", "4363d8", "f58231", "808080"]
+
+
+def test_untagged_sdr_source_is_read_as_bt709_and_marked():
+    info = _minimal_info("unknown", codec="h264", pix_fmt="yuv420p")
+    cmd, _ = nm._build_ffmpeg_cmd("in.mp4", "out.mp4", "sdr_bt709", info)
+    assert _vf_from_cmd(cmd) == f"{nm.UNTAGGED_AS_BT709_VF},format=yuv420p"
+    i = cmd.index("-metadata")
+    assert cmd[i + 1] == f"comment={nm.UNTAGGED_MASTER_MARKER}"
+    assert i < cmd.index("out.mp4")
+
+
+@pytest.mark.parametrize("transfer,color_space", [
+    ("bt709", "sdr_bt709"),         # tagged SDR: nothing to guess
+    ("smpte170m", "sdr_bt709"),     # tagged BT.601: ffmpeg converts it, correctly
+    ("arib-std-b67", "sdr_bt709"),  # iPhone HLG: the Vivid master, unchanged
+    ("unknown", "hdr_hlg"),         # HDR projects are out of scope, unchanged
+])
+def test_tagged_or_hdr_normalize_carries_no_tag_or_marker(monkeypatch, transfer, color_space):
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    info = _minimal_info(transfer, codec="h264", pix_fmt="yuv420p")
+    cmd, _ = nm._build_ffmpeg_cmd("in.mp4", "out.mp4", color_space, info)
+    assert "setparams" not in _vf_from_cmd(cmd)
+    assert "-metadata" not in cmd
+
+
+def _swatch_means_709(path: Path):
+    """Centre 16x16 mean of each 64-px swatch band, decoded as BT.709 limited."""
+    w, h = 64 * len(_SWATCHES), 64
+    raw = subprocess.run([
+        nm.ffmpeg_bin(), "-v", "error", "-ss", "1.5", "-i", str(path), "-frames:v", "1",
+        "-vf", "setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709,"
+               "scale=in_color_matrix=bt709:in_range=tv:out_range=pc,format=rgb24",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+    ], capture_output=True, check=True, timeout=30).stdout
+    assert len(raw) == w * h * 3
+    means = []
+    for i in range(len(_SWATCHES)):
+        acc, n = [0, 0, 0], 0
+        for y in range(h // 2 - 8, h // 2 + 8):
+            for x in range(i * 64 + 24, i * 64 + 40):
+                o = (y * w + x) * 3
+                acc = [acc[c] + raw[o + c] for c in range(3)]
+                n += 1
+        means.append(tuple(round(v / n) for v in acc))
+    return means
+
+
+def test_untagged_bt709_source_keeps_its_colours(tmp_path):
+    """Real encode: an untagged, 709-encoded swatch clip with a 3 s GOP (so it
+    is re-encoded) comes out of normalize with the same colours, tagged bt709
+    and carrying the marker. The old normalize moved the red swatch ~(-16, -22)."""
+    src = tmp_path / "download.mp4"
+    bands = ";".join(f"color=c=0x{c}:size=64x64:rate=30:duration=3[s{i}]" for i, c in enumerate(_SWATCHES))
+    stack = "".join(f"[s{i}]" for i in range(len(_SWATCHES)))
+    subprocess.run([
+        nm.ffmpeg_bin(), "-y", "-v", "error", "-filter_complex",
+        f"{bands};{stack}hstack=inputs={len(_SWATCHES)},format=rgb24,"
+        "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,"
+        "setparams=colorspace=unknown:color_trc=unknown:color_primaries=unknown:range=unknown",
+        "-c:v", "libx264", "-qp", "0", "-g", "300", "-pix_fmt", "yuv420p", str(src),
+    ], check=True, capture_output=True, timeout=60)
+    assert probe_video(str(src))["color_transfer"] == "unknown"
+
+    out = tmp_path / "download_normalized_sdr_bt709.mp4"
+    normalize(str(src), str(out), "sdr_bt709")
+    assert out.exists()
+
+    want, got = _swatch_means_709(src), _swatch_means_709(out)
+    rows = [f"{c}: source {w} master {g}" for c, w, g in zip(_SWATCHES, want, got)]
+    print("\n".join(rows))
+    assert all(abs(a - b) <= 3 for w, g in zip(want, got) for a, b in zip(w, g)), "\n".join(rows)
+
+    tags = subprocess.run([
+        nm.ffprobe_bin(), "-v", "quiet", "-show_entries",
+        "stream=color_space,color_transfer,color_primaries:format_tags=comment",
+        "-of", "json", str(out),
+    ], capture_output=True, text=True, check=True).stdout
+    probe = json.loads(tags)
+    s = probe["streams"][0]
+    assert (s.get("color_space"), s.get("color_transfer"), s.get("color_primaries")) == ("bt709",) * 3
+    assert probe["format"]["tags"]["comment"] == nm.UNTAGGED_MASTER_MARKER

@@ -181,7 +181,9 @@ test('HDR→SDR LUT path: the transparent pad is 10-bit 4:4:4 and sits after the
   const f = chain(item, LUT)
   const retag = 'zscale=tin=bt709:t=bt709:pin=bt709:p=bt709:m=bt709:rin=full:r=tv'
   assert.ok(f.includes(`scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2,`))
-  assert.ok(f.includes(`${retag},format=yuva444p10le,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0.0[vid0]`), f)
+  // The grade is pinned to yuv420p right after the chain (as derive-sdr.js and
+  // lib/normalize.py pin it), and the pad's own 10-bit alpha pin follows it.
+  assert.ok(f.includes(`${retag},format=yuv420p,format=yuva444p10le,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0.0[vid0]`), f)
   assert.ok(f.indexOf('format=rgb48le') < f.indexOf('format=yuva444p10le'), 'the pin follows the whole LUT chain')
   assert.doesNotMatch(f, /yuva420p/, 'no 8-bit alpha pin on the unrotated LUT path')
 })

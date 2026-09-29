@@ -42,6 +42,22 @@ arm — never in proxy encodes or the hable fallback arm. A module-level
 constant (not inlined) so tests can isolate its effect without forking the
 real filter-chain assembly."""
 
+UNTAGGED_AS_BT709_VF = "setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709"
+"""Read an untagged SDR source as BT.709, which is what it is underneath in
+practice (web downloads such as X exports). Without it, ffmpeg reads the
+untagged input as "unknown", i.e. BT.601, and converts it to the bt709 the
+output args ask for: measured on an untagged 1080p download, cloth patch
+158/50/102 came out 149/35/98. Mirrored by the segment encoder's untagged-video
+tag (montaj_assets/render/encode-segment.js)."""
+
+UNTAGGED_MASTER_MARKER = "montaj: untagged source read as BT.709"
+"""Written (as the container `comment`) into every SDR master of an untagged
+source built with UNTAGGED_AS_BT709_VF. A master of an untagged source WITHOUT
+it was built by an older montaj that converted it as BT.601, so render.js's
+reuse check rebuilds it (montaj_assets/render/render.js, UNTAGGED_MASTER_MARKER
+— keep the two strings identical). Masters of tagged or HDR sources carry no
+marker and are never checked."""
+
 
 def probe_video(path):
     """Return dict with codec, width, height, pix_fmt, color_transfer, fps, has_audio,
@@ -423,8 +439,18 @@ def _build_ffmpeg_cmd(
     # arms, none of which apply the curve).
     is_hdr_to_sdr = source_color_space in ("hdr_hlg", "hdr_pq") and project_color_space == "sdr_bt709"
 
+    # An untagged source in an SDR project: see UNTAGGED_AS_BT709_VF. Keyed on
+    # the probed transfer, the same field the rest of the pipeline reads colour
+    # identity from (render.js stamps 'unknown' for an untagged file too).
+    untagged_as_bt709 = (
+        project_color_space == "sdr_bt709"
+        and info.get("color_transfer", "unknown") == "unknown"
+    )
+
     used_fallback_tonemap = False
     vf_parts: list[str] = []
+    if untagged_as_bt709:
+        vf_parts.append(UNTAGGED_AS_BT709_VF)
     if needs_color_conversion:
         conv_filter, used_fallback_tonemap = _build_color_conversion_vf(
             source_color_space, project_color_space
@@ -467,6 +493,9 @@ def _build_ffmpeg_cmd(
         # we still emit conformant audio here to match the working-format contract.
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
         "-movflags", "+faststart",
+        # The reuse check's proof that this master was built reading its
+        # untagged source as BT.709 (see UNTAGGED_MASTER_MARKER).
+        *(["-metadata", f"comment={UNTAGGED_MASTER_MARKER}"] if untagged_as_bt709 else []),
         out_path,
     ]
     if not info["has_audio"]:
