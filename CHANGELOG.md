@@ -14,6 +14,8 @@
 - **Fixed: a regression from the previous release's blank-project change, which saved Media as the left rail's tab for every later project.** The switch to Media no longer writes to storage.
 - **Removed: the `style-profile` skill.** Style profiles are a Montaj Hub feature, and the app serves the skill as `app/style-profile`.
 - **Fixed: a still image clip no longer shows a Volume tab.** A still has no audio, so its clip panel offers Transform alone.
+- **Fixed: the inspector's Position keyframe controls were clipped at the default panel width.** The row now wraps, so the keyframe controls drop to a second line instead of being cut off.
+- **Fixed: under heavy load, an SDR clip in an HDR project could be graded as camera HDR in frame samples and the SDR export.** When ffprobe failed on the clip's SDR original (it could not start, was killed or timed out), the clip was silently treated as camera footage. A failed start, a kill or a timeout is now retried once, and a clip that still cannot be read stops the sample or export with an error naming the file and the reason.
 
 ## v5.6.0
 

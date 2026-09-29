@@ -1260,6 +1260,18 @@ describe('OverlayInspector — header keyframe navigation', () => {
     expect(screen.getByRole('button', { name: 'Next keyframe' })).toBeEnabled()
   })
 
+  it('lets the Position row wrap so its keyframe controls are never clipped', () => {
+    // Structure only: jsdom does no layout, so this cannot show the overflow
+    // itself (336px of row in 283px at the default rail). It pins the fix: the
+    // row that holds the label AND the keyframe unit is a wrapping flex row.
+    renderInspector(multiPropKeyed(), 10)
+
+    const diamond = screen.getByRole('button', { name: /Position keyframe at playhead/ })
+    const row = diamond.closest('.flex-wrap')
+    expect(row).not.toBeNull()
+    expect(row!.textContent).toContain('Position')
+  })
+
   it('gives each row its own arrows, scoped to that prop', () => {
     const onSeek = vi.fn()
     renderInspector(multiPropKeyed(), 10, { onSeek }) // localT = 5

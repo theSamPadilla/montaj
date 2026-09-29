@@ -881,8 +881,14 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
 
         {/* ── Position ───────────────────────────────────────────────────
             X and Y with ONE keyframe unit for the pair on the right (CapCut),
-            not a diamond crammed in after each axis. */}
-        <div className="flex items-center gap-2">
+            not a diamond crammed in after each axis.
+
+            `flex-wrap`: label 56 + X and Y ~96 each + keyframe unit 64 + gaps
+            is 336px, and the default 300px rail leaves 283. Without wrapping
+            the row overflowed by 53px and the section's clip hid the diamond.
+            Now the unit drops to a second line (still right-aligned by its
+            `ml-auto`) whenever the row does not fit, at any rail width. */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className={ROW_LABEL_CLASS}>Position</span>
           <NumberCell
             row={ROWS.offsetX}
