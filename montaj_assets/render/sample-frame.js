@@ -133,8 +133,13 @@ const SAMPLE_CACHE_VERSION = 5
 // every bundle input and every absolute file path in props. A lookup is a hit
 // only when the PNG AND the manifest exist AND every recorded mtime still
 // matches. The graph cannot change without editing a file already in it, so
-// that is exact. A missing file is a miss, and a PNG with no manifest is a
-// miss (which retires every pre-PV49 entry).
+// that is exact for the user's recorded files. It is NOT exact for changes to
+// resolution: a new file that shadows an import's resolution (a `helper.ts`
+// added beside `helper.js` behind an extensionless import) is not seen, nor is
+// a tsconfig or package.json edit, nor a props asset that was missing when the
+// entry was recorded. Engine changes need a SAMPLE_CACHE_VERSION bump (which
+// reaches both keys). A missing recorded file is a miss, and a PNG with no
+// manifest is a miss (which retires every pre-PV49 entry).
 
 /** Absolute paths in `props` that are existing files, walked the way bundle.js's rewritePathsToFileUrls finds them. */
 export function collectPropFilePaths(value, out = new Set()) {
