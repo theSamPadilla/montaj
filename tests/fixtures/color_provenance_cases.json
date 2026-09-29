@@ -1,0 +1,457 @@
+{
+  "_comment": [
+    "The shared case table for montaj_assets/render/sdr-layer.js (JS) and lib/color_provenance.py (Python).",
+    "Both test files run EVERY case: JS checks originOf, sdrLayerFor and gradeKeyFor; Python checks origin_of and proxy_source_for.",
+    "probes: path -> what the probe returns for it. A path with no entry is a failed probe:",
+    "  { transfer: 'unknown', comment: '', width: null, height: null, fps: null, duration: null }.",
+    "exists: the paths whose file exists. decodedTransfer: the transfer of the file the caller decodes after normalize.",
+    "expect.item: layer.item from sdrLayerFor. Omitted means equal to the input item.",
+    "Fingerprint rule: equal display width and height, equal r_frame_rate string, |duration delta| <= max(2 / fps, 0.05) s."
+  ],
+  "marker": "montaj: converted from SDR source ",
+  "cases": [
+    {
+      "name": "sdr src (bt709): SDR origin, ungraded",
+      "item": { "id": "v1", "type": "video", "src": "/proj/media/download.mp4", "inPoint": 1, "outPoint": 5 },
+      "probes": {
+        "/proj/media/download.mp4": { "transfer": "bt709", "comment": "", "width": 1280, "height": 720, "fps": "30/1", "duration": 15.0 }
+      },
+      "exists": [],
+      "decodedTransfer": "bt709",
+      "expect": {
+        "origin": { "colorSpace": "sdr_bt709", "original": null },
+        "grade": false, "cutoutKey": null, "gradeKey": null,
+        "proxy": { "input": "/proj/media/download.mp4", "tonemap": false }
+      }
+    },
+    {
+      "name": "marked HLG src, original present and matching: SDR origin, the original, ungraded",
+      "item": { "id": "v2", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "inPoint": 2, "outPoint": 6 },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source screen.mov", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.016 },
+        "/proj/media/screen.mov": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": ["/proj/media/screen.mov"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "sdr_bt709", "original": "/proj/media/screen.mov" },
+        "grade": false, "cutoutKey": null, "gradeKey": null,
+        "item": { "id": "v2", "type": "video", "src": "/proj/media/screen.mov", "inPoint": 2, "outPoint": 6 },
+        "proxy": { "input": "/proj/media/screen.mov", "tonemap": false }
+      }
+    },
+    {
+      "name": "marked HLG src, original missing: HDR, graded as today (Q1)",
+      "item": { "id": "v3", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source screen.mov", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.016 },
+        "/proj/media/screen.mov": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": [],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "tonemap": true }
+      }
+    },
+    {
+      "name": "marked HLG src whose original differs in duration (a trimmed copy that inherited the marker): HDR",
+      "item": { "id": "v4", "type": "video", "src": "/proj/media/screen_clip.mp4" },
+      "probes": {
+        "/proj/media/screen_clip.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source screen.mov", "width": 1080, "height": 1920, "fps": "60/1", "duration": 4.0 },
+        "/proj/media/screen.mov": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": ["/proj/media/screen.mov"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/screen_clip.mp4", "tonemap": true }
+      }
+    },
+    {
+      "name": "marked HLG src whose original differs in size (a scaled copy): HDR",
+      "item": { "id": "v5", "type": "video", "src": "/proj/media/screen_720.mp4" },
+      "probes": {
+        "/proj/media/screen_720.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source screen.mov", "width": 720, "height": 1280, "fps": "60/1", "duration": 12.016 },
+        "/proj/media/screen.mov": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": ["/proj/media/screen.mov"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/screen_720.mp4", "tonemap": true }
+      }
+    },
+    {
+      "name": "marked HLG src whose named original probes HLG, not SDR: HDR",
+      "item": { "id": "v6", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source screen.mov", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.016 },
+        "/proj/media/screen.mov": { "transfer": "arib-std-b67", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": ["/proj/media/screen.mov"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "tonemap": true }
+      }
+    },
+    {
+      "name": "camera HLG (no comment): HDR, graded",
+      "item": { "id": "v7", "type": "video", "src": "/proj/media/IMG_0001.MOV" },
+      "probes": {
+        "/proj/media/IMG_0001.MOV": { "transfer": "arib-std-b67", "comment": "", "width": 1080, "height": 1920, "fps": "30/1", "duration": 8.5 }
+      },
+      "exists": [],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/IMG_0001.MOV", "tonemap": true }
+      }
+    },
+    {
+      "name": "camera PQ: HDR, graded from PQ",
+      "item": { "id": "v8", "type": "video", "src": "/proj/media/drone.mp4" },
+      "probes": {
+        "/proj/media/drone.mp4": { "transfer": "smpte2084", "comment": "", "width": 3840, "height": 2160, "fps": "24000/1001", "duration": 20.0 }
+      },
+      "exists": [],
+      "decodedTransfer": "smpte2084",
+      "expect": {
+        "origin": { "colorSpace": "hdr_pq", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_pq",
+        "proxy": { "input": "/proj/media/drone.mp4", "tonemap": true }
+      }
+    },
+    {
+      "name": "cutout from HDR: graded from the provenance key, not the untagged alpha file",
+      "item": { "id": "v9", "type": "video", "src": "/proj/media/IMG_0001.MOV", "remove_bg": true, "nobg_src": "/proj/media/IMG_0001_nobg.mov" },
+      "probes": {
+        "/proj/media/IMG_0001.MOV": { "transfer": "arib-std-b67", "comment": "", "width": 1080, "height": 1920, "fps": "30/1", "duration": 8.5 }
+      },
+      "exists": [],
+      "decodedTransfer": "unknown",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": "hdr_hlg", "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/IMG_0001.MOV", "tonemap": true }
+      }
+    },
+    {
+      "name": "cutout from SDR: ungraded",
+      "item": { "id": "v10", "type": "video", "src": "/proj/media/download.mp4", "remove_bg": true, "nobg_src": "/proj/media/download_nobg.mov" },
+      "probes": {
+        "/proj/media/download.mp4": { "transfer": "bt709", "comment": "", "width": 1280, "height": 720, "fps": "30/1", "duration": 15.0 }
+      },
+      "exists": [],
+      "decodedTransfer": "unknown",
+      "expect": {
+        "origin": { "colorSpace": "sdr_bt709", "original": null },
+        "grade": false, "cutoutKey": null, "gradeKey": null,
+        "proxy": { "input": "/proj/media/download.mp4", "tonemap": false }
+      }
+    },
+    {
+      "name": "cutout whose src is a marked SDR-origin file: ungraded, item left as is",
+      "item": { "id": "v11", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "remove_bg": true, "nobg_src": "/proj/media/screen_nobg.mov" },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source screen.mov", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.016 },
+        "/proj/media/screen.mov": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": ["/proj/media/screen.mov"],
+      "decodedTransfer": "unknown",
+      "expect": {
+        "origin": { "colorSpace": "sdr_bt709", "original": "/proj/media/screen.mov" },
+        "grade": false, "cutoutKey": null, "gradeKey": null,
+        "proxy": { "input": "/proj/media/screen.mov", "tonemap": false }
+      }
+    },
+    {
+      "name": "remove_bg without a nobg_src is not a cutout: graded from the decoded file",
+      "item": { "id": "v12", "type": "video", "src": "/proj/media/IMG_0001.MOV", "remove_bg": true },
+      "probes": {
+        "/proj/media/IMG_0001.MOV": { "transfer": "arib-std-b67", "comment": "", "width": 1080, "height": 1920, "fps": "30/1", "duration": 8.5 }
+      },
+      "exists": [],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/IMG_0001.MOV", "tonemap": true }
+      }
+    },
+    {
+      "name": "HLG item with an HLG normalizedSrc: graded from HLG, normalizedSrc kept",
+      "item": { "id": "v13", "type": "video", "src": "/proj/media/IMG_0001.MOV", "normalizedSrc": "/proj/media/IMG_0001_normalized_hdr_hlg.mp4", "normalizedInPoint": 0, "inPoint": 3, "outPoint": 5 },
+      "probes": {
+        "/proj/media/IMG_0001.MOV": { "transfer": "arib-std-b67", "comment": "", "width": 1080, "height": 1920, "fps": "30/1", "duration": 8.5 }
+      },
+      "exists": [],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/IMG_0001.MOV", "tonemap": true }
+      }
+    },
+    {
+      "name": "HLG item whose normalizedSrc is an already graded SDR master: graded, but no key (never twice)",
+      "item": { "id": "v14", "type": "video", "src": "/proj/media/IMG_0001.MOV", "normalizedSrc": "/proj/media/IMG_0001_normalized_sdr_bt709_vivid.mp4", "normalizedInPoint": 0 },
+      "probes": {
+        "/proj/media/IMG_0001.MOV": { "transfer": "arib-std-b67", "comment": "", "width": 1080, "height": 1920, "fps": "30/1", "duration": 8.5 }
+      },
+      "exists": [],
+      "decodedTransfer": "bt709",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": null,
+        "proxy": { "input": "/proj/media/IMG_0001.MOV", "tonemap": true }
+      }
+    },
+    {
+      "name": "HLG item decoded as PQ (an HLG clip in a PQ project): graded from PQ",
+      "item": { "id": "v15", "type": "video", "src": "/proj/media/IMG_0001.MOV", "normalizedSrc": "/proj/media/IMG_0001_normalized_hdr_pq.mp4", "normalizedInPoint": 0 },
+      "probes": {
+        "/proj/media/IMG_0001.MOV": { "transfer": "arib-std-b67", "comment": "", "width": 1080, "height": 1920, "fps": "30/1", "duration": 8.5 }
+      },
+      "exists": [],
+      "decodedTransfer": "smpte2084",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_pq",
+        "proxy": { "input": "/proj/media/IMG_0001.MOV", "tonemap": true }
+      }
+    },
+    {
+      "name": "SDR-origin item carrying an HDR normalizedSrc: normalizedSrc and normalizedInPoint dropped",
+      "item": { "id": "v16", "type": "video", "src": "/proj/media/download.mp4", "normalizedSrc": "/proj/media/download_normalized_hdr_hlg_w203.mp4", "normalizedInPoint": 0, "inPoint": 1 },
+      "probes": {
+        "/proj/media/download.mp4": { "transfer": "bt709", "comment": "", "width": 1280, "height": 720, "fps": "30/1", "duration": 15.0 }
+      },
+      "exists": [],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "sdr_bt709", "original": null },
+        "grade": false, "cutoutKey": null, "gradeKey": null,
+        "item": { "id": "v16", "type": "video", "src": "/proj/media/download.mp4", "inPoint": 1 },
+        "proxy": { "input": "/proj/media/download.mp4", "tonemap": false }
+      }
+    },
+    {
+      "name": "marked src with a normalizedSrc window: the original, cache dropped",
+      "item": { "id": "v17", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "normalizedSrc": "/proj/media/screen_normalized_hdr_hlg_w203_window.mp4", "normalizedInPoint": 3.5, "inPoint": 4 },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source screen.mov", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.016 },
+        "/proj/media/screen.mov": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": ["/proj/media/screen.mov"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "sdr_bt709", "original": "/proj/media/screen.mov" },
+        "grade": false, "cutoutKey": null, "gradeKey": null,
+        "item": { "id": "v17", "type": "video", "src": "/proj/media/screen.mov", "inPoint": 4 },
+        "proxy": { "input": "/proj/media/screen.mov", "tonemap": false }
+      }
+    },
+    {
+      "name": "failed probe: SDR origin",
+      "item": { "id": "v18", "type": "video", "src": "/proj/media/broken.mp4" },
+      "probes": {},
+      "exists": [],
+      "decodedTransfer": null,
+      "expect": {
+        "origin": { "colorSpace": "sdr_bt709", "original": null },
+        "grade": false, "cutoutKey": null, "gradeKey": null,
+        "proxy": { "input": "/proj/media/broken.mp4", "tonemap": false }
+      }
+    },
+    {
+      "name": "untagged src (transfer unknown): SDR origin",
+      "item": { "id": "v19", "type": "video", "src": "/proj/media/x_export.mp4" },
+      "probes": {
+        "/proj/media/x_export.mp4": { "transfer": "unknown", "comment": "", "width": 1280, "height": 720, "fps": "30/1", "duration": 20.0 }
+      },
+      "exists": [],
+      "decodedTransfer": "unknown",
+      "expect": {
+        "origin": { "colorSpace": "sdr_bt709", "original": null },
+        "grade": false, "cutoutKey": null, "gradeKey": null,
+        "proxy": { "input": "/proj/media/x_export.mp4", "tonemap": false }
+      }
+    },
+    {
+      "name": "30000/1001, converted 0.066 s longer (tolerance 2/fps = 0.0667 s): matches",
+      "item": { "id": "v20", "type": "video", "src": "/proj/media/talk_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/talk_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source talk.mp4", "width": 1920, "height": 1080, "fps": "30000/1001", "duration": 10.066 },
+        "/proj/media/talk.mp4": { "transfer": "bt709", "comment": "", "width": 1920, "height": 1080, "fps": "30000/1001", "duration": 10.0 }
+      },
+      "exists": ["/proj/media/talk.mp4"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "sdr_bt709", "original": "/proj/media/talk.mp4" },
+        "grade": false, "cutoutKey": null, "gradeKey": null,
+        "item": { "id": "v20", "type": "video", "src": "/proj/media/talk.mp4" },
+        "proxy": { "input": "/proj/media/talk.mp4", "tonemap": false }
+      }
+    },
+    {
+      "name": "30000/1001, converted 0.066 s shorter: matches",
+      "item": { "id": "v21", "type": "video", "src": "/proj/media/talk_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/talk_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source talk.mp4", "width": 1920, "height": 1080, "fps": "30000/1001", "duration": 9.934 },
+        "/proj/media/talk.mp4": { "transfer": "bt709", "comment": "", "width": 1920, "height": 1080, "fps": "30000/1001", "duration": 10.0 }
+      },
+      "exists": ["/proj/media/talk.mp4"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "sdr_bt709", "original": "/proj/media/talk.mp4" },
+        "grade": false, "cutoutKey": null, "gradeKey": null,
+        "item": { "id": "v21", "type": "video", "src": "/proj/media/talk.mp4" },
+        "proxy": { "input": "/proj/media/talk.mp4", "tonemap": false }
+      }
+    },
+    {
+      "name": "30000/1001, converted 0.068 s longer: outside the tolerance, HDR",
+      "item": { "id": "v22", "type": "video", "src": "/proj/media/talk_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/talk_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source talk.mp4", "width": 1920, "height": 1080, "fps": "30000/1001", "duration": 10.068 },
+        "/proj/media/talk.mp4": { "transfer": "bt709", "comment": "", "width": 1920, "height": 1080, "fps": "30000/1001", "duration": 10.0 }
+      },
+      "exists": ["/proj/media/talk.mp4"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/talk_normalized_hdr_hlg_w203.mp4", "tonemap": true }
+      }
+    },
+    {
+      "name": "60/1, 0.045 s apart (2/fps = 0.033, floor 0.05): matches",
+      "item": { "id": "v23", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source screen.mov", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.045 },
+        "/proj/media/screen.mov": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": ["/proj/media/screen.mov"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "sdr_bt709", "original": "/proj/media/screen.mov" },
+        "grade": false, "cutoutKey": null, "gradeKey": null,
+        "item": { "id": "v23", "type": "video", "src": "/proj/media/screen.mov" },
+        "proxy": { "input": "/proj/media/screen.mov", "tonemap": false }
+      }
+    },
+    {
+      "name": "60/1, 0.055 s apart: outside the 0.05 floor, HDR",
+      "item": { "id": "v24", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source screen.mov", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.055 },
+        "/proj/media/screen.mov": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": ["/proj/media/screen.mov"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "tonemap": true }
+      }
+    },
+    {
+      "name": "frame rate differs from the original: HDR",
+      "item": { "id": "v25", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source screen.mov", "width": 1080, "height": 1920, "fps": "30/1", "duration": 12.0 },
+        "/proj/media/screen.mov": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": ["/proj/media/screen.mov"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "tonemap": true }
+      }
+    },
+    {
+      "name": "frame rate 0/0 on both: no fingerprint, HDR",
+      "item": { "id": "v26", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source screen.mov", "width": 1080, "height": 1920, "fps": "0/0", "duration": 12.0 },
+        "/proj/media/screen.mov": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "0/0", "duration": 12.0 }
+      },
+      "exists": ["/proj/media/screen.mov"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "tonemap": true }
+      }
+    },
+    {
+      "name": "frame rate missing on both: no fingerprint, HDR",
+      "item": { "id": "v27", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source screen.mov", "width": 1080, "height": 1920, "fps": null, "duration": 12.0 },
+        "/proj/media/screen.mov": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": null, "duration": 12.0 }
+      },
+      "exists": ["/proj/media/screen.mov"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "tonemap": true }
+      }
+    },
+    {
+      "name": "null comment does not throw: camera HLG",
+      "item": { "id": "v28", "type": "video", "src": "/proj/media/IMG_0002.MOV" },
+      "probes": {
+        "/proj/media/IMG_0002.MOV": { "transfer": "arib-std-b67", "comment": null, "width": 1080, "height": 1920, "fps": "30/1", "duration": 8.5 }
+      },
+      "exists": [],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/IMG_0002.MOV", "tonemap": true }
+      }
+    },
+    {
+      "name": "marker naming a path, not a sibling basename: ignored, HDR",
+      "item": { "id": "v29", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source ../other/screen.mov", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 },
+        "/proj/other/screen.mov": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 },
+        "/proj/media/../other/screen.mov": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": ["/proj/other/screen.mov", "/proj/media/../other/screen.mov"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "tonemap": true }
+      }
+    },
+    {
+      "name": "marker with no name after it: ignored, HDR",
+      "item": { "id": "v30", "type": "video", "src": "/proj/media/screen_normalized_hdr_hlg_w203.mp4" },
+      "probes": {
+        "/proj/media/screen_normalized_hdr_hlg_w203.mp4": { "transfer": "arib-std-b67", "comment": "montaj: converted from SDR source ", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 },
+        "/proj/media": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 },
+        "/proj/media/": { "transfer": "bt709", "comment": "", "width": 1080, "height": 1920, "fps": "60/1", "duration": 12.0 }
+      },
+      "exists": ["/proj/media", "/proj/media/"],
+      "decodedTransfer": "arib-std-b67",
+      "expect": {
+        "origin": { "colorSpace": "hdr_hlg", "original": null },
+        "grade": true, "cutoutKey": null, "gradeKey": "hdr_hlg",
+        "proxy": { "input": "/proj/media/screen_normalized_hdr_hlg_w203.mp4", "tonemap": true }
+      }
+    }
+  ]
+}
