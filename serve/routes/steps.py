@@ -412,7 +412,9 @@ def _normalize_sync(input_path: str, color_space: str, explicit_out: str | None)
         return {"path": input_path, "skipped": True}
 
     tonemapped = is_hdr(detect_from_transfer(info.get("color_transfer"))) and color_space == "sdr_bt709"
-    out = explicit_out or normalized_output_path(input_path, color_space, tonemapped=tonemapped)
+    sdr_stretch = not is_hdr(detect_from_transfer(info.get("color_transfer"))) and is_hdr(color_space)
+    out = explicit_out or normalized_output_path(input_path, color_space, tonemapped=tonemapped,
+                                                 sdr_stretch=sdr_stretch)
 
     try:
         result_path = normalize(input_path, out, color_space, info=info)

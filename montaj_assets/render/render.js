@@ -634,8 +634,11 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
     // actually runs the HDR→SDR Montaj Vivid LUT. Mirrors the Python sites'
     // `is_hdr(detect_from_transfer(...)) and color_space == "sdr_bt709"` check.
     const tonemapped = isHdr(detectFromTransfer(item.colorTransfer)) && projectColorSpace === 'sdr_bt709'
+    // sdrStretch: an SDR source into an HDR project (lib.normalize's stretch at
+    // 203 nits). Mirrors the Python sites' `sdr_stretch`.
+    const sdrStretch = !isHdr(detectFromTransfer(item.colorTransfer)) && isHdr(projectColorSpace)
     const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace, tonemapped,
-      { untaggedSource: item.colorTransfer === 'unknown' })
+      { untaggedSource: item.colorTransfer === 'unknown', sdrStretch })
     if (normalizedPath !== item.src) {
       log(`normalized ${item.src.split('/').pop()} → ${normalizedPath.split('/').pop()}`)
       item.src = normalizedPath
@@ -1410,8 +1413,11 @@ function getTotalDurationSeconds(projectJson) {
  * transfer is HDR and the project is SDR — the HDR→SDR Montaj Vivid LUT
  * chain runs) the current master look is appended (SP6b Task T3).
  */
-function buildNormalizedOutputPath(src, projectColorSpace, tonemapped) {
-  const lookSuffix = tonemapped ? `_${MASTER_LOOK}` : ''
+function buildNormalizedOutputPath(src, projectColorSpace, tonemapped, sdrStretch = false) {
+  // `_w203`: SDR white moved from 100 to 203 nits (PV42), so an SDR-into-HDR
+  // master is named apart from any old one. Twin: lib.normalize.
+  let lookSuffix = tonemapped ? `_${MASTER_LOOK}` : ''
+  if (sdrStretch) lookSuffix += '_w203'
   return src.replace(/(\.\w+)$/, `_normalized_${projectColorSpace}${lookSuffix}.mp4`)
 }
 
@@ -1495,8 +1501,8 @@ function repointStaleUntaggedMasters(projectJson) {
   }
 }
 
-async function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedSource = false } = {}) {
-  const out = buildNormalizedOutputPath(src, projectColorSpace, tonemapped)
+async function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedSource = false, sdrStretch = false } = {}) {
+  const out = buildNormalizedOutputPath(src, projectColorSpace, tonemapped, sdrStretch)
 
   // Idempotency cache: if the deterministic output already exists and is
   // fresher than the source, the previous render already paid the cost — skip

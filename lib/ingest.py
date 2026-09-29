@@ -144,7 +144,12 @@ def ingest_source(
                 is_hdr(detect_from_transfer(info.get("color_transfer")))
                 and color_space == "sdr_bt709"
             )
-            out = normalized_output_path(staged_src, color_space, tonemapped=tonemapped)
+            sdr_stretch = (
+                not is_hdr(detect_from_transfer(info.get("color_transfer")))
+                and is_hdr(color_space)
+            )
+            out = normalized_output_path(staged_src, color_space, tonemapped=tonemapped,
+                                         sdr_stretch=sdr_stretch)
             try:
                 normalize(staged_src, out, color_space, info=info)
                 clip["src"] = out

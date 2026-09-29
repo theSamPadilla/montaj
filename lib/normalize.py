@@ -50,6 +50,16 @@ output args ask for: measured on an untagged 1080p download, cloth patch
 158/50/102 came out 149/35/98. Mirrored by the segment encoder's untagged-video
 tag (montaj_assets/render/encode-segment.js)."""
 
+SDR_WHITE_NITS = 203
+"""Where SDR reference white lands in an HDR output, per ITU-R BT.2408 (203 nits;
+HLG Y10 721 and PQ Y10 572 for a white SDR frame). Twin: SDR_WHITE_NITS in
+montaj_assets/render/encode-segment.js — keep the two equal."""
+
+SDR_ORIGIN_MARKER = "montaj: converted from SDR source "
+"""Written (as the container `comment`, followed by the original's basename)
+into every SDR-to-HDR normalize output, so it can be told from camera HLG/PQ
+and its original recovered. Trailing space is part of the string."""
+
 UNTAGGED_MASTER_MARKER = "montaj: untagged source read as BT.709"
 """Written (as the container `comment`) into every SDR master of an untagged
 source built with UNTAGGED_AS_BT709_VF. A master of an untagged source WITHOUT
@@ -230,7 +240,8 @@ def is_normalized(path, info, project_color_space: ColorSpaceKey) -> bool:
     )
 
 
-def normalized_output_path(input_path: str, color_space: ColorSpaceKey, *, tonemapped: bool) -> str:
+def normalized_output_path(input_path: str, color_space: ColorSpaceKey, *, tonemapped: bool,
+                           sdr_stretch: bool = False) -> str:
     """Build the deterministic normalized-master output path for `input_path`.
 
     Base name is ``<stem>_normalized_<color_space>.mp4`` — namespaced per color
@@ -262,6 +273,11 @@ def normalized_output_path(input_path: str, color_space: ColorSpaceKey, *, tonem
     """
     stem = input_path.rsplit(".", 1)[0]
     look_suffix = f"_{MASTER_LOOK}" if tonemapped else ""
+    if sdr_stretch:
+        # SDR white moved from 100 to 203 nits (PV42): name apart from any old
+        # 100-nit master so render's mtime cache never reuses one. Twin:
+        # render.js buildNormalizedOutputPath.
+        look_suffix += "_w203"
     return f"{stem}_normalized_{color_space}{look_suffix}.mp4"
 
 
@@ -389,7 +405,7 @@ def _build_sdr_to_hdr_stretch(dst: ColorSpaceKey) -> str:
              f"Cannot convert SDR source into {dst} project: zscale (libzimg) is "
              f"required for HDR output. Run `montaj doctor` for installation steps.")
     transfer = "arib-std-b67" if dst == "hdr_hlg" else "smpte2084"
-    return f"zscale=t={transfer}:p=bt2020:m=bt2020nc"
+    return f"zscale=t={transfer}:p=bt2020:m=bt2020nc:npl={SDR_WHITE_NITS}"
 
 
 def _build_hdr_cross(src: ColorSpaceKey, dst: ColorSpaceKey) -> str:
@@ -442,10 +458,15 @@ def _build_ffmpeg_cmd(
     # An untagged source in an SDR project: see UNTAGGED_AS_BT709_VF. Keyed on
     # the probed transfer, the same field the rest of the pipeline reads colour
     # identity from (render.js stamps 'unknown' for an untagged file too).
-    untagged_as_bt709 = (
-        project_color_space == "sdr_bt709"
-        and info.get("color_transfer", "unknown") == "unknown"
+    src_untagged = info.get("color_transfer", "unknown") == "unknown"
+    sdr_to_hdr = (
+        project_color_space in ("hdr_hlg", "hdr_pq")
+        and not is_hdr(source_color_space)
     )
+    # Read as BT.709 for an SDR target (marked) and for an HDR target (the
+    # stretch's zscale needs a tagged input; the output is marked SDR_ORIGIN).
+    untagged_as_bt709 = src_untagged and (project_color_space == "sdr_bt709" or sdr_to_hdr)
+    untagged_master = src_untagged and project_color_space == "sdr_bt709"
 
     used_fallback_tonemap = False
     vf_parts: list[str] = []
@@ -495,7 +516,9 @@ def _build_ffmpeg_cmd(
         "-movflags", "+faststart",
         # The reuse check's proof that this master was built reading its
         # untagged source as BT.709 (see UNTAGGED_MASTER_MARKER).
-        *(["-metadata", f"comment={UNTAGGED_MASTER_MARKER}"] if untagged_as_bt709 else []),
+        *(["-metadata", f"comment={UNTAGGED_MASTER_MARKER}"] if untagged_master else []),
+        # An SDR-to-HDR output is otherwise indistinguishable from camera HDR.
+        *(["-metadata", f"comment={SDR_ORIGIN_MARKER}{os.path.basename(input_path)}"] if sdr_to_hdr else []),
         out_path,
     ]
     if not info["has_audio"]:
@@ -743,7 +766,13 @@ def main():
         and is_hdr(detect_from_transfer(info.get("color_transfer")))
         and args.color_space == "sdr_bt709"
     )
-    out = args.out or normalized_output_path(args.input, args.color_space, tonemapped=tonemapped)
+    sdr_stretch = (
+        info is not None
+        and not is_hdr(detect_from_transfer(info.get("color_transfer")))
+        and is_hdr(args.color_space)
+    )
+    out = args.out or normalized_output_path(args.input, args.color_space,
+                                             tonemapped=tonemapped, sdr_stretch=sdr_stretch)
     # CLI mode: print the result path so subprocess callers (e.g. render.js's
     # normalizeIfNeeded) can read it from stdout. The function itself returns
     # the path; only the CLI entry point prints, so library callers (init.py)

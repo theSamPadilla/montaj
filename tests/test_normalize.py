@@ -957,7 +957,6 @@ def test_untagged_sdr_source_is_read_as_bt709_and_marked():
     ("bt709", "sdr_bt709"),         # tagged SDR: nothing to guess
     ("smpte170m", "sdr_bt709"),     # tagged BT.601: ffmpeg converts it, correctly
     ("arib-std-b67", "sdr_bt709"),  # iPhone HLG: the Vivid master, unchanged
-    ("unknown", "hdr_hlg"),         # HDR projects are out of scope, unchanged
 ])
 def test_tagged_or_hdr_normalize_carries_no_tag_or_marker(monkeypatch, transfer, color_space):
     monkeypatch.setattr(nm, "_has_zscale", lambda: True)
@@ -966,6 +965,126 @@ def test_tagged_or_hdr_normalize_carries_no_tag_or_marker(monkeypatch, transfer,
     cmd, _ = nm._build_ffmpeg_cmd("in.mp4", "out.mp4", color_space, info)
     assert "setparams" not in _vf_from_cmd(cmd)
     assert "-metadata" not in cmd
+
+
+# ── SDR into HDR: untagged read as 709, white at 203 nits, marked origin ──────
+#
+# PV42. SDR white used to land at 100 nits in the HDR output (HLG Y10 616);
+# BT.2408 puts it at 203 nits (HLG Y10 721). An untagged SDR source into an HDR
+# project used to fail in libx265 ("Could not open encoder"). Every SDR-to-HDR
+# output carries SDR_ORIGIN_MARKER + the original's basename as its comment.
+
+
+def _zscale_on(monkeypatch):
+    monkeypatch.setattr(nm, "_has_zscale", lambda: True)
+
+
+@pytest.mark.parametrize("color_space,trc", [("hdr_hlg", "arib-std-b67"), ("hdr_pq", "smpte2084")])
+def test_untagged_sdr_into_hdr_reads_as_709_before_the_stretch(monkeypatch, color_space, trc):
+    _zscale_on(monkeypatch)
+    info = _minimal_info("unknown", codec="h264", pix_fmt="yuv420p")
+    cmd, _ = nm._build_ffmpeg_cmd("in.mp4", "out.mp4", color_space, info)
+    vf = _vf_from_cmd(cmd)
+    assert vf.startswith(nm.UNTAGGED_AS_BT709_VF + ",zscale=")
+    assert f"zscale=t={trc}:p=bt2020:m=bt2020nc:npl=203" in vf
+    i = cmd.index("-metadata")
+    assert cmd[i + 1] == f"comment={nm.SDR_ORIGIN_MARKER}in.mp4"
+    assert nm.UNTAGGED_MASTER_MARKER not in " ".join(cmd)
+
+
+def test_tagged_sdr_into_hdr_has_203_nit_white_and_no_setparams(monkeypatch):
+    _zscale_on(monkeypatch)
+    info = _minimal_info("bt709", codec="h264", pix_fmt="yuv420p")
+    cmd, _ = nm._build_ffmpeg_cmd("/a/clip.mp4", "out.mp4", "hdr_hlg", info)
+    vf = _vf_from_cmd(cmd)
+    assert "npl=203" in vf and "setparams" not in vf
+    i = cmd.index("-metadata")
+    assert cmd[i + 1] == f"comment={nm.SDR_ORIGIN_MARKER}clip.mp4"
+
+
+def test_hdr_source_carries_no_origin_marker(monkeypatch):
+    _zscale_on(monkeypatch)
+    info = _minimal_info("smpte2084")
+    cmd, _ = nm._build_ffmpeg_cmd("in.mp4", "out.mp4", "hdr_hlg", info)
+    assert "-metadata" not in cmd and "npl=" not in _vf_from_cmd(cmd)
+
+
+def _make_white_clip(path: Path, *, tagged=True):
+    """1 s of white, limited-range 709 (Y 235). Untagged: no colour tags at all."""
+    vf = "format=rgb24,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"
+    cmd = [nm.ffmpeg_bin(), "-y", "-v", "error", "-f", "lavfi", "-i",
+           "color=c=white:size=64x64:rate=30:duration=1", "-vf", vf,
+           "-c:v", "libx264", "-g", "30", "-pix_fmt", "yuv420p"]
+    if tagged:
+        cmd += ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+                "-bsf:v", "h264_metadata=transfer_characteristics=1:colour_primaries=1:matrix_coefficients=1"]
+    else:
+        cmd += ["-bsf:v", "h264_metadata=transfer_characteristics=2:colour_primaries=2:matrix_coefficients=2"]
+    subprocess.run(cmd + [str(path)], check=True, capture_output=True, timeout=60)
+
+
+def _y10_mean(path: Path) -> float:
+    raw = subprocess.run([
+        nm.ffmpeg_bin(), "-v", "error", "-i", str(path), "-frames:v", "1",
+        "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-",
+    ], capture_output=True, check=True, timeout=30).stdout
+    y = raw[: 64 * 64 * 2]
+    vals = [int.from_bytes(y[i:i + 2], "little") for i in range(0, len(y), 2)]
+    return sum(vals) / len(vals)
+
+
+def _format_comment(path: Path):
+    r = subprocess.run([nm.ffprobe_bin(), "-v", "quiet", "-show_entries", "format_tags=comment",
+                        "-of", "json", str(path)], capture_output=True, text=True, check=True)
+    return json.loads(r.stdout).get("format", {}).get("tags", {}).get("comment")
+
+
+def test_untagged_x264_clip_normalizes_into_hdr_hlg(tmp_path):
+    src = tmp_path / "untagged.mp4"
+    subprocess.run([
+        nm.ffmpeg_bin(), "-y", "-v", "error", "-f", "lavfi", "-i",
+        "testsrc2=size=320x180:rate=30:duration=1", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-g", "30", "-bsf:v",
+        "h264_metadata=transfer_characteristics=2:colour_primaries=2:matrix_coefficients=2",
+        str(src),
+    ], check=True, capture_output=True, timeout=60)
+    assert probe_video(str(src))["color_transfer"] == "unknown"
+    out = tmp_path / "untagged_normalized_hdr_hlg_w203.mp4"
+    normalize(str(src), str(out), "hdr_hlg")
+    assert out.exists()
+    assert _ffprobe_stream(out, "v").get("color_transfer") == "arib-std-b67"
+    assert _format_comment(out) == nm.SDR_ORIGIN_MARKER + "untagged.mp4"
+
+
+@pytest.mark.parametrize("tagged", [True, False])
+def test_hlg_white_lands_at_203_nits(tmp_path, tagged):
+    src = tmp_path / "white.mp4"
+    _make_white_clip(src, tagged=tagged)
+    out = tmp_path / "white_out.mp4"
+    normalize(str(src), str(out), "hdr_hlg")
+    y = _y10_mean(out)
+    print("HLG white Y10", y)
+    assert abs(y - 721) <= 2, y
+    assert _format_comment(out) == nm.SDR_ORIGIN_MARKER + "white.mp4"
+
+
+def test_pq_white_lands_at_203_nits(tmp_path):
+    """572 is computed from ST 2084 at 203 nits (64 + 876 x 0.580), not measured."""
+    src = tmp_path / "white.mp4"
+    _make_white_clip(src)
+    out = tmp_path / "white_pq.mp4"
+    normalize(str(src), str(out), "hdr_pq")
+    y = _y10_mean(out)
+    print("PQ white Y10", y)
+    assert abs(y - 572) <= 2, y
+
+
+def test_untagged_into_sdr_keeps_the_untagged_marker_only(tmp_path):
+    src = tmp_path / "white.mp4"
+    _make_white_clip(src, tagged=False)
+    out = tmp_path / "white_sdr.mp4"
+    normalize(str(src), str(out), "sdr_bt709")
+    assert _format_comment(out) == nm.UNTAGGED_MASTER_MARKER
 
 
 def _swatch_means_709(path: Path):

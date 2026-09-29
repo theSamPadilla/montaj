@@ -47,3 +47,13 @@ def test_strips_only_the_final_extension():
 def test_relative_input_path_is_preserved_relative():
     out = normalized_output_path("clip.mp4", "sdr_bt709", tonemapped=False)
     assert out == "clip_normalized_sdr_bt709.mp4"
+
+
+def test_w203_only_with_sdr_stretch():
+    """SDR white moved from 100 to 203 nits (PV42), so an SDR-into-HDR master
+    is named apart from any old 100-nit file and never reused."""
+    assert normalized_output_path("/v/c.mp4", "hdr_hlg", tonemapped=False, sdr_stretch=True) == "/v/c_normalized_hdr_hlg_w203.mp4"
+    assert normalized_output_path("/v/c.mp4", "hdr_pq", tonemapped=False, sdr_stretch=True) == "/v/c_normalized_hdr_pq_w203.mp4"
+    assert normalized_output_path("/v/c.mp4", "hdr_hlg", tonemapped=False) == "/v/c_normalized_hdr_hlg.mp4"
+    assert normalized_output_path("/v/c.mp4", "sdr_bt709", tonemapped=True) == f"/v/c_normalized_sdr_bt709_{MASTER_LOOK}.mp4"
+    assert normalized_output_path("/v/c.mp4", "sdr_bt709", tonemapped=False) == "/v/c_normalized_sdr_bt709.mp4"

@@ -231,3 +231,24 @@ def test_save_clip_to_project_accepts_a_project_with_no_tracks(tmp_path, monkeyp
     del project["tracks"]
     out = _save_clip(project, tmp_path, monkeypatch)
     assert out["tracks"] == [{"id": "trk-0", "items": [out["tracks"][0]["items"][0]]}]
+
+
+def test_sdr_clip_in_an_hdr_project_is_normalized_to_a_w203_master(tmp_path, monkeypatch):
+    """SDR white moved from 100 to 203 nits (PV42): the SDR-to-HDR master is
+    named `_w203` so no old 100-nit file is reused."""
+    import lib.ai_video as av
+
+    calls = []
+    monkeypatch.setattr(av, "probe_video", lambda p: {"color_transfer": "bt709"})
+    monkeypatch.setattr(av, "is_normalized", lambda p, info, cs: False)
+    monkeypatch.setattr(av, "normalize", lambda src, out, cs, info=None: calls.append((src, out, cs)))
+    monkeypatch.setattr(av, "get_duration", lambda p: 5.0)
+    monkeypatch.setattr(av, "save_project", lambda p, proj: None)
+    project = _storyboard_project([{"id": "trk-0", "items": []}])
+    project["settings"] = {"colorSpace": "hdr_hlg"}
+    scene = project["storyboard"]["scenes"][0]
+    av.save_clip_to_project(tmp_path / "project.json", project, scene,
+                            str(tmp_path / "out.mp4"), "a prompt")
+    out = str(tmp_path / "out_normalized_hdr_hlg_w203.mp4")
+    assert calls == [(str(tmp_path / "out.mp4"), out, "hdr_hlg")]
+    assert project["tracks"][0]["items"][0]["src"] == out

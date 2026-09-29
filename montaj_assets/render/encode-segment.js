@@ -268,13 +268,24 @@ export function buildVividLutChain(srcKey, sdrCurve = null) {
  * @param {object} [opts]
  * @param {string|null} [opts.sdrCurve]  curve id for the LUT; null → MASTER_LOOK.
  *   T7 threads `--sdr-curve` down to here for derived SDR renditions.
+ * @param {boolean} [opts.srcUntagged]  the SDR source carries no colour tags; the
+ *   SDR→HDR arm reads it as BT.709 first (twin of lib/normalize.py).
  * @param {boolean} [opts.hasLut3d]  defaults to the real probe, so a caller that
  *   forgets it gets a chain this ffmpeg can actually run rather than one naming
  *   a missing filter. Deterministic callers (dry-run) pass it explicitly.
  */
+/**
+ * Where SDR reference white lands in an HDR output, per ITU-R BT.2408 (203
+ * nits; HLG Y10 721, PQ Y10 572). Twin: SDR_WHITE_NITS in lib/normalize.py.
+ */
+export const SDR_WHITE_NITS = 203
+
+/** Twin of lib/normalize.py UNTAGGED_AS_BT709_VF. */
+const UNTAGGED_AS_BT709_VF = 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709'
+
 export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag, opts = {}) {
   if (srcKey === dstKey) return ''
-  const { sdrCurve = null, hasLut3d: hasLut3dFlag = hasLut3d() } = opts
+  const { sdrCurve = null, hasLut3d: hasLut3dFlag = hasLut3d(), srcUntagged = false } = opts
   // HDR → SDR
   if ((srcKey === 'hdr_hlg' || srcKey === 'hdr_pq') && dstKey === 'sdr_bt709') {
     if (hasZscaleFlag && hasLut3dFlag) {
@@ -290,7 +301,8 @@ export function buildColorConversionFilter(srcKey, dstKey, hasZscaleFlag, opts =
   // SDR → HDR
   if (srcKey === 'sdr_bt709' && (dstKey === 'hdr_hlg' || dstKey === 'hdr_pq')) {
     const dstTransfer = dstKey === 'hdr_hlg' ? 'arib-std-b67' : 'smpte2084'
-    return `zscale=t=${dstTransfer}:p=bt2020:m=bt2020nc`
+    const stretch = `zscale=t=${dstTransfer}:p=bt2020:m=bt2020nc:npl=${SDR_WHITE_NITS}`
+    return srcUntagged ? `${UNTAGGED_AS_BT709_VF},${stretch}` : stretch
   }
   // HDR ↔ HDR
   if ((srcKey === 'hdr_hlg' || srcKey === 'hdr_pq')
@@ -759,7 +771,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const conversionFilter = skipConversionForAlpha
     ? ''
     : buildColorConversionFilter(itemColorSpace, projectColorSpace, zscaleAvailable,
-        { sdrCurve, hasLut3d: lut3dAvailable })
+        { sdrCurve, hasLut3d: lut3dAvailable, srcUntagged: item.colorTransfer === 'unknown' })
   // An HDR→SDR grade ends pinned to yuv420p, as derive-sdr.js and
   // lib/normalize.py already pin it, so the Vivid chain's own last zscale
   // (m=bt709:r=tv) does the RGB→YUV step and the 4:2:0 subsampling, exactly as

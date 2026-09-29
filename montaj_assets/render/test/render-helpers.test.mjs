@@ -581,6 +581,21 @@ test('buildNormalizedOutputPath: preserves directory and swaps only the trailing
   assert.equal(out, `/a/b/c/my.clip_normalized_sdr_bt709_${MASTER_LOOK}.mp4`)
 })
 
+test('buildNormalizedOutputPath: _w203 only when sdrStretch (SDR white at 203 nits, PV42)', () => {
+  assert.equal(
+    buildNormalizedOutputPath('/videos/clip.mp4', 'hdr_hlg', false, true),
+    '/videos/clip_normalized_hdr_hlg_w203.mp4'
+  )
+  assert.equal(
+    buildNormalizedOutputPath('/videos/clip.mp4', 'hdr_pq', false, true),
+    '/videos/clip_normalized_hdr_pq_w203.mp4'
+  )
+  assert.equal(buildNormalizedOutputPath('/videos/clip.mp4', 'hdr_hlg', false, false),
+    '/videos/clip_normalized_hdr_hlg.mp4')
+  assert.equal(buildNormalizedOutputPath('/videos/clip.mp4', 'hdr_hlg', false),
+    '/videos/clip_normalized_hdr_hlg.mp4')
+})
+
 // ── Skipped tracks ──────────────────────────────────────────────────────────
 // A track with `enabled: false` must be absent from the export: no picture, no
 // audio, and not counted toward the project's length. These drive the exported

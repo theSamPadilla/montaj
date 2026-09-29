@@ -139,7 +139,8 @@ def _write(project_dir: Path, project: dict) -> None:
 
 
 def _converted(src: Path) -> str:
-    return normalized_output_path(str(src), "hdr_hlg", tonemapped=False)
+    # SDR source in an HLG project: the _w203 name (SDR white at 203 nits).
+    return normalized_output_path(str(src), "hdr_hlg", tonemapped=False, sdr_stretch=True)
 
 
 async def _settle() -> None:
@@ -337,4 +338,6 @@ def test_render_conforms_inline_to_the_same_path():
     assert "const normalizedPath = await normalizeIfNeeded(item.src, projectColorSpace, tonemapped," in render_js
     assert "return settings.normalize === 'lazy' && !!item.normalizedSrc" in render_js
     assert "`_normalized_${projectColorSpace}${lookSuffix}.mp4`" in render_js
-    assert normalized_output_path("/a/clip.MOV", "hdr_hlg", tonemapped=False) == "/a/clip_normalized_hdr_hlg.mp4"
+    # The SDR-to-HDR name carries `_w203`; render.js appends it from sdrStretch.
+    assert "_w203" in render_js
+    assert normalized_output_path("/a/clip.MOV", "hdr_hlg", tonemapped=False, sdr_stretch=True) == "/a/clip_normalized_hdr_hlg_w203.mp4"

@@ -32,7 +32,13 @@ def handle(args):
         and is_hdr(detect_from_transfer(info.get("color_transfer")))
         and args.color_space == "sdr_bt709"
     )
-    out = args.out or normalized_output_path(args.input, args.color_space, tonemapped=tonemapped)
+    sdr_stretch = (
+        info is not None
+        and not is_hdr(detect_from_transfer(info.get("color_transfer")))
+        and is_hdr(args.color_space)
+    )
+    out = args.out or normalized_output_path(args.input, args.color_space,
+                                             tonemapped=tonemapped, sdr_stretch=sdr_stretch)
 
     result = normalize(args.input, out, args.color_space, info=info)
     print(result)

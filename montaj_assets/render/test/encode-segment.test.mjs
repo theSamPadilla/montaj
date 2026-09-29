@@ -604,12 +604,25 @@ test('non-HDR→SDR conversions are untouched by the LUT migration', () => {
   // SP6b only replaced the tone-map arm. The stretch and cross arms must still
   // emit exactly what they always did — nothing here goes through a cube.
   assert.equal(buildColorConversionFilter('sdr_bt709', 'hdr_hlg', true),
-    'zscale=t=arib-std-b67:p=bt2020:m=bt2020nc')
+    'zscale=t=arib-std-b67:p=bt2020:m=bt2020nc:npl=203')
   assert.equal(buildColorConversionFilter('sdr_bt709', 'hdr_pq', true),
-    'zscale=t=smpte2084:p=bt2020:m=bt2020nc')
+    'zscale=t=smpte2084:p=bt2020:m=bt2020nc:npl=203')
   assert.equal(buildColorConversionFilter('hdr_hlg', 'hdr_pq', true), 'zscale=t=smpte2084')
   assert.equal(buildColorConversionFilter('hdr_pq', 'hdr_hlg', true), 'zscale=t=arib-std-b67')
   assert.equal(buildColorConversionFilter('sdr_bt709', 'sdr_bt709', true), '')
+})
+
+test('SDR→HDR: an untagged source is read as BT.709 before the stretch (PV42)', () => {
+  // Twin of lib/normalize.py UNTAGGED_AS_BT709_VF. SDR white sits at 203 nits
+  // (BT.2408), twin of SDR_WHITE_NITS.
+  const setparams = 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709'
+  assert.equal(buildColorConversionFilter('sdr_bt709', 'hdr_hlg', true, { srcUntagged: true }),
+    `${setparams},zscale=t=arib-std-b67:p=bt2020:m=bt2020nc:npl=203`)
+  assert.equal(buildColorConversionFilter('sdr_bt709', 'hdr_pq', true, { srcUntagged: true }),
+    `${setparams},zscale=t=smpte2084:p=bt2020:m=bt2020nc:npl=203`)
+  // Only the SDR→HDR arm: the other arms and the flag's absence are unchanged.
+  assert.ok(!buildColorConversionFilter('sdr_bt709', 'hdr_hlg', true, { srcUntagged: false }).includes('setparams'))
+  assert.equal(buildColorConversionFilter('hdr_hlg', 'hdr_pq', true, { srcUntagged: true }), 'zscale=t=smpte2084')
 })
 
 // ---------------------------------------------------------------------------

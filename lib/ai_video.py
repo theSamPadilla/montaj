@@ -263,7 +263,12 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
             is_hdr(detect_from_transfer(info.get("color_transfer")))
             and project_color_space == "sdr_bt709"
         )
-        normalized_path = normalized_output_path(out_path, project_color_space, tonemapped=tonemapped)
+        sdr_stretch = (
+            not is_hdr(detect_from_transfer(info.get("color_transfer")))
+            and is_hdr(project_color_space)
+        )
+        normalized_path = normalized_output_path(out_path, project_color_space,
+                                                 tonemapped=tonemapped, sdr_stretch=sdr_stretch)
         try:
             normalize(out_path, normalized_path, project_color_space, info=info)
             clip["src"] = normalized_path
