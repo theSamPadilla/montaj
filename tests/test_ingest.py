@@ -165,6 +165,9 @@ def test_eager_hdr_into_sdr_transcodes_with_tonemapped_master(tmp_path, monkeypa
     info = _hdr_info("arib-std-b67")
     monkeypatch.setattr(ing, "probe_video", lambda _p: info)
     monkeypatch.setattr(ing, "get_duration", lambda _p: 5.0)
+    # The master normalize writes is SDR (it was tonemapped), so its proxy is
+    # not graded. The stub bytes cannot be probed (PV57: that now raises).
+    _provenance_probes(monkeypatch, default="bt709")
 
     normalize_calls = []
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import JSONResponse
 
+from lib.color_provenance import ProbeError, is_probe_retryable
 from lib.credentials import CredentialError, build_env_overlay
 from serve.common import (
     MONTAJ_ROOT,
@@ -444,6 +445,30 @@ async def run_normalize_job(job_id: str, input_path: str, color_space: str, *, o
         set_error(job_id, {"error": "normalize_failed", "message": str(e)})
 
 
+def probe_failed_body(e: ProbeError) -> dict:
+    """The named error for a file that exists and that ffprobe could not read
+    (PV57): the serve error envelope (`error`, `message`) plus the file, the
+    failure kind, ffprobe's own words and whether a retry can help
+    (lib.color_provenance.is_probe_retryable — the one place that decides
+    this, PV57 review; a 'spawn' failure is retryable UNLESS it is ENOENT, no
+    ffprobe binary at all, which is an operator problem no retry fixes). One
+    shape for an HTTP error's detail, a failed job and a skipped item in a
+    batch."""
+    return {"error": "probe_failed", "message": str(e), "path": e.path, "reason": e.reason,
+            "detail": e.detail, "retryable": is_probe_retryable(e)}
+
+
+def probe_failed_error(e: ProbeError) -> HTTPException:
+    """probe_failed_body as an HTTPException. 503 when a retry can help, so a
+    client may retry; 422 when it cannot, since the same file fails the same
+    way (including ENOENT: no ffprobe at all needs an operator, not a retry).
+    Not the 504 that run_subprocess uses for a timeout: that is the request's
+    own operation running out of time, while here the request is fine and a
+    dependency was briefly unavailable. Never a 500."""
+    body = probe_failed_body(e)
+    return HTTPException(503 if body["retryable"] else 422, detail=body)
+
+
 async def _run_proxy_to_job(job_id: str, schema: dict, py_path: Path, body: dict, *, timeout: int = STEP_TIMEOUT_S) -> None:
     """Background driver for /api/proxy: run the proxy step and record its
     result/error on the job — same shape as _run_to_job, plus a `skipped:
@@ -500,7 +525,15 @@ async def proxy_video(body: dict = Body(...)):
     source = input_path  # the file the proxy is encoded from (run_proxy_job's rule)
     if tonemap is None:
         from lib.color_provenance import proxy_source_for
-        source, _ = await asyncio.to_thread(proxy_source_for, input_path)
+        try:
+            source, _ = await asyncio.to_thread(proxy_source_for, input_path)
+        except ProbeError as e:
+            # The input, or the original its marker names, exists and could not
+            # be read, so which file to encode and whether to grade it are both
+            # unknown (PV57). No proxy, rather than one graded on a guess and
+            # then kept (proxies are fresh by mtime alone): a named error, 503
+            # or 422 by whether a retry can help (probe_failed_error).
+            raise probe_failed_error(e)
 
     out = body.get("out") or proxy_path_for(source)
 
@@ -562,6 +595,13 @@ async def run_proxy_job(job_id: str, input_path: str, *, out: str, tonemap: bool
             proxy_timeout = max(STEP_TIMEOUT_S, int(get_duration(step_body["input"]) * 3))
         except (Exception, SystemExit):
             proxy_timeout = STEP_TIMEOUT_S
+    except ProbeError as e:
+        # The grade is unknown (PV57): no encode, and the job fails with the
+        # same named error as the route, naming the file and the reason. A
+        # look-migration unit that fails this way writes nothing back, so no
+        # item is pointed at a proxy graded on a guess.
+        set_error(job_id, probe_failed_body(e))
+        return
     except HTTPException as e:
         set_error(job_id, e.detail)
         return

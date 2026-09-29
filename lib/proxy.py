@@ -65,6 +65,19 @@ recolored when the proxy encoder changes). A separate tag is the honest
 mechanism — bump PROXY_FORMAT alone and only proxies get invalidated."""
 
 
+PROXY_GRADE_TAG = "montaj_proxy_grade"
+"""Container tag every new proxy carries, saying which arm built it: PROXY_LOOK
+(the Vivid LUT grade), "fallback" (the bare tonemap used when zscale is
+missing) or "none" (the plain arm, no grade). The file name cannot say it:
+every proxy is `_proxy_<PROXY_LOOK>_<PROXY_FORMAT>` whatever its grade, the
+name is its identity (serve's look migration matches on it, and a new name
+would re-encode every user's proxies), and freshness is by mtime alone. So a
+proxy graded on a wrong answer was undetectable (PV57); with the tag, the next
+one is. Nothing reads it yet. A custom key needs `-movflags
++use_metadata_tags`, or the mp4 muxer drops it; `comment` is left alone,
+since a normalized input's SDR_ORIGIN_MARKER is copied there."""
+
+
 def _workspace_root() -> str:
     """Global workspace root: MONTAJ_WORKSPACE_DIR env var > ~/.montaj/config.json's
     workspaceDir > ~/Montaj. Mirrors project/init.py / cli/commands/clean.py's
@@ -188,12 +201,15 @@ def _build_proxy_cmd(input_path: str, out_path: str, *, tonemap: bool, info: dic
     ]
     if not info.get("has_audio", True):
         cmd += ["-f", "lavfi", "-i", "anullsrc=cl=stereo:r=48000", "-shortest"]
+    grade = ("fallback" if used_fallback_tonemap else PROXY_LOOK) if tonemap else "none"
     cmd += [
         "-vf", vf,
         *untagged_color_args,
         "-c:v", "libx264", "-crf", "20", "-preset", "veryfast", "-g", "1",
         "-c:a", "libopus", "-b:a", "96k",
-        "-movflags", "+faststart",
+        # The arm that actually ran, after the not-HDR downgrade above.
+        "-metadata", f"{PROXY_GRADE_TAG}={grade}",
+        "-movflags", "+faststart+use_metadata_tags",
         out_path,
     ]
 

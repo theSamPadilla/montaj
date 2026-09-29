@@ -39,6 +39,19 @@ def _clean_state():
     projects_mod._look_migration_worker = None
 
 
+@pytest.fixture
+def provenance_reads(monkeypatch):
+    """The provenance probe (lib.color_provenance) reads each stub clip as
+    itself, SDR with no marker, so its proxy is encoded from `src`. The tests
+    on stub bytes are about look migration, not provenance. Before PV57 a
+    failed probe of the stub bytes gave this answer by accident; it now raises,
+    as it must, and tests/test_probe_failed_callers.py covers that. Not autouse:
+    the marked_media tests below probe real files."""
+    import lib.color_provenance as cp
+
+    monkeypatch.setattr(cp, "probe_media", lambda path, **_: cp.Probe("bt709", "", 1920, 1080, "30/1", 5.0))
+
+
 # ---------------------------------------------------------------------------
 # Fixture project + mocks
 # ---------------------------------------------------------------------------
@@ -85,7 +98,7 @@ def encodes(monkeypatch) -> _Encodes:
 
 
 @pytest.fixture
-def probe_hdr(monkeypatch):
+def probe_hdr(monkeypatch, provenance_reads):
     """Every source probes as HLG unless the test overrides the mapping."""
     import lib.normalize as normalize_mod
 
@@ -543,7 +556,7 @@ def test_failed_encode_leaves_field_cleared(workspace, encodes, probe_hdr, monke
     assert "proxySrc" not in _item(_read(project_dir))
 
 
-def test_concurrent_write_during_probe_is_not_clobbered(workspace, encodes, monkeypatch):
+def test_concurrent_write_during_probe_is_not_clobbered(workspace, encodes, provenance_reads, monkeypatch):
     """The probe pass is the one await inside the open-time migration, so a PUT
     can land in that window. The commit re-reads instead of dumping the dict it
     read before the probe — otherwise it would silently revert that PUT."""
@@ -751,7 +764,7 @@ def test_ensure_current_proxies_names_a_marked_src_proxy_after_its_original(work
         await _settle()
         return result
 
-    assert asyncio.run(_run()) == {"scheduled": 1, "alreadyFresh": 0}
+    assert asyncio.run(_run()) == {"scheduled": 1, "alreadyFresh": 0, "probeFailed": []}
     real = os.path.realpath(original)
     assert encodes.proxy == [(real, proxy_path_for(real))]
     project = _read(project_dir)

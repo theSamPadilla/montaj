@@ -24,10 +24,10 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
-from common import get_duration
+from common import get_duration, progress
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types...` works
-from lib.color_provenance import proxy_source_for
+from lib.color_provenance import ProbeError, proxy_source_for
 from lib.normalize import probe_video, is_normalized, normalized_output_path, normalize
 from lib.proxy import proxy_path_for, is_proxy_fresh, make_proxy
 from lib.types.colorspace import detect_from_transfer, is_hdr, require_valid_key
@@ -115,7 +115,8 @@ def ingest_source(
     the container carried a `creation_time` tag; ``proxySrc`` only when a
     proxy was generated (or an already-fresh one adopted). Transcode/proxy
     failures never raise — they fall back to the staged source and no proxy,
-    mirroring init.
+    mirroring init. So does a clip whose provenance ffprobe could not read
+    (ProbeError): it is imported without a proxy, and the failure is logged.
     """
     require_valid_key(color_space)
 
@@ -180,7 +181,17 @@ def ingest_source(
         # from its original. The proxy is named after the file it reads.
         # Lazy encodes from the realpath so symlinked fan-out children converge
         # on one shared proxy (init's lazy-arm contract).
-        proxy_src, proxy_tonemap = proxy_source_for(clip["src"])
+        try:
+            proxy_src, proxy_tonemap = proxy_source_for(clip["src"])
+        except ProbeError as e:
+            # The clip, or the original its marker names, exists and could not
+            # be read (PV57): which file the proxy comes from and its grade are
+            # unknown. The import is kept and only its proxy is skipped, logged
+            # with the file and the reason like init's own proxy failure. A
+            # later proxy pass (serve's "Generate previews") makes it once the
+            # file reads; a proxy made now would be kept until its source changes.
+            progress(f"ingest: no proxy for {os.path.basename(clip['src'])}: {e}")
+            return clip
         if normalize_mode == "lazy":
             proxy_src = os.path.realpath(proxy_src)
         proxy_out = proxy_path_for(proxy_src)

@@ -7,7 +7,24 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from cli.output import emit_error
 from cli.deps import render_runtime_dir
 from cli.main import MONTAJ_ROOT as _MONTAJ_ROOT
-from lib.common import node_child_env
+from lib.common import node_child_env, progress
+
+
+def _log_probe_failures(healed) -> None:
+    """One render-log line per file the heal could not read (PV57): the file,
+    the reason, and whether it is `blocking`, i.e. whether a clip was left as
+    it is because of it (it then keeps its look in this render and is looked
+    at again next time). A user whose clip does not heal can see which file
+    matters. Never raises: the heal never stops a render, nor does its report."""
+    try:
+        for f in (healed or {}).get("probeFailed") or []:
+            if f.get("blocking"):
+                what = f"blocking: {f.get('src') or f['path']} is left as it is until this file reads"
+            else:
+                what = "not blocking: nothing was left undone because of it"
+            progress(f"colour provenance: could not read {f['path']} ({f['reason']}: {f['detail']}); {what}")
+    except Exception:
+        pass
 
 
 def main(project_path=None, out=None, workers=None, clean=False, scale=None, montaj_root=None, image_tone=None,
@@ -39,7 +56,8 @@ def main(project_path=None, out=None, workers=None, clean=False, scale=None, mon
         # PV42, so the export grades each layer by its origin. Never raises.
         if project_path and os.path.basename(project_path) == "project.json":
             from lib.color_provenance import ensure_color_provenance
-            ensure_color_provenance(os.path.dirname(os.path.abspath(project_path)))
+            healed = ensure_color_provenance(os.path.dirname(os.path.abspath(project_path)))
+            _log_probe_failures(healed)
         render_js = os.path.join(render_dir, "render.js")
         cmd = ["node", render_js]
         if project_path: cmd.append(project_path)

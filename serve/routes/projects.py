@@ -12,6 +12,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -437,14 +438,21 @@ async def _run_ingest_detached(
         job.phase = "queueing proxy"
         try:
             await _warm_proxy_inputs(_video_srcs(project))
-            queued = _ensure_current_proxies(
-                project_id, Path(project_dir), project, broadcaster
-            )["scheduled"]
+            swept = _ensure_current_proxies(project_id, Path(project_dir), project, broadcaster)
+            queued = swept["scheduled"]
             # `queued` counts every un-proxied item in the project, not just the
             # one just ingested: _ensure_current_proxies sweeps the whole thing,
             # so adding one clip to an AV1-era project legitimately starts many
             # encodes. Say the real number rather than implying it was one.
-            log(f"[ingest] {queued} proxy encode(s) queued" if queued else "[ingest] no proxy needed")
+            # A clip skipped because it could not be read (PV57) is not "no
+            # proxy needed": that case keeps the line it had before the skip
+            # existed, when the ProbeError reached the except below.
+            if queued:
+                log(f"[ingest] {queued} proxy encode(s) queued")
+            elif swept.get("probeFailed"):
+                log("[ingest] proxy could not be queued")
+            else:
+                log("[ingest] no proxy needed")
         except Exception:
             log("[ingest] proxy could not be queued")
 
@@ -1296,9 +1304,23 @@ def _proxy_items_for(project_path: Path, out: str, path: str) -> list[tuple]:
             if proxy_path_for(_proxy_input_for(src)) != out:
                 continue
         except Exception:
+            # Including ProbeError (PV57): an item whose provenance cannot be
+            # read is not pointed at this proxy, which may be the wrong grade
+            # for it. Its own pass reports it and retries.
             continue
         edits.append((item.get("id"), src, "proxySrc", path))
     return edits
+
+
+_PROBE_FAILURE_HOLD_S = 10.0
+_probe_failures_held: dict[str, tuple[float, "Exception"]] = {}
+"""src -> (monotonic time, ProbeError) for `_proxy_input_for`. The probe cache
+keeps successes only (lib.color_provenance: failures are retried), so without
+this the synchronous pass after `_warm_proxy_inputs` would probe a failed file
+again ON the event loop, and a timeout there blocks serve for PROBE_TIMEOUT_S
+twice over (two tries) per call, and per item when a track item and its
+`sources` twin share the file. Held for a few seconds only: the next
+operation asks ffprobe again."""
 
 
 def _proxy_input_for(src: str) -> str:
@@ -1308,31 +1330,110 @@ def _proxy_input_for(src: str) -> str:
     SDR-origin conversion's proxy comes from its original, anything else's
     from `src`. realpath so every child of a shared lazy source names, and
     races on, the one proxy that serves them all (project/init.py's lazy arm
-    does the same). Probes are cached per (file, mtime)."""
-    from lib.color_provenance import proxy_source_for
+    does the same). Probes are cached per (file, mtime).
 
-    return os.path.realpath(proxy_source_for(src)[0])
+    Raises ProbeError when `src`, or the original its marker names, exists and
+    cannot be read (PV57): which file the proxy comes from, and its grade, are
+    then unknown. Every caller skips that item, so no proxy is written or
+    adopted for it on a guess. A failure is held for _PROBE_FAILURE_HOLD_S."""
+    from lib.color_provenance import ProbeError, proxy_source_for
+
+    held = _probe_failures_held.get(src)
+    if held is not None:
+        if time.monotonic() - held[0] < _PROBE_FAILURE_HOLD_S:
+            e = held[1]
+            raise ProbeError(e.path, e.reason, e.detail, getattr(e, "errno", None))
+        _probe_failures_held.pop(src, None)
+    try:
+        return os.path.realpath(proxy_source_for(src)[0])
+    except ProbeError as e:
+        _hold_probe_failure(src, e)
+        raise
+
+
+def _hold_probe_failure(src: str, e: "Exception") -> None:
+    if len(_probe_failures_held) >= 1024:
+        _probe_failures_held.clear()
+    _probe_failures_held[src] = (time.monotonic(), e)
 
 
 async def _warm_proxy_inputs(srcs) -> None:
     """Resolve `_proxy_input_for` for each of `srcs` off the event loop, a few
     at a time, so the synchronous calls that follow hit the probe cache instead
     of blocking the loop (one ffprobe is about 0.1 s on a phone clip). Never
-    raises: a miss only means the later call probes."""
+    raises: a miss only means the later call probes. A FRESH failure is held
+    from when the whole warm ends, not from when its own probe failed, so a
+    long warm cannot outlast the hold before the pass that follows.
+
+    A failure only READ from an existing hold (no fresh probe: `_proxy_input_for`
+    itself raised the cached error without asking ffprobe again) must NOT be
+    re-held here. The old code re-held every failure it saw either way, so
+    steady activity (a warm every few seconds, well inside the hold) kept
+    re-stamping the same hold's expiry to "now" and a file that had become
+    readable again stayed skipped forever (PV57 review) — the earlier fix
+    made this cheap in the first place, but cheap-and-wrong is still wrong.
+    `before`/`is not` tells the two apart: `_hold_probe_failure` always stores
+    a fresh `(time, error)` tuple, a new object, so an entry that is still the
+    SAME object after the warm was a cache hit, not a new failure."""
     from concurrent.futures import ThreadPoolExecutor
+    from lib.color_provenance import ProbeError
 
     srcs = sorted({s for s in srcs if isinstance(s, str) and os.path.isabs(s)})
     if not srcs:
         return
+    before = {s: _probe_failures_held.get(s) for s in srcs}
+    failed: dict[str, Exception] = {}
+
+    def _one(src: str) -> None:
+        try:
+            _proxy_input_for(src)
+        except ProbeError as e:
+            failed[src] = e  # one unreadable file must not stop the others warming
 
     def _resolve() -> None:
         with ThreadPoolExecutor(max_workers=min(8, len(srcs))) as pool:
-            list(pool.map(_proxy_input_for, srcs))
+            list(pool.map(_one, srcs))
 
     try:
         await asyncio.to_thread(_resolve)
     except Exception:
         pass
+    for src, e in failed.items():
+        if _probe_failures_held.get(src) is before[src]:
+            continue  # a cache hit inside this warm, not a fresh failure: do not renew its expiry
+        _hold_probe_failure(src, e)
+
+
+def _probe_failure_entry(src: str, e: "Exception") -> dict:
+    """A skipped item's record: the named error (serve.routes.steps.probe_failed_body)
+    plus the item `src` whose proxy was skipped. `path` is the file that could
+    not be read: `src`, or the original its marker names."""
+    from serve.routes.steps import probe_failed_body
+
+    return {**probe_failed_body(e), "src": src}
+
+
+def _report_probe_failures(project_id: str, broadcaster: "SSEBroadcaster | None", op: str,
+                           failures: list[dict], *, log: bool = True) -> None:
+    """Surface the files an operation over a project's items could not read
+    (PV57): one server-log line, and an `event: probe-failed` SSE frame,
+    `{"op": op, "failures": [...]}`, each entry naming at least `path`,
+    `reason`, `detail` and `src`. The frame is a named event on purpose: the
+    app's EventSource has no listener for it, so nothing a user sees changes
+    until a UI reads it, and the `log` event (which the app shows) stays as it
+    is. It reaches only clients already subscribed; it is not replayed."""
+    if not failures:
+        return
+    if log:
+        named = ", ".join(dict.fromkeys(f"{f['path']} ({f['reason']})" for f in failures))
+        print(f"[montaj] {op}: could not read {len(failures)} file(s), their items left as they are: {named}",
+              file=sys.stderr, flush=True)
+    if broadcaster is not None:
+        try:
+            broadcaster.publish(
+                project_id, f"event: probe-failed\ndata: {json.dumps({'op': op, 'failures': failures})}\n\n")
+        except Exception:
+            pass
 
 
 def _video_srcs(project: dict) -> list[str]:
@@ -1652,6 +1753,7 @@ async def _migrate_project_look(
     project: dict,
     broadcaster: "SSEBroadcaster | None",
 ) -> dict | None:
+    from lib.color_provenance import ProbeError
     from lib.normalize import normalized_output_path, probe_video
     from lib.proxy import PROXY_FORMAT, PROXY_LOOK, is_proxy_fresh, proxy_path_for
     from lib.types.colorspace import DEFAULT_COLOR_SPACE, detect_from_transfer, is_hdr
@@ -1743,6 +1845,18 @@ async def _migrate_project_look(
     # collapse to ONE edit and ONE encode instead of doing everything twice.
     units: dict[tuple, _LookMigrationUnit] = {}
     edits: dict[tuple, str | None] = {}
+    probe_failed: dict[str, dict] = {}
+
+    def _input_for(item: dict) -> str | None:
+        # An item whose provenance cannot be read (PV57) is skipped: its
+        # pointer is neither cleared, repointed nor queued, so it is never
+        # pointed at a proxy made or picked on a guess, and the next open looks
+        # again. The others carry on, and the skip is reported below.
+        try:
+            return _proxy_input_for(item["src"])
+        except ProbeError as e:
+            probe_failed.setdefault(item["src"], _probe_failure_entry(item["src"], e))
+            return None
 
     def _schedule(kind: str, key: tuple, src: str, out: str) -> None:
         edits[key] = None  # clear the pointer; the write-back repoints it
@@ -1758,7 +1872,9 @@ async def _migrate_project_look(
             continue
         # The file the proxy is encoded from (the item's provenance), as a
         # realpath: see _proxy_input_for.
-        real_in = _proxy_input_for(item["src"])
+        real_in = _input_for(item)
+        if real_in is None:
+            continue
         out = proxy_path_for(real_in)
         if is_proxy_fresh(out, real_in):
             edits[key] = out  # already encoded — just repoint
@@ -1769,7 +1885,9 @@ async def _migrate_project_look(
         key = (item.get("id"), item["src"], "proxySrc")
         if key in edits:
             continue
-        real_in = _proxy_input_for(item["src"])
+        real_in = _input_for(item)
+        if real_in is None:
+            continue
         out = proxy_path_for(real_in)
         if is_proxy_fresh(out, real_in):
             edits[key] = out
@@ -1806,6 +1924,9 @@ async def _migrate_project_look(
             continue  # already queued/running — this open only added targets
         _look_migration_enqueue(unit)
 
+    # The open's response is the project itself, so the skips go to the log
+    # and the probe-failed event (see _report_probe_failures).
+    _report_probe_failures(project_id, broadcaster, "look migration", list(probe_failed.values()))
     return result[0] if result is not None else None
 
 
@@ -1854,6 +1975,15 @@ async def _ensure_project_color_provenance(
         return None  # SDR: no probe, no thread
     async with _color_provenance_locks.setdefault(str(project_dir), asyncio.Lock()):
         plan = await asyncio.to_thread(plan_color_provenance, project_dir)
+        # Files the heal could not read (PV57), each {pass, id, src, path,
+        # reason, detail, blocking}: what depends on a `blocking` one was left
+        # as it is and is looked at again next time. This returns the project
+        # itself, so they go out as the probe-failed event, before the early
+        # return below, since a heal that only deferred has nothing to write.
+        # No second log line: the plan already logged one (`colour provenance:
+        # could not read ...`).
+        _report_probe_failures(project_id, broadcaster, "colour provenance",
+                               plan.get("probeFailed") or [], log=False)
         if not plan["edits"] and not plan["settings"]:
             return None
         if plan["edits"]:
@@ -1903,15 +2033,25 @@ def _ensure_current_proxies(
         `proxySrc`: a manual action's counts must only ever go DOWN, so the old
         pointer survives until the fresh encode lands and repoints it.
 
+    An item whose provenance cannot be read (ProbeError, PV57) is skipped: no
+    encode is queued for it, its `proxySrc` is left as it is, and it counts
+    toward neither number. The rest carry on. Each unreadable source is listed
+    once in `probeFailed` (the named error of
+    serve.routes.steps.probe_failed_body, plus the item `src`) and reported
+    (`_report_probe_failures`). A later pass (this one again: "Generate
+    previews", a save that changes the item) makes the proxy once it reads.
+
     Never awaits an encode — the background queue delivers write-backs over SSE.
-    Returns `{"scheduled": N, "alreadyFresh": M}`, both counts of unique sources.
+    Returns `{"scheduled": N, "alreadyFresh": M, "probeFailed": [...]}`, both
+    counts of unique sources.
     """
+    from lib.color_provenance import ProbeError
     from lib.proxy import is_proxy_fresh, proxy_path_for
     from lib.types.colorspace import DEFAULT_COLOR_SPACE
 
     settings = project.get("settings") or {}
     if settings.get("proxy") is False:
-        return {"scheduled": 0, "alreadyFresh": 0}
+        return {"scheduled": 0, "alreadyFresh": 0, "probeFailed": []}
     color_space = settings.get("colorSpace") or DEFAULT_COLOR_SPACE
 
     # Group every present, absolute-sourced video item by the ONE proxy path it
@@ -1920,11 +2060,21 @@ def _ensure_current_proxies(
     # to one).
     by_out: dict[str, list[dict]] = {}
     real_by_out: dict[str, str] = {}
+    probe_failed: dict[str, dict] = {}
     for item in _look_migration_items(project):
         src = item["src"]
         if not (os.path.isabs(src) and os.path.isfile(src)):
             continue
-        real_in = _proxy_input_for(src)
+        if src in probe_failed:
+            continue  # its twin (the `sources` entry, a split) already failed
+        try:
+            real_in = _proxy_input_for(src)
+        except ProbeError as e:
+            # Unknown input and grade: skip this item rather than encode or
+            # adopt a proxy on a guess, which would then be kept until its
+            # source changes (proxies are fresh by mtime alone).
+            probe_failed[src] = _probe_failure_entry(src, e)
+            continue
         out = proxy_path_for(real_in)
         by_out.setdefault(out, []).append(item)
         real_by_out[out] = real_in
@@ -1965,7 +2115,9 @@ def _ensure_current_proxies(
             continue  # already queued/running — this trigger only added targets
         _look_migration_enqueue(unit)
 
-    return {"scheduled": scheduled, "alreadyFresh": already_fresh}
+    failures = list(probe_failed.values())
+    _report_probe_failures(project_id, broadcaster, "proxies", failures)
+    return {"scheduled": scheduled, "alreadyFresh": already_fresh, "probeFailed": failures}
 
 
 @router.post("/projects/{project_id}/proxies")
@@ -1974,14 +2126,19 @@ async def ensure_project_proxies(project_id: str, request: Request, project_dir:
     migration of pre-proxy projects). Reuses the look-migration queue: nothing
     is encoded in the request — units are queued and land in project.json over
     SSE as they finish. 202 when work was queued, 200 when everything was
-    already fresh. Best-effort: housekeeping never 500s the caller."""
+    already fresh. Best-effort: housekeeping never 500s the caller.
+
+    `probeFailed` lists the sources skipped because a file could not be read
+    (PV57), each the named `probe_failed` error with its `path`, `reason`,
+    `detail`, `retryable` and the item `src`. The status stays 200/202: the
+    other items were handled, and each skip is named in the body."""
     project = json.loads((project_dir / "project.json").read_text())
     broadcaster = getattr(request.app.state, "broadcaster", None) if request is not None else None
     try:
         await _warm_proxy_inputs(_video_srcs(project))
         result = _ensure_current_proxies(project_id, project_dir, project, broadcaster)
     except Exception:
-        result = {"scheduled": 0, "alreadyFresh": 0}
+        result = {"scheduled": 0, "alreadyFresh": 0, "probeFailed": []}
     return JSONResponse(result, status_code=202 if result["scheduled"] else 200)
 
 
@@ -2308,7 +2465,7 @@ def _new_or_changed_video_items(previous: dict, merged: dict) -> list[dict]:
     return changed
 
 
-def _queue_previews_for_changed_items(
+async def _queue_previews_for_changed_items(
     project_id: str,
     project_dir: Path,
     previous: dict,
@@ -2340,11 +2497,20 @@ def _queue_previews_for_changed_items(
     Only ever QUEUES — `_ensure_current_proxies` never awaits an encode — and
     never raises: any failure here is logged and swallowed so a save can never
     fail, or even slow down, over this housekeeping.
+
+    Async (PV57 review): `_ensure_current_proxies`'s own probes
+    (`_proxy_input_for`) run synchronously, ON the event loop. Warming first,
+    off the loop, means the sync pass that follows hits the probe cache/hold
+    instead of blocking the loop itself — the same ordering every other
+    `_ensure_current_proxies` caller uses (open, "Generate previews", the
+    look-migration queue). Without it, a single new item on a stalled file
+    blocked serve for about a minute (two 30 s ffprobe tries) on every save.
     """
     try:
         changed_items = _new_or_changed_video_items(previous, merged)
         if not changed_items:
             return
+        await _warm_proxy_inputs(it["src"] for it in changed_items if isinstance(it.get("src"), str))
         cutdown = {
             "tracks": [{"id": "t0", "items": changed_items}],
             "sources": [],
@@ -2403,7 +2569,7 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
     # "Preparing preview…" until someone clicks "Generate previews" by hand.
     # Only relevant when this body could have touched a video item's (id, src).
     if "tracks" in body or "sources" in body:
-        _queue_previews_for_changed_items(project_id, project_dir, existing, merged, broadcaster)
+        await _queue_previews_for_changed_items(project_id, project_dir, existing, merged, broadcaster)
     # Auto-commit to git on status transitions — run in a thread so it doesn't block the event loop
     new_status = merged.get("status")
     if new_status in ("draft", "final") and new_status != prev_status:

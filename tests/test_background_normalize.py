@@ -98,6 +98,15 @@ def probes(monkeypatch) -> dict:
 
     monkeypatch.setattr(normalize_mod, "probe_video", _fake_probe)
     monkeypatch.setattr(normalize_mod, "is_normalized", _fake_is_normalized)
+    # The provenance probe (lib.color_provenance) reads each stub file with the
+    # same transfer and no marker, so a proxy is encoded from the file itself.
+    # Not counted: `count` is about the conversion probes above. Before PV57 a
+    # failed probe of the stub bytes gave that answer by accident; it now
+    # raises (tests/test_probe_failed_callers.py).
+    import lib.color_provenance as cp
+
+    monkeypatch.setattr(cp, "probe_media",
+                        lambda path, **_: cp.Probe(state["transfer"], "", 1920, 1080, "30/1", 5.0))
     return state
 
 

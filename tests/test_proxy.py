@@ -24,10 +24,11 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import lib.normalize as nm
 import lib.proxy as proxy_mod
-from lib.common import ffmpeg_bin
+from lib.common import ffmpeg_bin, ffprobe_bin
 from lib.normalize import _run_atomic_encode, probe_video
 from lib.proxy import (
     PROXY_FORMAT,
+    PROXY_GRADE_TAG,
     PROXY_LOOK,
     _build_proxy_cmd,
     is_proxy_fresh,
@@ -379,8 +380,70 @@ def test_build_proxy_cmd_encoder_params():
     assert cmd[cmd.index("-g") + 1] == "1"  # GOP=1 → all-intra
     assert cmd[cmd.index("-c:a") + 1] == "libopus"
     assert cmd[cmd.index("-b:a") + 1] == "96k"
-    assert "-movflags" in cmd and cmd[cmd.index("-movflags") + 1] == "+faststart"
+    # use_metadata_tags keeps the grade tag (PROXY_GRADE_TAG), which the mp4
+    # muxer otherwise drops.
+    assert "-movflags" in cmd and cmd[cmd.index("-movflags") + 1] == "+faststart+use_metadata_tags"
     assert cmd[-1] == "out.mp4"
+
+
+def _metadata_args(cmd) -> list:
+    return [cmd[i + 1] for i, a in enumerate(cmd) if a == "-metadata"]
+
+
+@pytest.mark.parametrize("tonemap,info,zscale,want", [
+    (False, {"color_transfer": "bt709"}, True, "none"),
+    (True, {"color_transfer": "bt709"}, True, "none"),          # not HDR: the plain arm ran
+    (True, {"color_transfer": "arib-std-b67"}, True, PROXY_LOOK),
+    (True, {"color_transfer": "smpte2084"}, False, "fallback"),  # no zscale: bare tonemap
+])
+def test_build_proxy_cmd_stamps_the_arm_that_ran(monkeypatch, tonemap, info, zscale, want):
+    """PV57: every new proxy says whether it was graded, in a container tag,
+    because its name cannot (every proxy is `_proxy_<look>_<format>`). The
+    comment is never written: a normalized input's SDR-origin marker is there."""
+    monkeypatch.setattr(nm, "_has_zscale", lambda: zscale)
+    monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
+    cmd, _ = _build_proxy_cmd("in.mov", "out.mp4", tonemap=tonemap, info={"has_audio": True, **info})
+    assert _metadata_args(cmd) == [f"{PROXY_GRADE_TAG}={want}"]
+    assert "+use_metadata_tags" in cmd[cmd.index("-movflags") + 1]
+
+
+def _format_tags(path) -> dict:
+    """PV57 review: the managed ffprobe (ffprobe_bin()), not whatever `ffprobe`
+    resolves to on PATH — the two can disagree (MONTAJ_REQUIRE_HDR_FFMPEG's
+    whole point), and this must read back exactly what make_proxy wrote with
+    the same binary lib/proxy.py itself uses."""
+    r = subprocess.run([ffprobe_bin(), "-v", "error", "-show_entries", "format_tags", "-of", "json", str(path)],
+                       capture_output=True, text=True, timeout=30, check=True)
+    return json.loads(r.stdout).get("format", {}).get("tags", {})
+
+
+def test_make_proxy_grade_tag_round_trips(test_video, tmp_path):
+    """A real encode of each arm, read back with ffprobe: the plain arm says
+    "none" and the graded one says PROXY_LOOK. The name, and freshness by
+    mtime, are what they were: the tag is the only change."""
+    plain = Path(proxy_path_for(str(test_video)))
+    make_proxy(str(test_video), str(plain), tonemap=False, info=probe_video(str(test_video)))
+    assert _format_tags(plain)[PROXY_GRADE_TAG] == "none"
+    assert plain.name == f"{Path(test_video).stem}_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4"
+    assert is_proxy_fresh(str(plain), str(test_video))
+
+    if not (nm._has_zscale() and nm._has_lut3d()):
+        if os.environ.get("MONTAJ_REQUIRE_HDR_FFMPEG") == "1":
+            pytest.fail("ffmpeg with zscale and lut3d not available (MONTAJ_REQUIRE_HDR_FFMPEG=1)")
+        pytest.skip("ffmpeg with zscale and lut3d not available")
+    hlg = tmp_path / "hlg.mov"
+    subprocess.run([
+        ffmpeg_bin(), "-y", "-v", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=1",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
+        "-c:v", "libx265", "-preset", "ultrafast", "-pix_fmt", "yuv420p10le",
+        "-x265-params", "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:log-level=error",
+        "-color_primaries", "bt2020", "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc",
+        "-c:a", "aac", "-shortest", str(hlg),
+    ], check=True, capture_output=True, timeout=60)
+    graded = Path(proxy_path_for(str(hlg)))
+    make_proxy(str(hlg), str(graded), tonemap=True, info=probe_video(str(hlg)))
+    assert _format_tags(graded)[PROXY_GRADE_TAG] == PROXY_LOOK
 
 
 def test_build_proxy_cmd_silent_source_gets_anullsrc():

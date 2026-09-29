@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.common import SAFE_NAME, fail, ffprobe_bin, progress
 from lib.remote_io import fetch_to_disk, parse_allowed_hosts
-from lib.color_provenance import proxy_source_for
+from lib.color_provenance import ProbeError, proxy_source_for
 from lib.normalize import normalize, normalized_output_path, is_normalized, probe_video
 from lib.proxy import is_proxy_fresh, make_proxy, proxy_path_for
 from lib.types.project import normalize_project_type
@@ -818,6 +818,12 @@ def main():
                     with _proxy_encode_sem:
                         make_proxy(proxy_in, proxy_out, tonemap=tonemap, info=proxy_info)
             clip["proxySrc"] = proxy_out
+        except ProbeError as e:
+            # The clip, or the original its marker names, exists and could not
+            # be read (PV57), so the proxy's input and grade are unknown and no
+            # proxy is made. The line names the file and the reason, which the
+            # generic one below would drop.
+            progress(f"[{clip_id}] proxy FAILED — editor will play the master: {e}")
         except (Exception, SystemExit):
             progress(f"[{clip_id}] proxy FAILED — editor will play the master")
 

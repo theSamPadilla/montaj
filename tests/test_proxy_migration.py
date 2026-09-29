@@ -36,6 +36,18 @@ def _clean_state():
     projects_mod._look_migration_worker = None
 
 
+@pytest.fixture(autouse=True)
+def _provenance_reads(monkeypatch):
+    """The provenance probe (lib.color_provenance) reads each stub clip as
+    itself, SDR with no marker, so its proxy is encoded from `src`. These tests
+    are about proxy migration, not provenance. Before PV57 a failed probe of
+    the stub bytes gave this answer by accident; it now raises, as it must,
+    and tests/test_probe_failed_callers.py covers that."""
+    import lib.color_provenance as cp
+
+    monkeypatch.setattr(cp, "probe_media", lambda path, **_: cp.Probe("bt709", "", 1920, 1080, "30/1", 5.0))
+
+
 # ---------------------------------------------------------------------------
 # Fixtures + mocks (proxy-only — this endpoint never touches normalize/probe)
 # ---------------------------------------------------------------------------
@@ -153,7 +165,7 @@ def test_missing_proxy_is_encoded_and_written_back(workspace, encodes):
 
     result = _trigger(project_dir)
 
-    assert result == {"scheduled": 1, "alreadyFresh": 0}
+    assert result == {"scheduled": 1, "alreadyFresh": 0, "probeFailed": []}
     assert len(encodes.proxy) == 1
     assert encodes.proxy[0][0] == os.path.realpath(src)
     assert encodes.proxy[0][1].endswith(f"_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4")
@@ -171,7 +183,7 @@ def test_fresh_proxy_on_disk_is_repointed_without_encoding(workspace, encodes):
 
     result = _trigger(project_dir)
 
-    assert result == {"scheduled": 0, "alreadyFresh": 1}
+    assert result == {"scheduled": 0, "alreadyFresh": 1, "probeFailed": []}
     assert encodes.proxy == []
     project = _read(project_dir)
     assert _item(project)["proxySrc"] == str(fresh)
@@ -202,7 +214,7 @@ def test_all_fresh_and_pointed_changes_nothing(workspace, encodes):
 
     result = _trigger(project_dir)
 
-    assert result == {"scheduled": 0, "alreadyFresh": 2}
+    assert result == {"scheduled": 0, "alreadyFresh": 2, "probeFailed": []}
     assert encodes.proxy == []
     assert (project_dir / "project.json").read_text() == before
 
@@ -217,7 +229,7 @@ def test_stale_old_look_proxy_is_re_encoded_and_repointed(workspace, encodes):
 
     result = _trigger(project_dir)
 
-    assert result == {"scheduled": 1, "alreadyFresh": 0}
+    assert result == {"scheduled": 1, "alreadyFresh": 0, "probeFailed": []}
     assert len(encodes.proxy) == 1
     new = encodes.proxy[0][1]
     assert new.endswith(f"_proxy_{PROXY_LOOK}_{PROXY_FORMAT}.mp4") and new != str(stale)
@@ -235,7 +247,7 @@ def test_proxy_opt_out_schedules_nothing(workspace, encodes):
 
     result = _trigger(project_dir)
 
-    assert result == {"scheduled": 0, "alreadyFresh": 0}
+    assert result == {"scheduled": 0, "alreadyFresh": 0, "probeFailed": []}
     assert encodes.proxy == []
 
 
@@ -247,7 +259,7 @@ def test_missing_source_is_skipped(workspace, encodes):
 
     result = _trigger(project_dir)
 
-    assert result == {"scheduled": 0, "alreadyFresh": 0}
+    assert result == {"scheduled": 0, "alreadyFresh": 0, "probeFailed": []}
     assert encodes.proxy == []
 
 
@@ -289,7 +301,7 @@ def test_http_shape(workspace, encodes):
     with TestClient(app) as client:
         resp = client.post(f"/api/projects/{PID}/proxies")
         assert resp.status_code == 202, resp.text
-        assert resp.json() == {"scheduled": 1, "alreadyFresh": 0}
+        assert resp.json() == {"scheduled": 1, "alreadyFresh": 0, "probeFailed": []}
         for _ in range(200):
             if _item(_read(project_dir)).get("proxySrc"):
                 break
@@ -313,7 +325,7 @@ def test_http_all_fresh_returns_200(workspace, encodes):
     with TestClient(app) as client:
         resp = client.post(f"/api/projects/{PID}/proxies")
         assert resp.status_code == 200, resp.text
-        assert resp.json() == {"scheduled": 0, "alreadyFresh": 1}
+        assert resp.json() == {"scheduled": 0, "alreadyFresh": 1, "probeFailed": []}
 
 
 def test_completion_broadcasts_write_back_only(workspace, encodes):
@@ -348,7 +360,7 @@ def test_out_of_workspace_source_lands_in_proxycache(workspace, encodes):
 
     result = _trigger(project_dir)
 
-    assert result == {"scheduled": 1, "alreadyFresh": 0}
+    assert result == {"scheduled": 1, "alreadyFresh": 0, "probeFailed": []}
     out = encodes.proxy[0][1]
     assert out.startswith(str(workspace / ".sources" / "_proxycache"))
     assert _item(_read(project_dir))["proxySrc"] == out

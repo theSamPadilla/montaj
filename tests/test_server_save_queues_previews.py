@@ -173,6 +173,33 @@ def test_non_video_item_is_never_queued(project, monkeypatch):
 # 4. A queueing exception does not fail the save.
 # ---------------------------------------------------------------------------
 
+def test_queue_previews_warms_proxy_inputs_off_the_loop_before_the_sync_pass(project, monkeypatch):
+    """PV57 review (RISK): _queue_previews_for_changed_items called
+    _ensure_current_proxies synchronously, ON the event loop, with no warm
+    first — so a new item on a stalled file blocked serve for about 60s (two
+    30s ffprobe tries) on every save. It must await _warm_proxy_inputs first,
+    matching how every other _ensure_current_proxies caller (open, "Generate
+    previews", the look-migration queue) warms off the loop."""
+    client, project_dir = project
+    order = []
+
+    async def fake_warm(srcs):
+        order.append(("warm", sorted(srcs)))
+
+    def fake_ensure(project_id, project_dir_arg, cutdown_project, broadcaster):
+        order.append(("ensure", [i["src"] for i in cutdown_project["tracks"][0]["items"]]))
+        return {"scheduled": 0, "alreadyFresh": 0}
+
+    monkeypatch.setattr(projects_mod, "_warm_proxy_inputs", fake_warm)
+    monkeypatch.setattr(projects_mod, "_ensure_current_proxies", fake_ensure)
+
+    resp = _put(client, _tracks(_video("clip-1", "/a.mp4")))
+
+    assert resp.status_code == 200, resp.text
+    assert order == [("warm", ["/a.mp4"]), ("ensure", ["/a.mp4"])], \
+        "the warm must run, and run before the synchronous pass"
+
+
 def test_queueing_exception_does_not_fail_save(project, monkeypatch):
     client, project_dir = project
 

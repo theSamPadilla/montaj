@@ -23,14 +23,21 @@ Projects made before PV42 had `src` swapped onto the converted file, with no
 marker in it. ensure_color_provenance heals them: it switches `src` back to the
 SDR original when that original is in the project folder (see "healing projects
 made before PV42" below).
+
+A file that exists and cannot be probed raises ProbeError (PV57, the twin of
+PV51 in sdr-layer.js): every answer this module could give for it picks a
+grade, and the heal would write that grade to disk.
 """
+import errno
 import json
 import math
 import os
 import re
+import signal
 import struct
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, NamedTuple, Optional
@@ -43,7 +50,8 @@ from lib.normalize import SDR_ORIGIN_MARKER, UNTAGGED_AS_BT709_VF
 from lib.types.colorspace import detect_from_transfer, is_hdr
 
 __all__ = [
-    "SDR_ORIGIN_MARKER", "Probe", "FAILED_PROBE", "Origin",
+    "SDR_ORIGIN_MARKER", "Probe", "FAILED_PROBE", "Origin", "ProbeError", "PROBE_TIMEOUT_S",
+    "TRANSIENT_PROBE_REASONS", "PERMANENT_PROBE_REASONS", "is_probe_retryable",
     "probe_media", "fps_value", "same_fingerprint", "origin_of", "proxy_source_for",
     "legacy_stretch_vf", "legacy_pool", "match_legacy_conversion",
     "plan_color_provenance", "write_color_provenance", "ensure_color_provenance",
@@ -69,6 +77,8 @@ class Probe(NamedTuple):
 
 
 FAILED_PROBE = Probe("unknown", "", None, None, None, None)
+"""The probe of a file that is not there (or of no path). It means only that:
+a file that exists and cannot be probed raises ProbeError instead."""
 
 
 class Origin(NamedTuple):
@@ -89,25 +99,150 @@ _CACHE: dict = {}
 """(realpath, mtime_ns) -> Probe. Failed probes are not cached."""
 _CACHE_MAX = 4096
 
+PROBE_TIMEOUT_S = 30
+"""Per try. The probe reads headers only: under 50 ms on 4K HEVC masters under
+heavy swap (measured for PV51, 2026-09-29). It stays bounded, because an
+unbounded probe of a stalled volume would hang an import, a proxy or a render
+with no error at all."""
+_PROBE_ATTEMPTS = 2
+_RETRY_BACKOFF_S = 0.25
+_STDERR_CAP = 400
+_TRANSIENT_SPAWN = frozenset({errno.EAGAIN, errno.ENOMEM, errno.EMFILE, errno.ENFILE})
+"""spawn errnos that mean "the machine is short right now", not "cannot ever work"."""
 
-def _ffprobe(path: str) -> Probe:
-    """One ffprobe, uncached. Never raises: any failure returns FAILED_PROBE."""
-    cmd = [ffprobe_bin(), "-v", "quiet", "-select_streams", "v:0",
+
+class ProbeError(Exception):
+    """A file that exists and that ffprobe could not read. `reason`: 'timeout'
+    (no answer in PROBE_TIMEOUT_S), 'killed' (a signal: jetsam, a crash),
+    'spawn' (ffprobe never started: EAGAIN/ENOMEM under load, ENOENT when there
+    is no ffprobe), 'exit' (non-zero, with its stderr), 'parse' (not JSON) or
+    'no-stream' (no video stream). `errno` is the OSError's, for 'spawn' only
+    (None otherwise): is_probe_retryable reads it to carve ENOENT (no ffprobe
+    binary at all) out of an otherwise-retryable reason. Twin of ProbeError in
+    sdr-layer.js."""
+
+    code = "MONTAJ_PROBE_FAILED"
+
+    def __init__(self, path, reason, detail, errno=None):
+        super().__init__(f"ffprobe could not read {path} ({reason}): {detail}. "
+                         "Its colour, and so its grade, is unknown")
+        self.path = path
+        self.reason = reason
+        self.detail = detail
+        self.errno = errno
+
+    def __reduce__(self):
+        return (type(self), (self.path, self.reason, self.detail, self.errno))
+
+
+TRANSIENT_PROBE_REASONS = frozenset({"timeout", "killed", "spawn"})
+"""Reasons _probe_once already retries once for (PROBE_TIMEOUT_S,
+_RETRY_BACKOFF_S): the machine was briefly unable to answer, not the file
+itself. A provenance decision that depends on such a failure stays open
+(blocking): the next look may read the file."""
+
+PERMANENT_PROBE_REASONS = frozenset({"exit", "parse", "no-stream"})
+"""Reasons _probe_once never retries: what ffprobe found is about the file's
+own content (a real error, output that is not JSON, or no video stream at
+all), so the next look gives the same answer. A provenance decision never
+stays open for one — a music bed that can never be a video's original, or a
+corrupt candidate, must not stall the legacy pass forever (PV57 review) — but
+the failure is still reported, always with blocking=False.
+
+Every site in this module that decides whether a ProbeError blocks a
+provenance decision, or is worth a retry, reads these two sets (or
+is_probe_retryable, which reads them); there is no other reason-name check."""
+
+
+def is_probe_retryable(e: "ProbeError") -> bool:
+    """Whether asking ffprobe again might get a different answer without the
+    file changing: yes for a TRANSIENT_PROBE_REASONS reason, except 'spawn'
+    with ENOENT (no ffprobe binary at all — an operator problem that will not
+    resolve on its own, unlike EAGAIN/ENOMEM/EMFILE/ENFILE under momentary
+    load). serve.routes.steps reuses this for its 503-vs-422 choice and for
+    the probe-failed event payload, so there is one place that decides
+    retryability (PV57 review)."""
+    if e.reason == "spawn" and e.errno == errno.ENOENT:
+        return False
+    return e.reason in TRANSIENT_PROBE_REASONS
+
+
+class _Failure(NamedTuple):
+    reason: str
+    detail: str
+    transient: bool = False
+    hard: bool = False  # raise whatever the path: there is no ffprobe to ask
+    errno: Optional[int] = None
+
+
+def _probe_once(path: str, run: Callable, timeout: float):
+    """One ffprobe run: the parsed JSON, or a _Failure."""
+    binary = ffprobe_bin()
+    cmd = [binary, "-v", "error", "-select_streams", "v:0",
            "-show_entries", _PROBE_ENTRIES, "-of", "json", path]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return FAILED_PROBE
+        r = run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return _Failure("timeout", f"no answer in {timeout:g} s", transient=True)
+    except OSError as e:
+        name = errno.errorcode.get(e.errno) or type(e).__name__
+        transient = e.errno in _TRANSIENT_SPAWN
+        return _Failure("spawn", f"{binary} did not start ({name})", transient=transient, hard=not transient,
+                        errno=e.errno)
+    except subprocess.SubprocessError as e:
+        return _Failure("spawn", f"{binary} did not run ({type(e).__name__}: {e})")
+    if r.returncode is not None and r.returncode < 0:
+        try:
+            sig = signal.Signals(-r.returncode).name
+        except ValueError:
+            sig = f"signal {-r.returncode}"
+        return _Failure("killed", f"killed by {sig}", transient=True)
     if r.returncode != 0:
-        return FAILED_PROBE
+        err = r.stderr.decode("utf-8", "replace") if isinstance(r.stderr, bytes) else str(r.stderr or "")
+        err = err.strip()
+        said = f"{err[:_STDERR_CAP]}..." if len(err) > _STDERR_CAP else err
+        return _Failure("exit", f"exit {r.returncode}" + (f": {said}" if said else ""))
     try:
         data = json.loads(r.stdout)
-    except ValueError:
-        return FAILED_PROBE
-    streams = data.get("streams") or []
-    if not streams:
-        return FAILED_PROBE
-    s = streams[0]
+    except (TypeError, ValueError):
+        return _Failure("parse", "its output is not JSON")
+    if not isinstance(data, dict) or not (data.get("streams") or []):
+        return _Failure("no-stream", "no video stream")
+    return data
+
+
+def _ffprobe(path: str, *, run: Optional[Callable] = None, sleep: Optional[Callable] = None,
+             exists: Optional[Callable] = None, timeout: Optional[float] = None) -> Probe:
+    """One ffprobe of the first video stream, uncached. A file that is not
+    there gives FAILED_PROBE. A file that IS there and cannot be probed raises
+    ProbeError; a timeout, a kill or a spawn failure under load (EAGAIN, ENOMEM,
+    EMFILE, ENFILE) is tried once more first, after a short backoff. No ffprobe
+    at all (ENOENT) raises at once, whatever the path: otherwise every clip
+    would probe as "not there". `run` (subprocess.run), `sleep` (time.sleep),
+    `exists` (os.path.exists) and `timeout` (PROBE_TIMEOUT_S) are for tests.
+    Twin of probeMedia in sdr-layer.js."""
+    run = run or subprocess.run
+    sleep = sleep or time.sleep
+    exists = exists or os.path.exists
+    timeout = PROBE_TIMEOUT_S if timeout is None else timeout
+    attempt = 1
+    while True:
+        data = _probe_once(path, run, timeout)
+        if not isinstance(data, _Failure):
+            break
+        if data.hard:
+            raise ProbeError(path, data.reason, data.detail, errno=data.errno)
+        # Re-checked after the failure: a file can vanish while it is probed.
+        if not exists(path):
+            return FAILED_PROBE
+        if not data.transient or attempt >= _PROBE_ATTEMPTS:
+            raise ProbeError(path, data.reason,
+                             f"{data.detail}, {attempt} tries" if attempt > 1 else data.detail,
+                             errno=data.errno)
+        sleep(_RETRY_BACKOFF_S)
+        attempt += 1
+
+    s = data["streams"][0]
     fmt = data.get("format") or {}
 
     width = s.get("width") if isinstance(s.get("width"), int) else None
@@ -141,9 +276,12 @@ def _ffprobe(path: str) -> Probe:
     )
 
 
-def probe_media(path) -> Probe:
+def probe_media(path, *, run: Optional[Callable] = None, sleep: Optional[Callable] = None,
+                exists: Optional[Callable] = None, timeout: Optional[float] = None) -> Probe:
     """The real probe, cached in-process by (realpath, mtime). A missing path
-    (or None) is FAILED_PROBE."""
+    (or None) is FAILED_PROBE; an existing file that cannot be probed raises
+    ProbeError (see _ffprobe, which the keyword arguments go to), and is
+    probed afresh next time."""
     try:
         real = os.path.realpath(path)
         mtime = os.stat(real).st_mtime_ns
@@ -153,7 +291,10 @@ def probe_media(path) -> Probe:
     hit = _CACHE.get(key)
     if hit is not None:
         return hit
-    result = _ffprobe(real)
+    opts = {k: v for k, v in (("run", run), ("sleep", sleep), ("exists", exists), ("timeout", timeout))
+            if v is not None}
+    # The caller's spelling, so a ProbeError names the file the caller asked about.
+    result = _ffprobe(os.fspath(path), **opts)
     if result != FAILED_PROBE:
         if len(_CACHE) >= _CACHE_MAX:
             _CACHE.clear()
@@ -190,7 +331,11 @@ def same_fingerprint(a: Probe, b: Probe) -> bool:
 def origin_of(path, *, probe: Optional[Callable] = None, exists: Optional[Callable] = None) -> Origin:
     """Where `path`'s colour came from. A converted clip whose original is gone
     or does not match is HDR and graded as today (Q1, Sam). `probe` and `exists`
-    default to probe_media and os.path.exists; tests inject fakes."""
+    default to probe_media and os.path.exists; tests inject fakes.
+
+    A ProbeError, of `path` or of the original, propagates: any Origin returned
+    for a file that could not be read would be a guess, and it picks a grade
+    (an unreadable SDR original falls through to "HDR, graded")."""
     probe = probe or probe_media
     exists = exists or os.path.exists
     p = probe(path)
@@ -213,7 +358,9 @@ def origin_of(path, *, probe: Optional[Callable] = None, exists: Optional[Callab
 def proxy_source_for(src, *, probe: Optional[Callable] = None,
                      exists: Optional[Callable] = None) -> tuple:
     """(input, tonemap) for an SDR proxy of `src`: a marked SDR-origin file's
-    original with no tonemap; otherwise `src`, tonemapped when its origin is HDR."""
+    original with no tonemap; otherwise `src`, tonemapped when its origin is HDR.
+    A ProbeError propagates (see origin_of): a proxy graded on a guess is kept
+    until its source changes, because proxies are fresh by mtime alone."""
     origin = origin_of(src, probe=probe, exists=exists)
     if origin.original:
         return origin.original, False
@@ -242,6 +389,15 @@ def proxy_source_for(src, *, probe: Optional[Callable] = None,
 #
 # A converted clip whose original is gone keeps today's look and is logged (Q1,
 # Sam). Items with `nobg_src` are skipped by both passes.
+#
+# A file that exists and cannot be read (ProbeError, or a thumbnail ffmpeg could
+# not decode) is an unknown, never an answer (PV57). Neither pass acts on it: it
+# is left as it is, listed in `probeFailed`, and looked at again on the next
+# call. The legacy pass is not recorded as done while a file that could change
+# its answer could not be read, or a transient failure would keep that clip
+# wrong for good. An unreadable pool file that cannot change it (newer than the
+# candidate, or ranked below the match found) is listed and does not hold the
+# pass back, or one damaged file would stop the heal for good.
 
 PROVENANCE_KEY = "colorProvenance"
 PROVENANCE_VERSION = 1
@@ -282,15 +438,64 @@ def _mtime_ns(path) -> Optional[int]:
         return None
 
 
+def _warm(path) -> None:
+    try:
+        probe_media(path)
+    except ProbeError:
+        pass  # only a cache warmer: the real call probes again and decides what a failure means
+
+
 def _prefetch(paths) -> None:
-    """Warm the probe cache for `paths` a few at a time (one ffprobe each)."""
+    """Warm the probe cache for `paths` a few at a time (one ffprobe each).
+    Never raises ProbeError."""
     paths = sorted({p for p in paths if isinstance(p, str)})
     if len(paths) < 2:
         for p in paths:
-            probe_media(p)
+            _warm(p)
         return
     with ThreadPoolExecutor(max_workers=min(8, len(paths))) as pool:
-        list(pool.map(probe_media, paths))
+        list(pool.map(_warm, paths))
+
+
+class _HealProbe:
+    """probe_media for one heal. A file whose probe raised is not probed again
+    in the same call (a stalled volume costs two 30 s tries per look); the next
+    call starts afresh, because failures are never cached."""
+
+    def __init__(self):
+        self.failed: dict = {}  # realpath -> ProbeError
+
+    def __call__(self, path) -> Probe:
+        key = os.path.realpath(path) if isinstance(path, str) else path
+        if key in self.failed:
+            raise self.failed[key]
+        try:
+            return probe_media(path)
+        except ProbeError as e:
+            self.failed[key] = e
+            raise
+
+    def warm(self, paths) -> None:
+        """Prefetch through `self`, not probe_media directly (PV57 review):
+        each failure lands in self.failed here, so the real probe that
+        follows later in this same heal finds it cached and does not try
+        again. Warming through probe_media instead (the old bug) filled the
+        process cache without recording the failure anywhere this heal could
+        see, so the first real call paid for the retry a second time — 4
+        ffprobe attempts per unreadable file per heal instead of 2."""
+        def _try(path) -> None:
+            try:
+                self(path)
+            except ProbeError:
+                pass  # recorded in self.failed; nothing else to do here
+
+        paths = [p for p in paths if isinstance(p, str) and os.path.realpath(p) not in self.failed]
+        if len(paths) < 2:
+            for p in paths:
+                _try(p)
+            return
+        with ThreadPoolExecutor(max_workers=min(8, len(paths))) as pool:
+            list(pool.map(_try, paths))
 
 
 def _video_items(project: dict):
@@ -353,12 +558,19 @@ def _mean_abs(a, b) -> float:
     return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
 
 
-def legacy_pool(project_dir, sources_srcs=(), *, exclude=(), probe: Optional[Callable] = None) -> list:
+def legacy_pool(project_dir, sources_srcs=(), *, exclude=(), probe: Optional[Callable] = None,
+                on_probe_error: Optional[Callable] = None) -> list:
     """The SDR files a legacy conversion could have been made from: every
     `sources[].src`, then the top-level .mp4/.mov/.m4v files of the project
     folder (any case), minus montaj's own artifacts (proxies, nobg, audioclean,
     normalized) and `exclude` (the candidates), one entry per file (realpath),
-    keeping only what probes SDR."""
+    keeping only what probes SDR.
+
+    A file whose probe raises ProbeError may be the original, so a pool without
+    it is incomplete: the error propagates, unless `on_probe_error(path, error)`
+    is given, in which case the file is left out and the caller owns knowing
+    that the pool is incomplete (_plan hands those files to
+    match_legacy_conversion as `unread`)."""
     probe = probe or probe_media
     paths = [s for s in sources_srcs if _is_file(s)]
     try:
@@ -379,55 +591,104 @@ def legacy_pool(project_dir, sources_srcs=(), *, exclude=(), probe: Optional[Cal
         kept.append(path)
     if probe is probe_media:
         _prefetch(kept)
+    elif isinstance(probe, _HealProbe):
+        probe.warm(kept)
     out = []
     for path in kept:
-        p = probe(path)
+        try:
+            p = probe(path)
+        except ProbeError as e:
+            if on_probe_error is None:
+                raise
+            on_probe_error(path, e)
+            continue
         if p.width and p.transfer in SDR_TRANSFERS:
             out.append(path)
     return out
 
 
 def match_legacy_conversion(candidate: str, pool, *, sources=(), probe: Optional[Callable] = None,
-                            thumbnails: Optional[Callable] = None) -> dict:
+                            thumbnails: Optional[Callable] = None, unread: Optional[dict] = None) -> dict:
     """Which file in `pool` `candidate` (an ffmpeg-written HDR file) was
     converted from, under the legacy stretch. `sources` holds the realpaths of
-    the project's `sources[].src` (a tiebreak).
+    the project's `sources[].src` (a tiebreak). `unread` maps pool files that
+    legacy_pool could not probe to their ProbeError.
 
     Per pool file, the first guard that rejects it: `mtime` (newer than the
     candidate: a conversion is made from an original that already exists),
-    `fingerprint` (same_fingerprint), `std-dev floor` (fewer than
-    CONTENT_MIN_STD_COUNT candidate thumbnails reach CONTENT_MIN_STD), or
-    `content` (a mean abs over CONTENT_MAX_MEAN_ABS at any point, or a
-    thumbnail that could not be read). Returns
-    {src, encoder, rejected, original, thumbStd, pool: [{path, rejected, meanAbs}]}."""
+    `fingerprint` (same_fingerprint), `unreadable` (its probe raised
+    ProbeError, or ffmpeg could not read a thumbnail of it or of the candidate),
+    `std-dev floor` (fewer than CONTENT_MIN_STD_COUNT candidate thumbnails reach
+    CONTENT_MIN_STD), or `content` (a mean abs over CONTENT_MAX_MEAN_ABS at any
+    point). Returns {src, encoder, rejected, original, deferred, thumbStd,
+    pool: [{path, rejected, meanAbs}], unreadable: [{path, reason, detail, blocking}]}.
+
+    Every file that could not be read is in `unreadable`; `blocking` says
+    whether it could change the answer (see _legacy_rank). `original` is the
+    match only when none could; otherwise the match is in `deferred`, and with
+    no match at all a blocking file means "no match" is not final either.
+
+    A ProbeError of the candidate itself propagates: there is nothing to match."""
     probe = probe or probe_media
     thumbnails = thumbnails or _thumbnails
     c = probe(candidate)
     key = detect_from_transfer(c.transfer)
-    entry = {"src": candidate, "encoder": c.encoder, "rejected": None, "original": None,
-             "thumbStd": None, "pool": []}
+    entry = {"src": candidate, "encoder": c.encoder, "rejected": None, "original": None, "deferred": None,
+             "thumbStd": None, "pool": [], "unreadable": []}
     c_mtime = _mtime_ns(candidate)
     times = [c.duration * f for f in THUMB_POINTS] if c.duration else []
     cand = None  # candidate planes: read once, and only when a pool file gets that far
     stds: list = []
     matches = []
+    rows_unread: list = []  # (row, {path, reason, detail}): rows that passed the mtime guard
+
+    def too_new(path) -> bool:
+        m = _mtime_ns(path)
+        return c_mtime is None or m is None or m > c_mtime
+
+    def unreadable(row, path, reason, detail, probe_errno=None):
+        # Not a mismatch: the pool file may be the original. Neither matched nor ruled out.
+        row["rejected"] = "unreadable"
+        rows_unread.append((row, {"path": path, "reason": reason, "detail": detail, "errno": probe_errno}))
+
+    for path, e in (unread or {}).items():
+        row = {"path": path, "rejected": None, "meanAbs": None}
+        entry["pool"].append(row)
+        if too_new(path):
+            # Stat-only: a file newer than the candidate is never its original,
+            # so not being able to read it changes nothing.
+            row["rejected"] = "mtime"
+            entry["unreadable"].append({"path": path, "reason": e.reason, "detail": e.detail,
+                                        "errno": e.errno, "blocking": False})
+        else:
+            unreadable(row, path, e.reason, e.detail, e.errno)
+
     for path in pool:
         row = {"path": path, "rejected": None, "meanAbs": None}
         entry["pool"].append(row)
-        m = _mtime_ns(path)
-        if c_mtime is None or m is None or m > c_mtime:
+        if too_new(path):
             row["rejected"] = "mtime"
             continue
-        p = probe(path)
+        try:
+            p = probe(path)
+        except ProbeError as e:
+            unreadable(row, path, e.reason, e.detail, e.errno)
+            continue
         if not same_fingerprint(c, p):
             row["rejected"] = "fingerprint"
             continue
         if cand is None:
-            cand = thumbnails(candidate, times) or []
+            cand = (thumbnails(candidate, times) or []) if times else []
             stds = [_std(t) for t in cand]
             entry["thumbStd"] = [round(v, 1) for v in stds] if stds else None
+        if times and not cand:
+            unreadable(row, candidate, "thumbnail", "ffmpeg could not read a frame")
+            continue
         planes = thumbnails(path, times, legacy_stretch_vf(key, untagged=p.transfer == "unknown")) \
             if cand else None
+        if cand and not planes:
+            unreadable(row, path, "thumbnail", "ffmpeg could not read a frame")
+            continue
         if not cand or not planes or len(planes) != len(cand):
             row["rejected"] = "content"
             continue
@@ -441,27 +702,62 @@ def match_legacy_conversion(candidate: str, pool, *, sources=(), probe: Optional
             continue
         matches.append(path)
 
-    if matches:
-        stem_of = lambda p: os.path.splitext(os.path.basename(p))[0]  # noqa: E731
-        cstem = stem_of(candidate)
-        sources_real = set(sources)
-
-        def rank(path):
-            stem = stem_of(path)
-            return (
-                # 1. the candidate is named `<pool stem>_normalized_<cs>.mp4`
-                os.path.basename(candidate) != f"{stem}_normalized_{key}.mp4",
-                # 2. the shortest pool stem the candidate's stem starts with
-                (0, len(stem)) if cstem.startswith(stem) else (1, 0),
-                # 3. a pool file that is some sources[].src
-                os.path.realpath(path) not in sources_real,
-                # 4. the oldest mtime
-                _mtime_ns(path) or 0,
-                path,
-            )
-
-        entry["original"] = min(matches, key=rank)
+    sources_real = set(sources)
+    best = min(matches, key=lambda p: _legacy_rank(candidate, key, sources_real, p)) if matches else None
+    for row, u in rows_unread:
+        # An unreadable pool file can change the answer only when its reason
+        # is worth waiting on (not PERMANENT_PROBE_REASONS — the file may read
+        # differently next time; this also covers 'thumbnail', a decode
+        # failure from below, which is not one of ProbeError's six reasons and
+        # so is never PERMANENT) AND it passes the mtime guard (every row here
+        # did) AND outranks the match. mtime and rank are stat-only, so this is
+        # decided without reading the file. A PERMANENT reason (no-stream,
+        # exit, parse) never blocks: the next look gives the same unreadable
+        # answer, so deferring on one — a music bed that can never be a
+        # video's original, or a corrupt file — would stall the heal for as
+        # long as it stays that way, which is forever (PV57 review). With no
+        # match, any non-PERMANENT-reason file may be the match.
+        blocking = u["reason"] not in PERMANENT_PROBE_REASONS and (
+            best is None or
+            _legacy_rank(candidate, key, sources_real, row["path"]) < _legacy_rank(candidate, key, sources_real, best)
+        )
+        seen = next((x for x in entry["unreadable"] if (x["path"], x["reason"]) == (u["path"], u["reason"])), None)
+        if seen is None:
+            entry["unreadable"].append({**u, "blocking": blocking})
+        else:
+            seen["blocking"] = seen["blocking"] or blocking
+    if best is not None:
+        if any(u["blocking"] for u in entry["unreadable"]):
+            entry["deferred"] = best  # what a full read may yet overturn; the caller retries
+        else:
+            entry["original"] = best  # provably what a full read would give
     return entry
+
+
+def _stem(path: str) -> str:
+    return os.path.splitext(os.path.basename(path))[0]
+
+
+def _legacy_rank(candidate: str, color_space: str, sources_real, path: str) -> tuple:
+    """Where `path` ranks as the original of `candidate` among its content
+    matches, lowest first. `color_space` is the candidate's; `sources_real` the
+    realpaths of the project's `sources[].src`.
+
+    Stat-only on purpose: names, sources membership and mtime, never a probe or
+    a frame. So a pool file that cannot be read can still be ranked, and
+    whether it could change the answer is decided without reading it (PV57)."""
+    stem = _stem(path)
+    return (
+        # 1. the candidate is named `<pool stem>_normalized_<cs>.mp4`
+        os.path.basename(candidate) != f"{stem}_normalized_{color_space}.mp4",
+        # 2. the shortest pool stem the candidate's stem starts with
+        (0, len(stem)) if _stem(candidate).startswith(stem) else (1, 0),
+        # 3. a pool file that is some sources[].src
+        os.path.realpath(path) not in sources_real,
+        # 4. the oldest mtime
+        _mtime_ns(path) or 0,
+        path,
+    )
 
 
 def _fresh_proxy(original: str) -> Optional[str]:
@@ -476,7 +772,7 @@ def _new_result(project_dir) -> dict:
     return {
         "projectDir": str(project_dir), "colorSpace": None, "skipped": None, "error": None,
         "legacyPass": False, "switched": [], "dropped": [], "candidates": [], "kept": [],
-        "settings": {}, "edits": [], "proxiesOwed": [], "log": [], "written": False,
+        "probeFailed": [], "settings": {}, "edits": [], "proxiesOwed": [], "log": [], "written": False,
     }
 
 
@@ -496,13 +792,31 @@ def _plan(project_dir: Path, result: dict) -> None:
         return
 
     items = [it for it in _video_items(project) if not it.get("nobg_src")]
-    _prefetch({it["src"] for it in items if _is_file(it["src"])}
+    probe = _HealProbe()
+    probe.warm({it["src"] for it in items if _is_file(it["src"])}
               | {it["normalizedSrc"] for it in items if _is_file(it.get("normalizedSrc"))})
     proxies_enabled = settings.get("proxy") is not False
 
     edits: dict = {}      # (id, src) -> {field: value}; `src` always last
     switched: dict = {}   # (id, src) -> original
     dropped: set = set()
+    unread: set = set()   # (id, src) the marker pass could not read: left as they are
+
+    def failed(pass_name: str, path: str, reason: str, detail: str, item=None, src=None,
+               blocking: bool = True, probe_errno: Optional[int] = None) -> None:
+        # blocking: whether something was left as it is because of this file.
+        # message/retryable (PV57 review): the same shape serve.routes.steps's
+        # probe_failed_body gives the "proxies" entries under the same
+        # `event: probe-failed`, so a listener sees one payload shape
+        # whichever pass reported it. Rebuilding a ProbeError here (never
+        # raised) is the one place that reuses its message text and
+        # is_probe_retryable, rather than a second, drifting copy of either.
+        e = ProbeError(path, reason, detail, probe_errno)
+        f = {"pass": pass_name, "id": item.get("id") if item else None,
+             "src": item["src"] if item else src, "path": path, "reason": reason, "detail": detail,
+             "message": str(e), "retryable": is_probe_retryable(e), "blocking": blocking}
+        if f not in result["probeFailed"]:
+            result["probeFailed"].append(f)
 
     def switch(item: dict, original: str, how: str) -> None:
         key = (item.get("id"), item["src"])
@@ -531,20 +845,35 @@ def _plan(project_dir: Path, result: dict) -> None:
     # 1. marker pass
     for item in items:
         src = item["src"]
-        if _is_file(src) and is_hdr(detect_from_transfer(probe_media(src).transfer)):
-            origin = origin_of(src)
-            if origin.original:
-                switch(item, origin.original, "marker")
+        if not _is_file(src):
+            continue
+        try:
+            if is_hdr(detect_from_transfer(probe(src).transfer)):
+                origin = origin_of(src, probe=probe)
+                if origin.original:
+                    switch(item, origin.original, "marker")
+        except ProbeError as e:
+            # Unknown (the clip or its original): switching and keeping would
+            # each pick a grade. Leave the item as it is; the next call retries.
+            unread.add((item.get("id"), src))
+            failed("marker", e.path, e.reason, e.detail, item, probe_errno=e.errno)
     for item in items:
         key = (item.get("id"), item["src"])
         cache = item.get("normalizedSrc")
-        if key in switched or key in dropped or not isinstance(cache, str) or not os.path.isabs(cache):
+        if key in switched or key in dropped or key in unread \
+                or not isinstance(cache, str) or not os.path.isabs(cache):
             continue
         reason = None
         if not os.path.exists(cache):
             reason = "missing"  # render's validateProjectFiles checks only src
         else:
-            comment = probe_media(cache).comment
+            try:
+                comment = probe(cache).comment
+            except ProbeError as e:
+                # Unknown: its marker may or may not name `src`, so it is not
+                # dropped on a guess. Kept as it is; the next call looks again.
+                failed("normalizedSrc", e.path, e.reason, e.detail, item, probe_errno=e.errno)
+                continue
             if comment.startswith(SDR_ORIGIN_MARKER):
                 named = comment[len(SDR_ORIGIN_MARKER):]
                 if named != os.path.basename(item["src"]):
@@ -559,6 +888,11 @@ def _plan(project_dir: Path, result: dict) -> None:
     # 2. legacy pass, once
     if settings.get(PROVENANCE_KEY) != PROVENANCE_VERSION:
         result["legacyPass"] = True
+        # Set when a file that could change the pass's answer could not be read.
+        # The pass is then not recorded as done, so it runs again on the next
+        # call: recording it would leave a clip that failed a transient probe
+        # unhealed for good.
+        unfinished = False
         by_real: dict = {}
         for item in items:
             if (item.get("id"), item["src"]) in switched or item.get("normalizedSrc") or not _is_file(item["src"]):
@@ -566,7 +900,21 @@ def _plan(project_dir: Path, result: dict) -> None:
             by_real.setdefault(os.path.realpath(item["src"]), item["src"])
         candidates = []
         for src in by_real.values():
-            p = probe_media(src)
+            try:
+                p = probe(src)
+            except ProbeError as e:
+                # TRANSIENT: unknown, it may be a legacy conversion — skipped
+                # this call, and the pass stays unfinished so the next call
+                # looks again. PERMANENT (no video stream, ffprobe's own
+                # error, or unparseable output): the file's own content is
+                # what's wrong, so it can never be a legacy-converted video
+                # either — not a candidate, and the heal is final for it, not
+                # unfinished (PV57 review).
+                if e.reason in TRANSIENT_PROBE_REASONS:
+                    unfinished = True
+                failed("legacy", e.path, e.reason, e.detail, src=src,
+                      blocking=e.reason in TRANSIENT_PROBE_REASONS, probe_errno=e.errno)
+                continue
             if not is_hdr(detect_from_transfer(p.transfer)):
                 continue
             reject = None
@@ -576,20 +924,47 @@ def _plan(project_dir: Path, result: dict) -> None:
                 reject = "encoder"
             if reject:
                 result["candidates"].append({"src": src, "encoder": p.encoder, "rejected": reject,
-                                             "original": None, "thumbStd": None, "pool": []})
+                                             "original": None, "deferred": None, "thumbStd": None,
+                                             "pool": [], "unreadable": []})
             else:
                 candidates.append(src)
         if candidates:
             sources_srcs = [s["src"] for s in project.get("sources") or []
                             if isinstance(s, dict) and isinstance(s.get("src"), str)]
-            pool = legacy_pool(project_dir, sources_srcs, exclude=candidates)
+            # Pool files that could not be probed: whether each one matters is
+            # per candidate (match_legacy_conversion's `blocking`).
+            pool_unread: dict = {}
+            pool = legacy_pool(project_dir, sources_srcs, exclude=candidates, probe=probe,
+                               on_probe_error=pool_unread.__setitem__)
             sources_real = {os.path.realpath(s) for s in sources_srcs if _is_file(s)}
             for src in candidates:
-                entry = match_legacy_conversion(src, pool, sources=sources_real)
+                try:
+                    entry = match_legacy_conversion(src, pool, sources=sources_real, probe=probe,
+                                                    unread=pool_unread)
+                except ProbeError as e:
+                    # The candidate itself (not a pool file) could not be
+                    # read. TRANSIENT keeps the pass open for a retry;
+                    # PERMANENT (its own content is what's wrong) makes the
+                    # heal final for this candidate, not unfinished (PV57
+                    # review): the next call would read the same failure.
+                    if e.reason in TRANSIENT_PROBE_REASONS:
+                        unfinished = True
+                    failed("legacy", e.path, e.reason, e.detail, src=src,
+                          blocking=e.reason in TRANSIENT_PROBE_REASONS, probe_errno=e.errno)
+                    continue
                 result["candidates"].append(entry)
+                for u in entry["unreadable"]:
+                    failed("legacy", u["path"], u["reason"], u["detail"], src=src, blocking=u["blocking"],
+                          probe_errno=u.get("errno"))
                 original = entry["original"]
                 if not original:
-                    result["kept"].append(os.path.basename(src))
+                    # Deferred (a better-ranked file could not be read), or no
+                    # match while a file that could have matched was unread: not
+                    # final, so the pass runs again. Otherwise "no match" is final.
+                    if any(u["blocking"] for u in entry["unreadable"]):
+                        unfinished = True
+                    else:
+                        result["kept"].append(os.path.basename(src))
                     continue
                 # Keep the folder spelled the way the candidate spells it.
                 if os.path.realpath(os.path.dirname(original)) == os.path.realpath(os.path.dirname(src)):
@@ -598,12 +973,32 @@ def _plan(project_dir: Path, result: dict) -> None:
                 for item in items:
                     if _is_file(item["src"]) and os.path.realpath(item["src"]) == real:
                         switch(item, original, "legacy")
-        result["settings"][PROVENANCE_KEY] = PROVENANCE_VERSION
+            listed = {f["path"] for f in result["probeFailed"]}
+            for path, e in pool_unread.items():
+                # Reached only when every candidate's own probe ALSO failed
+                # (so none of them ever got to attribute this pool file's
+                # failure to itself, above): which candidate this pool file
+                # would have mattered for is genuinely unknown, so `src` is
+                # null here — the one place a probeFailed entry's `src` can
+                # be (PV57 review nit: documented, not just left null).
+                if path not in listed:
+                    failed("legacy", e.path, e.reason, e.detail, blocking=False, probe_errno=e.errno)
+        if not unfinished:
+            result["settings"][PROVENANCE_KEY] = PROVENANCE_VERSION
         if result["kept"]:
             line = (f"colour provenance: no SDR original matched {len(result['kept'])} "
                     f"ffmpeg-written HDR clip(s): {', '.join(result['kept'])}")
             result["log"].append(line)
             progress(line)
+
+    if result["probeFailed"]:
+        named = list(dict.fromkeys(f"{os.path.basename(f['path'])} ({f['reason']})"
+                                   for f in result["probeFailed"]))
+        line = f"colour provenance: could not read {len(named)} file(s): {', '.join(named)}"
+        if any(f["blocking"] for f in result["probeFailed"]):
+            line += ". What depends on them is left as it is until the next look"
+        result["log"].append(line)
+        progress(line)
 
     if switched and settings.get(BACKGROUND_NORMALIZE_KEY) is not True:
         result["settings"][BACKGROUND_NORMALIZE_KEY] = True
@@ -674,12 +1069,25 @@ def ensure_color_provenance(project_dir) -> dict:
 
     The result, printable as JSON:
       projectDir, colorSpace, skipped (why nothing was looked at), error,
-      legacyPass (whether pass 2 ran),
+      legacyPass (whether pass 2 ran; it is recorded as done in `settings`
+      only when no file that could change its answer was unreadable),
       switched: [{id, from, to, pass: marker|legacy, proxySrc}],
       dropped: [{id, src, normalizedSrc, reason}],
-      candidates: [{src, encoder, rejected (encoder|marker), original, thumbStd,
-                    pool: [{path, rejected (mtime|fingerprint|std-dev floor|content), meanAbs}]}],
+      candidates: [{src, encoder, rejected (encoder|marker), original, deferred, thumbStd,
+                    pool: [{path, rejected (mtime|fingerprint|unreadable|std-dev floor|content),
+                            meanAbs}],
+                    unreadable: [{path, reason, detail, errno, blocking}]}],
       kept: basenames left as they are (no original), log: lines logged,
+      probeFailed: [{pass: marker|normalizedSrc|legacy, id, src, path, reason,
+                     detail, message, retryable, blocking}], files that could
+                     not be read (ProbeError's reason, or `thumbnail`);
+                     `message`/`retryable` are ProbeError's own text and
+                     is_probe_retryable, the same shape serve.routes.steps
+                     gives a `probe_failed` HTTP error (PV57 review, so
+                     `event: probe-failed` is one payload shape whichever pass
+                     reported it); `blocking` when something was left as it is
+                     because of it — never for a PERMANENT_PROBE_REASONS
+                     reason, which the next look would read the same way,
       settings, edits, proxiesOwed: [{id, src, input, out}], written."""
     result = plan_color_provenance(project_dir)
     if result["edits"] or result["settings"]:
