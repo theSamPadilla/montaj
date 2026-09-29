@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.5.1
+
 - **Fixed: footage and audio no longer start playing by themselves while an agent edits the project.** A clip-boundary check fired on a paused, zero-length clip whenever the project updated, treating it as "clip ended" and starting the next one, and a play retry could start a hidden clip that nothing paused. Only playback now crosses a clip boundary, and a retry only replays the clip that still owns playback.
 - **Fixed: the preview no longer says "Crossfades will not appear in this preview" when two clips only touch.** A rounding difference in clip times left two neighbouring clips overlapping by a tiny fraction of a second, which counted as a crossfade; an overlap of 1 ms or less is now a plain cut, in the preview and the export alike.
 
