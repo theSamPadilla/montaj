@@ -114,7 +114,7 @@ Workflows are discovered the same way steps are. Resolution order: project-local
 
 ## Built-in workflows
 
-The `clean_cut`, `broll`, `clips`, `animations`, `explainer`, `floating_head` and `lyrics_video` workflows moved to the Montaj app. The skills they use (`broll`, `find_clips`, `lyrics-video`, `animation-sections`) and their project types stay in montaj, so a project-local or user-global workflow can still use them.
+The `clean_cut`, `broll`, `clips`, `animations`, `explainer`, `floating_head` and `lyrics_video` workflows moved to the Montaj app. Their skills (`broll`, `find_clips`, `lyrics-video`, `animation-sections`) moved with them and are served by the app; their project types stay in montaj.
 
 ### `overlays`
 

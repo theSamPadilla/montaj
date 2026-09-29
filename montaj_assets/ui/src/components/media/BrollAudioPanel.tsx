@@ -45,7 +45,7 @@ function stem(path: string): string {
 /**
  * Is this audio-footage item already placed on the timeline? `usedSrcs` is
  * `project.audio.tracks[].src` — for a b-roll edit those are the PER-TAKE
- * files split out of the cleaned narration (see `skills/broll/SKILL.md`'s
+ * files split out of the cleaned narration (see the app's broll skill's
  * "audio.tracks" section), named however the authoring agent chose to
  * (e.g. `vo_02_IMG_0979.wav`), never the raw submitted take or the
  * assembled/cleaned narration path verbatim. A plain `usedSrcs.has(path)`

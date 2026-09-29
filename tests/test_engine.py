@@ -60,11 +60,11 @@ def test_resolve_step_project_local(tmp_path):
 
 
 def test_resolve_step_skill_fallback_builtin(tmp_path):
-    # Skills-as-steps precedent: the app-side lyrics_video workflow uses `montaj/lyrics-video`
-    # which has no step files, only skills/lyrics-video/SKILL.md.
-    ref = rw.resolve_step("montaj/lyrics-video", str(tmp_path))
+    # Skills-as-steps precedent: the overlays workflow uses `montaj/select-takes`,
+    # which has no step files, only skills/select-takes/SKILL.md.
+    ref = rw.resolve_step("montaj/select-takes", str(tmp_path))
     assert ref["kind"] == "skill"
-    assert ref["skill_path"].endswith("skills/lyrics-video/SKILL.md")
+    assert ref["skill_path"].endswith("skills/select-takes/SKILL.md")
     assert Path(ref["skill_path"]).exists()
 
 

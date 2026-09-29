@@ -87,7 +87,7 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 
 **Language — non-English footage.** The speech steps (`transcribe`, `rm_nonspeech`, `rm_fillers`) default to the multilingual `large-v3-turbo-q5_0` model, which handles every language; omit `--model`. A model that is not installed falls back to one that is. **Always pass `--language <code>` to every speech step** (e.g. `--language es`), taken from `project.settings.language`: whisper transcribes in the language it is told, and a wrong one emits sparse/garbage word timestamps that `rm_nonspeech` then deletes as "silence". If you do pass an English-only `*.en` model, a non-English code auto-upgrades it to its multilingual sibling. Set the project language at init with `--language es` (stored in `settings.language`); if a project predates this field and the audio clearly isn't English, pass `--language` explicitly anyway. `rm_fillers` also switches to that language's hesitation-filler set.
 
-**Transcribing a long source (e.g. a multi-minute source that `find_clips` will split)?** whisper can fall into a repetition-loop hallucination — one phrase repeated to EOF after a hard-to-decode stretch (music, a goal replay). Pass `--max-context 0` to `transcribe` to disable cross-window context, which reliably prevents the loop. Recommended for any multi-minute and/or non-English source transcription.
+**Transcribing a long source (e.g. a multi-minute source you will split into clips)?** whisper can fall into a repetition-loop hallucination — one phrase repeated to EOF after a hard-to-decode stretch (music, a goal replay). Pass `--max-context 0` to `transcribe` to disable cross-window context, which reliably prevents the loop. Recommended for any multi-minute and/or non-English source transcription.
 
 ### VFX
 | Step | What it does | Key params |
@@ -151,7 +151,7 @@ Read the assigned workflow from `workflows/{name}.json` (filesystem only — not
 - `carousel` — N still slides at one fixed aspect ratio, rendered to PNGs; no time axis, no audio
 - `ai_video` — director agent writes a storyboard from your prompt and references, you approve, scenes are generated via Kling
 
-A project can also name a project-local (`./workflows/`) or user-global (`~/.montaj/workflows/`) workflow; resolve it the same way. Skills such as `broll`, `find_clips`, `lyrics-video` and `animation-sections` stay available to those workflows even though no built-in workflow uses them.
+A project can also name a project-local (`./workflows/`) or user-global (`~/.montaj/workflows/`) workflow; resolve it the same way.
 
 **Deviation Rules**
 You should deviate only under one conditions:
@@ -216,13 +216,9 @@ Refer to sub-skills by name; the reader resolves the name to a path.
 | `select-takes` | Executing `montaj/select_takes` in a workflow |
 | `waveform-silence` | `waveform_trim`'s fixed threshold failed because the noise floor varies across clips — read waveforms visually instead |
 | `overlay` | Executing `montaj/overlay` in a workflow |
-| `animation-sections` | Building full-frame opaque sections from scratch (`montaj/animation-sections` in a workflow) |
 | `write-overlay` | Writing custom JSX overlay components |
 | `image-search` | Sourcing outside imagery (`search_images` + `fetch_image`) when the prompt asks for photos / logos / B-roll stills |
 | `style-profile` | Creating or updating a creator style profile |
-| `lyrics-video` | Executing `montaj/lyrics-video` in a workflow (a `music_video` project) |
-| `broll` | Executing `montaj/broll` in a workflow |
-| `find_clips` | Executing `montaj/find_clips` in a workflow |
 | `carousel` | Executing `montaj/carousel` in a workflow |
 | `ai-video-plan` | Working on an `ai_video` project (Phases 0-2: story clarification, storyboard planning) |
 | `ai-video-generate` | Working on an `ai_video` project (Phases 6-7: scene generation, audio assembly, regenQueue) |

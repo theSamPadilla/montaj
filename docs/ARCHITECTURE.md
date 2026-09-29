@@ -447,8 +447,7 @@ Skills without `step: true` (e.g. `skills/write-overlay/SKILL.md`) are loaded ma
 | Skill | Type | Purpose |
 |-------|------|---------|
 | `skills/overlay/` | step | Decide + author overlays; loaded on `montaj/overlay` step |
-| `skills/animation-sections/` | step | Build animation sections from scratch; loaded on `montaj/animation-sections` step |
-| `skills/write-overlay/` | manual | JSX authoring reference; loaded by overlay and animation-sections skills |
+| `skills/write-overlay/` | manual | JSX authoring reference; loaded by the overlay skill |
 | `skills/ai-video-plan/` | step | Director skill for `ai_video` projects — story clarification, storyboard writes, approval gate (Phases 0-2). Loaded on `montaj/ai-video-plan` step or when `projectType` is `"ai_video"`. |
 | `skills/ai-video-generate/` | step | Generation skill for `ai_video` projects — scene generation, audio assembly, regenQueue (Phases 6-7). Loaded after storyboard approval when generation begins. |
 

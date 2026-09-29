@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Removed: the `animation-sections`, `broll`, `find_clips` and `lyrics-video` skills.** Only the Montaj app's paid templates used them, and the app serves them now as `app/<name>`.
 - Caption regeneration accepts a `theme` (font and the style's emphasis colour) in its request body and seeds it into the saved track where the prior track has no value; the track's own values still win.
 - **Changed: the SDR export of an HDR project keeps SDR clips, overlays and photos in their own colours.** Screen recordings, downloads, overlays and photos no longer come out dark and colour-shifted. iPhone and camera footage looks as before. Every HDR project's SDR export changes on its next export.
 - **Fixed: clips that earlier versions converted in place now switch back to their original.** When the original is in the project folder, the project uses it again on open and render. A converted clip whose original is gone keeps its look.

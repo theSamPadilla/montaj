@@ -864,7 +864,7 @@ def main():
                 if info.get("creation_time"):
                     clip["sourceCreatedAt"] = info["creation_time"]
                 # Lazy clips are commonly --symlink-clips'd into a shared
-                # source (clips-workflow fan-out — see skills/find_clips):
+                # source (clips-workflow fan-out — see the app's find_clips skill):
                 # each child project stages its OWN local symlink under its
                 # own basename-collision-avoided name, so clip_path differs
                 # per child even though the underlying file is identical.

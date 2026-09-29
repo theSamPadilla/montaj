@@ -86,7 +86,7 @@ def resolve_step(uses, project_dir):
         return {"kind": "step", "executable": py_path, "schema_path": json_path}
 
     # Skill fallback — skills-as-steps pattern. Skill name is always the
-    # same as the bare step name (e.g. `montaj/lyrics-video` → skills/lyrics-video/SKILL.md).
+    # same as the bare step name (e.g. `montaj/select-takes` → skills/select-takes/SKILL.md).
     skill_path = os.path.join(skills_dir, name, "SKILL.md")
     if os.path.isfile(skill_path):
         return {"kind": "skill", "skill_path": skill_path}
