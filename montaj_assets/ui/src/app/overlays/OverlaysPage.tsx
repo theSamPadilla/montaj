@@ -49,18 +49,6 @@ function useOverlayPreview(jsxPath: string | undefined) {
 const NATIVE_W = 1080
 const NATIVE_H = 1920
 
-const PREVIEW_IMAGES = [
-  '/preview/preview.jpg',
-  '/preview/preview2.jpg',
-  '/preview/preview3.jpg',
-  '/preview/preview4.jpg',
-  '/preview/preview5.jpg',
-  '/preview/preview6.jpg',
-  '/preview/preview7.jpg',
-  '/preview/preview8.jpg',
-]
-const RANDOM_PREVIEW = PREVIEW_IMAGES[Math.floor(Math.random() * PREVIEW_IMAGES.length)]
-
 // Proxy any string prop values that are absolute local file paths so the
 // browser can load them through /api/files instead of failing with a 404.
 function proxyProps(props: Record<string, unknown>): Record<string, unknown> {
@@ -142,9 +130,7 @@ function OverlayPreview({
       <div
         style={{
           position: 'absolute', inset: 0,
-          backgroundImage: `url(${RANDOM_PREVIEW})`,
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
+          backgroundColor: '#111',
         }}
       />
       {/* overlay, scaled from native resolution */}
