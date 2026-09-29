@@ -189,6 +189,11 @@ describe('fonts: with no base, the page is byte-identical to the pre-fall-throug
     if (!existsSync(join(HARNESS, 'file-url.js'))) {
       symlinkSync(join(__dirname, '..', 'file-url.js'), join(HARNESS, 'file-url.js'))
     }
+    // Likewise './overlay-build.js', which bundle.js has imported since PV49
+    // (the shared esbuild options).
+    if (!existsSync(join(HARNESS, 'overlay-build.js'))) {
+      symlinkSync(join(__dirname, '..', 'overlay-build.js'), join(HARNESS, 'overlay-build.js'))
+    }
     const { generateHtml: head } = await import(baseline)
     for (const [fonts, base] of CASES) {
       const [now] = capturingStderr(() => bundleHtml(1080, 1920, false, fonts, base))
