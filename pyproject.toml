@@ -5,18 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "montaj"
 version = "5.8.0"
-description = "Video editing toolkit for AI agents — CLI-first, agent-native, open source"
+description = "The open-source engine behind Montaj, the free AI video editor for Mac. Video editing toolkit for AI agents: CLI, MCP and HTTP."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
     { name = "Sam Padilla", email = "sam@bycrux.com" },
 ]
-keywords = ["video", "editing", "ai", "agent", "cli", "ffmpeg", "montaj"]
+keywords = ["video", "video editor", "editing", "ai", "ai video editor", "agent", "mcp", "claude", "captions", "cli", "ffmpeg", "montaj"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
@@ -25,6 +26,8 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Video",
+    "Topic :: Multimedia :: Video :: Non-Linear Editor",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
@@ -45,7 +48,9 @@ demucs = ["demucs>=4.0", "torch>=2.0", "torchaudio>=2.0"]
 connectors = ["pyjwt>=2.8.0", "requests>=2.31.0", "google-genai>=0.3.0", "openai>=1.75.0"]
 
 [project.urls]
-Homepage = "https://github.com/theSamPadilla/montaj"
+Homepage = "https://montaj.ag"
+"Download the app" = "https://montaj.ag/free-video-editor-mac"
+"Video templates" = "https://montaj.ag/use-cases"
 Repository = "https://github.com/theSamPadilla/montaj"
 Issues = "https://github.com/theSamPadilla/montaj/issues"
 

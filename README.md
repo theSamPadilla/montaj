@@ -6,6 +6,8 @@
 
 > A video editing CLIP for AI agents. CLI-first, agent-native, open source.
 
+**Want the app?** Montaj is also a free video editor for Mac, built on this engine: **[montaj.ag](https://montaj.ag)**.
+
 Montaj is a **CLIP** — a CLI Program for agents. It clips onto your existing AI agent (Claude Code, OpenClaw, Cursor, or any harness) and gives it the specialized tools to edit video. Built-in steps cover the full editing pipeline. The agent decides what to run, in what order, and with what parameters.
 
 **The fundamental dependency is an agent.** Montaj doesn't edit on its own. It provides the tools; the agent makes the creative decisions.

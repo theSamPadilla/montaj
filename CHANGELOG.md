@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Package page:** PyPI metadata now points to montaj.ag (homepage, app download, templates), with an updated description, keywords and classifiers. The README links the Mac app.
 - **Fixed: a clip could be given the wrong colour grade, and keep it, when ffprobe briefly failed to read a file.** A timeout, a kill or a failed start under load while checking a converted SDR clip's original made it look like HDR footage, so its preview was graded with Vivid and saved to disk, and in an older project the clip could miss its one-time colour repair for good. A file that exists but cannot be read now stops with an error naming the file and the reason (retried once after 250 ms when the failure can clear), and nothing is graded or saved on a guess: preview jobs skip that clip and report it, import keeps the clip, and the repair tries again next time. `POST /api/proxy` answers such a failure with a named `probe_failed` error (503 when a retry may help, 422 when not) instead of a 500. New previews record the grade they were made with.
 
 ## v5.8.0
