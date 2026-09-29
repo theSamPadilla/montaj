@@ -1198,7 +1198,7 @@ class TestCheckKeyCapabilityDefaults:
 
     check_key() is new and unreleased (PV29 T4b, controller decision
     2026-09-28) with no backward compatibility to keep, and the app's
-    Integrations tile and the release guard read only
+    Connectors tile and the release guard read only
     {default_model, default_model_ok, detail} — so default_model_ok means
     ALL FOUR defaults are present, not just the text one, and when any are
     missing, default_model/detail name the missing one(s) instead of always

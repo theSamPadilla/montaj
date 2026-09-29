@@ -72,7 +72,7 @@ DEFAULT_MUSIC_MODEL = "lyria-3.5"
 # and the bare-CLI path rather than assuming either is the current surface.
 INVALID_API_KEY_MESSAGE = (
     "Your Gemini API key was rejected. Update it in the Montaj app under "
-    "Integrations, or on the CLI: montaj credentials --provider gemini "
+    "Connectors, or on the CLI: montaj credentials --provider gemini "
     "--key api_key --value <new key>."
 )
 
@@ -277,7 +277,7 @@ def check_key() -> dict:
     (text, image, TTS, music), each with its own default model that can be
     retired independently of the others. check_key() is new and unreleased
     (PV29) with no backward compatibility to keep, and the app's
-    Integrations tile and the release guard read only default_model_ok — so
+    Connectors tile and the release guard read only default_model_ok — so
     that field means ALL FOUR defaults are present in models.list, not just
     the text one:
       - default_model_ok is True only when DEFAULT_MODEL, DEFAULT_IMAGE_MODEL,

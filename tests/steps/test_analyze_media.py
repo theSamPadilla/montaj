@@ -82,7 +82,7 @@ class TestAnalyzeMediaConnectorErrorMapping:
             step_module.main()
         err = json.loads(capsys.readouterr().err)
         assert err["error"] == "invalid_api_key"
-        assert "Integrations" in err["message"]
+        assert "Connectors" in err["message"]
         assert "montaj credentials" in err["message"]
 
     def test_invalid_api_key_appends_google_detail(
@@ -107,7 +107,7 @@ class TestAnalyzeMediaConnectorErrorMapping:
             step_module.main()
         err = json.loads(capsys.readouterr().err)
         assert err["error"] == "invalid_api_key"
-        assert "Integrations" in err["message"]
+        assert "Connectors" in err["message"]
         assert "Google said: API key not valid. Please pass a valid API key." in err["message"]
 
     def test_generic_connector_error_keeps_api_error_code(

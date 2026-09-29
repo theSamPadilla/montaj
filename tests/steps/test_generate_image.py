@@ -52,7 +52,7 @@ class TestGenerateImageConnectorErrorMapping:
             step_module.main()
         err = json.loads(capsys.readouterr().err)
         assert err["error"] == "invalid_api_key"
-        assert "Integrations" in err["message"]
+        assert "Connectors" in err["message"]
 
     def test_gemini_invalid_key_appends_google_detail(
         self, step_module, monkeypatch, capsys, tmp_path
