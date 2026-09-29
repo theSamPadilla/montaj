@@ -440,6 +440,8 @@ def _build_ffmpeg_cmd(
     info: dict,
     pre_input_args: list | None = None,
     post_input_seek: str | None = None,
+    video_trim: str = "",
+    audio_trim: str | None = None,
 ) -> tuple[list, bool]:
     """Build the ffmpeg command list for a normalize encode.
 
@@ -451,12 +453,26 @@ def _build_ffmpeg_cmd(
     as a string, inserted as ``-ss <value>`` immediately after the primary
     input. This is an OUTPUT-side seek (ffmpeg semantics: `-ss` after the last
     `-i` applies to the output, decoding and discarding until that timestamp)
-    that trims the remainder a fast `pre_input_args` seek couldn't reach
-    exactly. Used by normalize_window()'s two-stage seek (PV48 T3, see
-    SEEK_PREROLL_S); normalize() passes None so its command is unchanged.
-    When the video has no audio track, the anullsrc input spliced in below
-    lands BEFORE this seek in the arg list (i.e. still after all `-i`s), so it
-    stays a valid output option either way.
+    that re-bases the output's timestamps close to 0. Used by
+    normalize_window()'s two-stage seek (PV48 T3, see SEEK_PREROLL_S);
+    normalize() passes None so its command is unchanged. When the video has no
+    audio track, the anullsrc input spliced in below lands BEFORE this seek in
+    the arg list (i.e. still after all `-i`s), so it stays a valid output
+    option either way.
+
+    `video_trim` / `audio_trim`: optional ``trim=start=<fine>:duration=<dur>``
+    / ``atrim=start=<fine>:duration=<dur>`` filter heads (PV48 review, no
+    trailing comma — `video_trim` is joined into `-vf` by the caller's own
+    comma-joined `vf_parts` list). The
+    `post_input_seek` above only re-bases where the output STARTS; it does not
+    bound where it ENDS — that was left to `pre_input_args`'s own `-t`, which
+    is measured from wherever decode actually began (`near`), not from the
+    window's true start, so an open-GOP source whose `near` lands inside a
+    leading-picture window produced more video than duration (PV48 review).
+    `video_trim` is prepended to `-vf` (frame-accurate); `audio_trim` is
+    passed as `-af`, only when the source has real audio — the anullsrc arm
+    below relies on `-shortest` against the now-correct video length instead.
+    Both default to "off" so normalize() (which passes neither) is unchanged.
 
     Returns (cmd, used_fallback_tonemap).  Callers that don't need the flag can
     ignore the second element.
@@ -497,6 +513,8 @@ def _build_ffmpeg_cmd(
 
     used_fallback_tonemap = False
     vf_parts: list[str] = []
+    if video_trim:
+        vf_parts.append(video_trim)
     if untagged_as_bt709:
         vf_parts.append(UNTAGGED_AS_BT709_VF)
     if needs_color_conversion:
@@ -528,6 +546,10 @@ def _build_ffmpeg_cmd(
         "-i", input_path,
         *(["-ss", post_input_seek] if post_input_seek else []),
         "-vf", vf,
+        # -af only when the source has a real audio track to trim; the
+        # anullsrc arm below has no stream to bound here and instead matches
+        # video's now-correct length via -shortest.
+        *(["-af", audio_trim] if audio_trim and info["has_audio"] else []),
         # Stream-level color metadata flags — written to the container so
         # downstream consumers (segment encoder, players) read the right color.
         # These complement the per-frame setparams stamping that the segment
@@ -741,18 +763,39 @@ def normalize_window(
     duration = max(0.0, out_point - in_point)
 
     # Two-stage seek: fast input-level seek to `near`, then an accurate
-    # output-side seek decodes and discards the remaining `fine` seconds. A
-    # single input seek straight to in_point can land inside an open-GOP
-    # source's leading-picture window and drop frames (PV48 T1/T3). At
-    # in_point == 0, near == fine == 0.0 and this reduces to exactly today's
-    # args (no post_input_seek emitted), so unaffected callers are unchanged.
+    # output-side seek re-bases the output's timestamps past the remaining
+    # `fine` seconds. A single input seek straight to in_point can land
+    # inside an open-GOP source's leading-picture window and drop frames
+    # (PV48 T1/T3). At in_point == 0, near == fine == 0.0 and this reduces to
+    # exactly today's args (no post_input_seek/trim emitted), so unaffected
+    # callers are unchanged.
+    #
+    # The output-side seek only bounds the START, though — the END was left
+    # to pre_input_args's own -t, measured from wherever decode actually
+    # began (`near`), not from in_point. On an open-GOP source where `near`
+    # itself lands in a leading-picture window that drifts, and the window
+    # ran long: in=4.75/out=5.75 produced 1.2s of video against 1.0s of exact
+    # audio (PV48 review, measured). So input -t is now only a generous upper
+    # bound (fine + duration + 1s) when the two-stage seek is active, and
+    # trim=start=fine:duration=duration / atrim=... do the exact cut, same
+    # shape as materialize_cut.py's fix. Guard duration > 0: a trim
+    # `duration=0` means unlimited, not zero-length, and today's form (no
+    # trim, no +1) already gives the right zero-duration encode.
     near = max(0.0, in_point - SEEK_PREROLL_S)
     fine = in_point - near
+    has_trim = fine > 0 and duration > 0
     pre_input_args = [
         "-ss", f"{near:.4f}",
-        "-t", f"{fine + duration:.4f}",
+        "-t", f"{fine + duration + 1:.4f}" if has_trim else f"{fine + duration:.4f}",
     ]
     post_input_seek = f"{fine:.4f}" if fine > 0 else None
+    # 6 decimals here, not 4 (unlike near/fine/-t above, which only need to
+    # be generous): a 4-decimal `duration=` can round UP past a frame
+    # boundary for periodic fractions like 8/30s ("0.2667" vs the true
+    # 0.266667), admitting one extra frame at the trim's own cut point —
+    # measured, PV48 review. Same fix as materialize_cut.py's _vchain/_achain.
+    video_trim = f"trim=start={fine:.6f}:duration={duration:.6f}" if has_trim else ""
+    audio_trim = f"atrim=start={fine:.6f}:duration={duration:.6f}" if has_trim else None
 
     out_path = os.path.abspath(out_path)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -762,6 +805,7 @@ def normalize_window(
     cmd, used_fallback_tonemap = _build_ffmpeg_cmd(
         input_path, tmp_path, project_color_space, info,
         pre_input_args=pre_input_args, post_input_seek=post_input_seek,
+        video_trim=video_trim, audio_trim=audio_trim,
     )
 
     if used_fallback_tonemap:

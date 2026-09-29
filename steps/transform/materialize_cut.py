@@ -70,12 +70,20 @@ def build_ffmpeg_args(spec: dict, audio_only: bool = False) -> tuple:
     Two-stage seek (PV48 T3, see lib/normalize.SEEK_PREROLL_S): a single
     input-level -ss straight to a segment's start can land inside an
     open-GOP source's leading-picture window and drop frames (PV48 T1). Each
-    segment instead seeks (fast) to near = max(0, s - SEEK_PREROLL_S), widens
-    -t by the remaining `fine = s - near` seconds, and — when fine > 0 —
-    trims that decode-only remainder back off at the head of its own filter
-    chain (trim=start=fine / atrim=start=fine, before setpts/asetpts rebases
-    to 0). At fine == 0 (segment start within SEEK_PREROLL_S of 0, or exactly
-    0) no trim filter is added and the args match today's exactly.
+    segment instead seeks (fast) to near = max(0, s - SEEK_PREROLL_S), and —
+    when fine = s - near > 0 — trims the decode-only remainder back off at
+    the head of its own filter chain: trim=start=fine:duration=(e-s) /
+    atrim=start=fine:duration=(e-s), before setpts/asetpts rebases to 0. The
+    `duration=` bound is load-bearing (PV48 review): the input's own -t
+    can't be trusted as the window's end, because ffmpeg counts it from the
+    first frame actually kept after `near`, not from `s` — on an open-GOP
+    source where `near` itself lands in a leading-picture window, that first
+    kept frame is later than `near`, and a window bounded only by -t runs
+    past `e`. So input -t is now only a generous upper bound (fine + (e-s) +
+    1s), and the trim/atrim filters do the exact cut. At fine == 0 (segment
+    start within SEEK_PREROLL_S of 0, or exactly 0) no trim filter is added
+    and the args match today's exactly — near == s there, so the input's own
+    -t already counts from s and never drifts.
     """
     segs  = _spec_segments(spec)
     n     = len(segs)
@@ -83,16 +91,34 @@ def build_ffmpeg_args(spec: dict, audio_only: bool = False) -> tuple:
 
     input_args = []
     fines = []  # per-segment decode-only remainder (seconds) left to trim
+    durs  = []  # per-segment kept-window length (seconds), e - s
     for src, s, e in segs:
         near = max(0.0, s - SEEK_PREROLL_S)
         fine = s - near
+        dur = e - s
         fines.append(fine)
-        input_args += ["-ss", f"{near:.4f}", "-t", f"{fine + (e - s):.4f}", "-i", src]
+        durs.append(dur)
+        # Guard dur > 0: a trim `duration=0` means unlimited, not zero-length,
+        # so a reversed/zero window (dur <= 0) falls back to today's -t form
+        # rather than emitting a bound that means the opposite of what it says.
+        if fine > 0 and dur > 0:
+            t = fine + dur + 1
+        else:
+            t = fine + dur
+        input_args += ["-ss", f"{near:.4f}", "-t", f"{t:.4f}", "-i", src]
 
     def _vchain(idx):
         parts = []
         if fines[idx] > 0:
-            parts.append(f"trim=start={fines[idx]:.4f}")
+            # 6 decimals here, not 4 (unlike the -ss/near/-t bounds above,
+            # which only need to be generous): a 4-decimal `duration=` can
+            # round UP past a frame boundary for periodic fractions like
+            # 8/30s ("0.2667" vs the true 0.266667), admitting one extra
+            # frame at the trim's own cut point — measured, PV48 review.
+            if durs[idx] > 0:
+                parts.append(f"trim=start={fines[idx]:.6f}:duration={durs[idx]:.6f}")
+            else:
+                parts.append(f"trim=start={fines[idx]:.6f}")
         parts.append("setpts=PTS-STARTPTS")
         parts.append("fps=30")
         if scale:
@@ -106,7 +132,11 @@ def build_ffmpeg_args(spec: dict, audio_only: bool = False) -> tuple:
     def _achain(idx):
         parts = []
         if fines[idx] > 0:
-            parts.append(f"atrim=start={fines[idx]:.4f}")
+            # 6 decimals — see the matching comment in _vchain above.
+            if durs[idx] > 0:
+                parts.append(f"atrim=start={fines[idx]:.6f}:duration={durs[idx]:.6f}")
+            else:
+                parts.append(f"atrim=start={fines[idx]:.6f}")
         parts.append("asetpts=PTS-STARTPTS")
         parts.append("aformat=sample_rates=48000:channel_layouts=stereo:sample_fmts=fltp")
         return f"[{idx}:a]" + ",".join(parts) + f"[ac{idx}]"
