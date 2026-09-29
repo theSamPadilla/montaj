@@ -53,7 +53,7 @@ function makeCallbacks() {
 
 type Callbacks = ReturnType<typeof makeCallbacks>
 
-type ClipTabExtras = { transformSlot?: ReactNode; onOpenCrop?: () => void; generationSlot?: ReactNode }
+type ClipTabExtras = { transformSlot?: ReactNode; onOpenCrop?: () => void; cropNav?: ReactNode; generationSlot?: ReactNode }
 
 function makeElement(selection: ClipSelection, cbs: Callbacks, extra: ClipTabExtras = {}) {
   return (
@@ -493,18 +493,16 @@ describe('ClipPropertiesPanel — clip tabs', () => {
     expect(screen.getByRole('button', { name: 'Transform' })).toHaveAttribute('aria-pressed', 'true')
   })
 
-  it('an image clip offers no Speed, Volume, Crop, or Generate tabs', () => {
-    // Crop/Generate are gated on the CALLER supplying onOpenCrop/
-    // generationSlot at all (the host encodes the "images don't generate or
-    // crop" rule) — this fixture mirrors a host that, for an image, simply
-    // doesn't offer those slots.
-    renderPanel({ kind: 'clip', item: clipItem({ type: 'image' }) }, { transformSlot: <div>T</div> })
-
+  it('an image clip offered the crop tool gets Transform and Crop only, with the crop diamond and no helper sentence', () => {
+    renderPanel({ kind: 'clip', item: clipItem({ type: 'image' }) },
+      { transformSlot: <div>T</div>, onOpenCrop: vi.fn(), cropNav: <div data-testid="crop-nav" /> })
     expect(screen.getByRole('button', { name: 'Transform' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Volume' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Speed' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Crop' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Generate' })).toBeNull()
+    openClipTab('Crop')
+    expect(screen.getByTestId('crop-nav')).toBeTruthy()
+    expect(screen.queryByText(/source video/)).toBeNull()
   })
 
   it('a video clip keeps its Volume tab', () => {

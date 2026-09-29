@@ -55,6 +55,8 @@ export interface ClipPropertiesPanelProps {
    *  tab it's offered and defers to a host-owned crop tool. Absent -> no
    *  Crop tab. */
   onOpenCrop?: () => void
+  /** Rendered in the Crop tab under its button: the host's keyframe unit for the crop (PV55). Absent -> none. */
+  cropNav?: ReactNode
   /** Generate tab body when a video clip is selected. Montaj puts its AI
    *  generation / regenerate surface here: that reads and writes
    *  `project.regenQueue`, a host-only field this package deliberately knows
@@ -229,6 +231,7 @@ interface ClipTabsProps {
   onChangeClip: (item: VisualItem) => void
   transformSlot?: ReactNode
   onOpenCrop?: () => void
+  cropNav?: ReactNode
   generationSlot?: ReactNode
   mode?: 'light' | 'dark'
 }
@@ -237,11 +240,11 @@ interface ClipTabsProps {
  * A selected clip's properties, tabbed: **Transform · Speed · Volume · Crop
  * · Generate**, in that fixed order. A tab appears only when it has
  * something to show for THIS selection — an image clip (a still, no audio)
- * offers only Transform; a main-track video with both slots
- * offers all five. Replaces the old flat `ClipSection` (Volume + Mute +
+ * offers Transform, plus Crop when the host passes `onOpenCrop`; a main-track
+ * video with both slots offers all five. Replaces the old flat `ClipSection` (Volume + Mute +
  * video-only Speed stacked above the host's `generationSlot`).
  */
-function ClipTabs({ item, onPreviewClip, onCommitClip, onChangeClip, transformSlot, onOpenCrop, generationSlot, mode = 'dark' }: ClipTabsProps) {
+function ClipTabs({ item, onPreviewClip, onCommitClip, onChangeClip, transformSlot, onOpenCrop, cropNav, generationSlot, mode = 'dark' }: ClipTabsProps) {
   const tabs: TabNavTab<ClipPanelTab>[] = []
   if (transformSlot !== undefined) tabs.push({ value: 'transform', label: 'Transform' })
   // Speed is video-only, matching the modal this replaces. `setClipSpeed`
@@ -360,9 +363,11 @@ function ClipTabs({ item, onPreviewClip, onCommitClip, onChangeClip, transformSl
                   <div className={`flex h-11 w-11 items-center justify-center rounded-full bg-indigo-500/10 ${mode === 'light' ? 'text-indigo-600' : 'text-indigo-400'}`}>
                     <Crop size={20} />
                   </div>
-                  <p className="max-w-[220px] text-xs leading-relaxed text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">
-                    Reframe this clip by cropping its source video. Pick the part of the frame to keep.
-                  </p>
+                  {item.type !== 'image' && (
+                    <p className="max-w-[220px] text-xs leading-relaxed text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">
+                      Reframe this clip by cropping its source video. Pick the part of the frame to keep.
+                    </p>
+                  )}
                   <button
                     type="button"
                     onClick={onOpenCrop}
@@ -371,6 +376,7 @@ function ClipTabs({ item, onPreviewClip, onCommitClip, onChangeClip, transformSl
                     <Crop size={13} />
                     Open crop tool
                   </button>
+                  {cropNav}
                 </div>
               )}
               {tab.value === 'generate' && generationSlot}
@@ -674,6 +680,7 @@ export default function ClipPropertiesPanel({
   onChangeAudio,
   transformSlot,
   onOpenCrop,
+  cropNav,
   generationSlot,
   mode = 'dark',
 }: ClipPropertiesPanelProps) {
@@ -696,6 +703,7 @@ export default function ClipPropertiesPanel({
         onChangeClip={onChangeClip}
         transformSlot={transformSlot}
         onOpenCrop={onOpenCrop}
+        cropNav={cropNav}
         generationSlot={generationSlot}
         mode={mode}
       />
