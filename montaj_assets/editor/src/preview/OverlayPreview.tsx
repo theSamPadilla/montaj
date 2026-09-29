@@ -15,6 +15,7 @@
 import React, { useEffect, useState } from 'react'
 import type { OverlayFactory } from '../types'
 import { Loader } from '../ui/Loader'
+import { useFontEpoch } from '../lib/use-font-epoch'
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -139,6 +140,7 @@ export function OverlayPreview({
 }: OverlayPreviewProps): React.ReactElement {
   const [factory, setFactory] = useState<OverlayFactory | null>(null)
   const [error, setError] = useState<Error | null>(null)
+  const epoch = useFontEpoch()
 
   useEffect(() => {
     let cancelled = false
@@ -165,6 +167,30 @@ export function OverlayPreview({
   if (error) return <>{errorNode}</>
   if (!factory) return <>{loadingNode}</>
 
+  return (
+    <OverlayBody
+      key={epoch}
+      factory={factory}
+      frame={frame}
+      fps={fps}
+      duration={duration}
+      props={props}
+      errorNode={errorNode}
+    />
+  )
+}
+
+// The factory calls the overlay component as a function, so its hooks run in
+// this component. Keyed on the font epoch by the parent so a font load remounts
+// them (PV50).
+function OverlayBody({ factory, frame, fps, duration, props, errorNode }: {
+  factory: OverlayFactory
+  frame: number
+  fps: number
+  duration: number
+  props: Record<string, unknown>
+  errorNode: React.ReactNode
+}): React.ReactElement {
   try {
     const out = factory(frame, fps, duration, props)
     return out ?? <>{errorNode}</>

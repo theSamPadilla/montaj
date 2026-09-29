@@ -8,6 +8,7 @@ import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
 import { getOverlayDesignCanvas } from '../design-canvas'
 import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
+import { useFontEpoch } from '../../lib/use-font-epoch'
 import type { Corner, Edge, OverlayChanges } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
 import { enabledTrackItems, withEnabledItemTracks } from '../timeline/timeline-model'
@@ -191,6 +192,7 @@ function CustomOverlay({
 }: CustomOverlayProps) {
   const [factory, setFactory] = useState<OverlayFactory | null>(null)
   const [error, setError]     = useState<string | null>(null)
+  const epoch = useFontEpoch()
 
   const compile = useCallback(() => {
     clearOverlayCache?.(src)
@@ -236,7 +238,29 @@ function CustomOverlay({
 
   if (!factory) return null
 
-  const element = factory(frame, fps, durationFrames, resolvedProps)
+  return (
+    <OverlayBody
+      key={epoch}
+      factory={factory}
+      frame={frame}
+      fps={fps}
+      durationFrames={durationFrames}
+      props={resolvedProps}
+    />
+  )
+}
+
+// The compiled factory CALLS the overlay component as a function, so its hooks
+// run in whichever component calls the factory. Calling it here, under a key
+// that changes when a font loads, is what remounts those hooks (PV50).
+function OverlayBody({ factory, frame, fps, durationFrames, props }: {
+  factory: OverlayFactory
+  frame: number
+  fps: number
+  durationFrames: number
+  props: Record<string, unknown>
+}) {
+  const element = factory(frame, fps, durationFrames, props)
   if (!element) return null
 
   return <div className="absolute inset-0 pointer-events-none">{element}</div>
