@@ -366,6 +366,7 @@ describe('OverlayItemsLayer — per-axis scale', () => {
         for (const name of ['cover', 'contain', 'fill']) {
           const btn = getByRole('button', { name }) as HTMLButtonElement
           expect(btn.disabled).toBe(true)
+          expect(btn.title).toBe('Crop keyframes set the framing')
           fireEvent.click(btn)
         }
         expect(onOverlayChange).not.toHaveBeenCalled()
@@ -376,6 +377,7 @@ describe('OverlayItemsLayer — per-axis scale', () => {
         const { getByRole } = renderLayer(item, { currentTime: 1, selected: true, track0, onOverlayChange })
         const btn = getByRole('button', { name: 'contain' }) as HTMLButtonElement
         expect(btn.disabled).toBe(false)
+        expect(btn.title).toBe('')
         fireEvent.click(btn)
         expect(onOverlayChange).toHaveBeenCalledWith('k', { fit: 'contain' })
       })

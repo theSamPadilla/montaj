@@ -379,10 +379,10 @@ function RotateHandle({ scaleX, scaleY, onMouseDown }: {
 const FIT_OPTIONS: Array<'cover' | 'contain' | 'fill'> = ['cover', 'contain', 'fill']
 // While an image's crop is keyframed the fit is ignored (an animated crop
 // always covers), so the control is shown DISABLED rather than accepting clicks
-// that do nothing. The treatment is Sam's call and lives on the next two lines:
-// LOCKED_TITLE is the tooltip (undefined = no new copy); to hide the control
-// instead of disabling it, return null when `locked`.
-const LOCKED_TITLE: string | undefined = undefined
+// that do nothing. Sam, 2026-09-29: disabled with a tooltip naming the cause, not
+// hidden (a control that appears and disappears as keys are added reads as a
+// glitch, and the layout would shift). To hide it instead, return null when `locked`.
+const LOCKED_TITLE: string | undefined = 'Crop keyframes set the framing'
 function FitControl({ value, scaleX, scaleY, onChange, locked }: {
   value: 'cover' | 'contain' | 'fill'
   scaleX: number
