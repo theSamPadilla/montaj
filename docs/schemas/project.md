@@ -377,8 +377,10 @@ on any other kind. An image whose crop is keyframed always covers its box.
 
 ```json
 "keyframes": [
-  { "prop": "cropX", "points": [{ "t": 0, "value": 0.1 }, { "t": 4, "value": 0.4, "easing": "ease-in-out" }] },
-  { "prop": "cropW", "points": [{ "t": 0, "value": 0.5 }, { "t": 4, "value": 0.3, "easing": "ease-in-out" }] }
+  { "prop": "cropX", "points": [{ "t": 0, "value": 0.1, "easing": "ease-in-out" }, { "t": 4, "value": 0.4 }] },
+  { "prop": "cropY", "points": [{ "t": 0, "value": 0, "easing": "ease-in-out" }, { "t": 4, "value": 0.2 }] },
+  { "prop": "cropW", "points": [{ "t": 0, "value": 0.5, "easing": "ease-in-out" }, { "t": 4, "value": 0.3 }] },
+  { "prop": "cropH", "points": [{ "t": 0, "value": 1, "easing": "ease-in-out" }, { "t": 4, "value": 0.6 }] }
 ]
 ```
 
