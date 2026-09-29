@@ -1,0 +1,14 @@
+{
+  "families": [
+    "Bebas Neue",
+    "Oswald"
+  ],
+  "faces": {
+    "Bebas Neue": { "normal": [400] },
+    "Oswald": { "normal": [400] }
+  },
+  "requested": {
+    "Bebas Neue": { "normal": [400] },
+    "Oswald": { "normal": [400] }
+  }
+}

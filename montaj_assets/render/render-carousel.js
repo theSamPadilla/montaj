@@ -179,7 +179,7 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
             await page.goto(toFileHref(htmlPath), { waitUntil: 'networkidle0', timeout: 30_000 })
 
             // Belt-and-suspenders: wait for all images to finish loading
-            await page.evaluate(() =>
+            const imagesLoaded = () => page.evaluate(() =>
               Promise.all(
                 [...document.images].map(img =>
                   img.complete ? null : new Promise(r => { img.onload = img.onerror = r })
@@ -191,12 +191,26 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
             // real family (e.g. Archivo Black) rather than a fallback — matching
             // the editor preview. Raced against a 5s cap: a slow/blocked font
             // fetch must never hang the render (it proceeds with the fallback).
-            await page.evaluate(() =>
+            const fontsReady = () => page.evaluate(() =>
               Promise.race([
                 document.fonts ? document.fonts.ready : Promise.resolve(),
                 new Promise(r => setTimeout(r, 5000)),
               ])
             )
+
+            await imagesLoaded()
+            await fontsReady()
+
+            // If a font loaded after the slide mounted, remount it so anything
+            // it measured at mount is measured again with the real font (see
+            // __remountIfFontsChanged in bundleSlide's shim). The remounted
+            // <img> elements are new, so wait for them again, then for fonts,
+            // then let the result composite before the screenshot.
+            if (await page.evaluate(() => window.__remountIfFontsChanged?.() ?? false)) {
+              await imagesLoaded()
+              await fontsReady()
+              await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
+            }
 
             await page.screenshot({
               path:            outFile,
@@ -292,7 +306,9 @@ async function bundleSlide({ slide, width, height, projectDir, fontsBaseDir = ''
   const projDirStr = JSON.stringify(projectDir)
 
   const shim = `
+import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { flushSync } from 'react-dom'
 import { makeOverlayGlobals } from 'montaj-overlay-runtime'
 import { Slide } from ${JSON.stringify(slidePath)}
 ${overlayImports}
@@ -323,15 +339,40 @@ const projectDir = ${projDirStr}
 
 ${assetResolverSource(projectDir)}
 
-createRoot(document.getElementById('root')).render(
-  <Slide
-    slide={slide}
-    width={width}
-    height={height}
-    overlayRegistry={overlayRegistry}
-    resolveAsset={resolveAsset}
-  />
-)
+// The slide mounts before its webfonts load, so an overlay that measures its
+// text at mount measures fallback metrics, and waiting for the fonts does not
+// re-run that measurement. Same fix as the video shim (bundle.js): a
+// \`loadingdone\` listener, registered before the mount, marks the fonts dirty,
+// and the page sequence calls __remountIfFontsChanged() after its fonts wait so
+// the slide remounts, and measures again, with the real metrics. A slide that
+// loads no font never remounts.
+let fontsDirty = false
+document.fonts?.addEventListener('loadingdone', () => { fontsDirty = true })
+let setEpoch
+
+function Root() {
+  const [epoch, setEpochState] = useState(0)
+  setEpoch = setEpochState
+  return (
+    <Slide
+      key={epoch}
+      slide={slide}
+      width={width}
+      height={height}
+      overlayRegistry={overlayRegistry}
+      resolveAsset={resolveAsset}
+    />
+  )
+}
+
+window.__remountIfFontsChanged = () => {
+  if (!fontsDirty) return false
+  fontsDirty = false
+  flushSync(() => setEpoch(e => e + 1))
+  return true
+}
+
+createRoot(document.getElementById('root')).render(<Root />)
 `
 
   const shimPath   = join(workDir, 'shim.jsx')

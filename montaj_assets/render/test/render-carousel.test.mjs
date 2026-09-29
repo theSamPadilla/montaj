@@ -87,12 +87,13 @@ function readPngDimensions(pngPath) {
 
 /**
  * Run render-carousel.js synchronously. Returns { status, stdout, stderr }.
+ * `env` is merged over this process's environment.
  */
-function runRenderer(args, { cwd } = {}) {
+function runRenderer(args, { cwd, env } = {}) {
   const result = spawnSync(
     'node',
     [SCRIPT, ...args],
-    { encoding: 'utf8', timeout: 120_000, cwd },
+    { encoding: 'utf8', timeout: 120_000, cwd, env: env && { ...process.env, ...env } },
   )
   return {
     status: result.status,
@@ -268,6 +269,59 @@ test('--scale 2: PNGs are 2160×2160 and manifest separates design from output d
     assert.equal(s.designHeight, 1080, 'designHeight should be design-coord 1080')
     assert.equal(s.width,        2160, 'width should be scaled 2160')
     assert.equal(s.height,       2160, 'height should be scaled 2160')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Font remount (PV50 T3)
+// ---------------------------------------------------------------------------
+//
+// A slide mounts before its webfont loads, so an overlay that measures its text
+// once at mount measured fallback metrics and kept them: the fonts wait re-runs
+// nothing. With the remount, that slide must come out pixel-identical to a
+// slide placing the same words at hardcoded, already-correct positions
+// (WordsFixed, whose numbers were measured with the fixture font). The fonts are
+// the offline fixture set, so the render reaches no network.
+
+const FONT_FIXTURES    = resolve(__dirname, 'fixtures', 'fonts')
+const REMOUNT_FIXTURES = resolve(__dirname, 'fixtures', 'font-remount')
+
+test('a slide that measures its text at mount matches the same text at hardcoded positions', { timeout: 120_000 }, () => {
+  const slide = (id, template) => ({
+    id,
+    base_color: '#000000',
+    elements: [{
+      id:          `${id}-overlay`,
+      type:        'overlay',
+      x: 0, y: 0, w: 1080, h: 1080,
+      googleFonts: ['Bebas+Neue'],
+      overlay:     { template: join(REMOUNT_FIXTURES, template), props: {} },
+    }],
+  })
+  const dir = writeTempProject({
+    projectType: 'carousel',
+    settings:    { resolution: [1080, 1080] },
+    carousel:    { aspect: 'square' },
+    slides:      [slide('measured', 'WordsMount.jsx'), slide('fixed', 'WordsFixed.jsx')],
+  })
+  const outDir = join(dir, 'render')
+  try {
+    const { status, stderr } = runRenderer(
+      ['--project-json', join(dir, 'project.json'), '--out', outDir, '--scale', '1'],
+      { env: { MONTAJ_FONTS_DIR: FONT_FIXTURES } },
+    )
+    assert.equal(status, 0, `render failed:\n${stderr}`)
+    // Bebas Neue came from the fixture set, not from Google and not missing.
+    assert.match(stderr, /fonts: vendored set/)
+    assert.doesNotMatch(stderr, /fonts\.googleapis\.com/)
+
+    const measured = readFileSync(join(outDir, 'slide_01.png'))
+    const fixed    = readFileSync(join(outDir, 'slide_02.png'))
+    assert.ok(measured.equals(fixed),
+      'the slide that measures at mount must be pixel-identical to the hardcoded one; '
+      + 'a difference means it kept the positions it measured before Bebas Neue loaded')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
