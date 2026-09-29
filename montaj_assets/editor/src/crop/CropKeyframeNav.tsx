@@ -6,11 +6,14 @@ import { usePlaybackTime, type PlaybackClock } from '../video/playback-clock'
 /** The Crop tab's `‹ ◇ ›` (PV55): step between crop keyframes, and add or
  *  remove the crop keyframe at the playhead. The four crop props key as one;
  *  the rules are the Transform rows' (`toggleCropKeyframeAt`). */
-export function CropKeyframeNav({ item, clock, onChange, onSeek }: {
+export function CropKeyframeNav({ item, clock, onChange, onSeek, frame }: {
   item: VisualItem
   clock: PlaybackClock
   onChange: (item: VisualItem) => void
   onSeek?: (time: number) => void
+  /** The box-shaped framing at the playhead, when known: an add keys this
+   *  instead of the untrimmed crop. Omitted, the add holds the current crop. */
+  frame?: (localT: number) => { x: number; y: number; w: number; h: number } | undefined
 }) {
   const localT = localTimeOf(item, usePlaybackTime(clock))
   const times = [...new Set(CROP_PROPS.flatMap(p => trackFor(item, p)?.points.map(pt => pt.t) ?? []))].sort((a, b) => a - b)
@@ -28,7 +31,7 @@ export function CropKeyframeNav({ item, clock, onChange, onSeek }: {
       canNext={!!onSeek && next !== undefined}
       onPrev={() => { if (prev !== undefined) onSeek?.(item.start + prev) }}
       onNext={() => { if (next !== undefined) onSeek?.(item.start + next) }}
-      onDiamond={() => onChange(toggleCropKeyframeAt(item, localT))}
+      onDiamond={() => onChange(toggleCropKeyframeAt(item, localT, frame?.(localT)))}
     />
   )
 }

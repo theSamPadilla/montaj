@@ -533,13 +533,19 @@ export function cropKeyedAt(item: VisualItem, t: number): boolean {
 }
 
 /** The Crop tab's diamond. Remove the crop keyframe at `t` from every crop
- *  prop, or add one to all four holding the current framing. Per prop it is
- *  exactly `toggleKeyframeAt`'s rule, so removing the last keyframe writes its
- *  value into `sourceCrop` and nothing moves. */
-export function toggleCropKeyframeAt(item: VisualItem, t: number): VisualItem {
+ *  prop, or add one to all four. Per prop it is `toggleKeyframeAt`'s rule, so
+ *  removing the last keyframe writes its value into `sourceCrop` and nothing
+ *  moves. An add holds `frame` when given (the box-shaped framing the viewer
+ *  sees, so a later zoom does not hide behind the cover fit), else the current
+ *  untrimmed crop. */
+export function toggleCropKeyframeAt(item: VisualItem, t: number, frame?: CropRect): VisualItem {
   const keyed = cropKeyedAt(item, t)
   let next = item
-  for (const prop of CROP_PROPS) next = keyed ? removeKeyframeAt(next, prop, t) : addKeyframeAt(next, prop, t)
+  for (const prop of CROP_PROPS) {
+    if (keyed) next = removeKeyframeAt(next, prop, t)
+    else if (frame && keyframeTimeAt(next, prop, t) === undefined) next = setKeyframe(next, prop, t, frame[CROP_FIELD[prop]])
+    else next = addKeyframeAt(next, prop, t)
+  }
   return next
 }
 

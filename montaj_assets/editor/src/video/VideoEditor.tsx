@@ -5,7 +5,9 @@ import type { AudioTrack, VisualItem } from '../schema'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
 import { CropKeyframeNav } from '../crop/CropKeyframeNav'
-import { localTimeOf, writeCrop } from './keyframeOps'
+import { cropAt, localTimeOf, writeCrop } from './keyframeOps'
+import { useImageNaturalSize } from './useImageNaturalSize'
+import { trimToAspect } from '../crop/crop-math'
 import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
 import { Tooltip } from '../ui/Tooltip'
 import { reviveNumberInRange, usePersistentState } from '../ui/usePersistentState'
@@ -1404,6 +1406,11 @@ function ReviewSurface<P extends Project>({
       ?? trackItems(project).flat().find(i => i.id === primarySelectedId && i.type === 'image' && !!i.src)
       ?? null
     : null
+
+  // The crop target still's natural size: the Crop tab's diamond needs it to key
+  // the box-shaped framing the viewer sees. Null until loaded (the diamond then
+  // keys the untrimmed crop).
+  const cropNatural = useImageNaturalSize(cropTarget?.type === 'image' ? adapter.fileUrl(cropTarget.src ?? '') : undefined)
 
   // Selecting a different item (or nothing croppable) exits crop mode.
   useEffect(() => {
@@ -2828,7 +2835,24 @@ function ReviewSurface<P extends Project>({
               }
               cropNav={
                 clipSelection.kind === 'clip' && clipSelection.item.type === 'image' && cropTarget?.id === clipSelection.item.id
-                  ? <CropKeyframeNav item={clipSelection.item} clock={clock} onChange={applyOverlayInspectorChange} onSeek={seekTo} />
+                  ? <CropKeyframeNav
+                      item={clipSelection.item}
+                      clock={clock}
+                      onChange={applyOverlayInspectorChange}
+                      onSeek={seekTo}
+                      frame={(localT) => {
+                        if (!cropNatural) return undefined
+                        const it = clipSelection.item
+                        const g = geometryAt(it, it.type, localT)
+                        const [rw, rh] = project.settings?.resolution ?? [1080, 1920]
+                        return trimToAspect({
+                          crop: cropAt(it, localT),
+                          aspect: (rw * g.scaleX) / (rh * g.scaleY),
+                          srcWidth: cropNatural.w,
+                          srcHeight: cropNatural.h,
+                        })
+                      }}
+                    />
                   : undefined
               }
               // The host's generation panel is per-CLIP — it draws that clip's

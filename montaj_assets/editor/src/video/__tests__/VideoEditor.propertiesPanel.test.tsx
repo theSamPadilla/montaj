@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import type { EditorAdapter, ImageElement, Project, RenderEvent, VersionEntry, WaveformChunk } from '../../types'
 import VideoEditor from '../VideoEditor'
 import { installCanvasHarness, selectCanvasItem } from '../timeline/__tests__/_canvasSelect'
@@ -590,6 +590,40 @@ describe('VideoEditor — CapCut right properties panel', () => {
       for (const prop of ['cropX', 'cropY', 'cropW', 'cropH']) expect(pts(prop)?.map(p => p.t)).toEqual([2])
       expect(pts('cropW')?.[0].value).toBe(1)
       expect(pts('cropX')?.[0].value).toBe(0)
+    })
+  })
+
+  it("the Crop tab's first diamond key holds the box-shaped framing the viewer sees (F10)", async () => {
+    onTestFinished(installCanvasHarness())
+    // The hook's probe: a 2000x1000 still, loaded as soon as src is set.
+    const RealImage = globalThis.Image
+    class FakeImage {
+      naturalWidth = 2000
+      naturalHeight = 1000
+      onload: (() => void) | null = null
+      set src(_v: string) { queueMicrotask(() => this.onload?.()) }
+    }
+    ;(globalThis as unknown as { Image: unknown }).Image = FakeImage
+    onTestFinished(() => { globalThis.Image = RealImage })
+    const project = makeProject({
+      tracks: [[{ id: 'img-0', type: 'image', src: 'photo.jpg', start: 0, end: 4 }]],
+    } as unknown as Partial<Project>)
+    const adapter = makeFakeAdapter(project)
+    const { container } = renderCapCut(project, adapter)
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+    selectCanvasItem(container, project, { id: 'img-0' })
+
+    fireEvent.click(await clipTab('Crop'))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Crop keyframe at playhead' }))
+
+    await waitFor(() => {
+      const kf = (lastSaved(adapter).tracks?.[0]?.items?.[0] as { keyframes?: { prop: string; points: { t: number; value: number }[] }[] }).keyframes
+      const v = (prop: string) => kf?.find(k => k.prop === prop)?.points[0].value
+      expect(v('cropW')).toBeCloseTo(0.28125, 9)
+      expect(v('cropX')).toBeCloseTo((1 - 0.28125) / 2, 9)
+      expect(v('cropH')).toBe(1)
+      expect(v('cropY')).toBe(0)
     })
   })
 

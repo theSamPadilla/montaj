@@ -71,4 +71,19 @@ describe('PV55: the crop in keyframeOps', () => {
     expect(off.keyframes).toBeUndefined()
     expect(off.sourceCrop).toEqual(RECT)
   })
+
+  it('the diamond with a frame keys the frame, not the untrimmed crop (F10 D1)', () => {
+    const frame = { x: 0.35, y: 0, w: 0.3, h: 1 }
+    const next = toggleCropKeyframeAt(img(), 1, frame)
+    for (const p of CROP_PROPS) expect(next.keyframes?.find(k => k.prop === p)?.points.map(pt => pt.t)).toEqual([1])
+    expect(cropAt(next, 1)).toEqual(frame)
+    expect(next.sourceCrop).toBeUndefined()
+  })
+
+  it('a frame changes nothing when the diamond removes', () => {
+    const keyed = toggleCropKeyframeAt(img(), 0)
+    const off = toggleCropKeyframeAt(keyed, 0, { x: 0.35, y: 0, w: 0.3, h: 1 })
+    expect(off.keyframes).toBeUndefined()
+    expect(off.sourceCrop).toEqual({ x: 0, y: 0, w: 1, h: 1 })
+  })
 })

@@ -32,4 +32,13 @@ describe('CropKeyframeNav (PV55)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Next Crop keyframe' }))
     expect(onSeek.mock.calls.map(c => c[0])).toEqual([10, 13])
   })
+  it('a click with a frame keys the frame values', () => {
+    const onChange = vi.fn()
+    const frame = { x: 0.35, y: 0, w: 0.3, h: 1 }
+    render(<CropKeyframeNav item={still} clock={createPlaybackClock(11)} onChange={onChange} frame={() => frame} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add Crop keyframe at playhead' }))
+    const next = onChange.mock.calls[0][0] as VisualItem
+    const at = (p: string) => next.keyframes?.find(k => k.prop === p)?.points[0].value
+    expect([at('cropX'), at('cropY'), at('cropW'), at('cropH')]).toEqual([0.35, 0, 0.3, 1])
+  })
 })
