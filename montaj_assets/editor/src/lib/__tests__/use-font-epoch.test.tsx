@@ -26,6 +26,18 @@ describe('useFontEpoch', () => {
     expect(result.current).toBe(2)
   })
 
+  it('ignores a loadingdone with no faces (a failed load)', () => {
+    const fonts = new EventTarget()
+    setFonts(fonts)
+    const { result } = renderHook(() => useFontEpoch())
+    const failed = Object.assign(new Event('loadingdone'), { fontfaces: [] })
+    act(() => { fonts.dispatchEvent(failed) })
+    expect(result.current).toBe(0)
+    const ok = Object.assign(new Event('loadingdone'), { fontfaces: [{}] })
+    act(() => { fonts.dispatchEvent(ok) })
+    expect(result.current).toBe(1)
+  })
+
   it('returns 0 without document.fonts', () => {
     setFonts(undefined)
     const { result } = renderHook(() => useFontEpoch())

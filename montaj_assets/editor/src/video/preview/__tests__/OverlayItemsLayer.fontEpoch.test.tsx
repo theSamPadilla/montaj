@@ -105,3 +105,44 @@ describe.each(cases)('%s font epoch', (_name, make) => {
     await waitFor(() => expect(mounts).toBe(1))
   })
 })
+
+// A watchFile recompile swaps the factory in place. The new overlay must mount
+// fresh, not inherit the old overlay's hook list (guardedFactory in the host
+// turns a hook-count mismatch into a badge rather than a throw).
+describe('CustomOverlay live edit', () => {
+  function guarded(Comp: (p: { frame: number }) => React.ReactElement): OverlayFactory {
+    return (frame) => {
+      try { return Comp({ frame }) } catch (e) { return <span data-testid="ov">badge: {String((e as Error).message)}</span> }
+    }
+  }
+  const v1 = guarded(() => { const [w] = React.useState(() => 'measured-v1'); return <span data-testid="ov">{w}</span> })
+  const v2 = guarded(() => { const [w] = React.useState(() => 'measured-v2'); return <span data-testid="ov">{w}</span> })
+  const v3 = guarded(() => { const [w] = React.useState(() => 'v3'); React.useRef(0); return <span data-testid="ov">{w}</span> })
+
+  function run(next: OverlayFactory) {
+    let onChange: () => void = () => {}
+    let current: OverlayFactory = v1
+    const el = React.cloneElement(layer(1), {
+      compileOverlay: async () => current,
+      watchFile: (_p: string, cb: () => void) => { onChange = cb; return () => {} },
+    })
+    render(el)
+    return { reload: () => { current = next; onChange() } }
+  }
+
+  it('a mount-time value is re-measured after an edit', async () => {
+    setFonts(new EventTarget())
+    const { reload } = run(v2)
+    await waitFor(() => expect(screen.getByTestId('ov').textContent).toBe('measured-v1'))
+    await act(async () => { reload() })
+    await waitFor(() => expect(screen.getByTestId('ov').textContent).toBe('measured-v2'))
+  })
+
+  it('an edit that adds a hook draws the overlay, not a badge', async () => {
+    setFonts(new EventTarget())
+    const { reload } = run(v3)
+    await waitFor(() => expect(screen.getByTestId('ov').textContent).toBe('measured-v1'))
+    await act(async () => { reload() })
+    await waitFor(() => expect(screen.getByTestId('ov').textContent).toBe('v3'))
+  })
+})

@@ -10,7 +10,11 @@ export function useFontEpoch(): number {
   useEffect(() => {
     const fonts = typeof document !== 'undefined' ? document.fonts : undefined
     if (!fonts || typeof fonts.addEventListener !== 'function') return
-    const onDone = () => setEpoch((n) => n + 1)
+    // A failed load also fires loadingdone, with no fontfaces: nothing changed.
+    const onDone = (e: Event) => {
+      if ((e as Event & { fontfaces?: unknown[] }).fontfaces?.length === 0) return
+      setEpoch((n) => n + 1)
+    }
     fonts.addEventListener('loadingdone', onDone)
     return () => fonts.removeEventListener('loadingdone', onDone)
   }, [])

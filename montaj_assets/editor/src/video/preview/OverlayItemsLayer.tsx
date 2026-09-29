@@ -240,7 +240,7 @@ function CustomOverlay({
 
   return (
     <OverlayBody
-      key={epoch}
+      key={`${factoryKey(factory)}:${epoch}`}
       factory={factory}
       frame={frame}
       fps={fps}
@@ -248,6 +248,16 @@ function CustomOverlay({
       props={resolvedProps}
     />
   )
+}
+
+// A watchFile recompile swaps the factory in place; without the factory id in
+// the key the new overlay would inherit the old one's hook list.
+const factoryIds = new WeakMap<OverlayFactory, number>()
+let nextFactoryId = 0
+function factoryKey(f: OverlayFactory): number {
+  let id = factoryIds.get(f)
+  if (id === undefined) factoryIds.set(f, (id = ++nextFactoryId))
+  return id
 }
 
 // The compiled factory CALLS the overlay component as a function, so its hooks
