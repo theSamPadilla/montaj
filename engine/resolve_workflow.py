@@ -10,6 +10,10 @@ Two kinds of steps:
 
 The resolver looks for a step script first; if neither the .py nor the .json
 is present it falls back to the skill path. Missing both paths is an error.
+
+A third scope, `app/`, is always a skill and never touches disk: it names a
+skill the host app serves itself (e.g. montaj-app, by entitlement), which
+the agent loads remotely with get_skill rather than from skills/<name>/SKILL.md.
 """
 import argparse, json, os, sys
 
@@ -52,7 +56,16 @@ def resolve_step(uses, project_dir):
     Returns a dict:
       - step  form: {"kind": "step",  "executable": <py>, "schema_path": <json>}
       - skill form: {"kind": "skill", "skill_path": <SKILL.md>}
+      - app   form: {"kind": "skill", "skill": <uses>, "remote": True} — a
+                     skill the host app serves (e.g. montaj-app), by
+                     entitlement. Nothing resolves on disk; the agent loads
+                     it with get_skill. No skill_path, unlike the other two
+                     skill forms above.
     """
+    if uses.startswith("app/"):
+        # A skill the host app serves (montaj-app's backend, by entitlement).
+        # Nothing on disk; the agent loads it with get_skill.
+        return {"kind": "skill", "skill": uses, "remote": True}
     if uses.startswith("montaj/"):
         name = uses[len("montaj/"):]
         steps_dir = BUILT_IN_STEPS_DIR
@@ -147,13 +160,20 @@ def main():
             # Skill-backed step: no param schema, no executable. The agent
             # loads the skill and follows its contract. Any workflow-declared
             # `params` pass through as-is so skills can still accept config.
-            resolved.append({
+            entry = {
                 "id": step_id,
                 "uses": uses,
                 "kind": "skill",
-                "skill_path": ref["skill_path"],
                 "params": workflow_params,
-            })
+            }
+            if ref.get("remote"):
+                # app/ scope: nothing on disk, so there is no skill_path —
+                # only the remote skill's full `uses` name.
+                entry["skill"] = ref["skill"]
+                entry["remote"] = True
+            else:
+                entry["skill_path"] = ref["skill_path"]
+            resolved.append(entry)
 
     print(json.dumps(resolved, indent=2))
 

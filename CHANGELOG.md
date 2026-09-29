@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Workflows can name host-app skills with the `app/` scope; `get_workflow` marks them `kind: "skill"` with the full `app/<name>`.
+
 ## v5.5.5
 
 - **Changed: an audio track now stops at its `end` in the export, and a track with no `end` plays in the preview.** Before, the preview never played a track without an `end` (in a project with music, voiceovers and sound effects, only tracks with an explicit `end` were heard), while the export played it to the end of its file. The export also ignored `end` except to place a fade-out, so a track whose `end` came before the end of its file played on past it. Preview and export now play every track over the same span: from `start` to the earliest of its `end`, its `outPoint` and the end of its file, which is how `docs/schemas/project.md` has always defined `end`. **For an existing project:** a track whose `end` is earlier than its file's end now stops at `end` in the export, as it already did in the preview, so a re-render can be shorter than before. A sound effect shorter than its slot no longer restarts in the preview once it finishes. An `outPoint` at or before `inPoint` no longer aborts the render; it is treated as unset.

@@ -30,7 +30,10 @@ def _annotate_steps(workflow: dict) -> None:
     can branch on without a presence check. When kind is "skill", the
     skill's bare name is also set as `skill` (e.g. "select-takes") — read off
     the resolved skill_path rather than re-parsed from `uses`, so it stays
-    correct regardless of scope prefix.
+    correct regardless of scope prefix. The `app/` scope is also "skill" but
+    has no skill_path to read a bare name off of — there, `skill` is the
+    full `uses` (e.g. "app/point-cloud-character"), which is the name a
+    caller passes to get_skill to load it remotely.
 
     resolve_step fails via lib.common.fail(), which does sys.exit(1) — a
     SystemExit, not an Exception — so it must be caught explicitly here or
@@ -54,7 +57,7 @@ def _annotate_steps(workflow: dict) -> None:
             continue
         entry["kind"] = ref["kind"]
         if ref["kind"] == "skill":
-            entry["skill"] = Path(ref["skill_path"]).parent.name
+            entry["skill"] = ref.get("skill") or Path(ref["skill_path"]).parent.name
 
 
 def _workflow_dirs() -> list[tuple[str, Path]]:
