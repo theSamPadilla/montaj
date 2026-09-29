@@ -363,10 +363,16 @@ let engineRootsCache = null
 
 /**
  * Directories whose files are montaj's, not the user's: render's node_modules
- * and core/, overlay-runtime, and the real target of every package render's
- * node_modules links to (`montaj-overlay-runtime`, `@bycrux/timeline-core` are
- * `file:` symlinks in both a dev checkout and the app's install). Each is
- * listed as spelled and as its realpath, since esbuild reports realpaths.
+ * and core/, the sibling overlay-runtime and timeline-core, and the real
+ * target of every package render's node_modules links to. Each is listed as
+ * spelled and as its realpath, since esbuild reports realpaths.
+ *
+ * The fixed entries are what make the roots the same in any layout: whether
+ * `montaj-overlay-runtime` and `@bycrux/timeline-core` are symlinks into those
+ * siblings depends on how npm linked the `file:` dependencies (its
+ * `install-links` default has flipped before), and a wheel ships no
+ * node_modules at all. The symlink pass catches the rest. Do not drop a fixed
+ * entry as redundant with it.
  */
 export function engineRoots() {
   if (engineRootsCache) return engineRootsCache
@@ -375,6 +381,7 @@ export function engineRoots() {
   addWithRealpath(roots, nodeModules)
   addWithRealpath(roots, join(__dirname, 'core'))
   addWithRealpath(roots, join(__dirname, '..', 'overlay-runtime'))
+  addWithRealpath(roots, join(__dirname, '..', 'timeline-core'))
   const addLinks = dir => {
     let names
     try { names = readdirSync(dir) } catch { return }

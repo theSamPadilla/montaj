@@ -9,7 +9,7 @@
 // is never a root here.
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, unlinkSync, realpathSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, unlinkSync, realpathSync, existsSync, copyFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -114,6 +114,22 @@ describe('overlayReadRoots: a project folder is a root only inside another root'
   test('the bundle\'s own work dir is a root wherever it is: render creates it', () => {
     const b = overlayReadBoundary({ workDir: join(outside, 'lib') })
     assert.equal(b.allows(join(outside, 'lib', 'entry.js')), true)
+  })
+})
+
+describe('engineRoots: the same in any layout', () => {
+  test('with no node_modules at all (a wheel\'s layout), overlay-runtime and timeline-core are still engine roots', async () => {
+    // Not reached through a node_modules symlink here, so only the fixed
+    // entries can put them in: how npm links a `file:` dependency varies.
+    const layout = realpathSync(mkdtempSync(join(tmpdir(), 'montaj-layout-')))
+    try {
+      for (const d of ['render', 'overlay-runtime', 'timeline-core']) mkdirSync(join(layout, d))
+      for (const f of ['overlay-build.js', 'file-url.js']) copyFileSync(join(RENDER, f), join(layout, 'render', f))
+      const { engineRoots } = await import(pathToFileURL(join(layout, 'render', 'overlay-build.js')).href)
+      const roots = engineRoots()
+      assert.ok(roots.includes(join(layout, 'overlay-runtime')), 'overlay-runtime')
+      assert.ok(roots.includes(join(layout, 'timeline-core')), 'timeline-core')
+    } finally { rmSync(layout, { recursive: true, force: true }) }
   })
 })
 
