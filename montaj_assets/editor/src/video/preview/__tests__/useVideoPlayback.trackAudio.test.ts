@@ -227,6 +227,7 @@ describe('useVideoPlayback — the track fold reaches the GainNodes', () => {
     act(() => { result.current.handleTimeUpdate() })
     g1.writes.length = 0
 
+    Object.defineProperty(v0, 'paused', { value: false, configurable: true }) // a boundary is only crossed while playing
     v0.currentTime = 5 // at outPoint, and b starts exactly where a ends
     act(() => { result.current.handleTimeUpdate() })
 
@@ -251,6 +252,7 @@ describe('useVideoPlayback — the track fold reaches the GainNodes', () => {
 
     const { result, v0, g1 } = mount(projectWith([a, b], { volume: 0.5 }))
     scheduled.length = 0
+    Object.defineProperty(v0, 'paused', { value: false, configurable: true }) // a boundary is only crossed while playing
     v0.currentTime = 2 // at a's outPoint, and b starts 1s later — a gap, not a cut
     act(() => { result.current.handleTimeUpdate() })
     expect(scheduled.length).toBeGreaterThan(0)

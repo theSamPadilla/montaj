@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed: footage and audio no longer start playing by themselves while an agent edits the project.** A clip-boundary check fired on a paused, zero-length clip whenever the project updated, treating it as "clip ended" and starting the next one, and a play retry could start a hidden clip that nothing paused. Only playback now crosses a clip boundary, and a retry only replays the clip that still owns playback.
+
 ## v5.5.0
 
 - **Whisper steps now accept every model `montaj models download` installs.** `small.en`, `small`, `large-v1` and `large-v2` downloaded fine, but `transcribe`, `filler`, `lyrics_sync` and `generate_captions` refused them (a 422 from serve, "invalid choice" from the CLI). The steps' choices and the downloadable models are now one list, pinned by a test.

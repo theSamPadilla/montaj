@@ -282,7 +282,12 @@ export function useVideoPlayback(
   function playSoon(video: HTMLVideoElement) {
     const p = video.play()
     if (p) p.catch(() => {
-      const onCanPlay = () => { video.removeEventListener('canplay', onCanPlay); video.play().catch(() => {}) }
+      const onCanPlay = () => {
+        video.removeEventListener('canplay', onCanPlay)
+        // Replay only if this slot still owns playback; a stale retry on a
+        // slot that has since gone inactive plays hidden and is never paused.
+        if (video === getActiveVideo() && isPlayingRef.current) video.play().catch(() => {})
+      }
       video.addEventListener('canplay', onCanPlay)
     })
   }
@@ -800,7 +805,11 @@ export function useVideoPlayback(
     // boundary too — otherwise the clip switch never fires and playback stalls
     // at that clip's end (raw full-length sources never hit this; trimmed
     // window caches can).
-    if (video.currentTime >= outPoint || video.ended) {
+    // Only PLAYBACK crosses a boundary. A paused element reports `timeupdate`
+    // too (every src reload, every seek); a paused clip sitting on its outPoint
+    // (a zero-length placeholder always is) must not start the next one.
+    // Natural EOF is paused as well, which is what `ended` distinguishes.
+    if ((video.currentTime >= outPoint && !video.paused) || video.ended) {
       if (clip.loop) {
         const projectT = clip.start + loopOffsetRef.current + (video.currentTime - clipInPoint)
         if (projectT < clip.end) {
