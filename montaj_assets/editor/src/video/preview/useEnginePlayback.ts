@@ -64,6 +64,7 @@ import {
   type EngineStatus,
 } from '../../engine'
 import { getSharedAudioContext, latencySeconds, peekSharedAudioContext, resumeAudioContextFromGesture } from './audio-context'
+import { laneSourceExhausted } from './audioLane'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import { enabledTrackItems } from '../timeline/timeline-model'
 
@@ -345,10 +346,13 @@ export function useEnginePlayback(
    * Slave every audio lane to the engine's playhead.
    *
    * The legacy version computed the window and the fade envelope inline; this
-   * one asks `timeline-core`'s `audioWindow` — the pure port of exactly that
-   * arithmetic, including the derived-outPoint rule (the stored `outPoint` can
-   * drift out of sync with start/end during a trim and cause premature
-   * silence). Finishing that adoption is plan decision 5.
+   * one asks `timeline-core`'s `audioWindow`, whose window is the one the
+   * export plays the track over (`audioSourceWindow`). Finishing that adoption
+   * is plan decision 5.
+   *
+   * The window can outlast the file (no `end`, or an `end` past the file's
+   * length), and `play()` on an element that has reached the end of its file
+   * restarts it from 0, so `laneSourceExhausted` leaves such a lane paused.
    *
    * Stable identity (`[]` + refs), because the engine's tick callback captures
    * it once at construction.
@@ -359,7 +363,7 @@ export function useEnginePlayback(
       if (!el) continue
 
       const win = audioWindow(track, playhead)
-      if (!win.active) {
+      if (!win.active || laneSourceExhausted(el, win.trackTime, AUDIO_SYNC_THRESHOLD_S)) {
         if (!el.paused) el.pause()
         continue
       }

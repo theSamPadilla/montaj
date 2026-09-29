@@ -259,11 +259,11 @@ test('compose: an audio track that starts partway through is audible in the expo
   // Two beds handing off at 5s, the shape that surfaced the bug: bed B starts
   // offset, with both a fade-in and a fade-out.
   //
-  // `outPoint: 5` on both is load-bearing, not tidiness. This file's source
-  // window is inPoint/outPoint alone — mix-audio.js never trims on `end` — so
-  // an untrimmed bed A would run its full 10s source straight through the 6-9s
-  // window and mask bed B's silence, and the test would pass against the
-  // unfixed code. Trimming makes that boundary explicit rather than leaving it
+  // `outPoint: 5` on both is load-bearing, not tidiness. When this test was
+  // written mix-audio.js did not trim on `end` (it does now, see
+  // audio-window-parity.test.mjs), so an untrimmed bed A would have run its
+  // full 10s source straight through the 6-9s window and masked bed B's
+  // silence, and the test would have passed against the unfixed code. Trimming makes that boundary explicit rather than leaving it
   // resting on bed A's fade-out happening to reach zero in time.
   await compose({
     projectJson: {

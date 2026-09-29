@@ -3,8 +3,15 @@
  *
  * Handles project.audio.tracks: per-track delay, volume, trimming, and amix.
  * Video item audio (muted flag on VisualItems) is handled inline in compose.js.
+ *
+ * WHERE a track plays (its start, and the slice of its source) is not decided
+ * here: it is timeline-core's `audioSourceWindow`, the same function the
+ * editor preview's `audioWindow` reads, so the export and the preview play
+ * every track over the same span. render/test/audio-window-parity.test.mjs
+ * holds them together.
  */
 import { spawnSync } from 'child_process'
+import { audioSourceWindow } from '@bycrux/timeline-core'
 import { FFMPEG } from './ffmpeg-bin.js'
 
 const FFMPEG_TIMEOUT_MS = 600_000
@@ -73,9 +80,9 @@ function buildFadeFilters(track) {
   const fadeIn  = track.fadeIn  ?? 0
   const fadeOut = track.fadeOut ?? 0
   // NOT `?? 0`. A track with no `end` is legal and common — `_validate_audio_tracks`
-  // in engine/validate.py deliberately does not require one, because this file
-  // never trims on `end` (the source window is inPoint/outPoint alone), so a music
-  // bed without one plays its natural length. Defaulting a missing `end` to 0 would
+  // in engine/validate.py deliberately does not require one: such a track plays
+  // to the end of its source slice (see `buildAudioTrackInputs`), so a music bed
+  // without one plays its natural length. Defaulting a missing `end` to 0 would
   // put the fade-out at st=0, inside the adelay padding, and zero the track for the
   // whole stream — the very failure this helper exists to prevent, reachable just by
   // dragging a fade-out grip on an end-less bed. A zero- or negative-width window
@@ -100,6 +107,18 @@ function buildFadeFilters(track) {
 /**
  * Build ffmpeg input args for all unmuted audio tracks.
  *
+ * The source slice is `audioSourceWindow`'s: `-ss inPoint`, and `-to` at
+ * whichever of `outPoint` and the declared `end` comes first (as input
+ * options, `-to` is a SOURCE position, so the slice is `to - ss` long). With
+ * neither, there is no `-to` and the track plays to the end of its file.
+ *
+ * `end` used to be ignored here, so a track stopped at its `outPoint` or its
+ * file's end while the editor stopped it at `end`: a split music bed's right
+ * half (`outPoint` = the whole file) played on past its own bar. And an
+ * `outPoint` at or before the `inPoint` (`outPoint: 0` exists on disk) went to
+ * ffmpeg as-is, which aborts the whole render with "-to value smaller than
+ * -ss"; `audioSourceWindow` drops it as undeclared.
+ *
  * @param {Array} audioTracks  — project.audio.tracks
  * @returns {string[]}         — flat array of ffmpeg input args
  */
@@ -107,10 +126,9 @@ export function buildAudioTrackInputs(audioTracks = []) {
   const args = []
   for (const track of audioTracks) {
     if (track.muted) continue
-    const inPt  = track.inPoint  ?? 0
-    const outPt = track.outPoint ?? null
-    if (inPt > 0)       args.push('-ss', String(inPt))
-    if (outPt !== null) args.push('-to', String(outPt))
+    const { inPoint, outPoint } = audioSourceWindow(track)
+    if (inPoint > 0)       args.push('-ss', String(inPoint))
+    if (outPoint !== null) args.push('-to', String(outPoint))
     args.push('-i', track.src)
   }
   return args

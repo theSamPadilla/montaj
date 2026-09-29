@@ -6,6 +6,7 @@ import {
   audioWindow,
 } from '@bycrux/timeline-core'
 import { gateProxy, isProxyUsable, markProxyFailed } from './proxySupport'
+import { laneSourceExhausted } from './audioLane'
 import {
   getSharedAudioContext,
   latencySeconds,
@@ -516,18 +517,22 @@ export function useVideoPlayback(
   useEffect(() => { unmutedAudioTracksRef.current = unmutedAudioTracks }, [unmutedAudioTracks])
 
   // SP4 T8: the window/gain arithmetic is routed through timeline-core's
-  // `audioWindow` (`src/audio.js`) — the pure port of exactly this logic,
-  // derived-outPoint rule included — the same way `useEnginePlayback.ts`
-  // already does for the WebCodecs engine path. The 0.3s re-seek threshold
-  // and all other imperative behavior (play/pause calls, gain writes) are
-  // kept exactly; only the pure MATH moved to the shared implementation.
+  // `audioWindow` (`src/audio.js`) — the same window the export plays the
+  // track over — exactly as `useEnginePlayback.ts` does for the WebCodecs
+  // engine path. The 0.3s re-seek threshold and all other imperative behavior
+  // (play/pause calls, gain writes) stay here.
+  //
+  // `laneSourceExhausted`: the window can outlast the file (no `end`, or an
+  // `end` past the file's length), and `play()` on an element that has reached
+  // the end of its file restarts it from 0. Past the end of the audio the lane
+  // is left paused, like a lane outside its window.
   const syncAudioTracks = useCallback(function syncAudioTracks(playhead: number, playing: boolean) {
     for (const track of unmutedAudioTracksRef.current) {
       const el = audioRefsMap.current.get(track.id)
       if (!el) continue
 
       const win = audioWindow(track, playhead)
-      if (!win.active) {
+      if (!win.active || laneSourceExhausted(el, win.trackTime, 0.3)) {
         if (!el.paused) el.pause()
         continue
       }

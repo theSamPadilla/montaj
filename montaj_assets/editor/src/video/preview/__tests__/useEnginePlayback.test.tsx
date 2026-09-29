@@ -527,4 +527,69 @@ describe('useEnginePlayback audio lanes', () => {
     // exactly the legacy `continue`.
     expect(gains[0].gain.value).toBe(inside)
   })
+
+  // ── A window that outlasts its file ────────────────────────────────────────
+  //
+  // `play()` on a media element that has reached the end of its file restarts
+  // it from 0. A lane whose timeline window runs past the end of its source (a
+  // short SFX with no `end`, or an `end` beyond the file) would otherwise be
+  // restarted on every tick after it finished: a looping or stuttering SFX.
+
+  /** A 3s file placed at 2 with inPoint 1: the source runs out at t = 4, the window at t = 8. */
+  const outlasting = () =>
+    makeProject({
+      audio: { tracks: [{ id: 'sfx', src: 'sfx.mp3', start: 2, end: 8, inPoint: 1 } as never] },
+    } as Partial<Project>)
+
+  function fileOf(el: HTMLAudioElement, duration: number, ended = false) {
+    Object.defineProperty(el, 'duration', { configurable: true, get: () => duration })
+    Object.defineProperty(el, 'ended', { configurable: true, get: () => ended })
+  }
+
+  it('plays a lane while its source has audio left', () => {
+    const { engine } = setup(outlasting())
+    const el = audioEls[0]
+    fileOf(el, 3)
+    const play = vi.spyOn(el, 'play')
+    act(() => { engine.setTransport('playing') })
+    // t = 3 → trackTime 2, inside the 3s file.
+    act(() => { engine.emit(3) })
+    expect(play).toHaveBeenCalled()
+  })
+
+  it('never calls play() on a lane whose source is exhausted', () => {
+    const { engine } = setup(outlasting())
+    const el = audioEls[0]
+    fileOf(el, 3, true)
+    const play = vi.spyOn(el, 'play')
+    act(() => { engine.setTransport('playing') })
+    // t = 5 → trackTime 4: inside the window [2, 8) but past the file's end.
+    act(() => { engine.emit(5) })
+    act(() => { engine.emit(6) })
+    expect(play).not.toHaveBeenCalled()
+  })
+
+  it('does not restart an ended lane that is only drift-behind the end of its file', () => {
+    // The element ran slightly ahead of the playhead and finished first:
+    // trackTime 2.9 against a 3s file is inside the re-seek tolerance, so there
+    // is nothing left to play and play() would restart it from 0.
+    const { engine } = setup(outlasting())
+    const el = audioEls[0]
+    fileOf(el, 3, true)
+    const play = vi.spyOn(el, 'play')
+    act(() => { engine.setTransport('playing') })
+    act(() => { engine.emit(3.9) })
+    expect(play).not.toHaveBeenCalled()
+  })
+
+  it('an ended lane plays again once the playhead is moved back into its audio', () => {
+    const { engine } = setup(outlasting())
+    const el = audioEls[0]
+    fileOf(el, 3, true)
+    const play = vi.spyOn(el, 'play')
+    act(() => { engine.setTransport('playing') })
+    // t = 2.5 → trackTime 1.5, well inside the file.
+    act(() => { engine.emit(2.5) })
+    expect(play).toHaveBeenCalled()
+  })
 })

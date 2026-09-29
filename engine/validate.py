@@ -201,13 +201,14 @@ def _validate_audio_tracks(data):
     """`audio.tracks` shape check.
 
     **Deliberately does NOT require `end`.** A track with no `end` is legal and
-    renders correctly: `montaj_assets/render/mix-audio.js` delays by
-    `track.start ?? 0` and never trims on `end` (it uses `end` only to place a
-    fade-out), so the source window is `inPoint`/`outPoint` alone and a music
-    bed with neither plays its natural length. Requiring `end` here would
-    outlaw a valid project in order to paper over an editor defect; the editor
-    is fixed instead — see `audioWindow` / `groupAudioLanes` in
-    `montaj_assets/editor/src/video/timeline/timeline-model.ts`.
+    renders correctly: it plays to the end of its source slice (`outPoint`, else
+    the file's end), in the export and in the editor preview alike, since both
+    read timeline-core's `audioSourceWindow`. A music bed with neither `end` nor
+    `outPoint` plays its natural length. Requiring `end` here would outlaw a
+    valid project in order to paper over an editor defect; the editor is fixed
+    instead — see `resolveAudioWindow` / `groupAudioLanes` in
+    `montaj_assets/editor/src/video/timeline/timeline-model.ts` and
+    `audioWindow` in `montaj_assets/timeline-core/src/audio.js`.
 
     What IS checked is the shape. A track with no `src` renders nothing at all.
     A non-numeric `start`/`end`/`volume` reaches ffmpeg as a malformed filter

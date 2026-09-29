@@ -138,9 +138,8 @@ test('buildAudioTrackFilters: a track at the origin is behaviourally unchanged',
 
 test('buildAudioTrackFilters: a track with no `end` gets NO fade-out rather than one at st=0', () => {
   // `end` is optional by design — engine/validate.py's `_validate_audio_tracks`
-  // deliberately does not require it, because mix-audio.js never trims on `end`
-  // (the source window is inPoint/outPoint alone), so a bed without one plays its
-  // natural length. Defaulting a missing `end` to 0 put the fade-out at st=0,
+  // deliberately does not require it: a bed without one plays to the end of its
+  // source slice (`outPoint`, else its natural length). Defaulting a missing `end` to 0 put the fade-out at st=0,
   // inside the adelay padding, and afade=t=out then holds zero for the rest of the
   // stream — silencing the whole track. Reachable just by dragging a fade-out grip
   // on an end-less bed, which commits `{ fadeOut }` and nothing else.

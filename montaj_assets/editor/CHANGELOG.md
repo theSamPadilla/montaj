@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Video editor
+
+- **Fixed: an audio track with no `end` was silent in the preview, though the export played it.** The preview's audio window read a missing `end` as 0, so the track was never inside it; a project whose voiceovers and SFX carried no `end` previewed only its one track that did. Such a track now plays to the end of its source slice, and a track whose window outlasts its file is left paused once the file is done instead of restarting from 0 on every tick. The window comes from `@bycrux/timeline-core`'s `audioSourceWindow`, the same one the export uses. (`video/preview/useVideoPlayback.ts`, `video/preview/useEnginePlayback.ts`, `video/preview/audioLane.ts`)
+
 ## 1.6.0 — 2026-09-28
 
 ### Video editor

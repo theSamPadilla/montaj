@@ -386,7 +386,21 @@ Every one below was independently re-verified against the cited source during
 T5 (grepped/read the actual lines, not transcribed on faith) — see the T5
 report for what was checked.
 
-## D1. `audio-outpoint-not-derived` — a genuine, distinct bug-class finding
+## D1. `audio-outpoint-not-derived` — ✅ RESOLVED (2026-09-28)
+
+**Resolution.** Both sides now read one function, `audioSourceWindow`
+(`src/audio.js`): a track starts at `start` from `inPoint` and stops at
+whichever of its declared `end`, its stored `outPoint` and the end of its file
+comes first. `mix-audio.js`'s `buildAudioTrackInputs` turns that into
+`-ss`/`-to`; the preview's `audioWindow` reads the same window. The preview
+gave up the derived-outPoint rule (it ignored a stored `outPoint`), and the
+export gave up ignoring `end`, which it did not trim on at all. The staleness
+the rule guarded against no longer arises from the editor's own trims:
+`resizeWindowedItem` writes both window bounds. The same change fixed a track
+with no `end` never playing in preview (`end ?? 0`).
+`render/test/audio-window-parity.test.mjs` checks the two windows against each
+other shape by shape, reading the export's window out of its real ffmpeg args,
+and measures one real mix. The original finding is kept below.
 
 **Verified.** `mix-audio.js`'s `buildAudioTrackInputs` (lines 18-29) uses the
 STORED `track.outPoint` directly:

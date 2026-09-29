@@ -44,8 +44,9 @@ export * from './src/geometry.js'
 // (every active segment, lane-ascending) for multi-row captions.
 export * from './src/captions.js'
 
-// T4 — audio: audioWindow, derived-outPoint rule + fade envelope (absorbs the
-// pure arithmetic slice of useVideoPlayback.ts:435-484).
+// T4 — audio: audioSourceWindow (where a track plays, shared by the export's
+// mix-audio.js and the preview) and audioWindow (the preview's per-tick
+// window + fade envelope over it).
 export * from './src/audio.js'
 
 // SP9b-T0.1 — keyframe curves: sampleTrack (the per-frame read path),

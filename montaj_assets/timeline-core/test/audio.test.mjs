@@ -1,12 +1,13 @@
 // montaj_assets/timeline-core/test/audio.test.mjs
 //
-// T4 suite for `audioWindow`, the fidelity contract for the pure-arithmetic
-// port of useVideoPlayback.ts:435-484 (`syncAudioTracks`). See src/audio.js's
-// module header for the exact quoted original and the derived-outPoint rule
-// this exists to test.
+// T4 suite for `audioWindow`, the pure half of the preview's per-track audio
+// sync. Its WINDOW must be the export's window (render/mix-audio.js) for every
+// track shape — see src/audio.js's module header. The shape-by-shape proof
+// against the export's real ffmpeg args is render/test/audio-window-parity.test.mjs;
+// this file pins the rule itself.
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { audioWindow } from '../index.js'
+import { audioWindow, audioSourceWindow } from '../index.js'
 
 /** Float compare — division in the fade math, so 1e-9 is plenty. */
 function closeTo(actual, expected, message) {
@@ -49,40 +50,152 @@ describe('audioWindow: inside / outside the timeline window', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 2. The derived-outPoint rule beats a stale stored outPoint
+// 2. A declared `end` and a stored `outPoint` both bind: first one wins
 // ---------------------------------------------------------------------------
+//
+// This section used to be "the derived-outPoint rule beats a stale stored
+// outPoint": audioWindow ignored `outPoint` entirely and derived the source
+// end from `end - start`. The export never did — mix-audio.js hands the stored
+// `outPoint` to ffmpeg's `-to` — so a track with `outPoint` short of its span
+// previewed at full length and exported truncated (KNOWN-DIVERGENCES D1). The
+// preview now takes the export's window, so those tests asserted the
+// divergence, not a feature.
 
-describe('audioWindow: derived-outPoint rule (premature-silence-after-trim fix)', () => {
-  test('a stale stored outPoint that would silence the track early is ignored — active stays true', () => {
-    // Track trimmed so its timeline span is [10, 20] (10s), inPoint 5, so the
-    // ACTUAL span it now occupies in the source is [5, 15). A stale stored
-    // outPoint of 12 (left over from before the trim) would say "silence at
-    // source-time 12", which is BEFORE trackTime 13 at playhead 18 — the
-    // premature-silence bug. audioWindow does not even look at track.outPoint;
-    // it derives 5 + (20-10) = 15, so trackTime 13 < 15 and the track is
-    // still active.
+describe('audioWindow: declared end and stored outPoint', () => {
+  test('a stored outPoint short of the span stops the track at the outPoint, as the export does', () => {
+    // Span [10, 20), inPoint 5, outPoint 12: the source slice is [5, 12), so the
+    // track is audible over [10, 17) — the export's `-ss 5 -to 12` exactly.
     const track = { start: 10, end: 20, inPoint: 5, outPoint: 12 }
+    assert.equal(audioWindow(track, 16.9).active, true)
     const w = audioWindow(track, 18)
     closeTo(w.trackTime, 13, 'trackTime = (18-10)+5')
-    assert.equal(w.active, true, 'derived outPoint (15) beats the stale stored outPoint (12)')
+    assert.equal(w.active, false, 'source slice [5, 12) is exhausted at trackTime 12')
   })
 
-  test('audioWindow never reads track.outPoint at all — removing the field changes nothing', () => {
-    const withStale = { start: 0, end: 10, inPoint: 0, outPoint: 1 }
-    const { outPoint: _drop, ...withoutStale } = withStale
-    for (const t of [0, 3, 7, 9.999]) {
-      assert.deepEqual(audioWindow(withStale, t), audioWindow(withoutStale, t))
-    }
+  test('a stored outPoint past the declared end stops the track at the end', () => {
+    // The right half of a split music bed carries `outPoint = sourceDuration`
+    // (cuts.ts splitAudioTrack) while its `end` is where the bar stops.
+    const track = { start: 10, end: 20, inPoint: 10, outPoint: 60 }
+    assert.equal(audioWindow(track, 19.9).active, true)
+    assert.equal(audioWindow(track, 20).active, false)
   })
 
-  test('the derived outPoint still correctly silences a track once its actual span is exhausted', () => {
-    // span [0,10), inPoint 0 -> derived outPoint = 0 + 10 = 10. At trackTime
-    // >= 10 (i.e. playhead >= 10) the track goes inactive via t >= end anyway,
-    // but confirm trackTime itself reaches the derived boundary at the edge.
+  test('a declared end with no outPoint stops the track at the end', () => {
     const track = { start: 0, end: 10, inPoint: 0 }
     const w = audioWindow(track, 9.999999)
     assert.equal(w.active, true)
     assert.ok(w.trackTime < 10)
+    assert.equal(audioWindow(track, 10).active, false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2b. No usable `end`: open-ended, like the export
+// ---------------------------------------------------------------------------
+//
+// `end` is optional (engine/validate.py does not require it; the export plays
+// such a track at its natural length). audioWindow used to default a missing
+// `end` to 0, so `t >= end` held for every t and the track was NEVER active in
+// preview while the export played it in full.
+
+describe('audioWindow: a track with no usable end is open-ended', () => {
+  test('{start: 4} is active at t=5 — the reported bug', () => {
+    const w = audioWindow({ start: 4 }, 5)
+    assert.equal(w.active, true)
+    closeTo(w.trackTime, 1, 'trackTime = 5 - 4')
+  })
+
+  test('{start: 4} is active from its start with no upper bound (the file ends it)', () => {
+    const track = { start: 4 }
+    assert.equal(audioWindow(track, 3.999).active, false)
+    assert.equal(audioWindow(track, 4).active, true)
+    assert.equal(audioWindow(track, 1000).active, true)
+  })
+
+  test('end <= start, a null end and a non-numeric end all count as undeclared', () => {
+    for (const end of [4, 2, -1, null, undefined, 'x', Number.NaN, Infinity]) {
+      const track = /** @type {any} */ ({ start: 4, end })
+      assert.equal(audioWindow(track, 5).active, true, `end=${String(end)} at t=5`)
+      assert.equal(audioWindow(track, 500).active, true, `end=${String(end)} at t=500`)
+    }
+  })
+
+  test('{start, inPoint, outPoint} with no end plays outPoint - inPoint', () => {
+    // Source slice [3, 8) → 5s, placed at 2 → audible over [2, 7).
+    const track = { start: 2, inPoint: 3, outPoint: 8 }
+    assert.equal(audioWindow(track, 2).active, true)
+    assert.equal(audioWindow(track, 6.999).active, true)
+    closeTo(audioWindow(track, 6).trackTime, 7, 'trackTime = (6-2)+3')
+    assert.equal(audioWindow(track, 7).active, false)
+  })
+
+  test('an outPoint at or before the inPoint counts as undeclared too', () => {
+    // `outPoint: 0` exists on disk; handed to ffmpeg as `-to 0` it aborted the
+    // whole render ("-to value smaller than -ss").
+    for (const track of [{ start: 1, outPoint: 0 }, { start: 1, inPoint: 5, outPoint: 3 }, { start: 1, inPoint: 5, outPoint: 5 }]) {
+      assert.equal(audioWindow(track, 100).active, true, JSON.stringify(track))
+    }
+  })
+
+  test('with no end there is no fade-out anchor, so the fade-out is not applied', () => {
+    // The export emits no `afade=t=out` for such a track (mix-audio.js
+    // buildFadeFilters). The old `end ?? 0` put `remaining` below zero and
+    // held the gain at 0 for the whole track.
+    const track = { start: 12, fadeOut: 2, volume: 0.8 }
+    closeTo(audioWindow(track, 13).gain, 0.8, 'full volume, no fade-out')
+    closeTo(audioWindow({ start: 12, fadeIn: 2 }, 13).gain, 0.5, 'the fade-in still anchors to start')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2c. A well-formed track is unchanged
+// ---------------------------------------------------------------------------
+
+/** audioWindow as it was before the no-`end` fix, verbatim. */
+function legacyAudioWindow(track, t) {
+  const start = track.start ?? 0
+  const end = track.end ?? 0
+  const inPt = track.inPoint ?? 0
+  const trackTime = t - start + inPt
+  const outPoint = inPt + (end - start)
+  const outsideWindow = t < start || t >= end || trackTime < 0 || trackTime >= outPoint
+  const fadeIn = track.fadeIn ?? 0
+  const fadeOut = track.fadeOut ?? 0
+  const baseVol = track.volume ?? 1
+  const elapsed = t - start
+  const remaining = end - t
+  let fadeMul = 1
+  if (fadeIn > 0 && elapsed < fadeIn) fadeMul = elapsed / fadeIn
+  if (fadeOut > 0 && remaining < fadeOut) fadeMul = Math.min(fadeMul, remaining / fadeOut)
+  return { active: !outsideWindow, trackTime, gain: baseVol * Math.max(0, fadeMul) }
+}
+
+describe('audioWindow: a track with a real end and no outPoint behaves exactly as before', () => {
+  const tracks = [
+    { start: 27, end: 31 },
+    { start: 27, end: 31, inPoint: 2, fadeIn: 0.5, fadeOut: 1, volume: 0.7 },
+    { start: 0, end: 10, fadeIn: 10, fadeOut: 2 },
+  ]
+  for (const track of tracks) {
+    test(JSON.stringify(track), () => {
+      for (let t = -2; t <= 40; t += 0.125) {
+        assert.deepEqual(audioWindow(track, t), legacyAudioWindow(track, t), `t=${t}`)
+      }
+    })
+  }
+})
+
+describe('audioSourceWindow', () => {
+  test('normalizes each field the way the export reads it', () => {
+    assert.deepEqual(audioSourceWindow({}), { start: 0, inPoint: 0, outPoint: null, end: null })
+    assert.deepEqual(audioSourceWindow({ start: 4 }), { start: 4, inPoint: 0, outPoint: null, end: null })
+    assert.deepEqual(audioSourceWindow({ start: 4, end: 4 }), { start: 4, inPoint: 0, outPoint: null, end: null })
+    assert.deepEqual(audioSourceWindow({ start: 27, end: 31 }), { start: 27, inPoint: 0, outPoint: 4, end: 31 })
+    assert.deepEqual(audioSourceWindow({ start: 2, inPoint: 3, outPoint: 8 }), { start: 2, inPoint: 3, outPoint: 8, end: null })
+    assert.deepEqual(audioSourceWindow({ start: 10, end: 20, inPoint: 5, outPoint: 12 }), { start: 10, inPoint: 5, outPoint: 12, end: 20 })
+    assert.deepEqual(audioSourceWindow({ start: 10, end: 20, inPoint: 10, outPoint: 60 }), { start: 10, inPoint: 10, outPoint: 20, end: 20 })
+    // ffmpeg gets no `-ss` for an inPoint <= 0, so the source starts at 0.
+    assert.deepEqual(audioSourceWindow({ start: 3, inPoint: -1 }), { start: 3, inPoint: 0, outPoint: null, end: null })
   })
 })
 
@@ -167,10 +280,16 @@ describe('audioWindow: volume scaling', () => {
 // ---------------------------------------------------------------------------
 
 describe('audioWindow: zero-length track', () => {
-  test('a track whose start equals its end is never active, and never throws or produces NaN/Infinity', () => {
+  // This test used to read "a track whose start equals its end is never
+  // active". That asserted the bug: the export treats `end <= start` as no
+  // `end` at all and plays the track at its natural length, and so does the
+  // editor's timeline (`resolveAudioWindow`). start == end is open-ended now.
+  test('a track whose start equals its end is open-ended (as the export plays it), and never throws or produces NaN/Infinity', () => {
     const track = { start: 5, end: 5, inPoint: 0 }
     const w = audioWindow(track, 5)
-    assert.equal(w.active, false)
+    assert.equal(w.active, true)
+    assert.equal(audioWindow(track, 60).active, true)
+    assert.equal(audioWindow(track, 4.999).active, false)
     assert.equal(Number.isFinite(w.trackTime), true)
     assert.equal(Number.isFinite(w.gain), true)
   })

@@ -581,8 +581,8 @@ Independent audio tracks, mixed into the video in a final pass. Every audio sour
 | `muted` | bool | When true the track is skipped entirely. |
 | `volume` | number | Linear gain. Defaults to `1.0`. |
 | `start` | number | Where the track begins on the output timeline, in seconds. Implemented as a delay; defaults to `0`. |
-| `end` | number | Where the track stops on the output timeline, in seconds. |
-| `inPoint` / `outPoint` | number | Slice of the **source** file to use. Optional. |
+| `end` | number | Where the track stops on the output timeline, in seconds. Optional: absent, or not after `start`, means the track plays to the end of its source slice. |
+| `inPoint` / `outPoint` | number | Slice of the **source** file to use. Optional. The track stops at whichever of `end`, `outPoint` and the end of the file comes first, in the editor preview and the export alike. |
 | `fadeIn` / `fadeOut` | number | Fade durations in seconds. **Auto-managed on overlap** — see "Automatic crossfade" below before setting these by hand. |
 | `fadeInCurve` / `fadeOutCurve` | string | `'linear' \| 'log' \| 'exp'`. Absent means `'exp'`, which is also the shape every fade rendered before curves existed, so an un-set project looks unchanged. Maps to ffmpeg `afade`'s `curve=`. |
 | `lane` | integer | Which timeline **row** this track renders in. Absent means "give me my own row": the editor assigns one auto-incrementing lane per unlabelled track, so **N tracks with no `lane` render as N separate rows.** Give several tracks the same `lane` to stack them in one row — that is how a multi-clip music bed reads as a single element rather than a pile of rows. Purely visual: the mix is unaffected by lane, and every track is summed regardless of which row it sits in. |

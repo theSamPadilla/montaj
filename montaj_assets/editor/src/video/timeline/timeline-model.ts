@@ -79,10 +79,11 @@ function finiteNumber(value: unknown): number | null {
  * the names are kept distinct on purpose.
  *
  * `start` and `end` are OPTIONAL on an audio track. `docs/schemas/project.md`
- * marks only `src` required, and the renderer agrees: `render/mix-audio.js`
- * delays by `start ?? 0` and never trims on `end` (it reads `end` only to
- * place a fade-out), so the source window is `inPoint`/`outPoint` alone and a
- * music bed with neither field plays its natural length. The `AudioTrack`
+ * marks only `src` required, and the renderer agrees: a track with no usable
+ * `end` plays to the end of its source slice (`outPoint`, else the file's
+ * end), so a music bed with neither field plays its natural length. Where a
+ * track plays is timeline-core's `audioSourceWindow`, shared by the export and
+ * the preview's `audioWindow`; this function only sizes the BAR. The `AudioTrack`
  * type here declares both required — a convenience for the many call sites
  * that do arithmetic on them, not a claim about what is on disk.
  *

@@ -726,24 +726,50 @@ export declare function activeCaptionSegments<T extends CaptionSegment>(
   fps: number,
 ): T[]
 
-/** A `project.audio.tracks[]` entry, as far as window/gain math is concerned. */
+/**
+ * A `project.audio.tracks[]` entry, as far as window/gain math is concerned.
+ * Every field is optional, and a malformed one (non-numeric, `end <= start`,
+ * `outPoint <= inPoint`) counts as absent; see src/audio.js's module header.
+ */
 export interface AudioTrack {
   /** Timeline start, seconds. */
   start?: number
-  /** Timeline end, seconds. */
+  /** Timeline end, seconds. Absent = the track plays to the end of its source slice. */
   end?: number
   /** Source-time the track starts playing from, seconds. */
   inPoint?: number
+  /** Source-time the track stops playing at, seconds. */
+  outPoint?: number
   /** Fade-in duration, seconds. */
   fadeIn?: number
-  /** Fade-out duration, seconds. */
+  /** Fade-out duration, seconds. Needs a usable `end` to anchor to. */
   fadeOut?: number
   /** Base volume multiplier (1 = unity; >1 amplifies). */
   volume?: number
 }
 
+/** Where a track plays: its timeline start and the slice of its source file. */
+export interface AudioSourceWindow {
+  /** Timeline position the track begins at, seconds. */
+  start: number
+  /** Source position playback begins from, seconds. Never negative. */
+  inPoint: number
+  /** Source position playback stops at, seconds; `null` = the end of the file. `> inPoint` when set. */
+  outPoint: number | null
+  /** The declared timeline end when usable (finite, `> start`), else `null`. The fade-out anchors to it. */
+  end: number | null
+}
+
+/**
+ * THE one definition of where an audio track plays, read by both the export
+ * (`render/mix-audio.js`, as ffmpeg's `-ss`/`-to`) and the preview
+ * ({@link audioWindow}). The track stops at whichever of `end`, `outPoint` and
+ * the end of its file comes first; see src/audio.js's module header.
+ */
+export declare function audioSourceWindow(track: AudioTrack): AudioSourceWindow
+
 export interface AudioWindow {
-  /** Whether timeline time `t` falls inside this track's playable window (derived-outPoint rule). */
+  /** Whether timeline time `t` falls inside this track's window ({@link audioSourceWindow}). */
   active: boolean
   /** Position inside the track's OWN source file, seconds. Meaningful only when `active`. */
   trackTime: number
@@ -753,11 +779,10 @@ export interface AudioWindow {
 
 /**
  * Whether `track` is audible at timeline time `t`, where inside its own
- * source file that lands, and at what gain. Pure port of the arithmetic slice
- * of `useVideoPlayback.ts:435-484` (`syncAudioTracks`) — the derived-outPoint
- * rule and the fade-in/fade-out envelope. See src/audio.js's module header
- * for the verbatim original and the render-side (`mix-audio.js`) divergence
- * this documents.
+ * source file that lands, and at what gain. The window is
+ * {@link audioSourceWindow}'s, so the preview plays a track over exactly the
+ * span the export does. A window with no `outPoint` is open-ended: the
+ * caller's element stops at the end of the file.
  */
 export declare function audioWindow(track: AudioTrack, t: number): AudioWindow
 
