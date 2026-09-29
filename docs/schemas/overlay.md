@@ -33,7 +33,9 @@ export default function MyOverlay({ frame, fps, duration, ...props }) {
 }
 ```
 
-**No imports.** Custom overlay JSX is executed in a sandboxed context where all `import` statements are stripped before evaluation. `interpolate` and `spring` are injected as globals — do not import them. Do not import anything else; those imports will be silently dropped at runtime.
+**Imports.** Overlay JSX may import your own files: relative paths (`./lib/palette.js`, `../_shared/ease.ts`, `.json` data) and `montaj/render` resolve in render and in the editor preview, and `react` resolves to the editor's React. The preview only follows files under the workspace, `~/.montaj/overlays` and profile folders. An import that doesn't resolve fails at render and shows an error in the preview.
+
+`frame`, `fps`, `duration`, `props`, `interpolate`, `spring` and the rest are injected as globals, and that stays the way to use them. Do not import `three`, `@react-three/fiber`, `recharts`, Phosphor or FontAwesome: render cannot resolve them from overlay code. A shared module must export functions and read the globals only inside them, because its top level runs before render sets them.
 
 ### Required props
 

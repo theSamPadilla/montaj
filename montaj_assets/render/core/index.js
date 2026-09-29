@@ -10,9 +10,8 @@
 //     preview's global injection) keeps the two consumers in sync the same
 //     way interpolate/spring already do.
 //   - bundle.js's esbuild alias config maps 'montaj/render' here
-// User-authored overlay JSX (inspected via `grep -rn` across /Users/Sam/Montaj
-// projects) uses bare globals only and would not need this — but the in-tree
-// consumers above do. We forward to the runtime so there's exactly one source
+// User-authored overlay JSX mostly uses bare globals, but it may also import
+// 'montaj/render', which resolves here. We forward to the runtime so there's exactly one source
 // of truth for the implementations.
 export {
   interpolate,

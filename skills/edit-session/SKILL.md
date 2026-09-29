@@ -167,7 +167,7 @@ All four globals (`Ph`, `FaIcon`, `FaSolid`, `FaBrands`) are injected automatica
 
 ## JSX authoring quick reference
 
-All overlay JSX has these globals injected — **no imports, ever**:
+All overlay JSX has these globals injected. Use them instead of importing packages; shared files of your own may be imported (see `write-overlay`):
 
 | Global | Description |
 |--------|-------------|

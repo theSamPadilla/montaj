@@ -36,13 +36,15 @@ Custom overlay JSX runs in a sandboxed evaluator. All identifiers below are inje
 
 **Availability note:** `useCanvas2DFrame` is provided by the renderer. If your CLI's local cache (`~/.cache/montaj`) was populated before this hook was added, running `montaj install ui` updates it.
 
-**No imports.** All `import` statements are stripped before evaluation. Do not import anything — use the globals above instead.
+**Imports.** An overlay can import your own files: relative paths (`./lib/palette.js`, `../_shared/ease.ts`, `.json` data) and `montaj/render` resolve in both the editor preview and render, and `react` resolves to the editor's React. The preview only follows files under the workspace, the global overlay library (`~/.montaj/overlays`) and profile folders; an import from anywhere else shows an error badge. An import that doesn't resolve (e.g. `from 'remotion'`) shows an error in the preview and fails at render. Editing an imported file refreshes the preview.
+
+The globals above stay the way to get `frame`, `fps`, `duration`, `props`, `interpolate`, `spring`, `THREE`, `Canvas`, `useThreeFrame`, `Ph`, `FaIcon`, `FaSolid`, `FaBrands` and the chart components. Do not `import` `three`, `@react-three/fiber`, `recharts`, Phosphor or FontAwesome: render cannot resolve those packages from overlay code, and the preview fails the same way. Use the globals.
 
 **Never hardcode frame counts; projects can be 24, 30 or 60fps.** A literal like `[0, 10]` means a different real-world duration on every project — 10 frames is 0.33s at 30fps but 0.17s at 60fps, so an overlay copied between projects (or a 30fps example copied into a 60fps project, which is the current default) plays at the wrong speed. Always derive the frame count from `fps`: `Math.round(fps * 0.33)` for "about a third of a second," not `10`.
 
 ### Top-level vs component-body
 
-**All calls to `interpolate`, `spring`, and any read of `frame`, `fps`, `duration`, or `props` must be inside the component function body.** The module's top-level code runs before the render shim sets up these globals — calling them outside a function will throw `interpolate is not defined` and crash the entire render.
+**All calls to `interpolate`, `spring`, and any read of `frame`, `fps`, `duration`, or `props` must be inside the component function body.** The module's top-level code runs before the render shim sets up these globals — calling them outside a function will throw `interpolate is not defined` and crash the entire render. The same goes for a shared module you import: it must export functions and read `frame`, `fps` and the other globals only inside them, because its top level runs before the globals are set.
 
 **With `settings.motionBlur` above 1, the renderer passes fractional `frame` values (sub-frames). Never index arrays by `frame` or branch on `frame % n`; derive everything as a continuous function of `frame`.**
 
