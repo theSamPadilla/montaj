@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Added: the Editor controls modal shows the editor's version.** The footer's bottom right reads `vX.Y.Z`, taken from `@bycrux/editor`'s own `package.json`.
 - **Changed: the editor's "Generate captions" counts only clips the server can hear.** A timeline whose only video is muted, or on a muted or disabled track, no longer enables the button, matching what the caption job transcribes.
 - **Fixed: a regression from the previous release's blank-project change, which saved Media as the left rail's tab for every later project.** The switch to Media no longer writes to storage.
 - **Removed: the `style-profile` skill.** Style profiles are a Montaj Hub feature, and the app serves the skill as `app/style-profile`.

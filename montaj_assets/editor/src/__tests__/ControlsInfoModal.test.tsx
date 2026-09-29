@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import pkg from '../../package.json'
 import ControlsInfoModal, {
   VIDEO_CONTROLS,
   CAROUSEL_CONTROLS,
@@ -28,6 +29,13 @@ describe('ControlsInfoModal', () => {
     // Keys render as individual <kbd> chips.
     expect(screen.getByText('⌘/Ctrl').tagName).toBe('KBD')
     expect(screen.getByText('Z').tagName).toBe('KBD')
+  })
+
+  it('shows the editor version in the footer, and never vundefined', () => {
+    render(<ControlsInfoModal title="Editor controls" sections={SECTIONS} onClose={vi.fn()} />)
+    expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/)
+    expect(screen.getByText(`v${pkg.version}`)).toBeTruthy()
+    expect(screen.queryByText(/vundefined/)).toBeNull()
   })
 
   it('closes on Escape', () => {

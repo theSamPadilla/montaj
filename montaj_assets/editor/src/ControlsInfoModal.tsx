@@ -19,6 +19,7 @@ import {
   X,
   type LucideProps,
 } from 'lucide-react'
+import { version } from '../package.json'
 
 /** A single control/shortcut row. `keys` renders as <kbd> chips; omit for a pure gesture. */
 export interface ControlEntry {
@@ -267,6 +268,7 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
             Esc
           </kbd>
           <span className="opacity-55">to close</span>
+          <span className="ml-3 opacity-55">v{version}</span>
         </div>
       </div>
     </div>
