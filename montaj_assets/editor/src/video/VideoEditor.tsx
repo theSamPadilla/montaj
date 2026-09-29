@@ -903,7 +903,7 @@ function ReviewSurface<P extends Project>({
   // re-selecting the same caption after the user switched tabs still snaps
   // back; only a truthy selection bumps it, so deselecting never yanks the tab.
   const [leftTabRequest, setLeftTabRequest] = useState(() =>
-    projectHasContent(project) ? { id: 'captions', nonce: 0 } : { id: 'media', nonce: 1 })
+    projectHasContent(project) ? { id: 'captions', nonce: 0 } : { id: 'media', nonce: 1, persist: false })
   useEffect(() => {
     if (selectedCaptionId) setLeftTabRequest(r => ({ id: 'captions', nonce: r.nonce + 1 }))
   }, [selectedCaptionId])

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fixed: a regression from the previous release's blank-project change, which saved Media as the left rail's tab for every later project.** The switch to Media no longer writes to storage.
 - **Removed: the `style-profile` skill.** Style profiles are a Montaj Hub feature, and the app serves the skill as `app/style-profile`.
 
 ## v5.6.0

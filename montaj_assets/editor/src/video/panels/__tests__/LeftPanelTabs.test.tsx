@@ -178,6 +178,20 @@ describe('LeftPanelTabs', () => {
       expect(shown('captions')).toBe(true)
     })
 
+    it('persist: false switches the tab but leaves the saved tab alone; a user click still saves', () => {
+      window.localStorage.setItem('montaj.editor.leftPanelTab', JSON.stringify('captions'))
+      render(<LeftPanelTabs tabs={makeTabs()} defaultTabId="captions" activationRequest={{ id: 'media', nonce: 1, persist: false }} />)
+      expect(shown('media')).toBe(true)
+      expect(window.localStorage.getItem('montaj.editor.leftPanelTab')).toBe(JSON.stringify('captions'))
+      fireEvent.click(screen.getByRole('tab', { name: 'Versions' }))
+      expect(window.localStorage.getItem('montaj.editor.leftPanelTab')).toBe(JSON.stringify('versions'))
+    })
+
+    it('an activation without persist still saves the tab', () => {
+      render(<LeftPanelTabs tabs={makeTabs()} defaultTabId="media" activationRequest={{ id: 'captions', nonce: 1 }} />)
+      expect(window.localStorage.getItem('montaj.editor.leftPanelTab')).toBe(JSON.stringify('captions'))
+    })
+
     it('ignores an activation for an id that is not a real tab (no crash, no blank pane)', () => {
       const { rerender } = render(
         <LeftPanelTabs tabs={makeTabs()} defaultTabId="media" activationRequest={{ id: 'ghost', nonce: 0 }} />,

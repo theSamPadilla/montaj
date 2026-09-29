@@ -153,6 +153,14 @@ describe('VideoEditor — the left rail on a blank project', () => {
     await waitFor(() => expect(media.getAttribute('aria-selected')).toBe('true'))
   })
 
+  it('opens on Media without saving it as the default for later projects', async () => {
+    localStorage.setItem(TAB_KEY, JSON.stringify('captions'))
+    renderEditor(makeBlankProject(), { canGenerateCaptions: true })
+    const media = await screen.findByRole('tab', { name: 'Media' })
+    await waitFor(() => expect(media.getAttribute('aria-selected')).toBe('true'))
+    expect(localStorage.getItem(TAB_KEY)).toBe(JSON.stringify('captions'))
+  })
+
   it('leaves a project with content on its persisted tab', async () => {
     localStorage.setItem(TAB_KEY, JSON.stringify('versions'))
     renderEditor(makeClipProject(), { canGenerateCaptions: true })

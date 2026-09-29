@@ -26,8 +26,9 @@ export interface LeftPanelTabsProps {
    *  fresh `nonce` so re-selecting the same target still switches — this stays
    *  generic (it never learns what a "caption" is): the editor bumps the nonce
    *  when a caption is selected so the panel jumps to Captions. `nonce` 0 (the
-   *  initial value) never forces a tab, so a persisted preference wins on mount. */
-  activationRequest?: { id: string; nonce: number }
+   *  initial value) never forces a tab, so a persisted preference wins on mount.
+   *  `persist: false` switches the tab without saving it as the user's choice. */
+  activationRequest?: { id: string; nonce: number; persist?: boolean }
   className?: string
 }
 
@@ -64,7 +65,7 @@ export default function LeftPanelTabs({ tabs, defaultTabId, storageKey = DEFAULT
   const activationId = activationRequest?.id
   useEffect(() => {
     if (activationNonce <= 0 || !activationId) return
-    if (tabs.some(t => t.id === activationId)) setActiveId(activationId)
+    if (tabs.some(t => t.id === activationId)) setActiveId(activationId, { persist: activationRequest?.persist })
     // Intentionally keyed on the nonce alone (see the note above); `tabs`/
     // `setActiveId` are deliberately not deps. `react-hooks/exhaustive-deps`
     // is not enabled in this package's eslint config, so no disable is used.
