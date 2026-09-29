@@ -241,16 +241,28 @@ export function embedThumbnail(outputPath, colorSpace, opts = {}) {
   // render outputs are open-GOP libx265 (same as every HDR/HLG conversion), so
   // a single input seek (`-ss t -i`) into a keyframe's leading-picture window
   // returns the keyframe instead of the frame at `t` (1-3 frames late,
-  // measured PV48 T3 audit). `near` seeks the input close, `fine` finishes the
-  // seek on the output side after decoding, which is always exact.
+  // measured PV48 T3 audit). `near` seeks the input close; `fine` finishes the
+  // seek with a `trim=start=` filter at the HEAD of `-vf`, ahead of the Vivid
+  // LUT, rather than an output-side `-ss` after it. An output-side `-ss`
+  // still runs every decoded frame from `near` to the target through the LUT
+  // before discarding all but one — measured 725ms vs 290ms on a 720p HLG
+  // frame (PV48 review). `trim` drops the unwanted frames before they ever
+  // reach the LUT, at an identical output (JPEG md5 matched across seeks with
+  // near=0, near>0, and inside a leading-picture window, HDR and SDR).
   function extractAt(seekSeconds) {
     const seek = twoStageSeek(seekSeconds)
     const args = ['-y', '-v', 'error',
       ...(seek
-        ? [...(seek.near > 0 ? ['-ss', String(seek.near)] : []), '-i', outputPath, '-ss', seek.fine]
+        ? [...(seek.near > 0 ? ['-ss', String(seek.near)] : []), '-i', outputPath]
         : ['-ss', String(seekSeconds), '-i', outputPath]),
       '-frames:v', '1']
-    if (vf) args.push('-vf', vf)
+    // SDR files have no `vf` (no LUT to protect from), but still need the
+    // exact frame, so the trim filter is the whole `-vf` there when a seek
+    // splits into near+fine.
+    const chainVf = seek
+      ? (vf ? `trim=start=${seek.fine},${vf}` : `trim=start=${seek.fine}`)
+      : vf
+    if (chainVf) args.push('-vf', chainVf)
     args.push('-q:v', '2', tmpJpg)
     return spawnSync(FFMPEG, args, { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
   }
