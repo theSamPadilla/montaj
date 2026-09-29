@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.5.3
+
 - **Fixed: photos, screen recordings and the presenter placed in a box looked squashed or the wrong size in the preview, though the export was right.** The preview fitted them to the whole frame and then stretched them into the box when its width and height scale differed; it now fits them into the box, as the export does. Cropped clips on upper tracks now show cropped in the preview too.
 - **Fixed: zooming a clip whose width and height are scaled separately now works.** The zoom did nothing in the preview and was dropped from the export; it now changes both.
 - **Fixed: iPhone HDR (HLG) footage in an SDR project no longer exports with orange skin and neon colours.** The export graded the clip twice, once when preparing it and again when encoding, so it did not match the preview. It is now graded once, and the export matches the preview.
