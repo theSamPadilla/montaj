@@ -556,7 +556,7 @@ function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
   // That gap is a property of the tool, not an oversight — see docs/RENDER.md.
   // The crop props (cropX/cropY/cropW/cropH, PV55) are absent too, and must stay
   // so: they move the picture inside the box (animatedImageCrop), never the box.
-  const GEOMETRY_PROPS =['offsetX', 'offsetY', 'scale', 'scaleX', 'scaleY', 'rotation']
+  const GEOMETRY_PROPS = ['offsetX', 'offsetY', 'scale', 'scaleX', 'scaleY', 'rotation']
   const animatedProps = tracks.filter(
     (tr) => tr && GEOMETRY_PROPS.includes(tr.prop) && Array.isArray(tr.points) && tr.points.length > 0,
   )
@@ -722,11 +722,31 @@ function warnIfCapped(item, kind) {
   }
 }
 
+/** A crop rect is interpolated into the filter graph as TEXT, so only finite
+ *  numbers may reach it. validate.py checks project files; this also covers any
+ *  caller that skipped validate (PV55 T13). */
+function isFiniteCrop(c) {
+  return !!c && Number.isFinite(c.x) && Number.isFinite(c.y) && Number.isFinite(c.w) && Number.isFinite(c.h)
+}
+
+/**
+ * The eval=frame `scale` in animatedImageCrop renders the WHOLE union at the
+ * deepest zoom's output resolution, so its peak frame is
+ * ceil(uw*kMax) x ceil(uh*kMax) however the rest of the chain is built.
+ * MEASURED (PV55 T13, ffmpeg 8.1.2): 15062x26846 (404 Mpx) rendered, at 4.2 GB
+ * RSS; 18992x33724 failed the whole export ("Picture size ... is invalid",
+ * ENOMEM). That was a plain zoom from the 9:16 framing of a 4032x3024 photo to
+ * the crop tool's 2% limit. Past this budget the crop is held, not animated.
+ */
+const MAX_ANIMATED_CROP_PX = 256_000_000
+
 /**
  * The keyframed source crop of an IMAGE (PV55), as a chain whose output is
  * exactly `boxW`x`boxH` rgba: the crop rect at each instant, cover-fitted into
- * the box. null when the item has no crop keyframes, or when its display size
- * cannot be read (the caller then holds the crop at the segment start).
+ * the box. Returns null when the item has no crop keyframes, `{ chain }` when it
+ * animates, and `{ hold: reason }` when it cannot (size unreadable, a rect that
+ * is not finite and positive, or a zoom past MAX_ANIMATED_CROP_PX): the caller
+ * then holds the crop at the segment start and warns with the reason.
  *
  * WHY THIS SHAPE. Each point was measured (PV55 T1, ffmpeg 8.1.2); do not re-derive.
  *   - `crop` evaluates w/h ONCE; only x/y follow `t`. So the size change is done
@@ -737,8 +757,8 @@ function warnIfCapped(item, kind) {
  *   - `crop` clamps x/y against its INPUT LINK's size. Straight after the
  *     eval=frame `scale` that is the current frame. Put ANY filter between them
  *     (`format=rgba` was the one measured) and the link keeps the first frame's
- *     size: a zoom-in silently freezes. `format=rgba` therefore goes AFTER the
- *     crop. The zoom pixel test exists to catch exactly this.
+ *     size: a zoom-in silently freezes. A plain `scale` then `format=rgba` go AFTER
+ *     the crop (the bare scale does the rgba conversion at box size). The zoom pixel test exists to catch exactly this.
  *
  * Not `zoompan`: it rounds its window to whole INPUT pixels (visible stepping on
  * a slow pan unless the source is upscaled first), and it is a frame generator
@@ -750,10 +770,13 @@ function warnIfCapped(item, kind) {
  */
 function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap) {
   if (!hasCropKeyframes(item)) return null
+  // probedWidth/probedHeight are a test seam here. render.js stamps them on VIDEO items only,
+  // from probeVideoGeometry, which reads a JPEG's STORED size (EXIF ignored). Never stamp them
+  // on an image that way: the animated crop would use the wrong axes on a rotated photo.
   const dims = item.probedWidth > 0 && item.probedHeight > 0
     ? { width: item.probedWidth, height: item.probedHeight }
     : probeImageDisplaySize(item.src)
-  if (!dims) return null
+  if (!dims) return { hold: 'could not read its size' }
   const SW = dims.width
   const SH = dims.height
 
@@ -769,9 +792,11 @@ function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap) {
       if (local >= 0 && local <= duration) probes.add(local)
     }
   }
-  let x0 = 1, y0 = 1, x1 = 0, y1 = 0, minW = 1, minH = 1
+  let x0 = 1, y0 = 1, x1 = 0, y1 = 0, minW = 1, minH = 1, kMax = 0
   for (const local of probes) {
     const c = geometryAt(item, 'image', timeOffset + local).sourceCrop
+    if (!isFiniteCrop(c) || !(c.w > 0) || !(c.h > 0)) return { hold: 'its crop is not a finite, non-empty rect' }
+    kMax = Math.max(kMax, boxW / (c.w * SW), boxH / (c.h * SH))
     x0 = Math.min(x0, c.x); y0 = Math.min(y0, c.y)
     x1 = Math.max(x1, c.x + c.w); y1 = Math.max(y1, c.y + c.h)
     minW = Math.min(minW, c.w); minH = Math.min(minH, c.h)
@@ -781,6 +806,9 @@ function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap) {
   const uy = Math.max(0, Math.floor((y0 * SH) / 2) * 2)
   const uw = Math.min(SW, Math.ceil(x1 * SW)) - ux
   const uh = Math.min(SH, Math.ceil(y1 * SH)) - uy
+  if (Math.ceil(uw * kMax) * Math.ceil(uh * kMax) > MAX_ANIMATED_CROP_PX) {
+    return { hold: 'its zoom is too deep to render' }
+  }
 
   const base = item.sourceCrop ?? { x: 0, y: 0, w: 1, h: 1 }
   const exprFor = (prop, fallback, unitsPerPixel) => {
@@ -803,9 +831,15 @@ function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap) {
   // ceil, never round: the box must always fit inside the resized union.
   const x = `round(((${X})*${SW}-${ux})*${k}+((${W})*${SW}*${k}-${boxW})/2)`
   const y = `round(((${Y})*${SH}-${uy})*${k}+((${H})*${SH}*${k}-${boxH})/2)`
-  return `crop=${uw}:${uh}:${ux}:${uy}:exact=1,`
-       + `scale=w='ceil(${uw}*${k})':h='ceil(${uh}*${k})':eval=frame,`
-       + `crop=${boxW}:${boxH}:x='${x}':y='${y}':exact=1,format=rgba`
+  // NOTHING may ever sit between the eval=frame `scale` and the fixed `crop`
+  // below, not even `format=rgba`: the crop would clamp x/y against the FIRST
+  // frame's size and a zoom-in would silently freeze (WHY THIS SHAPE, above).
+  // Guarded by test/image-crop.integration.test.mjs's zoom case.
+  return {
+    chain: `crop=${uw}:${uh}:${ux}:${uy}:exact=1,`
+         + `scale=w='ceil(${uw}*${k})':h='ceil(${uh}*${k})':eval=frame,`
+         + `crop=${boxW}:${boxH}:x='${x}':y='${y}':exact=1,scale,format=rgba`,
+  }
 }
 
 function rotateFilterStep(box, alphaPin = false) {
@@ -884,11 +918,11 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // image's own pixels, then the fit as always. No stored size is needed there.
   const cropAnim = animatedImageCrop(item, fitW, fitH, imgOffset, duration, warnIfCapped(item, 'image'))
   let stillCrop = item.sourceCrop
-  if (!cropAnim && hasCropKeyframes(item)) {
+  if (cropAnim?.hold) {
     stillCrop = geometryAt(item, 'image', imgOffset).sourceCrop
-    console.warn(`[montaj] image item ${item.id ?? item.src}: could not read its size, so its animated crop is held at ${imgOffset}s`)
+    console.warn(`[montaj] image item ${item.id ?? item.src}: ${cropAnim.hold}, so its animated crop is held at ${imgOffset}s`)
   }
-  const cropStep = !cropAnim && stillCrop && stillCrop.w > 0 && stillCrop.h > 0 && !isFullFrameCrop(stillCrop)
+  const cropStep = !cropAnim?.chain && isFiniteCrop(stillCrop) && stillCrop.w > 0 && stillCrop.h > 0 && !isFullFrameCrop(stillCrop)
     ? `crop=w='round(iw*${stillCrop.w})':h='round(ih*${stillCrop.h})':x='round(iw*${stillCrop.x})':y='round(ih*${stillCrop.y})':exact=1,`
     : ''
   let fitChain
@@ -901,7 +935,7 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
     fitChain = `scale=${fitW}:${fitH}:force_original_aspect_ratio=increase,`
              + `crop=${fitW}:${fitH},format=rgba`
   }
-  fitChain = cropAnim ?? (cropStep + fitChain)
+  fitChain = cropAnim?.chain ?? (cropStep + fitChain)
   // No alpha pin on the rotate: all three fit chains already run through
   // `format=rgba`, so the transparent pad and `c=black@0.0` corners are
   // representable exactly as the static path assumes.

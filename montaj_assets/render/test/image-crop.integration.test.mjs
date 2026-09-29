@@ -82,6 +82,10 @@ for (const ext of ['png', 'jpg']) {
       // clamp (~2 px), so a stale clamp freezes the window near 218 px and reads lime.
       // A window zoomed in at the union's left edge (x ~0) passes under the trap too:
       // MEASURED (PV55 T5), zooming into lime at 208 px read identical pixels either way.
+      // DO NOT simplify this geometry. A t1 window near the union's left edge (x ~0)
+      // makes this test blind to the stale-clamp trap (MEASURED, PV55 T5). If these
+      // numbers ever change, re-prove the test FAILS with `format=rgba` moved between
+      // the eval=frame scale and the fixed crop, in a scratch mirror, never the tree.
       const item = { src: stripes(dir, ext), scale: 1, probedWidth: 640, probedHeight: 360,
         keyframes: [lin('cropX', 0.341796875, 0.53), lin('cropY', 0, 0.342), lin('cropW', W916, 0.1), lin('cropH', 1, 0.31605)] }
       assert.ok(isLime(probeY(item, 45, 160, 0)), 'left quarter is lime at t0')
