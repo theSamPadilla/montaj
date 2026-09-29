@@ -122,9 +122,8 @@ interface DragState {
 
 export function useDragOverlay(
   containerRef: React.RefObject<HTMLDivElement | null>,
-  // PreviewPlayer passes its `onOverlayChange` prop straight through, so the
-  // host (VideoEditor.handleOverlayChange) receives the options argument even
-  // though PreviewPlayer's own prop type only names the first two.
+  // PreviewPlayer passes its `onOverlayChange` prop straight through to the
+  // host (VideoEditor.handleOverlayChange), options included.
   onOverlayChange?: (id: string, changes: OverlayChanges, options?: OverlayCommitOptions) => void,
 ) {
   const [dragState, setDragState] = useState<DragState | null>(null)

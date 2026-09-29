@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
-import { containsTime } from '@bycrux/timeline-core'
+import { containsTime, geometryAt } from '@bycrux/timeline-core'
 import { videoTransformContainerStyle, videoTransformBoxPct, mediaBoxStyle, perAxisRatio, zoomTo, type VideoTransform } from './transformStyle'
-import type { EditorProject as Project } from '../../schema'
+import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import CaptionPreview from './CaptionPreview'
 import { getOverlayDesignCanvas } from '../design-canvas'
 import { useDragOverlay } from './useDragOverlay'
-import type { OverlayChanges } from './useDragOverlay'
+import type { OverlayChanges, OverlayCommitOptions } from './useDragOverlay'
+import { hasKeyframes, localTimeOf } from '../keyframeOps'
 import type { CaptionEditPatch } from '../timeline/makeCaptionEdit'
 import OverlayItemsLayer from './OverlayItemsLayer'
 import { useVideoPlayback } from './useVideoPlayback'
@@ -57,7 +58,10 @@ interface PreviewPlayerProps {
   project: Project
   clock: PlaybackClock
   selectedOverlayId?: string
-  onOverlayChange?: (id: string, changes: OverlayChanges) => void
+  /** `options.shiftAnimation`: Option (Alt) was held, so an animated prop's
+   *  whole animation moves instead of keying the playhead. See
+   *  `applyOverlayChanges`, which is what the host runs. */
+  onOverlayChange?: (id: string, changes: OverlayChanges, options?: OverlayCommitOptions) => void
   onEditOverlay?: (id: string) => void
   // Adapter-injected capabilities
   compileOverlay: (src: string) => Promise<OverlayFactory>
@@ -158,6 +162,30 @@ interface PreviewPlayerProps {
    * documented gap, not a live bug.
    */
   muted?: boolean
+}
+
+/**
+ * The base clip's transform AT `time`: the value the export draws there, which
+ * is the keyframed value wherever the clip is animated (encode-segment.js
+ * animatedGeometry) and the static field elsewhere. `time` is clamped into the
+ * clip's span exactly as a gesture's commit clamps it (`localTimeOf`), so a
+ * gesture starts from the same value it commits against.
+ *
+ * `scaleX`/`scaleY` only when the clip carries them (a static field or a
+ * track): a uniform clip's zoom must keep committing `scale` alone (see
+ * `zoomChanges`). For a clip with no animation this is exactly its static
+ * fields, as it always was.
+ */
+function clipTransformAt(clip: VisualItem | undefined, time: number): VideoTransform {
+  if (!clip) return { scale: 1, offsetX: 0, offsetY: 0 }
+  const g = geometryAt(clip, 'video', localTimeOf(clip, time))
+  return {
+    scale: g.scale,
+    ...(clip.scaleX != null || hasKeyframes(clip, 'scaleX') ? { scaleX: g.scaleX } : null),
+    ...(clip.scaleY != null || hasKeyframes(clip, 'scaleY') ? { scaleY: g.scaleY } : null),
+    offsetX: g.offsetX,
+    offsetY: g.offsetY,
+  }
 }
 
 export default function PreviewPlayer(props: PreviewPlayerProps) {
@@ -506,6 +534,10 @@ function PreviewSurface({
     () => clips.find(c => containsTime(c.start, c.end, currentTime)) ?? clips[clips.length - 1],
     [clips, currentTime],
   )
+  // What the picture shows, and what every base-clip gesture starts from: the
+  // value at the playhead, not the static fields. See `clipTransformAt`.
+  const baseXf = clipTransformAt(activeClip, currentTime)
+  const xfRatio = perAxisRatio(baseXf)
   const cropStyle = useMemo(() => {
     const crop = activeClip?.sourceCrop
     if (!crop) return null
@@ -518,10 +550,10 @@ function PreviewSurface({
       crop,
       sourceWidth: sw,
       sourceHeight: sh,
-      frameWidth: frameSize.w * perAxisRatio(activeClip ?? {}),
+      frameWidth: frameSize.w * xfRatio,
       frameHeight: frameSize.h,
     })
-  }, [activeClip, videoDims, frameSize])
+  }, [activeClip, videoDims, frameSize, xfRatio])
 
   // The default full-frame style (no crop). object-contain letterboxes the source.
   const baseVideoStyle = cropStyle
@@ -533,6 +565,13 @@ function PreviewSurface({
   // to move (offsetX/offsetY), corner-drag or scroll to scale. Live during a
   // pointer drag, committed on pointer-up via onOverlayChange; scroll commits
   // directly. The <video> container reflects it (WYSIWYG with the renderer).
+  //
+  // Every one of them starts from `baseXf`, the value on screen at the
+  // playhead, and commits through the host's `applyOverlayChanges` like the
+  // overlay drag (useDragOverlay): an animated prop is keyed at the playhead,
+  // or with Option held its whole animation shifts. They used to start from the
+  // static fields, which keyframes hide, so on an animated clip the picture
+  // ignored the drag and snapped back on release.
   const selectedClip = useMemo(
     () => clips.find(c => c.id === selectedOverlayId) ?? null,
     [clips, selectedOverlayId],
@@ -544,13 +583,6 @@ function PreviewSurface({
     | { kind: 'scale'; center: { x: number; y: number }; startDist: number; start: VideoTransform }
     | null
   >(null)
-  const baseXf: VideoTransform = {
-    scale: activeClip?.scale ?? 1,
-    scaleX: activeClip?.scaleX,
-    scaleY: activeClip?.scaleY,
-    offsetX: activeClip?.offsetX ?? 0,
-    offsetY: activeClip?.offsetY ?? 0,
-  }
   const xf = liveXf ?? baseXf
   const transformContainerStyle = videoTransformContainerStyle(xf)
   const mediaBox = mediaBoxStyle(xf)
@@ -588,19 +620,20 @@ function PreviewSurface({
       setLiveXf(zoomTo(d.start, s))
     }
   }
-  const onXfUp = () => {
+  const onXfUp = (e: ReactPointerEvent) => {
     const live = liveXf
     xfDragRef.current = null
     setLiveXf(null)
     if (live && selectedClip && onOverlayChange) {
-      onOverlayChange(selectedClip.id, { offsetX: live.offsetX, offsetY: live.offsetY, ...zoomChanges(live) })
+      // Option is read off the release, as useDragOverlay reads it.
+      onOverlayChange(selectedClip.id, { offsetX: live.offsetX, offsetY: live.offsetY, ...zoomChanges(live) }, { shiftAnimation: e.altKey })
     }
   }
   const onXfWheel = (e: ReactWheelEvent) => {
     if (!showVideoTransform || !selectedClip || !onOverlayChange) return
     const factor = e.deltaY < 0 ? 1.06 : 1 / 1.06
-    const s = Math.min(8, Math.max(0.2, (activeClip?.scale ?? 1) * factor))
-    onOverlayChange(selectedClip.id, zoomChanges(zoomTo(baseXf, s)))
+    const s = Math.min(8, Math.max(0.2, (baseXf.scale ?? 1) * factor))
+    onOverlayChange(selectedClip.id, zoomChanges(zoomTo(baseXf, s)), { shiftAnimation: e.altKey })
   }
 
   return (
