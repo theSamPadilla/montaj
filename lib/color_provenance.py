@@ -260,14 +260,7 @@ converted files carry Lavf62.12.102."""
 
 THUMB_W, THUMB_H = 64, 36
 THUMB_POINTS = (0.25, 0.5, 0.75)
-THUMB_PHASE_OFFSETS = (-1, 0, 1)
-"""Frame offsets, in candidate frames, tried around each thumbnail time; the
-best of the three is the point's score. Real Essay, xtXouo5hHxM3LO46 at 25 %
-(4.65 s, a half-frame point at 10 fps): a same-time seek scored 6.2 mean abs,
-while frame-index-aligned the pair differs by only 0.23-0.35, because the two
-files' frame phases differ by about half a frame. Exactly three points, not a
-wider window: the artefact corrected is a frame-phase offset, bounded at one
-frame by construction."""
+THUMB_SEEK_PREROLL_S = 2.0
 CONTENT_MAX_MEAN_ABS = 8
 """Mean abs difference, in limited-range Y10 codes, allowed at every point."""
 CONTENT_MIN_STD = 24
@@ -330,8 +323,17 @@ def _thumbnails(path: str, times, pre_vf: str = "") -> Optional[list]:
     n = THUMB_W * THUMB_H
     planes = []
     for t in times:
-        cmd = [ffmpeg_bin(), "-v", "error", "-nostdin", "-ss", f"{t:.3f}", "-i", path,
-               "-frames:v", "1", "-an", "-sn", "-dn", "-vf", vf, "-f", "rawvideo", "-"]
+        # Two-stage seek. A single input seek is wrong on the ffmpeg-made libx265
+        # conversions (open GOP, B-frames): the keyframe displayed at 5.0 s in
+        # xtXouo5hHxM3LO46_compatible_hlg.mp4 has dts 4.4, its leading pictures
+        # (4.6-4.9 s) belong to the previous GOP, and `-ss 4.65 -i` starts at that
+        # keyframe, drops them and returns the 5.0 s frame instead of 4.7 s.
+        # Seek near, then decode forward to the exact frame; 2 s of preroll
+        # exceeds normalize's 1 s GOP. Same pattern as render/sample-frame.js.
+        near = max(0.0, t - THUMB_SEEK_PREROLL_S)
+        cmd = [ffmpeg_bin(), "-v", "error", "-nostdin",
+               *(["-ss", f"{near:.3f}"] if near > 0 else []), "-i", path,
+               "-ss", f"{t - near:.3f}", "-frames:v", "1", "-an", "-sn", "-dn", "-vf", vf, "-f", "rawvideo", "-"]
         try:
             r = subprocess.run(cmd, capture_output=True, timeout=120)
         except (OSError, subprocess.SubprocessError):
@@ -424,15 +426,12 @@ def match_legacy_conversion(candidate: str, pool, *, sources=(), probe: Optional
             cand = thumbnails(candidate, times) or []
             stds = [_std(t) for t in cand]
             entry["thumbStd"] = [round(v, 1) for v in stds] if stds else None
-        n = len(THUMB_PHASE_OFFSETS)
-        step = 1 / fps_value(c.fps)  # non-zero: same_fingerprint passed
-        pool_times = [max(0.0, t + k * step) for t in times for k in THUMB_PHASE_OFFSETS]
-        planes = thumbnails(path, pool_times, legacy_stretch_vf(key, untagged=p.transfer == "unknown")) \
+        planes = thumbnails(path, times, legacy_stretch_vf(key, untagged=p.transfer == "unknown")) \
             if cand else None
-        if not cand or not planes or len(planes) != n * len(cand):
+        if not cand or not planes or len(planes) != len(cand):
             row["rejected"] = "content"
             continue
-        mad = [min(_mean_abs(a, b) for b in planes[i * n:(i + 1) * n]) for i, a in enumerate(cand)]
+        mad = [_mean_abs(a, b) for a, b in zip(cand, planes)]
         row["meanAbs"] = [round(v, 2) for v in mad]
         if sum(v >= CONTENT_MIN_STD for v in stds) < CONTENT_MIN_STD_COUNT:
             row["rejected"] = "std-dev floor"

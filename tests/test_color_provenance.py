@@ -872,56 +872,83 @@ def test_cli_render_does_not_heal_a_carousel(tmp_path, monkeypatch):
     assert calls == ["exec"]
 
 
-# ── legacy matcher: frame-phase window (PV42 review) ─────────────────────────
+# ── legacy matcher: two-stage thumbnail seek (PV42) ──────────────────────────
+
+_GOP_FPS = 10
 
 
-def _phase_case(tmp_path, phase):
-    """A 10 fps, 18.6 s candidate and pool file whose frame phases differ by
-    `phase` seconds. Frame j is a bright 8-column bar starting at column j % 56,
-    so neighbouring frames disagree by far more than CONTENT_MAX_MEAN_ABS."""
-    cand = tmp_path / "clip_normalized_hdr_hlg.mp4"
-    pool = tmp_path / "clip.mp4"
-    for path, mtime in ((pool, _T0), (cand, _T0 + 100)):
-        path.write_bytes(b"x")
-        os.utime(path, (mtime, mtime))
-    hdr = cp.Probe("arib-std-b67", "", 160, 284, "10/1", 18.6, "Lavf62.12.102")
-    sdr = cp.Probe("bt709", "", 160, 284, "10/1", 18.6, "")
-
-    def probe(path):
-        return hdr if str(path) == str(cand) else sdr
-
-    def frame(j):
-        col = j % 56
-        return tuple(900 if col <= x < col + 8 else 64
-                     for _ in range(cp.THUMB_H) for x in range(cp.THUMB_W))
-
-    def thumbnails(path, times, pre_vf=""):
-        shift = phase if str(path) == str(cand) else 0.0
-        return [frame(math.ceil(round((t - shift) * 10, 6))) for t in times]
-
-    return str(cand), str(pool), probe, thumbnails
+def _open_gop_clips(d):
+    """A 10 fps testsrc2 SDR original and its legacy HLG conversion, encoded
+    like lib/normalize.py (libx265, preset fast, -g fps): open GOP with
+    B-frames, so a keyframe's dts precedes its pts."""
+    orig, conv = Path(d) / "orig.mp4", Path(d) / "orig_normalized_hdr_hlg.mp4"
+    _sdr(orig, f"testsrc2=size=128x72:rate={_GOP_FPS}:duration=3")
+    spec = nm.SPECS["hdr_hlg"]
+    _ffmpeg("-i", str(orig), "-vf", cp.legacy_stretch_vf("hdr_hlg", untagged=False),
+            "-c:v", "libx265", "-preset", spec["encoder_params"]["preset"], "-crf", "22",
+            "-x265-params", spec["encoder_params"]["x265-params"] + ":log-level=error",
+            *spec["output_color_args"], "-pix_fmt", "yuv420p10le",
+            "-g", str(_GOP_FPS), "-keyint_min", str(_GOP_FPS), str(conv))
+    return orig, conv
 
 
-def test_matcher_tolerates_a_half_frame_phase_offset(tmp_path):
-    cand, pool, probe, thumbnails = _phase_case(tmp_path, 0.05)
-    # A plain same-time seek at 25 % (4.65 s, a half-frame point) disagrees.
-    t = 18.6 * 0.25
-    same_time = cp._mean_abs(thumbnails(cand, [t])[0], thumbnails(pool, [t])[0])
-    assert same_time > cp.CONTENT_MAX_MEAN_ABS
+def _keyframe_window(path):
+    """(pts, dts) of the first keyframe after 0 whose dts precedes its pts."""
+    out = subprocess.run(
+        [nm.ffprobe_bin(), "-v", "error", "-select_streams", "v", "-show_entries",
+         "packet=pts_time,dts_time,flags", "-of", "csv", str(path)],
+        capture_output=True, text=True, check=True).stdout
+    for line in out.splitlines():
+        _, pts, dts, flags = line.split(",")[:4]
+        if flags.startswith("K") and float(pts) > 0 and float(dts) < float(pts):
+            return float(pts), float(dts)
+    return None
 
-    entry = cp.match_legacy_conversion(cand, [pool], probe=probe, thumbnails=thumbnails)
 
-    assert entry["original"] == pool
-    assert entry["pool"][0]["meanAbs"] == [0, 0, 0]
+@pytest.fixture(scope="module")
+def open_gop(tmp_path_factory):
+    if not HAS_ZSCALE:
+        if REQUIRE_HDR_FFMPEG:
+            pytest.fail("ffmpeg with zscale not available (MONTAJ_REQUIRE_HDR_FFMPEG=1)")
+        pytest.skip("ffmpeg with zscale not available")
+    d = Path(os.path.realpath(tmp_path_factory.mktemp("opengop")))
+    orig, conv = _open_gop_clips(d)
+    return d, orig, conv
 
 
-def test_matcher_still_rejects_a_quarter_second_offset(tmp_path):
-    cand, pool, probe, thumbnails = _phase_case(tmp_path, 0.25)
+def test_thumbnail_seek_is_exact_inside_an_open_gop_window(open_gop):
+    _, _, conv = open_gop
+    window = _keyframe_window(conv)
+    assert window is not None, "fixture is not open-GOP (no keyframe with dts < pts)"
+    pts, dts = window
+    t = round((pts + dts) / 2, 3)  # inside dts..pts: leading pictures are displayed here
+    k = math.ceil(t * _GOP_FPS)
+    assert k / _GOP_FPS < pts
 
-    entry = cp.match_legacy_conversion(cand, [pool], probe=probe, thumbnails=thumbnails)
+    by_index = lambda n: cp._thumbnails(str(conv), [0], f"select=eq(n\\,{n})")[0]  # noqa: E731
+    got = cp._thumbnails(str(conv), [t])[0]
+    want = by_index(k)
+    next_keyframe = by_index(round(pts * _GOP_FPS))
+    print(f"t={t} exact={cp._mean_abs(got, want):.2f} vs-keyframe={cp._mean_abs(got, next_keyframe):.2f}")
 
-    assert entry["original"] is None
-    assert entry["pool"][0]["rejected"] == "content"
+    assert cp._mean_abs(got, want) < 1
+    assert cp._mean_abs(got, next_keyframe) > cp.CONTENT_MAX_MEAN_ABS
+
+
+def test_matcher_matches_a_conversion_sampled_inside_an_open_gop_window(open_gop):
+    d, orig, conv = open_gop
+    pts, dts = _keyframe_window(conv)
+    dur = cp.probe_media(str(conv)).duration
+    assert dts < dur * cp.THUMB_POINTS[0] < pts, "the 25 % point must sit in the window"
+    os.utime(orig, (_T0, _T0))
+    os.utime(conv, (_T0 + 100, _T0 + 100))
+
+    entry = cp.match_legacy_conversion(str(conv), [str(orig)])
+
+    print("meanAbs", entry["pool"][0]["meanAbs"])
+    assert entry["original"] == str(orig)
+    assert len(entry["pool"][0]["meanAbs"]) == 3
+    assert max(entry["pool"][0]["meanAbs"]) <= cp.CONTENT_MAX_MEAN_ABS
 
 
 # ── serve: heal scope and concurrency (PV42 review) ──────────────────────────
