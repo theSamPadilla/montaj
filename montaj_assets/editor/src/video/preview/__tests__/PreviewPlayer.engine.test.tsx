@@ -144,10 +144,10 @@ describe('PreviewPlayer engine branch', () => {
     expect(container.querySelectorAll('video')).toHaveLength(0)
     expect(console.info).not.toHaveBeenCalled()
 
-    // The canvas sits where the active slot sat: z-index 1, inside the
-    // transform container, which is itself inside the isolate root.
+    // The canvas sits where the active slot sat: z-index 1, in the media box
+    // inside the transform container, which is itself inside the isolate root.
     expect(canvas.style.zIndex).toBe('1')
-    const transformContainer = canvas.parentElement!
+    const transformContainer = canvas.parentElement!.parentElement!
     expect(transformContainer.className).toBe('absolute inset-0')
     const root = transformContainer.parentElement!
     expect(root.style.isolation).toBe('isolate')

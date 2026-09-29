@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { containsTime, geometryAt, geometryFor, resolveAt } from '@bycrux/timeline-core'
 import { isProxyUsable, markProxyFailed } from './proxySupport'
+import { mediaBoxStyle, perAxisRatio } from './transformStyle'
+import { sourceCropVideoStyle } from './sourceCropStyle'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
@@ -21,9 +23,12 @@ import { enabledTrackItems, withEnabledItemTracks } from '../timeline/timeline-m
 const VIDEO_PRELOAD_S = 0.4
 
 // Synced video overlay — seeks to the correct position within the item's inPoint/outPoint range
-function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlaying, muted, visible, onSrcError }: {
+function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlaying, muted, visible, cropStyle, onSrcError }: {
   src: string; currentTime: number; itemStart: number; inPoint: number; speed?: number
-  isPlaying: boolean; muted?: boolean; visible: boolean; onSrcError?: () => void
+  isPlaying: boolean; muted?: boolean; visible: boolean
+  /** The item's `sourceCrop` as CSS (`sourceCropVideoStyle`), or null to contain the whole source. */
+  cropStyle?: React.CSSProperties | null
+  onSrcError?: () => void
 }) {
   const ref = useRef<HTMLVideoElement>(null)
   // Refs so the onSeeked handler can read current playback intent without stale closures
@@ -100,9 +105,20 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlayi
         }
       }}
       playsInline
-      className="absolute inset-0 w-full h-full object-contain pointer-events-none"
-      style={{ opacity: visible ? 1 : 0 }}
+      className={cropStyle ? 'pointer-events-none' : 'absolute inset-0 w-full h-full object-contain pointer-events-none'}
+      style={{ ...cropStyle, opacity: visible ? 1 : 0 }}
     />
+  )
+}
+
+// An item's image/video, fitted into its box rather than the frame. The box
+// comes from `mediaBoxStyle`; see there for why the wrapper's own scale cannot
+// do this. Pointer-transparent, so the wrapper stays the drag target.
+function MediaBox({ scaleX, scaleY, children }: { scaleX: number; scaleY: number; children: React.ReactNode }) {
+  return (
+    <div className="pointer-events-none" style={mediaBoxStyle({ scaleX, scaleY })}>
+      {children}
+    </div>
   )
 }
 
@@ -566,12 +582,14 @@ export default function OverlayItemsLayer({
         )
         return (
           <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
-            <img
-              src={fileUrl(item.src)}
-              draggable={false}
-              className="absolute inset-0 w-full h-full pointer-events-none"
-              style={{ objectFit: fit }}
-            />
+            <MediaBox scaleX={scaleX} scaleY={scaleY}>
+              <img
+                src={fileUrl(item.src)}
+                draggable={false}
+                className="absolute inset-0 w-full h-full pointer-events-none"
+                style={{ objectFit: fit }}
+              />
+            </MediaBox>
             {handles}
             {isSel && onOverlayChange && (
               <FitControl value={fit} scaleX={scaleX} scaleY={scaleY} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
@@ -737,12 +755,14 @@ export default function OverlayItemsLayer({
           if (item.type === 'image' && item.src) {
             return (
               <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
-                <img
-                  src={fileUrl(item.src)}
-                  draggable={false}
-                  className="absolute inset-0 w-full h-full pointer-events-none"
-                  style={{ objectFit: fit }}
-                />
+                <MediaBox scaleX={scaleX} scaleY={scaleY}>
+                  <img
+                    src={fileUrl(item.src)}
+                    draggable={false}
+                    className="absolute inset-0 w-full h-full pointer-events-none"
+                    style={{ objectFit: fit }}
+                  />
+                </MediaBox>
                 {handles}
                 {isSel && onOverlayChange && (
                   <FitControl value={fit} scaleX={scaleX} scaleY={scaleY} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
@@ -753,46 +773,62 @@ export default function OverlayItemsLayer({
 
           // Video items (preview uses raw src; remove_bg compositing only happens at final render)
           if (item.type === 'video' && item.src) {
+            // The export crops the source BEFORE fitting it to the box
+            // (encode-segment.js: `crop=` ahead of `scale=…:decrease`), and only
+            // when the item records its source dims; `sourceCropVideoStyle` makes
+            // the same call. It fits to the box's aspect, hence the ratio.
+            const cropStyle = item.sourceCrop
+              ? sourceCropVideoStyle({
+                  crop: item.sourceCrop,
+                  sourceWidth: item.sourceWidth ?? 0,
+                  sourceHeight: item.sourceHeight ?? 0,
+                  frameWidth: RENDER_W * perAxisRatio({ scaleX, scaleY }),
+                  frameHeight: RENDER_H,
+                })
+              : null
             return (
               <div key={item.id} className={wrapperClass} style={wrapperStyle} onMouseDown={startMove}>
-                <OverlayVideo
-                  // This is a THIRD src-precedence chain, deliberately not
-                  // @bycrux/timeline-core's `playbackSrcFor` (see
-                  // PreviewPlayer.tsx / useVideoPlayback.ts for that one): an
-                  // overlay-track video loads the ORIGINAL src (skipping
-                  // `normalizedSrc` entirely) and pairs it with a raw,
-                  // un-rebased `inPoint`. Switching this to
-                  // `playbackSrcFor(item, 'preview')` would add the
-                  // `normalizedSrc` tier and require rebasing `inPoint` to
-                  // match — an unbudgeted behavior change for this item
-                  // class. Out of scope for SP2; owned by SP4.
-                  //
-                  // SP3 adds `proxySrc` as a middle tier (between
-                  // `nobg_preview_src` and `src`), same precedence order as
-                  // the main chain. `proxySrc` is full-source like `src`
-                  // itself — no window, no rebase — so it slots in without
-                  // disturbing the raw, un-rebased `inPoint` this chain
-                  // already passes through. The tier is capability/failure
-                  // gated (SP3 fix B2) exactly like the main chain's.
-                  src={fileUrl(item.nobg_preview_src
-                    ?? (isProxyUsable(item.proxySrc) ? item.proxySrc : undefined)
-                    ?? item.src)}
-                  onSrcError={() => {
-                    if (!item.nobg_preview_src && isProxyUsable(item.proxySrc) && item.proxySrc) {
-                      console.warn(`[montaj] overlay proxy failed to decode — falling back to the master: ${item.proxySrc}`)
-                      markProxyFailed(item.proxySrc)
-                      bumpProxyFail()
-                    }
-                  }}
-                  currentTime={currentTime}
-                  itemStart={item.start}
-                  inPoint={item.inPoint ?? 0}
-                  speed={item.speed ?? 1}
-                  isPlaying={isPlaying}
-                  muted={item.muted}
-                  visible={visible}
-                  key={`vid-${item.id}`}
-                />
+                <MediaBox scaleX={scaleX} scaleY={scaleY}>
+                  <OverlayVideo
+                    // This is a THIRD src-precedence chain, deliberately not
+                    // @bycrux/timeline-core's `playbackSrcFor` (see
+                    // PreviewPlayer.tsx / useVideoPlayback.ts for that one): an
+                    // overlay-track video loads the ORIGINAL src (skipping
+                    // `normalizedSrc` entirely) and pairs it with a raw,
+                    // un-rebased `inPoint`. Switching this to
+                    // `playbackSrcFor(item, 'preview')` would add the
+                    // `normalizedSrc` tier and require rebasing `inPoint` to
+                    // match — an unbudgeted behavior change for this item
+                    // class. Out of scope for SP2; owned by SP4.
+                    //
+                    // SP3 adds `proxySrc` as a middle tier (between
+                    // `nobg_preview_src` and `src`), same precedence order as
+                    // the main chain. `proxySrc` is full-source like `src`
+                    // itself — no window, no rebase — so it slots in without
+                    // disturbing the raw, un-rebased `inPoint` this chain
+                    // already passes through. The tier is capability/failure
+                    // gated (SP3 fix B2) exactly like the main chain's.
+                    src={fileUrl(item.nobg_preview_src
+                      ?? (isProxyUsable(item.proxySrc) ? item.proxySrc : undefined)
+                      ?? item.src)}
+                    onSrcError={() => {
+                      if (!item.nobg_preview_src && isProxyUsable(item.proxySrc) && item.proxySrc) {
+                        console.warn(`[montaj] overlay proxy failed to decode — falling back to the master: ${item.proxySrc}`)
+                        markProxyFailed(item.proxySrc)
+                        bumpProxyFail()
+                      }
+                    }}
+                    currentTime={currentTime}
+                    itemStart={item.start}
+                    inPoint={item.inPoint ?? 0}
+                    speed={item.speed ?? 1}
+                    isPlaying={isPlaying}
+                    muted={item.muted}
+                    visible={visible}
+                    cropStyle={cropStyle}
+                    key={`vid-${item.id}`}
+                  />
+                </MediaBox>
                 {handles}
               </div>
             )

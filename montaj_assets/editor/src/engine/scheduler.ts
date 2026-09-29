@@ -84,6 +84,7 @@ import type { EditorProject as Project, VisualItem, VisualTrack } from '../schem
 import type { ClipTimebase, MasterClock } from './audio-clock'
 import type { FrameServer } from './frame-server'
 import { audioEnd, effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../video/timeline/timeline-model'
+import { perAxisRatio } from '../video/preview/transformStyle'
 
 // ── Tuning constants ────────────────────────────────────────────────────────
 
@@ -121,7 +122,8 @@ export const LOOP_BOUNDARY_EPS_S = 1e-3
  * coordinates are in the canvas backing store's pixels. Neither carries the
  * item's `scale`/`offsetX`/`offsetY`: those stay on the CSS transform container
  * that wraps the canvas, untouched, exactly as they wrap the `<video>` slots
- * today (`PreviewPlayer.tsx`'s `transformContainerStyle`).
+ * today (`PreviewPlayer.tsx`'s `transformContainerStyle`). The destination
+ * reads only the box's ASPECT, which per-axis scale changes — see `drawPlanFor`.
  */
 export interface DrawPlan {
   sx: number
@@ -272,24 +274,37 @@ export function sourceCropDrawPlan(input: SourceCropDrawInput): DrawPlan | null 
   }
 }
 
-/** The crop plan when the item has one, the contain-fit default otherwise. */
+/**
+ * The crop plan when the item has one, the contain-fit default otherwise.
+ *
+ * Per-axis scale: the canvas sits in the item's media box
+ * (`transformStyle.ts`'s `mediaBoxStyle`), stretched over a box whose aspect is
+ * the backing store's times k = scaleX / scaleY. The export fits the picture
+ * into that box, so the plan fits into a frame k times wider and then squeezes
+ * x back by k; the stretch undoes the squeeze and the picture lands fitted to
+ * the box undistorted. k is exactly 1 on a uniform item, which leaves the plan
+ * as it always was.
+ */
 export function drawPlanFor(
-  item: Pick<VisualItem, 'sourceCrop' | 'sourceWidth' | 'sourceHeight'>,
+  item: Pick<VisualItem, 'sourceCrop' | 'sourceWidth' | 'sourceHeight' | 'scale' | 'scaleX' | 'scaleY'>,
   codedWidth: number,
   codedHeight: number,
   frameWidth: number,
   frameHeight: number,
 ): DrawPlan {
+  const k = perAxisRatio(item)
+  const fitWidth = frameWidth * k
   const cropped = sourceCropDrawPlan({
     crop: item.sourceCrop,
     sourceWidth: item.sourceWidth,
     sourceHeight: item.sourceHeight,
     codedWidth,
     codedHeight,
-    frameWidth,
+    frameWidth: fitWidth,
     frameHeight,
   })
-  return cropped ?? containFitPlan(codedWidth, codedHeight, frameWidth, frameHeight)
+  const plan = cropped ?? containFitPlan(codedWidth, codedHeight, fitWidth, frameHeight)
+  return k === 1 ? plan : { ...plan, dx: plan.dx / k, dw: plan.dw / k }
 }
 
 // ── Source placement (the loop reimplementation) ─────────────────────────────

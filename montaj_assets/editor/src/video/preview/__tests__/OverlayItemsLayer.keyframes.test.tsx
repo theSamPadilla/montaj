@@ -408,10 +408,10 @@ function renderLayeredClips(overlayItems: VisualItem[], currentTime: number) {
       fileUrl={(pth: string) => pth}
     />,
   )
-  // Each clip's <img> sits directly inside its own wrapper div — the wrapper
-  // is where `opacity` actually lands (OverlayItemsLayer.tsx's `wrapperStyle`).
+  // Each clip's <img> sits in its media box, inside its own wrapper div — the
+  // wrapper is where `opacity` actually lands (OverlayItemsLayer.tsx's `wrapperStyle`).
   const styleOf = (src: string) =>
-    (utils.container.querySelector(`img[src="${src}"]`) as HTMLElement).parentElement!.style
+    (utils.container.querySelector(`img[src="${src}"]`) as HTMLElement).parentElement!.parentElement!.style
   return { ...utils, styleOf }
 }
 

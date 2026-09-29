@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed: photos, screen recordings and the presenter placed in a box looked squashed or the wrong size in the preview, though the export was right.** The preview fitted them to the whole frame and then stretched them into the box when its width and height scale differed; it now fits them into the box, as the export does. Cropped clips on upper tracks now show cropped in the preview too, and zooming such a clip in the preview now sticks in the export.
+
 ## v5.5.2
 
 - **Fixed: a project opened while an agent was still building it now switches to the full preview once it is ready.** The preview picked its player when the project opened, so a project whose preview files were still being made stayed on the basic player, without crossfades, until a reload; it now switches once they arrive, at the next pause, keeping the playhead and selection.

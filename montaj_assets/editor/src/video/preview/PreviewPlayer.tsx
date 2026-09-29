@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
 import { containsTime } from '@bycrux/timeline-core'
-import { videoTransformContainerStyle, videoTransformBoxPct, type VideoTransform } from './transformStyle'
+import { videoTransformContainerStyle, videoTransformBoxPct, mediaBoxStyle, perAxisRatio, zoomTo, type VideoTransform } from './transformStyle'
 import type { EditorProject as Project } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import CaptionPreview from './CaptionPreview'
@@ -512,11 +512,13 @@ function PreviewSurface({
     const sw = activeClip?.sourceWidth ?? videoDims?.w
     const sh = activeClip?.sourceHeight ?? videoDims?.h
     if (!sw || !sh || !frameSize.w || !frameSize.h) return null
+    // Fitted to the clip's media box, whose aspect per-axis scale changes. A
+    // drag zooms both axes together, so the committed ratio holds mid-drag.
     return sourceCropVideoStyle({
       crop,
       sourceWidth: sw,
       sourceHeight: sh,
-      frameWidth: frameSize.w,
+      frameWidth: frameSize.w * perAxisRatio(activeClip ?? {}),
       frameHeight: frameSize.h,
     })
   }, [activeClip, videoDims, frameSize])
@@ -544,12 +546,22 @@ function PreviewSurface({
   >(null)
   const baseXf: VideoTransform = {
     scale: activeClip?.scale ?? 1,
+    scaleX: activeClip?.scaleX,
+    scaleY: activeClip?.scaleY,
     offsetX: activeClip?.offsetX ?? 0,
     offsetY: activeClip?.offsetY ?? 0,
   }
   const xf = liveXf ?? baseXf
   const transformContainerStyle = videoTransformContainerStyle(xf)
+  const mediaBox = mediaBoxStyle(xf)
   const xfBox = videoTransformBoxPct(xf)
+  // A zoom commits the per-axis fields too when the clip carries them: `scale`
+  // alone would lose to the stale scaleX/scaleY (see `zoomTo`).
+  const zoomChanges = (t: VideoTransform) => ({
+    scale: t.scale,
+    ...(t.scaleX != null ? { scaleX: t.scaleX } : null),
+    ...(t.scaleY != null ? { scaleY: t.scaleY } : null),
+  })
 
   const onXfMoveDown = (e: ReactPointerEvent) => {
     e.stopPropagation(); e.currentTarget.setPointerCapture?.(e.pointerId)
@@ -573,7 +585,7 @@ function PreviewSurface({
     } else {
       const dist = Math.hypot(e.clientX - d.center.x, e.clientY - d.center.y)
       const s = Math.min(8, Math.max(0.2, (d.start.scale ?? 1) * (dist / d.startDist)))
-      setLiveXf({ ...d.start, scale: s })
+      setLiveXf(zoomTo(d.start, s))
     }
   }
   const onXfUp = () => {
@@ -581,14 +593,14 @@ function PreviewSurface({
     xfDragRef.current = null
     setLiveXf(null)
     if (live && selectedClip && onOverlayChange) {
-      onOverlayChange(selectedClip.id, { offsetX: live.offsetX, offsetY: live.offsetY, scale: live.scale })
+      onOverlayChange(selectedClip.id, { offsetX: live.offsetX, offsetY: live.offsetY, ...zoomChanges(live) })
     }
   }
   const onXfWheel = (e: ReactWheelEvent) => {
     if (!showVideoTransform || !selectedClip || !onOverlayChange) return
     const factor = e.deltaY < 0 ? 1.06 : 1 / 1.06
     const s = Math.min(8, Math.max(0.2, (activeClip?.scale ?? 1) * factor))
-    onOverlayChange(selectedClip.id, { scale: s })
+    onOverlayChange(selectedClip.id, zoomChanges(zoomTo(baseXf, s)))
   }
 
   return (
@@ -606,61 +618,69 @@ function PreviewSurface({
         // canvas. The div itself, its styles and its z-order are IDENTICAL for
         // both — the frame's overflow-hidden clips anything pushed outside, and
         // the whole thing mirrors the renderer's crop→scale→position.
+        //
+        // The media box inside it is what the picture is fitted to: the
+        // container's scale(sx, sy) would squash a per-axis clip, so the box
+        // undoes that and the picture is contained in the clip's own box, as the
+        // export does (see `mediaBoxStyle`). Always rendered, so a cut between
+        // a uniform and a per-axis clip never remounts the slots or the canvas.
         <div className="absolute inset-0" style={transformContainerStyle}>
-          {playback.mode === 'engine' ? (
-            <EngineSurface
-              attach={playback.attachCanvas}
-              picture={playback.status.picture}
-              reason={playback.status.reason}
-              debugHud={engine?.debugHud}
-              getStats={playback.getStats}
-            />
-          ) : (
-            <>
-              {/* Slot 0 */}
-              <video
-                ref={playback.video0Ref}
-                // Clips load cross-origin from R2; without this the media is CORS-tainted
-                // and the Web Audio createMediaElementSource graph outputs silence. R2
-                // sends Access-Control-Allow-Origin, so anonymous CORS keeps it audible.
-                crossOrigin="anonymous"
-                // Fetch enough to render the seeked poster frame on load (before play).
-                preload="auto"
-                onLoadedMetadata={(e) => { const v = e.currentTarget; if (v.videoWidth && v.videoHeight) setVideoDims({ w: v.videoWidth, h: v.videoHeight }) }}
-                onTimeUpdate={() => { if (playback.activeSlotRef.current === 0) playback.handleTimeUpdate() }}
-                onEnded={() => { if (playback.activeSlotRef.current === 0) playback.handleEnded() }}
-                onError={() => playback.handleVideoError(0)}
-                onPlay={() => { if (playback.activeSlotRef.current === 0) playback.setIsPlaying(true) }}
-                onPause={() => { if (playback.activeSlotRef.current === 0) playback.handlePause() }}
-                playsInline
-                // Defense in depth, not the mechanism — see the `muted` prop
-                // doc above. Once `ensureVideoGain` wires this element through
-                // Web Audio (on first play), this attribute stops having any
-                // audible effect; the GainNode zeroed via `mutedRef` in
-                // `useVideoPlayback.ts` is what actually silences it.
-                muted={!!muted}
-                style={{ ...baseVideoStyle, opacity: showVideo && playback.activeSlot === 0 ? 1 : 0, pointerEvents: playback.activeSlot === 0 ? 'auto' : 'none', zIndex: playback.activeSlot === 0 ? 1 : 0 }}
+          <div style={mediaBox}>
+            {playback.mode === 'engine' ? (
+              <EngineSurface
+                attach={playback.attachCanvas}
+                picture={playback.status.picture}
+                reason={playback.status.reason}
+                debugHud={engine?.debugHud}
+                getStats={playback.getStats}
               />
-              {/* Slot 1 */}
-              <video
-                ref={playback.video1Ref}
-                // See slot 0: anonymous CORS so R2 cross-origin clips aren't tainted
-                // (which would mute the Web Audio graph).
-                crossOrigin="anonymous"
-                preload="auto"
-                onLoadedMetadata={(e) => { const v = e.currentTarget; if (v.videoWidth && v.videoHeight) setVideoDims({ w: v.videoWidth, h: v.videoHeight }) }}
-                onTimeUpdate={() => { if (playback.activeSlotRef.current === 1) playback.handleTimeUpdate() }}
-                onEnded={() => { if (playback.activeSlotRef.current === 1) playback.handleEnded() }}
-                onError={() => playback.handleVideoError(1)}
-                onPlay={() => { if (playback.activeSlotRef.current === 1) playback.setIsPlaying(true) }}
-                onPause={() => { if (playback.activeSlotRef.current === 1) playback.handlePause() }}
-                playsInline
-                // See slot 0.
-                muted={!!muted}
-                style={{ ...baseVideoStyle, opacity: showVideo && playback.activeSlot === 1 ? 1 : 0, pointerEvents: playback.activeSlot === 1 ? 'auto' : 'none', zIndex: playback.activeSlot === 1 ? 1 : 0 }}
-              />
-            </>
-          )}
+            ) : (
+              <>
+                {/* Slot 0 */}
+                <video
+                  ref={playback.video0Ref}
+                  // Clips load cross-origin from R2; without this the media is CORS-tainted
+                  // and the Web Audio createMediaElementSource graph outputs silence. R2
+                  // sends Access-Control-Allow-Origin, so anonymous CORS keeps it audible.
+                  crossOrigin="anonymous"
+                  // Fetch enough to render the seeked poster frame on load (before play).
+                  preload="auto"
+                  onLoadedMetadata={(e) => { const v = e.currentTarget; if (v.videoWidth && v.videoHeight) setVideoDims({ w: v.videoWidth, h: v.videoHeight }) }}
+                  onTimeUpdate={() => { if (playback.activeSlotRef.current === 0) playback.handleTimeUpdate() }}
+                  onEnded={() => { if (playback.activeSlotRef.current === 0) playback.handleEnded() }}
+                  onError={() => playback.handleVideoError(0)}
+                  onPlay={() => { if (playback.activeSlotRef.current === 0) playback.setIsPlaying(true) }}
+                  onPause={() => { if (playback.activeSlotRef.current === 0) playback.handlePause() }}
+                  playsInline
+                  // Defense in depth, not the mechanism — see the `muted` prop
+                  // doc above. Once `ensureVideoGain` wires this element through
+                  // Web Audio (on first play), this attribute stops having any
+                  // audible effect; the GainNode zeroed via `mutedRef` in
+                  // `useVideoPlayback.ts` is what actually silences it.
+                  muted={!!muted}
+                  style={{ ...baseVideoStyle, opacity: showVideo && playback.activeSlot === 0 ? 1 : 0, pointerEvents: playback.activeSlot === 0 ? 'auto' : 'none', zIndex: playback.activeSlot === 0 ? 1 : 0 }}
+                />
+                {/* Slot 1 */}
+                <video
+                  ref={playback.video1Ref}
+                  // See slot 0: anonymous CORS so R2 cross-origin clips aren't tainted
+                  // (which would mute the Web Audio graph).
+                  crossOrigin="anonymous"
+                  preload="auto"
+                  onLoadedMetadata={(e) => { const v = e.currentTarget; if (v.videoWidth && v.videoHeight) setVideoDims({ w: v.videoWidth, h: v.videoHeight }) }}
+                  onTimeUpdate={() => { if (playback.activeSlotRef.current === 1) playback.handleTimeUpdate() }}
+                  onEnded={() => { if (playback.activeSlotRef.current === 1) playback.handleEnded() }}
+                  onError={() => playback.handleVideoError(1)}
+                  onPlay={() => { if (playback.activeSlotRef.current === 1) playback.setIsPlaying(true) }}
+                  onPause={() => { if (playback.activeSlotRef.current === 1) playback.handlePause() }}
+                  playsInline
+                  // See slot 0.
+                  muted={!!muted}
+                  style={{ ...baseVideoStyle, opacity: showVideo && playback.activeSlot === 1 ? 1 : 0, pointerEvents: playback.activeSlot === 1 ? 'auto' : 'none', zIndex: playback.activeSlot === 1 ? 1 : 0 }}
+                />
+              </>
+            )}
+          </div>
         </div>
       )}
 
