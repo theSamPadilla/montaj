@@ -217,8 +217,18 @@ test('a props URL shown only as text is never fetched, and an unused one that fa
   { timeout: 120_000 }, async () => {
   hits.length = 0
   const comp = join(ws, 'proj', 'overlays', 'cta.jsx')
+  // The link MUST be visible (that is the scenario: a URL shown only as text),
+  // but it must never touch the centre pixel, which assertBadgeColour samples.
+  // A full-bleed div let the white URL wrap onto the centre line, so the sample
+  // read antialiased text (220,246,255) instead of the background: flaky on main,
+  // 5 of 8 runs. Pinning the text to a top strip keeps the scenario and makes the
+  // geometry deterministic. Do not put the text back in the flow.
   writeFileSync(comp, `export default function Cta({ link }) {
-  return <div style={{ position: 'absolute', inset: 0, background: '#2266cc', color: '#fff' }}>{link}</div>
+  return (
+    <div style={{ position: 'absolute', inset: 0, background: '#2266cc', color: '#fff' }}>
+      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '25%', overflow: 'hidden', fontSize: 8, lineHeight: '10px' }}>{link}</div>
+    </div>
+  )
 }
 `)
   const out = join(base, 'cta.png')
