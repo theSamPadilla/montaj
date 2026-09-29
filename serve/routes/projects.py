@@ -2058,6 +2058,83 @@ async def _run_carousel_render_detached(project_id: str, project_dir: Path, scal
                 pass
 
 
+def _new_or_changed_video_items(previous: dict, merged: dict) -> list[dict]:
+    """Video items (across `tracks` and the `sources` bin — the same two
+    groups `_look_migration_items` walks) that are NEW in `merged` or whose
+    `src` CHANGED, compared with `previous` (the project as it was on disk
+    before this write). Matched by id — the same key `_apply_project_edits`
+    write-backs match on — so an item that lands on the same (id, src) it had
+    before is never returned even if some OTHER field on it changed.
+
+    An item's `tracks` placement and its `sources` bin twin share the same id
+    and src (see `_look_migration_items`'s docstring); the first occurrence
+    wins and the twin is skipped, so the caller gets one entry per clip.
+    """
+    prev_src_by_id: dict[str, str] = {}
+    for item in _look_migration_items(previous):
+        item_id = item.get("id")
+        if item_id is not None:
+            prev_src_by_id[item_id] = item.get("src")
+
+    changed: list[dict] = []
+    seen: set = set()
+    for item in _look_migration_items(merged):
+        item_id = item.get("id")
+        if item_id in seen:
+            continue
+        if item_id not in prev_src_by_id or prev_src_by_id[item_id] != item.get("src"):
+            changed.append(item)
+            seen.add(item_id)
+    return changed
+
+
+def _queue_previews_for_changed_items(
+    project_id: str,
+    project_dir: Path,
+    previous: dict,
+    merged: dict,
+    broadcaster: "SSEBroadcaster | None",
+) -> None:
+    """Best-effort: queue an editor preview (proxy) for every video item this
+    save just added or repointed. The save-side counterpart to POST
+    /sources's import-time queueing (`_run_ingest_detached`): without this, a
+    clip an agent places via a PUT (as opposed to dragging it in through
+    import) never gets a proxy queued, so the editor's engine player blocks on
+    it forever (`picture = 'preparing'`, `scheduler.ts`'s `engineSrcFor`) until
+    someone clicks "Generate previews" by hand.
+
+    Reuses `_ensure_current_proxies`'s own dedupe/skip-if-current logic by
+    handing it a cut-down project containing ONLY the new/changed items
+    (`_new_or_changed_video_items`), so:
+      * an item that already has a current, fresh proxy is not re-queued —
+        `is_proxy_fresh` inside `_ensure_current_proxies` decides that; this
+        function never duplicates the check.
+      * an UNCHANGED item is never even considered, so resaving an old
+        project (a rename, a status flip, moving a clip that already has a
+        proxy) never starts encoding its whole library — this is what keeps
+        "never scheduled from open" (`_migrate_project_look`'s deliberate
+        adopt-only behaviour) true for save too.
+      * non-video items (images, audio, overlays) are excluded by
+        `_look_migration_items` itself, exactly as they are for import.
+
+    Only ever QUEUES — `_ensure_current_proxies` never awaits an encode — and
+    never raises: any failure here is logged and swallowed so a save can never
+    fail, or even slow down, over this housekeeping.
+    """
+    try:
+        changed_items = _new_or_changed_video_items(previous, merged)
+        if not changed_items:
+            return
+        cutdown = {
+            "tracks": [{"id": "t0", "items": changed_items}],
+            "sources": [],
+            "settings": merged.get("settings"),
+        }
+        _ensure_current_proxies(project_id, project_dir, cutdown, broadcaster)
+    except Exception as e:
+        print(f"[montaj] save_project: could not queue previews for {project_id}: {e}")
+
+
 @router.put("/projects/{project_id}")
 async def save_project(project_id: str, body: dict = Body(...), request: Request = None, project_dir: Path = Depends(get_project_dir)):
     if body.get("id") != project_id:
@@ -2100,6 +2177,13 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
     # Don't rely on the file watcher which can miss updates during SSE reconnect windows.
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     broadcaster.publish(project_id, _sse_data_frame(text))
+    # Queue editor previews (proxies) for whatever video items this save just
+    # added or repointed — an agent placing a clip via PUT (the only way a
+    # clip's src reaches disk outside of import) must not leave it stuck on
+    # "Preparing preview…" until someone clicks "Generate previews" by hand.
+    # Only relevant when this body could have touched a video item's (id, src).
+    if "tracks" in body or "sources" in body:
+        _queue_previews_for_changed_items(project_id, project_dir, existing, merged, broadcaster)
     # Auto-commit to git on status transitions — run in a thread so it doesn't block the event loop
     new_status = merged.get("status")
     if new_status in ("draft", "final") and new_status != prev_status:

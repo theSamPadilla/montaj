@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed: a clip an agent placed into a project by saving (not by dragging it in through import) never got an editor preview, so the editor showed "Preparing preview…" forever until someone clicked "Generate previews" by hand.** Saving a project now queues a preview for any video item whose id or source is new or changed since what was last on disk; an item that already has a current preview, or one that didn't change, is never re-queued, so resaving an existing project doesn't start re-encoding its whole library.
+
 ## v5.5.3
 
 - **Fixed: photos, screen recordings and the presenter placed in a box looked squashed or the wrong size in the preview, though the export was right.** The preview fitted them to the whole frame and then stretched them into the box when its width and height scale differed; it now fits them into the box, as the export does. Cropped clips on upper tracks now show cropped in the preview too.
