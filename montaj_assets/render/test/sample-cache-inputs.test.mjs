@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
+import { FFMPEG } from '../ffmpeg-bin.js'
 
 import {
   sampleOverlay, sampleFrame, buildOverlayCacheKey,
@@ -150,13 +151,13 @@ test('overlay: a cached PNG with no manifest is a miss', { timeout: 120_000 }, a
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('frame: an imported helper edit changes sampleFrame pixels', { timeout: 180_000 }, async (t) => {
+test('frame: an imported helper edit changes sampleFrame pixels', { timeout: 180_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'montaj-sci-f-'))
   try {
     const clip = join(dir, 'clip.mp4')
-    const r = spawnSync('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'color=c=black:size=64x64:rate=30:duration=3', '-pix_fmt', 'yuv420p', clip],
+    const r = spawnSync(FFMPEG, ['-y', '-f', 'lavfi', '-i', 'color=c=black:size=64x64:rate=30:duration=3', '-pix_fmt', 'yuv420p', clip],
       { encoding: 'utf8', timeout: 15_000 })
-    if (r.status !== 0) { t.skip('ffmpeg synthetic source failed'); return }
+    assert.equal(r.status, 0, `ffmpeg (${FFMPEG}) could not make the synthetic source: ${r.error || r.stderr}`)
     const helper = join(dir, 'helper.js'), comp = join(dir, 'overlay.jsx')
     writeFileSync(helper, helperSrc('#ff0000')); writeFileSync(comp, overlaySrc)
     const project = {
