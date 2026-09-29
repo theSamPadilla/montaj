@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.5.2
+
 - **Fixed: a project opened while an agent was still building it now switches to the full preview once it is ready.** The preview picked its player when the project opened, so a project whose preview files were still being made stayed on the basic player, without crossfades, until a reload; it now switches once they arrive, at the next pause, keeping the playhead and selection.
 
 ## v5.5.1
