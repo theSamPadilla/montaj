@@ -456,7 +456,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
   })
 
   // ── Tab set varies with the selection ───────────────────────────────────
-  it('offers only Transform for a selected image clip', async () => {
+  it('offers Transform and Crop for a selected image clip', async () => {
     onTestFinished(installCanvasHarness())
     const project = makeProject({
       tracks: [[{ id: 'img-0', type: 'image', src: 'photo.jpg', start: 0, end: 4 }]],
@@ -467,9 +467,26 @@ describe('VideoEditor — CapCut right properties panel', () => {
     selectCanvasItem(container, project, { type: 'image' })
 
     const strip = await screen.findByRole('group', { name: 'Clip panel view' })
-    // No Speed or Volume (image, not video: a still has no audio), no Crop (not a tracks[0] video), no
-    // Generate (generation is video-only).
-    expect(clipTabNames(strip)).toEqual(['Transform'])
+    // No Speed or Volume (image, not video: a still has no audio), no Generate
+    // (generation is video-only). Crop is offered (PV55): a still is a crop target.
+    expect(clipTabNames(strip)).toEqual(['Transform', 'Crop'])
+  })
+
+  it('offers Transform and Crop for an image clip on tracks[1]', async () => {
+    onTestFinished(installCanvasHarness())
+    const project = makeProject({
+      tracks: [
+        [{ id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10 }],
+        [{ id: 'img-1', type: 'image', src: 'photo.jpg', start: 0, end: 4 }],
+      ],
+    } as unknown as Partial<Project>)
+    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+
+    selectCanvasItem(container, project, { id: 'img-1' })
+
+    const strip = await screen.findByRole('group', { name: 'Clip panel view' })
+    expect(clipTabNames(strip)).toEqual(['Transform', 'Crop'])
   })
 
   it('offers no Generate tab for an ordinary video clip with no generation provenance', async () => {
@@ -534,6 +551,91 @@ describe('VideoEditor — CapCut right properties panel', () => {
     // one-way enter, not a toggle like the toolbar button it mirrors.
     fireEvent.click(await cropTabBodyButton())
     expect(screen.getByLabelText('Crop source').getAttribute('aria-pressed')).toBe('true')
+  })
+  it('the toolbar Crop source button is enabled for a selected still and opens the modal on its image', async () => {
+    onTestFinished(installCanvasHarness())
+    const project = makeProject({
+      tracks: [[{ id: 'img-0', type: 'image', src: 'photo.jpg', start: 0, end: 4 }]],
+    } as unknown as Partial<Project>)
+    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+    const toolbar = screen.getByLabelText('Crop source') as HTMLButtonElement
+    expect(toolbar.disabled).toBe(true)
+
+    selectCanvasItem(container, project, { id: 'img-0' })
+
+    await waitFor(() => expect((screen.getByLabelText('Crop source') as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByLabelText('Crop source'))
+    const apply = await screen.findByRole('button', { name: 'Apply crop' })
+    expect(apply.closest('.fixed')!.querySelector('img')).toBeTruthy()
+  })
+
+  it("the Crop tab's diamond keys the still's crop at the playhead", async () => {
+    onTestFinished(installCanvasHarness())
+    const project = makeProject({
+      tracks: [[{ id: 'img-0', type: 'image', src: 'photo.jpg', start: 0, end: 4 }]],
+    } as unknown as Partial<Project>)
+    const adapter = makeFakeAdapter(project)
+    const { container } = renderCapCut(project, adapter)
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+    selectCanvasItem(container, project, { id: 'img-0' })
+
+    fireEvent.click(await clipTab('Crop'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Crop keyframe at playhead' }))
+
+    await waitFor(() => {
+      const kf = (lastSaved(adapter).tracks?.[0]?.items?.[0] as { keyframes?: { prop: string; points: { t: number; value: number }[] }[] }).keyframes
+      const pts = (prop: string) => kf?.find(k => k.prop === prop)?.points
+      // Selecting on the canvas parks the playhead where it pressed, mid-clip (2s).
+      for (const prop of ['cropX', 'cropY', 'cropW', 'cropH']) expect(pts(prop)?.map(p => p.t)).toEqual([2])
+      expect(pts('cropW')?.[0].value).toBe(1)
+      expect(pts('cropX')?.[0].value).toBe(0)
+    })
+  })
+
+  it('Apply on an animated still crop keys it; the static sourceCrop is untouched', async () => {
+    onTestFinished(installCanvasHarness())
+    // The file's beforeEach installs a no-op ResizeObserver, so the modal's
+    // frame would measure 0x0 and "Apply crop" would stay disabled.
+    ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+      cb: ResizeObserverCallback
+      constructor(cb: ResizeObserverCallback) { this.cb = cb }
+      observe() { this.cb([{ contentRect: { width: 800, height: 450 } } as ResizeObserverEntry], this as unknown as ResizeObserver) }
+      unobserve() {}
+      disconnect() {}
+    }
+    const key = (prop: string, value: number) => ({ prop, points: [{ t: 0, value, easing: 'linear' }] })
+    const project = makeProject({
+      tracks: [[{
+        id: 'img-0', type: 'image', src: 'photo.jpg', start: 0, end: 4,
+        keyframes: [key('cropX', 0), key('cropY', 0), key('cropW', 1), key('cropH', 1)],
+      }]],
+    } as unknown as Partial<Project>)
+    const adapter = makeFakeAdapter(project)
+    const { container } = renderCapCut(project, adapter)
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+    selectCanvasItem(container, project, { id: 'img-0' })
+
+    fireEvent.click(await clipTab('Crop'))
+    // The press that selected the clip left the playhead mid-clip; walk back to the key at 0.
+    fireEvent.click(await screen.findByRole('button', { name: 'Previous Crop keyframe' }))
+    fireEvent.click(await cropTabBodyButton())
+    const applyBtn = await screen.findByRole('button', { name: 'Apply crop' })
+    const img = applyBtn.closest('.fixed')!.querySelector('img')!
+    Object.defineProperty(img, 'naturalWidth', { configurable: true, value: 2000 })
+    Object.defineProperty(img, 'naturalHeight', { configurable: true, value: 1000 })
+    fireEvent.load(img)
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Apply crop' }) as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply crop' }))
+
+    await waitFor(() => {
+      const item = lastSaved(adapter).tracks?.[0]?.items?.[0] as { sourceCrop?: unknown; keyframes?: { prop: string; points: { t: number; value: number }[] }[] }
+      const at0 = (prop: string) => item.keyframes?.find(k => k.prop === prop)?.points.find(p => p.t === 0)?.value
+      const w = (1000 * 0.5625) / 2000
+      expect(at0('cropW')).toBeCloseTo(w, 9)
+      expect(at0('cropX')).toBeCloseTo((1 - w) / 2, 9)
+      expect(item.sourceCrop).toBeUndefined()
+    })
   })
 })
 

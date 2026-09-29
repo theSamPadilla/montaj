@@ -4,6 +4,8 @@ import type { Project, VideoEditorProps } from '../types'
 import type { AudioTrack, VisualItem } from '../schema'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
+import { CropKeyframeNav } from '../crop/CropKeyframeNav'
+import { localTimeOf, writeCrop } from './keyframeOps'
 import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
 import { Tooltip } from '../ui/Tooltip'
 import { reviveNumberInRange, usePersistentState } from '../ui/usePersistentState'
@@ -16,7 +18,7 @@ import { repairCaptionWords } from './captionRepair'
 import { maxCaptionLane, normalizeCaptionLanes } from './captionLanes'
 import { mergeCaptionProfileDefaults } from './captionProfileDefaults'
 import Timeline, { type TimelineActions, type TimelineMode } from './timeline/Timeline'
-import { visualDuration } from '@bycrux/timeline-core'
+import { geometryAt, visualDuration } from '@bycrux/timeline-core'
 import { audioEnd, computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, effectiveItemAudio, enabledTrackItems, enabledTracks, mapTrackItems, normalizeAudioTracks, trackItems, withEnabledItemTracks } from './timeline/timeline-model'
 import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle, type ScrubHandle } from './preview/PreviewPlayer'
@@ -1394,11 +1396,13 @@ function ReviewSurface<P extends Project>({
   const currentTime = usePlaybackTime(clock)
   const previewDuration = useMemo(() => computeDerivedTiming(project).contentDuration, [project])
 
-  // The selected tracks[0] video item, if any — the only thing source-crop mode
-  // can target. Source crop is a tracks[0]-video primitive (the renderer applies
-  // it to the original clip before compositing).
+  // What the crop tool can target: a tracks[0] video with a src, or (PV55) an
+  // image with a src on any track. The renderer applies a video's source crop to
+  // the original clip before compositing; a still's crop runs before its fit.
   const cropTarget = primarySelectedId
-    ? clips.find(c => c.id === primarySelectedId && c.type === 'video' && !!c.src) ?? null
+    ? clips.find(c => c.id === primarySelectedId && c.type === 'video' && !!c.src)
+      ?? trackItems(project).flat().find(i => i.id === primarySelectedId && i.type === 'image' && !!i.src)
+      ?? null
     : null
 
   // Selecting a different item (or nothing croppable) exits crop mode.
@@ -2809,7 +2813,7 @@ function ReviewSurface<P extends Project>({
               }
               // Crop tab: offered only when the selected clip IS the source-crop
               // target — `cropTarget` (above) already encodes that rule (tracks[0]
-              // video with a src), so this just checks the current clip against
+              // video or still with a src), so this just checks the current clip against
               // it rather than re-deriving the condition. Unlike the toolbar
               // button (above), which is an honest toggle, this is a one-way
               // ENTER: the tab body stays mounted once opened, so a toggle here
@@ -2820,6 +2824,11 @@ function ReviewSurface<P extends Project>({
               onOpenCrop={
                 clipSelection.kind === 'clip' && cropTarget?.id === clipSelection.item.id
                   ? () => setCropMode(true)
+                  : undefined
+              }
+              cropNav={
+                clipSelection.kind === 'clip' && clipSelection.item.type === 'image' && cropTarget?.id === clipSelection.item.id
+                  ? <CropKeyframeNav item={clipSelection.item} clock={clock} onChange={applyOverlayInspectorChange} onSeek={seekTo} />
                   : undefined
               }
               // The host's generation panel is per-CLIP — it draws that clip's
@@ -2948,29 +2957,41 @@ function ReviewSurface<P extends Project>({
       )}
 
       {/* Source-crop modal — drag-to-pan, aspect presets, zoom. Commits
-          sourceCrop (+ source dims) to the selected tracks[0] video on Apply. */}
-      {cropMode && cropTarget && (
-        <VideoSourceCropModal
-          item={cropTarget}
-          // Prefer the conformed per-window cache (short, starts at the clip's
-          // first frame → loads instantly and shows a representative frame).
-          // Falls back to the bg-removed proxy, then the raw source.
-          resolveSrc={(it) => adapter.fileUrl(it.nobg_preview_src ?? it.normalizedSrc ?? it.src ?? '')}
-          onApply={(next) => handleOverlayChange(cropTarget.id, {
-            sourceCrop: {
-              x: Math.min(1, Math.max(0, next.x)),
-              y: Math.min(1, Math.max(0, next.y)),
-              w: Math.min(1, Math.max(0, next.w)),
-              h: Math.min(1, Math.max(0, next.h)),
-            },
-          })}
-          onSrcDimsLoaded={(dims) => {
-            if (cropTarget.sourceWidth && cropTarget.sourceHeight) return
-            handleOverlayChange(cropTarget.id, { sourceWidth: dims.width, sourceHeight: dims.height })
-          }}
-          onClose={() => setCropMode(false)}
-        />
-      )}
+          sourceCrop (+ source dims) to the selected video or still on Apply. */}
+      {cropMode && cropTarget && (() => {
+        const isImage = cropTarget.type === 'image'
+        const g = geometryAt(cropTarget, cropTarget.type, localTimeOf(cropTarget, currentTime))
+        const [rw, rh] = project.settings?.resolution ?? [1080, 1920]
+        return (
+          <VideoSourceCropModal
+            item={cropTarget}
+            // A video prefers the conformed per-window cache (short, starts at the
+            // clip's first frame → loads instantly and shows a representative
+            // frame), then the bg-removed proxy, then the raw source. A still
+            // draws its own file.
+            resolveSrc={(it) => adapter.fileUrl(isImage ? (it.src ?? '') : (it.nobg_preview_src ?? it.normalizedSrc ?? it.src ?? ''))}
+            initialCrop={isImage ? g.sourceCrop : undefined}
+            lockAspect={isImage ? (rw * g.scaleX) / (rh * g.scaleY) : undefined}
+            onApply={(next) => {
+              const rect = {
+                x: Math.min(1, Math.max(0, next.x)), y: Math.min(1, Math.max(0, next.y)),
+                w: Math.min(1, Math.max(0, next.w)), h: Math.min(1, Math.max(0, next.h)),
+              }
+              // A still keys through the shared rule, so an animated crop is keyed
+              // at the playhead instead of writing a static value the tracks hide.
+              // The video path is unchanged until phase 2.
+              if (isImage) applyOverlayInspectorChange(writeCrop(cropTarget, localTimeOf(cropTarget, clock.get()), rect))
+              else handleOverlayChange(cropTarget.id, { sourceCrop: rect })
+            }}
+            onSrcDimsLoaded={(dims) => {
+              if (isImage) return // a still's crop needs no stored size (PV55)
+              if (cropTarget.sourceWidth && cropTarget.sourceHeight) return
+              handleOverlayChange(cropTarget.id, { sourceWidth: dims.width, sourceHeight: dims.height })
+            }}
+            onClose={() => setCropMode(false)}
+          />
+        )
+      })()}
 
       {/* Controls & shortcuts reference */}
       {showControls && (
