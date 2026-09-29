@@ -28,6 +28,9 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync, spawn } from 'node:child_process'
 import puppeteer from 'puppeteer'
 import { isHdr } from '../color-space.js'
+import { bundleComponent, cleanupBundle } from '../bundle.js'
+import { renderAllSegments } from '../renderer.js'
+import { sdrRecaptureSpecs, mergeSdrCaptures } from '../render.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // MONTAJ_ROOT is two levels above montaj_assets/render/
@@ -249,4 +252,80 @@ test('isHdr: returns true for hdr_hlg and hdr_pq, false otherwise', () => {
   assert.equal(isHdr(null), false)
   assert.equal(isHdr(undefined), false)
   assert.equal(isHdr(''), false)
+})
+
+// ---------------------------------------------------------------------------
+// hdrImages: the per-segment count of <img> fetches served a converted body
+// (PV42 T7). render.js re-captures exactly the segments with hdrImages > 0 for
+// the SDR export, because those captures carry HDR-converted pixels.
+// ---------------------------------------------------------------------------
+
+/** Render one tiny overlay whose JSX loads `imgSrc`; returns the segment result. */
+async function renderImgOverlay(dir, imgSrc, colorSpace, tag) {
+  const jsx = join(dir, `ov-${tag}.jsx`)
+  writeFileSync(jsx, `export default function Ov() {
+  return <div style={{ width: 200, height: 200 }}><img src="${imgSrc}" style={{ width: 100, height: 100 }} /></div>
+}
+`)
+  const { htmlPath, workDir } = await bundleComponent({
+    componentPath: jsx, props: {}, fps: 10, durationFrames: 2, width: 200, height: 200,
+  })
+  try {
+    const [seg] = await renderAllSegments([{
+      id: `seg-${tag}`, htmlPath, fps: 10, width: 200, height: 200,
+      frameCount: 2, startSeconds: 0, endSeconds: 0.2,
+      outputPath: join(dir, `seg-${tag}.mkv`),
+    }], { workers: 1, colorSpace })
+    return seg
+  } finally {
+    cleanupBundle(workDir)
+  }
+}
+
+test('renderAllSegments reports hdrImages: HDR local PNG = 1, SVG-only and SDR = 0', { timeout: 120_000 }, async (t) => {
+  if (!hasZscale()) { t.skip('zscale not available in ffmpeg'); return }
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-hdrimages-'))
+  try {
+    const png = join(dir, 'logo.png')
+    createSrgbPng(png)
+    const svg = join(dir, 'mark.svg')
+    writeFileSync(svg, '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>')
+
+    const hdr = await renderImgOverlay(dir, `file://${png}`, 'hdr_hlg', 'hdr-png')
+    assert.equal(hdr.hdrImages, 1, 'one converted PNG served in an HDR job')
+
+    const vec = await renderImgOverlay(dir, `file://${svg}`, 'hdr_hlg', 'hdr-svg')
+    assert.equal(vec.hdrImages, 0, 'SVG is never converted')
+
+    const sdr = await renderImgOverlay(dir, `file://${png}`, 'sdr_bt709', 'sdr-png')
+    assert.equal(sdr.hdrImages, 0, 'no interceptor in an SDR job')
+
+    const none = await renderImgOverlay(dir, `file://${png}`, null, 'null-png')
+    assert.equal(none.hdrImages, 0, 'no colour space, no interceptor')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('SDR pass re-captures only segments with hdrImages > 0 and keeps the rest', () => {
+  const rendered = [
+    { id: 'a', webmPath: '/s/a.mkv', hdrImages: 2, offsetX: 5, opacity: 0.5, keyframes: [{}] },
+    { id: 'b', webmPath: '/s/b.mkv', hdrImages: 0, offsetX: 7 },
+  ]
+  const specs = [
+    { id: 'a', outputPath: '/s/a.mkv', htmlPath: '/w/a.html' },
+    { id: 'b', outputPath: '/s/b.mkv', htmlPath: '/w/b.html' },
+  ]
+  const recapture = rendered.filter(s => s.hdrImages > 0)
+  const respecs = sdrRecaptureSpecs(recapture, specs)
+  assert.deepEqual(respecs.map(s => [s.id, s.outputPath]), [['a', '/s/a-sdr.mkv']])
+  assert.equal(specs[0].outputPath, '/s/a.mkv', 'input spec not mutated')
+
+  const merged = mergeSdrCaptures(rendered, [{ id: 'a', webmPath: '/s/a-sdr-chunk-0.mkv' }])
+  assert.equal(merged[0].webmPath, '/s/a-sdr-chunk-0.mkv')
+  assert.equal(merged[0].offsetX, 5, 'geometry carries over')
+  assert.equal(merged[0].opacity, 0.5)
+  assert.equal(merged[0].keyframes.length, 1)
+  assert.equal(merged[1].webmPath, '/s/b.mkv', 'untouched segment keeps its capture')
+  assert.equal(mergeSdrCaptures(rendered, [])[0].webmPath, '/s/a.mkv', 'nothing recaptured: identity')
 })

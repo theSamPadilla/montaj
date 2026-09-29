@@ -71,7 +71,7 @@ export function resolveChunkSize(longest, targetWorkers, subframes, configChunkS
  *   outputPath:   string,
  * }>} segments
  * @param {{ workers?: number, chunkSize?: number }} [config]
- * @returns {Promise<Array<{ id: string, webmPath: string, startSeconds: number, endSeconds: number }>>}
+ * @returns {Promise<Array<{ id: string, webmPath: string, startSeconds: number, endSeconds: number, hdrImages: number }>>}
  */
 export async function renderAllSegments(segments, config = {}) {
   if (segments.length === 0) return []
@@ -115,6 +115,8 @@ export async function renderAllSegments(segments, config = {}) {
 
   // chunkResults[segId][chunkIndex] = webmPath
   const chunkResults = new Map()
+  // hdrImageCounts[segId] = converted <img> bodies served, summed over chunks
+  const hdrImageCounts = new Map()
   const queue = [...jobs]
   let jobsDone = 0
 
@@ -143,12 +145,13 @@ export async function renderAllSegments(segments, config = {}) {
           ? `${job.id} chunk ${job.chunkIndex + 1}/${job.totalChunks}`
           : job.id
         log(`rendering ${label} (${job.frameEnd - job.frameStart} frames)...`)
-        const webmPath = await renderChunk(currentBrowser, job)
+        const { webmPath, hdrImages } = await renderChunk(currentBrowser, job)
         jobsDone++
         jobsOnThisBrowser++
         log(`encoded ${label} (${jobsDone}/${jobs.length} done)`)
         if (!chunkResults.has(job.id)) chunkResults.set(job.id, [])
         chunkResults.get(job.id)[job.chunkIndex] = webmPath
+        hdrImageCounts.set(job.id, (hdrImageCounts.get(job.id) ?? 0) + hdrImages)
 
         // Recycle browser to flush memory after RECYCLE_AFTER jobs
         if (jobsOnThisBrowser >= RECYCLE_AFTER && queue.length > 0) {
@@ -173,7 +176,7 @@ export async function renderAllSegments(segments, config = {}) {
       mkdirSync(dirname(seg.outputPath), { recursive: true })
       webmPath = concatChunks(chunks, seg.outputPath)
     }
-    results.push({ id: seg.id, webmPath, startSeconds: seg.startSeconds, endSeconds: seg.endSeconds, opaque: seg.opaque ?? false })
+    results.push({ id: seg.id, webmPath, startSeconds: seg.startSeconds, endSeconds: seg.endSeconds, opaque: seg.opaque ?? false, hdrImages: hdrImageCounts.get(seg.id) ?? 0 })
   }
 
   return results
@@ -240,6 +243,10 @@ async function renderChunk(browser, job) {
   // HDR image interception: rewrite sRGB image fetches to pre-converted HDR versions
   // so that images embedded in JSX overlays composite correctly against HDR footage.
   // Only active for HDR projects — SDR renders are byte-identical to v2.5.7.
+  // hdrImages counts the fetches served a CONVERTED body (not request.continue()):
+  // those pixels are wrong for an SDR output, so render.js re-captures such a
+  // segment for the SDR pass (PV42 T7).
+  let hdrImages = 0
   if (isHdr(colorSpace)) {
     await page.setRequestInterception(true)
     page.on('request', async (request) => {
@@ -310,6 +317,7 @@ async function renderChunk(browser, job) {
         if (existsSync(outPath) && statSync(outPath).mtimeMs >= statSync(srcPath).mtimeMs) {
           const body = readFileSync(outPath)
           request.respond({ status: 200, contentType: 'image/png', body })
+          hdrImages++
           return
         }
 
@@ -319,6 +327,7 @@ async function renderChunk(browser, job) {
         if (converted) {
           const body = readFileSync(outPath)
           request.respond({ status: 200, contentType: 'image/png', body })
+          hdrImages++
         } else {
           // Conversion failed — degrade to the v2.5.7 reinterpret-as-HDR path
           // rather than breaking the render.
@@ -443,7 +452,7 @@ async function renderChunk(browser, job) {
 
   rmSync(frameDir, { recursive: true, force: true })
 
-  return chunkMkv
+  return { webmPath: chunkMkv, hdrImages }
 }
 
 const TTY = process.stderr.isTTY

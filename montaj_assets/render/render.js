@@ -748,10 +748,21 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
     // One size for both files: the HDR pass's, when there is one.
     const [sdrWidth, sdrHeight] = outputDims ?? outputSize(settings, sdr.videoItems, renderWidth, renderHeight)
     // The overlay captures the SDR pass composites: the ones above, as they are
-    // (under --export sdr they were taken at sdr_bt709 already). Only a capture
-    // whose <img> went through the HDR interceptor (renderer.js) differs in
-    // SDR; PV42 T7 swaps re-captured segments in here.
-    const sdrOverlaySegments = renderedSegments
+    // (under --export sdr they were taken at sdr_bt709 already, so hdrImages is
+    // 0 and nothing is redone). Only a capture whose <img> was served a converted
+    // body by the HDR interceptor (renderer.js) differs in SDR; those segments,
+    // and only those, are captured again at sdr_bt709 (PV42 T7).
+    const recapture = renderedSegments.filter(s => s.hdrImages > 0)
+    let sdrCaptures = []
+    if (recapture.length > 0) {
+      // Deliberately avoids the phase-marker substrings ("bundling segment",
+      // "with Puppeteer"): serve would read them as a new bundling phase.
+      log(`re-capturing ${recapture.length} overlay segment(s) with images for SDR`)
+      sdrCaptures = await renderAllSegments(sdrRecaptureSpecs(recapture, segmentSpecs), {
+        workers, colorSpace: 'sdr_bt709', imageTone: effectiveImageTone, motionBlur,
+      })
+    }
+    const sdrOverlaySegments = mergeSdrCaptures(renderedSegments, sdrCaptures)
     // compose embeds this file's poster itself, as SDR: no LUT on the extract.
     await compose({
       projectJson: sdr.project,
@@ -779,6 +790,28 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   // serve's job.result) still sees the same thing it always has, and the SDR
   // sibling follows on line 2.
   process.stdout.write(exportPlan.outputs.join('\n') + '\n')
+}
+
+/**
+ * The specs to capture again for the SDR pass: those of the already-rendered
+ * `recapture` segments, each writing to its own `-sdr` path so the HDR capture
+ * (still needed by the HDR compose) is not overwritten.
+ */
+export function sdrRecaptureSpecs(recapture, segmentSpecs) {
+  return recapture.map(r => {
+    const spec = segmentSpecs.find(s => s.id === r.id)
+    return { ...spec, outputPath: spec.outputPath.replace(/(\.\w+)?$/, m => `-sdr${m}`) }
+  })
+}
+
+/**
+ * Overlay segments for the SDR compose: each segment keeps every field the
+ * geometry loop attached (offsets, scale, opacity, keyframes ...), and a
+ * re-captured one only swaps in its SDR capture's `webmPath`.
+ */
+export function mergeSdrCaptures(renderedSegments, sdrCaptures) {
+  const byId = new Map(sdrCaptures.map(c => [c.id, c]))
+  return renderedSegments.map(r => byId.has(r.id) ? { ...r, webmPath: byId.get(r.id).webmPath } : r)
 }
 
 // ---------------------------------------------------------------------------
