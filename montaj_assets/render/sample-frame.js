@@ -20,16 +20,16 @@
  * exit 0 success, exit 1 failure
  */
 import puppeteer from 'puppeteer'
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync, copyFileSync, rmSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync, copyFileSync, rmSync, renameSync } from 'fs'
 import { resolve, join, dirname, basename, extname } from 'path'
 import { fileURLToPath } from 'url'
 import { spawnSync } from 'child_process'
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
 
-import { bundleComponent, cleanupBundle } from './bundle.js'
+import { bundleComponent, cleanupBundle, resolveFilePath } from './bundle.js'
 import { isMain as isMainModule } from './is-main.js'
-import { toFileHref } from './file-url.js'
+import { toFileHref, isAbsPath } from './file-url.js'
 import { pMap } from './p-map.js'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { isHdr } from './color-space.js'
@@ -112,8 +112,88 @@ const SHORT_EDGE_TARGET = 1080
  * 5: PV50, an overlay remounts once its webfont loads, so text it positions by
  *    measuring is no longer placed with fallback metrics. Unconditional: it
  *    must not rely on another change's key edit landing in the same release.
+ *
+ * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
+ * bump of its own: a cached PNG with no manifest is a miss, which already
+ * retires every entry written before PV49. 5 above is PV50's and stands on
+ * its own, as its note says; the two do not depend on each other. A further
+ * bump would only rekey what this build writes, for no pixel change.
  */
 const SAMPLE_CACHE_VERSION = 5
+
+// ---------------------------------------------------------------------------
+// Input manifests
+// ---------------------------------------------------------------------------
+// A cache key that hashes only the entry file's mtime cannot see an edit to a
+// file the overlay IMPORTS. Rebuilding the import graph on every lookup would
+// cost an esbuild pass per overlay even on a hit, so instead the miss path
+// records the graph: `<key>.inputs.json` holds `[[path, mtimeMs], ...]` for
+// every bundle input and every absolute file path in props. A lookup is a hit
+// only when the PNG AND the manifest exist AND every recorded mtime still
+// matches. The graph cannot change without editing a file already in it, so
+// that is exact. A missing file is a miss, and a PNG with no manifest is a
+// miss (which retires every pre-PV49 entry).
+
+/** Absolute paths in `props` that are existing files, walked the way bundle.js's rewritePathsToFileUrls finds them. */
+export function collectPropFilePaths(value, out = new Set()) {
+  if (typeof value === 'string' && isAbsPath(value)) {
+    const resolved = resolveFilePath(value)
+    try { if (resolved && statSync(resolved).isFile()) out.add(resolved) } catch { /* gone */ }
+  } else if (Array.isArray(value)) {
+    for (const v of value) collectPropFilePaths(v, out)
+  } else if (value && typeof value === 'object') {
+    for (const v of Object.values(value)) collectPropFilePaths(v, out)
+  }
+  return out
+}
+
+/** `[[path, mtimeMs], ...]` for the paths that can be stat-ed now, sorted and deduped. */
+export function statInputs(paths) {
+  const out = []
+  for (const p of [...new Set(paths)].sort()) {
+    try { out.push([p, statSync(p).mtimeMs]) } catch { /* vanished: nothing to record */ }
+  }
+  return out
+}
+
+/**
+ * Union of several `[[path, mtimeMs]]` lists. A path recorded with two
+ * different mtimes changed while the frame was being sampled; it is recorded as
+ * -1, which no file has, so the entry can never validate.
+ */
+export function mergeInputs(lists) {
+  const m = new Map()
+  for (const list of lists) {
+    for (const [p, t] of list ?? []) {
+      m.set(p, m.has(p) && m.get(p) !== t ? -1 : t)
+    }
+  }
+  return [...m].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+}
+
+/** Write a manifest atomically (temp file, then rename). */
+export function writeInputsManifest(file, entries) {
+  const tmp = `${file}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify(entries))
+  renameSync(tmp, file)
+}
+
+/**
+ * Read a manifest and check every recorded mtime against disk.
+ * @returns {Array<[string, number]> | null} the entries when the manifest
+ *   exists, parses and every file still has its recorded mtime; null otherwise
+ *   (no manifest, unreadable, a file missing or changed).
+ */
+export function readValidInputsManifest(file) {
+  let entries
+  try { entries = JSON.parse(readFileSync(file, 'utf8')) } catch { return null }
+  if (!Array.isArray(entries)) return null
+  for (const e of entries) {
+    if (!Array.isArray(e) || typeof e[0] !== 'string' || typeof e[1] !== 'number') return null
+    try { if (statSync(e[0]).mtimeMs !== e[1]) return null } catch { return null }
+  }
+  return entries
+}
 
 // Transfer of the file actually decoded, probed once per path per process.
 const transferCache = new Map()
@@ -309,22 +389,25 @@ export async function sampleOverlay({
   const cacheKey = buildOverlayCacheKey(componentPath, props, frame, width, height, googleFonts, measure, effectiveDuration, MONTAJ_FONTS_DIR)
   const cachePng = join(CACHE_DIR, `${cacheKey}.png`)
   const cacheJson = join(CACHE_DIR, `${cacheKey}.json`)
+  const cacheInputs = join(CACHE_DIR, `${cacheKey}.inputs.json`)
 
-  // Cache hit
-  if (existsSync(cachePng)) {
+  // Cache hit: the PNG exists and every file it was rendered from is unchanged.
+  // The inputs come from the manifest, so sampleFrame can take their union.
+  const hitInputs = existsSync(cachePng) ? readValidInputsManifest(cacheInputs) : null
+  if (hitInputs) {
     log(`cache hit for ${basename(componentPath)} frame ${frame}`)
     mkdirSync(dirname(outPath), { recursive: true })
     copyFileSync(cachePng, outPath)
     if (measure && existsSync(cacheJson)) {
       const measurements = JSON.parse(readFileSync(cacheJson, 'utf8'))
-      return { pngPath: outPath, measurements }
+      return { pngPath: outPath, measurements, inputs: hitInputs }
     }
-    return { pngPath: outPath }
+    return { pngPath: outPath, inputs: hitInputs }
   }
 
   log(`sampling overlay ${basename(componentPath)} at frame ${frame}${measure ? ' (measure)' : ''}`)
 
-  const { htmlPath, workDir } = await bundleComponent({
+  const { htmlPath, workDir, inputs: bundleInputs } = await bundleComponent({
     componentPath,
     props,
     fps,
@@ -334,6 +417,11 @@ export async function sampleOverlay({
     googleFonts,
     fontsBaseDir: MONTAJ_FONTS_DIR,
   })
+  // Record mtimes now, right after the bundle. A file edited DURING the bundle
+  // (after esbuild read it, before this stat) is recorded with its new mtime
+  // against pixels built from the old text: a small window, accepted. A file
+  // edited after this point is recorded old, so the next lookup misses.
+  const recordedInputs = statInputs([...bundleInputs, componentPath, ...collectPropFilePaths(props)])
 
   let browser = null
   let measurements = undefined
@@ -540,19 +628,23 @@ export async function sampleOverlay({
   // Write to cache
   try {
     mkdirSync(CACHE_DIR, { recursive: true })
+    // Manifest goes first out and last in: a reader that sees the new PNG
+    // beside the old manifest would validate stale pixels.
+    rmSync(cacheInputs, { force: true })
     copyFileSync(outPath, cachePng)
     if (measure && measurements !== undefined) {
       writeFileSync(cacheJson, JSON.stringify(measurements))
     }
+    writeInputsManifest(cacheInputs, recordedInputs)
   } catch (e) {
     // Cache write failure is non-fatal
     log(`WARNING: cache write failed: ${e.message}`)
   }
 
   if (measure) {
-    return { pngPath: outPath, measurements }
+    return { pngPath: outPath, measurements, inputs: recordedInputs }
   }
-  return { pngPath: outPath }
+  return { pngPath: outPath, inputs: recordedInputs }
 }
 
 // ---------------------------------------------------------------------------
@@ -597,8 +689,11 @@ export async function sampleFrame({
   // Cache key
   const cacheKey = buildFrameCacheKey(projectPath, project, atSeconds, sdrCurve, preferProxy)
   const cachePng = join(CACHE_DIR, `${cacheKey}.png`)
+  const cacheInputs = join(CACHE_DIR, `${cacheKey}.inputs.json`)
 
-  if (existsSync(cachePng)) {
+  // The key covers each overlay's own file; the manifest covers everything they
+  // import and every props asset. No manifest is a miss.
+  if (existsSync(cachePng) && readValidInputsManifest(cacheInputs)) {
     log(`cache hit for frame at t=${atSeconds}`)
     mkdirSync(dirname(outPath), { recursive: true })
     copyFileSync(cachePng, outPath)
@@ -669,6 +764,7 @@ export async function sampleFrame({
 
   // --- Step 1: Render overlay PNGs in parallel (cap=4) ---
   // Each overlay PNG has transparent background, same design resolution as canvas
+  const overlayInputLists = []
   const overlayPngs = await pMap(overlayItems, async (ri) => {
     const ov = ri.item
     // ri.seek is the resolver's elapsed-since-start for a non-video item —
@@ -691,6 +787,7 @@ export async function sampleFrame({
       durationFrames: overlayDurationFrames,
       outPath: tmpOverlayOut,
     })
+    overlayInputLists.push(result.inputs)
     return {
       // Shape expected by buildOverlayFilterParts: webmPath, startSeconds, offsetX, offsetY, scale/scaleX/scaleY
       //
@@ -1106,7 +1203,9 @@ export async function sampleFrame({
   // Write to cache
   try {
     mkdirSync(CACHE_DIR, { recursive: true })
+    rmSync(cacheInputs, { force: true })
     copyFileSync(outPath, cachePng)
+    writeInputsManifest(cacheInputs, mergeInputs(overlayInputLists))
   } catch (e) {
     log(`WARNING: cache write failed: ${e.message}`)
   }

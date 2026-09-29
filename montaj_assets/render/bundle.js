@@ -15,7 +15,7 @@ import { fileURLToPath } from 'url'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
 import { isAbsPath, toFileHref, fontsCssHref } from './file-url.js'
-import { overlayEsbuildOptions } from './overlay-build.js'
+import { overlayEsbuildOptions, overlayInputsFromMetafile } from './overlay-build.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // `core/` and `node_modules/` are siblings of bundle.js — always resolve via
@@ -86,15 +86,21 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
   // Same resolution as every other overlay bundle (overlay-build.js): the
   // carousel renderer and the editor preview (preview-bundle.js) share these
   // options, so an overlay's imports resolve the same way in all three.
-  await esbuild.build({
+  // metafile lists every file the bundle read. esbuild's absWorkingDir is left
+  // at its default (process.cwd()), which is what metafile keys are relative
+  // to. `inputs` is the user's own files only (no engine, no generated shim);
+  // the sample cache records them so it can notice an edited import.
+  const result = await esbuild.build({
     ...overlayEsbuildOptions(),
     entryPoints: [shimPath],
     outfile:     bundlePath,
+    metafile:    true,
   })
+  const inputs = overlayInputsFromMetafile(result.metafile, process.cwd(), { exclude: [workDir] })
 
   writeFileSync(htmlPath, generateHtml(width, height, opaque, googleFonts, fontsBaseDir))
 
-  return { htmlPath, workDir }
+  return { htmlPath, workDir, inputs }
 }
 
 /** Remove the temp directory for a bundle. Call after the WebM segment is encoded. */
@@ -107,7 +113,7 @@ export function cleanupBundle(workDir) {
 // ---------------------------------------------------------------------------
 
 /** Resolve a path that may contain macOS narrow no-break spaces (\u202f). */
-function resolveFilePath(p) {
+export function resolveFilePath(p) {
   if (existsSync(p)) return p
   const dn = dirname(p)
   const bn = basename(p)
