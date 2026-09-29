@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import { render } from '@testing-library/react'
+import { render, fireEvent } from '@testing-library/react'
 import { geometryAt, geometryFor } from '@bycrux/timeline-core'
 import type { EditorProject, VisualItem } from '../../../schema'
 import type { OverlayFactory } from '../../../types'
@@ -31,6 +31,7 @@ function makeProject(): EditorProject {
 function renderLayer(item: VisualItem, opts: {
   currentTime: number
   selected?: boolean
+  track0?: boolean
   liveOffset?: { id: string; x: number; y: number } | null
   liveScale?: { id: string; scale: number; scaleX: number; scaleY: number } | null
   liveRotation?: { id: string; rotation: number } | null
@@ -42,8 +43,8 @@ function renderLayer(item: VisualItem, opts: {
       currentTime={opts.currentTime}
       isPlaying={false}
       isCanvasProject={false}
-      overlayTracks={[[item]]}
-      tracks0NonVideo={[]}
+      overlayTracks={opts.track0 ? [[]] : [[item]]}
+      tracks0NonVideo={opts.track0 ? [item] : []}
       renderScale={0.2}
       selectedOverlayId={opts.selected ? item.id : undefined}
       containerRef={{ current: document.createElement('div') }}
@@ -352,6 +353,33 @@ describe('OverlayItemsLayer — per-axis scale', () => {
     expect(fit).toBeTruthy()
     expect(container.contains(fit)).toBe(true)
     expect(fit.style.transform).toBe('translateX(-50%) translateY(140%) scale(0.25, 4)')
+  })
+
+  describe('the fit control while the crop is keyframed (F10)', () => {
+    const key = (prop: string, value: number) => ({ prop, points: [{ t: 0, value }] })
+    const cropKeys = [key('cropX', 0), key('cropY', 0), key('cropW', 0.5), key('cropH', 1)]
+    for (const track0 of [false, true]) {
+      it(`is disabled and writes nothing (${track0 ? 'tracks[0]' : 'upper track'})`, () => {
+        const item = { id: 'k', type: 'image', src: 'i.png', start: 0, end: 10, keyframes: cropKeys } as unknown as VisualItem
+        const onOverlayChange = vi.fn()
+        const { getByRole } = renderLayer(item, { currentTime: 1, selected: true, track0, onOverlayChange })
+        for (const name of ['cover', 'contain', 'fill']) {
+          const btn = getByRole('button', { name }) as HTMLButtonElement
+          expect(btn.disabled).toBe(true)
+          fireEvent.click(btn)
+        }
+        expect(onOverlayChange).not.toHaveBeenCalled()
+      })
+      it(`is unchanged with no crop keyframes (${track0 ? 'tracks[0]' : 'upper track'})`, () => {
+        const item = { id: 'k', type: 'image', src: 'i.png', start: 0, end: 10, sourceCrop: { x: 0, y: 0, w: 0.5, h: 1 } } as VisualItem
+        const onOverlayChange = vi.fn()
+        const { getByRole } = renderLayer(item, { currentTime: 1, selected: true, track0, onOverlayChange })
+        const btn = getByRole('button', { name: 'contain' }) as HTMLButtonElement
+        expect(btn.disabled).toBe(false)
+        fireEvent.click(btn)
+        expect(onOverlayChange).toHaveBeenCalledWith('k', { fit: 'contain' })
+      })
+    }
   })
 
   it('a legacy uniform item still counter-scales to a square handle', () => {

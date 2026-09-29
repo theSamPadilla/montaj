@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { containsTime, geometryAt, geometryFor, resolveAt } from '@bycrux/timeline-core'
+import { containsTime, geometryAt, geometryFor, hasCropKeyframes, resolveAt } from '@bycrux/timeline-core'
 import { isProxyUsable, markProxyFailed } from './proxySupport'
 import { mediaBoxStyle, perAxisRatio } from './transformStyle'
 import { sourceCropVideoStyle } from './sourceCropStyle'
@@ -377,11 +377,18 @@ function RotateHandle({ scaleX, scaleY, onMouseDown }: {
 // image's bounding box; counter-scales so it stays a constant size regardless of
 // the item's scale. 'fill' is the legacy stretch behavior (kept for opt-in).
 const FIT_OPTIONS: Array<'cover' | 'contain' | 'fill'> = ['cover', 'contain', 'fill']
-function FitControl({ value, scaleX, scaleY, onChange }: {
+// While an image's crop is keyframed the fit is ignored (an animated crop
+// always covers), so the control is shown DISABLED rather than accepting clicks
+// that do nothing. The treatment is Sam's call and lives on the next two lines:
+// LOCKED_TITLE is the tooltip (undefined = no new copy); to hide the control
+// instead of disabling it, return null when `locked`.
+const LOCKED_TITLE: string | undefined = undefined
+function FitControl({ value, scaleX, scaleY, onChange, locked }: {
   value: 'cover' | 'contain' | 'fill'
   scaleX: number
   scaleY: number
   onChange: (fit: 'cover' | 'contain' | 'fill') => void
+  locked?: boolean
 }) {
   return (
     <div
@@ -400,8 +407,11 @@ function FitControl({ value, scaleX, scaleY, onChange }: {
         <button
           key={opt}
           type="button"
-          onClick={(e) => { e.stopPropagation(); onChange(opt) }}
-          className={`px-2 py-1 text-[11px] font-mono capitalize ${
+          disabled={locked}
+          title={locked ? LOCKED_TITLE : undefined}
+          onClick={(e) => { e.stopPropagation(); if (!locked) onChange(opt) }}
+          // The disabled look is the editor's own (ui/button.tsx).
+          className={`px-2 py-1 text-[11px] font-mono capitalize disabled:pointer-events-none disabled:opacity-50 ${
             value === opt ? 'text-black' : 'text-gray-300 hover:bg-white/10'
           }`}
           style={value === opt ? { backgroundColor: SELECTION } : undefined}
@@ -628,7 +638,7 @@ export default function OverlayItemsLayer({
             </MediaBox>
             {handles}
             {isSel && onOverlayChange && (
-              <FitControl value={fit} scaleX={scaleX} scaleY={scaleY} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
+              <FitControl locked={hasCropKeyframes(item)} value={fit} scaleX={scaleX} scaleY={scaleY} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
             )}
           </div>
         )
@@ -802,7 +812,7 @@ export default function OverlayItemsLayer({
                 </MediaBox>
                 {handles}
                 {isSel && onOverlayChange && (
-                  <FitControl value={fit} scaleX={scaleX} scaleY={scaleY} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
+                  <FitControl locked={hasCropKeyframes(item)} value={fit} scaleX={scaleX} scaleY={scaleY} onChange={(next) => onOverlayChange(item.id, { fit: next })} />
                 )}
               </div>
             )
