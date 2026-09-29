@@ -107,8 +107,9 @@ const SHORT_EDGE_TARGET = 1080
  * project file, so the 24 h on-disk cache cannot serve the old picture.
  * 2: PV42, HDR projects grade each clip by its own origin.
  * 3: PV42 review, an untagged SDR clip in an HDR project is read as BT.709.
+ * 4: PV42 acceptance, an untagged proxy is read as BT.709.
  */
-const SAMPLE_CACHE_VERSION = 3
+const SAMPLE_CACHE_VERSION = 4
 
 // Transfer of the file actually decoded, probed once per path per process.
 const transferCache = new Map()
@@ -842,6 +843,11 @@ export async function sampleFrame({
           vfParts.push(`crop=${cw}:${ch}:${cx}:${cy}`)
         }
       }
+      // The proxy is ungraded SDR. One built from an untagged source by an older
+      // montaj is untagged too, and ffmpeg would decode it as BT.601 where the
+      // export reads its source as BT.709. Read it as the export does, in HDR and
+      // SDR projects alike; a tagged proxy (every new one) is left alone.
+      if (useProxy && decodedTransferOf(src) === 'unknown') vfParts.unshift(UNTAGGED_AS_BT709_VF)
       if (layer) {
         // Grade HLG/PQ -> SDR BT.709 inline, through the same Montaj Vivid LUT
         // the render and the proxies use, ONLY when sdr-layer.js says so for

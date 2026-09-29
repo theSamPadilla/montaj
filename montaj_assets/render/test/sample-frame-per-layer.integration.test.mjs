@@ -186,7 +186,7 @@ t('6. an HLG item whose normalizedSrc is a graded SDR master is not graded again
 })
 
 t('7. the cache key carries the sample cache version', () => {
-  assert.equal(SAMPLE_CACHE_VERSION, 3)
+  assert.equal(SAMPLE_CACHE_VERSION, 4)
   const p = { settings: { colorSpace: 'hdr_hlg' } }
   const now = buildFrameCacheKey(null, p, 1)
   assert.equal(buildFrameCacheKey(null, p, 1, null, false, SAMPLE_CACHE_VERSION), now)
@@ -247,6 +247,48 @@ t('9b. --prefer-proxy with an identity crop and a smaller proxy succeeds', async
   const viaMaster = await sample(dir, projectOf('sdr_bt709', item, [320, 180]), {}, 0.75)
   const viaProxy = await sample(dir, projectOf('sdr_bt709', item, [320, 180]), { preferProxy: true }, 0.75)
   assert.ok(maxDiff(viaProxy, viaMaster) <= 6, `proxy ${viaProxy}, master ${viaMaster}`)
+})
+
+// --- Untagged proxies (PV42 acceptance G6) ----------------------------------
+
+/** An untagged proxy of `master`, the way a pre-fix montaj built one: re-encoded, no colour tags. */
+function makeUntaggedProxy(master, proxy) {
+  run('ffmpeg', ['-y', '-v', 'error', '-i', master, '-vf', 'scale=64:64,format=yuv420p', '-c:v', 'libx264',
+    '-crf', '10', '-g', '1', proxy])
+  assert.ok(['', 'unknown'].includes(transferOf(proxy)), `fixture proxy must be untagged, got ${transferOf(proxy)}`)
+  return proxy
+}
+
+for (const space of ['hdr_hlg', 'sdr_bt709']) {
+  t(`9c. --prefer-proxy reads an untagged proxy as BT.709 like the export (${space} project)`, async (dir) => {
+    const master = makeBars(join(dir, 'dl.mp4'), UNTAGGED)
+    const proxy = makeUntaggedProxy(master, join(dir, 'dl_proxy.mp4'))
+    const project = projectOf(space, { src: master, proxySrc: proxy })
+    let vsProxy = 0, vsSource = 0
+    for (const fx of [0.2, 0.4, 0.6]) {
+      const got = await sample(dir, project, { preferProxy: true }, fx)
+      vsProxy = Math.max(vsProxy, maxDiff(got, decodeAs709(dir, proxy, `9c-p-${space}-${fx}`, fx)))
+      // The source read as the export reads it. Not exact: the proxy is a lossy re-encode
+      // (601 vs 709 differs by ~30 on these bars, so 3 still separates them cleanly).
+      vsSource = Math.max(vsSource, maxDiff(got, decodeAs709(dir, master, `9c-s-${space}-${fx}`, fx)))
+    }
+    // (the sample is frame 0.2 s, the reference frame 0: all-intra noise differs per frame)
+    assert.ok(vsProxy <= 3, `worst channel diff vs the proxy read as BT.709: ${vsProxy}`)
+    assert.ok(vsSource <= 3, `worst channel diff vs the source read as BT.709: ${vsSource}`)
+  })
+}
+
+t('9d. --prefer-proxy with a BT.709-tagged proxy is unchanged (plain decode)', async (dir) => {
+  const master = makeBars(join(dir, 'tagged.mp4'), BT709)
+  const proxy = join(dir, 'tagged_proxy.mp4')
+  run('ffmpeg', ['-y', '-v', 'error', '-i', master, '-vf', 'scale=64:64,format=yuv420p', '-crf', '10', ...BT709, proxy])
+  assert.equal(transferOf(proxy), 'bt709')
+  const project = projectOf('sdr_bt709', { src: master, proxySrc: proxy })
+  for (const fx of [0.2, 0.4, 0.6]) {
+    const want = decodeAs709(dir, proxy, `9d-${fx}`, fx)
+    const got = await sample(dir, project, { preferProxy: true }, fx)
+    assert.ok(maxDiff(got, want) <= 1.0, `tagged proxy at ${fx}: ${got} vs ${want}`)
+  }
 })
 
 // --- Cutouts ---------------------------------------------------------------

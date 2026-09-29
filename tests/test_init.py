@@ -1495,6 +1495,8 @@ def _zscale_ffmpeg() -> str | None:
 
 
 PLAIN_PROXY_VF = "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p"
+# The lavfi clips these tests make are untagged; their proxy reads them as BT.709 (PV42 G6).
+UNTAGGED_PROXY_VF = "setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709," + PLAIN_PROXY_VF
 
 
 def _last_ffmpeg_vf(log: Path) -> str:
@@ -1709,7 +1711,7 @@ def test_init_eager_sdr_into_hdr_proxy_comes_from_the_original_ungraded(tmp_path
     assert result.returncode == 0, result.stderr
     item = track_items(json.loads(_project_path_from_stdout(result.stdout).read_text()))[0][0]
     assert item["normalizedSrc"]  # converted, as a cache
-    assert _proxy_encodes(log) == [(item["src"], PLAIN_PROXY_VF)]
+    assert _proxy_encodes(log) == [(item["src"], UNTAGGED_PROXY_VF)]
     assert item["proxySrc"]
 
 
@@ -1856,7 +1858,9 @@ def test_init_lazy_proxy_command_is_plain_scale_for_sdr(tmp_path):
     # takes its profile from the input pix_fmt, so a 10-bit or 4:2:2 source
     # would otherwise yield High 10 / High 4:2:2 — profiles no browser decodes,
     # handed to a capability gate that declares them playable.
-    assert vf == "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p"
+    # The lavfi source is untagged, so the proxy reads it as BT.709 (PV42 G6).
+    assert vf == ("setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709,"
+                  "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p")
     assert "zscale" not in vf and "tonemap" not in vf
     assert "zscale" not in vf
 

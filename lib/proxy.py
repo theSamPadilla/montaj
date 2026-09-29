@@ -32,9 +32,9 @@ sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works
 from common import ffmpeg_bin, get_duration, progress
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types.colorspace` works
-from lib.normalize import _build_tonemap_vf_to_sdr, _run_atomic_encode, _sweep_stale_temps, _tmp_for
+from lib.normalize import UNTAGGED_AS_BT709_VF, _build_tonemap_vf_to_sdr, _run_atomic_encode, _sweep_stale_temps, _tmp_for
 from lib.look import MASTER_LOOK
-from lib.types.colorspace import detect_from_transfer, is_hdr
+from lib.types.colorspace import SPECS, detect_from_transfer, is_hdr
 
 PROXY_LOOK = MASTER_LOOK
 """Look-version tag stamped into every proxy filename. Re-exports lib/look.py's
@@ -143,6 +143,7 @@ def _build_proxy_cmd(input_path: str, out_path: str, *, tonemap: bool, info: dic
     when the tonemap arm ran without zscale (degraded color path; caller
     warns loudly, mirroring normalize()'s fallback warning).
     """
+    untagged_color_args: list[str] = []
     scale = "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'"
 
     used_fallback_tonemap = False
@@ -169,6 +170,13 @@ def _build_proxy_cmd(input_path: str, out_path: str, *, tonemap: bool, info: dic
         # preview failure that gate exists to prevent. Forcing 8-bit 4:2:0
         # here is a no-op for the common already-8-bit-4:2:0 case.
         vf = f"{scale},format=yuv420p"
+        # An untagged SDR source (a web download) is what the export reads as
+        # BT.709 (lib/normalize.py UNTAGGED_AS_BT709_VF), so the proxy is built
+        # reading it that way and declares it. The tags assert what the pixels
+        # already were; a tagged input keeps the command it always had.
+        if info.get("color_transfer") in (None, "", "unknown"):
+            vf = f"{UNTAGGED_AS_BT709_VF},{vf}"
+            untagged_color_args = list(SPECS["sdr_bt709"]["output_color_args"])
 
     cmd = [
         ffmpeg_bin(), "-y",
@@ -182,6 +190,7 @@ def _build_proxy_cmd(input_path: str, out_path: str, *, tonemap: bool, info: dic
         cmd += ["-f", "lavfi", "-i", "anullsrc=cl=stereo:r=48000", "-shortest"]
     cmd += [
         "-vf", vf,
+        *untagged_color_args,
         "-c:v", "libx264", "-crf", "20", "-preset", "veryfast", "-g", "1",
         "-c:a", "libopus", "-b:a", "96k",
         "-movflags", "+faststart",

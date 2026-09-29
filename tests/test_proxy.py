@@ -201,12 +201,33 @@ def test_build_proxy_cmd_eager_arm_is_plain_scale_no_tonemap():
     High 10/4:2:2 H.264, which the browser capability gate in
     proxySupport.ts declares playable and no browser can actually decode."""
     cmd, used_fallback = _build_proxy_cmd(
-        "master.mp4", "out.mp4", tonemap=False, info={"has_audio": True}
+        "master.mp4", "out.mp4", tonemap=False,
+        info={"has_audio": True, "color_transfer": "bt709"},
     )
     assert used_fallback is False
     vf = cmd[cmd.index("-vf") + 1]
     assert vf == "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p"
     assert "zscale" not in vf
+    # A tagged input's command carries no colour tags of its own (unchanged).
+    assert "-colorspace" not in cmd and "-color_trc" not in cmd
+
+
+@pytest.mark.parametrize("transfer", ["unknown", "", None])
+def test_build_proxy_cmd_untagged_input_is_read_and_tagged_as_bt709(transfer):
+    """PV42 acceptance G6: an untagged SDR source (a web download) is read as
+    BT.709 by the export, so its proxy is built reading it that way and says so,
+    instead of shipping untagged for every later decoder to guess BT.601."""
+    info = {"has_audio": True}
+    if transfer is not None:
+        info["color_transfer"] = transfer
+    cmd, _ = _build_proxy_cmd("dl.mp4", "out.mp4", tonemap=False, info=info)
+    vf = cmd[cmd.index("-vf") + 1]
+    assert vf == (nm.UNTAGGED_AS_BT709_VF
+                  + ",scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p")
+    for flag, want in (("-color_primaries", "bt709"), ("-color_trc", "bt709"), ("-colorspace", "bt709")):
+        assert cmd[cmd.index(flag) + 1] == want
+    # The tags go before the output path, as encoder options.
+    assert cmd.index("-colorspace") < cmd.index("out.mp4")
 
 
 def test_build_proxy_cmd_lazy_arm_scale_composed_ahead_of_tonemap(monkeypatch):
@@ -264,7 +285,8 @@ def test_build_proxy_cmd_never_grades_an_input_that_is_not_hdr(transfer, monkeyp
     info = {"has_audio": True, **({"color_transfer": transfer} if transfer else {})}
     cmd, used_fallback = _build_proxy_cmd("screen.mp4", "out.mp4", tonemap=True, info=info)
     assert used_fallback is False
-    assert cmd[cmd.index("-vf") + 1] == PLAIN_VF
+    want = PLAIN_VF if transfer in ("bt709", "smpte170m") else f"{nm.UNTAGGED_AS_BT709_VF},{PLAIN_VF}"
+    assert cmd[cmd.index("-vf") + 1] == want   # untagged: read as BT.709 like the export
     lines = [ln for ln in capsys.readouterr().err.splitlines() if "screen.mp4" in ln]
     assert len(lines) == 1 and "not HDR" in lines[0]
 
@@ -557,3 +579,45 @@ def test_make_proxy_timeout_uses_info_duration_when_present(tmp_path, monkeypatc
         info={"has_audio": True, "duration": 600},
     )
     assert captured["timeout"] == 1200
+
+
+def _decode_rgb(path, *, as709: bool, x=0.3):
+    """Frame 0 of `path`, one pixel at fraction x across the middle, as rgb24."""
+    # rgb24 BEFORE the crop: a 1x1 crop of 4:2:0 yuv rounds to zero chroma.
+    vf = ((nm.UNTAGGED_AS_BT709_VF + ",") if as709 else "") + f"format=rgb24,crop=1:1:iw*{x}:ih/2"
+    r = subprocess.run([ffmpeg_bin(), "-v", "error", "-i", str(path), "-vf", vf, "-frames:v", "1",
+                        "-f", "rawvideo", "pipe:1"], capture_output=True, timeout=30)
+    assert r.returncode == 0, r.stderr[-300:]
+    return list(r.stdout[:3])
+
+
+def test_make_proxy_untagged_source_ships_bt709_tagged_without_changing_pixels(tmp_path):
+    """The tag asserts what the file already was. Real ffmpeg: the proxy
+    probes bt709, and decodes (as BT.709) to the source decoded as BT.709;
+    the same encode without the tags is pixel-equivalent (only labels differ)."""
+    src = tmp_path / "dl.mp4"
+    subprocess.run([ffmpeg_bin(), "-y", "-v", "error", "-f", "lavfi", "-i",
+                    "smptebars=size=640x360:rate=30:duration=1", "-pix_fmt", "yuv420p",
+                    "-c:v", "libx264", str(src)], check=True, timeout=60)
+    info = probe_video(str(src))
+    assert info["color_transfer"] in (None, "", "unknown")
+    out = tmp_path / "proxy.mp4"
+    make_proxy(str(src), str(out), tonemap=False, info=info)
+    video = next(s for s in _ffprobe_streams(out) if s["codec_type"] == "video")
+    assert video.get("color_transfer") == "bt709"
+    assert video.get("color_space") == "bt709"
+    assert video.get("color_primaries") == "bt709"
+    for x in (0.1, 0.3, 0.5, 0.7):
+        want = _decode_rgb(src, as709=True, x=x)
+        got = _decode_rgb(out, as709=False, x=x)   # tagged: the plain decode is 709
+        assert max(abs(a - b) for a, b in zip(got, want)) <= 1.0, (x, got, want)
+
+    # Untagged baseline encode of the same source (the pre-fix proxy).
+    old = tmp_path / "old.mp4"
+    subprocess.run([ffmpeg_bin(), "-y", "-v", "error", "-i", str(src), "-vf",
+                    "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p",
+                    "-c:v", "libx264", "-crf", "20", "-preset", "veryfast", "-g", "1", str(old)],
+                   check=True, timeout=60)
+    for x in (0.1, 0.3, 0.5, 0.7):
+        assert max(abs(a - b) for a, b in zip(_decode_rgb(out, as709=False, x=x),
+                                              _decode_rgb(old, as709=True, x=x))) <= 1.0
