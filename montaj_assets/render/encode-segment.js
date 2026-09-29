@@ -40,7 +40,7 @@ import { lutPath } from './look.js'
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
-  transitionProgress,
+  transitionProgress, hasCropKeyframes, imageFitFor, isFullFrameCrop, CROP_KEYFRAME_PROPS,
 } from '@bycrux/timeline-core'
 
 const FFMPEG_TIMEOUT_MS = 600_000
@@ -187,6 +187,41 @@ export function probeVideoGeometry(filePath) {
   } catch {
     return null
   }
+}
+
+/**
+ * An image's DISPLAY size: the size ffmpeg decodes it to, EXIF orientation
+ * applied. MEASURED (PV55 T1, ffmpeg 8.1.2): ffprobe reports a JPEG's STORED
+ * size at stream level and carries its orientation only as a FRAME-level
+ * display matrix, which the decode applies (orientation 6 decodes 40x80 from an
+ * 80x40 store, through -filter_complex too). So the first frame is read and a
+ * quarter turn swaps the axes. Cached per path for the process; null on failure.
+ *
+ * @param {string} filePath
+ * @returns {{width: number, height: number} | null}
+ */
+const imageSizeCache = new Map()
+export function probeImageDisplaySize(filePath) {
+  if (imageSizeCache.has(filePath)) return imageSizeCache.get(filePath)
+  let size = null
+  const r = spawnSync(FFPROBE, [
+    '-v', 'quiet', '-select_streams', 'v:0', '-read_intervals', '%+#1',
+    '-show_entries', 'frame=width,height:frame_side_data=rotation',
+    '-of', 'json', filePath,
+  ], { encoding: 'utf8', timeout: 30_000 })
+  if (r.status === 0) {
+    try {
+      const f = JSON.parse(r.stdout).frames?.[0]
+      const w = Number(f?.width)
+      const h = Number(f?.height)
+      if (w > 0 && h > 0) {
+        const rot = (f.side_data_list ?? []).find((s) => typeof s?.rotation === 'number')?.rotation ?? 0
+        size = Math.abs(Math.round(rot / 90)) % 2 === 1 ? { width: h, height: w } : { width: w, height: h }
+      }
+    } catch { /* size stays null */ }
+  }
+  imageSizeCache.set(filePath, size)
+  return size
 }
 
 /**
@@ -519,7 +554,9 @@ function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
   // `colorchannelmixer aa` is a <double> and accepts no expression at all, so a
   // clip's opacity curve is IGNORED here and the static value is used instead.
   // That gap is a property of the tool, not an oversight — see docs/RENDER.md.
-  const GEOMETRY_PROPS = ['offsetX', 'offsetY', 'scale', 'scaleX', 'scaleY', 'rotation']
+  // The crop props (cropX/cropY/cropW/cropH, PV55) are absent too, and must stay
+  // so: they move the picture inside the box (animatedImageCrop), never the box.
+  const GEOMETRY_PROPS =['offsetX', 'offsetY', 'scale', 'scaleX', 'scaleY', 'rotation']
   const animatedProps = tracks.filter(
     (tr) => tr && GEOMETRY_PROPS.includes(tr.prop) && Array.isArray(tr.points) && tr.points.length > 0,
   )
@@ -685,6 +722,92 @@ function warnIfCapped(item, kind) {
   }
 }
 
+/**
+ * The keyframed source crop of an IMAGE (PV55), as a chain whose output is
+ * exactly `boxW`x`boxH` rgba: the crop rect at each instant, cover-fitted into
+ * the box. null when the item has no crop keyframes, or when its display size
+ * cannot be read (the caller then holds the crop at the segment start).
+ *
+ * WHY THIS SHAPE. Each point was measured (PV55 T1, ffmpeg 8.1.2); do not re-derive.
+ *   - `crop` evaluates w/h ONCE; only x/y follow `t`. So the size change is done
+ *     by `scale` at eval=frame (the source resized so the current rect lands at
+ *     the box size), and a FIXED-size `crop` cuts the box out at a moving x/y.
+ *   - `crop`'s own iw/ih are frozen at configuration, so x/y use `t` and
+ *     literals only, never iw. That is why the display size is needed.
+ *   - `crop` clamps x/y against its INPUT LINK's size. Straight after the
+ *     eval=frame `scale` that is the current frame. Put ANY filter between them
+ *     (`format=rgba` was the one measured) and the link keeps the first frame's
+ *     size: a zoom-in silently freezes. `format=rgba` therefore goes AFTER the
+ *     crop. The zoom pixel test exists to catch exactly this.
+ *
+ * Not `zoompan`: it rounds its window to whole INPUT pixels (visible stepping on
+ * a slow pan unless the source is upscaled first), and it is a frame generator
+ * (`d`, `fps`, `on`/`in`) where every other animated step here is a function of `t`.
+ *
+ * Cost: the static pre-crop to the UNION of the rects shown keeps the per-frame
+ * resize to the region the animation visits. A pan at one zoom resizes about
+ * what a still cover fit does; a zoom-in resizes the union at its deepest zoom.
+ */
+function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap) {
+  if (!hasCropKeyframes(item)) return null
+  const dims = item.probedWidth > 0 && item.probedHeight > 0
+    ? { width: item.probedWidth, height: item.probedHeight }
+    : probeImageDisplaySize(item.src)
+  if (!dims) return null
+  const SW = dims.width
+  const SH = dims.height
+
+  const cropTracks = item.keyframes.filter(
+    (tr) => tr && CROP_KEYFRAME_PROPS.includes(tr.prop) && Array.isArray(tr.points) && tr.points.length > 0,
+  )
+  // Every rect the item shows in this segment: a uniform grid plus the keys.
+  const probes = new Set([0, duration])
+  for (let i = 0; i <= 120; i++) probes.add((duration * i) / 120)
+  for (const tr of cropTracks) {
+    for (const p of tr.points) {
+      const local = p.t - timeOffset
+      if (local >= 0 && local <= duration) probes.add(local)
+    }
+  }
+  let x0 = 1, y0 = 1, x1 = 0, y1 = 0, minW = 1, minH = 1
+  for (const local of probes) {
+    const c = geometryAt(item, 'image', timeOffset + local).sourceCrop
+    x0 = Math.min(x0, c.x); y0 = Math.min(y0, c.y)
+    x1 = Math.max(x1, c.x + c.w); y1 = Math.max(y1, c.y + c.h)
+    minW = Math.min(minW, c.w); minH = Math.min(minH, c.h)
+  }
+  // The union in whole source pixels, origin on even pixels (a JPEG decodes 4:2:0).
+  const ux = Math.max(0, Math.floor((x0 * SW) / 2) * 2)
+  const uy = Math.max(0, Math.floor((y0 * SH) / 2) * 2)
+  const uw = Math.min(SW, Math.ceil(x1 * SW)) - ux
+  const uh = Math.min(SH, Math.ceil(y1 * SH)) - uy
+
+  const base = item.sourceCrop ?? { x: 0, y: 0, w: 1, h: 1 }
+  const exprFor = (prop, fallback, unitsPerPixel) => {
+    const tr = cropTracks.find((x) => x.prop === prop)
+    if (!tr) return String(fallback)
+    const shifted = { prop, points: tr.points.map((p) => ({ ...p, t: p.t - timeOffset })) }
+    const info = compileTrackExprInfo(shifted, { pixelTolerance: 0.25, unitsPerPixel })
+    if (info.capped) onCap(prop, info)
+    return info.expr ?? String(fallback)
+  }
+  // A crop-fraction error d moves the picture about d*box/w output pixels, worst
+  // at the deepest zoom (the smallest w, h).
+  const X = exprFor('cropX', base.x, minW / boxW)
+  const Y = exprFor('cropY', base.y, minH / boxH)
+  const W = exprFor('cropW', base.w, minW / boxW)
+  const H = exprFor('cropH', base.h, minH / boxH)
+
+  // k: source px -> output px, the cover factor of the current rect into the box.
+  const k = `max(${boxW}/((${W})*${SW}),${boxH}/((${H})*${SH}))`
+  // ceil, never round: the box must always fit inside the resized union.
+  const x = `round(((${X})*${SW}-${ux})*${k}+((${W})*${SW}*${k}-${boxW})/2)`
+  const y = `round(((${Y})*${SH}-${uy})*${k}+((${H})*${SH}*${k}-${boxH})/2)`
+  return `crop=${uw}:${uh}:${ux}:${uy}:exact=1,`
+       + `scale=w='ceil(${uw}*${k})':h='ceil(${uh}*${k})':eval=frame,`
+       + `crop=${boxW}:${boxH}:x='${x}':y='${y}':exact=1,format=rgba`
+}
+
 function rotateFilterStep(box, alphaPin = false) {
   if (box.isIdentity) return ''
   const pin = alphaPin ? 'format=yuva420p,' : ''
@@ -699,6 +822,13 @@ const BAKED_OVERLAY_GEOMETRY = geometryFor({}, 'overlay')
 
 /**
  * Build filter-graph parts for one image item.
+ *
+ * The chain is: source crop → fit → [box animation] → setpts. A still
+ * `sourceCrop` (PV55) is cut first, in the image's own pixels, and then the fit
+ * runs on it as always, so all three fits honour it. A KEYFRAMED crop replaces
+ * both steps with animatedImageCrop's chain, which always COVERS the box
+ * (`imageFitFor`): a per-frame contain or fill of a changing crop would need
+ * per-frame bars.
  *
  * @param {object} item       — the image item from segment.items
  * @param {number} vw         — canvas width  (pixels)
@@ -742,13 +872,25 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // letterboxes with transparency; 'fill' is the legacy stretch-to-box behavior
   // (does NOT preserve AR — kept only for explicit opt-in). Mirrors the AR-safe
   // treatment the video branch already applies via force_original_aspect_ratio.
-  const fit = item.fit ?? 'cover'
+  const fit = imageFitFor(item)
   // When animated, the fit runs to the PEAK box and the varying resize is
   // appended after it. All three fits stay correct under that split because the
   // peak box and every animated box share the CANVAS's aspect ratio, so the
   // trailing resize is uniform and changes framing in none of them.
   const fitW = anim?.needsAnimatedChain ? anim.peakW : scaledW
   const fitH = anim?.needsAnimatedChain ? anim.peakH : scaledH
+  // PV55: the source crop, BEFORE the fit. Keyframed: a chain that outputs the
+  // fitted box itself (animatedImageCrop). Held still: `sourceCrop` in the
+  // image's own pixels, then the fit as always. No stored size is needed there.
+  const cropAnim = animatedImageCrop(item, fitW, fitH, imgOffset, duration, warnIfCapped(item, 'image'))
+  let stillCrop = item.sourceCrop
+  if (!cropAnim && hasCropKeyframes(item)) {
+    stillCrop = geometryAt(item, 'image', imgOffset).sourceCrop
+    console.warn(`[montaj] image item ${item.id ?? item.src}: could not read its size, so its animated crop is held at ${imgOffset}s`)
+  }
+  const cropStep = !cropAnim && stillCrop && stillCrop.w > 0 && stillCrop.h > 0 && !isFullFrameCrop(stillCrop)
+    ? `crop=w='round(iw*${stillCrop.w})':h='round(ih*${stillCrop.h})':x='round(iw*${stillCrop.x})':y='round(ih*${stillCrop.y})':exact=1,`
+    : ''
   let fitChain
   if (fit === 'contain') {
     fitChain = `scale=${fitW}:${fitH}:force_original_aspect_ratio=decrease,format=rgba,`
@@ -759,6 +901,7 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
     fitChain = `scale=${fitW}:${fitH}:force_original_aspect_ratio=increase,`
              + `crop=${fitW}:${fitH},format=rgba`
   }
+  fitChain = cropAnim ?? (cropStep + fitChain)
   // No alpha pin on the rotate: all three fit chains already run through
   // `format=rgba`, so the transparent pad and `c=black@0.0` corners are
   // representable exactly as the static path assumes.
