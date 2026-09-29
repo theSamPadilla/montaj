@@ -132,6 +132,35 @@
 // corpus items carry no probed `colorTransfer`, so the untagged-video tag and
 // the pin after the Vivid chain (same change) never appear in them. Rewritten
 // through the override flag, deliberately.
+//
+// ── 2026-09-29 · PV48 (two-stage seek for video items) — deliberate render
+//    change, the transition golden below REWRITTEN, expected/encode-args.*.json
+//    UNCHANGED ─────────────────────────────────────────────────────────────────
+// A video item used to be read with one input seek, `-ss <actualIn> -t
+// <window>`. On an open-GOP file (x265 at its defaults: every SDR clip
+// converted to HLG) a seek into a keyframe's leading pictures drops them, and
+// the item's picture then ran 1 to 3 frames ahead of its own audio for the
+// whole segment (measured in a real render, PV48 T1). The input now seeks to
+// whole seconds at least SEEK_PREROLL_S earlier and the chain head trims the
+// rest (encode-segment.js twoStageSeek): `trim=start=<fine>:duration=<window>,`
+// heads the video chain, `atrim=start=<fine>:duration=<window>` replaces
+// `atrim=0:<window>` on the audio, and the input `-t` becomes
+// fine + window + 1, only an upper bound now. A seek of 0 keeps every old
+// string byte for byte.
+//
+// All three frozen fixtures seek 0 (one segment each, clips from inPoint 0),
+// so expected/encode-args.*.json did not move: the gate above passed untouched
+// and nothing was rewritten. The clip-crossfade EXPECTED below did move, where
+// an item starts mid-clip and only there: clipA in [3,4) (actualIn 3, so
+// `-ss 1` and trim/atrim start=2:duration=1) and clipB in [4,8) (actualIn 1,
+// so `-ss 0` and start=1:duration=4). Measured before landing, old against
+// new, 93 real encodes of closed-GOP H.264 at 30, 24 and 29.97 fps, speeds
+// 0.5/1/2, seeks either side of the preroll: video framemd5-identical in every
+// one. The audio md5 moves, because the AAC decoder's state depends on where
+// decoding starts; checked against the source decoded with no seek (7 cases,
+// 30 fps), old and new keep the sample count and lag 0 and each is within
+// 1 LSB. The pixel proof on an open-GOP file is
+// open-gop-seek.integration.test.mjs.
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
@@ -345,8 +374,10 @@ describe('encode-args golden: post-swap render pipeline == pre-T7 legacy output'
 describe('transition golden: a clip crossfade, end to end through the real pipeline', () => {
   const CANVAS = '[0:v]format=yuv420p,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv[canvas]'
   const SETPARAMS = 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout]'
-  const fit = (i) =>
-    `[${i}:v]setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,` +
+  // `trim`: PV48's two-stage seek, on an item that starts mid-clip (see the
+  // note at the top of this file).
+  const fit = (i, trim = '') =>
+    `[${i}:v]${trim}setpts=PTS-STARTPTS,scale=1080:1920:force_original_aspect_ratio=decrease,` +
     `pad=1080:1920:(ow-iw)/2:(oh-ih)/2[vid${i}]`
 
   /** @type {Array<{start: number, end: number, filterParts: string[]}>} */
@@ -372,9 +403,9 @@ describe('transition golden: a clip crossfade, end to end through the real pipel
       filterParts: [
         CANVAS,
         '[canvas]split=2[xfa1][xfb1]',
-        fit(1),
+        fit(1, 'trim=start=2:duration=1,'),
         '[xfa1][vid1]overlay=x=0:y=0:format=yuv420:shortest=0[iv1]',
-        "[1:a:0]atrim=0:1,asetpts=PTS-STARTPTS,volume=1,volume='1-(1*t)':eval=frame,aformat=channel_layouts=stereo:sample_rates=48000[a1]",
+        "[1:a:0]atrim=start=2:duration=1,asetpts=PTS-STARTPTS,volume=1,volume='1-(1*t)':eval=frame,aformat=channel_layouts=stereo:sample_rates=48000[a1]",
         fit(2),
         '[xfb1][vid2]overlay=x=0:y=0:format=yuv420:shortest=0[iv2]',
         "[2:a:0]atrim=0:1,asetpts=PTS-STARTPTS,volume=1,volume='1*t':eval=frame,aformat=channel_layouts=stereo:sample_rates=48000[a2]",
@@ -388,9 +419,9 @@ describe('transition golden: a clip crossfade, end to end through the real pipel
       start: 4, end: 8,
       filterParts: [
         CANVAS,
-        fit(1),
+        fit(1, 'trim=start=1:duration=4,'),
         '[canvas][vid1]overlay=x=0:y=0:format=yuv420:shortest=0[iv1]',
-        '[1:a:0]atrim=0:4,asetpts=PTS-STARTPTS,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1]',
+        '[1:a:0]atrim=start=1:duration=4,asetpts=PTS-STARTPTS,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1]',
         `[iv1]${SETPARAMS}`,
       ],
     },

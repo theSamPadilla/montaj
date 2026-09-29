@@ -9,6 +9,8 @@ import {
   buildVividLutChain,
   hasZscale,
   hasLut3d,
+  twoStageSeek,
+  SEEK_PREROLL_S,
 } from '../encode-segment.js'
 import { geometryFor, toPixelBox, toRotatedPixelBox } from '@bycrux/timeline-core'
 import { lutPath, MASTER_LOOK } from '../look.js'
@@ -135,6 +137,19 @@ test('dry-run: .mov input uses format=auto for alpha preservation', async () => 
 // Helper: the full filter string for the first video item
 function videoFilter(parts) { return parts.join(';') }
 
+/**
+ * The source window an item's input and chain head select: `seek` is the input
+ * `-ss` plus the head's `trim=start=` (PV48's two-stage seek; 0 without one)
+ * and `duration` is the trim's `duration=`, or the input `-t` without a trim.
+ */
+function sourceWindow(inputArgs, filterParts) {
+  const ss = Number(inputArgs[inputArgs.indexOf('-ss') + 1])
+  const m = /^\[\d+:v\]trim=start=([^:]+):duration=([^,]+),/.exec(filterParts[0])
+  return m
+    ? { seek: ss + Number(m[1]), duration: m[2] }
+    : { seek: ss, duration: inputArgs[inputArgs.indexOf('-t') + 1] }
+}
+
 test('sourceCrop inserts a crop filter sized from source dims, before scale', async () => {
   const item = {
     type: 'video', src: '/src.mp4', start: 0, end: 5, inPoint: 0,
@@ -178,12 +193,14 @@ test('speed=2: seek advances by seekOffset*speed, input trimmed to duration*spee
   }
   const { inputArgs, filterParts } = buildVideoItemFilterParts(item, 1920, 1080, 0, '[base]',
     { segStart: 1, duration: 4, projectColorSpace: 'sdr_bt709', zscaleAvailable: false })
-  assert.equal(inputArgs[inputArgs.indexOf('-ss') + 1], '2',
-    'actualIn = inPoint(0) + seekOffset(1)*speed(2)')
-  assert.equal(inputArgs[inputArgs.indexOf('-t') + 1], '8',
-    'input trim = duration(4)*speed(2)')
+  // Two-stage seek (PV48): the source seek is the input -ss plus the trim start.
+  const w = sourceWindow(inputArgs, filterParts)
+  assert.equal(w.seek, 2, 'actualIn = inPoint(0) + seekOffset(1)*speed(2)')
+  assert.equal(w.duration, '8', 'source window = duration(4)*speed(2)')
   assert.ok(videoFilter(filterParts).includes('setpts=(PTS-STARTPTS)/2'),
     'video PTS must divide by speed')
+  assert.ok(videoFilter(filterParts).includes('trim=start=2:duration=8,setpts=(PTS-STARTPTS)/2'),
+    'the trim counts SOURCE seconds, so it runs before the speed setpts')
 })
 
 test('speed=4, 0.5, 0.25: seek/trim/PTS all scale by speed', async () => {
@@ -195,10 +212,11 @@ test('speed=4, 0.5, 0.25: seek/trim/PTS all scale by speed', async () => {
     const { inputArgs, filterParts } = buildVideoItemFilterParts(item, 1920, 1080, 0, '[base]',
       { segStart: 2, duration: 3, projectColorSpace: 'sdr_bt709', zscaleAvailable: false })
     const seekOffset = 2 // segStart(2) - item.start(0)
-    assert.equal(inputArgs[inputArgs.indexOf('-ss') + 1], String(1 + seekOffset * speed),
-      `speed=${speed}: -ss must be inPoint + seekOffset*speed`)
-    assert.equal(inputArgs[inputArgs.indexOf('-t') + 1], String(3 * speed),
-      `speed=${speed}: -t must be duration*speed`)
+    const w = sourceWindow(inputArgs, filterParts)
+    assert.equal(w.seek, 1 + seekOffset * speed,
+      `speed=${speed}: the source seek must be inPoint + seekOffset*speed`)
+    assert.equal(w.duration, String(3 * speed),
+      `speed=${speed}: the source window must be duration*speed`)
     assert.ok(videoFilter(filterParts).includes(`setpts=(PTS-STARTPTS)/${speed}`),
       `speed=${speed}: video PTS must divide by speed`)
   }
@@ -1782,4 +1800,95 @@ test('an SDR-origin cutout (no alphaGrade) in an SDR segment is byte-identical t
   ]
   assert.deepEqual(cutoutGraph(cutout, 'sdr_bt709'), frozen)
   assert.deepEqual(cutoutGraph({ ...cutout, gradeFrom: null, alphaGrade: false }, 'sdr_bt709'), frozen)
+})
+
+// ---------------------------------------------------------------------------
+// PV48: two-stage seek for video items
+// ---------------------------------------------------------------------------
+//
+// A single input seek into an open-GOP file's leading pictures made the
+// item's picture run 1 to 3 frames ahead of its audio (measured, PV48 T1).
+// The input now seeks SEEK_PREROLL_S or more early and the chain head trims
+// the rest. The pixel proof is open-gop-seek.integration.test.mjs; these pin
+// the strings and the arithmetic.
+
+/** Microseconds ffmpeg's av_parse_time reads from a decimal string: truncated. */
+function parsedUs(str) {
+  const [whole, frac = ''] = str.split('.')
+  return Number(whole) * 1e6 + Number((frac + '000000').slice(0, 6))
+}
+
+test('twoStageSeek: whole-second input seek, the remainder keeps actualIn\'s own decimals', () => {
+  assert.equal(SEEK_PREROLL_S, 2)
+  assert.equal(twoStageSeek(0), null, 'a seek of 0 needs no split')
+  assert.deepEqual(twoStageSeek(1.5), { near: 0, fine: '1.5' })
+  assert.deepEqual(twoStageSeek(2), { near: 0, fine: '2' })
+  assert.deepEqual(twoStageSeek(12), { near: 10, fine: '2' })
+  // 5.1 - 2 is 3.0999999999999996 as a float, which ffmpeg reads 1 us short.
+  assert.deepEqual(twoStageSeek(5.1), { near: 3, fine: '2.1' })
+  assert.deepEqual(twoStageSeek(4 + 22 / 30), { near: 2, fine: '2.733333333333333' })
+  assert.deepEqual(twoStageSeek(3.0999999999999996), { near: 1, fine: '2.0999999999999996' })
+})
+
+test('twoStageSeek: near + fine is exactly the microseconds of the single -ss it replaces', () => {
+  const values = [0.001, 0.5, 1.9999999, 2, 2.0000001, 3.4, 5.1, 9.95, 17.3, 123.456789123]
+  for (let k = 1; k < 400; k++) values.push(k / 30, k / 24, k * 1001 / 30000, 2.9 + k / 30, k * 0.7)
+  for (const actualIn of values) {
+    const { near, fine } = twoStageSeek(actualIn)
+    assert.ok(Number.isInteger(near) && near >= 0, `${actualIn}: near must be whole seconds, got ${near}`)
+    assert.ok(Number(fine) >= Math.min(actualIn, SEEK_PREROLL_S), `${actualIn}: preroll ${fine} is short`)
+    assert.equal(near * 1e6 + parsedUs(fine), parsedUs(String(actualIn)),
+      `${actualIn}: -ss ${near} + trim ${fine} must select what -ss ${actualIn} did`)
+  }
+})
+
+test('two-stage seek: a seek of 0 emits the single-seek strings byte for byte', async () => {
+  const seg = {
+    start: 0, end: 5, items: [
+      { type: 'video', src: '/clip.mp4', start: 0, end: 5, inPoint: 0,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const { inputs, filterParts } = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  assert.deepEqual(inputs.slice(inputs.indexOf('/clip.mp4') - 5, inputs.indexOf('/clip.mp4') + 1),
+    ['-ss', '0', '-t', '5', '-i', '/clip.mp4'])
+  assert.match(filterParts[1], /^\[1:v\]setpts=PTS-STARTPTS,scale=/)
+  assert.ok(filterParts.some((f) => f.startsWith('[1:a:0]atrim=0:5,asetpts=PTS-STARTPTS,')))
+  assert.doesNotMatch(filterParts.join(';'), /trim=start=/)
+})
+
+test('two-stage seek: video and audio trim the same source window after an early input seek', async () => {
+  for (const [speed, window] of [[undefined, '0.5'], [2, '1']]) {
+    const seg = {
+      start: 4.5, end: 5, items: [
+        { type: 'video', src: '/clip.mp4', start: 0, end: 10, inPoint: 0.9,
+          trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false,
+          ...(speed ? { speed } : {}) },
+      ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+    }
+    // actualIn = 0.9 + 4.5 * speed: 5.4 at 1x, 9.9 at 2x.
+    const { near, fine } = twoStageSeek(0.9 + 4.5 * (speed ?? 1))
+    const { inputs, filterParts } = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+    const i = inputs.indexOf('/clip.mp4')
+    assert.deepEqual(inputs.slice(i - 5, i - 3), ['-ss', String(near)])
+    // The input -t is only an upper bound: it must reach past the trim's end.
+    assert.equal(inputs[i - 3], '-t')
+    assert.ok(Number(inputs[i - 2]) >= Number(fine) + Number(window) + 1, `input -t too short: ${inputs[i - 2]}`)
+    const pts = speed ? `setpts=(PTS-STARTPTS)/${speed}` : 'setpts=PTS-STARTPTS'
+    assert.ok(filterParts[1].startsWith(`[1:v]trim=start=${fine}:duration=${window},${pts},scale=`),
+      `the trim must head the video chain, before the speed setpts: ${filterParts[1]}`)
+    const audio = filterParts.find((f) => f.startsWith('[1:a:0]'))
+    assert.ok(audio.startsWith(`[1:a:0]atrim=start=${fine}:duration=${window},asetpts=PTS-STARTPTS,`),
+      `the audio must cut the video's source window: ${audio}`)
+  }
+})
+
+test('two-stage seek: a remove_bg cutout (.mov, graded or not) carries the trim at its head', () => {
+  const opts = { ...cutoutOpts('sdr_bt709'), segStart: 3.5 }
+  for (const extra of [{}, { gradeFrom: 'hdr_hlg', alphaGrade: true }]) {
+    const graph = buildVideoItemFilterParts({ ...cutout, ...extra }, 1080, 1920, 1, '[canvas]', opts)
+    assert.deepEqual(graph.inputArgs.slice(-6), ['-ss', '1', '-t', '6.5', '-i', cutout.src])
+    assert.match(graph.filterParts[0], /^\[1:v\]trim=start=2\.5:duration=3,(setparams=[^,]*,)?setpts=PTS-STARTPTS,/)
+    assert.equal(graph.audioTrim, 'atrim=start=2.5:duration=3')
+  }
 })

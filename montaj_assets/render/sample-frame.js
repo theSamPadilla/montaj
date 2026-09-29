@@ -44,6 +44,7 @@ import {
   UNTAGGED_AS_BT709_VF,
   hasZscale,
   hasLut3d,
+  SEEK_PREROLL_S,
 } from './encode-segment.js'
 import { resolveAt, sourceWindow, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
@@ -117,12 +118,13 @@ function decodedTransferOf(path) {
   if (!transferCache.has(path)) transferCache.set(path, probeMedia(path).transfer)
   return transferCache.get(path)
 }
-// Accurate-decode window for the two-stage frame seek below. A coarse `-ss`
-// before `-i` jumps to the nearest keyframe near the target (near-instant, no
-// decode), then this many seconds are decoded accurately after `-i` to land on
-// the exact frame. Bounds the decode to ~PREROLL + one GOP regardless of how
-// deep into a clip the sample sits, instead of decoding from t=0 every time.
-const SEEK_PREROLL_S = 2
+// SEEK_PREROLL_S (imported above, shared with the segment encoder's video
+// items since PV48) is the accurate-decode window for the two-stage frame seek
+// below. A coarse `-ss` before `-i` jumps to the nearest keyframe near the
+// target (near-instant, no decode), then this many seconds are decoded
+// accurately after `-i` to land on the exact frame. Bounds the decode to
+// ~PREROLL + one GOP regardless of how deep into a clip the sample sits,
+// instead of decoding from t=0 every time.
 
 // When previewing a single overlay frame we don't know the item's real on-screen
 // length. Overlays commonly fade OUT over the final ~15 frames keyed to the

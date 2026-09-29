@@ -46,6 +46,47 @@ import {
 const FFMPEG_TIMEOUT_MS = 600_000
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|bmp|tiff?)$/i
 
+/**
+ * How far ahead of the wanted instant a two-stage seek jumps with `-ss` before
+ * `-i`; the rest is decoded and trimmed away, so the frame it lands on is
+ * exact. Shared by this file's video items and sample-frame.js's frame extract.
+ */
+export const SEEK_PREROLL_S = 2
+
+/**
+ * Split a video item's source seek into an input seek and a decoded remainder
+ * (PV48). Returns null for a seek of 0, which needs no split.
+ *
+ * An input seek alone (`-ss t -i`) lands on the keyframe at or before `t`. On
+ * an open-GOP file (x265 at its defaults: every SDR clip converted to HLG) a
+ * keyframe's leading pictures are displayed before it but decoded after it,
+ * from the previous GOP. A seek into that window drops them, the keyframe
+ * becomes the first frame, and `setpts=PTS-STARTPTS` moves it to t=0: the
+ * item's picture ran 1 to 3 frames ahead of its own audio for the whole
+ * segment (measured in a real render, PV48 T1). Seeking to `near` first gives
+ * the decoder the previous GOP, and the `fine` seconds are trimmed off after.
+ *
+ * `near` is whole seconds and `fine` repeats actualIn's own decimals, so that
+ * near + fine is exactly the microseconds ffmpeg read from `-ss actualIn`
+ * (it truncates past 6 decimals) and whole seconds are a whole number of ticks
+ * in any 1/N time base. The kept frames and samples then match the old single
+ * seek wherever it did not drop anything. `actualIn - 2` computed as a float
+ * does not: 5.1 - 2 prints as 3.0999999999999996. So the preroll runs from
+ * SEEK_PREROLL_S up to one second more.
+ *
+ * @param {number} actualIn the item's source seek, in seconds
+ * @returns {{near: number, fine: string} | null}
+ */
+export function twoStageSeek(actualIn) {
+  if (!(actualIn > 0)) return null
+  const s = String(actualIn)
+  const dot = s.indexOf('.')
+  const whole = dot < 0 ? actualIn : Number(s.slice(0, dot))
+  const near = Math.max(0, whole - SEEK_PREROLL_S)
+  const fine = near === 0 ? s : `${whole - near}${dot < 0 ? '' : s.slice(dot)}`
+  return { near, fine }
+}
+
 // Only surface ffmpeg lines that carry actionable signal — suppress banner/input listing.
 const FFMPEG_SIGNAL = /warning|error|invalid|failed|matches no streams|^\[.*@/i
 function logFfmpegStderr(stderr) {
@@ -770,7 +811,9 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
  * @param {boolean} opts.zscaleAvailable  — whether ffmpeg has zscale
  * @param {boolean} [opts.lut3dAvailable] — whether ffmpeg has lut3d; omitted → probed
  * @param {string|null} [opts.sdrCurve]   — look curve id for the HDR→SDR LUT
- * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
+ * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string,
+ *   audioTrim: string }} audioTrim is the head of this item's audio chain, which
+ *   must cut the same source window as the video (the caller builds the audio)
  */
 export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const { segStart, duration, projectColorSpace, zscaleAvailable,
@@ -854,13 +897,27 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
     ? 'format=yuv420p,' : ''
   const conversionStep = conversionFilter ? `${conversionFilter},${gradePin}` : ''
 
+  // Source seconds this segment consumes from the item (speed-scaled).
+  const srcDur = hasSpeed ? duration * speed : duration
+  // Two-stage seek (PV48, see twoStageSeek): the input seeks to `near`, and
+  // `trim` / `atrim` (below, and audioTrim for encodeSegment) keep `srcDur`
+  // seconds from `fine` on. `duration=`, not an end time, because that is what
+  // the single seek's `-t` did: it counts from the first frame kept, which is
+  // not always at the seek instant. The input's `-t` is only an upper bound
+  // now, one second past the end so it can never cut a frame the trim keeps.
+  // A seek of 0 keeps the single-seek strings byte for byte.
+  const seek = twoStageSeek(actualIn)
   // -err_detect ignore_err + -max_error_rate 1.0: tolerate broken audio
   // packets from iPhone .MOV sources (see encodeSegment for full comment).
   const inputArgs = [
     '-err_detect', 'ignore_err',
     '-max_error_rate', '1.0',
-    '-ss', String(actualIn), '-t', String(hasSpeed ? duration * speed : duration), '-i', item.src,
+    ...(seek
+      ? ['-ss', String(seek.near), '-t', String(Number(seek.fine) + srcDur + 1), '-i', item.src]
+      : ['-ss', String(actualIn), '-t', String(srcDur), '-i', item.src]),
   ]
+  const trimStep = seek ? `trim=start=${seek.fine}:duration=${srcDur},` : ''
+  const audioTrim = seek ? `atrim=start=${seek.fine}:duration=${srcDur}` : `atrim=0:${srcDur}`
   const filterParts = []
 
   // Optional source crop (clips workflow vertical reframe). Needs source pixel
@@ -1002,7 +1059,8 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // for why all three of them silently mis-render otherwise. With an opaque pad
   // the static branch below is byte-for-byte what it has always been; the frozen
   // goldens say so.
-  const head = `[${idx}:v]${untaggedTag}${ptsStep},${cropStep}` +
+  // trimStep first: it counts in source seconds, before the speed setpts.
+  const head = `[${idx}:v]${trimStep}${untaggedTag}${ptsStep},${cropStep}` +
     (anim?.needsAnimatedChain
       ? `scale=${anim.peakW}:${anim.peakH}:force_original_aspect_ratio=decrease${divisibleBy},`
       : `scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease${divisibleBy},`)
@@ -1049,7 +1107,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   )
   const newVideoLabel = `[iv${idx}]`
 
-  return { inputArgs, filterParts, newVideoLabel }
+  return { inputArgs, filterParts, newVideoLabel, audioTrim }
 }
 
 /**
@@ -1490,7 +1548,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // The one split that does exist: in an HDR project's SDR export, a cutout
       // of HDR footage (item.alphaGrade) is graded through an alpha split
       // (PV42 T8, buildVideoItemFilterParts / buildCutoutGradeFilter).
-      const { inputArgs, filterParts: fp, newVideoLabel } =
+      const { inputArgs, filterParts: fp, newVideoLabel, audioTrim } =
         buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, {
           segStart: start,
           duration,
@@ -1532,6 +1590,11 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
         // stays BEFORE asetpts either way: it locks the sample range against
         // the input's own (seek-based) PTS, not the zero-based PTS asetpts
         // produces.
+        //
+        // audioTrim comes from buildVideoItemFilterParts, which owns the seek:
+        // `atrim=0:<window>` after a seek of 0, and after a two-stage seek
+        // (PV48) `atrim=start=<fine>:duration=<window>`, the same source
+        // window as the video's trim.
         const speed = item.speed
         const hasSpeed = speed != null && speed !== 1
         // The picture crossfades; the sound must too, or the overlap plays both
@@ -1576,8 +1639,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
             : `,volume='${aprog}':eval=frame`
         }
         const audioFilter = hasSpeed
-          ? `[${idx}:a:0]atrim=0:${duration * speed},asetpts=PTS-STARTPTS,${atempoChain(speed)},volume=${vol}${fade},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
-          : `[${idx}:a:0]atrim=0:${duration},asetpts=PTS-STARTPTS,volume=${vol}${fade},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
+          ? `[${idx}:a:0]${audioTrim},asetpts=PTS-STARTPTS,${atempoChain(speed)},volume=${vol}${fade},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
+          : `[${idx}:a:0]${audioTrim},asetpts=PTS-STARTPTS,volume=${vol}${fade},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
         filterParts.push(audioFilter)
         audioLabels.push(`[${aLabel}]`)
       }
