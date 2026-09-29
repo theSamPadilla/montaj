@@ -68,3 +68,62 @@ export function sourceCropVideoStyle(input: SourceCropInput): CSSProperties | nu
     maxWidth: 'none',
   }
 }
+
+export interface SourceCropImageInput {
+  crop: { x: number; y: number; w: number; h: number }
+  /** The image's natural (decoded, EXIF-applied) size; 0 while unknown. */
+  sourceWidth: number
+  sourceHeight: number
+  /** The item's box, any unit: only its aspect is read. */
+  boxWidth: number
+  boxHeight: number
+  fit: 'cover' | 'contain' | 'fill'
+}
+
+export interface SourceCropImageStyle {
+  /** The crop region fitted into the box, as ratios of the box. It clips. */
+  clip: CSSProperties
+  /** The whole image, placed so the crop region exactly fills `clip`. */
+  img: CSSProperties
+  /** False while a cover/contain fit still needs the natural size. */
+  ready: boolean
+}
+
+/**
+ * An IMAGE's `sourceCrop` as CSS (PV55). The export crops the source, then fits
+ * the crop into the box by the item's fit (encode-segment.js
+ * `buildImageItemFilterParts`). Here: a clip box that IS that fitted crop, and
+ * inside it the whole image placed so the crop region fills the clip box. A
+ * cover clip box overflows the item's box, whose own overflow-hidden trims it.
+ * The same algebra as `sourceCropVideoStyle` above, fit-aware.
+ */
+export function sourceCropImageStyle(input: SourceCropImageInput): SourceCropImageStyle | null {
+  const { crop, sourceWidth, sourceHeight, boxWidth, boxHeight, fit } = input
+  if (!crop || !(crop.w > 0) || !(crop.h > 0)) return null
+  if (crop.x === 0 && crop.y === 0 && crop.w === 1 && crop.h === 1) return null
+  const sized = sourceWidth > 0 && sourceHeight > 0 && boxWidth > 0 && boxHeight > 0
+  let cw = 1
+  let ch = 1
+  if (fit !== 'fill' && sized) {
+    const cropAspect = (sourceWidth * crop.w) / (sourceHeight * crop.h)
+    const boxAspect = boxWidth / boxHeight
+    const wider = cropAspect >= boxAspect
+    if (fit === 'cover') {
+      if (wider) cw = cropAspect / boxAspect
+      else ch = boxAspect / cropAspect
+    } else if (wider) {
+      ch = boxAspect / cropAspect
+    } else {
+      cw = cropAspect / boxAspect
+    }
+  }
+  const pct = (r: number) => `${r * 100}%`
+  return {
+    clip: { position: 'absolute', left: pct((1 - cw) / 2), top: pct((1 - ch) / 2), width: pct(cw), height: pct(ch), overflow: 'hidden' },
+    img: {
+      position: 'absolute', left: pct(-crop.x / crop.w), top: pct(-crop.y / crop.h),
+      width: pct(1 / crop.w), height: pct(1 / crop.h), objectFit: 'fill', maxWidth: 'none',
+    },
+    ready: fit === 'fill' || sized,
+  }
+}

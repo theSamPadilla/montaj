@@ -59,3 +59,34 @@ describe('sourceCropVideoStyle', () => {
     expect(style.top).toBe('-12.5%')
   })
 })
+
+import { sourceCropImageStyle } from '../sourceCropStyle'
+
+describe('sourceCropImageStyle (PV55)', () => {
+  const crop = { x: 0.5, y: 0, w: 0.25, h: 1 } // 500x1000 px of a 2000x1000 image: aspect 0.5
+  const base = { crop, sourceWidth: 2000, sourceHeight: 1000, boxWidth: 1080, boxHeight: 1920 } // box aspect 0.5625
+
+  it('no crop or the full frame: null (the caller keeps its plain <img>)', () => {
+    expect(sourceCropImageStyle({ ...base, crop: { x: 0, y: 0, w: 1, h: 1 }, fit: 'cover' })).toBeNull()
+    expect(sourceCropImageStyle({ ...base, crop: { x: 0, y: 0, w: 0, h: 1 }, fit: 'cover' })).toBeNull()
+  })
+  it('the image is placed so the crop region exactly fills the clip box', () => {
+    expect(sourceCropImageStyle({ ...base, fit: 'cover' })!.img).toMatchObject({ left: '-200%', top: '0%', width: '400%', height: '100%', objectFit: 'fill' })
+  })
+  it('cover: a crop taller than the box overflows it vertically, centred', () => {
+    expect(sourceCropImageStyle({ ...base, fit: 'cover' })!.clip).toMatchObject({ left: '0%', top: '-6.25%', width: '100%', height: '112.5%', overflow: 'hidden' })
+  })
+  it('contain: the same crop is letterboxed left and right', () => {
+    const clip = sourceCropImageStyle({ ...base, fit: 'contain' })!.clip
+    expect(parseFloat(clip.width as string)).toBeCloseTo(88.888888, 4)
+    expect(parseFloat(clip.left as string)).toBeCloseTo(5.555555, 4)
+  })
+  it('fill: the crop stretches to the box and needs no size', () => {
+    const s = sourceCropImageStyle({ ...base, sourceWidth: 0, sourceHeight: 0, fit: 'fill' })!
+    expect(s.clip).toMatchObject({ left: '0%', top: '0%', width: '100%', height: '100%' })
+    expect(s.ready).toBe(true)
+  })
+  it('cover/contain are not ready until the natural size is known', () => {
+    expect(sourceCropImageStyle({ ...base, sourceWidth: 0, sourceHeight: 0, fit: 'cover' })!.ready).toBe(false)
+  })
+})
