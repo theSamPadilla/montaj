@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { modifierKeys } from './modifierKeys'
 
 /**
  * A small dark pill that appears instantly on hover — the editor's replacement
@@ -22,7 +23,8 @@ import { createPortal } from 'react-dom'
 export interface TooltipProps {
   /** Terse label — "Undo", "Split at playhead". Not a sentence. */
   label: string
-  /** Optional shortcut chips rendered after the label, e.g. `['⌘', 'Z']`. */
+  /** Optional shortcut chips rendered after the label, e.g. `['⌘', 'Z']`.
+   *  Write the Mac glyphs; they are converted to the platform's label when shown. */
   keys?: string[]
   /** Which side of the trigger the pill sits on. */
   side?: 'top' | 'bottom'
@@ -100,7 +102,7 @@ export function Tooltip({ label, keys, side = 'top', className, children }: Tool
           }}
         >
           <span>{label}</span>
-          {keys?.map((k, i) => (
+          {keys && modifierKeys(keys).map((k, i) => (
             <kbd
               key={i}
               className="rounded border border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)] px-1 py-0.5 font-mono text-[9px] leading-none text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)]"

@@ -38,7 +38,8 @@ export interface KeyBinding {
   id: string
   /** Palette label (also the tooltip/description). */
   description: string
-  /** Display-only shortcut hint, e.g. ['⌘', 'Z']. Not used for matching. */
+  /** Display-only shortcut hint, e.g. ['⌘', 'Z']. Not used for matching.
+   *  Write the Mac glyphs; they are converted to the platform's label when shown. */
   keyHint?: string[]
   /** Whether this keydown event should fire the binding. */
   matches: (e: KeyboardEvent) => boolean

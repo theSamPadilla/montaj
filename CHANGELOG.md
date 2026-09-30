@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (editor): shortcut labels show Ctrl, Alt and Shift on Windows and Linux.** The command palette, the tooltips and the Controls list showed ⌘, ⌥ and ⇧ (or "⌘/Ctrl") everywhere. They now show the platform's own keys; Mac is unchanged. See `montaj_assets/editor/CHANGELOG.md`.
+
 ## v5.16.1
 
 - **Fixed (editor): tabbing past a colour swatch in the captions panel no longer changes anything.** It used to write white onto the colour, add an undo step and save. See `montaj_assets/editor/CHANGELOG.md`.

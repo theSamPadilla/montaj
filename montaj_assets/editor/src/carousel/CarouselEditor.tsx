@@ -9,6 +9,7 @@ import AddElementMenu from './AddElementMenu'
 import CarouselRenderModal from './CarouselRenderModal'
 import ControlsInfoModal, { CAROUSEL_CONTROLS } from '../ControlsInfoModal'
 import { Button } from '../ui'
+import { shortcutText } from '../ui/modifierKeys'
 
 // Generic over the host's concrete project type `P` (default = the package's
 // own `Project`). Montaj passes its richer Project; the index signature on
@@ -435,7 +436,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
               onClick={() => state.undo()}
               disabled={!state.canUndo}
               className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-surface)_80%,transparent)] text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Undo (Cmd/Ctrl+Z)"
+              title={`Undo (${shortcutText(['⌘', 'Z'])})`}
               aria-label="Undo"
             >
               <Undo2 size={18} />
@@ -444,7 +445,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
               onClick={() => state.redo()}
               disabled={!state.canRedo}
               className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-surface)_80%,transparent)] text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Redo (Cmd/Ctrl+Shift+Z)"
+              title={`Redo (${shortcutText(['⌘', '⇧', 'Z'])})`}
               aria-label="Redo"
             >
               <Redo2 size={18} />
@@ -564,7 +565,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             </div>
             <div className="flex-shrink-0 flex items-center justify-center gap-1.5 text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] max-w-md">
               <span className="text-center">
-                Drag to reposition, resize/rotate via handles, double-click text to edit. Cmd/Ctrl+Z to undo.
+                Drag to reposition, resize/rotate via handles, double-click text to edit. {shortcutText(['⌘', 'Z'])} to undo.
               </span>
               <button
                 type="button"

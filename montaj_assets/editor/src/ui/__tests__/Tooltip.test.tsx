@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { Tooltip } from '../Tooltip'
+import { stubPlatform } from './platform'
 
 afterEach(() => cleanup())
 
@@ -28,12 +29,30 @@ describe('Tooltip', () => {
     expect(screen.getByRole('tooltip').textContent).toContain('Undo')
   })
 
-  it('renders shortcut chips as <kbd> after the label', () => {
-    renderTooltip({ keys: ['⌘', 'Z'] })
-    fireEvent.mouseEnter(screen.getByLabelText('Undo').parentElement!)
+  it('renders shortcut chips as <kbd> after the label (Mac: glyphs)', () => {
+    const restore = stubPlatform('MacIntel')
+    try {
+      renderTooltip({ keys: ['⌘', 'Z'] })
+      fireEvent.mouseEnter(screen.getByLabelText('Undo').parentElement!)
 
-    const chips = screen.getAllByText(/^[⌘Z]$/)
-    expect(chips.map((c) => c.tagName)).toEqual(['KBD', 'KBD'])
+      const chips = screen.getAllByText(/^[⌘Z]$/)
+      expect(chips.map((c) => c.tagName)).toEqual(['KBD', 'KBD'])
+    } finally {
+      restore()
+    }
+  })
+
+  it('shows Ctrl instead of the command glyph on Windows', () => {
+    const restore = stubPlatform('Win32')
+    try {
+      renderTooltip({ keys: ['⌘', '⇧', 'Z'] })
+      fireEvent.mouseEnter(screen.getByLabelText('Undo').parentElement!)
+
+      const chips = screen.getByRole('tooltip').querySelectorAll('kbd')
+      expect([...chips].map((c) => c.textContent)).toEqual(['Ctrl', 'Shift', 'Z'])
+    } finally {
+      restore()
+    }
   })
 
   it('hides on mouse leave', () => {

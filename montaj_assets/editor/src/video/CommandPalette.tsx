@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Search } from 'lucide-react'
 import { parseTimecode } from './timecode'
+import { modifierKeys } from '../ui/modifierKeys'
 
 export interface PaletteCommand {
   id: string
@@ -146,7 +147,7 @@ export default function CommandPalette({ commands, initialMode = 'list', onGoToT
                   <span>{cmd.label}</span>
                   {cmd.keyHint && cmd.keyHint.length > 0 && (
                     <span className="flex items-center gap-1 shrink-0">
-                      {cmd.keyHint.map((k, j) => (
+                      {modifierKeys(cmd.keyHint).map((k, j) => (
                         <kbd key={j} className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-[var(--editor-border)] text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">
                           {k}
                         </kbd>

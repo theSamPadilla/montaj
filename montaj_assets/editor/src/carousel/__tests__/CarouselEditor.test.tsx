@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, act, waitFor, fireEvent } from '@testing-library/react'
 import type { CarouselRenderModalContext, EditorAdapter, ImageElement, Project, RenderEvent } from '../../types'
 import CarouselEditor from '../CarouselEditor'
+import { stubPlatform } from '../../ui/__tests__/platform'
 
 // ── Fake adapter (mirrors editor-core's use-project-state test pattern) ───────
 // The package owns the assembled editor now: no host (`@/`) modules are mocked.
@@ -384,5 +385,39 @@ describe('CarouselEditor — editor-core integration', () => {
 
     await act(async () => { ctx.onClose() })
     await waitFor(() => expect(queryByTestId('host-render-window')).toBeNull())
+  })
+})
+
+describe('CarouselEditor — platform shortcut labels', () => {
+  async function renderEditor() {
+    const r = render(
+      <CarouselEditor project={makeProject()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} />,
+    )
+    await waitFor(() => r.getByLabelText('Undo'))
+    return r
+  }
+
+  it('Windows: Undo and Redo titles and the help line say Ctrl', async () => {
+    const restore = stubPlatform('Win32')
+    try {
+      const { getByLabelText, container } = await renderEditor()
+      expect(getByLabelText('Undo').getAttribute('title')).toBe('Undo (Ctrl+Z)')
+      expect(getByLabelText('Redo').getAttribute('title')).toBe('Redo (Ctrl+Shift+Z)')
+      expect(container.textContent).toContain('Ctrl+Z to undo.')
+    } finally {
+      restore()
+    }
+  })
+
+  it('Mac: titles and the help line use the glyphs', async () => {
+    const restore = stubPlatform('MacIntel')
+    try {
+      const { getByLabelText, container } = await renderEditor()
+      expect(getByLabelText('Undo').getAttribute('title')).toBe('Undo (⌘Z)')
+      expect(getByLabelText('Redo').getAttribute('title')).toBe('Redo (⌘⇧Z)')
+      expect(container.textContent).toContain('⌘Z to undo.')
+    } finally {
+      restore()
+    }
   })
 })

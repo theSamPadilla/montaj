@@ -6,6 +6,7 @@ import ControlsInfoModal, {
   CAROUSEL_CONTROLS,
   type ControlSection,
 } from '../ControlsInfoModal'
+import { stubPlatform } from '../ui/__tests__/platform'
 
 afterEach(() => cleanup())
 
@@ -14,7 +15,7 @@ const SECTIONS: ControlSection[] = [
     heading: 'Canvas',
     entries: [
       { label: 'Drag an element to reposition it' },
-      { keys: ['⌘/Ctrl', 'Z'], label: 'Undo' },
+      { keys: ['⌘', 'Z'], label: 'Undo' },
     ],
   },
 ]
@@ -27,7 +28,8 @@ describe('ControlsInfoModal', () => {
     expect(screen.getByText('Canvas')).toBeTruthy()
     expect(screen.getByText('Drag an element to reposition it')).toBeTruthy()
     // Keys render as individual <kbd> chips.
-    expect(screen.getByText('⌘/Ctrl').tagName).toBe('KBD')
+    // jsdom's navigator.platform is '' (not Apple), so ⌘ renders as Ctrl.
+    expect(screen.getByText('Ctrl').tagName).toBe('KBD')
     expect(screen.getByText('Z').tagName).toBe('KBD')
   })
 
@@ -109,5 +111,36 @@ describe('ControlsInfoModal', () => {
         'Toggle fullscreen preview',
       ]),
     )
+  })
+})
+
+describe('ControlsInfoModal platform keys', () => {
+  const textOf = () => document.body.textContent ?? ''
+
+  it('shows Ctrl, Alt and Shift on Windows, never the glyphs or the combined forms', () => {
+    const restore = stubPlatform('Win32')
+    try {
+      render(<ControlsInfoModal title="Controls" sections={VIDEO_CONTROLS} onClose={vi.fn()} />)
+      const kbds = [...document.querySelectorAll('kbd')].map((k) => k.textContent)
+      expect(kbds).toEqual(expect.arrayContaining(['Ctrl', 'Alt', 'Shift']))
+      for (const bad of ['⌘', '⌥', '⇧', '⌘/Ctrl', '⌥/Alt']) expect(textOf()).not.toContain(bad)
+      expect(screen.getByText('Step one frame (Shift for ten frames)')).toBeTruthy()
+    } finally {
+      restore()
+    }
+  })
+
+  it('shows the glyphs on a Mac, never the combined forms', () => {
+    const restore = stubPlatform('MacIntel')
+    try {
+      render(<ControlsInfoModal title="Controls" sections={VIDEO_CONTROLS} onClose={vi.fn()} />)
+      const kbds = [...document.querySelectorAll('kbd')].map((k) => k.textContent)
+      expect(kbds).toEqual(expect.arrayContaining(['⌘', '⌥', '⇧']))
+      expect(textOf()).not.toContain('⌘/Ctrl')
+      expect(textOf()).not.toContain('⌥/Alt')
+      expect(screen.getByText('Step one frame (⇧ for ten frames)')).toBeTruthy()
+    } finally {
+      restore()
+    }
   })
 })

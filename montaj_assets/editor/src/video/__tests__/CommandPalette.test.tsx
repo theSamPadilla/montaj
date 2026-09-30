@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, cleanup, fireEvent, screen } from '@testing-library/react'
 import CommandPalette, { type PaletteCommand } from '../CommandPalette'
+import { stubPlatform } from '../../ui/__tests__/platform'
 
 afterEach(() => cleanup())
 
@@ -115,5 +116,32 @@ describe('CommandPalette', () => {
     const backdrop = document.body.querySelector('.fixed.inset-0') as HTMLElement
     fireEvent.click(backdrop)
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('CommandPalette key hints', () => {
+  const hinted = (): PaletteCommand[] => [
+    { id: 'undo', label: 'Undo', keyHint: ['⌘', '⌥', 'Z'], run: vi.fn() },
+  ]
+  const chips = () => [...document.querySelectorAll('kbd')].map((k) => k.textContent)
+
+  it('shows Ctrl, Alt and Shift on Windows', () => {
+    const restore = stubPlatform('Win32')
+    try {
+      render(<CommandPalette commands={[{ id: 'r', label: 'Redo', keyHint: ['⌘', '⇧', '⌥', 'Z'], run: vi.fn() }]} onGoToTime={vi.fn()} onClose={vi.fn()} />)
+      expect(chips()).toEqual(['Ctrl', 'Shift', 'Alt', 'Z'])
+    } finally {
+      restore()
+    }
+  })
+
+  it('keeps the glyphs on a Mac', () => {
+    const restore = stubPlatform('MacIntel')
+    try {
+      render(<CommandPalette commands={hinted()} onGoToTime={vi.fn()} onClose={vi.fn()} />)
+      expect(chips()).toEqual(['⌘', '⌥', 'Z'])
+    } finally {
+      restore()
+    }
   })
 })

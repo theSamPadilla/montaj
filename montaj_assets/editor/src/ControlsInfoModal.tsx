@@ -20,6 +20,7 @@ import {
   type LucideProps,
 } from 'lucide-react'
 import { version } from '../package.json'
+import { modifierKeys, modifierLabel } from './ui/modifierKeys'
 
 /** A single control/shortcut row. `keys` renders as <kbd> chips; omit for a pure gesture. */
 export interface ControlEntry {
@@ -217,7 +218,7 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
                               style={{ background: 'var(--editor-accent)' }}
                             />
                           )}
-                          {entry.label}
+                          {modifierLabel(entry.label)}
                         </span>
                         {entry.where && (
                           /* Deliberately NOT a <kbd>: a surface name is not
@@ -234,7 +235,7 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
                         )}
                         {entry.keys && entry.keys.length > 0 && (
                           <span className="flex shrink-0 items-center gap-1">
-                            {entry.keys.map((k, j) => (
+                            {modifierKeys(entry.keys).map((k, j) => (
                               <kbd
                                 key={j}
                                 className="rounded-md border border-b-2 px-2 py-1 font-mono text-[11px] leading-none shadow-sm"
@@ -312,15 +313,15 @@ export const VIDEO_CONTROLS: ControlSection[] = [
     entries: [
       { keys: ['S'], label: 'Split at the playhead' },
       { keys: ['M'], label: 'Drop a marker at the playhead (or the preview axis)' },
-      { keys: ['⌘/Ctrl', 'A'], label: 'Toggle the preview axis' },
+      { keys: ['⌘', 'A'], label: 'Toggle the preview axis' },
       { keys: ['⇧', 'Delete'], label: 'Ripple-delete the selection' },
-      { keys: ['⌘/Ctrl', 'Z'], label: 'Undo' },
-      { keys: ['⌘/Ctrl', '⇧', 'Z'], label: 'Redo' },
-      { keys: ['⌘/Ctrl', 'C'], label: 'Copy the selection' },
-      { keys: ['⌘/Ctrl', 'V'], label: 'Paste at the playhead' },
-      { keys: ['⌘/Ctrl', 'D'], label: 'Duplicate the selection in place' },
-      { keys: ['⌘/Ctrl', '⌥/Alt', 'V'], label: 'Paste attributes onto the selection' },
-      { keys: ['⌘/Ctrl', 'K'], label: 'Command palette' },
+      { keys: ['⌘', 'Z'], label: 'Undo' },
+      { keys: ['⌘', '⇧', 'Z'], label: 'Redo' },
+      { keys: ['⌘', 'C'], label: 'Copy the selection' },
+      { keys: ['⌘', 'V'], label: 'Paste at the playhead' },
+      { keys: ['⌘', 'D'], label: 'Duplicate the selection in place' },
+      { keys: ['⌘', '⌥', 'V'], label: 'Paste attributes onto the selection' },
+      { keys: ['⌘', 'K'], label: 'Command palette' },
       { keys: ['J', 'K', 'L'], label: 'Shuttle backward / stop / forward' },
       { keys: ['←', '→'], label: 'Step one frame (⇧ for ten frames)' },
       { keys: ['F'], label: 'Toggle fullscreen preview' },
@@ -342,8 +343,8 @@ export const CAROUSEL_CONTROLS: ControlSection[] = [
   {
     heading: 'Keyboard',
     entries: [
-      { keys: ['⌘/Ctrl', 'Z'], label: 'Undo' },
-      { keys: ['⌘/Ctrl', '⇧', 'Z'], label: 'Redo' },
+      { keys: ['⌘', 'Z'], label: 'Undo' },
+      { keys: ['⌘', '⇧', 'Z'], label: 'Redo' },
       { keys: ['Delete'], label: 'Remove the selected element' },
     ],
   },
