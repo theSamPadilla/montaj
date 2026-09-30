@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remove video background using RVM (Robust Video Matting).
+"""Remove video background using RVM (Robust Video Matting) on onnxruntime's CPU provider.
 
 Outputs ProRes 4444 .mov with alpha channel.
 """
@@ -11,129 +11,78 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output, run, ffmpeg_bin, ffprobe_bin
+import models
+import rvm_model
 
 # ---------------------------------------------------------------------------
 # Dependency check at import time (not inside main)
 # ---------------------------------------------------------------------------
 _missing = []
 try:
-    import torch  # noqa: F401
+    import numpy as np
 except ImportError:
-    _missing.append("torch")
+    _missing.append("numpy")
 try:
-    import torchvision  # noqa: F401
+    import onnxruntime
 except ImportError:
-    _missing.append("torchvision")
+    _missing.append("onnxruntime")
 try:
-    import av  # noqa: F401
+    import av
 except ImportError:
     _missing.append("av")
 
 if _missing:
     fail("missing_dependency",
-         f"Missing packages: {', '.join(_missing)}. Install with: montaj install rvm")
-
-# ---------------------------------------------------------------------------
-# Model registry
-# ---------------------------------------------------------------------------
-
-RVM_MODELS = {
-    "rvm_mobilenetv3": {
-        "url": "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3.pth",
-        # TODO: SHA-256 checksums are not published on the v1.0.0 release page.
-        # To obtain them, download each .pth and run: sha256sum rvm_mobilenetv3.pth
-        "checksum": None,
-    },
-    "rvm_resnet50": {
-        "url": "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_resnet50.pth",
-        # TODO: SHA-256 checksums are not published on the v1.0.0 release page.
-        # To obtain them, download each .pth and run: sha256sum rvm_resnet50.pth
-        "checksum": None,
-    },
-}
-
-# ---------------------------------------------------------------------------
-# Device detection + hardware-aware defaults
-# ---------------------------------------------------------------------------
-
-def _detect_device(force_cpu: bool) -> str:
-    import torch
-    if force_cpu:
-        return "cpu"
-    if torch.backends.mps.is_available():
-        return "mps"
-    if torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
-
-
-def _auto_downsample(device: str) -> float:
-    """Pick a sensible default downsample ratio based on available memory.
-
-    MPS (Apple Silicon): unified memory — use total RAM as proxy.
-    CUDA: use VRAM. CPU: conservative.
-    """
-    try:
-        if device == "mps":
-            import subprocess, re
-            out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
-            ram_gb = int(out.strip()) / (1024 ** 3)
-            if ram_gb >= 32:
-                return 0.5   # plenty of memory — standard quality
-            elif ram_gb >= 16:
-                return 0.375
-            else:
-                return 0.25  # 8 GB M1 base — keep it light
-        elif device == "cuda":
-            import torch
-            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-            return 0.5 if vram_gb >= 8 else 0.375
-    except Exception:
-        pass
-    return 0.5  # safe default
-
+         f"Background removal is missing part of its runtime ({', '.join(_missing)}). Reinstall Montaj.")
 
 # ---------------------------------------------------------------------------
 # Model loading
 # ---------------------------------------------------------------------------
 
-def _load_model(model_name: str, device: str):
-    """Download (if needed), load, and optionally compile the RVM model onto device."""
-    import torch
-    import sys as _sys
-    import models as _models
+# CPU only, on every OS: CoreML's provider produced wrong mattes (measured, PL2).
+_PROVIDERS = ["CPUExecutionProvider"]
+_OUTPUT_NAMES = ["fgr", "pha", "r1o", "r2o", "r3o", "r4o"]
 
-    # Vendor dir — no network call; model architecture is local
-    _STEPS_DIR = os.path.dirname(__file__)  # steps/
-    if _STEPS_DIR not in _sys.path:
-        _sys.path.insert(0, _STEPS_DIR)
-    from rvm.model import MattingNetwork  # vendored; relative imports resolve correctly
 
-    info = RVM_MODELS[model_name]
-    filename = f"{model_name}.pth"
-    model_file = _models.model_path("rvm", filename)
+def _load_session():
+    """Open the pinned RVM model. It is never downloaded here: the app stages it
+    on start, the CLI with its installer."""
+    model_file = models.model_path("rvm", rvm_model.FILENAME)
     if not os.path.isfile(model_file):
-        fail(
-            "missing_model_weights",
-            f"RVM model weights not found: {filename}. "
-            f"Run `montaj install rvm` or `montaj install --all` to download all model weights before running this step.",
-        )
-    model_file = _models.ensure_model("rvm", filename, info["url"], info["checksum"])
+        fail("missing_model",
+             "The background removal model is missing. Montaj restores it the next time it starts.")
+    return onnxruntime.InferenceSession(model_file, providers=_PROVIDERS)
 
-    backbone = "mobilenetv3" if "mobilenetv3" in model_name else "resnet50"
-    model = MattingNetwork(backbone)
-    state = torch.load(model_file, map_location=device, weights_only=True)
-    model.load_state_dict(state)
-    model = model.to(device).eval()
 
-    # torch.compile gives a free speedup on MPS/CUDA with PyTorch >= 2.0
-    if hasattr(torch, "compile") and device in ("mps", "cuda"):
-        try:
-            model = torch.compile(model)
-        except Exception:
-            pass  # compile is best-effort — fall back to eager silently
+# ---------------------------------------------------------------------------
+# Output size
+# ---------------------------------------------------------------------------
 
-    return model
+def _check_max_height(max_height: int | None) -> None:
+    if max_height is not None and (max_height <= 0 or max_height % 2):
+        fail("invalid_args", f"--max-height must be a positive even number, got {max_height}")
+
+
+def _target_size(width: int, height: int, rotation: int, max_height: int | None) -> tuple[int, int]:
+    """Stored (width, height) to decode at so the cutout's display height is at
+    most max_height. Never scales up; the other side follows the aspect ratio,
+    rounded to even. A +-90 rotation displays the stored width as the height.
+    """
+    _check_max_height(max_height)
+    if max_height is None:
+        return width, height
+    quarter_turn = abs(((rotation + 180) % 360) - 180) == 90
+    display_height = width if quarter_turn else height
+    if display_height <= max_height:
+        return width, height
+    scale = max_height / display_height
+
+    def _even(x: float) -> int:
+        return max(2, int(x / 2 + 0.5) * 2)
+
+    if quarter_turn:
+        return max_height, _even(height * scale)
+    return _even(width * scale), max_height
 
 
 # ---------------------------------------------------------------------------
@@ -173,8 +122,8 @@ def _rotation_to_transpose_filter(rotation: int) -> str | None:
     that physically rotates the pixels by the same amount.
 
     Why physical rotation, not metadata: ffmpeg 8.x silently drops
-    `-metadata:s:v:0 rotate=N` on fresh writes (the flag only survives `-c copy`
-    of an already-tagged source). There's no `setdisplaymatrix` filter and no
+    '-metadata:s:v:0 rotate=N' on fresh writes (the flag only survives '-c copy'
+    of an already-tagged source). There's no 'setdisplaymatrix' filter and no
     other CLI-accessible way to write displaymatrix side_data on a fresh
     encode. The reliable fix is to physically rotate the pixels — ProRes 4444
     is intra-frame, so re-encoding is fast and lossless.
@@ -203,28 +152,20 @@ def _rotation_to_transpose_filter(rotation: int) -> str | None:
 def _process_one(
     input_path: str,
     output_path: str,
-    model_name: str,
-    device: str,
+    session,
     downsample: float,
+    max_height: int | None,
     emit_progress: bool,
-    model=None,
 ) -> str:
     """Process one video file through RVM. Returns output_path.
 
-    Pass a pre-loaded model to avoid reloading weights between clips.
+    The session is shared across clips; the recurrent state starts fresh per clip.
     """
-    import torch
-    import numpy as np
-    import av
-
-    if model is None:
-        model = _load_model(model_name, device)
-
     # Source rotation must be reflected in the output's pixel orientation.
     # iPhone vertical clips store landscape pixels with rotation=-90 in their
     # displaymatrix; players auto-rotate to portrait. PyAV's prores_ks encoder
     # doesn't copy side_data, and ffmpeg 8.x can't write displaymatrix on a
-    # fresh encode (the `rotate=N` legacy flag silently no-ops), so we
+    # fresh encode (the 'rotate=N' legacy flag silently no-ops), so we
     # physically rotate the pixels at audio-mux time instead. See
     # _rotation_to_transpose_filter() for the filter mapping. Without this fix,
     # the bg-removed clip plays at native landscape orientation while its
@@ -244,59 +185,64 @@ def _process_one(
             width = video_stream.width
             height = video_stream.height
             total_frames = video_stream.frames  # may be 0 if unknown
+            out_width, out_height = _target_size(width, height, source_rotation, max_height)
+            scaled = (out_width, out_height) != (width, height)
 
             out_container = av.open(tmp_video_path, mode="w", format="mov")
             try:
                 out_stream = out_container.add_stream("prores_ks", rate=fps)
-                out_stream.width = width
-                out_stream.height = height
+                out_stream.width = out_width
+                out_stream.height = out_height
                 out_stream.pix_fmt = "yuva444p10le"
                 out_stream.options = {"profile": "4"}  # profile 4 = ProRes 4444
 
-                rec = [None, None, None, None]
+                zeros = np.zeros((1, 1, 1, 1), dtype=np.float32)
+                rec = [zeros, zeros, zeros, zeros]
+                downsample_ratio = np.array([downsample], dtype=np.float32)
                 frames_done = 0
 
-                with torch.no_grad():
-                    for packet in in_container.demux(video_stream):
-                        for frame in packet.decode():
-                            # Frame → numpy → tensor [1, C, H, W] float32 in [0, 1]
-                            img = frame.to_ndarray(format="rgb24")  # H×W×3 uint8
-                            tensor = (
-                                torch.from_numpy(img)
-                                .permute(2, 0, 1)        # 3×H×W
-                                .unsqueeze(0)            # 1×3×H×W
-                                .float()
-                                .div(255.0)
-                                .to(device, non_blocking=True)
+                for packet in in_container.demux(video_stream):
+                    for frame in packet.decode():
+                        # Frame → H×W×3 uint8 → [1, 3, H, W] float32 in [0, 1]
+                        if scaled:
+                            img = frame.reformat(
+                                width=out_width, height=out_height,
+                                format="rgb24", interpolation="AREA",
+                            ).to_ndarray()
+                        else:
+                            img = frame.to_ndarray(format="rgb24")
+                        src = img.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+
+                        fgr, pha, *rec = session.run(_OUTPUT_NAMES, {
+                            "src": src,
+                            "r1i": rec[0], "r2i": rec[1], "r3i": rec[2], "r4i": rec[3],
+                            "downsample_ratio": downsample_ratio,
+                        })
+
+                        # fgr: [1,3,H,W] float  pha: [1,1,H,W] float → H×W×4
+                        rgba = np.concatenate([fgr, pha], axis=1)[0].transpose(1, 2, 0).astype(np.float32)
+
+                        # Scale to uint16 and write as rgba64be
+                        rgba_np = (rgba * 65535).clip(0, 65535).astype(np.uint16)
+                        out_frame = av.VideoFrame.from_ndarray(rgba_np, format="rgba64be")
+                        out_frame.pts = frame.pts
+                        out_frame.time_base = frame.time_base
+
+                        for pkt in out_stream.encode(out_frame):
+                            out_container.mux(pkt)
+
+                        frames_done += 1
+                        if emit_progress:
+                            prog = (frames_done / total_frames) if total_frames else 0.0
+                            print(
+                                json.dumps({
+                                    "file": input_path,
+                                    "progress": round(prog, 4),
+                                    "frames_done": frames_done,
+                                    "frames_total": total_frames,
+                                }),
+                                file=sys.stderr,
                             )
-
-                            fgr, pha, *rec = model(tensor, *rec, downsample_ratio=downsample)
-
-                            # fgr: [1,3,H,W] float  pha: [1,1,H,W] float
-                            rgba = torch.cat([fgr, pha], dim=1)  # [1,4,H,W]
-                            rgba = rgba.squeeze(0).permute(1, 2, 0)  # H×W×4
-
-                            # Scale to uint16 and write as rgba64be
-                            rgba_np = (rgba.cpu().numpy() * 65535).clip(0, 65535).astype(np.uint16)
-                            out_frame = av.VideoFrame.from_ndarray(rgba_np, format="rgba64be")
-                            out_frame.pts = frame.pts
-                            out_frame.time_base = frame.time_base
-
-                            for pkt in out_stream.encode(out_frame):
-                                out_container.mux(pkt)
-
-                            frames_done += 1
-                            if emit_progress:
-                                prog = (frames_done / total_frames) if total_frames else 0.0
-                                print(
-                                    json.dumps({
-                                        "file": input_path,
-                                        "progress": round(prog, 4),
-                                        "frames_done": frames_done,
-                                        "frames_total": total_frames,
-                                    }),
-                                    file=sys.stderr,
-                                )
 
                 # Flush encoder
                 for pkt in out_stream.encode(None):
@@ -310,11 +256,11 @@ def _process_one(
         # rotation (e.g. iPhone vertical recording), physically rotate the
         # bg-removed pixels by the same amount during the mux so the output's
         # display orientation matches the source's. We can't write displaymatrix
-        # side_data on a fresh encode in ffmpeg 8.x — `-metadata:s:v:0 rotate=N`
-        # only survives `-c copy` of a tagged source, and there's no
+        # side_data on a fresh encode in ffmpeg 8.x — '-metadata:s:v:0 rotate=N'
+        # only survives '-c copy' of a tagged source, and there's no
         # setdisplaymatrix filter — so physical rotation is the reliable path.
         # ProRes 4444 is intra-frame; re-encoding adds ~real-time per minute of
-        # footage and is lossless. When source has no rotation, `-c:v copy`
+        # footage and is lossless. When source has no rotation, '-c:v copy'
         # keeps the mux trivially fast.
         rotation_filter = _rotation_to_transpose_filter(source_rotation)
         if rotation_filter:
@@ -412,18 +358,6 @@ def _make_webm_preview(mov_path: str, emit_progress: bool = False) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Worker trampoline for multiprocessing
-# ---------------------------------------------------------------------------
-
-def _worker_trampoline(args):
-    """Unpack arguments and call _process_one. Used by multiprocessing.Pool."""
-    input_path, output_path, model_name, device, downsample, emit_progress, num_threads = args
-    import torch
-    torch.set_num_threads(num_threads)
-    return _process_one(input_path, output_path, model_name, device, downsample, emit_progress)
-
-
-# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -431,7 +365,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Remove video background using RVM — outputs ProRes 4444 .mov with alpha"
+        description="Remove video background using RVM. Outputs ProRes 4444 .mov with alpha"
     )
 
     input_group = parser.add_mutually_exclusive_group(required=True)
@@ -440,92 +374,57 @@ def main():
 
     parser.add_argument("--out", help="Output path (only valid with --input, default: {stem}_nobg.mov)")
     parser.add_argument(
-        "--model",
-        default="rvm_mobilenetv3",
-        choices=list(RVM_MODELS.keys()),
-        help="RVM model variant",
-    )
-    parser.add_argument("--cpu", action="store_true", help="Force CPU and parallelize via multiprocessing")
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=None,
-        help="Worker count for --cpu mode (default: cpu_count // 2)",
-    )
-    parser.add_argument(
         "--downsample",
         type=float,
+        default=0.5,
+        help="Inference resolution ratio, relative to the frame RVM is given (0.25-1.0)",
+    )
+    parser.add_argument(
+        "--max-height",
+        type=int,
         default=None,
-        help="Downsample ratio for inference (0.25–1.0). Defaults to auto-detect based on available memory.",
+        help="Scale the cutout down so its display height is at most this (a positive even "
+             "number). Never scales up; width follows the aspect ratio.",
     )
     parser.add_argument("--progress", action="store_true", help="Emit JSON progress lines to stderr")
 
     args = parser.parse_args()
 
-    if args.workers is not None and not args.cpu:
-        print(json.dumps({"warning": "--workers has no effect without --cpu"}), file=sys.stderr)
-
     # Validate --out only used with --input
     if args.out and args.inputs:
         fail("invalid_args", "--out is only valid with --input, not --inputs")
-
-    device = _detect_device(args.cpu)
-
-    # Auto-detect downsample if not explicitly set
-    if args.downsample is None:
-        args.downsample = _auto_downsample(device)
 
     # Validate downsample range
     if not (0.25 <= args.downsample <= 1.0):
         fail("invalid_args", f"--downsample must be between 0.25 and 1.0, got {args.downsample}")
 
+    _check_max_height(args.max_height)
+
+    paths = [args.input] if args.input else args.inputs
+    for path in paths:
+        require_file(path)
+
+    # One session serves every clip, sequentially.
+    session = _load_session()
+
     if args.input:
         # Single file mode
-        require_file(args.input)
         stem = os.path.splitext(args.input)[0]
         out = args.out or f"{stem}_nobg.mov"
-        mov_path = _process_one(args.input, out, args.model, device, args.downsample, args.progress)
+        mov_path = _process_one(args.input, out, session, args.downsample, args.max_height, args.progress)
         webm_path = _make_webm_preview(mov_path, emit_progress=args.progress)
         print(json.dumps({"nobg_src": mov_path, "nobg_preview_src": webm_path}))
 
     else:
         # Multiple files mode
+        mov_paths = []
+        for path in args.inputs:
+            stem = os.path.splitext(path)[0]
+            out = f"{stem}_nobg.mov"
+            mov_paths.append(
+                _process_one(path, out, session, args.downsample, args.max_height, args.progress))
+
         results = []
-
-        if args.cpu:
-            import multiprocessing
-            import os as _os
-            cpu_count = _os.cpu_count() or 2
-            workers = args.workers or max(1, cpu_count // 2)
-            num_threads = max(1, cpu_count // workers)
-
-            if args.progress:
-                print(
-                    json.dumps({"warning": "--progress is not supported with --cpu (multiprocessing) mode"}),
-                    file=sys.stderr,
-                )
-            emit_progress = False
-
-            worker_args = []
-            for path in args.inputs:
-                require_file(path)
-                stem = os.path.splitext(path)[0]
-                out = f"{stem}_nobg.mov"
-                worker_args.append((path, out, args.model, "cpu", args.downsample, emit_progress, num_threads))
-
-            with multiprocessing.Pool(processes=workers) as pool:
-                mov_paths = pool.map(_worker_trampoline, worker_args)
-        else:
-            # GPU: load model once, process clips sequentially
-            shared_model = _load_model(args.model, device)
-            mov_paths = []
-            for path in args.inputs:
-                require_file(path)
-                stem = os.path.splitext(path)[0]
-                out = f"{stem}_nobg.mov"
-                mov_path = _process_one(path, out, args.model, device, args.downsample, args.progress, model=shared_model)
-                mov_paths.append(mov_path)
-
         for mov_path in mov_paths:
             webm_path = _make_webm_preview(mov_path, emit_progress=args.progress)
             results.append({"nobg_src": mov_path, "nobg_preview_src": webm_path})

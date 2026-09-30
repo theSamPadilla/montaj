@@ -164,8 +164,10 @@ def test_remove_bg_real_schema_batch_and_flags():
     from pathlib import Path
     path = Path(__file__).resolve().parent.parent / "steps" / "transform" / "remove_bg.json"
     schema = json.loads(path.read_text())
-    args = build_cli_args(schema, {"inputs": ["a.mp4", "b.mp4"], "cpu": True, "progress": True})
+    args = build_cli_args(schema, {"inputs": ["a.mp4", "b.mp4"], "max_height": 1920, "progress": True})
     assert args[:1] == ["--inputs"] and args[1:3] == ["a.mp4", "b.mp4"]
-    assert "--cpu" in args and "--progress" in args
+    i = args.index("--max-height")
+    assert args[i + 1] == "1920"
+    assert "--progress" in args
     assert "True" not in args
     assert args.count("--inputs") == 1

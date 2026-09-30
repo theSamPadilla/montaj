@@ -1,6 +1,6 @@
 {
   "name": "remove_bg",
-  "description": "Remove video background using RVM — outputs ProRes 4444 .mov with alpha + VP9 WebM preview. LONG-RUNNING: typically 1–5 minutes per clip on MPS/GPU depending on length and resolution. Always run via --inputs batch mode, fire in the background, and pass --progress to emit per-frame JSON progress lines to stderr so you can monitor status. Quality tuning: use rvm_resnet50 for complex/cluttered backgrounds; use downsample 1.0 for sharper edges (slower). Default settings are fast; prefer quality settings for final output.",
+  "description": "Remove video background using RVM on the CPU. Outputs ProRes 4444 .mov with alpha + VP9 WebM preview. LONG-RUNNING: time grows with pixel count, roughly 0.1 s per megapixel per frame, so minutes per clip. Always run via --inputs batch mode, fire in the background, and pass --progress to emit per-frame JSON progress lines to stderr so you can monitor status. Pass max-height to matte at the size the clip is shown rather than the camera's; use downsample 1.0 for sharper edges (slower).",
   "input": {
     "type": "video",
     "description": "Source video file"
@@ -29,30 +29,20 @@
       "description": "Output path (only valid with --input, default: {stem}_nobg.mov)"
     },
     {
-      "name": "model",
-      "type": "enum",
-      "required": false,
-      "default": "rvm_mobilenetv3",
-      "options": ["rvm_mobilenetv3", "rvm_resnet50"],
-      "description": "rvm_mobilenetv3: fast, good for clean backgrounds. rvm_resnet50: slower, significantly better on complex/cluttered backgrounds."
-    },
-    {
-      "name": "cpu",
-      "type": "boolean",
-      "required": false,
-      "default": false
-    },
-    {
-      "name": "workers",
-      "type": "integer",
-      "required": false
-    },
-    {
       "name": "downsample",
       "type": "float",
       "required": false,
-      "default": null,
-      "description": "Inference resolution ratio (0.25–1.0). Auto-detected from available memory when omitted: 0.25 on 8 GB, 0.375 on 16 GB, 0.5 on 32 GB+. 1.0 = full resolution (4x slower, sharper edges and finer hair/detail)."
+      "default": 0.5,
+      "min": 0.25,
+      "max": 1.0,
+      "description": "Inference resolution ratio (0.25-1.0), relative to the frame RVM is given. 1.0 = full resolution (about 4x slower, sharper edges and finer hair/detail)."
+    },
+    {
+      "name": "max-height",
+      "type": "int",
+      "required": false,
+      "min": 2,
+      "description": "Scales the cutout down so its display height is at most this many pixels (a positive even number), never up. Width follows the aspect ratio. Omit to keep the source size."
     },
     {
       "name": "progress",
