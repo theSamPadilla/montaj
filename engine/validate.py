@@ -135,9 +135,13 @@ def _validate_video_crop_keyframes(ti, item, tracks):
 
 def _validate_crop_key_bounds(ti, item, tracks, sc):
     """At every crop key time the window must stay inside the frame: past the edge
-    the export clamps (shifts) it while the preview shows it as requested. Each
-    prop is the keyed value at that time, else the static sourceCrop, else the
-    full frame. 1e-3 slack, not 1e-6: agent-written crops are rounded to 4 decimals."""
+    the export clamps (shifts) it while the preview shows it as requested. A prop
+    is known at a time when it is keyed exactly there, or not keyed at all (then the
+    static sourceCrop, else the full frame). An edge (x+w, y+h) is checked only when
+    BOTH its props are known; if either is keyed but not at that time its value is
+    interpolated, which is not computed here, so the edge is skipped. That can miss
+    an overshoot between mismatched key times but never rejects a valid project.
+    1e-3 slack, not 1e-6: agent-written crops are rounded to 4 decimals."""
     who = f"tracks[{ti}] item '{item.get('id','?')}'"
     static = {"cropX": 0.0, "cropY": 0.0, "cropW": 1.0, "cropH": 1.0}
     if sc:
@@ -146,11 +150,16 @@ def _validate_crop_key_bounds(ti, item, tracks, sc):
                 static[prop] = float(sc[k])
     at = {prop: {float(p["t"]): float(p["value"]) for p in tr["points"]} for prop, tr in tracks.items()}
     for t in sorted({t for m in at.values() for t in m}):
-        val = {prop: at.get(prop, {}).get(t, static[prop]) for prop in static}
-        if val["cropX"] + val["cropW"] > 1 + 1e-3:
-            fail("invalid_field", f"{who}: crop window passes the right edge at t={t:.1f} (cropX + cropW = {val['cropX'] + val['cropW']:.4f} > 1)")
-        if val["cropY"] + val["cropH"] > 1 + 1e-3:
-            fail("invalid_field", f"{who}: crop window passes the bottom edge at t={t:.1f} (cropY + cropH = {val['cropY'] + val['cropH']:.4f} > 1)")
+        def known(prop):
+            if prop not in at:
+                return static[prop]
+            return at[prop].get(t)  # keyed elsewhere only: interpolated, unknown here
+
+        x, w, y, h = known("cropX"), known("cropW"), known("cropY"), known("cropH")
+        if x is not None and w is not None and x + w > 1 + 1e-3:
+            fail("invalid_field", f"{who}: crop window passes the right edge at t={t:.1f} (cropX + cropW = {x + w:.4f} > 1)")
+        if y is not None and h is not None and y + h > 1 + 1e-3:
+            fail("invalid_field", f"{who}: crop window passes the bottom edge at t={t:.1f} (cropY + cropH = {y + h:.4f} > 1)")
 
 
 def _validate_clip_extensions(data, project_dir=None):

@@ -214,3 +214,18 @@ def test_crop_window_within_rounding_tolerance_passes(tmp_path):
     # 0.5001 + 0.5 = 1.0001, inside the 1e-3 tolerance for 4-decimal agent output.
     item = _item(keyframes=[_vtrack("cropX", [(0, 0.0), (1, 0.5001)]), _vtrack("cropW", [(0, 0.5), (1, 0.5)])])
     assert v.validate_project(_path(tmp_path, item))["valid"] is True
+
+
+def test_crop_edge_is_skipped_where_a_prop_is_keyed_but_not_at_that_time(tmp_path):
+    # cropX is keyed only at t=2; cropW is keyed at 0 and 4, so its value at t=2 is
+    # interpolated (0.5), not the full frame. 0.3 + 0.5 is inside; do not reject.
+    item = _item(keyframes=[_vtrack("cropX", [(2, 0.3)]), _vtrack("cropW", [(0, 0.5), (4, 0.5)]),
+                            _vtrack("cropH", [(0, 1.0), (4, 1.0)])])
+    assert v.validate_project(_path(tmp_path, item))["valid"] is True
+
+
+def test_video_crop_edge_is_skipped_where_x_is_keyed_but_w_is_not(tmp_path):
+    item = _video([_vtrack("cropX", [(0, 0.0), (3, 0.4)]),
+                   _vtrack("cropW", [(0, 0.5), (2, 0.5)]),
+                   _vtrack("cropH", [(0, 1.0), (2, 1.0)])])
+    assert v.validate_project(_path(tmp_path, item))["valid"] is True
