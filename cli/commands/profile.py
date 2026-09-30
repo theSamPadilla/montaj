@@ -59,8 +59,14 @@ def register(subparsers):
     p.set_defaults(func=lambda args: p.print_help())
 
 
+def default_analyze_out(name, path=os.path):
+    # One separator style on every OS: expanduser("~/...") on Windows gives a
+    # backslashed home followed by a forward-slash tail.
+    return path.join(path.expanduser("~"), ".montaj", "profiles", name)
+
+
 def handle_analyze(args):
-    out = args.out or os.path.expanduser(f"~/.montaj/profiles/{args.name}/")
+    out = args.out or default_analyze_out(args.name)
 
     videos = args.videos
     if not videos:

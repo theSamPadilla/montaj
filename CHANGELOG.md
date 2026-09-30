@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fixed: on Windows, `montaj profile analyze`'s default output folder uses one path separator.** It was the home folder with backslashes followed by `/.montaj/profiles/<name>/`, so every path written into the analysis JSON mixed the two. It is now built with `os.path.join`; on macOS and Linux it is the same folder.
 - **Fixed: a clip with its own scaleX/scaleY and a keyframed `scale` exports at the size the editor shows.** The export sized such a clip's box from the `scale` curve on both axes and ignored its per-axis scale, while the editor and `sample_frame` keep the per-axis scale (the `scale` curve does not move that clip's box). A 16:9 presenter in a full-width band at the bottom (scaleX 1, scaleY 0.316) came out stretched 3.16x tall. A clip that keyframes only `scale` animates as before, now fitted at its largest size instead of its static one, so a zoom past its static scale is no longer upscaled.
 - **Fixed: a JSX overlay that keyframes only `scale` animates in the export as it does in the editor.** The export baked it frozen at its static size: every overlay was handed a scaleX/scaleY equal to its `scale`, which counts as a per-axis size of its own and outranks the `scale` curve. An overlay with its own scaleX/scaleY is unchanged.
 
