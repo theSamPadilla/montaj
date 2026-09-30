@@ -23,6 +23,7 @@ import { fileURLToPath, pathToFileURL }         from "url";
 import { spawnSync }                            from "child_process";
 import { homedir }                              from "os";
 import { runCli }                               from "./run-cli.js";
+import { cliFailureMessage }                    from "./cli-failure.js";
 import { fetchContext }                         from "./serve-client.js";
 
 const __dirname       = dirname(fileURLToPath(import.meta.url))
@@ -411,7 +412,7 @@ async function main() {
 
     if (result.status !== 0) {
       return {
-        content: [{ type: "text", text: result.stderr?.trim() || `Tool '${name}' failed (exit ${result.status})` }],
+        content: [{ type: "text", text: cliFailureMessage(name, result) }],
         isError: true,
       }
     }

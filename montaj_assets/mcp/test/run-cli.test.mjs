@@ -31,3 +31,9 @@ test('does not block the event loop while the child runs', async () => {
   clearInterval(t)
   assert.ok(ticks >= 5, `event loop starved: ${ticks} ticks`)
 })
+
+test('signal kill resolves with null status and the signal name', async () => {
+  const r = await runCli(process.execPath, ['-e', 'process.kill(process.pid, "SIGKILL")'])
+  assert.equal(r.status, null)
+  assert.equal(r.signal, 'SIGKILL')
+})
