@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Added (editor): a host can own the render window.** `VideoEditor` and `CarouselEditor` take `renderModal`, and the render helpers are exported from `@bycrux/editor`. See `montaj_assets/editor/CHANGELOG.md`.
+
 ## v5.12.0
 
 - **Fixed: a failed MCP tool call now says which signal or exit code ended it and includes the tail of its output, instead of `failed (exit null)`.**

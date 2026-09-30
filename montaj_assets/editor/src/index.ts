@@ -62,6 +62,8 @@ export type {
   EditorSlots,
   CarouselEditorProps,
   VideoEditorProps,
+  RenderModalContext,
+  CarouselRenderModalContext,
 } from './types'
 // `FOOTAGE_DND_MIME` is a value (const), not a type — exported separately so
 // hosts can compare against it when reading a drag event's MIME data.
@@ -132,6 +134,20 @@ export type { ImageTone, ImageToneInfo } from './video/imageTone'
 export { SDR_CURVES, DEFAULT_SDR_CURVE, sdrCurveInfo, honestyLine } from './video/sdrCurves'
 export type { SdrCurve, SdrCurveInfo } from './video/sdrCurves'
 export type { PreRenderOptions } from './video/RenderModal'
+// Render progress and export-dialog helpers, public so a host that owns its
+// render window (`VideoEditorProps.renderModal`) reads the engine's log format
+// and serve's name sanitizer through the same code as RenderModal.
+export {
+  parseLogProgress,
+  RENDER_PHASES,
+  phaseLabel,
+  phaseIndex,
+  stepperPhases,
+  pickSampleTime,
+  sanitizeOutputName,
+  resLabel,
+} from './video/RenderModal'
+export { TONE_EXAMPLES } from './video/imageToneExamples'
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 export { defaultMontajTheme, lightMontajTheme, applyTheme, isLightTheme } from './theme'

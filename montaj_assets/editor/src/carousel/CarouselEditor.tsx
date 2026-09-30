@@ -152,7 +152,7 @@ function isTypingTarget(t: EventTarget | null): boolean {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -644,18 +644,32 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         />
       )}
 
-      {renderOpen && (
-        <CarouselRenderModal
-          projectId={project.id}
-          adapter={adapter}
-          slidesCount={slides.length}
-          resolution={project.settings.resolution as [number, number]}
-          exportActions={slots?.exportActions}
-          onClose={() => setRenderOpen(false)}
-          onCancel={() => setRenderOpen(false)}
-          mode={mode}
-        />
-      )}
+      {/* Render window. A host that passes `renderModal` owns it and the
+          render itself; it is called on every render, `open` saying whether
+          the window should show. Otherwise the package's CarouselRenderModal. */}
+      {renderModal
+        ? renderModal({
+            open: renderOpen,
+            projectId: project.id,
+            adapter,
+            slidesCount: slides.length,
+            resolution: project.settings.resolution as [number, number],
+            exportActions: slots?.exportActions,
+            mode,
+            onClose: () => setRenderOpen(false),
+          })
+        : renderOpen && (
+          <CarouselRenderModal
+            projectId={project.id}
+            adapter={adapter}
+            slidesCount={slides.length}
+            resolution={project.settings.resolution as [number, number]}
+            exportActions={slots?.exportActions}
+            onClose={() => setRenderOpen(false)}
+            onCancel={() => setRenderOpen(false)}
+            mode={mode}
+          />
+        )}
     </div>
   )
 }

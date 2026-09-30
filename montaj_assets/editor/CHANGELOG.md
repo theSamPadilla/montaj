@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Both editors
+
+- **Added: `renderModal`, a host-owned render window, on `VideoEditor` and `CarouselEditor`.** A host that passes it gets everything the package's own modal was given plus `open`, and the package no longer mounts `RenderModal` / `CarouselRenderModal` or calls `adapter.render`.
+  - Video gets `RenderModalContext`: `projectId`, `adapter`, `preRenderOptions`, `exportActions`, `mode`, `onClose`, `onRenderComplete`.
+  - Carousel gets `CarouselRenderModalContext`: `projectId`, `adapter`, `slidesCount`, `resolution`, `exportActions`, `mode`, `onClose`.
+  - Both are called on every render, so a video host can refresh versions for a render that finishes while its window is closed. Absent, nothing changes.
+  - `parseLogProgress`, `stepperPhases`, `phaseLabel`, `phaseIndex`, `RENDER_PHASES`, `pickSampleTime`, `sanitizeOutputName`, `resLabel` and `TONE_EXAMPLES` are now exported from the index.
+  - Files: `types.ts`, `video/VideoEditor.tsx`, `carousel/CarouselEditor.tsx`, `index.ts`, `video/__tests__/VideoEditor.test.tsx`, `carousel/__tests__/CarouselEditor.test.tsx`, `__tests__/index-render-helpers.test.ts`.
+
 ### Video editor
 
 - **Added: keyframed crop on video.** The Crop tab's diamond keys a video's crop, with `sourceWidth`/`sourceHeight` written in the same change; once keyed, the crop tool keys it at the playhead, while an unkeyed video's Apply still writes the static crop. `useVideoNaturalSize` probes the display size; a keyed video's crop modal locks to the keys' aspect and hides the shape choices. The preview draws the sampled crop for the base clip, upper-track videos and the scheduler. (`video/useVideoNaturalSize.ts`, `crop/VideoSourceCropModal.tsx`, `video/preview/PreviewPlayer.tsx`, `video/preview/OverlayItemsLayer.tsx`, `engine/scheduler.ts`)

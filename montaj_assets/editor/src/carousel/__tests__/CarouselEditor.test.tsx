@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, act, waitFor, fireEvent } from '@testing-library/react'
-import type { EditorAdapter, ImageElement, Project, RenderEvent } from '../../types'
+import type { CarouselRenderModalContext, EditorAdapter, ImageElement, Project, RenderEvent } from '../../types'
 import CarouselEditor from '../CarouselEditor'
 
 // ── Fake adapter (mirrors editor-core's use-project-state test pattern) ───────
@@ -340,5 +340,49 @@ describe('CarouselEditor — editor-core integration', () => {
     await act(async () => { fireEvent.keyDown(input, { key: 'Backspace' }) })
     expect(adapter.saveCalls.length).toBe(before)
     document.body.removeChild(input)
+  })
+
+  // PL1: a host can own the carousel's render window too. The package hands
+  // it everything CarouselRenderModal was given and never renders itself.
+  it('renderModal replaces CarouselRenderModal and gets everything it was given', async () => {
+    const adapter = makeFakeAdapter()
+    adapter.render = vi.fn(async function* (): AsyncIterable<RenderEvent> {
+      yield { type: 'done', outputPath: '/out' }
+    }) as unknown as typeof adapter.render
+    const seen: CarouselRenderModalContext<Project>[] = []
+    const { findByTitle, findByTestId, queryByTestId } = render(
+      <CarouselEditor
+        project={makeProject()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div data-testid="host-export-actions" /> }}
+        renderModal={(ctx) => {
+          seen.push(ctx)
+          return ctx.open ? <div data-testid="host-render-window">{ctx.exportActions}</div> : null
+        }}
+      />,
+    )
+
+    await waitFor(() => expect(seen.length).toBeGreaterThan(0))
+    expect(seen[seen.length - 1].open).toBe(false)
+
+    const renderBtn = await findByTitle('Render all slides as PNGs')
+    await act(async () => { fireEvent.click(renderBtn) })
+
+    await findByTestId('host-render-window')
+    expect(queryByTestId('host-export-actions')).not.toBeNull()
+    expect(adapter.render).not.toHaveBeenCalled()
+    const ctx = seen[seen.length - 1]
+    expect(ctx.open).toBe(true)
+    expect(ctx.projectId).toBe('proj-1')
+    expect(ctx.adapter).toBe(adapter)
+    expect(ctx.slidesCount).toBe(1)
+    expect(ctx.resolution).toEqual([1080, 1080])
+    expect(['light', 'dark']).toContain(ctx.mode)
+    // The Render click still saved the project as final first.
+    await waitFor(() => expect(adapter.saveCalls.some((c) => c.project.status === 'final')).toBe(true))
+
+    await act(async () => { ctx.onClose() })
+    await waitFor(() => expect(queryByTestId('host-render-window')).toBeNull())
   })
 })

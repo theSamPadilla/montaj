@@ -6,6 +6,7 @@ import type {
   ImageElement,
   Project,
   RenderEvent,
+  RenderModalContext,
   VersionEntry,
   WaveformChunk,
 } from '../../types'
@@ -763,6 +764,58 @@ describe('VideoEditor — editor-package integration', () => {
     await waitFor(() => {
       expect(adapter.listVersionHistory).toHaveBeenCalledTimes(2)
     })
+  })
+
+  // PL1: a host can own the render window. The package hands it everything
+  // RenderModal was given and never renders anything itself.
+  it('renderModal replaces the package RenderModal and gets everything it was given', async () => {
+    const adapter = makeFakeAdapter()
+    adapter.render = vi.fn(async function* (): AsyncIterable<RenderEvent> {
+      yield { type: 'done', outputPath: '/out.mp4' }
+    }) as unknown as typeof adapter.render
+    const initial = makeVideoProject({ status: 'final' })
+    const seen: RenderModalContext<Project>[] = []
+    const { findByText, findByTestId, queryByTestId, queryByRole } = render(
+      <VideoEditor
+        project={initial}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div data-testid="host-export-actions" /> }}
+        renderModal={(ctx) => {
+          seen.push(ctx)
+          return ctx.open ? <div data-testid="host-render-window">{ctx.exportActions}</div> : null
+        }}
+      />,
+    )
+
+    await waitFor(() => expect(adapter.listVersionHistory).toHaveBeenCalledTimes(1))
+    // Called while closed too, so a host keeps onRenderComplete for a render
+    // that finishes with no window up.
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen[seen.length - 1].open).toBe(false)
+    expect(queryByTestId('host-render-window')).toBeNull()
+
+    const renderBtn = await findByText('Render →')
+    await act(async () => { renderBtn.click() })
+
+    await findByTestId('host-render-window')
+    expect(queryByTestId('host-export-actions')).not.toBeNull()
+    // The package's own export dialog never mounts, and nothing is rendered.
+    expect(queryByRole('button', { name: 'Export' })).toBeNull()
+    expect(adapter.render).not.toHaveBeenCalled()
+
+    const ctx = seen[seen.length - 1]
+    expect(ctx.open).toBe(true)
+    expect(ctx.projectId).toBe('vid-1')
+    expect(ctx.adapter).toBe(adapter)
+    expect(ctx.preRenderOptions.durationSec).toBeGreaterThan(0)
+    expect(['light', 'dark']).toContain(ctx.mode)
+
+    await act(async () => { ctx.onRenderComplete() })
+    await waitFor(() => expect(adapter.listVersionHistory).toHaveBeenCalledTimes(2))
+
+    await act(async () => { ctx.onClose() })
+    await waitFor(() => expect(queryByTestId('host-render-window')).toBeNull())
   })
 
   it('handleSaveVersion calls adapter.saveVersion and refetches history', async () => {

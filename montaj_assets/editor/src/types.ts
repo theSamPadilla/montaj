@@ -25,6 +25,7 @@ import type {
 } from './schema'
 import type { ImageTone } from './video/imageTone'
 import type { SourcePreviewStore } from './video/source-preview'
+import type { PreRenderOptions } from './video/RenderModal'
 
 // ── Overlay compiler ─────────────────────────────────────────────────────────
 
@@ -1045,6 +1046,29 @@ export interface EditorSlots {
 // ── Top-level component props ──────────────────────────────────────────────────
 
 /**
+ * What the package hands a host that renders its own carousel render window
+ * (`CarouselEditorProps.renderModal`): exactly what CarouselRenderModal is
+ * given, plus `open`. No options and no completion callback, because the
+ * carousel has neither.
+ */
+export interface CarouselRenderModalContext<P extends Project = Project> {
+  /** Whether the window should show: true from Render until `onClose`. */
+  open: boolean
+  projectId: string
+  adapter: EditorAdapter<P>
+  /** Slides in the project: the result gallery's count. */
+  slidesCount: number
+  /** Slide resolution [w, h]: the result gallery's aspect. */
+  resolution: [number, number]
+  /** `slots.exportActions`, for the finished state. */
+  exportActions?: ReactNode
+  /** The editor's resolved light or dark mode. */
+  mode: 'light' | 'dark'
+  /** Close the window. Stops nothing: the host owns the render. */
+  onClose: () => void
+}
+
+/**
  * Props for the carousel editor component. Controlled shape: the host owns the
  * `project` and is notified of edits via `onProjectChange`. The adapter drives
  * transport; theme and slots are optional, and `readOnly` disables mutation.
@@ -1076,6 +1100,39 @@ export interface CarouselEditorProps<P extends Project = Project> {
    * selection). The package keeps owning selection state.
    */
   onSelectionChange?: (element: CarouselElement | null) => void
+
+  /**
+   * Replace the package's CarouselRenderModal with the host's own render
+   * window. Called on every render, including while closed; `ctx.open` says
+   * whether to show anything, so return null when it is false. With this set
+   * the package never mounts CarouselRenderModal and never calls
+   * `adapter.render`: the host starts, follows and stops the render. The
+   * toolbar Render button still saves the project as `final` and then opens.
+   * Absent: the package's CarouselRenderModal, as before.
+   */
+  renderModal?: (ctx: CarouselRenderModalContext<P>) => ReactNode
+}
+
+/**
+ * What the package hands a host that renders its own render window
+ * (`VideoEditorProps.renderModal`): exactly what its own RenderModal is given,
+ * plus `open`.
+ */
+export interface RenderModalContext<P extends Project = Project> {
+  /** Whether the window should show: true from Render (`openRender`) until `onClose`. */
+  open: boolean
+  projectId: string
+  adapter: EditorAdapter<P>
+  /** The export dialog's inputs: cover keeps, name, duration, aspect, resolution and fps tiers, HDR image tone. */
+  preRenderOptions: PreRenderOptions
+  /** `slots.exportActions`, for the finished state. */
+  exportActions?: ReactNode
+  /** The editor's resolved light or dark mode. */
+  mode: 'light' | 'dark'
+  /** Close the window. Stops nothing: the host owns the render. */
+  onClose: () => void
+  /** Refresh the editor's version history. Call once per finished render. */
+  onRenderComplete: () => void
 }
 
 /**
@@ -1151,6 +1208,18 @@ export interface VideoEditorProps<P extends Project = Project> {
    * unaffected.
    */
   onProvideRenderTrigger?: (openRender: () => void) => void
+
+  /**
+   * Replace the package's RenderModal with the host's own render window.
+   * Called on every render of the review surface, including while closed, so
+   * a host keeps `onRenderComplete` for a render that finishes with no window
+   * up; `ctx.open` says whether to show anything, so return null when it is
+   * false. With this set the package never mounts RenderModal and never calls
+   * `adapter.render`: the host starts, follows and stops the render.
+   * `openRender` (the Render button, `onProvideRenderTrigger`) still marks the
+   * project final, saves and opens. Absent: the package's RenderModal, as before.
+   */
+  renderModal?: (ctx: RenderModalContext<P>) => ReactNode
 
   /**
    * Opt a host OUT of the package's built-in toolbar image-tone button so it

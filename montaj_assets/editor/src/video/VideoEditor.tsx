@@ -266,6 +266,7 @@ export default function VideoEditor<P extends Project = Project>({
   regenEnabled,
   isClipQueued,
   onProvideRenderTrigger,
+  renderModal,
   onProvideImageTone,
   engine,
   sourcePreview,
@@ -451,6 +452,7 @@ export default function VideoEditor<P extends Project = Project>({
         regenEnabled={regenEnabled}
         isClipQueued={isClipQueued}
         onProvideRenderTrigger={onProvideRenderTrigger}
+        renderModal={renderModal}
         onProvideImageTone={onProvideImageTone}
         engine={engine}
         sourcePreview={sourcePreview}
@@ -571,6 +573,7 @@ interface SurfaceProps<P extends Project> {
   getWaveformPeaks?: VideoEditorProps<P>['adapter']['getWaveformPeaks']
   getFilmstrip?: VideoEditorProps<P>['adapter']['getFilmstrip']
   onProvideRenderTrigger?: VideoEditorProps<P>['onProvideRenderTrigger']
+  renderModal?: VideoEditorProps<P>['renderModal']
   onProvideImageTone?: VideoEditorProps<P>['onProvideImageTone']
   engine?: VideoEditorProps<P>['engine']
   /** Light/dark for the canvas timeline, resolved from the host theme by
@@ -799,6 +802,7 @@ function ReviewSurface<P extends Project>({
   regenEnabled,
   isClipQueued,
   onProvideRenderTrigger,
+  renderModal,
   onProvideImageTone,
   engine,
   sourcePreview,
@@ -1334,6 +1338,9 @@ function ReviewSurface<P extends Project>({
   useEffect(() => { onProvideRenderTrigger?.(openRender) }, [onProvideRenderTrigger, openRender])
 
   const { versions, restoring, setRestoring, saving, setSaving, refresh: refreshVersions } = useVersionHistory(adapter, project)
+  // PL1: the host-owned render window's two callbacks (see `renderModal`).
+  const closeRender = useCallback(() => setRenderOpen(false), [])
+  const completeRender = useCallback(() => { void refreshVersions() }, [refreshVersions])
   // The version-compare view: the LEFT hash it was opened for, or null when
   // closed. Mirrors PendingSurface's `compareOpen` — each surface mounts its
   // own VersionPanel, so each owns its own compare state.
@@ -3073,20 +3080,33 @@ function ReviewSurface<P extends Project>({
         />
       )}
 
-      {/* Render modal — adapter.render stream + host export controls */}
-      {renderOpen && (
-        <RenderModal
-          projectId={project.id}
-          adapter={adapter}
-          exportActions={slots?.exportActions}
-          progressView={renderProgressView}
-          preRenderOptions={preRenderOptions}
-          onClose={() => setRenderOpen(false)}
-          onCancel={() => setRenderOpen(false)}
-          onRenderComplete={() => { void refreshVersions() }}
-          mode={timelineMode}
-        />
-      )}
+      {/* Render window. A host that passes `renderModal` owns it and the
+          render itself; it is called on every render, `open` saying whether
+          the window should show. Otherwise the package's RenderModal. */}
+      {renderModal
+        ? renderModal({
+            open: renderOpen,
+            projectId: project.id,
+            adapter,
+            preRenderOptions,
+            exportActions: slots?.exportActions,
+            mode: timelineMode,
+            onClose: closeRender,
+            onRenderComplete: completeRender,
+          })
+        : renderOpen && (
+          <RenderModal
+            projectId={project.id}
+            adapter={adapter}
+            exportActions={slots?.exportActions}
+            progressView={renderProgressView}
+            preRenderOptions={preRenderOptions}
+            onClose={() => setRenderOpen(false)}
+            onCancel={() => setRenderOpen(false)}
+            onRenderComplete={() => { void refreshVersions() }}
+            mode={timelineMode}
+          />
+        )}
 
       {/* Visual A/B version compare — opened from a VersionPanel entry's
           Compare button. Gated on the adapter capability so a host without
