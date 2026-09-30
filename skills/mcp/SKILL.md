@@ -31,7 +31,7 @@ node mcp/server.js
 
 ## What the server exposes
 
-One tool: `render`, which renders a project to MP4. Everything else runs through the CLI (`montaj <command>`; `montaj --help` lists them) from a shell: create the project with `montaj run` and run each step with its command. Over HTTP, `montaj serve` runs a step with `POST /api/steps/<name>`. The Montaj app's connector adds its own `run_step` and project tools.
+One tool: `render`, which renders a project to MP4. It takes minutes. If the call errors or times out after a long wait, do not call it again: the first render keeps going, and the file lands in the project's `render` folder. Everything else runs through the CLI (`montaj <command>`; `montaj --help` lists them) from a shell: create the project with `montaj run` and run each step with its command. Over HTTP, `montaj serve` runs a step with `POST /api/steps/<name>`. The Montaj app's connector adds its own `run_step` and project tools.
 
 Follow the headless CLI loop from the root skill. Write project state to `project.json` in the project directory as you go.
 
