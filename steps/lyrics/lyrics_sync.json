@@ -1,6 +1,6 @@
 {
   "name": "lyrics_sync",
-  "description": "Sync lyrics text to audio using Whisper word timestamps on clean vocals (output of stem_separation). Whisper detects the lyrics window automatically then provides word-level timestamps. Lyrics are matched to Whisper words via SequenceMatcher; unmatched words are interpolated between anchors. Outputs a caption track JSON grouped by lyric phrase — ready to use as project.json captions or as overlay entries via lyric-phrase.jsx. For best results, pass the vocals stem from stem_separation rather than the full mix.",
+  "description": "Sync lyrics text to audio using Whisper word timestamps on clean vocals (output of stem_separation). The song is transcribed in windows of up to 30 s, cut at quiet points, and the lyrics are aligned to Whisper's words in order, which also detects the lyrics window; unmatched words are interpolated between matched ones. Outputs a caption track JSON grouped by lyric phrase, ready to use as project.json captions or as overlay entries via lyric-phrase.jsx. For best results, pass the vocals stem from stem_separation rather than the full mix.",
   "input": {
     "type": "audio",
     "description": "Vocals WAV from stem_separation (--stems vocals), or any audio/video file"
