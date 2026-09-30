@@ -1417,7 +1417,8 @@ function ReviewSurface<P extends Project>({
   // A video's display size, for the same diamond: its crop keys must carry
   // `sourceWidth`/`sourceHeight` in the same change. The file is the one the crop
   // tool draws (so both read the same dimensions). Null until known.
-  const cropVideoUrl = cropTarget?.type === 'video'
+  // No probe when the item already records its display size.
+  const cropVideoUrl = cropTarget?.type === 'video' && !(cropTarget.sourceWidth && cropTarget.sourceHeight)
     ? adapter.fileUrl(cropTarget.nobg_preview_src ?? cropTarget.normalizedSrc ?? cropTarget.src ?? '')
     : undefined
   const probedVideo = useVideoNaturalSize(cropVideoUrl)

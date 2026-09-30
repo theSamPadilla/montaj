@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Video editor
 
-- **Added: keyframed crop on video.** The Crop tab's diamond and the crop tool key a video's crop, with `sourceWidth`/`sourceHeight` written in the same change. `useVideoNaturalSize` probes the display size; a keyed video's crop modal locks to the keys' aspect and hides the shape choices. The preview draws the sampled crop for the base clip, upper-track videos and the scheduler. (`video/useVideoNaturalSize.ts`, `crop/VideoSourceCropModal.tsx`, `video/preview/PreviewPlayer.tsx`, `video/preview/OverlayItemsLayer.tsx`, `engine/scheduler.ts`)
+- **Added: keyframed crop on video.** The Crop tab's diamond keys a video's crop, with `sourceWidth`/`sourceHeight` written in the same change; once keyed, the crop tool keys it at the playhead, while an unkeyed video's Apply still writes the static crop. `useVideoNaturalSize` probes the display size; a keyed video's crop modal locks to the keys' aspect and hides the shape choices. The preview draws the sampled crop for the base clip, upper-track videos and the scheduler. (`video/useVideoNaturalSize.ts`, `crop/VideoSourceCropModal.tsx`, `video/preview/PreviewPlayer.tsx`, `video/preview/OverlayItemsLayer.tsx`, `engine/scheduler.ts`)
 
 - **Fixed: the preview showed source video outside a crop whose shape differs from its box, where the export shows empty space.** It now shows only the crop.
 - **Fixed: a crop edit made while paused did not appear until the playhead moved.**

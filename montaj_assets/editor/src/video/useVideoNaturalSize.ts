@@ -22,7 +22,7 @@ export function useVideoNaturalSize(src: string | undefined): Size | null {
       if (live) bump(n => n + 1)
     }
     v.src = src
-    return () => { live = false; v.onloadedmetadata = null; v.removeAttribute('src') }
+    return () => { live = false; v.onloadedmetadata = null; v.removeAttribute('src'); v.load() }
   }, [src])
   return (src && cache.get(src)) || null
 }

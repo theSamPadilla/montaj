@@ -561,8 +561,8 @@ function trackFor(tracks, prop) {
  * CONSTRUCTION and a keyframe-free project keeps producing a byte-identical
  * filter graph. Only the eleven props src/curves.js names can be animated.
  * The four crop props are folded into ONE `sourceCrop` for the kinds in
- * `CROP_KEYFRAME_KINDS` (images today), and such an image resolves `fit:
- * 'cover'`; otherwise `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are
+ * `CROP_KEYFRAME_KINDS` (images and video); such an image resolves `fit:
+ * 'cover'`, a video keeps 'contain'; otherwise `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are
  * forwarded exactly as the static path forwards them (`sourceCrop` by
  * reference, never cloned).
  *

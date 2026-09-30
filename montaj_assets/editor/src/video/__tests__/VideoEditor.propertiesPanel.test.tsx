@@ -752,15 +752,15 @@ describe('VideoEditor — the Crop tab and tool key a video crop (PV55 phase 2)'
 
     fireEvent.click(await clipTab('Crop'))
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
-    const before = (adapter.saveProject as ReturnType<typeof vi.fn>).mock.calls.length
+    const save = adapter.saveProject as ReturnType<typeof vi.fn>
+    const before = save.mock.calls.length
     fireEvent.click(await screen.findByRole('button', { name: 'Add Crop keyframe at playhead' }))
     await act(async () => { await new Promise(r => setTimeout(r, 50)) })
-    const calls = (adapter.saveProject as ReturnType<typeof vi.fn>).mock.calls
-    for (const c of calls.slice(before)) {
-      const it = (c[1] as Project).tracks?.[0]?.items?.[0] as unknown as Saved
-      expect(it.keyframes).toBeUndefined()
-      expect(it.sourceWidth).toBeUndefined()
-    }
+    // Nothing was written at all: no save (not merely no bad save), and the
+    // diamond still offers an add, so no key landed even transiently.
+    expect(save.mock.calls.length).toBe(before)
+    expect(screen.getByRole('button', { name: 'Add Crop keyframe at playhead' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Remove Crop keyframe at playhead' })).toBeNull()
   })
 
   it('Apply on a keyed video crop keys it, locked to the keys aspect; the static sourceCrop is untouched', async () => {
