@@ -40,9 +40,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
  * @param {number}  [opts.offsetX]   - Percent of frame width.  Read ONLY when `keyframes` is non-empty.
  * @param {number}  [opts.offsetY]   - Percent of frame height. Read ONLY when `keyframes` is non-empty.
  * @param {number}  [opts.scale]     - Frame-size multiplier.   Read ONLY when `keyframes` is non-empty.
- * @param {number}  [opts.scaleX]    - Width multiplier.  Defaults to `scale`, so a legacy
- *   uniform item is unchanged. Read ONLY when `keyframes` is non-empty.
- * @param {number}  [opts.scaleY]    - Height multiplier. Defaults to `scale`, ditto.
+ * @param {number}  [opts.scaleX]    - Width multiplier, as AUTHORED. Absent stays absent,
+ *   and the bake resolves it to the (animated) `scale`. Read ONLY when `keyframes` is non-empty.
+ * @param {number}  [opts.scaleY]    - Height multiplier, ditto.
  * @param {number}  [opts.rotation]  - Degrees.                 Read ONLY when `keyframes` is non-empty.
  * @param {number}  [opts.opacity]   - 0-1.                     Read ONLY when `keyframes` is non-empty.
  * @param {import('@bycrux/timeline-core').KeyframeTrack[]|null} [opts.keyframes]
@@ -65,11 +65,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
  *   installPageGuard). `needsGoogleFonts` is whether the page links
  *   fonts.googleapis.com, the one case its guard lets the font hosts through.
  */
-// `scaleX`/`scaleY` default to `scale` (a destructuring default may read an
-// earlier binding), which is the same `?? scale ?? 1` fallback the resolver in
-// @bycrux/timeline-core applies — so a caller that knows only about uniform
-// `scale`, or passes `scaleX: undefined`, still bakes the legacy numbers.
-export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, scaleX = scale, scaleY = scale, rotation = 0, opacity = 1, keyframes = null, opaque = false, googleFonts = [], fontsBaseDir = '', projectDir = null }) {
+// `scaleX`/`scaleY` have NO default. The resolver in @bycrux/timeline-core
+// (geometryAt) treats a present scaleX/scaleY as authored and reads it ahead of
+// the animated `scale`; defaulting them to `scale` here froze an overlay that
+// keyframes only `scale` at its static size. Left undefined, they drop out of
+// the bake's JSON and geometryAt falls back to the animated `scale`, exactly as
+// the preview does.
+export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, scaleX, scaleY, rotation = 0, opacity = 1, keyframes = null, opaque = false, googleFonts = [], fontsBaseDir = '', projectDir = null }) {
   const id      = randomBytes(8).toString('hex')
   const workDir = join(tmpdir(), `montaj-bundle-${id}`)
   mkdirSync(workDir, { recursive: true })
@@ -91,7 +93,8 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
   // resolves each axis as `sampleTrack(scaleX) ?? item.scaleX ?? <resolved
   // scale>`, so dropping the per-axis pair would snap a non-uniform item that
   // animates only, say, opacity back to a uniform box, while dropping `scale`
-  // would break the fallback every uniform item still relies on.
+  // would break the fallback every uniform item still relies on. An axis the
+  // item did not author is undefined here and JSON.stringify leaves it out.
   const bakeGeometry = Array.isArray(keyframes) && keyframes.length > 0
     ? { offsetX, offsetY, scale, scaleX, scaleY, rotation, opacity, keyframes }
     : null

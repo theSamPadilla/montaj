@@ -23,11 +23,15 @@
 // places — geometry.test.mjs's "NO-KEYFRAME IDENTITY" describe block,
 // shim-bake.test.mjs tests (a)/(b)/(c)/(i), and overlay-filter.test.mjs tests
 // (p)/(q) — so it is deliberately not restated here.
-import { test, describe } from 'node:test'
+import { test, describe, after } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { randomBytes } from 'node:crypto'
 import { geometryAt } from '@bycrux/timeline-core'
-import { generateShim } from '../bundle.js'
-import { collectPuppeteerSegments } from '../render.js'
+import { generateShim, bundleComponent, cleanupBundle } from '../bundle.js'
+import { collectPuppeteerSegments, overlayBakeInputs } from '../render.js'
 
 // ---------------------------------------------------------------------------
 // 1. Transform string parity
@@ -296,4 +300,70 @@ describe('T4.1: render clock vs preview clock agree up to the documented half-fr
       }
     })
   }
+})
+
+// ---------------------------------------------------------------------------
+// 3. The per-axis fallback, through the export's real spec-to-bake wiring
+//
+// Everything above hands generateShim a hand-built bake object. The one the
+// export bakes is built in three steps: collectPuppeteerSegments makes the
+// spec, overlayBakeInputs turns it into bundleComponent's arguments, and
+// bundleComponent builds the bake object. Each used to default
+// `scaleX`/`scaleY` to `scale`. geometryAt reads a PRESENT scaleX as authored,
+// ahead of the animated `scale`, so an overlay keyframing only `scale` baked
+// frozen at its static size while the preview animated it.
+// ---------------------------------------------------------------------------
+
+describe('the export bakes what the preview draws, through collectPuppeteerSegments and bundleComponent', () => {
+  const FPS = 30
+  // esbuild has to resolve the component, so it needs a file on disk.
+  const component = join(tmpdir(), `montaj-parity-${randomBytes(6).toString('hex')}.jsx`)
+  writeFileSync(component, 'export default function Ov() { return <div>ov</div> }\n')
+  after(() => rmSync(component, { force: true }))
+
+  /** The preview's item, and the bake the export builds for it. */
+  async function bakeFor(fields) {
+    const item = { id: 'ov', type: 'overlay', src: component, start: 0, end: 2, ...fields }
+    const [spec] = collectPuppeteerSegments({ tracks: [[], [item]], settings: { fps: FPS } }, FPS, 1080, 1920, '/tmp/seg')
+    const { workDir } = await bundleComponent({
+      componentPath: spec.componentPath, props: spec.props, fps: FPS,
+      durationFrames: spec.frameCount, width: 1080, height: 1920,
+      ...overlayBakeInputs(spec),
+    })
+    try {
+      return { item, bakeStyle: renderBakeStyleFn(readFileSync(join(workDir, 'shim.jsx'), 'utf8')) }
+    } finally {
+      cleanupBundle(workDir)
+    }
+  }
+
+  const assertParity = (item, bakeStyle) => {
+    for (const frame of [0, 15, 30, 45, 60]) {
+      const want = previewStyle(geometryAt(item, 'overlay', frame / FPS))
+      assert.equal(bakeStyle(frame).transform, want.transform, `frame=${frame}`)
+    }
+  }
+
+  test('an overlay keyframing only `scale` animates in the bake as it does in the preview', async () => {
+    const { item, bakeStyle } = await bakeFor({
+      scale: 1,
+      keyframes: [{ prop: 'scale', points: [{ t: 0, value: 0.5 }, { t: 2, value: 1.5 }] }],
+    })
+    assertParity(item, bakeStyle)
+    assert.match(bakeStyle(0).transform, /scale\(0\.5, 0\.5\)$/)
+    assert.match(bakeStyle(60).transform, /scale\(1\.5, 1\.5\)$/)
+  })
+
+  test('an authored scaleX/scaleY still wins over a `scale` curve, as in the preview', async () => {
+    const { item, bakeStyle } = await bakeFor({
+      scale: 1, scaleX: 1.2, scaleY: 0.4,
+      keyframes: [
+        { prop: 'scale', points: [{ t: 0, value: 0.5 }, { t: 2, value: 1.5 }] },
+        { prop: 'offsetX', points: [{ t: 0, value: -10 }, { t: 2, value: 10 }] },
+      ],
+    })
+    assertParity(item, bakeStyle)
+    assert.match(bakeStyle(0).transform, /scale\(1\.2, 0\.4\)$/)
+    assert.match(bakeStyle(60).transform, /scale\(1\.2, 0\.4\)$/)
+  })
 })

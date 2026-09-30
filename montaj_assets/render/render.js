@@ -643,17 +643,7 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
       durationFrames: spec.frameCount,
       width:          renderWidth,
       height:         renderHeight,
-      offsetX:        spec.offsetX     ?? 0,
-      offsetY:        spec.offsetY     ?? 0,
-      scale:          spec.scale       ?? 1,
-      // Per-axis siblings, resolved with the same `?? scale ?? 1` chain the
-      // timeline-core resolver uses, so a legacy uniform item forwards three
-      // identical numbers and bakes exactly what it always baked.
-      scaleX:         spec.scaleX ?? spec.scale ?? 1,
-      scaleY:         spec.scaleY ?? spec.scale ?? 1,
-      rotation:       spec.rotation    ?? 0,
-      opacity:        spec.opacity     ?? 1,
-      keyframes:      spec.keyframes   ?? null,
+      ...overlayBakeInputs(spec),
       googleFonts:    spec.googleFonts ?? [],
       fontsBaseDir:   MONTAJ_FONTS_DIR,
       projectDir,
@@ -690,9 +680,10 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
       // from `geometryFor(ov, 'overlay')` read off THIS object, and that
       // resolver reads `scaleX`/`scaleY` before falling back to `scale`. Miss
       // these two lines and a non-uniform overlay renders as a uniform box
-      // while the preview shows it stretched.
-      rSeg.scaleX    = spec.scaleX ?? spec.scale ?? 1
-      rSeg.scaleY    = spec.scaleY ?? spec.scale ?? 1
+      // while the preview shows it stretched. Carried as authored (undefined
+      // when absent), never defaulted: geometryFor resolves `?? scale ?? 1`.
+      rSeg.scaleX    = spec.scaleX
+      rSeg.scaleY    = spec.scaleY
       // rotation must be restated here too: these rSeg objects flow BY REFERENCE
       // through segment-plan.js's `overlays` array (built via activeIn() over
       // puppeteerSegs, preserving object identity) into buildOverlayFilterParts,
@@ -805,6 +796,29 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
   // serve's job.result) still sees the same thing it always has, and the SDR
   // sibling follows on line 2.
   process.stdout.write(exportPlan.outputs.join('\n') + '\n')
+}
+
+/**
+ * The geometry `render()` hands bundleComponent for one overlay spec, which
+ * generateShim bakes into the capture when the spec carries `keyframes` (and
+ * ignores otherwise; see the call site). Exported so a test runs the real
+ * wiring, spec to bake, instead of a transcription of it.
+ */
+export function overlayBakeInputs(spec) {
+  return {
+    offsetX:   spec.offsetX   ?? 0,
+    offsetY:   spec.offsetY   ?? 0,
+    scale:     spec.scale     ?? 1,
+    // Per-axis values as AUTHORED, undefined when absent, never defaulted to
+    // `scale`: geometryAt treats a present scaleX/scaleY as authored and reads it
+    // ahead of the animated `scale`, so a default here froze an overlay that
+    // keyframes only `scale`. The bake resolves `?? scale ?? 1` itself.
+    scaleX:    spec.scaleX,
+    scaleY:    spec.scaleY,
+    rotation:  spec.rotation  ?? 0,
+    opacity:   spec.opacity   ?? 1,
+    keyframes: spec.keyframes ?? null,
+  }
 }
 
 /**
@@ -1180,13 +1194,14 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
           offsetX:       item.offsetX ?? 0,
           offsetY:       item.offsetY ?? 0,
           scale:         item.scale   ?? 1,
-          // Per-axis siblings beside `scale`, never instead of it: everything
-          // downstream of this spec (bundleComponent's bake, the rSeg
-          // descriptor, buildOverlayFilterParts) resolves an axis as
-          // `scaleX ?? scale ?? 1`, so a legacy uniform item carries three
-          // identical numbers and takes the path it always took.
-          scaleX:        item.scaleX ?? item.scale ?? 1,
-          scaleY:        item.scaleY ?? item.scale ?? 1,
+          // Per-axis siblings beside `scale`, never instead of it, and only as
+          // AUTHORED (undefined when absent): everything downstream of this
+          // spec (bundleComponent's bake, the rSeg descriptor,
+          // buildOverlayFilterParts) resolves an axis as `scaleX ?? scale ?? 1`
+          // itself. A default stamped here made every overlay look per-axis, and
+          // geometryAt then froze one that keyframes only `scale`.
+          scaleX:        item.scaleX,
+          scaleY:        item.scaleY,
           rotation:      item.rotation ?? 0,
           opacity:       item.opacity ?? 1,
           opaque:        item.opaque  ?? false,
