@@ -1846,8 +1846,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   // Tagged, the composite is bit-exact to a bt709 layer and images convert
   // correctly; overlay captures convert in their own scale step
   // (buildOverlayFilterParts' captureToBt709). The HDR canvas is left as it
-  // was, so the HLG master stays byte-identical. Pinned by
-  // composite-matrix.integration.test.mjs.
+  // was, so the HLG master stays byte-identical; its RANGE is pinned at the
+  // encoder instead (Step 6). Pinned by composite-matrix.integration.test.mjs.
   inputs.push('-f', 'lavfi', '-i',
     `color=black:size=${vw}x${vh}:rate=${fps}:duration=${duration}`)
   const canvasTag = isHdr(projectColorSpace) ? '' : `,${spec.setparams}:range=tv`
@@ -2151,6 +2151,21 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
     ...audioArgs,
     '-c:v', spec.encoder, ...spec.encoderArgs, '-pix_fmt', spec.outputPixFmt,
     ...spec.outputColorArgs,
+    // HDR segments are pinned LIMITED range here, at the encoder. compose.js
+    // joins segments with `-c:v copy` and the joined mp4 keeps only the FIRST
+    // segment's parameter sets, so one segment's range flag is the whole
+    // film's. The HDR canvas is untagged, and a range tag on it would not hold
+    // anyway: the 10-bit canvas reaches `overlay=format=yuv420` through an
+    // inserted scaler that is free to change range. So each segment took the
+    // range of the layers it composited, full for a clip normalized from a
+    // full-range source (an iPhone screen recording). One at 0 s flagged a
+    // film full range over limited samples: every player lifted the blacks
+    // and dimmed the whites of every other segment, SDR-origin clips worst.
+    // Pinned here, ffmpeg converts a full-range layer to limited instead.
+    // Measured: a segment with only limited layers decodes byte-identical.
+    // SDR is already limited via its canvas tag (Step 1). Pinned by
+    // hdr-segment-range.integration.test.mjs.
+    ...(isHdr(projectColorSpace) ? ['-color_range', 'tv'] : []),
     // A Dolby Vision source (e.g. an iPhone HDR clip) carries a DV RPU, and
     // nothing upstream strips it: its side data propagates through the filter
     // graph into libx265, which re-emits the RPU in-band (HEVC NAL type 62), and
