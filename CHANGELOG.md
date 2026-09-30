@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Fixed (editor): shortcut labels show Ctrl, Alt and Shift on Windows and Linux.** The command palette, the tooltips and the Controls list showed ⌘, ⌥ and ⇧ (or "⌘/Ctrl") everywhere. They now show the platform's own keys; Mac is unchanged. See `montaj_assets/editor/CHANGELOG.md`.
+- **Fixed: a step's "unknown field(s)" error has no em dash.**
 
 ## v5.16.1
 

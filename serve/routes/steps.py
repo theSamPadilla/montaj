@@ -179,7 +179,7 @@ def validate_params(schema: dict, body: dict) -> None:
     if unknown:
         allowed = sorted(p["name"] for p in schema.get("params", []))
         errors.append(
-            f"unknown field(s): {', '.join(unknown)} — this step accepts "
+            f"unknown field(s): {', '.join(unknown)}. This step accepts "
             f"{allowed} plus input/inputs/out. "
             f"(A trim window must be embedded in a trim-spec .json passed as 'input', "
             f"not sent as a 'keeps' field.)"

@@ -96,6 +96,14 @@ class TestValidateParamsUnknownFields:
         assert exc_info.value.status_code == 422
         assert "keeps" in exc_info.value.detail["message"]
 
+    def test_unknown_field_message_has_no_em_dash(self):
+        # POSTLAUNCH 20.2: this text reaches agents through the app's run_step.
+        with pytest.raises(HTTPException) as exc:
+            validate_params(self.SCHEMA, {"input": "/a.mp4", "keeps": "[[1, 2]]"})
+        message = exc.value.detail["message"]
+        assert "\u2014" not in message
+        assert message.startswith("unknown field(s): keeps. This step accepts ")
+
     def test_multiple_unknown_fields_listed(self):
         with pytest.raises(HTTPException) as exc_info:
             validate_params(self.SCHEMA, {"keeps": [[0, 1]], "language": "es"})
