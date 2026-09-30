@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Video editor
+
+- **Changed: selecting a caption keeps the playhead when it is already inside the caption.** A timeline caption click and a captions-list row click used to jump the playhead to the caption's start (plus half a frame) every time. They now jump only when the playhead is outside the caption. "Inside" is the on-screen rule: the frame-snapped playhead with `start <= t < end`, so at exactly `end` the jump still fires. Clip and overlay clicks still seek to the click point. The shared test is `playheadInside` in `video/captionSeek.ts`. (`video/captionSeek.ts`, `video/timeline/canvas/pointer-machine.ts`, `video/CaptionListPanel.tsx`, `video/__tests__/captionSeek.test.ts`, `video/timeline/canvas/__tests__/pointer-machine.test.ts`, `video/CaptionListPanel.test.tsx`)
+
 ## 1.7.0
 
 ### Both editors

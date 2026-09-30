@@ -17,6 +17,7 @@ import { EditableSegment } from './timeline/EditableSegment'
 import { formatTime } from './timeline/utils'
 import { NumberField, Slider, stepValue, SwatchInput } from '../ui'
 import { groupCaptionLanes, laneOf } from './captionLanes'
+import { playheadInside } from './captionSeek'
 import { FontFamilyPicker, findFontOption } from '../text/FontPicker'
 import CaptionStyleGallery from './CaptionStyleGallery'
 import TabNav from './panels/TabNav'
@@ -226,7 +227,9 @@ export interface CaptionListPanelProps {
   generateCaptionsDisabledReason?: string
   fps: number
   /** Imperative seek target for a row click (see the half-frame comment
-   *  below) — separate from `currentTime`, which only drives the highlight. */
+   *  below), and where that click reads the playhead to skip the seek when
+   *  it is already inside the caption — separate from `currentTime`, which
+   *  only drives the highlight. */
   clock: PlaybackClock
   /** Phase 6 wires the canvas double-click into this; scrolls the target row
    *  into view and focuses its `EditableSegment` when `nonce` changes. */
@@ -439,7 +442,7 @@ function CaptionListPanelBody({
     el.querySelector<HTMLElement>('[contenteditable="true"]')?.focus()
   }, [editFocusId, search, rowFilter, segs, tab, setTab])
 
-  function handleRowClick(segId: string | undefined, start: number) {
+  function handleRowClick(segId: string | undefined, start: number, end: number) {
     if (!segId) return
     onSelectCaption(segId)
     // `CaptionPreview` snaps the clock to the frame grid (`round(t*fps)/fps`)
@@ -453,7 +456,13 @@ function CaptionListPanelBody({
     // explicit `0` through untouched (falsy, but not nullish) — and
     // `0.5 / 0` is `Infinity`, which parks the playhead at `totalDuration`
     // instead of inside the segment. Guarded here too.
+    //
+    // No seek at all when the playhead is already inside the caption
+    // (frame-snapped, half-open, the on-screen rule): it is on screen, and
+    // jumping to its start would only lose the operator's place. Same rule
+    // as the timeline's caption click (pointer-machine.ts).
     const safeFps = Number.isFinite(fps) && fps > 0 ? fps : 30
+    if (playheadInside({ start, end }, clock.get(), safeFps)) return
     clock.set(start + 0.5 / safeFps)
   }
 
@@ -1011,7 +1020,7 @@ function CaptionListPanelBody({
                       if (el) rowRefs.current.set(seg.id, el)
                       else rowRefs.current.delete(seg.id)
                     }}
-                    onClick={() => handleRowClick(seg.id, seg.start)}
+                    onClick={() => handleRowClick(seg.id, seg.start, seg.end)}
                     // Every segment reads as its own card: a solid surface fill
                     // plus a visible border always, so rows don't melt into the
                     // panel. Accent (indigo-500 == --editor-accent #6366f1) is

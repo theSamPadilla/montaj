@@ -28,8 +28,9 @@
  *   unsnapped; an additive click, or a click on an already-selected clip, does
  *   not (VisualTrackRow.tsx's `if (!additive && !isSel)`). Audio bars never
  *   seek on click — AudioTrackRow has no such line. A caption seeks too, but
- *   to its own start plus half a frame rather than to the clicked time; the
- *   reasoning is at the seek itself, in `pointerUp`.
+ *   to its own start plus half a frame rather than to the clicked time, and
+ *   not at all when the playhead is already inside it; the reasoning is at
+ *   the seek itself, in `pointerUp`.
  * - **Additive means shift OR meta OR ctrl**, and the resulting selection is
  *   computed by `toggleSelection`, which the host still owns: the machine emits
  *   `{type:'select', id, additive}` so Timeline's existing `handleSelectItem`
@@ -58,6 +59,7 @@ import type { AudioTrack, CaptionSegment, VisualItem } from '../../../schema'
 import type { Project, TimelinePin } from '../../../types'
 import { reflowMagneticLanes } from '../../audioMagnet'
 import { laneOf, normalizeCaptionLanes, resolveDropLane, sameLaneNeighbours } from '../../captionLanes'
+import { playheadInside } from '../../captionSeek'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { canKeyframe, enableKeyframing, moveKeyframe, setKeyframe, transformProps, valueAt } from '../../keyframeOps'
 import { moveMarker } from '../markers'
@@ -121,7 +123,8 @@ export interface PointerContext {
   /** Content duration plus the timeline's drag headroom. */
   totalDuration: number
   rippleMode: boolean
-  /** Where the playhead is, so item gestures can snap to it. */
+  /** Where the playhead is, so item gestures can snap to it, and so a caption
+   *  click can skip its seek when the playhead is already inside it. */
   playheadTime: number
   /** The project's frame rate. Needed for exactly one thing: a click on a
    *  caption seeks half a frame INTO the segment rather than to its start —
@@ -1845,8 +1848,15 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
             // explicit `0` (falsy, but not nullish) through untouched — and
             // `0.5 / 0` is `Infinity`, which the clamp below parks at
             // `totalDuration` instead of inside the segment. Guarded here too.
+            //
+            // No seek at all when the playhead is already inside the caption
+            // (frame-snapped, half-open, the on-screen rule): it is on screen
+            // with its handles, and jumping to its start would only lose the
+            // operator's place.
             const fps = Number.isFinite(ctx.fps) && ctx.fps > 0 ? ctx.fps : 30
-            effects.push({ type: 'seek', time: clamp(pressed.segment.start + 0.5 / fps, 0, ctx.totalDuration) })
+            if (!playheadInside(pressed.segment, ctx.playheadTime, fps)) {
+              effects.push({ type: 'seek', time: clamp(pressed.segment.start + 0.5 / fps, 0, ctx.totalDuration) })
+            }
           }
         } else if (isEmptyHit(pressed)) {
           // A click on empty track area that never became a marquee: seek and

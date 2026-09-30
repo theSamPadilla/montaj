@@ -22,8 +22,8 @@ function makeProject(style: Captions['style'], segments: CaptionSegment[], extra
   return { id: 'p1', captions: { style, segments, ...extra } } as unknown as Project
 }
 
-function makeClock(): PlaybackClock {
-  return { get: () => 0, set: vi.fn(), subscribe: () => () => {} }
+function makeClock(playheadTime = 0): PlaybackClock {
+  return { get: () => playheadTime, set: vi.fn(), subscribe: () => () => {} }
 }
 
 const THREE_SEGS: CaptionSegment[] = [
@@ -52,6 +52,8 @@ function renderPanel(opts: {
   fps?: number
   editFocusId?: CaptionListPanelProps['editFocusId']
   withRegenerate?: boolean
+  /** What `clock.get()` returns: where the playhead is. */
+  playheadTime?: number
 } = {}) {
   const {
     style = 'karaoke',
@@ -62,10 +64,11 @@ function renderPanel(opts: {
     fps = 30,
     editFocusId = null,
     withRegenerate = true,
+    playheadTime = 0,
   } = opts
 
   const project = makeProject(style, segments, extra)
-  const clock = makeClock()
+  const clock = makeClock(playheadTime)
   const onSelectCaption = vi.fn()
   const onCaptionSegmentChange = vi.fn()
   const onCaptionEdit = vi.fn()
@@ -240,6 +243,28 @@ describe('CaptionListPanel row interactions', () => {
     const { clock, onSelectCaption } = renderPanel({ fps: 30 })
     fireEvent.click(screen.getByText('goodbye now'))
     expect(onSelectCaption).toHaveBeenCalledWith('cap-1')
+    expect(clock.set).toHaveBeenCalledWith(2 + 0.5 / 30)
+  })
+
+  // cap-1 spans 2s–4s. The jump exists so the preview shows the caption; when
+  // it is already on screen the jump only loses the operator's place.
+  it('a row click keeps the playhead when it is already inside the caption', () => {
+    const { clock, onSelectCaption } = renderPanel({ fps: 30, playheadTime: 3 })
+    fireEvent.click(screen.getByText('goodbye now'))
+    expect(onSelectCaption).toHaveBeenCalledWith('cap-1')
+    expect(clock.set).not.toHaveBeenCalled()
+  })
+
+  it('a row click still seeks half a frame in when the playhead is outside the caption', () => {
+    const { clock, onSelectCaption } = renderPanel({ fps: 30, playheadTime: 5 })
+    fireEvent.click(screen.getByText('goodbye now'))
+    expect(onSelectCaption).toHaveBeenCalledWith('cap-1')
+    expect(clock.set).toHaveBeenCalledWith(2 + 0.5 / 30)
+  })
+
+  it('a row click seeks when the playhead sits exactly at the caption end, where it is not on screen', () => {
+    const { clock } = renderPanel({ fps: 30, playheadTime: 4 })
+    fireEvent.click(screen.getByText('goodbye now'))
     expect(clock.set).toHaveBeenCalledWith(2 + 0.5 / 30)
   })
 
@@ -642,7 +667,8 @@ describe('CaptionListPanel lanes (Phase 5)', () => {
   })
 
   it('text edit, delete, and row-click-to-select still commit through the existing channels for a row-2 (lane 1) caption', () => {
-    const { onCaptionSegmentChange, onCaptionSegmentDelete, onSelectCaption, clock } = renderPanel({ segments: TWO_LANE_SEGS })
+    // Playhead at 5s, outside r2-a (0s–2s), so the row click still seeks.
+    const { onCaptionSegmentChange, onCaptionSegmentDelete, onSelectCaption, clock } = renderPanel({ segments: TWO_LANE_SEGS, playheadTime: 5 })
 
     // rows[2] is r2-a: Row 2's first caption (Row 1's two captions list first).
     const row2A = screen.getAllByRole('listitem')[2]

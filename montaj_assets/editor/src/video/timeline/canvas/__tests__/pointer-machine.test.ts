@@ -2625,6 +2625,57 @@ describe('caption click — select, and seek half a frame IN', () => {
   })
 })
 
+describe('caption click — keeps the playhead when it is already inside the caption', () => {
+  // s1 spans 3.44s–4.5s. The jump exists so the preview can show the caption;
+  // when it is already on screen the jump only loses the operator's place.
+  it('selects without seeking when the playhead is inside the caption', () => {
+    // 3.8s is x = 380, clear of the playhead grab zone around the press at
+    // x = 400, so the press lands on the caption rather than the playhead.
+    const d = new Driver(captionCtx({ playheadTime: 3.8 }))
+    d.down(S1_BODY.x, S1_BODY.y)
+    const effects = d.up(S1_BODY.x, S1_BODY.y)
+    expect(of(effects, 'select')).toEqual([{ type: 'select', id: 's1', additive: false }])
+    expect(of(effects, 'seek')).toEqual([])
+  })
+
+  it('still seeks half a frame in when the playhead is outside the caption', () => {
+    for (const playheadTime of [1.5, 6]) {
+      const d = new Driver(captionCtx({ playheadTime }))
+      d.down(S1_BODY.x, S1_BODY.y)
+      expect(of(d.up(S1_BODY.x, S1_BODY.y), 'seek')).toEqual([{ type: 'seek', time: 3.44 + 0.5 / CAPTION_FPS }])
+    }
+  })
+
+  it('seeks when the playhead sits exactly at the caption end, where it is not on screen', () => {
+    const d = new Driver(captionCtx({ playheadTime: 4.5 }))
+    d.down(S1_BODY.x, S1_BODY.y)
+    expect(of(d.up(S1_BODY.x, S1_BODY.y), 'seek')).toEqual([{ type: 'seek', time: 3.44 + 0.5 / CAPTION_FPS }])
+  })
+
+  it('seeks when the playhead is past start in raw time but snaps before it', () => {
+    // 3.445 × 30 = 103.35 → frame 103 → 3.4333, before 3.44: not on screen.
+    const d = new Driver(captionCtx({ playheadTime: 3.445 }))
+    d.down(S1_BODY.x, S1_BODY.y)
+    expect(of(d.up(S1_BODY.x, S1_BODY.y), 'seek')).toEqual([{ type: 'seek', time: 3.44 + 0.5 / CAPTION_FPS }])
+  })
+
+  it('leaves clips alone: a clip click seeks to the click point even with the playhead inside the clip', () => {
+    // c0 spans 0s–5s; C0_BODY is t = 2.5.
+    const d = new Driver(makeContext({ playheadTime: 1 }))
+    d.down(C0_BODY.x, C0_BODY.y)
+    expect(of(d.up(C0_BODY.x, C0_BODY.y), 'seek')).toEqual([{ type: 'seek', time: 2.5 }])
+  })
+
+  it('leaves overlays alone: an overlay click seeks to the click point even with the playhead inside it', () => {
+    // o0 spans 2s–4s on track 1; x = 300 is t = 3.
+    const d = new Driver(makeContext({ playheadTime: 3.5 }))
+    d.down(300, OVERLAY_Y)
+    const effects = d.up(300, OVERLAY_Y)
+    expect(of(effects, 'select')).toEqual([{ type: 'select', id: 'o0', additive: false }])
+    expect(of(effects, 'seek')).toEqual([{ type: 'seek', time: 3 }])
+  })
+})
+
 describe('caption body drag — move', () => {
   it('MOVES a caption that was not selected when the drag began', () => {
     // The stale-selection trap. `selectMany` selects the grabbed caption, but
