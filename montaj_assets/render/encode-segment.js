@@ -932,10 +932,19 @@ function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap, budget
 /**
  * The keyframed source crop of a VIDEO (PV55 phase 2), as a chain for the crop
  * slot of buildVideoItemFilterParts: its output is a CONSTANT `width`x`height`
- * frame (the largest rect the item shows, in source pixels, even; or that at
- * 1/S) holding the crop rect at each instant, so the decrease-fit, the colour
+ * frame holding the crop rect at each instant, so the decrease-fit, the colour
  * conversion, the pad and the rotate after it all see one frame size, exactly
- * as they do for a still crop. Past the budget the decrease-fit upscales it.
+ * as they do for a still crop.
+ *
+ * That frame is cut at the size the picture is SHOWN (D1): the largest rect's
+ * fit into the box, even, never above that rect in source pixels (RW x RH,
+ * even). A rect smaller than its box keeps its own pixels and the decrease-fit
+ * upscales it, as it does a still crop. Cut at source size instead, a 4K zoom
+ * resized every frame to 4K and more, then threw most of it away in the
+ * decrease-fit (MEASURED, PV55 D1, ffmpeg 8.1.2: a 4K clip zooming 1x to 2x in
+ * a 1080x1920 box, 1 s at 30 fps, 379 ms / 1.08 GB RSS source-sized against
+ * 243 ms / 498 MB shown-sized; uncropped 128 ms / 439 MB). Past the budget the
+ * frame is that at 1/S, and the decrease-fit upscales it.
  *
  * The rect is cover-fitted into that frame, so a key whose pixel aspect is off
  * by validate's 1% tolerance (or by the even rounding) trims a sliver instead
@@ -944,8 +953,9 @@ function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap, budget
  * Returns `{ chain, width, height }`, or `{ hold: reason }` for a rect that is
  * not finite and positive (the caller then holds the crop at the segment start).
  *
- * @param {number} fitW, fitH  the box the decrease-fit fits it into (the PEAK box
- *   when the box itself animates), for the curve tolerance
+ * @param {number} fitW, fitH  the box the decrease-fit fits it into (the PEAK
+ *   unrotated box when the box itself animates): the shown size, and the curve
+ *   tolerance
  */
 function animatedVideoCrop(item, fitW, fitH, timeOffset, duration, onCap, budgetPx = MAX_ANIMATED_CROP_PX) {
   const SW = item.sourceWidth
@@ -961,7 +971,17 @@ function animatedVideoCrop(item, fitW, fitH, timeOffset, duration, onCap, budget
   const RW = Math.max(2, Math.round(maxW / 2) * 2)
   const RH = Math.max(2, Math.round(maxH / 2) * 2)
   const shown = decreaseFitSize(RW, RH, fitW, fitH)
-  const m = movingCropChain(item, SW, SH, RW, RH, sampled, timeOffset, onCap, budgetPx,
+  // D1: the fixed crop is the SHOWN size, which nothing after it enlarges:
+  //  - the head's decrease-fit fits into this same fitW x fitH, so on this size
+  //    it is a no-op (the box is even, one side equals it, the other is inside
+  //    it); it upscales only the RW x RH cap or the 1/S crop, as it always has;
+  //  - fitW x fitH is the PEAK unrotated box (animatedGeometry), and the tail's
+  //    eval=frame scale only shrinks the peak to the current box;
+  //  - the conversion, the cutout grade and the pad never resize, `rotate` turns
+  //    pixels 1:1 into a larger canvas, and overlay composites 1:1.
+  const BW = Math.max(2, Math.min(RW, Math.round(shown.width / 2) * 2))
+  const BH = Math.max(2, Math.min(RH, Math.round(shown.height / 2) * 2))
+  const m = movingCropChain(item, SW, SH, BW, BH, sampled, timeOffset, onCap, budgetPx,
     Math.max(1, shown.width), Math.max(1, shown.height))
   if (m.hold) return m
   if (m.downscaled) warnCropDownscaled('video', item, m, budgetPx)

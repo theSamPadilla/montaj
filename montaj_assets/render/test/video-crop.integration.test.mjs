@@ -90,7 +90,7 @@ const PAN = [lin('cropX', 0, 1 - W916), lin('cropY', 0, 0), lin('cropW', W916, W
 // t0: the centred 9:16 window (218.75..421.25 px, lime | blue). t1: a 64x113.8 px
 // 9:16 window (the same pixel aspect) at 339.2..403.2 px, inside the BLUE stripe,
 // far right of the union's left edge (218 px). The fixed crop's x then lands at
-// ~384 px of the resized union, well past the first frame's clamp (2 px), so a
+// ~341 px of the resized union, well past the first frame's clamp (2 px), so a
 // stale clamp freezes the window near 218 px and reads lime. A window zoomed in
 // at the union's left edge (x ~0) passes under the trap too (MEASURED, PV55 T5).
 // If these numbers ever change, re-prove the test FAILS with a filter moved
@@ -102,26 +102,28 @@ const ZOOM = [lin('cropX', 0.341796875, 0.53), lin('cropY', 0, 0.342), lin('crop
 const TINY = { cropBudgetPx: 64_000 }
 
 /** The chain must really be the branch the test names, or it proves nothing.
- *  Branch only: what sits between the scale and the crop is for the PIXELS to judge. */
+ *  Branch only: what sits between the scale and the crop is for the PIXELS to judge.
+ *  At full resolution the fixed crop is what is SHOWN (D1): the 202 x 360 px
+ *  window's fit into the 180 x 320 box. At 1/S it is smaller still. */
 function assertBranch(item, opts, fixedW, fixedH) {
   const c = chainParts(item, opts).filterParts.find((p) => p.includes('[vid1]'))
   assert.match(c, /eval=frame/, c)
   const m = /crop=(\d+):(\d+):x='[^']*':y='[^']*':exact=1,scale=180:320:force_original_aspect_ratio=decrease,/.exec(c)
   assert.ok(m, c)
   if (fixedW != null) assert.deepEqual([Number(m[1]), Number(m[2])], [fixedW, fixedH], c)
-  else assert.ok(Number(m[1]) < 202 && Number(m[2]) < 360, `expected a 1/S crop: ${c}`)
+  else assert.ok(Number(m[1]) < 180 && Number(m[2]) < 320, `expected a 1/S crop: ${c}`)
 }
 
 test('a keyframed video pan shows the left stripe at t0 and the right stripe after the last key', { timeout: 60_000, ...SKIP }, () => {
   const item = vid(PAN)
-  assertBranch(item, {}, 202, 360)
+  assertBranch(item, {}, 180, 320)
   assert.ok(isRed(probeY(item, 90, 160, 0)), 'centre is red at t0')
   assert.ok(isWhite(probeY(item, 90, 160, 0.6)), 'centre is white after the last key')
 })
 
 test('a keyframed video zoom narrows the window inside one stripe (the stale-clamp guard)', { timeout: 60_000, ...SKIP }, () => {
   const item = vid(ZOOM)
-  assertBranch(item, {}, 202, 360)
+  assertBranch(item, {}, 180, 320)
   assert.ok(isLime(probeY(item, 45, 160, 0)), 'left quarter is lime at t0')
   assert.ok(isBlue(probeY(item, 135, 160, 0)), 'right quarter is blue at t0')
   assert.ok(isBlue(probeY(item, 45, 160, 0.6)), 'left quarter is blue once zoomed')
