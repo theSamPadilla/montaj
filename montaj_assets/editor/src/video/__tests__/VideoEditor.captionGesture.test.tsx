@@ -278,7 +278,7 @@ describe('VideoEditor — captions "Apply to all"', () => {
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
       })
     }
-    return { ...view, onProjectChange, segments, checkbox, undoButton, dragCaption, resizeCaption, recolorCaption, undo }
+    return { ...view, adapter, onProjectChange, segments, checkbox, undoButton, dragCaption, resizeCaption, recolorCaption, undo }
   }
 
   it('is off by default, and nothing is stored until it is used', async () => {
@@ -422,5 +422,129 @@ describe('VideoEditor — captions "Apply to all"', () => {
     await view.dragCaption()
     await waitFor(() => expect(view.segments().map(seg => [seg.offsetX, seg.offsetY])).toEqual([[15, 10], [15, 10], [15, 10]]))
     expect(view.segments().map(seg => seg.color)).toEqual(['#123456', '#123456', '#123456'])
+  })
+
+  // ── Undo after a live-previewed change ─────────────────────────────────────
+  // The Format tab's swatches, slider and number boxes write every
+  // intermediate value into the project as a preview (no save, no undo entry)
+  // and commit once when the gesture ends. One undo must then put back the
+  // value from BEFORE the gesture. It used to put back the previewed value,
+  // which is the value just committed, so undo spent its entry and changed
+  // nothing. Each test also pins what must not change: the preview still lands
+  // live and is not itself an undo step, and the gesture is exactly one step.
+  describe('undo after a live-previewed change', () => {
+    /** The host's latest captions object, track fields and segments together. */
+    const captionsOf = (view: ReturnType<typeof mount>) => {
+      const calls = view.onProjectChange.mock.calls
+      return (calls[calls.length - 1][0] as Project).captions as unknown as Record<string, unknown>
+    }
+
+    it('off: one undo restores the selected caption\'s color', async () => {
+      const view = mount()
+      await waitFor(() => expect(view.checkbox().checked).toBe(false))
+
+      // Select s0, then pick a color and leave the swatch focused.
+      const box = view.container.querySelector('[style*="z-index: 50"]')!.firstElementChild as HTMLElement
+      fireEvent.mouseDown(box, { clientX: 500, clientY: 500 })
+      fireEvent.mouseUp(document)
+      fireEvent.click(view.getByRole('button', { name: 'Format' }))
+      const input = await view.findByLabelText('Selected segment text color')
+      fireEvent.change(input, { target: { value: '#123456' } })
+      // The preview is live, on that caption only, and is not an undo step.
+      await waitFor(() => expect(view.segments().map(seg => seg.color)).toEqual(['#123456', '#00ff00', undefined]))
+      expect(view.undoButton().disabled).toBe(true)
+
+      fireEvent.blur(input, { target: { value: '#123456' } })
+      await waitFor(() => expect(view.undoButton().disabled).toBe(false))
+      expect(view.segments().map(seg => seg.color)).toEqual(['#123456', '#00ff00', undefined])
+
+      await view.undo()
+      await waitFor(() => expect(view.segments()).toEqual(variedCaptions.segments))
+      // Exactly one undo entry for the whole gesture.
+      await waitFor(() => expect(view.undoButton().disabled).toBe(true))
+
+      // And redo brings the pick back.
+      fireEvent.click(view.getByLabelText('Redo'))
+      await waitFor(() => expect(view.segments().map(seg => seg.color)).toEqual(['#123456', '#00ff00', undefined]))
+    })
+
+    // Track-level controls, with nothing selected. `end` is the event that
+    // closes each control's gesture: a blur for a swatch or a number box, a
+    // pointer release for the slider.
+    const blurWith = (value: string) => (input: HTMLElement) => fireEvent.blur(input, { target: { value } })
+    const trackControls = [
+      { name: 'text color', label: 'Caption text color', typed: '#123456', end: blurWith('#123456'), field: 'color', value: '#123456' },
+      { name: 'font size (box)', label: 'Caption font size', typed: '72', end: (input: HTMLElement) => fireEvent.blur(input), field: 'fontsize', value: 72 },
+      { name: 'font size (slider)', label: 'Caption font size slider', typed: '72', end: (input: HTMLElement) => fireEvent.pointerUp(input), field: 'fontsize', value: 72 },
+      { name: 'letter spacing', label: 'Caption letter spacing', typed: '0.2', end: (input: HTMLElement) => fireEvent.blur(input), field: 'letterSpacing', value: '0.2em' },
+      { name: 'line height', label: 'Caption line height', typed: '1.5', end: (input: HTMLElement) => fireEvent.blur(input), field: 'lineHeight', value: 1.5 },
+    ]
+
+    it.each(trackControls)('one undo restores the track $name', async ({ label, typed, end, field, value }) => {
+      const view = mount()
+      await waitFor(() => expect(view.checkbox().checked).toBe(false))
+      fireEvent.click(view.getByRole('button', { name: 'Format' }))
+      const input = await view.findByLabelText(label)
+
+      fireEvent.change(input, { target: { value: typed } })
+      // The preview is live and is not an undo step.
+      await waitFor(() => expect(captionsOf(view)[field]).toBe(value))
+      expect(view.undoButton().disabled).toBe(true)
+
+      end(input)
+      await waitFor(() => expect(view.undoButton().disabled).toBe(false))
+      expect(captionsOf(view)[field]).toBe(value)
+
+      await view.undo()
+      // The fixture sets none of these fields, so "restored" is "absent again".
+      await waitFor(() => expect(captionsOf(view)).toEqual(variedCaptions))
+      expect(captionsOf(view)[field]).toBeUndefined()
+      // Exactly one undo entry for the whole gesture.
+      await waitFor(() => expect(view.undoButton().disabled).toBe(true))
+
+      // And redo brings the change back.
+      fireEvent.click(view.getByLabelText('Redo'))
+      await waitFor(() => expect(captionsOf(view)[field]).toBe(value))
+    })
+
+    it('off: a drag does not wipe a color pick that is still waiting on its blur, and one undo reverts both', async () => {
+      const view = mount()
+      await waitFor(() => expect(view.checkbox().checked).toBe(false))
+
+      // Pick a color and leave the swatch focused: previewed, not yet committed.
+      const box = view.container.querySelector('[style*="z-index: 50"]')!.firstElementChild as HTMLElement
+      fireEvent.mouseDown(box, { clientX: 500, clientY: 500 })
+      fireEvent.mouseUp(document)
+      fireEvent.click(view.getByRole('button', { name: 'Format' }))
+      const input = await view.findByLabelText('Selected segment text color')
+      fireEvent.change(input, { target: { value: '#123456' } })
+      await waitFor(() => expect(view.segments()[0].color).toBe('#123456'))
+
+      // The drag's commit drops the pick's preview, but only after building
+      // its project from what was on screen, so the pick survives it.
+      await view.dragCaption()
+      await waitFor(() => expect(view.segments()[0]).toMatchObject({ id: 's0', offsetX: 15, offsetY: 10, color: '#123456' }))
+      expect(view.segments()[1]).toEqual(variedCaptions.segments[1])
+      expect(view.segments()[2]).toEqual(variedCaptions.segments[2])
+
+      // The drag's undo entry is the project from before the pick.
+      await view.undo()
+      await waitFor(() => expect(view.segments()).toEqual(variedCaptions.segments))
+    })
+
+    it('a gesture that changes nothing commits nothing: no undo entry and no save', async () => {
+      const view = mount()
+      await waitFor(() => expect(view.checkbox().checked).toBe(false))
+      fireEvent.click(view.getByRole('button', { name: 'Format' }))
+
+      fireEvent.blur(await view.findByLabelText('Caption font size'))
+      fireEvent.pointerUp(view.getByLabelText('Caption font size slider'))
+      fireEvent.blur(view.getByLabelText('Caption letter spacing'))
+      fireEvent.blur(view.getByLabelText('Caption line height'))
+
+      expect(view.undoButton().disabled).toBe(true)
+      expect(view.adapter.saveProject).not.toHaveBeenCalled()
+      expect(captionsOf(view)).toEqual(variedCaptions)
+    })
   })
 })

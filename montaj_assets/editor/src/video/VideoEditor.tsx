@@ -1723,16 +1723,45 @@ function ReviewSurface<P extends Project>({
     commitAudioChange()
   }
 
-  // Commit a per-segment caption change (preview drag → offsetX/offsetY/scale).
+  // Land a finished caption edit: `p` is the WHOLE project the caller wants,
+  // and it becomes one undo step plus one queued save. Shared by the captions
+  // panel's whole-project commits (`onCaptionEdit`: font size, track colors,
+  // spacing, line height, font, case, alignment, style, "Remove all") and the
+  // one-segment commits below (`handleCaptionSegmentChange`).
+  //
+  // The discard is load-bearing. The panel's swatches, slider and number boxes
+  // preview every intermediate value through the transient channel
+  // (`handleProjectChange`), and `sync.mutate` records whatever the project is
+  // at that moment as its undo snapshot. A bare mutate after a preview
+  // therefore snapshots the PREVIEWED project, which already holds the value
+  // being committed, so undo spends its entry and changes nothing (measured:
+  // the tests for it fail). Dropping the preview first puts the project back to
+  // where the gesture began, and the one mutate then records THAT. Both state
+  // updates land in the same event, so nothing flashes.
+  //
+  // Dropping the preview loses nothing, because `p` was built from the project
+  // that was on screen, preview included, BEFORE the discard: the caller hands
+  // over its result, not a patch to re-apply to whatever is left. That is also
+  // why a preview drag may come through here while a color pick is still
+  // waiting on its blur. With no preview in progress the discard is a no-op
+  // and this is a plain mutate.
+  const commitCaptionProject = useCallback((p: Project) => {
+    syncDiscardTransient()
+    void syncMutate(() => p as P)
+  }, [syncMutate, syncDiscardTransient])
+
+  // Commit a per-segment caption change (preview drag → offsetX/offsetY/scale,
+  // the panel's text edits and the selected segment's color swatch).
   // Routed through `makeCaptionEdit` so there is exactly one project-mutation
   // path for caption edits — it addresses the segment by id and leaves the
-  // fields the patch omits alone — and through `sync.mutate` so a finished drag
-  // lands as one undo step plus a queued save, same as a timeline caption edit.
+  // fields the patch omits alone — and through `commitCaptionProject` so a
+  // finished gesture lands as one undo step plus a queued save, same as a
+  // timeline caption edit.
   // Only ONE of makeCaptionEdit's two callbacks is supplied: both are invoked
   // with the same updated project, so passing both would mutate twice.
   const handleCaptionSegmentChange = useCallback((segmentId: string, patch: CaptionEditPatch) => {
-    makeCaptionEdit(segmentId, syncProjectRef.current, (p) => void syncMutate(() => p as P))(patch)
-  }, [syncProjectRef, syncMutate])
+    makeCaptionEdit(segmentId, syncProjectRef.current, commitCaptionProject)(patch)
+  }, [syncProjectRef, commitCaptionProject])
 
   // The segment-wide variant, for "Apply to all": a preview drag (offsetX/
   // offsetY), a corner resize (scale) or the selected segment's text color
@@ -1751,6 +1780,11 @@ function ReviewSurface<P extends Project>({
   // state updates land in the same event, so nothing flashes. A drag or resize
   // previews inside the preview, never in the project, so it discards nothing;
   // it must not, or it would wipe a color pick still waiting on its blur.
+  //
+  // Unlike `commitCaptionProject`, the discard here comes BEFORE the project
+  // is built, not after: `makeCaptionEditAll` is a no-op when every segment
+  // already holds the values, which after a color preview they all do, so it
+  // has to compare against the project from before the pick.
   const handleCaptionAllSegmentsChange = useCallback((patch: CaptionEditAllPatch) => {
     if (patch.color !== undefined) syncDiscardTransient()
     makeCaptionEditAll(syncProjectRef.current, (p) => void syncMutate(() => p as P))(patch)
@@ -2561,7 +2595,7 @@ function ReviewSurface<P extends Project>({
       applyToAll={captionApplyToAll}
       onApplyToAllChange={setCaptionApplyToAll}
       onCaptionAllSegmentsChange={handleCaptionAllSegmentsChange}
-      onCaptionEdit={(p) => void sync.mutate(() => p as P)}
+      onCaptionEdit={commitCaptionProject}
       onProjectChange={handleProjectChange}
       onCaptionSegmentDelete={handleCaptionSegmentDelete}
       onRegenerateCaptions={handleRegenerateCaptions}

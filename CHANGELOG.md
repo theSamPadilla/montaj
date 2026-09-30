@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (editor): undo restores a caption's color and format after a live-previewed change.** Picking a text color, dragging the font size slider or typing a font size, letter spacing or line height in the captions Format tab, then pressing undo, used to change nothing. One undo now returns to the value from before the change. See `montaj_assets/editor/CHANGELOG.md`.
+
 ## v5.16.0
 
 - **Added (editor): an "Apply to all" checkbox in the captions panel.** On, a caption move, resize or text color change lands on every caption at once, as one undo step. Off by default and remembered per browser. See `montaj_assets/editor/CHANGELOG.md`.
