@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.14.0
+
 - **Added: overlay listings return an overlay's own settings from its `<name>.json`.** `durationSeconds`, `fps`, `width`, `height`, `googleFonts`, `opaque` and `defaults.props` are passed through when present and of the right type; wrong-typed fields are ignored.
 - **Changed: `remove_bg` runs RVM on onnxruntime (CPU) instead of torch.** torch cannot ship inside an app, and it is what kept background removal out of the Montaj app. It uses RVM's official ONNX export of the same mobilenetv3 model. Measured on two clips (a 4K HLG take and a 576x1024 clip), every pixel matches the torch CPU output within 0.6% of full scale. At 4K it is 1.7x faster than torch on the CPU (126 s against 219 s) in about a third of the memory (3.2 GB against 9.1 GB). Against torch on Apple GPUs (MPS, the old macOS default) it is about 1.6x slower (79 s at 4K). There is no GPU path: CoreML produced wrong mattes, so it is CPU only on every OS.
 - **Added: `remove_bg --max-height N`.** It scales the cutout down during decode so its display height is at most N, a positive even integer. It never scales up, and it respects rotation. Without it the output is full size as before. `--downsample` now defaults to 0.5 everywhere; the automatic default by RAM or VRAM (0.25 to 0.5 on Apple GPUs and CUDA) is gone.
