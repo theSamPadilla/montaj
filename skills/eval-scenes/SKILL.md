@@ -39,7 +39,7 @@ Evaluate each clip on 9 dimensions, scored 1-5. **Pass/fail thresholds vary by d
 
 ## The evaluation prompt
 
-Call `analyze_media` with the clip and this prompt template. Substitute `{prompt}` and `{specs}` before sending.
+Run the `analyze_media` step with the clip and this prompt template. Substitute `{prompt}` and `{specs}` before sending.
 
 ```
 analyze_media \

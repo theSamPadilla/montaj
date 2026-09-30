@@ -5,10 +5,10 @@ Called by mcp/server.js at startup:
     python3 cli/mcp_schema.py   →  JSON array of tool definitions
 
 Each tool has:
-  name         — underscore-joined command path, e.g. "render", "workflow_list"
+  name         : underscore-joined command path, e.g. "render"
   description  — from the argparse parser description
   inputSchema  — JSON Schema for MCP callers
-  _cli_tokens  — the CLI subcommand tokens, e.g. ["render"] or ["workflow", "list"]
+  _cli_tokens  : the CLI subcommand tokens, e.g. ["render"]
   _positionals — ordered list of positional arg dests (for CLI arg building)
   _has_json    — bool: whether --json flag is available (added by add_global_flags)
 """
@@ -39,8 +39,9 @@ _SKIP_DESTS = frozenset({'json', 'quiet', 'func', 'help'})
 # new` and `workflow edit` are both authoring commands, not connector
 # operations: `edit` launches $EDITOR on the user's machine, which hangs or
 # does nothing from an AI client with no TTY, and scaffolding a new workflow
-# is an authoring task outside the connector's editing surface. `workflow
-# list` and `workflow run` stay exported.
+# is an authoring task outside the connector's editing surface.
+# Nothing from `workflow` is exported since PL11; this only matters if
+# `workflow` is allowlisted again.
 _EXCLUDED_SUBCOMMANDS = frozenset({
     ('workflow', 'new'),
     ('workflow', 'edit'),

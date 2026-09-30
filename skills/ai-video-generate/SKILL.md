@@ -111,7 +111,7 @@ This makes generation idempotent and incremental:
 
 - **Full approval (first run):** all scenes generate.
 - **Re-approval after editing specific scenes:** only the changed scenes regenerate. Unchanged scenes keep their existing clips.
-- **Selective regeneration (user asks to redo specific scenes):** remove the clip for that scene from `tracks[0].items`, then call `kling_generate --project-id X --scene-id Y`. The step's dedup guard replaces any existing clip for the same sceneId, so you can also just re-run the step — it overwrites.
+- **Selective regeneration (user asks to redo specific scenes):** remove the clip for that scene from `tracks[0].items`, then run the `kling_generate` step with `--project-id X --scene-id Y`. The step's dedup guard replaces any existing clip for the same sceneId, so you can also just re-run the step: it overwrites.
 
 **Never regenerate all scenes when only some changed.** Each Kling call costs credits and takes ~60s. If the user edited scenes 1 and 3, generate only those two. The agent should diff the user's changes against the current storyboard to determine which scenes need regeneration.
 
@@ -134,7 +134,7 @@ When parallel results land out of narrative order, compute each clip's `start`/`
 
 #### Chained continuity
 
-Scene N visually continues N-1. Generate sequentially: after N-1 succeeds, call `snapshot --input <clip.src> --at <clip.outPoint> --out <frame.jpg>` to extract its last frame, then call `kling_generate --first-frame <frame.jpg> ...` for scene N. Slower (no parallelism), but preserves visual continuity at scene boundaries.
+Scene N visually continues N-1. Generate sequentially: after N-1 succeeds, run the `snapshot` step with `--input <clip.src> --at <clip.outPoint> --out <frame.jpg>` to extract its last frame, then run the `kling_generate` step with `--first-frame <frame.jpg> ...` for scene N. Slower (no parallelism), but preserves visual continuity at scene boundaries.
 
 #### Batched (multi-shot)
 

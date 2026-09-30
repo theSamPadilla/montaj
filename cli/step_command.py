@@ -55,8 +55,7 @@ def _add_param(parser, param):
         elif ptype == "enum":
             kw["choices"] = param.get("options")
         # string / path / dict → plain string arg (dict = a JSON string on the CLI)
-        # Forward the schema default so it surfaces in the MCP inputSchema
-        # (mcp_schema introspects argparse) and gets forwarded to the child,
+        # Forward the schema default to the child,
         # exactly as the hand wrappers' Python-level argparse defaults did.
         # Behaviorally inert: the step's own default == this default (guaranteed
         # by the schema↔step conformance test).
@@ -169,7 +168,7 @@ def register_step_command(subparsers, cli_name, step_name=None, quirks=None):
     step_name = step_name or quirks.get("step_name") or cli_name.replace("-", "_")
     schema = load_step_schema(step_name)
 
-    # help= feeds the parent command listing + the MCP tool description; the
+    # help= feeds the parent command listing; the
     # hand wrappers set no argparse `description=`, so neither do we (keeps the
     # subcommand's own --help free of a description block).
     parser = subparsers.add_parser(cli_name, help=schema.get("description"))

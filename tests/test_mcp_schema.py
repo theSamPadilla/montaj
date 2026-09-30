@@ -53,7 +53,6 @@ def test_init_tool_flags_survive_dest_flag_mismatches():
     rebuild the CLI invocation correctly."""
     # `init` is no longer exported (PL11), but the mechanism is general:
     # build its tool entry the way export() builds every tool.
-    import argparse
     from cli.main import register_command
 
     parser = argparse.ArgumentParser(prog="montaj")

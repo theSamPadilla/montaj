@@ -112,11 +112,11 @@ For each `storyboard.imageRefs[i]`:
 
   Example for a corgi character: "A small playful corgi with short legs, a long body, tan and golden fur with a white chest and belly, a fluffy white-tipped tail that curls upward, small pointed ears with tan fronts and white backs, round dark eyes with a friendly alert expression, a small black nose, bold black outlines with flat solid color fills, slightly exaggerated cartoon proportions with an oversized head relative to body."
 
-- If you can't discern enough detail from the image, call `analyze_media --input <path> --prompt "Describe this character in 60-120 words covering: overall appearance, distinguishing features, colors, clothing/surface details, accessories, and art style. Be specific enough that a video generator could reproduce this character consistently across multiple scenes."` and use the output as the anchor.
+- If you can't discern enough detail from the image, run the `analyze_media` step with `--input <path> --prompt "Describe this character in 60-120 words covering: overall appearance, distinguishing features, colors, clothing/surface details, accessories, and art style. Be specific enough that a video generator could reproduce this character consistently across multiple scenes."` and use the output as the anchor.
 - **Do NOT run the `generate_image` step.** Never overwrite the user's uploaded image.
 
 **`source: "text"`** — user typed a description in `anchor`. `refImages` is empty.
-- Your job: call `generate_image --prompt <anchor> --out <path>` and append the result to `refImages`.
+- Your job: run the `generate_image` step with `--prompt <anchor> --out <path>` and append the result to `refImages`.
 - **Keep `anchor` as-is.** It's the user's intent — don't rewrite it.
 
 **Ref images are identity-only, not style.** Do NOT fold `styleAnchor` into `generate_image` prompts. Refs answer *"what does this character/object/place look like"*; Kling applies style at scene-generation time. If the user explicitly wants style-baked refs, raise it in Phase 0 as a clarification — don't decide it silently.

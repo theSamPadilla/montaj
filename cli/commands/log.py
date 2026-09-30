@@ -3,8 +3,7 @@
 
 The native implementation of the `_contract` "log `<message>`" verb
 (skills/_contract/SKILL.md), for callers that reach Montaj through the raw
-CLI or the generated MCP server (cli/mcp_schema.py) rather than through an
-interface skill that already knows how to reach `serve`. skills/native/
+CLI rather than through an interface skill that already knows how to reach `serve`. skills/native/
 SKILL.md documents the identical two-mode split for an assistant driving
 Montaj directly:
 
@@ -21,8 +20,8 @@ inherits it. montaj_assets/mcp/serve-client.js's docstring documents the
 identical problem on the Node/MCP side, solved the same way: a lockfile
 serve writes at startup and removes at shutdown.
 
-On top of the message itself, a JSON result is always printed to stdout so an
-MCP caller (which never sees this process's stderr) can tell what happened:
+On top of the message itself, a JSON result is always printed to stdout so a
+caller that never sees this process's stderr can tell what happened:
 `{"shown": true}` once the UI actually got it, or `{"shown": false, "reason":
 "serve_not_running"}` in CLI mode — the message still goes to stderr in that
 case, unchanged. A 404 from the log endpoint (no project with that id) is
@@ -57,8 +56,8 @@ def handle(args):
     info = lockfile.read()
     if info is None:
         # CLI mode: no live `montaj serve` to post to. The message still goes
-        # to stderr; the JSON result on stdout lets an MCP caller (which
-        # never sees this process's stderr) tell that it wasn't shown.
+        # to stderr; the JSON result on stdout lets a caller that
+        # never sees this process's stderr tell that it wasn't shown.
         print(args.message, file=sys.stderr)
         print(json.dumps({"shown": False, "reason": "serve_not_running"}))
         return

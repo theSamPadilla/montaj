@@ -1,14 +1,4 @@
-"""Golden capture of CLI --help output and MCP schema introspection.
-
-Pins the CURRENT (pre-migration) behavior of the 16 commands the
-consolidation plan is about to touch, so later tasks can diff their output
-against a known-good baseline. A failure here means behavior changed —
-that's either the point of a later task (regenerate deliberately) or a bug
-(fix the code, not the golden).
-
-Regenerate after a deliberate, reviewed change:
-    python -m tests.test_cli_help_goldens --update-goldens
-"""
+"""Golden capture of CLI --help output."""
 import re
 import subprocess
 import sys
@@ -26,6 +16,7 @@ COMMANDS = (
     "generate-image", "generate-music", "generate-voiceover",
     "kling-generate", "analyze-media", "snapshot", "filler",
 )
+
 
 def _capture_help(cmd: str) -> str:
     """stdout of `python -m cli.main <cmd> --help`.
