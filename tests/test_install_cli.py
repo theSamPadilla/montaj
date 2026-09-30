@@ -164,3 +164,62 @@ def test_all_includes_ffmpeg(monkeypatch):
     args = _make_args(component="all")
     install_cmd.handle(args)
     assert "ffmpeg" in called
+
+
+# ---------------------------------------------------------------------------
+# rvm install + remove-bg wrapper (PL2: onnxruntime, no torch)
+# ---------------------------------------------------------------------------
+
+def test_ensure_rvm_installs_extra_and_fetches_only_the_onnx_model(monkeypatch, capsys):
+    import rvm_model
+    run = MagicMock(return_value=MagicMock(returncode=0))
+    ensure = MagicMock(return_value="/x/model.onnx")
+    monkeypatch.setattr(install_cmd.subprocess, "run", run)
+    monkeypatch.setattr(_models, "ensure_model", ensure)
+    assert install_cmd._ensure_rvm() is True
+    assert run.call_args.args[0][-1] == "montaj[rvm]"
+    ensure.assert_called_once_with("rvm", "rvm_mobilenetv3_fp32.onnx", rvm_model.URL, rvm_model.SHA256)
+    out = capsys.readouterr()
+    assert ".pth" not in out.out + out.err
+    assert "torch" not in (out.out + out.err).lower()
+
+
+def test_ensure_rvm_fails_when_the_model_cannot_be_fetched(monkeypatch, capsys):
+    monkeypatch.setattr(install_cmd.subprocess, "run", MagicMock(return_value=MagicMock(returncode=0)))
+    monkeypatch.setattr(_models, "ensure_model", MagicMock(side_effect=RuntimeError("offline")))
+    assert install_cmd._ensure_rvm() is False
+
+
+def test_install_rvm_help_does_not_mention_torch():
+    import argparse
+    install_cmd.register(argparse.ArgumentParser().add_subparsers())
+    sub = next(a for a in install_cmd._parser._subparsers._group_actions[0]._choices_actions if a.dest == "rvm")
+    help_text = sub.help
+    assert "torch" not in help_text.lower()
+
+
+def _remove_bg_step_cmd(monkeypatch, argv):
+    import argparse, subprocess
+    from cli.commands import remove_bg as rb
+    parser = argparse.ArgumentParser()
+    rb.register(parser.add_subparsers())
+    captured = {}
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: captured.update(cmd=cmd) or MagicMock(returncode=0))
+    with pytest.raises(SystemExit):
+        args = parser.parse_args(["remove-bg", *argv])
+        args.func(args)
+    return captured["cmd"]
+
+
+def test_remove_bg_wrapper_builds_a_command_the_step_accepts(monkeypatch):
+    import os, subprocess, sys as _sys
+    cmd = _remove_bg_step_cmd(monkeypatch, ["--input", "a.mp4", "--downsample", "0.75", "--max-height", "720"])
+    for removed in ("--model", "--cpu", "--workers"):
+        assert removed not in cmd
+    assert cmd[cmd.index("--max-height") + 1] == "720"
+    assert cmd[cmd.index("--downsample") + 1] == "0.75"
+    # the step's own argparse must accept it (--help-free dry parse via a stub main)
+    step = cmd[1]
+    probe = subprocess.run([_sys.executable, step, *cmd[2:]], capture_output=True, text=True,
+                           env={**os.environ, "MONTAJ_MODELS_DIR": "/nonexistent"})
+    assert "unrecognized arguments" not in probe.stderr

@@ -46,7 +46,7 @@ montaj install ui
 Optional extras:
 ```bash
 pip install "montaj[connectors]"  # Kling, Gemini, OpenAI API connectors
-pip install "montaj[rvm]"         # background removal (torch + RVM)
+pip install "montaj[rvm]"         # background removal (RVM on onnxruntime, CPU)
 pip install "montaj[demucs]"      # audio stem separation
 montaj install all                # whisper + ui + rvm
 ```

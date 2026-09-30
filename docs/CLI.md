@@ -16,7 +16,7 @@ montaj doctor                              # diagnose what's missing — prints 
 montaj install ui                          # build UI bundles into ~/.cache/montaj/ (brew + pip both need this)
 montaj install whisper                     # whisper-cpp binary + large-v3-turbo-q5_0 model weights
 montaj install ffmpeg                      # pinned static ffmpeg/ffprobe with zscale (libzimg) for HDR
-montaj install rvm                         # torch/torchvision/av (pip) + RVM model weights
+montaj install rvm                         # onnxruntime/av (pip) + RVM ONNX model (~15 MB)
 montaj install connectors                  # pyjwt, requests, google-genai, openai (for API steps)
 montaj credentials                         # interactive setup for API keys (~/.montaj/credentials.json)
 montaj install all                         # everything above, including ffmpeg
@@ -33,7 +33,7 @@ First-run flow is identical for brew and pip: `montaj doctor` first to see what'
 | `whisper` | whisper-cli (via `brew install whisper-cpp` on macOS) + large-v3-turbo-q5_0 model weights | `transcribe`, `rm_fillers`, `rm_nonspeech`, `waveform_trim`, render pipeline |
 | `ui` | npm deps for `render/` and `ui/`; production UI build | `montaj serve`, render engine |
 | `ffmpeg` | pinned static ffmpeg + ffprobe (8.1.2, with libzimg/zscale) into the managed models dir | HDR normalization (`zscale`), all ffmpeg-backed steps, render engine |
-| `rvm` | torch, torchvision, av (pip) + rvm_mobilenetv3 (~15 MB) + rvm_resnet50 (~103 MB) | `remove_bg` |
+| `rvm` | onnxruntime, av, numpy (pip) + rvm_mobilenetv3_fp32.onnx (~15 MB, SHA-256 verified); runs on the CPU | `remove_bg` |
 | `connectors` | pyjwt, requests, google-genai, openai | `kling_generate`, `analyze_media`, `generate_image` |
 
 Credentials are stored in `~/.montaj/credentials.json` (0600 permissions). Three modes:

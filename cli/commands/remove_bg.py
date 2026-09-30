@@ -13,15 +13,8 @@ def register(subparsers):
     group.add_argument("--input", help="Single source video file")
     group.add_argument("--inputs", nargs="+", help="Multiple source video files")
     p.add_argument("--out", help="Output path (only valid with --input)")
-    p.add_argument(
-        "--model",
-        default="rvm_mobilenetv3",
-        choices=["rvm_mobilenetv3", "rvm_resnet50"],
-        help="RVM model variant",
-    )
-    p.add_argument("--cpu", action="store_true", help="Force CPU and parallelize via multiprocessing")
-    p.add_argument("--workers", type=int, help="Worker count for --cpu mode")
     p.add_argument("--downsample", type=float, default=0.5, help="Downsample ratio (0.25–1.0)")
+    p.add_argument("--max-height", type=int, help="Scale the cutout down to at most this display height (even number)")
     p.add_argument("--progress", action="store_true", help="Emit JSON progress lines to stderr")
     p.set_defaults(func=handle)
 
@@ -37,12 +30,9 @@ def handle(args):
     else:
         cmd += ["--inputs"] + args.inputs
 
-    cmd += ["--model", args.model, "--downsample", str(args.downsample)]
-
-    if args.cpu:
-        cmd.append("--cpu")
-    if args.workers is not None:
-        cmd += ["--workers", str(args.workers)]
+    cmd += ["--downsample", str(args.downsample)]
+    if args.max_height is not None:
+        cmd += ["--max-height", str(args.max_height)]
     if args.progress:
         cmd.append("--progress")
 

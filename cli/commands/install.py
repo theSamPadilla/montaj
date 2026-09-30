@@ -24,7 +24,7 @@ def register(subparsers):
                            help=f"Model to download (default: {DEFAULT_WHISPER_MODEL}, multilingual). "
                                 f"The default weight is always added too.")
 
-    sub.add_parser("rvm",    help="torch/torchvision/av + RVM weights")
+    sub.add_parser("rvm",    help="onnxruntime/av + RVM model")
     sub.add_parser("demucs", help="Demucs stem separation + htdemucs model weights")
     sub.add_parser("connectors", help="pyjwt + requests + google-genai for external API steps")
     sub.add_parser("ui",     help="npm deps + UI build")
@@ -155,23 +155,20 @@ def _ensure_demucs() -> bool:
 
 
 def _ensure_rvm() -> bool:
-    print(f"{cyan('→')} installing {bold('rvm')} deps {dim('(torch, torchvision, av)')}\u2026")
+    import rvm_model
+    print(f"{cyan('→')} installing {bold('rvm')} deps {dim('(onnxruntime, av, numpy)')}\u2026")
     r = subprocess.run([sys.executable, "-m", "pip", "install", "montaj[rvm]"])
     if r.returncode != 0:
         print(f"{red('error:')} {dim('pip install montaj[rvm]')} failed", file=sys.stderr)
         return False
     print(f"{green('✓')} rvm deps installed")
-    # Pre-fetch all model weights so there are no lazy downloads at runtime
-    RVM_WEIGHTS = {
-        "rvm_mobilenetv3.pth": "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3.pth",
-        "rvm_resnet50.pth":    "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_resnet50.pth",
-    }
-    for filename, url in RVM_WEIGHTS.items():
-        try:
-            _models.ensure_model("rvm", filename, url, None)
-            print(f"{green('✓')} {dim(filename)}")
-        except Exception as e:
-            print(f"{yellow('warning:')} could not pre-fetch {dim(filename)}: {e}", file=sys.stderr)
+    # remove_bg never downloads, so the pinned model has to be here.
+    try:
+        _models.ensure_model("rvm", rvm_model.FILENAME, rvm_model.URL, rvm_model.SHA256)
+    except (Exception, SystemExit) as e:
+        print(f"{red('error:')} could not fetch {dim(rvm_model.FILENAME)}: {e}", file=sys.stderr)
+        return False
+    print(f"{green('✓')} {dim(rvm_model.FILENAME)}")
     return True
 
 

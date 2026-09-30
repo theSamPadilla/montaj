@@ -40,12 +40,12 @@ montaj materialize-cut --inputs clip0_spec.json clip1_spec.json clip2_spec.json
 # raise to 3 only on machines with 32GB+ RAM and 1080p or smaller footage
 montaj materialize-cut --inputs clip0.MOV clip1.MOV --workers 3
 
-# remove_bg — always use --inputs; GPU processes sequentially, CPU parallelises with workers
+# remove_bg — always use --inputs; runs on the CPU, one clip at a time
 montaj remove-bg --inputs clip0_cut.mp4 clip1_cut.mp4 clip2_cut.mp4
 # → JSON array of {nobg_src, nobg_preview_src} objects
 ```
 
-**`remove_bg` is long-running** (minutes per clip on MPS/GPU). Always run it in the background when using the Agent tool or HTTP API so the agent remains responsive.
+**`remove_bg` is long-running** (minutes per clip, CPU only). Always run it in the background when using the Agent tool or HTTP API so the agent remains responsive.
 
 ## `waveform_trim` native batch
 
