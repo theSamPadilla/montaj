@@ -730,70 +730,36 @@ function isFiniteCrop(c) {
 }
 
 /**
- * The largest frame, in pixels, the eval=frame `scale` in animatedImageCrop may
- * produce. That scale renders the WHOLE union at the deepest zoom's output
- * resolution, so its peak frame is ceil(uw*kMax) x ceil(uh*kMax) however the
- * rest of the chain is built. MEASURED (PV55 T13, ffmpeg 8.1.2): 15062x26846
- * (404 Mpx) rendered, at 4.2 GB RSS; 18992x33724 failed the whole export
- * ("Picture size ... is invalid", ENOMEM), a plain zoom from the 9:16 framing of
- * a 4032x3024 photo to the crop tool's 2% limit.
+ * The largest frame, in pixels, the eval=frame `scale` of a keyframed crop
+ * (movingCropChain: images and video) may produce. That scale renders the WHOLE
+ * union at the deepest zoom's output resolution, so its peak frame is
+ * ceil(uw*kMax) x ceil(uh*kMax) however the rest of the chain is built.
+ * MEASURED (PV55 T13, ffmpeg 8.1.2): 15062x26846 (404 Mpx) rendered, at 4.2 GB
+ * RSS; 18992x33724 failed the whole export ("Picture size ... is invalid",
+ * ENOMEM), a plain zoom from the 9:16 framing of a 4032x3024 photo to the crop
+ * tool's 2% limit.
  *
  * Past it the crop still animates, so the framing always matches the preview:
- * the chain renders at 1/S, S = sqrt(peak / budget), and upscales to the box.
- * Only sharpness gives, mostly at the zoomed-out end (PV55 F9). MEASURED (PV55
+ * the chain renders at 1/S, S = sqrt(peak / budget), and is upscaled to the box
+ * (by its own `scale` for an image, by the decrease-fit for a video). Only
+ * sharpness gives, mostly at the zoomed-out end (PV55 F9). MEASURED (PV55
  * F9, that same zoom held at its deepest for half of 1 s, 1080x1920 box): the
  * peak frame is 6004x10661 at 1/3.80, 0.55 s and ~370 MB RSS, against a still
  * cover fit's 0.32 s and ~166 MB; a 256 Mpx budget took ~760 MB, hence 64 Mpx.
  */
 const MAX_ANIMATED_CROP_PX = 64_000_000
 
-/**
- * The keyframed source crop of an IMAGE (PV55), as a chain whose output is
- * exactly `boxW`x`boxH` rgba: the crop rect at each instant, cover-fitted into
- * the box. Returns null when the item has no crop keyframes, `{ chain }` when it
- * animates, and `{ hold: reason }` when it cannot (size unreadable, or a rect
- * that is not finite and positive): the caller then holds the crop at the
- * segment start and warns with the reason. A zoom past `budgetPx`
- * (MAX_ANIMATED_CROP_PX unless a test injects one) still animates, at 1/S.
- *
- * WHY THIS SHAPE. Each point was measured (PV55 T1, ffmpeg 8.1.2); do not re-derive.
- *   - `crop` evaluates w/h ONCE; only x/y follow `t`. So the size change is done
- *     by `scale` at eval=frame (the source resized so the current rect lands at
- *     the box size), and a FIXED-size `crop` cuts the box out at a moving x/y.
- *   - `crop`'s own iw/ih are frozen at configuration, so x/y use `t` and
- *     literals only, never iw. That is why the display size is needed.
- *   - `crop` clamps x/y against its INPUT LINK's size. Straight after the
- *     eval=frame `scale` that is the current frame. Put ANY filter between them
- *     (`format=rgba` was the one measured) and the link keeps the first frame's
- *     size: a zoom-in silently freezes. A `scale` then `format=rgba` go AFTER
- *     the crop (bare at full resolution, `scale=boxW:boxH` at 1/S; either way it
- *     does the rgba conversion at box size). The zoom pixel tests, at full
- *     resolution and at 1/S, exist to catch exactly this.
- *
- * Not `zoompan`: it rounds its window to whole INPUT pixels (visible stepping on
- * a slow pan unless the source is upscaled first), and it is a frame generator
- * (`d`, `fps`, `on`/`in`) where every other animated step here is a function of `t`.
- *
- * Cost: the static pre-crop to the UNION of the rects shown keeps the per-frame
- * resize to the region the animation visits. A pan at one zoom resizes about
- * what a still cover fit does; a zoom-in resizes the union at its deepest zoom.
- * When that peak frame exceeds `budgetPx`, every size in the chain is divided by
- * S = sqrt(peak / budgetPx): the eval=frame scale uses k/S, the fixed crop is
- * floor(box/S), and a `scale` back up to the box follows it. The framing is the
- * same rect at every instant; only sharpness is lost.
- */
-function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap, budgetPx = MAX_ANIMATED_CROP_PX) {
-  if (!hasCropKeyframes(item)) return null
-  // probedWidth/probedHeight are a test seam here. render.js stamps them on VIDEO items only,
-  // from probeVideoGeometry, which reads a JPEG's STORED size (EXIF ignored). Never stamp them
-  // on an image that way: the animated crop would use the wrong axes on a rotated photo.
-  const dims = item.probedWidth > 0 && item.probedHeight > 0
-    ? { width: item.probedWidth, height: item.probedHeight }
-    : probeImageDisplaySize(item.src)
-  if (!dims) return { hold: 'could not read its size' }
-  const SW = dims.width
-  const SH = dims.height
+const NOT_A_RECT = 'its crop is not a finite, non-empty rect'
 
+/**
+ * Every source-crop rect a keyframed item shows in this segment (PV55), sampled
+ * through the shared `geometryAt` on a uniform grid plus the keys. null when any
+ * of them is not a finite, non-empty rect: text from a hand-written project
+ * must never reach the filter graph (PV55 T13).
+ *
+ * @returns {null | { cropTracks: object[], rects: {x: number, y: number, w: number, h: number}[] }}
+ */
+function sampleCropRects(item, kind, timeOffset, duration) {
   const cropTracks = item.keyframes.filter(
     (tr) => tr && CROP_KEYFRAME_PROPS.includes(tr.prop) && Array.isArray(tr.points) && tr.points.length > 0,
   )
@@ -806,16 +772,69 @@ function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap, budget
       if (local >= 0 && local <= duration) probes.add(local)
     }
   }
-  let x0 = 1, y0 = 1, x1 = 0, y1 = 0, minW = 1, minH = 1, kMax = 0
+  const rects = []
   for (const local of probes) {
-    const c = geometryAt(item, 'image', timeOffset + local).sourceCrop
-    if (!isFiniteCrop(c) || !(c.w > 0) || !(c.h > 0)) return { hold: 'its crop is not a finite, non-empty rect' }
+    const c = geometryAt(item, kind, timeOffset + local).sourceCrop
+    if (!isFiniteCrop(c) || !(c.w > 0) || !(c.h > 0)) return null
+    rects.push(c)
+  }
+  return { cropTracks, rects }
+}
+
+/**
+ * The moving crop at the heart of every keyframed source crop (PV55), shared by
+ * images (animatedImageCrop) and video (animatedVideoCrop): a chain whose output
+ * is a CONSTANT `bw`x`bh` frame showing the crop rect at each instant,
+ * cover-fitted into `boxW`x`boxH` (or into that box at 1/S, past `budgetPx`).
+ * The caller appends only what comes AFTER the fixed crop.
+ *
+ * WHY THIS SHAPE. Each point was measured (PV55 T1, ffmpeg 8.1.2); do not re-derive.
+ *   - `crop` evaluates w/h ONCE; only x/y follow `t`. So the size change is done
+ *     by `scale` at eval=frame (the source resized so the current rect lands at
+ *     the box size), and a FIXED-size `crop` cuts the box out at a moving x/y.
+ *   - `crop`'s own iw/ih are frozen at configuration, so x/y use `t` and
+ *     literals only, never iw. That is why the source size is needed.
+ *   - `crop` clamps x/y against its INPUT LINK's size. Straight after the
+ *     eval=frame `scale` that is the current frame. Put ANY filter between them
+ *     (`format=rgba` was the one measured) and the link keeps the first frame's
+ *     size: a zoom-in silently freezes. Everything else goes AFTER the crop: an
+ *     image's `scale` then `format=rgba` (bare at full resolution, `scale=box`
+ *     at 1/S; either way it does the rgba conversion at box size), a video's
+ *     decrease-fit, colour conversion and pad (the conversion breaks on a
+ *     varying size too; see animatedGeometry). The zoom pixel tests, per kind,
+ *     at full resolution and at 1/S, exist to catch exactly this.
+ *
+ * Not `zoompan`: it rounds its window to whole INPUT pixels (visible stepping on
+ * a slow pan unless the source is upscaled first), and it is a frame generator
+ * (`d`, `fps`, `on`/`in`) where every other animated step here is a function of `t`.
+ *
+ * Cost: the static pre-crop to the UNION of the rects shown keeps the per-frame
+ * resize to the region the animation visits. A pan at one zoom resizes about
+ * what a still cover fit does; a zoom-in resizes the union at its deepest zoom.
+ * When that peak frame exceeds `budgetPx`, every size in the chain is divided by
+ * S = sqrt(peak / budgetPx): the eval=frame scale uses k/S, the fixed crop is
+ * floor(box/S), and the caller scales it back up to the box. The framing is the
+ * same rect at every instant; only sharpness is lost.
+ *
+ * @param {number} SW, SH        the source's display size, pixels
+ * @param {number} boxW, boxH    the size the current rect is cover-fitted into
+ * @param {{cropTracks: object[], rects: object[]}} sampled  sampleCropRects' result
+ * @param {number} shownW, shownH  the size, in OUTPUT pixels, the box finally
+ *   shows at: the curve tolerance is a quarter of one of those pixels
+ * @returns {{ hold: string } | { chain: string, bw: number, bh: number,
+ *   S: number, downscaled: boolean, peakW: number, peakH: number }}
+ */
+function movingCropChain(item, SW, SH, boxW, boxH, sampled, timeOffset, onCap, budgetPx, shownW, shownH) {
+  const { cropTracks, rects } = sampled
+  let x0 = 1, y0 = 1, x1 = 0, y1 = 0, minW = 1, minH = 1, kMax = 0
+  for (const c of rects) {
     kMax = Math.max(kMax, boxW / (c.w * SW), boxH / (c.h * SH))
     x0 = Math.min(x0, c.x); y0 = Math.min(y0, c.y)
     x1 = Math.max(x1, c.x + c.w); y1 = Math.max(y1, c.y + c.h)
     minW = Math.min(minW, c.w); minH = Math.min(minH, c.h)
   }
-  // The union in whole source pixels, origin on even pixels (a JPEG decodes 4:2:0).
+  // The union in whole source pixels, origin on even pixels (a JPEG, and most
+  // video, decodes 4:2:0).
   const ux = Math.max(0, Math.floor((x0 * SW) / 2) * 2)
   const uy = Math.max(0, Math.floor((y0 * SH) / 2) * 2)
   const uw = Math.min(SW, Math.ceil(x1 * SW)) - ux
@@ -830,7 +849,7 @@ function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap, budget
     ? (Math.ceil(Math.sqrt((peakW * peakH) / budgetPx) * 1e6) / 1e6).toFixed(6)
     : null
   const S = sText ? Number(sText) : 1
-  if (!(S < 1e21)) return { hold: 'its crop is not a finite, non-empty rect' }
+  if (!(S < 1e21)) return { hold: NOT_A_RECT }
 
   const base = item.sourceCrop ?? { x: 0, y: 0, w: 1, h: 1 }
   const exprFor = (prop, fallback, unitsPerPixel) => {
@@ -841,14 +860,14 @@ function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap, budget
     if (info.capped) onCap(prop, info)
     return info.expr ?? String(fallback)
   }
-  // A crop-fraction error d moves the picture about d*box/w output pixels, worst
-  // at the deepest zoom (the smallest w, h).
-  const X = exprFor('cropX', base.x, minW / boxW)
-  const Y = exprFor('cropY', base.y, minH / boxH)
-  const W = exprFor('cropW', base.w, minW / boxW)
-  const H = exprFor('cropH', base.h, minH / boxH)
+  // A crop-fraction error d moves the picture about d*shown/w output pixels,
+  // worst at the deepest zoom (the smallest w, h).
+  const X = exprFor('cropX', base.x, minW / shownW)
+  const Y = exprFor('cropY', base.y, minH / shownH)
+  const W = exprFor('cropW', base.w, minW / shownW)
+  const H = exprFor('cropH', base.h, minH / shownH)
 
-  // k: source px -> output px, the cover factor of the current rect into the box.
+  // k: source px -> box px, the cover factor of the current rect into the box.
   // At 1/S it is k/S, and the fixed crop is the box at 1/S: FLOOR, so it always
   // fits inside the resized union (and at least 1 px, or `crop` fails the graph).
   const k = `max(${boxW}/((${W})*${SW}),${boxH}/((${H})*${SH}))`
@@ -858,24 +877,95 @@ function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap, budget
   // ceil, never round: the box must always fit inside the resized union.
   const x = `round(((${X})*${SW}-${ux})*${kS}+((${W})*${SW}*${kS}-${bw})/2)`
   const y = `round(((${Y})*${SH}-${uy})*${kS}+((${H})*${SH}*${kS}-${bh})/2)`
-  if (sText) {
-    console.warn(
-      `[montaj] image item ${item.id ?? item.src ?? '(unnamed)'}: its animated crop's deepest zoom `
-      + `needs a ${peakW}x${peakH} px frame, past the ${budgetPx} px budget, so the crop renders at `
-      + `1/${S.toFixed(2)} resolution and is upscaled to the box. The framing is unchanged; it looks softer.`,
-    )
-  }
   // NOTHING may ever sit between the eval=frame `scale` and the fixed `crop`
-  // below, in EITHER branch (full resolution, or 1/S), not even `format=rgba`
-  // or the upscale: the crop would clamp x/y against the FIRST frame's size and
-  // a zoom-in would silently freeze (WHY THIS SHAPE, above). Guarded by
-  // test/image-crop.integration.test.mjs's two zoom cases, one per branch.
+  // below, for either kind, in EITHER branch (full resolution, or 1/S): not
+  // `format=`, not the upscale, not a colour conversion. The crop would clamp
+  // x/y against the FIRST frame's size and a zoom-in would silently freeze (WHY
+  // THIS SHAPE, above). Guarded by the zoom cases in
+  // test/image-crop.integration.test.mjs and test/video-crop.integration.test.mjs,
+  // one per branch.
   return {
     chain: `crop=${uw}:${uh}:${ux}:${uy}:exact=1,`
          + `scale=w='ceil(${uw}*${kS})':h='ceil(${uh}*${kS})':eval=frame,`
-         + `crop=${bw}:${bh}:x='${x}':y='${y}':exact=1,`
-         + (sText ? `scale=${boxW}:${boxH},format=rgba` : 'scale,format=rgba'),
+         + `crop=${bw}:${bh}:x='${x}':y='${y}':exact=1`,
+    bw, bh, S, downscaled: sText !== null, peakW, peakH,
   }
+}
+
+/** One line for an operator reading the logs: why a keyframed crop looks soft. */
+function warnCropDownscaled(kind, item, m, budgetPx) {
+  console.warn(
+    `[montaj] ${kind} item ${item.id ?? item.src ?? '(unnamed)'}: its animated crop's deepest zoom `
+    + `needs a ${m.peakW}x${m.peakH} px frame, past the ${budgetPx} px budget, so the crop renders at `
+    + `1/${m.S.toFixed(2)} resolution and is upscaled to the box. The framing is unchanged; it looks softer.`,
+  )
+}
+
+/**
+ * The keyframed source crop of an IMAGE (PV55), as a chain whose output is
+ * exactly `boxW`x`boxH` rgba: the crop rect at each instant, cover-fitted into
+ * the box (movingCropChain, then a `scale` and `format=rgba` after its fixed
+ * crop). Returns null when the item has no crop keyframes, `{ chain }` when it
+ * animates, and `{ hold: reason }` when it cannot (size unreadable, or a rect
+ * that is not finite and positive): the caller then holds the crop at the
+ * segment start and warns with the reason. A zoom past `budgetPx`
+ * (MAX_ANIMATED_CROP_PX unless a test injects one) still animates, at 1/S.
+ */
+function animatedImageCrop(item, boxW, boxH, timeOffset, duration, onCap, budgetPx = MAX_ANIMATED_CROP_PX) {
+  if (!hasCropKeyframes(item)) return null
+  // probedWidth/probedHeight are a test seam here. render.js stamps them on VIDEO items only,
+  // from probeVideoGeometry, which reads a JPEG's STORED size (EXIF ignored). Never stamp them
+  // on an image that way: the animated crop would use the wrong axes on a rotated photo.
+  const dims = item.probedWidth > 0 && item.probedHeight > 0
+    ? { width: item.probedWidth, height: item.probedHeight }
+    : probeImageDisplaySize(item.src)
+  if (!dims) return { hold: 'could not read its size' }
+  const sampled = sampleCropRects(item, 'image', timeOffset, duration)
+  if (!sampled) return { hold: NOT_A_RECT }
+  const m = movingCropChain(item, dims.width, dims.height, boxW, boxH, sampled, timeOffset, onCap, budgetPx, boxW, boxH)
+  if (m.hold) return m
+  if (m.downscaled) warnCropDownscaled('image', item, m, budgetPx)
+  // AFTER the fixed crop, never between it and the eval=frame scale (movingCropChain).
+  return { chain: `${m.chain},${m.downscaled ? `scale=${boxW}:${boxH},format=rgba` : 'scale,format=rgba'}` }
+}
+
+/**
+ * The keyframed source crop of a VIDEO (PV55 phase 2), as a chain for the crop
+ * slot of buildVideoItemFilterParts: its output is a CONSTANT `width`x`height`
+ * frame (the largest rect the item shows, in source pixels, even; or that at
+ * 1/S) holding the crop rect at each instant, so the decrease-fit, the colour
+ * conversion, the pad and the rotate after it all see one frame size, exactly
+ * as they do for a still crop. Past the budget the decrease-fit upscales it.
+ *
+ * The rect is cover-fitted into that frame, so a key whose pixel aspect is off
+ * by validate's 1% tolerance (or by the even rounding) trims a sliver instead
+ * of reading past the rect. The caller has checked `hasCropKeyframes` and a
+ * positive `sourceWidth`/`sourceHeight` (the size every video crop is in).
+ * Returns `{ chain, width, height }`, or `{ hold: reason }` for a rect that is
+ * not finite and positive (the caller then holds the crop at the segment start).
+ *
+ * @param {number} fitW, fitH  the box the decrease-fit fits it into (the PEAK box
+ *   when the box itself animates), for the curve tolerance
+ */
+function animatedVideoCrop(item, fitW, fitH, timeOffset, duration, onCap, budgetPx = MAX_ANIMATED_CROP_PX) {
+  const SW = item.sourceWidth
+  const SH = item.sourceHeight
+  const sampled = sampleCropRects(item, 'video', timeOffset, duration)
+  if (!sampled) return { hold: NOT_A_RECT }
+  let maxW = 0
+  let maxH = 0
+  for (const c of sampled.rects) {
+    maxW = Math.max(maxW, c.w * SW)
+    maxH = Math.max(maxH, c.h * SH)
+  }
+  const RW = Math.max(2, Math.round(maxW / 2) * 2)
+  const RH = Math.max(2, Math.round(maxH / 2) * 2)
+  const shown = decreaseFitSize(RW, RH, fitW, fitH)
+  const m = movingCropChain(item, SW, SH, RW, RH, sampled, timeOffset, onCap, budgetPx,
+    Math.max(1, shown.width), Math.max(1, shown.height))
+  if (m.hold) return m
+  if (m.downscaled) warnCropDownscaled('video', item, m, budgetPx)
+  return { chain: m.chain, width: m.bw, height: m.bh }
 }
 
 function rotateFilterStep(box, alphaPin = false) {
@@ -1027,13 +1117,15 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
  * @param {boolean} opts.zscaleAvailable  — whether ffmpeg has zscale
  * @param {boolean} [opts.lut3dAvailable] — whether ffmpeg has lut3d; omitted → probed
  * @param {string|null} [opts.sdrCurve]   — look curve id for the HDR→SDR LUT
+ * @param {number} [opts.cropBudgetPx]    — test seam: a keyframed crop's pixel
+ *   budget, MAX_ANIMATED_CROP_PX when absent. No production caller passes it.
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string,
  *   audioTrim: string }} audioTrim is the head of this item's audio chain, which
  *   must cut the same source window as the video (the caller builds the audio)
  */
 export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const { segStart, duration, projectColorSpace, zscaleAvailable,
-          lut3dAvailable, sdrCurve } = opts
+          lut3dAvailable, sdrCurve, cropBudgetPx } = opts
 
   // Geometry comes from the shared resolver — see @bycrux/timeline-core's
   // src/geometry.js. This file used to carry its own copy of the formula; three
@@ -1136,6 +1228,11 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   const audioTrim = seek ? `atrim=start=${seek.fine}:duration=${srcDur}` : `atrim=0:${srcDur}`
   const filterParts = []
 
+  // The box the footage is fitted and padded into: the PEAK box when the box
+  // itself animates (animatedGeometry), else the item's own.
+  const padW = anim?.needsAnimatedChain ? anim.peakW : scaledW
+  const padH = anim?.needsAnimatedChain ? anim.peakH : scaledH
+
   // Optional source crop (clips workflow vertical reframe). Needs source pixel
   // dims; no-op without them. Even dims keep ffmpeg/x264 happy.
   let cropStep = ''
@@ -1143,8 +1240,32 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // output when a crop runs, otherwise the display size render.js probed.
   let footageW = null
   let footageH = null
-  const sc = item.sourceCrop
-  if (sc && item.sourceWidth && item.sourceHeight) {
+  let sc = item.sourceCrop
+  // PV55 phase 2: a KEYFRAMED crop takes the crop slot with a moving crop
+  // (animatedVideoCrop). Its output is a constant frame, so everything after it
+  // (the decrease-fit, the conversion, the pad, the rotate) is unchanged and
+  // never sees the varying size, which lives only inside that chain. Without a
+  // source size (validate requires one) it renders uncropped, as a still crop
+  // does; a rect that is not finite and positive holds the segment start's.
+  let movingCrop = null
+  if (hasCropKeyframes(item)) {
+    const who = `[montaj] video item ${item.id ?? item.src ?? '(unnamed)'}`
+    if (!(item.sourceWidth > 0 && item.sourceHeight > 0)) {
+      console.warn(`${who}: its crop is keyframed but it has no sourceWidth/sourceHeight, so it renders uncropped`)
+    } else {
+      movingCrop = animatedVideoCrop(item, padW, padH, seekOffset, duration, warnIfCapped(item, 'video'), cropBudgetPx)
+      if (movingCrop.hold) {
+        const held = geometryAt(item, 'video', seekOffset).sourceCrop
+        sc = isFiniteCrop(held) && held.w > 0 && held.h > 0 ? held : null
+        console.warn(`${who}: ${movingCrop.hold}, so its animated crop is ${sc ? `held at ${seekOffset}s` : 'dropped'}`)
+      }
+    }
+  }
+  if (movingCrop?.chain) {
+    cropStep = `${movingCrop.chain},`
+    footageW = movingCrop.width
+    footageH = movingCrop.height
+  } else if (sc && item.sourceWidth && item.sourceHeight) {
     const cw = Math.round(item.sourceWidth  * sc.w / 2) * 2  // even: x264 needs even dims
     const ch = Math.round(item.sourceHeight * sc.h / 2) * 2  // even: x264 needs even dims
     const cx = Math.round(item.sourceWidth  * sc.x)          // origin NOT even-rounded (offsets don't require it)
@@ -1159,6 +1280,12 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
 
   // STEP ORDER IS LOAD-BEARING: crop → scale → convert → pad → rotate
   // (SP6b T6; rotate added by SP9a-2).
+  //
+  // A keyframed crop (PV55 phase 2) fills the crop slot with
+  // crop(union) → scale(eval=frame) → crop(fixed): the only varying frame size
+  // in this chain, and it ends at that fixed crop, ahead of everything below.
+  // Nothing may be inserted between its scale and its fixed crop
+  // (movingCropChain).
   //
   // Geometry first. The conversion used to run at the head of this chain, which
   // meant tone-mapping every source pixel in float before throwing most of them
@@ -1257,8 +1384,6 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // A rotated item still passes through rotateFilterStep's `format=yuva420p`
   // pin after this, which narrows a converted item to 8 bits before `rotate`.
   // That predates this fill and is left alone here.
-  const padW = anim?.needsAnimatedChain ? anim.peakW : scaledW
-  const padH = anim?.needsAnimatedChain ? anim.peakH : scaledH
   let transparentPad = item.probedAlpha === true
   if (!transparentPad && footageW && footageH) {
     const fit = decreaseFitSize(footageW, footageH, padW, padH, (conversionStep || cutoutGrade) ? 2 : 1)
