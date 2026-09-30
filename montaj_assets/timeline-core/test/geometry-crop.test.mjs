@@ -39,12 +39,23 @@ describe('PV55: crop keyframes in geometryAt', () => {
     assert.equal(geometryAt({ fit: 'contain', keyframes: [lin('scale', 1, 2)] }, 'image', 1).fit, 'contain')
   })
 
-  test('phase 1: video and overlay items IGNORE crop tracks (sourceCrop by reference, fit unchanged)', () => {
-    const crop = { x: 0.1, y: 0, w: 0.5, h: 1 }
-    const item = { sourceCrop: crop, keyframes: PAN }
-    assert.equal(geometryAt(item, 'video', 1).sourceCrop, crop)
+  test('phase 2: a video samples its crop tracks like an image, and its fit stays contain', () => {
+    const item = { sourceCrop: { x: 0.1, y: 0, w: 0.5, h: 1 }, keyframes: PAN }
+    assert.deepEqual(geometryAt(item, 'video', 0).sourceCrop, { x: 0, y: 0, w: 0.4, h: 1 })
+    assert.ok(Math.abs(geometryAt(item, 'video', 1).sourceCrop.x - 0.3) < 1e-12)
+    assert.deepEqual(geometryAt(item, 'video', 5).sourceCrop, { x: 0.6, y: 0, w: 0.4, h: 1 })
     assert.equal(geometryAt(item, 'video', 1).fit, 'contain')
-    assert.equal(geometryAt(item, 'overlay', 1).sourceCrop, crop)
+    assert.equal(geometryAt({ keyframes: [lin('cropW', 1, 0.5)] }, 'video', 2).sourceCrop.h, 1)
+  })
+
+  test('an overlay still IGNORES crop tracks (sourceCrop by reference)', () => {
+    const crop = { x: 0.1, y: 0, w: 0.5, h: 1 }
+    assert.equal(geometryAt({ sourceCrop: crop, keyframes: PAN }, 'overlay', 1).sourceCrop, crop)
+  })
+
+  test('a video animating only its box forwards sourceCrop by reference', () => {
+    const crop = { x: 0.1, y: 0, w: 0.5, h: 1 }
+    assert.equal(geometryAt({ sourceCrop: crop, keyframes: [lin('scale', 1, 2)] }, 'video', 1).sourceCrop, crop)
   })
 
   test('an image animating only its box still forwards sourceCrop by reference', () => {
@@ -67,6 +78,6 @@ describe('PV55: crop keyframes in geometryAt', () => {
   })
 
   test('RESOLVER_VERSION was bumped: geometry output changed for the same input', () => {
-    assert.equal(RESOLVER_VERSION, '5')
+    assert.equal(RESOLVER_VERSION, '6')
   })
 })

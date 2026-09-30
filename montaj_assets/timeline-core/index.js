@@ -87,4 +87,6 @@ export * from './src/transitions.js'
 // float-noise overlap resolves with no `crossfade` stamp.
 // '5': geometryAt samples an image's crop keyframes (cropX/cropY/cropW/cropH) into
 // sourceCrop and resolves such an image's fit as 'cover' (PV55).
-export const RESOLVER_VERSION = '5'
+// '6': geometryAt also samples a VIDEO's crop keyframes into sourceCrop (PV55 phase 2);
+// its fit stays 'contain'.
+export const RESOLVER_VERSION = '6'

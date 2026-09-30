@@ -10,11 +10,14 @@ const img = (over: Partial<VisualItem> = {}): VisualItem =>
 const RECT = { x: 0.5, y: 0, w: 0.3, h: 1 }
 
 describe('PV55: the crop in keyframeOps', () => {
-  it('crop props keyframe on images only (phase 1)', () => {
+  it('crop props keyframe on images, and on videos that carry their source size (phase 2)', () => {
+    const dims = { sourceWidth: 1920, sourceHeight: 1080 }
     for (const p of CROP_PROPS) {
       expect(canKeyframeProp(img(), p)).toBe(true)
+      expect(canKeyframeProp(img({ type: 'video', ...dims }), p)).toBe(true)
       expect(canKeyframeProp(img({ type: 'video' }), p)).toBe(false)
-      expect(canKeyframeProp(img({ type: 'overlay' }), p)).toBe(false)
+      expect(canKeyframeProp(img({ type: 'video', sourceWidth: 1920 }), p)).toBe(false)
+      expect(canKeyframeProp(img({ type: 'overlay', ...dims }), p)).toBe(false)
     }
   })
 

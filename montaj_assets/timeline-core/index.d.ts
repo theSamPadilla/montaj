@@ -497,8 +497,8 @@ export interface Geometry {
   fit: 'cover' | 'contain' | 'fill' | undefined
   /**
    * Forwarded verbatim, by reference — never cloned. From {@link geometryAt},
-   * a fresh object sampled from the crop tracks when an image's crop is
-   * keyframed (PV55).
+   * a fresh object sampled from the crop tracks when an image's or a
+   * video's crop is keyframed (PV55).
    */
   sourceCrop: { x: number; y: number; w: number; h: number } | undefined
   /** Forwarded verbatim. */
@@ -543,7 +543,8 @@ export declare function geometryFor(item: GeometryItem, kind: ItemKind): Geometr
  * CONSTRUCTION and a keyframe-free project keeps producing a byte-identical
  * ffmpeg filter graph. Only the eleven {@link KeyframeProp} values can be
  * animated. The four crop props are folded into ONE `sourceCrop` for images
- * (PV55), and such an image resolves `fit: 'cover'`; otherwise
+ * and video (PV55); such an image resolves `fit: 'cover'` (a video keeps
+ * 'contain'); otherwise
  * `fit`/`sourceCrop`/`sourceWidth`/`sourceHeight` are forwarded exactly as the
  * static path forwards them (`sourceCrop` by reference, never cloned). The
  * per-prop fallback is `??` and never `||`, so a legitimately animated 0

@@ -82,9 +82,12 @@ export function canKeyframe(item: VisualItem | null | undefined): item is Visual
  */
 export function canKeyframeProp(item: VisualItem | null | undefined, prop: KeyframeProp): boolean {
   if (!canKeyframe(item)) return false
-  // PV55: the crop animates on images only. The video export applies
-  // `sourceCrop` statically until phase 2, and an overlay has no source.
-  if (isCropProp(prop)) return item.type === 'image'
+  // PV55: the crop animates on images, and on videos that carry their source
+  // size (a video's crop is a no-op without sourceWidth/sourceHeight, and
+  // validate rejects keys without them). An overlay has no source.
+  if (isCropProp(prop)) {
+    return item.type === 'image' || (item.type === 'video' && !!item.sourceWidth && !!item.sourceHeight)
+  }
   if (item.type === 'overlay') return true
   return prop !== 'opacity'
 }

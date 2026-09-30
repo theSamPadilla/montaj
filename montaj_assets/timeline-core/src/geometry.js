@@ -329,8 +329,8 @@
 // transform props (`offsetX`, `offsetY`, `scale`, `scaleX`, `scaleY`,
 // `rotation`, `opacity`) and the four crop props (`cropX`, `cropY`, `cropW`,
 // `cropH`, PV55). The crop four are folded back into ONE `sourceCrop` object,
-// and only for the kinds in `CROP_KEYFRAME_KINDS` (images today); such an
-// image resolves `fit: 'cover'`. For every other kind, and for an image with
+// and only for the kinds in `CROP_KEYFRAME_KINDS` (images and video); such an
+// image resolves `fit: 'cover'`, a video keeps 'contain'. For every other kind, and for an image with
 // no crop track, `sourceCrop` is forwarded exactly as the static path forwards
 // it — BY REFERENCE, never cloned. `fit`, `sourceWidth` and `sourceHeight` are
 // still NOT keyframeable. A track naming any other prop is simply never
@@ -447,14 +447,13 @@ export const CROP_KEYFRAME_PROPS = Object.freeze(/** @type {const} */ (['cropX',
 const CROP_PROP_SET = new Set(CROP_KEYFRAME_PROPS)
 
 /**
- * Which kinds `geometryAt` samples crop tracks for. Images only in PV55 phase 1:
- * the video export applies `sourceCrop` statically, so sampling a video's crop
- * tracks here would move the preview and the frame samples while the export
- * stood still. Phase 2 adds 'video' here, in `canKeyframeProp` and in
- * `engine/validate.py`, together.
+ * Which kinds `geometryAt` samples crop tracks for: images (PV55 phase 1) and
+ * video (phase 2). An overlay has no source frame, so its crop tracks are
+ * ignored. A video keeps its own 'contain' fit; only an image is forced to
+ * 'cover'. The same switch lives in `canKeyframeProp` and `engine/validate.py`.
  * @type {ReadonlySet<string>}
  */
-const CROP_KEYFRAME_KINDS = new Set(['image'])
+const CROP_KEYFRAME_KINDS = new Set(['image', 'video'])
 
 const FULL_CROP = Object.freeze({ x: 0, y: 0, w: 1, h: 1 })
 
@@ -614,7 +613,7 @@ export function geometryAt(item, kind, localT) {
     offsetX: sampleTrack(trackFor(tracks, 'offsetX'), localT) ?? item.offsetX ?? 0,
     offsetY: sampleTrack(trackFor(tracks, 'offsetY'), localT) ?? item.offsetY ?? 0,
     opacity: sampleTrack(trackFor(tracks, 'opacity'), localT) ?? item.opacity ?? 1,
-    fit: animatedCrop ? 'cover' : fitFor(item, kind),
+    fit: animatedCrop && kind === 'image' ? 'cover' : fitFor(item, kind),
     sourceCrop,
     sourceWidth: item.sourceWidth,
     sourceHeight: item.sourceHeight,

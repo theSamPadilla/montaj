@@ -155,7 +155,7 @@ export type CropKeyframeProp = 'cropX' | 'cropY' | 'cropW' | 'cropH'
  *  The four CROP props (PV55) are not geometry of the box: `geometryAt`
  *  (`@bycrux/timeline-core`) samples `cropX`/`cropY`/`cropW`/`cropH` and folds
  *  them back into ONE `sourceCrop`, so every reader keeps reading `sourceCrop`.
- *  They are image-only today (`canKeyframeProp`). */
+ *  They apply to images and to videos with a source size (`canKeyframeProp`). */
 export type KeyframeProp = TransformKeyframeProp | CropKeyframeProp
 
 export interface Keyframe {
@@ -229,7 +229,7 @@ export interface VisualItem {
   proxySrc?: string         // video type only
   muted?: boolean         // video type only — suppress audio in preview and render
   speed?: number          // video type only — playback speed, default 1.0, range 0.25–4
-  sourceCrop?: { x: number; y: number; w: number; h: number }  // video and image: the source region to show (0–1 fractions of its DISPLAY size). An image crops before its fit; a video needs sourceWidth/sourceHeight. Keyframed on images by cropX/cropY/cropW/cropH.
+  sourceCrop?: { x: number; y: number; w: number; h: number }  // video and image: the source region to show (0–1 fractions of its DISPLAY size). An image crops before its fit; a video needs sourceWidth/sourceHeight. Keyframed on images and videos by cropX/cropY/cropW/cropH.
   sourceWidth?: number    // video type only — intrinsic width of the source clip in pixels
   sourceHeight?: number   // video type only — intrinsic height of the source clip in pixels
   generation?: {            // ai_video only — frozen provenance from Kling generation

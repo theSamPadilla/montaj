@@ -92,6 +92,46 @@ def _probe_display_dims(src, project_dir, cache):
     return dims
 
 
+def _validate_video_crop_keyframes(ti, item, tracks):
+    """PV55 phase 2: a video's keyed crop is exported with ONE pixel aspect, so
+    it needs its source size, cropW and cropH keyed as a pair (same times, same
+    easing, so linear interpolation of w and h keeps w/h between keys), and the
+    pixel aspect w*sourceWidth/(h*sourceHeight) within 1% at every key time.
+    `tracks` maps each keyed crop prop to its non-empty track."""
+    who = f"tracks[{ti}] item '{item.get('id','?')}'"
+    sw, sh = _int_dim(item.get("sourceWidth")), _int_dim(item.get("sourceHeight"))
+    if sw is None or sh is None:
+        fail("invalid_field", f"{who}: crop keyframes on a video need sourceWidth and sourceHeight")
+    if "cropW" not in tracks and "cropH" not in tracks:
+        return
+    if "cropW" not in tracks or "cropH" not in tracks:
+        keyed = "cropW" if "cropW" in tracks else "cropH"
+        fail("invalid_field", f"{who}: only one of cropW/cropH is keyed ({keyed}); key both, at the same times")
+
+    def pts(tr):
+        return sorted((float(p["t"]), p["value"], p.get("easing") or "linear") for p in tr["points"]
+                      if isinstance(p.get("t"), (int, float)) and not isinstance(p.get("t"), bool))
+
+    w_pts, h_pts = pts(tracks["cropW"]), pts(tracks["cropH"])
+    w_times, h_times = [p[0] for p in w_pts], [p[0] for p in h_pts]
+    if w_times != h_times:
+        for t in w_times:
+            if t not in h_times:
+                fail("invalid_field", f"{who}: cropW and cropH are not keyed at the same times: t={t:.1f} is on cropW but not on cropH")
+        for t in h_times:
+            if t not in w_times:
+                fail("invalid_field", f"{who}: cropW and cropH are not keyed at the same times: t={t:.1f} is on cropH but not on cropW")
+    for (t, _, we), (_, _, he) in zip(w_pts, h_pts):
+        if we != he:
+            fail("invalid_field", f"{who}: cropW and cropH have different easing at t={t:.1f} (cropW {we}, cropH {he}); use the same easing on both")
+    aspects = [(t, wv * sw / (hv * sh)) for (t, wv, _), (_, hv, _) in zip(w_pts, h_pts)]
+    t0, a0 = aspects[0]
+    for t, a in aspects[1:]:
+        if abs(a - a0) / a0 > 0.01:
+            fail("invalid_field", f"{who}: crop aspect at t={t:.1f} ({a:.4f}) differs from t={t0:.1f} ({a0:.4f}) "
+                 "by more than 1%; key cropW and cropH with one aspect")
+
+
 def _validate_clip_extensions(data, project_dir=None):
     """Optional clips-workflow fields plus per-item speed/rotation checks.
 
@@ -112,8 +152,9 @@ def _validate_clip_extensions(data, project_dir=None):
     intentionally unchecked here: a helper elsewhere normalizes any finite
     value into [0,360).
 
-    Also checks keyframed crop props (cropX/cropY/cropW/cropH): image items
-    only, values in range (PV55)."""
+    Also checks keyframed crop props (cropX/cropY/cropW/cropH): image and video
+    items only, values in range, plus the video pairing and one-aspect rules
+    (PV55, `_validate_video_crop_keyframes`)."""
     df = data.get("derivedFrom")
     if df is not None and not isinstance(df, str):
         fail("invalid_field", "derivedFrom must be a string")
@@ -141,16 +182,16 @@ def _validate_clip_extensions(data, project_dir=None):
                 if isinstance(rotation, bool) or not isinstance(rotation, (int, float)) or not math.isfinite(rotation):
                     fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': rotation must be a finite number")
 
-            # PV55: keyframed source crop. Image-only until phase 2 (the video
-            # export applies sourceCrop statically, so a video's crop track would
-            # be silently ignored). x/y in [0, 1]; w/h in (0, 1] because the
-            # renderer divides by them.
+            # PV55: keyframed source crop, on images and videos (an overlay has no
+            # source). x/y in [0, 1]; w/h in (0, 1] because the renderer divides
+            # by them. A video adds the rules in `_validate_video_crop_keyframes`.
+            crop_tracks = {}
             for tr in item.get("keyframes") or []:
                 prop = tr.get("prop") if isinstance(tr, dict) else None
                 if prop not in ("cropX", "cropY", "cropW", "cropH"):
                     continue
-                if item.get("type") != "image":
-                    fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': {prop} keyframes are for image items only")
+                if item.get("type") not in ("image", "video"):
+                    fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': {prop} keyframes are for image or video items only")
                 for p in tr.get("points") or []:
                     val = p.get("value") if isinstance(p, dict) else None
                     ok = (isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val)
@@ -158,6 +199,10 @@ def _validate_clip_extensions(data, project_dir=None):
                     if not ok:
                         fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': {prop} keyframe values must be numbers in "
                              + ("(0,1]" if prop in ("cropW", "cropH") else "[0,1]"))
+                if tr.get("points"):
+                    crop_tracks[prop] = tr
+            if crop_tracks and item.get("type") == "video":
+                _validate_video_crop_keyframes(ti, item, crop_tracks)
 
             sc = item.get("sourceCrop")
             if sc is None:
