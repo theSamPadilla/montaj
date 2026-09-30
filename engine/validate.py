@@ -109,8 +109,9 @@ def _validate_video_crop_keyframes(ti, item, tracks):
         fail("invalid_field", f"{who}: only one of cropW/cropH is keyed ({keyed}); key both, at the same times")
 
     def pts(tr):
-        return sorted((float(p["t"]), p["value"], p.get("easing") or "linear") for p in tr["points"]
-                      if isinstance(p.get("t"), (int, float)) and not isinstance(p.get("t"), bool))
+        # Order is enforced (strictly increasing) by the caller's crop loop.
+        return [(float(p["t"]), p["value"], p.get("easing") or "linear") for p in tr["points"]
+                if isinstance(p.get("t"), (int, float)) and not isinstance(p.get("t"), bool)]
 
     w_pts, h_pts = pts(tracks["cropW"]), pts(tracks["cropH"])
     w_times, h_times = [p[0] for p in w_pts], [p[0] for p in h_pts]
@@ -130,6 +131,26 @@ def _validate_video_crop_keyframes(ti, item, tracks):
         if abs(a - a0) / a0 > 0.01:
             fail("invalid_field", f"{who}: crop aspect at t={t:.1f} ({a:.4f}) differs from t={t0:.1f} ({a0:.4f}) "
                  "by more than 1%; key cropW and cropH with one aspect")
+
+
+def _validate_crop_key_bounds(ti, item, tracks, sc):
+    """At every crop key time the window must stay inside the frame: past the edge
+    the export clamps (shifts) it while the preview shows it as requested. Each
+    prop is the keyed value at that time, else the static sourceCrop, else the
+    full frame. 1e-3 slack, not 1e-6: agent-written crops are rounded to 4 decimals."""
+    who = f"tracks[{ti}] item '{item.get('id','?')}'"
+    static = {"cropX": 0.0, "cropY": 0.0, "cropW": 1.0, "cropH": 1.0}
+    if sc:
+        for prop, k in (("cropX", "x"), ("cropY", "y"), ("cropW", "w"), ("cropH", "h")):
+            if isinstance(sc.get(k), (int, float)) and not isinstance(sc.get(k), bool):
+                static[prop] = float(sc[k])
+    at = {prop: {float(p["t"]): float(p["value"]) for p in tr["points"]} for prop, tr in tracks.items()}
+    for t in sorted({t for m in at.values() for t in m}):
+        val = {prop: at.get(prop, {}).get(t, static[prop]) for prop in static}
+        if val["cropX"] + val["cropW"] > 1 + 1e-3:
+            fail("invalid_field", f"{who}: crop window passes the right edge at t={t:.1f} (cropX + cropW = {val['cropX'] + val['cropW']:.4f} > 1)")
+        if val["cropY"] + val["cropH"] > 1 + 1e-3:
+            fail("invalid_field", f"{who}: crop window passes the bottom edge at t={t:.1f} (cropY + cropH = {val['cropY'] + val['cropH']:.4f} > 1)")
 
 
 def _validate_clip_extensions(data, project_dir=None):
@@ -202,20 +223,30 @@ def _validate_clip_extensions(data, project_dir=None):
                     if not ok:
                         fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': {prop} keyframe values must be numbers in "
                              + ("(0,1]" if prop in ("cropW", "cropH") else "[0,1]"))
+                # The sampler uses the FIRST track of a prop and walks its points in
+                # array order, so both must be unambiguous.
+                times = [p["t"] for p in tr.get("points") or []]
+                if any(b <= a for a, b in zip(times, times[1:])):
+                    fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': {prop} keyframe times must be strictly increasing")
                 if tr.get("points"):
+                    if prop in crop_tracks:
+                        fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': more than one {prop} track")
                     crop_tracks[prop] = tr
             if crop_tracks and item.get("type") == "video":
                 _validate_video_crop_keyframes(ti, item, crop_tracks)
 
             sc = item.get("sourceCrop")
-            if sc is None:
+            if crop_tracks:
+                _validate_crop_key_bounds(ti, item, crop_tracks, sc if isinstance(sc, dict) else None)
+            if sc is None and not crop_tracks:
                 continue
-            if not isinstance(sc, dict):
-                fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': sourceCrop must be an object")
-            for k in ("x", "y", "w", "h"):
-                val = sc.get(k)
-                if not isinstance(val, (int, float)) or not (0.0 <= float(val) <= 1.0):
-                    fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': sourceCrop.{k} must be a number in [0,1]")
+            if sc is not None:
+                if not isinstance(sc, dict):
+                    fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': sourceCrop must be an object")
+                for k in ("x", "y", "w", "h"):
+                    val = sc.get(k)
+                    if not isinstance(val, (int, float)) or not (0.0 <= float(val) <= 1.0):
+                        fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': sourceCrop.{k} must be a number in [0,1]")
 
             # Boundary invariant: the crop's frame of reference must be the frame
             # of reference the renderer will use. `sourceCrop` is a fraction of

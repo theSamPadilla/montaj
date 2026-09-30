@@ -1,5 +1,6 @@
 """PV55: crop keyframes are for images and videos (not overlays) and in range."""
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -10,6 +11,7 @@ sys.path.insert(0, str(REPO_ROOT / "lib"))
 sys.path.insert(0, str(REPO_ROOT / "engine"))
 
 import validate as v  # noqa: E402
+from tests.conftest import FFMPEG_BIN, HAS_FFMPEG  # noqa: E402
 
 BASE = {"version": "0.2", "id": "abc", "status": "pending", "workflow": "default", "editingPrompt": "t",
         "settings": {"resolution": [1080, 1920], "fps": 30}, "tracks": [[]], "assets": [], "audio": {}}
@@ -79,7 +81,8 @@ def test_video_crop_keyframes_with_dims_and_one_aspect_pass(tmp_path):
 
 
 def test_video_crop_keyframes_only_x_y_need_no_pairing(tmp_path):
-    item = _video([_vtrack("cropX", [(0, 0.0), (2, 0.4)])])
+    # A static half-width crop, so the panned x stays inside the frame (fix 10).
+    item = _video([_vtrack("cropX", [(0, 0.0), (2, 0.4)])], sourceCrop={"x": 0.0, "y": 0.0, "w": 0.5, "h": 1.0})
     assert v.validate_project(_path(tmp_path, item))["valid"] is True
 
 
@@ -170,3 +173,44 @@ def test_video_crop_zero_source_size_fails(tmp_path, capsys, dims):
     item = _video([_vtrack("cropW", [(0, 0.5), (2, 0.25)]), _vtrack("cropH", [(0, 1.0), (2, 0.5)])],
                   dims=False, sourceWidth=dims[0], sourceHeight=dims[1])
     assert "sourceWidth and sourceHeight" in _fails(tmp_path, capsys, item)
+
+
+def test_video_crop_only_keyframed_still_gets_the_dims_check(tmp_path, capsys):
+    """A crop that is ONLY keyframed (no static sourceCrop) must reach the display-dims check."""
+    if not HAS_FFMPEG:
+        pytest.fail("ffmpeg missing: the dims check cannot be proven")
+    clip = tmp_path / "c.mp4"
+    subprocess.run([FFMPEG_BIN, "-y", "-f", "lavfi", "-i", "color=c=black:s=192x108:r=30", "-t", "1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip)], capture_output=True, check=True)
+    item = {"id": "i-0", "type": "video", "src": str(clip), "start": 0.0, "end": 1.0,
+            "sourceWidth": 108, "sourceHeight": 192,  # swapped: the clip displays 192x108
+            "keyframes": [_vtrack("cropX", [(0, 0.0), (1, 0.0)])]}
+    with pytest.raises(SystemExit):
+        v.validate_project(_path(tmp_path, item))
+    assert _error(capsys)["error"] == "source_dims_mismatch"
+
+
+def test_crop_track_times_must_be_strictly_increasing(tmp_path, capsys):
+    for pairs in ([(1, 0.1), (0, 0.2)], [(0, 0.1), (0, 0.2)]):
+        msg = _fails(tmp_path, capsys, _item(keyframes=[_vtrack("cropX", pairs)]))
+        assert "cropX keyframe times must be strictly increasing" in msg
+
+
+def test_crop_prop_with_two_tracks_fails(tmp_path, capsys):
+    msg = _fails(tmp_path, capsys, _video([_vtrack("cropX", [(0, 0.0), (1, 0.1)]), _vtrack("cropX", [(0, 0.2), (1, 0.3)])]))
+    assert "more than one cropX track" in msg
+
+
+def test_crop_window_past_the_edge_at_a_key_time_fails(tmp_path, capsys):
+    item = _item(keyframes=[_vtrack("cropX", [(0, 0.0), (1, 0.7)]), _vtrack("cropW", [(0, 0.5), (1, 0.5)])])
+    msg = _fails(tmp_path, capsys, item)
+    assert "i-0" in msg and "t=1.0" in msg and "right" in msg
+    item = _item(keyframes=[_vtrack("cropY", [(0, 0.0), (1, 0.8)])], sourceCrop={"x": 0, "y": 0, "w": 1, "h": 0.5})
+    msg = _fails(tmp_path, capsys, item)
+    assert "t=1.0" in msg and "bottom" in msg
+
+
+def test_crop_window_within_rounding_tolerance_passes(tmp_path):
+    # 0.5001 + 0.5 = 1.0001, inside the 1e-3 tolerance for 4-decimal agent output.
+    item = _item(keyframes=[_vtrack("cropX", [(0, 0.0), (1, 0.5001)]), _vtrack("cropW", [(0, 0.5), (1, 0.5)])])
+    assert v.validate_project(_path(tmp_path, item))["valid"] is True
