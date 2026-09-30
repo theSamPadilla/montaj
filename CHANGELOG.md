@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Removed (breaking for MCP clients): the MCP server exports one tool, `render`.** The 36 tools that are gone were each a CLI command under another name: every step command (`probe`, `transcribe`, `snapshot`, `sample_frame`, `fetch`, `remove_bg`, `kling_generate` and the rest), the six `profile_*` tools, `log`, `init`, `run`, `workflow_list`, `workflow_run`, `status`, `normalize` and `upload`. Every CLI command still works, and so does `POST /api/steps/<name>`. An MCP client runs the CLI command instead: `montaj probe`, `montaj run`, `montaj workflow list`, `montaj status`, and `montaj log --project <id> "<message>"` for progress. The Montaj app is unaffected: its connector has its own `run_step`, project, workflow, profile and progress tools.
 - **Fixed (editor): shortcut labels show Ctrl, Alt and Shift on Windows and Linux.** The command palette, the tooltips and the Controls list showed ⌘, ⌥ and ⇧ (or "⌘/Ctrl") everywhere. They now show the platform's own keys; Mac is unchanged. See `montaj_assets/editor/CHANGELOG.md`.
 - **Fixed: a step's "unknown field(s)" error has no em dash.**
 

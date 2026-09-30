@@ -43,7 +43,7 @@ A tempo you requested from a music generator is approximate: Lyria honours a req
 
 ## Verify the motion, don't eyeball it
 
-**Do not render to check this.** Rendering the project is the user's call, not a QA step for you to take — sampling is. Everything below uses `sample_overlay` (one overlay, isolated) or `sample_frame` (the composited project at a timestamp); neither encodes a video.
+**Do not render to check this.** Render only to produce the final video; checking is sampling's job. Everything below uses `sample_overlay` (one overlay, isolated) or `sample_frame` (the composited project at a timestamp); neither encodes a video.
 
 ```bash
 # One frame, with the globals the render will actually use.

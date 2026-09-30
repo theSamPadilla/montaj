@@ -1,7 +1,7 @@
 {
   "name": "montaj-mcp",
   "version": "5.16.1",
-  "description": "MCP server for montaj \u2014 exposes all step schemas as MCP tools",
+  "description": "MCP server for montaj: the render command as an MCP tool",
   "type": "module",
   "bin": {
     "montaj-mcp": "./server.js"

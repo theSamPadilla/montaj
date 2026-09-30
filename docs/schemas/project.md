@@ -872,7 +872,7 @@ Anything that *appears in* the video: characters, locations, specific objects. P
 | `id` | string | Stable within the project. Referenced by `scenes[i].refImages` as well as `tracks[0].items[i].generation.refImages`. |
 | `label` | string | Short human-friendly name. The user provides this at intake (e.g. "Max"). Agents use labels to match natural-language prompt mentions to refs. |
 | `anchor` | string | Agent-written longer description. If the user provided an image at intake, the agent writes the anchor from the image + label. If the user provided a text description, the anchor starts as that text and the agent enriches it. |
-| `refImages` | string[] | Absolute paths to reference images. For `source: "upload"`, populated at intake with the user's file. For `source: "text"`, starts empty; agent calls `generate_image` with the anchor as prompt and appends the result. Fed into Kling's `image_list` (up to 7 per scene — Kling's hard limit). |
+| `refImages` | string[] | Absolute paths to reference images. For `source: "upload"`, populated at intake with the user's file. For `source: "text"`, starts empty; agent runs the `generate_image` step with the anchor as prompt and appends the result. Fed into Kling's `image_list` (up to 7 per scene, Kling's hard limit). |
 | `source` | string | What the user gave us at intake. `"upload"` = user uploaded a file (that file is `refImages[0]`). `"text"` = user provided a text description (`anchor` holds it; `refImages` starts empty and the agent populates it). Immutable after intake — describes the user's input, not the ref's current state. The UI shows a "your upload" chip when `source === "upload"`. |
 | `status` | string | `"pending"` \| `"generating"` \| `"ready"` \| `"failed"`. Written by the agent / UI as generation/regeneration runs. |
 
@@ -901,7 +901,7 @@ The editorial plan — one entry per scene the agent intends to generate. Empty 
 | `refImages` | string[] | IDs into `storyboard.imageRefs[]`. Max 7 per scene (Kling API limit). The agent picks refs that match labels mentioned in the prompt. |
 | `lastError` | object \| undefined | Optional. Written by the agent on a failed `kling_generate` call: `{ts: ISO-8601, message: string}`. Cleared on eventual success. The UI's ApproveAndGenerate progress panel reads this to show "failed" status per scene. |
 
-At approval time, the agent iterates `scenes[]` and calls `kling_generate` for each entry. A successful call appends a new `tracks[0]` clip with a frozen `generation` block. See next section.
+At approval time, the agent iterates `scenes[]` and runs the `kling_generate` step for each entry. A successful run appends a new `tracks[0]` clip with a frozen `generation` block. See next section.
 
 ---
 

@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import { cliFailureMessage } from '../cli-failure.js'
 
 test('signal kill with empty stderr names the signal', () => {
-  const m = JSON.parse(cliFailureMessage('sample_overlay', { status: null, signal: 'SIGKILL', stdout: '', stderr: '' }))
+  const m = JSON.parse(cliFailureMessage('render', { status: null, signal: 'SIGKILL', stdout: '', stderr: '' }))
   assert.equal(m.error, 'cli_failed')
-  assert.equal(m.tool, 'sample_overlay')
+  assert.equal(m.tool, 'render')
   assert.equal(m.signal, 'SIGKILL')
   assert.equal(m.exit, null)
 })

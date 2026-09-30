@@ -12,7 +12,7 @@ Built-in steps cover the common operations (trim, transcribe, remove fillers, re
 
 **The fundamental dependency is an agent.** Montaj headlessly produces nothing on its own. `montaj run` creates a pending project and waits. An agent picks it up, calls steps, and writes the edit.
 
-**Montaj is agent-agnostic.** It exposes two interfaces for agents to call steps — CLI and MCP. Neither is mandatory. The agent uses whichever it has access to. Both wrap the same underlying executables.
+**Montaj is agent-agnostic.** Agents run steps and set up projects through the CLI or the HTTP API; an MCP client can also render. None is mandatory: the agent uses whichever it has access to.
 
 ---
 
@@ -104,7 +104,7 @@ The entire mechanism is fail-closed: it is dormant unless `MONTAJ_HTTP_ALLOWED_H
 
 ## Agent Interfaces
 
-Montaj exposes two interfaces for agents to call steps. Both are optional. Both wrap the same CLI executables.
+Montaj exposes the CLI and the HTTP API for agents to run steps, and a one-tool MCP server. All are optional.
 
 ### CLI
 
@@ -120,14 +120,14 @@ Works with any agent that has shell access — Claude Code, OpenClaw, or any fra
 
 ### MCP
 
-Montaj runs as a local MCP server (`montaj mcp`), started automatically by the MCP client (Claude Desktop, Claude Code). The agent calls a curated set of CLI commands as native tools — no shell access required.
+Montaj runs as a local MCP server (`montaj mcp`), started automatically by the MCP client (Claude Desktop, Claude Code). It exposes one tool, `render`; steps and project setup run through the CLI or the HTTP API.
 
 ```
 Claude Desktop opens
   → spawns: montaj mcp
   → montaj mcp runs `python3 cli/mcp_schema.py`, which introspects the
     allowlisted CLI commands' argparse parsers and returns tool schemas
-  → agent calls: transcribe({input: "clip.mp4"})
+  → agent calls: render({project: "project.json"})
   → montaj mcp invokes the CLI executable, returns result
 Session ends → process dies
 ```
@@ -141,15 +141,9 @@ Configure once in `claude_desktop_config.json`:
 }
 ```
 
-**Tools come from CLI commands, not from steps directly.** `cli/mcp_schema.py` builds a parser for each command named in its `_EXPORTED_COMMANDS` allowlist, then flattens subcommands into separate tools — so the 26-command allowlist currently yields 33 tools (`workflow` becomes `workflow_list`/`workflow_run`; its `new` and `edit` subcommands are excluded via `_EXCLUDED_SUBCOMMANDS` — `edit` launches $EDITOR, which doesn't work from an AI client, and `new` is an authoring task outside the connector's editing surface). Argument schemas are derived from the argparse actions, so a flag added to a CLI command shows up as an MCP parameter with no extra work.
+**Tools come from CLI commands, not from steps directly.** `cli/mcp_schema.py` builds a parser for each command named in its `_EXPORTED_COMMANDS` allowlist, which is `render` alone, so it yields one tool. Argument schemas are derived from the argparse actions, so a flag added to the command shows up as an MCP parameter with no extra work.
 
-**Adding a step does not by itself create an MCP tool.** Three things have to line up:
-
-1. `steps/<name>.py` + `.json` — the step itself.
-2. An entry in `cli/main.py`'s `_STEP_COMMANDS`, which generates the CLI command from the step's JSON schema (`cli/step_command.py`). Hand-written commands live in `_COMMANDS` instead.
-3. An entry in `cli/mcp_schema.py`'s `_EXPORTED_COMMANDS`, which is what actually exports it over MCP.
-
-The allowlist is deliberate: it keeps the agent-facing surface curated rather than exposing every command the CLI happens to grow.
+**A step is never an MCP tool.** Steps run through the CLI (`cli/main.py`'s `_STEP_COMMANDS` generates the command from the step's JSON schema; hand-written commands live in `_COMMANDS`) or serve's `POST /api/steps/<name>`. `tests/test_mcp_surface.py` fails if a step command is added to the allowlist. The Montaj app's connector adds its own `run_step` tool over the HTTP route.
 
 ### MCP resources
 
@@ -192,7 +186,7 @@ Two additional routes support managed-orchestrator file sync (see "How it fits t
 ```
 CLI           →  step execution — agents with shell access, humans
 HTTP API      →  step execution — agents with HTTP access, the browser UI
-MCP           →  step execution — Claude Desktop / Claude Code (native tools)
+MCP           →  render (Claude Desktop / Claude Code)
 
 montaj serve  →  browser UI, SSE, project lifecycle, HTTP API
 ```

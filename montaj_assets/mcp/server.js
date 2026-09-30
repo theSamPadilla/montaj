@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * montaj MCP server — exposes all CLI commands as MCP tools.
+ * montaj MCP server: exposes the render command as an MCP tool.
  *
  * Tool definitions are generated at startup by introspecting the CLI's argparse
  * parsers (cli/mcp_schema.py). Every tool is dispatched via:

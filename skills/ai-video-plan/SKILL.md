@@ -58,7 +58,7 @@ Both are project-wide, not per-scene. They never appear in `scenes[]`. If set, t
 
 **The `source: "upload" | "text"` split on imageRefs:**
 - `"upload"` — user uploaded a file. `refImages[0]` is already the path to that file. `anchor` is NOT yet written; you write it in Phase 1.
-- `"text"` — user typed a description. It's stored in `anchor`. `refImages` is empty; you call `generate_image` in Phase 1 to produce the canonical ref image.
+- `"text"`: user typed a description. It's stored in `anchor`. `refImages` is empty; you run the `generate_image` step in Phase 1 to produce the canonical ref image.
 
 `source` is immutable. Never mutate it.
 
@@ -113,7 +113,7 @@ For each `storyboard.imageRefs[i]`:
   Example for a corgi character: "A small playful corgi with short legs, a long body, tan and golden fur with a white chest and belly, a fluffy white-tipped tail that curls upward, small pointed ears with tan fronts and white backs, round dark eyes with a friendly alert expression, a small black nose, bold black outlines with flat solid color fills, slightly exaggerated cartoon proportions with an oversized head relative to body."
 
 - If you can't discern enough detail from the image, call `analyze_media --input <path> --prompt "Describe this character in 60-120 words covering: overall appearance, distinguishing features, colors, clothing/surface details, accessories, and art style. Be specific enough that a video generator could reproduce this character consistently across multiple scenes."` and use the output as the anchor.
-- **Do NOT call `generate_image`.** Never overwrite the user's uploaded image.
+- **Do NOT run the `generate_image` step.** Never overwrite the user's uploaded image.
 
 **`source: "text"`** — user typed a description in `anchor`. `refImages` is empty.
 - Your job: call `generate_image --prompt <anchor> --out <path>` and append the result to `refImages`.
@@ -235,7 +235,7 @@ Given `T = targetDurationSeconds` and `N = intended scene count`:
 
 - `tracks[0].items` is STILL `[]`. Scenes are not put on `tracks[0].items` during pending — that happens in Phase 6 after approval.
 - Set `status: "storyboard_ready"`.
-- **DO NOT** call `kling_generate` during this phase.
+- **DO NOT** run `kling_generate` during this phase.
 
 ---
 
@@ -283,13 +283,13 @@ One table of every field you write, grouped by phase.
 - **Don't put `<<<image_N>>>` tokens in `storyboard.scenes[i].prompt`.** Scene prompts are natural language with character labels. Token placement happens at composition time in Phase 6 Step C, where you map `refImages` IDs to positional `--ref-image` args and insert tokens inline at the matching nouns.
 - **Don't skip Phase 0.** If intake is thin or ambiguous, ASK before writing scenes. A wrong 8-scene storyboard costs more than one clarification turn.
 - **Don't bombard the user with multiple questions at once.** One question per turn, wait for the answer.
-- **Don't call `generate_image` on `imageRefs[i]` with `source: "upload"`.** You'd overwrite the user's file. Only text-sourced refs get image generation.
+- **Don't run `generate_image` on `imageRefs[i]` with `source: "upload"`.** You'd overwrite the user's file. Only text-sourced refs get image generation.
 - **Don't fold `styleAnchor` into `generate_image` prompts.** Refs are identity-only; style is applied by Kling at scene generation.
 - **Don't write `<<<image_N>>>` tokens into `storyboard.scenes[i].prompt` or `generation.prompt` (the stored prompt).** These fields hold natural language only. Tokens and the ref clause are composed at call time (Phase 6 Step C / Phase 7 step 3) and passed directly to `kling_generate --prompt` — they are NOT persisted. The connector is a pure pass-through; it does not add tokens.
 - **Don't silently overshoot/undershoot `targetDurationSeconds`.** If your allocation lands >10% or >=3s off, mention it in chat so the user can confirm or redirect.
 - **Don't treat `targetDurationSeconds` as per-scene.** It's a TOTAL budget. Target 30s with 6 scenes → 5s each, not 30s each.
 - **Don't write `project.assets`.** That's the unrelated user-logo array.
 - **Don't append `aspectRatio` or `targetDurationSeconds` (or anything else) to `editingPrompt`.** Those fields live at `project.storyboard.*` as structured values. Pass `aspectRatio` directly to `kling_generate`; use `targetDurationSeconds` as input to your scene-count/duration decisions.
-- **Don't call `kling_generate` before `storyboard.approval` is set.** Premature generation wastes credits.
+- **Don't run `kling_generate` before `storyboard.approval` is set.** Premature generation wastes credits.
 - **Don't invent fields outside the schema.** If you need to store something, ask the user.
 - **Don't touch `project.json` outside ai_video's documented paths** (e.g., don't add fields to `settings`).

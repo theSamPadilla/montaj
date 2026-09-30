@@ -76,7 +76,7 @@ That message is produced by either:
 
 ### Verification guard — **always run before generating**
 
-Before calling `kling_generate`, re-read `project.json` and verify:
+Before running the `kling_generate` step, re-read `project.json` and verify:
 
 1. `project.projectType === "ai_video"`.
 2. `project.status === "storyboard_ready"`.
@@ -121,15 +121,15 @@ Three modes; infer from the prompt + scene count (ask in Phase 0 if unclear):
 
 #### Independent (default — parallel)
 
-Each scene is a separate `kling_generate` call, self-contained. **You MUST fire these in parallel** — call all scenes' `kling_generate` tool calls in a single response so they execute concurrently. Cap at 4 concurrent calls; if there are more than 4 scenes, fire 4 at a time, wait for any to complete, then fire the next. Do NOT generate scenes one at a time in a sequential loop — that wastes minutes of wall-clock time that parallel dispatch avoids.
+Each scene is a separate run of the `kling_generate` step, self-contained. **You MUST start these in parallel**: start every scene's `kling_generate` run in a single response so they execute concurrently. Cap at 4 concurrent calls; if there are more than 4 scenes, fire 4 at a time, wait for any to complete, then fire the next. Do NOT generate scenes one at a time in a sequential loop, which wastes minutes of wall-clock time that parallel dispatch avoids.
 
 When parallel results land out of narrative order, compute each clip's `start`/`end` from the scene's position in `storyboard.scenes[]`, not from generation order. Fault-isolated and easy to regenerate.
 
 **How to fire in parallel:** Include multiple tool calls in one assistant message. For example, if you have 5 scenes and are capping at 4 concurrent:
 
-1. First message: call `kling_generate` for scenes 1, 2, 3, 4 simultaneously (4 tool calls in one response).
+1. First message: start `kling_generate` for scenes 1, 2, 3, 4 at once (4 calls in one response).
 2. When results arrive, write all 4 clips to `tracks[0].items`.
-3. Second message: call `kling_generate` for scene 5.
+3. Second message: start `kling_generate` for scene 5.
 4. Write the final clip and check if all scenes are done → set status to `draft`.
 
 #### Chained continuity
@@ -498,7 +498,7 @@ Bad entries → tell the user, do NOT drop silently.
    - `entry.useFirstFrame === true` → `snapshot --input <clip.src> --at <entry.subrange.start> --out <frame_first.jpg>`.
    - `entry.useLastFrame === true` → `snapshot --input <clip.src> --at <entry.subrange.end> --out <frame_last.jpg>`.
 
-3. **Compose the full prompt** from `entry.prompt` + `entry.refImages`, then **call `kling_generate`**.
+3. **Compose the full prompt** from `entry.prompt` + `entry.refImages`, then **run the `kling_generate` step**.
 
    The connector is a pure pass-through — you must place `<<<image_N>>>` tokens and the ref clause yourself, same as Phase 6 Step C. Compose the prompt:
    - Start with `storyboard.styleAnchor` (if present) as prefix.
@@ -507,7 +507,7 @@ Bad entries → tell the user, do NOT drop silently.
 
    Store the **pre-composition** natural-language prompt (without tokens/clause) on `generation.prompt` when patching the clip.
 
-   Call `kling_generate` with the composed prompt:
+   Run the `kling_generate` step with the composed prompt:
    - `--prompt "<composed prompt with tokens and ref clause>"`
    - `--duration <entry.duration>`
    - `--aspect-ratio <project.storyboard.aspectRatio>`
@@ -574,7 +574,7 @@ One table of every field you write, grouped by phase.
 - **Don't exceed 512 chars per shot in multi-shot mode.** Single-shot's 2500-char budget does NOT apply per-shot. Fall back to independent mode for any scene that needs more prose.
 - **Don't use `sceneId` on the outer `generation` block of a batched clip.** Use `batchShots[].sceneId`. The idempotency check in Step A branches on whether `batchShots` exists.
 - **Don't set non-integer `scenes[i].duration`.** Kling's per-scene enum is integers (3–15 single-shot, 1–N multi-shot). Floats get silently clamped; apparent length drifts from your plan.
-- **Don't call `kling_generate` before `storyboard.approval` is set.** Premature generation wastes credits.
+- **Don't run `kling_generate` before `storyboard.approval` is set.** Premature generation wastes credits.
 - **Don't overwrite `storyboard.approval`.** The UI owns that field.
 - **Don't mutate `tracks[0].items[i].generation` to "edit the scene".** That block is a frozen snapshot. To change editorial intent, edit `storyboard.scenes[i]`. To actually regenerate with new settings, queue a `regenQueue` entry (via UI, CLI, or by writing one yourself in chat) and drain per Phase 7.
 - **Don't regenerate scenes that already have a clip** when the user re-approves. The skip-if-clip-exists check in Phase 6 Step A is mandatory — partial-approval retries depend on it.

@@ -22,7 +22,7 @@ The specificity the agent needs lives in the step layer. `steps/analyze_media.py
 
 ### Corollary: connectors are never agent-callable directly
 
-Workflows reference steps (`"uses": "montaj/analyze_media"`), never connector functions. The CLI, HTTP API, and MCP all dispatch to `steps/`. The connector layer is an internal library — it has no presence in any of Montaj's three agent interfaces. **Every connector function that needs to be agent-callable must have a step wrapping it.**
+Workflows reference steps (`"uses": "montaj/analyze_media"`), never connector functions. The CLI and the HTTP API dispatch to `steps/`. The connector layer is an internal library with no presence in any of Montaj's agent interfaces. **Every connector function that needs to be agent-callable must have a step wrapping it.**
 
 ## What a connector is (and isn't)
 
@@ -37,7 +37,7 @@ A connector:
 A connector is NOT:
 - A CLI — that's `cli/commands/<step>.py`.
 - A step — that's `steps/<step>.py` (which imports from the connector).
-- An HTTP/MCP surface — those layers auto-dispatch to steps, not connectors.
+- An HTTP surface: that layer dispatches to steps, not connectors.
 - A place for workflow logic.
 - Agent-facing. If an agent needs to call it, wrap it in a step.
 
@@ -107,7 +107,7 @@ Audio in Montaj is produced and composed in two separate layers, and the boundar
 - `connectors/kling.py::generate_speech`, `connectors/gemini.py::generate_speech` and `connectors/elevenlabs.py::generate_speech` produce voiceover audio.
 - `connectors/gemini.py::generate_music` produces music clips via Lyria 3; `connectors/elevenlabs.py::generate_music` is the paid-plan alternative.
 - `connectors/elevenlabs.py::generate_sfx` produces sound effects (PV29); no Gemini/Kling equivalent exists.
-- `steps/generate/generate_voiceover.py`, `steps/generate/generate_music.py` and `steps/generate/generate_sfx.py` wrap the connectors with CLI/MCP surfaces, dispatching to vendors via `--vendor` flags where applicable.
+- `steps/generate/generate_voiceover.py`, `steps/generate/generate_music.py` and `steps/generate/generate_sfx.py` wrap the connectors with CLI surfaces, dispatching to vendors via `--vendor` flags where applicable.
 
 **Composition** — `render/mix-audio.js` combines independent `AudioTrack` entries at render time via a single ffmpeg `amix` invocation, applying per-track delay, volume, trimming, and optional sidechain ducking.
 
@@ -177,7 +177,7 @@ Every new user-facing use case gets its own step, even if it reuses an existing 
    - Add a new top-level function to the existing `connectors/<vendor>.py`. Keep private helpers shared.
    - No changes to `KNOWN_PROVIDERS` unless the new use case needs an additional credential key.
 4. **Add a step script** in `steps/<verb>_<noun>.py` + `.json` — argparse + fail() + stdout=result. The step name describes the use case, not the vendor (`analyze_media`, not `gemini_analyze`).
-5. **Add a CLI command** in `cli/commands/<verb>_<noun>.py` — subprocesses the step script. This makes it available via CLI, HTTP (`POST /api/steps/<name>`), and MCP automatically.
+5. **Add a CLI command** in `cli/commands/<verb>_<noun>.py`, which subprocesses the step script. This makes it available via the CLI and HTTP (`POST /api/steps/<name>`).
 6. **Add unit tests** for any pure functions (payload builders, normalizers). Mock the SDK for branching logic tests.
 7. **Update this doc's "Current connectors" table** to list the new function under the existing vendor row, or add a new row if this is a new vendor.
 

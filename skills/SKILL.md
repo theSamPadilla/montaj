@@ -22,7 +22,7 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 **The loop, once your interface is loaded:**
 ```
 1. The location of the clips, the prompt, and preferred workflow should have been given to you by your human. If not provided, ask. Don't guess.
-   (HTTP: pick the first pending project via `read the project`. MCP: clips/prompt/workflow arrive as tool-call params.)
+   (HTTP: pick the first pending project via `read the project`. MCP: the server only renders, so set up the project and run steps with the CLI.)
 2. Read the workflow from workflows/{name}.json
 3. Apply editorial judgment (select/order/trim clips via probe + transcribe)
 4. Execute workflow steps following the dependency graph; log before each step

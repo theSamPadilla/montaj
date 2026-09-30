@@ -80,7 +80,7 @@ if __name__ == "__main__":
 }
 ```
 
-The schema is what the agent and MCP server use to discover and call steps — keep the description agent-readable.
+The schema is what the agent and the HTTP API use to discover and run steps; keep the description agent-readable.
 
 **3. Write a test** (`tests/steps/test_my_step.py`):
 
@@ -93,7 +93,7 @@ def test_my_step_basic(test_video):
     assert_file_output(proc)
 ```
 
-**4. That's it.** The step is automatically available via `montaj step my-step`, `POST /api/steps/my_step`, and MCP.
+**4. That's it.** The step is automatically available via `montaj step my-step` and `POST /api/steps/my_step`.
 
 ---
 
