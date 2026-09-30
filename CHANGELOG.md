@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Fixed: an export with animation, and a lyrics render or a trim of a heavily cut clip, could fail on Windows with a command line too long.** Windows caps a whole command line at 32,767 characters. One eased crop-zoom keyframe on one item made a graph of about 90,000 characters, and lyrics over about 145 single-word captions or a trim with about 470 kept ranges hit the same cap. ffmpeg now reads its filter graph from a file (`-/filter_complex`, `-/vf`) instead of the command line in the export's segment encode, frame samples, the audio mix, trim extraction (`transcribe`, `rm_fillers`, `rm_nonspeech`) and lyrics. It does this on every OS, not only past a threshold, so macOS and Linux run the same path. The graph text is unchanged. Each ffmpeg run writes one small temp file and deletes it afterwards; a cancelled export can leave one in its scratch folder, which the next export clears.
+- **Changed: ffmpeg 7 or later is required.** The `-/option file` syntax needs it. The audio mix and `materialize_cut` already required it, and Montaj's managed and bundled builds are 8.1.2.
+- **Removed: `lib/trim_spec.audio_extract_cmd`.** It is replaced by `audio_extract_graph(keeps)` and `extract_audio_at_keeps(...)`. Anything importing the old function must move to them.
+- **Fixed: on Windows, an overlay syntax error in the preview showed no location, and a blocked import answered 422 instead of 403.** esbuild's `file:line:col` locations are now parsed on drive-letter paths.
+- **Fixed: lyrics could not find a font on Windows.** After the macOS and Linux candidates, `lyrics_render` now tries `arial.ttf`, then `segoeui.ttf`, under `%SystemRoot%\Fonts`.
+- **Windows is still not a supported CLI platform.** These fixes make the shared render and step code work there for a host that ships Windows.
+
 ## v5.11.0
 
 - **Added: Kling accepts its current API key, not only the legacy access/secret pair.** Kling's own docs now list "API Key (for all models)" first and mark "Access Key / Secret Key" as applying to "legacy version design standards". `montaj credentials` can store `kling.api_key`, and the connector sends it straight as the bearer token. An existing access/secret pair keeps working unchanged: it still signs a JWT, and the connector prefers the API key only when one is stored. Kling's key page moved too, so `montaj credentials` now points at https://kling.ai/dev/api-key.
