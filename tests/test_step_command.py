@@ -429,6 +429,6 @@ def test_new_step_commands_are_hidden_from_top_level_help(cmd):
 
 
 @pytest.mark.parametrize("cmd", ["detect-shots", "shot-sheet", "detect-beats"])
-def test_new_steps_exported_to_mcp(cmd):
+def test_new_steps_are_not_exported_to_mcp(cmd):
     from cli.mcp_schema import _EXPORTED_COMMANDS
-    assert cmd in _EXPORTED_COMMANDS
+    assert cmd not in _EXPORTED_COMMANDS

@@ -12,7 +12,7 @@ entry).
 """
 import argparse
 
-from cli.mcp_schema import _collect, export
+from cli.mcp_schema import _collect
 
 
 def _tool_for(parser: argparse.ArgumentParser) -> dict:
@@ -51,8 +51,17 @@ def test_init_tool_flags_survive_dest_flag_mismatches():
     several options where the flag differs from its dest. The exported
     schema must record each real flag so montaj_assets/mcp/server.js can
     rebuild the CLI invocation correctly."""
-    tools = export()
-    init_tool = next(t for t in tools if t["name"] == "init")
+    # `init` is no longer exported (PL11), but the mechanism is general:
+    # build its tool entry the way export() builds every tool.
+    import argparse
+    from cli.main import register_command
+
+    parser = argparse.ArgumentParser(prog="montaj")
+    subparsers = parser.add_subparsers(dest="command")
+    register_command("init", subparsers)
+    out = []
+    _collect(["init"], subparsers.choices["init"], out)
+    init_tool = next(t for t in out if t["name"] == "init")
     flags = init_tool["_flags"]
     assert flags["clips"] == "--clip"
     assert flags["assets"] == "--asset"

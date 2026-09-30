@@ -107,13 +107,8 @@ def test_http_mode_404_reports_project_not_found(tmp_path, monkeypatch, capsys):
     }
 
 
-def test_log_is_exported_as_an_mcp_tool_with_project_and_message_args():
+def test_log_is_not_an_mcp_tool():
+    # PL11: `log` stays a CLI command and is no longer exported over MCP.
     from cli.mcp_schema import export
 
-    tool = next(t for t in export() if t["name"] == "log")
-    assert tool["_cli_tokens"] == ["log"]
-    assert tool["_positionals"] == ["message"]
-    assert tool["_flags"]["project"] == "--project"
-    assert set(tool["inputSchema"]["required"]) == {"project", "message"}
-    assert tool["inputSchema"]["properties"]["project"]["type"] == "string"
-    assert tool["inputSchema"]["properties"]["message"]["type"] == "string"
+    assert "log" not in {t["name"] for t in export()}

@@ -159,21 +159,14 @@ def _collect(tokens, parser, out, description=None):
 
 
 # Explicit allowlist of top-level commands exported as MCP tools. A conscious
-# surface choice, NOT registry drift: this is exactly the set the previous
-# hardcoded import list registered. Notably it OMITS the step commands
-# stem-separation, lyrics-sync, lyrics-render, generate-music,
-# generate-voiceover, and (PV29 T7) generate-sfx — expanding MCP's surface is
-# a separate decision. seedance-generate IS included: it must be callable by
-# an agent exactly the way kling-generate is (PV29 T7). Commands with
-# subcommands (workflow, sample, profile) flatten into multiple tools.
-_EXPORTED_COMMANDS = frozenset({
-    'run', 'render', 'workflow', 'fetch', 'profile',
-    'probe', 'snapshot', 'sample', 'filler', 'waveform-trim', 'rm-nonspeech',
-    'materialize-cut', 'resize', 'normalize', 'extract-audio',
-    'transcribe', 'caption', 'status', 'log', 'remove-bg', 'init',
-    'kling-generate', 'analyze-media', 'generate-image', 'upload',
-    'detect-shots', 'shot-sheet', 'detect-beats', 'seedance-generate',
-})
+# surface choice, NOT registry drift. One tool only: `render`, the agent's
+# way to produce the final video file. No step command is exported: a step
+# runs through the CLI (`montaj <command>`) or serve's POST /api/steps/<name>,
+# and the Montaj app's connector adds its own `run_step` tool over that route.
+# Project setup (`init`, `run`, `workflow`), `status`, `normalize`, `upload`,
+# `log` and `profile` are CLI-only too: the app has its own project, workflow,
+# progress and profile tools (Sam, 2026-09-30, PL11).
+_EXPORTED_COMMANDS = frozenset({'render'})
 
 
 def export():
@@ -198,16 +191,6 @@ def export():
     for name, sub in subparsers.choices.items():
         if name not in _SKIP_COMMANDS:
             _collect([name], sub, tools, description=top_help.get(name))
-
-    # sample_overlay requires --out at runtime (enforced in cli/commands/sample.py)
-    # but --out comes from add_global_flags which doesn't set required=True on the
-    # argparse action, so the auto-generated schema omits it from required[].
-    # Mark it required here so MCP callers know to supply it.
-    for tool in tools:
-        if tool['name'] == 'sample_overlay':
-            req = tool['inputSchema'].setdefault('required', [])
-            if 'out' not in req:
-                req.append('out')
 
     return tools
 

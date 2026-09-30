@@ -9,7 +9,6 @@ that's either the point of a later task (regenerate deliberately) or a bug
 Regenerate after a deliberate, reviewed change:
     python -m tests.test_cli_help_goldens --update-goldens
 """
-import json
 import re
 import subprocess
 import sys
@@ -28,12 +27,6 @@ COMMANDS = (
     "kling-generate", "analyze-media", "snapshot", "filler",
 )
 
-# cli.mcp_schema.export() doesn't wire these five commands up yet (see its
-# module-level import list) — that absence is itself part of the pinned,
-# current behavior, not an omission in this test.
-NOT_EXPORTED = "NOT_EXPORTED\n"
-
-
 def _capture_help(cmd: str) -> str:
     """stdout of `python -m cli.main <cmd> --help`.
 
@@ -48,18 +41,6 @@ def _capture_help(cmd: str) -> str:
     assert r.returncode == 0, f"{cmd} --help failed: {r.stderr}"
     assert "\x1b" not in r.stdout, f"{cmd} --help emitted ANSI color in a non-TTY pipe"
     return r.stdout
-
-
-def _capture_mcp(cmd: str) -> str:
-    """Pretty-printed JSON of the command's tool entry from
-    cli.mcp_schema.export(), or NOT_EXPORTED if export() doesn't currently
-    expose it."""
-    from cli.mcp_schema import export
-    name = cmd.replace("-", "_")
-    tool = next((t for t in export() if t["name"] == name), None)
-    if tool is None:
-        return NOT_EXPORTED
-    return json.dumps(tool, indent=2) + "\n"
 
 
 # The leading `usage: ...` block, up to the first blank line.
@@ -90,10 +71,6 @@ def _help_path(cmd: str):
     return GOLDENS_DIR / f"{cmd}.help.txt"
 
 
-def _mcp_path(cmd: str):
-    return GOLDENS_DIR / f"{cmd}.mcp.txt"
-
-
 @pytest.mark.parametrize("cmd", COMMANDS)
 def test_help_golden(cmd):
     assert _normalize_usage(_capture_help(cmd)) == _normalize_usage(
@@ -101,17 +78,19 @@ def test_help_golden(cmd):
     )
 
 
-@pytest.mark.parametrize("cmd", COMMANDS)
-def test_mcp_schema_golden(cmd):
-    assert _capture_mcp(cmd) == _mcp_path(cmd).read_text()
+def test_no_command_here_is_exported_to_mcp():
+    # Every command in COMMANDS is a step command, and no step is an MCP tool
+    # (PL11): the per-command MCP schema goldens are gone with the export.
+    from cli.mcp_schema import export
+    exported = {t["name"] for t in export()}
+    assert not {c.replace("-", "_") for c in COMMANDS} & exported
 
 
 def _update_goldens():
     GOLDENS_DIR.mkdir(parents=True, exist_ok=True)
     for cmd in COMMANDS:
         _help_path(cmd).write_text(_capture_help(cmd))
-        _mcp_path(cmd).write_text(_capture_mcp(cmd))
-    print(f"Wrote {2 * len(COMMANDS)} golden files to {GOLDENS_DIR}")
+    print(f"Wrote {len(COMMANDS)} golden files to {GOLDENS_DIR}")
 
 
 if __name__ == "__main__":

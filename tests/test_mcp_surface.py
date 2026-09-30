@@ -1,20 +1,13 @@
-"""MCP tool surface ↔ step registry parity.
+"""MCP tool surface: `render` only, and no step under another name.
 
 `cli/mcp_schema.py` exports a fixed allowlist of CLI commands as MCP tools
-(``_EXPORTED_COMMANDS``); the step registry (``serve/routes/steps.py``'s
-``scan_steps()``) independently discovers every step under ``steps/``. The two
-sets are NOT meant to be equal — ``mcp_schema.py``'s own comment calls the
-step-command omissions "a conscious surface choice, NOT registry drift" — so
-this test does not assert equality. Instead it freezes the *intent*: exactly
-which steps are HTTP-only, exactly which MCP tools name no step, and that the
-`cli/main.py` remap table (e.g. the CLI's ``filler`` command → the
-``rm_fillers`` step) still resolves correctly. Any new step or MCP tool that
-isn't already accounted for FAILS this test until someone makes the
-conscious choice to add it to the MCP allowlist or to the frozen exception
-list below — that forcing function is the test's job, not forbidding growth.
-
-Failure messages spell out both options so the developer isn't left guessing
-what to do next.
+(``_EXPORTED_COMMANDS``). Since PL11 (Sam, 2026-09-30) no step command is on
+it: a step runs through the CLI or serve's ``POST /api/steps/<name>``, and the
+Montaj app's connector adds its own ``run_step`` tool over that route. Project
+setup, status, normalize, upload, log and profile are CLI-only too. This
+test freezes that choice. A new MCP tool FAILS it until someone adds the name
+to ``EXPECTED_MCP_TOOLS`` on purpose, and a tool that is only a step under
+another name fails it outright.
 """
 import json
 import subprocess
@@ -23,19 +16,15 @@ import sys
 from serve.common import MONTAJ_ROOT
 from serve.routes.steps import scan_steps
 from cli.main import _STEP_COMMANDS
+from cli.mcp_schema import _EXPORTED_COMMANDS
 from tests.conftest import REPO_ROOT
-from tests.test_step_schema_conformance import MIGRATED_STEPS, _locate
 
-# ── ground truth loaders ─────────────────────────────────────────────────────
 
 def _all_steps() -> set[str]:
-    """Every step name scan_steps() discovers, filtered to builtin steps only.
+    """Every builtin step name scan_steps() discovers.
 
-    scan_steps() ALSO scans ~/.montaj/steps (user-installed custom steps) and
-    takes no scope parameter to opt out. On a machine with user steps
-    installed, the raw scan_steps() result would silently drift from the
-    frozen sets below. Filtering to py_path's under MONTAJ_ROOT/steps is what
-    keeps this test's expectations machine-independent.
+    scan_steps() also scans ~/.montaj/steps (user-installed steps), so filter
+    to py_path's under MONTAJ_ROOT/steps to stay machine-independent.
     """
     builtin_root = (MONTAJ_ROOT / "steps").resolve()
     return {
@@ -45,221 +34,69 @@ def _all_steps() -> set[str]:
     }
 
 
-def _mcp_tools() -> list[dict]:
-    """MCP tool definitions, via subprocess exactly as mcp/server.js invokes them.
-
-    The plan specifies "subprocess python3 cli/mcp_schema.py -> tool list".
-    cli/mcp_schema.py does have a __main__ block that prints json.dumps(export()),
-    so the subprocess call the plan describes is exactly what's exercised here
-    (rather than diverging to an in-process import).
-    """
+def _mcp_tool_names() -> set[str]:
+    """MCP tool names, via subprocess exactly as mcp/server.js invokes them."""
     r = subprocess.run(
         [sys.executable, str(REPO_ROOT / "cli" / "mcp_schema.py")],
         capture_output=True, text=True, cwd=REPO_ROOT,
     )
     assert r.returncode == 0, f"cli/mcp_schema.py failed:\n{r.stderr}"
-    return json.loads(r.stdout)
+    return {t["name"] for t in json.loads(r.stdout)}
 
 
-# Command name (underscored) -> step name it actually runs, per cli/main.py's
-# own quirks table. Identity for every command except the one deliberate
-# rename: the CLI's "filler" command runs the "rm_fillers" step.
+# Command name (underscored) -> the step it runs, per cli/main.py's own table.
+# Identity except the one rename: the `filler` command runs `rm_fillers`.
 _REMAP = {
     cmd.replace("-", "_"): quirks.get("step_name", cmd.replace("-", "_"))
     for cmd, quirks in _STEP_COMMANDS.items()
 }
 
-# ── frozen expected sets ─────────────────────────────────────────────────────
-
-# Steps with no MCP tool. Quoting cli/mcp_schema.py's own allowlist comment:
-#
-#   # Explicit allowlist of top-level commands exported as MCP tools. A conscious
-#   # surface choice, NOT registry drift: this is exactly the set the previous
-#   # hardcoded import list registered. Notably it OMITS the step commands
-#   # stem-separation, lyrics-sync, lyrics-render, generate-music,
-#   # generate-voiceover, and (PV29 T7) generate-sfx — expanding MCP's surface is
-#   # a separate decision. seedance-generate IS included: it must be callable by
-#   # an agent exactly the way kling-generate is (PV29 T7). Commands with
-#   # subcommands (workflow, sample, profile) flatten into multiple tools.
-#
-# The 6 named above account for 6 of these 26; the rest (capture_site,
-# check_key, contact_sheet, crop_spec, cross_cut, fetch_image, filmstrip,
-# generate_captions, jump_cut, mix_timeline, montage, normalize_window, proxy,
-# reframe, search_images, search_news, synth_audio, virtual_to_original,
-# waveform_image, waveform_peaks) were never CLI commands at all — they're
-# HTTP/editor-only steps with no corresponding top-level command to allowlist.
-# `mix_timeline` is an internal leg of the caption pipeline (the caption route
-# and `generate_captions` both spawn it directly by path), so it stays off the
-# MCP surface for the same reason. `check_key` (PV29 T3) is called only
-# through serve's per-request credentials overlay, from the app's save-a-key
-# flow — testing a candidate key isn't something an AI chat agent should
-# trigger, so it's deliberately not MCP-exposed either. `generate_sfx` (PV29
-# T7) is exposed the same way generate_music/generate_voiceover are: a real
-# CLI command, but not MCP-exposed.
-EXPECTED_HTTP_ONLY = frozenset({
-    "capture_site", "check_key", "contact_sheet", "crop_spec", "cross_cut",
-    "fetch_image", "filmstrip", "generate_captions", "generate_music",
-    "generate_sfx", "generate_voiceover", "jump_cut", "lyrics_render",
-    "lyrics_sync", "mix_timeline", "montage", "normalize_window", "proxy",
-    "reframe", "search_images", "search_news", "stem_separation",
-    "synth_audio", "virtual_to_original", "waveform_image", "waveform_peaks",
-})
-
-# MCP tools that name no step at all — run/render/status/upload/init/log are
-# general-purpose or admin commands, and workflow_*/profile_* are subcommands
-# of orchestration/asset-management commands, not single-step wrappers.
-EXPECTED_MCP_ONLY = frozenset({
-    "init", "log", "profile_analyze", "profile_asset_add", "profile_asset_list",
-    "profile_asset_rm", "profile_asset_summary", "profile_list", "render",
-    "run", "status", "upload", "workflow_list", "workflow_run",
-})
+# The whole MCP surface.
+EXPECTED_MCP_TOOLS = frozenset({"render"})
 
 _OPTIONS_MSG = (
-    "\nThis test pins the MCP surface as a CONSCIOUS choice, not registry "
-    "drift (see cli/mcp_schema.py's allowlist comment). You have two options:\n"
-    "  1. Add it to cli/mcp_schema.py's _EXPORTED_COMMANDS allowlist "
-    "(expands the MCP surface), or\n"
-    "  2. Add it to the frozen EXPECTED_HTTP_ONLY / EXPECTED_MCP_ONLY set in "
-    "tests/test_mcp_surface.py (keeps it HTTP/editor-only).\n"
-    "Either way, update the corresponding frozen set here once the choice is made."
+    "\nThe MCP surface is a conscious choice (see cli/mcp_schema.py's allowlist "
+    "comment). A step is never exported as its own tool: it runs through the CLI "
+    "or POST /api/steps/<name>. If this is a real project-level tool, add it to "
+    "EXPECTED_MCP_TOOLS in tests/test_mcp_surface.py."
 )
 
 
-def _classify(steps: set[str], mcp_tools: list[dict]):
-    """Split mcp tool names into ones that name a real step vs. ones that don't.
-
-    Returns (step_tools, mcp_step_tools, tools_by_name, resolved_to_tool):
-      - step_tools: MCP tool names (tool-name space) that resolve to a real step
-      - mcp_step_tools: the same, resolved into step-name space
-      - tools_by_name: {tool name: tool dict}
-      - resolved_to_tool: {step name: tool name that exposes it}
-    """
-    tools_by_name = {t["name"]: t for t in mcp_tools}
-    step_tools: set[str] = set()
-    mcp_step_tools: set[str] = set()
-    resolved_to_tool: dict[str, str] = {}
-    for name in tools_by_name:
-        resolved = _REMAP.get(name, name)
-        if resolved in steps:
-            step_tools.add(name)
-            mcp_step_tools.add(resolved)
-            resolved_to_tool[resolved] = name
-    return step_tools, mcp_step_tools, tools_by_name, resolved_to_tool
-
-
-# ── (a) remap resolves every step-naming MCP tool to a real step ────────────
-
-def test_remap_resolves_every_step_tool_to_a_real_step():
-    steps = _all_steps()
-    mcp_tools = _mcp_tools()
-    step_tools, mcp_step_tools, _tools_by_name, _resolved_to_tool = _classify(steps, mcp_tools)
-
-    # The pinned case: the CLI's "filler" command is the one deliberate
-    # rename in the remap table, and it must keep resolving to "rm_fillers".
-    assert _REMAP.get("filler") == "rm_fillers", (
-        "cli/main.py's _STEP_COMMANDS['filler'] no longer remaps to "
-        "'rm_fillers' — the MCP 'filler' tool would stop resolving to a real "
-        "step." + _OPTIONS_MSG
-    )
-
-    # General case: every MCP tool identified as naming a step must resolve
-    # (via the remap, or identity when absent from it) to a name scan_steps()
-    # actually returns.
-    unresolved = [
-        name for name in step_tools
-        if _REMAP.get(name, name) not in steps
-    ]
-    assert not unresolved, (
-        f"MCP tool(s) {unresolved} claim to name a step but resolve to a "
-        f"name scan_steps() doesn't return." + _OPTIONS_MSG
+def test_mcp_surface_is_exactly_the_frozen_set():
+    names = _mcp_tool_names()
+    assert names == EXPECTED_MCP_TOOLS, (
+        f"MCP tools changed.\n  new: {sorted(names - EXPECTED_MCP_TOOLS)}\n"
+        f"  gone: {sorted(EXPECTED_MCP_TOOLS - names)}" + _OPTIONS_MSG
     )
 
 
-# ── (b) steps with no MCP tool == frozen allowlist ───────────────────────────
-
-def test_http_only_steps_match_frozen_set():
+def test_no_mcp_tool_is_a_step_under_another_name():
     steps = _all_steps()
-    mcp_tools = _mcp_tools()
-    _step_tools, mcp_step_tools, _tools_by_name, _resolved_to_tool = _classify(steps, mcp_tools)
-
-    http_only = steps - mcp_step_tools
-    assert http_only == EXPECTED_HTTP_ONLY, (
-        f"steps with no MCP tool changed.\n"
-        f"  newly HTTP-only (not in frozen set): {sorted(http_only - EXPECTED_HTTP_ONLY)}\n"
-        f"  no longer HTTP-only (now MCP-exposed, stale in frozen set): "
-        f"{sorted(EXPECTED_HTTP_ONLY - http_only)}\n"
-        + _OPTIONS_MSG
+    duplicates = {
+        name for name in _mcp_tool_names() if _REMAP.get(name, name) in steps
+    }
+    assert not duplicates, (
+        f"MCP tool(s) {sorted(duplicates)} are a step under another name." + _OPTIONS_MSG
     )
 
 
-# ── (c) MCP tools naming no step == frozen allowlist ─────────────────────────
-
-def test_mcp_only_tools_match_frozen_set():
-    steps = _all_steps()
-    mcp_tools = _mcp_tools()
-    step_tools, _mcp_step_tools, _tools_by_name, _resolved_to_tool = _classify(steps, mcp_tools)
-
-    mcp_tool_names = {t["name"] for t in mcp_tools}
-    mcp_only = mcp_tool_names - step_tools
-    assert mcp_only == EXPECTED_MCP_ONLY, (
-        f"MCP tools naming no step changed.\n"
-        f"  newly step-less (not in frozen set): {sorted(mcp_only - EXPECTED_MCP_ONLY)}\n"
-        f"  no longer step-less (now names a step, stale in frozen set): "
-        f"{sorted(EXPECTED_MCP_ONLY - mcp_only)}\n"
-        + _OPTIONS_MSG
+def test_no_step_command_is_on_the_mcp_allowlist():
+    on_allowlist = set(_STEP_COMMANDS) & set(_EXPORTED_COMMANDS)
+    assert not on_allowlist, (
+        f"step command(s) {sorted(on_allowlist)} are in _EXPORTED_COMMANDS." + _OPTIONS_MSG
     )
 
 
-# ── (c.1) workflow_new and workflow_edit are excluded from the MCP surface ──
-
-def test_workflow_new_and_edit_excluded_from_mcp_surface():
-    """`workflow new` and `workflow edit` must not surface as MCP tools:
-    `edit` launches $EDITOR on the user's machine, which hangs or does
-    nothing from an AI client, and scaffolding a workflow is an authoring
-    task outside the connector's editing surface. `workflow list` and
-    `workflow run` stay exported.
-    """
-    mcp_tool_names = {t["name"] for t in _mcp_tools()}
-    assert "workflow_new" not in mcp_tool_names
-    assert "workflow_edit" not in mcp_tool_names
-    assert "workflow_list" in mcp_tool_names
-    assert "workflow_run" in mcp_tool_names
+def test_filler_command_still_runs_rm_fillers():
+    # The Montaj app redirects a call to the retired `filler` tool to the
+    # `rm_fillers` step, so this rename must hold.
+    assert _REMAP.get("filler") == "rm_fillers"
+    assert "rm_fillers" in _all_steps()
 
 
-# ── (d) param parity for the MCP-exposed ∩ schema-conformance-reconciled set ─
-
-def test_exposed_migrated_steps_cover_required_schema_params():
-    """For every step that's both MCP-exposed AND in
-    test_step_schema_conformance.py's MIGRATED_STEPS (the reconciled
-    schema<->argparse set), the MCP tool's argparse-derived inputSchema
-    properties must cover the step schema's required params — an MCP caller
-    given only the tool's inputSchema must be able to see every parameter the
-    step actually requires.
-    """
-    steps = _all_steps()
-    mcp_tools = _mcp_tools()
-    _step_tools, mcp_step_tools, tools_by_name, resolved_to_tool = _classify(steps, mcp_tools)
-
-    reconciled_and_exposed = mcp_step_tools & set(MIGRATED_STEPS)
-    assert reconciled_and_exposed, "sanity check: expected a non-empty intersection"
-
-    failures = []
-    for step_name in sorted(reconciled_and_exposed):
-        schema_path, _script_path = _locate(step_name)
-        schema = json.loads(schema_path.read_text())
-        required = {
-            p["name"].replace("-", "_")
-            for p in schema.get("params", [])
-            if p.get("required")
-        }
-        tool = tools_by_name[resolved_to_tool[step_name]]
-        properties = set(tool["inputSchema"].get("properties", {}).keys())
-        missing = required - properties
-        if missing:
-            failures.append(
-                f"{step_name} (tool '{tool['name']}'): required schema param(s) "
-                f"{sorted(missing)} missing from the MCP inputSchema properties "
-                f"{sorted(properties)}"
-            )
-
-    assert not failures, "\n" + "\n".join(failures)
+def test_no_workflow_subcommand_is_exported():
+    """Since PL11 no `workflow` subcommand is an MCP tool: `workflow run`
+    creates a project, which is CLI-only, and `workflow edit` launches
+    $EDITOR, which hangs from an AI client."""
+    names = _mcp_tool_names()
+    assert not {n for n in names if n.startswith("workflow_")}

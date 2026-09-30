@@ -48,14 +48,29 @@ test("boolean true just appends the mapped flag, no value", () => {
   assert.deepEqual(args, ["--no-proxy"])
 })
 
-test("end-to-end: the real 'init' tool schema round-trips 'clips' to --clip, not --clips", () => {
-  const stdout = execFileSync("python3", ["cli/mcp_schema.py"], {
+// `init` is no longer an MCP tool (PL11), but it is the command with the most
+// flag/dest mismatches, so its schema is built here the way cli/mcp_schema.py
+// builds every exported tool.
+const INIT_SCHEMA = [
+  "import argparse, json",
+  "from cli.main import register_command",
+  "from cli.mcp_schema import _collect",
+  "p = argparse.ArgumentParser(prog='montaj')",
+  "s = p.add_subparsers(dest='command')",
+  "register_command('init', s)",
+  "out = []",
+  "_collect(['init'], s.choices['init'], out)",
+  "print(json.dumps(out))",
+].join("\n")
+
+test("end-to-end: the real 'init' command's schema round-trips 'clips' to --clip, not --clips", () => {
+  const stdout = execFileSync("python3", ["-c", INIT_SCHEMA], {
     cwd: MONTAJ_ROOT,
     encoding: "utf8",
   })
   const tools = JSON.parse(stdout)
   const initTool = tools.find(t => t.name === "init")
-  assert.ok(initTool, "expected an 'init' tool in the exported schema")
+  assert.ok(initTool, "expected an 'init' tool from _collect")
 
   const args = buildCliArgs(initTool, { prompt: "test", clips: ["a.mp4"] })
   assert.ok(args.includes("--clip"), `expected --clip in ${JSON.stringify(args)}`)
