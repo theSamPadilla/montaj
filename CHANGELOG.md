@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.13.0
+
 - **Added (editor): a host can own the render window.** `VideoEditor` and `CarouselEditor` take `renderModal`, and the render helpers are exported from `@bycrux/editor`. See `montaj_assets/editor/CHANGELOG.md`.
 
 ## v5.12.0

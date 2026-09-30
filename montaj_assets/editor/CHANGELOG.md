@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 1.7.0
+
 ### Both editors
 
 - **Added: `renderModal`, a host-owned render window, on `VideoEditor` and `CarouselEditor`.** A host that passes it gets everything the package's own modal was given plus `open`, and the package no longer mounts `RenderModal` / `CarouselRenderModal` or calls `adapter.render`.
