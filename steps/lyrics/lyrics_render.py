@@ -8,7 +8,7 @@ import json, os, sys, argparse, subprocess
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, run_ffmpeg, get_duration, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path
+from common import fail, require_file, check_output, run, run_ffmpeg, get_duration, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path, filter_script
 
 try:
     import static_ffmpeg
@@ -437,39 +437,41 @@ def main():
     vf_parts.extend(drawtext_filters)
     vf_chain = ",".join(vf_parts) if vf_parts else "null"
 
-    # Build ffmpeg args
-    if args.input:
-        ffmpeg_args = [
-            "-y",
-            "-stream_loop", "-1",
-            "-i", args.input,
-            "-ss", str(audio_seek),
-            "-i", args.audio,
-            "-t", str(duration),
-            "-vf", vf_chain,
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-            "-c:a", "aac", "-b:a", "192k",
-            "-map", "0:v", "-map", "1:a",
-            "-shortest",
-            out,
-        ]
-    else:
-        lavfi_src = f"color=c={args.bg_color}:s={args.width}x{args.height}:r={args.fps}"
-        ffmpeg_args = [
-            "-y",
-            "-f", "lavfi", "-i", lavfi_src,
-            "-ss", str(audio_seek),
-            "-i", args.audio,
-            "-t", str(duration),
-            "-vf", vf_chain,
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-            "-c:a", "aac", "-b:a", "192k",
-            "-map", "0:v", "-map", "1:a",
-            "-shortest",
-            out,
-        ]
-
-    run_ffmpeg(ffmpeg_args)
+    # The chain goes to a file (-/vf), never argv: ~220 chars/word puts a long
+    # song past the Windows 32,767-char command-line cap.
+    with filter_script(vf_chain) as vf_path:
+        # Build ffmpeg args
+        if args.input:
+            ffmpeg_args = [
+                "-y",
+                "-stream_loop", "-1",
+                "-i", args.input,
+                "-ss", str(audio_seek),
+                "-i", args.audio,
+                "-t", str(duration),
+                "-/vf", vf_path,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "192k",
+                "-map", "0:v", "-map", "1:a",
+                "-shortest",
+                out,
+            ]
+        else:
+            lavfi_src = f"color=c={args.bg_color}:s={args.width}x{args.height}:r={args.fps}"
+            ffmpeg_args = [
+                "-y",
+                "-f", "lavfi", "-i", lavfi_src,
+                "-ss", str(audio_seek),
+                "-i", args.audio,
+                "-t", str(duration),
+                "-/vf", vf_path,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "192k",
+                "-map", "0:v", "-map", "1:a",
+                "-shortest",
+                out,
+            ]
+        run_ffmpeg(ffmpeg_args)
     check_output(out)
     print(out)
 

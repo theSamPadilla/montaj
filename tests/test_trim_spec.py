@@ -1,6 +1,6 @@
 import json, pytest, sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-from trim_spec import load, is_trim_spec, merge, remap_timestamp, audio_extract_cmd, from_window
+from trim_spec import load, is_trim_spec, merge, remap_timestamp, audio_extract_graph, from_window
 
 def test_load_from_dict():
     spec = load({"input": "/a.mov", "keeps": [[0, 5], [10, 15]]})
@@ -26,13 +26,14 @@ def test_remap_timestamp_maps_to_original():
     assert remap_timestamp(6.0, keeps) == pytest.approx(10.0)
     assert remap_timestamp(8.0, keeps) == pytest.approx(12.0)
 
-def test_audio_extract_cmd_builds_correct_filter():
-    keeps = [[2.0, 5.0], [10.0, 12.0]]
-    cmd = audio_extract_cmd("/a.mov", keeps, "/out.wav")
-    cmd_str = " ".join(cmd)
-    assert "atrim=start=2.000:end=5.000" in cmd_str
-    assert "atrim=start=10.000:end=12.000" in cmd_str
-    assert "/out.wav" in cmd_str
+# Pinned to the strings v5.11.0's audio_extract_cmd put after "-filter_complex"
+# (captured from a v5.11.0 worktree, not retyped).
+def test_audio_extract_graph_builds_correct_filter():
+    assert audio_extract_graph([[2.0, 5.0], [10.0, 12.0]]) == (
+        "[0:a]atrim=start=2.000:end=5.000,asetpts=PTS-STARTPTS[a0];"
+        "[0:a]atrim=start=10.000:end=12.000,asetpts=PTS-STARTPTS[a1];"
+        "[a0][a1]concat=n=2:v=0:a=1[aout]"
+    )
 
 def test_from_window_builds_single_range_spec():
     spec = from_window("/a.mov", 10.0, 20.0)
@@ -44,9 +45,7 @@ def test_from_window_is_a_valid_trim_spec_shape(tmp_path):
     p.write_text(json.dumps(spec))
     assert is_trim_spec(str(p))
 
-def test_audio_extract_cmd_single_segment():
-    keeps = [[1.0, 3.0]]
-    cmd = audio_extract_cmd("/a.mov", keeps, "/out.wav")
-    cmd_str = " ".join(cmd)
-    assert "anull" in cmd_str
-    assert "concat" not in cmd_str
+def test_audio_extract_graph_single_segment():
+    assert audio_extract_graph([[1.0, 3.0]]) == (
+        "[0:a]atrim=start=1.000:end=3.000,asetpts=PTS-STARTPTS[a0];[a0]anull[aout]"
+    )

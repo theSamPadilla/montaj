@@ -7,7 +7,7 @@ import pytest
 from tests.conftest import REPO_ROOT, run_step, assert_file_output, assert_error
 
 sys.path.insert(0, str(REPO_ROOT / "lib"))
-from trim_spec import audio_extract_cmd  # noqa: E402  (mono/16k extraction helper, for the fidelity test)
+from trim_spec import extract_audio_at_keeps  # noqa: E402  (mono/16k extraction helper, for the fidelity test)
 
 
 def test_normalize_youtube(test_video, tmp_path):
@@ -173,7 +173,7 @@ def stereo_test_audio(tmp_path_factory):
     on the right. The channel imbalance means a mono downmix measures
     materially different loudness than a true stereo BS.1770 measurement —
     exactly the fidelity trap `normalize --window-in/--window-out` must avoid
-    by measuring the source directly instead of via `audio_extract_cmd`."""
+    by measuring the source directly instead of via `extract_audio_at_keeps`."""
     d = tmp_path_factory.mktemp("stereo_audio")
     out = d / "stereo.wav"
     subprocess.run(
@@ -201,11 +201,7 @@ def test_normalize_windowed_measure_stereo_differs_materially_from_mono_downmix(
 
     # The same window, measured through a mono/16kHz whisper-style extraction.
     extracted = tmp_path / "extracted.wav"
-    r = subprocess.run(
-        audio_extract_cmd(str(stereo_test_audio), [[0.0, 5.0]], str(extracted)),
-        capture_output=True, text=True,
-    )
-    assert r.returncode == 0, r.stderr
+    extract_audio_at_keeps(str(stereo_test_audio), [[0.0, 5.0]], str(extracted))
 
     proc2 = run_step("normalize.py", "--input", str(extracted), "--target", "youtube", "--measure-only")
     assert proc2.returncode == 0, f"stderr: {proc2.stderr}"

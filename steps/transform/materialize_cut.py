@@ -10,11 +10,11 @@ Modes 2 and 3 can be combined: --inpoint/--outpoint clips the window, then --cut
 Batch mode (--inputs): materialise multiple clips with capped concurrency (default: 2 workers).
 Each encode is a full libx264 pass — running too many in parallel exhausts memory on 4K footage.
 """
-import json, os, sys, argparse, tempfile
+import json, os, sys, argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin
+from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin, filter_script
 from trim_spec import is_trim_spec, is_cut_spec, load as load_spec, merge as merge_keeps
 from normalize import SEEK_PREROLL_S
 
@@ -196,19 +196,13 @@ def _encode_one(spec: dict, out_path: str, audio_only: bool = False) -> str:
             "-c:a", "aac", "-b:a", "192k",
         ]
     map_flags = ["-map", "[aout]"] if audio_only else ["-map", "[vout]", "-map", "[aout]"]
-    fd, fc_path = tempfile.mkstemp(suffix=".txt", prefix="materialize_fc_")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(filter_str)
+    with filter_script(filter_str) as fc_path:
         run([
             ffmpeg_bin(), "-y", *input_args,
             "-/filter_complex", fc_path,
             *map_flags,
             *encode_flags, out_path,
         ])
-    finally:
-        if os.path.exists(fc_path):
-            os.unlink(fc_path)
     check_output(out_path)
     return out_path
 

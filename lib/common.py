@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Shared helpers for video-toolkit scripts. All scripts import from here."""
-import json, math, os, re, shutil, subprocess, sys
+import contextlib, json, math, os, re, shutil, subprocess, sys, tempfile
 
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -46,6 +46,33 @@ def run(cmd: list[str], timeout: int = 300, check: bool = True) -> subprocess.Co
     if check and r.returncode != 0:
         fail("unexpected_error", f"Command failed: {' '.join(cmd)}\n{r.stderr[:4000]}")
     return r
+
+
+@contextlib.contextmanager
+def filter_script(graph: str, dir=None):
+    """Write an ffmpeg filter graph to a temp file and yield its path.
+
+    Windows caps a CreateProcess command line at 32,767 chars, so a graph never
+    travels in argv: pass the path as ``-/filter_complex <path>`` or ``-/vf <path>``
+    (ffmpeg 7+ reads the option value from the file). Always a file, never a
+    size threshold, so every OS runs the same path.
+
+    Bytes are exactly ``graph`` as UTF-8: no BOM, no trailing newline, written in
+    binary mode (no cp1252, no CRLF). The fd is closed before the yield so the
+    spawned ffmpeg can open the file on Windows. Names are unique (mkstemp), in
+    the system temp dir unless ``dir`` is given, and removed on exit even if the
+    body raises.
+    """
+    fd, path = tempfile.mkstemp(prefix="montaj_fc_", suffix=".txt", dir=dir)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(graph.encode("utf-8"))
+        yield path
+    finally:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
 
 
 # Executable-name seam. Windows binaries carry a ".exe" suffix; everywhere

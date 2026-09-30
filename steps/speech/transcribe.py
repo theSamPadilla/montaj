@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 import models as _models
 from common import fail, require_file, check_output, run, run_whisper, find_whisper_bin, resolve_whisper_model, ffmpeg_bin, whisper_weight_path, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
-from trim_spec import is_trim_spec, load as load_spec, audio_extract_cmd, remap_timestamp
+from trim_spec import is_trim_spec, load as load_spec, extract_audio_at_keeps, remap_timestamp
 
 def main():
     parser = argparse.ArgumentParser(description="Transcribe audio or video using whisper.cpp")
@@ -43,7 +43,7 @@ def main():
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp.close()
         tmp_audio = tmp.name
-        run(audio_extract_cmd(source_path, keeps, tmp_audio))
+        extract_audio_at_keeps(source_path, keeps, tmp_audio)
         audio_input = tmp_audio
         output_prefix = args.out or os.path.splitext(source_path)[0]
     else:

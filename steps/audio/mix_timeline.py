@@ -40,10 +40,9 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import check_output, fail, ffmpeg_bin, ffprobe_bin, progress, require_file, run
+from common import check_output, fail, ffmpeg_bin, ffprobe_bin, filter_script, progress, require_file, run
 
 # Max ffmpeg inputs in a single pass (the silent bed plus this many segments).
 # A long b-roll cut can easily carry a couple of hundred audible pieces, and one
@@ -153,10 +152,7 @@ def _mix_pass(segments: list, duration: float, sample_rate: int, out_path: str):
     # The graph goes to a file rather than argv: a few hundred segments is a
     # filter string well past what a command line should carry. Same technique
     # materialize_cut uses.
-    fd, fc_path = tempfile.mkstemp(suffix=".txt", prefix="mix_timeline_fc_")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(";".join(parts))
+    with filter_script(";".join(parts)) as fc_path:
         run([
             ffmpeg_bin(), "-y", *inputs,
             "-/filter_complex", fc_path,
@@ -166,9 +162,6 @@ def _mix_pass(segments: list, duration: float, sample_rate: int, out_path: str):
             "-c:a", "pcm_s16le",
             out_path,
         ], timeout=FFMPEG_TIMEOUT)
-    finally:
-        if os.path.exists(fc_path):
-            os.unlink(fc_path)
 
 
 def mix_segments(segments: list, duration: float, sample_rate: int, out_path: str):

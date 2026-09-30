@@ -1,6 +1,6 @@
 import json
 
-from common import ffmpeg_bin
+from common import ffmpeg_bin, filter_script, run
 
 
 def load(src) -> dict:
@@ -102,8 +102,8 @@ def remap_timestamp(t: float, keeps: list) -> float:
     return t
 
 
-def audio_extract_cmd(input_path: str, keeps: list, out_wav: str) -> list:
-    """Build an ffmpeg command to extract and concatenate audio at keep ranges."""
+def audio_extract_graph(keeps: list) -> str:
+    """Build the filter graph that extracts and concatenates audio at keep ranges."""
     n = len(keeps)
     filter_parts = []
     for i, (s, e) in enumerate(keeps):
@@ -115,15 +115,23 @@ def audio_extract_cmd(input_path: str, keeps: list, out_wav: str) -> list:
         filter_parts.append(f"[a0]anull[aout]")
     else:
         filter_parts.append(f"{inputs}concat=n={n}:v=0:a=1[aout]")
-    filter_complex = ";".join(filter_parts)
+    return ";".join(filter_parts)
 
-    return [
-        ffmpeg_bin(), "-y",
-        "-i", input_path,
-        "-filter_complex", filter_complex,
-        "-map", "[aout]",
-        "-ar", "16000",
-        "-ac", "1",
-        "-f", "wav",
-        out_wav,
-    ]
+
+def extract_audio_at_keeps(input_path: str, keeps: list, out_wav: str, timeout: int = 300):
+    """Extract and concatenate audio at keep ranges into a 16 kHz mono wav.
+
+    The graph is ~70 chars per range, so it goes through a file
+    (``-/filter_complex``), never argv.
+    """
+    with filter_script(audio_extract_graph(keeps)) as fc_path:
+        return run([
+            ffmpeg_bin(), "-y",
+            "-i", input_path,
+            "-/filter_complex", fc_path,
+            "-map", "[aout]",
+            "-ar", "16000",
+            "-ac", "1",
+            "-f", "wav",
+            out_wav,
+        ], timeout=timeout)

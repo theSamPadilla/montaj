@@ -5,7 +5,7 @@ import json, os, re, sys, argparse, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, run, get_duration, transcribe_words, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
-from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, audio_extract_cmd, remap_timestamp, from_window
+from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, extract_audio_at_keeps, remap_timestamp, from_window
 
 # Hesitation-sound fillers per language. Kept conservative: only non-lexical
 # hesitations (never real words like Spanish "este"/"pues") so we don't cut
@@ -67,7 +67,7 @@ def main():
         fd, tmp_wav = tempfile.mkstemp(suffix=".wav", prefix="rmfil_")
         os.close(fd)
         try:
-            run(audio_extract_cmd(source, keeps, tmp_wav))
+            extract_audio_at_keeps(source, keeps, tmp_wav)
             words = transcribe_words(tmp_wav, args.model, language=args.language)
         finally:
             if os.path.exists(tmp_wav):
