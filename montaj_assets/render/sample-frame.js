@@ -33,6 +33,7 @@ import { isMain as isMainModule } from './is-main.js'
 import { toFileHref, isAbsPath } from './file-url.js'
 import { pMap } from './p-map.js'
 import { FFMPEG } from './ffmpeg-bin.js'
+import { externalizeFilterGraph } from './filter-script.js'
 import { isHdr } from './color-space.js'
 import { sdrLayerFor, gradeKeyFor, probeMedia } from './sdr-layer.js'
 import { curveIds, lutPath, MASTER_LOOK } from './look.js'
@@ -1232,10 +1233,18 @@ export async function sampleFrame({
   ]
 
   log(`compositing frame (${actualWidth}×${actualHeight})`)
-  const compResult = spawnSync(FFMPEG, ffmpegArgs, {
-    encoding: 'utf8',
-    timeout: 120_000,
-  })
+  // The graph reaches ffmpeg as a file in workDir (WIN1b: Windows caps a command
+  // line at 32,767 characters). Removed here on every way out of the spawn.
+  let compResult
+  const script = externalizeFilterGraph(ffmpegArgs, workDir)
+  try {
+    compResult = spawnSync(FFMPEG, script.args, {
+      encoding: 'utf8',
+      timeout: 120_000,
+    })
+  } finally {
+    script.cleanup()
+  }
 
   if (compResult.status !== 0) {
     throw new Error(`ffmpeg composite failed:\n${compResult.stderr?.slice(-500)}`)

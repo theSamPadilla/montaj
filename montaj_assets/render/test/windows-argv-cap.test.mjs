@@ -16,7 +16,7 @@
 // file in its own process, so this env does not leak into other files.
 import { describe, test, before, after, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync, chmodSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, chmodSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 
@@ -51,6 +51,7 @@ process.env.MONTAJ_FFMPEG = STUB
 process.env.MONTAJ_FFPROBE = STUB
 const { FFMPEG } = await import('../ffmpeg-bin.js')
 const { encodeSegment } = await import('../encode-segment.js')
+const { mixAudioIntoVideo, buildAudioTrackFilters, loudnessFilter } = await import('../mix-audio.js')
 
 // One photo, one eased 2x crop zoom over 5 s. probedWidth/Height are the image
 // path's test seam (encode-segment.js animatedImageCrop), so no ffprobe runs.
@@ -143,6 +144,79 @@ describe('an eased crop zoom on one photo, at the leaf', () => {
     assert.equal(dirname(s.path), dirname(outputPath))
     assert.deepEqual(scriptExistedAfter, [false])
     assert.deepEqual(scriptsIn(dirname(outputPath)), [])
+  })
+})
+
+describe('no render source builds an inline -filter_complex spawn', () => {
+  const RENDER_DIR = join(dirname(new URL(import.meta.url).pathname), '..')
+  const sources = readdirSync(RENDER_DIR).filter((f) => f.endsWith('.js'))
+
+  test('the scan covers the spawning modules', () => {
+    for (const f of ['encode-segment.js', 'sample-frame.js', 'mix-audio.js']) {
+      assert.ok(sources.includes(f), `${f} not in the scanned set (${sources.length} files)`)
+    }
+  })
+
+  test('a source that builds a -filter_complex pair also calls externalizeFilterGraph', () => {
+    // Callers keep building the inline pair (so _dryRun and the goldens pin the
+    // graph) and hand it to the helper before the spawn. A file with the literal
+    // and no helper call would spawn the graph inline. filter-script.js itself
+    // is the helper and is excluded. The leaf tests prove the calls are live.
+    const hits = sources
+      .filter((f) => f !== 'filter-script.js')
+      .filter((f) => {
+        const src = readFileSync(join(RENDER_DIR, f), 'utf8')
+        return /['"]-filter_complex['"]/.test(src) && !/externalizeFilterGraph\(/.test(src)
+      })
+    assert.deepEqual(hits, [], `inline -filter_complex with no externalizeFilterGraph call: ${hits.join(', ')}`)
+  })
+})
+
+describe('the audio mix, at the leaf', () => {
+  const TRACKS = [
+    { src: join(WORK, 'a.wav'), start: 0, volume: 0.8 },
+    { src: join(WORK, 'b.wav'), start: 1.5, volume: 0.5 },
+  ]
+  test('mixAudioIntoVideo passes -/filter_complex with the exact graph and removes the file', () => {
+    const tmp = join(WORK, 'mix-tmp')
+    mkdirSync(tmp, { recursive: true })
+    const oldTmp = process.env.TMPDIR
+    process.env.TMPDIR = tmp
+    const log = freshLog()
+    try {
+      mixAudioIntoVideo(join(WORK, 'v.mp4'), TRACKS, join(WORK, 'out.mp4'), { loudness: -14 })
+    } finally {
+      if (oldTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = oldTmp
+    }
+    const calls = readLog(log)
+    assert.equal(calls.length, 1)
+    const { filterParts, audioLabel } = buildAudioTrackFilters(TRACKS, 1, '[0:a]')
+    const expected = [...filterParts, loudnessFilter(audioLabel, -14).part].join(';')
+    const argv = calls[0].argv
+    assert.ok(argv.includes('-/filter_complex'), 'no -/filter_complex in argv')
+    assert.ok(!argv.includes('-filter_complex'), '-filter_complex is still in argv')
+    const s = calls[0].scripts.find((x) => x.opt === '-/filter_complex')
+    assert.ok(s, 'no script logged')
+    assert.ok(s.content === expected, 'script content !== expected graph')
+    assert.equal(dirname(s.path), tmp)
+    assert.equal(existsSync(s.path), false)
+    assert.deepEqual(scriptsIn(tmp), [])
+  })
+
+  test('ffmpeg exits non-zero: mixAudioIntoVideo throws, the script is gone', () => {
+    const tmp = join(WORK, 'mix-tmp-fail')
+    mkdirSync(tmp, { recursive: true })
+    const oldTmp = process.env.TMPDIR
+    process.env.TMPDIR = tmp
+    process.env.WIN1B_STUB_EXIT = '1'
+    freshLog()
+    try {
+      assert.throws(() => mixAudioIntoVideo(join(WORK, 'v.mp4'), TRACKS, join(WORK, 'out.mp4')), /ffmpeg audio mix failed/)
+    } finally {
+      delete process.env.WIN1B_STUB_EXIT
+      if (oldTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = oldTmp
+    }
+    assert.deepEqual(scriptsIn(tmp), [])
   })
 })
 

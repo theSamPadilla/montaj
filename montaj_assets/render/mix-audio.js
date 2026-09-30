@@ -11,8 +11,10 @@
  * holds them together.
  */
 import { spawnSync } from 'child_process'
+import { tmpdir } from 'os'
 import { audioSourceWindow } from '@bycrux/timeline-core'
 import { FFMPEG } from './ffmpeg-bin.js'
+import { externalizeFilterGraph } from './filter-script.js'
 
 const FFMPEG_TIMEOUT_MS = 600_000
 
@@ -260,7 +262,9 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness
   const parts = ln ? [...filterParts, ln.part] : filterParts
   const outLabel = ln ? ln.label : audioLabel
 
-  const result = spawnSync(FFMPEG, [
+  // The graph goes by file in the system temp dir (WIN1b: a Windows command
+  // line caps at 32,767 characters), removed however the spawn ends.
+  const script = externalizeFilterGraph([
     '-y', ...inputs,
     '-filter_complex', parts.join(';'),
     '-map', '0:v',
@@ -269,7 +273,13 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness
     '-c:a', 'aac', '-b:a', '192k',
     '-movflags', '+faststart',
     outputPath,
-  ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
+  ], tmpdir())
+  let result
+  try {
+    result = spawnSync(FFMPEG, script.args, { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
+  } finally {
+    script.cleanup()
+  }
 
   if (result.status !== 0) throw new Error(`ffmpeg audio mix failed:\n${result.stderr}`)
 }
