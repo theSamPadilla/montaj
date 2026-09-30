@@ -44,6 +44,15 @@ describe('sourceCropVideoStyle', () => {
     expect(style.objectFit).toBe('fill')
   })
 
+  it('clips the whole-source element to the crop rect (the export pads, never shows source beyond it)', () => {
+    const style = sourceCropVideoStyle({
+      crop: { x: 0.25, y: 0.25, w: 0.5, h: 0.5 },
+      sourceWidth: 1920, sourceHeight: 1080,
+      frameWidth: 1080, frameHeight: 1920,
+    })!
+    expect(style.clipPath).toBe('inset(25% 25% 25% 25%)')
+  })
+
   it('crop region matching frame aspect fills the frame exactly (no letterbox)', () => {
     // Portrait source 1080x1920, crop a centred 9:16 sub-rect → same aspect as a
     // 1080x1920 frame. Should fill edge-to-edge.

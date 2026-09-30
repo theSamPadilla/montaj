@@ -66,6 +66,9 @@ export function sourceCropVideoStyle(input: SourceCropInput): CSSProperties | nu
     top: `${topRatio * 100}%`,
     objectFit: 'fill',
     maxWidth: 'none',
+    // The element is the WHOLE source: clip it to the crop sub-rect. The export
+    // pads around a contained crop and never shows the source beyond it (PV55 review).
+    clipPath: `inset(${Math.max(0, crop.y) * 100}% ${Math.max(0, 1 - crop.x - crop.w) * 100}% ${Math.max(0, 1 - crop.y - crop.h) * 100}% ${Math.max(0, crop.x) * 100}%)`,
   }
 }
 
