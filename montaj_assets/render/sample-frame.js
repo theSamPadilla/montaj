@@ -909,7 +909,9 @@ export async function sampleFrame({
       // the ORIGINAL-coords seek and NO tone-map (both handled below). Decided
       // per clip: a clip with no proxy quietly falls back to the master.
       const item = ri.item
-      const useProxy = preferProxy && !!item.proxySrc && existsSync(item.proxySrc)
+      // A remove_bg item with a nobg_src is the exception: the proxy is the raw
+      // clip (background still in), so it decodes the cutout, as the render does.
+      const useProxy = shouldUseProxy(item, preferProxy, existsSync)
 
       // PV42: in an HDR project each layer is graded by its ORIGIN, decided by
       // sdr-layer.js and nothing else here. An SDR-origin layer (screen
@@ -1544,4 +1546,15 @@ function fail(code, message) {
 // so the property under test — different key for different base, same key
 // for unset vs. the pre-fontsBaseDir key — has to be asserted on the key
 // itself, not inferred from rendered output.
-export { resolveVideoSource, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION }
+/**
+ * Whether `--prefer-proxy` decodes the item's proxy. Never for a cutout
+ * (remove_bg + nobg_src): the proxy still has the background the render removes.
+ * Costs a heavier decode (ProRes 4444 alpha) on those items; correctness wins.
+ */
+function shouldUseProxy(item, preferProxy, exists) {
+  if (!preferProxy || !item.proxySrc) return false
+  if (item.remove_bg && item.nobg_src) return false
+  return !!exists(item.proxySrc)
+}
+
+export { shouldUseProxy, resolveVideoSource, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION }

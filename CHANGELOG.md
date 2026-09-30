@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed: `sample_frame --prefer-proxy` shows a background-removed clip without its background, as the render does.**
+
 ## v5.15.0
 
 - **Fixed: `fetch` runs yt-dlp through montaj's own Python (`python -m yt_dlp`), so it never depends on a yt-dlp on PATH.**
