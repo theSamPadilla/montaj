@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed: a clip whose length is not a whole number of filmstrip ticks showed "No preview" in the Footage panel.** The last tile's seek landed inside the final frame, decoded nothing and failed the whole sheet (camera clips such as 15.015 s at 23.976 fps). `filmstrip` now retries slightly earlier and takes the last frame.
+
 ## v5.10.0
 
 - **Added: keyframed crop on video.** A video's `cropX`/`cropY`/`cropW`/`cropH` keyframes now pan and zoom it inside its box in the preview, frame samples and the export, which was image-only. A keyed video needs `sourceWidth` and `sourceHeight`, `cropW` and `cropH` keyed together at the same times and easing, and one pixel aspect across its keys (within 1%); `validate` names the two keyframes that disagree. Past a 64 Mpx working size the export renders the crop at a lower resolution, framing unchanged.

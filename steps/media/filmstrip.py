@@ -23,10 +23,38 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, run, check_output, get_duration, ffmpeg_bin
 
 
+# How far back to retry when a seek lands past the last decodable frame.
+_TAIL_RETRY_BACK = (0.1, 0.5, 2.0)
+
+
 def extract_tile(src: str, t: float, dest: str, width: int, timeout: int):
-    run([ffmpeg_bin(), "-nostdin", "-loglevel", "error", "-ss", f"{t:.4f}",
-         "-i", src, "-frames:v", "1", "-vf", f"scale={width}:-2", dest, "-y"],
-        timeout=timeout)
+    """Write one frame near t to dest.
+
+    A seek to t drops every frame whose start is before t, so a t inside the
+    LAST frame's span (the tail tick of a grid whose duration is not a whole
+    number of ticks, e.g. 15.0 on a 15.015 s, 23.976 fps clip) decodes no
+    frame at all: ffmpeg then reports a bogus mjpeg "Non full-range YUV" encoder
+    error and exits non-zero, which failed the whole sheet. Retry a little
+    earlier, so the last frame is taken instead.
+    """
+    def ok() -> bool:
+        return os.path.isfile(dest) and os.path.getsize(dest) > 0
+
+    def attempt(at: float):
+        return run([ffmpeg_bin(), "-nostdin", "-loglevel", "error", "-ss", f"{at:.4f}",
+                    "-i", src, "-frames:v", "1", "-vf", f"scale={width}:-2", dest, "-y"],
+                   timeout=timeout, check=False)
+
+    r = attempt(t)
+    for back in _TAIL_RETRY_BACK:
+        if r.returncode == 0 and ok():
+            return
+        if t - back < 0:
+            break
+        r = attempt(t - back)
+    if r.returncode == 0 and ok():
+        return
+    fail("unexpected_error", f"Could not extract a frame at {t:.3f}s from {src}\n{r.stderr[:4000]}")
 
 
 def tile_sheet(work: str, count: int, cols: int, dest: str, timeout: int):

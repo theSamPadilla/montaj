@@ -129,3 +129,24 @@ def test_filmstrip_invalid_tile_width_rejected(twelve_second_video, tmp_path):
     proc = run_step("filmstrip.py", "--input", str(twelve_second_video),
                     "--out-dir", str(tmp_path), "--tile-width", "0")
     assert_error(proc, "invalid_param")
+
+
+def test_filmstrip_tail_tick_inside_last_frame(tmp_path):
+    """Camera-style clip: 15.015 s at 23.976 fps, so the last frame starts at
+    14.973 and the grid's final tick (15.0) sits inside it. A seek to 15.0
+    decodes no frame; the sheet used to fail and the Footage card showed
+    "No preview"."""
+    src = tmp_path / "tail.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-f", "lavfi", "-i", "color=c=gray:s=320x240:d=15.015:r=24000/1001",
+        "-pix_fmt", "yuv420p", "-g", "1", str(src),
+    ], check=True, capture_output=True)
+    out = tmp_path / "fs"
+    proc = run_step("filmstrip.py", "--input", str(src), "--out-dir", str(out),
+                    "--max-tiles", "100", "--min-interval", "1.0")
+    assert proc.returncode == 0, f"stderr: {proc.stderr}"
+    data = json.loads(proc.stdout)
+    tiles = [t for sheet in data["sheets"] for t in sheet["tiles"]]
+    assert len(tiles) == 16
+    assert Path(data["sheets"][0]["path"]).stat().st_size > 0
