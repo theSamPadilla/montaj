@@ -126,7 +126,7 @@ _BUNDLE_TIMEOUT_S = 30
 _BUNDLE_SEMAPHORE = asyncio.Semaphore(4)
 _log = logging.getLogger(__name__)
 # esbuild message prefix: an absolute POSIX path, then :line:col:
-_ESBUILD_LOC = re.compile(r"^(/.+?):(\d+):(\d+): ")
+_ESBUILD_LOC = re.compile(r"^((?:[A-Za-z]:[\\/]|/).+?):(\d+):(\d+): ")
 
 # Must equal IMPORT_REFUSED in montaj_assets/render/overlay-build.js. If the two
 # spellings ever drift, an import refusal silently degrades to a generic 422

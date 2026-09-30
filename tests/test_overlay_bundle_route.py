@@ -376,3 +376,20 @@ def test_real_syntax_error_in_imported_helper_inside_roots_422(env):
     r = _get(d / "ov.jsx")
     assert r.status_code == 422, r.text
     assert "h.js" in r.json()["detail"]["message"]
+
+
+# --- drive-letter paths (Windows esbuild locations) -------------------------
+
+def test_refused_import_on_a_drive_letter_path():
+    msg = r"C:\Users\a\x.jsx:1:18: import outside the allowed folders: C:\o\y.js"
+    assert overlays_route._refused_import(msg) == r"C:\o\y.js"
+
+
+@pytest.mark.parametrize("msg,path", [
+    (r"C:\Users\a b\x.jsx:3:4: Unexpected", r"C:\Users\a b\x.jsx"),
+    ("C:/Users/a/x.jsx:3:4: Unexpected", "C:/Users/a/x.jsx"),
+    ("/Users/a/x.jsx:3:4: Unexpected", "/Users/a/x.jsx"),
+])
+def test_esbuild_loc_matches_drive_letter_and_posix(msg, path):
+    m = overlays_route._ESBUILD_LOC.match(msg)
+    assert m is not None and m.groups() == (path, "3", "4")

@@ -261,3 +261,19 @@ def test_missing_audio_errors(captions_json, tmp_path):
         "--audio",    "/nonexistent/song.mp3",
     )
     assert_error(proc, "file_not_found")
+
+
+# --- Windows font candidate --------------------------------------------------
+
+def test_find_fontfile_windows_arial(monkeypatch):
+    import ntpath
+    from lib.common import ffmpeg_filter_path
+    monkeypatch.delenv("SystemRoot", raising=False)
+    arial = ntpath.join(r"C:\Windows", "Fonts", "arial.ttf")
+    monkeypatch.setattr(_mod, "_isfile", lambda p: p == arial)
+    assert _mod._find_fontfile() == arial
+
+    lines = _mod._make_line_filters(
+        ["hi"], 0, 1, 40, "white", "(w-text_w)/2", "center", 1080, 48, arial, False)
+    expected = ffmpeg_filter_path(arial)
+    assert lines[0].startswith(f"drawtext=fontfile={expected}:")

@@ -4,7 +4,7 @@
 Takes a caption track JSON (from lyrics_sync / caption) and an audio file, and produces
 an MP4 with word-by-word accumulated text overlaid on a solid-color or video background.
 """
-import json, os, sys, argparse, subprocess
+import json, ntpath, os, sys, argparse, subprocess
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
@@ -27,10 +27,21 @@ _FONT_CANDIDATES = [
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
 ]
 
+_isfile = os.path.isfile  # module seam: tests patch this, never os.path.isfile
+
+
+def _font_candidates():
+    # Windows fonts come last so the macOS and Linux order is unchanged.
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    return _FONT_CANDIDATES + [
+        ntpath.join(root, "Fonts", "arial.ttf"),
+        ntpath.join(root, "Fonts", "segoeui.ttf"),
+    ]
+
 
 def _find_fontfile():
-    for path in _FONT_CANDIDATES:
-        if os.path.isfile(path):
+    for path in _font_candidates():
+        if _isfile(path):
             return path
     return None
 
