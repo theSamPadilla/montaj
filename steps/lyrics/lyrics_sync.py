@@ -4,13 +4,12 @@ Outputs a caption track JSON with word-level timestamps grouped by lyric line.
 
 Pipeline:
   1. Whisper on vocals.wav → word timestamps + rough transcript
-  2. SequenceMatcher aligns original lyrics to Whisper words → inherit timestamps
+  2. One in-order global alignment matches the lyrics to Whisper words → matched words inherit timestamps
   3. Unmatched lyric words are interpolated between neighbouring matched words
 
 --start / --end override auto-detection of the lyrics window.
 """
 import json, mimetypes, os, re, sys, tempfile, argparse
-from difflib import SequenceMatcher
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
@@ -26,7 +25,72 @@ WINDOW_POST_BUFFER = 0.0
 
 
 def normalize(word):
-    return re.sub(r"[^a-z0-9']", "", word.lower())
+    # Unicode-aware: Cyrillic, accented and other letters survive. A token that
+    # is all symbols or punctuation (♪, &, a dash) normalizes to '', and
+    # _align_tokens never lets '' match anything.
+    return re.sub(r"[^\w']", "", word.lower())
+
+
+_SKIP_LYRIC, _DIAGONAL, _SKIP_WHISPER = 0, 1, 2
+
+
+def _align_tokens(lyr_norm, whi_norm):
+    """Align normalized lyric tokens to normalized Whisper tokens, in order.
+
+    Semi-global Levenshtein with unit costs: every lyric word is consumed
+    (matched, substituted or skipped), and Whisper words before the first or
+    after the last aligned lyric word cost nothing. Only an exact match of a
+    non-empty token becomes an anchor.
+
+    On a tie the backtrack prefers skipping a lyric word over the diagonal
+    (then over skipping a Whisper word), so when the lyrics hold more copies of
+    a passage than were sung, the earlier copies take the audio and the extra
+    copy is the one left to interpolation.
+
+    Pure Python, O(n*m) time; one byte per cell for the backtrack.
+    Returns {lyric_idx: whisper_idx}, one entry per anchor.
+    """
+    n, m = len(lyr_norm), len(whi_norm)
+    if n == 0 or m == 0:
+        return {}
+
+    prev  = [0] * (m + 1)          # row 0: leading Whisper words are free
+    moves = []                      # moves[i-1][j]: the step taken into cell (i, j)
+    for i in range(1, n + 1):
+        tok  = lyr_norm[i - 1]
+        cur  = [i] * (m + 1)        # column 0: i lyric words skipped
+        move = bytearray(m + 1)     # 0 == _SKIP_LYRIC
+        left = i
+        for j in range(1, m + 1):
+            best = prev[j] + 1                                   # skip this lyric word
+            diag = prev[j - 1] + (0 if tok and tok == whi_norm[j - 1] else 1)
+            if diag < best:
+                best = diag
+                move[j] = _DIAGONAL
+            if left + 1 < best:                                  # skip this Whisper word
+                best = left + 1
+                move[j] = _SKIP_WHISPER
+            cur[j] = left = best
+        moves.append(move)
+        prev = cur
+
+    # Trailing Whisper words are free: end on the cheapest column, the earliest on a tie.
+    j = min(range(m + 1), key=prev.__getitem__)
+    i = n
+    anchors = {}
+    while i > 0 and j > 0:
+        step = moves[i - 1][j]
+        if step == _DIAGONAL:
+            tok = lyr_norm[i - 1]
+            if tok and tok == whi_norm[j - 1]:
+                anchors[i - 1] = j - 1
+            i -= 1
+            j -= 1
+        elif step == _SKIP_LYRIC:
+            i -= 1
+        else:
+            j -= 1
+    return anchors
 
 
 def parse_lyrics(lyrics_path):
@@ -71,10 +135,7 @@ def detect_window(w_words, lyrics_groups):
     whisper_norm = [normalize(w["word"]) for w in w_words]
     lyrics_norm  = [normalize(w) for w in flat_lyrics]
 
-    matcher = SequenceMatcher(None, lyrics_norm, whisper_norm, autojunk=False)
-    matched = [block.b + off
-               for block in matcher.get_matching_blocks()
-               for off in range(block.size)]
+    matched = list(_align_tokens(lyrics_norm, whisper_norm).values())
 
     if not matched:
         return None, None
@@ -90,17 +151,16 @@ def align(lyrics_groups, w_words):
     Matched words inherit Whisper's timestamps directly.
     Unmatched words are interpolated between neighbouring matched anchors.
 
-    Returns [{text, start, end, words: [{word, start, end}]}]
+    Returns [{text, start, end, words: [{word, start, end}]}], or [] when no
+    lyric word matches any Whisper word (main then fails alignment_failed).
     """
     flat_lyrics  = [(g, w) for g, group in enumerate(lyrics_groups) for w in group]
     whisper_norm = [normalize(w["word"]) for w in w_words]
     lyrics_norm  = [normalize(w) for _, w in flat_lyrics]
 
-    matcher  = SequenceMatcher(None, lyrics_norm, whisper_norm, autojunk=False)
-    lyr2whi  = {}
-    for block in matcher.get_matching_blocks():
-        for off in range(block.size):
-            lyr2whi[block.a + off] = block.b + off
+    lyr2whi = _align_tokens(lyrics_norm, whisper_norm)
+    if not lyr2whi:
+        return []
 
     # Build a flat list of (lyric_word, start, end) — interpolating gaps
     total = len(flat_lyrics)
