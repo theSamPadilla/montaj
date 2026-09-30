@@ -19,6 +19,7 @@
  * into these boxes — is `render/test/per-axis-box-parity.test.mjs`.
  */
 import { render } from '@testing-library/react'
+import { geometryAt } from '@bycrux/timeline-core'
 import type { EditorProject, VisualItem } from '../../../schema'
 import type { OverlayFactory } from '../../../types'
 import OverlayItemsLayer from '../OverlayItemsLayer'
@@ -43,11 +44,11 @@ beforeEach(() => {
 })
 afterEach(() => vi.restoreAllMocks())
 
-function renderLayer(item: VisualItem, where: 'overlay' | 'track0' = 'overlay') {
+function renderLayer(item: VisualItem, where: 'overlay' | 'track0' = 'overlay', currentTime = item.start + 0.5) {
   const utils = render(
     <OverlayItemsLayer
       project={{ id: 'p', status: 'draft', settings: { resolution: [W, H], fps: 30 }, tracks: [[]] } as unknown as EditorProject}
-      currentTime={item.start + 0.5}
+      currentTime={currentTime}
       isPlaying={false}
       isCanvasProject={false}
       overlayTracks={where === 'overlay' ? [[item]] : [[]]}
@@ -69,11 +70,14 @@ function renderLayer(item: VisualItem, where: 'overlay' | 'track0' = 'overlay') 
   return { ...utils, media, frame: utils.container as HTMLElement }
 }
 
-function placementsFor(item: VisualItem, mediaW: number, mediaH: number, where: 'overlay' | 'track0' = 'overlay') {
-  const { media, frame } = renderLayer(item, where)
+function placementsFor(
+  item: VisualItem, mediaW: number, mediaH: number, where: 'overlay' | 'track0' = 'overlay',
+  currentTime?: number, exportItem: VisualItem = item,
+) {
+  const { media, frame } = renderLayer(item, where, currentTime)
   return {
     preview: previewPlacement(media, frame, W, H, { mediaW, mediaH }),
-    exported: exportPlacement(item, W, H, mediaW, mediaH),
+    exported: exportPlacement(exportItem, W, H, mediaW, mediaH),
   }
 }
 
@@ -117,6 +121,21 @@ describe('per-axis scale: the preview fits media into the box the export does', 
   it('upper-track video without a crop, letterboxed in its box', () => {
     const item = { id: 'v', type: 'video', src: 'v.mp4', start: 0, end: 4, inPoint: 0, ...UPPER_BOX } as VisualItem
     const { preview, exported } = placementsFor(item, 1920, 1080)
+    expectPlacementClose(preview, exported, TOL_PX)
+  })
+})
+
+describe('a keyframed video crop (PV55 phase 2): the preview follows the sampled crop', () => {
+  it('upper-track video panning cropX, at t=1, matches the still crop of that instant', () => {
+    const item = {
+      id: 'kv', type: 'video', src: 'kv.mp4', start: 0, end: 4, inPoint: 0,
+      sourceCrop: { x: 0, y: 0, w: 0.48, h: 1 }, sourceWidth: 1920, sourceHeight: 1080,
+      keyframes: [{ prop: 'cropX', points: [{ t: 0, value: 0 }, { t: 2, value: 0.5 }] }], ...UPPER_BOX,
+    } as VisualItem
+    // The export at that instant is exactly this still crop.
+    const twin = { ...item, keyframes: undefined, sourceCrop: geometryAt(item, 'video', 1).sourceCrop } as VisualItem
+    expect(twin.sourceCrop!.x).toBeCloseTo(0.25, 6)
+    const { preview, exported } = placementsFor(item, 1920, 1080, 'overlay', 1, twin)
     expectPlacementClose(preview, exported, TOL_PX)
   })
 })

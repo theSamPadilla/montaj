@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
-import { containsTime, geometryAt } from '@bycrux/timeline-core'
+import { containsTime, geometryAt, hasCropKeyframes } from '@bycrux/timeline-core'
 import { videoTransformContainerStyle, videoTransformBoxPct, mediaBoxStyle, perAxisRatio, zoomTo, type VideoTransform } from './transformStyle'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import type { OverlayFactory } from '../../types'
@@ -538,8 +538,15 @@ function PreviewSurface({
   // value at the playhead, not the static fields. See `clipTransformAt`.
   const baseXf = clipTransformAt(activeClip, currentTime)
   const xfRatio = perAxisRatio(baseXf)
+  // A keyframed crop (PV55 phase 2) is SAMPLED at the playhead, exactly as the
+  // export does; the memo then depends on the playhead. An un-keyframed clip
+  // keys on a constant, so its memo is not recomputed per frame.
+  const cropKeyed = !!activeClip && hasCropKeyframes(activeClip)
+  const cropTime = cropKeyed ? currentTime : 0
   const cropStyle = useMemo(() => {
-    const crop = activeClip?.sourceCrop
+    const crop = activeClip
+      ? (cropKeyed ? geometryAt(activeClip, 'video', localTimeOf(activeClip, cropTime)).sourceCrop : activeClip.sourceCrop)
+      : undefined
     if (!crop) return null
     const sw = activeClip?.sourceWidth ?? videoDims?.w
     const sh = activeClip?.sourceHeight ?? videoDims?.h
@@ -553,7 +560,7 @@ function PreviewSurface({
       frameWidth: frameSize.w * xfRatio,
       frameHeight: frameSize.h,
     })
-  }, [activeClip, videoDims, frameSize, xfRatio])
+  }, [activeClip, videoDims, frameSize, xfRatio, cropKeyed, cropTime])
 
   // The default full-frame style (no crop). object-contain letterboxes the source.
   const baseVideoStyle = cropStyle

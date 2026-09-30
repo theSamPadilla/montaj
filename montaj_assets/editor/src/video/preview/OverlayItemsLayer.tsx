@@ -824,9 +824,11 @@ export default function OverlayItemsLayer({
             // (encode-segment.js: `crop=` ahead of `scale=…:decrease`), and only
             // when the item records its source dims; `sourceCropVideoStyle` makes
             // the same call. It fits to the box's aspect, hence the ratio.
-            const cropStyle = item.sourceCrop
+            // The crop is the SAMPLED one at the playhead (`g`, PV55 phase 2), so
+            // a keyframed crop animates here as it does in the export.
+            const cropStyle = g.sourceCrop
               ? sourceCropVideoStyle({
-                  crop: item.sourceCrop,
+                  crop: g.sourceCrop,
                   sourceWidth: item.sourceWidth ?? 0,
                   sourceHeight: item.sourceHeight ?? 0,
                   frameWidth: RENDER_W * perAxisRatio({ scaleX, scaleY }),

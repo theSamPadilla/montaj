@@ -351,3 +351,34 @@ describe('drawPlanFor — crop when it can, contain when it cannot', () => {
     expect(plan).toEqual(containFitPlan(1280, 720, 1080, 1920))
   })
 })
+
+describe('drawPlanFor: a keyframed crop is sampled at the tick time (PV55 phase 2)', () => {
+  // cropX 0 -> 0.5 over the item's 10 s, starting at project time 2; w 0.5, h 1 static.
+  const item = {
+    start: 2,
+    end: 12,
+    type: 'video' as const,
+    sourceCrop: { x: 0, y: 0, w: 0.5, h: 1 },
+    sourceWidth: 1920,
+    sourceHeight: 1080,
+    keyframes: [{ prop: 'cropX' as const, points: [{ t: 0, value: 0 }, { t: 10, value: 0.5 }] }],
+  }
+  const planAt = (crop: { x: number; y: number; w: number; h: number }) =>
+    sourceCropDrawPlan({ crop, sourceWidth: 1920, sourceHeight: 1080, codedWidth: 1280, codedHeight: 720, frameWidth: 1080, frameHeight: 1920 })
+
+  it('draws the crop of that instant, not the static one', () => {
+    const at7 = drawPlanFor(item as never, 1280, 720, 1080, 1920, 7) // localT 5: cropX 0.25
+    expect(at7).toEqual(planAt({ x: 0.25, y: 0, w: 0.5, h: 1 }))
+    expect(at7).not.toEqual(planAt(item.sourceCrop))
+  })
+
+  it('clamps the time into the item span (before the start, after the end)', () => {
+    expect(drawPlanFor(item as never, 1280, 720, 1080, 1920, 0)).toEqual(planAt({ x: 0, y: 0, w: 0.5, h: 1 }))
+    expect(drawPlanFor(item as never, 1280, 720, 1080, 1920, 99)).toEqual(planAt({ x: 0.5, y: 0, w: 0.5, h: 1 }))
+  })
+
+  it('an un-keyframed item ignores the time entirely', () => {
+    const still = { sourceCrop: item.sourceCrop, sourceWidth: 1920, sourceHeight: 1080, start: 2, end: 12 }
+    expect(drawPlanFor(still as never, 1280, 720, 1080, 1920, 7)).toEqual(drawPlanFor(still as never, 1280, 720, 1080, 1920))
+  })
+})

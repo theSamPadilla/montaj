@@ -75,6 +75,8 @@
  *                `'black'`; the overlay/caption DOM layers do the drawing.
  */
 import {
+  geometryAt,
+  hasCropKeyframes,
   projectEnd as timelineProjectEnd,
   resolveAt,
   sourceWindow,
@@ -274,6 +276,17 @@ export function sourceCropDrawPlan(input: SourceCropDrawInput): DrawPlan | null 
   }
 }
 
+/** The crop at project time `t`: the sampled one for a keyframed crop (clamped into the item's span), else the static field. */
+function sampledCrop(
+  item: Parameters<typeof drawPlanFor>[0],
+  t: number | undefined,
+): VisualItem['sourceCrop'] {
+  if (t === undefined || !hasCropKeyframes(item as VisualItem)) return item.sourceCrop
+  const start = item.start ?? 0
+  const local = Math.min(Math.max(0, t - start), Math.max(0, (item.end ?? start) - start))
+  return geometryAt(item as VisualItem, 'video', local).sourceCrop
+}
+
 /**
  * The crop plan when the item has one, the contain-fit default otherwise.
  *
@@ -286,16 +299,18 @@ export function sourceCropDrawPlan(input: SourceCropDrawInput): DrawPlan | null 
  * as it always was.
  */
 export function drawPlanFor(
-  item: Pick<VisualItem, 'sourceCrop' | 'sourceWidth' | 'sourceHeight' | 'scale' | 'scaleX' | 'scaleY'>,
+  item: Pick<VisualItem, 'sourceCrop' | 'sourceWidth' | 'sourceHeight' | 'scale' | 'scaleX' | 'scaleY'> & Partial<Pick<VisualItem, 'start' | 'end' | 'keyframes'>>,
   codedWidth: number,
   codedHeight: number,
   frameWidth: number,
   frameHeight: number,
+  /** Project time of the frame (PV55 phase 2): a keyframed crop is sampled here, as the export does. */
+  t?: number,
 ): DrawPlan {
   const k = perAxisRatio(item)
   const fitWidth = frameWidth * k
   const cropped = sourceCropDrawPlan({
-    crop: item.sourceCrop,
+    crop: sampledCrop(item, t),
     sourceWidth: item.sourceWidth,
     sourceHeight: item.sourceHeight,
     codedWidth,
@@ -424,6 +439,8 @@ export interface ActiveClip {
   blocked?: string
   window: SourceWindow
   placement: SourcePlacement
+  /** Project time this clip was planned at; a keyframed crop is sampled here. */
+  t?: number
 }
 
 /**
@@ -677,6 +694,7 @@ export function planTick(
       blocked: usable.blocked,
       window: resolved.window,
       placement: placeInSource(item, resolved.window, t),
+      t,
     }
   }
 
@@ -1444,7 +1462,7 @@ class SchedulerImpl implements Scheduler {
       clipId: blend.clipId,
       p: blend.p,
       source,
-      active: { item, clipId: blend.clipId, src, window, placement },
+      active: { item, clipId: blend.clipId, src, window, placement, t },
       mediaUs: containerTsUsFor(source.frameServer.video.firstPresentationTsUs, placement.mediaS),
     }
   }
@@ -1612,7 +1630,7 @@ class SchedulerImpl implements Scheduler {
   ): DrawPlan {
     const w = frame.displayWidth || source.frameServer.video.coded.width
     const h = frame.displayHeight || source.frameServer.video.coded.height
-    return drawPlanFor(active.item, w, h, size.width, size.height)
+    return drawPlanFor(active.item, w, h, size.width, size.height, active.t)
   }
 
   private stopStream(): void {
