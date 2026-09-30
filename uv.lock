@@ -984,7 +984,7 @@ wheels = [
 
 [[package]]
 name = "montaj"
-version = "5.13.0"
+version = "5.14.0"
 source = { editable = "." }
 dependencies = [
     { name = "curl-cffi" },
@@ -1006,8 +1006,9 @@ connectors = [
 ]
 demucs = [
     { name = "demucs" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "torch" },
-    { name = "torchaudio" },
 ]
 rvm = [
     { name = "av" },
@@ -1031,6 +1032,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.110" },
     { name = "google-genai", marker = "extra == 'connectors'", specifier = ">=0.3.0" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "numpy", marker = "extra == 'demucs'" },
     { name = "numpy", marker = "extra == 'rvm'", specifier = ">=1.24" },
     { name = "numpy", marker = "extra == 'test'", specifier = ">=1.24" },
     { name = "onnxruntime", marker = "extra == 'rvm'", specifier = ">=1.23" },
@@ -1042,7 +1044,6 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "requests", marker = "extra == 'connectors'", specifier = ">=2.31.0" },
     { name = "torch", marker = "extra == 'demucs'", specifier = ">=2.0" },
-    { name = "torchaudio", marker = "extra == 'demucs'", specifier = ">=2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
     { name = "watchdog", specifier = ">=4.0" },
     { name = "yt-dlp", specifier = ">=2026.3" },
