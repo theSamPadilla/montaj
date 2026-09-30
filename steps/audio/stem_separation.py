@@ -2,27 +2,58 @@
 """Separate an audio/video file into stems (vocals, drums, bass, other) using Demucs.
 Outputs a JSON with paths to each separated stem file.
 """
-import json, mimetypes, os, sys, tempfile, argparse
+import json, mimetypes, os, subprocess, sys, tempfile, argparse
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, ffmpeg_bin
+from common import fail, require_file, check_output, run, ffmpeg_bin, ffprobe_bin
 
 
 STEM_NAMES = ["vocals", "drums", "bass", "other"]
 DEFAULT_MODEL = "htdemucs"
 
 
+def _channel_count(path):
+    r = subprocess.run([ffprobe_bin(), "-v", "error", "-select_streams", "a:0",
+                        "-show_entries", "stream=channels", "-of", "csv=p=0", path],
+                       capture_output=True, text=True)
+    try:
+        return int(r.stdout.strip().split(",")[0])
+    except ValueError:
+        return 2
+
+
+def _decode(np, path, sr):
+    """Decode to (2, n) float32 at sr via ffmpeg. Mono is copied to both
+    channels at full level (-ac 2 would upmix at -3 dB)."""
+    pan = "pan=stereo|c0=c0|c1=c0" if _channel_count(path) == 1 else "pan=stereo|c0=c0|c1=c1"
+    r = subprocess.run([ffmpeg_bin(), "-v", "error", "-i", path, "-f", "f32le",
+                        "-ar", str(sr), "-af", pan, "-"], capture_output=True)
+    if r.returncode != 0:
+        fail("decode_failed", r.stderr.decode(errors="replace").strip()[-500:])
+    return np.frombuffer(r.stdout, "<f4").reshape(-1, 2).T.copy()
+
+
+def _encode(np, samples, sr, out_path):
+    """Write (2, n) float32 as pcm_f32le WAV via ffmpeg."""
+    data = np.ascontiguousarray(samples.T, dtype="<f4").tobytes()
+    r = subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-f", "f32le", "-ac", "2",
+                        "-ar", str(sr), "-i", "-", "-c:a", "pcm_f32le", out_path],
+                       input=data, capture_output=True)
+    if r.returncode != 0:
+        fail("encode_failed", r.stderr.decode(errors="replace").strip()[-500:])
+
+
 def separate(audio_path, stems_requested, model_name, out_dir):
     """Run Demucs separation. Returns {stem_name: path} for each requested stem."""
     try:
+        import numpy as np
         import torch
-        import torchaudio
         from demucs.pretrained import get_model
         from demucs.apply import apply_model
-    except ImportError:
+    except ImportError as e:
         fail("missing_dependency",
-             "demucs not installed. Run: montaj install demucs")
+             f"stem_separation needs {e.name or e}. Run: montaj install demucs")
 
     if torch.backends.mps.is_available():
         device = torch.device("mps")
@@ -35,11 +66,7 @@ def separate(audio_path, stems_requested, model_name, out_dir):
     model.eval()
     model.to(device)
 
-    wav, sr = torchaudio.load(audio_path)
-    if sr != model.samplerate:
-        wav = torchaudio.functional.resample(wav, sr, model.samplerate)
-    if wav.shape[0] == 1:
-        wav = wav.repeat(2, 1)
+    wav = torch.from_numpy(_decode(np, audio_path, model.samplerate))
     wav = wav.unsqueeze(0).to(device)
 
     with torch.no_grad():
@@ -53,7 +80,7 @@ def separate(audio_path, stems_requested, model_name, out_dir):
         if stems_requested != ["all"] and name not in stems_requested:
             continue
         out_path = os.path.join(out_dir, f"{name}.wav")
-        torchaudio.save(out_path, sources[i].cpu(), model.samplerate)
+        _encode(np, sources[i].cpu().numpy(), model.samplerate, out_path)
         result[name] = out_path
 
     return result
