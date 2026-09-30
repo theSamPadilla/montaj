@@ -62,3 +62,105 @@ test('a tracks[0] presenter is contained in its per-axis box', () => {
   assert.deepEqual([p.width, p.height, p.x, p.y], [1016, 572, 32, 1300])
   assert.equal(p.mode, 'decrease')
 })
+
+// ── Keyframed per-axis items, through the export's own item collector ────────
+//
+// The operator's 2026-09-28 essay closer (`montaj_portrait_closer_preset.json`):
+// a 16:9 presenter in a full-width band at the bottom (scaleX 1, scaleY
+// 0.31640625 = 607.5/1920) that rises to centre on an `offsetY` curve, with a
+// uniform `scale` curve on it too. The preview draws `geometryAt`: an authored
+// scaleX/scaleY wins over the uniform `scale` track, so the band keeps its 16:9
+// box. The export used to take the `scale` track for BOTH axes, a 9:16 box, and
+// stretched the fitted 16:9 band 3.16x tall into it (only the eyes and nose
+// showed through the closer's aperture).
+//
+// Routed through collectAllItems because that is the object the export really
+// hands encode-segment.js; it used to stamp `scaleX ?? scale` onto every item,
+// which erased whether a per-axis value was authored, the one thing
+// geometryAt's fallback order depends on.
+
+import { geometryAt } from '@bycrux/timeline-core'
+import { collectAllItems } from '../render.js'
+
+/** The emitted dialect (`if`, `between`, `round`) evaluated at ffmpeg's `t`. */
+const ev = (src, t) => Function('t', `
+  const round = Math.round
+  const between = (x, a, b) => (x >= a && x <= b ? 1 : 0)
+  const iff = (c, a, b) => (c ? a : b)
+  return ${src.replace(/\bif\(/g, 'iff(')}
+`)(t)
+
+/** The export's fit box and its per-frame box, read out of the chain it emits for `item`. */
+function exportedAnimation(item, duration) {
+  const project = { tracks: [{ id: 'base', items: [] }, { id: 'band', items: [item] }] }
+  const emitted = collectAllItems(project).videoItems[0]
+  const { filterParts } = buildVideoItemFilterParts(emitted, VW, VH, 1, '[base]', { ...SDR, duration })
+  const chain = filterParts.join(';')
+  const fit = /scale=(\d+):(\d+):force_original_aspect_ratio=decrease/.exec(chain)
+  const size = /scale=w='([^']*)':h='([^']*)':eval=frame/.exec(chain)
+  const pos = /overlay=x='([^']*)':y='([^']*)'/.exec(chain)
+  assert.ok(fit && size && pos, `not an animated chain: ${chain}`)
+  return {
+    chain,
+    fit: { width: +fit[1], height: +fit[2] },
+    at: (t) => ({ width: ev(size[1], t), height: ev(size[2], t), x: ev(pos[1], t), y: ev(pos[2], t) }),
+  }
+}
+
+// 2 px on size: the export even-rounds an already-rounded size
+// (`round(round(x)/2)*2`), toPixelBox the raw one (`round(x/2)*2`).
+const near = (got, want, what) => {
+  for (const [k, tol] of [['width', 2], ['height', 2], ['x', 1], ['y', 1]]) {
+    assert.ok(Math.abs(got[k] - want[k]) <= tol, `${what}: ${k} ${got[k]} vs preview ${want[k]}`)
+  }
+}
+
+for (const [label, sourceCrop, cropStep] of [
+  ['the full frame', { x: 0, y: 0, w: 1, h: 1 }, 'crop=3840:2160:0:0,'],
+  ['a centre crop', { x: 0.2, y: 0, w: 0.6, h: 1 }, 'crop=2304:2160:768:0,'],
+]) {
+  test(`a per-axis band with a keyframed uniform scale keeps the preview's box (sourceCrop: ${label})`, () => {
+    const duration = 3
+    const item = {
+      id: 'closer', type: 'video', src: '/presenter.MOV', start: 0, end: duration, inPoint: 0,
+      sourceWidth: 3840, sourceHeight: 2160, sourceCrop,
+      scale: 1, scaleX: 1, scaleY: 0.31640625, offsetX: 0, offsetY: 34.1796875,
+      keyframes: [
+        { prop: 'scale', points: [{ t: 0, value: 1 }, { t: 0.9, value: 0.93 }, { t: 2.3, value: 0.465 }] },
+        { prop: 'offsetY', points: [{ t: 0, value: 34.1796875 }, { t: 0.9, value: 18.75 }, { t: 2.3, value: 0 }] },
+      ],
+    }
+    const exp = exportedAnimation(item, duration)
+    // The crop still runs first, ahead of the fit into the box.
+    assert.ok(exp.chain.includes(`${cropStep}scale=${exp.fit.width}:${exp.fit.height}:force_original_aspect_ratio=decrease`), exp.chain)
+    for (let t = 0; t <= duration; t += 1 / 30) {
+      const got = exp.at(t)
+      near(got, toPixelBox(geometryAt(item, 'video', t), VW, VH), `t=${t.toFixed(3)}`)
+      // And the per-frame resize after the fit is UNIFORM: the fitted footage
+      // keeps its aspect instead of being stretched to a different box.
+      assert.ok(Math.abs(got.width / got.height - exp.fit.width / exp.fit.height) < 0.01,
+        `t=${t.toFixed(3)}: box ${got.width}x${got.height} vs fit ${exp.fit.width}x${exp.fit.height}`)
+    }
+    // The preview's box: 1080x608 all the way, rising from the bottom to centre.
+    assert.deepEqual(exp.at(0), { width: 1080, height: 608, x: 0, y: 1313 })
+    assert.deepEqual(exp.at(2.5), { width: 1080, height: 608, x: 0, y: 656 })
+  })
+}
+
+test('a uniform clip keyframing only `scale` still animates, fitted at its peak', () => {
+  // The other side of the same fallback: with no authored scaleX/scaleY, both
+  // axes follow the animated `scale`, in the preview and in the export.
+  const duration = 3
+  const item = {
+    id: 'zoom', type: 'video', src: '/clip.mp4', start: 0, end: duration, inPoint: 0,
+    probedWidth: 1080, probedHeight: 1920, scale: 0.75, offsetX: 0, offsetY: 0,
+    keyframes: [{ prop: 'scale', points: [{ t: 0, value: 0.6 }, { t: 3, value: 0.9 }] }],
+  }
+  const exp = exportedAnimation(item, duration)
+  for (let t = 0; t <= duration; t += 1 / 30) {
+    near(exp.at(t), toPixelBox(geometryAt(item, 'video', t), VW, VH), `t=${t.toFixed(3)}`)
+  }
+  // Fitted at the largest box it reaches, not at the static 0.75 box.
+  const peak = toPixelBox({ scale: 0.9, offsetX: 0, offsetY: 0 }, VW, VH)
+  assert.deepEqual(exp.fit, { width: peak.width, height: peak.height })
+})

@@ -632,11 +632,18 @@ function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
   }
 
   const lit = (v) => String(v)
-  // scaleX/scaleY fall back to the uniform `scale` track, then to the static
-  // per-axis value — mirroring geometryAt's own resolution order.
+  // scaleX/scaleY in geometryAt's own order: the per-axis track, then the
+  // AUTHORED static per-axis value, then the (animated) uniform `scale`. An
+  // authored scaleX/scaleY therefore wins over a `scale` track, exactly as the
+  // preview draws it. Taking the `scale` track first sized a per-axis band
+  // (scaleX 1, scaleY 0.316) as a canvas-aspect box and stretched the footage
+  // fitted to the band 3.16x tall. This relies on render.js NOT defaulting
+  // `scaleX`/`scaleY` onto the item, which would make every value look authored.
   const sExpr = exprFor('scale', staticGeom.scale, 1 / vw)
-  const sxExpr = exprFor('scaleX', staticGeom.scaleX, 1 / vw) ?? sExpr ?? lit(staticGeom.scaleX)
-  const syExpr = exprFor('scaleY', staticGeom.scaleY, 1 / vh) ?? sExpr ?? lit(staticGeom.scaleY)
+  const sxExpr = exprFor('scaleX', staticGeom.scaleX, 1 / vw)
+    ?? (item.scaleX != null ? lit(item.scaleX) : sExpr) ?? lit(staticGeom.scaleX)
+  const syExpr = exprFor('scaleY', staticGeom.scaleY, 1 / vh)
+    ?? (item.scaleY != null ? lit(item.scaleY) : sExpr) ?? lit(staticGeom.scaleY)
   const oxExpr = exprFor('offsetX', staticGeom.offsetX, 100 / vw) ?? lit(staticGeom.offsetX)
   const oyExpr = exprFor('offsetY', staticGeom.offsetY, 100 / vh) ?? lit(staticGeom.offsetY)
   // Rotation's tolerance is converted against the item's PEAK size, per the

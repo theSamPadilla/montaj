@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed: a clip with its own scaleX/scaleY and a keyframed `scale` exports at the size the editor shows.** The export sized such a clip's box from the `scale` curve on both axes and ignored its per-axis scale, while the editor and `sample_frame` keep the per-axis scale (the `scale` curve does not move that clip's box). A 16:9 presenter in a full-width band at the bottom (scaleX 1, scaleY 0.316) came out stretched 3.16x tall. A clip that keyframes only `scale` animates as before, now fitted at its largest size instead of its static one, so a zoom past its static scale is no longer upscaled.
+
 ## v5.17.0
 
 - **Removed (breaking for MCP clients): the MCP server exports one tool, `render`.** The 36 tools that are gone each re-exported a CLI command: every step command (`probe`, `transcribe`, `snapshot`, `sample_frame`, `fetch`, `remove_bg`, `kling_generate` and the rest), the six `profile_*` tools, `log`, `init`, `run`, `workflow_list`, `workflow_run`, `status`, `normalize` and `upload`. Every CLI command still works, and so does `POST /api/steps/<name>`. Use the CLI command instead: `montaj probe`, `montaj run`, `montaj workflow list`, `montaj status`, and `montaj log --project <id> "<message>"` for progress. The Montaj app is unaffected: its connector has its own `run_step`, project, workflow, profile and progress tools.

@@ -1311,14 +1311,15 @@ function collectAllItems(projectJson) {
         offsetX: item.offsetX ?? 0,
         offsetY: item.offsetY ?? 0,
         scale:   item.scale   ?? 1,
-        // Defaulted explicitly rather than left to `passthrough` (which would
-        // carry `item.scaleX` through only when the item happens to have one):
-        // every geometry field this literal states is stated so the item that
-        // reaches encode-segment.js has a complete, resolved box. `?? scale ??
-        // 1` matches the timeline-core resolver exactly, so a uniform item is
-        // byte-for-byte what it was.
-        scaleX:  item.scaleX  ?? item.scale ?? 1,
-        scaleY:  item.scaleY  ?? item.scale ?? 1,
+        // `scaleX`/`scaleY` are NOT defaulted here: `passthrough` carries them
+        // only when the item has them, and every reader in encode-segment.js
+        // resolves `scaleX ?? scale ?? 1` itself (geometryFor/geometryAt). A
+        // default stamped here made every item look as if it had authored
+        // per-axis values, and whether one is authored is exactly what decides
+        // if a keyframed uniform `scale` moves the box (geometryAt, and
+        // animatedGeometry's mirror of it). Stamped, a legacy clip's `scale`
+        // animation had to be read ahead of the per-axis values, which then
+        // stretched a per-axis band (scaleX 1, scaleY 0.316) to a canvas-aspect box.
         opacity: item.opacity ?? 1,
       }
       if (item.type === 'image') {
