@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.11.0
+
 - **Added: Kling accepts its current API key, not only the legacy access/secret pair.** Kling's own docs now list "API Key (for all models)" first and mark "Access Key / Secret Key" as applying to "legacy version design standards". `montaj credentials` can store `kling.api_key`, and the connector sends it straight as the bearer token. An existing access/secret pair keeps working unchanged: it still signs a JWT, and the connector prefers the API key only when one is stored. Kling's key page moved too, so `montaj credentials` now points at https://kling.ai/dev/api-key.
 
 ## v5.10.1
