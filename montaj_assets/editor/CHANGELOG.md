@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Video editor
 
-- **Added: keyframed crop on video.** The Crop tab's diamond and the crop tool key a video's crop, with `sourceWidth`/`sourceHeight` written in the same change. `useVideoNaturalSize` probes the display size; a keyed video's crop modal locks to the keys' aspect and hides the shape choices. The preview draws the sampled crop for the base clip, upper-track videos and the scheduler. (`crop/useVideoNaturalSize.ts`, `crop/VideoSourceCropModal.tsx`, `video/preview/PreviewPlayer.tsx`, `video/preview/OverlayItemsLayer.tsx`, `engine/scheduler.ts`)
+- **Added: keyframed crop on video.** The Crop tab's diamond and the crop tool key a video's crop, with `sourceWidth`/`sourceHeight` written in the same change. `useVideoNaturalSize` probes the display size; a keyed video's crop modal locks to the keys' aspect and hides the shape choices. The preview draws the sampled crop for the base clip, upper-track videos and the scheduler. (`video/useVideoNaturalSize.ts`, `crop/VideoSourceCropModal.tsx`, `video/preview/PreviewPlayer.tsx`, `video/preview/OverlayItemsLayer.tsx`, `engine/scheduler.ts`)
 
 - **Added: pan and zoom a still inside its box.** The Crop tab and crop tool now open on images on any track, locked to the box's shape and opening on the crop at the playhead; the tab's diamond keys the crop there. `CroppedImage` draws an image through its crop in the preview, `CropKeyframeNav` is the tab's `‹ ◇ ›` unit, `keyframeOps` gains `writeCrop` and `toggleCropKeyframeAt`, and `VideoSourceCropModal` gains a still mode. (`video/preview/CroppedImage.tsx`, `crop/CropKeyframeNav.tsx`, `video/keyframeOps.ts`, `crop/VideoSourceCropModal.tsx`)
 
