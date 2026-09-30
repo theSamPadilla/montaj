@@ -1,9 +1,15 @@
 // render/test/integration-compose.test.mjs
-import { test } from 'node:test'
+import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { compose } from '../compose.js'
-import { existsSync, rmSync } from 'fs'
+import { existsSync, rmSync, mkdtempSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { spawnSync } from 'child_process'
+
+// One private dir per run: concurrent suites must not share fixed /tmp paths.
+const tmp = mkdtempSync(join(tmpdir(), 'montaj-compose-'))
+after(() => rmSync(tmp, { recursive: true, force: true }))
 
 // Generate test clip if needed
 function ensureTestClip(path, duration, w, h) {
@@ -16,8 +22,8 @@ function ensureTestClip(path, duration, w, h) {
 }
 
 test('compose: single video clip renders to playable MP4', async () => {
-  const testClip = '/tmp/montaj-test-clip-v2.mp4'
-  const outputPath = '/tmp/montaj-compose-test.mp4'
+  const testClip = join(tmp, 'montaj-test-clip-v2.mp4')
+  const outputPath = join(tmp, 'montaj-compose-test.mp4')
   ensureTestClip(testClip, 3, 1920, 1080)
   rmSync(outputPath, { force: true })
 
@@ -43,9 +49,9 @@ test('compose: single video clip renders to playable MP4', async () => {
 })
 
 test('compose: multiple clips concat without corruption', async () => {
-  const clip1 = '/tmp/montaj-test-clip-v2-a.mp4'
-  const clip2 = '/tmp/montaj-test-clip-v2-b.mp4'
-  const outputPath = '/tmp/montaj-compose-multi.mp4'
+  const clip1 = join(tmp, 'montaj-test-clip-v2-a.mp4')
+  const clip2 = join(tmp, 'montaj-test-clip-v2-b.mp4')
+  const outputPath = join(tmp, 'montaj-compose-multi.mp4')
   ensureTestClip(clip1, 2, 1920, 1080)
   ensureTestClip(clip2, 2, 1920, 1080)
   rmSync(outputPath, { force: true })
@@ -73,10 +79,10 @@ test('compose encodes segments concurrently when MONTAJ_SEGMENT_WORKERS>1', asyn
   // encodes. compose reads MONTAJ_SEGMENT_WORKERS at module load (default 2),
   // so setting it here documents intent and pins the concurrent path; the
   // final-mp4 assertions match the single/multi-clip tests above.
-  const clipA = '/tmp/montaj-test-clip-v2-c1.mp4'
-  const clipB = '/tmp/montaj-test-clip-v2-c2.mp4'
-  const clipC = '/tmp/montaj-test-clip-v2-c3.mp4'
-  const outputPath = '/tmp/montaj-compose-concurrent.mp4'
+  const clipA = join(tmp, 'montaj-test-clip-v2-c1.mp4')
+  const clipB = join(tmp, 'montaj-test-clip-v2-c2.mp4')
+  const clipC = join(tmp, 'montaj-test-clip-v2-c3.mp4')
+  const outputPath = join(tmp, 'montaj-compose-concurrent.mp4')
   ensureTestClip(clipA, 2, 1920, 1080)
   ensureTestClip(clipB, 2, 1920, 1080)
   ensureTestClip(clipC, 2, 1920, 1080)
@@ -137,8 +143,8 @@ const clipItem = (id, src, start, end) => ({
 })
 
 test('compose: a leading gap is preserved as black, not dropped', async () => {
-  const clip = '/tmp/montaj-test-leadgap.mp4'
-  const outputPath = '/tmp/montaj-compose-leadgap.mp4'
+  const clip = join(tmp, 'montaj-test-leadgap.mp4')
+  const outputPath = join(tmp, 'montaj-compose-leadgap.mp4')
   ensureTestClip(clip, 2, 640, 360)
   rmSync(outputPath, { force: true })
 
@@ -163,8 +169,8 @@ test('compose: a leading gap is preserved as black, not dropped', async () => {
 })
 
 test('compose: no leading gap is unchanged (no phantom head segment)', async () => {
-  const clip = '/tmp/montaj-test-nogap.mp4'
-  const outputPath = '/tmp/montaj-compose-nogap.mp4'
+  const clip = join(tmp, 'montaj-test-nogap.mp4')
+  const outputPath = join(tmp, 'montaj-compose-nogap.mp4')
   ensureTestClip(clip, 2, 640, 360)
   rmSync(outputPath, { force: true })
 
@@ -186,9 +192,9 @@ test('compose: no leading gap is unchanged (no phantom head segment)', async () 
 })
 
 test('compose: a gap BETWEEN clips still survives (unchanged behavior)', async () => {
-  const clipA = '/tmp/montaj-test-midgap-a.mp4'
-  const clipB = '/tmp/montaj-test-midgap-b.mp4'
-  const outputPath = '/tmp/montaj-compose-midgap.mp4'
+  const clipA = join(tmp, 'montaj-test-midgap-a.mp4')
+  const clipB = join(tmp, 'montaj-test-midgap-b.mp4')
+  const outputPath = join(tmp, 'montaj-compose-midgap.mp4')
   ensureTestClip(clipA, 2, 640, 360)
   ensureTestClip(clipB, 2, 640, 360)
   rmSync(outputPath, { force: true })
@@ -245,10 +251,10 @@ function meanVolumeDb(path, from, to) {
 }
 
 test('compose: an audio track that starts partway through is audible in the export', async () => {
-  const clip       = '/tmp/montaj-test-audiofade-clip.mp4'
-  const bedA       = '/tmp/montaj-test-audiofade-a.m4a'
-  const bedB       = '/tmp/montaj-test-audiofade-b.m4a'
-  const outputPath = '/tmp/montaj-compose-audiofade.mp4'
+  const clip       = join(tmp, 'montaj-test-audiofade-clip.mp4')
+  const bedA       = join(tmp, 'montaj-test-audiofade-a.m4a')
+  const bedB       = join(tmp, 'montaj-test-audiofade-b.m4a')
+  const outputPath = join(tmp, 'montaj-compose-audiofade.mp4')
   ensureTestClip(clip, 10, 640, 360)
   ensureTestAudio(bedA, 10, 440)
   ensureTestAudio(bedB, 10, 880)
@@ -337,8 +343,8 @@ function integratedLoudnessOf(path) {
 }
 
 test('compose: settings.loudness normalizes clip audio even with zero project.audio.tracks', async () => {
-  const clip = '/tmp/montaj-test-loudness-clip.mp4'
-  const outputPath = '/tmp/montaj-compose-loudness.mp4'
+  const clip = join(tmp, 'montaj-test-loudness-clip.mp4')
+  const outputPath = join(tmp, 'montaj-compose-loudness.mp4')
   rmSync(clip, { force: true })
   rmSync(outputPath, { force: true })
   // A quiet clip (well below -14 LUFS) so normalization toward -14 is unmistakable.
@@ -378,8 +384,8 @@ test('compose: settings.loudness absent and zero project.audio.tracks stays a pl
   // concatSegments writes straight to outputPath — the pre-existing,
   // unchanged path. This is the single-clip test at the top of this file in
   // all but name; repeated here to sit next to its loudness counterpart.
-  const clip = '/tmp/montaj-test-loudness-copy-clip.mp4'
-  const outputPath = '/tmp/montaj-compose-no-loudness.mp4'
+  const clip = join(tmp, 'montaj-test-loudness-copy-clip.mp4')
+  const outputPath = join(tmp, 'montaj-compose-no-loudness.mp4')
   rmSync(clip, { force: true })
   rmSync(outputPath, { force: true })
   spawnSync('ffmpeg', [
