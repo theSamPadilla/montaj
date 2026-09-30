@@ -17,7 +17,9 @@ def main():
 
     out = args.out or os.getcwd()
     cmd = [
-        "yt-dlp",
+        # montaj's own interpreter, never a PATH lookup: a packaged app has a
+        # minimal PATH and must not depend on a system yt-dlp.
+        sys.executable, "-m", "yt_dlp",
         "--format", args.format,
         "--merge-output-format", "mp4",
         "--print", "after_move:filepath",

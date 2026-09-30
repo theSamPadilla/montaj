@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed: `fetch` runs yt-dlp through montaj's own Python (`python -m yt_dlp`), so it never depends on a yt-dlp on PATH.**
+
 ## v5.14.0
 
 - **Added: overlay listings return an overlay's own settings from its `<name>.json`.** `durationSeconds`, `fps`, `width`, `height`, `googleFonts`, `opaque` and `defaults.props` are passed through when present and of the right type; wrong-typed fields are ignored.
