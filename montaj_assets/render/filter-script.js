@@ -31,7 +31,7 @@ const NOOP = () => {}
  *   `args` with only that pair replaced by `'-/filter_complex', path`, every
  *   other element in place. With no `-filter_complex`, `args` comes back as
  *   given, `path` is null and nothing is written. `cleanup` removes the file,
- *   is idempotent and never throws on a file already gone.
+ *   is idempotent and never throws; a file it cannot remove is left behind, like a cancelled one.
  */
 export function externalizeFilterGraph(args, dir) {
   const at = []
@@ -47,6 +47,6 @@ export function externalizeFilterGraph(args, dir) {
   return {
     args: [...args.slice(0, i), '-/filter_complex', path, ...args.slice(i + 2)],
     path,
-    cleanup: () => rmSync(path, { force: true }),
+    cleanup: () => { try { rmSync(path, { force: true }) } catch {} },
   }
 }

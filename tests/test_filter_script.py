@@ -119,6 +119,19 @@ def test_filter_script_honours_dir(tmp_path):
 # trim: audio extraction at 500 keep ranges
 # ---------------------------------------------------------------------------
 
+def test_filter_script_cleanup_is_best_effort(tmp_path):
+    """A script that cannot be removed never fails the run; it is left behind."""
+    from common import filter_script
+    held = tmp_path / "held"
+    held.mkdir()
+    try:
+        with filter_script("x", dir=str(held)) as p:
+            os.chmod(held, 0o555)
+        assert os.path.exists(p)
+    finally:
+        os.chmod(held, 0o755)
+
+
 def test_trim_500_ranges_reads_graph_from_file(tmp_path, monkeypatch):
     stub, log = _make_stub(tmp_path)
     monkeypatch.setenv("MONTAJ_FFMPEG", str(stub))

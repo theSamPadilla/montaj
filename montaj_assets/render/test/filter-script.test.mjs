@@ -6,7 +6,7 @@
 // file) is windows-argv-cap.test.mjs; this file pins the helper's own contract.
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, existsSync, readdirSync, rmSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, basename } from 'node:path'
 import { externalizeFilterGraph } from '../filter-script.js'
@@ -81,4 +81,13 @@ test('cleanup is idempotent and does not throw on a missing file', () => {
   const s = externalizeFilterGraph(ARGS, freshDir())
   rmSync(s.path)
   s.cleanup()
+})
+
+test('cleanup is best-effort: a script it cannot remove never throws', () => {
+  const dir = freshDir()
+  const r = externalizeFilterGraph(ARGS, dir)
+  try {
+    chmodSync(dir, 0o555)
+    assert.doesNotThrow(() => r.cleanup())
+  } finally { chmodSync(dir, 0o755); r.cleanup() }
 })

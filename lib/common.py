@@ -72,7 +72,8 @@ def filter_script(graph: str, dir=None):
     finally:
         try:
             os.unlink(path)
-        except FileNotFoundError:
+        except OSError:
+            # best-effort: a script we cannot remove is left behind, never a failed run
             pass
 
 
