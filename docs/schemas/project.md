@@ -273,8 +273,8 @@ All timed graphical elements live in `tracks[1+]`'s `items` arrays. Each track i
 | `rotation` | number | all | Clockwise rotation in degrees. Optional; default 0. Any finite number — values outside [0,360) are normalized at render. |
 | `opacity` | number | all | Opacity 0.0–1.0 (default 1.0). Applied at compose time. An overlapping OVERLAY pair may carry editor-derived `opacity` *keyframes* that dissolve between the two — see [Transitions](#transitions) below. |
 | `fit` | string | image | `cover` (default), `contain` or `fill`: how the image, or its `sourceCrop`, fills its box. An image whose crop is keyframed always covers. |
-| `sourceCrop` | object | image, video | `{x, y, w, h}`, fractions in `[0, 1]` of the source as DISPLAYED (EXIF or rotation applied). An image is cropped before its `fit` and needs no stored size; a video needs `sourceWidth`/`sourceHeight` (see the tracks[0] table). |
-| `keyframes` | array | all | Animate `offsetX`/`offsetY`/`scale`/`scaleX`/`scaleY`/`rotation` over the item's own lifetime (overlays also `opacity`). An image also takes `cropX`/`cropY`/`cropW`/`cropH`, its source crop: see "Image crop keyframes". |
+| `sourceCrop` | object | image, video | `{x, y, w, h}`, fractions in `[0, 1]` of the source as DISPLAYED (EXIF or rotation applied). An image is cropped before its `fit` and needs no stored size; a video needs `sourceWidth`/`sourceHeight` (see the tracks[0] table). Both can be keyframed (`cropX`/`cropY`/`cropW`/`cropH`): see "Crop keyframes". |
+| `keyframes` | array | all | Animate `offsetX`/`offsetY`/`scale`/`scaleX`/`scaleY`/`rotation` over the item's own lifetime (overlays also `opacity`). An image or a video also takes `cropX`/`cropY`/`cropW`/`cropH`, its source crop: see "Crop keyframes". |
 | `props` | object | overlay | Arbitrary props passed to the JSX component |
 | `opaque` | boolean | overlay | When `true`, render engine skips alpha — JSX controls full frame |
 | `googleFonts` | array | overlay | Google Font names to load before rendering |
@@ -362,27 +362,48 @@ to video: decode every frame of the animated span and composite it the way
 overlays already are. That was measured at 14–33× the expression path's render
 time and is out of scope; see `docs/RENDER.md`.
 
-### Image crop keyframes
+### Crop keyframes
 
-An `image` item may animate its source crop, pan and zoom inside its box, with
-four more `keyframes` tracks:
+An `image` or `video` item may animate its source crop, pan and zoom inside
+its box, with four more `keyframes` tracks:
 
 - `cropX`, `cropY`: the crop's top-left corner, in `[0, 1]`.
 - `cropW`, `cropH`: the crop's size, in `(0, 1]`.
 
 A prop with no track falls back to the static `sourceCrop`, then to the full
-frame. Key all four at the same times with the same easing (the editor does),
-so the rect keeps its shape. Image items only: `validate` rejects crop tracks
-on any other kind. An image whose crop is keyframed always covers its box.
+frame. Overlay items cannot take crop tracks: `validate` rejects them. An image
+whose crop is keyframed always covers its box; a video keeps its `contain` fit,
+so the whole crop rect stays visible.
+
+An image keys all four at the same times with the same easing (the editor
+does), so the rect keeps its shape. A video must:
+
+- carry `sourceWidth` and `sourceHeight` (both `> 0`), since its crop is in
+  fractions of the displayed source and the export needs the pixels;
+- key `cropW` and `cropH` together, at the same times, with the same easing on
+  each point. Only then does linear interpolation of `w` and `h` keep `w/h`
+  constant between keys;
+- keep one pixel aspect: `w * sourceWidth / (h * sourceHeight)` at every key
+  must be within 1% of the first key's. The export draws the whole animation
+  at one pixel aspect, so the crop pans and zooms but never changes shape.
+  The error names the two keyframes that disagree.
+
+`cropX` and `cropY` may be keyed on their own times.
 
 ```json
-"keyframes": [
-  { "prop": "cropX", "points": [{ "t": 0, "value": 0.1, "easing": "ease-in-out" }, { "t": 4, "value": 0.4 }] },
-  { "prop": "cropY", "points": [{ "t": 0, "value": 0, "easing": "ease-in-out" }, { "t": 4, "value": 0.2 }] },
-  { "prop": "cropW", "points": [{ "t": 0, "value": 0.5, "easing": "ease-in-out" }, { "t": 4, "value": 0.3 }] },
-  { "prop": "cropH", "points": [{ "t": 0, "value": 1, "easing": "ease-in-out" }, { "t": 4, "value": 0.6 }] }
-]
+{
+  "type": "video", "sourceWidth": 1920, "sourceHeight": 1080,
+  "keyframes": [
+    { "prop": "cropX", "points": [{ "t": 0, "value": 0.1, "easing": "ease-in-out" }, { "t": 4, "value": 0.5 }] },
+    { "prop": "cropY", "points": [{ "t": 0, "value": 0, "easing": "ease-in-out" }, { "t": 4, "value": 0.4 }] },
+    { "prop": "cropW", "points": [{ "t": 0, "value": 0.5, "easing": "ease-in-out" }, { "t": 4, "value": 0.25 }] },
+    { "prop": "cropH", "points": [{ "t": 0, "value": 1, "easing": "ease-in-out" }, { "t": 4, "value": 0.5 }] }
+  ]
+}
 ```
+
+(`0.5 * 1920 / (1 * 1080)` and `0.25 * 1920 / (0.5 * 1080)` are both 0.889.)
+An image takes the same four tracks without the size fields or the aspect rule.
 
 ### Transitions
 
