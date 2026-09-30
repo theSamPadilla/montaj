@@ -38,7 +38,9 @@ def normalize(word):
     # is all symbols or punctuation (♪, &, a dash) normalizes to '', and
     # _align_tokens never lets '' match anything. Curly apostrophes become
     # straight ones before the strip, which keeps them.
-    return re.sub(r"[^\w']", "", word.translate(_APOSTROPHES).lower())
+    # Apostrophes at the token's edges are quotation marks (‘love’), not part of
+    # the word; goin' and 'cause lose theirs on both sides alike.
+    return re.sub(r"[^\w']", "", word.translate(_APOSTROPHES).lower()).strip("'")
 
 
 _SKIP_LYRIC, _DIAGONAL, _SKIP_WHISPER = 0, 1, 2
@@ -184,8 +186,6 @@ def _decode(audio_in, wav_path):
         raw = w.readframes(w.getnframes())
     pcm = array("h")
     pcm.frombytes(raw)
-    if sys.byteorder == "big":
-        pcm.byteswap()
     return raw, pcm
 
 
@@ -219,7 +219,11 @@ def _window_words(win, dtw):
     times in samples of the full audio. A word starts at its first real
     token's DTW time, or at its segment offset when there is none."""
     # -ojf token text can split a multibyte character, so do not let that fail the read.
-    data = json.loads(Path(win["prefix"] + ".json").read_text(encoding="utf-8", errors="replace"))
+    try:
+        data = json.loads(Path(win["prefix"] + ".json").read_text(encoding="utf-8", errors="replace"),
+                          strict=False)
+    except ValueError:
+        fail("whisper_failed", "whisper wrote JSON that could not be read")
     base, out = win["start"], []
     for entry in data.get("transcription", []):
         text = entry.get("text", "").strip()

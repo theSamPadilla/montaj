@@ -206,6 +206,42 @@ def test_a_curly_apostrophe_anchors_on_a_straight_one():
     assert [w["start"] for w in segs[0]["words"]] == [0.0, 5.0, 6.0]
 
 
+def test_a_quoted_word_anchors_and_a_lone_apostrophe_does_not():
+    """‘love’ used as quotation marks must still match whisper's love, and a
+    token that is only an apostrophe must never anchor to another one."""
+    mod = _load_step()
+    assert mod.normalize("‘love’") == mod.normalize("love")
+    assert mod._align_tokens([mod.normalize("‘love’")], [mod.normalize("love")]) == {0: 0}
+    assert mod._align_tokens([mod.normalize("'")], [mod.normalize("'")]) == {}
+    w_words = [{"word": w, "start": s, "end": s + 0.4}
+               for w, s in (("you", 0.0), ("love", 5.0), ("me", 6.0))]
+    segs = mod.align([["you", "‘love’", "me"]], w_words)
+    assert [w["start"] for w in segs[0]["words"]] == [0.0, 5.0, 6.0]
+
+
+def _win(tmp_path, text):
+    prefix = str(tmp_path / "w")
+    Path(prefix + ".json").write_text(text, encoding="utf-8")
+    return {"prefix": prefix, "start": 0, "lo": 0, "hi": 10**9}
+
+
+def test_whisper_json_with_a_raw_control_character_still_parses(tmp_path):
+    mod = _load_step()
+    win = _win(tmp_path, '{"transcription": [{"text": " he\x01llo", '
+                         '"offsets": {"from": 0, "to": 500}}]}')
+    words = mod._window_words(win, None)
+    assert [w["word"] for w in words] == ["he\x01llo"]
+
+
+def test_malformed_whisper_json_fails_cleanly(tmp_path, capsys):
+    mod = _load_step()
+    win = _win(tmp_path, '{"transcription": [')
+    with pytest.raises(SystemExit):
+        mod._window_words(win, None)
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "whisper_failed"
+
+
 # ── the cut rule: pure function, a real quiet dip ─────────────────────────────
 
 def test_the_cut_lands_in_the_quiet_dip_of_its_search_range():
@@ -331,8 +367,6 @@ def _bin_dirs():
 
 
 def _write_wav(path, samples):
-    if sys.byteorder == "big":
-        samples.byteswap()
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
