@@ -172,3 +172,37 @@ def test_missing_numpy_names_the_module(fakes, tmp_path, monkeypatch, capsys):
     err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
     assert err["error"] == "missing_dependency"
     assert "numpy" in err["message"]
+
+
+def test_mono_video_is_copied_at_full_level(fakes, tmp_path, monkeypatch):
+    mov = tmp_path / "clip.mov"
+    subprocess.run([ffmpeg_bin(), "-v", "error", "-y",
+                    "-f", "lavfi", "-i", "color=c=black:s=64x64:r=10:d=2",
+                    "-f", "lavfi", "-i", "sine=f=440:d=2:r=48000",
+                    "-ac", "1", "-c:a", "pcm_s16le", "-c:v", "mpeg4",
+                    "-shortest", str(mov)], check=True)
+    mod = _load_step()
+    monkeypatch.setattr(sys, "argv", ["stem_separation.py", "--input", str(mov),
+                                      "--stems", "vocals"])
+    mod.main()
+    got = _decode_f32(tmp_path / "clip_stems" / "vocals.wav")
+    mono = _decode_f32(mov, 1)[0]
+    n = min(got.shape[1], mono.shape[0])
+    assert np.max(np.abs(mono[:n])) > 0.1
+    assert np.max(np.abs(got[0, :n] - 0.5 * mono[:n])) < 1e-5
+    assert np.max(np.abs(got[1, :n] - 0.5 * mono[:n])) < 1e-5
+
+
+def test_surround_keeps_the_centre(fakes, tmp_path):
+    wav = tmp_path / "c51.wav"
+    subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-f", "lavfi",
+                    "-i", "sine=f=440:d=2:r=48000",
+                    "-af", "pan=5.1|FL=0*c0|FR=0*c0|FC=c0|LFE=0*c0|BL=0*c0|BR=0*c0",
+                    "-c:a", "pcm_s16le", str(wav)], check=True)
+    mod = _load_step()
+    res = mod.separate(str(wav), ["vocals"], "htdemucs", str(tmp_path / "o"))
+    got = _decode_f32(res["vocals"])
+    ref = _decode_f32(wav, 2) * 0.5  # ffmpeg's own stereo downmix
+    n = min(got.shape[1], ref.shape[1])
+    assert np.max(np.abs(ref[:, :n])) > 0.01
+    assert np.max(np.abs(got[:, :n] - ref[:, :n])) < 1e-5

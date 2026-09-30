@@ -2,11 +2,11 @@
 """Separate an audio/video file into stems (vocals, drums, bass, other) using Demucs.
 Outputs a JSON with paths to each separated stem file.
 """
-import json, mimetypes, os, subprocess, sys, tempfile, argparse
+import json, os, subprocess, sys, argparse
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, ffmpeg_bin, ffprobe_bin
+from common import fail, require_file, check_output, ffmpeg_bin, ffprobe_bin
 
 
 STEM_NAMES = ["vocals", "drums", "bass", "other"]
@@ -25,10 +25,13 @@ def _channel_count(path):
 
 def _decode(np, path, sr):
     """Decode to (2, n) float32 at sr via ffmpeg. Mono is copied to both
-    channels at full level (-ac 2 would upmix at -3 dB)."""
-    pan = "pan=stereo|c0=c0|c1=c0" if _channel_count(path) == 1 else "pan=stereo|c0=c0|c1=c1"
-    r = subprocess.run([ffmpeg_bin(), "-v", "error", "-i", path, "-f", "f32le",
-                        "-ar", str(sr), "-af", pan, "-"], capture_output=True)
+    channels at full level (-ac 2 would upmix at -3 dB). Stereo is unchanged; surround
+    gets ffmpeg's stereo downmix, which keeps the centre. Audio and video
+    inputs both decode here."""
+    mix = (["-af", "pan=stereo|c0=c0|c1=c0"] if _channel_count(path) == 1
+           else ["-ac", "2"])
+    r = subprocess.run([ffmpeg_bin(), "-v", "error", "-i", path, "-map", "0:a:0",
+                        "-f", "f32le", "-ar", str(sr), *mix, "-"], capture_output=True)
     if r.returncode != 0:
         fail("decode_failed", r.stderr.decode(errors="replace").strip()[-500:])
     return np.frombuffer(r.stdout, "<f4").reshape(-1, 2).T.copy()
@@ -110,23 +113,7 @@ def main():
     out_dir  = args.out_dir or f"{base}_stems"
     out_json = args.out     or f"{base}_stems.json"
 
-    # Convert video → wav if needed
-    mime      = mimetypes.guess_type(args.input)[0] or ""
-    tmp_audio = None
-    audio_in  = args.input
-    if mime.startswith("video/"):
-        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        tmp.close()
-        tmp_audio = tmp.name
-        run([ffmpeg_bin(), "-y", "-i", args.input, "-vn", "-acodec", "pcm_s16le",
-             "-ar", "44100", "-ac", "2", tmp_audio])
-        audio_in = tmp_audio
-
-    try:
-        stem_paths = separate(audio_in, stems_requested, args.model, out_dir)
-    finally:
-        if tmp_audio and os.path.exists(tmp_audio):
-            os.unlink(tmp_audio)
+    stem_paths = separate(args.input, stems_requested, args.model, out_dir)
 
     if not stem_paths:
         fail("no_stems", "No stems were produced")
