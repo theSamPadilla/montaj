@@ -354,8 +354,9 @@ def run_whisper(cmd: list[str], audio_path: str, check: bool = False) -> subproc
     ``transcription_timeout``, naming the limit, rather than escaping as a raw
     TimeoutExpired traceback that serve would pass on as the error message."""
     timeout = whisper_runaway_timeout_for(audio_path)
-    # whisper.cpp loads its ggml-cpu-*.dll backends from the current directory as
-    # well as the exe's, so it must not inherit serve's cwd (a planted DLL there
+    # whisper.cpp loads its ggml-cpu-* backends (ggml-cpu-*.dll on Windows,
+    # libggml-cpu-*.so on macOS and Linux) from the current directory as well as
+    # the exe's, so it must not inherit serve's cwd (a planted library there
     # would load). Run it in its own directory instead. That moves every relative
     # path it is given, so the path arguments are made absolute first.
     exe = os.path.abspath(shutil.which(cmd[0]) or cmd[0])

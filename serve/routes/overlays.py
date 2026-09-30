@@ -125,7 +125,7 @@ _BUNDLE_TIMEOUT_S = 30
 # An editor opening many overlays must not spawn one node per overlay at once.
 _BUNDLE_SEMAPHORE = asyncio.Semaphore(4)
 _log = logging.getLogger(__name__)
-# esbuild message prefix: an absolute POSIX path, then :line:col:
+# esbuild message prefix: an absolute path (POSIX, or a Windows drive letter), then :line:col:
 _ESBUILD_LOC = re.compile(r"^((?:[A-Za-z]:[\\/]|/).+?):(\d+):(\d+): ")
 
 # Must equal IMPORT_REFUSED in montaj_assets/render/overlay-build.js. If the two

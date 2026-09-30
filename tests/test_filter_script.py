@@ -142,6 +142,7 @@ def test_trim_500_ranges_reads_graph_from_file(tmp_path, monkeypatch):
     graph = ";".join(
         [f"[0:a]atrim=start={s:.3f}:end={e:.3f},asetpts=PTS-STARTPTS[a{i}]" for i, (s, e) in enumerate(keeps)]
         + ["".join(f"[a{i}]" for i in range(500)) + "concat=n=500:v=0:a=1[aout]"])
+    assert len(graph) > CAP, f"fixture no longer reaches the cap ({len(graph)})"
     _assert_leaf(log, stub, "-/filter_complex", "-filter_complex", graph, out)
 
 
@@ -157,7 +158,7 @@ def test_lyrics_160_single_words_reads_vf_from_file(tmp_path):
          "-t", "2", str(audio)],
         check=True, capture_output=True)
     stub, log = _make_stub(tmp_path)
-    words = [{"word": f"w{i}", "start": i * 0.01, "end": i * 0.01 + 0.01} for i in range(160)]
+    words = [{"word": f"w{i:03d}" + "x" * 64, "start": i * 0.01, "end": i * 0.01 + 0.01} for i in range(160)]
     caps = tmp_path / "captions.json"
     caps.write_text(json.dumps({"segments": [{"text": "x", "start": 0.0, "end": 1.7, "words": words}]}))
     out = str(tmp_path / "render.mp4")
@@ -169,6 +170,6 @@ def test_lyrics_160_single_words_reads_vf_from_file(tmp_path):
     call = _calls(log)[0]
     argv = call["argv"]
     graph = call["scripts"].get("-/vf") or argv[argv.index("-vf") + 1]
-    print("GRAPH LEN", len(graph), "cmd bound", sum(2 * len(a) + 3 for a in [str(stub), *argv]))
     assert graph.count("drawtext=") == 160
+    assert len(graph) > CAP, f"fixture no longer reaches the cap ({len(graph)})"
     _assert_leaf(log, stub, "-/vf", "-vf", graph, out)

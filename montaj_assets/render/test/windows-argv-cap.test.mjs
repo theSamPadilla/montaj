@@ -19,6 +19,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, chmodSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const CAP = 32_767
 const WORK = mkdtempSync(join(tmpdir(), 'montaj-argv-cap-'))
@@ -52,6 +53,10 @@ process.env.MONTAJ_FFPROBE = STUB
 const { FFMPEG } = await import('../ffmpeg-bin.js')
 const { encodeSegment } = await import('../encode-segment.js')
 const { mixAudioIntoVideo, buildAudioTrackFilters, loudnessFilter } = await import('../mix-audio.js')
+// sample-frame.js fixes its cache dir from tmpdir() at import, so TMPDIR moves
+// inside WORK first. (The mix test below sets and restores its own TMPDIR.)
+process.env.TMPDIR = mkdtempSync(join(WORK, 'tmp-'))
+const { sampleFrame } = await import('../sample-frame.js')
 
 // One photo, one eased 2x crop zoom over 5 s. probedWidth/Height are the image
 // path's test seam (encode-segment.js animatedImageCrop), so no ffprobe runs.
@@ -148,7 +153,7 @@ describe('an eased crop zoom on one photo, at the leaf', () => {
 })
 
 describe('no render source builds an inline -filter_complex spawn', () => {
-  const RENDER_DIR = join(dirname(new URL(import.meta.url).pathname), '..')
+  const RENDER_DIR = join(dirname(fileURLToPath(import.meta.url)), '..')
   const sources = readdirSync(RENDER_DIR).filter((f) => f.endsWith('.js'))
 
   test('the scan covers the spawning modules', () => {
@@ -159,16 +164,20 @@ describe('no render source builds an inline -filter_complex spawn', () => {
 
   test('a source that builds a -filter_complex pair also calls externalizeFilterGraph', () => {
     // Callers keep building the inline pair (so _dryRun and the goldens pin the
-    // graph) and hand it to the helper before the spawn. A file with the literal
-    // and no helper call would spawn the graph inline. filter-script.js itself
-    // is the helper and is excluded. The leaf tests prove the calls are live.
+    // graph) and hand it to the helper before the spawn. Every literal needs a
+    // call, so a second spawn in a file that already has one call still fails.
+    // filter-script.js itself is the helper and is excluded. Comments are
+    // stripped first. The leaf tests prove the calls are live.
+    const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1')
     const hits = sources
       .filter((f) => f !== 'filter-script.js')
-      .filter((f) => {
-        const src = readFileSync(join(RENDER_DIR, f), 'utf8')
-        return /['"]-filter_complex['"]/.test(src) && !/externalizeFilterGraph\(/.test(src)
+      .map((f) => {
+        const src = strip(readFileSync(join(RENDER_DIR, f), 'utf8'))
+        return [f, (src.match(/['"]-filter_complex['"]/g) || []).length, (src.match(/\bexternalizeFilterGraph\(/g) || []).length]
       })
-    assert.deepEqual(hits, [], `inline -filter_complex with no externalizeFilterGraph call: ${hits.join(', ')}`)
+      .filter(([, literals, calls]) => literals > calls)
+      .map(([f, literals, calls]) => `${f}: ${literals} literal(s), ${calls} call(s)`)
+    assert.deepEqual(hits, [], `inline -filter_complex with too few externalizeFilterGraph calls: ${hits.join('; ')}`)
   })
 })
 
@@ -220,6 +229,35 @@ describe('the audio mix, at the leaf', () => {
   })
 })
 
+describe('the composite frame sample, at the leaf', () => {
+  test('sampleFrame passes -/filter_complex with a non-empty script and removes it', async () => {
+    const still = join(WORK, 'still.png')
+    // 1x1 PNG; the stub never decodes it.
+    writeFileSync(still, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
+    const outPath = join(WORK, 'sample-out', 'frame.png')
+    const log = freshLog()
+    await sampleFrame({
+      projectJson: {
+        settings: { resolution: [1080, 1920] },
+        tracks: [{ id: 't', items: [
+          { id: 'i1', type: 'image', src: still, start: 0, end: 5 },
+          { id: 'i2', type: 'image', src: still, start: 0, end: 5, scale: 0.5 },
+        ] }],
+      },
+      atSeconds: 1,
+      outPath,
+    })
+    const calls = readLog(log).filter((c) => c.argv.at(-1) === outPath)
+    assert.equal(calls.length, 1, `composite calls: ${calls.length}`)
+    const argv = calls[0].argv
+    assert.ok(argv.includes('-/filter_complex'), 'no -/filter_complex in argv')
+    assert.ok(!argv.includes('-filter_complex'), '-filter_complex is still in argv')
+    const s = calls[0].scripts.find((x) => x.opt === '-/filter_complex')
+    assert.ok(s && s.content && s.content.length > 0, 'the stub read no script content')
+    assert.equal(existsSync(s.path), false)
+  })
+})
+
 describe('the script is removed on every way out', () => {
   test('ffmpeg exits non-zero: encodeSegment throws, the script is gone', async () => {
     const outputPath = join(WORK, 'fail.segments', 'seg-000.mp4')
@@ -250,6 +288,17 @@ describe('the script is removed on every way out', () => {
     assert.notEqual(paths[0], paths[1])
     for (const p of paths) assert.equal(existsSync(p), false)
     assert.deepEqual(scriptsIn(dir), [])
+  })
+
+  test('a spawn that throws synchronously: the cause is in the error, nothing ran', async () => {
+    // A NUL in an argv element makes spawn() throw before any process exists.
+    const outputPath = join(WORK, 'nul.segments', 'seg-000.mp4')
+    const log = freshLog()
+    await assert.rejects(
+      encodeSegment(segmentFor(join(WORK, 'bad\0name.png')), outputPath),
+      /ffmpeg segment encode failed[\s\S]*null bytes/)
+    assert.deepEqual(readLog(log), [])
+    assert.deepEqual(scriptsIn(dirname(outputPath)), [])
   })
 
   // Last in the file: ffmpeg-bin.js has already fixed FFMPEG to this path, so

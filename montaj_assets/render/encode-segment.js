@@ -2166,7 +2166,9 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   if (result.stderr) logFfmpegStderr(result.stderr)
 
   if (result.status !== 0) {
-    throw new Error(`ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s):\n${(result.stderr || '').slice(-500)}`)
+    // spawn() can throw, or the script fail to write, before any stderr exists.
+    const cause = result.error ? `${result.error.message}\n` : ''
+    throw new Error(`ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s):\n${cause}${(result.stderr || '').slice(-500)}`)
   }
 
   return outputPath

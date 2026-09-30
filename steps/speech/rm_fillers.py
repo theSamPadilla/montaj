@@ -4,7 +4,7 @@ Also trims pre-speech noise at the head by snapping the start to the first word 
 import json, os, re, sys, argparse, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, run, get_duration, transcribe_words, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
+from common import fail, require_file, get_duration, transcribe_words, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
 from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, extract_audio_at_keeps, remap_timestamp, from_window
 
 # Hesitation-sound fillers per language. Kept conservative: only non-lexical
