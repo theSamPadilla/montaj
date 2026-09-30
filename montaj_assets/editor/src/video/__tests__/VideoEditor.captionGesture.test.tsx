@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, waitFor, act } from '@testing-library/react'
-import type { EditorAdapter, Project, RenderEvent, VersionEntry, WaveformChunk } from '../../types'
+import { render, waitFor, act, fireEvent } from '@testing-library/react'
+import type { ReactElement } from 'react'
+import type { EditorAdapter, OverlayFactory, Project, RenderEvent, VersionEntry, WaveformChunk } from '../../types'
 import type { ImageElement } from '../../types'
+import type { CaptionSegment } from '../../schema'
 import VideoEditor from '../VideoEditor'
 
 // ── Timeline stand-in ────────────────────────────────────────────────────────
@@ -166,5 +168,259 @@ describe('VideoEditor — cross-row caption drag preserves its undo entry (FIX 1
         ['s2', 2],
       ])
     })
+  })
+})
+
+// ── "Apply to all" ───────────────────────────────────────────────────────────
+// The captions panel's checkbox. VideoEditor owns the value (remembered on this
+// computer, never on the project) and hands it to the panel and the preview;
+// on, a preview drag, a corner resize or the selected caption's text color
+// lands on EVERY caption as the same absolute value, in one undo step.
+//
+// Driven through the real panel and the real preview, so it needs the two
+// stubs `captionPositioning.test.tsx` documents: a ResizeObserver that reports
+// a size (or the caption layer never renders) and a Range rect (or measuring
+// the caption throws).
+const APPLY_TO_ALL_KEY = 'montaj.editor.captionApplyToAll'
+const RENDER_W = 1080
+const RENDER_H = 1920
+
+function fixedRect(left: number, top: number, right: number, bottom: number): DOMRect {
+  return { left, top, right, bottom, width: right - left, height: bottom - top, x: left, y: top, toJSON: () => ({}) } as DOMRect
+}
+
+/** A caption template that paints the active segment's text as a real text node. */
+function compileCaptionTemplate() {
+  return vi.fn(async (): Promise<OverlayFactory> => {
+    return (frame: number, fps: number, _duration: number, props: Record<string, unknown>): ReactElement | null => {
+      const segments = (props.segments ?? []) as CaptionSegment[]
+      const t = frame / fps
+      const active = segments.find((seg) => t >= seg.start && t < seg.end)
+      return active ? <div><span>{active.text}</span></div> : null
+    }
+  })
+}
+
+// Different starting geometry and color on every caption, so "the same
+// absolute value" and "a delta" give different answers. s0 is on screen at 0s.
+const variedCaptions = {
+  style: 'clean',
+  segments: [
+    { id: 's0', text: 'zero', start: 0, end: 1, offsetX: 5, words: [{ word: 'zero', start: 0, end: 1 }] },
+    { id: 's1', text: 'one', start: 1, end: 2, offsetY: -8, scale: 1.5, color: '#00ff00', words: [{ word: 'one', start: 1, end: 2 }] },
+    { id: 's2', text: 'two', start: 2, end: 3, words: [{ word: 'two', start: 2, end: 3 }] },
+  ],
+}
+
+describe('VideoEditor — captions "Apply to all"', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+      cb: (entries: unknown[]) => void
+      constructor(cb: (entries: unknown[]) => void) { this.cb = cb }
+      observe() { this.cb([{ contentRect: { width: RENDER_W, height: RENDER_H } }]) }
+      unobserve() {}
+      disconnect() {}
+    }
+    Range.prototype.getBoundingClientRect = vi.fn(() => fixedRect(100, 1700, 300, 1750))
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(() => fixedRect(0, 0, RENDER_W, RENDER_H))
+  })
+  afterEach(() => {
+    delete (Range.prototype as { getBoundingClientRect?: unknown }).getBoundingClientRect
+    window.localStorage.clear()
+  })
+
+  function mount() {
+    const adapter = { ...makeFakeAdapter(), compileOverlay: compileCaptionTemplate() } as EditorAdapter<Project>
+    const onProjectChange = vi.fn()
+    const initial = makeVideoProject({ captions: variedCaptions } as Partial<Project>)
+    const view = render(<VideoEditor project={initial} adapter={adapter} onProjectChange={onProjectChange} />)
+    const segments = () => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      return last.captions!.segments
+    }
+    const checkbox = () => view.getByRole('checkbox', { name: 'Apply to all' }) as HTMLInputElement
+    const undoButton = () => view.getByLabelText('Undo') as HTMLButtonElement
+    /** The preview's selection box: the caption layer's only interactive element. */
+    const selectionBox = async () => {
+      await waitFor(() => expect(view.container.querySelector('[style*="z-index: 50"]')).not.toBeNull())
+      return view.container.querySelector('[style*="z-index: 50"]')!.firstElementChild as HTMLElement
+    }
+    /** Drag the on-screen caption (s0) by +10% of the frame on both axes. */
+    const dragCaption = async () => {
+      const box = await selectionBox()
+      fireEvent.mouseDown(box, { clientX: 500, clientY: 500 })
+      fireEvent.mouseMove(document, { clientX: 500 + 108, clientY: 500 + 192 })
+      fireEvent.mouseUp(document)
+    }
+    /** Select s0 with a click, then pull its south-east corner out: scale × 1.2. */
+    const resizeCaption = async () => {
+      const box = await selectionBox()
+      fireEvent.mouseDown(box, { clientX: 500, clientY: 500 })
+      fireEvent.mouseUp(document)
+      await waitFor(() => expect(box.children).toHaveLength(4))
+      fireEvent.mouseDown(box.children[3], { clientX: 500, clientY: 500 })
+      fireEvent.mouseMove(document, { clientX: 500 + 108, clientY: 500 + 192 })
+      fireEvent.mouseUp(document)
+    }
+    /** Select s0 with a click, then pick a text color on the Format tab. */
+    const recolorCaption = async (color: string) => {
+      const box = await selectionBox()
+      fireEvent.mouseDown(box, { clientX: 500, clientY: 500 })
+      fireEvent.mouseUp(document)
+      fireEvent.click(view.getByRole('button', { name: 'Format' }))
+      const input = await view.findByLabelText('Selected segment text color')
+      fireEvent.change(input, { target: { value: color } })
+      fireEvent.blur(input, { target: { value: color } })
+    }
+    const undo = async () => {
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+      })
+    }
+    return { ...view, onProjectChange, segments, checkbox, undoButton, dragCaption, resizeCaption, recolorCaption, undo }
+  }
+
+  it('is off by default, and nothing is stored until it is used', async () => {
+    const { checkbox } = mount()
+    await waitFor(() => expect(checkbox().checked).toBe(false))
+    expect(window.localStorage.getItem(APPLY_TO_ALL_KEY)).toBeNull()
+  })
+
+  it('is remembered on this computer: the value is stored, and a fresh editor restores it', async () => {
+    const first = mount()
+    await waitFor(() => expect(first.checkbox().checked).toBe(false))
+    fireEvent.click(first.checkbox())
+    expect(first.checkbox().checked).toBe(true)
+    expect(window.localStorage.getItem(APPLY_TO_ALL_KEY)).toBe('true')
+    first.unmount()
+
+    const second = mount()
+    await waitFor(() => expect(second.checkbox().checked).toBe(true))
+    fireEvent.click(second.checkbox())
+    expect(second.checkbox().checked).toBe(false)
+    expect(window.localStorage.getItem(APPLY_TO_ALL_KEY)).toBe('false')
+    second.unmount()
+
+    const third = mount()
+    await waitFor(() => expect(third.checkbox().checked).toBe(false))
+  })
+
+  it('is never written to the project', async () => {
+    const { checkbox, onProjectChange } = mount()
+    await waitFor(() => expect(checkbox().checked).toBe(false))
+    const before = onProjectChange.mock.calls.length
+    fireEvent.click(checkbox())
+    expect(onProjectChange.mock.calls.length).toBe(before)
+  })
+
+  it('falls back to off when the stored value is not a boolean, and when storage throws', async () => {
+    window.localStorage.setItem(APPLY_TO_ALL_KEY, '"yes"')
+    const bad = mount()
+    await waitFor(() => expect(bad.checkbox().checked).toBe(false))
+    bad.unmount()
+
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('storage denied') })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage denied') })
+    const denied = mount()
+    await waitFor(() => expect(denied.checkbox().checked).toBe(false))
+    // A write that throws still toggles the checkbox for this session.
+    fireEvent.click(denied.checkbox())
+    expect(denied.checkbox().checked).toBe(true)
+  })
+
+  it('off: a preview drag moves only the dragged caption', async () => {
+    const { dragCaption, segments } = mount()
+    await dragCaption()
+    await waitFor(() => expect(segments()[0]).toMatchObject({ id: 's0', offsetX: 15, offsetY: 10 }))
+    expect(segments()[1]).toEqual(variedCaptions.segments[1])
+    expect(segments()[2]).toEqual(variedCaptions.segments[2])
+  })
+
+  it('off: a corner resize sizes only the dragged caption', async () => {
+    const { resizeCaption, segments } = mount()
+    await resizeCaption()
+    await waitFor(() => expect(segments()[0].scale).toBeCloseTo(1.2))
+    expect(segments()[1]).toEqual(variedCaptions.segments[1])
+    expect(segments()[2]).toEqual(variedCaptions.segments[2])
+  })
+
+  it('off: a text color pick colors only the selected caption', async () => {
+    const { recolorCaption, segments } = mount()
+    await recolorCaption('#123456')
+    await waitFor(() => expect(segments().map(seg => seg.color)).toEqual(['#123456', '#00ff00', undefined]))
+  })
+
+  it('on: a preview drag gives every caption the same absolute position, and one undo reverts all of them', async () => {
+    const { checkbox, dragCaption, segments, undoButton, undo } = mount()
+    await waitFor(() => expect(checkbox().checked).toBe(false))
+    fireEvent.click(checkbox())
+    expect(undoButton().disabled).toBe(true)
+
+    await dragCaption()
+    // s0 started at offsetX 5, offsetY 0 and moved +10% on both axes. Every
+    // caption lands on that same absolute spot, not on its own start plus 10.
+    await waitFor(() => expect(segments().map(seg => [seg.offsetX, seg.offsetY])).toEqual([[15, 10], [15, 10], [15, 10]]))
+    // A move writes position only: each caption keeps its own size.
+    expect(segments().map(seg => seg.scale)).toEqual([undefined, 1.5, undefined])
+
+    await waitFor(() => expect(undoButton().disabled).toBe(false))
+    await undo()
+    await waitFor(() => expect(segments()).toEqual(variedCaptions.segments))
+    // Exactly one undo entry covered all three captions.
+    await waitFor(() => expect(undoButton().disabled).toBe(true))
+  })
+
+  it('on: a corner resize gives every caption the same size, and one undo reverts all of them', async () => {
+    const { checkbox, resizeCaption, segments, undoButton, undo } = mount()
+    await waitFor(() => expect(checkbox().checked).toBe(false))
+    fireEvent.click(checkbox())
+
+    await resizeCaption()
+    // s0 started at scale 1 and grew × 1.2. s1 started at 1.5; it takes 1.2,
+    // the same absolute size, not 1.5 × 1.2.
+    await waitFor(() => {
+      const scales = segments().map(seg => seg.scale)
+      expect(scales).toHaveLength(3)
+      scales.forEach(scale => expect(scale).toBeCloseTo(1.2))
+    })
+    // A resize writes size only: each caption keeps its own position.
+    expect(segments().map(seg => [seg.offsetX, seg.offsetY])).toEqual([[5, undefined], [undefined, -8], [undefined, undefined]])
+
+    await undo()
+    await waitFor(() => expect(segments()).toEqual(variedCaptions.segments))
+    await waitFor(() => expect(undoButton().disabled).toBe(true))
+  })
+
+  it('on: a text color pick colors every caption, and one undo reverts all of them', async () => {
+    const { checkbox, recolorCaption, segments, undoButton, undo } = mount()
+    await waitFor(() => expect(checkbox().checked).toBe(false))
+    fireEvent.click(checkbox())
+
+    await recolorCaption('#123456')
+    await waitFor(() => expect(segments().map(seg => seg.color)).toEqual(['#123456', '#123456', '#123456']))
+
+    await undo()
+    await waitFor(() => expect(segments()).toEqual(variedCaptions.segments))
+    await waitFor(() => expect(undoButton().disabled).toBe(true))
+  })
+
+  it('on: a drag does not wipe a color pick that is still waiting on its blur', async () => {
+    const view = mount()
+    await waitFor(() => expect(view.checkbox().checked).toBe(false))
+    fireEvent.click(view.checkbox())
+
+    // Pick a color and leave the swatch focused: previewed, not yet committed.
+    const box = view.container.querySelector('[style*="z-index: 50"]')!.firstElementChild as HTMLElement
+    fireEvent.mouseDown(box, { clientX: 500, clientY: 500 })
+    fireEvent.mouseUp(document)
+    fireEvent.click(view.getByRole('button', { name: 'Format' }))
+    const input = await view.findByLabelText('Selected segment text color')
+    fireEvent.change(input, { target: { value: '#123456' } })
+    await waitFor(() => expect(view.segments().map(seg => seg.color)).toEqual(['#123456', '#123456', '#123456']))
+
+    await view.dragCaption()
+    await waitFor(() => expect(view.segments().map(seg => [seg.offsetX, seg.offsetY])).toEqual([[15, 10], [15, 10], [15, 10]]))
+    expect(view.segments().map(seg => seg.color)).toEqual(['#123456', '#123456', '#123456'])
   })
 })

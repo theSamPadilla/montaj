@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Added (editor): an "Apply to all" checkbox in the captions panel.** On, a caption move, resize or text color change lands on every caption at once, as one undo step. Off by default and remembered per browser. See `montaj_assets/editor/CHANGELOG.md`.
+
 ## v5.15.1
 
 - **Fixed: `sample_frame --prefer-proxy` shows a background-removed clip without its background, as the render does.**

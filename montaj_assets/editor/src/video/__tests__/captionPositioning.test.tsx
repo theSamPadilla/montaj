@@ -194,6 +194,76 @@ describe('CaptionPreview — dragging updates only the dragged segment', () => {
   })
 })
 
+// ── 1b. "Apply to all": the drag lands on every segment ────────────────────
+
+describe('CaptionPreview — "Apply to all" moves every segment', () => {
+  const track: Captions = {
+    style: 'clean',
+    segments: [
+      seg({ id: 'cap-0', text: 'first', start: 0, end: 2, offsetX: 20, scale: 1.5 }),
+      seg({ id: 'cap-1', text: 'second', start: 2, end: 4 }),
+      seg({ id: 'cap-2', text: 'third', start: 4, end: 6, offsetY: -30 }),
+    ],
+  }
+
+  async function mountAndDrag(props: { applyToAll?: boolean; withAllChannel?: boolean }) {
+    const onCaptionSegmentChange = vi.fn()
+    const onCaptionAllSegmentsChange = vi.fn()
+    const seen: CaptionSegment[][] = []
+    const { container } = render(
+      <CaptionPreview
+        track={track}
+        currentTime={2.5} // active segment = cap-1
+        fps={30}
+        compileOverlay={makeCompileOverlay((p) => seen.push(p.segments as CaptionSegment[]))}
+        resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        onSelectCaption={vi.fn()}
+        onCaptionSegmentChange={onCaptionSegmentChange}
+        applyToAll={props.applyToAll}
+        onCaptionAllSegmentsChange={props.withAllChannel ? onCaptionAllSegmentsChange : undefined}
+      />,
+    )
+    await waitFor(() => expect(container.querySelector('[style*="z-index: 50"]')).not.toBeNull())
+    const box = getSelectionBox(container)
+    fireEvent.mouseDown(box, { clientX: 500, clientY: 500 })
+    fireEvent.mouseMove(document, { clientX: 500 + 108, clientY: 500 + 192 }) // +10% x, +10% y at scale 1
+    // What the template was handed mid-drag, before anything is committed.
+    const live = seen[seen.length - 1]
+    fireEvent.mouseUp(document)
+    return { onCaptionSegmentChange, onCaptionAllSegmentsChange, live }
+  }
+
+  it('on: the release commits the same absolute position to every segment, through the all-segments channel only', async () => {
+    const { onCaptionSegmentChange, onCaptionAllSegmentsChange } = await mountAndDrag({ applyToAll: true, withAllChannel: true })
+    expect(onCaptionAllSegmentsChange).toHaveBeenCalledTimes(1)
+    expect(onCaptionAllSegmentsChange).toHaveBeenCalledWith({ offsetX: 10, offsetY: 10 })
+    expect(onCaptionSegmentChange).not.toHaveBeenCalled()
+  })
+
+  it('on: every caption follows the pointer live, to the same absolute position, each keeping its own size', async () => {
+    const { live } = await mountAndDrag({ applyToAll: true, withAllChannel: true })
+    expect(live.map((s) => [s.offsetX, s.offsetY])).toEqual([[10, 10], [10, 10], [10, 10]])
+    expect(live.map((s) => s.scale)).toEqual([1.5, 1, undefined])
+  })
+
+  it('off: only the dragged caption follows the pointer, and the release patches only its id', async () => {
+    const { onCaptionSegmentChange, onCaptionAllSegmentsChange, live } = await mountAndDrag({ applyToAll: false, withAllChannel: true })
+    expect(live[0]).toBe(track.segments[0])
+    expect(live[1]).toMatchObject({ offsetX: 10, offsetY: 10 })
+    expect(live[2]).toBe(track.segments[2])
+    expect(onCaptionSegmentChange).toHaveBeenCalledTimes(1)
+    expect(onCaptionSegmentChange).toHaveBeenCalledWith('cap-1', { offsetX: 10, offsetY: 10 })
+    expect(onCaptionAllSegmentsChange).not.toHaveBeenCalled()
+  })
+
+  it('on, but the host wired no all-segments channel: behaves as off', async () => {
+    const { onCaptionSegmentChange, live } = await mountAndDrag({ applyToAll: true, withAllChannel: false })
+    expect(live[0]).toBe(track.segments[0])
+    expect(live[2]).toBe(track.segments[2])
+    expect(onCaptionSegmentChange).toHaveBeenCalledWith('cap-1', { offsetX: 10, offsetY: 10 })
+  })
+})
+
 // ── 2. Offsets survive a save/reload round-trip ─────────────────────────────
 
 function makeVideoProject(overrides: Partial<Project> = {}): Project {

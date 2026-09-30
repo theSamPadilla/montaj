@@ -11,7 +11,7 @@ import { useVideoNaturalSize } from './useVideoNaturalSize'
 import { trimToAspect } from '../crop/crop-math'
 import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
 import { Tooltip } from '../ui/Tooltip'
-import { reviveNumberInRange, usePersistentState } from '../ui/usePersistentState'
+import { reviveBoolean, reviveNumberInRange, usePersistentState } from '../ui/usePersistentState'
 import { getOverlayDesignCanvas } from './design-canvas'
 import { availableResolutionTiers, availableFpsTiers, currentResolutionTier, maxExportFps } from './export-limits'
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
@@ -23,7 +23,7 @@ import { mergeCaptionProfileDefaults } from './captionProfileDefaults'
 import Timeline, { type TimelineActions, type TimelineMode } from './timeline/Timeline'
 import { geometryAt, visualDuration } from '@bycrux/timeline-core'
 import { audioEnd, computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, effectiveItemAudio, enabledTrackItems, enabledTracks, mapTrackItems, normalizeAudioTracks, trackItems, withEnabledItemTracks } from './timeline/timeline-model'
-import { makeCaptionEdit, type CaptionEditPatch } from './timeline/makeCaptionEdit'
+import { makeCaptionEdit, makeCaptionEditAll, type CaptionEditAllPatch, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle, type ScrubHandle } from './preview/PreviewPlayer'
 import SocialPreviewMenu, { PlatformGlyph, platformOption } from './preview/SocialPreviewMenu'
 import type { SocialPreviewPlatform } from './preview/SocialSafeZoneOverlay'
@@ -106,6 +106,13 @@ const OVERLAY_PANEL_TABS: readonly { value: OverlayPanelTab; label: string }[] =
   { value: 'content', label: 'Content' },
   { value: 'transform', label: 'Transform' },
 ]
+
+// ── Captions "Apply to all" ───────────────────────────────────────────────
+// Whether a caption move, resize or text color change lands on every caption
+// instead of one. Off by default. Persisted per browser like the panel
+// preferences above, NOT on the project: it is how this operator likes to
+// work on this computer, not a property of the video.
+const CAPTION_APPLY_TO_ALL_STORAGE_KEY = 'montaj.editor.captionApplyToAll'
 
 // Generic over the host's concrete project type `P` (default = the package's
 // own `Project`). Montaj passes its richer Project; the index signature on
@@ -972,6 +979,15 @@ function ReviewSurface<P extends Project>({
     'content',
     reviveOverlayPanelTab,
   )
+  // The captions panel's "Apply to all" checkbox. Held here, not in the panel,
+  // because the preview (drag, resize) and the panel (text color) both act on
+  // it. `usePersistentState` wraps every storage read and write in try/catch
+  // and falls back to off on anything that is not a stored boolean.
+  const [captionApplyToAll, setCaptionApplyToAll] = usePersistentState(
+    CAPTION_APPLY_TO_ALL_STORAGE_KEY,
+    false,
+    reviveBoolean,
+  )
 
   /** Drag the rail divider. Mirrors `startSplitDrag` on the horizontal axis;
    *  dragging LEFT widens the rail, hence the inverted delta. */
@@ -1192,7 +1208,7 @@ function ReviewSurface<P extends Project>({
   // callback once without it going stale. `emit(final)` fires synchronously so
   // the host's chrome flips to "final" immediately; the queued `mutate` makes it
   // canonical and persists it.
-  const { mutate: syncMutate, projectRef: syncProjectRef } = sync
+  const { mutate: syncMutate, projectRef: syncProjectRef, discardTransient: syncDiscardTransient } = sync
   const emitRef = useRef(emit); emitRef.current = emit
 
   // Persist the HDR image color mapping into project settings. A real user
@@ -1718,6 +1734,28 @@ function ReviewSurface<P extends Project>({
     makeCaptionEdit(segmentId, syncProjectRef.current, (p) => void syncMutate(() => p as P))(patch)
   }, [syncProjectRef, syncMutate])
 
+  // The segment-wide variant, for "Apply to all": a preview drag (offsetX/
+  // offsetY), a corner resize (scale) or the selected segment's text color
+  // lands on EVERY segment as the same absolute value. `makeCaptionEditAll`
+  // builds the whole change as one project, and it goes through ONE
+  // `sync.mutate`, so it is one undo step and one queued save however many
+  // captions there are. One callback only, for the reason given above.
+  //
+  // A COLOR commit drops its own live preview first, and that is load-bearing:
+  // the swatch previews every pick through the transient channel
+  // (`handleProjectChange`), and `sync.mutate` records whatever the project is
+  // at that moment as its undo snapshot. Without the discard that snapshot
+  // already carries the new color on every caption, so undo changes nothing
+  // (measured: the test for it fails). Dropping the preview puts the project
+  // back to where the pick began, and the one mutate then records THAT. Both
+  // state updates land in the same event, so nothing flashes. A drag or resize
+  // previews inside the preview, never in the project, so it discards nothing;
+  // it must not, or it would wipe a color pick still waiting on its blur.
+  const handleCaptionAllSegmentsChange = useCallback((patch: CaptionEditAllPatch) => {
+    if (patch.color !== undefined) syncDiscardTransient()
+    makeCaptionEditAll(syncProjectRef.current, (p) => void syncMutate(() => p as P))(patch)
+  }, [syncProjectRef, syncMutate, syncDiscardTransient])
+
   // Delete one caption segment by id — CaptionListPanel's per-row trash
   // button. Captions have no "add" affordance (R4: they come from
   // transcription; Regenerate rebuilds the whole track), so this is the only
@@ -2198,6 +2236,8 @@ function ReviewSurface<P extends Project>({
                 selectedCaptionId={selectedCaptionId ?? undefined}
                 onSelectCaption={handleSelectCaption}
                 onCaptionSegmentChange={handleCaptionSegmentChange}
+                captionApplyToAll={captionApplyToAll}
+                onCaptionAllSegmentsChange={handleCaptionAllSegmentsChange}
                 engine={engine}
                 transportRef={transportRef}
                 onPlayingChange={setPreviewPlaying}
@@ -2518,6 +2558,9 @@ function ReviewSurface<P extends Project>({
       selectedIds={selectedIds}
       onSelectCaption={handleSelectCaption}
       onCaptionSegmentChange={handleCaptionSegmentChange}
+      applyToAll={captionApplyToAll}
+      onApplyToAllChange={setCaptionApplyToAll}
+      onCaptionAllSegmentsChange={handleCaptionAllSegmentsChange}
       onCaptionEdit={(p) => void sync.mutate(() => p as P)}
       onProjectChange={handleProjectChange}
       onCaptionSegmentDelete={handleCaptionSegmentDelete}

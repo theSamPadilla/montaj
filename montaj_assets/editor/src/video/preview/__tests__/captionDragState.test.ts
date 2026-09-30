@@ -6,6 +6,7 @@ import {
   captionDragGeometry,
   captionDragPatch,
   hasEscapedClickSlop,
+  liveCaptionSegments,
   measureCaptionContentRect,
   readCaptionGeometry,
   screenDeltaToFramePercent,
@@ -165,6 +166,54 @@ describe('captionDragPatch', () => {
   it('a resize writes only the scale', () => {
     expect(captionDragPatch(drag({ type: 'resize-sw' }), { offsetX: 3, offsetY: 4, scale: 2 }))
       .toEqual({ scale: 2 })
+  })
+})
+
+// What the template is handed while a gesture is in flight. With "Apply to
+// all" off only the dragged caption follows the pointer; with it on every
+// caption takes the SAME ABSOLUTE value the dragged one has, exactly what the
+// release will commit, so the preview shows the result before it lands.
+describe('liveCaptionSegments', () => {
+  const segments = [
+    { id: 'cap-0', text: 'zero', start: 0, end: 1, offsetX: 5, offsetY: -2, scale: 1.2 },
+    { id: 'cap-1', text: 'one', start: 1, end: 2 },
+    { id: 'cap-2', text: 'two', start: 2, end: 3, offsetX: -30, scale: 0.5 },
+  ]
+  const moveDrag = drag({ id: 'cap-1' })
+  const moveLive = { offsetX: 12, offsetY: 34, scale: 1 }
+  const resizeDrag = drag({ id: 'cap-1', type: 'resize-se' })
+  const resizeLive = { offsetX: 0, offsetY: 0, scale: 1.75 }
+
+  it('off: a move moves only the dragged caption', () => {
+    const out = liveCaptionSegments(segments, moveDrag, moveLive, false)
+    expect(out[1]).toMatchObject({ offsetX: 12, offsetY: 34 })
+    expect(out[0]).toBe(segments[0])
+    expect(out[2]).toBe(segments[2])
+  })
+
+  it('off: a resize resizes only the dragged caption', () => {
+    const out = liveCaptionSegments(segments, resizeDrag, resizeLive, false)
+    expect(out[1].scale).toBe(1.75)
+    expect(out[0]).toBe(segments[0])
+    expect(out[2]).toBe(segments[2])
+  })
+
+  it('on: a move gives every caption the same absolute position, each keeping its own size', () => {
+    const out = liveCaptionSegments(segments, moveDrag, moveLive, true)
+    expect(out.map(s => [s.offsetX, s.offsetY])).toEqual([[12, 34], [12, 34], [12, 34]])
+    expect(out.map(s => s.scale)).toEqual([1.2, 1, 0.5])
+  })
+
+  it('on: a resize gives every caption the same absolute size, each keeping its own position', () => {
+    const out = liveCaptionSegments(segments, resizeDrag, resizeLive, true)
+    expect(out.map(s => s.scale)).toEqual([1.75, 1.75, 1.75])
+    expect(out[0]).toMatchObject({ offsetX: 5, offsetY: -2 })
+    expect(out[2]).toMatchObject({ offsetX: -30 })
+  })
+
+  it('on: text and timing are untouched', () => {
+    const out = liveCaptionSegments(segments, moveDrag, moveLive, true)
+    expect(out.map(s => [s.id, s.text, s.start, s.end])).toEqual(segments.map(s => [s.id, s.text, s.start, s.end]))
   })
 })
 

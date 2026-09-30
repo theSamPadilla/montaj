@@ -36,11 +36,12 @@ import type { Captions } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
 import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
-import type { CaptionEditPatch } from '../timeline/makeCaptionEdit'
+import type { CaptionEditAllPatch, CaptionEditPatch } from '../timeline/makeCaptionEdit'
 import {
   captionDragGeometry,
   captionDragPatch,
   hasEscapedClickSlop,
+  liveCaptionSegments,
   measureCaptionContentRect,
   readCaptionGeometry,
   type CaptionDragState,
@@ -92,8 +93,18 @@ interface CaptionPreviewProps {
    *  (VideoEditor supplies one handler to both); the preview only ever passes
    *  an id, since it has no deselect affordance of its own. */
   onSelectCaption?:         (id: string | null) => void
-  /** Commit a finished drag/resize onto one segment. */
+  /** Commit a finished drag/resize onto one segment. Also what arms a drag at
+   *  all: without it the box only selects. */
   onCaptionSegmentChange?:  (segmentId: string, patch: CaptionEditPatch) => void
+  /** "Apply to all" (the captions panel's checkbox). On, and with
+   *  `onCaptionAllSegmentsChange` supplied, a drag or resize shows every
+   *  caption taking the dragged one's position or size live, and commits it to
+   *  every segment through `onCaptionAllSegmentsChange` instead of
+   *  `onCaptionSegmentChange`. Absent or false: one segment, as before. */
+  applyToAll?:              boolean
+  /** Commit a finished drag/resize onto EVERY segment, as the same absolute
+   *  values. Only called while `applyToAll` is on. */
+  onCaptionAllSegmentsChange?: (patch: CaptionEditAllPatch) => void
 }
 
 export default function CaptionPreview({
@@ -105,6 +116,8 @@ export default function CaptionPreview({
   selectedCaptionId,
   onSelectCaption,
   onCaptionSegmentChange,
+  applyToAll = false,
+  onCaptionAllSegmentsChange,
 }: CaptionPreviewProps) {
   const wrapRef            = useRef<HTMLDivElement>(null)
   const contentRef         = useRef<HTMLDivElement>(null)
@@ -123,6 +136,11 @@ export default function CaptionPreview({
   // render can't re-subscribe the document listeners mid-gesture.
   const changeRef = useRef(onCaptionSegmentChange)
   changeRef.current = onCaptionSegmentChange
+  // "Apply to all" is on only when there is somewhere to send it; read at
+  // release through a ref for the same reason as `changeRef`.
+  const allMode = applyToAll && !!onCaptionAllSegmentsChange
+  const allChangeRef = useRef(allMode ? onCaptionAllSegmentsChange : undefined)
+  allChangeRef.current = allMode ? onCaptionAllSegmentsChange : undefined
 
   // Scale the 1080×1920 render layer to fit the actual player size
   useEffect(() => {
@@ -198,11 +216,13 @@ export default function CaptionPreview({
   // bare string persisted projects occasionally carry (see google-fonts.ts).
   useEffect(() => { ensureGoogleFontsLoaded(googleFonts) }, [String(googleFonts)])
 
-  // Live drag preview: overlay the in-flight geometry onto the dragged segment
-  // only. The templates read offsetX/offsetY/scale straight off the segment, so
-  // this is all it takes for the caption to follow the cursor.
-  const segments = live
-    ? track.segments.map(s => (s.id === live.id ? { ...s, offsetX: live.offsetX, offsetY: live.offsetY, scale: live.scale } : s))
+  // Live drag preview: overlay the in-flight geometry onto the dragged segment,
+  // and with "Apply to all" onto every segment as the same absolute value (see
+  // `liveCaptionSegments`). The templates read offsetX/offsetY/scale straight
+  // off the segment, so this is all it takes for the captions to follow the
+  // cursor.
+  const segments = live && drag
+    ? liveCaptionSegments(track.segments, drag, live, allMode)
     : track.segments
 
   const element  = (factory && scale !== null)
@@ -234,7 +254,11 @@ export default function CaptionPreview({
       // Only commit if the pointer actually moved — a bare click selects and
       // must not push an undo step or queue a save.
       const l = liveRef.current
-      if (l) changeRef.current?.(l.id, captionDragPatch(d!, l))
+      if (l) {
+        const patch = captionDragPatch(d!, l)
+        if (allChangeRef.current) allChangeRef.current(patch)
+        else changeRef.current?.(l.id, patch)
+      }
       setDrag(null)
       setLive(null)
       liveRef.current = null

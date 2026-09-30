@@ -202,6 +202,29 @@ export function captionDragPatch(
     : { scale: geom.scale }
 }
 
+/**
+ * The segments to hand the template while a gesture is in flight, so the
+ * caption follows the pointer before anything is committed.
+ *
+ * The dragged segment takes the live geometry. With `applyToAll` (the captions
+ * panel's "Apply to all") every other segment takes `captionDragPatch` of it
+ * too: the same ABSOLUTE position on a move, the same scale on a resize,
+ * exactly what the release commits to every segment. Off, every other segment
+ * is returned as is (same object).
+ */
+export function liveCaptionSegments<T extends Pick<CaptionSegment, 'id' | 'offsetX' | 'offsetY' | 'scale'>>(
+  segments: readonly T[],
+  drag: CaptionDragState,
+  live: CaptionGeometry,
+  applyToAll: boolean,
+): T[] {
+  const patch = applyToAll ? captionDragPatch(drag, live) : null
+  return segments.map(s => {
+    if (s.id === drag.id) return { ...s, offsetX: live.offsetX, offsetY: live.offsetY, scale: live.scale }
+    return patch ? { ...s, ...patch } : s
+  })
+}
+
 // ── Measuring where a caption actually paints ───────────────────────────────
 
 /** A rectangle in client (screen) coordinates. */

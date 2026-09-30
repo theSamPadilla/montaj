@@ -347,6 +347,15 @@ only the card under the cursor is doing per-frame work.
 **Captions.** The transcript list — search, row filters, per-segment editing,
 footer actions. Unchanged by the Format/Styles split.
 
+**Apply to all.** A checkbox in the panel header, above the tab strip, so it
+shows on all three tabs. Off (the default), a caption drag or corner resize in
+the preview, and the selected caption's text color, change that one caption.
+On, the same edit lands on every caption as the same absolute value (not a
+delta) in one undo step, and the preview shows every caption following the
+drag. Text edits always change one caption; Format and Styles were already
+track-wide. The value is remembered per browser (`localStorage`, key
+`montaj.editor.captionApplyToAll`) and is never written to the project.
+
 ### Right panel: properties only
 
 The right panel holds exactly one thing, the properties of the current

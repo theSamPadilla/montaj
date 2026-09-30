@@ -57,3 +57,46 @@ export function makeCaptionEdit(
     onCaptionEdit?.(updated)
   }
 }
+
+/** The fields "Apply to all" writes onto every segment: the preview's
+ *  position (`offsetX`/`offsetY`) and size (`scale`), and the base text
+ *  `color`. Nothing else is ever spread across segments. */
+const ALL_SEGMENT_FIELDS = ['offsetX', 'offsetY', 'scale', 'color'] as const
+export type CaptionEditAllPatch = Partial<Pick<CaptionSegment, typeof ALL_SEGMENT_FIELDS[number]>>
+
+/**
+ * The segment-wide sibling of `makeCaptionEdit`, for the captions panel's
+ * "Apply to all": every segment gets the SAME ABSOLUTE values the edited one
+ * got (not a delta), in one project change, so the host can land it as one
+ * undo step.
+ *
+ * Only `ALL_SEGMENT_FIELDS` are read from the patch, so a stray `text` or
+ * `start`/`end` can never be copied onto every caption. An omitted or
+ * undefined key never clobbers a segment's own value. A no-op (no callback,
+ * so no empty undo step) when there is nothing to write: no segments, an
+ * empty patch, or every segment already holding exactly these values.
+ */
+export function makeCaptionEditAll(
+  project: Project,
+  onProjectChange?: (p: Project) => void,
+  onCaptionEdit?: (p: Project) => void,
+) {
+  return (patch: CaptionEditAllPatch) => {
+    const captions = project.captions
+    if (!captions || captions.segments.length === 0) return
+    const definedPatch: CaptionEditAllPatch = {}
+    for (const key of ALL_SEGMENT_FIELDS) {
+      if (patch[key] !== undefined) (definedPatch as Record<string, unknown>)[key] = patch[key]
+    }
+    const keys = Object.keys(definedPatch) as (keyof CaptionEditAllPatch)[]
+    if (keys.length === 0) return
+    if (captions.segments.every((s) => keys.every((k) => s[k] === definedPatch[k]))) return
+
+    const updated = {
+      ...project,
+      captions: { ...captions, segments: captions.segments.map((s) => ({ ...s, ...definedPatch })) },
+    }
+    onProjectChange?.(updated)
+    onCaptionEdit?.(updated)
+  }
+}

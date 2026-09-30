@@ -8,7 +8,7 @@ import { getOverlayDesignCanvas } from '../design-canvas'
 import { useDragOverlay } from './useDragOverlay'
 import type { OverlayChanges, OverlayCommitOptions } from './useDragOverlay'
 import { hasKeyframes, localTimeOf } from '../keyframeOps'
-import type { CaptionEditPatch } from '../timeline/makeCaptionEdit'
+import type { CaptionEditAllPatch, CaptionEditPatch } from '../timeline/makeCaptionEdit'
 import OverlayItemsLayer from './OverlayItemsLayer'
 import { useVideoPlayback } from './useVideoPlayback'
 import { useEnginePlayback, type EnginePlayback } from './useEnginePlayback'
@@ -75,6 +75,12 @@ interface PreviewPlayerProps {
   selectedCaptionId?: string
   onSelectCaption?: (id: string | null) => void
   onCaptionSegmentChange?: (segmentId: string, patch: CaptionEditPatch) => void
+  /** "Apply to all" (the captions panel's checkbox), passed through to
+   *  CaptionPreview with its commit channel: on, a caption drag or resize
+   *  moves or sizes every caption, live and on release. Both absent → one
+   *  caption at a time, as before. */
+  captionApplyToAll?: boolean
+  onCaptionAllSegmentsChange?: (patch: CaptionEditAllPatch) => void
   /**
    * SP4 — mirrors `VideoEditorProps['engine']` (see `../../types.ts`).
    * Absent/`{enabled: false}` (default): no effect, the legacy `<video>` slots
@@ -425,6 +431,8 @@ function PreviewSurface({
   selectedCaptionId,
   onSelectCaption,
   onCaptionSegmentChange,
+  captionApplyToAll,
+  onCaptionAllSegmentsChange,
   engine,
   transportRef,
   onPlayingChange,
@@ -821,6 +829,8 @@ function PreviewSurface({
           selectedCaptionId={selectedCaptionId}
           onSelectCaption={onSelectCaption}
           onCaptionSegmentChange={onCaptionSegmentChange}
+          applyToAll={captionApplyToAll}
+          onCaptionAllSegmentsChange={onCaptionAllSegmentsChange}
         />
       )}
 

@@ -54,6 +54,10 @@ function renderPanel(opts: {
   withRegenerate?: boolean
   /** What `clock.get()` returns: where the playhead is. */
   playheadTime?: number
+  /** Set (true or false) → the host wires "Apply to all": the checkbox shows
+   *  with this value and the all-segments commit channel is supplied. Left
+   *  undefined → neither prop is passed, as for a host that has not wired it. */
+  applyToAll?: boolean
 } = {}) {
   const {
     style = 'karaoke',
@@ -65,6 +69,7 @@ function renderPanel(opts: {
     editFocusId = null,
     withRegenerate = true,
     playheadTime = 0,
+    applyToAll,
   } = opts
 
   const project = makeProject(style, segments, extra)
@@ -75,6 +80,11 @@ function renderPanel(opts: {
   const onProjectChange = vi.fn()
   const onCaptionSegmentDelete = vi.fn()
   const onRegenerateCaptions = withRegenerate ? vi.fn() : undefined
+  const onApplyToAllChange = vi.fn()
+  const onCaptionAllSegmentsChange = vi.fn()
+  const applyToAllProps = applyToAll === undefined
+    ? {}
+    : { applyToAll, onApplyToAllChange, onCaptionAllSegmentsChange }
 
   const view = render(
     <CaptionListPanel
@@ -91,11 +101,14 @@ function renderPanel(opts: {
       fps={fps}
       clock={clock}
       editFocusId={editFocusId}
+      {...applyToAllProps}
     />,
   )
 
   return {
     ...view,
+    onApplyToAllChange,
+    onCaptionAllSegmentsChange,
     project,
     clock,
     onSelectCaption,
@@ -929,5 +942,127 @@ describe('CaptionListPanel tabs', () => {
     expect(screen.getByRole('button', { name: 'Captions' })).toHaveAttribute('aria-pressed', 'true')
     const editable = screen.getByText('goodbye now')
     expect(document.activeElement).toBe(editable)
+  })
+})
+
+// "Apply to all": one checkbox in the header. The panel is controlled: the
+// host (VideoEditor) owns the value and remembers it, because the preview's
+// drag and resize act on it too. The panel's own part is the checkbox and the
+// selected segment's text color.
+describe('CaptionListPanel — Apply to all', () => {
+  const checkbox = () => screen.getByRole('checkbox', { name: 'Apply to all' }) as HTMLInputElement
+
+  it('shows an unchecked "Apply to all" checkbox in the header on all three tabs', () => {
+    renderPanel({ applyToAll: false })
+    expect(checkbox().checked).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+    expect(checkbox().checked).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Styles' }))
+    expect(checkbox().checked).toBe(false)
+  })
+
+  it('reflects the host\'s value and reports a toggle, both ways', () => {
+    const off = renderPanel({ applyToAll: false })
+    fireEvent.click(checkbox())
+    expect(off.onApplyToAllChange).toHaveBeenCalledTimes(1)
+    expect(off.onApplyToAllChange).toHaveBeenCalledWith(true)
+    cleanup()
+
+    const on = renderPanel({ applyToAll: true })
+    expect(checkbox().checked).toBe(true)
+    fireEvent.click(checkbox())
+    expect(on.onApplyToAllChange).toHaveBeenCalledWith(false)
+  })
+
+  it('is not shown for a host that has not wired it, or while there are no captions', () => {
+    renderPanel()
+    expect(screen.queryByRole('checkbox', { name: 'Apply to all' })).toBeNull()
+    cleanup()
+
+    renderPanel({ segments: [], applyToAll: true })
+    expect(screen.queryByRole('checkbox', { name: 'Apply to all' })).toBeNull()
+  })
+
+  it('off: the selected segment color previews and commits on that segment only', () => {
+    const { onProjectChange, onCaptionSegmentChange, onCaptionAllSegmentsChange } = renderPanel({
+      applyToAll: false,
+      selectedIds: ['cap-1'],
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+    const input = screen.getByLabelText('Selected segment text color') as HTMLInputElement
+
+    fireEvent.change(input, { target: { value: '#123456' } })
+    const previewed = onProjectChange.mock.calls[0][0] as Project
+    expect(previewed.captions!.segments.map(s => s.color)).toEqual([undefined, '#123456', undefined])
+
+    fireEvent.blur(input, { target: { value: '#123456' } })
+    expect(onCaptionSegmentChange).toHaveBeenCalledTimes(1)
+    expect(onCaptionSegmentChange).toHaveBeenCalledWith('cap-1', { color: '#123456' })
+    expect(onCaptionAllSegmentsChange).not.toHaveBeenCalled()
+  })
+
+  it('on: the selected segment color previews on every segment and commits the same color to all, once', () => {
+    const { onProjectChange, onCaptionSegmentChange, onCaptionAllSegmentsChange, onCaptionEdit } = renderPanel({
+      applyToAll: true,
+      selectedIds: ['cap-1'],
+      segments: [
+        { id: 'cap-0', text: 'hello world', start: 0, end: 2, color: '#00ff00' },
+        { id: 'cap-1', text: 'goodbye now', start: 2, end: 4 },
+        { id: 'cap-2', text: 'the end', start: 4, end: 6, color: '#0000ff' },
+      ],
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+    const input = screen.getByLabelText('Selected segment text color') as HTMLInputElement
+
+    fireEvent.change(input, { target: { value: '#123456' } })
+    expect(onProjectChange).toHaveBeenCalledTimes(1)
+    const previewed = onProjectChange.mock.calls[0][0] as Project
+    expect(previewed.captions!.segments.map(s => s.color)).toEqual(['#123456', '#123456', '#123456'])
+
+    fireEvent.blur(input, { target: { value: '#123456' } })
+    expect(onCaptionAllSegmentsChange).toHaveBeenCalledTimes(1)
+    expect(onCaptionAllSegmentsChange).toHaveBeenCalledWith({ color: '#123456' })
+    // One commit per gesture, through one channel.
+    expect(onCaptionSegmentChange).not.toHaveBeenCalled()
+    expect(onCaptionEdit).not.toHaveBeenCalled()
+    expect(onProjectChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('on: a blur with no pick commits nothing, so tabbing past the swatch never recolors every caption', () => {
+    const { onProjectChange, onCaptionSegmentChange, onCaptionAllSegmentsChange } = renderPanel({
+      applyToAll: true,
+      selectedIds: ['cap-1'],
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+    const input = screen.getByLabelText('Selected segment text color') as HTMLInputElement
+    fireEvent.blur(input, { target: { value: input.value } })
+    expect(onCaptionAllSegmentsChange).not.toHaveBeenCalled()
+    expect(onCaptionSegmentChange).not.toHaveBeenCalled()
+    expect(onProjectChange).not.toHaveBeenCalled()
+
+    // A pick re-arms it, for exactly one commit.
+    fireEvent.change(input, { target: { value: '#123456' } })
+    fireEvent.blur(input, { target: { value: '#123456' } })
+    fireEvent.blur(input, { target: { value: '#123456' } })
+    expect(onCaptionAllSegmentsChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('on: a text edit still changes one segment only', () => {
+    const { onCaptionSegmentChange, onCaptionAllSegmentsChange } = renderPanel({ applyToAll: true })
+    const span = screen.getByText('hello world')
+    span.textContent = 'hello universe'
+    fireEvent.blur(span)
+    expect(onCaptionSegmentChange).toHaveBeenCalledWith('cap-0', { text: 'hello universe' })
+    expect(onCaptionAllSegmentsChange).not.toHaveBeenCalled()
+  })
+
+  it('on, with nothing selected: the swatch is the track color, which already applies to all', () => {
+    const { onCaptionEdit, onCaptionAllSegmentsChange } = renderPanel({ applyToAll: true })
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+    const input = screen.getByLabelText('Caption text color') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '#76b900' } })
+    fireEvent.blur(input, { target: { value: '#76b900' } })
+    expect(onCaptionEdit.mock.calls[0][0].captions.color).toBe('#76b900')
+    expect(onCaptionAllSegmentsChange).not.toHaveBeenCalled()
   })
 })

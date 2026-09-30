@@ -12,7 +12,7 @@ import { AlignCenter, AlignLeft, AlignRight, Loader2, RefreshCw, Search, Trash2 
 import type { Project, OverlayFactory } from '../types'
 import type { Captions } from '../schema'
 import type { PlaybackClock } from './playback-clock'
-import type { CaptionEditPatch } from './timeline/makeCaptionEdit'
+import type { CaptionEditAllPatch, CaptionEditPatch } from './timeline/makeCaptionEdit'
 import { EditableSegment } from './timeline/EditableSegment'
 import { formatTime } from './timeline/utils'
 import { NumberField, Slider, stepValue, SwatchInput } from '../ui'
@@ -199,6 +199,18 @@ export interface CaptionListPanelProps {
   /** Commit a single-segment patch — text edits and the per-segment color
    *  swatch. */
   onCaptionSegmentChange?: (segmentId: string, patch: CaptionEditPatch) => void
+  /** "Apply to all": whether a caption move, resize or text color change
+   *  lands on every caption instead of one. Controlled: the host owns the
+   *  value (and remembers it), because the preview acts on it too. Absent →
+   *  off. */
+  applyToAll?: boolean
+  /** The header checkbox was toggled. Absent → the checkbox is not shown. */
+  onApplyToAllChange?: (next: boolean) => void
+  /** Commit the same absolute values onto EVERY segment, as one change. Used
+   *  by the selected segment's color swatch while `applyToAll` is on. Absent →
+   *  the swatch writes the selected segment only, as if the checkbox were
+   *  off. */
+  onCaptionAllSegmentsChange?: (patch: CaptionEditAllPatch) => void
   /** Whole-project commit — style/fontsize/track-color changes and "Remove
    *  all". */
   onCaptionEdit?: (project: Project) => void
@@ -258,6 +270,9 @@ export default function CaptionListPanel({
   selectedIds,
   onSelectCaption,
   onCaptionSegmentChange,
+  applyToAll = false,
+  onApplyToAllChange,
+  onCaptionAllSegmentsChange,
   onCaptionEdit,
   onProjectChange,
   onCaptionSegmentDelete,
@@ -285,6 +300,9 @@ export default function CaptionListPanel({
       selectedIds={selectedIds}
       onSelectCaption={onSelectCaption}
       onCaptionSegmentChange={onCaptionSegmentChange}
+      applyToAll={applyToAll}
+      onApplyToAllChange={onApplyToAllChange}
+      onCaptionAllSegmentsChange={onCaptionAllSegmentsChange}
       onCaptionEdit={onCaptionEdit}
       onProjectChange={onProjectChange}
       onCaptionSegmentDelete={onCaptionSegmentDelete}
@@ -311,6 +329,9 @@ function CaptionListPanelBody({
   selectedIds,
   onSelectCaption,
   onCaptionSegmentChange,
+  applyToAll = false,
+  onApplyToAllChange,
+  onCaptionAllSegmentsChange,
   onCaptionEdit,
   onProjectChange,
   onCaptionSegmentDelete,
@@ -541,19 +562,35 @@ function CaptionListPanelBody({
   // instead of rewriting the whole captions object through `onCaptionEdit`.
   // Each fires from exactly one of SwatchInput's onChange/onCommit, so one
   // gesture produces exactly one commit — never both channels for one value.
+  //
+  // With "Apply to all" on (and a host that wired its commit channel), the
+  // same color goes onto EVERY segment: the live preview patches them all, and
+  // the commit goes through `onCaptionAllSegmentsChange` instead, still
+  // exactly one commit per gesture.
+  const colorAll = applyToAll && !!onCaptionAllSegmentsChange
+  // Set by a pick, cleared by its commit. The swatch commits on BLUR, which
+  // also fires when nothing was picked (tabbing past it, or opening the picker
+  // and closing it). For one segment that rewrites its own color onto itself;
+  // for all of them it would copy the selected caption's color over every
+  // other caption's with no pick made, so the all-segments commit needs one.
+  const segColorPickedRef = useRef(false)
   const liveSegColor = (v: string) => {
     if (!project.captions || !selectedSeg) return
+    segColorPickedRef.current = true
     onProjectChange?.({
       ...project,
       captions: {
         ...project.captions,
-        segments: project.captions.segments.map(s => s.id === selectedSeg.id ? { ...s, color: v } : s),
+        segments: project.captions.segments.map(s => colorAll || s.id === selectedSeg.id ? { ...s, color: v } : s),
       },
     })
   }
   const commitSegColor = (v: string) => {
+    const picked = segColorPickedRef.current
+    segColorPickedRef.current = false
     if (!selectedSeg?.id) return
-    onCaptionSegmentChange?.(selectedSeg.id, { color: v })
+    if (!colorAll) onCaptionSegmentChange?.(selectedSeg.id, { color: v })
+    else if (picked) onCaptionAllSegmentsChange?.({ color: v })
   }
 
   return (
@@ -572,6 +609,24 @@ function CaptionListPanelBody({
               <span className="ml-1.5 text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] normal-case tracking-normal">{segs.length}</span>
             )}
           </span>
+          {/* "Apply to all": a caption move, resize or text color change lands
+              on every caption instead of one. In the header, not inside a tab,
+              so it shows on Format, Styles and Captions alike; on this row
+              rather than beside the tab strip because the three tabs already
+              fill a 288px rail. Mounts with the tabs (there must be captions
+              to apply anything to), and only for a host that owns the value:
+              a checkbox nothing listens to is worse than none. */}
+          {segs.length > 0 && captionTrack && onApplyToAllChange && (
+            <label className="shrink-0 flex items-center gap-1.5 text-[11px] text-[var(--editor-text)] cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={applyToAll}
+                onChange={e => onApplyToAllChange(e.target.checked)}
+                className="h-3.5 w-3.5 accent-[var(--editor-accent)]"
+              />
+              Apply to all
+            </label>
+          )}
         </div>
 
         {/* Only mounts once there are captions to split between the gallery,
