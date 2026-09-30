@@ -151,7 +151,9 @@ def test_known_providers_contains_expected_entries():
     assert "kling" in KNOWN_PROVIDERS
     assert "gemini" in KNOWN_PROVIDERS
     assert "openai" in KNOWN_PROVIDERS
-    assert set(KNOWN_PROVIDERS["kling"]) == {"access_key", "secret_key"}
+    # Kling takes either the current API key or the legacy pair; the allowlist
+    # holds all three and REQUIRED_KEY_SETS decides what counts as configured.
+    assert set(KNOWN_PROVIDERS["kling"]) == {"api_key", "access_key", "secret_key"}
     assert set(KNOWN_PROVIDERS["gemini"]) == {"api_key"}
     assert set(KNOWN_PROVIDERS["openai"]) == {"api_key"}
 
@@ -167,3 +169,41 @@ def test_env_overlay_accepts_new_providers():
     env = build_env_overlay({"fal": {"api_key": "test-key"}, "elevenlabs": {"api_key": "test-key-2"}})
     assert env["FAL_API_KEY"] == "test-key"
     assert env["ELEVENLABS_API_KEY"] == "test-key-2"
+
+
+# ── Kling: API key is current, access/secret is legacy ──────────────────
+
+
+def test_kling_required_key_sets_accept_either_shape():
+    """Either the API key alone or the legacy pair makes Kling usable.
+
+    Kling's docs put "API Key (for all models)" first and mark
+    "Access Key / Secret Key" as legacy, so both must work: existing users keep
+    their pair, new ones store one key.
+    """
+    from lib.credentials import required_key_sets, provider_is_configured
+    assert required_key_sets("kling") == [["api_key"], ["access_key", "secret_key"]]
+
+    assert provider_is_configured("kling", lambda p, k: k == "api_key")
+    assert provider_is_configured("kling", lambda p, k: k in ("access_key", "secret_key"))
+    # A half-configured legacy pair is NOT usable: the JWT needs both.
+    assert not provider_is_configured("kling", lambda p, k: k == "access_key")
+    assert not provider_is_configured("kling", lambda p, k: False)
+
+
+def test_single_key_providers_are_unchanged_by_the_kling_override():
+    """Every other provider still requires its one key, via the default path."""
+    from lib.credentials import required_key_sets, provider_is_configured
+    for p in ("gemini", "openai", "fal", "elevenlabs", "serpapi"):
+        assert required_key_sets(p) == [["api_key"]]
+        assert provider_is_configured(p, lambda _p, k: k == "api_key")
+        assert not provider_is_configured(p, lambda _p, k: False)
+
+
+def test_build_env_overlay_accepts_a_kling_api_key():
+    """The env overlay must pass an api_key through, not reject it as unknown."""
+    from lib.credentials import build_env_overlay
+    assert build_env_overlay({"kling": {"api_key": "x"}}) == {"KLING_API_KEY": "x"}
+    # and the legacy pair still maps
+    assert build_env_overlay({"kling": {"access_key": "a", "secret_key": "b"}}) == {
+        "KLING_ACCESS_KEY": "a", "KLING_SECRET_KEY": "b"}

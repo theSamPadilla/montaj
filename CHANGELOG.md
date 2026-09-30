@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Added: Kling accepts its current API key, not only the legacy access/secret pair.** Kling's own docs now list "API Key (for all models)" first and mark "Access Key / Secret Key" as applying to "legacy version design standards". `montaj credentials` can store `kling.api_key`, and the connector sends it straight as the bearer token. An existing access/secret pair keeps working unchanged: it still signs a JWT, and the connector prefers the API key only when one is stored. Kling's key page moved too, so `montaj credentials` now points at https://kling.ai/dev/api-key.
+
 ## v5.10.1
 
 - **Fixed: a clip whose length is not a whole number of filmstrip ticks showed "No preview" in the Footage panel.** The last tile's seek landed inside the final frame, decoded nothing and failed the whole sheet (camera clips such as 15.015 s at 23.976 fps). `filmstrip` now retries slightly earlier and takes the last frame.

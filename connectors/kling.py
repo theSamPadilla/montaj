@@ -19,7 +19,7 @@ from connectors import (
     ConnectorError, _http, classify_http_error,
     INVALID_API_KEY, INSUFFICIENT_CREDIT, MODEL_RETIRED, UNREACHABLE,
 )
-from lib.credentials import get_credential
+from lib.credentials import get_credential, CredentialError
 
 # api.klingai.com answers identically (verified 2026-09-28); keep Singapore.
 BASE_URL = "https://api-singapore.klingai.com"
@@ -156,9 +156,30 @@ def _make_token() -> str:
     return jwt.encode(payload, secret_key, algorithm="HS256", headers=headers)
 
 
+def _bearer() -> str:
+    """The Authorization bearer value: the API key if stored, else a signed JWT.
+
+    Kling's current standard is a single API Key sent straight as the bearer
+    ("API Key (for all models)" in its auth docs, read 2026-09-29). The
+    access-key/secret-key pair that `_make_token` signs is documented there as
+    "API only applicable to legacy version design standards", so it stays as a
+    fallback for accounts still on it rather than being removed.
+
+    API key first, deliberately: an account holding both should use the current
+    mechanism, and a stored api_key is the newer, explicit choice.
+    """
+    try:
+        return get_credential("kling", "api_key")
+    except CredentialError:
+        # No API key stored: fall back to signing a JWT from the legacy pair.
+        # get_credential RAISES when a key is absent, it does not return None,
+        # so this except is the fallback path and not error handling.
+        return _make_token()
+
+
 def _auth_headers() -> dict:
     return {
-        "Authorization": f"Bearer {_make_token()}",
+        "Authorization": f"Bearer {_bearer()}",
         "Content-Type": "application/json",
     }
 

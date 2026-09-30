@@ -30,7 +30,7 @@ def register(subparsers):
 
 def handle(args):
     from lib.credentials import (
-        KNOWN_PROVIDERS, CredentialError,
+        KNOWN_PROVIDERS, CredentialError, provider_is_configured,
         get_credential, set_credential, list_providers,
     )
 
@@ -91,7 +91,8 @@ def handle(args):
 
             # Check current status
             keys = KNOWN_PROVIDERS[p]
-            all_set = all(_key_is_set(get_credential, p, k) for k in keys)
+            all_set = provider_is_configured(
+                p, lambda _p, k: _key_is_set(get_credential, _p, k))
             status = _green(f" {_CHECK} ready") if all_set else ""
 
             print(f"  {_bold(str(i))}  {_bold(_cyan(display))}{status}")
@@ -191,10 +192,11 @@ _PROVIDER_INFO = {
     "kling": {
         "display": "Kling AI",
         "desc": "Video generation",
-        "url": "https://platform.klingai.com",
+        "url": "https://kling.ai/dev/api-key",
         "keys": {
-            "access_key": "Your identity (becomes the JWT issuer claim)",
-            "secret_key": "Your signing secret (signs the JWT, never sent over the wire)",
+            "api_key": "Current. One key, sent as the bearer. Shown once on creation",
+            "access_key": "Legacy. Your identity (becomes the JWT issuer claim)",
+            "secret_key": "Legacy. Signs the JWT, never sent over the wire",
         },
     },
     "gemini": {

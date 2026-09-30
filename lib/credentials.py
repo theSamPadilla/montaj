@@ -13,13 +13,49 @@ CREDENTIALS_PATH = os.path.expanduser("~/.montaj/credentials.json")
 # which keys each one needs. `montaj credentials` imports this.
 # Adding a new connector → add it here first.
 KNOWN_PROVIDERS: dict[str, list[str]] = {
-    "kling":      ["access_key", "secret_key"],
+    # Kling accepts EITHER a single API key OR the legacy access/secret pair.
+    # Kling's own docs (kling.ai/document-api/api/get-started/authentication,
+    # read 2026-09-29) put "API Key (for all models)" first and label
+    # "Access Key / Secret Key" as "API only applicable to legacy version design
+    # standards". Both are listed here because this dict is an ALLOWLIST of what
+    # may be stored, not a set of required keys; REQUIRED_KEY_SETS below says
+    # which combinations count as configured.
+    "kling":      ["api_key", "access_key", "secret_key"],
     "gemini":     ["api_key"],
     "openai":     ["api_key"],
     "serpapi":    ["api_key"],
     "fal":        ["api_key"],
     "elevenlabs": ["api_key"],
 }
+
+
+# Which combinations of the keys above count as "configured". A provider is
+# configured when ANY one of its sets is fully present. Only Kling has more than
+# one: the current API key, or the legacy pair. Without this, adding `api_key` to
+# Kling's allowlist would make every existing access/secret user read as
+# unconfigured, because the CLI's readiness check is `all(keys are set)`.
+REQUIRED_KEY_SETS: dict[str, list[list[str]]] = {
+    "kling": [["api_key"], ["access_key", "secret_key"]],
+}
+
+
+def required_key_sets(provider: str) -> list[list[str]]:
+    """The credential combinations that make `provider` usable.
+
+    Defaults to "every key in KNOWN_PROVIDERS", which is right for every
+    single-key provider. Kling overrides it.
+    """
+    return REQUIRED_KEY_SETS.get(provider, [list(KNOWN_PROVIDERS[provider])])
+
+
+def provider_is_configured(provider: str, is_set) -> bool:
+    """True when any one required key set is fully present.
+
+    `is_set(provider, key) -> bool` is injected so callers can use the CLI's
+    cached getter or a test double; this function does no I/O.
+    """
+    return any(all(is_set(provider, k) for k in ks)
+               for ks in required_key_sets(provider))
 
 
 class CredentialError(ConnectorError):
