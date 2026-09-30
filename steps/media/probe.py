@@ -25,7 +25,8 @@ def main():
     rotation_info = probe_video(args.input)
 
     result = {
-        "duration": round(float(data["format"]["duration"]), 2),
+        # Still images (PNG, JPEG) have no container duration: ffprobe omits it.
+        "duration": round(float(data["format"].get("duration") or 0), 2),
         "size_bytes": int(data["format"]["size"]),
         "format": data["format"]["format_name"],
         "streams": []
