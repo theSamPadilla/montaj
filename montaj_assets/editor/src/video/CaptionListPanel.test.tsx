@@ -460,6 +460,41 @@ describe('CaptionListPanel relocated style controls', () => {
     })
   })
 
+  // A swatch commits when the picker closes, and a blur also fires when nothing
+  // was picked (tabbing past it). That must change nothing: the native input
+  // reports its own fallback (#ffffff when the value is unset), and committing
+  // that would write a colour nobody chose. (Picking a colour and then the
+  // original back is covered in VideoEditor.captionGesture.test.tsx, where the
+  // host echoes each pick into the swatch.)
+  describe('a swatch that ends with no change commits nothing', () => {
+    const swatches = [
+      { name: 'track text color', opts: {}, label: 'Caption text color', original: '#ffffff', other: '#123456' },
+      { name: 'one caption text color', opts: { selectedIds: ['cap-1'] }, label: 'Selected segment text color', original: '#ffffff', other: '#123456' },
+      { name: 'accent color', opts: { style: 'karaoke' as const }, label: 'Caption highlight color', original: '#ffffff', other: '#123456' },
+    ]
+    it.each(swatches)('$name: a blur with no pick writes nothing', ({ opts, label, original }) => {
+      const { onProjectChange, onCaptionEdit, onCaptionSegmentChange, onCaptionAllSegmentsChange } = renderPanel(opts)
+      expandFormat()
+      const input = screen.getByLabelText(label) as HTMLInputElement
+      fireEvent.blur(input, { target: { value: original } })
+      expect(onCaptionEdit).not.toHaveBeenCalled()
+      expect(onCaptionSegmentChange).not.toHaveBeenCalled()
+      expect(onCaptionAllSegmentsChange).not.toHaveBeenCalled()
+      expect(onProjectChange).not.toHaveBeenCalled()
+    })
+
+    it('a real pick after an empty blur still commits once', () => {
+      const { onCaptionEdit } = renderPanel()
+      expandFormat()
+      const input = screen.getByLabelText('Caption text color') as HTMLInputElement
+      fireEvent.blur(input, { target: { value: '#ffffff' } })
+      fireEvent.change(input, { target: { value: '#123456' } })
+      fireEvent.blur(input, { target: { value: '#123456' } })
+      expect(onCaptionEdit).toHaveBeenCalledTimes(1)
+      expect(onCaptionEdit.mock.calls[0][0].captions.color).toBe('#123456')
+    })
+  })
+
   it.each(['clean', 'word-by-word'] as const)('hides the accent swatch for styles with no accent: %s', (style) => {
     renderPanel({ style })
     expandFormat()

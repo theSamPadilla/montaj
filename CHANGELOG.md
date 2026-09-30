@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fixed (editor): tabbing past a colour swatch in the captions panel no longer changes anything.** It used to write white onto the colour, add an undo step and save. See `montaj_assets/editor/CHANGELOG.md`.
 - **Fixed (editor): undo restores a caption's color and format after a live-previewed change.** Picking a text color, dragging the font size slider or typing a font size, letter spacing or line height in the captions Format tab, then pressing undo, used to change nothing. One undo now returns to the value from before the change. See `montaj_assets/editor/CHANGELOG.md`.
 
 ## v5.16.0

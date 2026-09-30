@@ -230,10 +230,10 @@ describe('VideoEditor — captions "Apply to all"', () => {
     window.localStorage.clear()
   })
 
-  function mount() {
+  function mount(captions: unknown = variedCaptions) {
     const adapter = { ...makeFakeAdapter(), compileOverlay: compileCaptionTemplate() } as EditorAdapter<Project>
     const onProjectChange = vi.fn()
-    const initial = makeVideoProject({ captions: variedCaptions } as Partial<Project>)
+    const initial = makeVideoProject({ captions } as Partial<Project>)
     const view = render(<VideoEditor project={initial} adapter={adapter} onProjectChange={onProjectChange} />)
     const segments = () => {
       const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
@@ -530,6 +530,88 @@ describe('VideoEditor — captions "Apply to all"', () => {
       // The drag's undo entry is the project from before the pick.
       await view.undo()
       await waitFor(() => expect(view.segments()).toEqual(variedCaptions.segments))
+    })
+
+    // A swatch commits on blur, and a blur also fires when nothing was picked.
+    // The input reports its own #ffffff when the colour is unset, so an empty
+    // blur used to write white, spend an undo entry and save.
+    describe('a swatch that ends with no change', () => {
+      const selectS0AndOpenFormat = async (view: ReturnType<typeof mount>) => {
+        const box = view.container.querySelector('[style*="z-index: 50"]')!.firstElementChild as HTMLElement
+        fireEvent.mouseDown(box, { clientX: 500, clientY: 500 })
+        fireEvent.mouseUp(document)
+        fireEvent.click(view.getByRole('button', { name: 'Format' }))
+      }
+      const noChange = (view: ReturnType<typeof mount>, captions: unknown = variedCaptions) => {
+        expect(view.undoButton().disabled).toBe(true)
+        expect(view.adapter.saveProject).not.toHaveBeenCalled()
+        expect(captionsOf(view)).toEqual(captions)
+      }
+
+      it('track color: a blur with no pick', async () => {
+        const view = mount()
+        await waitFor(() => expect(view.checkbox().checked).toBe(false))
+        fireEvent.click(view.getByRole('button', { name: 'Format' }))
+        fireEvent.blur(await view.findByLabelText('Caption text color'))
+        noChange(view)
+      })
+
+      it('one caption color, Apply to all off: a blur with no pick', async () => {
+        const view = mount()
+        await waitFor(() => expect(view.checkbox().checked).toBe(false))
+        await selectS0AndOpenFormat(view)
+        fireEvent.blur(await view.findByLabelText('Selected segment text color'))
+        noChange(view)
+      })
+
+      it('track color: picking a colour and then the original back', async () => {
+        const view = mount()
+        await waitFor(() => expect(view.checkbox().checked).toBe(false))
+        fireEvent.click(view.getByRole('button', { name: 'Format' }))
+        const input = await view.findByLabelText('Caption text color')
+        fireEvent.change(input, { target: { value: '#123456' } })
+        fireEvent.change(input, { target: { value: '#ffffff' } })
+        fireEvent.blur(input, { target: { value: '#ffffff' } })
+        expect(view.undoButton().disabled).toBe(true)
+        expect(view.adapter.saveProject).not.toHaveBeenCalled()
+      })
+
+      it('one caption color: picking a colour and then the original back', async () => {
+        const view = mount()
+        await waitFor(() => expect(view.checkbox().checked).toBe(false))
+        await selectS0AndOpenFormat(view)
+        const input = await view.findByLabelText('Selected segment text color')
+        fireEvent.change(input, { target: { value: '#123456' } })
+        fireEvent.change(input, { target: { value: '#ffffff' } })
+        fireEvent.blur(input, { target: { value: '#ffffff' } })
+        expect(view.undoButton().disabled).toBe(true)
+        expect(view.adapter.saveProject).not.toHaveBeenCalled()
+      })
+
+      it('accent color: a blur with no pick', async () => {
+        const karaoke = { ...variedCaptions, style: 'karaoke' }
+        const view = mount(karaoke)
+        await waitFor(() => expect(view.checkbox().checked).toBe(false))
+        fireEvent.click(view.getByRole('button', { name: 'Format' }))
+        fireEvent.blur(await view.findByLabelText('Caption highlight color'))
+        noChange(view, karaoke)
+      })
+
+      it('a real pick after an empty blur is still one undo step', async () => {
+        const view = mount()
+        await waitFor(() => expect(view.checkbox().checked).toBe(false))
+        fireEvent.click(view.getByRole('button', { name: 'Format' }))
+        const input = await view.findByLabelText('Caption text color')
+        fireEvent.blur(input)
+        expect(view.undoButton().disabled).toBe(true)
+        fireEvent.change(input, { target: { value: '#123456' } })
+        fireEvent.blur(input, { target: { value: '#123456' } })
+        await waitFor(() => expect(view.undoButton().disabled).toBe(false))
+        expect(captionsOf(view).color).toBe('#123456')
+        await view.undo()
+        await waitFor(() => expect(captionsOf(view)).toEqual(variedCaptions))
+        await waitFor(() => expect(view.undoButton().disabled).toBe(true))
+      })
     })
 
     it('a gesture that changes nothing commits nothing: no undo entry and no save', async () => {
