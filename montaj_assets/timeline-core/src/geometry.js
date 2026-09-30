@@ -416,7 +416,7 @@ import { sampleTrack } from './curves.js'
  *   see the module header for why each of these is honest, not fabricated.
  * @property {{x: number, y: number, w: number, h: number} | undefined} sourceCrop
  *   Forwarded verbatim, by reference; from `geometryAt`, a fresh object
- *   sampled from the crop tracks when an image's crop is keyframed.
+ *   sampled from the crop tracks when an image or video's crop is keyframed.
  * @property {number | undefined} sourceWidth  Forwarded verbatim.
  * @property {number | undefined} sourceHeight Forwarded verbatim.
  * @property {number} rotation Degrees, as authored (NOT normalized here).

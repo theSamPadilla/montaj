@@ -144,3 +144,29 @@ def test_crop_keyframes_on_an_overlay_still_fail(tmp_path, capsys):
     assert err["error"] == "invalid_field"
     msg = err["message"]
     assert "cropX" in msg and "image or video" in msg
+
+
+def test_video_crop_point_without_t_fails(tmp_path, capsys):
+    no_t = {"prop": "cropW", "points": [{"value": 0.5}, {"value": 0.25}]}
+    item = _video([no_t, {"prop": "cropH", "points": [{"value": 1.0}, {"value": 0.5}]}])
+    msg = _fails(tmp_path, capsys, item)
+    assert "cropW" in msg and "i-0" in msg
+
+
+def test_image_crop_point_without_t_fails(tmp_path, capsys):
+    item = _item(keyframes=[{"prop": "cropX", "points": [{"value": 0.1}, {"t": 1.0, "value": 0.2}]}])
+    msg = _fails(tmp_path, capsys, item)
+    assert "cropX" in msg and "i-0" in msg
+
+
+@pytest.mark.parametrize("bad_t", [True, "1", None, float("nan")])
+def test_crop_point_non_numeric_t_fails(tmp_path, capsys, bad_t):
+    item = _item(keyframes=[{"prop": "cropY", "points": [{"t": bad_t, "value": 0.1}]}])
+    assert "cropY" in _fails(tmp_path, capsys, item)
+
+
+@pytest.mark.parametrize("dims", [(0, 1080), (1920, 0)])
+def test_video_crop_zero_source_size_fails(tmp_path, capsys, dims):
+    item = _video([_vtrack("cropW", [(0, 0.5), (2, 0.25)]), _vtrack("cropH", [(0, 1.0), (2, 0.5)])],
+                  dims=False, sourceWidth=dims[0], sourceHeight=dims[1])
+    assert "sourceWidth and sourceHeight" in _fails(tmp_path, capsys, item)

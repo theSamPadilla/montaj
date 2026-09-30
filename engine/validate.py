@@ -100,7 +100,7 @@ def _validate_video_crop_keyframes(ti, item, tracks):
     `tracks` maps each keyed crop prop to its non-empty track."""
     who = f"tracks[{ti}] item '{item.get('id','?')}'"
     sw, sh = _int_dim(item.get("sourceWidth")), _int_dim(item.get("sourceHeight"))
-    if sw is None or sh is None:
+    if sw is None or sh is None or sw <= 0 or sh <= 0:
         fail("invalid_field", f"{who}: crop keyframes on a video need sourceWidth and sourceHeight")
     if "cropW" not in tracks and "cropH" not in tracks:
         return
@@ -193,6 +193,9 @@ def _validate_clip_extensions(data, project_dir=None):
                 if item.get("type") not in ("image", "video"):
                     fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': {prop} keyframes are for image or video items only")
                 for p in tr.get("points") or []:
+                    pt = p.get("t") if isinstance(p, dict) else None
+                    if isinstance(pt, bool) or not isinstance(pt, (int, float)) or not math.isfinite(pt):
+                        fail("invalid_field", f"tracks[{ti}] item '{item.get('id','?')}': {prop} keyframe points need a numeric t")
                     val = p.get("value") if isinstance(p, dict) else None
                     ok = (isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val)
                           and val <= 1.0 and (val > 0.0 if prop in ("cropW", "cropH") else val >= 0.0))
