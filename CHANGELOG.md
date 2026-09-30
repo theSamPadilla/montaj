@@ -2,7 +2,10 @@
 
 ## Unreleased
 
+## v5.16.0
+
 - **Added (editor): an "Apply to all" checkbox in the captions panel.** On, a caption move, resize or text color change lands on every caption at once, as one undo step. Off by default and remembered per browser. See `montaj_assets/editor/CHANGELOG.md`.
+- **Fixed (editor): selecting a caption no longer moves the playhead when it is already inside that caption.** Clicking a caption on the timeline or in the list still seeks to its start when the playhead is outside it. See `montaj_assets/editor/CHANGELOG.md`.
 
 ## v5.15.1
 
