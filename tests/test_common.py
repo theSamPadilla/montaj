@@ -1,6 +1,7 @@
 """Unit tests for lib/common.py — no external dependencies required."""
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -440,7 +441,7 @@ def test_transcribe_words_fails_when_whisper_errors(tmp_path, monkeypatch, capsy
     (wdir / "ggml-base.en.bin").write_bytes(b"x")
     monkeypatch.setattr(common, "find_whisper_bin", lambda: "/fake/whisper-cpp")
 
-    def fake_run(cmd, timeout=300, check=True):
+    def fake_run(cmd, timeout=300, check=True, cwd=None):
         # Simulate whisper crashing: non-zero exit, no JSON written.
         return _sp.CompletedProcess(cmd, returncode=1, stdout="", stderr="ggml: CUDA boom")
 
@@ -521,3 +522,53 @@ def test_run_whisper_passes_through_a_normal_run(monkeypatch):
     monkeypatch.setattr(common, "whisper_runaway_timeout_for", lambda _path: 30)
     r = common.run_whisper([sys.executable, "-c", "print('ok')"], "audio.wav")
     assert r.returncode == 0 and r.stdout.strip() == "ok"
+
+
+def _capture_whisper_spawn(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"], seen["kw"] = cmd, kw
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(common.subprocess, "run", fake_run)
+    monkeypatch.setattr(common, "whisper_runaway_timeout_for", lambda _path: 30)
+    return seen
+
+
+def test_run_whisper_spawns_with_the_binarys_own_directory_as_cwd(tmp_path, monkeypatch):
+    # whisper.cpp loads ggml-cpu-*.dll from its cwd as well as its exe dir; an
+    # inherited cwd (serve's) would let a DLL planted there load.
+    seen = _capture_whisper_spawn(monkeypatch)
+    exe = tmp_path / "bin" / "whisper-cli"
+    common.run_whisper([str(exe), "-m", "m.bin"], "a.wav")
+    assert seen["kw"]["cwd"] == str(tmp_path / "bin")
+
+
+def test_run_whisper_resolves_a_relative_binary_before_taking_its_directory(tmp_path, monkeypatch):
+    seen = _capture_whisper_spawn(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    common.run_whisper([os.path.join("rel", "whisper-cli")], "a.wav")
+    assert seen["kw"]["cwd"] == str(tmp_path / "rel")
+    assert seen["cmd"][0] == str(tmp_path / "rel" / "whisper-cli")
+
+
+def test_run_whisper_makes_path_arguments_absolute_so_the_cwd_change_cannot_move_them(tmp_path, monkeypatch):
+    # -f, -m and --output-file were relative to the caller's cwd; whisper now
+    # runs elsewhere, so a relative one would read or write the wrong place.
+    seen = _capture_whisper_spawn(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    exe = str(tmp_path / "bin" / "whisper-cli")
+    common.run_whisper([exe, "-m", "models/m.bin", "-f", "clip.wav", "-l", "en",
+                        "--output-file", "out/prefix", "--output-json"], "clip.wav")
+    cmd = seen["cmd"]
+    assert cmd[cmd.index("-m") + 1] == str(tmp_path / "models" / "m.bin")
+    assert cmd[cmd.index("-f") + 1] == str(tmp_path / "clip.wav")
+    assert cmd[cmd.index("--output-file") + 1] == str(tmp_path / "out" / "prefix")
+    assert cmd[cmd.index("-l") + 1] == "en"      # non-path values untouched
+
+
+def test_run_leaves_cwd_unset_for_other_callers(monkeypatch):
+    seen = _capture_whisper_spawn(monkeypatch)
+    common.run(["echo", "x"])
+    assert seen["kw"].get("cwd") is None

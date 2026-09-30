@@ -40,9 +40,10 @@ def check_output(path: str):
         fail("empty_output", f"Output file is empty: {path}")
 
 
-def run(cmd: list[str], timeout: int = 300, check: bool = True) -> subprocess.CompletedProcess:
-    """Run a command without a shell, capture output."""
-    r = subprocess.run(cmd, shell=False, capture_output=True, text=True, timeout=timeout)
+def run(cmd: list[str], timeout: int = 300, check: bool = True, cwd: str = None) -> subprocess.CompletedProcess:
+    """Run a command without a shell, capture output. ``cwd`` defaults to the
+    caller's own (unchanged)."""
+    r = subprocess.run(cmd, shell=False, capture_output=True, text=True, timeout=timeout, cwd=cwd)
     if check and r.returncode != 0:
         fail("unexpected_error", f"Command failed: {' '.join(cmd)}\n{r.stderr[:4000]}")
     return r
@@ -333,14 +334,33 @@ def whisper_runaway_timeout_for(path: str) -> int:
         return WHISPER_RUNAWAY_FLOOR_S
 
 
+_WHISPER_PATH_FLAGS = {"-m", "--model", "-f", "--file", "-of", "--output-file"}
+
+
+def _absolute_whisper_paths(args: list[str]) -> list[str]:
+    """Make the value after each whisper path flag absolute (relative to the
+    caller's cwd, which is what the caller meant)."""
+    out, absolutize = [], False
+    for a in args:
+        out.append(os.path.abspath(a) if absolutize else a)
+        absolutize = a in _WHISPER_PATH_FLAGS
+    return out
+
+
 def run_whisper(cmd: list[str], audio_path: str, check: bool = False) -> subprocess.CompletedProcess:
     """Run a whisper-cli command under the runaway guard (``check`` as in
     ``run``). A run that outlives the guard is stopped and fails with
     ``transcription_timeout``, naming the limit, rather than escaping as a raw
     TimeoutExpired traceback that serve would pass on as the error message."""
     timeout = whisper_runaway_timeout_for(audio_path)
+    # whisper.cpp loads its ggml-cpu-*.dll backends from the current directory as
+    # well as the exe's, so it must not inherit serve's cwd (a planted DLL there
+    # would load). Run it in its own directory instead. That moves every relative
+    # path it is given, so the path arguments are made absolute first.
+    exe = os.path.abspath(shutil.which(cmd[0]) or cmd[0])
+    cmd = [exe] + _absolute_whisper_paths(cmd[1:])
     try:
-        return run(cmd, timeout=timeout, check=check)
+        return run(cmd, timeout=timeout, check=check, cwd=os.path.dirname(exe))
     except subprocess.TimeoutExpired:
         fail("transcription_timeout",
              f"whisper.cpp was stopped after {timeout}s without finishing. The limit is a "
