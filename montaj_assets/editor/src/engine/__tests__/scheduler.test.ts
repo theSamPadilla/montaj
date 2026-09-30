@@ -672,6 +672,10 @@ describe('endsOnLoopBoundary', () => {
 })
 
 describe('planTick', () => {
+  it('plans a clip at the exact tick time it was asked for (the crop sampler reads it)', () => {
+    const p = project([clip('a', 0, 10)])
+    expect(planTick(p, 7, track0VideoItems(p)).active?.t).toBe(7)
+  })
   it('resolves the active track-0 clip, the opaque flag and the next clip', () => {
     const p = project([clip('a', 0, 2), clip('b', 3, 5)], [overlay('o', 1, 4, true)])
     const clips = track0VideoItems(p)
@@ -1348,6 +1352,19 @@ describe('painting', () => {
     expect(server.seekTargets).toHaveLength(1)
     // …but a real move does.
     h.scheduler.seek(1.5)
+    expect(server.seekTargets).toHaveLength(2)
+  })
+
+  it('repaints a paused picture when only its crop changed', () => {
+    const dims = { sourceWidth: 1920, sourceHeight: 1080 }
+    const at = (x: number) => project([clip('a', 0, 4, { ...dims, sourceCrop: { x, y: 0, w: 0.5, h: 1 } })])
+    const h = harness(at(0))
+    h.scheduler.seek(1)
+    const server = h.host.server('a')
+    expect(server.seekTargets).toHaveLength(1)
+    h.scheduler.setProject(at(0))
+    expect(server.seekTargets).toHaveLength(1)
+    h.scheduler.setProject(at(0.5))
     expect(server.seekTargets).toHaveLength(2)
   })
 

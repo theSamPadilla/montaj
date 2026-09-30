@@ -287,6 +287,15 @@ function sampledCrop(
   return geometryAt(item as VisualItem, 'video', local).sourceCrop
 }
 
+/** What a paused canvas draw depends on besides the media position: the crop at
+ *  the tick (sampled when keyed), its source size and the box aspect. Part of the
+ *  paused repaint key, so a crop edit repaints (PV55 review). */
+function drawKeyOf(active: ActiveClip): string {
+  const c = sampledCrop(active.item, active.t)
+  const crop = c ? `${c.x},${c.y},${c.w},${c.h}` : ''
+  return `#${crop}/${active.item.sourceWidth ?? ''}x${active.item.sourceHeight ?? ''}/${perAxisRatio(active.item)}`
+}
+
 /**
  * The crop plan when the item has one, the contain-fit default otherwise.
  *
@@ -1290,8 +1299,8 @@ class SchedulerImpl implements Scheduler {
         // that has not moved. Inside a blend the key carries BOTH positions:
         // the outgoing one alone would hold a stale mix as `p` moves.
         const key = incoming
-          ? `${plan.active.clipId}@${Math.round(mediaUs)}+${incoming.clipId}@${Math.round(incoming.mediaUs)}`
-          : `${plan.active.clipId}@${Math.round(mediaUs)}`
+          ? `${plan.active.clipId}@${Math.round(mediaUs)}${drawKeyOf(plan.active)}+${incoming.clipId}@${Math.round(incoming.mediaUs)}${drawKeyOf(incoming.active)}`
+          : `${plan.active.clipId}@${Math.round(mediaUs)}${drawKeyOf(plan.active)}`
         if (picture === 'video' && key !== this.paintedKey) {
           this.paintedKey = key
           if (incoming) this.paintBlendFromSeek(source, plan.active, mediaUs, incoming)
