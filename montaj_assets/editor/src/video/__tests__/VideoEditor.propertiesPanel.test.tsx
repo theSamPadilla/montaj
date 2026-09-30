@@ -673,6 +673,150 @@ describe('VideoEditor — CapCut right properties panel', () => {
   })
 })
 
+describe('VideoEditor — the Crop tab and tool key a video crop (PV55 phase 2)', () => {
+  type Kf = { prop: string; points: { t: number; value: number }[] }[]
+  type Saved = { sourceCrop?: unknown; sourceWidth?: number; sourceHeight?: number; keyframes?: Kf }
+  const key = (prop: string, value: number) => ({ prop, points: [{ t: 0, value, easing: 'linear' }] })
+  const CROP_KEYS = [key('cropX', 0.1), key('cropY', 0), key('cropW', 0.5), key('cropH', 1)]
+  const saved = (adapter: EditorAdapter<Project>) => lastSaved(adapter).tracks?.[0]?.items?.[0] as unknown as Saved
+
+  /** The hook's probe: a <video> that reports `dims` on loadedmetadata once its
+   *  src is set (or never, when null). Patched on the prototype so React's own
+   *  <video> elements stay real. */
+  function stubVideoProbe(dims: { w: number; h: number } | null) {
+    const proto = HTMLVideoElement.prototype
+    Object.defineProperty(proto, 'videoWidth', { configurable: true, get: () => dims?.w ?? 0 })
+    Object.defineProperty(proto, 'videoHeight', { configurable: true, get: () => dims?.h ?? 0 })
+    Object.defineProperty(proto, 'src', {
+      configurable: true,
+      get() { return this.getAttribute('src') ?? '' },
+      set(this: HTMLVideoElement, v: string) {
+        this.setAttribute('src', v)
+        if (dims) queueMicrotask(() => this.dispatchEvent(new Event('loadedmetadata')))
+      },
+    })
+    onTestFinished(() => {
+      delete (proto as unknown as Record<string, unknown>).videoWidth
+      delete (proto as unknown as Record<string, unknown>).videoHeight
+      delete (proto as unknown as Record<string, unknown>).src
+    })
+  }
+  function stubModalResizeObserver() {
+    ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
+      cb: ResizeObserverCallback
+      constructor(cb: ResizeObserverCallback) { this.cb = cb }
+      observe() { this.cb([{ contentRect: { width: 800, height: 450 } } as ResizeObserverEntry], this as unknown as ResizeObserver) }
+      unobserve() {}
+      disconnect() {}
+    }
+  }
+  function videoProject(extra: Record<string, unknown> = {}) {
+    return makeProject({
+      tracks: [[{ id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, ...extra }]],
+    } as unknown as Partial<Project>)
+  }
+
+  it("the Crop tab's diamond keys a video's crop, with its probed size in the same change", async () => {
+    onTestFinished(installCanvasHarness())
+    stubVideoProbe({ w: 1920, h: 1080 })
+    const project = videoProject()
+    const adapter = makeFakeAdapter(project)
+    const { container } = renderCapCut(project, adapter)
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+    selectCanvasItem(container, project, { id: 'clip-0' })
+
+    fireEvent.click(await clipTab('Crop'))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Crop keyframe at playhead' }))
+
+    await waitFor(() => {
+      const item = saved(adapter)
+      const v = (prop: string) => item.keyframes?.find(k => k.prop === prop)?.points[0].value
+      // untrimmed: a video contain-fits its crop, so the whole rect is what is seen
+      expect([v('cropX'), v('cropY'), v('cropW'), v('cropH')]).toEqual([0, 0, 1, 1])
+      expect(item.sourceWidth).toBe(1920)
+      expect(item.sourceHeight).toBe(1080)
+      expect(item.sourceCrop).toBeUndefined()
+    })
+  })
+
+  it("a video's diamond does nothing until its size is known", async () => {
+    onTestFinished(installCanvasHarness())
+    stubVideoProbe(null)
+    // its own src: the probe caches per src for the whole file
+    const project = videoProject({ src: 'unprobed.mp4' })
+    const adapter = makeFakeAdapter(project)
+    const { container } = renderCapCut(project, adapter)
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+    selectCanvasItem(container, project, { id: 'clip-0' })
+
+    fireEvent.click(await clipTab('Crop'))
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    const before = (adapter.saveProject as ReturnType<typeof vi.fn>).mock.calls.length
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Crop keyframe at playhead' }))
+    await act(async () => { await new Promise(r => setTimeout(r, 50)) })
+    const calls = (adapter.saveProject as ReturnType<typeof vi.fn>).mock.calls
+    for (const c of calls.slice(before)) {
+      const it = (c[1] as Project).tracks?.[0]?.items?.[0] as unknown as Saved
+      expect(it.keyframes).toBeUndefined()
+      expect(it.sourceWidth).toBeUndefined()
+    }
+  })
+
+  it('Apply on a keyed video crop keys it, locked to the keys aspect; the static sourceCrop is untouched', async () => {
+    onTestFinished(installCanvasHarness())
+    stubVideoProbe({ w: 1920, h: 1080 })
+    stubModalResizeObserver()
+    const project = videoProject({ sourceWidth: 1920, sourceHeight: 1080, keyframes: CROP_KEYS })
+    const adapter = makeFakeAdapter(project)
+    const { container } = renderCapCut(project, adapter)
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+    selectCanvasItem(container, project, { id: 'clip-0' })
+
+    fireEvent.click(await clipTab('Crop'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Previous Crop keyframe' }))
+    fireEvent.click(await cropTabBodyButton())
+    await screen.findByRole('button', { name: 'Apply crop' })
+    // keyed: the shape choices are gone
+    expect(screen.queryByRole('button', { name: /Free|1:1|16:9|9:16/ })).toBeNull()
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Apply crop' }) as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply crop' }))
+
+    await waitFor(() => {
+      const item = saved(adapter)
+      const at0 = (prop: string) => item.keyframes?.find(k => k.prop === prop)?.points.find(p => p.t === 0)?.value
+      expect(at0('cropX')).toBeCloseTo(0.1, 9)
+      expect(at0('cropW')).toBeCloseTo(0.5, 9)
+      expect(at0('cropH')).toBeCloseTo(1, 9)
+      expect(item.sourceCrop).toBeUndefined()
+    })
+  })
+
+  it('Apply on an unkeyed video still writes the static sourceCrop, with the shape choices shown', async () => {
+    onTestFinished(installCanvasHarness())
+    stubVideoProbe({ w: 1920, h: 1080 })
+    stubModalResizeObserver()
+    const project = videoProject({ sourceWidth: 1920, sourceHeight: 1080 })
+    const adapter = makeFakeAdapter(project)
+    const { container } = renderCapCut(project, adapter)
+    await waitFor(() => screen.getByLabelText('Resize sidebar'))
+    selectCanvasItem(container, project, { id: 'clip-0' })
+
+    fireEvent.click(await clipTab('Crop'))
+    fireEvent.click(await cropTabBodyButton())
+    await screen.findByRole('button', { name: 'Apply crop' })
+    expect(screen.getByRole('button', { name: /Free/ })).toBeTruthy()
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Apply crop' }) as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply crop' }))
+
+    await waitFor(() => {
+      const item = saved(adapter)
+      expect(item.sourceCrop).toEqual({ x: 0, y: 0, w: 1, h: 1 })
+      expect(item.keyframes).toBeUndefined()
+    })
+  })
+})
+
 // ── The CapCut left panel ────────────────────────────────────────────────────
 // Media, Captions and Versions now live behind an icon rail on the LEFT, where
 // captions and version history used to stack into the right rail. Tabs are lazy:

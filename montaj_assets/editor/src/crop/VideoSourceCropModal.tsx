@@ -25,6 +25,10 @@ import {
 // locks the crop to `lockAspect` (the item's box shape) with no shape row, and
 // opens on `initialCrop` (the crop at the playhead) trimmed to that shape, which
 // is exactly what the box currently shows.
+//
+// A video whose crop is keyed (phase 2) also passes `lockAspect`: its keys share
+// one pixel aspect, so the tool keeps it and hides the shape choices. It opens on
+// `initialCrop` as is (a video contain-fits its crop, so the whole rect is seen).
 
 const FREE_HANDLES: CropHandle[] = ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se']
 const CORNER_HANDLES: CropHandle[] = ['nw', 'ne', 'sw', 'se']
@@ -69,8 +73,10 @@ export type VideoSourceCropModalProps = {
   onSrcDimsLoaded: (dims: { width: number; height: number }) => void
   /** Close without committing. */
   onClose: () => void
-  /** Still mode (PV55): the crop is locked to this pixel aspect, the item's box.
-   *  Absent for a video, which keeps its free and preset shapes. */
+  /** The crop is locked to this pixel aspect and the shape choices are hidden.
+   *  A still passes its box's shape; a video passes its keyed crop's shape (its
+   *  keys share one aspect). Absent for an unkeyed video, which keeps its free
+   *  and preset shapes. */
   lockAspect?: number
   /** The crop to open on: the crop at the playhead. Defaults to `item.sourceCrop`. */
   initialCrop?: CropFraction
@@ -120,9 +126,10 @@ export function VideoSourceCropModal({
   const windowPx = rendered && crop ? fractionToWrapperPx({ crop, rendered }) : null
 
   const aspectOf = (k: ShapeKey) => SHAPES.find(s => s.key === k)?.aspect ?? null
-  const lockedAspect = isImage ? (lockAspect ?? null) : aspectOf(shape)
+  const lockedAspect = lockAspect ?? (isImage ? null : aspectOf(shape))
+  const showShapes = !isImage && lockAspect == null
 
-  // Reachable for a video only: a still has no shape row.
+  // Reachable for an unlocked video only: a locked crop has no shape row.
   function selectShape(key: ShapeKey) {
     if (!crop) return
     const aspect = aspectOf(key)
@@ -273,9 +280,9 @@ export function VideoSourceCropModal({
           )}
         </div>
 
-        {/* Shape locks (constrain the crop rectangle; not output framing). Video only:
-            a still is locked to its box. */}
-        {!isImage && (
+        {/* Shape locks (constrain the crop rectangle; not output framing). An unkeyed
+            video only: a still is locked to its box, a keyed video to its keys' aspect. */}
+        {showShapes && (
           <div className="flex items-center gap-2">
             {SHAPES.map(({ key, label, Icon }) => {
               const active = shape === key

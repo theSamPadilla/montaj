@@ -5,8 +5,9 @@ import type { AudioTrack, VisualItem } from '../schema'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
 import { CropKeyframeNav } from '../crop/CropKeyframeNav'
-import { cropAt, localTimeOf, writeCrop } from './keyframeOps'
+import { cropAt, isCropKeyframed, localTimeOf, writeCrop } from './keyframeOps'
 import { useImageNaturalSize } from './useImageNaturalSize'
+import { useVideoNaturalSize } from './useVideoNaturalSize'
 import { trimToAspect } from '../crop/crop-math'
 import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
 import { Tooltip } from '../ui/Tooltip'
@@ -1401,6 +1402,7 @@ function ReviewSurface<P extends Project>({
   // What the crop tool can target: a tracks[0] video with a src, or (PV55) an
   // image with a src on any track. The renderer applies a video's source crop to
   // the original clip before compositing; a still's crop runs before its fit.
+  // Both key their crop (PV55, phase 2).
   const cropTarget = primarySelectedId
     ? clips.find(c => c.id === primarySelectedId && c.type === 'video' && !!c.src)
       ?? trackItems(project).flat().find(i => i.id === primarySelectedId && i.type === 'image' && !!i.src)
@@ -1411,6 +1413,19 @@ function ReviewSurface<P extends Project>({
   // the box-shaped framing the viewer sees. Null until loaded (the diamond then
   // keys the untrimmed crop).
   const cropNatural = useImageNaturalSize(cropTarget?.type === 'image' ? adapter.fileUrl(cropTarget.src ?? '') : undefined)
+
+  // A video's display size, for the same diamond: its crop keys must carry
+  // `sourceWidth`/`sourceHeight` in the same change. The file is the one the crop
+  // tool draws (so both read the same dimensions). Null until known.
+  const cropVideoUrl = cropTarget?.type === 'video'
+    ? adapter.fileUrl(cropTarget.nobg_preview_src ?? cropTarget.normalizedSrc ?? cropTarget.src ?? '')
+    : undefined
+  const probedVideo = useVideoNaturalSize(cropVideoUrl)
+  const cropVideoSize = cropTarget?.type === 'video'
+    ? (cropTarget.sourceWidth && cropTarget.sourceHeight
+        ? { w: cropTarget.sourceWidth, h: cropTarget.sourceHeight }
+        : probedVideo)
+    : null
 
   // Selecting a different item (or nothing croppable) exits crop mode.
   useEffect(() => {
@@ -2834,13 +2849,23 @@ function ReviewSurface<P extends Project>({
                   : undefined
               }
               cropNav={
-                clipSelection.kind === 'clip' && clipSelection.item.type === 'image' && cropTarget?.id === clipSelection.item.id
+                clipSelection.kind === 'clip' && cropTarget?.id === clipSelection.item.id
+                  && (clipSelection.item.type === 'image' || clipSelection.item.type === 'video')
                   ? <CropKeyframeNav
-                      item={clipSelection.item}
+                      // A video's keys carry its size in the same change. Until the
+                      // size is known the diamond does nothing (no keys without it).
+                      item={clipSelection.item.type === 'video' && cropVideoSize
+                        ? { ...clipSelection.item, sourceWidth: cropVideoSize.w, sourceHeight: cropVideoSize.h }
+                        : clipSelection.item}
                       clock={clock}
-                      onChange={applyOverlayInspectorChange}
+                      onChange={(next) => {
+                        if (next.type === 'video' && !(next.sourceWidth && next.sourceHeight)) return
+                        applyOverlayInspectorChange(next)
+                      }}
                       onSeek={seekTo}
-                      frame={(localT) => {
+                      // A still keys the box-shaped framing the viewer sees. A video
+                      // contain-fits its crop, so it keys the crop as is.
+                      frame={clipSelection.item.type !== 'image' ? undefined : (localT) => {
                         if (!cropNatural) return undefined
                         const it = clipSelection.item
                         const g = geometryAt(it, it.type, localT)
@@ -2986,6 +3011,12 @@ function ReviewSurface<P extends Project>({
         const isImage = cropTarget.type === 'image'
         const g = geometryAt(cropTarget, cropTarget.type, localTimeOf(cropTarget, currentTime))
         const [rw, rh] = project.settings?.resolution ?? [1080, 1920]
+        // A video whose crop is already keyed: its keys share one pixel aspect, so
+        // the tool keeps it (and drops the shape choices). Unkeyed, it is free.
+        const keyedVideo = !isImage && isCropKeyframed(cropTarget) && !!cropTarget.sourceWidth && !!cropTarget.sourceHeight
+        const keyedAspect = keyedVideo && g.sourceCrop && g.sourceCrop.h > 0
+          ? (g.sourceCrop.w * cropTarget.sourceWidth!) / (g.sourceCrop.h * cropTarget.sourceHeight!)
+          : undefined
         return (
           <VideoSourceCropModal
             item={cropTarget}
@@ -2994,18 +3025,21 @@ function ReviewSurface<P extends Project>({
             // frame), then the bg-removed proxy, then the raw source. A still
             // draws its own file.
             resolveSrc={(it) => adapter.fileUrl(isImage ? (it.src ?? '') : (it.nobg_preview_src ?? it.normalizedSrc ?? it.src ?? ''))}
-            initialCrop={isImage ? g.sourceCrop : undefined}
-            lockAspect={isImage ? (rw * g.scaleX) / (rh * g.scaleY) : undefined}
+            initialCrop={isImage || keyedVideo ? g.sourceCrop : undefined}
+            lockAspect={isImage ? (rw * g.scaleX) / (rh * g.scaleY) : keyedAspect}
             onApply={(next) => {
               const rect = {
                 x: Math.min(1, Math.max(0, next.x)), y: Math.min(1, Math.max(0, next.y)),
                 w: Math.min(1, Math.max(0, next.w)), h: Math.min(1, Math.max(0, next.h)),
               }
-              // A still keys through the shared rule, so an animated crop is keyed
-              // at the playhead instead of writing a static value the tracks hide.
-              // The video path is unchanged until phase 2.
-              if (isImage) applyOverlayInspectorChange(writeCrop(cropTarget, localTimeOf(cropTarget, clock.get()), rect))
-              else handleOverlayChange(cropTarget.id, { sourceCrop: rect })
+              // A still or a video keys through the shared rule, so an animated crop
+              // is keyed at the playhead instead of writing a static value the
+              // tracks hide; an unkeyed one takes the static `sourceCrop`. A video
+              // carries its size in the same change (validate requires it).
+              const base = !isImage && cropVideoSize && !(cropTarget.sourceWidth && cropTarget.sourceHeight)
+                ? { ...cropTarget, sourceWidth: cropVideoSize.w, sourceHeight: cropVideoSize.h }
+                : cropTarget
+              applyOverlayInspectorChange(writeCrop(base, localTimeOf(cropTarget, clock.get()), rect))
             }}
             onSrcDimsLoaded={(dims) => {
               if (isImage) return // a still's crop needs no stored size (PV55)
