@@ -3,7 +3,7 @@
 ## Unreleased
 
 - **Fixed: `sample_frame --prefer-proxy` shows a background-removed clip without its background, as the render does.**
-- **Fixed: `probe` handles a PNG like any still image instead of failing on its missing duration.**
+- **Fixed: `probe` handles still images (PNG, JPEG) instead of failing on their missing duration; a still reports `duration: 0.0`.**
 
 ## v5.15.0
 
