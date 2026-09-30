@@ -118,3 +118,48 @@ def test_user_library_does_not_include_static_text(tmp_path):
     assert "static-text" not in names, (
         f"'static-text' must not appear in user-library /api/overlays; got: {names}"
     )
+
+
+# ── Sidecar settings: optional fields from <name>.json ────────────────────────
+
+def _write_overlay(root: Path, name: str, meta: dict) -> None:
+    import json
+    d = root / name
+    d.mkdir(parents=True)
+    (d / f"{name}.jsx").write_text("export default () => null")
+    (d / f"{name}.json").write_text(json.dumps(meta))
+
+
+def test_sidecar_settings_are_returned(tmp_path):
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "card", {
+        "description": "d", "props": [{"name": "t", "type": "string"}],
+        "durationSeconds": 4.5, "fps": 30, "width": 1080, "height": 1920,
+        "googleFonts": ["Syne", "Inter"], "opaque": True,
+        "defaults": {"props": {"t": "hi"}, "junk": 1},
+    })
+    e = scan_overlays(tmp_path)[0]
+    assert e["durationSeconds"] == 4.5 and e["fps"] == 30
+    assert e["width"] == 1080 and e["height"] == 1920
+    assert e["googleFonts"] == ["Syne", "Inter"] and e["opaque"] is True
+    assert e["defaults"] == {"props": {"t": "hi"}}
+
+
+def test_sidecar_without_settings_adds_no_keys(tmp_path):
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "plain", {"description": "d", "props": []})
+    e = scan_overlays(tmp_path)[0]
+    assert set(e) == {"name", "description", "props", "jsxPath"}
+
+
+def test_sidecar_wrong_types_are_omitted(tmp_path):
+    from serve.routes.overlays import scan_overlays
+    _write_overlay(tmp_path, "bad", {
+        "description": "d", "fps": "30", "googleFonts": "Syne",
+        "durationSeconds": 0, "width": 10.5, "height": True,
+        "opaque": "yes", "defaults": {"props": []},
+    })
+    entries = scan_overlays(tmp_path)
+    assert len(entries) == 1
+    for k in ("durationSeconds", "fps", "width", "height", "googleFonts", "opaque", "defaults"):
+        assert k not in entries[0]

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Added: overlay listings return an overlay's own settings from its `<name>.json`.** `durationSeconds`, `fps`, `width`, `height`, `googleFonts`, `opaque` and `defaults.props` are passed through when present and of the right type; wrong-typed fields are ignored.
 - **Changed: `remove_bg` runs RVM on onnxruntime (CPU) instead of torch.** torch cannot ship inside an app, and it is what kept background removal out of the Montaj app. It uses RVM's official ONNX export of the same mobilenetv3 model. Measured on two clips (a 4K HLG take and a 576x1024 clip), every pixel matches the torch CPU output within 0.6% of full scale. At 4K it is 1.7x faster (126 s against 219 s) in about a third of the memory (3.2 GB against 9.1 GB). There is no GPU path: CoreML produced wrong mattes, so it is CPU only on every OS.
 - **Added: `remove_bg --max-height N`.** It scales the cutout down during decode so its display height is at most N, a positive even integer. It never scales up, and it respects rotation. Without it the output is full size as before. `--downsample` keeps its meaning and its 0.5 default.
 - **Removed: `remove_bg`'s `--model`, `--cpu` and `--workers`, and the resnet50 model.** This is breaking for CLI callers and for anything passing these params through serve or MCP: they now fail argparse. Drop them. There is one model and one CPU path.

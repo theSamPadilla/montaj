@@ -57,6 +57,22 @@ def scan_overlays(overlays_dir: Path) -> list[dict]:
             "props":       schema.get("props", []),
             "jsxPath":     str(jsx_path),
         }
+        # Optional settings from the sidecar, passed through only when present
+        # and of the right type; anything else is ignored. `defaults` is passed
+        # through only as {"props": {...}}; other keys under it are dropped.
+        def _num(v):  return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+        def _int(v):  return isinstance(v, int) and not isinstance(v, bool) and v > 0
+        for key, ok in (("durationSeconds", _num), ("fps", _num), ("width", _int), ("height", _int)):
+            if ok(schema.get(key)):
+                entry[key] = schema[key]
+        fonts = schema.get("googleFonts")
+        if isinstance(fonts, list) and all(isinstance(f, str) for f in fonts):
+            entry["googleFonts"] = fonts
+        if isinstance(schema.get("opaque"), bool):
+            entry["opaque"] = schema["opaque"]
+        defaults = schema.get("defaults")
+        if isinstance(defaults, dict) and isinstance(defaults.get("props"), dict):
+            entry["defaults"] = {"props": defaults["props"]}
         if group:
             entry["group"] = group
         return entry
