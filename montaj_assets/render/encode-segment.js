@@ -38,6 +38,7 @@ import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { specFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
+import { externalizeFilterGraph } from './filter-script.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
   transitionProgress, hasCropKeyframes, imageFitFor, isFullFrameCrop, CROP_KEYFRAME_PROPS,
@@ -105,17 +106,39 @@ function logFfmpegStderr(stderr) {
  * checks. Resolves (never rejects) with { status, signal, stderr, error? }. Used
  * for the per-segment encode so a bounded pool (compose.js) can drive several
  * encodes at once without blocking the event loop the way spawnSync would.
+ *
+ * The filter graph goes to ffmpeg as a file (`-/filter_complex <path>` in
+ * scriptDir), never inline: an animated graph is ~90k characters and Windows
+ * caps a command line at 32,767 (WIN1b, filter-script.js). `args` itself keeps
+ * the inline pair, so `_dryRun` still returns the graph the goldens pin. The
+ * file is removed on 'error' and on 'close' ('close' also follows the timeout's
+ * SIGKILL). A cancel kills the process without either, which is why the caller
+ * passes the render's own segments dir: compose wipes it on every render.
  */
-function runFfmpeg(args, timeoutMs) {
+function runFfmpeg(args, timeoutMs, scriptDir) {
   return new Promise((resolve) => {
-    const proc = spawn(FFMPEG, args)
+    let script
+    let proc
+    try {
+      script = externalizeFilterGraph(args, scriptDir)
+      proc = spawn(FFMPEG, script.args)
+    } catch (error) {
+      script?.cleanup()
+      resolve({ status: null, signal: null, stderr: '', error })
+      return
+    }
     let stderr = ''
     let timedOut = false
     const timer = setTimeout(() => { timedOut = true; proc.kill('SIGKILL') }, timeoutMs)
     proc.stderr.on('data', (d) => { stderr += d.toString('utf8') })
-    proc.on('error', (err) => { clearTimeout(timer); resolve({ status: null, signal: null, stderr, error: err }) })
+    proc.on('error', (err) => {
+      clearTimeout(timer)
+      script.cleanup()
+      resolve({ status: null, signal: null, stderr, error: err })
+    })
     proc.on('close', (status, signal) => {
       clearTimeout(timer)
+      script.cleanup()
       resolve({ status, signal: timedOut ? 'SIGKILL' : signal, stderr })
     })
   })
@@ -2138,7 +2161,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
 
   if (opts._dryRun) return { inputs, filterParts, args }
 
-  const result = await runFfmpeg(args, FFMPEG_TIMEOUT_MS)
+  const result = await runFfmpeg(args, FFMPEG_TIMEOUT_MS, dirname(outputPath))
 
   if (result.stderr) logFfmpegStderr(result.stderr)
 
