@@ -7,6 +7,7 @@
 - **Removed: `lib/trim_spec.audio_extract_cmd`.** It is replaced by `audio_extract_graph(keeps)` and `extract_audio_at_keeps(...)`. Anything importing the old function must move to them.
 - **Fixed: on Windows, an overlay syntax error in the preview showed no location, and a blocked import answered 422 instead of 403.** esbuild's `file:line:col` locations are now parsed on drive-letter paths.
 - **Fixed: lyrics could not find a font on Windows.** After the macOS and Linux candidates, `lyrics_render` now tries `arial.ttf`, then `segoeui.ttf`, under `%SystemRoot%\Fonts`.
+- **Fixed: `snapshot` creates its output folder when it does not exist.** It failed in grid and `--at` modes when `--out` pointed into a missing directory.
 - **Fixed: whisper.cpp could load a DLL planted in the server's working directory.** whisper.cpp loads its `ggml-cpu-*.dll` backends from the current directory as well as its own, and Montaj started it in the server's directory. It now starts in the whisper binary's own directory, and the model, audio and output paths it is given are made absolute first, so nothing else moves. This applies to transcription and lyrics sync on every OS.
 - **Windows is still not a supported CLI platform.** These fixes make the shared render and step code work there for a host that ships Windows.
 

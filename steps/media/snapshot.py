@@ -62,6 +62,7 @@ def main():
                  f"--at {args.at} is outside the video duration [0, {duration}]")
 
         out = args.out or f"{os.path.splitext(args.input)[0]}_at_{args.at:.2f}.jpg"
+        os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
         # Full-resolution single-frame extraction. Using -ss BEFORE -i for
         # fast seek; accuracy is sufficient for our boundary-frame use case.
         run([ffmpeg_bin(), "-y",
@@ -122,6 +123,7 @@ def main():
         total = cols * rows
 
     out = args.out or f"{os.path.splitext(args.input)[0]}_snapshot.jpg"
+    os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
     interval = window_duration / (total + 1)
     interval = max(0.033, interval)   # cap at ~30 fps
 

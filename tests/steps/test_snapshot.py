@@ -83,3 +83,19 @@ def test_snapshot_at_conflicts_with_start(test_video, tmp_path):
     proc = run_step("snapshot.py", "--input", str(test_video),
                     "--at", "1.0", "--start", "0.5", "--out", str(out))
     assert_error(proc, "invalid_args")
+
+
+# --- output folder that doesn't exist yet ---------------------------------
+
+def test_snapshot_grid_creates_missing_output_dir(test_video, tmp_path):
+    out = tmp_path / "missing" / "sub" / "out.jpg"
+    proc = run_step("snapshot.py", "--input", str(test_video), "--out", str(out))
+    assert_file_output(proc)
+    assert out.exists()
+
+
+def test_snapshot_at_creates_missing_output_dir(test_video, tmp_path):
+    out = tmp_path / "missing" / "sub" / "out.jpg"
+    proc = run_step("snapshot.py", "--input", str(test_video), "--at", "1.0", "--out", str(out))
+    assert_file_output(proc)
+    assert out.exists()
