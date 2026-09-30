@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.10.1
+
 - **Fixed: a clip whose length is not a whole number of filmstrip ticks showed "No preview" in the Footage panel.** The last tile's seek landed inside the final frame, decoded nothing and failed the whole sheet (camera clips such as 15.015 s at 23.976 fps). `filmstrip` now retries slightly earlier and takes the last frame.
 
 ## v5.10.0
