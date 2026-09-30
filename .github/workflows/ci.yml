@@ -22,7 +22,7 @@ jobs:
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Install montaj
-        run: pip install -e ".[test]"
+        run: pip install -e ".[test,rvm]"
       - name: Run tests (fast suite)
         run: pytest -m "not slow" --timeout=300
 
@@ -268,6 +268,6 @@ jobs:
           python-version: '3.12'
           cache: pip
       - name: Install montaj
-        run: pip install -e ".[test]"
+        run: pip install -e ".[test,rvm]"
       - name: Run full suite (fast tests) — expected NOT green; failure list feeds later plans
         run: pytest -m "not slow" --timeout=300

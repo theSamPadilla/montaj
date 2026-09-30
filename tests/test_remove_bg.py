@@ -503,3 +503,48 @@ def test_real_model_mattes_a_clip(tmp_path):
     assert (v["width"], v["height"]) == (256, 256)
     assert v["pix_fmt"].startswith("yuva"), v["pix_fmt"]
     assert Path(res["nobg_preview_src"]).is_file()
+
+
+# ---------------------------------------------------------------------------
+# ffmpeg time limits
+# ---------------------------------------------------------------------------
+
+def test_ffmpeg_timeout_scales_with_the_clip(monkeypatch):
+    mod = _import_step_module()
+    monkeypatch.setattr(mod, "get_duration", lambda p: 10.0)
+    assert mod._ffmpeg_timeout("a.mp4") == 300
+    monkeypatch.setattr(mod, "get_duration", lambda p: 60.0)
+    assert mod._ffmpeg_timeout("a.mp4") == 600
+
+
+def test_ffmpeg_timeout_floors_when_the_clip_cannot_be_probed(monkeypatch):
+    mod = _import_step_module()
+
+    def boom(p):
+        raise SystemExit(1)
+    monkeypatch.setattr(mod, "get_duration", boom)
+    assert mod._ffmpeg_timeout("a.mp4") == 300
+
+
+def test_ffmpeg_pass_gets_the_scaled_limit(monkeypatch):
+    mod = _import_step_module()
+    seen = {}
+    monkeypatch.setattr(mod, "get_duration", lambda p: 90.0)
+    monkeypatch.setattr(mod, "run", lambda cmd, **kw: seen.update(kw))
+    mod._run_ffmpeg(["ffmpeg"], "a.mov")
+    assert seen["timeout"] == 900
+
+
+def test_ffmpeg_timeout_becomes_error_json(monkeypatch, capsys):
+    mod = _import_step_module()
+    monkeypatch.setattr(mod, "get_duration", lambda p: 1.0)
+
+    def slow(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+    monkeypatch.setattr(mod, "run", slow)
+    with pytest.raises(SystemExit) as exc:
+        mod._run_ffmpeg(["ffmpeg", "-i", "a.mov"], "a.mov")
+    assert exc.value.code == 1
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "unexpected_error"
+    assert "ffmpeg" not in err["message"] and "—" not in err["message"]

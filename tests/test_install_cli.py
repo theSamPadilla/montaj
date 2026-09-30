@@ -186,7 +186,7 @@ def test_ensure_rvm_installs_extra_and_fetches_only_the_onnx_model(monkeypatch, 
 
 def test_ensure_rvm_fails_when_the_model_cannot_be_fetched(monkeypatch, capsys):
     monkeypatch.setattr(install_cmd.subprocess, "run", MagicMock(return_value=MagicMock(returncode=0)))
-    monkeypatch.setattr(_models, "ensure_model", MagicMock(side_effect=RuntimeError("offline")))
+    monkeypatch.setattr(_models, "ensure_model", MagicMock(side_effect=SystemExit(1)))
     assert install_cmd._ensure_rvm() is False
 
 
@@ -211,15 +211,19 @@ def _remove_bg_step_cmd(monkeypatch, argv):
     return captured["cmd"]
 
 
-def test_remove_bg_wrapper_builds_a_command_the_step_accepts(monkeypatch):
-    import os, subprocess, sys as _sys
-    cmd = _remove_bg_step_cmd(monkeypatch, ["--input", "a.mp4", "--downsample", "0.75", "--max-height", "720"])
+def test_remove_bg_wrapper_builds_a_command_the_step_accepts(monkeypatch, tmp_path):
+    import json, subprocess, sys as _sys
+    real_run = subprocess.run  # captured before the wrapper's own patch
+    missing = str(tmp_path / "nope.mp4")
+    cmd = _remove_bg_step_cmd(monkeypatch, ["--input", missing, "--downsample", "0.75", "--max-height", "720"])
     for removed in ("--model", "--cpu", "--workers"):
         assert removed not in cmd
     assert cmd[cmd.index("--max-height") + 1] == "720"
     assert cmd[cmd.index("--downsample") + 1] == "0.75"
-    # the step's own argparse must accept it (--help-free dry parse via a stub main)
-    step = cmd[1]
-    probe = subprocess.run([_sys.executable, step, *cmd[2:]], capture_output=True, text=True,
-                           env={**os.environ, "MONTAJ_MODELS_DIR": "/nonexistent"})
-    assert "unrecognized arguments" not in probe.stderr
+    # Run the step for real. argparse runs first and exits 2 on any flag it does
+    # not know; a missing input is checked before the model, so exit 1 with
+    # file_not_found proves every flag was accepted.
+    probe = real_run([_sys.executable, *cmd[1:]], capture_output=True, text=True)
+    assert probe.returncode == 1, probe.stderr
+    last = [l for l in probe.stderr.splitlines() if l.strip().startswith("{")][-1]
+    assert json.loads(last)["error"] == "file_not_found"

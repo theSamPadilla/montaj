@@ -86,19 +86,16 @@ Worth considering:
 
 ## Test environment
 
-### 5. Nine tests can't run without optional extras
+### 5. Two tests can't run without a zscale ffmpeg
 
-Not a regression — they fail identically on the old lock, so this is
+Not a regression — it fails identically on the old lock, so this is
 pre-existing. Noting it because it makes any dependency work harder to verify:
 
-- `tests/test_remove_bg.py` (7) — hard-exits at import with
-  `missing_dependency: torch, torchvision, av`. CI installs only `.[test]`, so
-  these presumably do not pass there either.
 - `tests/test_init.py` (2) — `vf.index("zscale=")` raises; needs a
   zscale-capable ffmpeg resolvable from the venv under test.
 
-Either skip these when the extras/binary are absent, or document that a full
-verification run needs `--extra rvm` and a managed ffmpeg.
+Either skip these when the binary is absent, or document that a full
+verification run needs a managed ffmpeg.
 
 ## Render / validate
 

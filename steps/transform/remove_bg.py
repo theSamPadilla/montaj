@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, ffmpeg_bin, ffprobe_bin
+from common import fail, require_file, check_output, run, ffmpeg_bin, ffprobe_bin, get_duration
 import models
 import rvm_model
 
@@ -52,6 +52,37 @@ def _load_session():
         fail("missing_model",
              "The background removal model is missing. Montaj restores it the next time it starts.")
     return onnxruntime.InferenceSession(model_file, providers=_PROVIDERS)
+
+
+# ---------------------------------------------------------------------------
+# ffmpeg time limits
+# ---------------------------------------------------------------------------
+
+# The VP9 alpha preview encodes at about 22 fps at 1080x1920 and 5 fps at 4K,
+# so a fixed limit cuts off long 4K clips. 10 s per second of footage covers a
+# 4K clip at 30 fps with room to spare.
+_FFMPEG_FLOOR_S = 300
+_FFMPEG_S_PER_CLIP_S = 10
+
+
+def _ffmpeg_timeout(path: str) -> int:
+    """Time limit for an ffmpeg pass over this clip. A clip whose duration cannot
+    be probed gets the floor."""
+    try:
+        duration = get_duration(path)
+    except (Exception, SystemExit):
+        duration = 0.0
+    return max(_FFMPEG_FLOOR_S, int(duration * _FFMPEG_S_PER_CLIP_S))
+
+
+def _run_ffmpeg(cmd: list[str], clip_path: str) -> None:
+    """common.run with a limit scaled to the clip. A run that outlives it fails
+    with error JSON rather than escaping as a TimeoutExpired traceback."""
+    try:
+        run(cmd, timeout=_ffmpeg_timeout(clip_path))
+    except subprocess.TimeoutExpired:
+        fail("unexpected_error", "Writing the cutout video took too long and was stopped. "
+                                 "Try a shorter clip or a smaller size.")
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +304,7 @@ def _process_one(
         else:
             video_args = ["-c:v", "copy"]
 
-        run([
+        _run_ffmpeg([
             ffmpeg_bin(), "-y",
             "-i", tmp_video_path,
             "-i", input_path,
@@ -282,7 +313,7 @@ def _process_one(
             "-map", "0:v:0",
             "-map", "1:a?",
             output_path,
-        ])
+        ], input_path)
 
     finally:
         if os.path.exists(tmp_video_path):
@@ -315,7 +346,7 @@ def _make_webm_preview(mov_path: str, emit_progress: bool = False) -> str:
     ]
 
     if not emit_progress:
-        run(cmd)
+        _run_ffmpeg(cmd, mov_path)
         return webm_path
 
     # Probe total frames for progress percentage
