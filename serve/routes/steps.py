@@ -133,11 +133,18 @@ def build_cli_args(schema: dict, body: dict) -> list[str]:
         if val is None:
             continue
         flag = "--" + name
-        if param.get("type") == "bool":
+        if param.get("type") in ("bool", "boolean"):
             if val:
                 flags.append(flag)
+        elif isinstance(val, list) and param.get("type") == "array":
+            # `array` params are argparse nargs="+" (remove_bg, materialize_cut --inputs):
+            # one flag then every value. A repeated flag would overwrite, keeping only the last.
+            flags.append(flag)
+            flags += [str(item) for item in val]
         elif isinstance(val, list):
-            # Repeatable params: emit the flag once per element (matches MCP buildCliArgs).
+            # Any other list value is an action="append" param (--at, --ref-image, ...):
+            # repeat the flag once per element. No step declares type "list"; `array` is the
+            # only JSON type that means nargs, so the type separates the two shapes.
             for item in val:
                 flags += [flag, str(item)]
         elif isinstance(val, dict):

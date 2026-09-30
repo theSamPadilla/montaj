@@ -9,6 +9,7 @@
 - **Fixed: lyrics could not find a font on Windows.** After the macOS and Linux candidates, `lyrics_render` now tries `arial.ttf`, then `segoeui.ttf`, under `%SystemRoot%\Fonts`.
 - **Fixed: `snapshot` creates its output folder when it does not exist.** It failed in grid and `--at` modes when `--out` pointed into a missing directory.
 - **Fixed: whisper.cpp could load a DLL planted in the server's working directory.** whisper.cpp loads its `ggml-cpu-*.dll` backends from the current directory as well as its own, and Montaj started it in the server's directory. It now starts in the whisper binary's own directory, and the model, audio and output paths it is given are made absolute first, so nothing else moves. This applies to transcription and lyrics sync on every OS.
+- **Fixed: steps run through serve pass `boolean` params as bare flags, and pass every clip of an array param.** `remove_bg`'s `cpu` and `progress` went out as `--cpu True` and failed argparse, and a batch `remove_bg` (or `materialize_cut`) `inputs` went out as a repeated flag, so only the last clip was processed. Array params now emit one flag followed by all values.
 - **Windows is still not a supported CLI platform.** These fixes make the shared render and step code work there for a host that ships Windows.
 
 ## v5.11.0

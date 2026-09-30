@@ -128,3 +128,44 @@ class TestBuildCliArgsUnderscoreAlias:
     def test_missing_key_omitted(self):
         flags = build_cli_args(self.SCHEMA, {})
         assert flags == []
+
+
+# ── build_cli_args: boolean and array shapes ─────────────────────────────────
+
+class TestBuildCliArgsBooleans:
+    """Both `bool` and `boolean` are bare flags; false is omitted."""
+
+    @pytest.mark.parametrize("type_name", ["bool", "boolean"])
+    def test_true_is_bare_flag(self, type_name):
+        schema = _schema([{"name": "cpu", "type": type_name}])
+        assert build_cli_args(schema, {"cpu": True}) == ["--cpu"]
+
+    @pytest.mark.parametrize("type_name", ["bool", "boolean"])
+    def test_false_is_omitted(self, type_name):
+        schema = _schema([{"name": "cpu", "type": type_name}])
+        assert build_cli_args(schema, {"cpu": False}) == []
+
+
+class TestBuildCliArgsLists:
+    def test_array_type_is_one_flag_then_all_values(self):
+        # `array` params are argparse nargs="+": a repeated flag would overwrite.
+        schema = _schema([{"name": "inputs", "type": "array"}])
+        assert build_cli_args(schema, {"inputs": ["a.mp4", "b.mp4"]}) == [
+            "--inputs", "a.mp4", "b.mp4"]
+
+    def test_non_array_list_value_stays_repeated(self):
+        # Scalar-typed params given a list are action="append" (e.g. --at, --ref-image).
+        schema = _schema([{"name": "at", "type": "float"}])
+        assert build_cli_args(schema, {"at": [1, 2]}) == ["--at", "1", "--at", "2"]
+
+
+def test_remove_bg_real_schema_batch_and_flags():
+    import json
+    from pathlib import Path
+    path = Path(__file__).resolve().parent.parent / "steps" / "transform" / "remove_bg.json"
+    schema = json.loads(path.read_text())
+    args = build_cli_args(schema, {"inputs": ["a.mp4", "b.mp4"], "cpu": True, "progress": True})
+    assert args[:1] == ["--inputs"] and args[1:3] == ["a.mp4", "b.mp4"]
+    assert "--cpu" in args and "--progress" in args
+    assert "True" not in args
+    assert args.count("--inputs") == 1
