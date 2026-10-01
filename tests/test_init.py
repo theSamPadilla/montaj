@@ -2211,3 +2211,60 @@ def test_probe_duration_does_not_retry_on_deterministic_failure(monkeypatch):
     monkeypatch.setattr(init_mod.subprocess, "run", fake_run)
     assert init_mod._probe_duration("/fake/path.mp4") is None
     assert calls == [60]
+
+
+# ---------------------------------------------------------------------------
+# settings.resolutionSource marks where the canvas came from, so serve can
+# adopt the first footage added to a project created without any.
+# ---------------------------------------------------------------------------
+
+def _init_settings(tmp_path, *args):
+    ws = tmp_path / "ws"; ws.mkdir(exist_ok=True)
+    result = run_init(*args, "--prompt", "test", env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+    assert result.returncode == 0, result.stderr
+    return json.loads(_project_path_from_stdout(result.stdout).read_text())["settings"]
+
+
+def test_init_without_clips_marks_resolution_source_default(tmp_path):
+    settings = _init_settings(tmp_path)
+    assert settings["resolution"] == [1920, 1080]
+    assert settings["resolutionSource"] == "default"
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_with_clips_marks_resolution_source_footage(tmp_path):
+    a = tmp_path / "a.mp4"; _make_clip(a, width=1280, height=720)
+    settings = _init_settings(tmp_path, "--clips", str(a))
+    assert settings["resolution"] == [1280, 720]
+    assert settings["resolutionSource"] == "footage"
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_with_resolution_flag_marks_resolution_source_explicit(tmp_path):
+    a = tmp_path / "a.mp4"; _make_clip(a, width=640, height=480)
+    settings = _init_settings(tmp_path, "--clips", str(a), "--resolution", "1280x720")
+    assert settings["resolutionSource"] == "explicit"
+    # --resolution with no clips is explicit too.
+    settings = _init_settings(tmp_path, "--resolution", "1280x720")
+    assert settings["resolutionSource"] == "explicit"
+
+
+def test_init_carousel_has_no_resolution_source(tmp_path):
+    settings = _init_settings(tmp_path, "--workflow", "carousel", "--carousel-aspect", "square")
+    assert "resolutionSource" not in settings
+
+
+def test_init_without_clips_marks_fps_source_default(tmp_path):
+    settings = _init_settings(tmp_path)
+    assert settings["fps"] == 60 and settings["fpsSource"] == "default"
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_with_clips_marks_fps_source_footage(tmp_path):
+    a = tmp_path / "a.mp4"; _make_clip(a, width=640, height=360, fps=24)
+    settings = _init_settings(tmp_path, "--clips", str(a))
+    assert settings["fps"] == 24 and settings["fpsSource"] == "footage"
+
+
+def test_init_carousel_has_no_fps_source(tmp_path):
+    assert "fpsSource" not in _init_settings(tmp_path, "--workflow", "carousel", "--carousel-aspect", "square")

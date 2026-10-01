@@ -33,6 +33,7 @@ from serve.caption_job import build_audio_mix_spec
 from serve.caption_theme import sanitize_theme, seed_prev
 from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import save_upload
+from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, canvas_for_footage, fps_from_rate, modal_dims
 from lib.ingest import ingest_source
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
@@ -1733,11 +1734,96 @@ async def ensure_source_dims(
     `_apply_project_edits` write (re-reads project.json, safe against a
     concurrent PUT) and are broadcast over SSE.
 
+    Then, for a project whose canvas is still the default it was created with,
+    the footage sets the canvas and frame rate once (`_ensure_canvas_follows_footage`).
+
     Never raises: a project must always open."""
     try:
-        return await _ensure_source_dims(project_id, project_dir, project, broadcaster) or project
+        project = await _ensure_source_dims(project_id, project_dir, project, broadcaster) or project
+    except Exception:
+        pass
+    try:
+        return await _ensure_canvas_follows_footage(project_id, project_dir, project, broadcaster) or project
     except Exception:
         return project
+
+
+async def _ensure_canvas_follows_footage(
+    project_id: str,
+    project_dir: Path,
+    project: dict,
+    broadcaster: "SSEBroadcaster | None",
+) -> dict | None:
+    """A project created without footage has `settings.resolutionSource` and
+    `settings.fpsSource` of `"default"`. Once a video item (tracks first, then
+    sources) carries source dims, the canvas becomes the modal footage size
+    (first appearance wins a tie, as at init); a canvas of another aspect keeps
+    its aspect and takes the footage's short side (`canvas_for_footage`). The
+    fps becomes the first probeable clip's, in track order. Each marker turns
+    `"footage"` in the same write and the setting never changes again. The two
+    are independent, and any other marker, or none, is left alone. A failed
+    probe changes nothing, so a later open retries.
+
+    The fps needs its own probe (the dims backfill records no rate), done off
+    the loop before the write. The write re-reads project.json and decides on
+    that copy with no await after it, so a PUT that set an explicit value a
+    moment ago is never overwritten."""
+    from lib.normalize import probe_video
+
+    project_path = project_dir / "project.json"
+
+    def _read() -> dict | None:
+        try:
+            current = json.loads(project_path.read_text())
+        except (OSError, ValueError):
+            return None
+        return current if isinstance(current.get("settings"), dict) else None
+
+    current = _read()
+    if current is None:
+        return None
+    settings = current["settings"]
+    want_canvas = settings.get("resolutionSource") == SOURCE_DEFAULT
+    want_fps = settings.get("fpsSource") == SOURCE_DEFAULT
+    if not (want_canvas or want_fps):
+        return None
+    fps = None
+    if want_fps:
+        for src in dict.fromkeys(i["src"] for i in _look_migration_items(current)
+                                 if isinstance(i["src"], str) and os.path.isabs(i["src"]) and os.path.isfile(i["src"])):
+            try:
+                info = await asyncio.to_thread(probe_video, src)
+            except Exception:
+                continue
+            fps = fps_from_rate((info or {}).get("r_frame_rate"))
+            if fps:
+                break
+        current = _read()
+        if current is None:
+            return None
+        settings = current["settings"]
+    edits: dict = {}
+    canvas = settings.get("resolution")
+    if settings.get("resolutionSource") == SOURCE_DEFAULT:
+        footage = modal_dims(
+            (item["sourceWidth"], item["sourceHeight"])
+            for item in _look_migration_items(current)
+            if _positive_dim(item.get("sourceWidth")) and _positive_dim(item.get("sourceHeight"))
+        )
+        if footage is not None and isinstance(canvas, list) and len(canvas) == 2 and all(_positive_dim(v) for v in canvas):
+            edits["resolution"] = canvas_for_footage(canvas, footage)
+            edits["resolutionSource"] = SOURCE_FOOTAGE
+    if fps and settings.get("fpsSource") == SOURCE_DEFAULT:
+        edits["fps"] = fps
+        edits["fpsSource"] = SOURCE_FOOTAGE
+    if not edits:
+        return None
+    result = _apply_project_edits(project_path, [], settings=edits)
+    if result is None:
+        return None
+    if broadcaster is not None:
+        broadcaster.publish(project_id, _sse_data_frame(result[1]))
+    return result[0]
 
 
 async def _ensure_source_dims(
@@ -2625,6 +2711,20 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
     # normalized or when `tracks` is absent/null, so the shallow-merge and
     # explicit-null-clears-a-field semantics above are untouched.
     merged = normalize_tracks(merged)
+    # A save that picks a resolution or fps is the user's (or an agent's) choice: pin it
+    # so footage never overrides it. A body whose settings leave the
+    # marker out keeps the stored one.
+    if isinstance(body.get("settings"), dict) and isinstance(merged.get("settings"), dict):
+        old_settings = existing.get("settings") if isinstance(existing.get("settings"), dict) else {}
+        new_settings = dict(merged["settings"])
+        if "resolution" in new_settings and new_settings["resolution"] != old_settings.get("resolution"):
+            new_settings["resolutionSource"] = SOURCE_EXPLICIT
+        if "fps" in new_settings and new_settings["fps"] != old_settings.get("fps"):
+            new_settings["fpsSource"] = SOURCE_EXPLICIT
+        for marker in ("resolutionSource", "fpsSource"):
+            if marker not in new_settings and marker in old_settings:
+                new_settings[marker] = old_settings[marker]
+        merged["settings"] = new_settings
     # Overlay items are checked only when this save carries `tracks`: a delta
     # that leaves tracks alone (a status flip, a rename) must not start failing
     # over an item already on disk. Nothing is written when an item is wrong,

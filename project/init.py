@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, fps_from_rate, modal_dims
 from lib.common import SAFE_NAME, fail, ffprobe_bin, progress
 from lib.remote_io import fetch_to_disk, parse_allowed_hosts
 from lib.color_provenance import ProbeError, proxy_source_for
@@ -558,6 +559,9 @@ def main():
     ar = args.aspect_ratio or DEFAULT_ASPECT_RATIO
     default_resolution = list(ASPECT_RESOLUTIONS.get(ar, ASPECT_RESOLUTIONS[DEFAULT_ASPECT_RATIO]))
     detected_resolution = default_resolution
+    # Where the canvas came from: serve lets the first footage added to a "default"
+    # project set it once; "explicit" and "footage" are never changed.
+    resolution_source = SOURCE_DEFAULT
     # A project with no footage of any kind has nothing to probe, so this default is
     # the FINAL answer for it — every frame is authored JSX rather than sampled
     # footage, and motion graphics at 30 read visibly cheap (stepped easing, strobing
@@ -619,26 +623,23 @@ def main():
             detected_resolution = [int(w_str), int(h_str)]
         except (ValueError, AttributeError):
             fail("invalid_resolution", f"--resolution must be WxH (got {args.resolution!r})")
+        resolution_source = SOURCE_EXPLICIT
     elif detected_pairs:
+        resolution_source = SOURCE_FOOTAGE
         # Modal resolution; tiebreak: first-appearance among tied modes (deterministic,
         # generalizes the prior "first clip wins" behavior, respects user-passed
         # --clips order as intent). Override via --resolution.
-        counts = Counter((w, h) for w, h, _ in detected_pairs)
-        max_count = max(counts.values())
-        # First-appearance tiebreak: pick the first (w,h) in clip order whose count == max_count
-        for w, h, _ in detected_pairs:
-            if counts[(w, h)] == max_count:
-                detected_resolution = [w, h]
-                break
+        detected_resolution = list(modal_dims((w, h) for w, h, _ in detected_pairs))
     # else: no clips OR no clips probed successfully → keep default_resolution.
 
     # fps from first successfully-probed clip (independent of resolution-detection branch).
+    # There is no --fps flag, so fpsSource is never "explicit" at init.
+    fps_source = SOURCE_DEFAULT
     if detected_pairs:
-        fps_str = detected_pairs[0][2]
-        if "/" in fps_str:
-            num, den = fps_str.split("/")
-            if int(den) > 0:
-                detected_fps = round(int(num) / int(den))
+        probed_fps = fps_from_rate(detected_pairs[0][2])
+        if probed_fps:
+            detected_fps = probed_fps
+            fps_source = SOURCE_FOOTAGE
 
     # Smart-detect project color space from probed clips. Each clip's
     # `color_transfer` maps to a color space key; smart_detect picks the
@@ -1057,7 +1058,9 @@ def main():
         "sources": clips,
         "settings": {
             "resolution": detected_resolution,
+            "resolutionSource": resolution_source,
             "fps": detected_fps,
+            "fpsSource": fps_source,
             "colorSpace": project_color_space,
             "language": args.language,
         },
