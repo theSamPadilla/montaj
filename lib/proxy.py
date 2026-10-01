@@ -142,6 +142,27 @@ def is_proxy_fresh(proxy: str, src: str) -> bool:
     return os.path.getmtime(proxy) >= os.path.getmtime(src)
 
 
+def _decode_args(info: dict) -> list[str]:
+    """How the proxy encode decodes its input.
+
+    On macOS, in software unless the input is 10-bit HEVC. Measured on an M3
+    Pro: VideoToolbox decode, which this encode then downloads for its software
+    scale, made a 4K60 H.264 screen recording's proxy 46.7 s against 17.2 s
+    decoded in software, frame for frame identical. Decode alone was slower in
+    hardware for 1080p and 4K H.264 (4.2x and 5.5x), 8-bit HEVC (2.3x) and
+    ProRes (1.8x), and faster only for 10-bit HEVC, the iPhone HDR case (about
+    1.5x decode, 5-25% on the whole tonemapped proxy).
+
+    Elsewhere "-hwaccel auto", as before: not measured there. "auto" (not
+    "videotoolbox") so the encode still works where no hwaccel is compiled in;
+    ffmpeg falls back to software.
+    """
+    if sys.platform == "darwin":
+        ten_bit_hevc = info.get("codec") == "hevc" and "10" in (info.get("pix_fmt") or "")
+        return ["-hwaccel", "auto"] if ten_bit_hevc else []
+    return ["-hwaccel", "auto"]
+
+
 def _build_proxy_cmd(input_path: str, out_path: str, *, tonemap: bool, info: dict) -> tuple[list, bool]:
     """Build the ffmpeg command for the h264-crf20-fast proxy encode.
 
@@ -193,10 +214,7 @@ def _build_proxy_cmd(input_path: str, out_path: str, *, tonemap: bool, info: dic
 
     cmd = [
         ffmpeg_bin(), "-y",
-        # "auto" (not "videotoolbox") so the encode works on Linux/CI where
-        # videotoolbox isn't compiled in; ffmpeg still selects videotoolbox on
-        # macOS and falls back to software elsewhere.
-        "-hwaccel", "auto",
+        *_decode_args(info),
         "-i", input_path,
     ]
     if not info.get("has_audio", True):

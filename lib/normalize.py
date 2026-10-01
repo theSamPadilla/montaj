@@ -2,10 +2,11 @@
 """Normalize a video clip to project working color space + codec.
 
 Probes the source with ffprobe. If it already matches the project's working
-format (color transfer + bit depth + keyframe interval), returns the input
-path unchanged — no re-encode. Otherwise re-encodes to the project's working
-color space, using libx264 yuv420p bt709 for SDR projects and libx265
-yuv420p10le bt2020/(HLG|PQ) for HDR projects.
+format (color transfer + bit depth, and keyframes no more than
+MAX_KEYFRAME_INTERVAL_S apart), returns the input path unchanged — no
+re-encode. Otherwise re-encodes to the project's working color space, using
+libx264 yuv420p bt709 for SDR projects and libx265 yuv420p10le
+bt2020/(HLG|PQ) for HDR projects.
 
 HDR/SDR conversions: uses zscale (from zimg) for proper colorspace conversion.
 HDR→SDR has a non-zscale fallback (degraded; loud warning). SDR→HDR and
@@ -68,6 +69,25 @@ reuse check rebuilds it (montaj_assets/render/render.js, UNTAGGED_MASTER_MARKER
 — keep the two strings identical). Masters of tagged or HDR sources carry no
 marker and are never checked."""
 
+KEYFRAME_PROBE_WINDOW_S = 10
+"""How much of a source _probe_max_keyframe_interval reads. It cannot see an
+interval longer than this (fewer than two keyframes: it returns 999)."""
+
+MAX_KEYFRAME_INTERVAL_S = 10.0
+"""The longest keyframe interval a source may have and still be used as is.
+
+Not a correctness bound. Every consumer that cuts a source transcodes, and a
+transcode's input seek (`-ss t -i`, -accurate_seek on by default) decodes from
+the prior keyframe and drops every frame before `t`: frame-exact on any GOP,
+closed or open (measured, montaj_assets/render/test/long-gop-seek.integration.test.mjs).
+The rule used to be 2.0 s on the belief that the seek "lands on the prior
+keyframe"; it re-encoded a 4K60 screen recording (4.17 s GOP) for 83 s at import.
+
+What a long GOP does cost is decode: each seek decodes up to one interval from
+its keyframe (4K60 H.264: about 850 frames/s in software on an M3 Pro, so under
+a second here at this bound). Past it, or with fewer than two keyframes in the
+probe window, the source is still re-encoded to ~1 s GOPs."""
+
 SEEK_PREROLL_S = 2.0
 """Two-stage-seek preroll for windowed reads of a source that may be open-GOP
 HEVC (libx265 default GOP — montaj's own SDR-to-HDR conversions, legacy
@@ -125,8 +145,9 @@ def probe_video(path):
     num, den = fps_str.split("/")
     fps = round(int(num) / max(int(den), 1))
 
-    # Check max keyframe interval (segment encoding relies on -ss with keyframes).
-    # Use ffprobe packet inspection — fast, reads only the first 10s of the file.
+    # Max keyframe interval, which bounds how far back a seek decodes (see
+    # MAX_KEYFRAME_INTERVAL_S). Packet inspection over the first
+    # KEYFRAME_PROBE_WINDOW_S only, so it is fast.
     max_kf_interval = _probe_max_keyframe_interval(path)
 
     rotation = _probe_rotation(path)
@@ -191,12 +212,13 @@ def _probe_rotation(path):
 
 
 def _probe_max_keyframe_interval(path):
-    """Return the max gap (seconds) between keyframes in the first 10s of the file.
-    Returns 999 if probing fails (treat as non-conformant)."""
+    """Return the max gap (seconds) between keyframes in the first
+    KEYFRAME_PROBE_WINDOW_S of the file. Returns 999 if probing fails or fewer
+    than two keyframes fall in that window (treat as non-conformant)."""
     cmd = [
         ffprobe_bin(), "-v", "quiet", "-select_streams", "v:0",
         "-show_entries", "packet=pts_time,flags",
-        "-read_intervals", "%+10",
+        "-read_intervals", f"%+{KEYFRAME_PROBE_WINDOW_S}",
         "-of", "csv=p=0", path,
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
@@ -222,14 +244,14 @@ def is_normalized(path, info, project_color_space: ColorSpaceKey) -> bool:
     A source is conformant when:
       - color_transfer is valid for the project's color space
       - pix_fmt matches the project's bit depth requirement
-      - keyframe interval ≤ 2.0s (load-bearing for segment-encoder fast seek)
+      - keyframe interval ≤ MAX_KEYFRAME_INTERVAL_S (a bound on how far back
+        each seek decodes, not on its accuracy: see that constant)
 
     Codec and audio sample rate are NOT checked — the segment encoder handles
     those at compose time (decode is codec-agnostic; audio is resampled per item).
-    Keyframe interval IS still checked because the segment encoder uses input-level
-    fast seek (-ss before -i), which lands on the prior keyframe — re-encoding
-    from there does not fix the wrong start time. See Task 2 of
-    docs/plans/2026-04-28-color-space-aware-pipeline.md for the full rationale.
+    The keyframe interval used to be held to 2.0 s, on the belief that the
+    segment encoder's input seek lands on the prior keyframe. It does not when
+    ffmpeg transcodes (measured frame-exact on 5 s GOPs).
 
     The previous (target_w, target_h) parameters have been removed entirely —
     source resolution is preserved through the pipeline (see the prior plan
@@ -251,7 +273,7 @@ def is_normalized(path, info, project_color_space: ColorSpaceKey) -> bool:
     return (
         info.get("color_transfer", "unknown") in spec["transfer_values"]
         and info.get("pix_fmt") in spec["pix_fmts"]
-        and info.get("max_keyframe_interval", 999) <= 2.0
+        and info.get("max_keyframe_interval", 999) <= MAX_KEYFRAME_INTERVAL_S
     )
 
 
@@ -530,9 +552,8 @@ def _build_ffmpeg_cmd(
     vf_parts.append(f"format={spec['output_pix_fmt']}")
     vf = ",".join(vf_parts)
 
-    # GOP enforcement — load-bearing for the segment encoder's input-level fast
-    # seek (-ss before -i). Source fps from probe; default 30. Output keyframe
-    # every ~1s. This is the same contract is_normalized() checks for at intake.
+    # Output keyframe every ~1 s (source fps from probe; default 30), well inside
+    # MAX_KEYFRAME_INTERVAL_S, so a master's seeks decode little.
     source_fps = info.get("fps") or 30
 
     # Build encoder args from the spec.
@@ -557,7 +578,7 @@ def _build_ffmpeg_cmd(
         *spec["output_color_args"],
         *enc_args,
         "-pix_fmt", spec["output_pix_fmt"],
-        # Force IDR keyframes every ~1s so segment encoder fast seek lands accurately.
+        # IDR keyframes every ~1 s: short seeks (see the comment above).
         "-g", str(source_fps),
         "-keyint_min", str(source_fps),
         # Audio is always 48kHz AAC stereo. Segment encoder also resamples per item;
@@ -698,8 +719,8 @@ def normalize(input_path, out_path, project_color_space: ColorSpaceKey, info=Non
         failures.append(f"color_transfer={src_transfer!r} not in {spec['transfer_values']}")
     if src_pix_fmt not in spec["pix_fmts"]:
         failures.append(f"pix_fmt={src_pix_fmt!r} not in {spec['pix_fmts']}")
-    if src_kf > 2.0:
-        failures.append(f"max_keyframe_interval={src_kf:.2f}s > 2.0s")
+    if src_kf > MAX_KEYFRAME_INTERVAL_S:
+        failures.append(f"max_keyframe_interval={src_kf:.2f}s > {MAX_KEYFRAME_INTERVAL_S}s")
     progress(f"normalize triggered: {'; '.join(failures) if failures else 'unknown reason'}")
 
     out_path = os.path.abspath(out_path)

@@ -36,8 +36,8 @@ def _make_conformant_sdr(path: Path, *, width=640, height=360, duration=2):
 
     The h264_metadata bitstream filter forces bt709 transfer tags into the
     stream (lavfi color sources otherwise read back as color_transfer=unknown);
-    -g/-keyint_min 30 keeps the keyframe interval under is_normalized()'s 2.0s
-    ceiling. Mirrors tests/test_normalize.py's fixture.
+    -g/-keyint_min 30 keeps the keyframe interval well under is_normalized()'s
+    MAX_KEYFRAME_INTERVAL_S. Mirrors tests/test_normalize.py's fixture.
     """
     subprocess.run([
         "ffmpeg", "-y",

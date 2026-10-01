@@ -497,7 +497,7 @@ def test_init_normalize_preserves_clip_order(tmp_path):
     for i in range(4):
         c = tmp_path / f"clip_{i}.mp4"
         # 3s duration ensures ≥2 keyframes so _probe_max_keyframe_interval
-        # returns a real value (≤2.0) and the audio fast path is taken.
+        # returns a real value (1 s) and the audio fast path is taken.
         # Shorter clips probe as 999 (single keyframe) and fall through to
         # full re-encode, which still passes this test but doesn't exercise
         # what the test name claims.

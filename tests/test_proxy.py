@@ -373,7 +373,6 @@ def test_build_proxy_cmd_format_yuv420p_in_both_arms():
 def test_build_proxy_cmd_encoder_params():
     """The locked h264-crf20-fast params: all-intra libx264 + opus."""
     cmd, _ = _build_proxy_cmd("master.mp4", "out.mp4", tonemap=False, info={"has_audio": True})
-    assert "-hwaccel" in cmd and cmd[cmd.index("-hwaccel") + 1] == "auto"
     assert cmd[cmd.index("-c:v") + 1] == "libx264"
     assert cmd[cmd.index("-crf") + 1] == "20"
     assert cmd[cmd.index("-preset") + 1] == "veryfast"
@@ -684,3 +683,38 @@ def test_make_proxy_untagged_source_ships_bt709_tagged_without_changing_pixels(t
     for x in (0.1, 0.3, 0.5, 0.7):
         assert max(abs(a - b) for a, b in zip(_decode_rgb(out, as709=False, x=x),
                                               _decode_rgb(old, as709=True, x=x))) <= 1.0
+
+
+# ── decode: software on macOS, except 10-bit HEVC (measured) ─────────────────
+
+@pytest.mark.parametrize("codec, pix_fmt", [
+    ("h264", "yuv420p"), ("hevc", "yuv420p"), ("prores", "yuv422p10le"),
+])
+def test_build_proxy_cmd_decodes_in_software_on_macos(monkeypatch, codec, pix_fmt):
+    """Measured on an M3 Pro: VideoToolbox decode, downloaded for the software
+    scale, made a 4K60 H.264 screen recording's proxy 46.7 s against 17.2 s in
+    software, with identical frames. Also slower for 8-bit HEVC, ProRes and
+    1080p H.264."""
+    monkeypatch.setattr(proxy_mod.sys, "platform", "darwin")
+    cmd, _ = _build_proxy_cmd("in.mov", "out.mp4", tonemap=False,
+                              info={"has_audio": True, "codec": codec, "pix_fmt": pix_fmt})
+    assert "-hwaccel" not in cmd
+
+
+def test_build_proxy_cmd_keeps_hwaccel_for_10bit_hevc_on_macos(monkeypatch):
+    """10-bit HEVC (iPhone HDR) is the one input VideoToolbox decodes faster."""
+    monkeypatch.setattr(proxy_mod.sys, "platform", "darwin")
+    cmd, _ = _build_proxy_cmd("in.mov", "out.mp4", tonemap=True,
+                              info={"has_audio": True, "codec": "hevc", "pix_fmt": "yuv420p10le",
+                                    "color_transfer": "arib-std-b67"})
+    assert cmd[cmd.index("-hwaccel") + 1] == "auto"
+    assert cmd.index("-hwaccel") < cmd.index("-i")
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_build_proxy_cmd_keeps_hwaccel_auto_off_macos(monkeypatch, platform):
+    """Measured on macOS only, so other platforms keep the decode they had."""
+    monkeypatch.setattr(proxy_mod.sys, "platform", platform)
+    cmd, _ = _build_proxy_cmd("in.mov", "out.mp4", tonemap=False,
+                              info={"has_audio": True, "codec": "h264", "pix_fmt": "yuv420p"})
+    assert cmd[cmd.index("-hwaccel") + 1] == "auto"

@@ -50,7 +50,7 @@ def _ffprobe_stream(path, kind="v"):
 
 
 def _make_conformant_video(path: Path, *, width=1920, height=1080,
-                           sample_rate=48000, with_audio=True, duration=2):
+                           sample_rate=48000, with_audio=True, duration=2, gop=30):
     """Create a video file with conformant SDR codec/pix_fmt/keyframes; audio per args.
 
     Uses the h264_metadata bitstream filter to force bt709 transfer tags into
@@ -67,7 +67,7 @@ def _make_conformant_video(path: Path, *, width=1920, height=1080,
                 f"sine=frequency=440:sample_rate={sample_rate}:duration={duration}"]
     cmd += [
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
-        "-pix_fmt", "yuv420p", "-g", "30", "-keyint_min", "30",
+        "-pix_fmt", "yuv420p", "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0",
         "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
         # Force bt709 transfer/primaries/matrix into the bitstream so ffprobe
         # reports them on read-back. h264_metadata=1 means bt709 in the spec.
@@ -162,6 +162,42 @@ def test_is_normalized_pq_source_in_pq_project(tmp_path):
     info = probe_video(str(src))
     assert info is not None
     assert is_normalized(str(src), info, "hdr_pq") is True
+
+
+def test_is_normalized_long_gop_sdr_source_is_conformant(tmp_path):
+    """A 5 s keyframe interval is conformant, so normalize leaves it alone.
+    Every consumer that cuts a source transcodes, and a transcode's input seek
+    is frame-exact on any GOP (render test long-gop-seek.integration.test.mjs).
+    The old 2 s rule re-encoded a 4K60 screen recording (4.17 s GOP) for 83 s
+    at import."""
+    src = tmp_path / "long_gop.mp4"
+    out = tmp_path / "out.mp4"
+    _make_conformant_video(src, width=640, height=360, duration=12, gop=150)
+    info = probe_video(str(src))
+    assert info is not None
+    assert 4.9 < info["max_keyframe_interval"] < 5.1
+    assert is_normalized(str(src), info, "sdr_bt709") is True
+    assert normalize(str(src), str(out), "sdr_bt709", info=info) == str(src)
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("interval, conformant", [
+    (1.0, True), (4.17, True), (nm.MAX_KEYFRAME_INTERVAL_S, True),
+    (nm.MAX_KEYFRAME_INTERVAL_S + 0.01, False),
+    # The probe's "fewer than two keyframes in its window", e.g. a file with one.
+    (999, False),
+])
+def test_is_normalized_keyframe_interval_bound(interval, conformant):
+    """Past MAX_KEYFRAME_INTERVAL_S every seek would decode from too far back,
+    so such a source is still re-encoded; up to it, it is used as is."""
+    info = {"color_transfer": "bt709", "pix_fmt": "yuv420p", "max_keyframe_interval": interval}
+    assert is_normalized("x.mp4", info, "sdr_bt709") is conformant
+
+
+def test_keyframe_bound_fits_the_probe_window():
+    """The probe reads only its window, so it cannot measure an interval
+    longer than that: a bound past it would be unreachable."""
+    assert nm.MAX_KEYFRAME_INTERVAL_S <= nm.KEYFRAME_PROBE_WINDOW_S
 
 
 def test_is_normalized_audio_rate_no_longer_checked(tmp_path):

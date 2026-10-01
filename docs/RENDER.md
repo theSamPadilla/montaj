@@ -317,8 +317,11 @@ don't match the project's working color space.
 
 The normalize pre-pass is now **color-space-aware**. A source is conformant
 when its `color_transfer` and bit depth match the project's working color
-space spec, and its keyframe interval is ≤ 2.0s (required for the segment
-encoder's input-level fast seek). When all three hold, the source passes
+space spec, and its keyframe interval is ≤ 10 s (`MAX_KEYFRAME_INTERVAL_S` in
+`lib/normalize.py`). That bound caps how far back each seek decodes; it is not
+needed for accuracy, since the segment encoder's input seek transcodes and is
+frame-exact on any GOP (`render/test/long-gop-seek.integration.test.mjs`).
+When all three hold, the source passes
 through with no transcode — iPhone HDR HLG clips in an `hdr_hlg` project are
 essentially a no-op at intake.
 
