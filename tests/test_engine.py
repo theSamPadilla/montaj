@@ -290,6 +290,15 @@ def test_validate_project_passes_for_valid(tmp_path):
     assert result["valid"] is True
 
 
+def test_validate_project_ignores_a_saved_image_tone(tmp_path):
+    """`settings.imageTone` was the per-image HDR tone, removed when HDR renders
+    began mapping every graphics pixel one way. A project saved with it still
+    validates; render.js ignores the key (render/test/hdr-overlay-image)."""
+    data = {**VALID_PROJECT, "settings": {**VALID_PROJECT["settings"], "colorSpace": "hdr_hlg", "imageTone": "punchy"}}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
 def test_validate_project_fails_missing_version(tmp_path):
     data = {**VALID_PROJECT}; del data["version"]
     path = _write_project(tmp_path, "project.json", data)

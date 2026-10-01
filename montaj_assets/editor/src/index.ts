@@ -117,12 +117,6 @@ export type { DroppedClipPlacement, PlacedClipResult } from './video/timeline/pl
 // header for the "same reference when unchanged" contract they all share).
 export { addMarker, moveMarker, renameMarker, removeMarkers, nextMarkerLabel } from './video/timeline/markers'
 
-// ── Image tone (HDR image color mapping) ─────────────────────────────────────
-// The picker component is exported so hosts using `onProvideImageTone` can
-// render the same control (variant="header") in their own chrome.
-export { default as ImageToneMenu } from './video/ImageToneMenu'
-export type { ImageToneMenuProps } from './video/ImageToneMenu'
-
 // ── Speed control (slider + preset chips) ────────────────────────────────────
 // Shared by the per-clip inspect modal (host `montaj_assets/ui`) and the
 // track-wide settings popover (TrackSettingsPopover.tsx).
@@ -130,8 +124,6 @@ export { default as SpeedControl } from './video/timeline/SpeedControl'
 export type { SpeedControlProps } from './video/timeline/SpeedControl'
 export { default as VolumeControl } from './video/timeline/VolumeControl'
 export type { VolumeControlProps } from './video/timeline/VolumeControl'
-export { IMAGE_TONES, DEFAULT_IMAGE_TONE } from './video/imageTone'
-export type { ImageTone, ImageToneInfo } from './video/imageTone'
 
 // ── SDR tone curves (HDR→SDR export look) ────────────────────────────────────
 // Descriptors + the modal's honesty copy. Exported so a host can label its own
@@ -152,7 +144,6 @@ export {
   sanitizeOutputName,
   resLabel,
 } from './video/RenderModal'
-export { TONE_EXAMPLES } from './video/imageToneExamples'
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 export { defaultMontajTheme, lightMontajTheme, applyTheme, isLightTheme } from './theme'

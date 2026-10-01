@@ -1,19 +1,18 @@
 // render/test/sdr-img-recapture.integration.test.mjs
 //
-// PV42 T7, end to end: an overlay whose JSX shows a local <img> is captured
-// twice on `--export both` of an HDR project. The HDR pass's capture carries the
-// HDR-converted image (renderer.js's interceptor), which is wrong for the SDR
-// file, so render.js re-captures that segment at sdr_bt709 for the SDR compose.
+// An overlay whose JSX shows a local <img>, on `--export both` of an HDR
+// project. PV42 T7 captured such a segment twice, because renderer.js's HDR
+// interceptor put an HDR-converted image into the HDR pass's capture, which was
+// wrong for the SDR file. The interceptor is gone: the page draws the image as
+// authored and the HDR compose maps the whole capture (hdr-graphics.js), so the
+// one capture serves both files and nothing is captured again.
 //
 // The image is three flat squares of known colour. In the SDR output each
 // square's interior must read as its authored colour (within +-4 per channel),
-// decoded with the file's own matrix and range. Without the re-capture the
-// squares come out HDR-converted and far off: `MONTAJ_RENDER_JS` points this
-// file at another checkout's render.js (a throwaway worktree of the pre-T7
-// base) to measure that; the numbers are in the commit message.
+// decoded with the file's own matrix and range.
 //
 // Also: the HDR master of `--export both` equals the `--export auto` master,
-// frame for frame, so the re-capture never touched the HDR pass.
+// frame for frame, so the SDR pass never touched the HDR pass.
 //
 // GATING: zscale + lut3d + libx265 in MONTAJ_FFMPEG, Python importing
 // lib.normalize (MONTAJ_PYTHON), as per-layer-sdr.integration.test.mjs.
@@ -176,7 +175,6 @@ test('--export both, HLG project with an <img> overlay: SDR squares as authored,
     }
     t.diagnostic(`worst per-channel deviation ${worst.toFixed(1)}`)
 
-    assert.match(run.stderr, /re-capturing 1 overlay segment\(s\) with images for SDR/)
     assert.ok(worst <= 4, `SDR squares must be within 4 of authored, worst ${worst.toFixed(1)}`)
     assert.equal(decodedMd5(both), decodedMd5(auto), 'the HDR master must be the --export auto master')
   })

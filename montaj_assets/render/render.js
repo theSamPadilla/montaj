@@ -104,13 +104,6 @@ const VIDEO_EXT = /^\.(mp4|mov|m4v|mkv|webm|avi|mts|m2ts|ts|3gp|mxf|mpg|mpeg|wmv
 // item was given; JSON never sees it.
 const SDR_LAYER = Symbol('montaj.sdrLayer')
 
-// Image tone modes for HDR overlay-image conversion. Keep in sync with
-// lib/normalize_image.py::TONE_MODES and the editor's imageTone.ts. Up here for
-// the same TDZ reason: under --export sdr on an HDR project (no HDR prepare)
-// main() reaches resolveImageTone before its first await.
-const IMAGE_TONE_MODES = ['vivid', 'broadcast', 'punchy', 'raw']
-const DEFAULT_IMAGE_TONE = 'vivid'
-
 // ---------------------------------------------------------------------------
 // Design resolution for overlay capture — always 1080 on the short edge,
 // with the aspect ratio of settings.resolution (or 9:16 portrait by default).
@@ -205,7 +198,7 @@ if (isMain) {
 
   if (!argv.length || argv[0] === '--help') {
     process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean] '
-      + '[--image-tone <vivid|broadcast|punchy|raw>] [--export <auto|sdr|both>] [--sdr-curve <id>]\n')
+      + '[--export <auto|sdr|both>] [--sdr-curve <id>]\n')
     process.exit(1)
   }
 
@@ -213,7 +206,6 @@ if (isMain) {
   let outArg       = null
   let workersArg   = null
   let cleanArg     = false
-  let imageToneArg = null
   let exportArg    = null
   let sdrCurveArg  = null
 
@@ -221,7 +213,6 @@ if (isMain) {
     if (argv[i] === '--out')        { outArg       = argv[++i]; continue }
     if (argv[i] === '--workers')    { workersArg   = parseInt(argv[++i], 10); continue }
     if (argv[i] === '--clean')      { cleanArg     = true; continue }
-    if (argv[i] === '--image-tone') { imageToneArg = argv[++i]; continue }
     if (argv[i] === '--export')     { exportArg    = argv[++i]; continue }
     if (argv[i] === '--sdr-curve')  { sdrCurveArg  = argv[++i]; continue }
     if (!projectArg) projectArg = argv[i]
@@ -243,25 +234,11 @@ if (isMain) {
   }
 
   main(projectArg, {
-    out: outArg, workers: workersArg, clean: cleanArg, imageTone: imageToneArg,
+    out: outArg, workers: workersArg, clean: cleanArg,
     exportMode, sdrCurve,
   }).catch(err => {
     fail('render_error', err.message)
   })
-}
-
-/**
- * Resolve the effective image tone: CLI flag > project settings > default.
- * Fails fast on an invalid value from either source — a typo silently falling
- * back to the default would be a color bug nobody can see in the logs.
- */
-function resolveImageTone(cliValue, settings) {
-  const chosen = cliValue ?? settings?.imageTone ?? DEFAULT_IMAGE_TONE
-  if (!IMAGE_TONE_MODES.includes(chosen)) {
-    fail('invalid_argument',
-      `Unknown image tone ${JSON.stringify(chosen)} — expected one of ${IMAGE_TONE_MODES.join(', ')}`)
-  }
-  return chosen
 }
 
 /** Validate `--export`. Returns the mode ('auto' when omitted); throws on an unknown value. */
@@ -362,7 +339,7 @@ function planExport({ exportMode, projectColorSpace, outputPath }) {
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(projectPath, { out, workers, clean, imageTone, exportMode = 'auto', sdrCurve = null }) {
+async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdrCurve = null }) {
   // 1. Validate + resolve paths
   const absProjectPath = resolve(projectPath)
   if (!existsSync(absProjectPath)) fail('file_not_found', `project.json not found: ${absProjectPath}`)
@@ -649,22 +626,20 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
       projectDir,
     })
     spec.htmlPath = htmlPath
-    // The page guard's inputs (page-guard.js), carried on the spec so the SDR
-    // re-capture's `{ ...spec }` keeps them too. The cache is this page's own
-    // props URLs, all fetched above.
+    // The page guard's inputs (page-guard.js), carried on the spec. The cache
+    // is this page's own props URLs, all fetched above.
     spec.boundary = boundary
     spec.needsGoogleFonts = needsGoogleFonts
     spec.propsCache = await prefetchPropsUrls(boundary.urls)
     workDirs.push(workDir)
   }
 
-  const effectiveImageTone = resolveImageTone(imageTone, settings)
-  // Captured in the colour space of the first compose that composites them: the
-  // project's, or sdr_bt709 when --export sdr on an HDR project composes only
-  // the SDR pass. (Colour space reaches a capture only through the <img>
-  // interceptor in renderer.js.)
-  const captureColorSpace = exportPlan.composePath ? projectColorSpace : 'sdr_bt709'
-  const renderedSegments = await renderAllSegments(segmentSpecs, { workers, colorSpace: captureColorSpace, imageTone: effectiveImageTone, motionBlur })
+  // A capture is the same for every colour space: the page draws the overlay
+  // as authored, and an HDR compose maps the whole capture into the project's
+  // space (encode-segment.js, hdr-graphics.js). So one capture serves the HDR
+  // master and the SDR rendition alike. A saved `settings.imageTone` (the
+  // removed per-image tone) is ignored.
+  const renderedSegments = await renderAllSegments(segmentSpecs, { workers, motionBlur })
 
   // Attach positioning offsets back onto rendered segments so compose.js can apply
   // x/y coordinates. Overlay size is derived from the output canvas at compose
@@ -753,26 +728,14 @@ async function main(projectPath, { out, workers, clean, imageTone, exportMode = 
     const sdr = await prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir })
     // One size for both files: the HDR pass's, when there is one.
     const [sdrWidth, sdrHeight] = outputDims ?? outputSize(settings, sdr.videoItems, renderWidth, renderHeight)
-    // The overlay captures the SDR pass composites: the ones above, as they are
-    // (under --export sdr they were taken at sdr_bt709 already, so hdrImages is
-    // 0 and nothing is redone). Only a capture whose <img> was served a converted
-    // body by the HDR interceptor (renderer.js) differs in SDR; those segments,
-    // and only those, are captured again at sdr_bt709 (PV42 T7).
-    const recapture = renderedSegments.filter(s => s.hdrImages > 0)
-    let sdrCaptures = []
-    if (recapture.length > 0) {
-      // Deliberately avoids the phase-marker substrings ("bundling segment",
-      // "with Puppeteer"): serve would read them as a new bundling phase.
-      log(`re-capturing ${recapture.length} overlay segment(s) with images for SDR`)
-      sdrCaptures = await renderAllSegments(sdrRecaptureSpecs(recapture, segmentSpecs), {
-        workers, colorSpace: 'sdr_bt709', imageTone: effectiveImageTone, motionBlur,
-      })
-    }
-    const sdrOverlaySegments = mergeSdrCaptures(renderedSegments, sdrCaptures)
+    // The overlay captures the SDR pass composites are the ones above, as they
+    // are: a capture holds the overlay as authored (see renderAllSegments
+    // above). Before the HDR <img> interceptor was removed, a capture whose
+    // image it had converted was taken again at sdr_bt709 here (PV42 T7).
     // compose embeds this file's poster itself, as SDR: no LUT on the extract.
     await compose({
       projectJson: sdr.project,
-      puppeteerSegments: sdrOverlaySegments,
+      puppeteerSegments: renderedSegments,
       imageItems:  sdr.imageItems,
       videoItems:  sdr.videoItems,
       outputPath:  exportPlan.derivePath,
@@ -819,30 +782,6 @@ export function overlayBakeInputs(spec) {
     opacity:   spec.opacity   ?? 1,
     keyframes: spec.keyframes ?? null,
   }
-}
-
-/**
- * The specs to capture again for the SDR pass: those of the already-rendered
- * `recapture` segments, each writing to its own `-sdr` path so the HDR capture
- * (still needed by the HDR compose) is not overwritten.
- */
-export function sdrRecaptureSpecs(recapture, segmentSpecs) {
-  return recapture.map(r => {
-    const spec = segmentSpecs.find(s => s.id === r.id)
-    // A sibling `sdr/` dir, not a `-sdr` suffix: overlay `foo`'s suffixed capture
-    // (`overlay-N--foo-sdr.mkv`) is overlay `foo-sdr`'s own capture path.
-    return { ...spec, outputPath: join(dirname(spec.outputPath), 'sdr', basename(spec.outputPath)) }
-  })
-}
-
-/**
- * Overlay segments for the SDR compose: each segment keeps every field the
- * geometry loop attached (offsets, scale, opacity, keyframes ...), and a
- * re-captured one only swaps in its SDR capture's `webmPath`.
- */
-export function mergeSdrCaptures(renderedSegments, sdrCaptures) {
-  const byId = new Map(sdrCaptures.map(c => [c.id, c]))
-  return renderedSegments.map(r => byId.has(r.id) ? { ...r, webmPath: byId.get(r.id).webmPath } : r)
 }
 
 // ---------------------------------------------------------------------------

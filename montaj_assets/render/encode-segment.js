@@ -38,6 +38,7 @@ import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { specFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
+import { graphicsToHdrChain } from './hdr-graphics.js'
 import { externalizeFilterGraph } from './filter-script.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
@@ -1047,8 +1048,12 @@ const BAKED_OVERLAY_GEOMETRY = geometryFor({}, 'overlay')
  * @param {string} videoLabel — current composite label, e.g. '[canvas]'
  * @param {number} duration   — segment duration in seconds (used for -t)
  * @param {number} [segStart] — segment start on the timeline (seconds)
- * @param {{ cropBudgetPx?: number }} [opts] — test seam: the animated crop's
- *   pixel budget, MAX_ANIMATED_CROP_PX when absent. No production caller passes it.
+ * @param {{ cropBudgetPx?: number, toHdr?: string|null, dryRun?: boolean }} [opts]
+ *   `cropBudgetPx` is a test seam: the animated crop's pixel budget,
+ *   MAX_ANIMATED_CROP_PX when absent. No production caller passes it.
+ *   `toHdr` ('hdr_hlg' or 'hdr_pq'): map the image into that space through the
+ *   graphics mapping (hdr-graphics.js); encodeSegment sets it for an HDR
+ *   segment. `dryRun` names the mapping's LUT without writing it.
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
  */
 // NOTE: item.speed is intentionally ignored here — a still image has no
@@ -1126,8 +1131,18 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // not geometry, so it neither cares nor should pay for the grown frame. No
   // alpha pin — all three fit chains above run through `format=rgba`, so the
   // `c=black@0.0` corners are already representable.
+  // An HDR segment maps the image through the same graphics mapping as the
+  // overlay captures (hdr-graphics.js), so an image and a CSS swatch of the same
+  // colour land on the same code value. Before this an image item went into the
+  // HDR canvas unconverted, its sRGB values read as HLG/PQ signal. Right after
+  // the fit, on the fitted box: nothing upstream converts an image item
+  // (render.js hands encode-segment the project's own file), and the box
+  // animation and rotate after it work on mapped pixels.
+  const toHdr = opts?.toHdr
+    ? `,${graphicsToHdrChain(opts.toHdr, { input: 'rgb', write: !opts.dryRun })}`
+    : ''
   filterParts.push(
-    `[${idx}:v]${fitChain}${anim?.needsAnimatedChain ? animStep : rotateFilterStep(box)},setpts=PTS-STARTPTS[img${idx}]`
+    `[${idx}:v]${fitChain}${toHdr}${anim?.needsAnimatedChain ? animStep : rotateFilterStep(box)},setpts=PTS-STARTPTS[img${idx}]`
   )
   let src = `[img${idx}]`
   if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
@@ -1531,6 +1546,11 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
  *   (what renderer.js's untagged PNG→FFV1 encode writes) to bt709 inside the scale
  *   step, with accurate rounding. encodeSegment sets it for an SDR segment, whose
  *   canvas is tagged bt709; see the note at the scale step. PNG callers leave it off.
+ * @param {string|null} [opts.captureToHdr=null] — 'hdr_hlg' or 'hdr_pq': map the
+ *   capture into that space (hdr-graphics.js), right after the scale step.
+ *   encodeSegment sets it for an HDR segment, whose canvas is tagged bt2020nc.
+ *   PNG callers leave it off (sample-frame composites in SDR).
+ * @param {boolean} [opts.dryRun=false] — name the mapping's LUT without writing it.
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
  */
 export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart, duration, opts = {}) {
@@ -1613,7 +1633,17 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
     ? ':flags=bicubic+accurate_rnd+full_chroma_int:in_color_matrix=bt601:out_color_matrix=bt709'
       + ':in_range=tv:out_range=tv,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv'
     : ''
-  filterParts.push(`${ovSrc}scale=${targetW}:${targetH}${to709}${rotateFilterStep(ovBox)}[ovsc${ovIdx}]`)
+  // captureToHdr: the same capture into an HLG/PQ segment, through the one
+  // graphics mapping (hdr-graphics.js): sRGB white at GRAPHICS_WHITE_NITS, sRGB
+  // colours in BT.2020. Overlays and captions both come through here. After the
+  // scale, so the LUT runs on output-sized frames, and before rotate and
+  // opacity, which then work on mapped pixels as they work on the bt709 ones
+  // above. Before this the capture went into the HDR canvas unconverted (white
+  // at Y10 940, the HLG peak; colours read as BT.2020 primaries).
+  const toHdr = opts.captureToHdr
+    ? `,${graphicsToHdrChain(opts.captureToHdr, { input: 'capture', write: !opts.dryRun })}`
+    : ''
+  filterParts.push(`${ovSrc}scale=${targetW}:${targetH}${to709}${toHdr}${rotateFilterStep(ovBox)}[ovsc${ovIdx}]`)
   ovSrc = `[ovsc${ovIdx}]`
 
   // Item-level opacity, in the same position and the same shape the image path
@@ -1845,12 +1875,24 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   // chroma, so only saturated colours moved (measured: red swatch R +16 / G +22).
   // Tagged, the composite is bit-exact to a bt709 layer and images convert
   // correctly; overlay captures convert in their own scale step
-  // (buildOverlayFilterParts' captureToBt709). The HDR canvas is left as it
-  // was, so the HLG master stays byte-identical; its RANGE is pinned at the
-  // encoder instead (Step 6). Pinned by composite-matrix.integration.test.mjs.
+  // (buildOverlayFilterParts' captureToBt709). Pinned by
+  // composite-matrix.integration.test.mjs.
+  //
+  // The HDR canvas is tagged bt2020nc the same way, for the graphics: overlay
+  // and caption captures and image items arrive mapped and tagged bt2020nc
+  // (hdr-graphics.js). Untagged, the canvas left the composite's matrix to
+  // negotiation: over a clip (bt2020nc) a mapped overlay landed as mapped, but
+  // over nothing `overlay` re-matrixed it to "unknown", i.e. BT.601 (measured
+  // on HLG: red #e6194b Y 535 → 552 and Cb 475 → 465, cyan #00b4d8 Cb 569 →
+  // 576). Tagged, every layer lands the same over anything. Measured on
+  // segments without graphics, HLG and PQ: an HLG clip (scaled or not), an SDR
+  // clip (tagged, untagged, full range), a remove_bg cutout, a clip with a
+  // cutout over it and a crossfade decode byte-identical to the untagged canvas.
+  // Its RANGE is still also pinned at the encoder (Step 6).
+  // Pinned by hdr-overlay-color.integration.test.mjs.
   inputs.push('-f', 'lavfi', '-i',
     `color=black:size=${vw}x${vh}:rate=${fps}:duration=${duration}`)
-  const canvasTag = isHdr(projectColorSpace) ? '' : `,${spec.setparams}:range=tv`
+  const canvasTag = `,${spec.setparams}:range=tv`
   filterParts.push(`[0:v]format=${spec.outputPixFmt}${canvasTag}[canvas]`)
   videoLabel = '[canvas]'
   inputIdx++
@@ -1915,7 +1957,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // (no input, no inputIdx bump).
       if (opaqueVideo) continue
       const { inputArgs, filterParts: fp, newVideoLabel } =
-        buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration, start)
+        buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration, start,
+          { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, dryRun: opts._dryRun })
       inputs.push(...inputArgs)
       filterParts.push(...fp)
       videoLabel = newVideoLabel
@@ -2079,7 +2122,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
     const ovIdx = inputIdx
     const { inputArgs, filterParts: fp, newVideoLabel } =
       buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration,
-        { fps, captureToBt709: !isHdr(projectColorSpace) })
+        { fps, captureToBt709: !isHdr(projectColorSpace),
+          captureToHdr: isHdr(projectColorSpace) ? projectColorSpace : null, dryRun: opts._dryRun })
     inputs.push(...inputArgs)
     filterParts.push(...fp)
     videoLabel = newVideoLabel
@@ -2154,8 +2198,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
     // HDR segments are pinned LIMITED range here, at the encoder. compose.js
     // joins segments with `-c:v copy` and the joined mp4 keeps only the FIRST
     // segment's parameter sets, so one segment's range flag is the whole
-    // film's. The HDR canvas is untagged, and a range tag on it would not hold
-    // anyway: the 10-bit canvas reaches `overlay=format=yuv420` through an
+    // film's. The HDR canvas's range tag (Step 1) would not hold on its own:
+    // the 10-bit canvas reaches `overlay=format=yuv420` through an
     // inserted scaler that is free to change range. So each segment took the
     // range of the layers it composited, full for a clip normalized from a
     // full-range source (an iPhone screen recording). One at 0 s flagged a

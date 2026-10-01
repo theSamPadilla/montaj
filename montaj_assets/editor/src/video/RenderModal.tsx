@@ -9,8 +9,6 @@ import type {
   RenderPhase,
   RenderStatus,
 } from '../types'
-import { IMAGE_TONES, DEFAULT_IMAGE_TONE, type ImageTone } from './imageTone'
-import { TONE_EXAMPLES } from './imageToneExamples'
 import { SDR_CURVES, DEFAULT_SDR_CURVE, honestyLine, type SdrCurve } from './sdrCurves'
 import { Loader } from '../ui/Loader'
 
@@ -31,13 +29,6 @@ export interface PreRenderOptions {
    * same frame. Empty/absent → no thumbnails, just labels.
    */
   keeps?: Array<{ start: number; end: number }>
-  /**
-   * Current HDR image color mapping plus its setter, so the export dialog can
-   * surface the same `ImageToneMenu` the toolbar shows. The setter is the
-   * host's normal persistence path (an editor mutation that saves and undoes).
-   * Absent → the menu is not rendered.
-   */
-  imageTone?: { value: ImageTone; set: (tone: ImageTone) => void }
   /**
    * Suggested output filename (no extension), seeding the dialog's Name field.
    * Absent → the field defaults to `export`.
@@ -423,7 +414,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   // `started` gates the render effect. Hosts that pass `preRenderOptions` open
   // on the dialog (montaj always does — for HDR and SDR alike); hosts that omit
   // it keep the historical fire-on-mount behavior exactly. The HDR-only controls
-  // (Format / Image color / SDR curve) stay gated on `isHdr` inside the dialog.
+  // (Format / SDR curve) stay gated on `isHdr` inside the dialog.
   const showOptions = !!preRenderOptions
   const isHdr = !!preRenderOptions?.isHdr
   const durationSec = preRenderOptions?.durationSec ?? 0
@@ -437,7 +428,6 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
   const [exportChoice, setExport]     = useState<RenderExport>('auto')
   const [sdrCurve, setSdrCurve]       = useState<SdrCurve>(DEFAULT_SDR_CURVE)
   const [advancedOpen, setAdvanced]   = useState(false)
-  const [imageColorOpen, setImageColor] = useState(false)
   const [showLog, setShowLog]         = useState(false)
   const [thumbs, setThumbs]           = useState<Record<string, string>>({})
   const [thumbsPending, setPending]   = useState(false)
@@ -993,72 +983,6 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
                       })}
                     </div>
                   </div>
-
-                  {/* Image color — a disclosure matching the Advanced one below: a
-                      plain chevron toggle opening a 2-col grid of tones, each with a
-                      per-tone example image. Persists through the host's normal
-                      settings path (an editor mutation that saves + undoes). */}
-                  {(() => {
-                    const it = preRenderOptions?.imageTone
-                    if (!it) return null
-                    const tone = it.value ?? DEFAULT_IMAGE_TONE
-                    const toneInfo = IMAGE_TONES.find(t => t.id === tone) ?? IMAGE_TONES[0]
-                    return (
-                      <div className="flex flex-col gap-3 border-t border-[var(--editor-border)] pt-3">
-                        <button
-                          onClick={() => setImageColor(o => !o)}
-                          aria-expanded={imageColorOpen}
-                          className="flex items-center gap-1.5 self-start text-xs text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] hover:text-[var(--editor-text)] transition-colors"
-                        >
-                          {imageColorOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                          Image color
-                        </button>
-
-                        {imageColorOpen ? (
-                          <div className="flex flex-col gap-2">
-                            <p className="text-[11px] font-semibold uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">
-                              How photos and logos convert for HDR
-                            </p>
-                            <div role="radiogroup" aria-label="Image color" className="grid grid-cols-2 gap-2">
-                              {IMAGE_TONES.map(t => {
-                                const active = t.id === tone
-                                return (
-                                  <button
-                                    key={t.id}
-                                    role="radio"
-                                    aria-checked={active}
-                                    onClick={() => it.set(t.id)}
-                                    className={`flex flex-col gap-1.5 rounded-lg border p-2 text-left transition-colors ${
-                                      active
-                                        ? 'border-[var(--editor-accent)] bg-[color-mix(in_srgb,var(--editor-accent)_12%,transparent)]'
-                                        : 'border-[var(--editor-border)] hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)]'
-                                    }`}
-                                  >
-                                    <img
-                                      src={TONE_EXAMPLES[t.id]}
-                                      alt={`${t.label} example`}
-                                      className="w-full aspect-video rounded object-cover border border-[var(--editor-border)]"
-                                    />
-                                    <span className="text-xs font-semibold text-[var(--editor-text)] flex items-center gap-1.5">
-                                      {t.label}
-                                      {t.id === DEFAULT_IMAGE_TONE && (
-                                        <span className="text-[9px] font-normal px-1 py-px rounded bg-[color-mix(in_srgb,var(--editor-text)_10%,transparent)] text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">default</span>
-                                      )}
-                                    </span>
-                                    <span className="text-[10px] leading-snug text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">{t.summary}</span>
-                                  </button>
-                                )
-                              })}
-                            </div>
-                          </div>
-                        ) : (
-                          <p className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)]">
-                            Photos and logos use the {toneInfo.label} conversion. Open to change.
-                          </p>
-                        )}
-                      </div>
-                    )
-                  })()}
 
                   {/* Advanced disclosure — SDR tone-curve compare. */}
                   <div className="flex flex-col gap-3 border-t border-[var(--editor-border)] pt-3">

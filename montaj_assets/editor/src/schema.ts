@@ -392,9 +392,6 @@ export interface EditorProject {
     /** Project working color space (e.g. 'sdr_bt709', 'hdr_hlg'). Written by
      *  the render pipeline's smart-detect; read here to gate HDR-only UI. */
     colorSpace?: string
-    /** Color mapping for overlay images in HDR renders — see video/imageTone.ts.
-     *  Absent → the render default ('vivid'). No effect on SDR projects. */
-    imageTone?: 'vivid' | 'broadcast' | 'punchy' | 'raw'
     /** Which platform's chrome the preview overlays on top of the video — see
      *  video/preview/SocialSafeZoneOverlay.tsx. A viewing aid only; never read
      *  by render. Absent = no chrome shown (the "None" picker option, and the

@@ -285,7 +285,7 @@ export function pageRequestDecision({ url, method = 'GET' }, { boundary, propsCa
  * Install the guard on `page`, before its `goto`. Every intercepted request
  * gets exactly one of continue, respond or abort. `onAllowed(request)`, when
  * given, takes over the requests the guard allows and must itself continue or
- * respond each one (renderer.js's HDR image conversion). `onCached(request)`
+ * respond each one. `onCached(request)`
  * is told about each request served from the props cache.
  *
  * Returns `{ blocked, failedProps, isBlockNoise(consoleMessage), assertPropsServed() }`:

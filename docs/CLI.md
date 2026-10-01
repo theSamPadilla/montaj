@@ -141,13 +141,6 @@ montaj render --project ./workspace/project.json --out ./output/final.mp4
 montaj render --clean
 # Delete intermediate files (base.mp4, per-segment WebMs) after compositing
 
-montaj render --image-tone vivid
-# Color mapping for overlay images in HDR renders (vivid | broadcast | punchy | raw)
-# vivid (default): true colors at full graphics brightness. broadcast: BT.2408
-# 203-nit graphics white (dimmer, TV-standard). punchy: legacy contrast with
-# corrected color. raw: no conversion (legacy oversaturated look).
-# Overrides settings.imageTone in project.json; ignored for SDR projects.
-
 montaj render --export sdr
 # Which deliverable(s) an HDR project renders (auto | sdr | both).
 # auto (default): HDR master only. sdr: a single SDR file, composed per

@@ -1077,18 +1077,11 @@ Caption data (segments + word timestamps) is always inlined in the track — nev
 
 **For JSX authoring details** (globals, `interpolate`, `spring`, rules, examples) — see `skills/write-overlay/SKILL.md`.
 
-#### HDR image handling in overlay JSX
+#### Graphics in HDR projects
 
-For HDR projects (`hdr_hlg`, `hdr_pq`), images embedded inside overlay JSX — any `<img src="file://...">`, CSS `background-image: url(...)`, etc. — are intercepted at the Puppeteer layer before the page loads. `renderChunk()` in `montaj_assets/render/renderer.js` enables `page.setRequestInterception(true)` when the project color space is HDR; local `file://` image fetches are caught, the source PNG is converted to an HDR-encoded 8-bit RGBA PNG by `lib/normalize_image.py` (applying a `zscale`-based transfer-curve conversion + 2x linear brightness boost to match overlay text brightness), and the converted bytes are returned in the intercepted response. Converted files are cached alongside the source as `<stem>_<colorspace>.png` and invalidated by mtime, so each unique image only pays the conversion cost on first render.
+In an HDR project (`hdr_hlg`, `hdr_pq`), every graphics pixel goes through one colour mapping at composite time: overlay captures, caption captures (text, shapes, SVG, and any `<img>` or CSS image inside the JSX, all in one capture), and tracks-level `{type: 'image'}` items. The mapping is sRGB EOTF, then BT.709 to BT.2020 primaries in linear light, then sRGB white to `GRAPHICS_WHITE_NITS` (900), then the project's transfer (HLG OETF, or PQ at absolute nits). `montaj_assets/render/hdr-graphics.js` holds the math and the constant. ffmpeg applies it as a 65-point tetrahedral 3D LUT on float RGB, generated from that math into the temp dir under a content-hashed name. `encode-segment.js` applies it to each capture right after its scale step, and to each image item right after its fit. The HDR canvas is tagged `bt2020nc` like the mapped layers, so the composite never re-matrixes them.
 
-This split is intentional:
-
-- **Images inside overlay JSX** — converted via the interceptor (this path goes through Puppeteer's screenshot framebuffer, so the converted HDR pixel values reach encode-segment correctly).
-- **Overlay text, shapes, captions, and SVG** — not converted; they stay on the sRGB-reinterpreted-as-HDR path that was deliberately kept in v2.5.7 for its bright, punchy output.
-- **Tracks-level `{type: 'image'}` items** — not converted in v1; they flow through encode-segment's existing image branch. The converter (`lib/normalize_image.py`) is fully reusable for this path if it becomes a real complaint.
-- **SDR projects** — the interceptor is never enabled; no Python subprocess is spawned; render output is byte-identical to v2.5.7.
-
-SVG image references and remote (`https://`) URLs are passed through unchanged (remote URLs emit a one-time per-host stderr warning). On any conversion failure the interceptor degrades gracefully to `request.continue()` rather than aborting the render.
+The page draws images as authored: there is no per-image conversion and no image tone. A capture is therefore the same for the HDR master and the SDR rendition, and the SDR pass of `--export both|sdr` reuses it. A saved `settings.imageTone` from an older project is ignored. SDR projects composite graphics as authored, as before.
 
 ---
 
@@ -1150,7 +1143,7 @@ Every imported video also gets a lightweight editing copy for instant scrubbing 
 | `_nobg.mov` / `_nobg_preview.webm` | sibling of the source | `remove_bg` step | Render uses `nobg_src` (ProRes 4444, alpha); preview uses `nobg_preview_src` (VP9 WebM, alpha) |
 | `_proxy_<PROXY_LOOK>.mp4` | sibling of the file it's encoded **from** | `lib/proxy.py`, at import (`project/init.py`) or via `POST /api/proxy` backfill | Preview only (`proxySrc`) — **render never reads it** |
 
-**Naming and freshness.** `proxy_path_for(src)` names the proxy `<stem>_proxy_<PROXY_LOOK>.mp4`, a sibling of whatever file it was encoded from — not necessarily the item's original `src`. `is_proxy_fresh(proxy, src)` is the same mtime-invalidation precedent normalize/image-tone caching already use: exists and `mtime(proxy) >= mtime(src)`.
+**Naming and freshness.** `proxy_path_for(src)` names the proxy `<stem>_proxy_<PROXY_LOOK>.mp4`, a sibling of whatever file it was encoded from — not necessarily the item's original `src`. `is_proxy_fresh(proxy, src)` is the same mtime-invalidation precedent normalize caching already uses: exists and `mtime(proxy) >= mtime(src)`.
 
 **Two encode paths.** Which file a proxy is encoded from, and whether it needs a tone-map, depends on the project's normalize mode:
 - **Eager projects** (`settings.normalize` absent or `"eager"`) — the proxy encodes from the already-normalized master (the post-`normalize()` `src`), with `tonemap = is_hdr(master colorspace)`. For an SDR project the master already made the one HDR→SDR color decision, so the proxy is a plain hardware-decode + scale + x264 encode, no second tone-map. For an HDR project the master is HDR — the proxy tone-maps it through the vivid1 LUT so the editor preview always shows montaj's SDR curve (policy v3), never the browser's own improvised HDR tone-mapping.

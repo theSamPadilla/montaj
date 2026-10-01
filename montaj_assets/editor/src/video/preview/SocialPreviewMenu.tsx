@@ -16,7 +16,7 @@ import type { SocialPreviewPlatform } from './SocialSafeZoneOverlay'
  * past the row's own bounds). It DEFAULTS to opening upward rather than
  * `TrackSettingsPopover`'s downward-by-default: the trigger lives in the
  * BOTTOM preview controls row, so there's rarely room below it, and this is
- * the same "icon variant opens upward" call `ImageToneMenu.tsx` makes for its
+ * the same "icon variant opens upward" call the other toolbar menus make for their
  * own bottom-toolbar placement.
  */
 
@@ -119,7 +119,7 @@ export default function SocialPreviewMenu({ anchorRef, value, onChange, onClose,
     setPosition({ left, top })
   }, [anchorRef])
 
-  // Close on outside click / Escape — same shape as ImageToneMenu.tsx's,
+  // Close on outside click / Escape — same shape as the other toolbar menus',
   // extended to exclude the portaled popover itself (which isn't a DOM
   // descendant of the trigger once portaled to document.body).
   useEffect(() => {

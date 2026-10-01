@@ -5,7 +5,7 @@
  * YouTube Shorts / Instagram Reels / None), calls `onChange` with the right
  * platform (or `null` for None) and closes itself, and marks the active
  * entry with a checkmark via `aria-checked` — the same `role="menuitemradio"`
- * shape `ImageToneMenu.tsx` uses for its own list of exclusive options.
+ * shape the other toolbar menus use for their lists of exclusive options.
  *
  * The popover portals to `document.body` (see the component's doc comment),
  * so these tests query `document.body` directly rather than a render

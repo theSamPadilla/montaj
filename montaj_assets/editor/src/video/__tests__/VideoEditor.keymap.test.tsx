@@ -743,7 +743,7 @@ describe('VideoEditor — preview controls row', () => {
     expect(screen.queryByTestId('social-safe-zone-overlay')).toBeNull()
   })
 
-  it('the social-preview pick persists into project settings (mirrors handleImageToneChange)', async () => {
+  it('the social-preview pick persists into project settings (handleSocialPreviewChange)', async () => {
     const adapter = makeFakeAdapter()
     render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
     await screen.findByLabelText('Preview axis')
@@ -756,6 +756,29 @@ describe('VideoEditor — preview controls row', () => {
     const calls = (adapter.saveProject as ReturnType<typeof vi.fn>).mock.calls
     const saved = calls[calls.length - 1]?.[1]
     expect(saved.settings.socialPreview).toBe('instagram')
+  })
+
+  it('an old HDR project carrying settings.imageTone mounts with no image-tone control, and other settings writes still save', async () => {
+    // `imageTone` was a per-image HDR color choice; the feature is gone and the
+    // saved key is ignored. The cast is the point: the field is no longer in
+    // the schema, but old project JSON still has it.
+    const stale = makeVideoProject({
+      settings: { resolution: [1080, 1920], fps: 30, colorSpace: 'hdr_hlg', imageTone: 'vivid' } as unknown as Project['settings'],
+    })
+    const adapter = makeFakeAdapter()
+    render(<VideoEditor project={stale} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByLabelText('Preview axis')
+
+    expect(screen.queryByTitle(/Image color mapping/)).toBeNull()
+    expect(screen.queryByText(/Image color/i)).toBeNull()
+
+    fireEvent.click(screen.getByLabelText('Preview for social media'))
+    fireEvent.click(screen.getByLabelText('Instagram Reels'))
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalled())
+    const calls = (adapter.saveProject as ReturnType<typeof vi.fn>).mock.calls
+    const saved = calls[calls.length - 1]?.[1]
+    expect(saved.settings.socialPreview).toBe('instagram')
+    expect(saved.settings.colorSpace).toBe('hdr_hlg')
   })
 
   it("the timeline chrome's 'fit' button resets the zoom — the single consolidated zoom-to-fit control (the duplicate preview-row icon was removed)", async () => {

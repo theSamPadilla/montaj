@@ -24,7 +24,6 @@ import type {
   OverlayElement,
   Captions,
 } from './schema'
-import type { ImageTone } from './video/imageTone'
 import type { SourcePreviewStore } from './video/source-preview'
 import type { PreRenderOptions } from './video/RenderModal'
 
@@ -1186,7 +1185,7 @@ export interface RenderModalContext<P extends Project = Project> {
   open: boolean
   projectId: string
   adapter: EditorAdapter<P>
-  /** The export dialog's inputs: cover keeps, name, duration, aspect, resolution and fps tiers, HDR image tone. */
+  /** The export dialog's inputs: cover keeps, name, duration, aspect, resolution and fps tiers. */
   preRenderOptions: PreRenderOptions
   /** `slots.exportActions`, for the finished state. */
   exportActions?: ReactNode
@@ -1294,20 +1293,6 @@ export interface VideoEditorProps<P extends Project = Project> {
    * package's ControlsInfoModal, as before.
    */
   renderControls?: (ctx: ControlsWindowContext) => ReactNode
-
-  /**
-   * Opt a host OUT of the package's built-in toolbar image-tone button so it
-   * can surface the setting in its own chrome (e.g. the top-of-page header).
-   * Mirrors `onProvideRenderTrigger`: when provided, the package (a) hides its
-   * toolbar control and (b) calls this callback with the current state
-   * whenever it changes. The host renders its own control (the package exports
-   * `ImageToneMenu` with `variant="header"` for exactly this) and calls
-   * `set(tone)` to persist a choice; the editor owns the save path.
-   *
-   * Called with `null` when the control should not be shown (SDR project: the
-   * tone only affects HDR renders). Hosts must render nothing in that case.
-   */
-  onProvideImageTone?: (api: { value: ImageTone; set: (tone: ImageTone) => void } | null) => void
 
   /**
    * Hand the host a way to move the playhead. Mirrors `onProvideRenderTrigger`:

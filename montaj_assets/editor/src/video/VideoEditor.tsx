@@ -44,8 +44,6 @@ import TabNav from './panels/TabNav'
 import VersionCompare from './VersionCompare'
 import CaptionListPanel, { type CaptionListPanelProps, type CaptionEditFocusRequest, nextEditFocus } from './CaptionListPanel'
 import RenderModal from './RenderModal'
-import ImageToneMenu from './ImageToneMenu'
-import type { ImageTone } from './imageTone'
 import CaptionRegenModal from './CaptionRegenModal'
 import AudioPolishModal from './AudioPolishModal'
 import CommandPalette, { type PaletteCommand } from './CommandPalette'
@@ -276,7 +274,6 @@ export default function VideoEditor<P extends Project = Project>({
   onProvideRenderTrigger,
   renderModal,
   renderControls,
-  onProvideImageTone,
   onProvideSeek,
   engine,
   sourcePreview,
@@ -464,7 +461,6 @@ export default function VideoEditor<P extends Project = Project>({
         onProvideRenderTrigger={onProvideRenderTrigger}
         renderModal={renderModal}
         renderControls={renderControls}
-        onProvideImageTone={onProvideImageTone}
         onProvideSeek={onProvideSeek}
         engine={engine}
         sourcePreview={sourcePreview}
@@ -587,7 +583,6 @@ interface SurfaceProps<P extends Project> {
   onProvideRenderTrigger?: VideoEditorProps<P>['onProvideRenderTrigger']
   renderModal?: VideoEditorProps<P>['renderModal']
   renderControls?: VideoEditorProps<P>['renderControls']
-  onProvideImageTone?: VideoEditorProps<P>['onProvideImageTone']
   onProvideSeek?: VideoEditorProps<P>['onProvideSeek']
   engine?: VideoEditorProps<P>['engine']
   /** Light/dark for the canvas timeline, resolved from the host theme by
@@ -818,7 +813,6 @@ function ReviewSurface<P extends Project>({
   onProvideRenderTrigger,
   renderModal,
   renderControls,
-  onProvideImageTone,
   onProvideSeek,
   engine,
   sourcePreview,
@@ -1152,7 +1146,7 @@ function ReviewSurface<P extends Project>({
   const timelineActionsRef = useRef<TimelineActions | null>(null)
 
   // Declared ahead of the scrub effect below (rather than alongside
-  // currentSocialPreview/currentImageTone further down) because that effect
+  // currentSocialPreview further down) because that effect
   // reads it to seed the scrubber's initial enabled state.
   const currentAudibleScrub = project.settings?.audibleScrub ?? false
 
@@ -1224,17 +1218,8 @@ function ReviewSurface<P extends Project>({
   const { mutate: syncMutate, projectRef: syncProjectRef, discardTransient: syncDiscardTransient } = sync
   const emitRef = useRef(emit); emitRef.current = emit
 
-  // Persist the HDR image color mapping into project settings. A real user
-  // edit: goes through sync.mutate so it saves and participates in undo.
-  const handleImageToneChange = useCallback((tone: ImageTone) => {
-    void syncMutate(() => {
-      const cur = syncProjectRef.current
-      return { ...cur, settings: { ...cur.settings, imageTone: tone } } as P
-    })
-  }, [syncMutate, syncProjectRef])
-
   // Persist the audible drag-scrub toggle into project settings — same
-  // save-then-sync idiom as handleImageToneChange above. SET-always (unlike
+  // save-then-sync idiom: a real user edit through sync.mutate. SET-always (unlike
   // handleSocialPreviewChange's omit-key below): a boolean has no natural
   // "unset" state, and default-off means an explicit `true` has to persist
   // the operator's opt-in.
@@ -1246,7 +1231,7 @@ function ReviewSurface<P extends Project>({
   }, [syncMutate, syncProjectRef])
 
   // Persist the social-media preview platform into project settings — same
-  // shape as handleImageToneChange above. `null` clears it (the picker's
+  // save-then-sync shape as handleAudibleScrubChange above. `null` clears it (the picker's
   // "None" entry), which the settings-spread below has to do by explicitly
   // OMITTING the key rather than writing `socialPreview: undefined`: a
   // spread with an `undefined` value still enumerates the key, so a
@@ -1269,15 +1254,7 @@ function ReviewSurface<P extends Project>({
   // itself returns for a `null` platform.
   const activeSocialPreviewOption = platformOption(currentSocialPreview)
 
-  // Host-chrome placement of the image-tone setting (mirrors
-  // onProvideRenderTrigger): push the current state up whenever it changes,
-  // and null for SDR projects so the host hides the control.
   const isHdrProject = !!project.settings?.colorSpace?.startsWith('hdr')
-  const currentImageTone = project.settings?.imageTone
-  useEffect(() => {
-    if (!onProvideImageTone) return
-    onProvideImageTone(isHdrProject ? { value: currentImageTone ?? 'vivid', set: handleImageToneChange } : null)
-  }, [onProvideImageTone, isHdrProject, currentImageTone, handleImageToneChange])
 
   // Pre-render options for the export dialog (RenderModal). `keeps` are the
   // track-0 video windows the modal samples cover/thumbnail frames from —
@@ -1298,7 +1275,7 @@ function ReviewSurface<P extends Project>({
     [project.tracks],
   )
   // Persist the export resolution / fps tier into project settings — same
-  // save-then-sync idiom as handleImageToneChange above. Mutating
+  // save-then-sync idiom: a real user edit through sync.mutate. Mutating
   // settings.resolution to a same-aspect higher tier doesn't perturb the
   // editor preview (design-canvas only reads it for aspect), so this is safe
   // to fire straight from the export dialog's tier picker.
@@ -1326,7 +1303,6 @@ function ReviewSurface<P extends Project>({
   const preRenderOptions = useMemo(() => ({
     isHdr: isHdrProject,
     keeps: renderKeeps,
-    imageTone: { value: currentImageTone ?? 'vivid', set: handleImageToneChange },
     name: project.name?.trim() || undefined,
     // NOT derived from `renderKeeps` — see `exportDurationSec`. Keeps covers
     // the footage windows the curve thumbnails can sample; the cover picker
@@ -1353,7 +1329,7 @@ function ReviewSurface<P extends Project>({
     // leave the duration silently stale the day keeps stops being memoized on
     // tracks. Deliberately NOT the whole `project`: this memo is kept off
     // unrelated project mutations on purpose (see `availableRes` above).
-    isHdrProject, renderKeeps, project.tracks, currentImageTone, handleImageToneChange,
+    isHdrProject, renderKeeps, project.tracks,
     project.name, project.settings?.resolution, project.settings?.fps,
     availableRes, availableFpsList, handleExportResolutionChange, handleExportFpsChange,
   ])
@@ -2000,7 +1976,7 @@ function ReviewSurface<P extends Project>({
   // Drawn inside the aspect-ratio box (over the video) rather than the
   // controls row below it, by SocialSafeZoneOverlay itself. Persisted into
   // project settings (see handleSocialPreviewChange below) the same way
-  // handleImageToneChange persists the HDR image-tone pick — a real user
+  // handleSocialPreviewChange persists the pick — a real user
   // preference, not per-render state, so it survives a reload.
   const [socialPreviewMenuOpen, setSocialPreviewMenuOpen] = useState(false)
   const socialPreviewTriggerRef = useRef<HTMLButtonElement>(null)
@@ -2501,16 +2477,6 @@ function ReviewSurface<P extends Project>({
             shows its props in the right column's Content tab, so a button whose
             only job was "open the thing that is already open" had nothing left
             to do. */}
-        {/* Image color mapping. HDR projects only (the tone has no effect on
-            SDR renders). Hidden when the host surfaces the setting in its own
-            chrome via onProvideImageTone, mirroring the Render button. */}
-        {!onProvideImageTone && isHdrProject && (
-          <ImageToneMenu
-            value={currentImageTone}
-            onChange={handleImageToneChange}
-            mode={timelineMode}
-          />
-        )}
         {/* Audio polish — silence/fillers/loudness/voice cleanup. Hidden when the
             host adapter doesn't implement `analyzeAudioPolish`, exactly like the
             caption-regen entry point above. */}

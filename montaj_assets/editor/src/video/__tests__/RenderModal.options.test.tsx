@@ -455,26 +455,8 @@ describe('RenderModal — curve thumbnails', () => {
   })
 })
 
-describe('RenderModal — image color control', () => {
-  it('persists a tone choice through the host callback', () => {
-    const set = vi.fn()
-    render(
-      <RenderModal
-        adapter={pollAdapter()}
-        projectId="vid-1"
-        onClose={vi.fn()}
-        preRenderOptions={{ isHdr: true, keeps: KEEPS, imageTone: { value: 'vivid', set } }}
-      />,
-    )
-
-    // Image color is a first-class expandable section: click its header to open
-    // the tone list, then pick another.
-    fireEvent.click(screen.getByText('Image color'))
-    fireEvent.click(screen.getByText('Broadcast'))
-    expect(set).toHaveBeenCalledWith('broadcast')
-  })
-
-  it('omits the tone menu when the host supplies no callback', () => {
+describe('RenderModal — no image color control', () => {
+  it('shows no image color section, even for HDR', () => {
     render(
       <RenderModal
         adapter={pollAdapter()}
@@ -483,9 +465,8 @@ describe('RenderModal — image color control', () => {
         preRenderOptions={{ isHdr: true, keeps: KEEPS }}
       />,
     )
-
-    // With no imageTone callback the whole Image color control is omitted.
-    expect(screen.queryByText('Image color:')).toBeNull()
+    expect(screen.queryByText('Image color')).toBeNull()
+    expect(screen.queryByText('Broadcast')).toBeNull()
   })
 })
 

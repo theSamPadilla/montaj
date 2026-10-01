@@ -9,7 +9,7 @@ import { useTimelineImport } from './timelineImport'
 import { useIsMobile } from '@/lib/useIsMobile'
 import { useIsDark } from '@/lib/useIsDark'
 import { Upload } from 'lucide-react'
-import { CarouselEditor, VideoEditor, createSourcePreviewStore, defaultMontajTheme, lightMontajTheme, type Captions, type EditorSlots, type ImageTone } from '@bycrux/editor'
+import { CarouselEditor, VideoEditor, createSourcePreviewStore, defaultMontajTheme, lightMontajTheme, type Captions, type EditorSlots } from '@bycrux/editor'
 import AssetsPanel from '@/components/AssetsPanel'
 import MediaPanel from '@/components/media/MediaPanel'
 import FootagePanel from '@/components/media/FootagePanel'
@@ -237,11 +237,6 @@ export default function EditorPage() {
     handleProjectChange({ ...base, captions })
   }, [handleProjectChange])
   useCaptionJobSink(handleCaptionJobDone)
-  // VideoEditor pushes the image-tone state up via onProvideImageTone. The
-  // control now lives inside the Export dialog (moved out of the page header),
-  // but the callback stays wired: providing it suppresses the package toolbar's
-  // fallback tone menu. We only need the setter — the value is read in-dialog.
-  const [, setImageToneApi] = useState<{ value: ImageTone; set: (tone: ImageTone) => void } | null>(null)
   // VideoEditor hands us a stable `openRender()` trigger (it owns the RenderModal);
   // we host the Render button in the ProjectHeader instead of the package toolbar.
   const [openRender, setOpenRender] = useState<(() => void) | null>(null)
@@ -659,7 +654,6 @@ export default function EditorPage() {
             pendingDrops={pendingDrops}
             onImportFilesToTimeline={handleImportFilesToTimeline}
             onProvideRenderTrigger={(fn) => setOpenRender(() => fn)}
-            onProvideImageTone={setImageToneApi}
             onBackToSetup={handleBackToSetup}
             // See handleRegenerateCaptions above for why this is guarded on
             // adapter.generateCaptions rather than passed unconditionally.

@@ -148,7 +148,7 @@ export default function TrackSettingsPopover({
     setPosition({ left, top, flipped: !fitsBelow })
   }, [anchorRef])
 
-  // Close on outside click / Escape — same shape as ImageToneMenu.tsx's.
+  // Close on outside click / Escape — same shape as the toolbar menus'.
   // "Outside" excludes both the trigger (a click on it is the button's own
   // toggle, handled by TrackGutter) and the popover's own portaled content.
   useEffect(() => {
