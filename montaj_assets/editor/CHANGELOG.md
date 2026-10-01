@@ -4,7 +4,7 @@ All notable changes to `@bycrux/editor` are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 2.0.0
 
 - **Removed: the HDR image tone feature (breaking for hosts).** The toolbar image-tone menu and the export dialog's "Image color" section are gone, along with the exports `ImageToneMenu`, `ImageToneMenuProps`, `IMAGE_TONES`, `DEFAULT_IMAGE_TONE`, `ImageTone`, `ImageToneInfo` and `TONE_EXAMPLES`, the `onProvideImageTone` prop on `VideoEditor`, `PreRenderOptions.imageTone`, and `EditorProject.settings.imageTone`. A host that passes `onProvideImageTone` or imports any of these must drop them. A saved `settings.imageTone` in an old project is ignored: it loads, renders and saves as before, the editor shows no tone control, and the key is left in place on save. Why: HDR renders convert the whole overlay capture with one mapping, so a per-image tone has nothing left to choose. Files: `video/ImageToneMenu.tsx`, `video/imageTone.ts`, `video/imageToneExamples.ts` (deleted), `video/VideoEditor.tsx`, `video/RenderModal.tsx`, `types.ts`, `schema.ts`, `index.ts`, `video/__tests__/VideoEditor.keymap.test.tsx`, `video/__tests__/RenderModal.options.test.tsx`, `__tests__/index-render-helpers.test.ts`
 - **Fixed: overlays rescale when the project's resolution changes while the editor is open.** `PreviewPlayer` stored the overlay scale from a container observer set up once, so it kept the first render's design-canvas width after a resolution change. It now derives the scale from the observed width and the current canvas on every render (1 until the observer reports). Files: `video/preview/PreviewPlayer.tsx`, `video/preview/__tests__/PreviewPlayer.overlayScale.test.tsx` (new).
