@@ -184,13 +184,13 @@ def test_normalize_window_ss_and_t_before_input(tmp_path):
     fine = in_point - near
     expected_duration = max(0.0, out_point - in_point)
     has_trim = fine > 0 and expected_duration > 0
-    assert cmd[ss_idx + 1] == f"{near:.4f}"
+    assert cmd[ss_idx + 1] == f"{near:.6f}"
     # PV48 review: -t is a generous upper bound (fine + duration + 1s) when
     # the trim filters below do the exact cut, not fine + duration itself —
     # that was measured to let the window run past its end on an open-GOP
     # source (see lib/normalize.py's normalize_window docstring/comment).
     assert has_trim, "test fixture must exercise the trim-filter arm"
-    assert cmd[t_idx + 1] == f"{fine + expected_duration + 1:.4f}"
+    assert cmd[t_idx + 1] == f"{fine + expected_duration + 1:.6f}"
 
     # -i must be followed by the input path
     assert cmd[i_idx + 1] == str(src)
@@ -200,7 +200,7 @@ def test_normalize_window_ss_and_t_before_input(tmp_path):
     # here (in_point=1.0 < SEEK_PREROLL_S=2.0).
     assert fine > 0, "test fixture must exercise the post-input seek arm"
     assert cmd[i_idx + 2] == "-ss"
-    assert cmd[i_idx + 3] == f"{fine:.4f}"
+    assert cmd[i_idx + 3] == f"{fine:.6f}"
 
     # The exact-end bound: trim/atrim filters carrying both `start` and
     # `duration`, so the window's END no longer depends on -t's own drift.
@@ -253,8 +253,8 @@ def test_normalize_window_at_zero_matches_today_exactly(tmp_path):
     ss_idx = cmd.index("-ss")
     i_idx = cmd.index("-i")
     t_idx = cmd.index("-t")
-    assert cmd[ss_idx + 1] == "0.0000"
-    assert cmd[t_idx + 1] == f"{out_point - in_point:.4f}"
+    assert cmd[ss_idx + 1] == "0.000000"
+    assert cmd[t_idx + 1] == f"{out_point - in_point:.6f}"
     # No second -ss: cmd has exactly one "-ss" occurrence.
     assert cmd.count("-ss") == 1
     assert cmd[i_idx + 1] == str(src)
@@ -346,12 +346,12 @@ def test_normalize_window_zero_duration_clamp(tmp_path):
     near = max(0.0, in_point - nm.SEEK_PREROLL_S)
     fine = in_point - near
     t_idx = cmd.index("-t")
-    assert cmd[t_idx + 1] == f"{fine + 0.0:.4f}"  # duration clamped to 0.0
+    assert cmd[t_idx + 1] == f"{fine + 0.0:.6f}"  # duration clamped to 0.0
 
     i_idx = cmd.index("-i")
     assert fine > 0
     assert cmd[i_idx + 2] == "-ss"
-    assert cmd[i_idx + 3] == f"{fine:.4f}"  # net output duration is still 0
+    assert cmd[i_idx + 3] == f"{fine:.6f}"  # net output duration is still 0
 
 
 def test_normalize_window_output_starts_at_zero(tmp_path):

@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Fixed: `materialize_cut` starts on the requested frame.** An inpoint on a frame boundary past 2 s started one frame late for a third of frame times at 30, 29.97 and 60 fps (149/30 s cut from frame 150), on any GOP. The input seek was written to 4 decimals and the trim is measured from it, so a seek that rounded up skipped the first frame. It is now written to the microsecond. The same rounding of `-t` gave a cut from 0 s one extra frame at the end; fixed too. Pinned by `tests/steps/test_materialize_cut_frame_exact.py`.
+- **Fixed: `normalize_window` starts on the requested frame, at any inpoint.** The same 4-decimal rounding hit both of its seeks, the input one past 2 s and the output one below 2 s, so a third of frame times at 30, 29.97 and 60 fps started one frame late, with the video beginning a frame after the audio (149/30 s gave frames 150, 150, 151...). Both seeks and `-t` are now written to the microsecond. Pinned by `tests/test_normalize_window_frame_exact.py`. A render's cover frame and the colour-provenance thumbnails used 3 decimals the same way and could take the next frame; they are microsecond-exact too.
 - **Added (editor): `renderControls` lets a host draw the Controls window.** `VideoEditor` and `CarouselEditor` take it and hand the host the Controls list exactly as the editor shows it, already in the platform's keys (Ctrl on Windows). See `montaj_assets/editor/CHANGELOG.md`.
 
 ## v5.17.3

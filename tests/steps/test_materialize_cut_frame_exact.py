@@ -12,9 +12,9 @@ and 60), on all-intra and long-GOP sources alike. The same 4-decimal `-t` is
 the exact end bound when the inpoint is 0 and admits one extra frame there.
 
 The clips carry their frame index as a binary strip of black/white blocks,
-read back by sampling pixels, so the assertions are on exact source indices.
+read back by sampling pixels (tests/counter_strip.py), so the assertions are on
+exact source indices.
 """
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
@@ -25,52 +25,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "steps" / "transform"))
 import materialize_cut  # noqa: E402
 
-from lib.common import ffmpeg_bin  # noqa: E402
 from tests.conftest import HAS_FFMPEG, run_step, skip_or_fail  # noqa: E402
+from tests.counter_strip import indices as _indices, make_counter_clip  # noqa: E402
 
-BLOCK = 16
-BITS = 9                      # frame indices 0..511
-W, H = BLOCK * (BITS + 1), BLOCK  # +1: an always-white sanity block
 N_FRAMES = 170                # covers k = 140..158 plus a 6-frame window
 WINDOW = 6
 SWEEP = range(140, 159)       # 149 and its neighbours, every residue mod 3
-
-
-def _frame(i: int) -> bytes:
-    row = bytearray()
-    for b in range(BITS + 1):
-        on = b == BITS or (i >> b) & 1
-        row += (b"\xff" if on else b"\x00") * BLOCK
-    return bytes(row) * H
-
-
-def _make_counter_clip(path: Path, rate: str) -> None:
-    """All-intra H.264 (so any miss is timestamps, not GOP) + a tone track,
-    which materialize_cut's filter graph requires."""
-    subprocess.run([
-        ffmpeg_bin(), "-y", "-v", "error",
-        "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{W}x{H}", "-r", rate, "-i", "-",
-        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
-        "-c:v", "libx264", "-crf", "10", "-g", "1", "-bf", "0", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-ar", "48000", "-shortest", str(path),
-    ], input=b"".join(_frame(i) for i in range(N_FRAMES)), check=True, capture_output=True,
-        timeout=60)
-
-
-def _indices(path: Path) -> list:
-    """Each decoded frame's counter value, read from block-centre pixels."""
-    raw = subprocess.run([ffmpeg_bin(), "-v", "error", "-nostdin", "-i", str(path),
-                          "-f", "rawvideo", "-pix_fmt", "gray", "-"],
-                         capture_output=True, check=True, timeout=60).stdout
-    size = W * H
-    out = []
-    for f in range(len(raw) // size):
-        row = raw[f * size + (H // 2) * W:f * size + (H // 2 + 1) * W]
-        px = [row[b * BLOCK + BLOCK // 2] for b in range(BITS + 1)]
-        assert px[BITS] > 200, f"{path.name} frame {f}: sanity block is dark ({px})"
-        assert all(c < 60 or c > 195 for c in px), f"{path.name} frame {f}: ambiguous bit {px}"
-        out.append(sum(1 << b for b in range(BITS) if px[b] >= 128))
-    return out
 
 
 @pytest.fixture(scope="module")
@@ -81,7 +41,7 @@ def clips(tmp_path_factory):
     made = {}
     for name, rate in (("30", "30"), ("29.97", "30000/1001")):
         p = d / f"counter_{name.replace('.', '')}.mp4"
-        _make_counter_clip(p, rate)
+        make_counter_clip(p, rate, N_FRAMES)
         assert _indices(p) == list(range(N_FRAMES)), f"{p.name}: counter strip does not round-trip"
         made[name] = p
     return made

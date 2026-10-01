@@ -537,8 +537,8 @@ def _thumbnails(path: str, times, pre_vf: str = "") -> Optional[list]:
         # exceeds normalize's 1 s GOP. Same pattern as render/sample-frame.js.
         near = max(0.0, t - THUMB_SEEK_PREROLL_S)
         cmd = [ffmpeg_bin(), "-v", "error", "-nostdin",
-               *(["-ss", f"{near:.3f}"] if near > 0 else []), "-i", path,
-               "-ss", f"{t - near:.3f}", "-frames:v", "1", "-an", "-sn", "-dn", "-vf", vf, "-f", "rawvideo", "-"]
+               *(["-ss", f"{near:.6f}"] if near > 0 else []), "-i", path,
+               "-ss", f"{t - near:.6f}", "-frames:v", "1", "-an", "-sn", "-dn", "-vf", vf, "-f", "rawvideo", "-"]
         try:
             r = subprocess.run(cmd, capture_output=True, timeout=120)
         except (OSError, subprocess.SubprocessError):

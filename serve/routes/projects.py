@@ -177,9 +177,9 @@ async def _extract_cover_frame(output_path: "Path", cover: float, job: _RenderJo
         near = max(0.0, cover - SEEK_PREROLL_S)
         cmd = [
             ffmpeg_bin(), "-y",
-            *(["-ss", f"{near:.3f}"] if near > 0 else []),
+            *(["-ss", f"{near:.6f}"] if near > 0 else []),
             "-i", str(output_path),
-            "-ss", f"{cover - near:.3f}",
+            "-ss", f"{cover - near:.6f}",
             "-frames:v", "1",
             "-update", "1",
             str(cover_path),

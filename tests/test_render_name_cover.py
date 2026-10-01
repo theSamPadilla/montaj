@@ -139,8 +139,8 @@ def test_cover_extraction_invokes_ffmpeg_with_seek_and_paths(monkeypatch, tmp_pa
     assert cover_cmd[0] == "/usr/bin/ffmpeg"
     ss_indices = [i for i, a in enumerate(cover_cmd) if a == "-ss"]
     assert len(ss_indices) == 2, "both the input pre-seek (near) and the output finish (fine) are -ss"
-    assert cover_cmd[ss_indices[0] + 1] == "10.500", "near = max(0, 12.5 - SEEK_PREROLL_S)"
-    assert cover_cmd[ss_indices[1] + 1] == "2.000", "fine = cover - near"
+    assert cover_cmd[ss_indices[0] + 1] == "10.500000", "near = max(0, 12.5 - SEEK_PREROLL_S)"
+    assert cover_cmd[ss_indices[1] + 1] == "2.000000", "fine = cover - near"
     assert cover_cmd[cover_cmd.index("-i") + 1] == str(output_path)
     assert cover_cmd[-1] == str(output_path.with_suffix(".jpg"))
     # The input pre-seek must precede -i (fast); the output finish must follow it (exact).
@@ -168,7 +168,7 @@ def test_cover_extraction_under_preroll_is_output_seek_only(monkeypatch, tmp_pat
     cover_cmd = calls[1]
     ss_indices = [i for i, a in enumerate(cover_cmd) if a == "-ss"]
     assert len(ss_indices) == 1, "near=0: no input pre-seek, just one output -ss"
-    assert cover_cmd[ss_indices[0] + 1] == "1.000"
+    assert cover_cmd[ss_indices[0] + 1] == "1.000000"
     assert ss_indices[0] > cover_cmd.index("-i"), "-ss must follow -i (output seek) when near is 0"
 
 

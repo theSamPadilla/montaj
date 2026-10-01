@@ -805,14 +805,21 @@ def normalize_window(
     near = max(0.0, in_point - SEEK_PREROLL_S)
     fine = in_point - near
     has_trim = fine > 0 and duration > 0
+    # Every seek time to 6 decimals (microseconds, ffmpeg's own resolution),
+    # not 4: neither -ss is just a bound. ffmpeg shifts frames by
+    # -round(seek / timebase), so a 4-decimal value that rounds UP by over
+    # half a tick drops the frame at in_point: the input -ss near ("2.9667"
+    # for 149/30) before the trim, the output -ss fine ("0.0667" for 2/30)
+    # after it. The video then started a frame late, 0.033 s after the audio
+    # (measured FQ54). With fine == 0, -t is the exact end bound and rounding
+    # up admitted one extra frame the same way.
     pre_input_args = [
-        "-ss", f"{near:.4f}",
-        "-t", f"{fine + duration + 1:.4f}" if has_trim else f"{fine + duration:.4f}",
+        "-ss", f"{near:.6f}",
+        "-t", f"{fine + duration + 1:.6f}" if has_trim else f"{fine + duration:.6f}",
     ]
-    post_input_seek = f"{fine:.4f}" if fine > 0 else None
-    # 6 decimals here, not 4 (unlike near/fine/-t above, which only need to
-    # be generous): a 4-decimal `duration=` can round UP past a frame
-    # boundary for periodic fractions like 8/30s ("0.2667" vs the true
+    post_input_seek = f"{fine:.6f}" if fine > 0 else None
+    # 6 decimals for the trims too: a 4-decimal `duration=` can round UP past
+    # a frame boundary for periodic fractions like 8/30s ("0.2667" vs the true
     # 0.266667), admitting one extra frame at the trim's own cut point —
     # measured, PV48 review. Same fix as materialize_cut.py's _vchain/_achain.
     video_trim = f"trim=start={fine:.6f}:duration={duration:.6f}" if has_trim else ""
