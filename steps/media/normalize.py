@@ -102,6 +102,20 @@ def main():
     mime = mimetypes.guess_type(args.input)[0] or ""
     is_audio_only = mime.startswith("audio/")
 
+    # Silent input (ffmpeg measures digital silence as input_i -inf, or anything
+    # at or under loudnorm's -70 LUFS absolute gate): there is nothing to
+    # normalize, and pass 2 would hand `measured_I=-inf` back to loudnorm, which
+    # rejects it ("Result too large"). Pass the media through unchanged.
+    try:
+        measured_i = float(stats["input_i"])
+    except (TypeError, ValueError):
+        measured_i = None
+    if measured_i is not None and not measured_i > -LOUDNORM_BOUND:
+        run([ffmpeg_bin(), "-y", "-i", args.input, "-c", "copy", out])
+        check_output(out)
+        print(out)
+        return
+
     # Second pass: apply with measured values for accurate linear normalization
     loudnorm_filter = (
         f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11"

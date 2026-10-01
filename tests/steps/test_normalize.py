@@ -212,3 +212,33 @@ def test_normalize_windowed_measure_stereo_differs_materially_from_mono_downmix(
         f"expected a materially different input_i between stereo/48k ({stereo_i}) and "
         f"mono/16k-downmix ({mono_i}) measurement of the same window — got only {diff} LU apart"
     )
+
+
+# ── silent input ──────────────────────────────────────────────────────────────
+
+def _silent_video(tmp_path):
+    path = tmp_path / "silent.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x240:r=30",
+         "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(path)],
+        capture_output=True, check=True,
+    )
+    return path
+
+
+def test_normalize_silent_input_is_left_alone_not_an_ffmpeg_error(tmp_path):
+    # ffmpeg measures digital silence as input_i -inf, and pass 2 then used to
+    # hand `measured_I=-inf` straight back to loudnorm, which rejects it
+    # ("Value -inf for parameter 'measured_I' out of range ... Result too large").
+    # There is nothing to normalize in silence, so the step passes the media
+    # through unchanged (stream copy) and still succeeds.
+    src = _silent_video(tmp_path)
+    out = tmp_path / "norm.mp4"
+    proc = run_step("normalize.py", "--input", str(src), "--target", "custom", "--lufs", "-16", "--out", str(out))
+    assert_file_output(proc)
+    streams = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(out)],
+        capture_output=True, text=True,
+    ).stdout.split()
+    assert sorted(streams) == ["audio", "video"], streams
