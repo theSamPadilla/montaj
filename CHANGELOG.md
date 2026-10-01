@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Changed (skills): `write-overlay` says how to stay sharp at 4K.** Overlays are authored on the 1080 design canvas and captured at `output short edge / 1080` (up to 2x), so text, CSS and SVG are already sharp. The skill's new "Sharp at 4K" section tells agents that raster images need at least 2x their displayed size (or SVG), that Three.js and WebGL must render at `window.devicePixelRatio` (keep r3f's default `dpr`, or call `renderer.setPixelRatio`), that a 2D canvas sizes its backing store in device pixels, and never to hard-code a 3840 layout. Its line saying the renderer upscales overlays at compose time is corrected.
+- **Fixed (render): a render with `settings.loudness` set and no sound failed with "Input contains (near) NaN/+-Inf".** A timeline with no audible audio (video-only clips and no audio tracks, as in the product-demo recipe, or tracks that are all silence) still carries a silent AAC stream, and ffmpeg's `loudnorm` over digital silence shorter than about 3 s emits NaN samples that the AAC encoder rejects, so the whole render died in the final mix pass. The mix pass now measures the mix first (decode only) and skips loudness normalization when it is silent (at or under the -70 LUFS gate), keeping the silent track; audible mixes normalize exactly as before. Pinned by the two `silent` tests in `montaj_assets/render/test/integration-compose.test.mjs` and the parser tests in `montaj_assets/render/test/loudness.test.mjs`. (`montaj_assets/render/mix-audio.js`)
 
 ## v5.18.2
 

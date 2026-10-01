@@ -412,3 +412,89 @@ test('compose: settings.loudness absent and zero project.audio.tracks stays a pl
   rmSync(clip, { force: true })
   rmSync(outputPath, { force: true })
 })
+
+// ── Loudness on a silent timeline ──────────────────────────────────────────
+//
+// A timeline with no audible sound (video-only clips, no audio tracks, or
+// tracks that are all silence) still gets a silent AAC stream from the
+// segment encoder (anullsrc). ffmpeg's loudnorm run over digital silence
+// shorter than its ~3 s window emits NaN samples, and the AAC encoder behind it
+// aborts with "Input contains (near) NaN/+-Inf", so the whole render failed
+// on any silent project that had settings.loudness (the product-demo recipe
+// sets -14 and has no clip audio). There is nothing to normalize in silence,
+// so the mix pass now measures first and leaves a silent mix alone.
+// 1.5 s is deliberate: silence of 3 s or more does not trip the bug.
+
+function audioStreamCount(path) {
+  const probe = spawnSync('ffprobe', [
+    '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index',
+    '-of', 'csv=p=0', path,
+  ], { encoding: 'utf8', timeout: 30_000 })
+  return (probe.stdout || '').trim().split('\n').filter(Boolean).length
+}
+
+test('compose: settings.loudness -16 on a video-only project with no audio tracks renders (silent timeline skips loudnorm)', async () => {
+  const clip = join(tmp, 'montaj-test-silent-loudness-clip.mp4')
+  const outputPath = join(tmp, 'montaj-compose-silent-loudness.mp4')
+  rmSync(clip, { force: true })
+  rmSync(outputPath, { force: true })
+  // Video only: no audio stream at all, so the segment's audio is anullsrc.
+  spawnSync('ffmpeg', [
+    '-y', '-f', 'lavfi', '-i', 'testsrc=duration=1.5:size=640x360:rate=30',
+    '-c:v', 'libx264', '-an', clip,
+  ], { encoding: 'utf8', timeout: 30_000 })
+
+  await compose({
+    projectJson: { settings: { resolution: [640, 360], fps: 30, loudness: -16 }, audio: { tracks: [] } },
+    puppeteerSegments: [],
+    imageItems: [],
+    videoItems: [{
+      id: 'v', type: 'video', trackIdx: 0, src: clip, start: 0, end: 1.5,
+      inPoint: 0, outPoint: 1.5, offsetX: 0, offsetY: 0, scale: 1, opacity: 1, muted: false,
+    }],
+    outputPath,
+  })
+
+  assert.ok(existsSync(outputPath), 'output file should exist')
+  assert.equal(audioStreamCount(outputPath), 1, 'the silent audio stream is kept')
+  assert.equal(sampleRateOf(outputPath), 48000)
+
+  rmSync(clip, { force: true })
+  rmSync(outputPath, { force: true })
+})
+
+test('compose: settings.loudness -16 with an all-silent audio track renders (silent mix skips loudnorm)', async () => {
+  const clip = join(tmp, 'montaj-test-silent-track-clip.mp4')
+  const bed = join(tmp, 'montaj-test-silent-bed.m4a')
+  const outputPath = join(tmp, 'montaj-compose-silent-track.mp4')
+  rmSync(outputPath, { force: true })
+  spawnSync('ffmpeg', [
+    '-y', '-f', 'lavfi', '-i', 'testsrc=duration=1.5:size=640x360:rate=30',
+    '-c:v', 'libx264', '-an', clip,
+  ], { encoding: 'utf8', timeout: 30_000 })
+  spawnSync('ffmpeg', [
+    '-y', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', '1.5', '-c:a', 'aac', bed,
+  ], { encoding: 'utf8', timeout: 30_000 })
+
+  await compose({
+    projectJson: {
+      settings: { resolution: [640, 360], fps: 30, loudness: -16 },
+      audio: { tracks: [{ id: 'bed', src: bed, start: 0, volume: 1 }] },
+    },
+    puppeteerSegments: [],
+    imageItems: [],
+    videoItems: [{
+      id: 'v', type: 'video', trackIdx: 0, src: clip, start: 0, end: 1.5,
+      inPoint: 0, outPoint: 1.5, offsetX: 0, offsetY: 0, scale: 1, opacity: 1, muted: false,
+    }],
+    outputPath,
+  })
+
+  assert.ok(existsSync(outputPath), 'output file should exist')
+  assert.equal(audioStreamCount(outputPath), 1)
+  assert.equal(sampleRateOf(outputPath), 48000)
+
+  rmSync(clip, { force: true })
+  rmSync(bed, { force: true })
+  rmSync(outputPath, { force: true })
+})

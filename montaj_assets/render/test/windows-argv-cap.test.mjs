@@ -198,13 +198,17 @@ describe('the audio mix, at the leaf', () => {
       if (oldTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = oldTmp
     }
     const calls = readLog(log)
-    assert.equal(calls.length, 1)
+    // With settings.loudness set the mix is measured first (a decode-only pass
+    // that also goes through a script file), then muxed: two calls, the last
+    // one is the real graph.
+    assert.equal(calls.length, 2)
+    assert.ok(calls[0].scripts.find((x) => x.opt === '-/filter_complex')?.content.includes('print_format=json'), 'first call is the silence measurement')
     const { filterParts, audioLabel } = buildAudioTrackFilters(TRACKS, 1, '[0:a]')
     const expected = [...filterParts, loudnessFilter(audioLabel, -14).part].join(';')
-    const argv = calls[0].argv
+    const argv = calls[1].argv
     assert.ok(argv.includes('-/filter_complex'), 'no -/filter_complex in argv')
     assert.ok(!argv.includes('-filter_complex'), '-filter_complex is still in argv')
-    const s = calls[0].scripts.find((x) => x.opt === '-/filter_complex')
+    const s = calls[1].scripts.find((x) => x.opt === '-/filter_complex')
     assert.ok(s, 'no script logged')
     assert.ok(s.content === expected, 'script content !== expected graph')
     assert.equal(dirname(s.path), tmp)

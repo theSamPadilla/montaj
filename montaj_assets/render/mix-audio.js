@@ -208,6 +208,51 @@ export function loudnessFilter(inLabel, lufs) {
   return { part: `${inLabel}loudnorm=I=${lufs}:TP=-1:LRA=11,aresample=48000[aloud]`, label: '[aloud]' }
 }
 
+/** Pull `input_i` (integrated loudness, LUFS) out of loudnorm's
+ *  `print_format=json` block on stderr. `-inf` for digital silence is a real
+ *  value here (Number('-inf') is NaN, so it is spelled out). `null` when the
+ *  block is missing or unparseable, which callers treat as "not known silent". */
+export function parseLoudnormInputI(stderr) {
+  const m = /"input_i"\s*:\s*"([^"]+)"/.exec(stderr ?? '')
+  if (!m) return null
+  const raw = m[1].trim().toLowerCase()
+  if (raw === '-inf') return -Infinity
+  const v = Number(raw)
+  return Number.isFinite(v) ? v : null
+}
+
+/** loudnorm's absolute gate is -70 LUFS: at or under it there is nothing to
+ *  normalize. Unknown (null) is NOT silent, so a failed measurement keeps the
+ *  old behaviour of normalizing. */
+export function isSilentInputI(inputI) {
+  return inputI !== null && inputI !== undefined && !(inputI > -70)
+}
+
+/** Measure (decode only, nothing encoded) whether the audio ffmpeg would feed
+ *  into loudnorm is silent. `args` select the audio: inputs plus, for a
+ *  filter graph, `-filter_complex ... -map [label]`.
+ *
+ *  Why this exists: loudnorm over digital silence shorter than its ~3 s window
+ *  emits NaN samples and the AAC encoder behind it aborts with "Input contains
+ *  (near) NaN/+-Inf", failing the whole render. Silence has nothing to
+ *  normalize, so the callers skip loudnorm when this says true. */
+function audioIsSilent(inputs, lufs, graph = null) {
+  const measure = `loudnorm=I=${lufs}:TP=-1:LRA=11:print_format=json`
+  const select = graph
+    ? ['-filter_complex', [...graph.parts, `${graph.label}${measure}[m]`].join(';'), '-map', '[m]']
+    : ['-map', '0:a', '-af', measure]
+  const script = externalizeFilterGraph(
+    ['-hide_banner', ...inputs, ...select, '-f', 'null', '-'], tmpdir())
+  let result
+  try {
+    result = spawnSync(FFMPEG, script.args, { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
+  } finally {
+    script.cleanup()
+  }
+  if (result.status !== 0) return false
+  return isSilentInputI(parseLoudnormInputI(result.stderr))
+}
+
 /**
  * Mix audio tracks into a pre-rendered video file.
  * Used by compose.js after segment concat: video stream is copied, audio is re-encoded.
@@ -233,16 +278,20 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness
     // validation before touching ffmpeg.
     if (loudness !== undefined && loudness !== null) {
       loudnessFilter('[a]', loudness)
-      const result = spawnSync(FFMPEG, [
-        '-y', '-i', videoPath,
-        '-c:v', 'copy',
-        '-af', `loudnorm=I=${loudness}:TP=-1:LRA=11,aresample=48000`,
-        '-c:a', 'aac', '-b:a', '192k',
-        '-movflags', '+faststart',
-        outputPath,
-      ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
-      if (result.status !== 0) throw new Error(`ffmpeg loudness normalize failed:\n${result.stderr}`)
-      return
+      // A silent timeline (video-only clips) has nothing to normalize and
+      // loudnorm over short silence yields NaN: fall through to the copy.
+      if (!audioIsSilent(['-i', videoPath], loudness)) {
+        const result = spawnSync(FFMPEG, [
+          '-y', '-i', videoPath,
+          '-c:v', 'copy',
+          '-af', `loudnorm=I=${loudness}:TP=-1:LRA=11,aresample=48000`,
+          '-c:a', 'aac', '-b:a', '192k',
+          '-movflags', '+faststart',
+          outputPath,
+        ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
+        if (result.status !== 0) throw new Error(`ffmpeg loudness normalize failed:\n${result.stderr}`)
+        return
+      }
     }
     const result = spawnSync(FFMPEG, [
       '-y', '-i', videoPath, '-c', 'copy', outputPath,
@@ -258,7 +307,11 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness
   // always produces a silent audio stream via anullsrc in compose.js)
   const { filterParts, audioLabel } = buildAudioTrackFilters(unmuted, 1, '[0:a]')
 
-  const ln = loudnessFilter(audioLabel, loudness)
+  let ln = loudnessFilter(audioLabel, loudness)
+  // Measure the mix BEFORE loudnorm; a silent mix skips it (see audioIsSilent).
+  if (ln && audioIsSilent(inputs, loudness, { parts: filterParts, label: audioLabel })) {
+    ln = null
+  }
   const parts = ln ? [...filterParts, ln.part] : filterParts
   const outLabel = ln ? ln.label : audioLabel
 
