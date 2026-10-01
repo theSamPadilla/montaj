@@ -105,13 +105,19 @@ def build_ffmpeg_args(spec: dict, audio_only: bool = False) -> tuple:
             t = fine + dur + 1
         else:
             t = fine + dur
-        input_args += ["-ss", f"{near:.4f}", "-t", f"{t:.4f}", "-i", src]
+        # 6 decimals (microseconds, ffmpeg's own -ss/-t resolution), not 4:
+        # -ss is not just a bound, it is the origin `fine` is measured from.
+        # ffmpeg shifts every frame by -round(near / timebase), so a 4-decimal
+        # near that rounds UP by over half a tick drops the frame at s at the
+        # trim: 149/30 cut from frame 150 (near "2.9667" vs 2.966667; k = 2 mod
+        # 3 at 30 fps, measured FQ54). With fine == 0, -t is the exact end bound
+        # and rounding up admitted one extra frame the same way.
+        input_args += ["-ss", f"{near:.6f}", "-t", f"{t:.6f}", "-i", src]
 
     def _vchain(idx):
         parts = []
         if fines[idx] > 0:
-            # 6 decimals here, not 4 (unlike the -ss/near/-t bounds above,
-            # which only need to be generous): a 4-decimal `duration=` can
+            # 6 decimals here, as for -ss/-t above: a 4-decimal `duration=` can
             # round UP past a frame boundary for periodic fractions like
             # 8/30s ("0.2667" vs the true 0.266667), admitting one extra
             # frame at the trim's own cut point — measured, PV48 review.

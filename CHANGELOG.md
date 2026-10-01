@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed: `materialize_cut` starts on the requested frame.** An inpoint on a frame boundary past 2 s started one frame late for a third of frame times at 30, 29.97 and 60 fps (149/30 s cut from frame 150), on any GOP. The input seek was written to 4 decimals and the trim is measured from it, so a seek that rounded up skipped the first frame. It is now written to the microsecond. The same rounding of `-t` gave a cut from 0 s one extra frame at the end; fixed too. Pinned by `tests/steps/test_materialize_cut_frame_exact.py`.
+
 ## v5.17.3
 
 - **Fixed: importing a long-GOP video no longer re-encodes it.** A source whose keyframes sit up to 10 s apart (a QuickTime screen recording's 4.17 s, a camera's long GOP) is now used as is when its colour and bit depth already match the project. The old rule re-encoded anything over 2 s, on the belief that the render's seek lands on the prior keyframe. It does not: every seek into a source transcodes, which is frame-exact on any GOP (measured on 5 s GOPs, closed and open, H.264 and HEVC, now pinned by `render/test/long-gop-seek.integration.test.mjs`). A 142 s 4K60 screen recording imports in 17.5 s instead of 131.5 s. Past 10 s, or with fewer than two keyframes in the first 10 s, a source is still re-encoded, so each seek's decode stays short.
