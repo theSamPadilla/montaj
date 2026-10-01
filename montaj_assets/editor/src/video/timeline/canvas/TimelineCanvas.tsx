@@ -127,6 +127,12 @@ export interface TimelineCanvasProps {
   onProjectChange?: (p: Project) => void
   /** Gesture finished; persist. Same split the DOM rows use. */
   onOverlayEdit?: (p: Project) => void
+  /** True from a press until its gesture ends (release, a stale gesture's next
+   *  press, or unmount), false after. Lets the host hold back its own commits
+   *  while a gesture's transient edits are still arriving — Timeline's
+   *  debounced crossfade pass, which otherwise fires whenever the pointer
+   *  pauses mid-drag. */
+  onGestureActiveChange?: (active: boolean) => void
   onInspectClip?: (id: string) => void
   onInspectAudio?: (id: string) => void
   /** Double-click on a caption block. A caption has no inspector dialog, so
@@ -439,6 +445,7 @@ export default function TimelineCanvas({
   onSelectKeyframe,
   onProjectChange,
   onOverlayEdit,
+  onGestureActiveChange,
   onInspectClip,
   onInspectAudio,
   onEditCaption,
@@ -827,12 +834,12 @@ export default function TimelineCanvas({
   // handlers bound once on mount never read a stale project or callback.
   const pointerRef = useRef({
     project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis, pins,
-    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu, onPinClick,
+    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onGestureActiveChange, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu, onPinClick,
     onImportFilesToTimeline,
   })
   pointerRef.current = {
     project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis, pins,
-    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu, onPinClick,
+    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onGestureActiveChange, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu, onPinClick,
     // Read by the drag handlers below, which are bound ONCE on mount — a
     // file-drop hook read from the closure instead of from here would be the
     // one the host passed on the very first render, forever.
@@ -1152,6 +1159,7 @@ export default function TimelineCanvas({
       // — so focus it explicitly.
       containerRef.current?.focus({ preventScroll: true })
       e.preventDefault()
+      pointerRef.current.onGestureActiveChange?.(true)
       runEffects(machine.dispatch({ type: 'pointerDown', point, modifiers: modifiersOf(e), ctx: buildContext() }))
 
       const onMove = (ev: MouseEvent) => handlersRef.current.move(ev)
@@ -1165,9 +1173,12 @@ export default function TimelineCanvas({
         releaseGestureRef.current = null
         // Every path that ends a gesture — release, a stale gesture's next
         // press, or unmount — runs through here, so this is the one place
-        // edge auto-scroll needs to be torn down.
+        // edge auto-scroll needs to be torn down, and the one place the host
+        // hears the gesture is over. A release reports it BEFORE dispatching
+        // the commit, so both land in the same render.
         stopEdgeAutoScroll()
         lastDragPointRef.current = null
+        pointerRef.current.onGestureActiveChange?.(false)
       }
     },
     // Hover only updates the cursor, and only while no gesture is running — the

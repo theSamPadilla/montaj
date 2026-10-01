@@ -64,7 +64,7 @@ import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { canKeyframe, enableKeyframing, moveKeyframe, setKeyframe, transformProps, valueAt } from '../../keyframeOps'
 import { moveMarker } from '../markers'
 import { applyMoveDeltaToSelection, applyResizeDeltaToSelection } from '../multiSelectOps'
-import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, mapTrackItems, moveItemAcrossTracks, normalizeTracks, resolveTargetTrackIdx, trackItems, updateAudioTrack } from '../timeline-model'
+import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, hasVerticalIntent, mapTrackItems, moveItemAcrossTracks, normalizeTracks, resolveTargetTrackIdx, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
 import type { TimelineLayout } from './draw'
 import { keyframeUnionTimes } from './keyframe-strip'
@@ -724,6 +724,66 @@ function neighboursOnTrack(project: Project, item: VisualItem): { prev?: VisualI
   }
 }
 
+/**
+ * Where a same-track MOVE may put its item's start: `start` clamped into the
+ * stretch of legal positions that holds `fromStart`, the press-time start.
+ *
+ * Legal is what `engine/validate.py` accepts (lines 566-635), the rule
+ * `applyTrim` below already enforces for a trim:
+ *
+ * - No CONTAINMENT, on every track but tracks[0] (`allowContainment` false).
+ *   The item contains a neighbour `n` or is contained by it exactly when its
+ *   start lies between `n.start` and `n.end - duration` (either order), ends
+ *   included, since the validator compares with `<=`/`>=`.
+ * - No THREE ITEMS LIVE AT ONCE, on every track, tracks[0] included. With two
+ *   neighbours already overlapping each other over `[s, e)`, the item makes a
+ *   third live there whenever its start is inside `(s - duration, e)`.
+ *
+ * Each rule forbids an interval of starts. Clamping into the legal stretch
+ * around `fromStart`, rather than snapping to the nearest legal start, is what
+ * stops a fast drag from jumping across a neighbour: the item halts EPSILON
+ * short of the first forbidden interval in each direction, and passing a
+ * neighbour on its own track takes vertical travel instead. An interval that
+ * already holds `fromStart` (a project that was invalid before the drag)
+ * bounds nothing, so the drag can still move the item out of it.
+ *
+ * Not shared with `applyTrim`'s guard, which bounds ONE edge against the
+ * nearest neighbours with the other edge fixed, and only off tracks[0]. A move
+ * carries both edges, and on tracks[0] (containment allowed) it can pass a
+ * neighbour, so every pair on the track matters, not just the adjacent ones.
+ */
+function legalMoveStart(
+  others: readonly VisualItem[],
+  duration: number,
+  fromStart: number,
+  start: number,
+  allowContainment: boolean,
+): number {
+  let lo = -Infinity
+  let hi = Infinity
+  // Starts in [low, high] are forbidden; the bound sits EPSILON outside it,
+  // the same margin `applyTrim` keeps.
+  const forbid = (low: number, high: number) => {
+    if (fromStart <= low) hi = Math.min(hi, low - EPSILON)
+    else if (fromStart >= high) lo = Math.max(lo, high + EPSILON)
+  }
+  if (!allowContainment) {
+    for (const n of others) {
+      const a = n.start
+      const b = n.end - duration
+      forbid(Math.min(a, b), Math.max(a, b))
+    }
+  }
+  for (let i = 0; i < others.length; i++) {
+    for (let j = i + 1; j < others.length; j++) {
+      const s = Math.max(others[i].start, others[j].start)
+      const e = Math.min(others[i].end, others[j].end)
+      if (e > s) forbid(s - duration, e)
+    }
+  }
+  return lo > hi ? fromStart : clamp(start, lo, hi)
+}
+
 /** Where a guide line goes, and how hard the magnet holding it pulls. */
 export interface SnapGuide {
   time: number
@@ -896,9 +956,35 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   const boundaries = itemSnapPoints(ctx, press, originGuard(escaped, [item.start, item.end]), { trackIdx: currentTrackIdx })
   const points = snapPointsForSpan(boundaries, duration)
   const snapped = applySnap(rawStart, points, ctx.viewport, snap, ctx.snapConfig)
-  const start = clamp(snapped.time, 0, Math.max(0, ctx.totalDuration - duration))
-  // Clamped against t=0 or the end of the timeline the item is NOT where the
-  // magnet put it, so there is nothing to mark.
+  const maxStart = Math.max(0, ctx.totalDuration - duration)
+  let start = clamp(snapped.time, 0, maxStart)
+
+  // Server-side shape normalization is best-effort (a project must always
+  // open even if migration throws), and the SSE stream's initial frame
+  // reads project.json straight off disk with no migration at all — so a
+  // legacy-shape project genuinely can reach here. Normalize defensively
+  // rather than assume `.tracks` is already `VisualTrack[]`.
+  const liveTracks = normalizeTracks(lastProject).tracks ?? []
+
+  // With no vertical intent the item stays on its own track at any overlap
+  // (see `resolveTargetTrackIdx`), where the 30% fan-out used to be what kept
+  // a sideways drag off a neighbour. So the horizontal position is what has to
+  // stay legal now: clamped on every move, not only at the drop, short of the
+  // shapes `engine/validate.py` rejects (`legalMoveStart`). Ripple mode is
+  // left as it was — a collision there pushes the neighbours aside instead —
+  // and so is a move the kind gate sends off its own track.
+  if (!ctx.rippleMode && !hasVerticalIntent(dy)) {
+    const landing = resolveTargetTrackIdx({
+      tracks: liveTracks, item, start, end: start + duration, sourceTrackIdx: press.hit.trackIdx, dy,
+    })
+    if (landing === press.hit.trackIdx && landing < liveTracks.length) {
+      const others = liveTracks[landing].items.filter(other => other.id !== item.id)
+      start = clamp(legalMoveStart(others, duration, item.start, start, landing === 0), 0, maxStart)
+    }
+  }
+
+  // Clamped against t=0, the end of the timeline or a neighbour, the item is
+  // NOT where the magnet put it, so there is nothing to mark.
   const guide = Math.abs(start - snapped.time) <= EPSILON
     ? spanSnapGuide(snapped, duration, boundaries)
     : null
@@ -906,12 +992,7 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   const next: Project = {
     ...lastProject,
     tracks: moveItemAcrossTracks({
-      // Server-side shape normalization is best-effort (a project must always
-      // open even if migration throws), and the SSE stream's initial frame
-      // reads project.json straight off disk with no migration at all — so a
-      // legacy-shape project genuinely can reach here. Normalize defensively
-      // rather than assume `.tracks` is already `VisualTrack[]`.
-      tracks: normalizeTracks(lastProject).tracks ?? [],
+      tracks: liveTracks,
       item,
       start,
       end: start + duration,

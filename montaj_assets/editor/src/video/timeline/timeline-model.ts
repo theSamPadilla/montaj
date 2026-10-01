@@ -303,6 +303,15 @@ export interface ResolveTargetTrackOptions {
   kindOnly?: boolean
 }
 
+/** Whether a drag's vertical travel has carried the pointer into another
+ *  track's band. Below half a row step it has not, and a move stays on its own
+ *  track at any overlap (see "No vertical intent" in `moveItemAcrossTracks`'
+ *  doc); the pointer machine also reads it to decide when a move's horizontal
+ *  position must be clamped to a legal overlap instead. */
+export function hasVerticalIntent(dy: number): boolean {
+  return Math.round(dy / VISUAL_ROW_HEIGHT_PX) !== 0
+}
+
 /**
  * WHICH track a cross-track move lands on — the outward search `moveItemAcross
  * Tracks` performs, and nothing else. Extracted from it (it now calls this) so
@@ -326,6 +335,10 @@ export function resolveTargetTrackIdx(
 ): number {
   const trackDelta = Math.round(dy / VISUAL_ROW_HEIGHT_PX)
   const targetIdx = Math.max(0, sourceTrackIdx - trackDelta)
+  // No vertical intent: the pointer has not left its own track's band, so an
+  // overlap on that track is what the drag is asking for, not a reason to move
+  // it to another. See "No vertical intent" in `moveItemAcrossTracks`' doc.
+  const stayPut = !hasVerticalIntent(dy)
   const duration = end - start
   const overlapMin = duration * 0.3
 
@@ -365,8 +378,11 @@ export function resolveTargetTrackIdx(
       // ripple-insert in `moveItemAcrossTracks`), so the gate drops to
       // kind-only — which is what keeps the search from fanning out past the
       // pointed-at track just because something is sitting there. `kindOnly`
-      // drops it for a different reason; see the option's own doc.
-      const collisionOk = kindOnly || makeSpace || !hasOverlap(candidateItems)
+      // drops it for a different reason; see the option's own doc. `stayPut`
+      // drops it for the item's OWN track only: with no vertical intent the
+      // collision gate never runs there, but a fan-out the kind gate forces
+      // still vets its candidates for collisions as before.
+      const collisionOk = kindOnly || makeSpace || (stayPut && i === targetIdx) || !hasOverlap(candidateItems)
       if (collisionOk && kindOk(candidateItems)) { bestIdx = i; break outer }
     }
   }
@@ -385,10 +401,25 @@ export function resolveTargetTrackIdx(
  *   row height, so a drag reaches the neighbouring track before the cursor has
  *   fully left the current one. Downward travel LOWERS the track index, because
  *   tracks are stacked with the highest index on top.
- * - "Collision" means overlapping an existing item by more than 30% of the
- *   dragged item's duration; brushing past a neighbour is allowed.
- * - When the target track is occupied the search fans out — one above, one
- *   below, then two, and so on — and one step past the end of the array is a
+ * - No vertical intent, no track change. While `Math.round(dy / 24)` is 0 the
+ *   pointer is still in its own track's band, and the item stays on its own
+ *   track at ANY overlap, during the drag and on the drop. Sliding an item into
+ *   a neighbour is how an overlap (a transition) is made, and lifting it away
+ *   mid-slide was the bug: the 30% gate below used to apply here too, so a
+ *   purely horizontal drag jumped to a new top track the moment the overlap
+ *   passed 30% (or an edge auto-scroll carried it there with the pointer held
+ *   still). Only the kind gate can still move an item that has no vertical
+ *   travel, and only off a track that already holds the other kind. What
+ *   keeps such a move VALID is not this function: the pointer machine clamps
+ *   its horizontal position short of the two shapes `engine/validate.py`
+ *   rejects (lines 566-635: containment on any track but tracks[0], and three
+ *   items live at once on every track). See `legalMoveStart` in
+ *   `canvas/pointer-machine.ts`.
+ * - With vertical travel, "collision" means overlapping an existing item by
+ *   more than 30% of the dragged item's duration; brushing past a neighbour is
+ *   allowed.
+ * - When the pointed-at track is occupied the search fans out — one below, one
+ *   above, then two, and so on — and one step past the end of the array is a
  *   legal answer, which is how a drag creates a new top track. That search now
  *   lives in `resolveTargetTrackIdx` above, which this calls: the snap tier
  *   needs the same answer without the move.

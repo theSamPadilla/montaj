@@ -20,7 +20,7 @@ import { VIDEO_CONTROLS } from '../../ControlsInfoModal'
 import { stubPlatform } from '../../ui/__tests__/platform'
 import { CROSSFADE_COMMIT_DELAY_MS } from '../timeline/Timeline'
 import { trackItems } from '../timeline/timeline-model'
-import { dragCanvasItem, installCanvasHarness, selectCanvasItem } from '../timeline/__tests__/_canvasSelect'
+import { canvasItemPoint, canvasSurface, dragCanvasItem, installCanvasHarness, selectCanvasItem, timeToClientX } from '../timeline/__tests__/_canvasSelect'
 
 // ── Fake adapter ──────────────────────────────────────────────────────────────
 // Full EditorAdapter with the video-editor capabilities VideoEditor threads:
@@ -1185,5 +1185,73 @@ describe('VideoEditor — editor-package integration', () => {
     // or it would commit forever.
     await act(async () => { vi.advanceTimersByTime(CROSSFADE_COMMIT_DELAY_MS * 4) })
     expect(adapter.saveCalls.length).toBe(2)
+  })
+
+  // A drag that PAUSES in an overlap used to commit mid-gesture: the debounced
+  // pass above only held while the pointer kept moving, so every pause of the
+  // delay saved the transient project and pushed an undo entry. One gesture is
+  // one save and one undo entry, however long the pointer rests.
+  it('a drag into an overlay overlap that pauses mid-gesture saves once, on release', async () => {
+    onTestFinished(installCanvasHarness())
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+
+    const adapter = makeFakeAdapter()
+    const initial = makeVideoProject({
+      tracks: [
+        {
+          id: 'trk-0',
+          items: [
+            { id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 40 },
+          ],
+        },
+        {
+          id: 'trk-1',
+          items: [
+            { id: 'ov-a', type: 'overlay', src: 'A.jsx', start: 0, end: 4 },
+            { id: 'ov-b', type: 'overlay', src: 'B.jsx', start: 5, end: 9 },
+          ],
+        },
+      ],
+    })
+    const { container } = render(
+      <VideoEditor project={initial} adapter={adapter} slots={{ exportActions: <div /> }} />,
+    )
+    await act(async () => { await Promise.resolve() })
+
+    const surface = canvasSurface(container)
+    const press = canvasItemPoint(initial, { id: 'ov-a' }, { at: 2 })
+    const at = (t: number) => ({ clientX: timeToClientX(initial, t), clientY: press.clientY, button: 0, bubbles: true })
+    const pause = async () => { await act(async () => { vi.advanceTimersByTime(CROSSFADE_COMMIT_DELAY_MS * 4) }) }
+
+    fireEvent.mouseDown(surface, { ...press, button: 0 })
+    // 0.8s into ov-b (20% of ov-a), then hold.
+    act(() => { document.dispatchEvent(new MouseEvent('mousemove', at(3.8))) })
+    await pause()
+    // 3s into ov-b (75%), then hold.
+    act(() => { document.dispatchEvent(new MouseEvent('mousemove', at(6))) })
+    await pause()
+    expect(adapter.saveCalls.length).toBe(0)
+
+    act(() => { document.dispatchEvent(new MouseEvent('mouseup', at(6))) })
+    await act(async () => { await Promise.resolve() })
+    await pause()
+
+    expect(adapter.saveCalls.length).toBe(1)
+    const dropped = adapter.saveCalls[0].project
+    const overlayTrack = dropped.tracks!.find(t => t.items.some(i => i.id === 'ov-b'))!
+    expect(overlayTrack.items.map(i => i.id).sort()).toEqual(['ov-a', 'ov-b'])
+    expect(itemOf(dropped, 'ov-a')!.start).toBeCloseTo(4, 5)
+    // The derived fade rides in that same save.
+    expect(opacityTrackOf(dropped, 'ov-a')?.origin).toBe('crossfade')
+
+    // ONE undo returns ov-a to where the drag began.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
+    })
+    expect(adapter.saveCalls.length).toBe(2)
+    const undone = adapter.saveCalls[1].project
+    expect(itemOf(undone, 'ov-a')).toMatchObject({ start: 0, end: 4 })
+    expect(opacityTrackOf(undone, 'ov-a')).toBeUndefined()
   })
 })

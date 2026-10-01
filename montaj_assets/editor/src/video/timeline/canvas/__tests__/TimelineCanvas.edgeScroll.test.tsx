@@ -148,9 +148,9 @@ function lastC0Start(calls: unknown[][]): number {
   const emitted = calls[calls.length - 1][0] as unknown as {
     tracks: { items: { id: string; start: number }[] }[]
   }
-  // Searched across every track: dragging c0 out over c1 makes the mover lift
-  // it to a track of its own rather than overlap, so it is not on trk-0 by the
-  // time the pan starts.
+  // Searched across every track, so this reads only WHERE in time c0 is. (A
+  // sideways drag keeps it on trk-0 now, overlapping c1, which tracks[0]
+  // allows; it used to be lifted to a track of its own.)
   const c0 = emitted.tracks.flatMap(t => t.items).find(i => i.id === 'c0')
   expect(c0).toBeDefined()
   return c0!.start

@@ -16,7 +16,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { VisualItem, VisualTrack } from '../../../schema'
-import { moveItemAcrossTracks } from '../timeline-model'
+import { moveItemAcrossTracks, VISUAL_ROW_HEIGHT_PX } from '../timeline-model'
 
 const clip = (id: string, start: number, end: number): VisualItem =>
   ({ id, type: 'video', src: `${id}.mp4`, start, end }) as VisualItem
@@ -97,6 +97,79 @@ describe('moveItemAcrossTracks — collision avoidance', () => {
     const tracks = stack([dragged, clip('far', 50, 60)])
     const moved = moveItemAcrossTracks({ tracks, item: dragged, start: 1, end: 11, sourceTrackIdx: 0, dy: 0 })
     expect(ids(moved)).toEqual([['far', 'd']])
+  })
+})
+
+// ── No vertical intent: the item stays on its own track ──────────────────
+//
+// The reported bug: dragging an overlay sideways INTO a neighbour lifted it to
+// a new top track the moment the overlap passed 30% of its duration, with the
+// pointer never leaving its own row. The 30% collision gate now applies only
+// once the pointer has travelled into another track's band
+// (`Math.round(dy / VISUAL_ROW_HEIGHT_PX) !== 0`); below that the item lands
+// on its own track at any overlap.
+
+describe('moveItemAcrossTracks — no vertical intent keeps the item on its track', () => {
+  /** Video base track, then an overlay track holding the dragged `a` (0-10)
+   *  and its neighbour `b` (14-24). */
+  const a = overlay('a', 0, 10)
+  const overlayRow = () => stack([clip('v', 0, 30)], [a, overlay('b', 14, 24)])
+
+  it('a horizontal drag of an overlay past 30% overlap stays on its own track', () => {
+    // [10, 20] overlaps b by 6s, 60% of a: past the old fan-out threshold.
+    const moved = moveItemAcrossTracks({ tracks: overlayRow(), item: a, start: 10, end: 20, sourceTrackIdx: 1, dy: 0 })
+    expect(ids(moved)).toEqual([['v'], ['b', 'a']])
+    expect(moved[1].items[1]).toMatchObject({ id: 'a', start: 10, end: 20 })
+  })
+
+  it('sub-threshold vertical jitter still counts as no vertical intent', () => {
+    const jitter = VISUAL_ROW_HEIGHT_PX / 2 - 1
+    for (const dy of [jitter, -jitter]) {
+      const moved = moveItemAcrossTracks({ tracks: overlayRow(), item: a, start: 10, end: 20, sourceTrackIdx: 1, dy })
+      expect(ids(moved)).toEqual([['v'], ['b', 'a']])
+    }
+  })
+
+  it('a video clip on tracks[0] dragged into overlap stays on tracks[0]', () => {
+    const tracks = stack([dragged, clip('b', 14, 24)])
+    const moved = moveItemAcrossTracks({ tracks, item: dragged, start: 10, end: 20, sourceTrackIdx: 0, dy: 0 })
+    expect(ids(moved)).toEqual([['b', 'd']])
+  })
+
+  it('the kind gate still applies with no vertical travel', () => {
+    // Not an overlap rule: a video item whose own track also holds an overlay
+    // is displaced by the kind gate exactly as before.
+    const videoDragged = clip('d', 0, 10)
+    const tracks: VisualTrack[] = [
+      { id: 'trk-0', items: [overlay('ov0', 0, 5)] },
+      { id: 'trk-1', items: [videoDragged, overlay('ov1', 50, 60)] },
+    ]
+    const moved = moveItemAcrossTracks({ tracks, item: videoDragged, start: 0, end: 10, sourceTrackIdx: 1, dy: 0 })
+    expect(ids(moved)).toEqual([['d'], ['ov0'], ['ov1']])
+  })
+})
+
+describe('moveItemAcrossTracks — vertical travel still runs the collision search', () => {
+  const a = overlay('a', 0, 10)
+
+  it('moves onto the pointed-at track when it is free', () => {
+    const tracks = stack([clip('v', 0, 30)], [a, overlay('b', 14, 24)], [overlay('f', 40, 50)])
+    const moved = moveItemAcrossTracks({ tracks, item: a, start: 10, end: 20, sourceTrackIdx: 1, dy: -VISUAL_ROW_HEIGHT_PX })
+    expect(ids(moved)).toEqual([['v'], ['b'], ['f', 'a']])
+  })
+
+  it('mints a new top track when the drag points past the top edge', () => {
+    const tracks = stack([clip('v', 0, 30)], [a, overlay('b', 14, 24)])
+    const moved = moveItemAcrossTracks({ tracks, item: a, start: 10, end: 20, sourceTrackIdx: 1, dy: -VISUAL_ROW_HEIGHT_PX })
+    expect(ids(moved)).toEqual([['v'], ['b'], ['a']])
+  })
+
+  it('fans out past an occupied band, minting a top track when its own is blocked too', () => {
+    // Pointed-at track 2 collides with b (6s of 10); the fan-out tries track 1
+    // (its own, where c overlaps by 8s) and finds no free row, so it mints.
+    const tracks = stack([clip('v', 0, 30)], [a, overlay('c', 12, 22)], [overlay('b', 14, 24)])
+    const moved = moveItemAcrossTracks({ tracks, item: a, start: 10, end: 20, sourceTrackIdx: 1, dy: -VISUAL_ROW_HEIGHT_PX })
+    expect(ids(moved)).toEqual([['v'], ['c'], ['b'], ['a']])
   })
 })
 

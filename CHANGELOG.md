@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Fixed (editor): overlays rescale when the project's resolution changes while the editor is open.** See `montaj_assets/editor/CHANGELOG.md`.
+- **Fixed (editor): a sideways drag into an overlap keeps the item on its track.** Sliding an overlay or clip into a neighbour moved it to a new top track once the overlap passed 30% of its length, mid-drag, with the pointer never leaving its row (edge auto-scroll could carry it there with the pointer held still). Only moving the pointer onto another track changes track now. On its own track the move stops just short of an overlap `montaj validate` rejects: one item containing another (any track but the first) or three items live at once (every track). A video clip on the first track may still overlap or pass a neighbour. Passing a neighbour on its own track takes vertical travel. One drag is also one save and one undo entry: a drag that paused in an overlap used to save mid-gesture. See `montaj_assets/editor/CHANGELOG.md`.
 
 ## v5.17.6
 

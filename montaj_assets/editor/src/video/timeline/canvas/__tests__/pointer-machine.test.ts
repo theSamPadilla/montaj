@@ -39,6 +39,7 @@ import {
 import { FADE_GRIP_ZONE_HEIGHT_PX, hitTest } from '../hit-test'
 import type { SnapConfig } from '../snap'
 import { timeToX, xToTime, type Viewport } from '../viewport'
+import { overlapViolations } from '../../__tests__/_overlapRules'
 
 const VIEWPORT: Viewport = { pxPerSecond: 100, scrollSeconds: 0, widthPx: 1000 }
 
@@ -848,6 +849,132 @@ describe('cross-track move — ripple mode (makeSpace)', () => {
     const after = lastProjectChange(d.move(C0_BODY.x, C0_BODY.y - VISUAL_ROW_HEIGHT_PX))
     expect(trackIndexOf(after, 'c0')).toBe(0)
     expect(visual(after, 'o0')).toMatchObject({ start: 2, end: 4 })
+  })
+})
+
+// ── Sideways move into a neighbour ───────────────────────────────────────
+//
+// With no vertical travel a move stays on its own track at ANY overlap (the
+// 30% fan-out used to lift it to a new top track). What keeps it valid
+// instead is a live clamp short of the two shapes `engine/validate.py`
+// rejects: containment on tracks other than tracks[0], and three items live
+// at once on every track. `overlapViolations` restates those rules.
+
+/** A 20s video base track, then (when given) one overlay track. */
+function sidewaysProject(overlays: Array<[string, number, number]>, base: Array<[string, number, number]> = [['c0', 0, 20]]): Project {
+  const clipItem = ([id, start, end]: [string, number, number]) =>
+    ({ id, type: 'video', src: `${id}.mp4`, start, end, inPoint: 0, outPoint: end - start, sourceDuration: 40 })
+  return {
+    id: 'p',
+    tracks: [
+      { id: 'trk-0', items: base.map(clipItem) },
+      ...(overlays.length ? [{ id: 'trk-1', items: overlays.map(([id, start, end]) => ({ id, type: 'overlay', start, end })) }] : []),
+    ],
+  } as unknown as Project
+}
+
+describe('body drag with no vertical travel — stays on its track, clamped to a legal overlap', () => {
+  /** Press `id`'s body at time `t` on row `trackIdx`, then move to time `toT`. */
+  function slide(project: Project, trackIdx: number, t: number, toT: number, over: Partial<PointerContext> = {}) {
+    const ctx = makeContext({ project, snapConfig: ZERO_SNAP, ...over })
+    const y = rowMidYFor(ctx, trackIdx)
+    const d = new Driver(ctx)
+    d.down(t * 100, y)
+    return lastProjectChange(d.move(toT * 100, y))
+  }
+
+  it('slides an overlay 75% into its neighbour without leaving the track', () => {
+    const after = slide(sidewaysProject([['a', 0, 4], ['b', 6, 10]]), 1, 2, 7)
+    expect(trackIndexOf(after, 'a')).toBe(1)
+    expect(visual(after, 'a')).toMatchObject({ start: 5, end: 9 })
+    expect(after.tracks).toHaveLength(2)
+    expect(overlapViolations(after)).toEqual([])
+  })
+
+  it('stops just short of containing a same-length neighbour, however far the pointer goes', () => {
+    const after = slide(sidewaysProject([['a', 0, 4], ['b', 6, 10]]), 1, 2, 15)
+    expect(trackIndexOf(after, 'a')).toBe(1)
+    expect(visual(after, 'a').start).toBeLessThan(6)
+    expect(visual(after, 'a').start).toBeGreaterThan(5.999)
+    expect(overlapViolations(after)).toEqual([])
+  })
+
+  it('a longer item stops just short of swallowing a shorter neighbour', () => {
+    const after = slide(sidewaysProject([['a', 0, 6], ['b', 8, 10]]), 1, 3, 15)
+    expect(trackIndexOf(after, 'a')).toBe(1)
+    expect(visual(after, 'a').end).toBeLessThan(10)
+    expect(visual(after, 'a').end).toBeGreaterThan(9.999)
+    expect(overlapViolations(after)).toEqual([])
+  })
+
+  it('clamps the same way travelling left', () => {
+    const after = slide(sidewaysProject([['b', 0, 4], ['a', 10, 14]]), 1, 12, 0)
+    expect(trackIndexOf(after, 'a')).toBe(1)
+    expect(visual(after, 'a').start).toBeGreaterThan(0)
+    expect(visual(after, 'a').start).toBeLessThan(0.001)
+    expect(overlapViolations(after)).toEqual([])
+  })
+
+  it('stops short of a third item live where two neighbours already cross-fade', () => {
+    // b and c overlap over [9, 10). a (5s long) would be contained by nothing
+    // until its start reaches 5, but it makes three live once its end passes 9.
+    const after = slide(sidewaysProject([['a', 0, 5], ['b', 6, 10], ['c', 9, 13]]), 1, 2.5, 15)
+    expect(trackIndexOf(after, 'a')).toBe(1)
+    expect(visual(after, 'a').end).toBeLessThan(9)
+    expect(visual(after, 'a').end).toBeGreaterThan(8.999)
+    expect(overlapViolations(after)).toEqual([])
+  })
+
+  it('tracks[0]: a video clip may pass a neighbour, since containment is legal there', () => {
+    const after = slide(sidewaysProject([], [['c0', 0, 4], ['c1', 6, 10]]), 0, 2, 9)
+    expect(trackIndexOf(after, 'c0')).toBe(0)
+    expect(visual(after, 'c0')).toMatchObject({ start: 7, end: 11 })
+    expect(after.tracks).toHaveLength(1)
+    expect(overlapViolations(after)).toEqual([])
+  })
+
+  it('tracks[0]: stops short of a third clip live where two clips cross-fade', () => {
+    const after = slide(sidewaysProject([], [['c0', 0, 4], ['c1', 6, 10], ['c2', 9, 14]]), 0, 2, 12)
+    expect(trackIndexOf(after, 'c0')).toBe(0)
+    expect(visual(after, 'c0').end).toBeLessThan(9)
+    expect(visual(after, 'c0').end).toBeGreaterThan(8.999)
+    expect(overlapViolations(after)).toEqual([])
+  })
+
+  it('every frame of a sweep, and the drop, stays on the track and passes the validator rules', () => {
+    const cases: Array<{ project: Project; trackIdx: number; id: string; t: number }> = [
+      { project: sidewaysProject([['a', 0, 4], ['b', 6, 10]]), trackIdx: 1, id: 'a', t: 2 },
+      { project: sidewaysProject([['a', 0, 6], ['b', 8, 10]]), trackIdx: 1, id: 'a', t: 3 },
+      { project: sidewaysProject([['a', 0, 5], ['b', 6, 10], ['c', 9, 13]]), trackIdx: 1, id: 'a', t: 2.5 },
+      { project: sidewaysProject([['b', 0, 4], ['c', 3, 8], ['a', 12, 15]]), trackIdx: 1, id: 'a', t: 13.5 },
+      { project: sidewaysProject([], [['c0', 0, 4], ['c1', 6, 10], ['c2', 9, 14]]), trackIdx: 0, id: 'c0', t: 2 },
+    ]
+    const jitter = VISUAL_ROW_HEIGHT_PX / 2 - 1
+    for (const { project, trackIdx, id, t } of cases) {
+      for (const dy of [0, jitter, -jitter]) {
+        const ctx = makeContext({ project, snapConfig: ZERO_SNAP })
+        const y = rowMidYFor(ctx, trackIdx)
+        const d = new Driver(ctx)
+        d.down(t * 100, y)
+        const xs = [...Array(81).keys()].map(i => i * 25)
+        for (const x of [...xs, ...xs.reverse()]) {
+          const frame = lastProjectChange(d.move(x, y + dy))
+          expect(trackIndexOf(frame, id)).toBe(trackIdx)
+          expect(overlapViolations(frame)).toEqual([])
+        }
+        const commit = of(d.up(1500, y + dy), 'commit')
+        expect(commit).toHaveLength(1)
+        expect(trackIndexOf(commit[0].project, id)).toBe(trackIdx)
+        expect(overlapViolations(commit[0].project)).toEqual([])
+      }
+    }
+  })
+
+  it('ripple mode is unchanged: a collision still pushes the neighbour aside, unclamped', () => {
+    const after = slide(sidewaysProject([['a', 0, 4], ['b', 6, 10]]), 1, 2, 7, { rippleMode: true })
+    expect(trackIndexOf(after, 'a')).toBe(1)
+    expect(visual(after, 'a')).toMatchObject({ start: 5, end: 9 })
+    expect(visual(after, 'b')).toMatchObject({ start: 10, end: 14 })
   })
 })
 

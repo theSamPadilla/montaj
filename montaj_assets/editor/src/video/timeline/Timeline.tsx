@@ -634,13 +634,18 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
     [project.tracks, project.audio],
   )
 
+  // True while the canvas surface has a gesture in progress (press to release).
+  // The two crossfade passes below stand down for its whole length, so one
+  // gesture is one commit: the gesture's own, on release.
+  const [gestureActive, setGestureActive] = useState(false)
+
   // Auto-crossfade: when two audio tracks overlap, apply fade-out on the
   // earlier and fade-in on the later, each equal to the overlap duration. The
   // decision logic lives in timeline-model.ts (computeAutoCrossfade) so both
   // the DOM and canvas (T4) track-row areas share it; this effect is a thin
   // shell that applies the result.
   useEffect(() => {
-    if (!onOverlayEdit) return
+    if (!onOverlayEdit || gestureActive) return
     const next = computeAutoCrossfade(project)
     if (!next) return
     // Commit the derived crossfade on a short delay, NEVER synchronously per
@@ -649,9 +654,11 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
     // version of the per-move-undo bug the video-move commit split fixed. A
     // drag's own commit (`commitTimelineEdit`) now folds the crossfade into its
     // one undo step, so this debounced pass is only the catch-all for audio
-    // timing that changes OUTSIDE a gesture (ripple-delete, gap-collapse): mid-
-    // drag the timer is cleared and rescheduled every frame and never fires,
-    // and right after a gesture it no-ops because `computeAutoCrossfade` is
+    // timing that changes OUTSIDE a gesture (ripple-delete, gap-collapse).
+    // While a gesture is live it does not run at all (`gestureActive`): the
+    // debounce alone only held while the pointer kept moving, so a drag that
+    // paused for the delay committed mid-gesture, a save and an undo entry per
+    // pause. Right after a gesture it no-ops because `computeAutoCrossfade` is
     // idempotent. The digest keying this effect includes the FADES on purpose —
     // the gesture's own crossfade commit changes it, which re-runs this effect
     // and clears the pending timer rather than letting a stale one fire. That
@@ -661,8 +668,9 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
     const timer = setTimeout(() => onOverlayEdit(next), CROSSFADE_COMMIT_DELAY_MS)
     return () => clearTimeout(timer)
   // Keyed on a stable digest of audio-track timing/mute AND fades, so the pass
-  // re-runs on real edits (see above for why the fades belong in the key).
-  }, [audioTracks.map(t => `${t.id}:${t.start}:${t.end}:${t.muted}:${t.fadeIn ?? ''}:${t.fadeOut ?? ''}`).join('|')])
+  // re-runs on real edits (see above for why the fades belong in the key), and
+  // on the gesture ending, so a change held back during it is still caught.
+  }, [audioTracks.map(t => `${t.id}:${t.start}:${t.end}:${t.muted}:${t.fadeIn ?? ''}:${t.fadeOut ?? ''}`).join('|'), gestureActive])
 
   // The VISUAL sibling of the pass above: two OVERLAYS overlapping on the same
   // track get complementary derived `opacity` curves (`computeVisualCrossfade`
@@ -679,16 +687,17 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
   // Same debounce, for the same reason: an overlay's span moves on every
   // mousemove of a drag, and committing each one is the per-move-undo bug. A
   // gesture's own commit (`commitTimelineEdit`) folds the visual fade into its
-  // one undo step, so mid-drag this timer is cleared and rescheduled every
-  // frame and never fires, and right after a gesture it no-ops because
-  // `computeVisualCrossfade` is idempotent. This pass is therefore only the
+  // one undo step, so this pass does not run while a gesture is live (the
+  // debounce alone fired whenever a drag into an overlap paused for the delay),
+  // and right after a gesture it no-ops because `computeVisualCrossfade` is
+  // idempotent. This pass is therefore only the
   // catch-all for overlay timing that changes OUTSIDE a gesture — ripple-
   // delete, gap-collapse — which reach `sync.mutate` directly and never pass
   // through `commitTimelineEdit` at all. Commits only; a preview via
   // `onProjectChange` would change the digest below and clear the timer before
   // it fired, so a ripple-delete's fade would never get saved.
   useEffect(() => {
-    if (!onOverlayEdit) return
+    if (!onOverlayEdit || gestureActive) return
     const next = computeVisualCrossfade(project)
     if (!next) return
     const timer = setTimeout(() => onOverlayEdit(next), CROSSFADE_COMMIT_DELAY_MS)
@@ -699,12 +708,13 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
   // effect and clears the pending timer rather than letting a stale one fire.
   // `origin` is what makes a curve derived, and this pass is its only writer,
   // so a hand-authored curve (no `origin`) contributes nothing to the key —
-  // it can never be the reason this pass needs to run again.
+  // it can never be the reason this pass needs to run again. `gestureActive`
+  // as in the audio pass above.
   }, [allTracks.map(items => items.map(i => {
     const fade = i.keyframes?.find(k => k.prop === 'opacity')
     const curve = fade?.origin ? fade.points.map(p => `${p.t},${p.value}`).join(';') : ''
     return `${i.id}:${i.start}:${i.end}:${curve}`
-  }).join('|')).join('||')])
+  }).join('|')).join('||'), gestureActive])
 
   // The tabIndex={0} root below — Delete/Enter's guards below check focus is
   // inside it before firing (see the useKeymap block), restoring the pre-T9
@@ -1045,6 +1055,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               onSelectKeyframe={setSelectedKeyframe}
               onProjectChange={onProjectChange}
               onOverlayEdit={onOverlayEdit}
+              onGestureActiveChange={setGestureActive}
               onInspectClip={onInspectClip}
               onInspectAudio={onInspectAudio}
               onEditCaption={onEditCaption}
