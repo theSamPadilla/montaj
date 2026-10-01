@@ -277,6 +277,7 @@ export default function VideoEditor<P extends Project = Project>({
   renderModal,
   renderControls,
   onProvideImageTone,
+  onProvideSeek,
   engine,
   sourcePreview,
   onRegenerateCaptions,
@@ -464,6 +465,7 @@ export default function VideoEditor<P extends Project = Project>({
         renderModal={renderModal}
         renderControls={renderControls}
         onProvideImageTone={onProvideImageTone}
+        onProvideSeek={onProvideSeek}
         engine={engine}
         sourcePreview={sourcePreview}
         onRegenerateCaptions={onRegenerateCaptions}
@@ -586,6 +588,7 @@ interface SurfaceProps<P extends Project> {
   renderModal?: VideoEditorProps<P>['renderModal']
   renderControls?: VideoEditorProps<P>['renderControls']
   onProvideImageTone?: VideoEditorProps<P>['onProvideImageTone']
+  onProvideSeek?: VideoEditorProps<P>['onProvideSeek']
   engine?: VideoEditorProps<P>['engine']
   /** Light/dark for the canvas timeline, resolved from the host theme by
    *  `VideoEditor` (the canvas can't read the CSS vars the rest of the chrome
@@ -816,6 +819,7 @@ function ReviewSurface<P extends Project>({
   renderModal,
   renderControls,
   onProvideImageTone,
+  onProvideSeek,
   engine,
   sourcePreview,
   onRegenerateCaptions,
@@ -1669,6 +1673,9 @@ function ReviewSurface<P extends Project>({
     (time: number) => clock.set(Math.max(0, Math.min(getTotalDuration(), time))),
     [clock, getTotalDuration],
   )
+  // Host seek (onProvideSeek): the same seekTo, handed up once like the render
+  // trigger. It only writes the clock, so it never starts playback.
+  useEffect(() => { onProvideSeek?.(seekTo) }, [onProvideSeek, seekTo])
 
   // ── Clip / audio properties-panel edits ────────────────────────────────────
   // The same preview/commit/change trio as the overlay inspector above, on the

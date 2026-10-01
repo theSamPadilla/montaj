@@ -1309,6 +1309,15 @@ export interface VideoEditorProps<P extends Project = Project> {
    */
   onProvideImageTone?: (api: { value: ImageTone; set: (tone: ImageTone) => void } | null) => void
 
+  /**
+   * Hand the host a way to move the playhead. Mirrors `onProvideRenderTrigger`:
+   * called with a stable `seek(sec)` that seeks to `sec` timeline seconds
+   * through the editor's own clock, clamped to [0, duration]. Works while
+   * playing or paused and never starts playback. The editor itself never calls
+   * it: a host that wants a pin click (`onPinClick`) to scrub wires that.
+   */
+  onProvideSeek?: (seek: (sec: number) => void) => void
+
   // ── Host-supplied Montaj-specific UI (render-prop seams) ──────────────────
   // The generation panel and the subcut-regeneration tool read host-only
   // fields (regenQueue, storyboard, the host's full Project) the package types
@@ -1502,6 +1511,8 @@ export interface VideoEditorProps<P extends Project = Project> {
    * Absent → a pin is inert ink: it still paints, and a click on it still
    * consumes the press (it does not scrub, seek or select) rather than falling
    * through to whatever is underneath.
+   * The editor never seeks on a pin click by itself; a host that wants the
+   * playhead to follow calls the `seek` it got from `onProvideSeek`.
    */
   onPinClick?: (id: string) => void
 }

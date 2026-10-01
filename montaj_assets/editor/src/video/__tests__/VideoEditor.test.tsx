@@ -15,6 +15,7 @@ import type {
 import type { Captions, VisualItem } from '../../schema'
 import { applyOverlayChanges, type OverlayChanges } from '../preview/useDragOverlay'
 import VideoEditor from '../VideoEditor'
+import type { PlaybackClock } from '../playback-clock'
 import { VIDEO_CONTROLS } from '../../ControlsInfoModal'
 import { stubPlatform } from '../../ui/__tests__/platform'
 import { CROSSFADE_COMMIT_DELAY_MS } from '../timeline/Timeline'
@@ -26,6 +27,21 @@ import { dragCanvasItem, installCanvasHarness, selectCanvasItem } from '../timel
 // listVersionHistory / restoreVersion / getWaveformChunks / compileOverlay /
 // fileUrl / resolveCaptionTemplate. No host (`@/`) modules are mocked — the
 // package owns the assembled editor.
+
+// Capture every PlaybackClock the editor creates so a test can read the
+// playhead the host seek moves. Behaviour is the real clock's.
+const clockSpy = vi.hoisted(() => ({ clocks: [] as unknown[] }))
+vi.mock('../playback-clock', async (orig) => {
+  const actual = await orig<typeof import('../playback-clock')>()
+  return {
+    ...actual,
+    createPlaybackClock: (initial?: number) => {
+      const c = actual.createPlaybackClock(initial)
+      clockSpy.clocks.push(c)
+      return c
+    },
+  }
+})
 
 function makeVideoProject(overrides: Partial<Project> = {}): Project {
   return {
@@ -820,6 +836,41 @@ describe('VideoEditor — editor-package integration', () => {
 
     await act(async () => { ctx.onClose() })
     await waitFor(() => expect(queryByTestId('host-render-window')).toBeNull())
+  })
+
+  // FQ54: a host can move the playhead (e.g. to a review comment's time).
+  it('onProvideSeek hands the host a stable seek that moves the playhead, clamped to [0, duration]', async () => {
+    clockSpy.clocks.length = 0
+    const provided: Array<(sec: number) => void> = []
+    const { findByRole } = render(
+      <VideoEditor
+        project={makeVideoProject()}
+        adapter={makeFakeAdapter()}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+        onProvideSeek={(seek) => { provided.push(seek) }}
+      />,
+    )
+    await findByRole('button', { name: 'Editor controls & shortcuts' })
+    expect(provided.length).toBeGreaterThan(0)
+    const clock = clockSpy.clocks[clockSpy.clocks.length - 1] as PlaybackClock
+    const seek = provided[provided.length - 1]
+    expect(clock.get()).toBe(0)
+    act(() => seek(2.5))
+    expect(clock.get()).toBe(2.5)
+    act(() => seek(99))
+    // Clamped to the project's total duration (>= the 4 s clip), not 99.
+    const end = clock.get()
+    expect(end).toBeGreaterThanOrEqual(4)
+    expect(end).toBeLessThan(99)
+    act(() => seek(1000))
+    expect(clock.get()).toBe(end)
+    act(() => seek(-3))
+    expect(clock.get()).toBe(0)
+    // It only moves the playhead: it never starts playback.
+    expect(HTMLMediaElement.prototype.play).not.toHaveBeenCalled()
+    // Stable: the same function after the editor re-rendered.
+    expect(new Set(provided).size).toBe(1)
   })
 
   // PL14: a host can draw the Controls window. It gets the modal's exact
