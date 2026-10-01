@@ -433,7 +433,7 @@ createRoot(document.getElementById('root')).render(<Root />)
     throw err
   }
 
-  const html = generateHtml(width, height, googleFonts, fontsBaseDir, [...boundary.urls])
+  const html = generateHtml(width, height, googleFonts, fontsBaseDir, [...boundary.urls, ...boundary.onDemandUrls])
   writeFileSync(htmlPath, html)
 
   return { workDir, boundary, needsGoogleFonts: pageNeedsGoogleFonts(html) }

@@ -525,6 +525,11 @@ export async function sampleOverlay({
       throw waitErr
     }
 
+    // An image the props name with no extension is fetched when the page asks
+    // for it: wait for it before capturing (page-guard.js settleOnDemand; at
+    // once when the props name none).
+    await guard.settleOnDemand()
+
     // Double rAF: first fires after layout+paint, second after compositor flush
     await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
 

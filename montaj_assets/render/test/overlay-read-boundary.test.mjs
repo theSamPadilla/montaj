@@ -196,16 +196,17 @@ describe('allows(): in or out of the boundary', () => {
     assert.equal(b.files.size, 0)
   })
 
-  test('props http(s) URLs are collected and normalized; media and extension-less ones are to be fetched', () => {
+  test('props http(s) URLs are collected and normalized; only media ones are to be fetched up front', () => {
     const b = overlayReadBoundary({ props: {
       a: 'HTTPS://Example.COM/team/badge.PNG?v=2', b: 'not a url', c: 'ftp://x/y',
       cta: 'https://example.com/signup', unsub: 'https://example.com/u?token=1', data: 'https://example.com/scores.json',
       home: 'https://example.com/', page: 'https://example.com/signup.php?token=1',
     } })
-    // An extension-less URL is fetched and kept only if it serves an image
-    // (page-guard.js); a page (a trailing `/`) or a non-media extension is not.
-    assert.deepEqual([...b.urls], ['https://example.com/team/badge.PNG?v=2',
-      'https://example.com/signup', 'https://example.com/u?token=1', 'https://example.com/scores.json'])
+    assert.deepEqual([...b.urls], ['https://example.com/team/badge.PNG?v=2', 'https://example.com/scores.json'])
+    // An extension-less URL is fetched only if the page asks for it, and kept
+    // only if it is an image (page-guard.js); a page (a trailing `/`) or a
+    // non-media extension never is.
+    assert.deepEqual([...b.onDemandUrls], ['https://example.com/signup', 'https://example.com/u?token=1'])
     assert.deepEqual([...b.unfetchedUrls], ['https://example.com/', 'https://example.com/signup.php?token=1'])
     assert.equal(b.files.size, 0)
   })

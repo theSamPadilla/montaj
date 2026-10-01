@@ -1,14 +1,15 @@
 // render/test/props-url-extensionless.test.mjs
 //
 // A props URL with NO extension (Spotify cover art: https://i.scdn.co/image/ab67…,
-// an image CDN's https://images.example.com/photo-123?w=800) is fetched like a
-// media URL: by Node, before the page loads, with the same timeout, size cap and
-// redirect rules (page-guard.js prefetchPropsUrls). It is kept only when the
-// response says `Content-Type: image/*` or its first bytes are a PNG, JPEG,
-// WebP, GIF or AVIF; anything else is refused and the page is told "not
-// fetched", as before. Everything else PV54 decides is unchanged, and pinned
-// here where this change could have moved it: media URLs, file: and data:,
-// redirects off http(s), the caps.
+// an image CDN's https://images.example.com/photo-123?w=800) is fetched ON
+// DEMAND, the way the editor preview loads it: never before the page loads,
+// only when the overlay page requests that exact URL (page-guard.js
+// installPageGuard). Node fetches it then, with the same timeout, size cap,
+// concurrency and redirect rules as a media URL's prefetch, and keeps it only
+// when the response says `Content-Type: image/*` or its first bytes are a PNG,
+// JPEG, WebP, GIF or AVIF; anything else is aborted and logged "not fetched".
+// So a text-only link with no extension is never requested (PV54), and nothing
+// else PV54 decides moves: media URLs, pages, other extensions, file: and data:.
 //
 // The new names are read off the module namespaces, so on code without them
 // each test fails on its own rather than the file failing to load.
@@ -29,10 +30,10 @@ const ftyp = (major, ...compat) => {
 }
 
 // ---------------------------------------------------------------------------
-// which props URLs are fetched
+// which props URLs are fetched, and when
 // ---------------------------------------------------------------------------
 
-describe('a props URL with no extension is fetched; file:, data: and pages are not', () => {
+describe('a props URL with no extension is fetched on demand; file:, data: and pages are not', () => {
   test('isExtensionlessPropsUrl: http(s), and the last path segment is a name with no dot', () => {
     for (const url of [
       'https://i.scdn.co/image/ab67616d0000b273e8b066f70c206551210d902b',
@@ -43,23 +44,25 @@ describe('a props URL with no extension is fetched; file:, data: and pages are n
     for (const url of [
       'https://example.com/', 'https://example.com', 'https://example.com/team/',   // a page, not a file
       'https://example.com/signup.php?token=abc', 'https://example.com/page.html',   // an extension, not media
-      'https://cdn.example.com/a.png',                                               // media: fetched as before
+      'https://cdn.example.com/a.png',                                               // media: prefetched as before
       'file:///Users/me/secret', 'file:///Users/me/cover',                            // never through this path
       'data:image/png;base64,AAAA', 'blob:https://x/1', 'ftp://h/x', 'not a url',
     ]) assert.equal(build.isExtensionlessPropsUrl(url), false, url)
   })
 
-  test('the boundary fetches it with the media URLs, and leaves file:, data: and pages where they were', () => {
+  test('the boundary: media URLs prefetched, extension-less ones on demand, pages never; file: and data: where they were', () => {
     const cover = 'https://i.scdn.co/image/ab67616d0000b273e8b066f70c206551210d902b'
     const b = build.overlayReadBoundary({ props: {
       cover, badge: 'https://cdn.example.com/a.png',
       home: 'https://example.com/', page: 'https://example.com/signup.php?token=abc',
       inline: 'data:image/png;base64,AAAA', local: 'file:///nonexistent/montaj-fq54/cover',
     } })
-    assert.deepEqual([...b.urls], [cover, 'https://cdn.example.com/a.png'])
+    assert.deepEqual([...b.urls], ['https://cdn.example.com/a.png'], 'only media is prefetched')
+    assert.deepEqual([...b.onDemandUrls], [cover])
     assert.deepEqual([...b.unfetchedUrls], ['https://example.com/', 'https://example.com/signup.php?token=abc'])
     assert.equal(b.files.size, 0, 'a missing file: names nothing; data: is not a file')
-    assert.deepEqual(build.namedPropsUrls({ cover, local: 'file:///x/cover', inline: 'data:,x' }), [cover])
+    assert.deepEqual(build.namedPropsUrls({ cover, badge: 'https://cdn.example.com/a.png', local: 'file:///x/cover' }),
+      ['https://cdn.example.com/a.png'], 'render.js prefetches media only')
   })
 })
 
@@ -89,13 +92,43 @@ describe('sniffImageType: the first bytes of a PNG, JPEG, WebP, GIF or AVIF', ()
 })
 
 // ---------------------------------------------------------------------------
-// the fetch: same path, same caps, and an image or nothing
+// the decision: an exact props URL with no extension, GET only
 // ---------------------------------------------------------------------------
 
-describe('prefetchPropsUrls: an extension-less URL is kept only if it serves an image', () => {
+describe('pageRequestDecision on an extension-less URL', () => {
+  const cover = 'https://i.scdn.co/image/ab67?size=640'
+  const boundary = {
+    allows: () => false,
+    onDemandUrls: new Set([cover]),
+    unfetchedUrls: new Set(['https://example.com/signup.php?token=abc']),
+  }
+  const decide = (url, method = 'GET') => guard.pageRequestDecision({ url, method }, { boundary })
+
+  test('the exact props URL, GET: fetched on demand', () => {
+    assert.deepEqual(decide(cover), { action: 'fetch', url: cover })
+  })
+
+  test('not GET, or not exactly a props URL: aborted as a network request, as before', () => {
+    assert.deepEqual(decide(cover, 'POST'), { action: 'abort', kind: 'network', host: 'i.scdn.co' })
+    assert.deepEqual(decide('https://i.scdn.co/image/ab67'), { action: 'abort', kind: 'network', host: 'i.scdn.co' })
+    assert.deepEqual(decide('https://i.scdn.co/image/other'), { action: 'abort', kind: 'network', host: 'i.scdn.co' })
+  })
+
+  test('a props URL with a non-media extension: never fetched, as before', () => {
+    assert.deepEqual(decide('https://example.com/signup.php?token=abc'),
+      { action: 'abort', kind: 'unfetched', url: 'https://example.com/signup.php' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// the fetch and the guard: same caps, an image or nothing
+// ---------------------------------------------------------------------------
+
+describe('on demand: fetched when the page asks, kept only if it is an image', () => {
   let server, origin
   const hits = []
   const held = new Set()
+  let inFlight = 0, maxInFlight = 0
 
   before(async () => {
     server = createServer((req, res) => {
@@ -104,12 +137,16 @@ describe('prefetchPropsUrls: an extension-less URL is kept only if it serves an 
         res.writeHead(200, { ...(type ? { 'content-type': type } : {}), 'content-length': body.length, ...extra })
         res.end(body)
       }
+      if (req.url.startsWith('/busy/')) {
+        inFlight++; maxInFlight = Math.max(maxInFlight, inFlight)
+        return setTimeout(() => { inFlight--; send('image/png', PNG) }, 80)
+      }
       switch (req.url) {
-        case '/img/png': return send('image/png', PNG)
-        case '/img/octet': return send('application/octet-stream', PNG)
+        case '/img/png': case '/img/png-again': case '/img/guard-png': return send('image/png', PNG)
+        case '/img/octet': case '/img/guard-octet': return send('application/octet-stream', PNG)
         case '/img/untyped': return send(null, JPEG)
         case '/img/mislabelled': return send('text/plain; charset=utf-8', PNG)
-        case '/img/html': return send('text/html; charset=utf-8', HTML)
+        case '/img/html': case '/img/guard-html': return send('text/html; charset=utf-8', HTML)
         case '/img/empty': return send('application/octet-stream', Buffer.alloc(0))
         case '/img/html-endless': {
           // A page that never ends: refused on its first bytes, not read to the cap or the timeout.
@@ -141,7 +178,7 @@ describe('prefetchPropsUrls: an extension-less URL is kept only if it serves an 
         case '/img/to-data': res.writeHead(302, { location: `data:image/png;base64,${PNG.toString('base64')}` }); return res.end()
         case '/img/to-png': res.writeHead(302, { location: '/img/png' }); return res.end()
         case '/img/to-big': res.writeHead(302, { location: '/img/declared-big' }); return res.end()
-        case '/page.png': return send('text/html', HTML)   // a media URL: served as fetched, as before
+        case '/page.png': return send('text/html', HTML)   // a media URL: prefetched as fetched, as before
       }
       res.writeHead(404); res.end()
     })
@@ -161,14 +198,17 @@ describe('prefetchPropsUrls: an extension-less URL is kept only if it serves an 
   }
   const fetchOne = async (path, opts) => {
     const url = `${origin}${path}`
-    const [got, log] = await withStderr(() => guard.prefetchPropsUrls([url], opts))
-    return { url, entry: got.get(url), log }
+    const [entry, log] = await withStderr(() => guard.fetchOnDemandPropsUrl(url, opts))
+    return { url, entry, log }
   }
 
-  test('Content-Type image/*: kept, served as sent', async () => {
-    const { entry } = await fetchOne('/img/png')
+  test('Content-Type image/*: kept, served as sent; fetched once per job', async () => {
+    hits.length = 0
+    const { url, entry } = await fetchOne('/img/png-again')
     assert.equal(entry.contentType, 'image/png')
     assert.deepEqual(entry.body, PNG)
+    assert.equal(await guard.fetchOnDemandPropsUrl(url), entry)
+    assert.deepEqual(hits, ['/img/png-again'])
   })
 
   for (const [path, type, bytes] of [
@@ -185,10 +225,10 @@ describe('prefetchPropsUrls: an extension-less URL is kept only if it serves an 
   }
 
   for (const path of ['/img/html', '/img/empty']) {
-    test(`${path}: not an image: refused, holding nothing, logged only if the page asks`, async () => {
+    test(`${path}: not an image: refused, holding nothing`, async () => {
       const { entry, log } = await fetchOne(path)
       assert.deepEqual(entry, { notImage: true })
-      assert.equal(log, '')
+      assert.equal(log, '', 'the guard logs it, once, when it aborts the request')
     })
   }
 
@@ -224,52 +264,92 @@ describe('prefetchPropsUrls: an extension-less URL is kept only if it serves an 
     assert.deepEqual(entry.body, PNG)
   })
 
-  test('a media URL is unchanged: served as fetched, whatever it holds', async () => {
-    const { entry } = await fetchOne('/page.png')
-    assert.equal(entry.contentType, 'text/html')
-    assert.deepEqual(entry.body, HTML)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// the page: a refused one is "not fetched", blank, and does not fail the job
-// ---------------------------------------------------------------------------
-
-describe('the page guard on a refused extension-less URL', () => {
-  const cover = 'https://example.com/cover/ab67?size=640'
-  const boundary = { allows: () => false }
-  const propsCache = new Map([[cover, { notImage: true }]])
-
-  test('pageRequestDecision: aborted as never fetched, named without its query', () => {
-    assert.deepEqual(guard.pageRequestDecision({ url: cover }, { boundary, propsCache }),
-      { action: 'abort', kind: 'unfetched', url: 'https://example.com/cover/ab67' })
+  test('no more than 6 at a time, and every one is served', async () => {
+    maxInFlight = 0
+    const urls = Array.from({ length: 15 }, (_, i) => `${origin}/busy/${i}`)
+    const got = await Promise.all(urls.map(u => guard.fetchOnDemandPropsUrl(u)))
+    assert.equal(maxInFlight, 6)
+    assert.ok(got.every(e => e.body?.equals(PNG)))
   })
 
-  test('installPageGuard: aborted, logged as today, and the job goes on', async () => {
-    const handlers = []
-    const page = {
-      setRequestInterception: async () => {},
-      on: (event, fn) => { if (event === 'request') handlers.push(fn) },
-    }
-    const calls = []
-    const orig = process.stderr.write.bind(process.stderr)
-    let log = ''
-    process.stderr.write = c => { log += String(c); return true }
-    let g
-    try {
-      g = await guard.installPageGuard(page, { boundary, propsCache })
+  test('a media URL is unchanged: prefetched, served as fetched, whatever it holds', async () => {
+    const url = `${origin}/page.png`
+    const got = await guard.prefetchPropsUrls([url])
+    assert.equal(got.get(url).contentType, 'text/html')
+    assert.deepEqual(got.get(url).body, HTML)
+  })
+
+  // installPageGuard on a page that asks. The fake page has no evaluate(), so
+  // a guard that touched the page where it should not would throw.
+  function fakePage() {
+    const page = { handlers: [] }
+    page.setRequestInterception = async () => {}
+    page.on = (event, fn) => { if (event === 'request') page.handlers.push(fn) }
+    page.request = (url, method = 'GET') => {
+      const calls = []
+      let done
+      const settled = new Promise(r => { done = r })
       const req = {
-        url: () => cover, method: () => 'GET', resourceType: () => 'image',
-        abort: async reason => { calls.push(['abort', reason]) },
-        continue: async () => { calls.push(['continue']) },
-        respond: async r => { calls.push(['respond', r]) },
+        url: () => url, method: () => method, resourceType: () => 'image',
+        abort: async reason => { calls.push(['abort', reason]); done() },
+        continue: async () => { calls.push(['continue']); done() },
+        respond: async r => { calls.push(['respond', r]); done() },
       }
-      for (const h of handlers) h(req)
-    } finally { process.stderr.write = orig }
-    assert.deepEqual(calls, [['abort', 'blockedbyclient']])
-    assert.match(log, /^\[montaj\] not fetched: https:\/\/example\.com\/cover\/ab67 \(a props URL is fetched only when/)
-    assert.doesNotMatch(log, /size=640/)
-    assert.ok(g.blocked.has(cover), 'so the sample is not cached')
+      for (const h of page.handlers) h(req)
+      return { calls, settled }
+    }
+    return page
+  }
+  const boundaryFor = (...paths) => ({ allows: () => false, onDemandUrls: new Set(paths.map(p => `${origin}${p}`)) })
+
+  test('installPageGuard: an image the page asks for is served from Node\'s fetch', async () => {
+    hits.length = 0
+    const page = fakePage()
+    const g = await guard.installPageGuard(page, { boundary: boundaryFor('/img/guard-octet') })
+    assert.deepEqual(hits, [], 'nothing is fetched before the page asks')
+    const r = page.request(`${origin}/img/guard-octet`)
+    await r.settled
+    assert.equal(r.calls.length, 1)
+    assert.equal(r.calls[0][0], 'respond')
+    assert.equal(r.calls[0][1].status, 200)
+    assert.equal(r.calls[0][1].contentType, 'image/png', 'served as what it sniffed as')
+    assert.deepEqual(r.calls[0][1].body, PNG)
+    assert.deepEqual(hits, ['/img/guard-octet'])
+    assert.equal(g.blocked.size, 0)
     assert.doesNotThrow(() => g.assertPropsServed())
+  })
+
+  test('installPageGuard: one that is not an image is aborted, logged as not fetched, and the job goes on', async () => {
+    const page = fakePage()
+    const url = `${origin}/img/guard-html`
+    const [{ g, r }, log] = await withStderr(async () => {
+      const g = await guard.installPageGuard(page, { boundary: boundaryFor('/img/guard-html') })
+      const r = page.request(url)
+      await r.settled
+      return { g, r }
+    })
+    assert.deepEqual(r.calls, [['abort', 'blockedbyclient']])
+    assert.match(log, new RegExp(`^\\[montaj\\] not fetched: ${url.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')} \\(a props URL is fetched only when`))
+    assert.ok(g.blocked.has(url), 'so its console line is noise, and the sample is not cached')
+    assert.doesNotThrow(() => g.assertPropsServed())
+  })
+
+  test('installPageGuard: one that fails is aborted and fails the job by name', async () => {
+    const page = fakePage()
+    const url = `${origin}/img/guard-missing`
+    const [{ g, r }] = await withStderr(async () => {
+      const g = await guard.installPageGuard(page, { boundary: boundaryFor('/img/guard-missing') })
+      const r = page.request(url)
+      await r.settled
+      return { g, r }
+    })
+    assert.deepEqual(r.calls, [['abort', 'blockedbyclient']])
+    assert.throws(() => g.assertPropsServed(), new RegExp(`props URL ${url.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')} could not be fetched: HTTP 404`))
+  })
+
+  test('installPageGuard: settleOnDemand does nothing on a page whose props name no such URL', async () => {
+    const page = fakePage()
+    const g = await guard.installPageGuard(page, { boundary: { allows: () => false } })
+    await g.settleOnDemand()   // would throw: the fake page has no evaluate()
   })
 })

@@ -311,6 +311,10 @@ async function renderChunk(browser, job) {
         { timeout: 10000 },
         t,
       )
+      // 2b. An image the props name with no extension is fetched when the page
+      //     asks for it, so wait for it to arrive before capturing this frame
+      //     (page-guard.js settleOnDemand; at once when the props name none).
+      await guard.settleOnDemand()
       // 3. Double rAF: first fires after layout+paint, second fires after the result
       //    has been composited — guarantees the screenshot sees the current frame.
       await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))

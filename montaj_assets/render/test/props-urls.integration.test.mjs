@@ -213,7 +213,7 @@ test('a props image that answers 404 fails its carousel slide, naming the URL', 
   assert.deepEqual(readdirSync(out).filter(n => n.endsWith('.png')), [], 'no slide rendered without its image')
 })
 
-test('a props URL shown only as text is never fetched unless it has no extension, and an unused one that fails does not fail the sample',
+test('a props URL shown only as text is never fetched, and an unused one that fails does not fail the sample',
   { timeout: 120_000 }, async () => {
   hits.length = 0
   const comp = join(ws, 'proj', 'overlays', 'cta.jsx')
@@ -234,18 +234,12 @@ test('a props URL shown only as text is never fetched unless it has no extension
   const out = join(base, 'cta.png')
   await sampleOverlay({
     componentPath: comp,
-    props: {
-      link: `${origin}/signup.php?token=abc`, home: `${origin}/`,
-      bare: `${origin}/signup?token=abc`, spare: `${origin}/images/media/team/badge/unused.png`,
-    },
+    props: { link: `${origin}/signup?token=abc`, spare: `${origin}/images/media/team/badge/unused.png` },
     frame: 0, fps: 30, width: SIZE, height: SIZE, outPath: out, projectDir: join(ws, 'proj'),
   })
   assertBadgeColour(out, 2)
-  // The media URL was prefetched (and failed, unused). So was the extension-less
-  // one, since it might be an image (Sam, 2026-10-01: such images render as the
-  // preview shows them), and it failed unused too. A link with a non-media
-  // extension, and a page (a trailing `/`), never left the machine.
-  assert.deepEqual(hits.map(h => h.url).sort(), ['/images/media/team/badge/unused.png', '/signup?token=abc'])
+  // The media URL was prefetched (and failed, unused); the link never left the machine.
+  assert.deepEqual(hits.map(h => h.url), ['/images/media/team/badge/unused.png'])
 })
 
 test('legit: a slide image given relative to a project outside the workspace renders', { timeout: 180_000 }, async () => {

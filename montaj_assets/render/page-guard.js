@@ -16,8 +16,12 @@
  *        http(s) GET    of a URL the props name: served from the props cache,
  *                       fetched by Node BEFORE the page loads (prefetchPropsUrls),
  *                       so which allowed URLs the page asks for never reaches
- *                       the wire. One with no extension is served only if it
- *                       is an image
+ *                       the wire
+ *        http(s) GET    of a URL the props name with no extension: fetched by
+ *                       Node only when the page asks for it, as the editor
+ *                       preview loads it, and served only if it is an image
+ *                       (fetchOnDemandPropsUrl); so one shown only as text is
+ *                       never requested
  *        https GET      to fonts.googleapis.com / fonts.gstatic.com, only on a
  *                       page that links Google Fonts (a family not vendored)
  *        anything else  aborted
@@ -46,7 +50,6 @@
  * handler, so "refused at the handler" would prove nothing for them.
  */
 import { fromFileHref } from './file-url.js'
-import { isPropsMediaUrl } from './overlay-build.js'
 import { pMap } from './p-map.js'
 
 export const GOOGLE_FONT_HOSTS = Object.freeze(['fonts.googleapis.com', 'fonts.gstatic.com'])
@@ -55,7 +58,7 @@ export const GOOGLE_FONT_HOSTS = Object.freeze(['fonts.googleapis.com', 'fonts.g
 export const PROPS_FETCH_TIMEOUT_MS = 30_000
 /** The largest props URL body fetched; a bigger one is a failed fetch. */
 export const PROPS_FETCH_MAX_BYTES = 50 * 1024 * 1024
-/** How many props URLs are fetched at once. */
+/** How many props URLs are fetched at once (up front, and on demand). */
 export const PROPS_FETCH_CONCURRENCY = 6
 /** How many first bytes of an extension-less props URL are read to tell an image. */
 export const IMAGE_SNIFF_BYTES = 32
@@ -170,31 +173,62 @@ const propsFetches = new Map()
  * text (a link, a QR target), which a render never needed to reach, so a
  * failed URL fails the job only if the page asks for it (installPageGuard's
  * `failedProps`, thrown by `assertPropsServed`). It is logged either way.
- *
- * A URL with no media extension (overlay-build.js isExtensionlessPropsUrl:
- * Spotify cover art, an image CDN) goes the same way, under the same timeout
- * and cap, and is kept only if it is an image: `Content-Type: image/*`, or
- * first bytes that are a PNG, JPEG, WebP, GIF or AVIF (sniffImageType). Any
- * other is `{ notImage: true }`, its body cancelled on those first bytes, and
- * the page is told it was not fetched, as for a URL that is not media.
  */
 export async function prefetchPropsUrls(urls, { timeoutMs = PROPS_FETCH_TIMEOUT_MS, maxBytes = PROPS_FETCH_MAX_BYTES } = {}) {
   const hrefs = [...new Set([...urls].map(u => new URL(u).href))]
-  const results = await pMap(hrefs, href => {
-    let p = propsFetches.get(href)
-    if (!p) {
-      p = fetchPropsUrl(href, { timeoutMs, maxBytes, imageOnly: !isPropsMediaUrl(href) }).catch(error => {
-        process.stderr.write(`[montaj] ${error.message}\n`)
-        return { error }
-      })
-      propsFetches.set(href, p)
-    }
-    return p
-  }, PROPS_FETCH_CONCURRENCY)
+  const results = await pMap(hrefs, href => fetchOnce(href, () => fetchPropsUrl(href, { timeoutMs, maxBytes })),
+    PROPS_FETCH_CONCURRENCY)
   return new Map(hrefs.map((href, i) => [href, results[i]]))
 }
 
-// `imageOnly`: keep the body only if it is an image (see prefetchPropsUrls).
+/**
+ * Fetch one props URL with no extension (overlay-build.js
+ * isExtensionlessPropsUrl: Spotify cover art, an image CDN) that a page asked
+ * for: once per process, at most PROPS_FETCH_CONCURRENCY at a time, under the
+ * prefetch's timeout, cap and redirect rules. Resolves to `{ contentType, body }`
+ * when it is an image (`Content-Type: image/*`, or first bytes that are a PNG,
+ * JPEG, WebP, GIF or AVIF: sniffImageType, which then names the type served),
+ * `{ notImage: true }` when it is not (its body cancelled on those first
+ * bytes), or `{ error }` (a PropsFetchError naming the URL, logged) when it
+ * failed, timed out or exceeded the cap. Never rejects.
+ */
+export function fetchOnDemandPropsUrl(url, { timeoutMs = PROPS_FETCH_TIMEOUT_MS, maxBytes = PROPS_FETCH_MAX_BYTES } = {}) {
+  const href = new URL(url).href
+  return fetchOnce(href, () => onDemandSlot(() => fetchPropsUrl(href, { timeoutMs, maxBytes, imageOnly: true })))
+}
+
+// Each distinct URL is fetched once per process, up front or on demand, and a
+// failure is logged once, when it happens.
+function fetchOnce(href, start) {
+  let p = propsFetches.get(href)
+  if (!p) {
+    p = start().catch(error => {
+      process.stderr.write(`[montaj] ${error.message}\n`)
+      return { error }
+    })
+    propsFetches.set(href, p)
+  }
+  return p
+}
+
+// At most PROPS_FETCH_CONCURRENCY on-demand fetches at once, the rest queued.
+let onDemandActive = 0
+const onDemandQueue = []
+function onDemandSlot(start) {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      onDemandActive++
+      start().then(resolve, reject).finally(() => {
+        onDemandActive--
+        onDemandQueue.shift()?.()
+      })
+    }
+    if (onDemandActive < PROPS_FETCH_CONCURRENCY) run()
+    else onDemandQueue.push(run)
+  })
+}
+
+// `imageOnly`: keep the body only if it is an image (see fetchOnDemandPropsUrl).
 async function fetchPropsUrl(href, { timeoutMs, maxBytes, imageOnly = false }) {
   const mb = Math.round(maxBytes / (1024 * 1024))
   const tooBig = () => new PropsFetchError(`props URL ${href} exceeds ${mb} MB`)
@@ -302,8 +336,9 @@ function filePathOf(url) {
  * `{ action: 'respond', response }` or `{ action: 'abort', kind: 'read', path }` /
  * `{ action: 'abort', kind: 'network', host }` / `{ action: 'abort', kind: 'props', error }`
  * (a props URL whose prefetch failed) / `{ action: 'abort', kind: 'unfetched', url }`
- * (a props URL that is not media, so never fetched: overlay-build.js
- * isPropsFetchedUrl; or one with no extension that was not an image).
+ * (a props URL that is not media, so never fetched: overlay-build.js isPropsMediaUrl)
+ * / `{ action: 'fetch', url }` (a props URL with no extension, fetched now,
+ * on demand: installPageGuard).
  * Pure, so each rule is testable without a browser.
  */
 export function pageRequestDecision({ url, method = 'GET' }, { boundary, propsCache = new Map(), needsGoogleFonts = false }) {
@@ -322,9 +357,12 @@ export function pageRequestDecision({ url, method = 'GET' }, { boundary, propsCa
     case 'https:': {
       if (method === 'GET' && propsCache.has(u.href)) {
         const entry = propsCache.get(u.href)
-        if (entry.error) return { action: 'abort', kind: 'props', error: entry.error }
-        if (entry.notImage) return { action: 'abort', kind: 'unfetched', url: `${u.origin}${u.pathname}` }
-        return { action: 'respond', response: entry }
+        return entry.error
+          ? { action: 'abort', kind: 'props', error: entry.error }
+          : { action: 'respond', response: entry }
+      }
+      if (method === 'GET' && boundary.onDemandUrls?.has(u.href)) {
+        return { action: 'fetch', url: u.href }
       }
       if (boundary.unfetchedUrls?.has(u.href)) {
         return { action: 'abort', kind: 'unfetched', url: `${u.origin}${u.pathname}` }
@@ -347,11 +385,16 @@ export function pageRequestDecision({ url, method = 'GET' }, { boundary, propsCa
  * respond each one. `onCached(request)`
  * is told about each request served from the props cache.
  *
- * Returns `{ blocked, failedProps, isBlockNoise(consoleMessage), assertPropsServed() }`:
- * the URLs aborted; the props URLs the page asked for whose prefetch failed
+ * A props URL with no extension (`fetch`) is fetched when the page asks for
+ * it (fetchOnDemandPropsUrl) and then served, or aborted: logged as not
+ * fetched when it is not an image, or recorded in `failedProps` when the
+ * fetch failed.
+ *
+ * Returns `{ blocked, failedProps, isBlockNoise(consoleMessage), assertPropsServed(), settleOnDemand() }`:
+ * the URLs aborted; the props URLs the page asked for whose fetch failed
  * (href -> PropsFetchError); whether a console message is only Chromium
- * reporting one of those aborts; and a check that throws the first of those
- * failures. A caller that fails on console errors must skip that noise, or a
+ * reporting one of those aborts; a check that throws the first of those
+ * failures; and the wait a capture makes for images fetched on demand. A caller that fails on console errors must skip that noise, or a
  * blocked read would fail the job instead of leaving the overlay's own
  * fallback. Every caller calls assertPropsServed() once the page has loaded
  * what it needs: a props image the page asked for and could not get fails the
@@ -370,6 +413,19 @@ export async function installPageGuard(page, { boundary, propsCache = new Map(),
     logged.add(line)
     process.stderr.write(line + '\n')
   }
+  const notFetched = url =>
+    `[montaj] not fetched: ${url} (a props URL is fetched only when it ends in an image, video, audio, font or data extension, or has none and serves an image)`
+  const serve = (request, response) => {
+    request.respond({
+      status: 200,
+      contentType: response.contentType,
+      headers: { 'Access-Control-Allow-Origin': '*' },
+      body: response.body,
+    }).catch(() => {})
+    if (onCached) onCached(request)
+  }
+  const onDemandUrls = [...(boundary.onDemandUrls ?? [])]
+  const pending = new Set()
   await page.setRequestInterception(true)
   page.on('request', request => {
     let d
@@ -382,19 +438,27 @@ export async function installPageGuard(page, { boundary, propsCache = new Map(),
       blocked.add(request.url())
       if (d.kind === 'props') failedProps.set(request.url(), d.error)
       else note(d.kind === 'read' ? `[montaj] blocked a read outside the allowed folders: ${d.path}`
-        : d.kind === 'unfetched' ? `[montaj] not fetched: ${d.url} (a props URL is fetched only when it ends in an image, video, audio, font or data extension, or has none and serves an image)`
+        : d.kind === 'unfetched' ? notFetched(d.url)
         : `[montaj] blocked a network request to ${d.host}`)
       request.abort('blockedbyclient').catch(() => {})
       return
     }
-    if (d.action === 'respond') {
-      request.respond({
-        status: 200,
-        contentType: d.response.contentType,
-        headers: { 'Access-Control-Allow-Origin': '*' },
-        body: d.response.body,
-      }).catch(() => {})
-      if (onCached) onCached(request)
+    if (d.action === 'respond') return serve(request, d.response)
+    if (d.action === 'fetch') {
+      const url = request.url()
+      const p = fetchOnDemandPropsUrl(d.url)
+        .then(entry => {
+          if (entry.body) return serve(request, entry)
+          // Recorded before the abort, so the page's error event and console
+          // line come after it.
+          blocked.add(url)
+          if (entry.error) failedProps.set(url, entry.error)
+          else { const u = new URL(d.url); note(notFetched(`${u.origin}${u.pathname}`)) }
+          request.abort('blockedbyclient').catch(() => {})
+        })
+        .catch(() => { blocked.add(url); request.abort('blockedbyclient').catch(() => {}) })
+        .finally(() => pending.delete(p))
+      pending.add(p)
       return
     }
     if (onAllowed) return onAllowed(request)
@@ -410,6 +474,33 @@ export async function installPageGuard(page, { boundary, propsCache = new Map(),
     },
     assertPropsServed() {
       for (const error of failedProps.values()) throw error
+    },
+    /**
+     * Call before each capture. An image fetched on demand arrives after the
+     * page asked for it, so a frame captured at once would show it blank.
+     * Waits for every <img> showing one of this page's on-demand URLs to load
+     * (and decode) or fail, then for every on-demand fetch already under way.
+     * The <img> wait is what makes it deterministic: the element is in the
+     * DOM, incomplete, before this runs, however late its request reaches
+     * Node. Capped at the fetch timeout plus 5 s (a lazy image off screen
+     * never loads). A page whose props name no such URL returns at once,
+     * without touching the page.
+     */
+    async settleOnDemand() {
+      if (onDemandUrls.length === 0) return
+      await page.evaluate((hrefs, capMs) => {
+        const wanted = new Set(hrefs)
+        const images = [...document.images].filter(img => wanted.has(img.currentSrc) || wanted.has(img.src))
+        const ready = img => (img.complete ? Promise.resolve() : new Promise(resolve => {
+          img.addEventListener('load', resolve, { once: true })
+          img.addEventListener('error', resolve, { once: true })
+        })).then(() => (img.naturalWidth > 0 ? img.decode().catch(() => {}) : undefined))
+        return Promise.race([
+          Promise.all(images.map(ready)),
+          new Promise(resolve => setTimeout(resolve, capMs)),
+        ])
+      }, onDemandUrls, PROPS_FETCH_TIMEOUT_MS + 5000)
+      await Promise.all([...pending])
     },
   }
 }

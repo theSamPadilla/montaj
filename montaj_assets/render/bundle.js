@@ -124,7 +124,7 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
   }
   const inputs = overlayInputsFromMetafile(result.metafile, options.absWorkingDir, { exclude: [workDir] })
 
-  const html = generateHtml(width, height, opaque, googleFonts, fontsBaseDir, [...boundary.urls])
+  const html = generateHtml(width, height, opaque, googleFonts, fontsBaseDir, [...boundary.urls, ...boundary.onDemandUrls])
   writeFileSync(htmlPath, html)
 
   return { htmlPath, workDir, inputs, boundary, needsGoogleFonts: pageNeedsGoogleFonts(html) }
@@ -754,8 +754,9 @@ function reportVendoredFonts(vendoredKeys, fellThrough, faceIndex) {
   }
 }
 
-// `connectUrls` are the page's props URLs (its boundary's `urls`): the CSP's
-// connect-src names them, so an overlay can still fetch() a URL its props name.
+// `connectUrls` are the page's props URLs (its boundary's `urls` and
+// `onDemandUrls`): the CSP's connect-src names them, so an overlay can still
+// fetch() a URL its props name.
 export function generateHtml(width, height, opaque = false, googleFonts = [], fontsBaseDir = '', connectUrls = []) {
   const bgRule = opaque ? '' : 'background: transparent;'
   // Each entry in googleFonts is appended as a `family=...` parameter on the
