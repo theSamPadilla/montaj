@@ -17,10 +17,8 @@ from math import sqrt
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-import models as _models
 from common import (fail, require_file, check_output, run, run_whisper, find_whisper_bin, ffmpeg_bin,
-                    resolve_whisper_model, whisper_weight_path, DEFAULT_WHISPER_MODEL,
-                    WHISPER_MODEL_CHOICES)
+                    require_whisper_model, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES)
 
 
 WHISPER_MODEL      = DEFAULT_WHISPER_MODEL
@@ -423,10 +421,9 @@ def main():
     require_file(args.input)
     require_file(args.lyrics)
 
-    model       = resolve_whisper_model(args.model, args.language)
     # Managed dir first, then the legacy whisper.cpp dir, as transcribe does.
-    model_path  = whisper_weight_path(model) or _models.model_path("whisper", f"ggml-{model}.bin")
-    require_file(model_path)
+    # No weight: whisper_model_missing.
+    model, model_path = require_whisper_model(args.model, args.language)
     whisper_bin = find_whisper_bin()
 
     out = args.out or f"{os.path.splitext(args.input)[0]}_lyrics.json"

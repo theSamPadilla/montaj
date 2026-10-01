@@ -257,6 +257,9 @@ def _setup_caption_project(tmp_path, monkeypatch):
         # leave job in running state (simulates in-flight caption)
 
     monkeypatch.setattr(projects_mod, "_run_caption_detached", fake_detached)
+    # A whisper weight is installed (the route 503s without one; see
+    # test_whisper_model_missing.py), whatever the host has.
+    monkeypatch.setattr(projects_mod, "whisper_model_missing", lambda model: None)
     return project_dir, captured
 
 

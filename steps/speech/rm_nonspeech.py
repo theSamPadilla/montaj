@@ -3,7 +3,7 @@
 import json, os, sys, argparse, shutil, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, get_duration, transcribe_words, DEFAULT_WHISPER_MODEL
+from common import fail, require_file, require_whisper_model, get_duration, transcribe_words, DEFAULT_WHISPER_MODEL
 from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, extract_audio_at_keeps, remap_timestamp, from_window
 
 def main():
@@ -34,6 +34,8 @@ def main():
         fail("invalid_args", "--window-in and --window-out must be used together")
 
     require_file(args.input)
+    # Before any audio work: no weight fails as whisper_model_missing.
+    require_whisper_model(args.model, args.language)
 
     windowed = args.window_in is not None
     if windowed:

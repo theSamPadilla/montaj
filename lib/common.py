@@ -397,8 +397,8 @@ def resolve_whisper_model(model: str, language: str) -> str:
     that only carry turbo, and older CLI installs (base.en only) keep working
     now that turbo is the default. Failing those, it takes the most capable
     other installed weight (multilingual only, for a non-English language).
-    With nothing installed the name is returned unchanged so
-    ``transcribe_words``' require_file names the missing file.
+    With nothing installed the name is returned unchanged;
+    ``require_whisper_model`` reports that case as ``whisper_model_missing``.
 
     Then: English (or unspecified) → the model unchanged. For any other
     language (or ``auto``), an English-only ``*.en`` model is swapped for a
@@ -448,6 +448,41 @@ def resolve_whisper_model(model: str, language: str) -> str:
          f"montaj models download {sibling}")
 
 
+# ── Missing whisper model ────────────────────────────────────────────────────
+# `montaj serve` starts without the whisper model (the Montaj App downloads it
+# after launch), so every path that runs whisper fails with this one code until
+# a weight is installed. Hosts map the code, not the message, so it must stay
+# distinct from file_not_found.
+
+def _whisper_missing_message(model: str) -> str:
+    return (f"Whisper model '{model}' is not installed. Install one with: "
+            f"montaj models download {DEFAULT_WHISPER_MODEL}")
+
+
+def whisper_model_missing(model: str):
+    """The ``whisper_model_missing`` message when no whisper weight is installed
+    at all, else None. Non-exiting, for serve routes that check before starting
+    a whisper job; steps use ``require_whisper_model``."""
+    if any(whisper_weight_path(m) is not None for m in WHISPER_MODEL_CHOICES):
+        return None
+    return _whisper_missing_message(model)
+
+
+def require_whisper_model(model: str, language: str) -> tuple[str, str]:
+    """Resolve ``model`` for ``language`` (``resolve_whisper_model``) and return
+    ``(model, weight_path)``. Fails with ``whisper_model_missing`` when no weight
+    is installed, checked before resolving so an empty install never reads as
+    ``missing_multilingual_model``."""
+    missing = whisper_model_missing(model)
+    if missing:
+        fail("whisper_model_missing", missing)
+    model = resolve_whisper_model(model, language)
+    path = whisper_weight_path(model)
+    if path is None:
+        fail("whisper_model_missing", _whisper_missing_message(model))
+    return model, path
+
+
 def transcribe_words(input_path: str, model: str = DEFAULT_WHISPER_MODEL, work_dir: str = None,
                      language: str = "en") -> list:
     """Transcribe audio or video with whisper.cpp.
@@ -459,6 +494,8 @@ def transcribe_words(input_path: str, model: str = DEFAULT_WHISPER_MODEL, work_d
     upgrades an English-only ``*.en`` ``model`` to a multilingual one.
     """
     import mimetypes, tempfile
+    # Before any audio work: a missing model fails as whisper_model_missing.
+    model, model_file = require_whisper_model(model, language)
     own_work = work_dir is None
     if own_work:
         work_dir = tempfile.mkdtemp(prefix="transcribe_")
@@ -471,11 +508,6 @@ def transcribe_words(input_path: str, model: str = DEFAULT_WHISPER_MODEL, work_d
         else:
             audio = input_path
 
-        import models as _models
-        model = resolve_whisper_model(model, language)
-        # Managed dir first, then the legacy whisper.cpp dir for older installs.
-        model_file = whisper_weight_path(model) or _models.model_path("whisper", f"ggml-{model}.bin")
-        require_file(model_file)  # fails with a clear error if the model isn't installed
         whisper_bin = find_whisper_bin()
 
         prefix = os.path.join(work_dir, "out")

@@ -332,6 +332,8 @@ def _run_generate_captions_sse(project_id, project_dir, body, monkeypatch, captu
         return {"style": "pop", "segments": []}
 
     monkeypatch.setattr(projects_mod, "_run_caption_pipeline", fake_pipeline)
+    # A whisper weight is installed (the route 503s without one), whatever the host has.
+    monkeypatch.setattr(projects_mod, "whisper_model_missing", lambda model: None)
 
     class _FakeRequest:
         def __init__(self):

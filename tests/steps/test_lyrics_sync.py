@@ -36,8 +36,9 @@ def test_default_model_is_turbo():
 
 
 def test_model_goes_through_resolve_whisper_model(tmp_path, monkeypatch):
-    """lyrics_sync picks its weight via resolve_whisper_model, so a requested
-    model that is not installed falls back like every other whisper step."""
+    """lyrics_sync picks its weight via require_whisper_model (resolve_whisper_model
+    plus the missing-model check), so a requested model that is not installed
+    falls back like every other whisper step."""
     mod = _load_step()
     audio = tmp_path / "vocals.wav"
     audio.write_bytes(b"x")
@@ -50,7 +51,7 @@ def test_model_goes_through_resolve_whisper_model(tmp_path, monkeypatch):
         calls.append((model, language))
         raise _Stop()
 
-    monkeypatch.setattr(mod, "resolve_whisper_model", fake_resolve)
+    monkeypatch.setattr(mod, "require_whisper_model", fake_resolve)
     monkeypatch.setattr(sys, "argv", [
         "lyrics_sync.py", "--input", str(audio), "--lyrics", str(lyrics),
         "--model", "base.en", "--language", "es",

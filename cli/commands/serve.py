@@ -4,7 +4,7 @@ import os
 import sys
 
 from cli.main import add_global_flags
-from cli.deps import check_deps, check_ui, ensure_runtime_cache_fresh
+from cli.deps import check_fatal_deps, check_nonfatal_deps, check_ui, ensure_runtime_cache_fresh
 from cli.help import bold, green, yellow, cyan, dim, red
 
 
@@ -39,13 +39,17 @@ def register(subparsers):
 def handle(args):
     import uvicorn
 
-    missing = check_deps()
+    missing = check_fatal_deps()
     if missing:
         print(red("error: missing dependencies:"), file=sys.stderr)
         for m in missing:
             print(red(f"  • {m}"), file=sys.stderr)
         print(f"\nRun: {bold('montaj install')}", file=sys.stderr)
         sys.exit(1)
+    # The whisper model is not fatal: serve starts, and the whisper steps fail
+    # with whisper_model_missing until it is installed.
+    for m in check_nonfatal_deps():
+        print(yellow(f"warning: {m}; speech steps fail until it is installed"), file=sys.stderr)
 
     headless = args.headless or os.environ.get("MONTAJ_HEADLESS") == "1"
 

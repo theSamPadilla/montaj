@@ -109,9 +109,7 @@ def test_transcribe_single_whisper_invocation(transcribe_module, monkeypatch, tm
     # whisper itself goes through run_whisper (the runaway guard, PV27 follow-up).
     monkeypatch.setattr(transcribe_module, "run_whisper", lambda cmd, audio, check=False: fake_run(cmd))
     monkeypatch.setattr(transcribe_module, "find_whisper_bin", lambda: "whisper-cli")
-    monkeypatch.setattr(transcribe_module._models, "model_path",
-                        lambda family, name: str(tmp_path / name))
-    monkeypatch.setattr(transcribe_module, "require_file", lambda path: None)
+    _stub_weights(monkeypatch, tmp_path, "large-v3-turbo-q5_0")
 
     out_prefix = str(tmp_path / "out")
     monkeypatch.setattr(sys, "argv",
@@ -124,11 +122,23 @@ def test_transcribe_single_whisper_invocation(transcribe_module, monkeypatch, tm
     assert "--output-json" in argv, "--output-json missing from whisper call"
 
 
-def _capture_whisper_cmd(transcribe_module, monkeypatch, tmp_path, argv):
+def _stub_weights(monkeypatch, tmp_path, *names):
+    """Point every whisper weight lookup at tmp_path/<name> (no legacy dir) and
+    install exactly ``names``, so a test never depends on the host's weights."""
+    import common
+    import models
+    monkeypatch.setattr(models, "model_path", lambda family, name: str(tmp_path / name))
+    monkeypatch.setattr(common, "LEGACY_WHISPER_DIR", str(tmp_path / "no-legacy"))
+    for name in names:
+        (tmp_path / f"ggml-{name}.bin").write_bytes(b"x")
+
+
+def _capture_whisper_cmd(transcribe_module, monkeypatch, tmp_path, argv,
+                         weights=("large-v3-turbo-q5_0",)):
     """Run transcribe.main() in-process with whisper stubbed; return the whisper command.
 
-    model_path is stubbed to tmp_path/<name> and require_file is a no-op, so the
-    test never depends on real whisper weights being installed.
+    Weight lookups are stubbed to tmp_path with only ``weights`` installed (see
+    _stub_weights), so the test never depends on real whisper weights.
     """
     calls = []
 
@@ -147,9 +157,7 @@ def _capture_whisper_cmd(transcribe_module, monkeypatch, tmp_path, argv):
     # whisper itself goes through run_whisper (the runaway guard, PV27 follow-up).
     monkeypatch.setattr(transcribe_module, "run_whisper", lambda cmd, audio, check=False: fake_run(cmd))
     monkeypatch.setattr(transcribe_module, "find_whisper_bin", lambda: "whisper-cli")
-    monkeypatch.setattr(transcribe_module._models, "model_path",
-                        lambda family, name: str(tmp_path / name))
-    monkeypatch.setattr(transcribe_module, "require_file", lambda path: None)
+    _stub_weights(monkeypatch, tmp_path, *weights)
 
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"\x00" * 16)
@@ -172,19 +180,17 @@ def test_transcribe_no_max_context_by_default(transcribe_module, monkeypatch, tm
 
 
 def test_transcribe_non_english_upgrades_en_model(transcribe_module, monkeypatch, tmp_path):
-    # Install the multilingual sibling so resolve_whisper_model's file-existence
-    # loop actually finds it (not just the bare-sibling fallback) — model_path is
-    # stubbed to tmp_path/<name> by the helper.
-    (tmp_path / "ggml-base.bin").write_bytes(b"x")
+    # Install only the multilingual sibling so resolve_whisper_model's
+    # file-existence loop actually finds it (not just the bare-sibling fallback).
     cmd = _capture_whisper_cmd(transcribe_module, monkeypatch, tmp_path,
-                               ["--model", "base.en", "--language", "es"])
+                               ["--model", "base.en", "--language", "es"], weights=("base",))
     model_path = cmd[cmd.index("-m") + 1]
     assert os.path.basename(model_path) == "ggml-base.bin"  # base.en -> base (multilingual)
 
 
 def test_transcribe_english_keeps_en_model(transcribe_module, monkeypatch, tmp_path):
     cmd = _capture_whisper_cmd(transcribe_module, monkeypatch, tmp_path,
-                               ["--model", "base.en", "--language", "en"])
+                               ["--model", "base.en", "--language", "en"], weights=("base.en",))
     model_path = cmd[cmd.index("-m") + 1]
     assert os.path.basename(model_path) == "ggml-base.en.bin"
 
@@ -203,9 +209,7 @@ def test_transcribe_runs_whisper_under_the_runaway_guard(transcribe_module, monk
 
     monkeypatch.setattr(transcribe_module, "run_whisper", fake_run_whisper)
     monkeypatch.setattr(transcribe_module, "find_whisper_bin", lambda: "whisper-cli")
-    monkeypatch.setattr(transcribe_module._models, "model_path",
-                        lambda family, name: str(tmp_path / name))
-    monkeypatch.setattr(transcribe_module, "require_file", lambda path: None)
+    _stub_weights(monkeypatch, tmp_path, "large-v3-turbo-q5_0")
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"\x00" * 16)
     monkeypatch.setattr(sys, "argv", ["transcribe.py", "--input", str(audio), "--out", str(tmp_path / "out")])

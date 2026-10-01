@@ -28,7 +28,7 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 MONTAJ_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", ".."))
 
 sys.path.insert(0, os.path.join(MONTAJ_ROOT, "lib"))
-from common import fail, run, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES, whisper_runaway_timeout_for  # noqa: E402
+from common import fail, run, require_whisper_model, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES, whisper_runaway_timeout_for  # noqa: E402
 
 sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
@@ -88,6 +88,10 @@ def main():
             project = json.load(f)
     except Exception:
         fail("project_not_found", f"project.json for {args.project_id} not found")
+
+    # Before mixing: no weight fails as whisper_model_missing here, rather than
+    # surfacing later inside transcribe's unexpected_error.
+    require_whisper_model(args.model, args.language)
 
     try:
         mix_spec = build_audio_mix_spec(project)

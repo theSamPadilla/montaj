@@ -62,3 +62,25 @@ def test_resolve_source_unknown_absolute_path_not_mislabeled(tmp_path, monkeypat
     assert "managed:" not in result
     assert "bundled" not in result
     assert resolved in result
+
+
+def test_doctor_still_reports_the_missing_whisper_model(tmp_path, monkeypatch, capsys):
+    # serve now starts without the model (PL20); doctor must keep naming it.
+    import types
+    import models as _models
+    from cli import deps
+
+    monkeypatch.setattr(_models, "MONTAJ_MODELS_DIR", str(tmp_path / "models"))
+    monkeypatch.setattr(deps, "LEGACY_WHISPER_MODELS_DIR", str(tmp_path / "legacy"))
+    monkeypatch.setattr(doctor, "whisper_bin_path", lambda: "/fake/whisper-cli")
+    monkeypatch.setattr(doctor, "_check_av_binary", lambda name, resolved: (f"/fake/{name}", name))
+    monkeypatch.setattr(doctor, "_check_ffmpeg_filters",
+                        lambda path: (doctor.REQUIRED_FFMPEG_FILTERS, [], []))
+    monkeypatch.setattr(doctor, "_check_binary", lambda name: (f"/fake/{name}", name))
+    monkeypatch.setattr(doctor, "check_ui", lambda: ("dev", None))
+
+    doctor.handle(types.SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert "model: large-v3-turbo-q5_0" in out
+    assert "not downloaded" in out

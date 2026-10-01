@@ -37,6 +37,11 @@ def _av_ok(resolved: str) -> bool:
 
 def check_deps() -> list[str]:
     """Return a list of missing dependency descriptions. Empty = all good."""
+    return check_fatal_deps() + check_nonfatal_deps()
+
+
+def check_fatal_deps() -> list[str]:
+    """The missing dependencies `montaj serve` cannot start without."""
     missing = []
 
     if not (_av_ok(ffmpeg_bin()) and _av_ok(ffprobe_bin())):
@@ -45,10 +50,16 @@ def check_deps() -> list[str]:
     if not whisper_bin_path():
         missing.append("whisper.cpp binary not found")
 
-    if not (whisper_model_path() or whisper_model_path(LEGACY_DEFAULT_WHISPER_MODEL)):
-        missing.append(f"whisper model '{WHISPER_MODEL}' not downloaded")
-
     return missing
+
+
+def check_nonfatal_deps() -> list[str]:
+    """Missing dependencies `montaj serve` starts without: the whisper model.
+    The Montaj App downloads it after launch; until then the whisper steps fail
+    with `whisper_model_missing`."""
+    if not (whisper_model_path() or whisper_model_path(LEGACY_DEFAULT_WHISPER_MODEL)):
+        return [f"whisper model '{WHISPER_MODEL}' not downloaded"]
+    return []
 
 
 def whisper_model_path(model: str = WHISPER_MODEL) -> str | None:

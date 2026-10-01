@@ -2,6 +2,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 
 from cli import deps
@@ -583,7 +585,8 @@ from cli.commands import serve as serve_cmd
 
 def _serve(monkeypatch):
     started = []
-    monkeypatch.setattr(serve_cmd, "check_deps", lambda: [])
+    monkeypatch.setattr(serve_cmd, "check_fatal_deps", lambda: [])
+    monkeypatch.setattr(serve_cmd, "check_nonfatal_deps", lambda: [])
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: started.append(1))
     monkeypatch.delenv("MONTAJ_HEADLESS", raising=False)
     monkeypatch.setenv("MONTAJ_SERVE_PORT", "3999")  # handle() sets it; restore after
@@ -640,3 +643,70 @@ def test_serve_startup_skips_dev_checkout(tmp_path, monkeypatch):
 
     assert _serve(monkeypatch) == [1]
     assert calls == []
+
+
+# ── serve without the whisper model (PL20) ───────────────────────────────────
+# The Montaj App starts `serve` before its whisper model has been downloaded.
+# A missing model must not stop serve; a missing ffmpeg/ffprobe or whisper
+# binary still does. These run the real dep checks against a scratch HOME.
+
+def _scratch_deps(tmp_path, monkeypatch, *, whisper_binary):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(_models, "MONTAJ_MODELS_DIR", str(tmp_path / "models"))
+    monkeypatch.setattr(deps, "LEGACY_WHISPER_MODELS_DIR", str(tmp_path / "legacy"))
+    monkeypatch.setattr(deps, "_av_ok", lambda resolved: True)
+    monkeypatch.setattr(deps.shutil, "which", lambda name: None)
+    if whisper_binary:
+        binary = Path(_models.model_path("whisper", common._exe("whisper-cli")))
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"fake binary")
+
+
+def _serve_headless(monkeypatch):
+    started = []
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: started.append(1))
+    monkeypatch.delenv("MONTAJ_HEADLESS", raising=False)
+    monkeypatch.setenv("MONTAJ_SERVE_PORT", "3999")  # handle() sets it; restore after
+    args = types.SimpleNamespace(port=3999, network=False, debug=False, headless=True)
+    serve_cmd.handle(args)
+    return started
+
+
+def test_serve_starts_without_the_whisper_model(tmp_path, monkeypatch, capsys):
+    _scratch_deps(tmp_path, monkeypatch, whisper_binary=True)
+
+    assert _serve_headless(monkeypatch) == [1]
+    err = capsys.readouterr().err
+    assert "missing dependencies" not in err
+    assert "warning" in err and TURBO_MISSING in err
+
+
+def test_serve_still_refuses_without_the_whisper_binary(tmp_path, monkeypatch, capsys):
+    _scratch_deps(tmp_path, monkeypatch, whisper_binary=False)
+
+    with pytest.raises(SystemExit) as exc:
+        _serve_headless(monkeypatch)
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "whisper.cpp binary not found" in err
+
+
+def test_serve_still_refuses_without_ffmpeg(tmp_path, monkeypatch, capsys):
+    _scratch_deps(tmp_path, monkeypatch, whisper_binary=True)
+    monkeypatch.setattr(deps, "_av_ok", lambda resolved: False)
+
+    with pytest.raises(SystemExit) as exc:
+        _serve_headless(monkeypatch)
+    assert exc.value.code == 1
+    assert "ffmpeg / ffprobe not found" in capsys.readouterr().err
+
+
+def test_check_deps_still_lists_the_missing_model(tmp_path, monkeypatch):
+    # `check_deps()` keeps reporting every missing item, the model included;
+    # only serve's gate stops treating the model as fatal.
+    _scratch_deps(tmp_path, monkeypatch, whisper_binary=True)
+
+    assert deps.check_deps() == [TURBO_MISSING]

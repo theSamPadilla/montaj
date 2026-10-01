@@ -227,7 +227,9 @@ def wrap_output(stdout: str, schema: dict) -> dict:
 
 @router.get("/steps")
 async def list_steps():
-    return [schema for schema, _ in scan_steps().values()]
+    """Every step's schema, plus `runsWhisper` (`_runs_whisper`): a host that
+    gates whisper steps on the model being installed builds its list from this."""
+    return [{**schema, "runsWhisper": _runs_whisper(schema)} for schema, _ in scan_steps().values()]
 
 
 async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, timeout: int | None = None) -> dict:
