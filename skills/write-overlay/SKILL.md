@@ -90,9 +90,19 @@ When an overlay needs a background, prefer a solid semi-transparent color over `
 - **Frame-driven** — all animation must derive from `frame`. No `setTimeout`, `setInterval`, CSS `animation`, or `transition`.
 - **Transparent background (default)** — overlays render with a transparent background by default. Do not set `background` on the root element; it will obscure whatever is beneath it.
 - **Opaque overlays** — when `"opaque": true` is set on the item in project.json, the root element's CSS controls the entire frame. You may freely set `background`, gradients, images, or any CSS on the root. Use this for full-frame covers, title cards, and animation sections.
-- **Absolute positioning** — the component fills the full video frame (1080 on the short edge, aspect of `project.settings.resolution`). The Puppeteer viewport is always 1080-short-edge regardless of output resolution; the renderer upscales to the final video dimensions at compose time. Place elements with `position: absolute`. Author all `fontSize`, padding, and `width` values at 1080-design coordinates — they have one consistent meaning across every resolution the project might render at.
+- **Absolute positioning** — the component fills the full video frame (1080 on the short edge, aspect of `project.settings.resolution`). The Puppeteer viewport is always 1080-short-edge regardless of output resolution; the renderer captures it at the output's pixel density (see "Sharp at 4K" below). Place elements with `position: absolute`. Author all `fontSize`, padding, and `width` values at 1080-design coordinates — they have one consistent meaning across every resolution the project might render at.
 - **No side effects** — no API calls, no filesystem access, no global state mutations.
 - **`backdropFilter` caution** — `backdrop-filter: blur(...)` causes Chrome to create a separate GPU compositor layer that can be cached and replayed as a stale frame during rendering. Avoid putting `backdrop-filter` on any element whose children animate — the blur container will flash or freeze. See the track-splitting guidance below.
+
+### Sharp at 4K
+
+The renderer captures overlays at `deviceScaleFactor = output short edge / 1080`, between 1 and 2 (2 at 4K). Text, CSS and SVG come out sharp at every resolution with no work from you. Three things don't:
+
+- **Raster images:** supply at least 2× their displayed size (a logo shown 400 px wide needs an 800 px file), or use SVG. A 1× PNG is upscaled and soft at 4K.
+- **Three.js / WebGL:** render at `window.devicePixelRatio`. With `<Canvas>`, keep r3f's default `dpr` (it follows `devicePixelRatio`) and never pass `dpr={1}`. A raw `THREE.WebGLRenderer` needs `renderer.setPixelRatio(window.devicePixelRatio)`.
+- **2D `<canvas>`:** size the backing store in device pixels (`width={1080 * devicePixelRatio}`, CSS size unchanged), start `draw` with `ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)`, then draw in 1080 coordinates.
+
+**Never hard-code a 3840 or 2160 layout.** Author at the 1080 design canvas; the capture scale does the rest.
 
 ---
 

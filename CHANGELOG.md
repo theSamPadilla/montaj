@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (skills): `write-overlay` says how to stay sharp at 4K.** Overlays are authored on the 1080 design canvas and captured at `output short edge / 1080` (up to 2x), so text, CSS and SVG are already sharp. The skill's new "Sharp at 4K" section tells agents that raster images need at least 2x their displayed size (or SVG), that Three.js and WebGL must render at `window.devicePixelRatio` (keep r3f's default `dpr`, or call `renderer.setPixelRatio`), that a 2D canvas sizes its backing store in device pixels, and never to hard-code a 3840 layout. Its line saying the renderer upscales overlays at compose time is corrected.
+
 ## v5.18.2
 
 - **Fixed (serve): Export offers 1440p and 2160p for 4K footage in projects whose clips were written without source dimensions.** Agent-built projects add clip items with no `sourceWidth`/`sourceHeight` (only ingest recorded them), so the export dialog capped resolution at the project canvas. Opening a project, and saving one through `PUT /projects/{id}`, now probes the missing dimensions (rotation-aware, so a sideways iPhone clip is 1080x1920), writes them to `project.json` and broadcasts the update to an open editor. A project whose clips already carry dimensions is neither probed nor rewritten, and a clip that cannot be probed is left as it was.
