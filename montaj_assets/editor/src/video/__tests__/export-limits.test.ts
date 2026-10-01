@@ -145,6 +145,18 @@ describe('availableResolutionTiers', () => {
     expect(tiers.some(([w, h]) => Math.min(w, h) === 2160)).toBe(true)
   })
 
+  it.each([[1080, 1920], [1920, 1080]] as Array<[number, number]>)(
+    'offers 1440 and 2160 for a 3840x2160 clip on a %ix%i canvas',
+    (w, h) => {
+      const p = makeProject({
+        settings: { resolution: [w, h] },
+        tracks: vtracks([videoClip({ sourceWidth: 3840, sourceHeight: 2160 })]),
+      })
+      const shorts = availableResolutionTiers(p).map(([tw, th]) => Math.min(tw, th))
+      expect(shorts).toEqual([720, 1080, 1440, 2160])
+    },
+  )
+
   it('filters against the project own short-side when there are no video clips', () => {
     const p = makeProject({ settings: { resolution: [1080, 1920] }, tracks: vtracks([]) })
     const tiers = availableResolutionTiers(p)

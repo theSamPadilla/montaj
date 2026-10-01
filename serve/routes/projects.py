@@ -1704,6 +1704,86 @@ def _look_migration_items(project: dict):
                 yield item
 
 
+# Strong refs to in-flight detached source-dims tasks (see ensure_source_dims).
+_source_dims_task_refs: set = set()
+
+_SOURCE_DIMS_PROBE_CONCURRENCY = 4
+
+
+def _positive_dim(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+async def ensure_source_dims(
+    project_id: str,
+    project_dir: Path,
+    project: dict,
+    broadcaster: "SSEBroadcaster | None" = None,
+) -> dict:
+    """Backfill `sourceWidth`/`sourceHeight` on video items that lack them, and
+    return the project to serve: `project` itself when nothing changed.
+
+    Agent-built projects write clip items without dims (only ingest records
+    them), and the editor's export dialog caps resolution at the canvas when
+    they are missing. Dims are the rotation-aware display size
+    (lib.normalize.probe_video), probed once per unique src off the event loop,
+    at most a few at a time. Items whose src is not an existing absolute file,
+    or whose probe fails, are left as they are. Nothing is probed or written
+    when every item already has dims. The edits land in one
+    `_apply_project_edits` write (re-reads project.json, safe against a
+    concurrent PUT) and are broadcast over SSE.
+
+    Never raises: a project must always open."""
+    try:
+        return await _ensure_source_dims(project_id, project_dir, project, broadcaster) or project
+    except Exception:
+        return project
+
+
+async def _ensure_source_dims(
+    project_id: str,
+    project_dir: Path,
+    project: dict,
+    broadcaster: "SSEBroadcaster | None",
+) -> dict | None:
+    from lib.normalize import probe_video
+
+    owed = [
+        item for item in _look_migration_items(project)
+        if not (_positive_dim(item.get("sourceWidth")) and _positive_dim(item.get("sourceHeight")))
+        and isinstance(item["src"], str) and os.path.isabs(item["src"]) and os.path.isfile(item["src"])
+    ]
+    if not owed:
+        return None
+    sem = asyncio.Semaphore(_SOURCE_DIMS_PROBE_CONCURRENCY)
+
+    async def _probe(src: str):
+        async with sem:
+            try:
+                info = await asyncio.to_thread(probe_video, src)
+            except Exception:
+                return src, None
+        w = (info or {}).get("display_width")
+        h = (info or {}).get("display_height")
+        return src, (w, h) if _positive_dim(w) and _positive_dim(h) else None
+
+    probed = dict(await asyncio.gather(*(_probe(src) for src in dict.fromkeys(i["src"] for i in owed))))
+    edits: list[tuple] = []
+    for item in owed:
+        dims = probed.get(item["src"])
+        if dims:
+            edits.append((item.get("id"), item["src"], "sourceWidth", dims[0]))
+            edits.append((item.get("id"), item["src"], "sourceHeight", dims[1]))
+    if not edits:
+        return None
+    result = _apply_project_edits(project_dir / "project.json", edits)
+    if result is None:
+        return None
+    if broadcaster is not None:
+        broadcaster.publish(project_id, _sse_data_frame(result[1]))
+    return result[0]
+
+
 async def migrate_project_look(
     project_id: str,
     project_dir: Path,
@@ -2212,6 +2292,10 @@ async def get_project(project_id: str, request: Request = None, project_dir: Pat
     # the originals it switched to. Best-effort, never raises.
     project = await ensure_project_color_provenance(project_id, project_dir, project, broadcaster)
 
+    # Clips written without source dims (agents, PUT) get them probed and saved,
+    # so the export dialog can offer the resolutions the footage supports.
+    project = await ensure_source_dims(project_id, project_dir, project, broadcaster)
+
     # A project still owed background colour conversions (see
     # `_ensure_background_normalize`): join what is queued, restart what a serve
     # restart dropped. Best-effort — a project must always open.
@@ -2570,6 +2654,12 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
     # Only relevant when this body could have touched a video item's (id, src).
     if "tracks" in body or "sources" in body:
         await _queue_previews_for_changed_items(project_id, project_dir, existing, merged, broadcaster)
+    # Probe dims for clips this save wrote without them. Detached: the PUT never
+    # waits on ffprobe; the heal's SSE frame updates an open editor.
+    if "tracks" in body or "sources" in body:
+        dims_task = asyncio.create_task(ensure_source_dims(project_id, project_dir, merged, broadcaster))
+        _source_dims_task_refs.add(dims_task)
+        dims_task.add_done_callback(_source_dims_task_refs.discard)
     # Auto-commit to git on status transitions — run in a thread so it doesn't block the event loop
     new_status = merged.get("status")
     if new_status in ("draft", "final") and new_status != prev_status:

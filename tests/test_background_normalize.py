@@ -132,7 +132,7 @@ def _make_project(workspace: Path, *, lazy: bool = True,
     if lazy:
         settings["normalize"] = "lazy"
     item = {"id": "clip-0", "type": "video", "src": str(src), "proxySrc": str(old_proxy),
-            "start": 0.0, "end": 5.0, "inPoint": 0.0, "outPoint": 5.0}
+            "sourceWidth": 3840, "sourceHeight": 2160, "start": 0.0, "end": 5.0, "inPoint": 0.0, "outPoint": 5.0}
     project = {
         "id": PID, "version": "0.2", "status": "draft", "projectType": "video",
         "settings": settings,
