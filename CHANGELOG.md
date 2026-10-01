@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (editor): overlays rescale when the project's resolution changes while the editor is open.** See `montaj_assets/editor/CHANGELOG.md`.
+
 ## v5.17.6
 
 - **Fixed (editor): captions show in the preview on landscape projects.** The caption layer used a fixed 1080x1920 canvas, so on a 16:9 project it was about 1.78x too tall for the player and captions anchored near the bottom were clipped below the frame. It now uses the project's design canvas, the one the overlays use and the export captures captions at; caption drag and resize on landscape use it too. 9:16 is unchanged and the export was always correct. See `montaj_assets/editor/CHANGELOG.md`.

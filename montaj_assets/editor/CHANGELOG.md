@@ -4,6 +4,10 @@ All notable changes to `@bycrux/editor` are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+- **Fixed: overlays rescale when the project's resolution changes while the editor is open.** `PreviewPlayer` stored the overlay scale from a container observer set up once, so it kept the first render's design-canvas width after a resolution change. It now derives the scale from the observed width and the current canvas on every render (1 until the observer reports). Files: `video/preview/PreviewPlayer.tsx`, `video/preview/__tests__/PreviewPlayer.overlayScale.test.tsx` (new).
+
 ## 1.10.1
 
 - **Fixed: captions show in the preview on landscape projects.** `CaptionPreview` laid its caption layer out on a fixed 1080x1920 canvas scaled by the player's width / 1080. On a 1920x1080 project that layer was about 1.78x taller than the player, so a caption anchored 25% up from the bottom (every built-in style) sat below the frame and the wrapper's `overflow-hidden` clipped it. `CaptionPreview` now takes a required `designCanvas`, which `PreviewPlayer` passes as `getOverlayDesignCanvas(settings.resolution)`: the canvas the frame and the overlays are laid out on, and the one render.js captures captions at (1920x1080 for a 16:9 or 4K landscape project). Caption drag and resize use it too; on landscape a vertical drag saved about a third of the offset the pointer moved, since Y was measured against 1920. 9:16 is unchanged. Files: `video/preview/CaptionPreview.tsx`, `video/preview/PreviewPlayer.tsx`, `video/preview/__tests__/CaptionPreview.canvas.test.tsx` (new), `video/preview/__tests__/PreviewPlayer.captionCanvas.test.tsx` (new), `video/preview/__tests__/CaptionPreview.fonts.test.tsx`, `video/__tests__/captionPositioning.test.tsx`.

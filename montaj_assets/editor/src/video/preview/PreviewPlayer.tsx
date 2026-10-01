@@ -453,10 +453,14 @@ function PreviewSurface({
   }, [playback.isPlaying, hoverScrub, clock])
 
   const containerRef = useRef<HTMLDivElement>(null)
-  const [renderScale, setRenderScale] = useState<number>(1)
-  // Frame pixel size — used to compute the sourceCrop CSS transform that mirrors
-  // render's crop→contain. Tracked alongside renderScale from the same observer.
+  // Frame pixel size from the container observer — used to compute the sourceCrop
+  // CSS transform that mirrors render's crop→contain, and (with the current
+  // design canvas) the overlay scale.
   const [frameSize, setFrameSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
+  // Derived each render, not stored: the observer below is set up once, so a
+  // stored scale would keep the first render's canvas width after a resolution
+  // change. 1 until the observer reports.
+  const renderScale = frameSize.w ? frameSize.w / RENDER_W : 1
   // Intrinsic dims of the loaded source <video>, captured on loadedmetadata.
   // Falls back to a clip's own sourceWidth/sourceHeight when present.
   const [videoDims, setVideoDims] = useState<{ w: number; h: number } | null>(null)
@@ -466,7 +470,6 @@ function PreviewSurface({
     const el = containerRef.current
     if (!el) return
     const obs = new ResizeObserver(([entry]) => {
-      setRenderScale(entry.contentRect.width / RENDER_W)
       setFrameSize({ w: entry.contentRect.width, h: entry.contentRect.height })
     })
     obs.observe(el)
