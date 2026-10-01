@@ -649,7 +649,7 @@ complementary fades *is* the crossfade.
 
 **One track is one contiguous slice of one file.** There is no multi-segment cut list for audio; a track carries a single `inPoint`/`outPoint` pair. A voiceover that has been cut down (silence, non-speech, and fillers removed) is therefore materialized to a single file first — see `materialize_cut --audio` — rather than emitted as one track per surviving segment.
 
-**Ducking** auto-lowers a track under speech and raises it in pauses. `depth` is in dB (negative). `attack` and `release` are in seconds.
+**Ducking** auto-lowers a track under speech and raises it in pauses. `depth` is in dB (negative). `attack` and `release` are in seconds. Export clamps the compressor to ffmpeg's ratio range, so depths below about -26 dB duck the same as -26 dB (the editor preview does not play ducking back).
 
 ---
 

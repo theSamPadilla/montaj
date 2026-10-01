@@ -164,3 +164,30 @@ test('buildAudioTrackFilters: a fade-in is still emitted on a track with no `end
   const { filterParts } = buildAudioTrackFilters([track], 1, '[0:a]')
   assert.match(filterParts.find(p => p.includes('atrack0')), /afade=t=in:st=12:d=1:curve=exp/)
 })
+
+// ── ducking ratio stays inside ffmpeg's sidechaincompress range (1..20) ────
+// ratio = 10^(-depth/20) reached 1000 at depth -60 and ffmpeg rejected the
+// whole mix ("Value 1000.000000 for parameter 'ratio' out of range [1 - 20]").
+
+function duckRatio(depth) {
+  const track = { id: 't', src: 'a.mp3', start: 0, volume: 1, ducking: { enabled: true, ...(depth === undefined ? {} : { depth }) } }
+  const { filterParts } = buildAudioTrackFilters([track], 1, '[0:a]')
+  const m = /sidechaincompress=[^;]*?ratio=([0-9.]+)/.exec(filterParts.join(';'))
+  assert.ok(m, 'no sidechaincompress in graph')
+  return Number(m[1])
+}
+
+test('ducking ratio: depth -60 is clamped to ffmpeg\'s max of 20', () => {
+  assert.equal(duckRatio(-60), 20)
+  assert.equal(duckRatio(-200), 20)
+})
+test('ducking ratio: depths up to about -26 dB are unchanged, default -12 is still 4', () => {
+  assert.equal(duckRatio(undefined), 4)
+  assert.equal(duckRatio(-6), 2)
+  assert.equal(duckRatio(-20), 10)
+})
+test('ducking ratio: zero, positive and non-finite depths stay at or above the min of 1', () => {
+  assert.equal(duckRatio(0), 1)
+  assert.equal(duckRatio(6), 1)
+  assert.equal(duckRatio(NaN), 4)
+})

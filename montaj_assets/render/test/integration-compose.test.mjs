@@ -498,3 +498,38 @@ test('compose: settings.loudness -16 with an all-silent audio track renders (sil
   rmSync(bed, { force: true })
   rmSync(outputPath, { force: true })
 })
+
+test('compose: a ducked track at depth -60 renders (ratio clamped into ffmpeg\'s 1..20)', async () => {
+  const clip = join(tmp, 'montaj-test-duck60-clip.mp4')
+  const bed = join(tmp, 'montaj-test-duck60-bed.m4a')
+  const outputPath = join(tmp, 'montaj-compose-duck60.mp4')
+  rmSync(outputPath, { force: true })
+  spawnSync('ffmpeg', [
+    '-y', '-f', 'lavfi', '-i', 'testsrc=duration=2:size=640x360:rate=30',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2:sample_rate=48000',
+    '-c:v', 'libx264', '-c:a', 'aac', '-shortest', clip,
+  ], { encoding: 'utf8', timeout: 30_000 })
+  spawnSync('ffmpeg', [
+    '-y', '-f', 'lavfi', '-i', 'sine=frequency=220:duration=2:sample_rate=48000', '-c:a', 'aac', bed,
+  ], { encoding: 'utf8', timeout: 30_000 })
+
+  await compose({
+    projectJson: {
+      settings: { resolution: [640, 360], fps: 30 },
+      audio: { tracks: [{ id: 'bed', src: bed, start: 0, volume: 1, ducking: { enabled: true, depth: -60 } }] },
+    },
+    puppeteerSegments: [],
+    imageItems: [],
+    videoItems: [{
+      id: 'v', type: 'video', trackIdx: 0, src: clip, start: 0, end: 2,
+      inPoint: 0, outPoint: 2, offsetX: 0, offsetY: 0, scale: 1, opacity: 1, muted: false,
+    }],
+    outputPath,
+  })
+  assert.ok(existsSync(outputPath), 'output file should exist')
+  assert.equal(audioStreamCount(outputPath), 1)
+
+  rmSync(clip, { force: true })
+  rmSync(bed, { force: true })
+  rmSync(outputPath, { force: true })
+})
