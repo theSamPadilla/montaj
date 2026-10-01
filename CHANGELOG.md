@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.17.2
+
 - **Fixed (editor): a landscape project no longer plays squashed in the preview.** The preview frame was `h-full max-w-full` with an aspect ratio, so in an area narrower than the project's aspect (the editor with its side panels open) the width clamped, the height did not, and the frame stopped being W:H. The engine's canvas fills its frame, so every 16:9 project whose clips all have proxies played squeezed sideways (measured: a 16:9 frame in a 900x600 area came out 884x584, aspect 1.51), and overlays drifted off the picture on both preview paths. The frame is now contain-fitted and stays W:H in a parent of any shape. Portrait projects were never affected; the export was always correct. See `montaj_assets/editor/CHANGELOG.md`.
 
 ## v5.17.1
