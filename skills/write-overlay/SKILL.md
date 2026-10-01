@@ -42,6 +42,8 @@ The globals above stay the way to get `frame`, `fps`, `duration`, `props`, `inte
 
 **Never hardcode frame counts; projects can be 24, 30 or 60fps.** A literal like `[0, 10]` means a different real-world duration on every project — 10 frames is 0.33s at 30fps but 0.17s at 60fps, so an overlay copied between projects (or a 30fps example copied into a 60fps project, which is the current default) plays at the wrong speed. Always derive the frame count from `fps`: `Math.round(fps * 0.33)` for "about a third of a second," not `10`.
 
+**A project made without footage is 60fps until footage arrives.** The first video clip added to it sets the project's frame rate (and canvas) from that clip, once: a 60fps animation project that adds 30fps b-roll becomes 30fps. To keep 60, save `settings.fps: 60` once (a `PUT` of the project's settings). An fps set that way is never changed.
+
 ### Top-level vs component-body
 
 **All calls to `interpolate`, `spring`, and any read of `frame`, `fps`, `duration`, or `props` must be inside the component function body.** The module's top-level code runs before the render shim sets up these globals — calling them outside a function will throw `interpolate is not defined` and crash the entire render. The same goes for a shared module you import: it must export functions and read `frame`, `fps` and the other globals only inside them, because its top level runs before the globals are set.

@@ -71,8 +71,22 @@ The agent writes project.json as it works — every write pushes to the browser 
 |-------|------|-------------|
 | `resolution` | number[2] | Output resolution `[width, height]` in pixels. |
 | `fps` | number | Output frame rate. |
+| `resolutionSource` | string | Optional. Where `resolution` came from: `"explicit"` (`--resolution` at init, or a later save that changed it), `"footage"` (the clips' most common display size), or `"default"` (the aspect's default canvas, for a project created without footage). See *Canvas and frame rate from the first footage* below. |
+| `fpsSource` | string | Optional. Where `fps` came from, with the same three values: `"footage"` (the first probed clip's frame rate), `"default"` (a project created without footage, which starts at 60), or `"explicit"` (a later save that changed `fps`; init has no fps flag). |
 | `brandKit` | string | Brand kit name. |
 | `normalize` | string | Source normalization strategy. `"eager"` (default) — re-encodes the full source to a dense-keyframe, conformant file at import time. `"lazy"` — skips full-source normalization; instead each clip's `[inPoint, outPoint]` window is normalized on demand and cached as `normalizedSrc` on the track item. The `clips` workflow imports with `lazy` so large sources are not re-encoded up front. |
+
+### Canvas and frame rate from the first footage
+
+`project/init.py` writes `resolutionSource` and `fpsSource` on video projects (never on carousels). A project created with clips gets `"footage"` for both (or `"explicit"` for a `--resolution`). A project created without footage gets `"default"`: the aspect's default canvas and 60 fps.
+
+While a marker is `"default"`, serve heals it once, on `GET /projects/{id}` and after a `PUT /projects/{id}` that carries `tracks` or `sources` (`ensure_source_dims` in `serve/routes/projects.py`, with the shared rules in `lib/canvas.py`):
+
+- **Canvas.** Once a video item carries `sourceWidth`/`sourceHeight` (backfilled by the same pass when missing), `resolution` becomes the most common footage size, in track order, first appearance winning a tie, as init does. Footage of another aspect (more than 1% apart) keeps the canvas's aspect, scaled so its short side equals the footage's: a 9:16 canvas with 3840x2160 footage becomes 2160x3840.
+- **Frame rate.** `fps` becomes the first probeable clip's frame rate, in track order. A failed probe changes nothing, so a later open retries.
+- Each marker becomes `"footage"` in the same write, and that setting never changes again. The two markers are independent.
+
+**An explicit value always wins.** A `PUT` whose `settings.resolution` or `settings.fps` differs from the stored value sets that marker to `"explicit"`, and no heal touches it after that. A `PUT` whose `settings` leaves a marker out keeps the stored one. Projects made before these markers existed have neither and are never changed.
 
 ---
 
