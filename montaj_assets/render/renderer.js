@@ -454,8 +454,18 @@ async function renderChunk(browser, job) {
   // Motion blur off: args are exactly as before (render goldens depend on it).
   const blurVf = motionBlurFilter(subframes, { alpha: omitBackground })
   const inputRate = blurVf ? String(fps * subframes) : String(fps)
+  // Chrome writes a transparent capture's fully opaque frames as RGB PNG, the
+  // rest as RGBA. ffmpeg rebuilds the filter graph at each flip by default,
+  // and the blur graph is stateful: setpts=PTS-STARTPTS restarts at 0, so -r
+  // drops the rebuilt graph's frames as late until they catch up (an opaque
+  // card vanished from the segment). -reinit_filter 0 keeps one graph; premultiply takes planar
+  // formats only, so the scaler ffmpeg inserts ahead of it converts each frame.
+  // Not on the opaque path: its captures are always RGB, and tmix there reads
+  // the input format directly, so a flip would be misread rather than converted.
+  const keepGraph = blurVf && omitBackground ? ['-reinit_filter', '0'] : []
   await spawnAsync(FFMPEG, [
     '-y',
+    ...keepGraph,
     '-framerate',           inputRate,
     '-i',                   join(frameDir, 'frame-%06d.png'),
     ...(blurVf ? ['-vf', blurVf, '-r', String(fps)] : []),

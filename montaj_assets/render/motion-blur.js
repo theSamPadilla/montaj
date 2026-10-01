@@ -24,6 +24,9 @@ export function subframeTimes(frame, n) {
 // alpha: the capture has a transparent background. Averaging straight-alpha
 // RGBA mixes the transparent pixels' black RGB into the edges (dark fringes on
 // composite), so average premultiplied colour and unpremultiply afterwards.
+// renderer.js runs the alpha graph with -reinit_filter 0, which is safe only
+// while a converter heads the graph: premultiply's planar-only input puts one
+// there. Keep one first if this changes.
 export function motionBlurFilter(n, { alpha = false } = {}) {
   if (n <= 1) return null
   const select = `select='eq(mod(n\\,${n})\\,${n - 1})',setpts=PTS-STARTPTS`
