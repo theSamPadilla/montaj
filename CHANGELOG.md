@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.18.1
+
 - **Fixed (render): an overlay image named by a host's files URL draws in the export.** The editor preview loads a prop holding `/api/files?path=<absolute path>` (what the app's and serve's `fileUrl` make of a path) as that file; the render read the same string as a filesystem path, so the image came out blank with no error, at the top level of props or in a list. The render now loads the file such a URL names, at any depth (lists, lists of lists, objects), and names it for the read boundary and the sample cache. Any other `/api/` string is left as it is, as the preview leaves it. Absolute paths in lists already rendered and are unchanged. The sample cache version is 8, so a blank sample cached before is not served again. Preview and render are held to one table, `render/test/fixtures/overlay-prop-files.json`; pinned by `render/test/prop-file-paths.test.mjs` and `overlay-prop-images.integration.test.mjs`.
 
 ## v5.18.0
