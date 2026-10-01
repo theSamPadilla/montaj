@@ -4,7 +4,7 @@ All notable changes to `@bycrux/editor` are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 2.0.1
 
 - **Fixed: layered audio tracks no longer get a whole-length crossfade on open.** `computeAutoCrossfade` crossfaded any two time-overlapping audio tracks, so a music bed plus sfx both spanning the film got `fadeOut`/`fadeIn` equal to the whole overlap the moment the project opened. Only a sequential overlap (the earlier track starts first and ends first) crossfades now; containment and identical spans are layering and keep their fades. It also tests every later track starting inside a track, not just the next neighbour, so a layered track sorted between a real pair no longer hides it; a track in two pairs takes the longer overlap per side. Projects already written with the old fades are left as they are. Files: `video/timeline/timeline-model.ts`, `video/timeline/__tests__/timeline-model.test.ts`.
 
