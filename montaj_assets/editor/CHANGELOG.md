@@ -4,7 +4,7 @@ All notable changes to `@bycrux/editor` are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 1.10.0
 
 - **Added: `onProvideSeek` lets a host move the playhead, on `VideoEditor`.** It is called with a stable `seek(sec)`, like `onProvideRenderTrigger`. The seek goes through the editor's own clock, clamped to [0, duration], works playing or paused and never starts playback. The editor still does not seek on a pin click by itself; a host wires `onPinClick` to it. Files: `types.ts`, `video/VideoEditor.tsx`, `video/__tests__/VideoEditor.test.tsx`.
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.17.5
+
 - **Added (editor): `onProvideSeek` lets a host move the playhead.** `VideoEditor` calls it once with a stable `seek(sec)`, clamped to the project, never starting playback. See `montaj_assets/editor/CHANGELOG.md`.
 
 ## v5.17.4
