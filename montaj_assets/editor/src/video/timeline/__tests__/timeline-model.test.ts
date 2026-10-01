@@ -143,6 +143,104 @@ describe('computeAutoCrossfade', () => {
     expect(computeAutoCrossfade(first!)).toBeNull()
   })
 
+  // Layering vs crossfade. A music bed under sfx of the same span is layering;
+  // the old any-overlap rule wrote fadeOut/fadeIn = the whole film on open.
+  const fades = (p: Project | null, src: Project) =>
+    (p ?? src).audio!.tracks.map(t => [t.id, t.fadeIn ?? 0, t.fadeOut ?? 0])
+
+  it('does not fade a bed and sfx with identical full-length spans', () => {
+    const p = project({
+      audio: { tracks: [track({ id: 'bed', start: 0, end: 75.43 }), track({ id: 'sfx', start: 0, end: 75.43 })] },
+    })
+    expect(computeAutoCrossfade(p)).toBeNull()
+  })
+
+  it('does not fade a track contained inside another', () => {
+    const p = project({
+      audio: { tracks: [track({ id: 'music', start: 0, end: 75 }), track({ id: 'sfx', start: 10, end: 20 })] },
+    })
+    expect(computeAutoCrossfade(p)).toBeNull()
+  })
+
+  it('still crossfades a real sequential pair (0..30 then 28..60 gets 2s each)', () => {
+    const p = project({
+      audio: { tracks: [track({ id: 'a', start: 0, end: 30 }), track({ id: 'b', start: 28, end: 60 })] },
+    })
+    const next = computeAutoCrossfade(p)!
+    expect(fades(next, p)).toEqual([['a', 0, 2], ['b', 2, 0]])
+  })
+
+  it('mixed: bed + sfx layered under a sequential music pair, only the pair crossfades', () => {
+    const p = project({
+      audio: {
+        tracks: [
+          track({ id: 'bed', start: 0, end: 75 }),
+          track({ id: 'sfx', start: 0, end: 75 }),
+          track({ id: 'a', start: 10, end: 40 }),
+          track({ id: 'b', start: 38, end: 70 }),
+        ],
+      },
+    })
+    const next = computeAutoCrossfade(p)!
+    expect(fades(next, p)).toEqual([['bed', 0, 0], ['sfx', 0, 0], ['a', 0, 2], ['b', 2, 0]])
+  })
+
+  it('finds a sequential pair even when a layered track sorts between its two halves', () => {
+    const p = project({
+      audio: {
+        tracks: [
+          track({ id: 'a', start: 10, end: 40 }),
+          track({ id: 'sfx', start: 12, end: 30 }), // inside a, sorts between a and b
+          track({ id: 'b', start: 38, end: 70 }),
+        ],
+      },
+    })
+    const next = computeAutoCrossfade(p)!
+    expect(fades(next, p)).toEqual([['a', 0, 2], ['sfx', 0, 0], ['b', 2, 0]])
+  })
+
+  it('is idempotent with several pairs: a second pass over its own output returns null', () => {
+    const p = project({
+      audio: {
+        tracks: [
+          track({ id: 'bed', start: 0, end: 75 }),
+          track({ id: 'a', start: 10, end: 40 }),
+          track({ id: 'sfx', start: 12, end: 30 }),
+          track({ id: 'b', start: 38, end: 70 }),
+          track({ id: 'c', start: 39, end: 80 }),
+        ],
+      },
+    })
+    const first = computeAutoCrossfade(p)!
+    expect(first).not.toBeNull()
+    expect(computeAutoCrossfade(first)).toBeNull()
+  })
+
+  it('opening writes nothing when stored fades already equal the derived values', () => {
+    const p = project({
+      audio: {
+        tracks: [
+          track({ id: 'bed', start: 0, end: 75 }),
+          track({ id: 'a', start: 10, end: 40, fadeOut: 2 }),
+          track({ id: 'b', start: 38, end: 70, fadeIn: 2 }),
+        ],
+      },
+    })
+    expect(computeAutoCrossfade(p)).toBeNull()
+  })
+
+  it('leaves a project poisoned by the old rule as is (no cleanup of whole-overlap fades on layered tracks)', () => {
+    const p = project({
+      audio: {
+        tracks: [
+          track({ id: 'bed', start: 0, end: 75.43, fadeOut: 75.4 }),
+          track({ id: 'sfx', start: 0, end: 75.43, fadeIn: 75.4 }),
+        ],
+      },
+    })
+    expect(computeAutoCrossfade(p)).toBeNull()
+  })
+
   it('ignores overlap when either track is muted', () => {
     const p = project({
       audio: {

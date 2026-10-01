@@ -647,16 +647,20 @@ Independent audio tracks, mixed into the video in a final pass. Every audio sour
 | `magnetic` | bool | When set, this track's whole **lane** is kept gapless — no gaps and **no overlaps**. Fanned out across the lane like `muted`: a lane counts as magnetic only when every track in it sets it, so toggling it makes the whole row magnetic at once. **A magnetic lane can never crossfade**, because a crossfade requires the overlap magnetism removes. Dragging a track onto a magnetic row in the editor makes it inherit that row's magnet state. |
 | `ducking` | object | `{ enabled, depth, attack, release }` — see below. |
 
-**Automatic crossfade.** When two audio tracks overlap in time, the editor sets
-the outgoing track's `fadeOut` and the incoming track's `fadeIn` to the overlap
-duration (rounded to 0.1s), producing a symmetric crossfade. This happens on any
+**Automatic crossfade.** When two audio tracks overlap **sequentially** (the
+earlier starts first and ends first, `a.start < b.start` and `a.end < b.end`),
+the editor sets the outgoing track's `fadeOut` and the incoming track's `fadeIn`
+to the overlap duration (rounded to 0.1s), producing a symmetric crossfade.
+**Layered tracks never crossfade:** one track inside the other, or identical
+spans, is layering, so a full-length music bed under full-length sfx keeps its
+own fades. A track in two sequential pairs takes the longer overlap per side. This happens on any
 audio change with no user gesture, so **a hand-authored fade on an overlapping
 pair will be overwritten** — write the overlap you want and let the fades be
 derived, rather than authoring mismatched fades and expecting them to survive.
 Non-overlapping fades (a track's outer fade-in at the top of the timeline, or
 fade-out at the end) are left alone. The pairing is computed across all audio
 tracks sorted by `start`, independent of `lane`, so tracks on different rows
-still crossfade with each other. Muted tracks are skipped. Implemented by
+still crossfade with each other when their overlap is sequential. Muted tracks are skipped. Implemented by
 `computeAutoCrossfade` in the editor; the render side needs nothing special,
 since `mix-audio.js` emits a per-track `afade` either way and the sum of two
 complementary fades *is* the crossfade.

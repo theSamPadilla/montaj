@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (editor): layered audio tracks no longer get a whole-length crossfade on open.** `computeAutoCrossfade` treated any two time-overlapping audio tracks as a crossfade pair, so a music bed and an sfx track both spanning 0..75.43 got fadeOut 75.4 and fadeIn 75.4 written to project.json the moment the project opened (every Hub template layering music and sfx). Only a sequential overlap (earlier track starts first and ends first) crossfades now; containment and identical spans keep their own fades, and a layered track sorted between a real pair no longer hides it. A project already written with the old whole-overlap fades is not cleaned up. Pinned by the new `computeAutoCrossfade` cases in `montaj_assets/editor/src/video/timeline/__tests__/timeline-model.test.ts`. (`timeline-model.ts`, `docs/schemas/project.md`)
+
 ## v5.19.0
 
 - **Fixed (normalize): `normalize` on a silent clip failed with ffmpeg's "Result too large".** ffmpeg measures digital silence as `input_i` -inf, and the second pass handed `measured_I=-inf` straight back to `loudnorm`, which rejects it. A clip measured at or under loudnorm's -70 LUFS gate is now passed through unchanged (stream copy) and the step succeeds; audible clips normalize as before and `--measure-only` is untouched. Pinned by `test_normalize_silent_input_is_left_alone_not_an_ffmpeg_error` in `tests/steps/test_normalize.py`. (`steps/media/normalize.py`)

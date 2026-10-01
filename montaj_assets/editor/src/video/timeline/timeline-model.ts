@@ -558,9 +558,10 @@ export function computeDerivedTiming(project: Project): DerivedTiming {
 // ── Auto-crossfade ───────────────────────────────────────────────────────
 
 /**
- * Auto-crossfade: when two audio tracks overlap, apply fade-out on the
- * earlier track and fade-in on the later one, each equal to the overlap
- * duration. Lifted out of Timeline's render-time effect — previously a
+ * Auto-crossfade: when two audio tracks overlap SEQUENTIALLY (the earlier
+ * starts first and ends first), apply fade-out on the earlier track and
+ * fade-in on the later one, each equal to the overlap duration. Layered
+ * tracks (one inside the other, or identical spans) are left untouched. Lifted out of Timeline's render-time effect — previously a
  * hidden project mutation with no test coverage — so the canvas timeline
  * (T4) can't silently drop the behavior.
  *
@@ -588,31 +589,40 @@ export function computeAutoCrossfade(project: Project): Project | null {
   let changed = false
   const updated = sorted.map(t => ({ ...t }))
 
-  // We only auto-set fades where overlap exists
-  for (let i = 0; i < updated.length - 1; i++) {
+  // Only a SEQUENTIAL overlap is a crossfade: `a` starts first AND ends first
+  // (a.start < b.start, a.end < b.end, a.end > b.start). Containment and
+  // identical spans are LAYERING (a music bed under sfx) and never fade: the
+  // old rule faded any time-overlap, so a full-length bed plus full-length sfx
+  // got fadeOut/fadeIn equal to the whole film written on open.
+  //
+  // Every later track that starts inside `a` is tested, not just the next
+  // neighbour: a layered track sorted between a real pair must not hide it.
+  // A track in two pairs takes the LONGEST overlap per side, computed before
+  // any write, so the result does not depend on pair order and stays
+  // idempotent (last-write-wins would re-change on every run).
+  const outTarget = new Map<number, number>()
+  const inTarget = new Map<number, number>()
+  for (let i = 0; i < updated.length; i++) {
     const a = updated[i]
-    const b = updated[i + 1]
-    if (a.end > b.start && !a.muted && !b.muted) {
-      // Overlap detected. Round ONCE and compare against the rounded value —
-      // comparing against the raw `overlap` made this non-idempotent whenever
-      // the overlap wasn't already a multiple of 0.1s (e.g. 0.37): the stored
-      // fade (0.4) would never equal the raw overlap (0.37), so `changed` was
-      // permanently true and this function kept reporting a change on a
-      // project it had already converged. Since Timeline.tsx's effect commits
-      // on every non-null result, that meant merely opening such a project
-      // wrote to disk and pushed a no-op undo entry, re-firing on every
-      // unrelated edit too.
-      const overlap = Math.min(a.end - b.start, a.end - a.start, b.end - b.start)
-      const rounded = Math.round(overlap * 10) / 10  // round to 0.1s
-      if ((a.fadeOut ?? 0) !== rounded) {
-        a.fadeOut = rounded
-        changed = true
-      }
-      if ((b.fadeIn ?? 0) !== rounded) {
-        b.fadeIn = rounded
-        changed = true
-      }
+    if (a.muted) continue
+    for (let j = i + 1; j < updated.length && updated[j].start < a.end; j++) {
+      const b = updated[j]
+      if (b.muted) continue
+      if (!(a.start < b.start && a.end < b.end)) continue
+      // Round ONCE and compare against the rounded value; comparing the raw
+      // overlap was non-idempotent whenever it was not a multiple of 0.1s
+      // (stored 0.4 never equalled 0.37), so merely opening such a project
+      // wrote to disk and pushed a no-op undo entry.
+      const rounded = Math.round((a.end - b.start) * 10) / 10  // round to 0.1s
+      outTarget.set(i, Math.max(outTarget.get(i) ?? 0, rounded))
+      inTarget.set(j, Math.max(inTarget.get(j) ?? 0, rounded))
     }
+  }
+  for (const [i, v] of outTarget) {
+    if ((updated[i].fadeOut ?? 0) !== v) { updated[i].fadeOut = v; changed = true }
+  }
+  for (const [j, v] of inTarget) {
+    if ((updated[j].fadeIn ?? 0) !== v) { updated[j].fadeIn = v; changed = true }
   }
 
   if (!changed) return null
