@@ -58,9 +58,9 @@ beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
 
-  // Fires synchronously with a fixed 1080×1920 size — CaptionPreview's own
-  // `RENDER_W`/`RENDER_H` (hardcoded in CaptionPreview.tsx, independent of
-  // project.settings.resolution), so `scale` resolves to exactly 1 and every
+  // Fires synchronously with a fixed 1080×1920 size — the 9:16 design canvas
+  // every CaptionPreview here is given (`designCanvas`; VideoEditor's projects
+  // below are 1080×1920 too), so `scale` resolves to exactly 1 and every
   // screen-px delta below maps 1:1 to design px.
   ;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
     cb: (entries: unknown[]) => void
@@ -146,6 +146,7 @@ describe('CaptionPreview — dragging updates only the dragged segment', () => {
         fps={30}
         compileOverlay={makeCompileOverlay()}
         resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        designCanvas={[RENDER_W, RENDER_H]}
         onSelectCaption={vi.fn()}
         onCaptionSegmentChange={onCaptionSegmentChange}
       />,
@@ -174,6 +175,7 @@ describe('CaptionPreview — dragging updates only the dragged segment', () => {
         fps={30}
         compileOverlay={makeCompileOverlay()}
         resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        designCanvas={[RENDER_W, RENDER_H]}
         onSelectCaption={vi.fn()}
         onCaptionSegmentChange={onCaptionSegmentChange}
       />,
@@ -217,6 +219,7 @@ describe('CaptionPreview — "Apply to all" moves every segment', () => {
         fps={30}
         compileOverlay={makeCompileOverlay((p) => seen.push(p.segments as CaptionSegment[]))}
         resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        designCanvas={[RENDER_W, RENDER_H]}
         onSelectCaption={vi.fn()}
         onCaptionSegmentChange={onCaptionSegmentChange}
         applyToAll={props.applyToAll}
@@ -383,6 +386,7 @@ describe('CaptionPreview — a segment with no offsets passes through unchanged'
         fps={30}
         compileOverlay={makeCompileOverlay((props) => received.push(props.segments))}
         resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        designCanvas={[RENDER_W, RENDER_H]}
       />,
     )
 
@@ -459,6 +463,7 @@ describe('CaptionPreview — pointer-events design: only the measured selection 
         fps={30}
         compileOverlay={makeCompileOverlay()}
         resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        designCanvas={[RENDER_W, RENDER_H]}
         onSelectCaption={onSelectCaption}
       />,
     )
@@ -480,6 +485,7 @@ describe('CaptionPreview — pointer-events design: only the measured selection 
         fps={30}
         compileOverlay={makeCompileOverlay()}
         resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        designCanvas={[RENDER_W, RENDER_H]}
         onSelectCaption={onSelectCaption}
       />,
     )
@@ -498,6 +504,7 @@ describe('CaptionPreview — pointer-events design: only the measured selection 
         fps={30}
         compileOverlay={makeCompileOverlay()}
         resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        designCanvas={[RENDER_W, RENDER_H]}
         onSelectCaption={onSelectCaption}
       />,
     )

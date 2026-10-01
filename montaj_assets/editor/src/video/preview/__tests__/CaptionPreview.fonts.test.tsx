@@ -62,6 +62,7 @@ describe('CaptionPreview — Google Fonts injection', () => {
         fps={30}
         compileOverlay={compileOverlay}
         resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        designCanvas={[1080, 1920]}
       />,
     )
 
@@ -88,6 +89,7 @@ describe('CaptionPreview — Google Fonts injection', () => {
         fps={30}
         compileOverlay={compileOverlay}
         resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        designCanvas={[1080, 1920]}
       />,
     )
 

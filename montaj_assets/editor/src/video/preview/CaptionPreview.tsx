@@ -7,9 +7,10 @@
  * PreviewPlayer (sourced from adapter.compileOverlay) so the package has no
  * direct dependency on the host's overlay-eval module.
  *
- * The caption layer is sized at the native render resolution (1080 × 1920) and
- * scaled down to fit the player via ResizeObserver so pixel values are 1:1 with
- * the render output.
+ * The caption layer is sized at the project's design canvas (`designCanvas`,
+ * 1080 on the short edge: 1080 × 1920 for 9:16, 1920 × 1080 for 16:9), the
+ * same canvas render.js captures captions at, and scaled down to fit the player
+ * via ResizeObserver so pixel values are 1:1 with the render output.
  *
  * Per-segment positioning
  * -----------------------
@@ -47,9 +48,6 @@ import {
   type CaptionDragState,
   type CaptionGeometry,
 } from './captionDragState'
-
-const RENDER_W = 1080
-const RENDER_H = 1920
 
 // Screen-px padding added around the measured text so the selection box is
 // comfortably grabbable and its outline clears the templates' glyph shadows.
@@ -105,6 +103,12 @@ interface CaptionPreviewProps {
   /** Commit a finished drag/resize onto EVERY segment, as the same absolute
    *  values. Only called while `applyToAll` is on. */
   onCaptionAllSegmentsChange?: (patch: CaptionEditAllPatch) => void
+  /** The project's design canvas, `getOverlayDesignCanvas(settings.resolution)`:
+   *  the box the templates lay captions out in, and the one render.js captures
+   *  them at. Required rather than defaulted to 9:16 — a fixed 1080 × 1920
+   *  here made the layer ~1.78× too tall on a landscape project, so captions
+   *  anchored near the bottom landed below the frame and were clipped. */
+  designCanvas:             [number, number]
 }
 
 export default function CaptionPreview({
@@ -118,11 +122,13 @@ export default function CaptionPreview({
   onCaptionSegmentChange,
   applyToAll = false,
   onCaptionAllSegmentsChange,
+  designCanvas,
 }: CaptionPreviewProps) {
+  const [RENDER_W, RENDER_H] = designCanvas
   const wrapRef            = useRef<HTMLDivElement>(null)
   const contentRef         = useRef<HTMLDivElement>(null)
   const boxRef             = useRef<HTMLDivElement>(null)
-  const [scale, setScale]  = useState<number | null>(null)
+  const [frameW, setFrameW] = useState<number | null>(null)
   const [factory, setFactory] = useState<OverlayFactory | null>(null)
   const [hovered, setHovered] = useState(false)
 
@@ -142,16 +148,19 @@ export default function CaptionPreview({
   const allChangeRef = useRef(allMode ? onCaptionAllSegmentsChange : undefined)
   allChangeRef.current = allMode ? onCaptionAllSegmentsChange : undefined
 
-  // Scale the 1080×1920 render layer to fit the actual player size
+  // Scale the design-canvas layer to fit the actual player size. The player's
+  // width is what is observed, and the scale derived from it per render, so a
+  // canvas change (the project's resolution) rescales without a resize.
   useEffect(() => {
     const el = wrapRef.current
     if (!el) return
     const obs = new ResizeObserver(([entry]) => {
-      setScale(entry.contentRect.width / RENDER_W)
+      setFrameW(entry.contentRect.width)
     })
     obs.observe(el)
     return () => obs.disconnect()
   }, [])
+  const scale = frameW === null ? null : frameW / RENDER_W
 
   // Load the render-engine template for the active style.
   // If the host did not supply resolveCaptionTemplate, render nothing (graceful
@@ -270,7 +279,7 @@ export default function CaptionPreview({
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
     }
-  }, [drag, scale])
+  }, [drag, scale, RENDER_W, RENDER_H])
 
   function startGesture(type: CaptionDragState['type'], e: React.MouseEvent) {
     if (!targetId) return

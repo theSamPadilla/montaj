@@ -838,6 +838,7 @@ function PreviewSurface({
           onCaptionSegmentChange={onCaptionSegmentChange}
           applyToAll={captionApplyToAll}
           onCaptionAllSegmentsChange={onCaptionAllSegmentsChange}
+          designCanvas={[RENDER_W, RENDER_H]}
         />
       )}
 
