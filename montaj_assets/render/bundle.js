@@ -14,7 +14,7 @@ import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
-import { isAbsPath, toFileHref, fontsCssHref } from './file-url.js'
+import { propFilePath, toFileHref, fontsCssHref } from './file-url.js'
 import { overlayEsbuildOptions, overlayInputsFromMetafile, overlayReadBoundary, resolveFilePath } from './overlay-build.js'
 import { overlayPageCspMeta, pageNeedsGoogleFonts } from './page-guard.js'
 
@@ -140,14 +140,16 @@ export function cleanupBundle(workDir) {
 // ---------------------------------------------------------------------------
 
 /**
- * Recursively rewrite absolute filesystem path strings in props to file:// URLs
- * so they resolve correctly in Puppeteer's file:// page context.
+ * Recursively rewrite the files props name (propFilePath: an absolute path, or
+ * a host's `/api/files?path=` URL) to file:// URLs so they resolve in
+ * Puppeteer's file:// page context. Any other string is left as it is.
  */
 function rewritePathsToFileUrls(value) {
-  if (typeof value === 'string' && isAbsPath(value)) {
+  const file = propFilePath(value)
+  if (file !== null) {
     // Resolve the actual path on disk — macOS screenshot filenames contain narrow
     // no-break spaces (\u202f) that don't match the regular spaces in project.json.
-    const resolved = resolveFilePath(value) ?? value
+    const resolved = resolveFilePath(file) ?? file
     return toFileHref(resolved)
   }
   if (Array.isArray(value)) {

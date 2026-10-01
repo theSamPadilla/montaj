@@ -12,7 +12,7 @@ import { join, dirname, resolve, sep, basename, isAbsolute } from 'path'
 import { realpathSync, readdirSync, lstatSync, readFileSync, existsSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { fileURLToPath } from 'url'
-import { isAbsPath, fromFileHref } from './file-url.js'
+import { propFilePath, fromFileHref } from './file-url.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -290,8 +290,9 @@ function collectNamed(value, files, urls) {
       try { urls.add(new URL(value).href) } catch { /* not a URL: nothing to fetch */ }
     } else if (/^file:\/\//i.test(value)) {
       try { addNamedFile(files, fromFileHref(new URL(value).href.replace(/[?#].*$/, ''))) } catch { /* malformed */ }
-    } else if (isAbsPath(value)) {
-      addNamedFile(files, resolveFilePath(value) ?? value)
+    } else {
+      const file = propFilePath(value)
+      if (file !== null) addNamedFile(files, resolveFilePath(file) ?? file)
     }
     return
   }

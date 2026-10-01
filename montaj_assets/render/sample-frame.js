@@ -30,7 +30,7 @@ import { createHash } from 'crypto'
 import { bundleComponent, cleanupBundle, resolveFilePath } from './bundle.js'
 import { overlayPageLaunchOptions, installPageGuard, prefetchPropsUrls } from './page-guard.js'
 import { isMain as isMainModule } from './is-main.js'
-import { toFileHref, isAbsPath } from './file-url.js'
+import { toFileHref, propFilePath } from './file-url.js'
 import { pMap } from './p-map.js'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { externalizeFilterGraph } from './filter-script.js'
@@ -122,6 +122,8 @@ const SHORT_EDGE_TARGET = 1080
  *    A frame cached before holds the UNCROPPED image. RESOLVER_VERSION 5 does
  *    not retire it: that bump shipped in 5.7.0, before samples cropped, so
  *    5.7.0 and 5.8.0 wrote uncropped frames under it.
+ * 8: an image a prop names by a host's files URL (`/api/files?path=`, as the
+ *    editor preview loads it) is drawn. A PNG cached before holds it blank.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -129,7 +131,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 7
+const SAMPLE_CACHE_VERSION = 8
 
 // ---------------------------------------------------------------------------
 // Input manifests
@@ -149,10 +151,11 @@ const SAMPLE_CACHE_VERSION = 7
 // reaches both keys). A missing recorded file is a miss, and a PNG with no
 // manifest is a miss (which retires every pre-PV49 entry).
 
-/** Absolute paths in `props` that are existing files, walked the way bundle.js's rewritePathsToFileUrls finds them. */
+/** Files `props` names (propFilePath) that exist, walked the way bundle.js's rewritePathsToFileUrls finds them. */
 export function collectPropFilePaths(value, out = new Set()) {
-  if (typeof value === 'string' && isAbsPath(value)) {
-    const resolved = resolveFilePath(value)
+  if (typeof value === 'string') {
+    const file = propFilePath(value)
+    const resolved = file === null ? null : resolveFilePath(file)
     try { if (resolved && statSync(resolved).isFile()) out.add(resolved) } catch { /* gone */ }
   } else if (Array.isArray(value)) {
     for (const v of value) collectPropFilePaths(v, out)

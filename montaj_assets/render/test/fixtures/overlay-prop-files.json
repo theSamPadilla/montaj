@@ -1,0 +1,33 @@
+{
+  "_note": "Which file an overlay prop makes the page load: the editor preview (editor/src/video/preview/OverlayItemsLayer.tsx resolveOverlayPropPaths, with serve's /api/files?path= fileUrl) and the render (render/bundle.js rewritePathsToFileUrls) must agree on every entry. `file` is the file loaded, or null when the value is not a file. Read by render/test/prop-file-paths.test.mjs and editor/src/video/preview/__tests__/overlayPropFilesParity.test.ts. One way only: the render may load MORE than the preview (a file:// URL), never less, so render-only spellings are not listed here. Posix paths; Windows is covered by each side's own tests.",
+  "values": [
+    { "value": "/W/covers/a.png", "file": "/W/covers/a.png" },
+    { "value": "/W/My Covers/b #1?.png", "file": "/W/My Covers/b #1?.png" },
+    { "value": "/apix/d.png", "file": "/apix/d.png" },
+    { "value": "/api/files?path=%2FW%2Fcovers%2Fa.png", "file": "/W/covers/a.png" },
+    { "value": "/api/files?path=%2FW%2FMy%20Covers%2Fb%20%231%3F.png&v=3", "file": "/W/My Covers/b #1?.png" },
+    { "value": "/api/files?path=/W/frames/f%2012.jpg", "file": "/W/frames/f 12.jpg" },
+    { "value": "/api/hub/montaj/files?path=%2FW%2Fc.png", "file": "/W/c.png" },
+    { "value": "/api/files?path=covers%2Fa.png", "file": null },
+    { "value": "/api/files", "file": null },
+    { "value": "/api/x", "file": null },
+    { "value": "covers/a.png", "file": null },
+    { "value": "https://cdn.example.com/a.png", "file": null },
+    { "value": "data:image/png;base64,AAAA", "file": null },
+    { "value": "Top picks", "file": null }
+  ],
+  "props": {
+    "title": "Top picks",
+    "count": 4,
+    "covers": ["/api/files?path=%2FW%2Fa.png", "/W/b.png", "/api/files?path=%2FW%2Fc.png", "https://cdn.example.com/d.png"],
+    "reel": [["/api/files?path=%2FW%2Fr1.png"], [{ "src": "/api/files?path=%2FW%2Fr2.png", "label": "0:02" }]],
+    "card": { "image": "/api/files?path=%2FW%2Fcard.png", "back": { "image": "/W/back.png" }, "visible": true }
+  },
+  "files": {
+    "title": null,
+    "count": 4,
+    "covers": ["/W/a.png", "/W/b.png", "/W/c.png", null],
+    "reel": [["/W/r1.png"], [{ "src": "/W/r2.png", "label": null }]],
+    "card": { "image": "/W/card.png", "back": { "image": "/W/back.png" }, "visible": true }
+  }
+}

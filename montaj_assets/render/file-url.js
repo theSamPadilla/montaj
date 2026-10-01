@@ -32,6 +32,27 @@ export function isAbsPath(p, { windows = IS_WIN } = {}) {
   return p.startsWith('/')
 }
 
+// A host's files route: serve's GET /api/files, the Hub's /api/hub/montaj/files.
+const SERVED_FILES_ROUTE = /^\/api\/(?:.+\/)?files$/
+
+/**
+ * The file a props string names, or null: an absolute path, or a host's
+ * files URL (`/api/files?path=<absolute path>`, what a host's fileUrl makes of
+ * one). Any other `/api/` string is a URL the host serves, never a path.
+ * This is the editor preview's rule (OverlayItemsLayer.tsx
+ * resolveOverlayPropPaths), so the render loads the file the preview showed;
+ * test/fixtures/overlay-prop-files.json holds both to it. A served URL names
+ * nothing a plain path could not, so the read boundary grants nothing new.
+ */
+export function propFilePath(value, { windows = IS_WIN } = {}) {
+  if (typeof value !== 'string') return null
+  if (!value.startsWith('/api/')) return isAbsPath(value, { windows }) ? value : null
+  const q = value.indexOf('?')
+  if (q < 0 || !SERVED_FILES_ROUTE.test(value.slice(0, q))) return null
+  const p = new URLSearchParams(value.slice(q + 1).replace(/#.*$/, '')).get('path')
+  return p && isAbsPath(p, { windows }) ? p : null
+}
+
 /** Absolute path -> file:// href. */
 export function toFileHref(p, { windows = IS_WIN } = {}) {
   if (windows && DRIVE.test(p)) return 'file:///' + encodePath(p.replace(/\\/g, '/'))
