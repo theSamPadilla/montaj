@@ -58,8 +58,8 @@ function renderPreview(item: VisualItem, opts: { engine?: boolean; selected?: bo
       onOverlayChange={opts.onOverlayChange}
     />,
   )
-  // The player's root: the aspect-locked, overflow-hidden frame.
-  const frame = utils.container.firstElementChild as HTMLElement
+  // The aspect-locked, overflow-hidden frame (inside its fit container).
+  const frame = utils.container.querySelector('[data-montaj-preview-frame]') as HTMLElement
   return { ...utils, frame }
 }
 
@@ -105,7 +105,7 @@ describe('PreviewPlayer — tracks[0] clip with per-axis scale', () => {
       return c as HTMLElement
     })
     // Read after the switch: the engine path mounts a fresh root.
-    const frame = container.firstElementChild as HTMLElement
+    const frame = container.querySelector('[data-montaj-preview-frame]') as HTMLElement
     // The engine paints the design canvas; the proxy decodes at 1280×720.
     const plan = drawPlanFor(item, 1280, 720, W, H)
     const preview = previewPlacement(canvas, frame, W, H, { mediaW: 1280, mediaH: 720, canvas: { backingW: W, backingH: H, plan } })

@@ -18,6 +18,7 @@ import type { AcquiredDemux } from '../../engine'
 import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } from '../hover-scrub'
 import { sourceCropVideoStyle } from './sourceCropStyle'
+import { FIT_PARENT_STYLE, fitBoxStyle } from './fitBox'
 import CarouselPreview from './CarouselPreview'
 import SocialSafeZoneOverlay, { type SocialPreviewPlatform } from './SocialSafeZoneOverlay'
 
@@ -376,10 +377,13 @@ function VideoPreviewPlayer(props: PreviewPlayerProps) {
   // one and only one of them is what makes a single hook call per path legal.
   if (mode === null) {
     return (
-      <div
-        className="relative bg-black h-full max-w-full overflow-hidden rounded"
-        style={{ aspectRatio: `${RENDER_W} / ${RENDER_H}`, isolation: 'isolate' }}
-      />
+      <div style={FIT_PARENT_STYLE}>
+        <div
+          data-montaj-preview-frame=""
+          className="relative bg-black overflow-hidden rounded"
+          style={{ ...fitBoxStyle(RENDER_W, RENDER_H), isolation: 'isolate' }}
+        />
+      </div>
     )
   }
 
@@ -652,7 +656,10 @@ function PreviewSurface({
   }
 
   return (
-    <div ref={containerRef} className="relative bg-black h-full max-w-full overflow-hidden rounded" style={{ aspectRatio: `${RENDER_W} / ${RENDER_H}`, isolation: 'isolate' }}>
+    // The frame is contain-fitted in its own size container, so it stays
+    // RENDER_W:RENDER_H in a parent of any shape. See `fitBox.ts`.
+    <div style={FIT_PARENT_STYLE}>
+    <div ref={containerRef} data-montaj-preview-frame="" className="relative bg-black overflow-hidden rounded" style={{ ...fitBoxStyle(RENDER_W, RENDER_H), isolation: 'isolate' }}>
       {isCanvasProject ? (
         <div className="absolute inset-0 cursor-pointer" style={{ zIndex: 10 }} onClick={togglePlay} />
       ) : clips.length === 0 ? (
@@ -872,6 +879,7 @@ function PreviewSurface({
           </div>
         </div>
       )}
+    </div>
     </div>
   )
 }

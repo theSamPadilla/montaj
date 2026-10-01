@@ -25,6 +25,7 @@ import { geometryAt, visualDuration } from '@bycrux/timeline-core'
 import { audioEnd, computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, effectiveItemAudio, enabledTrackItems, enabledTracks, mapTrackItems, normalizeAudioTracks, trackItems, withEnabledItemTracks } from './timeline/timeline-model'
 import { makeCaptionEdit, makeCaptionEditAll, type CaptionEditAllPatch, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle, type ScrubHandle } from './preview/PreviewPlayer'
+import { fitBoxStyle } from './preview/fitBox'
 import SocialPreviewMenu, { PlatformGlyph, platformOption } from './preview/SocialPreviewMenu'
 import type { SocialPreviewPlatform } from './preview/SocialSafeZoneOverlay'
 import { createPlaybackClock, usePlaybackTime, type PlaybackClock } from './playback-clock'
@@ -2248,10 +2249,12 @@ function ReviewSurface<P extends Project>({
     <div ref={previewRegionRef} className="flex-1 min-h-0 flex flex-col bg-black overflow-hidden">
       {hasContent ? (
         <>
-          <div className="flex-1 min-h-0 flex items-center justify-center overflow-hidden p-2">
+          {/* A size container, so the box below is contain-fitted and stays
+              W:H however narrow the side panels leave this row (`fitBox.ts`). */}
+          <div className="flex-1 min-h-0 flex items-center justify-center overflow-hidden p-2" style={{ containerType: 'size' }}>
             <div
-              className="relative h-full max-w-full"
-              style={{ aspectRatio: (() => { const [w, h] = getOverlayDesignCanvas(project.settings?.resolution); return `${w} / ${h}` })() }}
+              className="relative"
+              style={(() => { const [w, h] = getOverlayDesignCanvas(project.settings?.resolution); return fitBoxStyle(w, h) })()}
             >
               <PreviewPlayer
                 project={project}
