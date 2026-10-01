@@ -14,7 +14,8 @@
  * them from `../types`; the public barrel (index.ts) sources the schema types
  * from `./schema` directly to avoid duplicate-export conflicts.
  */
-import type { ReactElement, ReactNode } from 'react'
+import type { ComponentType, ReactElement, ReactNode } from 'react'
+import type { LucideProps } from 'lucide-react'
 import type {
   EditorProject as Project,
   Slide,
@@ -1043,6 +1044,58 @@ export interface EditorSlots {
   runHistory?: ReactNode
 }
 
+// ── Controls window ───────────────────────────────────────────────────────────
+// Declared here rather than in ControlsInfoModal (which re-exports the two
+// content types) so this module and the modal never import each other.
+
+/** A single control/shortcut row. `keys` renders as <kbd> chips; omit for a pure gesture. */
+export interface ControlEntry {
+  keys?: string[]
+  label: string
+  /** The row's own glyph, drawn in place of its bullet: a toolbar button's
+   *  actual icon, or a picture of the gesture (four-way arrows for a move,
+   *  facing chevrons for an edge-trim). It carries the meaning ahead of the
+   *  sentence — and for a toolbar row it also ties the words to a button
+   *  that's easy to miss, the crop one especially, since it's a 12px glyph
+   *  that greys out whenever no clip is selected. */
+  icon?: ComponentType<LucideProps>
+  /** Where the gesture applies — "Preview", "Timeline". Rendered as a pill on
+   *  the right, in the same slot the keyboard rows put their key chips.
+   *
+   *  This exists because Preview and Timeline used to be two separate cards,
+   *  and the heading was the only thing saying which surface a gesture was
+   *  for. Merging them into one Mouse card would have thrown that away; the
+   *  pill puts it back per row, where it's easier to read anyway — you no
+   *  longer have to look up to a heading to find out where "corner-drag to
+   *  scale" applies. */
+  where?: string
+}
+
+export interface ControlSection {
+  heading: string
+  entries: ControlEntry[]
+}
+
+/** A section as the Controls window shows it: `keys` and `label` already in
+ *  the platform's form (Ctrl, Alt, Shift off Apple), plus the card's icon. */
+export type ControlsWindowSection = ControlSection & { icon: ComponentType<LucideProps> }
+
+/**
+ * What the package hands a host that draws its own Controls window
+ * (`VideoEditorProps.renderControls`, `CarouselEditorProps.renderControls`):
+ * exactly what ControlsInfoModal shows, plus `open`.
+ */
+export interface ControlsWindowContext {
+  /** Whether the window should show: true from the Controls button until `onClose`. */
+  open: boolean
+  title: string
+  kind: 'video' | 'carousel'
+  /** The modal's content, platform-resolved: draw it as given. */
+  sections: ControlsWindowSection[]
+  /** Close the window. */
+  onClose: () => void
+}
+
 // ── Top-level component props ──────────────────────────────────────────────────
 
 /**
@@ -1111,6 +1164,16 @@ export interface CarouselEditorProps<P extends Project = Project> {
    * Absent: the package's CarouselRenderModal, as before.
    */
   renderModal?: (ctx: CarouselRenderModalContext<P>) => ReactNode
+
+  /**
+   * Replace the package's ControlsInfoModal with the host's own Controls
+   * window. Called on every render, including while closed; `ctx.open` says
+   * whether to show anything, so return null when it is false. With this set
+   * the package never mounts ControlsInfoModal. The Controls button and the
+   * open state stay the editor's. Absent: the package's ControlsInfoModal, as
+   * before.
+   */
+  renderControls?: (ctx: ControlsWindowContext) => ReactNode
 }
 
 /**
@@ -1220,6 +1283,17 @@ export interface VideoEditorProps<P extends Project = Project> {
    * project final, saves and opens. Absent: the package's RenderModal, as before.
    */
   renderModal?: (ctx: RenderModalContext<P>) => ReactNode
+
+  /**
+   * Replace the package's ControlsInfoModal with the host's own Controls
+   * window. Called on every render of the review surface, including while
+   * closed; `ctx.open` says whether to show anything, so return null when it
+   * is false. With this set the package never mounts ControlsInfoModal. The
+   * Controls button and the open state stay the editor's, so the timeline's
+   * shortcuts are still held off while the host's window is open. Absent: the
+   * package's ControlsInfoModal, as before.
+   */
+  renderControls?: (ctx: ControlsWindowContext) => ReactNode
 
   /**
    * Opt a host OUT of the package's built-in toolbar image-tone button so it

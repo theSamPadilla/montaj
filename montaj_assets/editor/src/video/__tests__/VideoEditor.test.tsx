@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { render, waitFor, act, fireEvent } from '@testing-library/react'
+import { Keyboard, MousePointer2, SlidersHorizontal } from 'lucide-react'
 import type {
   CaptionEvent,
+  ControlsWindowContext,
   EditorAdapter,
   ImageElement,
   Project,
@@ -13,6 +15,8 @@ import type {
 import type { Captions, VisualItem } from '../../schema'
 import { applyOverlayChanges, type OverlayChanges } from '../preview/useDragOverlay'
 import VideoEditor from '../VideoEditor'
+import { VIDEO_CONTROLS } from '../../ControlsInfoModal'
+import { stubPlatform } from '../../ui/__tests__/platform'
 import { CROSSFADE_COMMIT_DELAY_MS } from '../timeline/Timeline'
 import { trackItems } from '../timeline/timeline-model'
 import { dragCanvasItem, installCanvasHarness, selectCanvasItem } from '../timeline/__tests__/_canvasSelect'
@@ -816,6 +820,76 @@ describe('VideoEditor — editor-package integration', () => {
 
     await act(async () => { ctx.onClose() })
     await waitFor(() => expect(queryByTestId('host-render-window')).toBeNull())
+  })
+
+  // PL14: a host can draw the Controls window. It gets the modal's exact
+  // content with the platform's keys already in place, and the package draws
+  // nothing.
+  it('renderControls replaces ControlsInfoModal and gets the platform-resolved sections', async () => {
+    onTestFinished(stubPlatform('Win32'))
+    const seen: ControlsWindowContext[] = []
+    const { findByRole, findByTestId, queryByTestId, queryByRole } = render(
+      <VideoEditor
+        project={makeVideoProject()}
+        adapter={makeFakeAdapter()}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+        renderControls={(ctx) => {
+          seen.push(ctx)
+          return ctx.open ? <div data-testid="host-controls" /> : null
+        }}
+      />,
+    )
+
+    const trigger = await findByRole('button', { name: 'Editor controls & shortcuts' })
+    // Called while closed too, like renderModal.
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen[seen.length - 1].open).toBe(false)
+    expect(queryByTestId('host-controls')).toBeNull()
+
+    await act(async () => { fireEvent.click(trigger) })
+
+    await findByTestId('host-controls')
+    expect(queryByRole('dialog', { name: 'Editor controls' })).toBeNull()
+
+    const ctx = seen[seen.length - 1]
+    expect(ctx.open).toBe(true)
+    expect(ctx.kind).toBe('video')
+    expect(ctx.title).toBe('Editor controls')
+    expect(ctx.sections.map((s) => [s.heading, s.icon])).toEqual([
+      ['Mouse', MousePointer2],
+      ['Toolbar', SlidersHorizontal],
+      ['Keyboard', Keyboard],
+    ])
+    expect(ctx.sections.map((s) => s.entries.length)).toEqual(VIDEO_CONTROLS.map((s) => s.entries.length))
+    const keyboard = ctx.sections.find((s) => s.heading === 'Keyboard')!
+    const keysOf = (label: string) => keyboard.entries.find((e) => e.label === label)?.keys
+    expect(keysOf('Undo')).toEqual(['Ctrl', 'Z'])
+    expect(keysOf('Redo')).toEqual(['Ctrl', 'Shift', 'Z'])
+    expect(keysOf('Paste attributes onto the selection')).toEqual(['Ctrl', 'Alt', 'V'])
+    expect(keyboard.entries.map((e) => e.label)).toContain('Step one frame (Shift for ten frames)')
+    const text = ctx.sections.flatMap((s) => s.entries.flatMap((e) => [e.label, ...(e.keys ?? [])])).join(' ')
+    for (const glyph of ['⌘', '⌥', '⇧']) expect(text).not.toContain(glyph)
+
+    const calls = seen.length
+    await act(async () => { ctx.onClose() })
+    await waitFor(() => expect(queryByTestId('host-controls')).toBeNull())
+    expect(seen.length).toBeGreaterThan(calls)
+    expect(seen[calls].open).toBe(false)
+  })
+
+  it('without renderControls, the Controls trigger opens the package modal', async () => {
+    const { findByRole } = render(
+      <VideoEditor
+        project={makeVideoProject()}
+        adapter={makeFakeAdapter()}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+      />,
+    )
+    const trigger = await findByRole('button', { name: 'Editor controls & shortcuts' })
+    await act(async () => { fireEvent.click(trigger) })
+    await findByRole('dialog', { name: 'Editor controls' })
   })
 
   it('handleSaveVersion calls adapter.saveVersion and refetches history', async () => {

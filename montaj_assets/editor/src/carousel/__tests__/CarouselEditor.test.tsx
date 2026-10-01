@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, act, waitFor, fireEvent } from '@testing-library/react'
-import type { CarouselRenderModalContext, EditorAdapter, ImageElement, Project, RenderEvent } from '../../types'
+import { Keyboard, MousePointer2 } from 'lucide-react'
+import type { CarouselRenderModalContext, ControlsWindowContext, EditorAdapter, ImageElement, Project, RenderEvent } from '../../types'
 import CarouselEditor from '../CarouselEditor'
+import { CAROUSEL_CONTROLS } from '../../ControlsInfoModal'
 import { stubPlatform } from '../../ui/__tests__/platform'
 
 // ── Fake adapter (mirrors editor-core's use-project-state test pattern) ───────
@@ -385,6 +387,67 @@ describe('CarouselEditor — editor-core integration', () => {
 
     await act(async () => { ctx.onClose() })
     await waitFor(() => expect(queryByTestId('host-render-window')).toBeNull())
+  })
+
+  // PL14: a host can draw the carousel's Controls window too, with the
+  // modal's exact content already resolved for the platform.
+  it('renderControls replaces ControlsInfoModal and gets the platform-resolved sections', async () => {
+    const restore = stubPlatform('Win32')
+    try {
+      const seen: ControlsWindowContext[] = []
+      const { findByRole, findByTestId, queryByTestId, queryByRole } = render(
+        <CarouselEditor
+          project={makeProject()}
+          adapter={makeFakeAdapter()}
+          onProjectChange={vi.fn()}
+          renderControls={(ctx) => {
+            seen.push(ctx)
+            return ctx.open ? <div data-testid="host-controls" /> : null
+          }}
+        />,
+      )
+
+      const trigger = await findByRole('button', { name: 'Editor controls & shortcuts' })
+      expect(seen.length).toBeGreaterThan(0)
+      expect(seen[seen.length - 1].open).toBe(false)
+      expect(queryByTestId('host-controls')).toBeNull()
+
+      await act(async () => { fireEvent.click(trigger) })
+
+      await findByTestId('host-controls')
+      expect(queryByRole('dialog', { name: 'Editor controls' })).toBeNull()
+
+      const ctx = seen[seen.length - 1]
+      expect(ctx.open).toBe(true)
+      expect(ctx.kind).toBe('carousel')
+      expect(ctx.title).toBe('Editor controls')
+      expect(ctx.sections.map((s) => [s.heading, s.icon])).toEqual([
+        ['Canvas', MousePointer2],
+        ['Keyboard', Keyboard],
+      ])
+      expect(ctx.sections.map((s) => s.entries.map((e) => e.label))).toEqual(
+        CAROUSEL_CONTROLS.map((s) => s.entries.map((e) => e.label)),
+      )
+      const keyboard = ctx.sections.find((s) => s.heading === 'Keyboard')!
+      expect(keyboard.entries.map((e) => e.keys)).toEqual([['Ctrl', 'Z'], ['Ctrl', 'Shift', 'Z'], ['Delete']])
+
+      const calls = seen.length
+      await act(async () => { ctx.onClose() })
+      await waitFor(() => expect(queryByTestId('host-controls')).toBeNull())
+      expect(seen.length).toBeGreaterThan(calls)
+      expect(seen[calls].open).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  it('without renderControls, the Controls trigger opens the package modal', async () => {
+    const { findByRole } = render(
+      <CarouselEditor project={makeProject()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} />,
+    )
+    const trigger = await findByRole('button', { name: 'Editor controls & shortcuts' })
+    await act(async () => { fireEvent.click(trigger) })
+    await findByRole('dialog', { name: 'Editor controls' })
   })
 })
 

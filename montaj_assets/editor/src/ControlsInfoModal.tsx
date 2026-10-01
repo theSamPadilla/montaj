@@ -20,35 +20,10 @@ import {
   type LucideProps,
 } from 'lucide-react'
 import { version } from '../package.json'
-import { modifierKeys, modifierLabel } from './ui/modifierKeys'
+import { isApplePlatform, modifierKeys, modifierLabel } from './ui/modifierKeys'
+import type { ControlSection, ControlsWindowSection } from './types'
 
-/** A single control/shortcut row. `keys` renders as <kbd> chips; omit for a pure gesture. */
-export interface ControlEntry {
-  keys?: string[]
-  label: string
-  /** The row's own glyph, drawn in place of its bullet: a toolbar button's
-   *  actual icon, or a picture of the gesture (four-way arrows for a move,
-   *  facing chevrons for an edge-trim). It carries the meaning ahead of the
-   *  sentence — and for a toolbar row it also ties the words to a button
-   *  that's easy to miss, the crop one especially, since it's a 12px glyph
-   *  that greys out whenever no clip is selected. */
-  icon?: ComponentType<LucideProps>
-  /** Where the gesture applies — "Preview", "Timeline". Rendered as a pill on
-   *  the right, in the same slot the keyboard rows put their key chips.
-   *
-   *  This exists because Preview and Timeline used to be two separate cards,
-   *  and the heading was the only thing saying which surface a gesture was
-   *  for. Merging them into one Mouse card would have thrown that away; the
-   *  pill puts it back per row, where it's easier to read anyway — you no
-   *  longer have to look up to a heading to find out where "corner-drag to
-   *  scale" applies. */
-  where?: string
-}
-
-export interface ControlSection {
-  heading: string
-  entries: ControlEntry[]
-}
+export type { ControlEntry, ControlSection } from './types'
 
 export interface ControlsInfoModalProps {
   title: string
@@ -69,6 +44,25 @@ const SECTION_ICONS: Record<string, ComponentType<LucideProps>> = {
   // merged into Mouse), but kept for a host passing sections of its own.
   Preview: Clapperboard,
   Timeline: LayoutPanelTop,
+}
+
+/** `sections` as this modal shows them: each entry's `keys` and `label` in the
+ *  platform's form (⌘ ⌥ ⇧ become Ctrl Alt Shift off Apple) and each section
+ *  with its card icon. The modal renders through this, and a host's
+ *  `renderControls` is handed its result, so the two cannot drift. Pure. */
+export function platformSections(
+  sections: readonly ControlSection[],
+  apple: boolean = isApplePlatform(),
+): ControlsWindowSection[] {
+  return sections.map((section) => ({
+    ...section,
+    icon: SECTION_ICONS[section.heading] ?? SlidersHorizontal,
+    entries: section.entries.map((entry) => ({
+      ...entry,
+      label: modifierLabel(entry.label, apple),
+      ...(entry.keys && { keys: modifierKeys(entry.keys, apple) }),
+    })),
+  }))
 }
 
 /**
@@ -171,8 +165,8 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
               height instead of pairing them row-by-row and leaving a tall
               gap. */}
           <div className="gap-5 sm:columns-2">
-            {sections.map((section) => {
-              const Icon = SECTION_ICONS[section.heading] ?? SlidersHorizontal
+            {platformSections(sections).map((section) => {
+              const Icon = section.icon
               return (
                 <section
                   key={section.heading}
@@ -218,7 +212,7 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
                               style={{ background: 'var(--editor-accent)' }}
                             />
                           )}
-                          {modifierLabel(entry.label)}
+                          {entry.label}
                         </span>
                         {entry.where && (
                           /* Deliberately NOT a <kbd>: a surface name is not
@@ -235,7 +229,7 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
                         )}
                         {entry.keys && entry.keys.length > 0 && (
                           <span className="flex shrink-0 items-center gap-1">
-                            {modifierKeys(entry.keys).map((k, j) => (
+                            {entry.keys.map((k, j) => (
                               <kbd
                                 key={j}
                                 className="rounded-md border border-b-2 px-2 py-1 font-mono text-[11px] leading-none shadow-sm"

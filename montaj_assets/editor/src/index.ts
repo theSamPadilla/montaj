@@ -64,6 +64,11 @@ export type {
   VideoEditorProps,
   RenderModalContext,
   CarouselRenderModalContext,
+  // The host-drawn Controls window (`renderControls`) and its content.
+  ControlsWindowContext,
+  ControlsWindowSection,
+  ControlSection,
+  ControlEntry,
 } from './types'
 // `FOOTAGE_DND_MIME` is a value (const), not a type — exported separately so
 // hosts can compare against it when reading a drag event's MIME data.

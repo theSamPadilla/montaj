@@ -7,7 +7,7 @@ import SlideCanvas from './SlideCanvas'
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import CarouselRenderModal from './CarouselRenderModal'
-import ControlsInfoModal, { CAROUSEL_CONTROLS } from '../ControlsInfoModal'
+import ControlsInfoModal, { CAROUSEL_CONTROLS, platformSections } from '../ControlsInfoModal'
 import { Button } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
 
@@ -153,7 +153,7 @@ function isTypingTarget(t: EventTarget | null): boolean {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -170,6 +170,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const [skillPath, setSkillPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [showControls, setShowControls] = useState(false)
+  // What a host's `renderControls` is handed: the modal's content, resolved
+  // for the platform once (it does not change while the editor is up).
+  const controlSections = useMemo(() => platformSections(CAROUSEL_CONTROLS), [])
   const [refreshing, setRefreshing] = useState(false)
   const [refreshState, setRefreshState] = useState<'idle' | 'err'>('idle')
   const [rendering, setRendering] = useState(false)
@@ -637,13 +640,24 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         </div>
       )}
 
-      {showControls && (
-        <ControlsInfoModal
-          title="Editor controls"
-          sections={CAROUSEL_CONTROLS}
-          onClose={() => setShowControls(false)}
-        />
-      )}
+      {/* Controls window. A host that passes `renderControls` draws it; it is
+          called on every render, `open` saying whether the window should
+          show. Otherwise the package's ControlsInfoModal. */}
+      {renderControls
+        ? renderControls({
+            open: showControls,
+            title: 'Editor controls',
+            kind: 'carousel',
+            sections: controlSections,
+            onClose: () => setShowControls(false),
+          })
+        : showControls && (
+          <ControlsInfoModal
+            title="Editor controls"
+            sections={CAROUSEL_CONTROLS}
+            onClose={() => setShowControls(false)}
+          />
+        )}
 
       {/* Render window. A host that passes `renderModal` owns it and the
           render itself; it is called on every render, `open` saying whether

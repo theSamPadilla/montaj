@@ -9,7 +9,7 @@ import { cropAt, isCropKeyframed, localTimeOf, writeCrop } from './keyframeOps'
 import { useImageNaturalSize } from './useImageNaturalSize'
 import { useVideoNaturalSize } from './useVideoNaturalSize'
 import { trimToAspect } from '../crop/crop-math'
-import ControlsInfoModal, { VIDEO_CONTROLS } from '../ControlsInfoModal'
+import ControlsInfoModal, { VIDEO_CONTROLS, platformSections } from '../ControlsInfoModal'
 import { Tooltip } from '../ui/Tooltip'
 import { reviveBoolean, reviveNumberInRange, usePersistentState } from '../ui/usePersistentState'
 import { getOverlayDesignCanvas } from './design-canvas'
@@ -275,6 +275,7 @@ export default function VideoEditor<P extends Project = Project>({
   isClipQueued,
   onProvideRenderTrigger,
   renderModal,
+  renderControls,
   onProvideImageTone,
   engine,
   sourcePreview,
@@ -461,6 +462,7 @@ export default function VideoEditor<P extends Project = Project>({
         isClipQueued={isClipQueued}
         onProvideRenderTrigger={onProvideRenderTrigger}
         renderModal={renderModal}
+        renderControls={renderControls}
         onProvideImageTone={onProvideImageTone}
         engine={engine}
         sourcePreview={sourcePreview}
@@ -582,6 +584,7 @@ interface SurfaceProps<P extends Project> {
   getFilmstrip?: VideoEditorProps<P>['adapter']['getFilmstrip']
   onProvideRenderTrigger?: VideoEditorProps<P>['onProvideRenderTrigger']
   renderModal?: VideoEditorProps<P>['renderModal']
+  renderControls?: VideoEditorProps<P>['renderControls']
   onProvideImageTone?: VideoEditorProps<P>['onProvideImageTone']
   engine?: VideoEditorProps<P>['engine']
   /** Light/dark for the canvas timeline, resolved from the host theme by
@@ -811,6 +814,7 @@ function ReviewSurface<P extends Project>({
   isClipQueued,
   onProvideRenderTrigger,
   renderModal,
+  renderControls,
   onProvideImageTone,
   engine,
   sourcePreview,
@@ -1101,6 +1105,10 @@ function ReviewSurface<P extends Project>({
     hoverScrub.set(time)
   }, [hoverScrub])
   const [showControls, setShowControls] = useState(false)
+  const closeControls = useCallback(() => setShowControls(false), [])
+  // What a host's `renderControls` is handed: the modal's content, resolved
+  // for the platform once (it does not change while the editor is up).
+  const controlSections = useMemo(() => platformSections(VIDEO_CONTROLS), [])
   // Source-crop mode: when on, the VideoSourceCropModal opens for the selected
   // tracks[0] video item. Cleared when selection changes.
   const [cropMode, setCropMode]       = useState(false)
@@ -3139,14 +3147,24 @@ function ReviewSurface<P extends Project>({
         )
       })()}
 
-      {/* Controls & shortcuts reference */}
-      {showControls && (
-        <ControlsInfoModal
-          title="Editor controls"
-          sections={VIDEO_CONTROLS}
-          onClose={() => setShowControls(false)}
-        />
-      )}
+      {/* Controls & shortcuts reference. A host that passes `renderControls`
+          draws it; it is called on every render, `open` saying whether the
+          window should show. Otherwise the package's ControlsInfoModal. */}
+      {renderControls
+        ? renderControls({
+            open: showControls,
+            title: 'Editor controls',
+            kind: 'video',
+            sections: controlSections,
+            onClose: closeControls,
+          })
+        : showControls && (
+          <ControlsInfoModal
+            title="Editor controls"
+            sections={VIDEO_CONTROLS}
+            onClose={closeControls}
+          />
+        )}
 
       {/* Command palette — Cmd/Ctrl+K, or the scrubber's time-readout click
           (opens straight into "go to time"). */}

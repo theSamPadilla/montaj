@@ -4,6 +4,16 @@ All notable changes to `@bycrux/editor` are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Both editors
+
+- **Added: `renderControls` lets a host draw the Controls window, on `VideoEditor` and `CarouselEditor`.** A host that passes it gets a `ControlsWindowContext` (`open`, `title`, `kind`, `sections`, `onClose`), and the package no longer mounts `ControlsInfoModal`.
+  - `sections` is the modal's own content, platform-resolved: each entry's `keys` and `label` already read Ctrl, Alt and Shift off Apple, and each section carries its card's `icon`. The modal now renders through the same `platformSections`, so the two cannot drift.
+  - Called on every render, `open` saying whether to show anything. The Controls button and the open state stay the editor's, so the video timeline's shortcuts are still held off while the host's window is open. Absent, nothing changes.
+  - `ControlsWindowContext`, `ControlsWindowSection`, `ControlSection` and `ControlEntry` are exported from the index as types. `ControlEntry` and `ControlSection` moved to `types.ts`; `ControlsInfoModal` re-exports them.
+  - Files: `types.ts`, `ControlsInfoModal.tsx`, `video/VideoEditor.tsx`, `carousel/CarouselEditor.tsx`, `index.ts`, `__tests__/platformSections.test.ts` (new), `__tests__/controls-window-types.ts` (new), `video/__tests__/VideoEditor.test.tsx`, `carousel/__tests__/CarouselEditor.test.tsx`.
+
 ## 1.8.0
 
 ### Video editor
