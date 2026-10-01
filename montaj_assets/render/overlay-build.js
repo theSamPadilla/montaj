@@ -218,8 +218,9 @@ function isUnderAnyRoot(dir, roots) {
  *                  workspace, so a named file is allowed even there; nothing
  *                  beside it is.
  *   urls           the http(s) URLs in `props` that name media
- *                  (isPropsMediaUrl), normalized (`new URL(u).href`): the
- *                  ones fetched for the page (page-guard.js)
+ *                  (isPropsMediaUrl) or have no extension
+ *                  (isExtensionlessPropsUrl), normalized (`new URL(u).href`):
+ *                  the ones fetched for the page (page-guard.js)
  *   unfetchedUrls  the other http(s) URLs in `props`, never fetched
  *
  * `allows(path)` compares by realpath against realpathed roots, so a symlink
@@ -239,8 +240,8 @@ export function overlayReadBoundary({ projectDir = null, workDir = null, fontsDi
   return Object.freeze({
     roots,
     files: named,
-    urls: new Set([...urls].filter(isPropsMediaUrl)),
-    unfetchedUrls: new Set([...urls].filter(u => !isPropsMediaUrl(u))),
+    urls: new Set([...urls].filter(isPropsFetchedUrl)),
+    unfetchedUrls: new Set([...urls].filter(u => !isPropsFetchedUrl(u))),
     allows(p) {
       if (typeof p !== 'string' || !isAbsolute(p) || p.includes('\0')) return false
       const real = realpathOrNull(p)
@@ -255,8 +256,8 @@ export function overlayReadBoundary({ projectDir = null, workDir = null, fontsDi
  * video, audio, fonts and data files. Props also hold URLs that are only shown
  * as text (a call-to-action link, a QR code's target), and fetching one of
  * those could act on it (an unsubscribe or confirm link), so a URL is fetched
- * only when its path ends in one of these. A remote image with no extension
- * belongs in the project as a file.
+ * only when its path ends in one of these, or has no extension at all
+ * (isExtensionlessPropsUrl).
  */
 export const PROPS_MEDIA_EXTENSIONS = Object.freeze([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'svg', 'bmp', 'ico', 'apng', 'tif', 'tiff', 'heic',
@@ -277,11 +278,39 @@ export function isPropsMediaUrl(href) {
   }
 }
 
-/** The distinct http(s) media URLs in `props` (isPropsMediaUrl), normalized. */
+/**
+ * Whether a props URL has no extension: http(s), and the last segment of its
+ * path is a name with no dot (`https://i.scdn.co/image/ab67…`,
+ * `https://images.example.com/photo-123?w=800`). The editor preview shows such
+ * an image, so the render fetches it like a media URL, with the same timeout,
+ * size cap and redirect rules, and keeps it only if it serves an image
+ * (page-guard.js prefetchPropsUrls): a link with no extension is fetched but
+ * never drawn. A path ending in `/` (`https://example.com/`) names a page, and
+ * one with any other extension (`.html`, `.php`) is not media: neither is
+ * fetched.
+ */
+export function isExtensionlessPropsUrl(href) {
+  try {
+    const u = new URL(href)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false
+    let last = u.pathname.slice(u.pathname.lastIndexOf('/') + 1)
+    try { last = decodeURIComponent(last) } catch { /* judged as spelled */ }
+    return last !== '' && !last.includes('.')
+  } catch {
+    return false
+  }
+}
+
+/** Whether a props URL is fetched for the page: media, or extension-less. */
+export function isPropsFetchedUrl(href) {
+  return isPropsMediaUrl(href) || isExtensionlessPropsUrl(href)
+}
+
+/** The distinct http(s) URLs in `props` fetched for the page (isPropsFetchedUrl), normalized. */
 export function namedPropsUrls(props) {
   const urls = new Set()
   collectNamed(props, new Set(), urls)
-  return [...urls].filter(isPropsMediaUrl)
+  return [...urls].filter(isPropsFetchedUrl)
 }
 
 function collectNamed(value, files, urls) {
