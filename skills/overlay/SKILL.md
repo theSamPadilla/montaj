@@ -16,7 +16,7 @@ subskills: "write-overlay"
 | Name | When to load |
 |------|--------------|
 | `write-overlay` | Before writing any JSX overlay — globals, `interpolate`/`spring` utilities, canvas rules, examples. |
-| `image-search` | When the prompt asks to source outside imagery (a photo of a person, a logo, an event/B-roll still) — find via `search_images` + download via `fetch_image`, then place as an image-card overlay. |
+| `image-search` | When the prompt asks to source outside imagery (a photo of a person, a logo, an event/B-roll still) — find via `search_images` + download via `fetch_image`, then place as an image clip on `tracks[1+]`. |
 
 ---
 
@@ -30,7 +30,7 @@ The prompt tells you the tone and intent. The transcript tells you the moments w
 
 Decide from the prompt and the transcript what the video needs that isn't already in the footage.
 
-**If the prompt asks you to source images** ("add a photo of X", "find images of the IPO"), load skill `image-search` to find them via `search_images` and download via `fetch_image`, then add each as an image-card overlay (pass the local fetched path via `props`).
+**If the prompt asks you to source images** ("add a photo of X", "find images of the IPO"), load skill `image-search` to find them via `search_images` and download via `fetch_image`, then add each as a `type: "image"` clip on `tracks[1+]`. A still photo is an image clip, not an overlay; overlays are animated graphics.
 
 If the prompt says "no overlays" — write nothing.
 

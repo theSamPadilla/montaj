@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (skills): agents add a still photo as a `type: "image"` clip on `tracks[1+]`, not a JSX overlay.** `image-search`, `overlay` and the top-level `SKILL.md` no longer recommend an overlay image card; overlays stay for animated graphics. Overlays cannot be cropped, image clips can.
+
 - **Fixed (editor, render): an opaque overlay that does not cover the canvas no longer blacks out the footage.** Preview (`engine/scheduler.ts` `planTick`) and export (`segment-plan.js`'s `opaqueVideo`) treated any active `opaque: true` overlay as covering the whole frame, so a photo at scale 0.38 marked opaque showed black around it. `opaque` now takes effect only over the whole canvas: scale 1 on both axes, no offset, no rotation, no keyframes other than `opacity` (the editor's derived crossfade fade still counts as full canvas). The rule lives once in `@bycrux/timeline-core` 0.4.0 (`isFullCanvasPlacement`, `opaqueReplacesPicture`, moved from `render/cover-probe.js`) and the editor, `segment-plan.js`, `render.js`'s overlay specs (so a scaled opaque overlay is captured with alpha and is not an HDR card) and `sample-frame.js` all read it. cover-probe's card test, which also needs opacity 1 and no keyframes, is now `isCardPlacement` on top of it. `SAMPLE_CACHE_VERSION` 11. `@bycrux/editor` 2.0.5. (`montaj_assets/timeline-core/src/geometry.js`, `montaj_assets/editor/src/engine/scheduler.ts`, `montaj_assets/render/{segment-plan,render,sample-frame,cover-probe}.js`, `timeline-core/test/full-canvas.test.mjs`, `segment-plan.test.mjs`, `render-helpers.test.mjs`, `scheduler.test.ts`)
 
 ## v5.20.3

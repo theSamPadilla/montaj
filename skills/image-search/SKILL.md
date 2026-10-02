@@ -1,11 +1,11 @@
 ---
 name: image-search
-description: "Find and download real images from the web — people, logos, brand/event stills, B-roll — to add as overlay image cards or project assets. Load when the prompt asks to source or insert images (e.g. 'add a photo of X', 'find images of the IPO', 'pull a shot of the factory')."
+description: "Find and download real images from the web — people, logos, brand/event stills, B-roll — to add as image clips on the timeline or as project assets. Load when the prompt asks to source or insert images (e.g. 'add a photo of X', 'find images of the IPO', 'pull a shot of the factory')."
 ---
 
 # Image Search
 
-Sourcing real imagery is a two-step pipeline: **`search_images`** finds candidate URLs, **`fetch_image`** downloads the one you pick to a workspace path. From there the image becomes an overlay image card (load skill `overlay`) or a project asset.
+Sourcing real imagery is a two-step pipeline: **`search_images`** finds candidate URLs, **`fetch_image`** downloads the one you pick to a workspace path. From there the image becomes an image clip on the timeline or a project asset.
 
 Use this when the editing prompt asks for outside imagery — a person ("a photo of Elon Musk"), an event ("the IPO"), a logo, a brand still, or B-roll the footage doesn't contain. Never fabricate an image path or hotlink a remote URL into the project — always run step `fetch_image` to a real local file first (the preview player and render engine read local files).
 
@@ -59,7 +59,15 @@ Search returns more than you need. Before committing:
 
 ## Where the image goes
 
-- **As an overlay image card** — the usual choice for a B-roll insert synced to a beat. Author/point a `photo_card`-style JSX overlay at it and pass the local path via `props`. Load skill `overlay` and load skill `write-overlay`.
+- **As an image clip (the default)** — a sourced photo or B-roll still is a `type: "image"` item on an upper track (`tracks[1+]`), timed to the beat with `start`/`end`. It crops and positions like a clip; overlays cannot be cropped. Never write a JSX overlay for a plain photo.
+
+```json
+{ "id": "img-0", "type": "image", "src": "/abs/path/musk.jpg", "start": 4.2, "end": 7.0,
+  "fit": "cover", "sourceCrop": { "x": 0.1, "y": 0, "w": 0.8, "h": 1 } }
+```
+
+Omit `sourceCrop` for the whole photo. `offsetX`, `offsetY` and `scale` place it smaller than the frame. Fields: `docs/schemas/project.md`, "`type: \"image\"`".
+- **In an animated graphic** — only when the photo is part of a motion graphic (a card that animates in with text). Then pass the local path via `props` to a JSX overlay: load skills `overlay` and `write-overlay`.
 - **As a project asset** — add to `project.assets[]` (`{ id, type: "image", src, name }`) so it's tracked and reusable.
 
 Always use the **local fetched path** (absolute), never the remote URL.
@@ -71,5 +79,5 @@ Always use the **local fetched path** (absolute), never the remote URL.
 2. Eyeball results → pick a clean ≥1500px original
 3. Run step `fetch_image` with {url:"https://…/elon.jpg", out:"<project>/assets/elon_musk.jpg"}
 4. Read the downloaded file → confirm subject + no watermark/chyron
-5. Add an image-card overlay (props.src = the fetched path) → load skill `overlay`
+5. Add it as a `type: "image"` clip on `tracks[1+]` (src = the fetched path, start/end on the beat)
 ```
