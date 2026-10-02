@@ -278,7 +278,7 @@ def is_normalized(path, info, project_color_space: ColorSpaceKey) -> bool:
 
 
 def normalized_output_path(input_path: str, color_space: ColorSpaceKey, *, tonemapped: bool,
-                           sdr_stretch: bool = False) -> str:
+                           sdr_stretch: bool = False, look: str | None = None) -> str:
     """Build the deterministic normalized-master output path for `input_path`.
 
     Base name is ``<stem>_normalized_<color_space>.mp4`` — namespaced per color
@@ -291,7 +291,7 @@ def normalized_output_path(input_path: str, color_space: ColorSpaceKey, *, tonem
     means this encode ran (or will run) the HDR→SDR
     `_build_tonemap_vf_to_sdr` LUT chain — i.e. the source's detected color
     space is HDR (hlg/pq) and `color_space` is "sdr_bt709", the one branch of
-    `_build_color_conversion_vf` that actually applies the Montaj Vivid LUT.
+    `_build_color_conversion_vf` that actually applies the default look's LUT.
     Callers determine this from their own probe (`is_hdr(detect_from_transfer(
     info["color_transfer"])) and color_space == "sdr_bt709"`) and pass it in —
     this function does no probing itself.
@@ -300,7 +300,9 @@ def normalized_output_path(input_path: str, color_space: ColorSpaceKey, *, tonem
     look changes MASTER_LOOK, which changes this suffix, so a stale
     tone-mapped master becomes detectable (and cleanable — see
     cli/commands/clean.py's KNOWN_LOOKS) by filename alone, no re-probing or
-    pixel inspection required.
+    pixel inspection required. `look` names the master an EARLIER look made
+    (lib/look.py's PREVIOUS_MASTER_LOOKS), which is how serve's look migration
+    recognizes one; omitted, it is MASTER_LOOK.
 
     `tonemapped=False` masters (a source already SDR, or an HDR<->HDR /
     SDR->HDR conversion — no LUT involved) stay untagged: their pixels carry
@@ -309,7 +311,7 @@ def normalized_output_path(input_path: str, color_space: ColorSpaceKey, *, tonem
     any of this — it checks probed content, never the filename.
     """
     stem = input_path.rsplit(".", 1)[0]
-    look_suffix = f"_{MASTER_LOOK}" if tonemapped else ""
+    look_suffix = f"_{look or MASTER_LOOK}" if tonemapped else ""
     if sdr_stretch:
         # SDR white moved from 100 to 203 nits (PV42): name apart from any old
         # 100-nit master so render's mtime cache never reuses one. Twin:
@@ -332,7 +334,7 @@ def _has_zscale():
 
 @functools.lru_cache(maxsize=None)
 def _has_lut3d():
-    """Check if ffmpeg has the lut3d filter (applies the Montaj Vivid .cube LUT).
+    """Check if ffmpeg has the lut3d filter (applies the look's .cube LUT).
 
     Memoized for the same reason as _has_zscale().
     """
@@ -362,7 +364,7 @@ def _build_color_conversion_vf(
 
 
 def _build_tonemap_vf_to_sdr(src: ColorSpaceKey) -> tuple[str, bool]:
-    """HDR (HLG or PQ) → SDR Rec.709. Uses the Montaj Vivid LUT chain (zscale +
+    """HDR (HLG or PQ) → SDR Rec.709. Uses the default look's LUT chain (zscale +
     lut3d, see montaj_assets/luts/ and lib/look.py) when available; falls back
     to a bare Hable tonemap otherwise.
 

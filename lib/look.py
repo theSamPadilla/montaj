@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Vivid look/curve manifest loader — montaj_assets/luts/looks.json.
+"""Look/curve manifest loader — montaj_assets/luts/looks.json.
 
 The JSON is the canonical source of truth for which color-grade LUTs exist
 and which one is the project default ("master look"). No heavy imports here
@@ -17,7 +17,15 @@ _MANIFEST_PATH = _LUTS_DIR / "looks.json"
 _DATA = json.loads(_MANIFEST_PATH.read_text())
 
 MASTER_LOOK: str = _DATA["masterLook"]
-"""The manifest's default look id (e.g. "vivid1") — the curve new projects grade with."""
+"""The manifest's default look id ("natural1" since PL24): the curve every HDR→SDR grade
+uses unless a caller names another."""
+
+PREVIOUS_MASTER_LOOKS: tuple[str, ...] = tuple(_DATA.get("previousMasterLooks", ()))
+"""Every earlier masterLook that tagged artifact filenames, oldest first ("vivid1"
+before PL24). APPEND the outgoing id here, in looks.json, on each bump: serve's
+look migration retires a normalized master tagged with any of these, and
+`montaj clean` keeps their files cleanable. "hable1" never tagged a master, so
+it is not here (clean names it itself, for proxies)."""
 
 _CURVES: dict = _DATA["curves"]
 

@@ -1,0 +1,42 @@
+{
+  "name": "montaj-natural-v1",
+  "date": "2026-10-02",
+  "captured_at": "2026-10-02T01:02Z (2026-10-01 18:02 PDT)",
+  "plan": "PL24 phase 1 (capture) and phase 2 (default look)",
+  "lut_size": 33,
+  "input": "full-range HLG-encoded BT.2020 RGB [0,1] (zscale matrixin=2020_ncl rangein=limited range=full), clipped at 1.0: Y10 64 to 940 maps to 0 to 1, the same domain as montaj-vivid-v1",
+  "output": "BT.709 R'G'B' [0,1], display-referred: the values Apple's BT.709 limited-range 8-bit output decodes to, so the chain's trailing zscale only retags",
+  "reference": {
+    "tool": "avconvert -p Preset1920x1080",
+    "macos": "26.6.2",
+    "what": "Apple's own HLG-to-SDR conversion: an AVFoundation export preset, driven by the avconvert command"
+  },
+  "method": [
+    "Lossless HLG/BT.2020 test videos (libx265 Main10, tagged bt2020 / arib-std-b67 / bt2020nc / tv) carrying a 33^3 grid of flat patches at exact 10-bit limited BT.2020 NCL codes, plus off-grid validation patches and controls, each held 15 frames",
+    "The patches are laid out in three placements (raster, reversed, shuffled), each converted by avconvert; node outputs are the mean of the three, decoded from BT.709 limited 8-bit to full-range R'G'B'",
+    "Node values corrected to first order for 10-bit input quantisation (grid gradient times the decoded-minus-nominal offset), clipped to [0,1]",
+    "Validated with a tetrahedral twin of ffmpeg lut3d on 3183 off-grid patches: dE00 mean 0.22, p95 0.52; placement-to-placement noise mean 0.11 to 0.15",
+    "Adaptation checks: the conversion is static (no scene or surround adaptation within measurement noise); superwhites above Y10 940 clip to the same output as 940",
+    "Title line re-stamped to montaj-natural-v1 on promotion; data rows unchanged from the capture (apple-hlg-sdr-N33.cube)"
+  ],
+  "data_sha256": "7dd2e0bd6dd8e39267ac1874741c87551130b5d10f96a567a26efa624498d0ac",
+  "data_sha256_of": "every line after the 4-line header, newline-joined with a trailing newline",
+  "accuracy": {
+    "vs_apple_on_a_real_hlg_master": {
+      "dE00_mean": 0.75,
+      "dE00_p95": 2.41,
+      "how": "8 frames of a real HLG master at 1080p through montaj's chain (scale, zscale, rgb48le, lut3d tetrahedral, zscale bt709 tv, yuv420p) against Apple's avconvert output of the same master; CIEDE2000 on BT.709 R'G'B' with a 2.4 display gamma"
+    },
+    "h264_noise_floor": {
+      "dE00_mean": 0.64,
+      "dE00_p95": 2.47
+    },
+    "h264_noise_floor_how": "the same chain's output re-encoded with H.264 at Apple's bitrate, against itself: what the codec alone costs",
+    "vivid1_same_measure": {
+      "chain_dE00_mean": 5.23,
+      "chain_dE00_p95": 13.94,
+      "shipped_export_dE00_mean": 4.75,
+      "shipped_export_dE00_p95": 12.29
+    }
+  }
+}

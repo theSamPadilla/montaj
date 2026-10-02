@@ -161,7 +161,7 @@ export async function deriveSdr(masterPath, outputPath, opts = {}) {
     // from the one the editor previewed.
     dlog(`WARNING: this ffmpeg build is missing ${!zscaleAvailable ? 'zscale' : 'lut3d'} — `
        + `the SDR rendition falls back to a generic tonemap and will NOT match the `
-       + `Montaj Vivid grade you previewed. Run \`montaj doctor\` for the fix.`)
+       + `grade you previewed. Run \`montaj doctor\` for the fix.`)
   }
 
   const args = buildDeriveSdrArgs(masterPath, outputPath, {

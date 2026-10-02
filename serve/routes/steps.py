@@ -498,7 +498,7 @@ async def _run_proxy_to_job(job_id: str, schema: dict, py_path: Path, body: dict
 async def proxy_video(body: dict = Body(...)):
     """Encode the full-source, 720p, all-intra AV1+Opus editing proxy for `input`.
 
-    Request:  { "input": "/abs/path/to/video.mp4", "out": "/abs/path/to/video_proxy_vivid1.mp4", "tonemap": false }
+    Request:  { "input": "/abs/path/to/video.mp4", "out": "/abs/path/to/video_proxy_natural1_h264.mp4", "tonemap": false }
     ("tonemap" defaults to the input's provenance
     (lib.color_provenance.proxy_source_for): HDR-origin footage is graded, so
     backfilling a lazy HDR project can't silently produce an un-tone-mapped

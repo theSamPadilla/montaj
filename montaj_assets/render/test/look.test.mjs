@@ -9,8 +9,14 @@ import { existsSync } from 'node:fs'
 
 import { MASTER_LOOK, curveIds, lutPath } from '../look.js'
 
-test('look.js: MASTER_LOOK matches the manifest default (vivid1)', () => {
-  assert.equal(MASTER_LOOK, 'vivid1')
+test('look.js: MASTER_LOOK matches the manifest default (natural1, PL24)', () => {
+  assert.equal(MASTER_LOOK, 'natural1')
+})
+
+test('look.js: the default look is the natural1 cube; vivid1 and vivid1-neutral stay selectable', () => {
+  assert.ok(lutPath().endsWith('/montaj-natural-v1.cube'), lutPath())
+  assert.ok(lutPath('vivid1').endsWith('/montaj-vivid-v1.cube'))
+  assert.ok(lutPath('vivid1-neutral').endsWith('/montaj-vivid-v1-neutral.cube'))
 })
 
 test('look.js: curveIds returns all registered curves, master look included', () => {

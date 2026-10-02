@@ -1,18 +1,19 @@
-"""SP6b whole-SP acceptance: preview vs render traverse the SAME vivid1 LUT.
+"""SP6b whole-SP acceptance: preview vs render traverse the SAME default LUT.
 
 MASTER SP6's gate: a golden-frame preview-vs-render comparison within a defined
-tolerance. The editor preview of an HDR project plays the SDR vivid1 proxy; the
-SDR export is composed per layer, and an HDR clip's grade is encode-segment.js's
-buildColorConversionFilter('hdr_hlg', 'sdr_bt709') through the same LUT.
-Both sides tone-map through montaj-vivid-v1.cube, one in Python's proxy encode
-and one in the JS export filter, so a frame sampled from each at the same
-timestamp must agree to SSIM >= 0.93 at matched resolution — the tolerance
-absorbs scaler/encoder drift (AV1 proxy vs x264 export), nothing else.
+tolerance. The editor preview of an HDR project plays the SDR proxy, graded
+through the default look; the SDR export is composed per layer, and an HDR
+clip's grade is encode-segment.js's buildColorConversionFilter('hdr_hlg',
+'sdr_bt709') through the same LUT. Since PL24 that LUT is montaj-natural-v1.cube
+(natural1, Apple's own HLG-to-SDR conversion); it was montaj-vivid-v1.cube
+before. Both sides tone-map through it, one in Python's proxy encode and one in
+the JS export filter, so a frame sampled from each at the same timestamp must
+agree to SSIM >= 0.93 at matched resolution. The tolerance absorbs
+scaler/encoder drift (H.264 proxy vs x264 export), nothing else, and a negative
+control below proves it still fails when the two sides use different looks.
 
-The fixture is deliberately saturated, structured content (smptehdbars): the
-vivid1 and vivid1-neutral cubes are byte-identical on neutral tones (the delta
-is Helmholtz-Kohlrausch chroma handling), and a flat gray fixture would also
-make the SSIM gate trivially weak.
+The fixture is deliberately saturated, structured content (smptehdbars): a flat
+gray fixture would make the SSIM gate trivially weak.
 """
 
 import re
@@ -84,42 +85,78 @@ def _ssim(a: Path, b: Path) -> float:
     return float(m.group(1))
 
 
-@pytest.mark.slow
-def test_vivid_preview_matches_derived_sdr_render(tmp_path):
-    """Proxy frame (preview) vs the export grade frame: SSIM >= 0.93."""
-    if not (_has_zscale() and _has_lut3d()):
-        pytest.skip("ffmpeg lacks zscale/lut3d")
-    if not HAS_NODE:
-        pytest.skip("node not available")
+NATURAL_CUBE = "montaj-natural-v1.cube"
+VIVID_CUBE = "montaj-vivid-v1.cube"
+PARITY_SSIM = 0.93
 
-    master = tmp_path / "bars.mp4"
-    _make_hlg_bars(master)
+
+def _preview_proxy(master: Path, tmp_path: Path) -> tuple[Path, str]:
+    """The SDR proxy exactly as the editor gets it (the graded proxy arm, at
+    proxy quality). Returns the file and the command line that built it."""
     info = probe_video(str(master))
     assert info is not None
-
-    # Preview side: the SDR vivid1 proxy, exactly as the lazy proxy arm
-    # encodes it for the editor (tonemap through the LUT at proxy quality).
     proxy = tmp_path / "bars_proxy.mp4"
     proxy_cmd, used_fallback = _build_proxy_cmd(
         str(master), str(proxy), tonemap=True, info=info
     )
     assert not used_fallback
     subprocess.run(proxy_cmd, check=True, capture_output=True, timeout=300)
+    return proxy, " ".join(proxy_cmd)
 
-    # Export side: the grade the per-layer SDR compose applies to an HDR clip,
-    # from the real JS filter builder, then the compose's yuv420p output format.
-    derived = tmp_path / "bars-sdr.mp4"
+
+def _derived_sdr(master: Path, tmp_path: Path, sdr_curve: str | None = None) -> tuple[Path, str]:
+    """The grade the per-layer SDR compose applies to an HDR clip, from the
+    real JS filter builder (`sdr_curve` None is `--export sdr` without
+    `--sdr-curve`), then the compose's yuv420p output format."""
+    curve = "null" if sdr_curve is None else repr(sdr_curve)
     chain = subprocess.run(
         ["node", "-e",
          "import(process.argv[1]).then(m => console.log("
-         "m.buildColorConversionFilter('hdr_hlg', 'sdr_bt709', true, {hasLut3d: true})))",
+         "m.buildColorConversionFilter('hdr_hlg', 'sdr_bt709', true, "
+         f"{{hasLut3d: true, sdrCurve: {curve}}})))",
          str(ENCODE_SEGMENT_JS)],
         check=True, capture_output=True, text=True, timeout=60,
     ).stdout.strip()
     assert chain
+    derived = tmp_path / f"bars-sdr-{sdr_curve or 'default'}.mp4"
     subprocess.run([FFMPEG_BIN, "-y", "-i", str(master), "-vf", f"{chain},format=yuv420p",
                     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", str(derived)],
                    check=True, capture_output=True, timeout=300)
+    return derived, chain
+
+
+def _frame_ssim(a: Path, b: Path, tmp_path: Path) -> float:
+    a_png = tmp_path / f"{a.stem}.png"
+    b_png = tmp_path / f"{b.stem}.png"
+    _extract_frame(a, a_png)
+    _extract_frame(b, b_png)
+    return _ssim(a_png, b_png)
+
+
+def _needs_lut_chain():
+    if not (_has_zscale() and _has_lut3d()):
+        pytest.skip("ffmpeg lacks zscale/lut3d")
+    if not HAS_NODE:
+        pytest.skip("node not available")
+
+
+@pytest.mark.slow
+def test_vivid_preview_matches_derived_sdr_render(tmp_path):
+    """Proxy frame (preview) vs the default SDR export frame: both run the
+    natural1 cube, and SSIM >= 0.93."""
+    _needs_lut_chain()
+
+    master = tmp_path / "bars.mp4"
+    _make_hlg_bars(master)
+
+    proxy, proxy_cmd = _preview_proxy(master, tmp_path)
+    derived, chain = _derived_sdr(master, tmp_path)
+
+    # Same LUT on both sides, and it is the natural1 cube. A preview on one
+    # look and an export on another is exactly what this gate exists to stop.
+    assert f"/{NATURAL_CUBE}:" in proxy_cmd, proxy_cmd
+    assert f"/{NATURAL_CUBE}:" in chain, chain
+    assert VIVID_CUBE not in proxy_cmd and VIVID_CUBE not in chain
 
     probe = subprocess.run([
         "ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -128,14 +165,28 @@ def test_vivid_preview_matches_derived_sdr_render(tmp_path):
     ], check=True, capture_output=True, text=True, timeout=30)
     assert probe.stdout.strip() == "bt709"
 
-    proxy_png = tmp_path / "proxy.png"
-    derived_png = tmp_path / "derived.png"
-    _extract_frame(proxy, proxy_png)
-    _extract_frame(derived, derived_png)
+    score = _frame_ssim(proxy, derived, tmp_path)
+    print(f"parity SSIM (natural1 proxy vs default derived SDR): {score:.4f}")
+    assert score >= PARITY_SSIM
 
-    score = _ssim(proxy_png, derived_png)
-    print(f"vivid acceptance SSIM (proxy vs derived SDR): {score:.4f}")
-    assert score >= 0.93
+
+@pytest.mark.slow
+def test_parity_gate_fails_when_preview_and_export_looks_diverge(tmp_path):
+    """Negative control: the same proxy against an export graded through
+    vivid1 must FAIL the parity tolerance, or the gate above could not tell the
+    two looks apart and would pass a divergence."""
+    _needs_lut_chain()
+
+    master = tmp_path / "bars.mp4"
+    _make_hlg_bars(master)
+
+    proxy, _ = _preview_proxy(master, tmp_path)
+    vivid, chain = _derived_sdr(master, tmp_path, "vivid1")
+    assert f"/{VIVID_CUBE}:" in chain, chain
+
+    score = _frame_ssim(proxy, vivid, tmp_path)
+    print(f"divergent SSIM (natural1 proxy vs vivid1 derived SDR): {score:.4f}")
+    assert score < PARITY_SSIM
 
 
 @pytest.mark.slow
@@ -153,7 +204,7 @@ def test_tonemap_chain_output_matches_the_lut_grade(tmp_path):
     HLG→709 and BT.2020→709 over already-tone-mapped pixels. Highlights
     clipped per channel and hue shifted; a warm white wall rendered pure
     yellow and a window cyan, in every vivid1 proxy and every derived SDR
-    export.
+    export of the time.
 
     Threshold note: on this saturated-bars fixture the broken chain still
     scored 0.938 — it sits above the sibling test's 0.93 tolerance, so that

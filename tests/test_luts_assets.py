@@ -128,3 +128,62 @@ def test_neutral_params_are_winner_params_minus_pop_knobs():
     pop_knobs = {"hk_pop", "hk_darken", "hk_skin"}
     expected = {k: v for k, v in winner.items() if k not in pop_knobs}
     assert neutral == expected
+
+
+# ---------------------------------------------------------------------------
+# montaj-natural-v1 (PL24): Apple's own HLG-to-SDR conversion, captured as a
+# 33^3 cube. The default look since PL24; vivid1 and vivid1-neutral stay
+# selectable.
+# ---------------------------------------------------------------------------
+
+# sha256 of the cube's data rows (every line after the header), as captured in
+# phase 1. Only the TITLE line was re-stamped on promotion, the same pattern as
+# montaj-vivid-v1.cube; a change to any row is a change of look.
+NATURAL_DATA_SHA256 = "7dd2e0bd6dd8e39267ac1874741c87551130b5d10f96a567a26efa624498d0ac"
+
+
+def _cube_header_and_rows(path):
+    lines = path.read_text().splitlines()
+    header = [ln for ln in lines if ln and (ln[0].isalpha() or ln.startswith("#"))]
+    rows = [ln for ln in lines if ln and not (ln[0].isalpha() or ln.startswith("#"))]
+    return header, rows
+
+
+def test_natural1_is_the_default_look():
+    looks = _load_looks()
+    assert looks["masterLook"] == "natural1"
+    assert looks["curves"]["natural1"]["file"] == "montaj-natural-v1.cube"
+    assert looks["curves"]["natural1"].get("default") is True
+
+
+def test_vivid_curves_stay_selectable_and_not_default():
+    curves = _load_looks()["curves"]
+    for curve_id, file in (("vivid1", "montaj-vivid-v1.cube"),
+                           ("vivid1-neutral", "montaj-vivid-v1-neutral.cube")):
+        assert curves[curve_id]["file"] == file
+        assert not curves[curve_id].get("default")
+
+
+def test_natural_cube_is_the_phase1_capture():
+    header, rows = _cube_header_and_rows(LUTS_DIR / "montaj-natural-v1.cube")
+    assert header[0] == 'TITLE "montaj-natural-v1"'
+    assert "LUT_3D_SIZE 33" in header
+    assert "DOMAIN_MIN 0.0 0.0 0.0" in header and "DOMAIN_MAX 1.0 1.0 1.0" in header
+    assert len(rows) == 33 ** 3
+    import hashlib
+    digest = hashlib.sha256(("\n".join(rows) + "\n").encode()).hexdigest()
+    assert digest == NATURAL_DATA_SHA256
+
+
+def test_natural_params_record_provenance_and_accuracy():
+    params = json.loads((LUTS_DIR / "montaj-natural-v1.params.json").read_text())
+    assert params["name"] == "montaj-natural-v1"
+    assert params["date"] == "2026-10-02"
+    assert params["lut_size"] == 33
+    assert params["data_sha256"] == NATURAL_DATA_SHA256
+    reference = params["reference"]
+    assert "avconvert" in reference["tool"] and "Preset1920x1080" in reference["tool"]
+    assert reference["macos"] == "26.6.2"
+    accuracy = params["accuracy"]["vs_apple_on_a_real_hlg_master"]
+    assert accuracy["dE00_mean"] == 0.75 and accuracy["dE00_p95"] == 2.41
+    assert params["accuracy"]["h264_noise_floor"] == {"dE00_mean": 0.64, "dE00_p95": 2.47}

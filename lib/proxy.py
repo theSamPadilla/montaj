@@ -46,7 +46,8 @@ every existing proxy as stale and regenerates it under the new look — no
 migration step needed. When bumping: APPEND the previous look id to
 cli/commands/clean.py's KNOWN_LOOKS so the previous look's files stay
 cleanable (clean only deletes known-tagged files, SP3 fix S5). "hable1" is the
-historical value from before the Montaj Vivid LUT (SP6b) shipped."""
+historical value from before the Montaj Vivid LUT (SP6b) shipped, and "vivid1"
+the value from then until PL24 made "natural1" the default."""
 
 PROXY_FORMAT = "h264"
 """Codec/container-generation tag stamped into every proxy filename, alongside
@@ -67,7 +68,7 @@ mechanism — bump PROXY_FORMAT alone and only proxies get invalidated."""
 
 PROXY_GRADE_TAG = "montaj_proxy_grade"
 """Container tag every new proxy carries, saying which arm built it: PROXY_LOOK
-(the Vivid LUT grade), "fallback" (the bare tonemap used when zscale is
+(the default look's LUT grade), "fallback" (the bare tonemap used when zscale is
 missing) or "none" (the plain arm, no grade). The file name cannot say it:
 every proxy is `_proxy_<PROXY_LOOK>_<PROXY_FORMAT>` whatever its grade, the
 name is its identity (serve's look migration matches on it, and a new name

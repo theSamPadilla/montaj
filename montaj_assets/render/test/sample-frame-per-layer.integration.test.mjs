@@ -76,8 +76,8 @@ function plainDecode(dir, clip, tag) {
   return centre(png)
 }
 
-/** The ideal Vivid grade of frame 0, centre pixel (no encode in between). */
-function idealVivid(dir, clip, tag) {
+/** The ideal default-look grade of frame 0, centre pixel (no encode in between). */
+function idealGrade(dir, clip, tag) {
   const png = join(dir, `vivid-${tag}.png`)
   run('ffmpeg', ['-y', '-v', 'error', '-i', clip, '-vf', `${buildVividLutChain('hdr_hlg')},format=rgb24`,
     '-frames:v', '1', '-update', '1', png])
@@ -166,9 +166,9 @@ t('4. a marked HLG src (lib.normalize) decodes the original, ungraded', async (d
   assert.ok(maxDiff(got, want) <= 1.0, `got ${got}, as authored ${want}`)
 })
 
-t('5. an HLG clip is graded: the ideal Vivid within 1', async (dir) => {
+t('5. an HLG clip is graded: the ideal grade within 1', async (dir) => {
   const hlg = makeClip(join(dir, 'hlg.mp4'), '0x5090c0', HLG)
-  const want = idealVivid(dir, hlg, '5')
+  const want = idealGrade(dir, hlg, '5')
   const ungraded = plainDecode(dir, hlg, '5')
   assert.ok(maxDiff(want, ungraded) > 8, 'fixture: the grade must visibly change this colour')
   const got = await sample(dir, projectOf('hdr_hlg', { src: hlg }))
@@ -294,7 +294,7 @@ t('9d. --prefer-proxy with a BT.709-tagged proxy is unchanged (plain decode)', a
 
 // --- Cutouts ---------------------------------------------------------------
 
-t('10. an HDR-origin cutout decodes as BT.601 YUV, is graded to the ideal Vivid, and keeps its alpha', async (dir) => {
+t('10. an HDR-origin cutout decodes as BT.601 YUV, is graded to the ideal grade, and keeps its alpha', async (dir) => {
   const hlg = makeClip(join(dir, 'hlg.mp4'), '0xe0ac69', HLG)
   // The cutout the way steps/transform/remove_bg.py makes one (T8 measured it):
   // the HLG frame decoded to RGB with the BT.2020 matrix, alpha opaque on the
@@ -319,10 +319,13 @@ t('10. an HDR-origin cutout decodes as BT.601 YUV, is graded to the ideal Vivid,
   const clear = centre(out, 0.75)
   assert.deepEqual(clear, [0, 0, 0], 'the transparent half shows the black canvas')
   assert.notDeepEqual(opaque, plainDecode(dir, hlg, '10'), 'and it is graded')
-  // The export declares this file BT.601 (T8); so must the still. Declared
-  // BT.2020 it measured 3-5 levels off on skin.
-  const ideal = idealVivid(dir, hlg, '10')
-  assert.ok(maxDiff(opaque, ideal) <= 1.5, `cutout ${opaque}, ideal Vivid of its source ${ideal}`)
+  // The export declares this file BT.601 (T8); so must the still. Measured
+  // under natural1 (PL24) on this skin tone: declared BT.601 the still is 2
+  // levels off the ideal (the grade filter alone is exact; the still's alpha
+  // split costs 1 and its composite 1 more), declared BT.2020 it is 7 off.
+  // Under vivid1 the same pair was within 1.5 and 3-5 off.
+  const ideal = idealGrade(dir, hlg, '10')
+  assert.ok(maxDiff(opaque, ideal) <= 2.5, `cutout ${opaque}, ideal grade of its source ${ideal}`)
 })
 
 t('10b. the still builds its cutout grade with the export\'s builder, so they cannot drift', async () => {

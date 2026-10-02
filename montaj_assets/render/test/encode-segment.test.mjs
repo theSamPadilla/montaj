@@ -594,6 +594,18 @@ test('vivid chain: the trailing zscale retags, it does not re-convert', () => {
   }
 })
 
+test('vivid chain: the default (no --sdr-curve) is the natural1 cube; vivid1 still selects its own', () => {
+  // PL24: `--export sdr|both` without `--sdr-curve` grades HDR clips through
+  // Apple's HLG-to-SDR conversion; an explicit vivid1 keeps working.
+  const def = buildVividLutChain('hdr_hlg')
+  assert.ok(def.includes('/montaj-natural-v1.cube:interp=tetrahedral'), def)
+  assert.ok(!def.includes('montaj-vivid-v1'), def)
+  const vivid = buildVividLutChain('hdr_hlg', 'vivid1')
+  assert.ok(vivid.includes('/montaj-vivid-v1.cube:interp=tetrahedral'), vivid)
+  const conv = buildColorConversionFilter('hdr_hlg', 'sdr_bt709', true, { hasLut3d: true })
+  assert.ok(conv.includes('/montaj-natural-v1.cube:'), conv)
+})
+
 test('vivid chain: a curve id selects that cube; omitting it uses the master look', () => {
   const master = buildVividLutChain('hdr_hlg')
   const neutral = buildVividLutChain('hdr_hlg', 'vivid1-neutral')

@@ -160,7 +160,7 @@ describe('RenderModal — name + cover', () => {
     await waitFor(() => expect(adapter.renderAsync).toHaveBeenCalledTimes(1))
     expect(adapter.renderAsync).toHaveBeenCalledWith('vid-1', expect.objectContaining({
       export: 'auto',
-      sdrCurve: 'vivid1',
+      sdrCurve: 'natural1',
       name: 'my-clip',
       cover: expect.closeTo(1.8, 5),
     }))
@@ -226,7 +226,7 @@ describe('RenderModal — HDR format + curve', () => {
     await waitFor(() => expect(adapter.render).toHaveBeenCalledTimes(1))
     expect(adapter.render).toHaveBeenCalledWith('vid-1', expect.objectContaining({
       export: 'sdr',
-      sdrCurve: 'vivid1',
+      sdrCurve: 'natural1',
     }))
   })
 
@@ -245,7 +245,7 @@ describe('RenderModal — HDR format + curve', () => {
     await waitFor(() => expect(adapter.renderAsync).toHaveBeenCalledTimes(1))
     expect(adapter.renderAsync).toHaveBeenCalledWith('vid-1', expect.objectContaining({
       export: 'auto',
-      sdrCurve: 'vivid1',
+      sdrCurve: 'natural1',
     }))
   })
 
@@ -309,11 +309,17 @@ describe('RenderModal — curve picker honesty line', () => {
     const line = screen.getByTestId('sdr-honesty-line').textContent ?? ''
     expect(line).not.toBe(DEFAULT_LINE)
     expect(line).toMatch(/will not match your preview/i)
-    expect(line).toMatch(/Montaj Vivid/)
+    expect(line).toMatch(/Natural/)
 
     // And back again.
-    fireEvent.click(screen.getByText('Montaj Vivid'))
+    fireEvent.click(screen.getByText('Natural'))
     expect(screen.getByTestId('sdr-honesty-line').textContent).toBe(DEFAULT_LINE)
+  })
+
+  it('treats Montaj Vivid as a non-default curve since natural1 became the default (PL24)', () => {
+    openAdvanced()
+    fireEvent.click(screen.getByText('Montaj Vivid'))
+    expect(screen.getByTestId('sdr-honesty-line').textContent).toMatch(/will not match your preview/i)
   })
 
   it('keeps every option string free of em dashes (project copy rule)', () => {
@@ -342,16 +348,18 @@ describe('RenderModal — curve thumbnails', () => {
     // there). Opening it fires exactly one sample per curve; the cover sample is
     // debounced, so it hasn't landed by the time these two resolve.
     fireEvent.click(screen.getByText('Advanced'))
-    await waitFor(() => expect(adapter.getSampleFrame).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(adapter.getSampleFrame).toHaveBeenCalledTimes(3))
     const calls = (adapter.getSampleFrame as ReturnType<typeof vi.fn>).mock.calls
-    expect(calls.map(c => c[2]?.sdrCurve).sort()).toEqual(['vivid1', 'vivid1-neutral'])
-    // Both curves must be judged on the SAME frame, inside the given keep.
+    expect(calls.map(c => c[2]?.sdrCurve).sort()).toEqual(['natural1', 'vivid1', 'vivid1-neutral'])
+    // Every curve must be judged on the SAME frame, inside the given keep.
     expect(calls[0][1]).toBe(calls[1][1])
+    expect(calls[0][1]).toBe(calls[2][1])
     expect(calls[0][1]).toBeGreaterThan(0)
     expect(calls[0][1]).toBeLessThan(12)
 
     await waitFor(() => {
       const srcs = Array.from(document.querySelectorAll('img')).map(i => i.getAttribute('src'))
+      expect(srcs).toContain('/files?path=/sample-natural1.png')
       expect(srcs).toContain('/files?path=/sample-vivid1.png')
       expect(srcs).toContain('/files?path=/sample-vivid1-neutral.png')
     })
@@ -383,10 +391,11 @@ describe('RenderModal — curve thumbnails', () => {
     // Open Advanced to trigger the (now-deferred) curve sampling. Dedup still
     // holds: exactly one sample per curve despite the double-mount.
     fireEvent.click(screen.getByText('Advanced'))
-    await waitFor(() => expect(adapter.getSampleFrame).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(adapter.getSampleFrame).toHaveBeenCalledTimes(3))
 
     await waitFor(() => {
       const srcs = Array.from(document.querySelectorAll('img')).map(i => i.getAttribute('src'))
+      expect(srcs).toContain('/files?path=/sample-natural1.png')
       expect(srcs).toContain('/files?path=/sample-vivid1.png')
       expect(srcs).toContain('/files?path=/sample-vivid1-neutral.png')
     })
@@ -404,6 +413,7 @@ describe('RenderModal — curve thumbnails', () => {
     )
 
     fireEvent.click(screen.getByText('Advanced'))
+    expect(screen.getByText('Natural')).toBeTruthy()
     expect(screen.getByText('Montaj Vivid')).toBeTruthy()
     expect(screen.getByText('Neutral brights')).toBeTruthy()
     expect(document.querySelectorAll('img').length).toBe(0)
@@ -427,8 +437,8 @@ describe('RenderModal — curve thumbnails', () => {
     )
 
     fireEvent.click(screen.getByText('Advanced'))
-    await waitFor(() => expect(adapter.getSampleFrame).toHaveBeenCalledTimes(2))
-    expect(screen.getByText('Montaj Vivid')).toBeTruthy()
+    await waitFor(() => expect(adapter.getSampleFrame).toHaveBeenCalledTimes(3))
+    expect(screen.getByText('Natural')).toBeTruthy()
 
     fireEvent.click(exportButton())
     await waitFor(() => expect(adapter.renderAsync).toHaveBeenCalledTimes(1))

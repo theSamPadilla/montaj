@@ -798,3 +798,203 @@ def test_proxy_write_back_reaches_an_item_whose_marked_src_maps_to_that_proxy(wo
     edits = projects_mod._proxy_items_for(project_dir / "project.json", out, out)
 
     assert ("clip-0", marked, "proxySrc", out) in edits
+
+
+# ---------------------------------------------------------------------------
+# PL24: the default look moved from vivid1 to natural1. Every HDR project's
+# vivid1 proxies are now stale and rebuild once, in the background, on open.
+# These pin the literal tags (not MASTER_LOOK) so they say which switch they
+# guard.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def hlg_sources(monkeypatch, provenance_reads):
+    """Every source probes as HLG with no marker: iPhone footage, the case the
+    natural1 switch is for. The migration hands the proxy step tonemap=None, so
+    the step's provenance resolver grades it."""
+    import lib.color_provenance as cp
+
+    monkeypatch.setattr(cp, "probe_media",
+                        lambda path, **_: cp.Probe("arib-std-b67", "", 1920, 1080, "30/1", 5.0))
+
+
+def test_natural1_vivid1_proxy_is_requeued_in_the_background(workspace, hlg_sources, monkeypatch):
+    from serve.jobs import set_done
+    import serve.routes.steps as steps_mod
+
+    calls: list = []
+    gate: dict = {}
+
+    async def _fake_proxy(job_id, input_path, *, out, tonemap=None):
+        calls.append((input_path, out, tonemap))
+        await gate["event"].wait()
+        Path(out).write_bytes(b"natural-proxy")
+        set_done(job_id, {"path": out, "skipped": False})
+
+    monkeypatch.setattr(steps_mod, "run_proxy_job", _fake_proxy)
+
+    project_dir, src = _make_project(workspace, PID, color_space="hdr_hlg")
+    stem = src.with_suffix("")
+    vivid = Path(f"{stem}_proxy_vivid1_h264.mp4")
+    vivid.write_bytes(b"vivid-proxy")
+    _set_fields(project_dir, proxySrc=str(vivid))
+    natural = Path(f"{stem}_proxy_natural1_h264.mp4")
+
+    async def _run():
+        gate["event"] = asyncio.Event()  # the encode cannot finish until released
+        # A request that waited on the encode would hang on the gate: the
+        # timeout turns that into a failure instead of a stuck suite.
+        body = await asyncio.wait_for(get_project(PID, project_dir=project_dir), timeout=10)
+        at_response = (body, _read(project_dir), natural.exists())
+        gate["event"].set()
+        await _settle()
+        return at_response
+
+    body, committed, natural_existed = asyncio.run(_run())
+
+    # The open returned with the vivid1 pointer cleared, before any encode
+    # finished: nothing was re-encoded inside the request.
+    assert "proxySrc" not in _item(body)
+    assert "proxySrc" not in _item(committed)
+    assert not natural_existed
+    # One background encode, named with the natural1 tag...
+    assert len(calls) == 1, calls
+    assert calls[0][0] == os.path.realpath(src)
+    assert calls[0][1] == str(natural)
+    # ...whose result is written back. The vivid1 file is left for `montaj clean`.
+    assert _item(_read(project_dir))["proxySrc"] == str(natural)
+    assert vivid.exists()
+
+
+def test_natural1_proxy_already_current_is_untouched(workspace, encodes, hlg_sources):
+    project_dir, src = _make_project(workspace, PID, color_space="hdr_hlg")
+    stem = src.with_suffix("")
+    natural = Path(f"{stem}_proxy_natural1_h264.mp4")
+    natural.write_bytes(b"natural-proxy")
+    _set_fields(project_dir, proxySrc=str(natural))
+
+    body = _open_and_settle(PID, project_dir)
+
+    assert encodes.total == 0
+    assert _item(body)["proxySrc"] == str(natural)
+    assert _item(_read(project_dir))["proxySrc"] == str(natural)
+    assert natural.read_bytes() == b"natural-proxy"
+
+
+# ---------------------------------------------------------------------------
+# PL24 B: a `normalizedSrc` naming this item's full-source master under an
+# OLDER look tag (`_normalized_sdr_bt709_vivid1.mp4`) is stale, the same as an
+# untagged pre-vivid1 master: render would keep using it while the proxy shows
+# natural1, so preview and export would diverge. Clear it and re-normalize at
+# the current look in the background, from the untouched original.
+# ---------------------------------------------------------------------------
+
+def test_vivid1_master_is_requeued_at_natural1(workspace, probe_hdr, monkeypatch):
+    from serve.jobs import set_done
+    import serve.routes.steps as steps_mod
+
+    calls: list = []
+    gate: dict = {}
+
+    async def _fake_normalize(job_id, input_path, color_space, *, out=None):
+        calls.append((input_path, color_space, out))
+        await gate["event"].wait()
+        Path(out).write_bytes(b"natural-master")
+        set_done(job_id, {"path": out, "skipped": False})
+
+    async def _no_proxy(job_id, input_path, *, out, tonemap=None):
+        raise AssertionError("no proxy field in this project")
+
+    monkeypatch.setattr(steps_mod, "run_normalize_job", _fake_normalize)
+    monkeypatch.setattr(steps_mod, "run_proxy_job", _no_proxy)
+
+    project_dir, src = _make_project(workspace, PID)  # sdr_bt709, src probes HLG
+    stem = src.with_suffix("")
+    vivid = Path(f"{stem}_normalized_sdr_bt709_vivid1.mp4")
+    vivid.write_bytes(b"vivid-master")
+    _set_fields(project_dir, normalizedSrc=str(vivid), normalizedInPoint=0)
+    natural = Path(f"{stem}_normalized_sdr_bt709_natural1.mp4")
+    original = (src.read_bytes(), src.stat().st_mtime_ns)
+
+    async def _run():
+        gate["event"] = asyncio.Event()
+        body = await asyncio.wait_for(get_project(PID, project_dir=project_dir), timeout=10)
+        at_response = (body, _read(project_dir), natural.exists())
+        gate["event"].set()
+        await _settle()
+        return at_response
+
+    body, committed, natural_existed = asyncio.run(_run())
+
+    # Cleared in the request; render and preview fall back to `src` meanwhile.
+    assert "normalizedSrc" not in _item(body)
+    assert "normalizedSrc" not in _item(committed)
+    assert not natural_existed
+    # One background re-normalize, FROM the original, INTO the natural1 name.
+    assert calls == [(str(src), "sdr_bt709", str(natural))]
+    item = _item(_read(project_dir))
+    assert item["normalizedSrc"] == str(natural)
+    assert item["src"] == str(src)
+    # The HLG original is read, never written; the vivid1 master is left for clean.
+    assert (src.read_bytes(), src.stat().st_mtime_ns) == original
+    assert vivid.read_bytes() == b"vivid-master"
+
+
+def test_vivid1_master_is_repointed_when_natural1_exists(workspace, encodes, probe_hdr):
+    project_dir, src = _make_project(workspace, PID)
+    stem = src.with_suffix("")
+    vivid = Path(f"{stem}_normalized_sdr_bt709_vivid1.mp4")
+    natural = Path(f"{stem}_normalized_sdr_bt709_natural1.mp4")
+    vivid.write_bytes(b"vivid-master")
+    natural.write_bytes(b"natural-master")
+    _set_fields(project_dir, normalizedSrc=str(vivid))
+
+    _open_and_settle(PID, project_dir)
+
+    assert encodes.total == 0
+    assert _item(_read(project_dir))["normalizedSrc"] == str(natural)
+
+
+def test_vivid1_tagged_path_that_is_not_this_items_master_is_left_alone(workspace, encodes, probe_hdr):
+    """Only the exact full-source master name of THIS item's src counts. A
+    vivid1-tagged file of another source, or one elsewhere, is user-written as
+    far as the migration can tell, and a window cache keeps its own timing."""
+    project_dir, src = _make_project(workspace, PID)
+    foreign = project_dir / "other_normalized_sdr_bt709_vivid1.mp4"
+    foreign.write_bytes(b"foreign")
+    _set_fields(project_dir, normalizedSrc=str(foreign), normalizedInPoint=4.0)
+
+    _open_and_settle(PID, project_dir)
+
+    assert encodes.total == 0
+    item = _item(_read(project_dir))
+    assert item["normalizedSrc"] == str(foreign)
+    assert item["normalizedInPoint"] == 4.0
+
+
+def test_eager_vivid1_src_master_keeps_its_look_this_release(workspace, encodes, probe_hdr):
+    """PL24 shape A, decided: an eagerly normalized clip whose `src` IS the
+    vivid1 master keeps it. Only its proxy is re-encoded (the tag bump), from
+    that same src; nothing re-normalizes and `src` is not re-pointed."""
+    from lib.proxy import PROXY_FORMAT
+
+    project_dir, original = _make_project(workspace, PID)
+    stem = original.with_suffix("")
+    master = Path(f"{stem}_normalized_sdr_bt709_vivid1.mp4")
+    master.write_bytes(b"vivid-master")
+    old_proxy = Path(f"{stem}_normalized_sdr_bt709_vivid1_proxy_vivid1_{PROXY_FORMAT}.mp4")
+    old_proxy.write_bytes(b"vivid-proxy")
+    project = _read(project_dir)
+    for group in list(project["tracks"]) + [project["sources"]]:
+        for item in group:
+            item["src"] = str(master)
+            item["proxySrc"] = str(old_proxy)
+    _write(project_dir, project)
+
+    _open_and_settle(PID, project_dir)
+
+    assert encodes.normalize == []
+    assert len(encodes.proxy) == 1
+    assert encodes.proxy[0][0] == os.path.realpath(master)
+    assert encodes.proxy[0][1].endswith(f"_normalized_sdr_bt709_vivid1_proxy_natural1_{PROXY_FORMAT}.mp4")
+    assert _item(_read(project_dir))["src"] == str(master)

@@ -148,9 +148,10 @@ montaj render --export sdr
 # composed the same way.
 # Ignored for SDR projects.
 
-montaj render --sdr-curve vivid1-neutral
+montaj render --sdr-curve vivid1
 # Look curve used for the SDR rendition (with --export sdr|both).
-# Choices: vivid1 | vivid1-neutral. Defaults to the project's master look.
+# Choices: natural1 | vivid1 | vivid1-neutral. Defaults to natural1
+# (Apple's own HLG-to-SDR conversion), the look the editor preview uses.
 ```
 
 `montaj run` works headlessly — no UI, no `montaj serve` required. The full pipeline runs in-process.

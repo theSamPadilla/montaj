@@ -224,7 +224,7 @@ export interface VisualItem {
    * no `proxyInPoint` — so one proxy can serve every clip sharing a lazy source. Preview-only: render never
    * reads this field. Preview's src precedence, alpha-safe, is
    * `nobg_preview_src ?? proxySrc ?? normalizedSrc ?? src`. Filename carries a look-version tag
-   * (`<stem>_proxy_<PROXY_LOOK>.mp4`); bumping `PROXY_LOOK` (e.g. when Montaj Vivid ships) invalidates every
+   * (`<stem>_proxy_<PROXY_LOOK>.mp4`); bumping `PROXY_LOOK` (e.g. vivid1 to natural1 in PL24) invalidates every
    * existing proxy by construction — the freshness check sees a different filename and regenerates lazily. */
   proxySrc?: string         // video type only
   muted?: boolean         // video type only — suppress audio in preview and render

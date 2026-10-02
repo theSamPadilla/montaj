@@ -115,12 +115,12 @@ def test_proxy_look_is_sourced_from_the_look_manifest():
     """PROXY_LOOK is a re-export of lib/look.py's MASTER_LOOK (SP6b Task T5) —
     not an independently-maintained constant — so bumping
     montaj_assets/luts/looks.json's masterLook is the only place a look bump
-    needs to happen. Currently "vivid1" (montaj-vivid-v1.cube); "hable1" is
-    the historical pre-Vivid value, still pinned in cli/commands/clean.py's
-    KNOWN_LOOKS so old proxies stay cleanable."""
+    needs to happen. Currently "natural1" (montaj-natural-v1.cube, PL24);
+    "hable1" and "vivid1" are the earlier values, still pinned in
+    cli/commands/clean.py's KNOWN_LOOKS so old proxies stay cleanable."""
     from lib.look import MASTER_LOOK
     assert PROXY_LOOK == MASTER_LOOK
-    assert PROXY_LOOK == "vivid1"
+    assert PROXY_LOOK == "natural1"
 
 
 # ── proxy_path_for() naming ─────────────────────────────────────────────────
@@ -136,7 +136,7 @@ def test_proxy_path_for_pins_the_look_and_format_shape(monkeypatch):
     the exact filename shape the browser's codec probe assumes decodes as
     H.264 (SP3 fix: AV1->H.264 encoder switch)."""
     monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", "/a")
-    assert proxy_path_for("/a/b/clip.mp4") == "/a/b/clip_proxy_vivid1_h264.mp4"
+    assert proxy_path_for("/a/b/clip.mp4") == "/a/b/clip_proxy_natural1_h264.mp4"
 
 
 def test_proxy_path_for_strips_only_the_last_extension(monkeypatch):

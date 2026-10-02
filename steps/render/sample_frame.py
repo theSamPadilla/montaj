@@ -31,7 +31,8 @@ def main():
     parser.add_argument("--sdr-curve", default=None,
                         help="Look curve id for the HDR-to-SDR grade (see lib/look.py::curve_ids()). "
                              "Meaningless on SDR projects: ignored with a stderr warning, not an "
-                             "error. Omit to use the project's master look.")
+                             "error. Omit to use the default look (natural1, what the editor "
+                             "preview shows).")
     parser.add_argument("--prefer-proxy", action="store_true",
                         help="Decode each clip from its SDR proxy (proxySrc) instead of the master "
                              "when a proxy exists — a fast path for quick previews. The proxy is "

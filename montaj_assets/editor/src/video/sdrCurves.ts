@@ -4,8 +4,9 @@
  *
  * Background: an HDR project can export its HDR master untouched, an SDR
  * deliverable, or both. Every SDR deliverable goes through one of Montaj's
- * signature 3D LUTs — the curve decides how highlights land once the extra HDR
- * range is folded down.
+ * 3D LUTs; the curve decides how color and highlights land once the extra HDR
+ * range is folded down. The default, Natural, is Apple's own HLG-to-SDR
+ * conversion captured as a LUT (PL24).
  *
  * The preview, the proxies and the editor thumbnails ALWAYS use the default
  * curve. This picker changes the exported file only, which is why choosing a
@@ -14,9 +15,9 @@
  * Keep ids in sync with the `curves` keys in montaj_assets/luts/looks.json,
  * which is what the render pipeline validates against.
  */
-export type SdrCurve = 'vivid1' | 'vivid1-neutral'
+export type SdrCurve = 'natural1' | 'vivid1' | 'vivid1-neutral'
 
-export const DEFAULT_SDR_CURVE: SdrCurve = 'vivid1'
+export const DEFAULT_SDR_CURVE: SdrCurve = 'natural1'
 
 export interface SdrCurveInfo {
   id: SdrCurve
@@ -27,14 +28,19 @@ export interface SdrCurveInfo {
 
 export const SDR_CURVES: SdrCurveInfo[] = [
   {
+    id: 'natural1',
+    label: 'Natural',
+    blurb: 'True-to-life color, matching how Apple converts HDR. What your preview shows.',
+  },
+  {
     id: 'vivid1',
     label: 'Montaj Vivid',
-    blurb: 'The signature look. Rich color with highlights rolled off gently, and what your preview shows.',
+    blurb: 'Richer color with highlights rolled off gently.',
   },
   {
     id: 'vivid1-neutral',
     label: 'Neutral brights',
-    blurb: 'The same color, with flatter bright areas. Calmer on skies, windows and lit skin.',
+    blurb: 'Montaj Vivid with flatter bright areas. Calmer on skies, windows and lit skin.',
   },
 ]
 
@@ -46,11 +52,11 @@ export function sdrCurveInfo(id: string | undefined): SdrCurveInfo {
 /**
  * The line under the curve picker. On the default curve it tells the user how
  * each export relates to what they are looking at; on any other curve it
- * becomes a caveat, because the preview is always Montaj Vivid and the export
- * no longer matches it.
+ * becomes a caveat, because the preview always uses the default curve and the
+ * export no longer matches it.
  */
 export function honestyLine(curve: string | undefined): string {
   return (curve ?? DEFAULT_SDR_CURVE) === DEFAULT_SDR_CURVE
     ? 'SDR export matches this preview; HDR export adds highlight range on HDR displays.'
-    : 'Heads up: this export will not match your preview. The preview always uses Montaj Vivid, so the curve you picked shows up in the exported file only.'
+    : `Heads up: this export will not match your preview. The preview always uses ${sdrCurveInfo(DEFAULT_SDR_CURVE).label}, so the curve you picked shows up in the exported file only.`
 }

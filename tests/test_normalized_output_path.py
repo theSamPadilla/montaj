@@ -57,3 +57,12 @@ def test_w203_only_with_sdr_stretch():
     assert normalized_output_path("/v/c.mp4", "hdr_hlg", tonemapped=False) == "/v/c_normalized_hdr_hlg.mp4"
     assert normalized_output_path("/v/c.mp4", "sdr_bt709", tonemapped=True) == f"/v/c_normalized_sdr_bt709_{MASTER_LOOK}.mp4"
     assert normalized_output_path("/v/c.mp4", "sdr_bt709", tonemapped=False) == "/v/c_normalized_sdr_bt709.mp4"
+
+
+def test_a_previous_look_can_be_named():
+    """serve's look migration recognizes a master made under an earlier
+    masterLook by this same naming, not a second copy of it (PL24)."""
+    from lib.look import PREVIOUS_MASTER_LOOKS
+    assert "vivid1" in PREVIOUS_MASTER_LOOKS
+    assert normalized_output_path("/v/c.mp4", "sdr_bt709", tonemapped=True, look="vivid1") \
+        == "/v/c_normalized_sdr_bt709_vivid1.mp4"

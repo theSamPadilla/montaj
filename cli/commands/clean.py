@@ -6,13 +6,15 @@ from itertools import chain
 from cli.main import add_global_flags
 from cli.output import emit_error
 from lib.project_tracks import track_items
+from lib.look import PREVIOUS_MASTER_LOOKS
 from lib.proxy import PROXY_LOOK
 
 # Only files carrying a KNOWN look tag are ever deleted (SP3 fix S5) — the loose
 # `*_proxy_*.mp4` glob also matched user files like `reverse_proxy_demo.mp4`.
-# APPEND (never remove) old tags here when lib/proxy.py's PROXY_LOOK bumps, so
-# the previous look's files stay cleanable after a regeneration.
-KNOWN_LOOKS = tuple(dict.fromkeys(("hable1", PROXY_LOOK)))
+# Every earlier look comes from looks.json's previousMasterLooks (APPEND there,
+# never remove, when PROXY_LOOK bumps), so the previous look's files stay
+# cleanable after a regeneration. "hable1" predates the manifest.
+KNOWN_LOOKS = tuple(dict.fromkeys(("hable1", *PREVIOUS_MASTER_LOOKS, PROXY_LOOK)))
 # The optional `(_h264)?` group covers lib/proxy.py's two proxy-naming
 # generations: proxies written before the AV1->H.264 encoder switch are named
 # `<stem>_proxy_<look>.mp4`; proxies written after are named

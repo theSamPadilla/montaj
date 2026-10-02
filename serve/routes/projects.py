@@ -1900,7 +1900,12 @@ async def migrate_project_look(
       alone too, because a full-source re-encode would break the window's
       `normalizedInPoint` rebase. A field already naming the tagged master is
       migrated only when that file has gone missing (`montaj clean` can delete
-      a superseded master out from under a live pointer).
+      a superseded master out from under a live pointer). A field naming
+      this item's master under an EARLIER look's tag (lib/look.py's
+      PREVIOUS_MASTER_LOOKS, e.g. `_normalized_sdr_bt709_vivid1.mp4` once
+      natural1 is the default) is migrated the same way as an untagged one,
+      with no probe: the tag proves it was tone-mapped (PL24). An item whose
+      `src` itself is such a master (an eager import) is not re-pointed.
 
     A cleared field is safe on its own: preview and render both fall back to
     `src`, and render's own `normalizeIfNeeded` rebuilds the tagged master. So a
@@ -1921,6 +1926,7 @@ async def _migrate_project_look(
 ) -> dict | None:
     from lib.color_provenance import ProbeError
     from lib.normalize import normalized_output_path, probe_video
+    from lib.look import PREVIOUS_MASTER_LOOKS
     from lib.proxy import PROXY_FORMAT, PROXY_LOOK, is_proxy_fresh, proxy_path_for
     from lib.types.colorspace import DEFAULT_COLOR_SPACE, detect_from_transfer, is_hdr
 
@@ -1975,6 +1981,15 @@ async def _migrate_project_look(
                 # tag itself is the proof it was tone-mapped.
                 master_candidates.append(item)
             elif normalized_src == untagged:
+                master_candidates.append(item)
+            elif normalized_src in {
+                normalized_output_path(src, color_space, tonemapped=True, look=old)
+                for old in PREVIOUS_MASTER_LOOKS
+            }:
+                # This item's full-source master under an earlier look (PL24:
+                # `_vivid1` once natural1 is the default). The tag proves it
+                # was tone-mapped, so no probe; left in place, render would
+                # keep the old look while the proxy shows the new one.
                 master_candidates.append(item)
 
     if not proxy_stale and not master_candidates and not proxy_missing:

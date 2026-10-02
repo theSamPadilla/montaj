@@ -176,6 +176,7 @@ jobs:
           # pyproject.toml, so it's the exact failure mode above — present in
           # the sdist, silently missing from the wheel. lib/look.py and
           # render/look.js both load these at runtime with no fallback.
+          echo "$listing" | grep -q "montaj_assets/luts/montaj-natural-v1.cube"
           echo "$listing" | grep -q "montaj_assets/luts/montaj-vivid-v1.cube"
           echo "$listing" | grep -q "montaj_assets/luts/montaj-vivid-v1-neutral.cube"
           echo "$listing" | grep -q "montaj_assets/luts/looks.json"

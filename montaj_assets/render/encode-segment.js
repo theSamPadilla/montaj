@@ -334,7 +334,7 @@ export function hasZscale() {
   return /^[A-Z. ]+ zscale\b/m.test(filterList())
 }
 
-/** True when this ffmpeg build has lut3d — the filter that applies the Montaj Vivid .cube. */
+/** True when this ffmpeg build has lut3d — the filter that applies the look's .cube. */
 export function hasLut3d() {
   return /^[A-Z. ]+ lut3d\b/m.test(filterList())
 }

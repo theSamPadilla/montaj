@@ -1702,7 +1702,7 @@ async function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedS
   // One more condition, for an UNTAGGED source's SDR master only: it must carry
   // UNTAGGED_MASTER_MARKER. Without it the master was built reading the source
   // as BT.601 and has that conversion baked in, so it is rebuilt here, in
-  // place. Every other master (tagged or HDR sources, the iPhone `_vivid1`
+  // place. Every other master (tagged or HDR sources, the iPhone `_<look>`
   // ones) is reused on mtime alone and costs no probe.
   if (existsSync(out)) {
     try {

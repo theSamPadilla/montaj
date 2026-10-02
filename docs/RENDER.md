@@ -251,7 +251,7 @@ emit `libx265 yuv420p10le` with `bt2020nc` colorimetry plus the appropriate
 transfer (`arib-std-b67` for HLG, `smpte2084` for PQ with static HDR10
 mastering metadata). Sources whose color space conflicts with the project
 are converted at the per-item filter chain in the segment encoder
-(the Montaj Vivid LUT for HDR→SDR — see *One look: Montaj Vivid* below;
+(the default look's LUT for HDR→SDR, see *One look: the default curve* below;
 stretch into HDR container for SDR→HDR; HLG↔PQ via zscale transfer-curve
 conversion). The conversion runs AFTER the per-item crop/scale and before
 pad, so a 4K HDR source feeding a 1080 canvas is tone-mapped at 1080, not
@@ -259,11 +259,12 @@ pad, so a 4K HDR source feeding a 1080 canvas is tone-mapped at 1080, not
 generated in the destination space), with `force_divisible_by=2` pinning
 even scale dims only on converted items (zscale rejects odd dimensions).
 
-## One look: Montaj Vivid
+## One look: the default curve
 
 Every HDR→SDR conversion in the product goes through one LUT,
-`montaj_assets/luts/montaj-vivid-v1.cube`, named by the manifest
-`montaj_assets/luts/looks.json` (`masterLook: "vivid1"`) and loaded by
+`montaj_assets/luts/montaj-natural-v1.cube` (id `natural1`, labeled
+"Natural"), named by the manifest `montaj_assets/luts/looks.json`
+(`masterLook: "natural1"`) and loaded by
 `lib/look.py` (Python) and `montaj_assets/render/look.js` (Node) — the same
 one-file-two-loaders pattern as the color-space taxonomy. The binding chain,
 character-identical in both runtimes (regression-tested cross-runtime):
@@ -295,16 +296,26 @@ only, never proxies or fallbacks), the editing proxy (`lib/proxy.py`), the
 per-item segment conversion (`encode-segment.js`), the embedded thumbnail
 (`compose.js`), and single-frame sampling (`sample-frame.js`).
 
-The manifest registers a second curve alongside the default:
-`montaj-vivid-v1-neutral.cube` (id `vivid1-neutral`, labeled "Neutral
-brights"). Both files run through the identical binding chain above —
-`vivid1-neutral` is a different `.cube` grade, not a different filter graph.
-`curve_ids()` / `lut_path(curve_id)` (Python) and their Node equivalents in
-`montaj_assets/render/look.js` resolve either id; passing no id resolves to
-`masterLook` (`vivid1`), which is what every site listed above uses. The
-neutral curve is only ever selected explicitly, via `--sdr-curve` on the
-derived SDR export (see *Export modes* below) or `sample_frame`'s matching
-`--sdr-curve` param.
+`natural1` is Apple's own HLG-to-SDR conversion (`avconvert -p
+Preset1920x1080`, macOS 26.6.2) captured as a 33³ cube over exactly this
+chain's input domain, so the export and the editor preview match what Apple
+devices produce from the same HLG footage. On a real HLG master it scores
+ΔE00 mean 0.75 and p95 2.41 against Apple's output, at the H.264 noise floor
+(0.64 and 2.47); vivid1 scores about 4.8 to 5.2 mean on the same measure.
+Provenance, method and numbers are in `montaj-natural-v1.params.json` (PL24,
+2026-10-02).
+
+The manifest registers two more curves alongside the default:
+`montaj-vivid-v1.cube` (id `vivid1`, labeled "Montaj Vivid", the default
+from SP6b until PL24) and `montaj-vivid-v1-neutral.cube` (id
+`vivid1-neutral`, labeled "Neutral brights"). All three run through the
+identical binding chain above; a curve is a different `.cube` grade, not a
+different filter graph. `curve_ids()` / `lut_path(curve_id)` (Python) and
+their Node equivalents in `montaj_assets/render/look.js` resolve any id;
+passing no id resolves to `masterLook` (`natural1`), which is what every site
+listed above uses. The vivid curves are only ever selected explicitly, via
+`--sdr-curve` on the derived SDR export (see *Export modes* below) or
+`sample_frame`'s matching `--sdr-curve` param.
 
 ---
 
@@ -329,11 +340,11 @@ When a source conflicts, normalize emits the project's working format using
 the encoder/pix_fmt/color args from the color-space spec:
 
 - **`sdr_bt709` project:** `libx264 -pix_fmt yuv420p` with `bt709` stream
-  metadata. HDR sources are tone-mapped through the Montaj Vivid LUT chain
-  (see *One look: Montaj Vivid* above), preceded by a light
-  `hqdn3d=1.5:1.5:3:3` denoise in the source domain — the vivid curve
-  brightens midtones in a way that would otherwise amplify phone-camera
-  shadow grain (a bare tonemap fallback runs when `zscale`/`lut3d` are
+  metadata. HDR sources are tone-mapped through the default look's LUT chain
+  (see *One look: the default curve* above), preceded by a light
+  `hqdn3d=1.5:1.5:3:3` denoise in the source domain — added for the vivid
+  curve, which brightens midtones in a way that would otherwise amplify
+  phone-camera shadow grain (a bare tonemap fallback runs when `zscale`/`lut3d` are
   missing — accompanied by a loud warning, and without the denoise).
 - **`hdr_hlg` project:** `libx265 -pix_fmt yuv420p10le` with `bt2020nc` /
   `arib-std-b67` stream metadata.
@@ -361,14 +372,18 @@ originals (e.g. `clip_normalized_sdr_bt709.mp4` or
 preserved for potential re-export. Namespacing by color space lets a project
 flip between SDR and HDR without colliding with cached normalize output.
 Tone-mapped masters additionally carry the master look tag —
-`clip_normalized_sdr_bt709_vivid1.mp4` — so a future LUT change can detect
+`clip_normalized_sdr_bt709_natural1.mp4` — so a future LUT change can detect
 stale artifacts by name (same contract as proxy filenames). SDR-source
 conformance masters stay untagged: their pixels carry no look, and retagging
 them would churn every SDR project for nothing. One helper per runtime builds
 the name (`normalized_output_path()` in `lib/normalize.py`,
-`buildNormalizedOutputPath()` in `render.js`); opening a pre-vivid1 project
-heals stale `normalizedSrc`/`proxySrc` fields in the background (see
-*Architecture — look-version regeneration*). The
+`buildNormalizedOutputPath()` in `render.js`); opening a project made under
+an earlier look heals stale `normalizedSrc`/`proxySrc` fields in the
+background (see *Architecture — look-version regeneration*): an untagged
+pre-vivid1 master, or one tagged with a look in `looks.json`'s
+`previousMasterLooks` (`_vivid1` since PL24), is re-normalized from the
+original at the current look. A clip whose `src` itself is such a master
+(an eager import) is not re-pointed and keeps its old look. The
 `lib/normalize.py` module is the shared infrastructure backing this (also
 used by `project/init.py` for ingest-time normalization and `steps/ai_video.py`
 for generated clip normalization).
@@ -484,7 +499,7 @@ HDR projects render an HDR master by default, untouched. `montaj render`
 
 The SDR rendition is a **second compose** at `sdr_bt709`, not a conversion of
 the HDR master, and there is no temp master. Each layer is graded once from its
-origin: HDR-origin clips through the Vivid LUT chain, SDR-origin clips from
+origin: HDR-origin clips through the default look's LUT chain, SDR-origin clips from
 their original file, ungraded. Overlays and photos are as authored, and `<img>`
 overlays are re-captured for SDR. `both` runs this compose after the HDR
 compose. Audio is mixed by the SDR compose, not stream-copied from the master.
@@ -494,8 +509,10 @@ path per stdout line (master first) and the serve status route surfaces
 `outputPaths[]` alongside the first-line `outputPath`. Thumbnails are embedded in every emitted file.
 
 `--sdr-curve <id>` selects the curve from the `looks.json` registry
-(`vivid1` default, `vivid1-neutral` for restrained brights) — it affects the
-EXPORT only; preview and proxies always use vivid1. The editor's RenderModal
+(`natural1` default, `vivid1` for the richer Montaj Vivid look,
+`vivid1-neutral` for Vivid with restrained brights). It affects the EXPORT
+only; preview and proxies always use the default, so an export without
+`--sdr-curve` matches the preview. The editor's RenderModal
 surfaces all of this for HDR projects (export choice + an Advanced curve
 picker with per-project `sample_frame` thumbnails and an honesty line about
 preview/export parity); SDR projects keep the zero-friction fire-on-mount

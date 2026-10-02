@@ -2,7 +2,7 @@
 """montaj render — render project.json [final] to MP4."""
 import os
 from cli.main import add_global_flags, MONTAJ_ROOT
-from lib.look import curve_ids
+from lib.look import MASTER_LOOK, curve_ids
 from project.render import main as render_main
 
 
@@ -36,7 +36,7 @@ def register(subparsers):
         default=None,
         help=(
             "Look curve used for the SDR rendition (with --export sdr|both). "
-            "Defaults to the project's master look."
+            f"Defaults to {MASTER_LOOK}, the look the editor preview uses."
         ),
     )
     add_global_flags(p)  # adds --json, --out, --quiet

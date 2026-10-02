@@ -1,6 +1,6 @@
 // render/look.js
 /**
- * Vivid look/curve manifest — JS loader for montaj_assets/luts/looks.json.
+ * Look/curve manifest — JS loader for montaj_assets/luts/looks.json.
  *
  * Mirrors lib/look.py: the JSON is the canonical source of truth for which
  * color-grade LUTs exist and which one is the project default ("master
@@ -22,7 +22,7 @@ const MANIFEST_PATH = join(LUTS_DIR, 'looks.json')
 
 const _DATA = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8'))
 
-/** The manifest's default look id (e.g. "vivid1") — the curve new projects grade with. */
+/** The manifest's default look id ("natural1" since PL24): the curve every HDR→SDR grade uses unless a caller names another. */
 export const MASTER_LOOK = _DATA.masterLook
 
 const _CURVES = _DATA.curves

@@ -1,10 +1,15 @@
 {
-  "masterLook": "vivid1",
+  "masterLook": "natural1",
+  "previousMasterLooks": ["vivid1"],
   "curves": {
+    "natural1": {
+      "file": "montaj-natural-v1.cube",
+      "label": "Natural",
+      "default": true
+    },
     "vivid1": {
       "file": "montaj-vivid-v1.cube",
-      "label": "Montaj Vivid",
-      "default": true
+      "label": "Montaj Vivid"
     },
     "vivid1-neutral": {
       "file": "montaj-vivid-v1-neutral.cube",

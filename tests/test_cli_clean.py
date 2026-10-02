@@ -82,6 +82,21 @@ class TestGlobMatch:
         assert not old_gen.exists()
         assert not new_gen.exists()
 
+    def test_vivid1_proxies_stay_cleanable_after_the_natural1_bump(self, project_dir):
+        """PL24 moved the default look from vivid1 to natural1, so every vivid1
+        proxy is superseded. KNOWN_LOOKS must still name vivid1, or the old
+        proxies become permanently unclaimable."""
+        assert clean_cmd.PROXY_LOOK == "natural1"
+        old_gen = project_dir / "clip_proxy_vivid1.mp4"
+        h264_gen = project_dir / "clip_proxy_vivid1_h264.mp4"
+        old_gen.write_bytes(b"x" * 1024)
+        h264_gen.write_bytes(b"y" * 1024)
+
+        clean_cmd.handle(_ns())
+
+        assert not old_gen.exists()
+        assert not h264_gen.exists()
+
     def test_h264_tagged_lookalike_with_unknown_look_survives(self, project_dir):
         """A file that merely LOOKS like the new h264-tagged generation but
         carries a look tag that isn't in KNOWN_LOOKS must survive, same as
