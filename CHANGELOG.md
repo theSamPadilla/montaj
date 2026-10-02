@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (serve, steps): `sample_frame` and `contact_sheet` take the project id or the project's folder as `project`, not only the path of its project.json.** Every other project tool takes the id, so agents passed it here too and the step failed. serve resolves the value to that project's project.json before the step runs (`resolve_project_param`, using `find_project_dir` on the workspace); a full path still passes through unchanged. `projectId` and `project_id` are accepted in place of `project`, and so is `sample_frame`'s declared `input`. An id no project has is `422 invalid_params` naming the field, with an example. The two schemas' descriptions say what `project` takes. (`serve/routes/steps.py`, `steps/render/{sample_frame,contact_sheet}.json`, `tests/test_steps_project_ref.py`)
+
 ## v5.21.0
 
 - **Added (steps): `fetch` takes `meta`.** With it, stdout is always one JSON object, `{"paths": [...], "videos": [{id, path, url, title, description, view_count, like_count, comment_count, upload_date, duration}]}`, one entry per downloaded video (a profile with `limit` gives one each). The values come from yt-dlp's info dict (`%(.{...})j` at `after_move`); a value the site did not return is `null`, and `description` is cut at 2200 characters. Without `meta` the command line and the output are unchanged. An Instagram profile or account page (yt-dlp cannot read one signed out) now fails with code `instagram_profile` and a hint to paste individual reel links, instead of the generic `failed`. Fixtures are real captures from the bundled yt-dlp 2026.08.19 (`tests/fixtures/ytdlp/meta_*.txt`). (`steps/media/fetch.{py,json}`, `tests/test_fetch_meta.py`)

@@ -3,7 +3,7 @@
   "description": "Tile sampled frames of a composited project into one image, each labelled with its time. No video encode: one sample_frame per time. --every covers the whole project on a grid; --at lists exact times (repeatable), e.g. 12 consecutive frame times for a frame strip. A small --tile-width (360) gives a phone-size view.",
   "output": { "type": "json", "description": "{path, times, cols, tile_width, frames?: [abs paths in time order, only when frames-dir is set]}" },
   "params": [
-    { "name": "project", "type": "path", "required": true, "description": "Absolute path to project.json" },
+    { "name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json" },
     { "name": "at", "type": "float", "repeatable": true, "required": false, "description": "Sample time in seconds (repeatable)" },
     { "name": "every", "type": "float", "required": false, "description": "Sample every N seconds across the project (must be > 0; not combined with --at; capped at 120 samples)" },
     { "name": "cols", "type": "int", "default": 6, "description": "Tiles per row" },

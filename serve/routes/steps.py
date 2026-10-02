@@ -12,6 +12,7 @@ from lib.color_provenance import ProbeError, is_probe_retryable
 from lib.credentials import CredentialError, build_env_overlay
 from serve.common import (
     MONTAJ_ROOT,
+    find_project_dir,
     resolve_workspace,
     run_subprocess,
     not_found, bad_request, server_error,
@@ -217,6 +218,59 @@ def validate_params(schema: dict, body: dict) -> None:
         raise HTTPException(422, detail={"error": "invalid_params", "message": "; ".join(errors)})
 
 
+_PROJECT_ALIASES = ("projectId", "project_id")
+_PROJECT_EXAMPLE = '{"project": "3f2a..."}'
+
+
+def resolve_project_param(schema: dict, body: dict) -> None:
+    """A step whose `project` param is the path of a project.json
+    (sample_frame, contact_sheet) also takes the project's id or its folder,
+    the way every other project tool does. Resolved here, in place, to that
+    project's project.json before the step runs. A value that is already an
+    absolute path to a file, or to anything that is not a project folder,
+    passes through for the step to report.
+
+    `projectId` and `project_id` are aliases of `project`, and so is the
+    step's own `input` when its input block is `"type": "project"`
+    (sample_frame declares one but its script has no --input). Each alias is
+    used only when `project` itself is absent. An id no project in the
+    workspace has is a 422 invalid_params naming the field.
+    """
+    params = schema.get("params") or []
+    if not any(p.get("name") == "project" and p.get("type") == "path" for p in params):
+        return
+    aliases = list(_PROJECT_ALIASES)
+    if (schema.get("input") or {}).get("type") == "project":
+        aliases.append("input")
+    if body.get("project") is None:
+        for alias in aliases:
+            if isinstance(body.get(alias), str) and body[alias].strip():
+                body["project"] = body[alias]
+                break
+    for alias in aliases:
+        body.pop(alias, None)
+
+    value = body.get("project")
+    if not isinstance(value, str) or not value.strip():
+        return  # validate_params reports a missing project
+    value = value.strip()
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        if path.is_dir() and (path / "project.json").is_file():
+            body["project"] = str(path / "project.json")
+        return
+    found = find_project_dir(resolve_workspace(), value)
+    if found is None:
+        raise HTTPException(422, detail={
+            "error": "invalid_params",
+            "message": (
+                f'No project with the id "{value}". "project" takes the project id, '
+                f"its folder or the absolute path of its project.json. Example: {_PROJECT_EXAMPLE}"
+            ),
+        })
+    body["project"] = str(found / "project.json")
+
+
 def wrap_output(stdout: str, schema: dict) -> dict:
     """Wrap bare file paths as JSON. Steps that already return JSON pass through."""
     text = stdout.strip()
@@ -267,6 +321,7 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
             env = {**os.environ, **overlay}
             secret_values = list(overlay.values())
 
+    resolve_project_param(schema, body)
     validate_params(schema, body)
     cli_args = build_cli_args(schema, body)
     if timeout is None:

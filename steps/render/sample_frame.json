@@ -3,7 +3,7 @@
   "description": "Render a fully composited project frame at a given timestamp to PNG (video + image items + active overlay JSXs, no audio).",
   "input": {
     "type": "project",
-    "description": "Absolute path to project.json"
+    "description": "The project id, its folder, or the absolute path of its project.json"
   },
   "output": {
     "type": "image",
@@ -14,7 +14,7 @@
       "name": "project",
       "type": "path",
       "required": true,
-      "description": "Absolute path to project.json"
+      "description": "The project id, its folder, or the absolute path of its project.json"
     },
     {
       "name": "at",
