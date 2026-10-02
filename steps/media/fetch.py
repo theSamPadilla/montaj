@@ -17,12 +17,60 @@ _HINTS = {
     "too_large": "The video is too large to download; use a smaller one.",
     "no_space": "The disk is full; free space and retry.",
     "failed": "The download failed; see stderr_tail, then retry or use another URL.",
+    "instagram_profile": "Instagram profiles can't be fetched; paste individual reel links.",
 }
+
+# One JSON object per downloaded video at after_move, so a profile prints one line each.
+META_PRINT = ("after_move:%(.{id,title,description,view_count,like_count,comment_count,"
+              "upload_date,duration,webpage_url,filepath})j")
+DESCRIPTION_MAX = 2200
 
 
 def _is_youtube(url):
     host = (urlparse(url if "://" in url else "https://" + url).hostname or "").lower()
     return host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
+
+
+def _is_instagram(url):
+    host = (urlparse(url if "://" in url else "https://" + url).hostname or "").lower()
+    return host == "instagram.com" or host.endswith(".instagram.com")
+
+
+def parse_meta_lines(stdout):
+    """{"paths", "videos"} from the JSON lines of a `meta` run, or None when there are none.
+
+    Lines that are not a JSON object with an id (progress, merger notes) are skipped.
+    A value yt-dlp did not return is None.
+    """
+    paths, videos = [], []
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            info = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(info, dict) or not info.get("id"):
+            continue
+        desc = info.get("description")
+        path = info.get("filepath")
+        paths.append(path)
+        videos.append({
+            "id": info.get("id"),
+            "path": path,
+            "url": info.get("webpage_url"),
+            "title": info.get("title"),
+            "description": desc[:DESCRIPTION_MAX] if isinstance(desc, str) else None,
+            "view_count": info.get("view_count"),
+            "like_count": info.get("like_count"),
+            "comment_count": info.get("comment_count"),
+            "upload_date": info.get("upload_date"),
+            "duration": info.get("duration"),
+        })
+    if not videos:
+        return None
+    return {"paths": paths, "videos": videos}
 
 
 def stderr_tail(text, lines=15, limit=2048):
@@ -34,6 +82,9 @@ def stderr_tail(text, lines=15, limit=2048):
 def classify_failure(url, returncode, stdout, stderr):
     """(code, hint) for a failed yt-dlp run."""
     code = (classify_error(returncode, stdout, stderr) if _is_youtube(url) else None) or "failed"
+    if code == "failed" and _is_instagram(url) and (
+            "[instagram:user]" in (stderr or "") or "Unsupported URL" in (stderr or "")):
+        return "instagram_profile", _HINTS["instagram_profile"]
     if "Requested format is not available" in (stderr or ""):
         return code, "That format isn't offered for this video; leave format unset."
     if code == "failed" and "HTTP Error 403" in (stderr or ""):
@@ -48,6 +99,8 @@ def main():
     parser.add_argument("--format", default="bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                         help="yt-dlp format selector")
     parser.add_argument("--limit",  type=int, help="Max number of videos to download from a playlist or channel")
+    parser.add_argument("--meta",   action="store_true",
+                        help="Also return each video's id, title, caption text, views, likes, comments, upload date and duration as JSON")
     args = parser.parse_args()
 
     out = args.out or os.getcwd()
@@ -57,7 +110,7 @@ def main():
         sys.executable, "-m", "yt_dlp",
         "--format", args.format,
         "--merge-output-format", "mp4",
-        "--print", "after_move:filepath",
+        "--print", META_PRINT if args.meta else "after_move:filepath",
         # YouTube extraction needs a JavaScript runtime to run the player JS,
         # and yt-dlp enables ONLY deno by default. Without one it degrades to
         # "No supported JavaScript runtime could be found", then "No title
@@ -107,6 +160,13 @@ def main():
             "message": f"{code}: {hint}\n{tail}",
         }), file=sys.stderr)
         sys.exit(1)
+
+    if args.meta:
+        got = parse_meta_lines(r.stdout)
+        if not got:
+            fail("no_output", "yt-dlp produced no output files")
+        print(json.dumps(got))
+        return
 
     paths = [line.strip() for line in r.stdout.strip().splitlines() if line.strip()]
 

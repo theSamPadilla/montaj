@@ -1,0 +1,8 @@
+# captured 2026-10-02, yt-dlp 2026.08.19 (bundled build, https://www.instagram.com/instagram/ signed out, fetch --meta argv with --max-downloads 2; FAILURE capture: no reel URL was vetted, so Instagram profiles are recorded as unfetchable)
+exit: 1
+--- stdout
+[instagram:user] Extracting URL: https://www.instagram.com/instagram/
+[instagram:user] instagram: Downloading webpage
+--- stderr
+WARNING: The program functionality for this site has been marked as broken, and will probably not work.
+ERROR: [instagram:user] instagram: Unable to extract data; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U

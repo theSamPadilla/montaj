@@ -1,0 +1,36 @@
+# captured 2026-10-02, yt-dlp 2026.08.19 (bundled build, jNQXAC9IVRw, fetch --meta argv plus --no-quiet; output dir rewritten to /work/meta-youtube)
+exit: 0
+--- stdout
+[youtube] Extracting URL: https://www.youtube.com/watch?v=jNQXAC9IVRw
+[youtube] jNQXAC9IVRw: Downloading webpage
+[youtube] jNQXAC9IVRw: Downloading visionos player API JSON
+[youtube] jNQXAC9IVRw: Downloading m3u8 information
+[info] jNQXAC9IVRw: Downloading 1 format(s): 395+140
+[download] Destination: /work/meta-youtube/jNQXAC9IVRw.f395.mp4
+
+[download]   0.5% of  218.53KiB at  560.89KiB/s ETA 00:00
+[download]   1.4% of  218.53KiB at    1.43MiB/s ETA 00:00
+[download]   3.2% of  218.53KiB at    3.13MiB/s ETA 00:00
+[download]   6.9% of  218.53KiB at    6.37MiB/s ETA 00:00
+[download]  14.2% of  218.53KiB at    7.62MiB/s ETA 00:00
+[download]  28.8% of  218.53KiB at    6.82MiB/s ETA 00:00
+[download]  58.1% of  218.53KiB at    6.06MiB/s ETA 00:00
+[download] 100.0% of  218.53KiB at    6.94MiB/s ETA 00:00
+[download] 100% of  218.53KiB in 00:00:00 at 1.80MiB/s   
+[download] Destination: /work/meta-youtube/jNQXAC9IVRw.f140.m4a
+
+[download]   0.3% of  302.04KiB at  244.91KiB/s ETA 00:01
+[download]   1.0% of  302.04KiB at  648.37KiB/s ETA 00:00
+[download]   2.3% of  302.04KiB at    1.38MiB/s ETA 00:00
+[download]   5.0% of  302.04KiB at    2.87MiB/s ETA 00:00
+[download]  10.3% of  302.04KiB at    5.77MiB/s ETA 00:00
+[download]  20.9% of  302.04KiB at   11.47MiB/s ETA 00:00
+[download]  42.0% of  302.04KiB at   16.42MiB/s ETA 00:00
+[download]  84.4% of  302.04KiB at   10.20MiB/s ETA 00:00
+[download] 100.0% of  302.04KiB at   11.92MiB/s ETA 00:00
+[download] 100% of  302.04KiB in 00:00:00 at 4.38MiB/s   
+[Merger] Merging formats into "/work/meta-youtube/jNQXAC9IVRw.mp4"
+Deleting original file /work/meta-youtube/jNQXAC9IVRw.f395.mp4 (pass -k to keep)
+Deleting original file /work/meta-youtube/jNQXAC9IVRw.f140.m4a (pass -k to keep)
+{"id": "jNQXAC9IVRw", "title": "Me at the zoo", "description": "Microplastics are accumulating in human brains at an alarming rate\nhttps://www.youtube.com/watch?v=0PT5c1z3LL8\n\n\u201cNanoplastics and Human Health\u201d with Matthew J Campen, PhD, MSPH\nhttps://www.youtube.com/watch?v=RRBN_4L09Mg\n\n00:00 Intro\n00:05 The cool thing\n00:17 End", "view_count": 439075022, "like_count": 19974624, "comment_count": 10000000, "upload_date": "20050424", "duration": 19, "webpage_url": "https://www.youtube.com/watch?v=jNQXAC9IVRw", "filepath": "/work/meta-youtube/jNQXAC9IVRw.mp4"}
+--- stderr

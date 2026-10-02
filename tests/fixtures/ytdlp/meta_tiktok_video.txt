@@ -1,0 +1,26 @@
+# captured 2026-10-02, yt-dlp 2026.08.19 (bundled build, @tiktok official account, single video, fetch --meta argv plus --no-quiet; output dir rewritten to /work/meta-tiktok_video)
+exit: 0
+--- stdout
+[TikTok] Extracting URL: https://www.tiktok.com/@tiktok/video/7691450773619625247
+[TikTok] 7691450773619625247: Downloading webpage
+[info] 7691450773619625247: Downloading 1 format(s): bytevc1_1080p_1287009-1
+[download] Destination: /work/meta-tiktok_video/7691450773619625247.mp4
+
+[download]   0.0% of   13.51MiB at  Unknown B/s ETA Unknown
+[download]   0.0% of   13.51MiB at  Unknown B/s ETA Unknown
+[download]   0.1% of   13.51MiB at  Unknown B/s ETA Unknown
+[download]   0.1% of   13.51MiB at  Unknown B/s ETA Unknown
+[download]   0.2% of   13.51MiB at   16.97MiB/s ETA 00:00  
+[download]   0.5% of   13.51MiB at    2.77MiB/s ETA 00:04
+[download]   0.9% of   13.51MiB at    5.03MiB/s ETA 00:02
+[download]   1.8% of   13.51MiB at    5.74MiB/s ETA 00:02
+[download]   3.7% of   13.51MiB at    8.44MiB/s ETA 00:01
+[download]   7.4% of   13.51MiB at   12.42MiB/s ETA 00:01
+[download]  14.8% of   13.51MiB at   19.63MiB/s ETA 00:00
+[download]  29.6% of   13.51MiB at   30.45MiB/s ETA 00:00
+[download]  59.2% of   13.51MiB at   24.84MiB/s ETA 00:00
+[download]  88.8% of   13.51MiB at   32.53MiB/s ETA 00:00
+[download] 100.0% of   13.51MiB at   35.03MiB/s ETA 00:00
+[download] 100% of   13.51MiB in 00:00:00 at 28.30MiB/s  
+{"id": "7691450773619625247", "title": "if your FYF had you hitting the Zara Larsson, you'll know Pop Girl Su...", "description": "if your FYF had you hitting the Zara Larsson, you'll know Pop Girl Summer is never-ending. @McCall Mirabella the music and moments that shaped the season \ud83d\udc2c", "view_count": 128100, "like_count": 2194, "comment_count": 611, "upload_date": "20260930", "duration": 88, "webpage_url": "https://www.tiktok.com/@tiktok/video/7691450773619625247", "filepath": "/work/meta-tiktok_video/7691450773619625247.mp4"}
+--- stderr

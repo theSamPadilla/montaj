@@ -1,0 +1,158 @@
+# captured 2026-10-02, yt-dlp 2026.08.19 (bundled build, @tiktok official account profile, --max-downloads 2 (exit 101 is expected), fetch --meta argv plus --no-quiet; output dir rewritten to /work/meta-tiktok_profile)
+exit: 101
+--- stdout
+[tiktok:user] Extracting URL: https://www.tiktok.com/@tiktok
+[tiktok:user] tiktok: Downloading user webpage
+[download] Downloading playlist: tiktok
+[tiktok:user] tiktok: Downloading page 1
+[tiktok:user] tiktok: Downloading page 2
+[tiktok:user] tiktok: Downloading page 3
+[tiktok:user] tiktok: Downloading page 4
+[tiktok:user] tiktok: Downloading page 5
+[tiktok:user] tiktok: Downloading page 6
+[tiktok:user] tiktok: Downloading page 7
+[tiktok:user] tiktok: Downloading page 8
+[tiktok:user] tiktok: Downloading page 9
+[tiktok:user] tiktok: Downloading page 10
+[tiktok:user] tiktok: Downloading page 11
+[tiktok:user] tiktok: Downloading page 12
+[tiktok:user] tiktok: Downloading page 13
+[tiktok:user] tiktok: Downloading page 14
+[tiktok:user] tiktok: Downloading page 15
+[tiktok:user] tiktok: Downloading page 16
+[tiktok:user] tiktok: Downloading page 17
+[tiktok:user] tiktok: Downloading page 18
+[tiktok:user] tiktok: Downloading page 19
+[tiktok:user] tiktok: Downloading page 20
+[tiktok:user] tiktok: Downloading page 21
+[tiktok:user] tiktok: Downloading page 22
+[tiktok:user] tiktok: Downloading page 23
+[tiktok:user] tiktok: Downloading page 24
+[tiktok:user] tiktok: Downloading page 25
+[tiktok:user] tiktok: Downloading page 26
+[tiktok:user] tiktok: Downloading page 27
+[tiktok:user] tiktok: Downloading page 28
+[tiktok:user] tiktok: Downloading page 29
+[tiktok:user] tiktok: Downloading page 30
+[tiktok:user] tiktok: Downloading page 31
+[tiktok:user] tiktok: Downloading page 32
+[tiktok:user] tiktok: Downloading page 33
+[tiktok:user] tiktok: Downloading page 34
+[tiktok:user] tiktok: Downloading page 35
+[tiktok:user] tiktok: Downloading page 36
+[tiktok:user] tiktok: Downloading page 37
+[tiktok:user] tiktok: Downloading page 38
+[tiktok:user] tiktok: Downloading page 39
+[tiktok:user] tiktok: Downloading page 40
+[tiktok:user] tiktok: Downloading page 41
+[tiktok:user] tiktok: Downloading page 42
+[tiktok:user] tiktok: Downloading page 43
+[tiktok:user] tiktok: Downloading page 44
+[tiktok:user] tiktok: Downloading page 45
+[tiktok:user] tiktok: Downloading page 46
+[tiktok:user] tiktok: Downloading page 47
+[tiktok:user] tiktok: Downloading page 48
+[tiktok:user] tiktok: Downloading page 49
+[tiktok:user] tiktok: Downloading page 50
+[tiktok:user] tiktok: Downloading page 51
+[tiktok:user] tiktok: Downloading page 52
+[tiktok:user] tiktok: Downloading page 53
+[tiktok:user] tiktok: Downloading page 54
+[tiktok:user] tiktok: Downloading page 55
+[tiktok:user] tiktok: Downloading page 56
+[tiktok:user] tiktok: Downloading page 57
+[tiktok:user] tiktok: Downloading page 58
+[tiktok:user] tiktok: Downloading page 59
+[tiktok:user] tiktok: Downloading page 60
+[tiktok:user] tiktok: Downloading page 61
+[tiktok:user] tiktok: Downloading page 62
+[tiktok:user] tiktok: Downloading page 63
+[tiktok:user] tiktok: Downloading page 64
+[tiktok:user] tiktok: Downloading page 65
+[tiktok:user] tiktok: Downloading page 66
+[tiktok:user] tiktok: Downloading page 67
+[tiktok:user] tiktok: Downloading page 68
+[tiktok:user] tiktok: Downloading page 69
+[tiktok:user] tiktok: Downloading page 70
+[tiktok:user] tiktok: Downloading page 71
+[tiktok:user] tiktok: Downloading page 72
+[tiktok:user] tiktok: Downloading page 73
+[tiktok:user] tiktok: Downloading page 74
+[tiktok:user] tiktok: Downloading page 75
+[tiktok:user] tiktok: Downloading page 76
+[tiktok:user] tiktok: Downloading page 77
+[tiktok:user] tiktok: Downloading page 78
+[tiktok:user] tiktok: Downloading page 79
+[tiktok:user] tiktok: Downloading page 80
+[tiktok:user] tiktok: Downloading page 81
+[tiktok:user] tiktok: Downloading page 82
+[tiktok:user] tiktok: Downloading page 83
+[tiktok:user] tiktok: Downloading page 84
+[tiktok:user] tiktok: Downloading page 85
+[tiktok:user] tiktok: Downloading page 86
+[tiktok:user] tiktok: Downloading page 87
+[tiktok:user] tiktok: Downloading page 88
+[tiktok:user] tiktok: Downloading page 89
+[tiktok:user] tiktok: Downloading page 90
+[tiktok:user] tiktok: Downloading page 91
+[tiktok:user] tiktok: Downloading page 92
+[tiktok:user] tiktok: Downloading page 93
+[tiktok:user] tiktok: Downloading page 94
+[tiktok:user] tiktok: Downloading page 95
+[tiktok:user] tiktok: Downloading page 96
+[tiktok:user] tiktok: Downloading page 97
+[tiktok:user] tiktok: Downloading page 98
+[tiktok:user] tiktok: Downloading page 99
+[tiktok:user] tiktok: Downloading page 100
+[tiktok:user] tiktok: Downloading page 101
+[tiktok:user] tiktok: Downloading page 102
+[tiktok:user] tiktok: Downloading page 103
+[tiktok:user] Playlist tiktok: Downloading 1489 items of 1489
+[download] Downloading item 1 of 1489
+[TikTok] Extracting URL: https://www.tiktok.com/@tiktok/video/7691450773619625247
+[TikTok] 7691450773619625247: Downloading webpage
+[info] 7691450773619625247: Downloading 1 format(s): bytevc1_1080p_1287009-1
+[download] Destination: /work/meta-tiktok_profile/7691450773619625247.mp4
+
+[download]   0.0% of   13.51MiB at  Unknown B/s ETA Unknown
+[download]   0.0% of   13.51MiB at  Unknown B/s ETA Unknown
+[download]   0.1% of   13.51MiB at  Unknown B/s ETA Unknown
+[download]   0.1% of   13.51MiB at  Unknown B/s ETA Unknown
+[download]   0.2% of   13.51MiB at    5.07MiB/s ETA 00:02  
+[download]   0.5% of   13.51MiB at    2.26MiB/s ETA 00:05
+[download]   0.9% of   13.51MiB at    3.29MiB/s ETA 00:04
+[download]   1.8% of   13.51MiB at    4.36MiB/s ETA 00:03
+[download]   3.7% of   13.51MiB at    5.93MiB/s ETA 00:02
+[download]   7.4% of   13.51MiB at    8.52MiB/s ETA 00:01
+[download]  14.8% of   13.51MiB at   12.62MiB/s ETA 00:00
+[download]  29.6% of   13.51MiB at   19.38MiB/s ETA 00:00
+[download]  59.2% of   13.51MiB at   29.25MiB/s ETA 00:00
+[download]  88.8% of   13.51MiB at   38.96MiB/s ETA 00:00
+[download] 100.0% of   13.51MiB at   41.03MiB/s ETA 00:00
+[download] 100% of   13.51MiB in 00:00:00 at 23.07MiB/s  
+{"id": "7691450773619625247", "title": "if your FYF had you hitting the Zara Larsson, you'll know Pop Girl Su...", "description": "if your FYF had you hitting the Zara Larsson, you'll know Pop Girl Summer is never-ending. @McCall Mirabella the music and moments that shaped the season \ud83d\udc2c", "view_count": 128000, "like_count": 2195, "comment_count": 611, "upload_date": "20260930", "duration": 88, "webpage_url": "https://www.tiktok.com/@tiktok/video/7691450773619625247", "filepath": "/work/meta-tiktok_profile/7691450773619625247.mp4"}
+[download] Downloading item 2 of 1489
+[TikTok] Extracting URL: https://www.tiktok.com/@tiktok/video/7691013160425327903
+[TikTok] 7691013160425327903: Downloading webpage
+[info] 7691013160425327903: Downloading 1 format(s): bytevc1_1080p_987169-1
+[download] Destination: /work/meta-tiktok_profile/7691013160425327903.mp4
+
+[download]   0.0% of   10.36MiB at  504.55KiB/s ETA 00:21
+[download]   0.0% of   10.36MiB at    1.35MiB/s ETA 00:07
+[download]   0.1% of   10.36MiB at    2.87MiB/s ETA 00:03
+[download]   0.1% of   10.36MiB at    5.87MiB/s ETA 00:01
+[download]   0.3% of   10.36MiB at   11.63MiB/s ETA 00:00
+[download]   0.6% of   10.36MiB at   22.69MiB/s ETA 00:00
+[download]   1.2% of   10.36MiB at   28.33MiB/s ETA 00:00
+[download]   2.4% of   10.36MiB at   38.05MiB/s ETA 00:00
+[download]   4.8% of   10.36MiB at   39.03MiB/s ETA 00:00
+[download]   9.6% of   10.36MiB at   45.79MiB/s ETA 00:00
+[download]  19.3% of   10.36MiB at   46.56MiB/s ETA 00:00
+[download]  38.6% of   10.36MiB at   47.54MiB/s ETA 00:00
+[download]  77.2% of   10.36MiB at   49.80MiB/s ETA 00:00
+[download] 100.0% of   10.36MiB at   49.32MiB/s ETA 00:00
+[download] 100% of   10.36MiB in 00:00:00 at 34.95MiB/s  
+{"id": "7691013160425327903", "title": "K-pop fans have been BUSY. @rachelszero shares how your fan cams, DIY...", "description": "K-pop fans have been BUSY. @rachelszero shares how your fan cams, DIYs, and choreo made this a K-pop summer \ud83e\udef0", "view_count": 129400, "like_count": 2896, "comment_count": 646, "upload_date": "20260929", "duration": 88, "webpage_url": "https://www.tiktok.com/@tiktok/video/7691013160425327903", "filepath": "/work/meta-tiktok_profile/7691013160425327903.mp4"}
+[info] Maximum number of downloads reached, stopping due to --max-downloads
+Aborting remaining downloads
+--- stderr
