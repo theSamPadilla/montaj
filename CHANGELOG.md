@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.19.6
+
 - **Changed (look): HDR footage's SDR export and its editor preview now match Apple's own HDR-to-SDR conversion.** The new default look, Natural (`natural1`, `montaj_assets/luts/montaj-natural-v1.cube`), is Apple's HLG-to-SDR conversion captured as a LUT, so skin and color come out the way Apple devices show them: on a real HLG master it differs from Apple's output by ΔE00 0.75 mean, about what H.264 compression alone costs, where Montaj Vivid differs by about 5. `--export sdr|both` without `--sdr-curve`, the editor preview, sample frames and SDR thumbnails all use it. Existing projects switch to the natural look; vivid1 stays selectable, as does `vivid1-neutral`, through `--sdr-curve` and the export dialog's curve picker. On open, each project rebuilds its editor previews once in the background, and an SDR project's tone-mapped HDR clips re-grade their cached masters the same way. One exception: SDR-working-space projects whose HDR clips were normalized at import (eager) keep the vivid look until those clips are re-imported. Old vivid1 proxies stay on disk until `montaj clean --proxies --yes`.
 
 ## v5.19.5
