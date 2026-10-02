@@ -1,6 +1,6 @@
 {
   "name": "montaj-render",
-  "version": "5.20.3",
+  "version": "5.20.4",
   "description": "Render engine for montaj \u2014 React + Puppeteer + ffmpeg",
   "type": "module",
   "engines": {
