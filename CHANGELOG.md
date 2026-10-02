@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.20.3
+
 - **Fixed (editor): a timeline marquee released off the canvas keeps what it caught.** Dragging a box past t=0 into the track rail, or below the last lane, selected nothing; a smaller box released on the canvas worked, so it looked like a cap on multi-selection. There is no cap: the box caught every item, then the browser's `click` for that press/release, fired on the common ancestor of the two targets, reached Timeline's background-click handler and cleared the selection. `TimelineCanvas` now swallows that one click (capture phase, one-shot, only when aimed at an ancestor of the surface). Shift still adds, and a later background click still clears. `@bycrux/editor` 2.0.4. (`montaj_assets/editor/src/video/timeline/canvas/TimelineCanvas.tsx`, `Timeline.marqueeRelease.test.tsx`)
 
 ## v5.20.2
