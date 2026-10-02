@@ -7,7 +7,7 @@
   },
   "output": {
     "type": "json",
-    "description": "JSON object with paths to both outputs: {\"srt\": \"...\", \"words\": \"...\"}"
+    "description": "JSON object with paths to both outputs: {\"srt\": \"...\", \"words\": \"...\"}, plus word_count, speech_s (first word start to last word end) and wpm (words per minute over that span, one decimal). The three are left out if the words file cannot be read."
   },
   "params": [
     {

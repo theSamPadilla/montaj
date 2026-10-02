@@ -7,6 +7,23 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, check_output, run, run_whisper, find_whisper_bin, require_whisper_model, ffmpeg_bin, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
 from trim_spec import is_trim_spec, load as load_spec, extract_audio_at_keeps, remap_timestamp
 
+def speech_stats(data):
+    """word_count, speech_s and wpm from a words JSON, by the rule profiles/analyze.py uses.
+
+    A word is an entry whose text has a letter or digit. speech_s runs from the first
+    counted word's start to the last one's end; wpm is 0 when that span is 0.
+    """
+    words = [w for w in (data or {}).get("transcription", [])
+             if any(ch.isalnum() for ch in (w.get("text") or ""))]
+    if not words:
+        return {"word_count": 0, "speech_s": 0.0, "wpm": 0}
+    start = words[0].get("offsets", {}).get("from", 0) / 1000.0
+    end = words[-1].get("offsets", {}).get("to", 0) / 1000.0
+    span = max(end - start, 0.0)
+    wpm = round(len(words) / (span / 60), 1) if span > 0 else 0
+    return {"word_count": len(words), "speech_s": round(span, 3), "wpm": wpm}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Transcribe audio or video using whisper.cpp")
     parser.add_argument("--input", required=True, help="Audio or video file to transcribe")
@@ -85,7 +102,12 @@ def main():
     srt_path = f"{output_prefix}.srt"
     words_path = f"{output_prefix}.json"
     check_output(srt_path)
-    print(json.dumps({"srt": srt_path, "words": words_path}))
+    result = {"srt": srt_path, "words": words_path}
+    try:
+        result.update(speech_stats(json.loads(Path(words_path).read_text())))
+    except Exception:
+        pass  # an unreadable words file leaves the stats out; it never fails the step
+    print(json.dumps(result))
 
 if __name__ == "__main__":
     main()

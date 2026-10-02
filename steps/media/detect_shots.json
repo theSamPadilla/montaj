@@ -7,7 +7,7 @@
   },
   "output": {
     "type": "json",
-    "description": "{input, duration, shots:[{index, start, end, duration, motion_mean, motion_peak}]}"
+    "description": "{input, duration, cuts_per_min, shots:[{index, start, end, duration, motion_mean, motion_peak}]}. cuts_per_min is cuts (shots minus one) per minute, one decimal."
   },
   "params": [
     {

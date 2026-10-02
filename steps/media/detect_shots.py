@@ -56,6 +56,13 @@ def shot_motion(scores, start: float, end: float) -> tuple[float, float]:
     return sum(inner) / len(inner), max(inner)
 
 
+def cuts_per_min(shots, duration: float) -> float:
+    """Cuts (shots minus one) per minute of video, one decimal; 0.0 for no duration."""
+    if duration <= 0 or len(shots) < 2:
+        return 0.0
+    return round((len(shots) - 1) / (duration / 60), 1)
+
+
 def detect(path: str, threshold: float, min_shot: float, timeout: int) -> dict:
     require_file(path)
     duration = get_duration(path)
@@ -74,7 +81,7 @@ def detect(path: str, threshold: float, min_shot: float, timeout: int) -> dict:
             "motion_mean": round(mean, 5),
             "motion_peak": round(peak, 5),
         })
-    return {"input": path, "duration": round(duration, 3), "shots": shots}
+    return {"input": path, "duration": round(duration, 3), "cuts_per_min": cuts_per_min(shots, duration), "shots": shots}
 
 
 def main():
