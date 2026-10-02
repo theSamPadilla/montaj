@@ -1,6 +1,6 @@
 {
   "name": "montaj-mcp",
-  "version": "5.21.0",
+  "version": "5.21.1",
   "description": "MCP server for montaj: the render command as an MCP tool",
   "type": "module",
   "bin": {
