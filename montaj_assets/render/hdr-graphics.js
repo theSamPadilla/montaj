@@ -18,17 +18,19 @@
  * (oversaturated), and an <img> converted on its own looked different from the
  * CSS around it.
  *
- * 900 nits is the product owner's choice, made by eye against SDR clips and
- * camera HDR on an XDR display (2026-10-01). It is brighter than BT.2408's 203-nit
+ * 800 nits is the product owner's choice, made by eye against SDR clips and
+ * camera HDR on an XDR display: first 900 (2026-10-01), lowered to 800 the
+ * next day because 900 was too much. It is brighter than BT.2408's 203-nit
  * graphics white, which SDR clips in an HDR project use (lib/normalize.py
  * SDR_WHITE_NITS), so a white card sits above an SDR clip's white on purpose.
  *
  * Applied in ffmpeg as a 65-point 3D LUT (tetrahedral) on float RGB: a
  * per-pixel geq is far too slow for every overlay frame. Measured against the
- * math on a grey ramp: within 2 Y10 codes from sRGB 4 up (the float path
- * rounds about 2 high at white: 928 for 926); the first grid interval
- * undershoots the steep toe below that, sRGB 1 to 3 by up to 12 codes on HLG
- * and 48 on PQ. The LUT is generated
+ * math on a 256-step grey ramp through the managed ffmpeg at 800 nits: within
+ * 2 Y10 codes from sRGB 4 up (the float path rounds about 2 high at white: 912
+ * for 910 on HLG, 703 for 701 on PQ); the first grid interval misses the steep
+ * toe below that, sRGB 1 to 3 by up to 12 codes on HLG and 45 on PQ. The LUT
+ * is generated
  * from the math here, not shipped: the white level stays one constant in code,
  * and the wheel carries no second 7 MB .cube that could drift from it. It is
  * written once per process to the temp dir under a name hashed from its own
@@ -44,11 +46,11 @@ import { join } from 'node:path'
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
 
 /** Where sRGB white lands in an HLG or PQ output, in nits. */
-export const GRAPHICS_WHITE_NITS = 900
+export const GRAPHICS_WHITE_NITS = 800
 
 // HLG's nominal display: 1000-nit peak, system gamma 1.2 (BT.2100). Scene
 // light E maps to display light 1000 * E^1.2 for a neutral, so white at
-// GRAPHICS_WHITE_NITS is scene light (900/1000)^(1/1.2) = 0.91587.
+// GRAPHICS_WHITE_NITS is scene light (800/1000)^(1/1.2) = 0.83031.
 const HLG_PEAK_NITS = 1000
 const HLG_SYSTEM_GAMMA = 1.2
 const PQ_PEAK_NITS = 10000

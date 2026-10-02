@@ -17,7 +17,7 @@
 //   1. The mapping. Before it, captures and image items went into the HDR
 //      canvas unconverted: white at Y10 940 (the HLG peak) and sRGB colours
 //      read as BT.2020 primaries. Now white is at GRAPHICS_WHITE_NITS
-//      (HLG Y10 926, PQ 713).
+//      (800 nits: HLG Y10 910, PQ 701).
 //   2. Alpha. The bottom third catches a conversion that drops the alpha of the
 //      lower rows (zscale does, writing 4:2:0 under slice threading), the
 //      middle third one that makes the graphic opaque.
@@ -56,7 +56,7 @@ const GREY_BG = [96, 96, 96]
 // Mapped graphic against graphicsToHdr's prediction, per Y/Cb/Cr, in Y10
 // codes: one step of the 8-bit composite (encode-segment's
 // `overlay=format=yuv420`). Measured worst 3 (the swscale/lut3d float path
-// rounds about 2 codes high at white: 928 for 926).
+// rounds about 2 codes high at white: 912 for 910 on HLG).
 const TOL = 4
 
 /** graphicsToHdr's R'G'B' as limited-range BT.2020 NCL Y'CbCr, 10-bit. */

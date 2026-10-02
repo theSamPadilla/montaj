@@ -1883,8 +1883,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   // (hdr-graphics.js). Untagged, the canvas left the composite's matrix to
   // negotiation: over a clip (bt2020nc) a mapped overlay landed as mapped, but
   // over nothing `overlay` re-matrixed it to "unknown", i.e. BT.601 (measured
-  // on HLG: red #e6194b Y 535 → 552 and Cb 475 → 465, cyan #00b4d8 Cb 569 →
-  // 576). Tagged, every layer lands the same over anything. Measured on
+  // on HLG with graphics white at 900 nits, before it moved to 800: red
+  // #e6194b Y 535 → 552 and Cb 475 → 465, cyan #00b4d8 Cb 569 → 576). Tagged, every layer lands the same over anything. Measured on
   // segments without graphics, HLG and PQ: an HLG clip (scaled or not), an SDR
   // clip (tagged, untagged, full range), a remove_bg cutout, a clip with a
   // cutout over it and a crossfade decode byte-identical to the untagged canvas.

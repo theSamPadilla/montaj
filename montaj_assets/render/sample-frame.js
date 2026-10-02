@@ -127,6 +127,9 @@ const SHORT_EDGE_TARGET = 1080
  * 9: PL22, a capture waits for every image on the page (page-guard.js
  *    settleImages). A PNG cached before may hold an image that mounted on the
  *    sampled frame as an empty window, and was served again for the same props.
+ * 10: graphics white in HDR projects moves from 900 to 800 nits
+ *    (hdr-graphics.js GRAPHICS_WHITE_NITS). A frame cached before holds its
+ *    overlays, captions and images 900 nits bright.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -134,7 +137,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 9
+const SAMPLE_CACHE_VERSION = 10
 
 // ---------------------------------------------------------------------------
 // Input manifests

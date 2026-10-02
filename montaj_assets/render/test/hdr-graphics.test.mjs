@@ -16,8 +16,9 @@ import {
 const close = (got, want, tol, label) =>
   assert.ok(Math.abs(got - want) <= tol, `${label}: got ${got}, want ${want} (tolerance ${tol})`)
 
-test('white sits at 900 nits', () => {
-  assert.equal(GRAPHICS_WHITE_NITS, 900)
+test('white sits at 800 nits', () => {
+  // The product owner lowered it from 900 ("too much") on 2026-10-02.
+  assert.equal(GRAPHICS_WHITE_NITS, 800)
 })
 
 test('the transfer functions match their published values', () => {
@@ -33,35 +34,46 @@ test('the transfer functions match their published values', () => {
   close(srgbToLinear(0.5), 0.214041, 1e-6, 'sRGB EOTF at 0.5')
 })
 
-test('HLG white: scene light (900/1000)^(1/1.2), signal 0.98390, Y10 926', () => {
+// The expected numbers below come from an independent Python implementation of
+// the same standards (sRGB EOTF, the BT.2087 matrix, BT.2100 HLG with a
+// 1000-nit display and system gamma 1.2, ST 2084 PQ), not from this module. It
+// reproduces every 900-nit value this file pinned before (HLG Y10 926, PQ 713,
+// the n900.cube entries) exactly, then gives at 800 nits:
+//   HLG: scene light (800/1000)^(1/1.2) = 0.83031, signal 0.96586,
+//        Y10 round(64 + 876 * 0.96586) = 910
+//   PQ:  signal pqOetf(800) = 0.72753, Y10 round(64 + 876 * 0.72753) = 701
+test('HLG white: scene light (800/1000)^(1/1.2), signal 0.96586, Y10 910', () => {
   const [r, g, b] = graphicsToHdr([1, 1, 1], 'hdr_hlg')
-  close(r, hlgOetf(0.9 ** (1 / 1.2)), 1e-12, 'white')
+  close(r, hlgOetf(0.8 ** (1 / 1.2)), 1e-12, 'white')
   // The BT.2087 rows sum to 1 only to 6 decimals (two to 0.999999).
   close(g, r, 1e-5, 'white is neutral (green)')
   close(b, r, 1e-5, 'white is neutral (blue)')
-  close(r, 0.98390, 5e-5, 'white signal')
-  assert.equal(Math.round(64 + 876 * r), 926)
+  close(r, 0.96586, 5e-5, 'white signal')
+  assert.equal(Math.round(64 + 876 * r), 910)
 })
 
-test('PQ white: 900 nits absolute, Y10 713', () => {
+test('PQ white: 800 nits absolute, signal 0.72753, Y10 701', () => {
   const [r] = graphicsToHdr([1, 1, 1], 'hdr_pq')
-  close(r, pqOetf(900), 1e-12, 'white')
-  assert.equal(Math.round(64 + 876 * r), 713)
+  close(r, pqOetf(800), 1e-12, 'white')
+  close(r, 0.72753, 5e-5, 'white signal')
+  assert.equal(Math.round(64 + 876 * r), 701)
 })
 
-test('the HLG LUT reproduces the reference cube the white level was chosen on', () => {
-  // Entries of n900.cube, built independently by the orchestrator from
-  // lib/normalize_image.py's vivid math at 900 nits and compared on an XDR
-  // display (2026-10-01). Keys are grid indices (r, g, b) on the 65-point grid.
+test('the HLG LUT reproduces an independently built reference cube at 800 nits', () => {
+  // Grid entries computed by the independent Python implementation described
+  // above (the one that reproduced every entry of the orchestrator's n900.cube,
+  // the cube the 900-nit white was first chosen on, 2026-10-01), at 800 nits:
+  //   out = hlg_oetf((800/1000)^(1/1.2) * M_709_2020 @ srgb_eotf(rgb))
+  // printed to 6 decimals. Keys are grid indices (r, g, b) on the 65-point grid.
   const reference = [
-    [[64, 64, 64], [0.983899, 0.983899, 0.983899]],
-    [[1, 0, 0], [0.045661, 0.015153, 0.007380]],
-    [[32, 32, 32], [0.689841, 0.689841, 0.689841]],
-    [[64, 0, 0], [0.897687, 0.435737, 0.212226]],
-    [[0, 64, 0], [0.775288, 0.968482, 0.491777]],
-    [[0, 0, 64], [0.344988, 0.176694, 0.963625]],
-    [[10, 20, 30], [0.361250, 0.459236, 0.647230]],
-    [[0, 45, 54], [0.652359, 0.823779, 0.904114]],
+    [[64, 64, 64], [0.965855, 0.965855, 0.965855]],
+    [[1, 0, 0], [0.043474, 0.014427, 0.007027]],
+    [[32, 32, 32], [0.669731, 0.669731, 0.669731]],
+    [[64, 0, 0], [0.879339, 0.414869, 0.202062]],
+    [[0, 64, 0], [0.756153, 0.950394, 0.468225]],
+    [[0, 0, 64], [0.328466, 0.168232, 0.945522]],
+    [[10, 20, 30], [0.343949, 0.437242, 0.626425]],
+    [[0, 45, 54], [0.631647, 0.805022, 0.885794]],
   ]
   const lines = graphicsLutText('hdr_hlg').trim().split('\n')
   assert.equal(lines[1], 'LUT_3D_SIZE 65')
