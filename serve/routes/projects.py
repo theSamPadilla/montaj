@@ -39,6 +39,7 @@ from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwarg
 from lib.overlay_validation import overlay_item_errors
 from lib.project_tracks import normalize_tracks, track_items
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
+from lib.youtube import classify_error, parse_printed_path, parse_youtube_url, ytdlp_argv
 from project.init import _copy_into_workspace
 from serve.sse import SSEBroadcaster, sse_stream
 
@@ -464,6 +465,363 @@ async def _run_ingest_detached(
         log(f"[ingest] failed: {e}")
 
 
+# ---------------------------------------------------------------------------
+# YouTube source download (PL28)
+#
+# `POST /run` with `clipUrls` creates the project at once with an empty
+# timeline and a top-level `sourceDownload` record, then downloads the video
+# here, in a detached task, and adds the clip as init would have. Serve is the
+# only writer of the record:
+#
+#   {"kind": "youtube", "url", "status": "downloading", "jobId"}
+#   {"kind": "youtube", "url", "status": "done", "clipId"}
+#   {"kind": "youtube", "url", "status": "failed", "error": <code>}
+#
+# `jobId` is a serve/jobs.py job, so `GET /api/steps/jobs/{jobId}` (what the
+# MCP `get_step_result` polls) answers `done` with the clip or `error` with
+# `{"error": <code>, "message"}`. The registry is in-process: after a serve
+# restart the record still says `downloading`, and `GET /projects/{id}`
+# (`_ensure_source_download`) restarts the task under a new `jobId`.
+# ---------------------------------------------------------------------------
+
+# One live task per project, and its running yt-dlp (so DELETE and shutdown
+# can kill it: a POSIX kill of serve does not take its own children along).
+_source_download_tasks: dict[str, "asyncio.Task"] = {}
+_source_download_procs: dict[str, "asyncio.subprocess.Process"] = {}
+
+# Last bytes of yt-dlp's output kept for the classifier. The printed path, the
+# max-filesize notice and the ERROR lines are all at the end; the progress
+# lines before them can run to megabytes on a long video.
+_YTDLP_TAIL_BYTES = 256 * 1024
+
+_SOURCE_DOWNLOAD_MESSAGES = {
+    "unavailable": "This video can't be downloaded: it is private, removed, age-restricted, members-only or not available in this region.",
+    "blocked": "YouTube blocked the download. Try again later.",
+    "offline": "No internet connection.",
+    "too_long": "The video is longer than 3 hours, or is a live stream.",
+    "too_large": "The video is larger than 4 GB.",
+    "no_space": "Not enough disk space.",
+    "failed": "The download failed.",
+}
+
+
+def _parse_clip_urls(raw, clips, remote_clips) -> dict | None:
+    """`POST /run`'s `clipUrls`: None when absent or empty, else the one parsed
+    link (`lib.youtube.parse_youtube_url`). Raises the 400s."""
+    if raw is None or raw == []:
+        return None
+    if not isinstance(raw, list):
+        raise bad_request("invalid_field", "'clipUrls' must be a list of links")
+    if len(raw) > 1:
+        raise bad_request("invalid_clip_url", "'clipUrls' takes one link")
+    if clips or remote_clips:
+        raise bad_request("mutually_exclusive", "Send either 'clipUrls' or clips, not both")
+    parsed = parse_youtube_url(raw[0])
+    if not parsed["ok"]:
+        if parsed["reason"] == "shorts":
+            raise bad_request("invalid_clip_url", "Shorts links are not supported")
+        raise bad_request("invalid_clip_url", "Not a YouTube watch or youtu.be link")
+    return parsed
+
+
+def _write_project_json(project_path: Path, project: dict) -> str:
+    """tmp + os.replace, as `_apply_project_edits`. Returns the text written."""
+    text = json.dumps(project, indent=2)
+    tmp = str(project_path) + ".tmp"
+    Path(tmp).write_text(text)
+    os.replace(tmp, project_path)
+    return text
+
+
+def _start_source_download(
+    project_id: str,
+    project_dir: Path,
+    url: str,
+    video_id: str,
+    broadcaster: "SSEBroadcaster | None" = None,
+    *,
+    resume: bool = False,
+) -> dict | None:
+    """Write a `downloading` record under a new `jobId` and start the task.
+    Returns the project as written, or None when nothing was started.
+
+    Synchronous on purpose: the live-task check, the read, the write and the
+    task's registration happen with no await between, so two callers (two
+    GETs, or a GET racing the create) start one task. With `resume`, the
+    record on disk must still be `downloading` for this link."""
+    live = _source_download_tasks.get(project_id)
+    if live is not None and not live.done():
+        return None
+    project_path = Path(project_dir) / "project.json"
+    try:
+        project = json.loads(project_path.read_text())
+    except (OSError, ValueError):
+        return None
+    if resume:
+        current = project.get("sourceDownload")
+        if not isinstance(current, dict) or current.get("status") != "downloading" or current.get("url") != url:
+            return None
+    job_id = create_job()
+    project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "downloading", "jobId": job_id}
+    try:
+        text = _write_project_json(project_path, project)
+    except OSError as e:
+        set_error(job_id, {"error": "failed", "message": str(e)})
+        return None
+    task = asyncio.create_task(
+        _run_source_download(project_id, Path(project_dir), url, video_id, job_id, broadcaster)
+    )
+    _source_download_tasks[project_id] = task
+
+    def _forget(t: "asyncio.Task") -> None:
+        if _source_download_tasks.get(project_id) is t:
+            del _source_download_tasks[project_id]
+
+    task.add_done_callback(_forget)
+    if broadcaster is not None:
+        broadcaster.publish(project_id, _sse_data_frame(text))
+    return project
+
+
+def _ensure_source_download(
+    project_id: str,
+    project_dir: Path,
+    project: dict,
+    broadcaster: "SSEBroadcaster | None" = None,
+) -> dict:
+    """`GET /projects/{id}`'s hook: a record still `downloading` with no live
+    task (serve restarted, or a stale editor save put it back) gets a new
+    `jobId` and a new task. With a live task, the response carries the record
+    on disk, so it names the live `jobId`. Never raises: a project must always
+    open."""
+    try:
+        record = project.get("sourceDownload")
+        if not isinstance(record, dict) or record.get("status") != "downloading":
+            return project
+        live = _source_download_tasks.get(project_id)
+        if live is not None and not live.done():
+            on_disk = json.loads((Path(project_dir) / "project.json").read_text()).get("sourceDownload")
+            return {**project, "sourceDownload": on_disk} if isinstance(on_disk, dict) else project
+        parsed = parse_youtube_url(record.get("url"))
+        if not parsed["ok"]:
+            return project
+        started = _start_source_download(
+            project_id, project_dir, record["url"], parsed["id"], broadcaster, resume=True,
+        )
+        if started is None:
+            return project
+        return {**project, "sourceDownload": started["sourceDownload"]}
+    except Exception:
+        return project
+
+
+async def _spawn_ytdlp(argv: list[str]) -> "asyncio.subprocess.Process":
+    """yt-dlp in its own process group, so `_kill_tree` takes its ffmpeg merge
+    child too. The seam the tests replace; nothing here touches the network."""
+    return await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        **_detached_kwargs(),
+    )
+
+
+async def _read_tail(stream, limit: int = _YTDLP_TAIL_BYTES) -> str:
+    """Drain `stream` to EOF, keeping only its last `limit` bytes."""
+    if stream is None:
+        return ""
+    buf = bytearray()
+    while True:
+        chunk = await stream.read(65536)
+        if not chunk:
+            break
+        buf += chunk
+        if len(buf) > limit:
+            del buf[:-limit]
+    return buf.decode("utf-8", errors="replace")
+
+
+def _kill_source_download_proc(proc) -> None:
+    if proc is None or proc.returncode is not None:
+        return
+    try:
+        _kill_tree(proc)
+    except Exception:
+        pass
+
+
+def _same_path(a: str, b: str) -> bool:
+    return a == b or os.path.realpath(a) == os.path.realpath(b)
+
+
+async def _run_source_download(
+    project_id: str,
+    project_dir: Path,
+    url: str,
+    video_id: str,
+    job_id: str,
+    broadcaster: "SSEBroadcaster | None",
+) -> None:
+    """Download to `<project_dir>/youtube-<id>.mp4` (deterministic, so a
+    restart resumes the partial with `--continue`; an existing complete file
+    skips yt-dlp), then finalize. A cancel (DELETE, shutdown) kills yt-dlp and
+    writes nothing, so after a quit the record still says `downloading`."""
+    proc = None
+    try:
+        target = project_dir / f"youtube-{video_id}.mp4"
+        path = str(target) if target.is_file() else None
+        if path is None:
+            proc = await _spawn_ytdlp(ytdlp_argv(url, project_dir, video_id))
+            _source_download_procs[project_id] = proc
+            stdout, stderr = await asyncio.gather(_read_tail(proc.stdout), _read_tail(proc.stderr))
+            returncode = await proc.wait()
+            # The file path comes from the printed line only: with --no-quiet
+            # stdout is also yt-dlp's log, and a duration or size skip exits 0.
+            code = classify_error(returncode, stdout, stderr)
+            if code is None:
+                path = parse_printed_path(stdout)
+                if not path or not os.path.isfile(path):
+                    code, path = "failed", None
+            if code is not None:
+                _fail_source_download(project_id, project_dir, url, video_id, job_id, code,
+                                      broadcaster, remove_partials=True)
+                return
+        await _finalize_source_download(project_id, project_dir, url, path, job_id, broadcaster)
+    except asyncio.CancelledError:
+        _kill_source_download_proc(proc)
+        raise
+    except Exception as e:
+        # A finalize that failed on a complete file keeps the file (a clip
+        # already in `sources` may point at it); only yt-dlp's failures above
+        # remove what it wrote.
+        _fail_source_download(project_id, project_dir, url, video_id, job_id, "failed",
+                              broadcaster, remove_partials=False, message=str(e))
+    finally:
+        if proc is not None and _source_download_procs.get(project_id) is proc:
+            del _source_download_procs[project_id]
+
+
+async def _finalize_source_download(
+    project_id: str,
+    project_dir: Path,
+    url: str,
+    path: str,
+    job_id: str,
+    broadcaster: "SSEBroadcaster | None",
+) -> None:
+    """Add the downloaded file as init would have, once.
+
+    Idempotent, keyed by the file's path: a source already at this `src` is
+    reused (a stale save can put the record back to `downloading` after a
+    finalize, and the next open runs this again). A new clip goes to `sources`
+    and, only while the project is `pending` (the agent's lifecycle), to
+    `tracks[0].items` in init's shape. Read to write with no await between, as
+    `_run_ingest_detached`, so a concurrent PUT cannot interleave."""
+    project_path = project_dir / "project.json"
+    settings = json.loads(project_path.read_text()).get("settings") or {}
+    color_space = settings.get("colorSpace") or "sdr_bt709"
+    # Lazy always: the H.264 SDR download fits the default SDR project, and
+    # export conforms anything else inline. The proxy is queued below.
+    clip = await asyncio.to_thread(ingest_source, str(project_dir), path, color_space, "lazy", proxy=False)
+
+    try:
+        project = json.loads(project_path.read_text())
+    except (OSError, ValueError):
+        return  # deleted meanwhile
+    sources = project.get("sources")
+    if not isinstance(sources, list):
+        sources = project["sources"] = []
+    existing = next((s for s in sources if isinstance(s, dict) and isinstance(s.get("src"), str)
+                     and _same_path(s["src"], clip["src"])), None)
+    if existing is not None:
+        clip = existing
+    else:
+        clip = {"id": _next_clip_id(project), **clip}
+        sources.append(clip)
+        if project.get("status") == "pending":
+            tracks = project.get("tracks")
+            if not isinstance(tracks, list) or not tracks:
+                tracks = project["tracks"] = [{"id": "trk-0", "items": []}]
+            first = tracks[0]
+            if isinstance(first, dict):
+                first.setdefault("items", []).append(dict(clip))
+            elif isinstance(first, list):
+                first.append(dict(clip))
+    project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "done", "clipId": clip["id"]}
+    text = _write_project_json(project_path, project)
+    if broadcaster is not None:
+        broadcaster.publish(project_id, _sse_data_frame(text))
+
+    # The proxy, as `_run_ingest_detached`: queued only once the clip is on
+    # disk under its (id, src). Best-effort.
+    try:
+        await _warm_proxy_inputs(_video_srcs(project))
+        _ensure_current_proxies(project_id, project_dir, project, broadcaster)
+    except Exception:
+        pass
+    # The canvas and fps follow this first footage. Never raises.
+    await ensure_source_dims(project_id, project_dir, project, broadcaster)
+    set_done(job_id, clip)
+
+
+def _fail_source_download(
+    project_id: str,
+    project_dir: Path,
+    url: str,
+    video_id: str,
+    job_id: str,
+    code: str,
+    broadcaster: "SSEBroadcaster | None",
+    *,
+    remove_partials: bool,
+    message: str | None = None,
+) -> None:
+    if remove_partials:
+        for partial in project_dir.glob(f"youtube-{video_id}.*"):
+            try:
+                if partial.is_file():
+                    partial.unlink()
+            except OSError:
+                pass
+    project_path = project_dir / "project.json"
+    try:
+        project = json.loads(project_path.read_text())
+        project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "failed", "error": code}
+        text = _write_project_json(project_path, project)
+    except (OSError, ValueError):
+        text = None
+    if text is not None and broadcaster is not None:
+        broadcaster.publish(project_id, _sse_data_frame(text))
+    set_error(job_id, {"error": code, "message": message or _SOURCE_DOWNLOAD_MESSAGES.get(code, _SOURCE_DOWNLOAD_MESSAGES["failed"])})
+
+
+async def _cancel_source_download(project_id: str) -> None:
+    """Stop a project's download (DELETE): cancel the task first, so the
+    killed yt-dlp is not read as a failure, then kill it and wait for both."""
+    task = _source_download_tasks.pop(project_id, None)
+    proc = _source_download_procs.pop(project_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+    _kill_source_download_proc(proc)
+    if task is not None:
+        await asyncio.wait({task}, timeout=5)
+    if proc is not None:
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except Exception:
+            pass
+
+
+def kill_source_downloads() -> None:
+    """Serve shutdown: cancel every download task, then kill its yt-dlp. The
+    records stay `downloading`, so each resumes when its project is opened."""
+    for task in list(_source_download_tasks.values()):
+        task.cancel()
+    for proc in list(_source_download_procs.values()):
+        _kill_source_download_proc(proc)
+
+
 OVERLAY_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 OVERLAY_MAX_BYTES = 65_536  # 64 KB — overlay JSX is small; reject big bodies hard.
 
@@ -772,6 +1130,10 @@ async def run_project(request: Request, body: dict = Body(...)):
     if not prompt:
         raise bad_request("missing_field", "'prompt' is required")
 
+    # PL28: one YouTube link as the footage, downloaded after init in the
+    # background (`_start_source_download`). Either/or with clips.
+    youtube = _parse_clip_urls(body.get("clipUrls"), clips, remote_clips)
+
     if project_path_arg is not None and not isinstance(project_path_arg, str):
         raise bad_request(
             "invalid_field",
@@ -1011,6 +1373,9 @@ async def run_project(request: Request, body: dict = Body(...)):
 
     if clips:
         cmd += ["--clips"] + [str(c) for c in clips]
+    elif youtube is not None:
+        # The link counts as footage; the clip lands when the download does.
+        cmd.append("--canvas")
     elif not remote_clips:
         # No local clips and no remote clips — check workflow's requires_clips to decide how to proceed
         requires_clips = True  # conservative default
@@ -1036,11 +1401,23 @@ async def run_project(request: Request, body: dict = Body(...)):
     # 30 min ceiling is a sanity bound, not a real expected duration — with parallel
     # normalize + audio fast path + resolution preservation, realistic init time is
     # seconds to a few minutes even on heavy footage.
-    return await _run_init_subprocess(
+    broadcaster = getattr(request.app.state, "broadcaster", None)
+    project = await _run_init_subprocess(
         cmd,
-        broadcaster=getattr(request.app.state, "broadcaster", None),
+        broadcaster=broadcaster,
         background_normalize=background_normalize,
     )
+    if youtube is None:
+        return project
+    # Returned WITH the record, so the editor's first paint has the spinner.
+    project_dir = find_project_dir(resolve_workspace(), project.get("id"))
+    started = (
+        _start_source_download(project["id"], project_dir, youtube["url"], youtube["id"], broadcaster)
+        if project_dir is not None else None
+    )
+    if started is None:
+        raise server_error("source_download_failed", "Project created but its download could not start")
+    return started
 
 
 @router.get("/projects")
@@ -2407,7 +2784,10 @@ async def get_project(project_id: str, request: Request = None, project_dir: Pat
             ) or project
         except Exception:
             pass
-    return project
+
+    # A YouTube source still `downloading` with no live task: restart it under
+    # a new jobId (PL28). Best-effort, never raises.
+    return _ensure_source_download(project_id, project_dir, project, broadcaster)
 
 
 @router.get("/projects/{project_id}/stream")
@@ -2568,6 +2948,9 @@ async def delete_project(
                 # If project.json is unparseable, fall through to the delete.
                 pass
 
+    # PL28: stop a YouTube download first, so yt-dlp is not writing into the
+    # folder being removed.
+    await _cancel_source_download(project_id)
     shutil.rmtree(project_dir)
 
     if preserve_assets:

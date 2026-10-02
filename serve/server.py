@@ -88,6 +88,10 @@ async def lifespan(app: FastAPI):
         open_delay = 2.5 if vite_proc else 0.5
         loop.call_later(open_delay, lambda: webbrowser.open(f"http://localhost:{PORT}"))
     yield
+    # A running yt-dlp (PL28) is in its own process group, so a kill of serve
+    # does not take it along: kill it here. Its project resumes on open.
+    from serve.routes.projects import kill_source_downloads
+    kill_source_downloads()
     watcher.stop()
     overlay_watcher.stop()
     lockfile.remove()

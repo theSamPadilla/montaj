@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Added (serve): `POST /api/run` takes `clipUrls` (one YouTube watch or youtu.be link) as the footage, and downloads it in the background.** The project is created at once on an empty timeline with a top-level `sourceDownload` record (`downloading`, `done` or `failed`, with a failure code), and the request does not wait. Serve runs yt-dlp (1080p H.264, up to 3 hours and 4 GB) in a detached task, then adds the clip as init would have: to `sources`, and to `tracks[0]` while the project is `pending`; the canvas follows the footage and the update goes out over the project's SSE stream. The record's `jobId` is a step job, so `GET /api/steps/jobs/{jobId}` (MCP `get_step_result`) waits on it. `GET /projects/{id}` resumes a download a restart dropped, `DELETE` kills it, and so does serve's shutdown. Shorts and other links are refused (`400 invalid_clip_url`); a link with clips is `400 mutually_exclusive`. (`lib/youtube.py`, `serve/routes/projects.py`, `serve/server.py`, `docs/schemas/project.md`)
+
 ## v5.19.7
 
 - **Changed (render): HDR graphics with no footage under them, and full-screen cards, are 300 nits, up from 203.** The product owner picked 300 from 4K renders at 203, 300 and 400: BT.2408's 203 read too dim next to footage. `GRAPHICS_WHITE_NITS_NO_FOOTAGE` in `render/hdr-graphics.js` is now its own constant (HLG Y10 776, PQ 609), no longer tied to `SDR_WHITE_NITS`, which stays 203 for SDR clips in an HDR project. Graphics over footage stay 800.

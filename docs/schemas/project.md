@@ -733,6 +733,39 @@ To use an asset in a `tracks[1+]` item, pass its `src` path via `props` (for ove
 
 ---
 
+## Source download (`sourceDownload`)
+
+A project created from a YouTube link (`POST /api/run` with `clipUrls: ["<watch or youtu.be link>"]`) is created at once, as a canvas project with an empty `tracks[0]`, and serve downloads the video in the background with yt-dlp. The top-level `sourceDownload` record says where that stands. **Serve is its only writer** (`serve/routes/projects.py`, `_start_source_download` and below); a client never sets it.
+
+```json
+"sourceDownload": {
+  "kind": "youtube",
+  "url": "https://www.youtube.com/watch?v=<id>",
+  "status": "downloading",
+  "jobId": "<hex>"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | string | `"youtube"`. |
+| `url` | string | The canonical watch link (every other query parameter dropped). |
+| `status` | string | `"downloading"`, `"done"` or `"failed"`. Independent of the project's own `status`, which stays the agent lifecycle (`pending`). |
+| `jobId` | string | Only while `downloading`. A `serve/jobs.py` job: `GET /api/steps/jobs/{jobId}` answers `running`, then `done` with the clip as `result`, or `error` with `{"error": <code>, "message"}`. This is what the MCP `get_step_result` waits on. |
+| `clipId` | string | Only when `done`: the `sources` entry the download became. |
+| `error` | string | Only when `failed`, one code: `unavailable` (private, removed, age-restricted, members-only, region-locked), `blocked` (bot check, sign-in, HTTP 429), `offline`, `too_long` (over 3 hours, or a live stream), `too_large` (over 4 GB), `no_space`, `failed` (anything else). |
+
+The record is kept after `done` as the source's provenance.
+
+- **Request.** `clipUrls` takes one link; Shorts are refused (`400 invalid_clip_url`), and so is any other link. It is either/or with `clips` and `remoteClips` (`400 mutually_exclusive`). The link counts as footage for a workflow's `requires_clips`.
+- **Download.** 1080p H.264 where available, to `<project>/youtube-<id>.mp4`. Capped at 3 hours (`--match-filters duration<=10800`) and 4 GB (`--max-filesize 4G`). The argv is `lib/youtube.py` `ytdlp_argv`.
+- **Done.** The file is ingested lazily, as `POST /projects/{id}/sources` does, and appended to `sources`. While the project is `pending` the same item also goes on `tracks[0].items`, in init's shape (`start` and `end` 0); a `draft` project gets it in `sources` only. Then the proxy is queued and the canvas and fps follow the footage (*Canvas and frame rate from the first footage*). This step is idempotent, keyed by the file's path: a source already at that `src` is reused.
+- **Failed.** Every `youtube-<id>.*` file yt-dlp left in the project folder is deleted.
+- **Resume.** The job registry is in-process. `GET /projects/{id}` restarts a record that says `downloading` with no live download (serve restarted, or a stale save wrote an old record back) under a new `jobId`; yt-dlp continues the partial, and a complete file is not downloaded again. One download per project at a time.
+- **Cancel.** `DELETE /projects/{id}` kills the download before removing the folder. Serve's shutdown kills every running download and leaves its record `downloading`, to resume on the next open.
+
+---
+
 ## Markers
 
 Timestamps the operator dropped while scrubbing the timeline, for their own
