@@ -1,9 +1,44 @@
 #!/usr/bin/env python3
 """Download a video or playlist from a URL using yt-dlp."""
-import json, os, sys, argparse
+import json, os, re, sys, argparse
+from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, run
+from youtube import classify_error
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+_HINTS = {
+    "unavailable": "That video is private, removed or restricted; use another video.",
+    "blocked": "YouTube refused the request. Try again later or use another video.",
+    "offline": "No network reached the site. Check the connection and retry.",
+    "too_long": "The video is too long to download; use a shorter one.",
+    "too_large": "The video is too large to download; use a smaller one.",
+    "no_space": "The disk is full; free space and retry.",
+    "failed": "The download failed; see stderr_tail, then retry or use another URL.",
+}
+
+
+def _is_youtube(url):
+    host = (urlparse(url if "://" in url else "https://" + url).hostname or "").lower()
+    return host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
+
+
+def stderr_tail(text, lines=15, limit=2048):
+    """Last `lines` lines of stderr, ANSI stripped, at most `limit` characters."""
+    clean = _ANSI.sub("", text or "").strip().splitlines()
+    return "\n".join(clean[-lines:])[-limit:]
+
+
+def classify_failure(url, returncode, stdout, stderr):
+    """(code, hint) for a failed yt-dlp run."""
+    code = (classify_error(returncode, stdout, stderr) if _is_youtube(url) else None) or "failed"
+    if "Requested format is not available" in (stderr or ""):
+        return code, "That format isn't offered for this video; leave format unset."
+    if code == "failed" and "HTTP Error 403" in (stderr or ""):
+        return code, "The site refused the media request (HTTP 403). Retry later or use another video."
+    return code, _HINTS[code]
 
 
 def main():
@@ -58,14 +93,20 @@ def main():
     r = run(cmd, check=False)
     # yt-dlp exits 101 when --max-downloads limit is reached — that's expected, not an error
     if r.returncode not in (0, 101):
-        # THE TAIL, NOT THE HEAD, AND THAT IS THE WHOLE POINT. yt-dlp writes
-        # warnings first and the fatal error last, so `stderr[:500]` reliably
-        # reports the least useful 500 characters it produced. A real failure
-        # reached a caller as "ERROR: [youtube" with the cause cut off, and
-        # diagnosing it took reading the sidecar's own logs by timestamp.
-        # 4000 matches `lib/common.py`'s existing slice; this file was the
-        # outlier at 500, not the convention.
-        fail("unexpected_error", f"Command failed: {' '.join(cmd)}\n{r.stderr[-4000:]}")
+        # THE TAIL, NOT THE HEAD: yt-dlp writes warnings first and the fatal
+        # error last, so a head slice reports the least useful text.
+        # stderr_tail goes FIRST in the JSON: the MCP wrapper keeps only the
+        # last 2000 chars of stderr, so the code and hint must come last.
+        code, hint = classify_failure(args.url, r.returncode, r.stdout, r.stderr)
+        tail = stderr_tail(r.stderr)
+        print(json.dumps({
+            "stderr_tail": tail,
+            "hint": hint,
+            "code": code,
+            "error": code,
+            "message": f"{code}: {hint}\n{tail}",
+        }), file=sys.stderr)
+        sys.exit(1)
 
     paths = [line.strip() for line in r.stdout.strip().splitlines() if line.strip()]
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (fetch): a failed `montaj/fetch` now says why.** The error carries the classified code (`unavailable`, `blocked`, `offline`, `too_long`, `too_large`, `no_space`, `failed`; YouTube URLs reuse `classify_error`, other sites are `failed`), a one-line `hint`, and `stderr_tail` (last 15 lines of yt-dlp's stderr, ANSI stripped, at most 2 KB). `message` repeats code and hint, so callers that flatten the error still see them. Was `unexpected_error` with a raw 4 KB slice. (`steps/media/fetch.py`)
+
 ## v5.20.0
 
 - **Changed (serve): serve no longer opens a browser.** The auto-open of `http://localhost:<port>` is gone in every mode (`webbrowser.open` in `serve/server.py`'s lifespan). `--headless` is still accepted and still skips the Vite spawn, the SPA catch-all route and the UI-built check; it no longer has a browser to suppress. Pinned by `test_lifespan_never_opens_a_browser` in `tests/test_server_headless.py`.
