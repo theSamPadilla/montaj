@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.19.7
+
 - **Changed (render): HDR graphics with no footage under them, and full-screen cards, are 300 nits, up from 203.** The product owner picked 300 from 4K renders at 203, 300 and 400: BT.2408's 203 read too dim next to footage. `GRAPHICS_WHITE_NITS_NO_FOOTAGE` in `render/hdr-graphics.js` is now its own constant (HLG Y10 776, PQ 609), no longer tied to `SDR_WHITE_NITS`, which stays 203 for SDR clips in an HDR project. Graphics over footage stay 800.
 
 ## v5.19.6
