@@ -957,6 +957,34 @@ export default function TimelineCanvas({
     return { x: e.clientX - rect.left, y: e.clientY - rect.top }
   }
 
+  /**
+   * The `click` that ends a press begun on this surface belongs to the surface,
+   * wherever the browser sends it.
+   *
+   * The browser fires that click on the nearest COMMON ANCESTOR of the
+   * mousedown and mouseup targets (measured, Chromium 154). Released inside the
+   * surface, that is the surface, whose `onClick` below swallows it. A marquee
+   * dragged past t=0 into the track rail, or below the last lane, is released
+   * on something else, so the click lands on an ANCESTOR of the surface,
+   * bubbles to Timeline's `handleContainerClick`, and clears the selection the
+   * marquee just made: a big box selected nothing, a small one worked.
+   *
+   * One-shot, capture phase, and only for a click aimed at an ancestor of the
+   * surface. The click is dispatched in the same task as the mouseup, so a
+   * zero timeout disarms it if none comes (a release outside the window).
+   */
+  function swallowGestureClick() {
+    const surface = containerRef.current
+    if (!surface) return
+    const doc = surface.ownerDocument
+    const swallow = (ev: MouseEvent) => {
+      const target = ev.target
+      if (target instanceof Node && target !== surface && target.contains(surface)) ev.stopPropagation()
+    }
+    doc.addEventListener('click', swallow, { capture: true, once: true })
+    setTimeout(() => doc.removeEventListener('click', swallow, { capture: true }), 0)
+  }
+
   function modifiersOf(e: MouseEvent): Modifiers {
     return { shift: e.shiftKey, alt: e.altKey, meta: e.metaKey, ctrl: e.ctrlKey }
   }
@@ -1208,6 +1236,7 @@ export default function TimelineCanvas({
       // frozen rect, not the live one the teardown below reverts to.
       const point = surfacePoint(e)
       releaseGestureRef.current?.()
+      swallowGestureClick()
       if (!point) { runEffects(machine.dispatch({ type: 'cancel' })); return }
       runEffects(machine.dispatch({ type: 'pointerUp', point, modifiers: modifiersOf(e), ctx: buildContext() }))
     },
