@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.20.2
+
 - **Fixed (serve, editor): an overlay whose `src` is relative to the project (`overlays/st_spotlight.jsx`, what the Hub template recipe writes) now previews in the editor, as it already rendered.** render.js and sample-frame.js resolve a relative `src` against the project's directory; the preview's `GET /api/overlays/bundle` refused it with `400 path must be an absolute file path`. The route takes an optional `project` (a project id) and resolves a relative `path` against that project's directory; a `..` that climbs out of the project is `403 forbidden`, an unknown project `404`, and a relative path with no project is still `400`. Absolute paths are unchanged, and the allowed-roots checks still run on the resolved path. The editor (`@bycrux/editor` 2.0.3) passes the project id as a new optional trailing argument to the adapter's `compileOverlay(template, projectId?)` and `watchFile(path, onChange, projectId?)` for video overlay items, bound once per project in `OverlayItemsLayer` so nothing recompiles or resubscribes per frame. A host must forward it (`&project=`) for the fix to show. (`serve/routes/overlays.py`, `montaj_assets/editor/src/types.ts`, `montaj_assets/editor/src/video/preview/OverlayItemsLayer.tsx`, `tests/test_overlay_bundle_project_relative.py`, `OverlayItemsLayer.projectRelative.test.tsx`)
 
 ## v5.20.1
