@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.19.2
+
 - **Fixed (render): a sample or render chunk that starts on the frame an overlay first shows an image waits for the image, instead of capturing an empty window.** Each capture waited only for extension-less props URLs fetched on demand. An overlay that mounts an `<img>` from a later frame (pw_screen shows its screenshot once its scene fades in) inserts it on a fresh page (every `sample_frame` and `sample overlay`, and the first frame of every render chunk) in the same commit it captures. An image that loaded slower than two animation frames (a machine under load) came out as an empty white window, and the 24 h sample cache then served that blank again for the same props, so it looked deterministic. Every capture now waits for every `<img>` on the page to load or fail and decode (each once per source; `loading="lazy"` images excepted), capped at 35 s. Past the cap the frame is captured anyway, never failed, the images still loading are logged by path (`[montaj] captured before these images loaded (35 s): ...`), and a sample captured with an image still loading is not cached. `SAMPLE_CACHE_VERSION` is 9, so blank samples already cached are not served again. Pinned by `montaj_assets/render/test/image-load-wait.integration.test.mjs` (a sample, the first frame of a later render chunk, and the cap). (`page-guard.js` `settleImages`, `sample-frame.js`, `renderer.js`)
 
 ## v5.19.1
