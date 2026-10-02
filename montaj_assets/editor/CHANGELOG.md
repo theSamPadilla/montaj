@@ -4,6 +4,10 @@ All notable changes to `@bycrux/editor` are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2.0.4
+
+- **Fixed: a timeline marquee released off the canvas keeps what it caught.** Released past t=0 over the track rail, or below the last lane, the browser's click for that press landed on an ancestor of the canvas and Timeline's background-click handler cleared the new selection. `TimelineCanvas` swallows that one click. No cap on selection size existed. See the root CHANGELOG (Unreleased).
+
 ## 2.0.3
 
 - **Fixed: a project-relative overlay `src` previews.** `OverlayItemsLayer` passes the project id to the adapter's `compileOverlay(template, projectId?)` and `watchFile(path, onChange, projectId?)` for video overlay items (new optional trailing arguments), so the host can resolve `overlays/x.jsx` against the project the way render does. Bound once per project, so a frame change neither recompiles nor resubscribes. See the root CHANGELOG (v5.20.2).
