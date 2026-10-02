@@ -280,7 +280,7 @@ function isImageItem(item) {
  * Where graphics white lands in one HDR compose segment (POSTLAUNCH §47):
  * GRAPHICS_WHITE_NITS (800) when a video clip is visible in the segment, so
  * captions and overlays over footage stay bright against camera HDR, and
- * GRAPHICS_WHITE_NITS_NO_FOOTAGE (203, BT.2408) when none is: an end card, a
+ * GRAPHICS_WHITE_NITS_NO_FOOTAGE (300) when none is: an end card, a
  * title card, a full-screen overlay, or a timeline image or screenshot with no
  * clip at that time, which then match SDR and the editor preview.
  *
@@ -1892,7 +1892,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   const duration = end - start
   const projectColorSpace = segment.colorSpace ?? DEFAULT_COLOR_SPACE
   const spec = specFor(projectColorSpace)
-  // HDR graphics white for this segment: 800 over footage, 203 without (§47).
+  // HDR graphics white for this segment: 800 over footage, 300 without (§47).
   const graphicsWhiteNits = graphicsWhiteNitsFor(segment)
   // Dry-run pins both probes to true so the golden capture never depends on the
   // host's ffmpeg build (see encode-args-golden.test.mjs's determinism note).

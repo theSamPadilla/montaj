@@ -4,7 +4,7 @@
 // often keeps footage running under a full-screen overlay (for the audio and
 // continuity), so "a video clip is in the segment" alone kept such an overlay at
 // 800 nits. An overlay that covers the frame opaquely at some point is a card:
-// it renders at GRAPHICS_WHITE_NITS_NO_FOOTAGE (203) for its whole span, fades
+// it renders at GRAPHICS_WHITE_NITS_NO_FOOTAGE (300) for its whole span, fades
 // included, and overlays and captions stacked above it in a segment follow it.
 // Everything else keeps the per-segment footage rule (graphicsWhiteNitsFor).
 // The pixels are proven in hdr-overlay-color.integration.test.mjs.
@@ -96,7 +96,7 @@ test('markCards probes only full-canvas overlays, only in HDR, once per capture'
   assert.deepEqual(hdr.map((s) => !!s.coversFrame), [true, false, false, true, true], 'the explicit opaque flag is a card without a probe')
 })
 
-test('a card and whatever is stacked above it take 203; overlays below it keep the segment rule', () => {
+test('a card and whatever is stacked above it take the no-footage level; overlays below it keep the segment rule', () => {
   const card = { ...full, coversFrame: true }
   const lower = { ...full, scale: 0.4 }
   const caption = { ...full, isCaption: true }
@@ -105,18 +105,18 @@ test('a card and whatever is stacked above it take 203; overlays below it keep t
   assert.equal(overlayWhiteNits(overlays, 1, GRAPHICS_WHITE_NITS), GRAPHICS_WHITE_NITS_NO_FOOTAGE, 'the card')
   assert.equal(overlayWhiteNits(overlays, 2, GRAPHICS_WHITE_NITS), GRAPHICS_WHITE_NITS_NO_FOOTAGE, 'a caption on the card')
   assert.equal(overlayWhiteNits([lower, caption], 1, GRAPHICS_WHITE_NITS), GRAPHICS_WHITE_NITS, 'no card: footage rule')
-  assert.equal(overlayWhiteNits([lower], 0, GRAPHICS_WHITE_NITS_NO_FOOTAGE), GRAPHICS_WHITE_NITS_NO_FOOTAGE, 'no footage: 203 anyway')
+  assert.equal(overlayWhiteNits([lower], 0, GRAPHICS_WHITE_NITS_NO_FOOTAGE), GRAPHICS_WHITE_NITS_NO_FOOTAGE, 'no footage: the no-footage level anyway')
 })
 
 for (const colorSpace of ['hdr_hlg', 'hdr_pq']) {
-  test(`${colorSpace}: a card over running footage maps at 203, a lower third over the same footage at 800`, async () => {
+  test(`${colorSpace}: a card over running footage maps at the no-footage level, a lower third over the same footage at 800`, async () => {
     const video = { type: 'video', src: '/x/clip.mp4', start: 0, end: 1, trackIdx: 0, colorTransfer: 'bt709', hasAudio: false, muted: true, probedWidth: 640, probedHeight: 360 }
     const lut = (nits) => graphicsLutPath(colorSpace, { write: false, whiteNits: nits }).split('/').pop()
     const graph = async (overlays) => (await encodeSegment({ start: 0, end: 1, vw: 640, vh: 360, fps: 30, colorSpace, items: [video], overlays },
       '/tmp/x.mp4', { _dryRun: true })).filterParts.join(';')
     const withCard = await graph([{ ...full, coversFrame: true }])
-    assert.ok(withCard.includes(lut(203)) && !withCard.includes(lut(800)), 'the card uses the 203-nit LUT')
+    assert.ok(withCard.includes(lut(GRAPHICS_WHITE_NITS_NO_FOOTAGE)) && !withCard.includes(lut(800)), 'the card uses the no-footage LUT')
     const withThird = await graph([{ ...full, scale: 0.4 }])
-    assert.ok(withThird.includes(lut(800)) && !withThird.includes(lut(203)), 'a lower third over footage stays 800')
+    assert.ok(withThird.includes(lut(800)) && !withThird.includes(lut(GRAPHICS_WHITE_NITS_NO_FOOTAGE)), 'a lower third over footage stays 800')
   })
 }

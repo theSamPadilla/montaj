@@ -131,7 +131,7 @@ const SHORT_EDGE_TARGET = 1080
  *    (hdr-graphics.js GRAPHICS_WHITE_NITS). Defensive only: samples composite
  *    in SDR (overlays as sRGB PNGs over footage graded to SDR) and never pass
  *    through hdr-graphics.js, so no cached pixel depended on the HDR white.
- *    The per-segment white (800 over footage, 203 without, POSTLAUNCH §47)
+ *    The per-segment white (800 over footage, 300 without, POSTLAUNCH §47)
  *    needs no bump for the same reason.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no

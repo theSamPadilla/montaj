@@ -27,13 +27,14 @@
  *
  * Graphics with NO FOOTAGE under them (a title card, an end card, a full-screen
  * overlay, a timeline image or screenshot with no clip at that time) take
- * GRAPHICS_WHITE_NITS_NO_FOOTAGE, BT.2408's 203 nits, so they match SDR and the
- * editor preview instead of filling the screen at 800 ("it is SO bright",
- * product owner, 2026-10-02; POSTLAUNCH §47). encode-segment.js decides per
+ * GRAPHICS_WHITE_NITS_NO_FOOTAGE, 300 nits, instead of filling the screen at 800
+ * ("it is SO bright", product owner, 2026-10-02; POSTLAUNCH §47). He picked 300
+ * from 4K renders at 203, 300 and 400: BT.2408's 203 (what SDR clips use) read
+ * too dim next to footage. encode-segment.js decides per
  * compose segment (graphicsWhiteNitsFor); segments already split at every clip
  * boundary, so an overlay that runs from a clip into a footage-less stretch
  * changes level exactly at that frame. A full-screen card (cover-probe.js) is
- * 203 for its whole span even with footage running under it, and what is
+ * at that level for its whole span even with footage running under it, and what is
  * stacked above it follows it (encode-segment.js overlayWhiteNits). Both levels
  * are one mapping with the white as its parameter, each with its own generated
  * LUT.
@@ -63,12 +64,12 @@ import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
 export const GRAPHICS_WHITE_NITS = 800
 
 /**
- * Where sRGB white lands when no video clip is visible under the graphics:
- * BT.2408 reference white, the same value as encode-segment.js and
- * lib/normalize.py's SDR_WHITE_NITS (hdr-graphics-no-footage.test.mjs holds
- * them equal; not imported, since encode-segment.js imports this module).
+ * Where sRGB white lands when no video clip is visible under the graphics, and
+ * on a full-screen card: the product owner's pick, a little above BT.2408's
+ * 203-nit reference white that SDR clips use (encode-segment.js and
+ * lib/normalize.py SDR_WHITE_NITS, deliberately a separate constant).
  */
-export const GRAPHICS_WHITE_NITS_NO_FOOTAGE = 203
+export const GRAPHICS_WHITE_NITS_NO_FOOTAGE = 300
 
 // HLG's nominal display: 1000-nit peak, system gamma 1.2 (BT.2100). Scene
 // light E maps to display light 1000 * E^1.2 for a neutral, so white at
@@ -188,7 +189,7 @@ export function graphicsLutPath(dstKey, { write = true, whiteNits = GRAPHICS_WHI
  * @param {'capture'|'rgb'} opts.input
  * @param {boolean} [opts.write=true]  write the LUT file (false for dry runs)
  * @param {number} [opts.whiteNits=GRAPHICS_WHITE_NITS]  where sRGB white lands
- *   (encode-segment.js graphicsWhiteNitsFor: 800 over footage, 203 without)
+ *   (encode-segment.js graphicsWhiteNitsFor: 800 over footage, 300 without)
  * @returns {string}
  */
 export function graphicsToHdrChain(dstKey, { input, write = true, whiteNits = GRAPHICS_WHITE_NITS }) {

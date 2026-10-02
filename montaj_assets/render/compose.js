@@ -73,7 +73,7 @@ export async function compose({
   const hasAudio = audioTracks.some(t => !t.muted) || (loudness !== undefined && loudness !== null)
 
   // 0. HDR only: mark full-screen cards (cover-probe.js), whose graphics map
-  //    white to 203 nits for their whole span even with footage running under
+  //    white to 300 nits for their whole span even with footage running under
   //    them. Probes only overlays placed over the whole canvas.
   await markCards(puppeteerSegments, { colorSpace: projectColorSpace })
 

@@ -18,14 +18,14 @@
 //      canvas unconverted: white at Y10 940 (the HLG peak) and sRGB colours
 //      read as BT.2020 primaries. Now white is at GRAPHICS_WHITE_NITS over a
 //      clip (800 nits: HLG Y10 910, PQ 701) and at
-//      GRAPHICS_WHITE_NITS_NO_FOOTAGE with no clip under it (203 nits, BT.2408:
-//      HLG Y10 721, PQ 573), decided per segment (POSTLAUNCH §47).
+//      GRAPHICS_WHITE_NITS_NO_FOOTAGE with no clip under it (300 nits:
+//      HLG Y10 776, PQ 609), decided per segment (POSTLAUNCH §47).
 //   2. Alpha. The bottom third catches a conversion that drops the alpha of the
 //      lower rows (zscale does, writing 4:2:0 under slice threading), the
 //      middle third one that makes the graphic opaque.
 //   3. The composite's matrix. With an untagged HDR canvas, `overlay`
 //      re-matrixed a mapped layer whenever no clip sat under it. The
-//      bare-canvas cases now map at 203 nits, so each case is held to its own
+//      bare-canvas cases now map at 300 nits, so each case is held to its own
 //      level's prediction, swatch by swatch, which still catches a re-matrix
 //      (it moved saturated swatches by more than TOL; see encode-segment.js).
 
@@ -68,8 +68,8 @@ const TOL = 4
 // in hdr-graphics.test.mjs and hdr-graphics-no-footage.test.mjs, not from
 // graphicsToHdr: round(64 + 876 * signal).
 const WHITE_Y10 = {
-  hdr_hlg: { [GRAPHICS_WHITE_NITS]: 910, [GRAPHICS_WHITE_NITS_NO_FOOTAGE]: 721 },
-  hdr_pq: { [GRAPHICS_WHITE_NITS]: 701, [GRAPHICS_WHITE_NITS_NO_FOOTAGE]: 573 },
+  hdr_hlg: { [GRAPHICS_WHITE_NITS]: 910, [GRAPHICS_WHITE_NITS_NO_FOOTAGE]: 776 },
+  hdr_pq: { [GRAPHICS_WHITE_NITS]: 701, [GRAPHICS_WHITE_NITS_NO_FOOTAGE]: 609 },
 }
 
 /** graphicsToHdr's R'G'B' at `whiteNits` as limited-range BT.2020 NCL Y'CbCr, 10-bit. */
@@ -201,7 +201,7 @@ function assertMatches(t, label, got, want) {
 }
 
 for (const colorSpace of ['hdr_hlg', 'hdr_pq']) {
-  test(`${colorSpace}: overlays, captions and image items land at 800 nits over a clip and 203 over nothing`,
+  test(`${colorSpace}: overlays, captions and image items land at 800 nits over a clip and 300 over nothing`,
     { timeout: 240_000 }, async (t) => {
       // zscale is the HDR encode's own requirement (an SDR clip's stretch needs it).
       assert.ok(hasZscale(), `${FFMPEG} lacks zscale: point MONTAJ_FFMPEG at the managed build`)
@@ -248,10 +248,10 @@ for (const colorSpace of ['hdr_hlg', 'hdr_pq']) {
 // POSTLAUNCH §47, cards: footage kept running under a full-screen overlay (for
 // its audio) used to keep that overlay at 800 nits. Through the production path
 // (cover-probe.js markCards, then encodeSegment), a fully opaque full-canvas
-// capture over a running clip is a card and lands at the 203-nit mapping; the
+// capture over a running clip is a card and lands at the 300-nit mapping; the
 // same capture left unmarked, as 5.19.4 composed it, lands at 800.
 for (const colorSpace of ['hdr_hlg', 'hdr_pq']) {
-  test(`${colorSpace}: a full-screen card over running footage lands at 203 nits`, { timeout: 240_000 }, async (t) => {
+  test(`${colorSpace}: a full-screen card over running footage lands at 300 nits`, { timeout: 240_000 }, async (t) => {
     assert.ok(hasZscale(), `${FFMPEG} lacks zscale: point MONTAJ_FFMPEG at the managed build`)
     const dir = mkdtempSync(path.join(tmpdir(), 'montaj-hdr-card-'))
     try {
