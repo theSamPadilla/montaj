@@ -298,6 +298,23 @@ export function graphicsWhiteNitsFor(segment) {
   return footage ? GRAPHICS_WHITE_NITS : GRAPHICS_WHITE_NITS_NO_FOOTAGE
 }
 
+/**
+ * Where the overlay at `index` maps white: a full-screen card (cover-probe.js
+ * markCards set `coversFrame`) and every overlay or caption stacked above it
+ * take GRAPHICS_WHITE_NITS_NO_FOOTAGE, since they sit on the card and not on
+ * footage, for the card's whole span. Overlays below the card, and every
+ * overlay in a segment without one, take the segment's level.
+ *
+ * @param {object[]} overlays       the segment's overlays, in compositing order
+ * @param {number}   index
+ * @param {number}   segmentWhiteNits  graphicsWhiteNitsFor(segment)
+ * @returns {number}
+ */
+export function overlayWhiteNits(overlays, index, segmentWhiteNits) {
+  const cardAt = overlays.findIndex((ov) => ov.coversFrame === true)
+  return cardAt !== -1 && index >= cardAt ? GRAPHICS_WHITE_NITS_NO_FOOTAGE : segmentWhiteNits
+}
+
 // Cache the `ffmpeg -filters` listing across calls — a build's filter set can't
 // change mid-process, and both probes below read the same listing so this costs
 // one spawn total, not one per filter. Mirrors the functools.lru_cache on
@@ -2146,12 +2163,13 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   }
 
   // --- Step 3: Overlay + caption inputs (captions already sorted last by planSegments) ---
-  for (const ov of overlays) {
+  for (const [ovPos, ov] of overlays.entries()) {
     const ovIdx = inputIdx
     const { inputArgs, filterParts: fp, newVideoLabel } =
       buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration,
         { fps, captureToBt709: !isHdr(projectColorSpace),
-          captureToHdr: isHdr(projectColorSpace) ? projectColorSpace : null, captureWhiteNits: graphicsWhiteNits,
+          captureToHdr: isHdr(projectColorSpace) ? projectColorSpace : null,
+          captureWhiteNits: overlayWhiteNits(overlays, ovPos, graphicsWhiteNits),
           dryRun: opts._dryRun })
     inputs.push(...inputArgs)
     filterParts.push(...fp)

@@ -32,8 +32,11 @@
  * product owner, 2026-10-02; POSTLAUNCH §47). encode-segment.js decides per
  * compose segment (graphicsWhiteNitsFor); segments already split at every clip
  * boundary, so an overlay that runs from a clip into a footage-less stretch
- * changes level exactly at that frame. Both levels are one mapping with the
- * white as its parameter, each with its own generated LUT.
+ * changes level exactly at that frame. A full-screen card (cover-probe.js) is
+ * 203 for its whole span even with footage running under it, and what is
+ * stacked above it follows it (encode-segment.js overlayWhiteNits). Both levels
+ * are one mapping with the white as its parameter, each with its own generated
+ * LUT.
  *
  * Applied in ffmpeg as a 65-point 3D LUT (tetrahedral) on float RGB: a
  * per-pixel geq is far too slow for every overlay frame. Measured against the

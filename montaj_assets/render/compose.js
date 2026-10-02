@@ -16,6 +16,7 @@ import { dirname, join } from 'path'
 import { randomBytes } from 'crypto'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { planSegments } from './segment-plan.js'
+import { markCards } from './cover-probe.js'
 import { encodeSegment, buildVividLutChain, hasLut3d, twoStageSeek } from './encode-segment.js'
 import { mixAudioIntoVideo } from './mix-audio.js'
 import { pMap } from './p-map.js'
@@ -70,6 +71,11 @@ export async function compose({
   // so the premix/mix machinery below must engage for it exactly as it would
   // for a real audio track.
   const hasAudio = audioTracks.some(t => !t.muted) || (loudness !== undefined && loudness !== null)
+
+  // 0. HDR only: mark full-screen cards (cover-probe.js), whose graphics map
+  //    white to 203 nits for their whole span even with footage running under
+  //    them. Probes only overlays placed over the whole canvas.
+  await markCards(puppeteerSegments, { colorSpace: projectColorSpace })
 
   // 1. Plan segments — merge video + image items
   const allItems = [...imageItems, ...videoItems]

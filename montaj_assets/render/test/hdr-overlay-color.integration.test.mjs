@@ -37,6 +37,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { FFMPEG } from '../ffmpeg-bin.js'
 import { encodeSegment, hasZscale } from '../encode-segment.js'
+import { markCards } from '../cover-probe.js'
 import { graphicsToHdr, GRAPHICS_WHITE_NITS, GRAPHICS_WHITE_NITS_NO_FOOTAGE } from '../hdr-graphics.js'
 
 const SWATCHES = [
@@ -101,10 +102,18 @@ function swatchPng(dir) {
   return png
 }
 
+/** The swatches over the whole frame, fully opaque: a full-screen card. */
+function cardPng(dir) {
+  const raw = rawFrame(path.join(dir, 'card.rgba'), 4, (x) => [...swatchAt(x), 255])
+  const png = path.join(dir, 'card.png')
+  ff(['-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${W}x${H}`, '-i', raw, '-frames:v', '1', '-update', '1', png])
+  return png
+}
+
 /** renderer.js's capture of that PNG: RGBA PNG frames → ffv1 yuva420p in matroska, untagged. */
-function captureOf(dir, png) {
+function captureOf(dir, png, name = 'ov') {
   for (const n of [1, 2, 3]) copyFileSync(png, path.join(dir, `frame-00000${n}.png`))
-  const mkv = path.join(dir, 'ov.mkv')
+  const mkv = path.join(dir, `${name}.mkv`)
   ff(['-framerate', String(FPS), '-i', path.join(dir, 'frame-%06d.png'),
     '-c:v', 'ffv1', '-g', '1', '-pix_fmt', 'yuva420p', '-f', 'matroska', mkv])
   return mkv
@@ -234,4 +243,36 @@ for (const colorSpace of ['hdr_hlg', 'hdr_pq']) {
         rmSync(dir, { recursive: true, force: true })
       }
     })
+}
+
+// POSTLAUNCH §47, cards: footage kept running under a full-screen overlay (for
+// its audio) used to keep that overlay at 800 nits. Through the production path
+// (cover-probe.js markCards, then encodeSegment), a fully opaque full-canvas
+// capture over a running clip is a card and lands at the 203-nit mapping; the
+// same capture left unmarked, as 5.19.4 composed it, lands at 800.
+for (const colorSpace of ['hdr_hlg', 'hdr_pq']) {
+  test(`${colorSpace}: a full-screen card over running footage lands at 203 nits`, { timeout: 240_000 }, async (t) => {
+    assert.ok(hasZscale(), `${FFMPEG} lacks zscale: point MONTAJ_FFMPEG at the managed build`)
+    const dir = mkdtempSync(path.join(tmpdir(), 'montaj-hdr-card-'))
+    try {
+      const capture = captureOf(dir, cardPng(dir), 'card')
+      const clip = [videoItem(hlgClip(dir), 'arib-std-b67')]
+      const card = overlayOf(capture)
+      await markCards([card], { colorSpace })
+      assert.equal(card.coversFrame, true, 'the probe finds the capture fully opaque over the whole canvas')
+      const out = await encode(dir, colorSpace, clip, [card])
+      const want = SWATCHES.map((s) => predicted(s.rgb, colorSpace, GRAPHICS_WHITE_NITS_NO_FOOTAGE))
+      for (const row of [0, 1, 2]) assertMatches(t, `card, row ${row}`, codes(out, row), want)
+      const white = codes(out, 1)[0].y
+      const whiteWant = WHITE_Y10[colorSpace][GRAPHICS_WHITE_NITS_NO_FOOTAGE]
+      assert.ok(Math.abs(white - whiteWant) <= TOL, `card white Y10 ${white.toFixed(1)}, want ${whiteWant}`)
+
+      const unmarked = await encode(dir, colorSpace, clip, [overlayOf(capture)])
+      const at800 = codes(unmarked, 1)[0].y
+      t.diagnostic(`card white: marked ${white.toFixed(1)}, unmarked (5.19.4) ${at800.toFixed(1)}`)
+      assert.ok(Math.abs(at800 - WHITE_Y10[colorSpace][GRAPHICS_WHITE_NITS]) <= TOL, `unmarked white ${at800.toFixed(1)} is the 800-nit code`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 }

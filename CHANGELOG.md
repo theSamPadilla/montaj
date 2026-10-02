@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (render): full-screen overlays over running footage are cards, at 203 nits, in HDR projects.** A film often keeps footage running under a full-screen overlay for its audio, so 5.19.4's "no footage under it" rule never applied there and the overlay stayed at 800. An overlay placed over the whole canvas whose capture is fully opaque on at least one frame (or that sets `opaque: true`) is now a card: it maps white to 203 nits for its whole span, its fades included, so the level never steps at a clip cut hidden under it. Overlays and captions stacked above a card follow it; a caption that runs past the card's end steps from 203 to 800 at that boundary, where the cut is visible. Lower thirds and anything scaled, moved, rotated, translucent or keyframed keep the footage rule (800 over footage). The capture is probed once (`render/cover-probe.js`), only in HDR and only for full-canvas overlays, so SDR and card-free renders do no extra work.
+
 ## v5.19.4
 
 - **Changed (render): in HDR projects, graphics with no footage under them use SDR reference white (203 nits).** A title card, an end card, a full-screen overlay, or a timeline image or screenshot with no video clip at that time now maps sRGB white to BT.2408's 203 nits (HLG Y10 721, PQ 573), so it matches SDR and the editor preview instead of filling the screen at 800. Captions, overlays and images over footage keep 800 nits. Decided per compose segment (`graphicsWhiteNitsFor` in `render/encode-segment.js`), which already splits at every clip boundary, so an overlay that runs from a clip into a footage-less stretch changes level at that frame. Both levels come from the one mapping in `render/hdr-graphics.js`, each with its own generated LUT.
