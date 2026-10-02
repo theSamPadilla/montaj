@@ -446,10 +446,12 @@ interface OverlayItemsLayerProps {
   liveRotation: ReturnType<typeof useDragOverlay>['liveRotation']
   snapGuides: ReturnType<typeof useDragOverlay>['snapGuides']
   snapRotation: ReturnType<typeof useDragOverlay>['snapRotation']
-  // Adapter-injected overlay capabilities
-  compileOverlay: (src: string) => Promise<OverlayFactory>
+  // Adapter-injected overlay capabilities. Both take the project id, so a
+  // project-relative overlay `src` resolves against this project's directory,
+  // as render resolves it.
+  compileOverlay: (src: string, projectId?: string) => Promise<OverlayFactory>
   clearOverlayCache?: (src?: string) => void
-  watchFile?: (path: string, onChange: () => void) => () => void
+  watchFile?: (path: string, onChange: () => void, projectId?: string) => () => void
   fileUrl: (path: string) => string
 }
 
@@ -478,6 +480,18 @@ export default function OverlayItemsLayer({
   fileUrl,
 }: OverlayItemsLayerProps) {
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
+  // An overlay `src` may be relative to the project (`overlays/x.jsx`). Bound
+  // here, once per project, so the children keep a stable function and do not
+  // recompile or resubscribe on every frame.
+  const projectId = project.id
+  const compileProjectOverlay = useCallback(
+    (src: string) => compileOverlay(src, projectId),
+    [compileOverlay, projectId],
+  )
+  const watchProjectFile = useMemo(
+    () => watchFile && ((path: string, onChange: () => void) => watchFile(path, onChange, projectId)),
+    [watchFile, projectId],
+  )
   // SP3 fix B2: re-render trigger for proxy decode failures — marking a proxy
   // failed flips isProxyUsable() below, swapping the overlay video back to its
   // master src on the forced re-render.
@@ -902,7 +916,7 @@ export default function OverlayItemsLayer({
                   <OverlayErrorBoundary
                     label={item.src.split('/').pop() ?? item.src}
                     watchPath={item.src}
-                    watchFile={watchFile}
+                    watchFile={watchProjectFile}
                   >
                     <CustomOverlay
                       src={item.src}
@@ -911,9 +925,9 @@ export default function OverlayItemsLayer({
                       fps={fps}
                       durationFrames={durationFrames}
                       googleFonts={item.googleFonts}
-                      compileOverlay={compileOverlay}
+                      compileOverlay={compileProjectOverlay}
                       clearOverlayCache={clearOverlayCache}
-                      watchFile={watchFile}
+                      watchFile={watchProjectFile}
                       fileUrl={fileUrl}
                     />
                   </OverlayErrorBoundary>

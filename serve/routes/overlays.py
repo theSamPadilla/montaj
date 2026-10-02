@@ -6,6 +6,7 @@ overlay-scoped (not profile-scoped) so they share scan_overlays.
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import sys
@@ -22,6 +23,7 @@ from serve.common import (
     _is_under,
     bad_request,
     forbidden,
+    get_project_dir,
     not_found,
     resolve_workspace,
     server_error,
@@ -199,18 +201,31 @@ def _watcher_spelling(real: Path) -> str:
 
 
 @router.get("/overlays/bundle")
-async def bundle_overlay(path: str = Query(default="")):
+async def bundle_overlay(path: str = Query(default=""), project: str = Query(default="")):
     """Bundle one overlay (and what it imports) for the editor preview.
 
     Runs montaj_assets/render/preview-bundle.js and returns {code, inputs}.
-    Errors: 400 bad_request (missing/relative path), 404 not_found, 403
-    forbidden (entry outside the allowed roots) or import_outside_roots (an
-    input outside them), 422 build_failed (esbuild message), 504
-    bundle_timeout (node exceeded 30 s; the child is killed), 500 otherwise.
+    `path` is absolute, or relative to the directory of `project` (a project
+    id), the way render.js and sample-frame.js resolve an overlay item's `src`.
+    Errors: 400 bad_request (missing path, or relative with no project), 404
+    not_found (no such file or project), 403 forbidden (a relative path
+    climbing out of the project, or an entry outside the allowed roots) or
+    import_outside_roots (an input outside them), 422 build_failed (esbuild
+    message), 504 bundle_timeout (node exceeded 30 s; the child is killed), 500
+    otherwise.
     """
-    if not path or not Path(path).is_absolute():
+    if not path:
         raise bad_request("bad_request", "path must be an absolute file path")
     entry = Path(path)
+    if not entry.is_absolute():
+        if not project:
+            raise bad_request("bad_request", "path must be an absolute file path")
+        project_dir = get_project_dir(project)
+        # Lexical, so `..` cannot climb out; a symlink inside the project is
+        # still judged by where it points, by the allowed-roots check below.
+        entry = Path(os.path.normpath(project_dir / path))
+        if not _is_under(entry, Path(os.path.normpath(project_dir))):
+            raise forbidden("forbidden", f"Path escapes the project: {path}")
     if not entry.is_file():
         raise not_found("not_found", f"File not found: {path}")
 

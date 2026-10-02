@@ -693,8 +693,12 @@ export interface EditorAdapter<P extends Project = Project> {
    * strategy, caching) is host-specific. The editor-core preview component
    * receives it as a prop; nothing inside editor-core imports the host's
    * compiler directly.
+   *
+   * `projectId` is passed for a video overlay item: its `src` may be relative
+   * to that project's directory (`overlays/x.jsx`), which is how render
+   * resolves it. An absolute `template` ignores it.
    */
-  compileOverlay(template: string): Promise<OverlayFactory>
+  compileOverlay(template: string, projectId?: string): Promise<OverlayFactory>
 
   /**
    * List the host's global (workspace-wide) overlay templates. The assembled
@@ -749,8 +753,10 @@ export interface EditorAdapter<P extends Project = Project> {
    * to auto-recover an overlay preview when its source is edited on disk. Hosts
    * without a file-watch transport omit this; the editor simply doesn't watch
    * (no fallback EventSource). Montaj wires this to its `/api/files/stream` SSE.
+   * `projectId` is passed with a video overlay item's `src`, which may be
+   * relative to that project (see `compileOverlay`).
    */
-  watchFile?(path: string, onChange: () => void): () => void
+  watchFile?(path: string, onChange: () => void, projectId?: string): () => void
 
   /**
    * Optional: resolve the host's default "static text" overlay template — the
