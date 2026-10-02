@@ -679,6 +679,33 @@ export declare function isFullFrameCrop(
   crop: { x: number; y: number; w: number; h: number } | null | undefined,
 ): boolean
 
+/** The fields {@link isFullCanvasPlacement} reads. */
+export interface PlacementFields {
+  scale?: number | null
+  scaleX?: number | null
+  scaleY?: number | null
+  offsetX?: number | null
+  offsetY?: number | null
+  rotation?: number | null
+  keyframes?: ReadonlyArray<{ prop?: string }> | null
+}
+
+/**
+ * Whether an item is placed over the whole canvas: scale 1 on both axes, no
+ * offset, no rotation, and no keyframe track other than `opacity` (a fade
+ * leaves the item where it is). The one placement rule both engines read.
+ */
+export declare function isFullCanvasPlacement(item: PlacementFields | null | undefined): boolean
+
+/**
+ * Whether an overlay's `opaque: true` replaces the picture beneath it: only
+ * when it is also placed over the whole canvas. A scaled, moved or rotated
+ * opaque overlay leaves the footage drawn, in preview and export alike.
+ */
+export declare function opaqueReplacesPicture(
+  item: (PlacementFields & { opaque?: unknown }) | null | undefined,
+): boolean
+
 /**
  * The 1080-short-edge overlay design canvas. Verbatim port of
  * `design-canvas.ts:5-11`, confirmed algebraically identical to

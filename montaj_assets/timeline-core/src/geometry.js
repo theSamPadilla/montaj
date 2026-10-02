@@ -780,6 +780,45 @@ export function isFullFrameCrop(crop) {
 }
 
 /**
+ * Whether an item is placed over the whole canvas: scale 1 on both axes, no
+ * offset, no rotation, and no keyframe track that moves it. An `opacity` track
+ * does not move it: the editor derives one for the incoming side of every
+ * overlay crossfade, and a fade leaves the item where it is. Any other track
+ * (a placement prop, a crop, or one naming nothing) does.
+ *
+ * The one placement rule both engines read, through {@link opaqueReplacesPicture}
+ * and render's cover-probe.js.
+ *
+ * @param {{scale?: number|null, scaleX?: number|null, scaleY?: number|null,
+ *   offsetX?: number|null, offsetY?: number|null, rotation?: number|null,
+ *   keyframes?: ReadonlyArray<{prop?: string}>|null} | null | undefined} item
+ * @returns {boolean}
+ */
+export function isFullCanvasPlacement(item) {
+  if (!item) return false
+  if (Array.isArray(item.keyframes) && item.keyframes.some((track) => track?.prop !== 'opacity')) return false
+  const one = (/** @type {unknown} */ v) => v === undefined || v === null || v === 1
+  const zero = (/** @type {unknown} */ v) => v === undefined || v === null || v === 0
+  return one(item.scale) && one(item.scaleX) && one(item.scaleY)
+    && zero(item.offsetX) && zero(item.offsetY) && zero(item.rotation)
+}
+
+/**
+ * Whether an overlay's `opaque: true` replaces the picture beneath it. Only over
+ * the whole canvas ({@link isFullCanvasPlacement}): a scaled, moved or rotated
+ * overlay cannot cover the frame, so the footage around it stays drawn and the
+ * overlay composites like any other. The editor's scheduler, render's segment
+ * planner and spec collector, and sample-frame.js all read this, so preview and
+ * export agree about when the footage goes black.
+ *
+ * @param {{opaque?: unknown} & Parameters<typeof isFullCanvasPlacement>[0]} item
+ * @returns {boolean}
+ */
+export function opaqueReplacesPicture(item) {
+  return item?.opaque === true && isFullCanvasPlacement(item)
+}
+
+/**
  * The 1080-short-edge overlay design canvas. Verbatim port of
  * design-canvas.ts:5-11 (`getOverlayDesignCanvas`), confirmed algebraically
  * identical to render.js:263-269's inline copy — see the module header.

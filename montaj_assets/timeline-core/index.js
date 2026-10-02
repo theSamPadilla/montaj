@@ -33,8 +33,9 @@ export * from './src/durations.js'
 // SP9b's geometryAt (its animated sibling: the same geometry AT an instant,
 // and the ONE function both engines call to place a keyframed item),
 // toCssBoxPct / toPixelBox (its two engine-specific adapters), isFullFrameCrop
-// (the (0,0,1,1) preview short-circuit predicate), designCanvas (the
-// 1080-short-edge overlay design canvas rule) (absorbs:
+// (the (0,0,1,1) preview short-circuit predicate), isFullCanvasPlacement /
+// opaqueReplacesPicture (when an opaque overlay hides the footage), designCanvas
+// (the 1080-short-edge overlay design canvas rule) (absorbs:
 // transformStyle.ts, encode-segment.js:245/305/457, sourceCropStyle.ts:35,
 // design-canvas.ts:5-11).
 export * from './src/geometry.js'

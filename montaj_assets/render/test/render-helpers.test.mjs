@@ -497,6 +497,27 @@ test('collectPuppeteerSegments: overlay geometry (incl. opacity and keyframes) r
   assert.equal('keyframes' in c, false)
 })
 
+test('collectPuppeteerSegments: opaque reaches the spec only for an overlay over the whole canvas', () => {
+  // The spec's `opaque` picks the capture (no alpha, page background kept),
+  // marks an HDR card and gates the footage. A scaled photo marked opaque
+  // composites over the footage like any other overlay, so it needs alpha.
+  const project = {
+    tracks: [
+      [],
+      [
+        { id: 'photo', type: 'overlay', src: '/abs/a.jsx', start: 0, end: 2, opaque: true, scale: 0.38 },
+        { id: 'card', type: 'overlay', src: '/abs/b.jsx', start: 2, end: 4, opaque: true },
+        { id: 'plain', type: 'overlay', src: '/abs/c.jsx', start: 4, end: 6 },
+      ],
+    ],
+    settings: { fps: 30 },
+  }
+  const [photo, card, plain] = collectPuppeteerSegments(project, 30, 1080, 1920, '/tmp/seg')
+  assert.equal(photo.opaque, false, 'a scaled opaque overlay is captured with alpha')
+  assert.equal(card.opaque, true, 'a full-canvas opaque overlay keeps the opaque capture')
+  assert.equal(plain.opaque, false)
+})
+
 test('collectPuppeteerSegments: clean-style captions with no fontFamily still default to Figtree', () => {
   const project = {
     tracks: [

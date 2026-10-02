@@ -26,7 +26,7 @@ import { pMap }                           from './p-map.js'
 import { fileHasAudio, probeVideoGeometry } from './encode-segment.js'
 import { probeColorTransfer }             from './derive-sdr.js'
 import { sdrLayerFor, gradeKeyFor, probeMedia, defaultDeps } from './sdr-layer.js'
-import { sourceWindow, transitionPairs }  from '@bycrux/timeline-core'
+import { sourceWindow, transitionPairs, opaqueReplacesPicture } from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
 import { resolveMotionBlur }              from './motion-blur.js'
 import { loudnessFilter }                 from './mix-audio.js'
@@ -1143,7 +1143,12 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
           scaleY:        item.scaleY,
           rotation:      item.rotation ?? 0,
           opacity:       item.opacity ?? 1,
-          opaque:        item.opaque  ?? false,
+          // Opaque only over the whole canvas (`opaqueReplacesPicture`, shared
+          // with the editor). This flag picks the capture (no alpha, page
+          // background kept), marks an HDR card and gates the footage, so a
+          // scaled photo marked opaque must read false here: it composites over
+          // the footage like any other overlay and needs its alpha.
+          opaque:        opaqueReplacesPicture(item),
           googleFonts:   item.googleFonts ?? [],
           // Keyframes drive BOTH ends of the render: bundleComponent bakes the
           // animated transform into the capture, and buildOverlayFilterParts

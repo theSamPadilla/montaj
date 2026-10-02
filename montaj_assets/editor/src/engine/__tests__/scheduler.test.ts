@@ -686,6 +686,31 @@ describe('planTick', () => {
     expect(plan.canvas).toBe(false)
   })
 
+  it('keeps the footage under an opaque overlay that does not cover the canvas', () => {
+    // Regression (app 1.0.7): a photo at scale 0.38 marked opaque blacked out
+    // the footage around it. Opaque replaces the picture only over the whole
+    // canvas, the rule render uses (`opaqueReplacesPicture`).
+    const scaled = { ...overlay('o', 1, 4, true), scale: 0.38 }
+    const moved = { ...overlay('o', 1, 4, true), offsetX: 12 }
+    const rotated = { ...overlay('o', 1, 4, true), rotation: 5 }
+    for (const ov of [scaled, moved, rotated]) {
+      const p = project([clip('a', 0, 5)], [ov])
+      expect(planTick(p, 1.5, track0VideoItems(p)).opaque).toBe(false)
+    }
+  })
+
+  it('still suppresses the footage under a full-canvas opaque overlay, a fade included', () => {
+    const fading: VisualItem = {
+      ...overlay('o', 1, 4, true),
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+      keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 0.5, value: 1 }] }],
+    }
+    const p = project([clip('a', 0, 5)], [fading])
+    expect(planTick(p, 1.5, track0VideoItems(p)).opaque).toBe(true)
+  })
+
   it('returns no active clip inside a gap (resolveAt has no last-clip fallback)', () => {
     const p = project([clip('a', 0, 2), clip('b', 3, 5)])
     const plan = planTick(p, 2.5, track0VideoItems(p))
@@ -1209,6 +1234,21 @@ describe('transition: opaque toggle mid-play', () => {
     step(h, 1.25)
     expect(h.scheduler.status().clock).toBe('audio')
     expect(h.host.sessions.get('a')!.clock.playing).toBe(true)
+  })
+})
+
+describe('a scaled opaque overlay', () => {
+  it('leaves the picture on video and paints the frame', () => {
+    const p = project([clip('a', 0, 4)], [{ ...overlay('o', 1, 2, true), scale: 0.38 }])
+    const h = harness(p)
+    h.scheduler.play()
+    step(h, 0.5)
+    h.host.server('a').supply = (us) => fakeFrame(us)
+
+    // Inside the overlay's span: the frame is painted, not pulled and closed.
+    step(h, 1.25)
+    expect(h.scheduler.status().picture).toBe('video')
+    expect(h.painter.paints).toHaveLength(1)
   })
 })
 

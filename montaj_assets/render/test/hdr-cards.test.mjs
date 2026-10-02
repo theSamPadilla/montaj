@@ -16,15 +16,15 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { FFMPEG } from '../ffmpeg-bin.js'
-import { isFullCanvasPlacement, captureHasOpaqueFrame, markCards } from '../cover-probe.js'
+import { isCardPlacement, captureHasOpaqueFrame, markCards } from '../cover-probe.js'
 import { encodeSegment, overlayWhiteNits } from '../encode-segment.js'
 import { graphicsLutPath, GRAPHICS_WHITE_NITS, GRAPHICS_WHITE_NITS_NO_FOOTAGE } from '../hdr-graphics.js'
 
 const full = { webmPath: '/x/ov.mkv', startSeconds: 0, endSeconds: 1, isCaption: false, scale: 1, offsetX: 0, offsetY: 0, rotation: 0, opacity: 1 }
 
 test('only an overlay placed over the whole canvas can be a card', () => {
-  assert.equal(isFullCanvasPlacement(full), true)
-  assert.equal(isFullCanvasPlacement({ ...full, scale: undefined, rotation: undefined, opacity: undefined }), true, 'defaults are full canvas')
+  assert.equal(isCardPlacement(full), true)
+  assert.equal(isCardPlacement({ ...full, scale: undefined, rotation: undefined, opacity: undefined }), true, 'defaults are full canvas')
   for (const [why, ov] of [
     ['scaled down', { ...full, scale: 0.5 }],
     ['scaled on one axis', { ...full, scaleX: 0.8 }],
@@ -34,7 +34,7 @@ test('only an overlay placed over the whole canvas can be a card', () => {
     ['translucent', { ...full, opacity: 0.6 }],
     ['keyframed', { ...full, keyframes: [{ t: 0 }] }],
     ['a caption', { ...full, isCaption: true }],
-  ]) assert.equal(isFullCanvasPlacement(ov), false, why)
+  ]) assert.equal(isCardPlacement(ov), false, why)
 })
 
 const W = 64, H = 36, FPS = 30

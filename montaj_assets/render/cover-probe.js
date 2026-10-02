@@ -20,17 +20,21 @@
  * stops at the first fully opaque frame.
  */
 import { spawn } from 'node:child_process'
+import { isFullCanvasPlacement } from '@bycrux/timeline-core'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { isHdr } from './color-space.js'
 
-/** True when the overlay is drawn over the whole canvas exactly as captured. */
-export function isFullCanvasPlacement(ov) {
+/**
+ * True when the overlay is drawn over the whole canvas exactly as captured: the
+ * shared placement rule (timeline-core's `isFullCanvasPlacement`, which `opaque`
+ * reads too), and on top of it no caption, no static opacity below 1 and no
+ * keyframes at all, since an opacity track changes what the composite shows.
+ */
+export function isCardPlacement(ov) {
   if (ov.isCaption) return false
   if (ov.keyframes?.length) return false
   const one = (v) => v === undefined || v === null || v === 1
-  const zero = (v) => v === undefined || v === null || v === 0
-  return one(ov.scale) && one(ov.scaleX) && one(ov.scaleY) && one(ov.opacity)
-    && zero(ov.offsetX) && zero(ov.offsetY) && zero(ov.rotation)
+  return one(ov.opacity) && isFullCanvasPlacement(ov)
 }
 
 /**
@@ -78,11 +82,11 @@ export async function markCards(puppeteerSegs, { colorSpace, probe = captureHasO
   const results = new Map()
   for (const seg of puppeteerSegs) {
     if (seg.opaque === true) { seg.coversFrame = true; continue }
-    if (!isFullCanvasPlacement(seg)) continue
+    if (!isCardPlacement(seg)) continue
     if (!results.has(seg.webmPath)) results.set(seg.webmPath, probe(seg.webmPath))
   }
   for (const seg of puppeteerSegs) {
-    if (seg.opaque === true || !results.has(seg.webmPath) || !isFullCanvasPlacement(seg)) continue
+    if (seg.opaque === true || !results.has(seg.webmPath) || !isCardPlacement(seg)) continue
     if (await results.get(seg.webmPath)) seg.coversFrame = true
   }
 }

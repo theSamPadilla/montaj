@@ -81,8 +81,10 @@ path still diverges.**
 An overlay item's `opaque: true` means "this overlay replaces the picture
 underneath, but the underlying item's audio must still be heard" — the doc
 comment at `segment-plan.js:9-12` states this explicitly. Render honors it:
-`planSegments` computes `opaqueVideo = overlays.some(o => o.opaque)` per
-segment, and `encode-segment.js` Step 2 skips VIDEO compositing for every item
+`planSegments` computes `opaqueVideo = overlays.some(o => opaqueReplacesPicture(o))`
+per segment (`opaque: true` AND placed over the whole canvas, see
+`src/geometry.js`; a scaled, moved or rotated opaque overlay leaves the footage
+drawn), and `encode-segment.js` Step 2 skips VIDEO compositing for every item
 in an opaque segment while still extracting its audio (Step 2's `if
 (!item.muted && ...)` audio branch runs unconditionally regardless of
 `opaqueVideo`).
@@ -90,8 +92,7 @@ in an opaque segment while still extracting its audio (Step 2's `if
 **SP4's WebCodecs engine unifies preview onto RENDER semantics, by
 construction, now that there is a compositing stage to make the choice in.**
 `engine/scheduler.ts`'s `planTick` sets `TickPlan.opaque` from any active
-OVERLAY item's `item.opaque === true` (matching render's `overlays.some(o =>
-o.opaque)`), and `SchedulerImpl.apply`'s picture-selection step (§4) sets
+OVERLAY item through the same `opaqueReplacesPicture` render reads, and `SchedulerImpl.apply`'s picture-selection step (§4) sets
 `picture = 'opaque'` when `plan.opaque` is true — the canvas paints black
 (`pullFrame` still PULLS the frame off the active clip's decoder to keep the
 buffer from stalling, then closes it unpainted) while the clip's audio, and the

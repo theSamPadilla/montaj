@@ -48,7 +48,7 @@ import {
   hasLut3d,
   SEEK_PREROLL_S,
 } from './encode-segment.js'
-import { resolveAt, sourceWindow, RESOLVER_VERSION } from '@bycrux/timeline-core'
+import { resolveAt, sourceWindow, opaqueReplacesPicture, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 
 /**
@@ -133,6 +133,9 @@ const SHORT_EDGE_TARGET = 1080
  *    through hdr-graphics.js, so no cached pixel depended on the HDR white.
  *    The per-segment white (800 over footage, 300 without, POSTLAUNCH §47)
  *    needs no bump for the same reason.
+ * 11: an opaque overlay hides the footage only when it covers the whole canvas
+ *    (timeline-core `opaqueReplacesPicture`). A frame cached before holds black
+ *    around a scaled one.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -140,7 +143,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 10
+const SAMPLE_CACHE_VERSION = 11
 
 // ---------------------------------------------------------------------------
 // Input manifests
@@ -821,7 +824,9 @@ export async function sampleFrame({
   // their AUDIO still reaches the mix — irrelevant for a still frame, so the
   // analogue here is simpler: don't composite ANY video/image item while an
   // opaque overlay is active. See KNOWN-DIVERGENCES.md "opaque-in-preview".
-  const hasOpaque = overlayItems.some(ri => ri.item.opaque)
+  // Only one over the whole canvas counts (`opaqueReplacesPicture`, the rule
+  // export and the editor read): a scaled one leaves the footage drawn.
+  const hasOpaque = overlayItems.some(ri => opaqueReplacesPicture(ri.item))
 
   log(`active items: ${videoCount} video, ${imageCount} image` +
       `${hasOpaque ? ' (hidden by opaque overlay)' : ''}, ${overlayItems.length} overlay`)

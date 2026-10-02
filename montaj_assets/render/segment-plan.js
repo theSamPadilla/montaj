@@ -6,7 +6,8 @@
  * Each segment carries:
  *   - items: ALL active visual items sorted ascending by trackIdx (lower = further back).
  *     The encoder composites them in order. Empty array = black canvas.
- *   - opaqueVideo: true when an opaque overlay covers this segment's frame. The
+ *   - opaqueVideo: true when an opaque overlay covers this segment's frame (an
+ *     opaque overlay placed over the whole canvas; a scaled one covers nothing). The
  *     encoder then skips compositing the items' VIDEO (the overlay replaces the
  *     frame) but still sources their AUDIO — opaque means "replace the picture",
  *     never "drop the voiceover". Items are kept precisely so their audio survives.
@@ -53,7 +54,7 @@
  *      because `collectAllItems` (render.js:597) stamps `trackIdx` on every
  *      item it emits.
  */
-import { boundariesFrom, activeIn, captionsLast, byTrackIdx } from '@bycrux/timeline-core'
+import { boundariesFrom, activeIn, captionsLast, byTrackIdx, opaqueReplacesPicture } from '@bycrux/timeline-core'
 
 /**
  * Puppeteer overlay segments name their endpoints `startSeconds`/`endSeconds`
@@ -153,7 +154,11 @@ export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
     // KEPT so the encoder can still source their audio (the voiceover under a
     // full-screen animation). The opaqueVideo flag tells the encoder to skip the
     // items' video compositing only. See encode-segment.js Step 2.
-    const hasOpaque = overlays.some(o => o.opaque)
+    //
+    // Only an opaque overlay over the WHOLE canvas replaces the frame
+    // (`opaqueReplacesPicture`, the rule the editor's scheduler reads too). A
+    // scaled or moved one cannot cover it, so the footage around it stays.
+    const hasOpaque = overlays.some(o => opaqueReplacesPicture(o))
 
     segments.push({
       start,

@@ -77,6 +77,7 @@
 import {
   geometryAt,
   hasCropKeyframes,
+  opaqueReplacesPicture,
   projectEnd as timelineProjectEnd,
   resolveAt,
   sourceWindow,
@@ -662,9 +663,11 @@ export const previewResolver: SceneResolver = (project, t) =>
  *    (`segment-plan.js`'s stable trackIdx sort over document order, then
  *    `encode-segment.js`'s overlay chain), so preview showed the outgoing clip
  *    across a window where the export showed the incoming one.
- *  - **`opaque`** is read off any active OVERLAY item on any track, matching
- *    render's `overlays.some(o => o.opaque)` (`segment-plan.js`). Track-0
- *    videos and images never carry it.
+ *  - **`opaque`** is read off any active OVERLAY item on any track through
+ *    timeline-core's `opaqueReplacesPicture`, the rule render's
+ *    `segment-plan.js` reads: `opaque: true` AND placed over the whole canvas.
+ *    A scaled, moved or rotated opaque overlay leaves the footage drawn.
+ *    Track-0 videos and images never carry it.
  */
 export function planTick(
   project: Project,
@@ -681,7 +684,7 @@ export function planTick(
   const incoming: Array<{ clipId: string; p: number }> = []
   let opaque = false
   for (const resolved of scene.items) {
-    if (resolved.kind === 'overlay' && resolved.item.opaque === true) opaque = true
+    if (resolved.kind === 'overlay' && opaqueReplacesPicture(resolved.item)) opaque = true
     if (resolved.trackIdx !== 0 || resolved.kind !== 'video' || !resolved.window) continue
     // `ResolvedItem.item` is the project's own object by reference (documented
     // in timeline-core's `ResolvedItem`), so this recovers the editor-side

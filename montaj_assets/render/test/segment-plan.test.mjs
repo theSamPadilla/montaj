@@ -70,6 +70,37 @@ test('planSegments: opaque overlay keeps items (for audio) and flags opaqueVideo
   assert.equal(segs[1].opaqueVideo, false, 'uncovered segment is not opaqueVideo')
 })
 
+test('planSegments: an opaque overlay that does not cover the canvas keeps the footage drawn', () => {
+  // Regression (app 1.0.7): a photo at scale 0.38 marked opaque blacked out the
+  // footage around it. Opaque replaces the picture only over the whole canvas.
+  const items = [
+    { id: 'c1', type: 'video', start: 0, end: 10, src: '/a.mp4', inPoint: 0, outPoint: 10, trackIdx: 0 },
+  ]
+  const ov = { startSeconds: 0, endSeconds: 3, webmPath: '/ov.mkv', opaque: true, isCaption: false, offsetX: 0, offsetY: 0, rotation: 0, opacity: 1 }
+  for (const [why, geo] of [
+    ['scaled', { scale: 0.38 }],
+    ['moved', { scale: 1, offsetX: 12 }],
+    ['rotated', { scale: 1, rotation: 5 }],
+    ['moved by a keyframe', { scale: 1, keyframes: [{ prop: 'offsetY', points: [{ t: 0, value: 0 }, { t: 1, value: 20 }] }] }],
+  ]) {
+    const segs = planSegments(items, [{ id: 'ov1', ...ov, ...geo }], 1920, 1080, 30)
+    assert.equal(segs[0].opaqueVideo, false, `${why}: footage stays drawn`)
+    assert.equal(segs[0].items.length, 1)
+  }
+})
+
+test('planSegments: a full-canvas opaque overlay still replaces the picture, opacity keyframes included', () => {
+  const items = [
+    { id: 'c1', type: 'video', start: 0, end: 10, src: '/a.mp4', inPoint: 0, outPoint: 10, trackIdx: 0 },
+  ]
+  const ov = { id: 'ov1', startSeconds: 0, endSeconds: 3, webmPath: '/ov.mkv', opaque: true, isCaption: false, scale: 1, offsetX: 0, offsetY: 0, rotation: 0, opacity: 1 }
+  assert.equal(planSegments(items, [ov], 1920, 1080, 30)[0].opaqueVideo, true)
+  // The editor derives an opacity track for the incoming side of a crossfade;
+  // a fade does not move the overlay off the canvas.
+  const fading = { ...ov, keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 0.5, value: 1 }] }] }
+  assert.equal(planSegments(items, [fading], 1920, 1080, 30)[0].opaqueVideo, true)
+})
+
 test('planSegments: multi-track items all included, sorted by trackIdx', () => {
   const items = [
     { id: 'bg', type: 'image', start: 0, end: 10, src: '/bg.jpg', trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1 },

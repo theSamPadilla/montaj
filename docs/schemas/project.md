@@ -289,7 +289,7 @@ All timed graphical elements live in `tracks[1+]`'s `items` arrays. Each track i
 | `sourceCrop` | object | image, video | `{x, y, w, h}`, fractions in `[0, 1]` of the source as DISPLAYED (EXIF or rotation applied). An image is cropped before its `fit` and needs no stored size; a video needs `sourceWidth`/`sourceHeight` (see the tracks[0] table). Both can be keyframed (`cropX`/`cropY`/`cropW`/`cropH`): see "Crop keyframes". |
 | `keyframes` | array | all | Animate `offsetX`/`offsetY`/`scale`/`scaleX`/`scaleY`/`rotation` over the item's own lifetime (overlays also `opacity`). An image or a video also takes `cropX`/`cropY`/`cropW`/`cropH`, its source crop: see "Crop keyframes". |
 | `props` | object | overlay | Arbitrary props passed to the JSX component |
-| `opaque` | boolean | overlay | When `true`, render engine skips alpha — JSX controls full frame |
+| `opaque` | boolean | overlay | When `true`, render engine skips alpha — JSX controls full frame. Only over the whole canvas (scale 1, no offset or rotation, no keyframes other than `opacity`); a scaled or moved opaque overlay leaves the footage drawn |
 | `googleFonts` | array | overlay | Google Font names to load before rendering |
 | `remove_bg` | boolean | video | Marks this item as background-removed. `src` stays as the original (used for browser preview). Render uses `nobg_src` when present. |
 | `nobg_src` | string | video | Path to the ProRes 4444 `.mov` with alpha channel produced by the `remove_bg` step. Used at final render time. |
