@@ -62,6 +62,24 @@ export const PROPS_FETCH_MAX_BYTES = 50 * 1024 * 1024
 export const PROPS_FETCH_CONCURRENCY = 6
 /** How many first bytes of an extension-less props URL are read to tell an image. */
 export const IMAGE_SNIFF_BYTES = 32
+/** How long a capture waits for the page's images (settleImages) before it goes ahead without them. */
+export const IMAGE_SETTLE_CAP_MS = PROPS_FETCH_TIMEOUT_MS + 5000
+
+/**
+ * How a capture names an image it went ahead without: a file by its path, a
+ * web URL without its query (which may carry a token), anything else by its
+ * scheme alone (a data: URL is the image itself).
+ */
+export function describeImageSrc(src) {
+  try {
+    const u = new URL(src)
+    if (u.protocol === 'file:') return fromFileHref(src)
+    if (u.protocol === 'http:' || u.protocol === 'https:') return `${u.origin}${u.pathname}`
+    return `a ${u.protocol} URL`
+  } catch {
+    return String(src)
+  }
+}
 
 // ---------------------------------------------------------------------------
 // launch
@@ -390,11 +408,12 @@ export function pageRequestDecision({ url, method = 'GET' }, { boundary, propsCa
  * fetched when it is not an image, or recorded in `failedProps` when the
  * fetch failed.
  *
- * Returns `{ blocked, failedProps, isBlockNoise(consoleMessage), assertPropsServed(), settleOnDemand() }`:
+ * Returns `{ blocked, failedProps, isBlockNoise(consoleMessage), assertPropsServed(), settleOnDemand(), settleImages() }`:
  * the URLs aborted; the props URLs the page asked for whose fetch failed
  * (href -> PropsFetchError); whether a console message is only Chromium
  * reporting one of those aborts; a check that throws the first of those
- * failures; and the wait a capture makes for images fetched on demand. A caller that fails on console errors must skip that noise, or a
+ * failures; the wait a capture makes for images fetched on demand; and the
+ * wait it makes for every image on the page. A caller that fails on console errors must skip that noise, or a
  * blocked read would fail the job instead of leaving the overlay's own
  * fallback. Every caller calls assertPropsServed() once the page has loaded
  * what it needs: a props image the page asked for and could not get fails the
@@ -501,6 +520,50 @@ export async function installPageGuard(page, { boundary, propsCache = new Map(),
         ])
       }, onDemandUrls, PROPS_FETCH_TIMEOUT_MS + 5000)
       await Promise.all([...pending])
+    },
+    /**
+     * Call before each capture, after settleOnDemand. Waits for every <img> on
+     * the page to load or fail, then decodes each one that loaded, so the
+     * capture shows it. An overlay that mounts an image only from a later
+     * frame (a screenshot shown once its scene fades in) puts the <img> on a
+     * fresh page (every sample, the first frame of every render chunk) in the
+     * same commit the capture is for, and a slow load came out as an empty
+     * frame (PL22).
+     *
+     * Capped at IMAGE_SETTLE_CAP_MS: the frame is then captured anyway, never
+     * failed, and the images still loading are logged and returned (by
+     * describeImageSrc), so the caller can keep that capture out of a cache.
+     * An image that already cost this page the cap is not waited for again: a
+     * file that never arrives costs one cap per page, not one per frame. A
+     * loading="lazy" image is not waited for: one off screen never loads.
+     * Each image is decoded once per source, not on every frame.
+     */
+    async settleImages({ capMs = IMAGE_SETTLE_CAP_MS } = {}) {
+      const late = await page.evaluate(capMs => {
+        const seen = (window.__montajImages ??= { decoded: new WeakMap(), gaveUp: new WeakSet() })
+        const images = [...document.images].filter(img => img.loading !== 'lazy' && !seen.gaveUp.has(img))
+        const ready = img => (img.complete ? Promise.resolve() : new Promise(resolve => {
+          img.addEventListener('load', resolve, { once: true })
+          img.addEventListener('error', resolve, { once: true })
+        })).then(() => {
+          const src = img.currentSrc
+          if (img.naturalWidth === 0 || seen.decoded.get(img) === src) return undefined
+          return img.decode().then(() => { seen.decoded.set(img, src) }, () => {})
+        })
+        let timer
+        return Promise.race([
+          Promise.all(images.map(ready)),
+          new Promise(resolve => { timer = setTimeout(resolve, capMs) }),
+        ]).then(() => {
+          clearTimeout(timer)
+          const stillLoading = images.filter(img => !img.complete)
+          for (const img of stillLoading) seen.gaveUp.add(img)
+          return stillLoading.map(img => img.currentSrc || img.src)
+        })
+      }, capMs)
+      const missed = [...new Set(late.map(describeImageSrc))]
+      if (missed.length) note(`[montaj] captured before these images loaded (${capMs / 1000} s): ${missed.join(', ')}`)
+      return missed
     },
   }
 }

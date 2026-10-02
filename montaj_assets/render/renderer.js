@@ -315,6 +315,11 @@ async function renderChunk(browser, job) {
       //     asks for it, so wait for it to arrive before capturing this frame
       //     (page-guard.js settleOnDemand; at once when the props name none).
       await guard.settleOnDemand()
+      // 2c. And for every image on the page: an overlay that mounts one only
+      //     from a later frame inserts it in the commit just made, on a fresh
+      //     page at the first frame of every chunk (page-guard.js settleImages).
+      //     Capped; past the cap the frame is captured anyway and the image named.
+      await guard.settleImages()
       // 3. Double rAF: first fires after layout+paint, second fires after the result
       //    has been composited — guarantees the screenshot sees the current frame.
       await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))

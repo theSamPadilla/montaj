@@ -124,6 +124,9 @@ const SHORT_EDGE_TARGET = 1080
  *    5.7.0 and 5.8.0 wrote uncropped frames under it.
  * 8: an image a prop names by a host's files URL (`/api/files?path=`, as the
  *    editor preview loads it) is drawn. A PNG cached before holds it blank.
+ * 9: PL22, a capture waits for every image on the page (page-guard.js
+ *    settleImages). A PNG cached before may hold an image that mounted on the
+ *    sampled frame as an empty window, and was served again for the same props.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -131,7 +134,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 8
+const SAMPLE_CACHE_VERSION = 9
 
 // ---------------------------------------------------------------------------
 // Input manifests
@@ -449,6 +452,7 @@ export async function sampleOverlay({
   let measurements = undefined
   // A sample the page guard blocked anything in is not cached: what it shows
   // may depend on things outside the cache key (the workspace, the network).
+  // Nor is one captured with an image still loading: it may be missing it.
   let degraded = false
 
   try {
@@ -529,6 +533,10 @@ export async function sampleOverlay({
     // for it: wait for it before capturing (page-guard.js settleOnDemand; at
     // once when the props name none).
     await guard.settleOnDemand()
+    // And for every image on the page: an overlay that mounts one only from a
+    // later frame inserts it in the commit just made (page-guard.js
+    // settleImages). Capped; whatever is still loading is named here.
+    const imagesMissed = await guard.settleImages()
 
     // Double rAF: first fires after layout+paint, second after compositor flush
     await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
@@ -653,7 +661,11 @@ export async function sampleOverlay({
       err.sampleError = 'props_fetch_failed'
       throw err
     }
-    degraded = guard.blocked.size > 0
+    // An image still loading at capture (past the cap, or inserted after the
+    // wait) keeps this sample out of the cache, so a blank is never served again.
+    const imagesLoading = imagesMissed.length > 0 || await page.evaluate(() =>
+      [...document.images].some(img => img.loading !== 'lazy' && !img.complete))
+    degraded = guard.blocked.size > 0 || imagesLoading
 
     // Screenshot — transparent PNG (omitBackground: true matches the renderer)
     mkdirSync(dirname(outPath), { recursive: true })
