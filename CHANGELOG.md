@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.20.0
+
 - **Changed (serve): serve no longer opens a browser.** The auto-open of `http://localhost:<port>` is gone in every mode (`webbrowser.open` in `serve/server.py`'s lifespan). `--headless` is still accepted and still skips the Vite spawn, the SPA catch-all route and the UI-built check; it no longer has a browser to suppress. Pinned by `test_lifespan_never_opens_a_browser` in `tests/test_server_headless.py`.
 
 - **Added (serve): `POST /api/run` takes `clipUrls` (one YouTube watch or youtu.be link) as the footage, and downloads it in the background.** The project is created at once on an empty timeline with a top-level `sourceDownload` record (`downloading`, `done` or `failed`, with a failure code), and the request does not wait. Serve runs yt-dlp (1080p H.264, up to 3 hours and 4 GB) in a detached task, then adds the clip as init would have: to `sources`, and to `tracks[0]` while the project is `pending`; the canvas follows the footage and the update goes out over the project's SSE stream. The record's `jobId` is a step job, so `GET /api/steps/jobs/{jobId}` (MCP `get_step_result`) waits on it. `GET /projects/{id}` resumes a download a restart dropped, `DELETE` kills it, and so does serve's shutdown. Shorts and other links are refused (`400 invalid_clip_url`); a link with clips is `400 mutually_exclusive`. (`lib/youtube.py`, `serve/routes/projects.py`, `serve/server.py`, `docs/schemas/project.md`)
