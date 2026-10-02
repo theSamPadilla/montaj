@@ -30,7 +30,7 @@ export const SDR_CURVES: SdrCurveInfo[] = [
   {
     id: 'natural1',
     label: 'Natural',
-    blurb: 'True-to-life color, matching how Apple converts HDR. What your preview shows.',
+    blurb: 'True-to-life color.',
   },
   {
     id: 'vivid1',
