@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.19.3
+
 - **Changed (render): graphics white in HDR projects is 800 nits, down from 900.** Overlays, captions and timeline images in an HLG or PQ project now put sRGB white at 800 nits (HLG Y10 910, PQ 701; were 926 and 713), the product owner's call after 900 read as too bright next to camera HDR. One constant, `GRAPHICS_WHITE_NITS` in `render/hdr-graphics.js`; the LUT is regenerated from it under a new content-hashed name, and the sample cache version moves to 10 so no cached frame shows the old white.
 
 ## v5.19.2
