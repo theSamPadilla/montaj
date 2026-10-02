@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (render): in HDR projects, graphics with no footage under them use SDR reference white (203 nits).** A title card, an end card, a full-screen overlay, or a timeline image or screenshot with no video clip at that time now maps sRGB white to BT.2408's 203 nits (HLG Y10 721, PQ 573), so it matches SDR and the editor preview instead of filling the screen at 800. Captions, overlays and images over footage keep 800 nits. Decided per compose segment (`graphicsWhiteNitsFor` in `render/encode-segment.js`), which already splits at every clip boundary, so an overlay that runs from a clip into a footage-less stretch changes level at that frame. Both levels come from the one mapping in `render/hdr-graphics.js`, each with its own generated LUT.
+
 ## v5.19.3
 
 - **Changed (render): graphics white in HDR projects is 800 nits, down from 900.** Overlays, captions and timeline images in an HLG or PQ project now put sRGB white at 800 nits (HLG Y10 910, PQ 701; were 926 and 713), the product owner's call after 900 read as too bright next to camera HDR. One constant, `GRAPHICS_WHITE_NITS` in `render/hdr-graphics.js`; the LUT is regenerated from it under a new content-hashed name, and the sample cache version moves to 10 so no cached frame shows the old white.

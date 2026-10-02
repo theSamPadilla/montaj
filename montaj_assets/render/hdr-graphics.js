@@ -18,11 +18,22 @@
  * (oversaturated), and an <img> converted on its own looked different from the
  * CSS around it.
  *
- * 800 nits is the product owner's choice, made by eye against SDR clips and
- * camera HDR on an XDR display: first 900 (2026-10-01), lowered to 800 the
- * next day because 900 was too much. It is brighter than BT.2408's 203-nit
- * graphics white, which SDR clips in an HDR project use (lib/normalize.py
- * SDR_WHITE_NITS), so a white card sits above an SDR clip's white on purpose.
+ * 800 nits is the product owner's choice for graphics OVER FOOTAGE, made by eye
+ * against SDR clips and camera HDR on an XDR display: first 900 (2026-10-01),
+ * lowered to 800 the next day because 900 was too much. It is brighter than
+ * BT.2408's 203-nit graphics white, which SDR clips in an HDR project use
+ * (lib/normalize.py SDR_WHITE_NITS), so a caption over a clip sits above an SDR
+ * clip's white on purpose.
+ *
+ * Graphics with NO FOOTAGE under them (a title card, an end card, a full-screen
+ * overlay, a timeline image or screenshot with no clip at that time) take
+ * GRAPHICS_WHITE_NITS_NO_FOOTAGE, BT.2408's 203 nits, so they match SDR and the
+ * editor preview instead of filling the screen at 800 ("it is SO bright",
+ * product owner, 2026-10-02; POSTLAUNCH §47). encode-segment.js decides per
+ * compose segment (graphicsWhiteNitsFor); segments already split at every clip
+ * boundary, so an overlay that runs from a clip into a footage-less stretch
+ * changes level exactly at that frame. Both levels are one mapping with the
+ * white as its parameter, each with its own generated LUT.
  *
  * Applied in ffmpeg as a 65-point 3D LUT (tetrahedral) on float RGB: a
  * per-pixel geq is far too slow for every overlay frame. Measured against the
@@ -45,8 +56,16 @@ import { join } from 'node:path'
 
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
 
-/** Where sRGB white lands in an HLG or PQ output, in nits. */
+/** Where sRGB white lands in an HLG or PQ output over footage, in nits. */
 export const GRAPHICS_WHITE_NITS = 800
+
+/**
+ * Where sRGB white lands when no video clip is visible under the graphics:
+ * BT.2408 reference white, the same value as encode-segment.js and
+ * lib/normalize.py's SDR_WHITE_NITS (hdr-graphics-no-footage.test.mjs holds
+ * them equal; not imported, since encode-segment.js imports this module).
+ */
+export const GRAPHICS_WHITE_NITS_NO_FOOTAGE = 203
 
 // HLG's nominal display: 1000-nit peak, system gamma 1.2 (BT.2100). Scene
 // light E maps to display light 1000 * E^1.2 for a neutral, so white at
@@ -91,24 +110,25 @@ export function pqOetf(nits) {
  *
  * @param {number[]} rgb
  * @param {'hdr_hlg'|'hdr_pq'} dstKey
+ * @param {number} [whiteNits=GRAPHICS_WHITE_NITS]  where sRGB white lands
  * @returns {number[]}
  */
-export function graphicsToHdr(rgb, dstKey) {
+export function graphicsToHdr(rgb, dstKey, whiteNits = GRAPHICS_WHITE_NITS) {
   const lin = rgb.map(srgbToLinear)
   const wide = M_709_2020.map(row => row[0] * lin[0] + row[1] * lin[1] + row[2] * lin[2])
-  if (dstKey === 'hdr_pq') return wide.map(l => pqOetf(l * GRAPHICS_WHITE_NITS))
-  const k = (GRAPHICS_WHITE_NITS / HLG_PEAK_NITS) ** (1 / HLG_SYSTEM_GAMMA)
+  if (dstKey === 'hdr_pq') return wide.map(l => pqOetf(l * whiteNits))
+  const k = (whiteNits / HLG_PEAK_NITS) ** (1 / HLG_SYSTEM_GAMMA)
   return wide.map(l => hlgOetf(l * k))
 }
 
 /** The mapping as a .cube file's text (red fastest, as the format orders it). */
-export function graphicsLutText(dstKey) {
+export function graphicsLutText(dstKey, whiteNits = GRAPHICS_WHITE_NITS) {
   const n = LUT_SIZE
-  const lines = [`TITLE "montaj graphics ${dstKey} ${GRAPHICS_WHITE_NITS} nits"`, `LUT_3D_SIZE ${n}`]
+  const lines = [`TITLE "montaj graphics ${dstKey} ${whiteNits} nits"`, `LUT_3D_SIZE ${n}`]
   for (let b = 0; b < n; b++) {
     for (let g = 0; g < n; g++) {
       for (let r = 0; r < n; r++) {
-        const out = graphicsToHdr([r / (n - 1), g / (n - 1), b / (n - 1)], dstKey)
+        const out = graphicsToHdr([r / (n - 1), g / (n - 1), b / (n - 1)], dstKey, whiteNits)
         lines.push(out.map(v => v.toFixed(6)).join(' '))
       }
     }
@@ -119,17 +139,18 @@ export function graphicsLutText(dstKey) {
 const lutPaths = new Map()
 
 /**
- * Absolute path of the mapping's .cube for `dstKey`, written to the temp dir
- * on first use in this process. `write: false` (dry runs) names it without
- * touching the disk.
+ * Absolute path of the mapping's .cube for `dstKey` at `whiteNits`, written to
+ * the temp dir on first use in this process. `write: false` (dry runs) names it
+ * without touching the disk.
  */
-export function graphicsLutPath(dstKey, { write = true } = {}) {
-  let entry = lutPaths.get(dstKey)
+export function graphicsLutPath(dstKey, { write = true, whiteNits = GRAPHICS_WHITE_NITS } = {}) {
+  const memoKey = `${dstKey}@${whiteNits}`
+  let entry = lutPaths.get(memoKey)
   if (!entry) {
-    const text = graphicsLutText(dstKey)
+    const text = graphicsLutText(dstKey, whiteNits)
     const hash = createHash('sha256').update(text).digest('hex').slice(0, 16)
     entry = { text, path: join(tmpdir(), 'montaj-luts', `graphics-${dstKey}-${hash}.cube`), written: false }
-    lutPaths.set(dstKey, entry)
+    lutPaths.set(memoKey, entry)
   }
   if (write && !entry.written) {
     if (!existsSync(entry.path)) {
@@ -163,9 +184,11 @@ export function graphicsLutPath(dstKey, { write = true } = {}) {
  * @param {object} opts
  * @param {'capture'|'rgb'} opts.input
  * @param {boolean} [opts.write=true]  write the LUT file (false for dry runs)
+ * @param {number} [opts.whiteNits=GRAPHICS_WHITE_NITS]  where sRGB white lands
+ *   (encode-segment.js graphicsWhiteNitsFor: 800 over footage, 203 without)
  * @returns {string}
  */
-export function graphicsToHdrChain(dstKey, { input, write = true }) {
+export function graphicsToHdrChain(dstKey, { input, write = true, whiteNits = GRAPHICS_WHITE_NITS }) {
   const trc = dstKey === 'hdr_pq' ? 'smpte2084' : 'arib-std-b67'
   const flags = 'flags=accurate_rnd+full_chroma_int'
   const toRgb = input === 'capture'
@@ -173,7 +196,7 @@ export function graphicsToHdrChain(dstKey, { input, write = true }) {
     : ''
   return toRgb
        + 'format=gbrapf32le,'
-       + `lut3d=file=${ffmpegFilterPath(graphicsLutPath(dstKey, { write }))}:interp=tetrahedral,`
+       + `lut3d=file=${ffmpegFilterPath(graphicsLutPath(dstKey, { write, whiteNits }))}:interp=tetrahedral,`
        + `scale=out_color_matrix=bt2020:out_range=tv:${flags},format=yuva444p10le,`
        + `setparams=colorspace=bt2020nc:color_trc=${trc}:color_primaries=bt2020:range=tv`
 }

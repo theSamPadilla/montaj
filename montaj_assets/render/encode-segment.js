@@ -38,7 +38,7 @@ import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { specFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
-import { graphicsToHdrChain } from './hdr-graphics.js'
+import { graphicsToHdrChain, GRAPHICS_WHITE_NITS, GRAPHICS_WHITE_NITS_NO_FOOTAGE } from './hdr-graphics.js'
 import { externalizeFilterGraph } from './filter-script.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
@@ -274,6 +274,28 @@ export function decreaseFitSize(inW, inH, boxW, boxH, divisibleBy = 1) {
 
 function isImageItem(item) {
   return item.type === 'image' || IMAGE_EXTENSIONS.test(item.src)
+}
+
+/**
+ * Where graphics white lands in one HDR compose segment (POSTLAUNCH §47):
+ * GRAPHICS_WHITE_NITS (800) when a video clip is visible in the segment, so
+ * captions and overlays over footage stay bright against camera HDR, and
+ * GRAPHICS_WHITE_NITS_NO_FOOTAGE (203, BT.2408) when none is: an end card, a
+ * title card, a full-screen overlay, or a timeline image or screenshot with no
+ * clip at that time, which then match SDR and the editor preview.
+ *
+ * A clip is visible when the segment has a non-image item and no opaque overlay
+ * hides the items' video (segment.opaqueVideo). An image over a clip is
+ * graphics over footage. planSegments splits at every clip boundary, so the set
+ * of items is constant within a segment, and an overlay that runs from a clip
+ * into a footage-less stretch changes level at exactly that frame.
+ *
+ * @param {{ items?: object[], opaqueVideo?: boolean }} segment
+ * @returns {number} nits
+ */
+export function graphicsWhiteNitsFor(segment) {
+  const footage = !(segment.opaqueVideo ?? false) && (segment.items ?? []).some((item) => !isImageItem(item))
+  return footage ? GRAPHICS_WHITE_NITS : GRAPHICS_WHITE_NITS_NO_FOOTAGE
 }
 
 // Cache the `ffmpeg -filters` listing across calls — a build's filter set can't
@@ -1048,12 +1070,13 @@ const BAKED_OVERLAY_GEOMETRY = geometryFor({}, 'overlay')
  * @param {string} videoLabel — current composite label, e.g. '[canvas]'
  * @param {number} duration   — segment duration in seconds (used for -t)
  * @param {number} [segStart] — segment start on the timeline (seconds)
- * @param {{ cropBudgetPx?: number, toHdr?: string|null, dryRun?: boolean }} [opts]
+ * @param {{ cropBudgetPx?: number, toHdr?: string|null, whiteNits?: number, dryRun?: boolean }} [opts]
  *   `cropBudgetPx` is a test seam: the animated crop's pixel budget,
  *   MAX_ANIMATED_CROP_PX when absent. No production caller passes it.
  *   `toHdr` ('hdr_hlg' or 'hdr_pq'): map the image into that space through the
  *   graphics mapping (hdr-graphics.js); encodeSegment sets it for an HDR
- *   segment. `dryRun` names the mapping's LUT without writing it.
+ *   segment, with `whiteNits` from graphicsWhiteNitsFor (GRAPHICS_WHITE_NITS
+ *   when absent). `dryRun` names the mapping's LUT without writing it.
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
  */
 // NOTE: item.speed is intentionally ignored here — a still image has no
@@ -1139,7 +1162,7 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   // (render.js hands encode-segment the project's own file), and the box
   // animation and rotate after it work on mapped pixels.
   const toHdr = opts?.toHdr
-    ? `,${graphicsToHdrChain(opts.toHdr, { input: 'rgb', write: !opts.dryRun })}`
+    ? `,${graphicsToHdrChain(opts.toHdr, { input: 'rgb', write: !opts.dryRun, whiteNits: opts.whiteNits })}`
     : ''
   filterParts.push(
     `[${idx}:v]${fitChain}${toHdr}${anim?.needsAnimatedChain ? animStep : rotateFilterStep(box)},setpts=PTS-STARTPTS[img${idx}]`
@@ -1550,6 +1573,9 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
  *   capture into that space (hdr-graphics.js), right after the scale step.
  *   encodeSegment sets it for an HDR segment, whose canvas is tagged bt2020nc.
  *   PNG callers leave it off (sample-frame composites in SDR).
+ * @param {number} [opts.captureWhiteNits] — where the mapping puts white:
+ *   encodeSegment passes graphicsWhiteNitsFor(segment); GRAPHICS_WHITE_NITS when
+ *   absent.
  * @param {boolean} [opts.dryRun=false] — name the mapping's LUT without writing it.
  * @returns {{ inputArgs: string[], filterParts: string[], newVideoLabel: string }}
  */
@@ -1641,7 +1667,7 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   // above. Before this the capture went into the HDR canvas unconverted (white
   // at Y10 940, the HLG peak; colours read as BT.2020 primaries).
   const toHdr = opts.captureToHdr
-    ? `,${graphicsToHdrChain(opts.captureToHdr, { input: 'capture', write: !opts.dryRun })}`
+    ? `,${graphicsToHdrChain(opts.captureToHdr, { input: 'capture', write: !opts.dryRun, whiteNits: opts.captureWhiteNits })}`
     : ''
   filterParts.push(`${ovSrc}scale=${targetW}:${targetH}${to709}${toHdr}${rotateFilterStep(ovBox)}[ovsc${ovIdx}]`)
   ovSrc = `[ovsc${ovIdx}]`
@@ -1849,6 +1875,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   const duration = end - start
   const projectColorSpace = segment.colorSpace ?? DEFAULT_COLOR_SPACE
   const spec = specFor(projectColorSpace)
+  // HDR graphics white for this segment: 800 over footage, 203 without (§47).
+  const graphicsWhiteNits = graphicsWhiteNitsFor(segment)
   // Dry-run pins both probes to true so the golden capture never depends on the
   // host's ffmpeg build (see encode-args-golden.test.mjs's determinism note).
   const zscaleAvailable = opts._dryRun ? true : hasZscale()
@@ -1958,7 +1986,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       if (opaqueVideo) continue
       const { inputArgs, filterParts: fp, newVideoLabel } =
         buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration, start,
-          { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, dryRun: opts._dryRun })
+          { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, whiteNits: graphicsWhiteNits, dryRun: opts._dryRun })
       inputs.push(...inputArgs)
       filterParts.push(...fp)
       videoLabel = newVideoLabel
@@ -2123,7 +2151,8 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
     const { inputArgs, filterParts: fp, newVideoLabel } =
       buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration,
         { fps, captureToBt709: !isHdr(projectColorSpace),
-          captureToHdr: isHdr(projectColorSpace) ? projectColorSpace : null, dryRun: opts._dryRun })
+          captureToHdr: isHdr(projectColorSpace) ? projectColorSpace : null, captureWhiteNits: graphicsWhiteNits,
+          dryRun: opts._dryRun })
     inputs.push(...inputArgs)
     filterParts.push(...fp)
     videoLabel = newVideoLabel

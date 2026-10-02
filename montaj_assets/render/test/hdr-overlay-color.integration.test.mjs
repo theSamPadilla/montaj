@@ -16,14 +16,18 @@
 //
 //   1. The mapping. Before it, captures and image items went into the HDR
 //      canvas unconverted: white at Y10 940 (the HLG peak) and sRGB colours
-//      read as BT.2020 primaries. Now white is at GRAPHICS_WHITE_NITS
-//      (800 nits: HLG Y10 910, PQ 701).
+//      read as BT.2020 primaries. Now white is at GRAPHICS_WHITE_NITS over a
+//      clip (800 nits: HLG Y10 910, PQ 701) and at
+//      GRAPHICS_WHITE_NITS_NO_FOOTAGE with no clip under it (203 nits, BT.2408:
+//      HLG Y10 721, PQ 573), decided per segment (POSTLAUNCH §47).
 //   2. Alpha. The bottom third catches a conversion that drops the alpha of the
 //      lower rows (zscale does, writing 4:2:0 under slice threading), the
 //      middle third one that makes the graphic opaque.
 //   3. The composite's matrix. With an untagged HDR canvas, `overlay`
-//      re-matrixed a mapped layer whenever no clip sat under it, so the
-//      bare-canvas cases must land exactly where the over-a-clip ones do.
+//      re-matrixed a mapped layer whenever no clip sat under it. The
+//      bare-canvas cases now map at 203 nits, so each case is held to its own
+//      level's prediction, swatch by swatch, which still catches a re-matrix
+//      (it moved saturated swatches by more than TOL; see encode-segment.js).
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -33,7 +37,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { FFMPEG } from '../ffmpeg-bin.js'
 import { encodeSegment, hasZscale } from '../encode-segment.js'
-import { graphicsToHdr } from '../hdr-graphics.js'
+import { graphicsToHdr, GRAPHICS_WHITE_NITS, GRAPHICS_WHITE_NITS_NO_FOOTAGE } from '../hdr-graphics.js'
 
 const SWATCHES = [
   { name: 'white', rgb: [255, 255, 255] },
@@ -59,9 +63,17 @@ const GREY_BG = [96, 96, 96]
 // rounds about 2 codes high at white: 912 for 910 on HLG).
 const TOL = 4
 
-/** graphicsToHdr's R'G'B' as limited-range BT.2020 NCL Y'CbCr, 10-bit. */
-function predicted(rgb, colorSpace) {
-  const [r, g, b] = graphicsToHdr(rgb.map(v => v / 255), colorSpace)
+// Graphics white in Y10 at each level, from the independent Python derivation
+// in hdr-graphics.test.mjs and hdr-graphics-no-footage.test.mjs, not from
+// graphicsToHdr: round(64 + 876 * signal).
+const WHITE_Y10 = {
+  hdr_hlg: { [GRAPHICS_WHITE_NITS]: 910, [GRAPHICS_WHITE_NITS_NO_FOOTAGE]: 721 },
+  hdr_pq: { [GRAPHICS_WHITE_NITS]: 701, [GRAPHICS_WHITE_NITS_NO_FOOTAGE]: 573 },
+}
+
+/** graphicsToHdr's R'G'B' at `whiteNits` as limited-range BT.2020 NCL Y'CbCr, 10-bit. */
+function predicted(rgb, colorSpace, whiteNits) {
+  const [r, g, b] = graphicsToHdr(rgb.map(v => v / 255), colorSpace, whiteNits)
   const y = 0.2627 * r + 0.6780 * g + 0.0593 * b
   return { y: 64 + 876 * y, cb: 512 + 896 * (b - y) / 1.8814, cr: 512 + 896 * (r - y) / 1.4746 }
 }
@@ -180,31 +192,39 @@ function assertMatches(t, label, got, want) {
 }
 
 for (const colorSpace of ['hdr_hlg', 'hdr_pq']) {
-  test(`${colorSpace}: overlays, captions and image items land on the graphics mapping, over a clip or over nothing`,
+  test(`${colorSpace}: overlays, captions and image items land at 800 nits over a clip and 203 over nothing`,
     { timeout: 240_000 }, async (t) => {
       // zscale is the HDR encode's own requirement (an SDR clip's stretch needs it).
       assert.ok(hasZscale(), `${FFMPEG} lacks zscale: point MONTAJ_FFMPEG at the managed build`)
       const dir = mkdtempSync(path.join(tmpdir(), 'montaj-hdr-ov-'))
       try {
-        const want = SWATCHES.map((s) => predicted(s.rgb, colorSpace))
-        t.diagnostic(`predicted white ${fmt(want[0])}`)
+        const wantAt = (nits) => SWATCHES.map((s) => predicted(s.rgb, colorSpace, nits))
+        t.diagnostic(`predicted white over a clip ${fmt(wantAt(GRAPHICS_WHITE_NITS)[0])}, over nothing ${fmt(wantAt(GRAPHICS_WHITE_NITS_NO_FOOTAGE)[0])}`)
         const png = swatchPng(dir)
         const capture = captureOf(dir, png)
         const sdr = sdrClip(dir)
         const hlg = hlgClip(dir)
 
+        const OVER = GRAPHICS_WHITE_NITS, NONE = GRAPHICS_WHITE_NITS_NO_FOOTAGE
         const cases = [
-          ['overlay over an SDR clip', [videoItem(sdr, 'bt709')], [overlayOf(capture)]],
-          ['overlay over an HLG clip', [videoItem(hlg, 'arib-std-b67')], [overlayOf(capture)]],
-          ['overlay on bare canvas', [], [overlayOf(capture)]],
-          ['caption on bare canvas', [], [overlayOf(capture, true)]],
-          ['image item over an HLG clip', [videoItem(hlg, 'arib-std-b67'), imageItem(png)], []],
-          ['image item on bare canvas', [{ ...imageItem(png), trackIdx: 0 }], []],
+          ['overlay over an SDR clip', [videoItem(sdr, 'bt709')], [overlayOf(capture)], OVER],
+          ['overlay over an HLG clip', [videoItem(hlg, 'arib-std-b67')], [overlayOf(capture)], OVER],
+          ['overlay on bare canvas', [], [overlayOf(capture)], NONE],
+          ['caption on bare canvas', [], [overlayOf(capture, true)], NONE],
+          ['image item over an HLG clip', [videoItem(hlg, 'arib-std-b67'), imageItem(png)], [], OVER],
+          ['image item on bare canvas', [{ ...imageItem(png), trackIdx: 0 }], [], NONE],
         ]
-        for (const [label, items, overlays] of cases) {
+        for (const [label, items, overlays, nits] of cases) {
+          const want = wantAt(nits)
           const out = await encode(dir, colorSpace, items, overlays)
-          assertMatches(t, `${label}, top`, codes(out, 0), want)
+          const top = codes(out, 0)
+          assertMatches(t, `${label}, top`, top, want)
           assertMatches(t, `${label}, bottom`, codes(out, 2), want)
+          // White at this level's independently derived code, so a segment can
+          // never land at the other level's white unnoticed.
+          const whiteWant = WHITE_Y10[colorSpace][nits]
+          assert.ok(Math.abs(top[0].y - whiteWant) <= TOL,
+            `${label}: white Y10 ${top[0].y.toFixed(1)}, want ${whiteWant} (${nits} nits)`)
           // The middle third is the layer beneath, untouched by the graphic.
           const under = items.filter((it) => it.type === 'video')
           const alone = await encode(dir, colorSpace, under, [])

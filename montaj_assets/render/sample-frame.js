@@ -127,9 +127,12 @@ const SHORT_EDGE_TARGET = 1080
  * 9: PL22, a capture waits for every image on the page (page-guard.js
  *    settleImages). A PNG cached before may hold an image that mounted on the
  *    sampled frame as an empty window, and was served again for the same props.
- * 10: graphics white in HDR projects moves from 900 to 800 nits
- *    (hdr-graphics.js GRAPHICS_WHITE_NITS). A frame cached before holds its
- *    overlays, captions and images 900 nits bright.
+ * 10: graphics white in HDR projects moved from 900 to 800 nits
+ *    (hdr-graphics.js GRAPHICS_WHITE_NITS). Defensive only: samples composite
+ *    in SDR (overlays as sRGB PNGs over footage graded to SDR) and never pass
+ *    through hdr-graphics.js, so no cached pixel depended on the HDR white.
+ *    The per-segment white (800 over footage, 203 without, POSTLAUNCH §47)
+ *    needs no bump for the same reason.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
