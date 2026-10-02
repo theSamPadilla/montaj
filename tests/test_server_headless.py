@@ -97,13 +97,13 @@ def test_headless_mode_spa_route_not_registered():
     assert "/{full_path:path}" not in paths
 
 
-def test_headless_lifespan_skips_vite_and_browser(tmp_path):
-    """The lifespan-level gates (Vite spawn, webbrowser.open) only fire when
+def test_headless_lifespan_skips_vite(tmp_path):
+    """The lifespan-level gate (Vite spawn) only fires when
     lifespan() actually runs. TestClient triggers lifespan only when used as
     a context manager — `with TestClient(app) as client:`.
 
-    We patch four things:
-      - `subprocess.Popen` and `webbrowser.open` are the gates under test.
+    We patch three things (the browser is test_lifespan_never_opens_a_browser's):
+      - `subprocess.Popen` is the gate under test.
         Confirmed (via grep) that subprocess.Popen has exactly one call site
         in serve/server.py — the Vite spawn — so a flat assert_not_called()
         is correct. If a future change adds another Popen call site in
@@ -116,7 +116,6 @@ def test_headless_lifespan_skips_vite_and_browser(tmp_path):
         user's real `~/Montaj` (or configured workspace) directory."""
     app = _reload_server_with_headless(True)
     with patch("serve.server.subprocess.Popen") as mock_popen, \
-         patch("serve.server.webbrowser.open") as mock_browser, \
          patch("serve.server.ProjectWatcher"), \
          patch("serve.server.GlobalOverlayWatcher"), \
          patch("serve.server.resolve_workspace", return_value=tmp_path):
@@ -124,4 +123,44 @@ def test_headless_lifespan_skips_vite_and_browser(tmp_path):
             # Hit any /api endpoint to ensure lifespan startup completed.
             client.get("/api/info")
         mock_popen.assert_not_called()
-        mock_browser.assert_not_called()
+
+
+def test_lifespan_never_opens_a_browser(tmp_path, monkeypatch):
+    """serve never opens a browser, headless or not (Sam's browser kept opening
+    localhost:3000). Runs the NON-headless lifespan with every webbrowser entry
+    point patched to raise and record, long enough for the old delayed open
+    (0.5 s without Vite) to have fired. Vite is kept from spawning by a non-dev
+    checkout and a Popen that raises."""
+    import asyncio
+    import webbrowser
+
+    from serve import lockfile
+
+    _reload_server_with_headless(False)
+    server_mod = sys.modules["serve.server"]
+    assert server_mod.HEADLESS is False
+
+    opened = []
+
+    def refuse(*args, **kwargs):
+        opened.append(args)
+        raise AssertionError("serve opened a browser")
+
+    for name in ("open", "open_new", "open_new_tab"):
+        monkeypatch.setattr(webbrowser, name, refuse)
+    monkeypatch.setattr(lockfile, "_lockfile_path", lambda: tmp_path / "serve.json")
+    monkeypatch.setattr("cli.deps.is_dev_checkout", lambda: False)
+
+    def no_popen(*args, **kwargs):
+        raise AssertionError(f"lifespan spawned {args!r}")
+
+    async def drive():
+        with patch.object(server_mod.subprocess, "Popen", no_popen), \
+             patch("serve.server.ProjectWatcher"), \
+             patch("serve.server.GlobalOverlayWatcher"), \
+             patch("serve.server.resolve_workspace", return_value=tmp_path):
+            async with server_mod.lifespan(server_mod.app):
+                await asyncio.sleep(1.0)
+
+    asyncio.run(drive())
+    assert opened == []

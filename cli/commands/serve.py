@@ -28,9 +28,10 @@ def register(subparsers):
     p.add_argument(
         "--headless",
         action="store_true",
-        help="Disable embedded UI (no Vite spawn, no browser auto-open, no SPA "
-             "catch-all route). Skips the 'UI is built' check. For sidecar "
-             "deployments where the host product provides its own frontend.",
+        help="Disable embedded UI (no Vite spawn, no SPA catch-all route). "
+             "Skips the 'UI is built' check. For sidecar deployments where "
+             "the host product provides its own frontend. (serve never opens "
+             "a browser, with or without this flag.)",
     )
     add_global_flags(p)
     p.set_defaults(func=handle)
@@ -83,7 +84,7 @@ def handle(args):
         print(cyan("debug: streaming subprocess stderr (init progress, etc.) live"), file=sys.stderr)
     if headless:
         os.environ["MONTAJ_HEADLESS"] = "1"
-        print(cyan("headless: UI disabled (no Vite, no browser, no SPA route)"), file=sys.stderr)
+        print(cyan("headless: UI disabled (no Vite, no SPA route)"), file=sys.stderr)
     uvicorn.run(
         "serve.server:app",
         host=host,

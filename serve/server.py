@@ -4,7 +4,6 @@ import asyncio
 import os
 import subprocess
 import sys
-import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -30,10 +29,11 @@ _HOP_BY_HOP = frozenset({
     "te", "trailer", "upgrade", "proxy-authenticate", "proxy-authorization",
 })
 # When set, disables embedded UI behaviors. Consumed in two places below:
-#   - lifespan() — gates Vite-dev spawn and webbrowser.open
+#   - lifespan(): gates Vite-dev spawn
 #   - module-level SPA catch-all — route is not registered when HEADLESS
-# To find the gates, grep for `if not HEADLESS` (3 hits: 2 inside lifespan,
+# To find the gates, grep for `if not HEADLESS` (2 hits: 1 inside lifespan,
 # 1 at module scope wrapping the ~40-line `serve_spa` decorator block).
+# serve never opens a browser, in either mode (it used to, outside headless).
 # See docs/plans/2026-05-02-headless-serve.md.
 HEADLESS = os.environ.get("MONTAJ_HEADLESS") == "1"
 
@@ -83,10 +83,6 @@ async def lifespan(app: FastAPI):
     except OSError:
         pass
 
-    # Give Vite a moment to start before opening the browser
-    if not HEADLESS:
-        open_delay = 2.5 if vite_proc else 0.5
-        loop.call_later(open_delay, lambda: webbrowser.open(f"http://localhost:{PORT}"))
     yield
     # A running yt-dlp (PL28) is in its own process group, so a kill of serve
     # does not take it along: kill it here. Its project resumes on open.
