@@ -1,0 +1,6 @@
+# NOT captured: ENOSPC cannot be produced safely. Text is the OS error string yt-dlp surfaces ("[Errno 28] No space left on device"), 2026-10-01.
+exit: 1
+--- stdout
+[download] Destination: /work/youtube-jNQXAC9IVRw.f299.mp4
+--- stderr
+ERROR: unable to write data: [Errno 28] No space left on device

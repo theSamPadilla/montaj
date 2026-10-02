@@ -1,0 +1,8 @@
+# captured 2026-10-01, yt-dlp 2026.08.19 (bundled build, nonexistent id)
+exit: 1
+--- stdout
+[youtube] Extracting URL: https://www.youtube.com/watch?v=aaaaaaaaaaa
+[youtube] aaaaaaaaaaa: Downloading webpage
+[youtube] aaaaaaaaaaa: Downloading visionos player API JSON
+--- stderr
+ERROR: [youtube] aaaaaaaaaaa: This video is unavailable

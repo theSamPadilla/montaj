@@ -1,0 +1,13 @@
+# captured 2026-10-01, yt-dlp 2026.08.19 (bundled build, --max-filesize 100K)
+exit: 0
+--- stdout
+[youtube] Extracting URL: https://www.youtube.com/watch?v=jNQXAC9IVRw
+[youtube] jNQXAC9IVRw: Downloading webpage
+[youtube] jNQXAC9IVRw: Downloading visionos player API JSON
+[youtube] jNQXAC9IVRw: Downloading m3u8 information
+[info] jNQXAC9IVRw: Downloading 1 format(s): 133+140
+[download] File is larger than max-filesize (433081 bytes > 102400 bytes). Aborting.
+
+[download] File is larger than max-filesize (309288 bytes > 102400 bytes). Aborting.
+
+--- stderr

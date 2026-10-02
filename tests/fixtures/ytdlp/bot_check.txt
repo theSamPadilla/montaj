@@ -1,0 +1,6 @@
+# NOT captured: a bot-check cannot be produced on demand. Pattern written from yt-dlp's source (yt_dlp/extractor/youtube/_video.py), 2026-10-01.
+exit: 1
+--- stdout
+[youtube] Extracting URL: https://www.youtube.com/watch?v=jNQXAC9IVRw
+--- stderr
+ERROR: [youtube] jNQXAC9IVRw: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication.

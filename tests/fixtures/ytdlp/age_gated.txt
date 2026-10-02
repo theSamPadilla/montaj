@@ -1,0 +1,16 @@
+# captured 2026-10-01, yt-dlp 2026.08.19 (bundled build, HtVdAasjOgU, no cookies)
+exit: 1
+--- stdout
+[youtube] Extracting URL: https://www.youtube.com/watch?v=HtVdAasjOgU
+[youtube] HtVdAasjOgU: Downloading webpage
+[youtube] HtVdAasjOgU: Downloading visionos player API JSON
+[youtube] HtVdAasjOgU: This video is age-restricted; some formats may be missing without authentication. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies
+[youtube] HtVdAasjOgU: Downloading web embedded client config
+[youtube] HtVdAasjOgU: Downloading player 92b29aca-main
+[youtube] HtVdAasjOgU: Downloading web embedded player API JSON
+[youtube] [jsc:deno] Solving JS challenges using deno
+[youtube] [jsc:node] Solving JS challenges using node
+--- stderr
+WARNING: [youtube] [jsc] Remote components challenge solver script (deno, node) and NPM package (deno) were skipped. These may be required to solve JS challenges. You can enable these downloads with  --remote-components ejs:github  (recommended) or  --remote-components ejs:npm , respectively. For more information and alternatives, refer to  https://github.com/yt-dlp/yt-dlp/wiki/EJS
+WARNING: [youtube] HtVdAasjOgU: n challenge solving failed: Some formats may be missing. Ensure you have a supported JavaScript runtime and challenge solver script distribution installed. Review any warnings presented before this message. For more details, refer to  https://github.com/yt-dlp/yt-dlp/wiki/EJS
+ERROR: [youtube] HtVdAasjOgU: Sign in to confirm your age. Use --cookies-from-browser or --cookies for the authentication. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp  for how to manually pass cookies. Also see  https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies  for tips on effectively exporting YouTube cookies

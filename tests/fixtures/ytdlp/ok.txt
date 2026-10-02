@@ -1,0 +1,17 @@
+# captured 2026-10-01, yt-dlp 2026.08.19 (bundled build, jNQXAC9IVRw, T2 argv plus --no-quiet)
+exit: 0
+--- stdout
+[youtube] Extracting URL: https://www.youtube.com/watch?v=jNQXAC9IVRw
+[youtube] jNQXAC9IVRw: Downloading webpage
+[youtube] jNQXAC9IVRw: Downloading visionos player API JSON
+[youtube] jNQXAC9IVRw: Downloading m3u8 information
+[info] jNQXAC9IVRw: Downloading 1 format(s): 133+140
+[download] Destination: /work/bundled-ok/youtube-jNQXAC9IVRw.f133.mp4
+[download]   0.2% of  422.93KiB at  Unknown B/s ETA Unknown[download]   0.7% of  422.93KiB at  Unknown B/s ETA Unknown[download]   1.7% of  422.93KiB at  Unknown B/s ETA Unknown[download]   3.5% of  422.93KiB at  Unknown B/s ETA Unknown[download]   7.3% of  422.93KiB at   11.13MiB/s ETA 00:00  [download]  14.9% of  422.93KiB at    8.73MiB/s ETA 00:00[download]  30.0% of  422.93KiB at    6.25MiB/s ETA 00:00[download]  60.3% of  422.93KiB at    7.83MiB/s ETA 00:00[download] 100.0% of  422.93KiB at   10.21MiB/s ETA 00:00[download] 100% of  422.93KiB in 00:00:00 at 3.73MiB/s   
+[download] Destination: /work/bundled-ok/youtube-jNQXAC9IVRw.f140.m4a
+[download]   0.3% of  302.04KiB at  Unknown B/s ETA Unknown[download]   1.0% of  302.04KiB at  Unknown B/s ETA Unknown[download]   2.3% of  302.04KiB at  Unknown B/s ETA Unknown[download]   5.0% of  302.04KiB at  Unknown B/s ETA Unknown[download]  10.3% of  302.04KiB at  Unknown B/s ETA Unknown[download]  20.9% of  302.04KiB at   57.65MiB/s ETA 00:00  [download]  42.0% of  302.04KiB at  104.48MiB/s ETA 00:00[download]  84.4% of  302.04KiB at  181.62MiB/s ETA 00:00[download] 100.0% of  302.04KiB at  192.37MiB/s ETA 00:00[download] 100% of  302.04KiB in 00:00:00 at 2.35MiB/s   
+[Merger] Merging formats into "/work/bundled-ok/youtube-jNQXAC9IVRw.mp4"
+Deleting original file /work/bundled-ok/youtube-jNQXAC9IVRw.f140.m4a (pass -k to keep)
+Deleting original file /work/bundled-ok/youtube-jNQXAC9IVRw.f133.mp4 (pass -k to keep)
+/work/bundled-ok/youtube-jNQXAC9IVRw.mp4
+--- stderr

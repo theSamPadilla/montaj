@@ -1,0 +1,9 @@
+# captured 2026-10-01, yt-dlp 2026.03.17 (montaj dev venv build, jNQXAC9IVRw; HTTP 403 on the media request)
+exit: 1
+--- stdout
+[youtube] Extracting URL: https://www.youtube.com/watch?v=jNQXAC9IVRw
+[youtube] jNQXAC9IVRw: Downloading webpage
+[youtube] jNQXAC9IVRw: Downloading android vr player API JSON
+[info] jNQXAC9IVRw: Downloading 1 format(s): 18
+--- stderr
+ERROR: unable to download video data: HTTP Error 403: Forbidden

@@ -1,0 +1,15 @@
+# captured 2026-10-01, yt-dlp 2026.08.19 (bundled build, --match-filters duration<=10 on a 3 min video)
+exit: 0
+--- stdout
+[youtube] Extracting URL: https://www.youtube.com/watch?v=dQw4w9WgXcQ
+[youtube] dQw4w9WgXcQ: Downloading webpage
+[youtube] dQw4w9WgXcQ: Downloading visionos player API JSON
+[youtube] dQw4w9WgXcQ: Downloading m3u8 information
+[youtube] dQw4w9WgXcQ: Downloading player 8ab5c328-main
+[youtube] [jsc:deno] Solving JS challenges using deno
+[youtube] [jsc:node] Solving JS challenges using node
+[download] Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster) does not pass filter (duration<=10), skipping ..
+--- stderr
+WARNING: [youtube] [jsc] Remote components challenge solver script (deno, node) and NPM package (deno) were skipped. These may be required to solve JS challenges. You can enable these downloads with  --remote-components ejs:github  (recommended) or  --remote-components ejs:npm , respectively. For more information and alternatives, refer to  https://github.com/yt-dlp/yt-dlp/wiki/EJS
+WARNING: [youtube] dQw4w9WgXcQ: Signature solving failed: Some formats may be missing. Ensure you have a supported JavaScript runtime and challenge solver script distribution installed. Review any warnings presented before this message. For more details, refer to  https://github.com/yt-dlp/yt-dlp/wiki/EJS
+WARNING: [youtube] dQw4w9WgXcQ: n challenge solving failed: Some formats may be missing. Ensure you have a supported JavaScript runtime and challenge solver script distribution installed. Review any warnings presented before this message. For more details, refer to  https://github.com/yt-dlp/yt-dlp/wiki/EJS
