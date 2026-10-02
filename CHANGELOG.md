@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.21.0
+
 - **Added (steps): `fetch` takes `meta`.** With it, stdout is always one JSON object, `{"paths": [...], "videos": [{id, path, url, title, description, view_count, like_count, comment_count, upload_date, duration}]}`, one entry per downloaded video (a profile with `limit` gives one each). The values come from yt-dlp's info dict (`%(.{...})j` at `after_move`); a value the site did not return is `null`, and `description` is cut at 2200 characters. Without `meta` the command line and the output are unchanged. An Instagram profile or account page (yt-dlp cannot read one signed out) now fails with code `instagram_profile` and a hint to paste individual reel links, instead of the generic `failed`. Fixtures are real captures from the bundled yt-dlp 2026.08.19 (`tests/fixtures/ytdlp/meta_*.txt`). (`steps/media/fetch.{py,json}`, `tests/test_fetch_meta.py`)
 
 - **Added (steps): `transcribe` reports `word_count`, `speech_s` and `wpm`; `detect_shots` reports `cuts_per_min`.** `wpm` is words per minute from the first counted word's start to the last one's end (an entry counts as a word when its text has a letter or digit), one decimal; an unreadable words file leaves the three keys out and never fails the step. `cuts_per_min` is `(shots - 1)` per minute, one decimal. (`steps/speech/transcribe.{py,json}`, `steps/media/detect_shots.{py,json}`, `tests/test_step_speech_shot_stats.py`)
