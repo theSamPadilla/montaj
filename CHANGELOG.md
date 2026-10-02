@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.20.1
+
 - **Changed (fetch): a failed `montaj/fetch` now says why.** The error carries the classified code (`unavailable`, `blocked`, `offline`, `too_long`, `too_large`, `no_space`, `failed`; YouTube URLs reuse `classify_error`, other sites are `failed`), a one-line `hint`, and `stderr_tail` (last 15 lines of yt-dlp's stderr, ANSI stripped, at most 2 KB). `message` repeats code and hint, so callers that flatten the error still see them. Was `unexpected_error` with a raw 4 KB slice. (`steps/media/fetch.py`)
 
 ## v5.20.0
