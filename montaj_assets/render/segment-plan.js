@@ -174,3 +174,103 @@ export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
 
   return segments
 }
+
+/**
+ * The fewest frames any one video encode is given (5.20.5).
+ *
+ * libx265 reads an UNINITIALISED member for the DTS of an encode of 2 frames or
+ * fewer. x265 4.0 `Encoder::encode` sets `m_bframeDelayTime` only when the frame
+ * numbered `m_bframeDelay` (0-based) arrives (encoder.cpp:1765-1766), and the
+ * constructor never initialises it. `m_bframeDelay` is 2 with B-frames and
+ * b-pyramid on (encoder.cpp:4222), as at our `preset fast`. Every packet's DTS is
+ * then `pts - m_bframeDelayTime` (encoder.cpp:2393-2395): whatever the heap held.
+ * In a small process that is 0 and nothing shows. In a 4K HDR segment it is
+ * garbage (measured on Sam's seg-0017: dts -6161412657059652 at pts 0), and when
+ * the garbage still fits after rescaling the mp4 muxer refuses the packet,
+ * "pts/dts pair unsupported" (AVERROR_PATCHWELCOME, exit 176): ffmpeg writes the
+ * audio, no video stream, and the export dies. When it overflows, the muxer
+ * drops the DTS and the segment comes out fine, which is why the same project
+ * exported one day and not the next.
+ *
+ * 3 is what x265 needs whatever its B-frame settings (`m_bframeDelay` is at most
+ * 2), and the least that keeps a run of tiny clips in small groups. x264 has
+ * the same logic but zeroes its context first (encoder.c:1513), so SDR was
+ * never affected; grouping runs for every colour space anyway, because it costs
+ * one lossless pass over a few frames and keeps one code path.
+ */
+export const MIN_SEGMENT_FRAMES = 3
+
+/**
+ * Group planned segments so that no group is shorter than `minFrames` (5.20.5).
+ *
+ * A segment that is already long enough becomes a group of one, the same object,
+ * encoded exactly as before. Runs of shorter segments (an agent's zoom built as
+ * a dozen 2-frame clips, or a cut landing one frame from an overlay edge) are
+ * collected into one group, closed as soon as it holds `minFrames`. A run that
+ * is still short borrows frames from the next segment: just the frames it needs
+ * when the rest of that segment stays long enough, otherwise all of it. A short
+ * run at the very end borrows from the segment before it the same way, or joins
+ * the group before it. Only a whole timeline under `minFrames` stays short.
+ *
+ * Nothing is dropped and nothing moves. A group's parts are the planned segments
+ * in order, a borrowed one cut on the frame grid, each with its own items and
+ * overlays, so every frame shows what the planner said it shows. The encoder
+ * renders each part on its own and encodes the joined frames once
+ * (encode-segment.js `encodeSegmentGroup`).
+ *
+ * Kept OUT of `planSegments`, like compose.js's leading gap: resolver-parity
+ * holds `planSegments` to the frozen pre-T7 algorithm, and the editor preview
+ * never encodes, so this is a render-only concern.
+ *
+ * @param {Array<{start: number, end: number}>} segments  planSegments' output, in order
+ * @param {number} fps
+ * @param {number} [minFrames]
+ * @returns {Array<{start: number, end: number, parts: object[]}>}
+ */
+export function groupShortSegments(segments, fps, minFrames = MIN_SEGMENT_FRAMES) {
+  const frameOf = t => Math.round(t * fps)
+  const framesIn = s => frameOf(s.end) - frameOf(s.start)
+  const framesOf = parts => parts.reduce((n, s) => n + framesIn(s), 0)
+  // Cut on the frame grid, the same rounding boundariesFrom uses, so the two
+  // halves meet exactly and each keeps the planner's items, overlays and flag.
+  const cut = (s, k) => {
+    const t = (frameOf(s.start) + k) / fps
+    return [{ ...s, end: t }, { ...s, start: t }]
+  }
+
+  const groups = []
+  let run = null
+  for (const seg of segments) {
+    const f = framesIn(seg)
+    if (!run) {
+      if (f >= minFrames) groups.push([seg])
+      else run = [seg]
+      continue
+    }
+    const need = minFrames - framesOf(run)
+    if (f >= minFrames && f - need >= minFrames) {
+      const [head, rest] = cut(seg, need)
+      groups.push([...run, head], [rest])
+      run = null
+      continue
+    }
+    run.push(seg)
+    if (framesOf(run) >= minFrames) {
+      groups.push(run)
+      run = null
+    }
+  }
+  if (run) {
+    const prev = groups.pop()
+    const need = minFrames - framesOf(run)
+    if (!prev) {
+      groups.push(run)
+    } else if (prev.length === 1 && framesIn(prev[0]) - need >= minFrames) {
+      const [rest, tail] = cut(prev[0], framesIn(prev[0]) - need)
+      groups.push([rest], [tail, ...run])
+    } else {
+      groups.push([...prev, ...run])
+    }
+  }
+  return groups.map(parts => ({ start: parts[0].start, end: parts[parts.length - 1].end, parts }))
+}

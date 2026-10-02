@@ -4,7 +4,8 @@
  *
  * Pipeline:
  *   1. planSegments() — split timeline at clip/overlay boundaries
- *   2. encodeSegment() — encode each segment independently
+ *   2. encodeSegmentGroup() — encode each segment independently (short ones
+ *      grouped to MIN_SEGMENT_FRAMES first, see groupShortSegments)
  *   3. concat — ffmpeg concat demuxer (video: copy, audio: re-encode to uniform AAC 48kHz)
  *   4. mixAudioIntoVideo() — independent audio tracks mixed in final pass
  *
@@ -12,12 +13,13 @@
  */
 import { spawnSync } from 'child_process'
 import { mkdirSync, writeFileSync, rmSync, renameSync } from 'fs'
-import { dirname, join } from 'path'
+import { dirname, join, resolve } from 'path'
 import { randomBytes } from 'crypto'
 import { FFMPEG } from './ffmpeg-bin.js'
-import { planSegments } from './segment-plan.js'
+import { planSegments, groupShortSegments, MIN_SEGMENT_FRAMES } from './segment-plan.js'
 import { markCards } from './cover-probe.js'
-import { encodeSegment, buildVividLutChain, hasLut3d, twoStageSeek } from './encode-segment.js'
+import { encodeSegmentGroup, buildVividLutChain, hasLut3d, twoStageSeek } from './encode-segment.js'
+import { assertSegmentsJoinable } from './segment-check.js'
 import { mixAudioIntoVideo } from './mix-audio.js'
 import { pMap } from './p-map.js'
 
@@ -53,6 +55,9 @@ export async function compose({
   // the poster-frame tonemap below (an HDR project's thumbnail). null uses the
   // master look, which is what every caller predating --sdr-curve gets.
   sdrCurve = null,
+  // Test hook: the fewest frames one encode is given (segment-plan.js
+  // MIN_SEGMENT_FRAMES). 1 turns grouping off, i.e. the pre-5.20.5 path.
+  _minSegmentFrames = MIN_SEGMENT_FRAMES,
 }) {
   // Default resolution is portrait (1080x1920) — montaj's default orientation.
   // render.js always passes explicit dimensions, but direct callers hitting
@@ -143,6 +148,21 @@ export async function compose({
   const lastEnd = segments[segments.length - 1].end
   clog(`planned ${segments.length} segment(s) across ${lastEnd.toFixed(1)}s`)
 
+  // ── NO ENCODE UNDER MIN_SEGMENT_FRAMES (5.20.5) ─────────────────────────
+  //
+  // libx265 stamps an uninitialised DTS on an encode of 2 frames or fewer, and
+  // on Sam's 4K HDR export the mp4 muxer refused it: seg-0017, the first of an
+  // agent's 12 consecutive 2-frame zoom clips, came out with audio and no
+  // video, and the render died (full mechanism on MIN_SEGMENT_FRAMES). Short
+  // segments are grouped with their neighbours, each part still rendered on its
+  // own (encode-segment.js encodeSegmentGroup), so no frame changes.
+  const groups = groupShortSegments(segments, fps, _minSegmentFrames)
+  const joined = groups.filter(g => g.parts.length > 1)
+  if (joined.length > 0) {
+    clog(`grouped ${joined.reduce((n, g) => n + g.parts.length, 0)} short part(s) into `
+      + `${joined.length} segment(s) of at least ${_minSegmentFrames} frames`)
+  }
+
   // 2. Encode each segment
   mkdirSync(dirname(outputPath), { recursive: true })
   const segDir = outputPath + '.segments'
@@ -159,23 +179,26 @@ export async function compose({
   // Encode up to SEGMENT_WORKERS segments concurrently. pMap returns results in
   // input order, so concatSegments below still joins them in timeline order; each
   // segment writes a distinct seg-NNNN.mp4, so concurrent encodes never collide.
-  const segPaths = await pMap(segments, async (seg, i) => {
+  const encoded = await pMap(groups, async (group, i) => {
     // Stamp project color space onto each segment so the encoder knows what
     // codec/pix_fmt/color metadata to emit. planSegments doesn't know about
     // color space; that's a project-level concern threaded through here.
-    seg.colorSpace = projectColorSpace
+    for (const part of group.parts) part.colorSpace = projectColorSpace
     const segPath = join(segDir, `seg-${String(i).padStart(4, '0')}.mp4`)
+    const items = new Set(group.parts.flatMap(p => p.items)).size
+    const overlays = new Set(group.parts.flatMap(p => p.overlays)).size
 
-    clog(`segment ${i + 1}/${segments.length} (${seg.start.toFixed(2)}-${seg.end.toFixed(2)}s): ` +
-         `${seg.items.length} item(s), ${seg.overlays.length} overlay(s)`)
+    clog(`segment ${i + 1}/${groups.length} (${group.start.toFixed(2)}-${group.end.toFixed(2)}s): ` +
+         `${items} item(s), ${overlays} overlay(s)` +
+         (group.parts.length > 1 ? `, ${group.parts.length} short parts` : ''))
 
-    await encodeSegment(seg, segPath, { sdrCurve })
-    return segPath
+    await encodeSegmentGroup(group, segPath, { sdrCurve })
+    return { path: segPath, start: group.start, end: group.end }
   }, SEGMENT_WORKERS)
 
   // 3. Concat all segments
   const preMixPath = hasAudio ? outputPath.replace(/(\.\w+)$/, '_premix$1') : outputPath
-  concatSegments(segPaths, preMixPath)
+  concatSegments(encoded, preMixPath)
 
   // 4. Mix independent audio tracks (concat output guaranteed to have audio
   //    because every segment produces AAC 48kHz — either from source or anullsrc)
@@ -321,12 +344,24 @@ export function embedThumbnail(outputPath, colorSpace, opts = {}) {
   clog('attached poster thumbnail')
 }
 
-function concatSegments(paths, outputPath) {
+/**
+ * @param {Array<{path: string, start: number, end: number}>} segments  in timeline order
+ * @param {string} outputPath
+ */
+function concatSegments(segments, outputPath) {
+  // Every segment must have a picture and match the first one's stream
+  // parameters, or the join either fails with an ffmpeg error naming the list
+  // file or, worse, succeeds with the first segment's tags over all of them.
+  // Fail here instead, naming the segment and its place on the timeline.
+  assertSegmentsJoinable(segments)
+
   const listFile = outputPath + '.concat.txt'
-  writeFileSync(listFile, paths.map(p => `file '${p}'`).join('\n'))
+  // Absolute: the concat demuxer resolves a relative entry against the LIST's
+  // directory, not the cwd, so a relative outputPath doubled its own prefix.
+  writeFileSync(listFile, segments.map(s => `file '${resolve(s.path)}'`).join('\n'))
 
   // PHASE MARKER: "concatenating" → encoding in serve's _render_phase_for (projects.py).
-  clog(`concatenating ${paths.length} segment(s)...`)
+  clog(`concatenating ${segments.length} segment(s)...`)
 
   // Video: -c:v copy. All segments from a single render share the project's
   // working codec — h264 for SDR, hevc for HDR — so stream-copy concat is safe.

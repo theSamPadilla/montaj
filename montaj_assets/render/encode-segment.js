@@ -32,7 +32,7 @@
  * per-segment ffprobe.
  */
 import { spawn, spawnSync } from 'child_process'
-import { mkdirSync } from 'fs'
+import { mkdirSync, rmSync } from 'fs'
 import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { specFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
@@ -40,6 +40,7 @@ import { lutPath } from './look.js'
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
 import { graphicsToHdrChain, GRAPHICS_WHITE_NITS, GRAPHICS_WHITE_NITS_NO_FOOTAGE } from './hdr-graphics.js'
 import { externalizeFilterGraph } from './filter-script.js'
+import { assertSegmentHasVideo } from './segment-check.js'
 import {
   geometryFor, geometryAt, toRotatedPixelBox, toPixelBox, compileTrackExprInfo,
   transitionProgress, hasCropKeyframes, imageFitFor, isFullFrameCrop, CROP_KEYFRAME_PROPS,
@@ -1868,11 +1869,65 @@ function matchCrossfadePairs(items, segStart, segEnd) {
 }
 
 /**
+ * The video encoder half of a segment encode: codec, pix_fmt, colour tags,
+ * GOP, length and mp4 flags, in the order the encode-args goldens pin. Shared
+ * by encodeSegment and encodeSegmentGroup, so a grouped segment is encoded
+ * exactly like every other one and the join can stream-copy them all.
+ */
+export function segmentVideoArgs(spec, projectColorSpace, fps, duration) {
+  return [
+    '-c:v', spec.encoder, ...spec.encoderArgs, '-pix_fmt', spec.outputPixFmt,
+    ...spec.outputColorArgs,
+    // HDR segments are pinned LIMITED range here, at the encoder. compose.js
+    // joins segments with `-c:v copy` and the joined mp4 keeps only the FIRST
+    // segment's parameter sets, so one segment's range flag is the whole
+    // film's. The HDR canvas's range tag (Step 1) would not hold on its own:
+    // the 10-bit canvas reaches `overlay=format=yuv420` through an
+    // inserted scaler that is free to change range. So each segment took the
+    // range of the layers it composited, full for a clip normalized from a
+    // full-range source (an iPhone screen recording). One at 0 s flagged a
+    // film full range over limited samples: every player lifted the blacks
+    // and dimmed the whites of every other segment, SDR-origin clips worst.
+    // Pinned here, ffmpeg converts a full-range layer to limited instead.
+    // Measured: a segment with only limited layers decodes byte-identical.
+    // SDR is already limited via its canvas tag (Step 1). Pinned by
+    // hdr-segment-range.integration.test.mjs.
+    ...(isHdr(projectColorSpace) ? ['-color_range', 'tv'] : []),
+    // A Dolby Vision source (e.g. an iPhone HDR clip) carries a DV RPU, and
+    // nothing upstream strips it: its side data propagates through the filter
+    // graph into libx265, which re-emits the RPU in-band (HEVC NAL type 62), and
+    // the MP4 muxer then dies with "Error submitting a packet to the muxer: Not
+    // yet implemented in FFmpeg, patches welcome". Montaj outputs HDR10/HLG,
+    // never Dolby Vision, so the RPU is unwanted — dropping NAL 62 before the
+    // muxer leaves plain HEVC (the HDR10 mastering-display / content-light SEI,
+    // NAL 39/40, are untouched). No-op on a non-DV or non-HEVC stream.
+    // The SAME muxer message has a second cause: libx265's uninitialised DTS
+    // on an encode of 2 frames or fewer (segment-plan.js MIN_SEGMENT_FRAMES).
+    ...(/265|hevc/i.test(spec.encoder) ? ['-bsf:v', 'filter_units=remove_types=62'] : []),
+    '-g', String(fps), '-keyint_min', String(fps),
+    '-t', String(duration),
+    '-movflags', '+faststart',
+  ]
+}
+
+/**
+ * A lossless stand-in for segmentVideoArgs: one part of a segment group,
+ * decoded again by encodeSegmentGroup's single real encode. FFV1 in NUT keeps
+ * the samples bit-exact and NUT keeps 1/fps timestamps exact (Matroska rounds
+ * them to the millisecond). Colour tags are restamped by that encode.
+ */
+function intermediateVideoArgs(spec, duration) {
+  return ['-c:v', 'ffv1', '-level', '3', '-pix_fmt', spec.outputPixFmt, '-t', String(duration), '-f', 'nut']
+}
+
+/**
  * @param {object} segment — from planSegments(); may carry a colorSpace key
  *   (project working color space). Defaults to sdr_bt709 when missing.
  * @param {string} outputPath
  * @param {object} [opts]
  * @param {boolean} [opts._dryRun] — return { inputs, filterParts, args } without executing
+ * @param {boolean} [opts.intermediate] — write a lossless FFV1/NUT part for
+ *   encodeSegmentGroup instead of the final codec
  * @param {string|null} [opts.sdrCurve] — look curve id for any HDR→SDR item
  *   conversion in this segment; null/omitted uses the master look.
  * @returns {string | object} outputPath, or dry-run result
@@ -2240,35 +2295,9 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
     '-filter_complex', filterParts.join(';'),
     '-map', videoLabel,
     ...audioArgs,
-    '-c:v', spec.encoder, ...spec.encoderArgs, '-pix_fmt', spec.outputPixFmt,
-    ...spec.outputColorArgs,
-    // HDR segments are pinned LIMITED range here, at the encoder. compose.js
-    // joins segments with `-c:v copy` and the joined mp4 keeps only the FIRST
-    // segment's parameter sets, so one segment's range flag is the whole
-    // film's. The HDR canvas's range tag (Step 1) would not hold on its own:
-    // the 10-bit canvas reaches `overlay=format=yuv420` through an
-    // inserted scaler that is free to change range. So each segment took the
-    // range of the layers it composited, full for a clip normalized from a
-    // full-range source (an iPhone screen recording). One at 0 s flagged a
-    // film full range over limited samples: every player lifted the blacks
-    // and dimmed the whites of every other segment, SDR-origin clips worst.
-    // Pinned here, ffmpeg converts a full-range layer to limited instead.
-    // Measured: a segment with only limited layers decodes byte-identical.
-    // SDR is already limited via its canvas tag (Step 1). Pinned by
-    // hdr-segment-range.integration.test.mjs.
-    ...(isHdr(projectColorSpace) ? ['-color_range', 'tv'] : []),
-    // A Dolby Vision source (e.g. an iPhone HDR clip) carries a DV RPU, and
-    // nothing upstream strips it: its side data propagates through the filter
-    // graph into libx265, which re-emits the RPU in-band (HEVC NAL type 62), and
-    // the MP4 muxer then dies with "Error submitting a packet to the muxer: Not
-    // yet implemented in FFmpeg, patches welcome". Montaj outputs HDR10/HLG,
-    // never Dolby Vision, so the RPU is unwanted — dropping NAL 62 before the
-    // muxer leaves plain HEVC (the HDR10 mastering-display / content-light SEI,
-    // NAL 39/40, are untouched). No-op on a non-DV or non-HEVC stream.
-    ...(/265|hevc/i.test(spec.encoder) ? ['-bsf:v', 'filter_units=remove_types=62'] : []),
-    '-g', String(fps), '-keyint_min', String(fps),
-    '-t', String(duration),
-    '-movflags', '+faststart',
+    ...(opts.intermediate
+      ? intermediateVideoArgs(spec, duration)
+      : segmentVideoArgs(spec, projectColorSpace, fps, duration)),
     outputPath,
   ]
 
@@ -2284,5 +2313,69 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
     throw new Error(`ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s):\n${cause}${(result.stderr || '').slice(-500)}`)
   }
 
+  // An exit code of 0 does not promise a picture: a graph can end without a
+  // frame, and the join then fails far from the cause. Name it here (5.20.5).
+  assertSegmentHasVideo(outputPath, { start, end })
+
+  return outputPath
+}
+
+/**
+ * Encode one group from segment-plan.js `groupShortSegments` to `outputPath`
+ * (5.20.5).
+ *
+ * A group of one is encodeSegment, unchanged. A group of several holds planned
+ * segments too short to hand libx265 alone (MIN_SEGMENT_FRAMES). Each part is
+ * rendered by encodeSegment exactly as it would have been, into a lossless
+ * FFV1/NUT file, and the parts are joined with the concat FILTER into ONE encode
+ * with the segment's own codec arguments (segmentVideoArgs). So every frame shows
+ * what its part composited, and the result has the same stream parameters as
+ * every other segment, which is what compose.js's stream-copy join needs. Parts
+ * render one after another, never in one graph: a single part of Sam's zoom
+ * scaled its b-roll to 6682x11878 at 4:4:4 10-bit, about 600 MB a frame.
+ *
+ * @param {{start: number, end: number, parts: object[]}} group  parts carry colorSpace
+ * @param {string} outputPath
+ * @param {object} [opts]  as encodeSegment; `_dryRun` returns the join's args only
+ */
+export async function encodeSegmentGroup(group, outputPath, opts = {}) {
+  const { start, end, parts } = group
+  if (parts.length === 1) return encodeSegment(parts[0], outputPath, opts)
+
+  const { fps } = parts[0]
+  const spec = specFor(parts[0].colorSpace ?? DEFAULT_COLOR_SPACE)
+  const duration = end - start
+  const partPath = k => `${outputPath.replace(/\.mp4$/i, '')}.part-${String(k).padStart(2, '0')}.nut`
+  // The concat filter takes each part's video and audio in turn. setparams
+  // restamps the tags the direct path's frames carry (its canvas is tagged
+  // limited range, Step 1, and its last step is spec.setparams, Step 4); NUT
+  // does not keep them.
+  const graph = parts.map((_, k) => `[${k}:v:0][${k}:a:0]`).join('')
+    + `concat=n=${parts.length}:v=1:a=1[cv][ca];[cv]${spec.setparams}:range=tv[vout]`
+  const args = [
+    '-y', ...parts.flatMap((_, k) => ['-i', partPath(k)]),
+    '-filter_complex', graph,
+    '-map', '[vout]',
+    '-map', '[ca]', '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '2',
+    ...segmentVideoArgs(spec, parts[0].colorSpace ?? DEFAULT_COLOR_SPACE, fps, duration),
+    outputPath,
+  ]
+  if (opts._dryRun) return { args }
+
+  try {
+    for (const [k, part] of parts.entries()) {
+      await encodeSegment(part, partPath(k), { ...opts, intermediate: true })
+    }
+    const result = await runFfmpeg(args, FFMPEG_TIMEOUT_MS, dirname(outputPath))
+    if (result.stderr) logFfmpegStderr(result.stderr)
+    if (result.status !== 0) {
+      const cause = result.error ? `${result.error.message}\n` : ''
+      throw new Error(`ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s, `
+        + `${parts.length} short parts joined):\n${cause}${(result.stderr || '').slice(-500)}`)
+    }
+    assertSegmentHasVideo(outputPath, { start, end })
+  } finally {
+    for (let k = 0; k < parts.length; k++) rmSync(partPath(k), { force: true })
+  }
   return outputPath
 }
