@@ -366,14 +366,18 @@ describe('no-offset equivalence gate — inner anchor, historical values (10 wra
     })
   })
 
-  test('accent: bottom 38%, padding 0 6%, textAlign center, no opacity key', () => {
+  // accent centres its block on 59.5% of the frame height: a zero-height
+  // anchor on that line (so a segment scale grows the block around its own
+  // centre) and a nested node carrying the centring translate.
+  test('accent: top 59.5%, height 0, padding 0 6%, textAlign center, no opacity key; nested translateY(-50%)', () => {
     const { innerEl } = renderNoOffset('accent', { words: WORDS })
     assert.deepEqual(innerEl.props.style, {
       position: 'absolute',
-      bottom: '38%', left: 0, right: 0,
+      top: '59.5%', left: 0, right: 0, height: 0,
       textAlign: 'center', padding: '0 6%',
     })
     assert.ok(!('opacity' in innerEl.props.style))
+    assert.deepEqual(innerEl.props.children.props.style, { transform: 'translateY(-50%)' })
   })
 
   test('pop: bottom 24%, padding 0 8%, textAlign center, no wrapper opacity', () => {
@@ -522,18 +526,18 @@ describe('per-segment color override — seg.color ?? color (base text color)', 
   })
 })
 
-// accent renders a running window as an array of word spans directly under
-// the anchor, so the single-child extractors above do not apply.
+// accent renders a running window as an array of word spans under the
+// anchor's centring node, so the single-child extractors above do not apply.
 describe('accent — base color, per-segment color, accentColor', () => {
-  const spanColors = (innerEl) => innerEl.props.children.map(c => c.props.style.color)
+  const spanColors = (innerEl) => innerEl.props.children.props.children.map(c => c.props.style.color)
   const ACCENT_WORDS = [
     { word: 'hi',    start: 1, end: 2 },
     { word: 'there', start: 2, end: 3, accent: 'sans' },
   ]
 
-  test('with neither set, a plain word is #F5F5F5', () => {
+  test('with neither set, a plain word is #FBFBFB', () => {
     const { innerEl } = renderForColor('accent', { words: ACCENT_WORDS })
-    assert.equal(spanColors(innerEl)[0], '#F5F5F5')
+    assert.equal(spanColors(innerEl)[0], '#FBFBFB')
   })
   test('a segment with color renders a non-accent word with that color', () => {
     const { innerEl } = renderForColor('accent', { segColor: '#123456', words: ACCENT_WORDS })

@@ -35,7 +35,7 @@ export const CAPTION_STYLE_FONT_WEIGHT: Record<Style, number> = {
   'word-by-word': 800,
   'highlight-box': 900,
   outline: 900,
-  accent: 800,
+  accent: 700,
 }
 
 /** `Captions.fontFamily`'s default per style. Six of the seven templates
@@ -60,7 +60,7 @@ export const CAPTION_STYLE_LETTER_SPACING: Partial<Record<Style, string>> = {
   clean: '0.01em',
   pop: '-0.02em',
   'word-by-word': '-0.02em',
-  accent: '-0.04em',
+  accent: '-0.03em',
 }
 
 /** `Captions.lineHeight`'s default per style.
@@ -78,7 +78,7 @@ export const CAPTION_STYLE_LINE_HEIGHT: Partial<Record<Style, number>> = {
   subtitle: 1.4,
   'highlight-box': 1.25,
   outline: 1.15,
-  accent: 0.86,
+  accent: 0.76,
 }
 
 /** `Captions.textAlign`'s default per style — every template centers text by
@@ -104,13 +104,16 @@ export const CAPTION_STYLE_TEXT_TRANSFORM: Partial<Record<Style, CaptionTextTran
   outline: 'uppercase',
 }
 
-/** Google Fonts the `accent` style always needs (Inter Tight running text,
- *  Instrument Serif italic accent, Caveat script accent). Specs use '+' for
- *  spaces, as the loader interpolates them raw into the googleapis URL.
+/** Google Fonts the `accent` style always needs (Inter Tight 700 running
+ *  text, Playfair Display italic 700 accent, Caveat script accent). Specs use
+ *  '+' for spaces, as the loader interpolates them raw into the googleapis
+ *  URL. The Playfair spec carries a comma (`ital,wght@1,700`), so this list is
+ *  always handed to the loader as an array: a bare string would be split on
+ *  commas.
  *  The other copy of this list is `ACCENT_FONTS` in
  *  `montaj_assets/render/render.js` (the editor cannot import render.js);
  *  keep the two identical. */
-export const ACCENT_CAPTION_FONTS = ['Inter+Tight:wght@800', 'Instrument+Serif:ital@1', 'Caveat:wght@700']
+export const ACCENT_CAPTION_FONTS = ['Inter+Tight:wght@700', 'Playfair+Display:ital,wght@1,700', 'Caveat:wght@700']
 
 /** The font list the editor must load for a caption style: the track's own
  *  `googleFonts` (array or bare string), plus the accent fonts for `accent`,

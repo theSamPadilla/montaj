@@ -1214,8 +1214,10 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
     }
     if (captions.style === 'accent') {
       // PL41. Spaces are '+' (bundle.js:762-767 interpolates specs raw into the
-      // googleapis URL). A persisted project can carry a bare string.
-      const ACCENT_FONTS = ['Inter+Tight:wght@800', 'Instrument+Serif:ital@1', 'Caveat:wght@700']
+      // googleapis URL). A persisted project can carry a bare string. The
+      // editor's ACCENT_CAPTION_FONTS (captionStyleDefaults.ts) is the other
+      // copy of this list; keep the two identical.
+      const ACCENT_FONTS = ['Inter+Tight:wght@700', 'Playfair+Display:ital,wght@1,700', 'Caveat:wght@700']
       const given = Array.isArray(captionFonts) ? captionFonts : captionFonts ? [captionFonts] : []
       captionFonts = [...new Set([...given, ...ACCENT_FONTS])]
     }

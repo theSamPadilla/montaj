@@ -308,7 +308,7 @@ const DEFAULT_FONT_WEIGHT = {
   'highlight-box':  900,
   'word-by-word':   800,
   pop:              800,
-  accent:           800,
+  accent:           700,
 }
 
 describe('fontWeight — no prop keeps each template\'s current default literal', () => {

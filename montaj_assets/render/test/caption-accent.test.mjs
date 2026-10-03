@@ -1,11 +1,17 @@
 // montaj_assets/render/test/caption-accent.test.mjs
 //
 // The Accent caption style (PL41): running captions in windows of at most
-// three words, hard cuts; hero blocks (`seg.hero`) 2.4x larger on two
-// balanced lines, each word cutting on when spoken with the layout fixed;
+// three words, hard cuts; hero blocks (`seg.hero`) at the running size on two
+// staggered lines, each word cutting on when spoken with the layout fixed;
 // a word's optional `accent` ('serif' | 'sans' | 'script') picks its
-// treatment. Plus render.js: the 'accent' style resolves to accent.jsx and
-// always loads its three Google fonts, merged with the caller's list.
+// treatment, and consecutive script words form one script run. Both tiers
+// centre on 59.5% of the frame height. Plus render.js: the 'accent' style
+// resolves to accent.jsx and always loads its three Google fonts, merged with
+// the caller's list, identical to the editor's copy of that list.
+//
+// The default values (size 168, weight 700, Playfair Display italic 700
+// accent, the scales, indents and anchor) were matched to the reference by
+// measurement in PL41 T6.
 //
 // Harness: the same esbuild + 'montaj/render' shim trick as
 // captions-font.test.mjs (copied, that file does not export its helpers).
@@ -15,7 +21,7 @@
 
 import { test, describe, before } from 'node:test'
 import assert from 'node:assert/strict'
-import { writeFileSync, unlinkSync, existsSync } from 'node:fs'
+import { writeFileSync, unlinkSync, existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import esbuild from 'esbuild'
@@ -123,9 +129,12 @@ const mainLineDivs = (el) => lineDivs(el).filter(d => !kidsOf(d).every(isScriptS
 
 const FPS = 30
 const at = (t) => Math.round(t * FPS)
-const BASE_COLOR = '#F5F5F5'
+const BASE_COLOR = '#FBFBFB'
 const ACCENT_COLOR = '#F00000'
 const RUNNING_FONT = '"Inter Tight", system-ui, sans-serif'
+const SERIF_FONT = '"Playfair Display", Georgia, serif'
+const SIZE = 168
+const SHADOW = '0 1px 3px rgba(0,0,0,0.25)'
 
 const WORDS = [
   { word: 'i',     start: 1,   end: 1.2 },
@@ -166,12 +175,27 @@ describe('running windows', () => {
 // 2. Running accent
 // ---------------------------------------------------------------------------
 
-test('running accent serif: red italic Instrument Serif', () => {
+test('running accent serif: red Playfair Display italic 700, 1.2x, -0.02em', () => {
   const el = Accent({ frame: at(1.8), fps: FPS, segments: [seg()] })
   const s = spanFor(el, 'drone').props.style
   assert.equal(s.color, ACCENT_COLOR)
   assert.equal(s.fontStyle, 'italic')
-  assert.ok(s.fontFamily.startsWith('"Instrument Serif"'), s.fontFamily)
+  assert.equal(s.fontFamily, SERIF_FONT)
+  assert.equal(s.fontWeight, 700)
+  assert.equal(s.fontSize, SIZE * 1.2)
+  assert.equal(s.letterSpacing, '-0.02em')
+})
+
+test('running defaults: 168px Inter Tight 700, -0.03em, line-height 0.76, #FBFBFB, a light shadow', () => {
+  const el = Accent({ frame: at(1.25), fps: FPS, segments: [seg()] })
+  const s = spanFor(el, 'build').props.style
+  assert.equal(s.fontSize, SIZE)
+  assert.equal(s.fontFamily, RUNNING_FONT)
+  assert.equal(s.fontWeight, 700)
+  assert.equal(s.letterSpacing, '-0.03em')
+  assert.equal(s.lineHeight, 0.76)
+  assert.equal(s.color, BASE_COLOR)
+  assert.equal(s.textShadow, SHADOW)
 })
 
 test('running accent uses a custom accentColor', () => {
@@ -192,10 +216,10 @@ describe('hero build-up keeps its layout', () => {
     assert.equal(spanFor(el, 'drone').props.style.visibility, 'hidden')
   })
 
-  test('hero sizes: 2.4x, serif 1.12x on top', () => {
+  test('hero sizes: the running size (1.0x), serif 1.2x on top', () => {
     const el = Accent({ frame: at(1.25), fps: FPS, segments: [seg({ hero: true })] })
-    for (const w of ['i', 'build', 'this']) assert.equal(spanFor(el, w).props.style.fontSize, 64 * 2.4, w)
-    assert.equal(spanFor(el, 'drone').props.style.fontSize, 64 * 2.4 * 1.12)
+    for (const w of ['i', 'build', 'this']) assert.equal(spanFor(el, w).props.style.fontSize, SIZE, w)
+    assert.equal(spanFor(el, 'drone').props.style.fontSize, SIZE * 1.2)
   })
 })
 
@@ -209,6 +233,49 @@ test('hero: two balanced main lines', () => {
   assert.deepEqual(lines, ['i build', 'this drone'])
 })
 
+test('hero: staggered lines, line 1 flush left, line 2 indented 0.45 of the hero size', () => {
+  const el = Accent({ frame: at(2.0), fps: FPS, segments: [seg({ hero: true })] })
+  const [l1, l2] = mainLineDivs(el)
+  assert.equal(l1.props.style.paddingLeft, 0)
+  assert.equal(l2.props.style.paddingLeft, SIZE * 0.45)
+})
+
+test('hero: the lines sit in a left-aligned inline block, centred as a whole', () => {
+  const el = Accent({ frame: at(2.0), fps: FPS, segments: [seg({ hero: true })] })
+  let block
+  walk(el, (n) => { if (n.type === 'div' && n.props.style?.display === 'inline-block') block ??= n })
+  assert.ok(block, 'expected an inline-block wrapping the lines')
+  assert.equal(block.props.style.textAlign, 'left')
+  assert.deepEqual(kidsOf(block).map(textOf), ['i build', 'this drone'])
+})
+
+// ---------------------------------------------------------------------------
+// 4b. Anchor: both tiers centre on 59.5%, and a segment scale keeps it
+// ---------------------------------------------------------------------------
+
+describe('anchor: centred on 59.5% of the frame height', () => {
+  const anchorOf = (el) => kidsOf(kidsOf(el)[0])[0]
+  for (const hero of [false, true]) {
+    test(`${hero ? 'hero' : 'running'}: a zero-height anchor at top 59.5%, a nested translateY(-50%)`, () => {
+      const el = Accent({ frame: at(2.0), fps: FPS, segments: [seg({ hero })] })
+      const anchor = anchorOf(el)
+      assert.equal(anchor.props.style.top, '59.5%')
+      assert.equal(anchor.props.style.height, 0)
+      assert.ok(!('bottom' in anchor.props.style))
+      assert.ok(!('transform' in anchor.props.style), 'no transform on the anchor without a segment scale')
+      assert.equal(kidsOf(anchor)[0].props.style.transform, 'translateY(-50%)')
+    })
+
+    test(`${hero ? 'hero' : 'running'}: a segment scale goes on the anchor and the nested centring survives`, () => {
+      const el = Accent({ frame: at(2.0), fps: FPS, segments: [seg({ hero, scale: 1.5 })] })
+      const anchor = anchorOf(el)
+      assert.equal(anchor.props.style.transform, 'scale(1.5)')
+      assert.equal(anchor.props.style.transformOrigin, 'center center')
+      assert.equal(kidsOf(anchor)[0].props.style.transform, 'translateY(-50%)')
+    })
+  }
+})
+
 // ---------------------------------------------------------------------------
 // 5. Script
 // ---------------------------------------------------------------------------
@@ -220,18 +287,30 @@ const SCRIPT_WORDS = [
 ]
 
 describe('script accent', () => {
-  test('hero: small white Caveat line before the line holding the next word', () => {
+  test('hero: white Caveat line directly before the line holding the next word', () => {
     const el = Accent({ frame: at(2.0), fps: FPS, segments: [seg({ hero: true }, SCRIPT_WORDS)] })
     const lines = lineDivs(el)
     const timeIdx = lines.findIndex(d => textOf(d) === 'time')
     const posIdx = lines.findIndex(d => textOf(d).includes('position'))
     assert.ok(timeIdx >= 0, `expected a line div holding only "time", got ${JSON.stringify(lines.map(textOf))}`)
-    assert.ok(posIdx > timeIdx, 'the script line comes before the line holding "position"')
+    assert.equal(posIdx, timeIdx + 1, 'the script line comes directly before the line holding "position"')
     assert.ok(!textOf(lines[posIdx]).includes('time'), '"time" is not in the main line')
     const s = spanFor(el, 'time').props.style
     assert.ok(s.fontFamily.startsWith('"Caveat"'), s.fontFamily)
     assert.equal(s.color, BASE_COLOR)
-    assert.equal(s.fontSize, 64 * 2.4 * 0.42)
+    assert.equal(s.fontSize, SIZE * 0.8)
+    assert.equal(s.fontWeight, 700)
+    assert.equal(s.letterSpacing, '-0.08em')
+    assert.ok(!('transform' in s), 'the script is not rotated')
+  })
+
+  test('hero: the script line starts at the block left and overlaps the next by 0.07 of the size; its word line is indented 0.66', () => {
+    const el = Accent({ frame: at(2.0), fps: FPS, segments: [seg({ hero: true }, SCRIPT_WORDS)] })
+    const lines = lineDivs(el)
+    const script = lines.find(d => textOf(d) === 'time')
+    const main = lines.find(d => textOf(d) === 'position')
+    assert.deepEqual(script.props.style, { marginBottom: -SIZE * 0.07 })
+    assert.equal(main.props.style.paddingLeft, SIZE * 0.66)
   })
 
   test('hero: script line color follows the color prop, not accentColor', () => {
@@ -250,7 +329,54 @@ describe('script accent', () => {
     const s = spanFor(el, 'time').props.style
     assert.equal(s.color, ACCENT_COLOR)
     assert.equal(s.fontStyle, 'italic')
-    assert.ok(s.fontFamily.startsWith('"Instrument Serif"'), s.fontFamily)
+    assert.equal(s.fontFamily, SERIF_FONT)
+  })
+})
+
+describe('script runs', () => {
+  // The reference's "full time / position": two script words over one sans word.
+  const TWO_SCRIPT = [
+    { word: 'full',     start: 1,   end: 1.3, accent: 'script' },
+    { word: 'time',     start: 1.3, end: 1.6, accent: 'script' },
+    { word: 'position', start: 1.6, end: 2.2, accent: 'sans' },
+  ]
+
+  test('two consecutive script words form ONE script line above the word they qualify', () => {
+    const el = Accent({ frame: at(2.0), fps: FPS, segments: [seg({ hero: true }, TWO_SCRIPT)] })
+    const lines = lineDivs(el)
+    assert.deepEqual(lines.map(textOf), ['full time', 'position'])
+    assert.ok(kidsOf(lines[0]).every(isScriptSpan), 'line 1 is the script run')
+    assert.equal(kidsOf(lines[0]).length, 2)
+    assert.deepEqual(mainLineDivs(el).map(textOf), ['position'])
+    assert.equal(spanFor(el, 'position').props.style.color, ACCENT_COLOR)
+    assert.equal(lines[1].props.style.paddingLeft, SIZE * 0.66)
+  })
+
+  test('each script word still cuts on when spoken', () => {
+    const el = Accent({ frame: at(1.35), fps: FPS, segments: [seg({ hero: true }, TWO_SCRIPT)] })
+    assert.equal(spanFor(el, 'full').props.style.visibility, 'visible')
+    assert.equal(spanFor(el, 'time').props.style.visibility, 'visible')
+    assert.equal(spanFor(el, 'position').props.style.visibility, 'hidden')
+  })
+
+  test('a run qualifying a later word starts line 2, directly above that word', () => {
+    const words = ['i', 'got', 'a'].map((w, i) => ({ word: w, start: 1 + i * 0.1, end: 1.1 + i * 0.1 }))
+      .concat(TWO_SCRIPT.map(w => ({ ...w, start: w.start + 0.3, end: w.end + 0.3 })))
+    const el = Accent({ frame: at(2.3), fps: FPS, segments: [seg({ hero: true, end: 3 }, words)] })
+    assert.deepEqual(lineDivs(el).map(textOf), ['i got a', 'full time', 'position'])
+    const [l1, l2] = mainLineDivs(el)
+    assert.equal(l1.props.style.paddingLeft, 0)
+    assert.equal(l2.props.style.paddingLeft, SIZE * 0.66)
+  })
+
+  test('a trailing script run with no word after it still renders, as a script line', () => {
+    const words = [
+      { word: 'so',   start: 1,   end: 1.2 },
+      { word: 'much', start: 1.2, end: 1.5, accent: 'script' },
+    ]
+    const el = Accent({ frame: at(2.0), fps: FPS, segments: [seg({ hero: true }, words)] })
+    assert.deepEqual(lineDivs(el).map(textOf), ['so', 'much'])
+    assert.ok(isScriptSpan(spanFor(el, 'much')))
   })
 })
 
@@ -305,7 +431,7 @@ describe('old segments', () => {
 // render.js: style registration and fonts
 // ---------------------------------------------------------------------------
 
-const ACCENT_FONTS = ['Inter+Tight:wght@800', 'Instrument+Serif:ital@1', 'Caveat:wght@700']
+const ACCENT_FONTS = ['Inter+Tight:wght@700', 'Playfair+Display:ital,wght@1,700', 'Caveat:wght@700']
 
 function captionSpecFor(captions) {
   const project = {
@@ -331,7 +457,7 @@ describe('render.js: accent style', () => {
 
   test('caller fonts are kept, accent fonts merged in, no duplicates', () => {
     const fonts = captionSpecFor({ googleFonts: ['Baloo+2:wght@700', 'Caveat:wght@700'] }).googleFonts
-    assert.deepEqual(fonts, ['Baloo+2:wght@700', 'Caveat:wght@700', 'Inter+Tight:wght@800', 'Instrument+Serif:ital@1'])
+    assert.deepEqual(fonts, ['Baloo+2:wght@700', 'Caveat:wght@700', 'Inter+Tight:wght@700', 'Playfair+Display:ital,wght@1,700'])
   })
 
   test('a bare-string googleFonts is kept whole', () => {
@@ -342,5 +468,12 @@ describe('render.js: accent style', () => {
   test('accent fonts load even with a caller fontFamily', () => {
     const fonts = captionSpecFor({ fontFamily: '"Baloo 2", sans-serif' }).googleFonts
     assert.deepEqual(fonts, ACCENT_FONTS)
+  })
+
+  test("the editor's ACCENT_CAPTION_FONTS is the same list", () => {
+    const src = readFileSync(join(__dirname, '..', '..', 'editor', 'src', 'video', 'captionStyleDefaults.ts'), 'utf8')
+    const m = src.match(/export const ACCENT_CAPTION_FONTS = (\[[^\]]*\])/)
+    assert.ok(m, 'expected the ACCENT_CAPTION_FONTS literal in captionStyleDefaults.ts')
+    assert.deepEqual(JSON.parse(m[1].replace(/'/g, '"')), ACCENT_FONTS)
   })
 })
