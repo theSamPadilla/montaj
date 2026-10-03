@@ -35,6 +35,7 @@ export const CAPTION_STYLE_FONT_WEIGHT: Record<Style, number> = {
   'word-by-word': 800,
   'highlight-box': 900,
   outline: 900,
+  accent: 800,
 }
 
 /** `Captions.fontFamily`'s default per style. Six of the seven templates
@@ -48,6 +49,7 @@ export const CAPTION_STYLE_FONT_FAMILY: Record<Style, string> = {
   'word-by-word': 'system-ui, -apple-system, sans-serif',
   'highlight-box': 'system-ui, -apple-system, sans-serif',
   outline: 'system-ui, -apple-system, sans-serif',
+  accent: '"Inter Tight", system-ui, sans-serif',
 }
 
 /** `Captions.letterSpacing`'s default per style. A style absent from this
@@ -58,6 +60,7 @@ export const CAPTION_STYLE_LETTER_SPACING: Partial<Record<Style, string>> = {
   clean: '0.01em',
   pop: '-0.02em',
   'word-by-word': '-0.02em',
+  accent: '-0.04em',
 }
 
 /** `Captions.lineHeight`'s default per style.
@@ -75,6 +78,7 @@ export const CAPTION_STYLE_LINE_HEIGHT: Partial<Record<Style, number>> = {
   subtitle: 1.4,
   'highlight-box': 1.25,
   outline: 1.15,
+  accent: 0.86,
 }
 
 /** `Captions.textAlign`'s default per style — every template centers text by
@@ -87,6 +91,7 @@ export const CAPTION_STYLE_TEXT_ALIGN: Record<Style, string> = {
   'word-by-word': 'center',
   'highlight-box': 'center',
   outline: 'center',
+  accent: 'center',
 }
 
 /** `Captions.textTransform`'s default per style. Only `outline` has one — its

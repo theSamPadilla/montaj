@@ -9,6 +9,8 @@ export interface Word {
   word: string
   start: number
   end: number
+  // PL41: the Accent style's accent treatment; other styles ignore it
+  accent?: 'serif' | 'sans' | 'script'
 }
 
 export interface AudioTrack {
@@ -77,6 +79,9 @@ export interface CaptionSegment {
   // track-level theme fields (color, fontsize, accentColor, …) stay
   // track-global and do not vary per lane.
   lane?: number
+  // PL41: the Accent style draws this segment as a hero block (large, stacked,
+  // words cut on as spoken) instead of running captions; other styles ignore it
+  hero?: boolean
 }
 
 /**
@@ -93,7 +98,7 @@ export interface CaptionSegment {
 export type CaptionTextTransform = 'uppercase' | 'lowercase' | 'capitalize' | 'none'
 
 export interface Captions {
-  style: 'word-by-word' | 'pop' | 'karaoke' | 'subtitle' | 'highlight-box' | 'outline' | 'clean'
+  style: 'word-by-word' | 'pop' | 'karaoke' | 'subtitle' | 'highlight-box' | 'outline' | 'clean' | 'accent'
   segments: CaptionSegment[]
   // `color` and `fontsize` are read by BOTH paths: the JSX browser preview /
   // Puppeteer render (spread into the caption template props; `fontsize`→`fontSize`)

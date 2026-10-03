@@ -6,7 +6,7 @@
 // straight into the template's props (see render.js ~line 763), so a
 // template that merely destructures a new prop starts honouring
 // `captions.<field>` with zero plumbing changes — this file proves each of
-// the seven templates actually does that destructuring, and that the
+// the eight templates actually does that destructuring, and that the
 // defaults reproduce today's hardcoded literals exactly (a no-change gate,
 // same spirit as caption-position.test.mjs).
 //
@@ -70,13 +70,13 @@ async function loadTemplate(name) {
   }
 }
 
-// A literal list of all seven templates — deliberately not derived from a
+// A literal list of all eight templates — deliberately not derived from a
 // directory listing, so a template that goes missing (renamed, deleted)
 // fails this test instead of silently shrinking the coverage.
-const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop']
+const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent']
 
-test('STYLE_NAMES names exactly the seven caption templates that exist on disk', () => {
-  assert.equal(STYLE_NAMES.length, 7)
+test('STYLE_NAMES names exactly the eight caption templates that exist on disk', () => {
+  assert.equal(STYLE_NAMES.length, 8)
   for (const name of STYLE_NAMES) {
     assert.ok(existsSync(join(TEMPLATES_DIR, `${name}.jsx`)), `${name}.jsx must exist in ${TEMPLATES_DIR}`)
   }
@@ -98,7 +98,7 @@ const WORDS = [{ word: 'hi', start: 1, end: 2 }] // active at t≈1.333
 // words), so they always need `words: WORDS`. karaoke/highlight-box/outline
 // have a fallback branch AND a words branch — see segmentFor below for which
 // one each uses for the single-style tests.
-const NEEDS_WORDS = new Set(['karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop'])
+const NEEDS_WORDS = new Set(['karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent'])
 
 // outline's words branch hardcodes `textTransform: textTransform ?? 'uppercase'`
 // — the deliberate all-caps stencil look documented in outline.jsx — so it
@@ -165,6 +165,7 @@ const DEFAULT_FONT_FAMILY = {
   'highlight-box':  'system-ui, -apple-system, sans-serif',
   'word-by-word':   'system-ui, -apple-system, sans-serif',
   pop:              'system-ui, -apple-system, sans-serif',
+  accent:           '"Inter Tight", system-ui, sans-serif',
 }
 
 describe('fontFamily — no prop keeps each template\'s current default literal', () => {
@@ -228,7 +229,7 @@ describe('fontFamily — multi-site templates apply a custom value at every site
 
 // ---------------------------------------------------------------------------
 // 4. textTransform: absent by default, 'uppercase' reaches the caption text
-// style when passed — for all seven templates.
+// style when passed — for all eight templates.
 // ---------------------------------------------------------------------------
 
 describe('textTransform — absent by default, applied when passed', () => {
@@ -295,7 +296,7 @@ describe('outline — words branch keeps its deliberate per-branch textTransform
 // 5. fontWeight: no prop -> today's hardcoded literal, per template. Same
 // "hardcoded expectation vs. live-executed current source" strategy as
 // DEFAULT_FONT_FAMILY above. `fontWeight` sits in the same style object as
-// `fontFamily` at every site in all seven templates, so findFontFamilyStyle
+// `fontFamily` at every site in all eight templates, so findFontFamilyStyle
 // (which locates that node) doubles as "the caption text style" here too.
 // ---------------------------------------------------------------------------
 
@@ -307,6 +308,7 @@ const DEFAULT_FONT_WEIGHT = {
   'highlight-box':  900,
   'word-by-word':   800,
   pop:              800,
+  accent:           800,
 }
 
 describe('fontWeight — no prop keeps each template\'s current default literal', () => {

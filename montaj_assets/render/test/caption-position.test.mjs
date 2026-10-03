@@ -10,7 +10,7 @@
 // Two parts:
 //   1. Direct unit tests of captionOuterStyle/captionInnerStyle — the maths,
 //      key presence/absence, and seg?. null-safety.
-//   2. Anchor fidelity, per real template. Each of the 7 templates under
+//   2. Anchor fidelity, per real template. Each of the 8 templates under
 //      render/templates/captions/ is compiled with esbuild (same alias trick
 //      bundle.js uses for the real render pipeline: 'montaj/render' resolves
 //      to the actual captionOuterStyle/captionInnerStyle in overlay-runtime)
@@ -209,7 +209,7 @@ async function loadTemplate(name) {
   }
 }
 
-const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop']
+const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent']
 
 const templates = {}
 before(async () => {
@@ -254,9 +254,9 @@ function renderNoOffset(name, extraSeg = {}) {
 
 // word-by-word/pop return null with zero words (no fallback branch); the
 // others render fine either way, but pass words here too for uniformity.
-const NEEDS_WORDS = new Set(['karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop'])
+const NEEDS_WORDS = new Set(['karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent'])
 
-describe('no-offset equivalence gate — outer wrapper (all 7 templates)', () => {
+describe('no-offset equivalence gate — outer wrapper (all 8 templates)', () => {
   for (const name of STYLE_NAMES) {
     test(`${name}: outer wrapper is frame-sized with no transform key`, () => {
       const { outerEl } = renderNoOffset(name, NEEDS_WORDS.has(name) ? { words: WORDS } : {})
@@ -366,6 +366,16 @@ describe('no-offset equivalence gate — inner anchor, historical values (10 wra
     })
   })
 
+  test('accent: bottom 38%, padding 0 6%, textAlign center, no opacity key', () => {
+    const { innerEl } = renderNoOffset('accent', { words: WORDS })
+    assert.deepEqual(innerEl.props.style, {
+      position: 'absolute',
+      bottom: '38%', left: 0, right: 0,
+      textAlign: 'center', padding: '0 6%',
+    })
+    assert.ok(!('opacity' in innerEl.props.style))
+  })
+
   test('pop: bottom 24%, padding 0 8%, textAlign center, no wrapper opacity', () => {
     const { innerEl } = renderNoOffset('pop', { words: WORDS })
     assert.deepEqual(innerEl.props.style, {
@@ -384,7 +394,7 @@ describe('no-offset equivalence gate — inner anchor, historical values (10 wra
 // `segments.find(...)` and the two calls.
 // ---------------------------------------------------------------------------
 
-describe('offset/scale wiring — real segment reaches the positioner (all 7 templates)', () => {
+describe('offset/scale wiring — real segment reaches the positioner (all 8 templates)', () => {
   for (const name of STYLE_NAMES) {
     test(`${name}: a segment with offsetX/offsetY/scale set reaches both style calls`, () => {
       const { outerEl, innerEl } = renderNoOffset(name, {
@@ -512,6 +522,38 @@ describe('per-segment color override — seg.color ?? color (base text color)', 
   })
 })
 
+// accent renders a running window as an array of word spans directly under
+// the anchor, so the single-child extractors above do not apply.
+describe('accent — base color, per-segment color, accentColor', () => {
+  const spanColors = (innerEl) => innerEl.props.children.map(c => c.props.style.color)
+  const ACCENT_WORDS = [
+    { word: 'hi',    start: 1, end: 2 },
+    { word: 'there', start: 2, end: 3, accent: 'sans' },
+  ]
+
+  test('with neither set, a plain word is #F5F5F5', () => {
+    const { innerEl } = renderForColor('accent', { words: ACCENT_WORDS })
+    assert.equal(spanColors(innerEl)[0], '#F5F5F5')
+  })
+  test('a segment with color renders a non-accent word with that color', () => {
+    const { innerEl } = renderForColor('accent', { segColor: '#123456', words: ACCENT_WORDS })
+    assert.equal(spanColors(innerEl)[0], '#123456')
+  })
+  test('a segment without color uses the track-level color prop', () => {
+    const { innerEl } = renderForColor('accent', { trackColor: '#abcdef', words: ACCENT_WORDS })
+    assert.equal(spanColors(innerEl)[0], '#abcdef')
+  })
+  test('an accent word is #F00000 by default and ignores the segment color', () => {
+    const { innerEl } = renderForColor('accent', { segColor: '#123456', words: ACCENT_WORDS })
+    assert.equal(spanColors(innerEl)[1], '#F00000')
+  })
+  test('the accentColor prop reaches the accent word', () => {
+    const seg = { ...SEG_BASE, text: 'hi there', words: ACCENT_WORDS }
+    const [block] = captionBlocks(templates.accent({ frame: FRAME, fps: FPS, segments: [seg], accentColor: '#00ff00' }), 'accent')
+    assert.equal(spanColors(block.props.children)[1], '#00ff00')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Part 4 — lanes: EVERY active segment renders, lane-ascending.
 //
@@ -539,7 +581,7 @@ function laneFixture(name) {
   ]
 }
 
-describe('lanes — two simultaneous segments both render, lane-ascending (all 7 templates)', () => {
+describe('lanes — two simultaneous segments both render, lane-ascending (all 8 templates)', () => {
   for (const name of STYLE_NAMES) {
     test(`${name}: both segments are present, higher lane later in document order`, () => {
       const blocks = renderSegments(name, laneFixture(name))

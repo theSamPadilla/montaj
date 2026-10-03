@@ -32,7 +32,7 @@
     {
       "name": "style",
       "type": "enum",
-      "options": ["word-by-word", "karaoke", "subtitle", "pop", "highlight-box", "outline", "clean"],
+      "options": ["word-by-word", "karaoke", "subtitle", "pop", "highlight-box", "outline", "clean", "accent"],
       "description": "Caption animation style. Defaults to the prior caption track's style, then 'pop'."
     }
   ]

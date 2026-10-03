@@ -76,7 +76,9 @@ const PER_WORD = ['word-by-word', 'pop']
 const templates = {}
 before(async () => {
   for (const name of PER_WORD) templates[name] = await loadTemplate(name)
+  accent = await loadTemplate('accent')
 })
+let accent
 
 const FPS = 30
 /** A word that starts exactly on a frame boundary and lasts one frame. */
@@ -366,4 +368,62 @@ describe('per-word caption templates — an already-floor-clean stream renders e
         `${name}: expected each word to appear once, in order, with none skipped or repeated out of order`)
     })
   }
+})
+
+// ---------------------------------------------------------------------------
+// accent: hard cuts, no opacity envelope, so a short word cannot fade out of
+// sight. Not in PER_WORD (that list is the opacity-envelope templates).
+// ---------------------------------------------------------------------------
+
+/** Every span style under the element tree that carries a fontFamily (a word). */
+function wordSpans(el) {
+  const out = []
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return
+    const style = node.props?.style
+    if (style && 'fontFamily' in style) out.push({ style, text: node.props.children })
+    const kids = node.props?.children
+    if (Array.isArray(kids)) kids.forEach(walk)
+    else if (kids) walk(kids)
+  }
+  walk(el)
+  return out
+}
+
+describe('accent — short words are visible', () => {
+  test('a 50 ms word inside a running window is drawn on every frame its window is up', () => {
+    const words = [
+      { word: 'the', start: 0,    end: 0.3 },
+      { word: 'a',   start: 0.3,  end: 0.35 },   // 50 ms, ~1.5 frames
+      { word: 'cat', start: 0.35, end: 1 },
+    ]
+    const seg = { start: 0, end: 2, text: 'the a cat', words }
+    for (let frame = 0; frame < 30; frame++) {
+      const el = accent({ frame, fps: FPS, segments: [seg] })
+      assert.ok(el, `frame ${frame}: window must be drawn`)
+      const spans = wordSpans(el)
+      assert.equal(spans.length, 3, `frame ${frame}: all three window words present`)
+      assert.ok(spans.some(s => String(s.text).trim() === 'a'), `frame ${frame}: the short word is drawn`)
+      assert.ok(spans.every(s => !('opacity' in s.style)), `frame ${frame}: no opacity envelope`)
+    }
+  })
+
+  test('a 50 ms hero word is visible from its start frame', () => {
+    const words = [
+      { word: 'one', start: 0,   end: 0.5 },
+      { word: 'a',   start: 0.5, end: 0.55 },     // 50 ms
+      { word: 'two', start: 0.55, end: 1 },
+    ]
+    const seg = { start: 0, end: 2, hero: true, text: 'one a two', words }
+    const startFrame = Math.round(0.5 * FPS)
+    for (const frame of [startFrame, startFrame + 1, startFrame + 10]) {
+      const el = accent({ frame, fps: FPS, segments: [seg] })
+      const a = wordSpans(el).find(s => String(s.text).trim() === 'a')
+      assert.ok(a, `frame ${frame}: hero word present in the tree`)
+      assert.equal(a.style.visibility, 'visible', `frame ${frame}`)
+    }
+    const before = wordSpans(accent({ frame: startFrame - 1, fps: FPS, segments: [seg] }))
+      .find(s => String(s.text).trim() === 'a')
+    assert.equal(before.style.visibility, 'hidden', 'hidden (not absent) before its start')
+  })
 })

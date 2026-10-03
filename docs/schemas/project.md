@@ -540,7 +540,7 @@ The `captions` field is a top-level object (not a track). It always renders abov
 
 **Segment end is explicit.** Each segment carries its own `end`; the next segment's `start` does NOT imply the previous segment's `end`. The editor's active-segment test is `currentTime >= start && currentTime < end`.
 
-**Caption styles:** `word-by-word`, `pop`, `karaoke`, `subtitle`
+**Caption styles:** `word-by-word`, `pop`, `karaoke`, `subtitle`, `highlight-box`, `outline`, `clean`, `accent`
 
 Each style maps to a built-in JSX template served at `GET /api/caption-template/:style`. An unknown style value renders no captions. `words` is optional in the schema but required for animated styles (`word-by-word`, `karaoke`).
 
@@ -554,6 +554,9 @@ Each style maps to a built-in JSX template served at `GET /api/caption-template/
 | `offsetY` | number | 0 | Vertical offset as % of frame height. `0` or absent = the style's default anchor. |
 | `scale` | number | 1 | Visual scale of the whole caption block, about its own centre. This is a CSS transform, not a font-size change: it scales the background box (`subtitle`) and text stroke (`outline`) along with the text, and it does **not** re-wrap the text — a scaled-up caption keeps its original line breaks and can overflow the frame. |
 | `color` | string | — | Per-segment override of the base text color, overriding the track-level `color` below for this segment only (per-style accent colors — e.g. `highlightColor`, `accentColor` — are not overridable per segment). Absent = inherit the track-level `color` → the style's own default. Like `offsetX`/`offsetY`/`scale`, this is consumed only by the JSX browser preview and the Puppeteer render path; the ffmpeg `drawtext` render branch has no per-segment concept and continues to honour only the track-level `color` field below. |
+| `hero` | boolean | false | `accent` style only (PL41; other styles ignore it): draw the segment as a hero block, a large stacked block on two balanced lines whose words cut on as they are spoken, instead of running captions of up to three words. |
+
+**Per-word `accent`.** An entry in a segment's `words[]` may carry `accent`: `serif`, `sans` or `script`. The `accent` style draws that word in `accentColor` with the matching treatment (`serif`: italic serif; `sans`: the running font; `script`: a small script line over the next word, drawn as `serif` inside a running window). Other styles ignore it.
 
 **Text-styling fields.** The following optional fields may appear on the top-level `captions` object. They are consumed only by the JSX caption templates — browser preview and Puppeteer render — and are ignored by the ffmpeg `drawtext` render branch below (the converse of that branch's fields).
 

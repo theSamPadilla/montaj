@@ -44,7 +44,7 @@ type CompileOverlay = (src: string) => Promise<OverlayFactory>
  *  in `CaptionListPanel.tsx` had its own private copy, which is retired when
  *  this gallery is mounted in its place. */
 export const CAPTION_STYLES: readonly CaptionStyle[] = [
-  'word-by-word', 'pop', 'karaoke', 'subtitle', 'highlight-box', 'outline', 'clean',
+  'word-by-word', 'pop', 'karaoke', 'subtitle', 'highlight-box', 'outline', 'clean', 'accent',
 ]
 
 /** Human labels for the cards. The kebab-case identifier is a code name, not a
@@ -58,6 +58,7 @@ export const CAPTION_STYLE_LABELS: Record<CaptionStyle, string> = {
   'highlight-box': 'Highlight box',
   outline: 'Outline',
   clean: 'Clean',
+  accent: 'Accent',
 }
 
 // The caption templates position themselves against the native render frame
