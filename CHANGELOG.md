@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (editor): ⌘A / Ctrl+A selects everything in the timeline; the preview-axis toggle moves to plain `A`.** Select-all takes every clip on every track, overlay, audio bar and caption segment through the same multi-select state as shift-click and marquee, so delete, move and copy apply to all of it. It leaves native select-all alone in an input, textarea or caption editor. (`video/timeline/Timeline.tsx`, `video/VideoEditor.tsx`, `ControlsInfoModal.tsx`)
+
 ## v5.21.1
 
 - **Changed (serve, steps): `sample_frame` and `contact_sheet` take the project id or the project's folder as `project`, not only the path of its project.json.** Every other project tool takes the id, so agents passed it here too and the step failed. serve resolves the value to that project's project.json before the step runs (`resolve_project_param`, using `find_project_dir` on the workspace); a full path still passes through unchanged. `projectId` and `project_id` are accepted in place of `project`, and so is `sample_frame`'s declared `input`. An id no project has is `422 invalid_params` naming the field, with an example. The two schemas' descriptions say what `project` takes. (`serve/routes/steps.py`, `steps/render/{sample_frame,contact_sheet}.json`, `tests/test_steps_project_ref.py`)

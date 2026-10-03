@@ -307,7 +307,8 @@ export const VIDEO_CONTROLS: ControlSection[] = [
     entries: [
       { keys: ['S'], label: 'Split at the playhead' },
       { keys: ['M'], label: 'Drop a marker at the playhead (or the preview axis)' },
-      { keys: ['⌘', 'A'], label: 'Toggle the preview axis' },
+      { keys: ['A'], label: 'Toggle the preview axis' },
+      { keys: ['⌘', 'A'], label: 'Select everything in the timeline' },
       { keys: ['⇧', 'Delete'], label: 'Ripple-delete the selection' },
       { keys: ['⌘', 'Z'], label: 'Undo' },
       { keys: ['⌘', '⇧', 'Z'], label: 'Redo' },

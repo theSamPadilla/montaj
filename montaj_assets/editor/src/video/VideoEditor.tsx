@@ -1993,7 +1993,7 @@ function ReviewSurface<P extends Project>({
       description: 'Split at the playhead, or the preview axis when it is on',
       keyHint: ['S'],
       matches: matchesKey('s'),
-      // When the preview axis (⌘A) is on, `S` splits at the AXIS time
+      // When the preview axis (A) is on, `S` splits at the AXIS time
       // (`hoverScrub`) rather than the playhead — split where you're looking,
       // as CapCut does. Falls back to the playhead when the axis is off or
       // nothing is being hovered (`get()` is null). Targeting is unchanged:
@@ -2085,15 +2085,13 @@ function ReviewSurface<P extends Project>({
       // modifier check (deliberately: it reproduces the pre-keymap split
       // handler verbatim), so any S-based chord would be swallowed by it.
       //
-      // `matchesModKey` is meta-OR-ctrl (keymap.ts's `mod`), so this is Cmd+A
-      // and Ctrl+A alike. That shadows the browser's Select All, which this
-      // surface has no use for — and only outside a typing surface: every
-      // binding sits behind `isTypingTarget`, so Cmd+A in a caption, an input,
-      // or a textarea still selects text natively.
+      // Plain `A` (A for Axis), like S/M/F: `matchesPlainKey` ignores any
+      // modifier, so Cmd/Ctrl+A is free for the timeline's select-all, and the
+      // keymap's `isTypingTarget` guard keeps it out of text entry.
       id: 'video.preview-axis',
       description: 'Toggle preview axis',
-      keyHint: ['⌘', 'A'],
-      matches: matchesModKey('a'),
+      keyHint: ['A'],
+      matches: matchesPlainKey('a'),
       action: () => setPreviewAxis(v => !v),
     },
     {
@@ -2169,7 +2167,7 @@ function ReviewSurface<P extends Project>({
   paletteCommands.push({
     id: 'preview-axis',
     label: previewAxis ? 'Preview axis: turn off' : 'Preview axis: turn on',
-    keyHint: ['⌘', 'A'],
+    keyHint: ['A'],
     run: () => setPreviewAxis(v => !v),
   })
   paletteCommands.push({
@@ -2427,7 +2425,7 @@ function ReviewSurface<P extends Project>({
             <Redo2 size={12} />
           </button>
         </Tooltip>
-        <Tooltip label={previewAxis ? 'Preview axis on — hover to preview' : 'Preview axis off'} keys={['⌘', 'A']}>
+        <Tooltip label={previewAxis ? 'Preview axis on — hover to preview' : 'Preview axis off'} keys={['A']}>
           <button
             onClick={() => setPreviewAxis(v => !v)}
             aria-label="Preview axis"

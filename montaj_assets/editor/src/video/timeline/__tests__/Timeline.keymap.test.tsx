@@ -385,4 +385,61 @@ describe('Timeline — T9 keymap (arrows / delete / enter / escape)', () => {
     // Smoke test: it doesn't throw, and the ref stays populated.
     expect(actionsRef.current).not.toBeNull()
   })
+
+  // Select-all: every clip, audio bar and caption segment, through the same
+  // `onSelectIds` a shift-click or marquee writes.
+  describe('Cmd/Ctrl+A select all', () => {
+    function makeFullProject(): Project {
+      return {
+        ...makeProjectWithCaptions(),
+        tracks: [
+          [{ id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4 }],
+          [{ id: 'overlay-1', type: 'overlay', src: 'o.jsx', start: 0, end: 2 }],
+        ],
+        audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 0, end: 2, lane: 0 }] },
+      } as unknown as Project
+    }
+    const ALL = ['a0', 'cap-0', 'cap-1', 'clip-0', 'overlay-1']
+    const sorted = (ids: string[]) => [...ids].sort()
+
+    it('Cmd+A selects every clip, overlay, audio bar and caption, and prevents default', () => {
+      const onSelectIds = vi.fn()
+      render(<Timeline project={makeFullProject()} clock={createPlaybackClock(0)} onSelectIds={onSelectIds} />)
+      const ev = new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true, cancelable: true })
+      act(() => { document.body.dispatchEvent(ev) })
+      expect(onSelectIds).toHaveBeenCalledTimes(1)
+      expect(sorted(onSelectIds.mock.calls[0][0])).toEqual(ALL)
+      expect(ev.defaultPrevented).toBe(true)
+    })
+
+    it('Ctrl+A does the same', () => {
+      const onSelectIds = vi.fn()
+      render(<Timeline project={makeFullProject()} clock={createPlaybackClock(0)} onSelectIds={onSelectIds} />)
+      act(() => { fireEvent.keyDown(document.body, { key: 'a', ctrlKey: true }) })
+      expect(sorted(onSelectIds.mock.calls[0][0])).toEqual(ALL)
+    })
+
+    it('a bare "a" does not select all', () => {
+      const onSelectIds = vi.fn()
+      render(<Timeline project={makeFullProject()} clock={createPlaybackClock(0)} onSelectIds={onSelectIds} />)
+      act(() => { fireEvent.keyDown(document.body, { key: 'a' }) })
+      expect(onSelectIds).not.toHaveBeenCalled()
+    })
+
+    it('does nothing and does not preventDefault while focus is in a text input', () => {
+      const onSelectIds = vi.fn()
+      const { container } = render(
+        <div>
+          <input />
+          <Timeline project={makeFullProject()} clock={createPlaybackClock(0)} onSelectIds={onSelectIds} />
+        </div>,
+      )
+      const input = container.querySelector('input') as HTMLInputElement
+      input.focus()
+      const ev = new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true, cancelable: true })
+      act(() => { input.dispatchEvent(ev) })
+      expect(onSelectIds).not.toHaveBeenCalled()
+      expect(ev.defaultPrevented).toBe(false)
+    })
+  })
 })

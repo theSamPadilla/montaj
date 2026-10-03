@@ -327,50 +327,37 @@ describe('VideoEditor — preview axis toggle', () => {
     expect(button.getAttribute('aria-pressed')).toBe('false')
   })
 
-  it('Cmd+A and Ctrl+A both toggle it — A for Axis', async () => {
-    const adapter = makeFakeAdapter()
-    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+  const AXIS = () => screen.getByLabelText('Preview axis')
+  const mount = async () => {
+    render(<VideoEditor project={makeVideoProject()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
     await screen.findByLabelText('Preview axis')
+  }
 
-    const button = screen.getByLabelText('Preview axis')
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true }))
-    })
-    expect(button.getAttribute('aria-pressed')).toBe('true')
-
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true }))
-    })
-    expect(button.getAttribute('aria-pressed')).toBe('false')
+  it('plain A toggles it — A for Axis', async () => {
+    await mount()
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' })) })
+    expect(AXIS().getAttribute('aria-pressed')).toBe('true')
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' })) })
+    expect(AXIS().getAttribute('aria-pressed')).toBe('false')
   })
 
-  it('leaves Cmd+A alone inside a typing surface, so Select All still works there', async () => {
-    // The chord shadows the browser's Select All everywhere EXCEPT text entry.
-    // `isTypingTarget` is what draws that line, and a caption row is a real
-    // contentEditable in this surface — regressing the guard would make it
-    // impossible to select the text of a caption you are editing.
-    const adapter = makeFakeAdapter()
-    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
-    await screen.findByLabelText('Preview axis')
+  it('Cmd+A and Ctrl+A no longer toggle it (they are select-all)', async () => {
+    await mount()
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true })) })
+    expect(AXIS().getAttribute('aria-pressed')).toBe('false')
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true })) })
+    expect(AXIS().getAttribute('aria-pressed')).toBe('false')
+  })
 
+  it('typing A in an input does not toggle it', async () => {
+    await mount()
     const input = document.createElement('input')
     document.body.appendChild(input)
     await act(async () => {
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true }))
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true }))
     })
-    expect(screen.getByLabelText('Preview axis').getAttribute('aria-pressed')).toBe('false')
+    expect(AXIS().getAttribute('aria-pressed')).toBe('false')
     input.remove()
-  })
-
-  it('bare A does nothing — the toggle is the chord, not the letter', async () => {
-    const adapter = makeFakeAdapter()
-    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
-    await screen.findByLabelText('Preview axis')
-
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }))
-    })
-    expect(screen.getByLabelText('Preview axis').getAttribute('aria-pressed')).toBe('false')
   })
 
   it('offers the toggle in the command palette, labelled by what it will do', async () => {

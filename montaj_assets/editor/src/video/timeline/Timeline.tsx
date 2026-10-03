@@ -821,6 +821,25 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       },
     },
     {
+      // Select everything the marquee can catch: clips on every track, audio
+      // bars, and caption segments (id-less segments are unselectable). Goes
+      // through `onSelectIds`, the same state a shift-click or marquee writes,
+      // so delete/move/copy act on the whole set. `useKeymap` skips typing
+      // targets and open modals first, so native select-all in a text field is
+      // untouched and `preventDefault` only fires when this handles the key.
+      id: 'timeline.select-all',
+      description: 'Select all',
+      matches: matchesModKey('a'),
+      guard: () => !!onSelectIds,
+      action: () => {
+        onSelectIds?.([
+          ...(captionTrack?.segments ?? []).flatMap(seg => (typeof seg.id === 'string' ? [seg.id] : [])),
+          ...allTracks.flatMap(items => items.map(item => item.id)),
+          ...audioTracks.map(t => t.id),
+        ])
+      },
+    },
+    {
       id: 'timeline.delete-selection',
       description: 'Delete selection',
       matches: matchesDelete,
