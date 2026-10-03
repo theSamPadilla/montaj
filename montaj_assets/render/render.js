@@ -1212,6 +1212,13 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
     if (captions.style === 'clean' && (captionFonts == null || captionFonts.length === 0) && captionTheme.fontFamily == null) {
       captionFonts = ['Figtree:wght@700']
     }
+    if (captions.style === 'accent') {
+      // PL41. Spaces are '+' (bundle.js:762-767 interpolates specs raw into the
+      // googleapis URL). A persisted project can carry a bare string.
+      const ACCENT_FONTS = ['Inter+Tight:wght@800', 'Instrument+Serif:ital@1', 'Caveat:wght@700']
+      const given = Array.isArray(captionFonts) ? captionFonts : captionFonts ? [captionFonts] : []
+      captionFonts = [...new Set([...given, ...ACCENT_FONTS])]
+    }
     specs.push({
       id:            'captions',
       componentPath: captionTemplatePath(captions.style),
@@ -1502,6 +1509,7 @@ function captionTemplatePath(style) {
     'highlight-box': 'highlight-box.jsx',
     'outline':       'outline.jsx',
     'clean':         'clean.jsx',
+    'accent':        'accent.jsx',
   }
   const file = styleMap[style] ?? 'subtitle.jsx'
   return join(__dirname, 'templates', 'captions', file)
