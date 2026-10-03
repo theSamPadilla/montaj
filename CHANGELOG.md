@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.22.1
+
 - **Fixed (editor, serve): `N` reveals the Notes tab, and restoring a version keeps your notes (PL39).** With a media panel the left rail could be on another tab, so a new note was added out of sight; `N` and the palette now switch it to Media. `restore_version` wrote the old commit's `project.json` whole, replacing the current `notes`; it now carries them over. (`montaj_assets/editor/src/video/VideoEditor.tsx`, `serve/routes/projects.py`, `tests/test_versions.py`)
 
 ## v5.22.0
