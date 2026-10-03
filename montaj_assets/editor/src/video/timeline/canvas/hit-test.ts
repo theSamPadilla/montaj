@@ -381,7 +381,10 @@ export function hitTest(
       const pin = pins[i]
       const x = timeToX(pin.t, viewport)
       if (Math.round(x) + 0.5 < 0) continue
-      if (point.x >= x && point.x <= x + MARKER_HIT_WIDTH_PX) {
+      const right = pin.tEnd !== undefined
+        ? Math.max(x + MARKER_HIT_WIDTH_PX, timeToX(pin.tEnd, viewport))
+        : x + MARKER_HIT_WIDTH_PX
+      if (point.x >= x && point.x <= right) {
         return { kind: 'pin', t, pinId: pin.id, pin }
       }
     }

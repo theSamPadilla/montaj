@@ -583,3 +583,54 @@ describe('TimelineCanvas — pins', () => {
     expect(onSelectItem).toHaveBeenCalledWith('m1', false)
   })
 })
+
+// ── PL39: tone and range ─────────────────────────────────────────────────
+
+describe('pin tone and range', () => {
+  it('has the note tokens in both palettes', () => {
+    for (const c of [TIMELINE_COLORS, LIGHT_TIMELINE_COLORS]) {
+      expect(typeof c.pinFlagNote).toBe('string')
+      expect(typeof c.pinTextNote).toBe('string')
+    }
+    expect(LIGHT_TIMELINE_COLORS.pinFlagNote).not.toBe(TIMELINE_COLORS.pinFlagNote)
+  })
+
+  it('paints a note pin in the note colours', () => {
+    const r = recordingContext()
+    drawPins(r.ctx, [{ id: 'n', t: 2, label: 'a', tone: 'note' }], VIEWPORT, STRIP_RECT, 1000)
+    expect(fillStyles(r)).toContain(TIMELINE_COLORS.pinFlagNote)
+    expect(fillStyles(r)).toContain(TIMELINE_COLORS.pinTextNote)
+    expect(fillStyles(r)).not.toContain(TIMELINE_COLORS.pinFlag)
+  })
+
+  it('paints no tone and review in the review colours', () => {
+    for (const tone of [undefined, 'review' as const]) {
+      const r = recordingContext()
+      drawPins(r.ctx, [{ id: 'n', t: 2, label: 'a', tone }], VIEWPORT, STRIP_RECT, 1000)
+      expect(fillStyles(r)).toContain(TIMELINE_COLORS.pinFlag)
+      expect(fillStyles(r)).not.toContain(TIMELINE_COLORS.pinFlagNote)
+    }
+  })
+
+  it('fills a range bar from t to tEnd', () => {
+    const r = recordingContext()
+    drawPins(r.ctx, [{ id: 'n', t: 2, tEnd: 5, label: 'a' }], VIEWPORT, STRIP_RECT, 1000)
+    const bar = r.of('fillRect').find(c => c.args[2] === 300)
+    expect(bar).toBeDefined()
+    expect(bar!.args[3]).toBe(3)
+  })
+
+  it('draws no bar without tEnd', () => {
+    const r = recordingContext()
+    drawPins(r.ctx, PINS, VIEWPORT, STRIP_RECT, 1000)
+    expect(r.of('fillRect').some(c => c.args[3] === 3)).toBe(false)
+  })
+
+  it('hits a range pin far to the right, and a point pin keeps its region', () => {
+    const ranged: TimelinePin[] = [{ id: 'r', t: 2, tEnd: 7, label: 'a' }]
+    const layout = computeTimelineLayout(bareProject, ranged)
+    expect(hitTest({ x: 700 - 1, y: STRIP_Y }, layout, VIEWPORT, { pins: ranged }).kind).toBe('pin')
+    const point = computeTimelineLayout(bareProject, PINS)
+    expect(hitTest({ x: PIN_X + MARKER_HIT_WIDTH_PX + 10, y: STRIP_Y }, point, VIEWPORT, { pins: PINS }).kind).not.toBe('pin')
+  })
+})

@@ -335,6 +335,10 @@ export const TIMELINE_COLORS = {
    *  keeps the pin's hue: it has to be legible as belonging to the yellow flag
    *  rather than to the strip. */
   pinText: 'rgba(253,224,71,0.9)',
+  /** A note pin's flag: the user's own note, in the Montaj cyan. */
+  pinFlagNote: '#22d3ee',
+  /** A note pin's label. */
+  pinTextNote: 'rgba(34,211,238,0.9)',
   /** The marquee (rubber-band) selection box. Same white as the selection
    *  vocabulary, since what it is doing IS selecting. */
   marqueeFill: 'rgba(255,255,255,0.08)',
@@ -508,6 +512,10 @@ export const LIGHT_TIMELINE_COLORS: TimelineColors = {
    *  so the caption has to go darker rather than lighter to stay the quieter of
    *  the two. */
   pinText: 'rgba(133,77,14,0.95)',
+  /** A note pin's flag on a light ground. */
+  pinFlagNote: '#0891b2',
+  /** A note pin's label on a light ground. */
+  pinTextNote: 'rgba(14,116,144,0.95)',
   /** The marquee. Selection vocabulary again, so it follows the outline and
    *  the handles into near-black — at the dark set's own alphas, which were
    *  already tuned to "a wash you can see through and a border you can't miss". */
@@ -2004,9 +2012,17 @@ export function drawPins(
   for (const pin of pins) {
     const x = Math.round(timeToX(pin.t, viewport)) + 0.5
     if (x < 0 || x > surfaceWidth) continue
-    ctx.fillStyle = palette.colors.pinFlag
+    const note = pin.tone === 'note'
+    const flag = note ? palette.colors.pinFlagNote : palette.colors.pinFlag
+    ctx.fillStyle = flag
+    if (pin.tEnd !== undefined && pin.tEnd > pin.t) {
+      const xEnd = Math.round(timeToX(pin.tEnd, viewport)) + 0.5
+      ctx.globalAlpha = 0.5
+      ctx.fillRect(x, rect.y + rect.height - 3, xEnd - x, 3)
+      ctx.globalAlpha = 1
+    }
     ctx.fillRect(x, rect.y + 2, MARKER_FLAG_WIDTH_PX, rect.height - 4)
-    ctx.fillStyle = palette.colors.pinText
+    ctx.fillStyle = note ? palette.colors.pinTextNote : palette.colors.pinText
     const label = pin.label.length > MARKER_LABEL_MAX_CHARS
       ? `${pin.label.slice(0, MARKER_LABEL_MAX_CHARS - 1)}…`
       : pin.label

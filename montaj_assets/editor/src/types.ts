@@ -592,6 +592,11 @@ export interface TimelinePin {
   t: number
   /** Drawn beside the flag, truncated exactly as a marker label is. */
   label: string
+  /** Colour family. Defaults to `'review'`; `'note'` is the user's own note. */
+  tone?: 'review' | 'note'
+  /** End of a range, in timeline seconds. When set and greater than `t`, the
+   *  pin draws a range bar and its hit region extends to here. */
+  tEnd?: number
 }
 
 // ── Adapter ────────────────────────────────────────────────────────────────
