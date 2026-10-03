@@ -51,6 +51,7 @@ const ACCENT: Partial<Record<CaptionStyle, { field: AccentField; label: string; 
   pop:             { field: 'activeColor',     label: 'Active',    def: '#ffe600' },
   'highlight-box': { field: 'accentColor',     label: 'Accent',    def: '#fbbf24' },
   outline:         { field: 'accentColor',     label: 'Accent',    def: '#fbbf24' },
+  accent:          { field: 'accentColor',     label: 'Accent',    def: '#F00000' },
   subtitle:        { field: 'backgroundColor', label: 'Box',       def: '#000000' },
 }
 

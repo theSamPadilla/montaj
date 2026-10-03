@@ -441,6 +441,7 @@ describe('CaptionListPanel relocated style controls', () => {
     { style: 'subtitle' as const, label: 'Caption box color', field: 'backgroundColor' },
     { style: 'highlight-box' as const, label: 'Caption accent color', field: 'accentColor' },
     { style: 'outline' as const, label: 'Caption accent color', field: 'accentColor' },
+    { style: 'accent' as const, label: 'Caption accent color', field: 'accentColor' },
   ])('accent color for style $style', ({ style, label, field }) => {
     it(`writes to captions.${field}, live then commit, exactly once each`, () => {
       const { onProjectChange, onCaptionEdit } = renderPanel({ style })

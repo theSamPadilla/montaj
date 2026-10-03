@@ -32,11 +32,21 @@ function repairSegment(seg: CaptionSegment): CaptionSegment {
   const newWords = seg.text.split(/\s+/).filter(Boolean)
   const segDur = seg.end - seg.start
   const wordDur = segDur / (newWords.length || 1)
-  const spreadWords = newWords.map((w, i) => ({
-    word: w,
-    start: seg.start + i * wordDur,
-    end: seg.start + (i + 1) * wordDur,
-  }))
+  // PL41: keep an accent on a word that survives the edit (matched by
+  // lowercased, punctuation-stripped text). `hero` lives on seg and is kept by
+  // the spread below.
+  const key = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+  const accents = new Map<string, NonNullable<CaptionSegment['words']>[number]['accent']>()
+  for (const w of seg.words ?? []) if (w.accent) accents.set(key(w.word), w.accent)
+  const spreadWords = newWords.map((w, i) => {
+    const accent = accents.get(key(w))
+    return {
+      word: w,
+      start: seg.start + i * wordDur,
+      end: seg.start + (i + 1) * wordDur,
+      ...(accent ? { accent } : {}),
+    }
+  })
   return {
     ...seg,
     // Uniform spread has no minimum of its own — floor it so a short word

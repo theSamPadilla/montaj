@@ -157,4 +157,28 @@ describe('repairCaptionWords', () => {
     expect(result).not.toBeNull()
     expect(result!.segments[0].words![0]).toEqual({ word: 'hello', start: 5, end: 7 })
   })
+
+  describe('PL41 accents', () => {
+    const seg = (text: string): CaptionSegment => ({
+      id: 's', text, start: 0, end: 3, hero: true,
+      words: [
+        { word: 'make', start: 0, end: 1 },
+        { word: 'it', start: 1, end: 2 },
+        { word: 'Bold,', start: 2, end: 3, accent: 'serif' },
+      ],
+    })
+
+    it('keeps an accent on a surviving word and keeps hero', () => {
+      const out = repairCaptionWords(makeCaptions([seg('make it really bold')]))!.segments[0]
+      expect(out.hero).toBe(true)
+      expect(out.words!.map(w => w.accent)).toEqual([undefined, undefined, undefined, 'serif'])
+      expect(out.words![3].word).toBe('bold')
+    })
+
+    it('drops the accent when its word is removed', () => {
+      const out = repairCaptionWords(makeCaptions([seg('make it quiet')]))!.segments[0]
+      expect(out.hero).toBe(true)
+      expect(out.words!.some(w => w.accent)).toBe(false)
+    })
+  })
 })

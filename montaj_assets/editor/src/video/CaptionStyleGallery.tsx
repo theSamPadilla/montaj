@@ -31,7 +31,7 @@ import type { OverlayFactory, Project } from '../types'
 import OverlayErrorBoundary from '../carousel/OverlayErrorBoundary'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
 import CaptionSpecimen from './CaptionSpecimen'
-import { CAPTION_STYLE_LETTER_SPACING, CAPTION_STYLE_TEXT_TRANSFORM } from './captionStyleDefaults'
+import { CAPTION_STYLE_LETTER_SPACING, CAPTION_STYLE_TEXT_TRANSFORM, captionFontsFor } from './captionStyleDefaults'
 
 type CaptionStyle = Captions['style']
 type CompileOverlay = (src: string) => Promise<OverlayFactory>
@@ -145,6 +145,15 @@ export const SAMPLE_SEGMENT: CaptionSegment = {
   ],
 }
 const SAMPLE_SEGMENTS: CaptionSegment[] = [SAMPLE_SEGMENT]
+// PL41: the Accent style only shows its look on a hero block with an accent
+// word, so its card gets the same sample with the last word accented.
+const ACCENT_SAMPLE_SEGMENTS: CaptionSegment[] = [{
+  ...SAMPLE_SEGMENT,
+  hero: true,
+  words: SAMPLE_SEGMENT.words!.map((w, i, a) => (i === a.length - 1 ? { ...w, accent: 'serif' as const } : w)),
+}]
+export const sampleSegmentsFor = (style: string): CaptionSegment[] =>
+  style === 'accent' ? ACCENT_SAMPLE_SEGMENTS : SAMPLE_SEGMENTS
 const SAMPLE_TOTAL_FRAMES = Math.round(SAMPLE_SEGMENT.end * SAMPLE_FPS)
 
 /** Length of one hover loop, in seconds. Longer than the sample (2.6s) on
@@ -251,7 +260,10 @@ export default function CaptionStyleGallery({
   // dedupes anyway. Without it every card would preview in a fallback face and
   // misreport what the export will look like. Keyed on the joined list because
   // `captions` is a fresh object on every project edit (see CaptionPreview).
-  useEffect(() => { ensureGoogleFontsLoaded(googleFonts) }, [String(googleFonts)])
+  // The Accent card is always on screen, so its fonts load whatever the
+  // active style is (the preview only loads them while accent is active).
+  const fontsToLoad = captionFontsFor('accent', googleFonts)
+  useEffect(() => { ensureGoogleFontsLoaded(fontsToLoad) }, [String(fontsToLoad)])
 
   function selectStyle(style: CaptionStyle) {
     // Guarded on `project.captions`, not the `captions` prop: the commit below
@@ -369,7 +381,7 @@ export function CaptionStyleCard({
   // Templates are pure functions of `frame`, so re-rendering IS the animation.
   const element = factory
     ? factory(frame, SAMPLE_FPS, SAMPLE_TOTAL_FRAMES, {
-        segments: SAMPLE_SEGMENTS,
+        segments: sampleSegmentsFor(style),
         ...theme,
         fontSize: CARD_FONT_SIZE,
       })
@@ -439,7 +451,7 @@ export function CaptionStyleCard({
               fallback inside CaptionSpecimen, so the style defaults are applied
               here. */}
           <CaptionSpecimen
-            captions={{ ...captions, style, segments: SAMPLE_SEGMENTS }}
+            captions={{ ...captions, style, segments: sampleSegmentsFor(style) }}
             currentTime={POSTER_FRAME / SAMPLE_FPS}
             fontFamily={captions.fontFamily}
             fontSize={captions.fontsize ?? DEFAULT_FONT_SIZE}

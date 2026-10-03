@@ -16,6 +16,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 import CaptionPreview from '../CaptionPreview'
+import { ACCENT_CAPTION_FONTS, captionFontsFor } from '../../captionStyleDefaults'
 import type { Captions } from '../../../schema'
 import type { OverlayFactory } from '../../../types'
 
@@ -95,5 +96,40 @@ describe('CaptionPreview — Google Fonts injection', () => {
 
     await waitFor(() => expect(compileOverlay).toHaveBeenCalled())
     expect(fontLinks().map((l) => l.href)).toEqual(before)
+  })
+
+  it('loads the three accent fonts for the accent style, merged with googleFonts', async () => {
+    const track: Captions = {
+      style: 'accent',
+      googleFonts: ['Anton'],
+      segments: [{ id: 'cap-0', text: 'hello', start: 0, end: 2 }],
+    }
+
+    render(
+      <CaptionPreview
+        track={track}
+        currentTime={1}
+        fps={30}
+        compileOverlay={compileOverlay}
+        resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        designCanvas={[1080, 1920]}
+      />,
+    )
+
+    await waitFor(() => {
+      const hrefs = fontLinks().map((l) => decodeURIComponent(l.href))
+      for (const spec of ACCENT_CAPTION_FONTS) {
+        expect(hrefs.some((h) => h.includes(`family=${spec}`))).toBe(true)
+      }
+      expect(hrefs.some((h) => h.includes('family=Anton'))).toBe(true)
+    })
+  })
+})
+
+describe('captionFontsFor', () => {
+  it('passes other styles through and dedupes for accent', () => {
+    expect(captionFontsFor('clean', 'Anton')).toBe('Anton')
+    expect(captionFontsFor('accent', undefined)).toEqual(ACCENT_CAPTION_FONTS)
+    expect(captionFontsFor('accent', ['Caveat:wght@700', 'X'])).toEqual(['Caveat:wght@700', 'X', ACCENT_CAPTION_FONTS[0], ACCENT_CAPTION_FONTS[1]])
   })
 })

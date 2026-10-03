@@ -23,7 +23,7 @@
 //     blank. See FALLBACK_CARD_W in CaptionStyleGallery.tsx.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import type { Captions } from '../../schema'
+import type { Captions, CaptionSegment } from '../../schema'
 import type { OverlayFactory, Project } from '../../types'
 import CaptionStyleGallery, {
   CAPTION_STYLES,
@@ -128,6 +128,17 @@ describe('CaptionStyleGallery', () => {
     expect(screen.getAllByRole('button')).toHaveLength(CAPTION_STYLES.length)
     for (const style of CAPTION_STYLES) {
       expect(cardFor(style)).toHaveAttribute('data-style', style)
+    }
+  })
+
+  it('feeds the accent card a hero sample with its last word accented, and no other card', async () => {
+    const { calls } = await renderGallery()
+
+    const accent = calls.filter(c => c.src === 'accent')[0].props.segments as CaptionSegment[]
+    expect(accent[0].hero).toBe(true)
+    expect(accent[0].words!.map(w => w.accent)).toEqual([undefined, undefined, undefined, 'serif'])
+    for (const c of calls.filter(c => c.src !== 'accent')) {
+      expect(c.props.segments).toEqual([SAMPLE_SEGMENT])
     }
   })
 

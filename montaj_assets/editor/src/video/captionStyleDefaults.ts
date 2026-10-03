@@ -103,3 +103,23 @@ export const CAPTION_STYLE_TEXT_ALIGN: Record<Style, string> = {
 export const CAPTION_STYLE_TEXT_TRANSFORM: Partial<Record<Style, CaptionTextTransform>> = {
   outline: 'uppercase',
 }
+
+/** Google Fonts the `accent` style always needs (Inter Tight running text,
+ *  Instrument Serif italic accent, Caveat script accent). Specs use '+' for
+ *  spaces, as the loader interpolates them raw into the googleapis URL.
+ *  The other copy of this list is `ACCENT_FONTS` in
+ *  `montaj_assets/render/render.js` (the editor cannot import render.js);
+ *  keep the two identical. */
+export const ACCENT_CAPTION_FONTS = ['Inter+Tight:wght@800', 'Instrument+Serif:ital@1', 'Caveat:wght@700']
+
+/** The font list the editor must load for a caption style: the track's own
+ *  `googleFonts` (array or bare string), plus the accent fonts for `accent`,
+ *  deduped, mirroring render.js. Other styles pass through unchanged. */
+export function captionFontsFor(
+  style: string | undefined,
+  googleFonts: string[] | string | undefined,
+): string[] | string | undefined {
+  if (style !== 'accent') return googleFonts
+  const given = Array.isArray(googleFonts) ? googleFonts : googleFonts ? [googleFonts] : []
+  return [...new Set([...given, ...ACCENT_CAPTION_FONTS])]
+}
