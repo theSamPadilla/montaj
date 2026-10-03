@@ -21,7 +21,7 @@ import { playheadInside } from './captionSeek'
 import { FontFamilyPicker, findFontOption } from '../text/FontPicker'
 import CaptionStyleGallery from './CaptionStyleGallery'
 import TabNav from './panels/TabNav'
-import { CAPTION_STYLE_LETTER_SPACING, CAPTION_STYLE_LINE_HEIGHT, CAPTION_STYLE_TEXT_TRANSFORM } from './captionStyleDefaults'
+import { CAPTION_STYLE_FONT_SIZE, CAPTION_STYLE_LETTER_SPACING, CAPTION_STYLE_LINE_HEIGHT, CAPTION_STYLE_TEXT_TRANSFORM } from './captionStyleDefaults'
 
 /** Which of the panel's three sub-tabs is showing: the caption transcript,
  *  the fine formatting controls, or the style gallery. Plain component state,
@@ -368,10 +368,11 @@ function CaptionListPanelBody({
   // release/blur/Enter so mid-gesture updates don't each trigger a server PUT.
   // Both the slider and the box read and write THIS state, so they stay in
   // lockstep and the preview tracks the edit as it happens.
-  const [fontsize, setFontsize] = useState(captionTrack?.fontsize ?? 46)
+  const styleFontSize = captionTrack ? CAPTION_STYLE_FONT_SIZE[captionTrack.style] ?? 46 : 46
+  const [fontsize, setFontsize] = useState(captionTrack?.fontsize ?? styleFontSize)
   useEffect(() => {
-    setFontsize(captionTrack?.fontsize ?? 46)
-  }, [captionTrack?.fontsize])
+    setFontsize(captionTrack?.fontsize ?? styleFontSize)
+  }, [captionTrack?.fontsize, styleFontSize])
 
   // The selected segment, if any — derived from the unified `selectedIds`
   // the same way VideoEditor derives its own `selectedCaptionId` mirror: a

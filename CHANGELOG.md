@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Added (render, editor): Accent caption style.** Short bold running captions and hero blocks with one red accent word (serif, sans or script); new optional `words[].accent` and `segments[].hero`.
+- **Added (render, editor): Accent caption style.** Short bold running captions (one line per window, sized to fit the frame) and hero segments: the same size, two staggered lines, words cutting on as spoken, with one accent (`serif` red Playfair Display italic, `sans` red, `script` a white Caveat run above the word it qualifies); new optional `words[].accent` and `segments[].hero`. (`montaj_assets/render/templates/captions/accent.jsx`, `montaj_assets/render/render.js`, `montaj_assets/editor/src/{schema.ts,video/captionStyleDefaults.ts,video/captionRepair.ts,video/CaptionStyleGallery.tsx,video/CaptionListPanel.tsx}`, `montaj_assets/render/test/caption-accent.test.mjs`, `docs/schemas/project.md`)
 - **Added (editor): the Accent style in the caption gallery and style defaults; its accent colour swatch; accent words survive a caption text edit.**
 
 - **Added (editor, serve, mcp): project notes (PL39).** Private time-stamped notes the operator adds with `N` while reviewing; `project.notes` is `{id, t, tEnd?, text, done?}`, sorted by `t`, never rendered into output. Timeline pins take a tone (review or note) and an optional range, and `montaj://context` lists the open notes (not `done`) in a Notes section, so an agent can work through them. (`montaj_assets/editor/src/{schema.ts,index.ts,video/timeline/notes.ts}`, `docs/schemas/project.md`, `serve/context.py`, `montaj_assets/mcp/server.js`, `tests/test_server_context.py`, `tests/test_server_projects_save_validation.py`, `montaj_assets/mcp/test/context-resource.test.mjs`)

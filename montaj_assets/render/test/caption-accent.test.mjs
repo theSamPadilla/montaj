@@ -166,6 +166,26 @@ describe('running windows', () => {
     assert.equal(textOf(el), 'drone')
   })
 
+  test('a window closes once it would pass the line budget (168 px): everything | you need is', () => {
+    const words = [
+      { word: 'everything', start: 1,   end: 1.3 },
+      { word: 'you',        start: 1.3, end: 1.5 },
+      { word: 'need',       start: 1.5, end: 1.7 },
+      { word: 'is',         start: 1.7, end: 1.9 },
+    ]
+    assert.equal(textOf(Accent({ frame: at(1.1), fps: FPS, segments: [seg({}, words)] })), 'everything')
+    assert.equal(textOf(Accent({ frame: at(1.4), fps: FPS, segments: [seg({}, words)] })), 'you need is')
+  })
+
+  test('a smaller font keeps three words in one window: everything you need at 84', () => {
+    const words = [
+      { word: 'everything', start: 1,   end: 1.3 },
+      { word: 'you',        start: 1.3, end: 1.5 },
+      { word: 'need',       start: 1.5, end: 1.7 },
+    ]
+    assert.equal(textOf(Accent({ frame: at(1.1), fps: FPS, fontSize: 84, segments: [seg({}, words)] })), 'everything you need')
+  })
+
   test('t=0.9: before the segment -> null', () => {
     assert.equal(Accent({ frame: at(0.9), fps: FPS, segments: [seg()] }), null)
   })
@@ -318,14 +338,28 @@ describe('script accent', () => {
     assert.equal(spanFor(el, 'time').props.style.color, '#123456')
   })
 
+  test('hero: the script line follows the segment colour', () => {
+    const el = Accent({ frame: at(2.0), fps: FPS, segments: [seg({ hero: true, color: '#123456' }, SCRIPT_WORDS)] })
+    assert.equal(spanFor(el, 'time').props.style.color, '#123456')
+  })
+
+  test('hero: a long 5-word hero is drawn smaller so its widest line fits; the 4-word one keeps 168', () => {
+    const w5 = 'the hardest thing i have done'.split(' ').map((word, i) => ({ word, start: 1 + i * 0.1, end: 1.1 + i * 0.1 }))
+    const el = Accent({ frame: at(2.0), fps: FPS, segments: [seg({ hero: true }, w5)] })
+    const sz = spanFor(el, 'hardest').props.style.fontSize
+    assert.ok(sz >= SIZE * 0.6 && sz < SIZE, `size ${sz}`)
+    const el4 = Accent({ frame: at(2.0), fps: FPS, segments: [seg({ hero: true })] })
+    assert.equal(spanFor(el4, 'i').props.style.fontSize, SIZE)
+  })
+
   test('hero: the script word does not count as a main line', () => {
     const el = Accent({ frame: at(2.0), fps: FPS, segments: [seg({ hero: true }, SCRIPT_WORDS)] })
     assert.deepEqual(mainLineDivs(el).map(textOf), ['full', 'position'])
   })
 
   test('running: a script word draws as serif (red italic)', () => {
-    const el = Accent({ frame: at(2.0), fps: FPS, segments: [seg({}, SCRIPT_WORDS)] })
-    assert.equal(textOf(el), 'full time position')
+    const el = Accent({ frame: at(1.4), fps: FPS, segments: [seg({}, SCRIPT_WORDS)] })
+    assert.equal(textOf(el), 'full time')
     const s = spanFor(el, 'time').props.style
     assert.equal(s.color, ACCENT_COLOR)
     assert.equal(s.fontStyle, 'italic')

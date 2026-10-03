@@ -39,7 +39,7 @@ export default function WordByWord({
  * caption template is standalone JSX compiled into the browser/Puppeteer
  * bundle and can import nothing but `montaj/render`. Deliberate duplication —
  * change the predicate or the lane default in timeline-core/src/captions.js
- * and in all seven templates together, never in one alone.
+ * and in all eight templates together, never in one alone.
  */
 function activeSegments(segments, t) {
   return segments

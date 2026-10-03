@@ -79,7 +79,7 @@ export interface CaptionSegment {
   // track-level theme fields (color, fontsize, accentColor, …) stay
   // track-global and do not vary per lane.
   lane?: number
-  // PL41: the Accent style draws this segment as a hero block (large, stacked,
+  // PL41: the Accent style draws this segment as a hero block (two staggered lines at the running size,
   // words cut on as spoken) instead of running captions; other styles ignore it
   hero?: boolean
 }
@@ -110,7 +110,7 @@ export interface Captions {
   bgColor?: string
   // Per-style accent color fields, each read by the matching JSX caption template.
   // A single UI control writes whichever one the active style uses (see CaptionListPanel).
-  accentColor?: string    // active-word/box accent — highlight-box, outline
+  accentColor?: string    // active-word/box accent — highlight-box, outline, accent
   highlightColor?: string // active word — karaoke
   activeColor?: string    // active word — pop
   backgroundColor?: string// text box background — subtitle

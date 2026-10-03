@@ -137,6 +137,8 @@ describe('CaptionStyleGallery', () => {
     const accent = calls.filter(c => c.src === 'accent')[0].props.segments as CaptionSegment[]
     expect(accent[0].hero).toBe(true)
     expect(accent[0].words!.map(w => w.accent)).toEqual([undefined, undefined, undefined, 'serif'])
+    // the resting poster frame (1.0 s) already shows every word
+    for (const w of accent[0].words!) expect(w.start).toBeLessThanOrEqual(1.0)
     for (const c of calls.filter(c => c.src !== 'accent')) {
       expect(c.props.segments).toEqual([SAMPLE_SEGMENT])
     }

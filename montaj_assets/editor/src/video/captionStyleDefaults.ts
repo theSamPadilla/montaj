@@ -1,6 +1,6 @@
 /**
  * Per-style default values for the caption text-styling fields — the ones
- * each of the seven JSX caption templates applies via its own destructuring
+ * each of the eight JSX caption templates applies via its own destructuring
  * default (`fontWeight = 700`, etc.) whenever the corresponding `Captions`
  * field is absent from the project.
  *
@@ -19,12 +19,17 @@
  * here too, in the same commit. Verified against the actual `function Xxx({
  * ... })` destructuring defaults in:
  *   clean.jsx, karaoke.jsx, subtitle.jsx, pop.jsx, word-by-word.jsx,
- *   highlight-box.jsx, outline.jsx
+ *   highlight-box.jsx, outline.jsx, accent.jsx
  * (all under montaj_assets/render/templates/captions/).
  */
 import type { Captions, CaptionTextTransform } from '../schema'
 
 type Style = Captions['style']
+
+/** The caption templates' own default font size (px), shown by the size control when `fontsize` is absent. */
+export const CAPTION_STYLE_FONT_SIZE: Record<Style, number> = {
+  clean: 54, karaoke: 52, subtitle: 46, pop: 68, 'word-by-word': 72, 'highlight-box': 60, outline: 70, accent: 168,
+}
 
 /** `Captions.fontWeight`'s default per style (CSS `font-weight`). */
 export const CAPTION_STYLE_FONT_WEIGHT: Record<Style, number> = {
@@ -38,7 +43,7 @@ export const CAPTION_STYLE_FONT_WEIGHT: Record<Style, number> = {
   accent: 700,
 }
 
-/** `Captions.fontFamily`'s default per style. Six of the seven templates
+/** `Captions.fontFamily`'s default per style. Seven of the eight templates
  *  share the plain system-sans stack as their parameter default; only
  *  `clean` names a specific face (Figtree) as its designed look. */
 export const CAPTION_STYLE_FONT_FAMILY: Record<Style, string> = {
@@ -123,6 +128,6 @@ export function captionFontsFor(
   googleFonts: string[] | string | undefined,
 ): string[] | string | undefined {
   if (style !== 'accent') return googleFonts
-  const given = Array.isArray(googleFonts) ? googleFonts : googleFonts ? [googleFonts] : []
+  const given = Array.isArray(googleFonts) ? googleFonts : googleFonts ? googleFonts.split(',').map(s => s.trim()).filter(Boolean) : []
   return [...new Set([...given, ...ACCENT_CAPTION_FONTS])]
 }

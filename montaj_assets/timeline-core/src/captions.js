@@ -34,7 +34,7 @@
 // RENDER-SIDE AGREEMENT: every caption template under
 // montaj_assets/render/templates/captions/*.jsx (karaoke.jsx:15-17,
 // clean.jsx:16-17, outline.jsx:17-18, highlight-box.jsx:17-18,
-// word-by-word.jsx:14-15, subtitle.jsx:15-16, pop.jsx:15-16) computes
+// word-by-word.jsx:14-15, subtitle.jsx:15-16, pop.jsx:15-16, accent.jsx) computes
 // `t = frame / fps` and does the identical `segments.find(s => t >= s.start
 // && t < s.end)`. Render receives an already-integer `frame` from its own
 // per-frame Puppeteer capture loop, so there is no `Math.round(currentTime *

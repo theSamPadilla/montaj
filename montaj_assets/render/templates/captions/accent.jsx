@@ -45,6 +45,16 @@ const SCRIPT_INDENT = 0.66
 const CENTRE_Y = '59.5%'
 const TEXT_SHADOW = '0 1px 3px rgba(0,0,0,0.25)'
 const ACCENTS = new Set(['serif', 'sans', 'script'])
+/** Line width budget in running-font characters (spaces included) at RUN_CHARS_SIZE px:
+ *  12 measure 690 to 933 px of the 950 inside the anchor padding on a 1080 frame. */
+const RUN_CHARS = 12
+const RUN_CHARS_SIZE = 168
+/** About how many characters one em of indent takes (1 / 0.47em per character). */
+const CHARS_PER_EM = 2.1
+const charBudget = size => (RUN_CHARS * RUN_CHARS_SIZE) / size
+/** Uppercase Inter Tight 700 measures 1.2 to 1.4 times its lowercase width. */
+const caseWidth = th => (th.textTransform === 'uppercase' ? 1.3 : 1)
+const wordCost = (w, running) => w.word.length * (w.accent === 'serif' || (running && w.accent === 'script') ? SERIF_SCALE : 1)
 
 export default function Accent({
   frame, fps,
@@ -75,16 +85,20 @@ function activeSegments(segments, t) {
     .sort((a, b) => (a.lane ?? 0) - (b.lane ?? 0))
 }
 
-/** Running windows: at most RUN_WINDOW words, broken after punctuation or a pause. */
-export function runWindows(words) {
+/** Running windows: at most RUN_WINDOW words and a character budget, broken after punctuation or a pause. */
+export function runWindows(words, fontSize = RUN_CHARS_SIZE) {
+  const budget = charBudget(fontSize)
   const out = []
   let cur = []
+  let chars = 0
   words.forEach((w, i) => {
+    chars += (cur.length ? 1 : 0) + wordCost(w, true)
     cur.push(w)
     const next = words[i + 1]
     const punct = /[.,!?;:]$/.test(w.word)
     const pause = next && next.start - w.end > RUN_PAUSE_S
-    if (cur.length >= RUN_WINDOW || punct || pause || !next) { out.push(cur); cur = [] }
+    const full = next && chars + 1 + wordCost(next, true) > budget
+    if (cur.length >= RUN_WINDOW || punct || pause || full || !next) { out.push(cur); cur = []; chars = 0 }
   })
   return out
 }
@@ -146,7 +160,7 @@ const CENTRE = { transform: 'translateY(-50%)' }
 function renderRunning(seg, key, th) {
   const words = seg.words || []
   if (!words.length) return null
-  const windows = runWindows(words)
+  const windows = runWindows(words, th.fontSize * caseWidth(th))
   const win = [...windows].reverse().find(w => th.t >= w[0].start)
   if (!win) return null
   return (
@@ -167,21 +181,30 @@ function renderRunning(seg, key, th) {
 function renderHero(seg, key, th) {
   const words = seg.words || []
   if (!words.length || th.t < words[0].start) return null
-  const size = th.fontSize * HERO_SCALE
+  const lines = heroLines(words)
+  const indentOf = (line, li) => (line[0].script && line[0].main ? SCRIPT_INDENT : li > 0 ? LINE2_INDENT : 0)
+  // A hero line wider than the frame would wrap and clip: shrink the block until its widest line fits.
+  const base = th.fontSize * HERO_SCALE
+  const widest = Math.max(0, ...lines.map((line, li) => {
+    const mains = line.filter(u => u.main)
+    if (!mains.length) return 0
+    return mains.reduce((n, u, i) => n + (i ? 1 : 0) + wordCost(u.main, false), 0) + indentOf(line, li) * CHARS_PER_EM
+  }))
+  const size = base * Math.min(1, charBudget(base * caseWidth(th)) / (widest || 1))
   const vis = w => ({ visibility: th.t >= w.start ? 'visible' : 'hidden' })
   const lineDivs = []
-  heroLines(words).forEach((line, li) => {
+  lines.forEach((line, li) => {
     const run = line.flatMap(u => u.script || [])
     if (run.length) {
       lineDivs.push(
         <div key={`s${li}`} style={{ marginBottom: -size * SCRIPT_GAP }}>
-          {run.map((w, i) => <span key={i} style={{ ...wordStyle(w, size, th, { running: false }), ...vis(w) }}>{(i ? ' ' : '') + w.word}</span>)}
+          {run.map((w, i) => <span key={i} style={{ ...wordStyle(w, size, th, { running: false }), color: seg.color ?? th.color, ...vis(w) }}>{(i ? ' ' : '') + w.word}</span>)}
         </div>,
       )
     }
     const mains = line.filter(u => u.main)
     if (!mains.length) return
-    const indent = line[0].script && line[0].main ? SCRIPT_INDENT : li > 0 ? LINE2_INDENT : 0
+    const indent = indentOf(line, li)
     lineDivs.push(
       <div key={`l${li}`} style={{ paddingLeft: size * indent }}>
         {mains.map((u, i) => (

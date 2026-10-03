@@ -358,6 +358,12 @@ describe('CaptionListPanel relocated style controls', () => {
   // via `clampToRange`. 400 is CAPTION_FONT_SIZE_MAX, the widened ceiling this
   // feature's changelog entry advertises; this is the only test proving the
   // call-site clamp actually catches a value typed past it.
+  it('font size starts at the style default when the track has none (accent: 168)', () => {
+    renderPanel({ style: 'accent' })
+    expandFormat()
+    expect(screen.getByRole('spinbutton', { name: 'Caption font size' })).toHaveValue(168)
+  })
+
   it('fontsize typed past the ceiling clamps to 400 on commit', () => {
     const { onCaptionEdit } = renderPanel()
     expandFormat()

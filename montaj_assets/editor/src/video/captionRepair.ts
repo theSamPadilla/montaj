@@ -36,10 +36,14 @@ function repairSegment(seg: CaptionSegment): CaptionSegment {
   // lowercased, punctuation-stripped text). `hero` lives on seg and is kept by
   // the spread below.
   const key = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+  // Matched by occurrence: the n-th copy of a repeated word keeps the n-th old copy's accent.
+  const nth = (seen: Map<string, number>, k: string) => { const n = seen.get(k) ?? 0; seen.set(k, n + 1); return `${k}#${n}` }
   const accents = new Map<string, NonNullable<CaptionSegment['words']>[number]['accent']>()
-  for (const w of seg.words ?? []) if (w.accent) accents.set(key(w.word), w.accent)
+  const oldSeen = new Map<string, number>()
+  for (const w of seg.words ?? []) { const id = nth(oldSeen, key(w.word)); if (w.accent) accents.set(id, w.accent) }
+  const newSeen = new Map<string, number>()
   const spreadWords = newWords.map((w, i) => {
-    const accent = accents.get(key(w))
+    const accent = accents.get(nth(newSeen, key(w)))
     return {
       word: w,
       start: seg.start + i * wordDur,

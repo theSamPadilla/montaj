@@ -175,6 +175,19 @@ describe('repairCaptionWords', () => {
       expect(out.words![3].word).toBe('bold')
     })
 
+    it('a repeated word keeps the accent of its own occurrence only', () => {
+      const s: CaptionSegment = {
+        id: 's', text: 'it really is it', start: 0, end: 4,
+        words: [
+          { word: 'it', start: 0, end: 1 },
+          { word: 'is', start: 1, end: 2 },
+          { word: 'it', start: 2, end: 4, accent: 'serif' },
+        ],
+      }
+      const out = repairCaptionWords(makeCaptions([s]))!.segments[0]
+      expect(out.words!.map(w => w.accent)).toEqual([undefined, undefined, undefined, 'serif'])
+    })
+
     it('drops the accent when its word is removed', () => {
       const out = repairCaptionWords(makeCaptions([seg('make it quiet')]))!.segments[0]
       expect(out.hero).toBe(true)

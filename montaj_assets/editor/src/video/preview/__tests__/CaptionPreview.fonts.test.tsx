@@ -132,4 +132,8 @@ describe('captionFontsFor', () => {
     expect(captionFontsFor('accent', undefined)).toEqual(ACCENT_CAPTION_FONTS)
     expect(captionFontsFor('accent', ['Caveat:wght@700', 'X'])).toEqual(['Caveat:wght@700', 'X', ACCENT_CAPTION_FONTS[0], ACCENT_CAPTION_FONTS[1]])
   })
+
+  it('splits a comma-separated string for accent', () => {
+    expect((captionFontsFor('accent', 'Anton,Roboto') as string[]).slice(0, 2)).toEqual(['Anton', 'Roboto'])
+  })
 })

@@ -75,7 +75,7 @@ const RENDER_H = 1920
  *  15% for `subtitle`), so a full-frame thumbnail would be mostly empty and
  *  shrink the text to a few illegible pixels.
  *
- *  All seven caption templates now anchor at the SAME 25% (see
+ *  Seven of the eight caption templates anchor at the SAME 25% (Accent centres at 59.5%; see
  *  `render/templates/captions/*.jsx`), so one fixed window frames every card
  *  identically — no per-style offset needed. BAND_TOP is tuned so the
  *  full-sentence block styles (five of the seven, two lines at CARD_FONT_SIZE)
@@ -150,7 +150,11 @@ const SAMPLE_SEGMENTS: CaptionSegment[] = [SAMPLE_SEGMENT]
 const ACCENT_SAMPLE_SEGMENTS: CaptionSegment[] = [{
   ...SAMPLE_SEGMENT,
   hero: true,
-  words: SAMPLE_SEGMENT.words!.map((w, i, a) => (i === a.length - 1 ? { ...w, accent: 'serif' as const } : w)),
+  // Words 0.2 s apart so the whole block is on screen by the 1.0 s poster frame.
+  words: SAMPLE_SEGMENT.words!.map((w, i, a) => ({
+    ...w, start: i * 0.2, end: i === a.length - 1 ? w.end : (i + 1) * 0.2,
+    ...(i === a.length - 1 ? { accent: 'serif' as const } : {}),
+  })),
 }]
 export const sampleSegmentsFor = (style: string): CaptionSegment[] =>
   style === 'accent' ? ACCENT_SAMPLE_SEGMENTS : SAMPLE_SEGMENTS
