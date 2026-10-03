@@ -117,6 +117,10 @@ export type { DroppedClipPlacement, PlacedClipResult } from './video/timeline/pl
 // header for the "same reference when unchanged" contract they all share).
 export { addMarker, moveMarker, renameMarker, removeMarkers, nextMarkerLabel } from './video/timeline/markers'
 
+// Note model (PL39) — pure mutations over `project.notes`, same contract as markers.
+export { addNote, setNoteText, setNoteDone, removeNotes, sortedNotes } from './video/timeline/notes'
+export type { Note } from './schema'
+
 // ── Speed control (slider + preset chips) ────────────────────────────────────
 // Shared by the per-clip inspect modal (host `montaj_assets/ui`) and the
 // track-wide settings popover (TrackSettingsPopover.tsx).

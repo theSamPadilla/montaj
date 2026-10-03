@@ -297,3 +297,22 @@ def test_all_documented_overlay_items_are_valid():
         project = {"tracks": [{"id": "t", "items": [item]}]}
         bad += [f"{source}: {e}" for e in overlay_item_errors(project)]
     assert bad == []
+
+
+# ---------------------------------------------------------------------------
+# Project notes (PL39): a top-level `notes` field survives save and get, and a
+# later PUT that omits it keeps it (serve does a shallow merge).
+# ---------------------------------------------------------------------------
+
+def test_notes_round_trip_and_survive_a_put_that_omits_them(project):
+    client, project_dir = project
+    notes = [{"id": "n1", "t": 1.0, "text": "x"}]
+    resp = client.put(f"/api/projects/{PID}", json={"id": PID, "notes": notes})
+    assert resp.status_code == 200, resp.text
+    assert _on_disk(project_dir)["notes"] == notes
+    got = client.get(f"/api/projects/{PID}")
+    assert got.status_code == 200, got.text
+    assert got.json()["notes"] == notes
+    resp = client.put(f"/api/projects/{PID}", json={"id": PID, "name": "renamed"})
+    assert resp.status_code == 200, resp.text
+    assert _on_disk(project_dir)["notes"] == notes

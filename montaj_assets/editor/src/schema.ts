@@ -317,6 +317,18 @@ export interface Marker {
   label: string
 }
 
+/** A private, time-stamped note on the project (PL39). Never a marker. */
+export interface Note {
+  id: string
+  /** Seconds on the timeline. */
+  t: number
+  /** Optional end, seconds. v1 UI never writes it; agents may. */
+  tEnd?: number
+  text: string
+  /** Present and true once resolved; absent otherwise. */
+  done?: boolean
+}
+
 // ── Carousel types ─────────────────────────────────────────────────────────
 export interface ImageElement {
   id: string
@@ -420,6 +432,8 @@ export interface EditorProject {
    *  project has none, so a marker-less project is byte-identical to one from
    *  before the feature existed (the same discipline `captions` follows). */
   markers?: Marker[]
+  /** Private operator notes (PL39), kept sorted by `t`. Absent, not `[]`, when empty. */
+  notes?: Note[]
   carousel?: { aspect: string }
   profile?: string
   derivedFrom?: string  // ID of the source project this was derived from (e.g. clips workflow)

@@ -49,6 +49,7 @@ The agent writes project.json as it works — every write pushes to the browser 
 | `tracks` | array | Array of track objects (`{id, items, volume?, muted?, enabled?}`); a legacy array-of-arrays shape is also still read everywhere. `tracks[0]` is the primary footage track. `tracks[1+]` are overlay tracks. Higher-index tracks render on top. `tracks[0]` may have an empty `items` array for animation-only projects. See [tracks](#tracks) below. |
 | `captions` | object | Caption configuration. Always rendered topmost, above all tracks. |
 | `markers` | array | Optional. Operator markers dropped with `M` in the editor — `{id, t, label}`, kept sorted by `t`. Editing aid only: never rendered into output. Surfaced to agents through the context endpoint. See [markers](#markers). |
+| `notes` | array | Optional. Private operator notes added with `N` in the editor, `{id, t, tEnd?, text, done?}`, kept sorted by `t`. Never rendered into output and never shown to reviewers. See [notes](#notes). |
 | `audio` | object | Music and ducking config |
 | `derivedFrom` | string | Optional. Set on clip projects fanned out from a source by the `clips` workflow; the source project's id. |
 
@@ -797,6 +798,41 @@ only the first should read as an empty array. A project that has never had a
 marker dropped simply omits the field.
 
 **Dropped with `M` in the editor**, at the current playhead position.
+
+---
+
+## Notes
+
+Private, time-stamped notes the operator writes while reviewing the timeline,
+for themselves and for an agent to act on. Editing aid only: nothing in the
+render pipeline or the preview reads `notes`; it never affects output.
+
+```json
+{
+  "notes": [
+    { "id": "note-1", "t": 2.0, "text": "caption covers the face" },
+    { "id": "note-2", "t": 8.0, "tEnd": 10.5, "text": "tighten this cut", "done": true }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique identifier for this note. |
+| `t` | number | Position on the output timeline, in seconds. |
+| `tEnd` | number | Optional end of a range, in seconds. The editor UI never writes it; agents may. |
+| `text` | string | Operator-entered text. May be empty. |
+| `done` | boolean | Present and `true` once resolved; absent otherwise. |
+
+**Kept sorted by `t`.**
+
+**Absent, not `[]`, when a project has no notes.**
+
+**Private: never shown to reviewers.**
+
+**Agents may set `done: true`** after addressing a note.
+
+**Added with `N` in the editor**, at the current playhead position.
 
 ---
 
