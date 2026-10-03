@@ -319,6 +319,33 @@ def test_restore_preserves_uncommitted_edit(tmp_path):
     assert any(item["id"] == "uncommitted-item" for item in autosaved["tracks"][0]["items"])
 
 
+def test_restore_keeps_current_notes(tmp_path):
+    """A restore swaps the content, never the operator's private notes."""
+    project_dir = tmp_path / "proj"
+    old_hash = _git_commit_current_version(project_dir, run_count=1)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    app.state.broadcaster = _StubBroadcaster()
+    app.dependency_overrides[get_project_dir] = lambda: project_dir
+    try:
+        project = _read_project(project_dir)
+        project["runCount"] = 2
+        project["notes"] = [{"id": "n1", "t": 1.0, "text": "fix this"}]
+        _write_project(project_dir, project)
+        resp = client.post(f"/api/projects/{PID}/versions", json={"name": "draft"})
+        assert resp.status_code == 200, resp.text
+
+        resp = client.post(f"/api/projects/{PID}/versions/{old_hash}/restore")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["notes"] == [{"id": "n1", "t": 1.0, "text": "fix this"}]
+    finally:
+        app.dependency_overrides.pop(get_project_dir, None)
+
+    restored = _read_project(project_dir)
+    assert restored["runCount"] == 1
+    assert restored["notes"] == [{"id": "n1", "t": 1.0, "text": "fix this"}]
+
+
 def test_restore_no_op_when_no_uncommitted_edit(tmp_path):
     project_dir = tmp_path / "proj"
     old_hash = _git_commit_current_version(project_dir, run_count=1)

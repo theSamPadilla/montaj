@@ -1913,6 +1913,9 @@ function ReviewSurface<P extends Project>({
       opts.onLocked?.()
       return
     }
+    // The Notes tab lives in the media panel; the rail may be on Captions or
+    // another tab, so reveal Media (without persisting the choice).
+    if (slots?.mediaPanel) setLeftTabRequest(r => ({ id: 'media', nonce: r.nonce + 1, persist: false }))
     // Two statements on purpose: `opts.onNoteAdded?.(addNoteAt(at))` would
     // skip evaluating its argument, so no note at all, when a host passes no
     // `onNoteAdded`.

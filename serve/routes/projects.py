@@ -3276,6 +3276,12 @@ async def restore_version(project_id: str, commit: str, request: Request, projec
     # leaves legacy tracks on disk — a no-op (same object back) when the
     # restored version is already normalized, matching save_project's rule.
     restored = normalize_tracks(restored)
+    # Notes are the operator's private review notes, not version content: a
+    # restore keeps the current ones rather than swapping in the old commit's.
+    if current_project.get("notes"):
+        restored["notes"] = current_project["notes"]
+    else:
+        restored.pop("notes", None)
     project_path.write_text(json.dumps(restored, indent=2))
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     broadcaster.publish(project_id, f"data: {json.dumps(restored)}\n\n")

@@ -483,6 +483,28 @@ describe('VideoEditor — N adds a note (PL39)', () => {
     expect(onNoteAdded).toHaveBeenCalledWith(saved.notes![0])
   })
 
+  it('with a mediaPanel slot, N reveals the Media tab even when another rail tab is open', async () => {
+    const adapter = makeFakeAdapter()
+    render(
+      <VideoEditor
+        project={makeVideoProject()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div />, mediaPanel: <div data-testid="media-panel">Footage bin</div> }}
+        notes={{ enabled: true }}
+      />,
+    )
+    await screen.findByLabelText('Preview axis')
+    const mediaTab = screen.getByRole('tab', { name: /media/i })
+    const otherTab = screen.getByRole('tab', { name: /versions/i })
+    await act(async () => { fireEvent.click(otherTab) })
+    expect(otherTab.getAttribute('aria-selected')).toBe('true')
+
+    await pressN()
+
+    await waitFor(() => expect(mediaTab.getAttribute('aria-selected')).toBe('true'))
+  })
+
   it('with the preview axis on, drops the note at the hovered time, the same as M', async () => {
     // Also the no-`onNoteAdded` case: the note must land without a reporter.
     const adapter = makeFakeAdapter()
