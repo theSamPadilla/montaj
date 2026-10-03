@@ -68,7 +68,7 @@ Search returns more than you need. Before committing:
 
 Omit `sourceCrop` for the whole photo. `offsetX`, `offsetY` and `scale` place it smaller than the frame. Fields: `docs/schemas/project.md`, "`type: \"image\"`".
 - **In an animated graphic** — only when the photo is part of a motion graphic (a card that animates in with text). Then pass the local path via `props` to a JSX overlay: load skills `overlay` and `write-overlay`.
-- **As a project asset** — add to `project.assets[]` (`{ id, type: "image", src, name }`) so it's tracked and reusable.
+- **Register every image as a project asset — required, whether or not it is also placed.** Add each image you download into the project to `project.assets[]` as `{ "id": "asset-N", "src": "<absolute path>", "type": "image", "name": "<short name>" }`, with N continuing the existing numbering. The editor's Assets panel lists `project.assets`, so an unregistered image looks missing there. Saving the project normally is enough.
 
 Always use the **local fetched path** (absolute), never the remote URL.
 

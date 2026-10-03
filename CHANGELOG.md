@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Changed (editor): ⌘A / Ctrl+A selects everything in the timeline; the preview-axis toggle moves to plain `A`.** Select-all takes every clip on every track, overlay, audio bar and caption segment through the same multi-select state as shift-click and marquee, so delete, move and copy apply to all of it. It leaves native select-all alone in an input, textarea or caption editor. (`video/timeline/Timeline.tsx`, `video/VideoEditor.tsx`, `ControlsInfoModal.tsx`)
+- **Changed (skills): `image-search` makes registering downloaded images in `project.assets[]` a required step.** It was an optional third placement choice, so agents saved photos into `assets/` and put them on the timeline without registering them, and the editor's Assets panel showed empty. (`skills/image-search/SKILL.md`)
 
 ## v5.21.1
 
