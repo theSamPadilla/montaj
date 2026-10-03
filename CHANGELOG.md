@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.22.0
+
 - **Added (render, editor): Accent caption style.** Short bold running captions (one line per window, sized to fit the frame) and hero segments: the same size, two staggered lines, words cutting on as spoken, with one accent (`serif` red Playfair Display italic, `sans` red, `script` a white Caveat run above the word it qualifies); new optional `words[].accent` and `segments[].hero`. (`montaj_assets/render/templates/captions/accent.jsx`, `montaj_assets/render/render.js`, `montaj_assets/editor/src/{schema.ts,video/captionStyleDefaults.ts,video/captionRepair.ts,video/CaptionStyleGallery.tsx,video/CaptionListPanel.tsx}`, `montaj_assets/render/test/caption-accent.test.mjs`, `docs/schemas/project.md`)
 - **Added (editor): the Accent style in the caption gallery and style defaults; its accent colour swatch; accent words survive a caption text edit.**
 
