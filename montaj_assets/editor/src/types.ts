@@ -23,6 +23,7 @@ import type {
   ImageElement,
   OverlayElement,
   Captions,
+  Note,
 } from './schema'
 import type { SourcePreviewStore } from './video/source-preview'
 import type { PreRenderOptions } from './video/RenderModal'
@@ -597,6 +598,36 @@ export interface TimelinePin {
   /** End of a range, in timeline seconds. When set and greater than `t`, the
    *  pin draws a range bar and its hit region extends to here. */
   tEnd?: number
+}
+
+// ── Project notes (PL39) ─────────────────────────────────────────────────
+//
+// `project.notes` are the user's own private, time-stamped notes. The editor
+// is their ONLY writer: every change goes through the editor's project sync
+// (`sync.mutate`), whether it starts at the N key or at the host's notes UI
+// via `NotesApi`. A host must never PUT `notes` itself, because a whole-
+// project save from the host would race the editor's queued saves and could
+// write back a stale copy. The host draws notes (pins, a list) from the
+// project it receives through `onProjectChange`.
+
+/** The host's opt-in to notes. Absent: N is not bound and no palette entry. */
+export interface NotesOptions {
+  /** True: N adds a note. False: N calls `onLocked` (the host shows its paywall). */
+  enabled: boolean
+  onLocked?: () => void
+  /** Called after N (or the palette) adds a note, so the host can focus its text. */
+  onNoteAdded?: (note: Note) => void
+}
+
+/** Note writes, each one `sync.mutate` (one save, one undo step). A write that
+ *  changes nothing is skipped: no save, no undo step. Ids are `Note.id`. */
+export interface NotesApi {
+  /** Adds an empty note at `t` seconds and returns its id. Does not call
+   *  `onNoteAdded`: the caller already has the id. */
+  add: (t: number) => string
+  setText: (id: string, text: string) => void
+  setDone: (id: string, done: boolean) => void
+  remove: (id: string) => void
 }
 
 // ── Adapter ────────────────────────────────────────────────────────────────
@@ -1511,4 +1542,24 @@ export interface VideoEditorProps<P extends Project = Project> {
    * playhead to follow calls the `seek` it got from `onProvideSeek`.
    */
   onPinClick?: (id: string) => void
+
+  // ── Project notes (opt-in, PL39) ──────────────────────────────────────────
+
+  /**
+   * Turns on notes. N adds a note at the playhead (or the preview axis, the
+   * same rule as M) when `enabled`, and calls `onLocked` when not. Key repeats
+   * are ignored, so holding N adds one note. Absent: N is not bound and the
+   * command palette has no "Add a note", so a host that does not opt in sees
+   * the editor exactly as before. The editor draws no note UI of its own; the
+   * host draws notes as `pins` and in its own list. See `NotesApi`.
+   */
+  notes?: NotesOptions
+
+  /**
+   * Hands the host the note writes (`NotesApi`), so the host's notes UI writes
+   * through the editor's project sync instead of saving `notes` itself.
+   * Mirrors `onProvideSeek`: called once with a stable api while the review
+   * surface is mounted, and with `null` when it unmounts. Absent: no api.
+   */
+  onProvideNotesApi?: (api: NotesApi | null) => void
 }

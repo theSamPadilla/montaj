@@ -56,6 +56,8 @@ export type {
   PendingDrop,
   TimelineDropPlacement,
   TimelinePin,
+  NotesOptions,
+  NotesApi,
   EditorAdapter,
   EditorContext,
   EditorTheme,

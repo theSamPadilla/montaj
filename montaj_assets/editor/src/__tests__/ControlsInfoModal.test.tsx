@@ -112,6 +112,14 @@ describe('ControlsInfoModal', () => {
       ]),
     )
   })
+
+  it('lists N as "Add a note" under Keyboard (PL39)', () => {
+    // Static like M: the row is always listed, the binding is the host's opt-in.
+    const keyboard = VIDEO_CONTROLS.find((s) => s.heading === 'Keyboard')!
+    expect(keyboard.entries).toEqual(
+      expect.arrayContaining([expect.objectContaining({ keys: ['N'], label: 'Add a note' })]),
+    )
+  })
 })
 
 describe('ControlsInfoModal platform keys', () => {

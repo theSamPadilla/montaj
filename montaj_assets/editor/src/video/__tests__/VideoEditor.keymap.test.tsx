@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, waitFor, act, fireEvent, screen } from '@testing-library/react'
-import type { EditorAdapter, ImageElement, Project, RenderEvent, VersionEntry, WaveformChunk } from '../../types'
+import type { EditorAdapter, ImageElement, NotesApi, Project, RenderEvent, VersionEntry, WaveformChunk } from '../../types'
 import VideoEditor from '../VideoEditor'
 import { trackItems } from '../timeline/timeline-model'
-import { installCanvasHarness, selectCanvasItem } from '../timeline/__tests__/_canvasSelect'
+import { canvasSurface, installCanvasHarness, selectCanvasItem, timeToClientX } from '../timeline/__tests__/_canvasSelect'
 
 // ── T9 integration tests — the ReviewSurface keymap, the command palette,
 // and the scrubber's "go to time" affordance, driven through a mounted
@@ -434,6 +434,265 @@ describe('VideoEditor — M drops a marker', () => {
     }
     const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0]
     expect(last.markers).toHaveLength(1)
+  })
+})
+
+// ── PL39 — N adds a note, and the host's notes api ───────────────────────
+//
+// Notes are a host opt-in: N exists only when the host passes `notes`, and
+// every note write (the key, the palette, the api) is one `sync.mutate`. A
+// mutate is observed here as one `adapter.saveProject` call whose SECOND
+// argument is the project being saved, the same seam the T2 tests read.
+
+function savedProjects(adapter: EditorAdapter<Project>): Project[] {
+  return (adapter.saveProject as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[1] as Project)
+}
+function lastSaved(adapter: EditorAdapter<Project>): Project {
+  const all = savedProjects(adapter)
+  return all[all.length - 1]
+}
+const pressN = (init: KeyboardEventInit = {}) =>
+  act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', cancelable: true, ...init })) })
+
+describe('VideoEditor — N adds a note (PL39)', () => {
+  it('with notes enabled, adds one note at the playhead and hands it to onNoteAdded', async () => {
+    const adapter = makeFakeAdapter()
+    const onNoteAdded = vi.fn()
+    let seek: ((sec: number) => void) | null = null
+    render(
+      <VideoEditor
+        project={makeVideoProject()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+        notes={{ enabled: true, onNoteAdded }}
+        onProvideSeek={(s) => { seek = s }}
+      />,
+    )
+    await screen.findByLabelText('Preview axis')
+    // Off zero on purpose: a note that ignored the playhead would land at 0.
+    act(() => seek!(1.5))
+
+    await pressN()
+
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+    const saved = lastSaved(adapter)
+    expect(saved.notes).toHaveLength(1)
+    expect(saved.notes![0]).toMatchObject({ t: 1.5, text: '' })
+    expect(onNoteAdded).toHaveBeenCalledTimes(1)
+    expect(onNoteAdded).toHaveBeenCalledWith(saved.notes![0])
+  })
+
+  it('with the preview axis on, drops the note at the hovered time, the same as M', async () => {
+    // Also the no-`onNoteAdded` case: the note must land without a reporter.
+    const adapter = makeFakeAdapter()
+    const project = makeVideoProject()
+    const { container } = render(
+      <VideoEditor project={project} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} notes={{ enabled: true }} />,
+    )
+    await screen.findByLabelText('Preview axis')
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' })) })
+    const surface = canvasSurface(container)
+    await act(async () => {
+      surface.dispatchEvent(new MouseEvent('mousemove', { clientX: timeToClientX(project, 2), clientY: 20, bubbles: true }))
+    })
+    // The hover report is paced to one animation frame.
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)) })
+
+    await pressN()
+
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+    expect(lastSaved(adapter).notes![0].t).toBeCloseTo(2, 3)
+  })
+
+  it('with notes locked, calls onLocked once and changes nothing, even when held', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    const onLocked = vi.fn()
+    render(
+      <VideoEditor
+        project={makeVideoProject()}
+        adapter={adapter}
+        onProjectChange={onProjectChange}
+        slots={{ exportActions: <div /> }}
+        notes={{ enabled: false, onLocked }}
+      />,
+    )
+    await screen.findByLabelText('Preview axis')
+    onProjectChange.mockClear()
+
+    await pressN()
+    await pressN({ repeat: true })
+    await pressN({ repeat: true })
+
+    expect(onLocked).toHaveBeenCalledTimes(1)
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(onProjectChange).not.toHaveBeenCalled()
+  })
+
+  it('without the notes prop, N is not bound at all', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(<VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={onProjectChange} slots={{ exportActions: <div /> }} />)
+    await screen.findByLabelText('Preview axis')
+    onProjectChange.mockClear()
+
+    const e = new KeyboardEvent('keydown', { key: 'n', cancelable: true })
+    await act(async () => { document.dispatchEvent(e) })
+
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(onProjectChange).not.toHaveBeenCalled()
+    // No binding claimed the key, so nothing swallowed it.
+    expect(e.defaultPrevented).toBe(false)
+  })
+
+  it('does not fire while typing in a text surface', async () => {
+    const adapter = makeFakeAdapter()
+    const onNoteAdded = vi.fn()
+    render(
+      <VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} notes={{ enabled: true, onNoteAdded }} />,
+    )
+    await screen.findByLabelText('Preview axis')
+
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', bubbles: true }))
+    })
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(onNoteAdded).not.toHaveBeenCalled()
+    input.remove()
+  })
+
+  it('Cmd+N and Ctrl+N are left alone: the shortcut is the bare letter', async () => {
+    const adapter = makeFakeAdapter()
+    const onNoteAdded = vi.fn()
+    render(
+      <VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} notes={{ enabled: true, onNoteAdded }} />,
+    )
+    await screen.findByLabelText('Preview axis')
+
+    await pressN({ metaKey: true })
+    await pressN({ ctrlKey: true })
+
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(onNoteAdded).not.toHaveBeenCalled()
+  })
+
+  it('holding N adds one note: key repeats are ignored', async () => {
+    // Unlike addMarker, addNote has no half-frame dedupe, so the binding
+    // itself must drop auto-repeat or a held key sprays notes.
+    const adapter = makeFakeAdapter()
+    const onNoteAdded = vi.fn()
+    render(
+      <VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} notes={{ enabled: true, onNoteAdded }} />,
+    )
+    await screen.findByLabelText('Preview axis')
+
+    await pressN()
+    for (let i = 0; i < 4; i++) await pressN({ repeat: true })
+
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+    expect(lastSaved(adapter).notes).toHaveLength(1)
+    expect(onNoteAdded).toHaveBeenCalledTimes(1)
+  })
+
+  it('the palette offers "Add a note" only when the host passes notes', async () => {
+    const adapter = makeFakeAdapter()
+    const onNoteAdded = vi.fn()
+    const { unmount } = render(
+      <VideoEditor project={makeVideoProject()} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} notes={{ enabled: true, onNoteAdded }} />,
+    )
+    await screen.findByLabelText('Preview axis')
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true })) })
+    fireEvent.click(await screen.findByText('Add a note'))
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+    expect(lastSaved(adapter).notes).toHaveLength(1)
+    expect(onNoteAdded).toHaveBeenCalledTimes(1)
+    unmount()
+
+    render(<VideoEditor project={makeVideoProject()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByLabelText('Preview axis')
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true })) })
+    await screen.findByText('Split at playhead')
+    expect(screen.queryByText('Add a note')).toBeNull()
+  })
+})
+
+describe('VideoEditor — onProvideNotesApi (PL39)', () => {
+  async function mountWithApi(project: Project = makeVideoProject()) {
+    const adapter = makeFakeAdapter()
+    const onNoteAdded = vi.fn()
+    const provided: Array<NotesApi | null> = []
+    const utils = render(
+      <VideoEditor
+        project={project}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        slots={{ exportActions: <div /> }}
+        notes={{ enabled: true, onNoteAdded }}
+        onProvideNotesApi={(api) => { provided.push(api) }}
+      />,
+    )
+    await screen.findByLabelText('Preview axis')
+    const api = provided[provided.length - 1]
+    if (!api) throw new Error('no notes api was provided')
+    return { adapter, api, provided, onNoteAdded, utils }
+  }
+
+  it('add(t) adds a note at t through one save and returns its id', async () => {
+    const { adapter, api, onNoteAdded } = await mountWithApi()
+    let id = ''
+    await act(async () => { id = api.add(2) })
+
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+    expect(id).toBeTruthy()
+    expect(lastSaved(adapter).notes).toEqual([{ id, t: 2, text: '' }])
+    // The caller already has the id; onNoteAdded is the N key's report.
+    expect(onNoteAdded).not.toHaveBeenCalled()
+  })
+
+  it('setText, setDone and remove each write once, through the note model', async () => {
+    const { adapter, api } = await mountWithApi(makeVideoProject({ notes: [{ id: 'n1', t: 1, text: '' }] }))
+
+    await act(async () => { api.setText('n1', 'caption covers face') })
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+    expect(lastSaved(adapter).notes).toEqual([{ id: 'n1', t: 1, text: 'caption covers face' }])
+
+    await act(async () => { api.setDone('n1', true) })
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(2))
+    expect(lastSaved(adapter).notes).toEqual([{ id: 'n1', t: 1, text: 'caption covers face', done: true }])
+
+    await act(async () => { api.remove('n1') })
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(3))
+    // The last note gone drops the key entirely, never `notes: []`.
+    expect('notes' in lastSaved(adapter)).toBe(false)
+  })
+
+  it('a write that changes nothing makes no save and no undo step', async () => {
+    const { adapter, api } = await mountWithApi(makeVideoProject({ notes: [{ id: 'n1', t: 1, text: 'same' }] }))
+
+    await act(async () => {
+      api.setText('n1', 'same')
+      api.setDone('n1', false)
+      api.remove('nope')
+      api.setText('nope', 'x')
+    })
+
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true })) })
+    await screen.findByText('Split at playhead')
+    expect(screen.queryByText('Undo')).toBeNull()
+  })
+
+  it('is one stable api across re-renders, withdrawn with null on unmount', async () => {
+    const { api, provided, utils } = await mountWithApi()
+    await act(async () => { api.add(1) })
+    await act(async () => { api.add(3) })
+
+    expect(new Set(provided.filter(Boolean))).toEqual(new Set([api]))
+    utils.unmount()
+    expect(provided[provided.length - 1]).toBeNull()
   })
 })
 

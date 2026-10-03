@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { AlertCircle, Captions, Crop, Ear, EarOff, Film, HelpCircle, History, Magnet, Maximize2, Minimize2, Redo2, SeparatorVertical, Smartphone, SquareDashedMousePointer, Undo2, Wand2 } from 'lucide-react'
-import type { Project, VideoEditorProps } from '../types'
-import type { AudioTrack, VisualItem } from '../schema'
+import type { NotesApi, Project, VideoEditorProps } from '../types'
+import type { AudioTrack, EditorProject, Note, VisualItem } from '../schema'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
 import { VideoSourceCropModal } from '../crop/VideoSourceCropModal'
 import { CropKeyframeNav } from '../crop/CropKeyframeNav'
@@ -17,6 +17,7 @@ import { availableResolutionTiers, availableFpsTiers, currentResolutionTier, max
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { collapseGaps, rippleDelete, splitAtTime } from './cuts'
 import { addMarker } from './timeline/markers'
+import { addNote, removeNotes, setNoteDone, setNoteText } from './timeline/notes'
 import { repairCaptionWords } from './captionRepair'
 import { maxCaptionLane, normalizeCaptionLanes } from './captionLanes'
 import { mergeCaptionProfileDefaults } from './captionProfileDefaults'
@@ -283,6 +284,8 @@ export default function VideoEditor<P extends Project = Project>({
   pendingDrops,
   pins,
   onPinClick,
+  notes,
+  onProvideNotesApi,
 }: Props<P>) {
   const emit = onProjectChange ?? (() => {})
 
@@ -470,6 +473,8 @@ export default function VideoEditor<P extends Project = Project>({
         pendingDrops={pendingDrops}
         pins={pins}
         onPinClick={onPinClick}
+        notes={notes}
+        onProvideNotesApi={onProvideNotesApi}
         timelineMode={timelineMode}
       />
     </div>
@@ -822,6 +827,8 @@ function ReviewSurface<P extends Project>({
   pendingDrops,
   pins,
   onPinClick,
+  notes,
+  onProvideNotesApi,
   timelineMode,
 }: SurfaceProps<P> & {
   // See the definition beside `sync` in VideoEditor above — set for the
@@ -848,6 +855,11 @@ function ReviewSurface<P extends Project>({
   // annotation ON a finished edit.
   pins?: VideoEditorProps<P>['pins']
   onPinClick?: VideoEditorProps<P>['onPinClick']
+  // The host's notes opt-in and its notes api. On the REVIEW surface only, for
+  // the same reason as pins: a note is feedback on a finished edit, and the
+  // pending surface has no editing chrome to write one from.
+  notes?: VideoEditorProps<P>['notes']
+  onProvideNotesApi?: VideoEditorProps<P>['onProvideNotesApi']
 }) {
   const project = sync.project
   // Playhead in an external store, not useState — ~60Hz ticks re-render only the
@@ -1866,6 +1878,63 @@ function ReviewSurface<P extends Project>({
     void sync.mutate(() => updated as P)
   }
 
+  // ── Project notes (PL39) ───────────────────────────────────────────────
+  // The editor is the ONLY writer of `project.notes`. The N key, the palette
+  // and the host's notes api all land in the two cores below, and each write
+  // is one `sync.mutate` (one save, one undo step), so a note can never race
+  // the editor's own queued saves. `notes` is mirrored into a ref for the N
+  // binding, whose guard and action run from the keymap's document listener.
+  const notesRef = useRef(notes)
+  notesRef.current = notes
+
+  /** Adds an empty note at `t` and returns it: the core of N and `api.add`.
+   *  Built from the live ref, like `handleAddMarker`, so two writes in one
+   *  tick chain instead of the second dropping the first. */
+  const addNoteAt = useCallback((t: number): Note => {
+    const { project: updated, id } = addNote(syncProjectRef.current, t)
+    void syncMutate(() => updated as P)
+    return updated.notes!.find(n => n.id === id)!
+  }, [syncMutate, syncProjectRef])
+
+  /** Every other note write. A write that changes nothing (the same text, an
+   *  unknown id) is skipped: no save and no empty undo step. */
+  const commitNoteEdit = useCallback((edit: (p: EditorProject) => EditorProject) => {
+    const base = syncProjectRef.current
+    const updated = edit(base)
+    if (updated === base) return
+    void syncMutate(() => updated as P)
+  }, [syncMutate, syncProjectRef])
+
+  /** N and the palette: add a note, or hand the host its locked moment. */
+  function handleNoteKey(at: number) {
+    const opts = notesRef.current
+    if (!opts) return
+    if (!opts.enabled) {
+      opts.onLocked?.()
+      return
+    }
+    // Two statements on purpose: `opts.onNoteAdded?.(addNoteAt(at))` would
+    // skip evaluating its argument, so no note at all, when a host passes no
+    // `onNoteAdded`.
+    const note = addNoteAt(at)
+    opts.onNoteAdded?.(note)
+  }
+
+  // Host notes api (`onProvideNotesApi`): handed up like `onProvideSeek`, and
+  // withdrawn with null when this surface unmounts, so the host never writes
+  // through an editor that is gone. Stable, so it is handed up once.
+  const notesApi = useMemo<NotesApi>(() => ({
+    add: (t) => addNoteAt(t).id,
+    setText: (id, text) => commitNoteEdit(p => setNoteText(p, id, text)),
+    setDone: (id, done) => commitNoteEdit(p => setNoteDone(p, id, done)),
+    remove: (id) => commitNoteEdit(p => removeNotes(p, new Set([id]))),
+  }), [addNoteAt, commitNoteEdit])
+  useEffect(() => {
+    if (!onProvideNotesApi) return
+    onProvideNotesApi(notesApi)
+    return () => onProvideNotesApi(null)
+  }, [onProvideNotesApi, notesApi])
+
   function handleRippleToggle() {
     const next = !rippleMode
     setRippleMode(next)
@@ -2010,6 +2079,22 @@ function ReviewSurface<P extends Project>({
       action: () => handleAddMarker(markerDropTime(previewAxis, hoverScrub.get(), clock.get())),
     },
     {
+      // PL39. Bound only when the host passes `notes` (the guard), so without
+      // it N is not claimed at all and never preventDefault-ed. Lands where M
+      // does. Repeats are dropped here: `useKeymap` passes auto-repeat through,
+      // and unlike `addMarker` (which dedupes within half a frame) `addNote`
+      // always adds, so a held N would otherwise spray notes.
+      id: 'video.add-note',
+      description: 'Add a note',
+      keyHint: ['N'],
+      matches: matchesPlainKey('n'),
+      guard: () => !!notesRef.current,
+      action: (e) => {
+        if (e.repeat) return
+        handleNoteKey(markerDropTime(previewAxis, hoverScrub.get(), clock.get()))
+      },
+    },
+    {
       id: 'video.undo',
       description: 'Undo',
       keyHint: ['⌘', 'Z'],
@@ -2149,6 +2234,9 @@ function ReviewSurface<P extends Project>({
     { id: 'split', label: 'Split at playhead', keyHint: ['S'], run: () => handleSplit() },
     { id: 'add-marker', label: 'Drop a marker', keyHint: ['M'], run: () => handleAddMarker() },
   ]
+  if (notes) {
+    paletteCommands.push({ id: 'add-note', label: 'Add a note', keyHint: ['N'], run: () => handleNoteKey(clock.get()) })
+  }
   if (primarySelectedId) {
     paletteCommands.push({ id: 'ripple-delete', label: 'Ripple-delete selection', keyHint: ['⇧', 'Delete'], run: () => handleRippleDelete() })
   }
