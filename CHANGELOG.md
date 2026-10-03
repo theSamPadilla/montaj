@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Added (editor, serve, mcp): project notes (PL39).** Private time-stamped notes the operator adds with `N` while reviewing; `project.notes` is `{id, t, tEnd?, text, done?}`, sorted by `t`, never rendered into output. Timeline pins take a tone (review or note) and an optional range, and `montaj://context` lists the open notes (not `done`) in a Notes section, so an agent can work through them. (`montaj_assets/editor/src/{schema.ts,index.ts,video/timeline/notes.ts}`, `docs/schemas/project.md`, `serve/context.py`, `montaj_assets/mcp/server.js`, `tests/test_server_context.py`, `tests/test_server_projects_save_validation.py`, `montaj_assets/mcp/test/context-resource.test.mjs`)
+
 ## v5.21.2
 
 - **Changed (editor): ⌘A / Ctrl+A selects everything in the timeline; the preview-axis toggle moves to plain `A`.** Select-all takes every clip on every track, overlay, audio bar and caption segment through the same multi-select state as shift-click and marquee, so delete, move and copy apply to all of it. It leaves native select-all alone in an input, textarea or caption editor. (`video/timeline/Timeline.tsx`, `video/VideoEditor.tsx`, `ControlsInfoModal.tsx`)

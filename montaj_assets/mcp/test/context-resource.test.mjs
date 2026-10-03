@@ -138,3 +138,23 @@ test("an app-mediated env with no entitlement JWT still reads resources (gate re
     delete process.env.MONTAJ_APP_VENDOR_ROOT
   }
 })
+
+test("open notes render as a Notes section with m:ss times", () => {
+  const body = {
+    active: true,
+    project: { id: "p1", name: "x", durationSec: 20 },
+    playhead: { sec: 1, frame: 30 },
+    clipAtPlayhead: null,
+    selection: [],
+    transcriptAroundPlayhead: null,
+    ageMs: 10,
+  }
+  const text = renderContextResource({
+    ok: true,
+    body: { ...body, notes: [{ t: 12.4, text: "caption covers face" }, { t: 65, tEnd: 70.2, text: "tighten" }] },
+  })
+  assert.match(text, /## Notes/)
+  assert.match(text, /0:12 caption covers face/)
+  assert.match(text, /1:05-1:10 tighten/)
+  assert.doesNotMatch(renderContextResource({ ok: true, body }), /## Notes/)
+})

@@ -207,6 +207,15 @@ export function renderContextResource(result) {
     lines.push(`This project has no captions, so there is no transcript to quote.`)
   }
 
+  if (Array.isArray(body.notes) && body.notes.length) {
+    const mss = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`
+    lines.push(``, `## Notes`, ``)
+    for (const n of body.notes) {
+      const when = typeof n.tEnd === "number" ? `${mss(n.t)}-${mss(n.tEnd)}` : mss(n.t)
+      lines.push(`- ${when} ${String(n.text).replace(/\s+/g, " ").trim()}`)
+    }
+  }
+
   return lines.join("\n")
 }
 

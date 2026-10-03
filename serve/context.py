@@ -288,6 +288,34 @@ def _markers(project: dict) -> list[dict] | None:
     return usable
 
 
+def _notes(project: dict) -> list[dict] | None:
+    """The operator's open notes (not `done`), sorted by time.
+
+    None when there are none, same discipline as `_markers`. Malformed
+    entries are skipped.
+    """
+    notes = project.get("notes")
+    if not isinstance(notes, list):
+        return None
+    usable = [
+        {
+            "t": float(n["t"]),
+            "tEnd": float(n["tEnd"]) if isinstance(n.get("tEnd"), (int, float)) else None,
+            "text": str(n.get("text", "")),
+        }
+        for n in notes
+        if isinstance(n, dict)
+        and isinstance(n.get("id"), str)
+        and isinstance(n.get("t"), (int, float))
+        and isinstance(n.get("text"), str)
+        and not n.get("done")
+    ]
+    if not usable:
+        return None
+    usable.sort(key=lambda n: n["t"])
+    return usable
+
+
 def enrich(project_id: str, project: dict, state: ContextState) -> dict:
     """Join a reported playhead against the project into one actionable answer.
 
@@ -320,6 +348,7 @@ def enrich(project_id: str, project: dict, state: ContextState) -> dict:
         })
 
     markers = _markers(project)
+    notes = _notes(project)
 
     return {
         "project": {
@@ -343,5 +372,6 @@ def enrich(project_id: str, project: dict, state: ContextState) -> dict:
         "selectedCaptionId":         state.selected_caption_id,
         "transcriptAroundPlayhead":  _captions_around(project, t),
         **({"markers": markers} if markers is not None else {}),
+        **({"notes": notes} if notes is not None else {}),
         "ageMs":                     state.age_ms(),
     }

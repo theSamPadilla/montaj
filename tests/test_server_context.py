@@ -274,6 +274,42 @@ def test_enrich_skips_malformed_markers():
     assert context.enrich("p1", project, state)["markers"] == [{"id": "ok", "t": 1.0, "label": "a"}]
 
 
+def test_enrich_includes_open_notes_sorted_by_time():
+    project = _project()
+    project["notes"] = [
+        {"id": "n2", "t": 8.0, "tEnd": 9.5, "text": "tighten"},
+        {"id": "n1", "t": 2.0, "text": "caption covers face"},
+        {"id": "n3", "t": 4.0, "text": "fixed already", "done": True},
+    ]
+    state = context.report("p1", {"playheadSec": 5.0, "selectedIds": []})
+    out = context.enrich("p1", project, state)
+    assert out["notes"] == [
+        {"t": 2.0, "tEnd": None, "text": "caption covers face"},
+        {"t": 8.0, "tEnd": 9.5, "text": "tighten"},
+    ]
+
+
+def test_enrich_omits_notes_when_none_are_open():
+    project = _project()
+    state = context.report("p1", {"playheadSec": 0.0, "selectedIds": []})
+    assert "notes" not in context.enrich("p1", project, state)
+    project["notes"] = [{"id": "n1", "t": 1.0, "text": "x", "done": True}]
+    assert "notes" not in context.enrich("p1", project, state)
+
+
+def test_enrich_skips_malformed_notes():
+    project = _project()
+    project["notes"] = [
+        {"id": "ok", "t": 1.0, "text": "a"},
+        {"id": "bad"},
+        "nonsense",
+        {"t": 2.0, "text": "no id"},
+        {"id": "x", "t": "soon", "text": "b"},
+    ]
+    state = context.report("p1", {"playheadSec": 0.0, "selectedIds": []})
+    assert context.enrich("p1", project, state)["notes"] == [{"t": 1.0, "tEnd": None, "text": "a"}]
+
+
 client = TestClient(app, raise_server_exceptions=False)
 
 
