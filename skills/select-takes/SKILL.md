@@ -8,7 +8,7 @@ step: true
 
 `montaj/select_takes` is an agent-authored task: no CLI step, no API call. You reason across every clip and make editorial decisions. You do them as text: the speech track is read with `speech_text`, edited, and applied with `speech_edit` (format and rules: skill `speech-edit`).
 
-Order: the mechanical pass (`waveform_trim`, `rm_nonspeech`, `rm_fillers`) has already run, so its keeps are the items on the speech track, in clip order, and the words you read already match that cut.
+Order: the mechanical pass (`waveform_trim`, `rm_nonspeech`, `rm_fillers`) has already run. Its keeps become the speech track's items (step 0), so the words you read match that cut.
 
 ## Core Purpose
 
@@ -19,6 +19,10 @@ Every repeated take of the same line is wasted runtime. Find every section of th
 This is the only step with full cross-clip awareness. Use it.
 
 ## Process
+
+### 0. Put every take on the speech track
+
+`speech_text` reads the timeline, so the mechanical pass's keeps must be items first. If `tracks[0]` still holds whole clips: for each clip in order, take its final trim spec (the `rm_fillers` output) and make one `type: "video"` item per keep, with `src` the clip, `inPoint`/`outPoint` the keep, and `start`/`end` packed end to end. Carry each clip item's `proxySrc`, `sourceWidth`, `sourceHeight` and `sourceDuration` across. Save the whole `tracks` with `save_project`, then run `speech_text`.
 
 ### 1. Read the whole track
 
