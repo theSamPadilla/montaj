@@ -277,3 +277,30 @@ def test_the_text_is_rendered_before_the_version_is_taken(env, monkeypatch):
     with pytest.raises(RuntimeError):
         apply(env, delete_row(env.text, "A4"))
     assert snapshot(env) == before
+
+
+# ---- PL44 review: unedited text is a no-op on real-world project shapes
+
+def _rewrite(env, mutate):
+    p = json.loads(open(env.path).read())
+    mutate(p)
+    open(env.path, "w").write(json.dumps(p, indent=2))
+    return render(derive(p, env.dir), p["id"])    # the text an agent would read from this project
+
+
+def test_unedited_text_on_unsorted_items_is_a_noop(env):
+    text = _rewrite(env, lambda p: p["tracks"][0]["items"].reverse())
+    before = snapshot(env)
+    r = apply(env, text)
+    assert r["noop"] is True and snapshot(env) == before
+
+
+def test_unedited_text_on_integer_timings_is_a_noop(env):
+    def ints(p):
+        it = p["tracks"][0]["items"][0]
+        assert it["inPoint"] == 0.0
+        it["inPoint"] = 0
+    text = _rewrite(env, ints)
+    before = snapshot(env)
+    r = apply(env, text)
+    assert r["noop"] is True and snapshot(env) == before

@@ -229,7 +229,9 @@ class TimeMap:
         self.old_start = self.old[0].start if self.old else 0.0
         self.old_end = max((x.end for x in self.old), default=0.0)
         self.new_end = max((x.end for x in self.new), default=0.0)
-        self.changed = list(old_items) != list(new_items)
+        def by_id(items):
+            return sorted(items or [], key=lambda it: str(it.get("id")))
+        self.changed = by_id(old_items) != by_id(new_items)
         self._old_by_id = {x.id: x for x in self.old}
         self._old_by_key: dict = {}
         for x in self.old:

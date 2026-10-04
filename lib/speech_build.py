@@ -838,7 +838,8 @@ def items_from_runs(runs, old_items, fps, *, report: Report | None = None, sourc
             start, end = round(start, 6), round(start + dur, 6)
         item["id"], item["start"], item["end"] = nid, start, end
         if run.kind == "speech":
-            item["inPoint"], item["outPoint"] = run.s_in, run.s_out
+            if not whole:    # a whole item keeps its own numbers (an integer 0 stays 0)
+                item["inPoint"], item["outPoint"] = run.s_in, run.s_out
             if not whole:
                 _flag_merged(report, nid, run, anchor, old_items, project_dir)
             if anchor is not None and not whole:

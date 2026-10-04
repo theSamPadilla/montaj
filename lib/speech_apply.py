@@ -109,6 +109,11 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     reserved = {it["id"] for i, t in enumerate(tracks) if i != ti for it in t["items"]}
     items, prov = items_from_runs(runs, old_items, fps, report=report, sources=project.get("sources"),
                                   reserved_ids=reserved, project_dir=project_dir)
+    def canon(its):
+        return sorted(json.dumps(it, sort_keys=True) for it in its)
+
+    if canon(items) == canon(old_items):
+        items = list(old_items)      # unedited: keep the project's own item order
     tmap = TimeMap(old_items, items, prov, words=words_by_src(derived), project_dir=project_dir)
     candidate, report = carry(project, ti, items, tmap, fps, report=report)
 
