@@ -1,0 +1,564 @@
+{
+  "version": "0.2",
+  "id": "speech-text-fixture",
+  "status": "draft",
+  "workflow": "speech-text-fixture",
+  "editingPrompt": "fixture",
+  "settings": {
+    "resolution": [
+      64,
+      64
+    ],
+    "fps": 30
+  },
+  "tracks": [
+    {
+      "id": "trk-0",
+      "items": [
+        {
+          "id": "clip-1",
+          "type": "video",
+          "src": "/FIXTURE/speech.mp4",
+          "start": 0.0,
+          "end": 14.1,
+          "inPoint": 1.1,
+          "outPoint": 15.2,
+          "sourceWidth": 64,
+          "sourceHeight": 64,
+          "sourceCrop": {
+            "x": 0,
+            "y": 0,
+            "w": 0.5,
+            "h": 1
+          },
+          "keyframes": [
+            {
+              "prop": "cropX",
+              "points": [
+                {
+                  "t": 0,
+                  "value": 0,
+                  "easing": "ease-in-out"
+                },
+                {
+                  "t": 7,
+                  "value": 0.3,
+                  "easing": "ease-in-out"
+                },
+                {
+                  "t": 14.1,
+                  "value": 0
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "clip-2",
+          "type": "video",
+          "src": "/FIXTURE/speech.mp4",
+          "start": 14.1,
+          "end": 22.9,
+          "inPoint": 16.0,
+          "outPoint": 24.8,
+          "sourceWidth": 64,
+          "sourceHeight": 64
+        },
+        {
+          "id": "clip-3",
+          "type": "video",
+          "src": "/FIXTURE/speech.mp4",
+          "start": 22.7,
+          "end": 27.1,
+          "inPoint": 25.6,
+          "outPoint": 30.0,
+          "sourceWidth": 64,
+          "sourceHeight": 64
+        }
+      ]
+    },
+    {
+      "id": "st-face",
+      "items": [
+        {
+          "id": "face-1",
+          "type": "video",
+          "src": "/FIXTURE/speech.mp4",
+          "start": 15.1,
+          "end": 19.1,
+          "inPoint": 17.0,
+          "outPoint": 21.0,
+          "muted": true,
+          "sourceWidth": 64,
+          "sourceHeight": 64,
+          "sourceCrop": {
+            "x": 0.25,
+            "y": 0.25,
+            "w": 0.5,
+            "h": 0.5
+          },
+          "scale": 0.3
+        }
+      ]
+    },
+    {
+      "id": "trk-2",
+      "items": [
+        {
+          "id": "ov-1",
+          "type": "overlay",
+          "src": "/FIXTURE/overlay.jsx",
+          "start": 10.0,
+          "end": 14.0,
+          "props": {}
+        },
+        {
+          "id": "ov-2",
+          "type": "overlay",
+          "src": "/FIXTURE/overlay.jsx",
+          "start": 22.0,
+          "end": 24.0,
+          "props": {}
+        }
+      ]
+    }
+  ],
+  "captions": {
+    "style": "subtitle",
+    "segments": [
+      {
+        "id": "cap-1",
+        "text": "discipline are to be understood the marshalling of the army in its proper subdivisions",
+        "start": 0.17,
+        "end": 5.32,
+        "words": [
+          {
+            "word": "discipline",
+            "start": 0.17,
+            "end": 0.51
+          },
+          {
+            "word": "are",
+            "start": 0.51,
+            "end": 0.74
+          },
+          {
+            "word": "to",
+            "start": 0.74,
+            "end": 0.89
+          },
+          {
+            "word": "be",
+            "start": 0.89,
+            "end": 1.04
+          },
+          {
+            "word": "understood",
+            "start": 1.04,
+            "end": 1.81
+          },
+          {
+            "word": "the",
+            "start": 1.81,
+            "end": 2.04
+          },
+          {
+            "word": "marshalling",
+            "start": 2.04,
+            "end": 2.88
+          },
+          {
+            "word": "of",
+            "start": 2.88,
+            "end": 3.03
+          },
+          {
+            "word": "the",
+            "start": 3.03,
+            "end": 3.26
+          },
+          {
+            "word": "army",
+            "start": 3.26,
+            "end": 3.56
+          },
+          {
+            "word": "in",
+            "start": 3.56,
+            "end": 3.71
+          },
+          {
+            "word": "its",
+            "start": 3.71,
+            "end": 3.95
+          },
+          {
+            "word": "proper",
+            "start": 3.95,
+            "end": 4.4
+          },
+          {
+            "word": "subdivisions",
+            "start": 4.4,
+            "end": 5.32
+          }
+        ]
+      },
+      {
+        "id": "cap-2",
+        "text": "the graduations of rank among the officers",
+        "start": 5.32,
+        "end": 8.06,
+        "words": [
+          {
+            "word": "the",
+            "start": 5.32,
+            "end": 5.56
+          },
+          {
+            "word": "graduations",
+            "start": 5.56,
+            "end": 6.39
+          },
+          {
+            "word": "of",
+            "start": 6.39,
+            "end": 6.54
+          },
+          {
+            "word": "rank",
+            "start": 6.54,
+            "end": 6.84
+          },
+          {
+            "word": "among",
+            "start": 6.84,
+            "end": 7.22
+          },
+          {
+            "word": "the",
+            "start": 7.22,
+            "end": 7.45
+          },
+          {
+            "word": "officers",
+            "start": 7.45,
+            "end": 8.06
+          }
+        ]
+      },
+      {
+        "id": "cap-3",
+        "text": "the maintenance of roads by which supplies may reach the army and the control of military",
+        "start": 8.06,
+        "end": 13.7,
+        "words": [
+          {
+            "word": "the",
+            "start": 8.06,
+            "end": 8.29
+          },
+          {
+            "word": "maintenance",
+            "start": 8.29,
+            "end": 9.13
+          },
+          {
+            "word": "of",
+            "start": 9.13,
+            "end": 9.28
+          },
+          {
+            "word": "roads",
+            "start": 9.28,
+            "end": 9.66
+          },
+          {
+            "word": "by",
+            "start": 9.66,
+            "end": 9.82
+          },
+          {
+            "word": "which",
+            "start": 9.82,
+            "end": 10.19
+          },
+          {
+            "word": "supplies",
+            "start": 10.19,
+            "end": 10.8
+          },
+          {
+            "word": "may",
+            "start": 10.8,
+            "end": 11.03
+          },
+          {
+            "word": "reach",
+            "start": 11.03,
+            "end": 11.41
+          },
+          {
+            "word": "the",
+            "start": 11.41,
+            "end": 11.64
+          },
+          {
+            "word": "army",
+            "start": 11.64,
+            "end": 11.94
+          },
+          {
+            "word": "and",
+            "start": 11.94,
+            "end": 12.17
+          },
+          {
+            "word": "the",
+            "start": 12.17,
+            "end": 12.4
+          },
+          {
+            "word": "control",
+            "start": 12.4,
+            "end": 12.94
+          },
+          {
+            "word": "of",
+            "start": 12.94,
+            "end": 13.09
+          },
+          {
+            "word": "military",
+            "start": 13.09,
+            "end": 13.7
+          }
+        ]
+      },
+      {
+        "id": "cap-4",
+        "text": "these five heads should be familiar to every general he who knows them will be victorious he who knows them not will fail therefore",
+        "start": 14.145,
+        "end": 22.82,
+        "words": [
+          {
+            "word": "these",
+            "start": 14.145,
+            "end": 14.35
+          },
+          {
+            "word": "five",
+            "start": 14.35,
+            "end": 14.68
+          },
+          {
+            "word": "heads",
+            "start": 14.68,
+            "end": 15.09
+          },
+          {
+            "word": "should",
+            "start": 15.09,
+            "end": 15.58
+          },
+          {
+            "word": "be",
+            "start": 15.58,
+            "end": 15.74
+          },
+          {
+            "word": "familiar",
+            "start": 15.74,
+            "end": 16.42
+          },
+          {
+            "word": "to",
+            "start": 16.42,
+            "end": 16.56
+          },
+          {
+            "word": "every",
+            "start": 16.56,
+            "end": 16.97
+          },
+          {
+            "word": "general",
+            "start": 16.97,
+            "end": 17.55
+          },
+          {
+            "word": "he",
+            "start": 17.55,
+            "end": 17.71
+          },
+          {
+            "word": "who",
+            "start": 17.71,
+            "end": 17.96
+          },
+          {
+            "word": "knows",
+            "start": 17.96,
+            "end": 18.37
+          },
+          {
+            "word": "them",
+            "start": 18.37,
+            "end": 18.7
+          },
+          {
+            "word": "will",
+            "start": 18.7,
+            "end": 19.03
+          },
+          {
+            "word": "be",
+            "start": 19.03,
+            "end": 19.19
+          },
+          {
+            "word": "victorious",
+            "start": 19.19,
+            "end": 20.02
+          },
+          {
+            "word": "he",
+            "start": 20.02,
+            "end": 20.18
+          },
+          {
+            "word": "who",
+            "start": 20.18,
+            "end": 20.43
+          },
+          {
+            "word": "knows",
+            "start": 20.43,
+            "end": 20.84
+          },
+          {
+            "word": "them",
+            "start": 20.84,
+            "end": 21.17
+          },
+          {
+            "word": "not",
+            "start": 21.17,
+            "end": 21.42
+          },
+          {
+            "word": "will",
+            "start": 21.42,
+            "end": 21.75
+          },
+          {
+            "word": "fail",
+            "start": 21.75,
+            "end": 22.08
+          },
+          {
+            "word": "therefore",
+            "start": 22.08,
+            "end": 22.82
+          }
+        ]
+      },
+      {
+        "id": "cap-5",
+        "text": "in",
+        "start": 22.82,
+        "end": 22.9,
+        "words": [
+          {
+            "word": "in",
+            "start": 22.82,
+            "end": 22.9
+          }
+        ]
+      },
+      {
+        "id": "cap-6",
+        "text": "deliberations when seeking to determine the military conditions",
+        "start": 22.845,
+        "end": 27.1,
+        "words": [
+          {
+            "word": "deliberations",
+            "start": 22.845,
+            "end": 23.38
+          },
+          {
+            "word": "when",
+            "start": 23.38,
+            "end": 23.71
+          },
+          {
+            "word": "seeking",
+            "start": 23.71,
+            "end": 24.29
+          },
+          {
+            "word": "to",
+            "start": 24.29,
+            "end": 24.45
+          },
+          {
+            "word": "determine",
+            "start": 24.45,
+            "end": 25.19
+          },
+          {
+            "word": "the",
+            "start": 25.19,
+            "end": 25.44
+          },
+          {
+            "word": "military",
+            "start": 25.44,
+            "end": 26.1
+          },
+          {
+            "word": "conditions",
+            "start": 26.1,
+            "end": 27.1
+          }
+        ]
+      }
+    ]
+  },
+  "audio": {
+    "tracks": [
+      {
+        "id": "aud-bed",
+        "src": "/FIXTURE/speech.mp4",
+        "start": 0,
+        "end": 27.1,
+        "volume": 0.2
+      },
+      {
+        "id": "aud-line",
+        "src": "/FIXTURE/speech.mp4",
+        "start": 22.7,
+        "end": 24.7,
+        "inPoint": 5.0,
+        "outPoint": 7.0,
+        "volume": 1
+      }
+    ]
+  },
+  "markers": [
+    {
+      "id": "m1",
+      "t": 16.0,
+      "label": "beat"
+    }
+  ],
+  "notes": [
+    {
+      "id": "note-1",
+      "t": 18.0,
+      "tEnd": 19.5,
+      "text": "check this line"
+    }
+  ]
+}
