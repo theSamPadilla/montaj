@@ -22,7 +22,7 @@ This is the only step with full cross-clip awareness. Use it.
 
 ### 0. Put every take on the speech track
 
-`speech_text` reads the timeline, so the mechanical pass's keeps must be items first. If `tracks[0]` still holds whole clips: for each clip in order, take its final trim spec (the `rm_fillers` output) and make one `type: "video"` item per keep, with `src` the clip, `inPoint`/`outPoint` the keep, and `start`/`end` packed end to end. Carry each clip item's `proxySrc`, `sourceWidth`, `sourceHeight` and `sourceDuration` across. Save the whole `tracks` with `save_project`, then run `speech_text`.
+`speech_text` reads the timeline, so the mechanical pass's keeps must be items first. If `tracks[0]` still holds whole clips: for each clip in order, take its final trim spec (the `rm_fillers` output) and make one `type: "video"` item per keep, with `src` the clip, `inPoint`/`outPoint` the keep, and `start`/`end` packed end to end. Carry each clip item's `proxySrc`, `sourceWidth`, `sourceHeight` and `sourceDuration` across, and its `normalizedSrc` and `normalizedInPoint` too when `normalizedInPoint` is 0 (a full-source conversion; otherwise drop both). Save the whole `tracks` with `save_project`, then run `speech_text`.
 
 ### 1. Read the whole track
 

@@ -364,7 +364,7 @@ montaj step rm_nonspeech --input clip.mp4
 montaj step rm_nonspeech --input clip.mp4 --model base --max-word-gap 0.10 --sentence-edge 0.05
 
 montaj step speech_text --project project.json
-# → numbered transcript lines with their pauses; write it to a file, edit it, then:
+# → writes speech-text.md next to project.json: numbered transcript lines with their pauses. Edit it, then:
 montaj step speech_edit --project project.json --text edited.txt --preview
 montaj step speech_edit --project project.json --text edited.txt
 # --preview reports the change without writing; the real run saves a version first

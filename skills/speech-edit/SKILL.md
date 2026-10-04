@@ -71,7 +71,7 @@ A7 um so the next thing is
 | repeat | copy the row |
 | use an unused take, or restore cut words | copy the line from `## Unused` into `## Cut`, then delete the words you do not want |
 
-A pause never grows past what the source has; it is clamped and reported in `clamped`.
+A pause never grows past what the source has; it is clamped and reported in `clamped`. Pause values are source seconds, so a clip at speed 2 plays a `{0.40}` marker as 0.20 s. A pause next to a word the transcript placed inside a pause is kept whole when it cannot be cut safely (the real word lies somewhere in that gap); the result reports it in `clamped` with `unsure`.
 
 ## Rules
 
@@ -93,7 +93,11 @@ A pause never grows past what the source has; it is clamped and reported in `cla
 | `unknown_line` | An id that is not in the text. Copy a real line |
 | `bad_row` | A row is malformed |
 | `bad_marker` | A `{x}` that is not a number |
-| `bad_header` | The header comment was edited |
+| `bad_header` | The header comment was edited, or the `## Cut` heading is missing |
+| `unknown_row` | A `--` row was edited. Move or delete it as it was written |
+| `empty_cut` | Every speech row is gone. Keep some speech |
+| `transcript_missing` | A source has no transcript. Run the `transcribe` call the error names |
+| `mixed_track` | The speech track holds an overlay, text, caption or sourceless item. Pass the `track` that holds the speech |
 | `invalid_result` | The rebuilt project failed validation. Undo the last edit |
 | `carry_conflict` | Overlays on one track would overlap after the edit. Move or delete one, then apply again |
 
@@ -111,6 +115,6 @@ The result lists what happened to everything else:
 | `clamped` | Pauses held to what the source has |
 | `hardCuts` | Cuts with no silence near, placed at the word edge with a small pad |
 | `carried` | Overlays, captions, audio, markers that followed their content |
-| `flagged` | `overlay_removed`, `overlay_trimmed`, `linked_removed`, `bed_check_timing`, `marker_moved` |
+| `flagged` | `overlay_removed`, `overlay_trimmed`, `overlay_moved`, `overlay_clipped`, `linked_removed`, `linked_clipped`, `caption_removed`, `audio_moved`, `audio_clipped`, `audio_removed`, `bed_check_timing`, `marker_moved`, `keyframes_merged`, `state_merged`, `fields_dropped`, `short_piece` |
 
 Before saying it is done, check `flagged`. Look at every moved overlay and every hard cut with `sample_frame`. A `bed_check_timing` music or SFX bed was made for the old cut; confirm it still fits.
