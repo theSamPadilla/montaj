@@ -1,0 +1,11 @@
+{
+  "name": "speech_text",
+  "description": "Read a project's speech as numbered transcript lines, with pauses, to edit as text. Writes speech-text.md in the project folder and returns the same text. Edit it, then run speech_edit.",
+  "input": {"type": "project", "description": "The project id, its folder, or the absolute path of its project.json"},
+  "output": {"type": "json", "description": "{path, text, track, stamp, sources, lines, duration, warnings}"},
+  "params": [
+    {"name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json"},
+    {"name": "track", "type": "string", "required": false, "description": "Track id of the speech track. Leave out to use the track with the most transcribed speech."},
+    {"name": "unused", "type": "enum", "default": "lines", "options": ["lines", "none"], "description": "lines lists every source line not fully in the cut, so you can bring takes back; none leaves it out."}
+  ]
+}
