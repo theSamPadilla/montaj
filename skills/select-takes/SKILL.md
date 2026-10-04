@@ -6,150 +6,122 @@ step: true
 
 # Select Takes
 
-`montaj/select_takes` is an agent-authored task — no CLI step, no API call. You reason across all clip transcripts and make editorial decisions. The output is a set of cropped trim specs ready for `rm_fillers`. Nothing joins them into a file: the surviving keeps become `tracks[0]` items with their own `inPoint`/`outPoint`, and the render engine assembles them in one pass at the end.
+`montaj/select_takes` is an agent-authored task: no CLI step, no API call. You reason across every clip and make editorial decisions. You do them as text: the speech track is read with `speech_text`, edited, and applied with `speech_edit` (format and rules: skill `speech-edit`).
+
+Order: the mechanical pass (`waveform_trim`, `rm_nonspeech`, `rm_fillers`) has already run, so its keeps are the items on the speech track, in clip order, and the words you read already match that cut.
 
 ## Core Purpose
 
 **Pick one. Kill the rest.**
 
-Every repeated take of the same line is wasted runtime in the final video. Your job is to identify every section of the script, find all takes of that section across all clips, select the single best delivery, and discard everything else. If a section has three takes, two get cut entirely. If a clip is entirely a worse take of content covered better in another clip, that clip is dropped.
+Every repeated take of the same line is wasted runtime. Find every section of the script, find all takes of it across all clips, keep the single best delivery, delete the rest. If a clip is entirely a worse take of content covered better elsewhere, drop the clip.
 
-This is the only step in the pipeline with full cross-file awareness. Use it.
+This is the only step with full cross-clip awareness. Use it.
 
 ## Process
 
-### 1. Read all transcripts
+### 1. Read the whole track
 
-Read the SRT file for every clip from the preceding `transcribe` step. Read them all before making any decisions — the best take of a section may be in a different clip than you expect.
+Run `speech_text` with `unused: lines`. Read all of it before deciding: the best take of a section may be in a different clip than you expect. Source lines outside the cut sit under `## Unused`; they are candidates too.
 
 ### 2. Map the script
 
-Lay out every distinct section of the intended script in narrative order. A "section" is a unit of content — a sentence, a thought, a beat. Name each one.
+Lay out every distinct section in narrative order. A section is a unit of content: a sentence, a thought, a beat. Name each one.
 
-Example for a 5-clip set:
 ```
-A. Hook — "this is insane, the source code got leaked"
-B. What happened — "at 3am someone posted, 33M views"
-C. What was found — "tamagotchi, Kyros mode, dreaming"
-D. Fallout — "copyright claims, repos taken down"
-E. Resolution — "people rewrote in different languages, Boris said human error"
-F. CTA — "go check it out, follow me"
+A. Hook: "this is insane, the source code got leaked"
+B. What happened: "at 3am someone posted, 33M views"
+C. What was found: "tamagotchi, Kyros mode, dreaming"
+D. Fallout: "copyright claims, repos taken down"
+E. Resolution: "people rewrote in different languages, Boris said human error"
+F. CTA: "go check it out, follow me"
 ```
+
+Then map each section to the line numbers (`A12`, `B3`, ...) that cover it.
 
 ### 3. Find all takes of each section
 
-For each section, find every occurrence across all clips. A take is any transcript segment that covers that section's content — same words, same idea, same intent. Include:
-- Complete takes
-- False starts (partial delivery that stops mid-sentence)
-- Repeated attempts (full delivery but not the best one)
+Any line group covering the section's content: same words, same idea, same intent.
+
+| Kind | Example |
+|---|---|
+| Complete take | full delivery |
+| False start | stops mid-sentence |
+| Repeated attempt | full delivery, not the best |
 
 ### 4. Pick the best take
 
-For each section, select **one** take. Apply these criteria in order:
+One per section. Criteria in order:
 
-1. **Complete over truncated** — a take that finishes the thought beats one that trails off
-2. **No mid-sentence restarts** — a take with no repeated phrases within it beats one that corrects itself
-3. **Clean delivery** — fewer filler words, less dead air within the take
-4. **Last attempt wins ties** — speakers improve with repetition; when two takes are equally clean, prefer the later one
+| # | Criterion |
+|---|---|
+| 1 | Complete over truncated: finishes the thought |
+| 2 | No mid-sentence restarts: no self-correcting repeats |
+| 3 | Clean delivery: fewer fillers, less dead air |
+| 4 | Last attempt wins ties |
 
-**Do not hedge.** Pick one. If two takes are genuinely indistinguishable, pick the last one and move on.
+**Do not hedge.** If two takes are indistinguishable, pick the last.
 
-### 5. Scan each selected take for within-take repetition
+### 5. Check each selected take for within-take repetition
 
-After picking a take, re-read its SRT segments carefully. Look for the **same phrase (3+ words) appearing more than once** within the selected window — this is a mid-take stutter where the speaker restarted a clause without a long enough pause to be split into a separate take by `waveform_trim`.
+Look for the same phrase (3+ words) twice inside the selected lines: a restarted clause with no pause long enough to split it into its own take. Keep only the final occurrence and delete the words before it.
 
-For each repetition found:
-1. **Identify the repeated phrase** and all its occurrences in the SRT
-2. **Keep only the final occurrence** — the speaker lands the phrase correctly on the last attempt
-3. **Tighten the crop window** to start just before the final occurrence, discarding the earlier stumbles
+Example: `and always on mode, and always on mode called Kyros that basically lets and always on mode called Kyros` keeps only the last `and always on mode called Kyros`.
 
-Example: SRT shows `"and always on mode, and always on mode called Kyros that basically lets and always on mode called Kyros..."` — the speaker repeated "always on mode" three times. Crop the section start to just before the last clean attempt.
+**Required, not optional.** `rm_fillers` removes only um/uh/hmm; nothing automated catches repeated phrases.
 
-**This is a required check, not optional.** `rm_fillers` only removes um/uh/hmm; it will not catch repeated phrases. If you don't catch it here, it encodes into the final video.
+### 6. Edit the file
 
-### 6. Determine the output order
+1. Delete the rows of every losing take.
+2. Order the remaining rows into the narrative. Reordering is moving rows.
+3. Check every seam (step 7).
+4. Apply with `speech_edit`, `preview` first, then for real (see `speech-edit`).
 
-Arrange the selected takes in narrative order. This may differ from the original clip order. A clip that contains section C might come before a clip that contains section B if that serves the story.
+### 7. Check every seam
 
-### 7. Check every seam for narrative overlap
+Read the last line of section N and the first line of section N+1 for every adjacent pair. Flag a pair where:
 
-After ordering, read the **last sentence of section N** and the **first sentence of section N+1** for every adjacent pair. Flag any pair where:
-- The same fact, event, or phrase is stated in both (e.g. hook ends "source code got leaked" → next section opens "they had leaked the entire source code")
-- The same emotional beat lands twice in a row
-- A setup at the end of N is answered by N itself, making the opening of N+1 redundant
+- the same fact, event or phrase is stated in both ("source code got leaked" then "they had leaked the entire source code");
+- the same emotional beat lands twice in a row;
+- N already answers a setup that N+1 opens by repeating.
 
-For each flagged seam, fix it by trimming the crop window of whichever section is redundant — usually cutting the opening of N+1 forward to where it adds new information, or cutting the close of N back to where it hands off cleanly. Do not simply accept the overlap because both sections were independently "the best take."
+Fix by deleting the redundant words: usually the opening of N+1, or the close of N. Do not accept an overlap because both takes were independently the best.
 
-**This check is required before writing any spec files.** Seam problems cannot be caught by any automated step downstream.
+**Required before applying.** No automated step catches cross-section redundancy.
 
-### 9. Crop the trim specs — never encode an intermediate
+## Voiceover on an audio track
 
-For each selected take, the trim spec JSON comes back **inline** (on stdout / in the step result) from the preceding `waveform_trim` step — it is NOT written to disk automatically. The `crop_spec` step requires an on-disk file (its `--input` argument). Before calling `crop_spec`, write the inline spec to the project scratch dir using the `write_file` tool (e.g. save it as `<clip>_spec.json`), then pass that path as `crop_spec`'s `input`.
-
-Crop the written spec to the selected take's virtual-timeline window using the `crop_spec` step.
-
-**Never encode an intermediate video file here.** There is no `trim` step to call, and reaching for `materialize_cut` at this point would break the single-encode chain for no gain. Cropping the spec keeps `tracks[0].items[*].src` pointing at the original source all the way through to the final render, which is what lets the operator re-trim any cut later without losing quality — and what keeps each item's `proxySrc` valid, since a proxy covers the original file.
-
-**Note:** the `input` path in all `crop_spec` calls below must point to a spec file you've written to disk via `write_file` first (see above).
-
-Run step `crop_spec` with `{"input": "/path/IMG_4893_spec.json", "keeps": [[8.5, 34.1]]}` → returns `{"path": "/path/IMG_4893_spec_cropped.json"}` (single window).
-
-Run step `crop_spec` with `{"input": "/path/IMG_4893_spec.json", "keeps": [[0, 2.4], [13.84, 18.33]]}` → returns `{"path": "/path/IMG_4893_spec_cropped.json"}` (multiple windows — skip rejected content in between).
-
-Run step `crop_spec` with `{"input": "/path/IMG_4893_spec.json", "keeps": [[40.28, null]]}` (open-ended: keep from virtual 40.28s to end of clip).
-
-The `keeps` field is a **native JSON array** of `[start, end]` pairs — not a string. Use `null` for an open-ended window.
-
-**Important:** the timestamps you pass to `crop_spec` are in the time of the spec being cropped (its kept audio back to back), never original-file time. See 9a for which transcript fields are in which time.
-
-Write each cropped spec to `<original>_selected.json` by saving the path returned by the step.
-
-### 9a. Timestamps: the .srt is in the transcribed spec's time
+For flows whose speech is not on a visual track (B-roll's voiceover), `speech_text` does not read it (visual tracks only). There, crop the exact spec that was transcribed with `crop_spec`, and write each result to `<original>_selected.json`.
 
 The `.srt` is in the time of the spec you transcribed, which the words JSON's `montaj.spec` names. Crop that same spec with those times and pass them to `crop_spec` without conversion. The words JSON `offsets` and `timestamps` are source (original-file) time; to use them with `crop_spec`, convert with `virtual_to_original --inverse`. Never crop a different spec with these times.
 
-SRT shows the best take at 8.5s–34.1s → run step `crop_spec` with `{"input": "/path/IMG_4893_spec.json", "keeps": [[8.5, 34.1]]}` and pass the result directly.
+Run step `crop_spec` with `{"input": "/path/spec.json", "keeps": [[8.5, 34.1]]}`. `input` must be a spec file on disk (save an inline spec with `write_file` first); `keeps` is a native JSON array of `[start, end]` pairs, `null` for open-ended. Never encode an intermediate file: cropping keeps `src` on the original.
 
-`virtual_to_original` is a **debugging tool**, not a conversion step in the normal workflow. Use it when you need to verify that a virtual timestamp maps to the right spot in the original file — for example, to check why a cut looks off:
-
-Run step `virtual_to_original` with `{"input": "spec.json", "verbose": true, "timestamp": 47.32}` → returns something like `47.32 → 95.483 (keep 10: [93.295, 96.166])`.
-
-The `inverse` option goes the other direction (original-file → virtual). Use it when you have an original-file timestamp from somewhere else (e.g., ffprobe output, manual note) and need to know where it falls in the virtual timeline:
-
-Run step `virtual_to_original` with `{"input": "spec.json", "inverse": true, "timestamp": 95.483}` → returns `47.320`.
-
-### 10. Output
-
-An ordered list of `_selected.json` trim spec paths — one per selected section, in narrative order. These become the inputs to `rm_fillers`, and the keeps that survive it become the `tracks[0]` items the render engine assembles.
-
-When this is the last editorial pass before the render, the project must be `final` before the render will run — see skill `native` → "Project lifecycle — status, and the render gate".
+When this is the last editorial pass before the render, the project must be `final` before the render will run: see skill `native`, "Project lifecycle".
 
 ## What to Log
 
-Before writing specs, log your decisions clearly:
+Before applying, log your decisions by line:
 
 ```
 select_takes decisions:
-  A. Hook → IMG_4891 0–18s (only take, clean delivery)
-  B. What happened → IMG_4893 0–7.5s (first clean take; second at 22s is identical but trails off)
-  C. What was found → IMG_4893 42.5–66.8s (THIRD take — first two at 26s and 34s cut off before "Kyros")
-  D. Fallout → IMG_4894 0–18.4s (only take)
-  E. Resolution → IMG_4895 8.5–34.1s (cleaner pivot take + Boris statement; dropping filler at 34–44s)
-  F. CTA → IMG_4896 12.9–18.9s (FOURTH take — first three are false starts)
+  A. Hook -> A1-A4 (only take, clean delivery)
+  B. What happened -> B1-B3 (first clean take; B9-B11 is identical but trails off)
+  C. What was found -> B20-B27 (THIRD take: first two cut off before "Kyros")
+  D. Fallout -> C1-C6 (only take)
+  E. Resolution -> D4-D12 (cleaner pivot take + Boris statement; dropping filler at D13-D15)
+  F. CTA -> E5-E7 (FOURTH take: first three are false starts)
 
-  Dropped entirely: IMG_4893 0–42s (repeated takes of B and C), IMG_4895 44–60s (trailing filler), IMG_4896 0–12.9s (false starts)
+  Deleted entirely: B4-B19 (repeated takes of B and C), D13-D18 (trailing filler), E1-E4 (false starts)
 ```
 
 ## Common Mistakes
 
-**Too conservative — the most common failure.** Keeping a wide window like `0–66s` because it "contains the best take" is wrong. It also contains two rejected takes. Crop to the specific take only.
-
-**Not reading all clips before deciding.** The best take of section C might be in clip 4, not clip 2. Read everything first.
-
-**Keeping false starts.** A false start is not content. If a speaker says "so the — actually let me start over — the tweet got..." cut before the restart.
-
-**Keeping the outro filler.** Clips often end with trailing "so yeah", "anyway", "alright" after the real content. Cut at the end of the last meaningful sentence.
-
-**Missing within-take phrase repetition.** Even after picking the best take, the speaker may have stumbled and repeated a clause mid-sentence — no automated step catches this. You must read the SRT for every selected take and crop out earlier occurrences of any repeated phrase. Choosing the "best" take is not enough if that take still contains an internal stutter.
-
-**Skipping the seam check.** Each section is picked independently, but the seams are where edits fall apart. A hook that ends "the source code got leaked" followed by an opener that says "they had leaked the entire source code" is the same beat twice — no automated step catches cross-section redundancy. Always read adjacent section boundaries as a pair before writing specs.
+| Mistake | Fix |
+|---|---|
+| **Too conservative, the most common failure.** Keeping a wide span because it "contains the best take" also keeps the rejected takes | Delete the line groups of the losing takes; keep only the chosen one |
+| Not reading all clips before deciding | Read the whole track and `## Unused` first |
+| Keeping false starts ("so the, actually let me start over, the tweet got...") | Delete up to the restart |
+| Keeping the outro filler ("so yeah", "anyway") | End at the last meaningful sentence |
+| Missing within-take repetition | Re-read every selected line group for repeated clauses; no step catches them |
+| Skipping the seam check | Read adjacent boundaries as pairs before applying |
