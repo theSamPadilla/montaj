@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.22.4
+
 - **Added (editor): Cmd/Ctrl+Shift+A selects everything that starts at or after the playhead.** Same scope as Cmd/Ctrl+A (clips, overlays, audio, captions); an item straddling the playhead is left out, and Cmd/Ctrl+A no longer fires when Shift is held. (`montaj_assets/editor/src/video/timeline/Timeline.tsx`, `montaj_assets/editor/src/ControlsInfoModal.tsx`, `montaj_assets/editor/src/video/timeline/__tests__/Timeline.keymap.test.tsx`)
 
 - **Changed (editor): timeline pins and note pins are about 1.45x bigger and easier to click.** Stem 2px to 3px, label 10px to 14px, the marker strip 16px to 22px, and the click target reaches 104px right of the flag (was 72px) and 3px left of it. (`montaj_assets/editor/src/video/timeline/canvas/{draw.ts,hit-test.ts}`, `montaj_assets/editor/src/video/timeline/canvas/__tests__/pins.test.tsx`)
