@@ -28,7 +28,7 @@ def main():
         project = json.load(f)
 
     d = derive(project, project_dir, args.track)
-    text = render(d, project.get("id") or os.path.basename(project_dir), args.unused)
+    text = render(d, project.get("name") or project.get("id") or os.path.basename(project_dir), args.unused)
 
     out_path = os.path.join(project_dir, "speech-text.md")
     with open(out_path, "w", encoding="utf-8") as f:
