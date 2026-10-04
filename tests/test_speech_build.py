@@ -8,6 +8,7 @@ word whisper put inside a pause.
 """
 import copy
 import json
+import math
 import os
 import re
 import shutil
@@ -117,22 +118,26 @@ def assert_cut_invariant(fx, runs, report, pad=HARD_CUT_PAD_S, max_pad=None):
     """A cut never lands inside a refined word. A placed edge is either in a certain gap between two
     consecutive refined words (or at the media's start/end), or it is a counted hard cut sitting at
     a word edge with `pad` (HARD_CUT_PAD_S by default), or with anything from `pad` to `max_pad` when
-    given (natural's pad, which grows into silence). Returns (placed edges, hard cuts)."""
+    given (natural's pad, which grows into silence). A pad never runs past the gap beside the word, so
+    where words are glued the hard cut is the word edge itself. Returns (placed edges, hard cuts)."""
     top = max_pad or pad
     W = fx.words
     gaps = [(W[i].end, W[i + 1].start) for i in range(len(W) - 1)
             if (i, i + 1) not in fx.uncertain and W[i + 1].start - W[i].end > EPS]   # glued words have no gap
     gaps += [(0.0, W[0].start), (W[-1].end, W[-1].end)]                               # the media's own start and end
+    after = [(w.end, W[i + 1].start - w.end if i + 1 < len(W) else math.inf) for i, w in enumerate(W)]
+    before = [(w.start, w.start - W[i - 1].end if i else w.start) for i, w in enumerate(W)]
     placed = cut_edges(fx, runs)
     hard = 0
     for t, is_hard in placed:
         inside = [w.text for w in W if w.start + EPS < t < w.end - EPS]
+        assert not inside, f"cut at {t:.4f} lands inside {inside}"
         if is_hard:
             hard += 1
-            assert any(w.end + pad[0] - EPS <= t <= w.end + top[0] + EPS or w.start - top[1] - EPS <= t <= w.start - pad[1] + EPS
-                       for w in W), f"hard cut at {t:.4f} is not a word edge with its pad"
+            assert any(e + min(pad[0], g) - EPS <= t <= e + min(top[0], g) + EPS for e, g in after) \
+                or any(s - min(top[1], g) - EPS <= t <= s - min(pad[1], g) + EPS for s, g in before), \
+                f"hard cut at {t:.4f} is not a word edge with its pad"
             continue
-        assert not inside, f"cut at {t:.4f} lands inside {inside} and is not counted as a hard cut"
         assert any(lo - EPS <= t <= hi + EPS for lo, hi in gaps), f"cut at {t:.4f} is not in a certain gap"
     assert hard == sum(r.hard_cuts for r in runs) == report.hard_cuts
     return len(placed), hard
@@ -146,7 +151,8 @@ A1_CUT = ("A1 results, of what they once were themselves, thought and talked, "
 
 def _glued_edits():
     """Deletions where the words around the cut are glued (no gap) or the gap is uncertain: these must
-    hard-cut, and each hard cut must sit at a word edge with its pad."""
+    hard-cut, and each hard cut must sit at a word edge with its pad, cut short by the gap (none of a
+    deleted word glued to a kept one plays)."""
     return {
         "a1_words_cut": lambda t: edit(t, A1, A1_CUT),
         "a1_words_cut_with_pause": lambda t: edit(t, A1, A1_CUT.replace("themselves, thought", "themselves, {0.30} thought")),
@@ -361,7 +367,8 @@ def test_deleted_trailing_word_leaves_its_silence_to_the_tail_marker(fx):
 
 def test_deleted_leading_word_leaves_its_silence_to_the_lead_in_marker(fx):
     # the symmetric case: A9's first word (word 33) deleted, A9 keeps "answer." with a 0.30 lead-in. The
-    # old item clip-3 opened with 0.073 of silence before the deleted word; word 33 -> 34 are glued.
+    # old item clip-3 opened with 0.073 of silence before the deleted word; word 33 -> 34 are glued, so
+    # the edge before 'answer."' is its own start: no pad, none of '"No' plays.
     t = edit(fx.text, 'A9 "No answer."', 'A9 {0.30} answer."')
     b = build(fx, t)
     W = fx.words
@@ -374,9 +381,9 @@ def test_deleted_leading_word_leaves_its_silence_to_the_lead_in_marker(fx):
         kept += b.runs[k].s_out - b.runs[k].s_in
         mids.append(b.runs[k])
     assert len(mids) == 1 and abs(mids[0].s_out - W[33].start) <= EPS
-    # all the silence there is on this side is kept: the pad (0.02) plus the old item's 0.073 lead-in;
-    # the join also carries clip-2's tail (0.174), so the clamp reports 0.174 + 0.093 kept of 0.474 asked
-    assert abs(kept - (HARD_CUT_PAD_S[1] + 0.073)) <= 0.001, kept
+    # all the silence there is on this side is kept: the old item's 0.073 lead-in; the join also carries
+    # clip-2's tail (0.174), so the clamp reports 0.174 + 0.073 kept of 0.474 asked
+    assert abs(kept - 0.073) <= 0.001, kept
     assert [c["line"] for c in b.report.clamped] == ["A9"], b.report.clamped
     assert abs(b.report.clamped[0]["kept"] - (0.174 + kept)) <= 0.011
     assert_cut_invariant(fx, b.runs, b.report)
@@ -456,7 +463,8 @@ def test_crossfade_overlap_never_exceeds_the_previous_piece(fx):
 
 
 def test_hard_cut_edges_are_rounded_like_item_times(fx):
-    # "were" (1.87-2.14) is glued to its neighbours: 1.87 + 0.04 is 1.9100000000000001 unrounded
+    # "were" (1.87-2.14) is glued to its neighbours, so both hard cuts are word edges with no pad; an
+    # edge is rounded like item times either way (a 0.04 pad on 1.87 would be 1.9100000000000001)
     assert "once were themselves" in fx.text
     b = build(fx, fx.text.replace("once were themselves", "once themselves", 1))
     edges = [t for t, hard in cut_edges(fx, b.runs) if hard]

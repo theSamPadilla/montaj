@@ -5,6 +5,13 @@ tests/goldens/speech_edit_tight.json was recorded from montaj 5.23.1 (170fd59d),
 the edits BUILD_CASES and APPLY_CASES replay here. Record it again only when tight's output is meant to
 change: `python -m tests.test_speech_feel` records feel="tight" from the code on disk.
 
+Recorded again after 5.23.2, when a hard cut stopped padding into a glued neighbouring word (its pad had
+played 0.04 s after the last kept word and 0.02 s before the next of a word that does not play there).
+Only cuts beside glued words changed: build a1_words_cut, a1_words_cut_with_pause, a13_her,
+a13_pulled_deleted, a2_row_deleted, a3_first_word, a8_deleted_trailing, a9_deleted_leading, a9_first_word
+and move_a7_after_a9 (the moved "Tom!" is glued to the words it left), apply a1_words_cut and
+move_a7_after_a9.
+
 The fixture is the real speech of tests/fixtures/speech_text (its README); word times quoted below are
 the refined words derive() gives on it (see tests/test_speech_build.py).
 """
@@ -244,14 +251,14 @@ def test_natural_floors_a_join_the_text_set_no_pause_for(fx, gap, tight_kept, na
 
 def test_the_floor_never_crosses_a_word(fx):
     # A13 "pulled" (49) deleted: 0.079 s of certain gap after "lady" (48), none before "her" (50). The floor
-    # takes what the gap has and hard-cuts the glued side with tight's pad; nothing lands inside a kept word.
+    # takes what the gap has and hard-cuts the glued side at "her"'s own start; nothing lands inside a word.
     t = edit(fx.text, "A13 {0.17} The old lady pulled her speckle.", "A13 {0.17} The old lady her speckle.")
     b = build(fx, t, feel="natural")
     W = fx.words
     r = next(r for r in b.runs if 48 in r.words)
     n = b.runs[b.runs.index(r) + 1]
     assert abs(r.s_out - W[49].start) <= EPS and not r.hard_out
-    assert n.hard_in and abs(n.s_in - (W[50].start - TIGHT.hard_cut_pad[1])) <= EPS
+    assert n.hard_in and abs(n.s_in - W[50].start) <= EPS
 
 
 # ---------------------------------------------------------------- max pause
@@ -282,7 +289,7 @@ def test_a_written_pause_wins_over_the_natural_cap_and_floor(fx):
 
 # ---------------------------------------------------------------- hard-cut pads
 # natural's pad grows past tight's only into measured silence between the kept word and its neighbour,
-# never into the neighbour; where words run together it is tight's 0.04/0.02, as before feels existed.
+# never into the neighbour; where words run together neither feel pads, so none of the neighbour plays.
 
 
 def _heard(b, w):
@@ -291,20 +298,21 @@ def _heard(b, w):
 
 
 def test_natural_plays_no_more_of_a_deleted_glued_her_than_tight(fx):
-    # A13 "her" (50, 29.51 to 29.69) between glued words: no silence either side, so tight's pads
+    # A13 "her" (50, 29.51 to 29.69) between glued words: no gap either side, so no pad and none of it
+    # plays (5.23.2 played 0.06 s of it, tight's 0.04 + 0.02)
     t = edit(fx.text, "A13 {0.17} The old lady pulled her speckle.", "A13 {0.17} The old lady pulled speckle.")
     her = fx.words[50]
     tight, natural = _heard(build(fx, t, feel="tight"), her), _heard(build(fx, t, feel="natural"), her)
-    assert abs(tight - 0.06) <= 0.001 and abs(natural - tight) <= EPS, (tight, natural)
+    assert tight == natural == 0.0, (tight, natural)
 
 
-def test_a_deleted_in_is_not_played_whole(fx):
+def test_a_deleted_in_is_not_played_at_all(fx):
     # A2 "in." (23, 10.705 to 10.74, 0.035 s) deleted: glued to "The" after it, so the edge before "The"
-    # keeps tight's 0.02, as before feels existed, and natural no more
+    # is "The"'s own start on both feels (5.23.2 kept tight's 0.02 of "in." there)
     t = edit(fx.text, "A2 in.", None)
     w = fx.words[23]
     tight, natural = _heard(build(fx, t, feel="tight"), w), _heard(build(fx, t, feel="natural"), w)
-    assert abs(natural - tight) <= EPS and natural < (w.end - w.start) - 0.01, (tight, natural)
+    assert tight == natural == 0.0, (tight, natural)
 
 
 @pytest.mark.parametrize("name", BUILD_CASES)

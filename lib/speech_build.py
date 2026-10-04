@@ -54,14 +54,18 @@ Where a cut lands
 - **Hard cut.** When the gap on a cut's side is empty (glued words) or uncertain (the inside word is deleted), the edge sits at
   the word edge padded by `HARD_CUT_PAD_S` (kept after the last word, before the next) and counts
   as a hard cut. The feel's `hard_cut_pad` widens that pad only into the measured silence that runs
-  from the word edge, never past the gap: glued words keep `HARD_CUT_PAD_S`. A source's own start
-  and end are not cuts. So: an edge lies inside a refined word only when it is a counted hard cut.
+  from the word edge. No pad runs past the gap: the neighbouring word does not play there, so where
+  the words are glued the edge is the kept word's own edge and none of the deleted word plays. A
+  source's own start and end are not cuts. So an edge never lies inside a refined word.
+- **Nothing to cut.** A deleted word the new cut still plays (its midpoint inside a run, as derive()
+  reads it: a zero-length word between glued words) is not in `cut`; it is flagged `no_gap`.
 
 Times are source seconds; pause values are source seconds too (as derive shows them), so an item
 at `speed` 2 plays a 0.4 s marker as 0.2 s.
 
-Feel (`FEELS`): `tight` is the cut this module made before feels existed, byte for byte (min pause
-0.08, no floor, no cap of its own, pads 0.04/0.02). `natural`, the default, keeps more silence:
+Feel (`FEELS`): `tight` is the cut this module made before feels existed, byte for byte except beside
+glued words, where no pad plays the neighbouring word any more (min pause 0.08, no floor, no cap of its
+own, pads 0.04/0.02). `natural`, the default, keeps more silence:
 min pause and floor 0.18, unchanged pauses capped at 0.45 unless the call passes `max_pause`,
 hard-cut pads up to 0.08/0.05 where measured silence holds them.
 """
@@ -90,8 +94,8 @@ class Feel:
       beside it hold it; 0 keeps their natural pause. A marker the text wrote is never floored.
     max_pause: the cap on every pause the text did not change, when the call passes none.
     hard_cut_pad: the most a hard cut keeps after the last word and before the next word. Past
-      HARD_CUT_PAD_S it only reaches into measured silence, so it never plays more of the neighbouring
-      (deleted) word than HARD_CUT_PAD_S does; where words run together it is HARD_CUT_PAD_S.
+      HARD_CUT_PAD_S it only reaches into measured silence, and no pad runs past the gap, so it never
+      plays any of the neighbouring (deleted) word; where words run together it is 0.
     """
     min_pause: float
     floor: float
@@ -99,7 +103,7 @@ class Feel:
     hard_cut_pad: tuple
 
 
-# tight is the cut speech_edit made before feels existed, byte for byte; natural is the default.
+# tight is the cut speech_edit made before feels existed (byte for byte but beside glued words); natural is the default.
 FEELS = {
     "natural": Feel(min_pause=0.18, floor=0.18, max_pause=0.45, hard_cut_pad=(0.08, 0.05)),
     "tight": Feel(min_pause=MIN_PAUSE_S, floor=0.0, max_pause=None, hard_cut_pad=HARD_CUT_PAD_S),
@@ -161,7 +165,8 @@ class Report:
     pauses: [{"line", "from", "to"}] a join of the old cut whose kept pause changed.
     clamped: [{"line", "asked", "kept"[, "unsure": true]}] a marker asked for a different silence than was kept:
     more than exists, or less where the gap is uncertain (kept whole).
-    flagged: [{"kind", "id", ...}] kinds keyframes_merged, state_merged, fields_dropped, short_piece.
+    flagged: [{"kind", "id", ...}] kinds keyframes_merged, state_merged, fields_dropped, short_piece; and
+    [{"kind": "no_gap", "line", "words"}] deleted words the new cut still plays (they are not in `cut`).
     """
     hard_cuts: int = 0
     cut: list = field(default_factory=list)
@@ -246,15 +251,16 @@ class _Source:
     def hard_pad(self, side, lo, hi):
         """The pad of a hard cut in the gap [lo, hi]: after the word ending at lo (side 0) or before the
         word starting at hi (side 1). HARD_CUT_PAD_S, widened toward the feel's pad only as far as the
-        measured silence touching that word edge runs, and never past the gap (the neighbouring word)."""
-        base, most = HARD_CUT_PAD_S[side], self.pad[side]
-        if most <= base:
+        measured silence touching that word edge runs, and never past the gap: the neighbouring word is
+        not played here, so where the words are glued (no gap) the pad is 0 and the edge is the word edge."""
+        base, most = min(HARD_CUT_PAD_S[side], max(0.0, hi - lo)), self.pad[side]
+        if most <= HARD_CUT_PAD_S[side]:
             return base
         if side == 0:
             room = max((min(b, hi) - lo for a, b in self.sils if a - _MARK_TOL_S <= lo < b), default=0.0)
         else:
             room = max((hi - max(a, lo) for a, b in self.sils if a < hi <= b + _MARK_TOL_S), default=0.0)
-        return max(base, min(most, room))
+        return max(base, min(most, room))      # room is clipped to the gap too
 
     def capacity(self, lo, hi, certain):
         return hi - lo if certain and hi - lo > _EPS else 0.0
@@ -772,7 +778,7 @@ class _Build:
         for r in runs:
             r.hard_cuts = int(r.hard_in) + int(r.hard_out)
         self.report.hard_cuts = sum(r.hard_cuts for r in runs)
-        self._report_cut_and_moved()
+        self._report_cut_and_moved(runs)
         return runs, self.report
 
     @staticmethod
@@ -790,7 +796,10 @@ class _Build:
             out.append(r)
         return out
 
-    def _report_cut_and_moved(self):
+    def _report_cut_and_moved(self, runs):
+        """`cut`: the words the text deleted. A deleted word the new runs still play, its midpoint inside
+        a speech run of its source as derive() reads it, was not cut (nothing separates it from the kept
+        words around it, e.g. a zero-length word between glued words): it is flagged `no_gap` instead."""
         old_by_line: dict = {}
         for m in self.metas:
             old_by_line.setdefault(m.row.line, {}).update({w.idx: w for w in m.row.words})
@@ -799,9 +808,15 @@ class _Build:
             kept.setdefault(info.line, set()).update(w.idx for w in info.words)
         for line, words in old_by_line.items():
             gone = [words[i] for i in sorted(words) if i not in kept.get(line, set())]
+            src = self.src_of[_LINE_RE.match(line).group(1)]
+            spans = [(r.s_in, r.s_out) for r in runs if r.kind == "speech" and r.src == src]
+            uncut = [w for w in gone if any(a <= (w.start + w.end) / 2 < b for a, b in spans)]
+            gone = [w for w in gone if w not in uncut]
             if gone:
                 self.report.cut.append({"line": line, "words": " ".join(w.text for w in gone),
                                         "seconds": round(sum(w.end - w.start for w in gone), 2)})
+            if uncut:
+                self.report.flagged.append({"kind": "no_gap", "line": line, "words": " ".join(w.text for w in uncut)})
         old_seq = [m.row.line for m in self.metas]
         new_seq = [info.line for _, info in sorted(self.infos.items()) if info.words]
         in_lcs = _lcs_members(old_seq, new_seq)

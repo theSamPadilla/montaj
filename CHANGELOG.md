@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (steps): `speech_edit` removes a deleted word glued to a kept one, and flags a deletion that changes nothing.** A hard cut padded 0.04 s past the last kept word and 0.02 s before the next even where there was no gap, so on both feels part of a glued deleted word stayed in the cut: a short word such as "I" kept its midpoint and came back in the text, and deleting it again was a no-op that `cut` still listed. A pad now stops at the gap, so a glued cut lands on the kept word's edge (`tight` changes only there). A deleted word the new cut still plays, such as a zero-length word between glued words, is flagged `no_gap` and left out of `cut`. (`lib/speech_build.py`, `skills/speech-edit/SKILL.md`, `tests/test_speech_glued.py`, `tests/test_speech_build.py`, `tests/test_speech_feel.py`, `tests/goldens/speech_edit_tight.json`)
+
 ## v5.23.2
 
 - **Fixed (serve): deleting a project with `preserve_assets` keeps its uploaded audio too.** An uploaded music track (`storyboard.music.path`), the voiceover and its takes, and every audio track item inside the project move to `<workspace>/_uploads/` once and are returned in the `preserved` map, by the same rules as clips: a file outside the project maps to itself, a symlink maps to its target, a name already in `_uploads` is never overwritten. A described music track has no file and is untouched. (`serve/routes/projects.py`, `tests/test_server_delete_preserve.py`)
