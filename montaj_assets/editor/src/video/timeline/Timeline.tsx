@@ -829,13 +829,32 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       // untouched and `preventDefault` only fires when this handles the key.
       id: 'timeline.select-all',
       description: 'Select all',
-      matches: matchesModKey('a'),
+      // No Shift: Cmd/Ctrl+Shift+A is select-after-playhead, just below.
+      matches: (e: KeyboardEvent) => matchesModKey('a')(e) && !e.shiftKey,
       guard: () => !!onSelectIds,
       action: () => {
         onSelectIds?.([
           ...(captionTrack?.segments ?? []).flatMap(seg => (typeof seg.id === 'string' ? [seg.id] : [])),
           ...allTracks.flatMap(items => items.map(item => item.id)),
           ...audioTracks.map(t => t.id),
+        ])
+      },
+    },
+    {
+      // Same scope and same `onSelectIds` as select-all, narrowed to items whose
+      // START is at or after the playhead. An item that straddles the playhead
+      // (starts before it) is not caught.
+      id: 'timeline.select-after-playhead',
+      description: 'Select all after playhead',
+      matches: (e: KeyboardEvent) => matchesModKey('a')(e) && e.shiftKey,
+      guard: () => !!onSelectIds,
+      action: () => {
+        const t = clock.get()
+        const after = (x: { start: number }) => x.start >= t
+        onSelectIds?.([
+          ...(captionTrack?.segments ?? []).flatMap(seg => (typeof seg.id === 'string' && after(seg) ? [seg.id] : [])),
+          ...allTracks.flatMap(items => items.filter(after).map(item => item.id)),
+          ...audioTracks.filter(after).map(a => a.id),
         ])
       },
     },

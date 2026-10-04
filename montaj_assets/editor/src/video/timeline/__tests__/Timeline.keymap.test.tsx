@@ -419,6 +419,49 @@ describe('Timeline — T9 keymap (arrows / delete / enter / escape)', () => {
       expect(sorted(onSelectIds.mock.calls[0][0])).toEqual(ALL)
     })
 
+    it('Cmd+Shift+A selects only items starting at or after the playhead, not a straddler, and Cmd+A still selects all', () => {
+      const onSelectIds = vi.fn()
+      const project = {
+        ...makeProjectWithCaptions(),
+        tracks: [
+          [{ id: 'clip-0', type: 'video', src: 'a.mp4', start: 0, end: 4, inPoint: 0, outPoint: 4 }],
+          [
+            { id: 'overlay-1', type: 'overlay', src: 'o.jsx', start: 1, end: 3 },
+            { id: 'overlay-2', type: 'overlay', src: 'o.jsx', start: 2, end: 3 },
+          ],
+        ],
+        audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 0.5, end: 2, lane: 0 }, { id: 'a1', src: 'v.mp3', start: 3, end: 5, lane: 0 }] },
+      } as unknown as Project
+      render(<Timeline project={project} clock={createPlaybackClock(1)} onSelectIds={onSelectIds} />)
+      const ev = new KeyboardEvent('keydown', { key: 'A', metaKey: true, shiftKey: true, bubbles: true, cancelable: true })
+      act(() => { document.body.dispatchEvent(ev) })
+      expect(onSelectIds).toHaveBeenCalledTimes(1)
+      // start >= 1: cap-1 (1), overlay-1 (1, exact playhead), overlay-2, a1. Straddlers clip-0, cap-0, a0 are out.
+      expect(sorted(onSelectIds.mock.calls[0][0])).toEqual(['a1', 'cap-1', 'overlay-1', 'overlay-2'])
+      expect(ev.defaultPrevented).toBe(true)
+      act(() => { fireEvent.keyDown(document.body, { key: 'a', ctrlKey: true, shiftKey: true }) })
+      expect(onSelectIds).toHaveBeenCalledTimes(2)
+      onSelectIds.mockClear()
+      act(() => { fireEvent.keyDown(document.body, { key: 'a', metaKey: true }) })
+      expect(sorted(onSelectIds.mock.calls[0][0])).toEqual(['a0', 'a1', 'cap-0', 'cap-1', 'clip-0', 'overlay-1', 'overlay-2'])
+    })
+
+    it('Cmd+Shift+A does nothing while focus is in a text input', () => {
+      const onSelectIds = vi.fn()
+      const { container } = render(
+        <div>
+          <input />
+          <Timeline project={makeFullProject()} clock={createPlaybackClock(0)} onSelectIds={onSelectIds} />
+        </div>,
+      )
+      const input = container.querySelector('input') as HTMLInputElement
+      input.focus()
+      const ev = new KeyboardEvent('keydown', { key: 'A', metaKey: true, shiftKey: true, bubbles: true, cancelable: true })
+      act(() => { input.dispatchEvent(ev) })
+      expect(onSelectIds).not.toHaveBeenCalled()
+      expect(ev.defaultPrevented).toBe(false)
+    })
+
     it('a bare "a" does not select all', () => {
       const onSelectIds = vi.fn()
       render(<Timeline project={makeFullProject()} clock={createPlaybackClock(0)} onSelectIds={onSelectIds} />)
