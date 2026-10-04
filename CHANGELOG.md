@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.23.3
+
 - **Fixed (steps): `speech_edit` removes a deleted word glued to a kept one, and flags a deletion that changes nothing.** A hard cut padded 0.04 s past the last kept word and 0.02 s before the next even where there was no gap, so on both feels part of a glued deleted word stayed in the cut: a short word such as "I" kept its midpoint and came back in the text, and deleting it again was a no-op that `cut` still listed. A pad now stops at the gap, so a glued cut lands on the kept word's edge (`tight` changes only there). A deleted word the new cut still plays, such as a zero-length word between glued words, is flagged `no_gap` and left out of `cut`. (`lib/speech_build.py`, `skills/speech-edit/SKILL.md`, `tests/test_speech_glued.py`, `tests/test_speech_build.py`, `tests/test_speech_feel.py`, `tests/goldens/speech_edit_tight.json`)
 
 ## v5.23.2
