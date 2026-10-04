@@ -29,9 +29,24 @@ describe('setNoteText / setNoteDone', () => {
   })
 })
 describe('removeNotes', () => {
-  it('drops the key entirely when the last note goes', () => {
+  it('last note removed: notes is null (the clear serve needs), JSON-serialized too', () => {
+    // serve shallow-merges a PUT: an OMITTED key keeps the old value on disk (PL43).
     const { project, id } = addNote(base, 1)
-    expect('notes' in removeNotes(project, new Set([id]))).toBe(false)
+    const out = removeNotes(project, new Set([id]))
+    expect(out.notes).toBeNull()
+    expect(JSON.parse(JSON.stringify(out))).toHaveProperty('notes', null)
+  })
+  it('removing one of two keeps the other', () => {
+    const a = addNote(base, 1)
+    const b = addNote(a.project, 2)
+    expect(removeNotes(b.project, new Set([a.id])).notes!.map(n => n.id)).toEqual([b.id])
+  })
+  it('a note added after the last was removed starts a fresh list', () => {
+    const { project, id } = addNote(base, 1)
+    expect(addNote(removeNotes(project, new Set([id])), 4).project.notes).toHaveLength(1)
+  })
+  it('sortedNotes treats null as empty', () => {
+    expect(sortedNotes({ notes: null })).toEqual([])
   })
   it('unknown ids return the same reference', () => {
     const { project } = addNote(base, 1)

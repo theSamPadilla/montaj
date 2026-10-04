@@ -14,10 +14,9 @@ export function sortedNotes(project: Pick<EditorProject, 'notes'>): Note[] {
 }
 
 function withNotes(project: EditorProject, notes: Note[]): EditorProject {
-  if (notes.length === 0) {
-    const { notes: _drop, ...rest } = project
-    return rest as EditorProject
-  }
+  // An empty list is sent as an explicit null: serve shallow-merges a PUT, so an
+  // omitted key would keep the old notes on disk (PL43).
+  if (notes.length === 0) return { ...project, notes: null }
   return { ...project, notes }
 }
 

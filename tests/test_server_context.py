@@ -402,3 +402,11 @@ def test_context_route_never_writes_to_the_project(tmp_path, monkeypatch):
 
     assert project_file.read_bytes() == before
     assert not (tmp_path / pid / "context.json").exists()
+
+
+def test_enrich_treats_notes_null_as_none():
+    # The editor's clear (PL43) is `notes: null` in a save body; a stray one must read as no notes.
+    project = _project()
+    project["notes"] = None
+    state = context.report("p1", {"playheadSec": 0.0, "selectedIds": []})
+    assert "notes" not in context.enrich("p1", project, state)

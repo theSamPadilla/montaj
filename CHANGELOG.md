@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fixed (editor, serve): deleting the last note sticks too (PL43).** Same bug and fix as markers: the editor now sends `notes: null` and serve drops the key. (`montaj_assets/editor/src/schema.ts`, `montaj_assets/editor/src/video/timeline/notes.ts`, `montaj_assets/editor/src/video/timeline/__tests__/notes.test.ts`, `montaj_assets/editor/src/video/__tests__/VideoEditor.keymap.test.tsx`, `serve/routes/projects.py`, `tests/test_server_projects_save_validation.py`, `tests/test_server_context.py`)
 - **Fixed (editor, serve): deleting the last marker now sticks (PL43).** The editor dropped the empty `markers` key from the save, and serve's shallow merge kept the old list, so the marker came back on reload. The editor now sends `markers: null` and serve drops the key. (`montaj_assets/editor/src/schema.ts`, `montaj_assets/editor/src/video/timeline/markers.ts`, `montaj_assets/editor/src/video/timeline/__tests__/markers.test.ts`, `serve/routes/projects.py`, `tests/test_server_projects_save_validation.py`)
 
 ## v5.22.1

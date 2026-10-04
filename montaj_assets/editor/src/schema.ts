@@ -438,7 +438,7 @@ export interface EditorProject {
    *  before the feature existed (the same discipline `captions` follows). */
   markers?: Marker[] | null
   /** Private operator notes (PL39), kept sorted by `t`. Absent, not `[]`, when empty. */
-  notes?: Note[]
+  notes?: Note[] | null
   carousel?: { aspect: string }
   profile?: string
   derivedFrom?: string  // ID of the source project this was derived from (e.g. clips workflow)

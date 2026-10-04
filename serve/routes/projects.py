@@ -3103,11 +3103,12 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
     # runCount, settings, profile, …) gets wiped. To explicitly clear a field,
     # callers must send it as null in the body.
     merged = {**existing, **body}
-    # The editor deletes its last marker by sending `markers: null` (an omitted
-    # key would keep the old list through the merge above). Drop the key so a
-    # project with no markers is stored without one.
-    if "markers" in body and body["markers"] is None:
-        merged.pop("markers", None)
+    # The editor deletes its last marker/note by sending `markers: null` /
+    # `notes: null` (an omitted key would keep the old list through the merge
+    # above). Drop the key so a project with none is stored without one.
+    for _key in ("markers", "notes"):
+        if _key in body and body[_key] is None:
+            merged.pop(_key, None)
     # Agents routinely PUT a still-legacy `tracks` shape (or a whole project
     # they hand-built). Normalize before writing so a server write never leaves
     # legacy tracks on disk — a no-op (same object back) when already

@@ -687,8 +687,8 @@ describe('VideoEditor — onProvideNotesApi (PL39)', () => {
 
     await act(async () => { api.remove('n1') })
     await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(3))
-    // The last note gone drops the key entirely, never `notes: []`.
-    expect('notes' in lastSaved(adapter)).toBe(false)
+    // The last note gone is an explicit `notes: null` (serve's merge keeps an omitted key), never `notes: []`.
+    expect(lastSaved(adapter).notes).toBeNull()
   })
 
   it('a write that changes nothing makes no save and no undo step', async () => {

@@ -346,3 +346,18 @@ def test_markers_survive_a_put_that_omits_them(project):
     resp = client.put(f"/api/projects/{PID}", json={"id": PID, "name": "renamed"})
     assert resp.status_code == 200, resp.text
     assert _on_disk(project_dir)["markers"] == markers
+
+
+def test_notes_null_clears_the_stored_notes(project):
+    client, project_dir = project
+    notes = [{"id": "n1", "t": 1.0, "text": "a"}, {"id": "n2", "t": 2.0, "text": "b"}]
+    resp = client.put(f"/api/projects/{PID}", json={"id": PID, "notes": notes})
+    assert resp.status_code == 200, resp.text
+    assert _on_disk(project_dir)["notes"] == notes
+    resp = client.put(f"/api/projects/{PID}", json={"id": PID, "notes": None})
+    assert resp.status_code == 200, resp.text
+    assert "notes" not in resp.json()
+    assert "notes" not in _on_disk(project_dir)
+    got = client.get(f"/api/projects/{PID}")
+    assert got.status_code == 200, got.text
+    assert not got.json().get("notes")
