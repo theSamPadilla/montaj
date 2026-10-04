@@ -151,7 +151,7 @@ def _glued_edits():
         "a13_her": lambda t: edit(t, "A13 {0.17} The old lady pulled her speckle.", "A13 {0.17} The old lady pulled speckle."),
         "a10_with_uncertain": lambda t: edit(t, 'A10 {0.75} "What\'s gone with {0.27} that boy, I wonder?"',
                                              'A10 {0.75} "What\'s gone {0.27} that boy, I wonder?"'),
-        "a5_pause_in_uncertain_gap": lambda t: edit(t, "A5 {0.78} 1876 CHAPTER {0.22} I", "A5 {0.78} 1876 CHAPTER {0.10} I"),
+        "a5_inside_word_deleted": lambda t: edit(t, "A5 {0.78} 1876 CHAPTER {0.22} I", "A5 {0.78} 1876 CHAPTER"),
         "a3_first_word": lambda t: edit(t, "A3 The Author", "A3 Author"),
     }
 
@@ -299,13 +299,29 @@ def test_max_pause_never_splits_an_uncertain_gap(fx):
     assert b.report.hard_cuts == 0
 
 
-def test_uncertain_gap_takes_hard_cut_pads(fx):
-    # A5's {0.22} is the gap 28-29 around "I", a word whisper placed inside a pause
-    b = build(fx, edit(fx.text, "A5 {0.78} 1876 CHAPTER {0.22} I", "A5 {0.78} 1876 CHAPTER {0.10} I"))
+def test_uncertain_gap_takes_hard_cut_pads_when_the_inside_word_is_deleted(fx):
+    # "I" (word 29) is the word whisper placed inside a pause; deleting it hard-cuts both sides
+    b = build(fx, edit(fx.text, "A5 {0.78} 1876 CHAPTER {0.22} I", "A5 {0.78} 1876 CHAPTER"))
     W = fx.words
     assert b.report.hard_cuts == 2
     edges = sorted(t for t, _ in cut_edges(fx, b.runs))
-    assert edges == pytest.approx(sorted([W[28].end + HARD_CUT_PAD_S[0], W[29].start - HARD_CUT_PAD_S[1]]), abs=EPS)
+    assert edges == pytest.approx(sorted([W[28].end + HARD_CUT_PAD_S[0], W[30].start - HARD_CUT_PAD_S[1]]), abs=EPS)
+
+
+def test_shortening_a_pause_next_to_an_inside_word_keeps_the_gap_whole(fx):
+    # A5's {0.22} is the gap 28-29 around "I", spoken somewhere inside it: no cut, reported as unsure
+    b = build(fx, edit(fx.text, "A5 {0.78} 1876 CHAPTER {0.22} I", "A5 {0.78} 1876 CHAPTER {0.10} I"))
+    assert b.report.hard_cuts == 0
+    assert len(b.items) == len(fx.project["tracks"][0]["items"])
+    assert any(c.get("unsure") is True and c["line"] == "A5" for c in b.report.clamped), b.report.clamped
+
+
+def test_kept_inside_word_keeps_its_whole_gap_at_the_cut(fx):
+    # "I" kept, the word after it deleted: the edge sits at the next word's start, not inside the gap
+    b = build(fx, edit(fx.text, 'A6 {0.77} "Tom!"', None))
+    W = fx.words
+    edges = [t for t, _ in cut_edges(fx, b.runs)]
+    assert any(abs(t - W[30].start) <= EPS for t in edges), edges
 
 
 def test_constants():

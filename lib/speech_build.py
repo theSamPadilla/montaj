@@ -43,7 +43,10 @@ Where a cut lands
   kept word, so a deleted word is never kept and a kept word never dropped. Inside that gap it may
   move into the gap's measured silence (`sils_by_src`) when it would land on orphan sound (a word
   fragment refine could not attach), if that silence is within `SNAP_WINDOW_S`.
-- **Hard cut.** When the gap on a cut's side is empty (glued words) or uncertain, the edge sits at
+- **Inside words.** A kept word whisper placed inside a pause (`Derived.inside_words`) keeps the whole
+  gap on each side: a pause next to it that would cut that gap is kept whole and reported as
+  `clamped` with `unsure`, because the real word lies somewhere in the gap.
+- **Hard cut.** When the gap on a cut's side is empty (glued words) or uncertain (the inside word is deleted), the edge sits at
   the word edge padded by `HARD_CUT_PAD_S` (kept after the last word, before the next) and counts
   as a hard cut. A source's own start and end are not cuts. So: an edge lies inside a refined word
   only when it is a counted hard cut.
@@ -119,7 +122,8 @@ class Report:
     cut: [{"line", "words", "seconds"}] words the old cut played that the new one does not.
     moved: line ids whose rows left the old order (outside a longest common subsequence).
     pauses: [{"line", "from", "to"}] a join of the old cut whose kept pause changed.
-    clamped: [{"line", "asked", "kept"}] an edited marker asked for more silence than exists.
+    clamped: [{"line", "asked", "kept"[, "unsure": true]}] a marker asked for a different silence than was kept:
+    more than exists, or less where the gap is uncertain (kept whole).
     flagged: [{"kind", "id", ...}] kinds keyframes_merged, state_merged, fields_dropped, short_piece.
     """
     hard_cuts: int = 0
@@ -151,9 +155,10 @@ def _key(item: dict, project_dir) -> str | None:
 class _Source:
     """One source's refined words and the gaps between them."""
 
-    def __init__(self, words, uncertain, sils, end):
+    def __init__(self, words, uncertain, sils, end, inside=frozenset()):
         self.words = words            # refined Words, words[i].idx == i
         self.uncertain = uncertain    # {(i, i + 1)}
+        self.inside = inside          # indexes of words whisper placed inside a pause
         self.sils = sils              # measured silences [(start, end)]
         self.end = end                # the source's end, as far as the project knows it
 
@@ -183,6 +188,8 @@ class _Source:
         lo, hi, certain = self.gap_after(i)
         if i == len(self.words) - 1 and hi - lo <= _EPS:
             return hi, False                                  # the source ends here: not a cut
+        if i in self.inside:
+            return hi, False                                  # the real word is somewhere in the gap: keep it whole
         if hi - lo <= _EPS or not certain:
             return min(lo + HARD_CUT_PAD_S[0], max(self.end, lo)), True
         return self.snap(lo + max(0.0, min(amount, hi - lo)), lo, hi), False
@@ -192,6 +199,8 @@ class _Source:
         lo, hi, certain = self.gap_before(i)
         if i == 0 and hi - lo <= _EPS:
             return lo, False                                  # the source starts here: not a cut
+        if i in self.inside:
+            return lo, False                                  # the real word is somewhere in the gap: keep it whole
         if hi - lo <= _EPS or not certain:
             return max(0.0, hi - HARD_CUT_PAD_S[1]), True
         return self.snap(hi - max(0.0, min(amount, hi - lo)), lo, hi), False
@@ -313,7 +322,8 @@ class _Build:
                       + [float(it[k]) for it in self.items if _key(it, self.project_dir) == src
                          for k in ("outPoint", "sourceDuration") if isinstance(it.get(k), (int, float))])
             unc = {(i, j) for lt, i, j in self.d.uncertain if lt == letter}
-            out[src] = _Source(words, unc, sils, end)
+            inside = frozenset(i for lt, i in self.d.inside_words if lt == letter)
+            out[src] = _Source(words, unc, sils, end, inside)
         return out
 
     def _metas(self):
@@ -427,12 +437,15 @@ class _Build:
                         s.kind = "value"   # the cap moves this side off its old edge
         return p, edited, capped
 
-    def _note(self, line, old, kept, asked, edited):
+    def _note(self, line, old, kept, asked, edited, unsure=False):
         """Report a clamp (an edited marker asked for more than the source has) and a pause change
         (a join of the old cut now keeps a different pause). `kept` is the source time between the
         two words, pads of a hard cut included."""
-        if edited and kept < asked - _MARK_TOL_S:
-            self.report.clamped.append({"line": line, "asked": round(asked, 2), "kept": round(kept, 2)})
+        if unsure or (edited and kept < asked - _MARK_TOL_S):
+            entry = {"line": line, "asked": round(asked, 2), "kept": round(kept, 2)}
+            if unsure:
+                entry["unsure"] = True
+            self.report.clamped.append(entry)
         if old is not None and abs(kept - old) >= _MARK_TOL_S:
             self.report.pauses.append({"line": line, "from": round(old, 2), "to": round(kept, 2)})
 
@@ -478,8 +491,11 @@ class _Build:
             return _Edge(fl.edge, old=fl.item), _Edge(fr.edge, old=fr.item)
         if consecutive:
             gap = b.start - a.end
-            if capped and not ga[2]:
-                return None   # max_pause never splits an uncertain gap
+            if not ga[2] and p < gap - _MARK_TOL_S:
+                # a word whisper placed inside a pause is next to this gap: where the pause lies is
+                # unknown, so a cut could take a spoken word. Keep the gap whole and say so.
+                self._note(info.line, old, gap, p, True, unsure=True)
+                return None
             if p >= gap - _MARK_TOL_S:
                 self._note(info.line, old, gap, p, edited)
                 return None

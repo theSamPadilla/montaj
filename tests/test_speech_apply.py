@@ -204,3 +204,43 @@ def test_invalid_candidate_refused_with_engine_code(env, monkeypatch, capsys):
     assert snapshot(env) == before
     # validated outside the project folder, and cleaned up
     assert seen and not seen[0].startswith(env.dir) and not os.path.exists(os.path.dirname(seen[0]))
+
+
+# ---- PL44 review: uncertain gaps (words whisper placed inside a pause), fixture README measurements
+
+def edit_row(text, prefix, old, new):
+    lines = text.split("\n")
+    hit = [i for i, ln in enumerate(lines) if ln.startswith(prefix + " ")]
+    assert len(hit) == 1, prefix
+    assert old in lines[hit[0]], (old, lines[hit[0]])
+    lines[hit[0]] = lines[hit[0]].replace(old, new, 1)
+    return "\n".join(lines)
+
+
+def written_items(env):
+    return json.loads(open(env.path).read())["tracks"][0]["items"]
+
+
+def spans(items, src_only=True):
+    return [(it["inPoint"], it["outPoint"]) for it in items if it.get("type", "video") == "video"]
+
+
+def test_shortening_a_pause_next_to_an_inside_word_keeps_the_gap_whole(env):
+    # "I" (whisper 16.98-17.06) is really spoken at about 17.36-17.8, inside pause 16.761-17.825
+    before = snapshot(env)
+    r = apply(env, edit_row(env.text, "A6", "{0.77}", "{0.30}"))
+    assert r["noop"] is True and snapshot(env) == before     # clip-2 stays whole: nothing to change
+
+
+def test_deleting_a_pause_next_to_an_inside_word_keeps_the_gap_whole(env):
+    # "with" (whisper 22.33-22.8) sits inside pause 22.267-23.073
+    before = snapshot(env)
+    r = apply(env, edit_row(env.text, "A10", "{0.27} ", ""))
+    assert r["noop"] is True and snapshot(env) == before     # clip-3 stays whole
+
+
+def test_deleting_an_inside_word_leaves_no_kept_span_over_the_real_word(env):
+    r = apply(env, edit_row(env.text, "A5", " {0.22} I", ""))
+    assert r["applied"] is True
+    for lo, hi in spans(written_items(env)):
+        assert min(hi, 17.8) - max(lo, 17.36) <= 0, (lo, hi)

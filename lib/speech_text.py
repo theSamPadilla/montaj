@@ -52,6 +52,7 @@ class Derived:
     partly: set
     stamp: str
     uncertain: set = field(default_factory=set)   # (letter, i, j) word-index pairs whose pause position is unsure
+    inside_words: set = field(default_factory=set)   # (letter, i): words whisper placed inside a pause
     warnings: list = field(default_factory=list)
 
 
@@ -170,7 +171,7 @@ def derive(project: dict, project_dir: str, track: str | None = None) -> Derived
             add(s["src"], sc, _media_for(s, sc))
     letters = {k: _letter(n) for n, k in enumerate(keys)}
 
-    words, lines, uncertain = {}, {}, set()
+    words, lines, uncertain, inside = {}, {}, set(), set()
     for k in keys:
         if sidecars[k] is None:
             words[k], lines[k] = [], []
@@ -181,6 +182,7 @@ def derive(project: dict, project_dir: str, track: str | None = None) -> Derived
         letter = letters[k]
         for a, b in uncertain_gaps(stats):
             uncertain.add((letter, a, b))
+        inside.update((letter, i) for i in stats["inside_words"])
         lines[k] = split_lines(letter, refined)
     line_of = {k: {w.idx: ln for ln in lines[k] for w in ln.words} for k in keys}
 
@@ -240,7 +242,7 @@ def derive(project: dict, project_dir: str, track: str | None = None) -> Derived
                 if n_played:
                     partly.add(ln.id)
     used_sidecars = [sidecars[k] for k in keys if sidecars[k]]
-    return Derived(tr["id"], letters, all_lines, cut, unused, partly, stamp(project, idx, used_sidecars), uncertain, warnings)
+    return Derived(tr["id"], letters, all_lines, cut, unused, partly, stamp(project, idx, used_sidecars), uncertain, inside, warnings)
 
 
 def _row_text(row: Row) -> str:
