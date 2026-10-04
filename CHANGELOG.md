@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.22.3
+
 - **Changed (skills): edit-session treats a revision as one coordinated change.** It now says to read the project fresh, move everything tied to a cut together, keep the user's own edits and check sync afterwards. (`skills/edit-session/SKILL.md`)
 - **Fixed (transcribe, select-takes): a transcript says which time each of its fields is in.** Transcribing a trim spec wrote word `offsets` in source time but its `.srt` and `timestamps` in the spec's own time (its keeps back to back), so the two disagreed by up to 51 s on long clips. `timestamps` now match `offsets`, the words JSON carries a `montaj` block naming the spec, its keeps and each field's time, and `select-takes` says to crop the same spec that was transcribed. (`steps/speech/transcribe.py`, `skills/select-takes/SKILL.md`, `skills/edit-session/SKILL.md`, `tests/steps/test_transcribe_time_base.py`)
 
