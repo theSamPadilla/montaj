@@ -46,6 +46,10 @@ Where a cut lands
 - **Inside words.** A kept word whisper placed inside a pause (`Derived.inside_words`) keeps the whole
   gap on each side: a pause next to it that would cut that gap is kept whole and reported as
   `clamped` with `unsure`, because the real word lies somewhere in the gap.
+- **Silence of deleted edge words.** When the text edits a marker at a join and the gaps beside the two
+  kept words cannot hold it, silence the old item kept after deleted words at its end (before deleted
+  words at its start) is used too: only the deleted words are cut out and their silence is kept as a
+  silence-only run (`Run.words` empty).
 - **Hard cut.** When the gap on a cut's side is empty (glued words) or uncertain (the inside word is deleted), the edge sits at
   the word edge padded by `HARD_CUT_PAD_S` (kept after the last word, before the next) and counts
   as a hard cut. A source's own start and end are not cuts. So: an edge lies inside a refined word
@@ -466,8 +470,57 @@ class _Build:
 
     # -------------------------------------------------------------- joins and free sides
 
+    def _item_words(self, info):
+        """Word indexes the old item of this row played (midpoint inside its in/out, as derive() reads them)."""
+        m = info.meta
+        if m is None or m.item is None:
+            return None
+        it = m.item
+        a, b = float(it.get("inPoint", 0)), float(it.get("outPoint", 0))
+        idx = [w.idx for w in self.sources[info.src].words if a <= (w.start + w.end) / 2 < b]
+        return idx, a, b
+
+    def _trailing_silence(self, prev, a, info, b):
+        """Silence the old item kept after the words that followed kept word `a` in it, when the new cut
+        drops those words: (D, available) with D the end of the item's last word, else None."""
+        got = self._item_words(prev)
+        if got is None:
+            return None
+        idx, lo, out = got
+        if not idx or a.idx not in idx or max(idx) <= a.idx:
+            return None
+        last = max(idx)
+        if prev.src == info.src and a.idx < b.idx <= last:
+            return None                      # b is one of those words: they are not trailing
+        src = self.sources[prev.src]
+        if not src.gap_after(last)[2]:
+            return None
+        edge = min(out, src.words[last + 1].start) if last + 1 < len(src.words) else out
+        d = src.words[last].end
+        return (d, edge - d) if edge - d > _MARK_TOL_S else None
+
+    def _leading_silence(self, prev, a, info, b):
+        """The mirror image: silence the old item kept before the words that preceded kept word `b` in it,
+        when the new cut drops those words: (S, available) with S the start of the item's first word."""
+        got = self._item_words(info)
+        if got is None:
+            return None
+        idx, inp, _ = got
+        if not idx or b.idx not in idx or min(idx) >= b.idx:
+            return None
+        first = min(idx)
+        if prev.src == info.src and first <= a.idx < b.idx:
+            return None
+        src = self.sources[info.src]
+        if not src.gap_before(first)[2]:
+            return None
+        edge = max(inp, src.words[first - 1].end) if first > 0 else inp
+        s0 = src.words[first].start
+        return (s0, s0 - edge) if s0 - edge > _MARK_TOL_S else None
+
     def _join(self, prev, pk, info, k):
-        """None when the join is contiguous, else (left edge, right edge)."""
+        """None when the join is contiguous, else (left edge, right edge, silence-only pieces), the pieces
+        being (info, from, to) source spans kept between the two edges."""
         a, b = prev.words[pk], info.words[k]
         sa, sb = self.sources[prev.src], self.sources[info.src]
         if prev is info:
@@ -488,7 +541,7 @@ class _Build:
 
         if fl and fr:
             self._note(info.line, old, fl.amount + fr.amount, p, edited)
-            return _Edge(fl.edge, old=fl.item), _Edge(fr.edge, old=fr.item)
+            return _Edge(fl.edge, old=fl.item), _Edge(fr.edge, old=fr.item), []
         if consecutive:
             gap = b.start - a.end
             if not ga[2] and p < gap - _MARK_TOL_S:
@@ -515,8 +568,27 @@ class _Build:
         right = _Edge(fr.edge, old=fr.item) if fr else _Edge(*sb.before(b.idx, right_amount))
         if prev.src == info.src and a.idx < b.idx and left.t >= right.t - _EPS:
             return None   # pads or snapping met: nothing left to cut between them
-        self._note(info.line, old, (left.t - a.end) + (b.start - right.t), p, edited)
-        return left, right
+        kept = (left.t - a.end) + (b.start - right.t)
+        pieces = []
+        short = p - kept
+        if edited and not consecutive and short > _MARK_TOL_S:
+            # The gaps beside the two words cannot hold the pause the text asked for. Silence that followed deleted words
+            # at the end of a's old item (or preceded deleted words at the start of b's) is there too:
+            # cut out only those words and keep their silence.
+            tail = None if fl else self._trailing_silence(prev, a, info, b)
+            if tail:
+                t = min(short, tail[1])
+                pieces.append((prev, tail[0], tail[0] + t))
+                short -= t
+            lead = None if fr else self._leading_silence(prev, a, info, b)
+            if lead and short > _MARK_TOL_S:
+                u = min(short, lead[1])
+                pieces.append((info, lead[0] - u, lead[0]))
+                kept += u
+            if tail:
+                kept += pieces[0][2] - pieces[0][1]
+        self._note(info.line, old, kept, p, edited)
+        return left, right, pieces
 
     def _free_lead(self, info):
         """Edge before a row's first word when nothing plays before it (timeline start, special row)."""
@@ -637,6 +709,10 @@ class _Build:
                     edges = self._join(prev[0], prev[1], info, k)
                     if edges is not None:
                         close(edges[0])
+                        for minfo, t0, t1 in edges[2]:
+                            cur = open_(minfo, _Edge(t0))
+                            cur.row_index = info.ri
+                            close(_Edge(t1))
                         cur = open_(info, edges[1])
                 cur.words.append(w.idx)
                 prev = (info, k)

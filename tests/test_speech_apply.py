@@ -304,3 +304,13 @@ def test_unedited_text_on_integer_timings_is_a_noop(env):
     before = snapshot(env)
     r = apply(env, text)
     assert r["noop"] is True and snapshot(env) == before
+
+
+def test_deleted_trailing_word_keeps_its_silence_end_to_end(env):
+    # A8's "Tom!" is deleted and A7 asks for a 0.17 tail: the old item's trailing silence supplies it
+    t = edit_row(env.text, "A7", '"Tom!"', '"Tom!" {0.17}')
+    t = delete_row(t, "A8")
+    r = apply(env, t)
+    assert r["applied"] is True and r["clamped"] == []
+    again = apply(env, r["text"])
+    assert again["noop"] is True

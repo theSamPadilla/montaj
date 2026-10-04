@@ -324,6 +324,61 @@ def test_kept_inside_word_keeps_its_whole_gap_at_the_cut(fx):
     assert any(abs(t - W[30].start) <= EPS for t in edges), edges
 
 
+# ---------------------------------------------------------------- deleted trailing / leading words keep their silence
+
+
+def _kept_silence_after_word(fx, b, i):
+    """Source silence kept between word i (end of its run, plus any silence-only runs) and the run that
+    starts the next row: edge pad after word i plus the silence-only pieces."""
+    W = fx.words
+    r1 = next(r for r in b.runs if i in r.words)
+    k = b.runs.index(r1) + 1
+    kept = r1.s_out - W[i].end
+    mids = []
+    while k < len(b.runs) and not b.runs[k].words:
+        kept += b.runs[k].s_out - b.runs[k].s_in
+        mids.append(b.runs[k])
+        k += 1
+    return kept, mids, b.runs[k]
+
+
+def test_deleted_trailing_word_leaves_its_silence_to_the_tail_marker(fx):
+    # A8 "Tom!" (word 32) is deleted; A7 (word 31) asks for a 0.17 tail. In clip-2 the silence that
+    # followed the deleted word runs to its outPoint 19.7 (0.174). The asked 0.17 is kept, not clamped.
+    t = edit(edit(fx.text, 'A7 {0.45} "Tom!"', 'A7 {0.45} "Tom!" {0.17}'), 'A8 "Tom!" {0.17}', None)
+    b = build(fx, t)
+    W = fx.words
+    # the join's pause is the tail 0.17 plus A9's unchanged lead-in (the 0.073 s before word 33)
+    kept, mids, nxt = _kept_silence_after_word(fx, b, 31)
+    assert len(mids) == 1 and abs(mids[0].s_in - W[32].end) <= EPS
+    assert abs(kept - 0.17) <= 0.001, kept
+    assert not b.report.clamped, b.report.clamped
+    placed, hard = assert_cut_invariant(fx, b.runs, b.report)
+
+
+def test_deleted_leading_word_leaves_its_silence_to_the_lead_in_marker(fx):
+    # the symmetric case: A9's first word (word 33) deleted, A9 keeps "answer." with a 0.30 lead-in. The
+    # old item clip-3 opened with 0.073 of silence before the deleted word; word 33 -> 34 are glued.
+    t = edit(fx.text, 'A9 "No answer."', 'A9 {0.30} answer."')
+    b = build(fx, t)
+    W = fx.words
+    r = next(r for r in b.runs if 34 in r.words)
+    k = b.runs.index(r)
+    kept = W[34].start - r.s_in
+    mids = []
+    while k > 0 and not b.runs[k - 1].words:
+        k -= 1
+        kept += b.runs[k].s_out - b.runs[k].s_in
+        mids.append(b.runs[k])
+    assert len(mids) == 1 and abs(mids[0].s_out - W[33].start) <= EPS
+    # all the silence there is on this side is kept: the pad (0.02) plus the old item's 0.073 lead-in;
+    # the join also carries clip-2's tail (0.174), so the clamp reports 0.174 + 0.093 kept of 0.474 asked
+    assert abs(kept - (HARD_CUT_PAD_S[1] + 0.073)) <= 0.001, kept
+    assert [c["line"] for c in b.report.clamped] == ["A9"], b.report.clamped
+    assert abs(b.report.clamped[0]["kept"] - (0.174 + kept)) <= 0.011
+    assert_cut_invariant(fx, b.runs, b.report)
+
+
 def test_constants():
     assert (SNAP_WINDOW_S, HARD_CUT_PAD_S, MIN_PAUSE_S) == (0.15, (0.04, 0.02), 0.08)
 
