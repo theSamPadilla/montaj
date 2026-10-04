@@ -215,6 +215,7 @@ Refer to sub-skills by name; the reader resolves the name to a path.
 | `mcp` | Running as MCP client |
 | `parallel` | Multiple clips, or workflow has `foreach` steps |
 | `edit-session` | The draft is done and the user wants interactive refinements — cuts, re-timing, new overlays |
+| `speech-edit` | Cutting speech by editing its transcript as text (`speech_text`, `speech_edit`), on a project that already has a timeline |
 | `select-takes` | Executing `montaj/select_takes` in a workflow |
 | `waveform-silence` | `waveform_trim`'s fixed threshold failed because the noise floor varies across clips — read waveforms visually instead |
 | `overlay` | Executing `montaj/overlay` in a workflow |
