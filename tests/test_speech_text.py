@@ -5,6 +5,8 @@ import shutil
 
 import pytest
 
+from lib import speech_text
+
 from lib.speech_text import derive, render, speech_track_index, stamp
 
 FIX = os.path.join(os.path.dirname(__file__), "fixtures", "speech_text")
@@ -149,11 +151,12 @@ def test_image_loop_and_gap_rows(tmp_path):
     project, pdir = load_project(tmp_path)
     items = project["tracks"][0]["items"]
     items.append({"id": "img", "type": "image", "src": os.path.join(pdir, "photo.png"), "start": 32.0, "end": 35.0})
-    items.append({"id": "lp", "type": "loop", "src": os.path.join(pdir, "speech.mp4"), "start": 35.0, "end": 36.0,
+    items.append({"id": "lp", "type": "video", "loop": True, "src": os.path.join(pdir, "speech.mp4"), "start": 35.0, "end": 36.0,
                   "inPoint": 1.0, "outPoint": 2.0})
     d = derive(project, pdir)
     kinds = [r.kind for r in d.cut]
     assert kinds[-3:] == ["gap", "image", "nospeech"]
+    assert d.warnings == []
     text = render(d, "t")
     assert "-- gap 3.20" in text
     assert "-- image photo.png 3.00" in text
@@ -169,14 +172,14 @@ def test_unused_none_omits_section(tmp_path):
 
 def test_unused_lines_and_partly(tmp_path):
     project, pdir = load_project(tmp_path)
-    item(project, "clip-3")["outPoint"] = 25.0
-    item(project, "clip-3")["end"] = 23.8
+    item(project, "clip-3")["outPoint"] = 23.5
+    item(project, "clip-3")["end"] = 22.3
     d = derive(project, pdir)
-    assert [ln.id for ln in d.unused] == ["A8", "A9"]
-    assert d.partly == {"A8"}
+    assert [ln.id for ln in d.unused] == ["A10", "A11", "A12", "A13"]
+    assert d.partly == {"A10"}
     text = render(d, "t")
-    assert "\n*A8 " in text.split("## Unused")[1]
-    assert "\nA9 " in text.split("## Unused")[1]
+    assert "\n*A10 " in text.split("## Unused")[1]
+    assert "\nA13 " in text.split("## Unused")[1]
 
 
 def test_pause_markers_are_playing_gaps(tmp_path):
@@ -187,4 +190,36 @@ def test_pause_markers_are_playing_gaps(tmp_path):
     assert by_line["A1"].pauses == {}
     assert by_line["A4"].pauses == {0: 1.6}
     assert by_line["A5"].pauses == {0: 0.78, 2: 0.22}
-    assert by_line["A6"].pauses == {0: 0.77, 1: 0.45, 3: 0.17}   # 3 = tail against clip-2's outPoint
+    assert by_line["A6"].pauses == {0: 0.77}
+    assert by_line["A7"].pauses == {0: 0.45}
+    assert by_line["A8"].pauses == {1: 0.17}   # tail against clip-2's outPoint
+
+
+def test_leading_gap_row(tmp_path):
+    project, pdir = load_project(tmp_path)
+    for it in project["tracks"][0]["items"]:
+        it["start"] += 2.0
+        it["end"] += 2.0
+    d = derive(project, pdir)
+    assert d.cut[0].kind == "gap" and d.cut[0].dur == 2.0
+    assert render(d, "t").split("## Cut\n\n")[1].startswith("-- gap 2.00\n")
+
+
+def test_no_transcript_row_and_warning(tmp_path):
+    project, pdir = load_project(tmp_path)
+    other = os.path.join(pdir, "other.mp4")
+    shutil.copy(os.path.join(pdir, "speech.mp4"), other)
+    project["tracks"][0]["items"].append({"id": "x", "type": "video", "src": other, "start": 30.0, "end": 32.0,
+                                           "inPoint": 1.0, "outPoint": 3.0})
+    d = derive(project, pdir)
+    assert d.letters[other] == "B"
+    assert d.cut[-1].kind == "notranscript"
+    text = render(d, "t")
+    assert "B = other.mp4" in text
+    assert "-- B 1.00-3.00 no transcript" in text
+    assert d.warnings == [f'No transcript for {other}; run step transcribe with {json.dumps({"input": other})}']
+
+
+def test_stamp_constants_are_text_only():
+    from lib import speech_lines, speech_pauses
+    assert set(speech_text._STAMP_CONSTANTS) <= set(dir(speech_lines)) | set(dir(speech_pauses))

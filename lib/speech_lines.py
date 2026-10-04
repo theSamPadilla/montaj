@@ -150,13 +150,18 @@ def _gap(prev: Word, nxt: Word) -> float:
     return nxt.start - prev.end
 
 
+def _ends_sentence(text: str) -> bool:
+    """True when the text, after trailing closing quotes and brackets, ends in . ? or !."""
+    return text.rstrip("\"'\u201d\u2019)]").endswith((".", "?", "!"))
+
+
 def split_lines(letter: str, words: list[Word]) -> list[Line]:
     groups: list[list[Word]] = []
     cur: list[Word] = []
     for w in words:
         if cur:
             prev = cur[-1]
-            if prev.text.endswith((".", "?", "!")) or _gap(prev, w) >= LINE_BREAK_PAUSE_S:
+            if _ends_sentence(prev.text) or _gap(prev, w) >= LINE_BREAK_PAUSE_S:
                 groups.append(cur)
                 cur = []
             elif len(cur) >= LINE_MAX_WORDS:

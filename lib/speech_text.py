@@ -19,14 +19,14 @@ from lib.speech_pauses import silences
 STAMP_VERSION = "speech-text v1"
 _STAMP_CONSTANTS = (
     "MIN_SILENCE_S", "FLOOR_MARGIN_DB", "SHOW_PAUSE_S", "LINE_BREAK_PAUSE_S", "LINE_MAX_WORDS",
-    "PAUSE_SPLIT_S", "EDGE_TOUCH_S", "SNAP_WINDOW_S", "HARD_CUT_PAD_S", "MIN_PAUSE_S", "BED_SHARE",
+    "PAUSE_SPLIT_S", "EDGE_TOUCH_S",
 )
 _NON_SPEECH_TYPES = ("overlay", "image", "text", "caption")
 
 
 @dataclass
 class Row:
-    """One line of the cut. kind: "speech" | "gap" | "nospeech" | "image".
+    """One line of the cut. kind: "speech" | "gap" | "nospeech" | "notranscript" | "image".
 
     pauses are keyed by position: 0 is the lead-in, k is the gap before word k, len(words) is the tail.
     """
@@ -51,6 +51,7 @@ class Derived:
     partly: set
     stamp: str
     uncertain: set = field(default_factory=set)   # (letter, i, j) word-index pairs whose pause position is unsure
+    warnings: list = field(default_factory=list)
 
 
 def _resolve(item: dict, project_dir: str | None) -> dict:
@@ -111,7 +112,7 @@ def stamp(project: dict, track_index: int, sidecars: list) -> str:
     for p in sidecars:
         with open(p, "rb") as f:
             sums.append(hashlib.sha256(f.read()).hexdigest())
-    # constants live in speech_lines / speech_pauses; ones not defined yet (later tasks) stamp as null
+    # only what changes the text: constants of speech_lines / speech_pauses (apply-only ones are left out)
     consts = {n: getattr(speech_lines, n, getattr(speech_pauses, n, None)) for n in _STAMP_CONSTANTS}
     blob = json.dumps([rows, sums, STAMP_VERSION, consts], sort_keys=True, separators=(",", ":"), default=list)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
@@ -154,9 +155,11 @@ def derive(project: dict, project_dir: str, track: str | None = None) -> Derived
             sidecars[key] = sc
             media[key] = med
     for it in items:
+        key = it.get("src") or it.get("normalizedSrc")
+        if not key or it.get("type") in _NON_SPEECH_TYPES:
+            continue
         sc = sidecar_for(it)
-        if sc:
-            add(it.get("src") or it.get("normalizedSrc"), sc, _media_for(it, sc))
+        add(key, sc, _media_for(it, sc) if sc else key)
     for s in project.get("sources") or []:
         s = _resolve(s, project_dir)
         sc = sidecar_for(s) if s.get("src") else None
@@ -166,6 +169,9 @@ def derive(project: dict, project_dir: str, track: str | None = None) -> Derived
 
     words, lines, uncertain = {}, {}, set()
     for k in keys:
+        if sidecars[k] is None:
+            words[k], lines[k] = [], []
+            continue
         raw = load_words(sidecars[k])
         refined, stats = refine(raw, silences(media[k]))
         words[k] = refined
@@ -176,20 +182,27 @@ def derive(project: dict, project_dir: str, track: str | None = None) -> Derived
     line_of = {k: {w.idx: ln for ln in lines[k] for w in ln.words} for k in keys}
 
     cut, played = [], {k: set() for k in keys}
-    end_so_far = None
+    end_so_far, warnings = 0.0, []
     for it in items:
-        if end_so_far is not None and float(it["start"]) - end_so_far >= frame - 1e-9:
+        if float(it["start"]) - end_so_far >= frame - 1e-9:
             cut.append(Row("gap", dur=round(float(it["start"]) - end_so_far, 2)))
-        end_so_far = max(end_so_far if end_so_far is not None else 0.0, float(it.get("end", it["start"])))
+        end_so_far = max(end_so_far, float(it.get("end", it["start"])))
         key = it.get("src") or it.get("normalizedSrc")
         if it.get("type") == "image":
             cut.append(Row("image", item_ids=[it["id"]], label=os.path.basename(it.get("src") or ""),
                            dur=round(_dur(it), 2)))
             continue
         a, b = float(it.get("inPoint", 0)), float(it.get("outPoint", 0))
-        if it.get("type") == "loop" or key not in letters:
+        if key not in letters or it.get("loop"):
             cut.append(Row("nospeech", item_ids=[it["id"]], label=letters.get(key) or os.path.basename(key or ""),
                            t0=a, t1=b))
+            continue
+        if sidecars[key] is None:
+            cut.append(Row("notranscript", item_ids=[it["id"]], label=letters[key], t0=a, t1=b))
+            warn = (f"No transcript for {key}; run step transcribe with "
+                    + json.dumps({"input": key}))
+            if warn not in warnings:
+                warnings.append(warn)
             continue
         ws = [w for w in words[key] if a <= (w.start + w.end) / 2 < b]
         if not ws:
@@ -223,8 +236,8 @@ def derive(project: dict, project_dir: str, track: str | None = None) -> Derived
                 unused.append(ln)
                 if n_played:
                     partly.add(ln.id)
-    used_sidecars = [sidecars[k] for k in keys]
-    return Derived(tr["id"], letters, all_lines, cut, unused, partly, stamp(project, idx, used_sidecars), uncertain)
+    used_sidecars = [sidecars[k] for k in keys if sidecars[k]]
+    return Derived(tr["id"], letters, all_lines, cut, unused, partly, stamp(project, idx, used_sidecars), uncertain, warnings)
 
 
 def _row_text(row: Row) -> str:
@@ -248,8 +261,9 @@ def render(d: Derived, title: str, unused: str = "lines") -> str:
             out.append(f"{r.line} {_row_text(r)}")
         elif r.kind == "gap":
             out.append(f"-- gap {r.dur:.2f}")
-        elif r.kind == "nospeech":
-            out.append(f"-- {r.label} {r.t0:.2f}-{r.t1:.2f} no speech")
+        elif r.kind in ("nospeech", "notranscript"):
+            what = "no speech" if r.kind == "nospeech" else "no transcript"
+            out.append(f"-- {r.label} {r.t0:.2f}-{r.t1:.2f} {what}")
         else:
             out.append(f"-- image {r.label} {r.dur:.2f}")
     if unused != "none":

@@ -168,3 +168,10 @@ def test_fixture_uncertain_gaps_surround_inside_words():
     gaps = uncertain_gaps(stats)
     for i in stats["inside_words"]:
         assert all(g in gaps for g in ((i - 1, i), (i, i + 1)) if g[0] >= 0)
+
+
+def test_sentence_end_after_closing_quote():
+    ws = [W(0, 'wonder?"', 0.0, 0.5), W(1, '"You,', 0.5, 0.9), W(2, "Tom!)", 0.9, 1.2), W(3, "next", 1.2, 1.5),
+          W(4, "it's.'", 1.5, 1.8), W(5, "last", 1.8, 2.0)]
+    assert [[w.text for w in ln.words] for ln in split_lines("E", ws)] == [
+        ['wonder?"'], ['"You,', "Tom!)"], ["next", "it's.'"], ["last"]]
