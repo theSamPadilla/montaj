@@ -195,7 +195,7 @@ class _Source:
         if i in self.inside:
             return hi, False                                  # the real word is somewhere in the gap: keep it whole
         if hi - lo <= _EPS or not certain:
-            return min(lo + HARD_CUT_PAD_S[0], max(self.end, lo)), True
+            return round(min(lo + HARD_CUT_PAD_S[0], max(self.end, lo)), 6), True
         return self.snap(lo + max(0.0, min(amount, hi - lo)), lo, hi), False
 
     def before(self, i, amount):
@@ -206,7 +206,7 @@ class _Source:
         if i in self.inside:
             return lo, False                                  # the real word is somewhere in the gap: keep it whole
         if hi - lo <= _EPS or not certain:
-            return max(0.0, hi - HARD_CUT_PAD_S[1]), True
+            return round(max(0.0, hi - HARD_CUT_PAD_S[1]), 6), True
         return self.snap(hi - max(0.0, min(amount, hi - lo)), lo, hi), False
 
     def capacity(self, lo, hi, certain):
@@ -905,7 +905,7 @@ def items_from_runs(runs, old_items, fps, *, report: Report | None = None, sourc
         if prev is not None and prev[0] and run.old_in and next_of.get(prev[0]) == run.old_in:
             off = float(by_id[run.old_in]["start"]) - float(by_id[prev[0]]["end"])
             if off < -_TOUCH_S or 0 < off < frame:
-                start = prev[1] + off
+                start = prev[1] + max(off, -(prev[1] - prev[2]))   # an overlap never exceeds the piece it overlaps
         nid = new_id(anchor["id"] if anchor is not None else None, run.line)
         used.add(nid)
         if whole and abs(start - float(anchor["start"])) < _EPS:
@@ -934,7 +934,7 @@ def items_from_runs(runs, old_items, fps, *, report: Report | None = None, sourc
                      "row_index": run.row_index, "repeat": repeat, "words": list(run.words)}
         items.append(item)
         cursor = float(end)
-        prev = (run.old_out, float(end))
+        prev = (run.old_out, float(end), float(start))
     return items, prov
 
 

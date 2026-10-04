@@ -53,6 +53,7 @@ class Derived:
     stamp: str
     uncertain: set = field(default_factory=set)   # (letter, i, j) word-index pairs whose pause position is unsure
     inside_words: set = field(default_factory=set)   # (letter, i): words whisper placed inside a pause
+    silences: dict = field(default_factory=dict)     # source key -> measured silences, kept so an apply measures once
     warnings: list = field(default_factory=list)
 
 
@@ -142,7 +143,8 @@ def _pause(v: float, pauses: dict, key: int):
         pauses[key] = v
 
 
-def derive(project: dict, project_dir: str, track: str | None = None) -> Derived:
+def derive(project: dict, project_dir: str, track: str | None = None, sils: dict | None = None) -> Derived:
+    """`sils`: silences already measured per source key (a previous Derived.silences); reused, not measured again."""
     idx = speech_track_index(project, track, project_dir)
     tr = normalize_tracks(project)["tracks"][idx]
     items = _sorted_items(tr, project_dir)
@@ -171,13 +173,15 @@ def derive(project: dict, project_dir: str, track: str | None = None) -> Derived
             add(s["src"], sc, _media_for(s, sc))
     letters = {k: _letter(n) for n, k in enumerate(keys)}
 
-    words, lines, uncertain, inside = {}, {}, set(), set()
+    words, lines, uncertain, inside, measured = {}, {}, set(), set(), {}
     for k in keys:
         if sidecars[k] is None:
             words[k], lines[k] = [], []
             continue
         raw = load_words(sidecars[k])
-        refined, stats = refine(raw, silences(media[k]))
+        sil = sils[k] if sils is not None and k in sils else silences(media[k])
+        measured[k] = sil
+        refined, stats = refine(raw, sil)
         words[k] = refined
         letter = letters[k]
         for a, b in uncertain_gaps(stats):
@@ -245,7 +249,7 @@ def derive(project: dict, project_dir: str, track: str | None = None) -> Derived
                 if n_played:
                     partly.add(ln.id)
     used_sidecars = [sidecars[k] for k in keys if sidecars[k]]
-    return Derived(tr["id"], letters, all_lines, cut, unused, partly, stamp(project, idx, used_sidecars), uncertain, inside, warnings)
+    return Derived(tr["id"], letters, all_lines, cut, unused, partly, stamp(project, idx, used_sidecars), uncertain, inside, measured, warnings)
 
 
 def _row_text(row: Row) -> str:

@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from lib.keyframe_curves import EASING_NAMES, sample_track
-from lib.speech_build import (HARD_CUT_PAD_S, MIN_PAUSE_S, SNAP_WINDOW_S, items_from_runs, runs_from_rows)
+from lib.speech_build import (HARD_CUT_PAD_S, MIN_PAUSE_S, SNAP_WINDOW_S, Run, items_from_runs, runs_from_rows)
 from lib.speech_pauses import silences
 from lib.speech_text import derive, parse, render
 
@@ -438,6 +438,26 @@ def test_crossfade_survives_an_edit_elsewhere(fx):
     c2, c3 = by_in(b.items, 10.7), by_in(b.items, 20.1)
     assert abs(c3["start"] - (c2["end"] - 0.2)) < EPS
     assert (c2["id"], c3["id"]) == ("clip-2", "clip-3")
+
+
+def test_crossfade_overlap_never_exceeds_the_previous_piece(fx):
+    # clip-2's last piece is 0.1 s long and clip-3 follows with its old 0.2 s crossfade: the overlap is
+    # clamped to the piece, so the next item never starts before the previous one does
+    old = copy.deepcopy(speech_items(fx.project))
+    runs = [Run(fx.src, 19.6, 19.7, 0, "A8", old_out="clip-2"),
+            Run(fx.src, 20.1, 21.0, 1, "A9", old_in="clip-3")]
+    items, _ = items_from_runs(runs, old, FPS)
+    assert items[0]["start"] == 0.0 and abs(items[0]["end"] - 0.1) < EPS
+    assert items[1]["start"] >= items[0]["start"] - EPS
+    assert items[1]["start"] >= 0.0
+
+
+def test_hard_cut_edges_are_rounded_like_item_times(fx):
+    # "were" (1.87-2.14) is glued to its neighbours: 1.87 + 0.04 is 1.9100000000000001 unrounded
+    assert "once were themselves" in fx.text
+    b = build(fx, fx.text.replace("once were themselves", "once themselves", 1))
+    edges = [t for t, hard in cut_edges(fx, b.runs) if hard]
+    assert len(edges) == 2 and all(t == round(t, 6) for t in edges), edges
 
 
 def test_crossfade_dropped_when_item3_first_word_is_cut(fx):

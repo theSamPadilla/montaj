@@ -356,3 +356,19 @@ def test_overlay_item_on_the_speech_track_is_refused_before_any_write(env, capsy
     err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
     assert err["error"] == "mixed_track" and "ov-on-speech" in err["message"], err
     assert snapshot(env) == before
+
+
+# ---- PL44 review (nit): silences are measured once per apply
+
+def test_silences_are_measured_once_per_source_per_apply(env, monkeypatch):
+    from lib import speech_text as st
+    real = st.silences
+    calls = []
+    def spy(media):
+        calls.append(media)
+        return real(media)
+    monkeypatch.setattr(st, "silences", spy)
+    monkeypatch.setattr(speech_apply, "silences", spy, raising=False)
+    r = apply(env, delete_row(env.text, "A4"))
+    assert r["applied"] is True
+    assert len(calls) == 1, calls

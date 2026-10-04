@@ -19,8 +19,6 @@ from lib.project_tracks import normalize_tracks
 from lib.project_versions import commit_version, is_own_repo
 from lib.speech_build import items_from_runs, runs_from_rows
 from lib.speech_carry import TimeMap, carry, words_by_src
-from lib.speech_lines import sidecar_for
-from lib.speech_pauses import silences
 
 # engine/validate.py imports its sibling validate_step by bare name, so engine/ must be on the path.
 _ENGINE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "engine")
@@ -31,23 +29,6 @@ from engine.validate import validate_project  # noqa: E402
 
 def _title(project: dict) -> str:
     return project.get("name") or project["id"]
-
-
-def _sils_by_src(project: dict, track: dict, derived, project_dir: str) -> dict:
-    """Measured silences per source key of `derived.letters`, from the same media derive() read."""
-    out = {}
-    cands = [speech_text._resolve(it, project_dir) for it in track["items"]]
-    cands += [speech_text._resolve(s, project_dir) for s in project.get("sources") or [] if s.get("src")]
-    for it in cands:
-        key = it.get("src") or it.get("normalizedSrc")
-        if key not in derived.letters or key in out or it.get("type") in speech_text._NON_SPEECH_TYPES:
-            continue
-        sc = sidecar_for(it)
-        if sc:
-            out[key] = silences(speech_text._media_for(it, sc))
-    for key in derived.letters:
-        out.setdefault(key, [])
-    return out
 
 
 def _validate(candidate: dict):
@@ -108,7 +89,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     old_items = tracks[ti]["items"]
     fps = (project.get("settings") or {}).get("fps") or 30
 
-    runs, report = runs_from_rows(rows, derived, _sils_by_src(project, tracks[ti], derived, project_dir),
+    runs, report = runs_from_rows(rows, derived, derived.silences,
                                   max_pause, old_items, project_dir)
     if not any(r.kind == "speech" for r in runs):
         fail("empty_cut", "The edit leaves no speech in the cut. Delete words or rows, but keep some speech.")
@@ -134,12 +115,12 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
 
     before, after = _summary(project, ti), _summary(candidate, ti)
     if preview:
-        new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id), _title(candidate))
+        new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id, sils=derived.silences), _title(candidate))
         return _result(applied=False, preview=True, version=False, before=before, after=after,
                        report=report, warnings=derived.warnings, text=new_text)
 
     # Everything that can fail runs before the write, so nothing fails after it.
-    new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id), _title(candidate))
+    new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id, sils=derived.silences), _title(candidate))
     version = commit_version(project_dir, "version: before speech edit")
     warnings = list(derived.warnings)
     if not version and not is_own_repo(project_dir):
