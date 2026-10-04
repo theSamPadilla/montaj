@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Changed (connectors): ElevenLabs voiceovers default to Eleven v4 (`eleven_v4`).** Same cost as v3, 10,000 characters per request (v3: 5,000), and inline direction tags such as `[laughs]` are performed, not read. `eleven_v3` and the half-cost `eleven_v4_turbo` remain available through the step's `model` override. (`connectors/elevenlabs.py`, `tests/test_connectors_elevenlabs.py`, `docs/CONNECTORS.md`)
+- **Fixed (serve): deleting a project with `preserve_assets` keeps its clips too, not only its image and style refs.** Every video item's `src` (`sources` and every track) inside the project moves to `<workspace>/_uploads/` once and is returned in the `preserved` map, so going back to setup no longer deletes the footage. A transcoded clip keeps the original beside its normalized master; proxies and normalized files are not kept. A clip outside the project is never moved and maps to itself, and a symlinked clip maps to its target. (`serve/routes/projects.py`, `tests/test_server_delete_preserve.py`)
 
 ## v5.23.0
 

@@ -49,6 +49,7 @@ from lib.look import curve_ids
 from lib.profile_assets import FILENAME_RE, NAME_RE
 from lib.types.kling import ASPECT_RATIOS, is_valid_aspect_ratio
 from lib.types.carousel import CAROUSEL_ASPECTS
+from lib.types.colorspace import ALL_COLOR_SPACES
 from lib.workflow import read_workflow
 from lib.normalize import SEEK_PREROLL_S
 from cli.deps import render_runtime_dir
@@ -2855,6 +2856,86 @@ async def reserve_path(project_id: str, body: dict = Body(...)):
     return {"path": str(path)}
 
 
+# lib/normalize.py normalized_output_path: `<stem>_normalized_<colorSpace>`, then
+# an optional look tag and `_w203`, then `.mp4`. `<stem>` is the staged original's
+# path minus its extension.
+_NORMALIZED_MASTER_RE = re.compile(
+    r"^(?P<stem>.+)_normalized_(?:%s)(?:_[A-Za-z0-9]+)*\.mp4$"
+    % "|".join(re.escape(cs) for cs in ALL_COLOR_SPACES)
+)
+_CLIP_EXTENSIONS = (".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi")
+
+
+def _move_into_uploads(src: Path, uploads_dir: Path) -> Path:
+    """Move `src` into `uploads_dir` under a name no file there has yet
+    (`<stem>_<n><suffix>`, the save_upload() convention, so two back-to-setup
+    round-trips never clobber), and return where it landed."""
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    target = uploads_dir / src.name
+    stem, suffix = target.stem, target.suffix
+    counter = 1
+    while target.exists():
+        target = uploads_dir / f"{stem}_{counter}{suffix}"
+        counter += 1
+    shutil.move(str(src), str(target))
+    return target
+
+
+def _clip_original(path: Path) -> Path:
+    """The file the user brought in, for a clip whose `src` resolves to `path`.
+
+    When init transcodes a clip it points `src` at the conformed master and
+    leaves the staged original beside it, referenced by nothing. For a master
+    with exactly one `<stem>.<video ext>` sibling, that sibling is the
+    original. Anything else returns `path` itself: a master whose original is
+    gone is still the only copy of that footage."""
+    m = _NORMALIZED_MASTER_RE.match(path.name)
+    if not m:
+        return path
+    stem = m.group("stem")
+    candidates = [
+        p for p in path.parent.iterdir()
+        if p.name.startswith(stem + ".")
+        and p.name[len(stem):].lower() in _CLIP_EXTENSIONS
+        and p.is_file()
+    ]
+    return candidates[0] if len(candidates) == 1 else path
+
+
+def _preserve_clips(proj: dict, project_dir_resolved: Path, uploads_dir: Path,
+                    preserved: dict[str, str]) -> None:
+    """Keep every video item's footage (`sources` and every track) through the
+    delete, recording `src -> surviving path` in `preserved`.
+
+    A file inside the project is moved into `uploads_dir`, once however many
+    items name it. Derived files (`proxySrc`, `normalizedSrc`, a normalized
+    master whose original is beside it) are not kept: the next create
+    rebuilds them from the original. A file outside the project is never
+    moved and maps to itself; a symlink inside the project maps to the file
+    it points at, since the link itself goes with the folder."""
+    moved: dict[Path, str] = {}
+    for item in _look_migration_items(proj):
+        raw = item.get("src")
+        if not isinstance(raw, str) or raw in preserved:
+            continue
+        try:
+            src = Path(raw)
+            if not src.is_file():
+                continue
+            real = src.resolve()
+            if not _is_under(real, project_dir_resolved):
+                link_dir = Path(os.path.realpath(src.parent))
+                preserved[raw] = str(real) if _is_under(link_dir, project_dir_resolved) else raw
+                continue
+            original = _clip_original(real)
+            if original not in moved:
+                moved[original] = str(_move_into_uploads(original, uploads_dir))
+            preserved[raw] = moved[original]
+        except Exception:
+            # Best-effort: a single bad file must not block the delete.
+            pass
+
+
 @router.delete("/projects/{project_id}")
 async def delete_project(
     project_id: str,
@@ -2880,8 +2961,13 @@ async def delete_project(
     Files outside this project_dir are left alone (they're either user-owned
     originals or references into another project). A missing project.json, a
     parse error, or a `shutil.move` failure on any single file is non-fatal:
-    we still rmtree the project. The preserved map only includes files that
-    were successfully moved.
+    we still rmtree the project. For image and style refs the preserved map
+    only includes files that were successfully moved.
+
+    Clips are kept too (`_preserve_clips`): every video item's `src`, across
+    `sources` and all tracks, so going back to setup never loses footage. A
+    clip outside the project maps to itself (a symlink inside it, to its
+    target) and is never moved.
     """
     from fastapi.responses import Response
     preserved: dict[str, str] = {}
@@ -2919,20 +3005,13 @@ async def delete_project(
                             # must not be touched.
                             if not _is_under(src.resolve(), project_dir_resolved):
                                 continue
-                            # De-dup the target name in _uploads/ — matches the
-                            # save_upload() helper's naming convention so two
-                            # back-to-setup round-trips don't clobber.
-                            target = uploads_dir / src.name
-                            stem, suffix = target.stem, target.suffix
-                            counter = 1
-                            while target.exists():
-                                target = uploads_dir / f"{stem}_{counter}{suffix}"
-                                counter += 1
-                            shutil.move(str(src), str(target))
-                            preserved[raw] = str(target)
+                            preserved[raw] = str(_move_into_uploads(src, uploads_dir))
                         except Exception:
                             # Best-effort: a single bad file must not block the delete.
                             pass
+
+                _preserve_clips(proj, project_dir.resolve(),
+                                resolve_workspace() / "_uploads", preserved)
             except Exception:
                 # If project.json is unparseable, fall through to the delete.
                 pass
