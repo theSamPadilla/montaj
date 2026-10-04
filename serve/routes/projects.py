@@ -35,6 +35,7 @@ from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import save_upload
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, canvas_for_footage, fps_from_rate, modal_dims
 from lib.ingest import ingest_source
+from lib.project_versions import commit_version
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
 from lib.project_tracks import normalize_tracks, track_items
@@ -899,19 +900,7 @@ def _validate_optional_id(body: dict) -> str | None:
 
 def _git_commit_sync(project_dir: Path, message: str) -> None:
     """Blocking git commit — call via asyncio.to_thread to avoid blocking the event loop."""
-    env = {
-        **os.environ,
-        "GIT_AUTHOR_NAME": "montaj", "GIT_AUTHOR_EMAIL": "montaj@local",
-        "GIT_COMMITTER_NAME": "montaj", "GIT_COMMITTER_EMAIL": "montaj@local",
-    }
-    subprocess.run(["git", "add", "project.json"], cwd=str(project_dir), env=env,
-                   capture_output=True)
-    result = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=str(project_dir), env=env,
-                            capture_output=True)
-    if result.returncode == 0:
-        return  # nothing staged — skip commit
-    subprocess.run(["git", "commit", "-m", message], cwd=str(project_dir), env=env,
-                   capture_output=True)
+    commit_version(project_dir, message)
 
 
 async def _run_init_subprocess(
