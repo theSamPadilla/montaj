@@ -373,7 +373,7 @@ describe('Timeline — T9 keymap (arrows / delete / enter / escape)', () => {
     fireEvent.keyDown(document.body, { key: 'Delete' })
     expect(onProjectChange).toHaveBeenCalledTimes(1)
     const updated = onProjectChange.mock.calls[0][0] as Project
-    expect(updated.markers).toBeUndefined()   // last one gone → key dropped
+    expect(updated.markers).toBeNull()   // last one gone → null clear (PL43)
   })
 
   it('exposes zoomFit through actionsRef for a host-level palette', () => {

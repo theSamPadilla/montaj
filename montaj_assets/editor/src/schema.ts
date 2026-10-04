@@ -434,9 +434,9 @@ export interface EditorProject {
   audio?: { tracks: AudioTrack[] }
   assets?: Asset[]
   /** Operator markers, kept sorted by `t`. Absent — not `[]` — when the
-   *  project has none, so a marker-less project is byte-identical to one from
+   *  project has none (`null` only in a save body, where it clears them), so a marker-less project is byte-identical to one from
    *  before the feature existed (the same discipline `captions` follows). */
-  markers?: Marker[]
+  markers?: Marker[] | null
   /** Private operator notes (PL39), kept sorted by `t`. Absent, not `[]`, when empty. */
   notes?: Note[]
   carousel?: { aspect: string }

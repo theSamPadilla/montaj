@@ -77,7 +77,7 @@ export interface HitTestOptions {
    *  carries the strip's RECTANGLE but not what sits in it, so the flags have
    *  to arrive here to be hit-testable. Absent means no marker hits are
    *  possible, which is what every caller that predates this gets. */
-  markers?: readonly Marker[]
+  markers?: readonly Marker[] | null
   /** The host's read-only pins, threaded exactly as `markers` is and for the
    *  same reason: the layout carries the strip's RECTANGLE but not what sits in
    *  it. Absent means no pin hits are possible, which is what every caller that

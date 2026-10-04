@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (editor, serve): deleting the last marker now sticks (PL43).** The editor dropped the empty `markers` key from the save, and serve's shallow merge kept the old list, so the marker came back on reload. The editor now sends `markers: null` and serve drops the key. (`montaj_assets/editor/src/schema.ts`, `montaj_assets/editor/src/video/timeline/markers.ts`, `montaj_assets/editor/src/video/timeline/__tests__/markers.test.ts`, `serve/routes/projects.py`, `tests/test_server_projects_save_validation.py`)
+
 ## v5.22.1
 
 - **Fixed (editor, serve): `N` reveals the Notes tab, and restoring a version keeps your notes (PL39).** With a media panel the left rail could be on another tab, so a new note was added out of sight; `N` and the palette now switch it to Media. `restore_version` wrote the old commit's `project.json` whole, replacing the current `notes`; it now carries them over. (`montaj_assets/editor/src/video/VideoEditor.tsx`, `serve/routes/projects.py`, `tests/test_versions.py`)

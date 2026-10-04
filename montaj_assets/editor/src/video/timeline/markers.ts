@@ -46,12 +46,12 @@ export function nextMarkerLabel(markers: readonly Marker[]): string {
 
 const byTime = (a: Marker, b: Marker) => a.t - b.t
 
-/** Write a marker list back, dropping the key entirely when it empties. */
+/** Write a marker list back. When it empties the key becomes an explicit
+ *  `null`, not absent: serve shallow-merges a save, so an omitted key would
+ *  keep the old markers on disk and the delete would not stick (PL43). serve
+ *  drops the null, so the stored project has no `markers` key. */
 function withMarkers(project: EditorProject, markers: Marker[]): EditorProject {
-  if (markers.length === 0) {
-    const { markers: _dropped, ...rest } = project
-    return rest as EditorProject
-  }
+  if (markers.length === 0) return { ...project, markers: null }
   return { ...project, markers }
 }
 

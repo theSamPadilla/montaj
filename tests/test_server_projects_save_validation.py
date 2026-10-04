@@ -316,3 +316,33 @@ def test_notes_round_trip_and_survive_a_put_that_omits_them(project):
     resp = client.put(f"/api/projects/{PID}", json={"id": PID, "name": "renamed"})
     assert resp.status_code == 200, resp.text
     assert _on_disk(project_dir)["notes"] == notes
+
+
+# ---------------------------------------------------------------------------
+# Deleting the last marker (PL43): the editor sends `markers: null` (an omitted
+# key would survive serve's shallow merge). serve drops the key rather than
+# storing the null, so get returns no markers.
+# ---------------------------------------------------------------------------
+
+def test_markers_null_clears_the_stored_markers(project):
+    client, project_dir = project
+    markers = [{"id": "m1", "t": 1.0, "label": "1"}, {"id": "m2", "t": 2.0, "label": "2"}]
+    resp = client.put(f"/api/projects/{PID}", json={"id": PID, "markers": markers})
+    assert resp.status_code == 200, resp.text
+    assert _on_disk(project_dir)["markers"] == markers
+    resp = client.put(f"/api/projects/{PID}", json={"id": PID, "markers": None})
+    assert resp.status_code == 200, resp.text
+    assert "markers" not in resp.json()
+    assert "markers" not in _on_disk(project_dir)
+    got = client.get(f"/api/projects/{PID}")
+    assert got.status_code == 200, got.text
+    assert not got.json().get("markers")
+
+
+def test_markers_survive_a_put_that_omits_them(project):
+    client, project_dir = project
+    markers = [{"id": "m1", "t": 1.0, "label": "1"}]
+    client.put(f"/api/projects/{PID}", json={"id": PID, "markers": markers})
+    resp = client.put(f"/api/projects/{PID}", json={"id": PID, "name": "renamed"})
+    assert resp.status_code == 200, resp.text
+    assert _on_disk(project_dir)["markers"] == markers

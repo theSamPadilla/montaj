@@ -110,7 +110,24 @@ describe('removeMarkers', () => {
   it('drops the markers key entirely when the last one goes', () => {
     // Keeps a marker-less project byte-identical to one that never had markers.
     const out = removeMarkers(proj([mk('a', 1, '1')]), new Set(['a']))
-    expect(out).not.toHaveProperty('markers')
+    expect(out.markers).toBeNull()
+  })
+
+  it('last marker removed: markers is null (the clear serve needs), JSON-serialized too', () => {
+    // serve shallow-merges a PUT: an OMITTED key keeps the old value on disk,
+    // so the editor must send an explicit null for the delete to stick (PL43).
+    const out = removeMarkers(proj([mk('a', 1, '1')]), new Set(['a']))
+    expect(JSON.parse(JSON.stringify(out))).toHaveProperty('markers', null)
+  })
+
+  it('removing one of two keeps the other', () => {
+    const out = removeMarkers(proj([mk('a', 1, '1'), mk('b', 2, '2')]), new Set(['a']))
+    expect(out.markers!.map(m => m.id)).toEqual(['b'])
+  })
+
+  it('a marker added after the last was removed starts a fresh list', () => {
+    const out = removeMarkers(proj([mk('a', 1, '1')]), new Set(['a']))
+    expect(addMarker(out, 4, 30).markers).toHaveLength(1)
   })
 
   it('returns the same reference when nothing matched', () => {
