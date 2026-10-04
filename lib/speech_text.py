@@ -145,6 +145,8 @@ def derive(project: dict, project_dir: str, track: str | None = None) -> Derived
     idx = speech_track_index(project, track, project_dir)
     tr = normalize_tracks(project)["tracks"][idx]
     items = _sorted_items(tr, project_dir)
+    if not any(sidecar_for(it) for it in items):
+        _missing(project, project_dir)
     fps = (project.get("settings") or {}).get("fps") or 30
     frame = 1.0 / fps
 

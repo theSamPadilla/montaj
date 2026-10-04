@@ -294,3 +294,15 @@ def test_parse_bad_row(capsys):
         e = parse_fail(HDR + "## Cut\n\n" + bad + "\n", capsys)
         assert e["error"] == "bad_row", bad
         assert "Line 4" in e["message"]
+
+
+def test_override_track_without_transcript_fails(tmp_path, capsys):
+    project, pdir = load_project(tmp_path)
+    project["tracks"].append({"id": "trk-9", "items": [
+        {"id": "x1", "type": "video", "src": os.path.join(pdir, "nosidecar.mp4"),
+         "start": 0, "end": 2, "inPoint": 0, "outPoint": 2}]})
+    with pytest.raises(SystemExit):
+        derive(project, pdir, track="trk-9")
+    e = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert e["error"] == "transcript_missing"
+    assert "nosidecar.mp4" in e["message"]
