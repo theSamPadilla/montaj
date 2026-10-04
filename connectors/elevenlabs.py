@@ -45,11 +45,14 @@ _NO_REASON_401_STATUSES = frozenset({"missing_permissions", "detected_unusual_ac
 # error is worse than a wrongly abandoned rate limit.
 _RATE_LIMIT_STATUSES = frozenset({"too_many_concurrent_requests", "system_busy"})
 
-# eleven_v3 is ElevenLabs' best current expressive TTS model (GA) — verified
-# live 2026-09-28 (PV29 Task 0). eleven_multilingual_v2 is the documented
-# fallback for a line that needs no prompt-tag direction; re-check against
-# GET /v1/models before ever changing this.
-DEFAULT_TTS_MODEL = "eleven_v3"
+# eleven_v4 is ElevenLabs' newest expressive TTS model (released 2026-09-28).
+# Verified live 2026-10-03: GET /v1/models lists it with
+# can_do_text_to_speech true, the same cost multiplier as eleven_v3 and a
+# 10,000-character limit (v3: 5,000); one real /v1/text-to-speech call
+# succeeded and an inline [laughs] tag was performed, not read aloud.
+# eleven_v4_turbo (half the cost, low latency) and eleven_v3 stay reachable
+# through the step's model override. Re-check GET /v1/models before changing.
+DEFAULT_TTS_MODEL = "eleven_v4"
 DEFAULT_SFX_MODEL = "eleven_text_to_sound_v2"
 # POST /v1/music takes no model_id — the verified call (Task 0, 2026-09-28)
 # sent none. None here means generate_music's request body omits model_id

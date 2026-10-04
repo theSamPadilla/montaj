@@ -60,6 +60,7 @@ _VOICES_BODY = {
 }
 
 _MODELS_BODY = [
+    {"model_id": "eleven_v4", "name": "Eleven v4", "can_do_text_to_speech": True},
     {"model_id": "eleven_v3", "name": "Eleven v3", "can_do_text_to_speech": True},
     {"model_id": "eleven_multilingual_v2", "name": "Multilingual v2", "can_do_text_to_speech": True},
 ]
@@ -705,7 +706,7 @@ class TestCheckKeyRestrictedKey:
         monkeypatch.setattr(mod._http, "request_with_retry", fake_retry)
 
         result = mod.check_key()
-        assert result["default_model_ok"] is False  # eleven_v3 not in this list
+        assert result["default_model_ok"] is False  # eleven_v4 not in this list
         assert "default_model_verified" not in result
 
     def test_user_and_models_both_restricted(self, monkeypatch):

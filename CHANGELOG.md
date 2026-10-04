@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (connectors): ElevenLabs voiceovers default to Eleven v4 (`eleven_v4`).** Same cost as v3, 10,000 characters per request (v3: 5,000), and inline direction tags such as `[laughs]` are performed, not read. `eleven_v3` and the half-cost `eleven_v4_turbo` remain available through the step's `model` override. (`connectors/elevenlabs.py`, `tests/test_connectors_elevenlabs.py`, `docs/CONNECTORS.md`)
+
 ## v5.23.0
 
 - **Added (steps, skills): edit speech as text.** `speech_text` reads a project's speech track as numbered transcript lines with their pauses, and `speech_edit` applies an edited copy in one write, with `preview`: cut words or lines, shorten pauses, drop failed takes, move or repeat lines, bring back unused takes. Every cut lands between words, in silence measured from the audio (per-source threshold) where there is any; the rest are counted as hard cuts; synced layers, overlays, captions, markers and notes follow the speech; a version is saved before each apply; a word that is not in the transcript refuses the whole edit. New skill `speech-edit`. (`steps/speech/speech_text.{py,json}`, `steps/speech/speech_edit.{py,json}`, `lib/speech_pauses.py`, `lib/speech_lines.py`, `lib/speech_text.py`, `lib/speech_align.py`, `lib/speech_build.py`, `lib/speech_carry.py`, `lib/speech_apply.py`, `lib/keyframe_curves.py`, `skills/speech-edit/SKILL.md`, `tests/test_speech_*.py`, `tests/test_keyframe_curves.py`, `tests/steps/test_speech_*.py`, `tests/fixtures/speech_text/`)
