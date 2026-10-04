@@ -244,3 +244,36 @@ def test_deleting_an_inside_word_leaves_no_kept_span_over_the_real_word(env):
     assert r["applied"] is True
     for lo, hi in spans(written_items(env)):
         assert min(hi, 17.8) - max(lo, 17.36) <= 0, (lo, hi)
+
+
+# ---- PL44 review: an empty Cut never writes
+
+def _all_rows_deleted(text):
+    out, in_cut = [], False
+    for ln in text.split("\n"):
+        if ln.startswith("## "):
+            in_cut = ln.strip() == "## Cut"
+        elif in_cut and ln.strip():
+            continue
+        out.append(ln)
+    return "\n".join(out)
+
+
+def test_every_row_deleted_is_refused_and_writes_nothing(env, capsys):
+    refused(env, _all_rows_deleted(env.text), "empty_cut", capsys)
+
+
+def test_text_without_a_cut_section_is_refused_and_writes_nothing(env, capsys):
+    head = env.text.split("\n## Cut")[0]
+    refused(env, head + "\n", "bad_header", capsys)
+
+
+def test_the_text_is_rendered_before_the_version_is_taken(env, monkeypatch):
+    # nothing may fail after the write: a render failure leaves the project and the history alone
+    def boom(*a, **k):
+        raise RuntimeError("render")
+    monkeypatch.setattr(speech_apply.speech_text, "render", boom)
+    before = snapshot(env)
+    with pytest.raises(RuntimeError):
+        apply(env, delete_row(env.text, "A4"))
+    assert snapshot(env) == before

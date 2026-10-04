@@ -104,6 +104,8 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
 
     runs, report = runs_from_rows(rows, derived, _sils_by_src(project, tracks[ti], derived, project_dir),
                                   max_pause, old_items, project_dir)
+    if not any(r.kind == "speech" for r in runs):
+        fail("empty_cut", "The edit leaves no speech in the cut. Delete words or rows, but keep some speech.")
     reserved = {it["id"] for i, t in enumerate(tracks) if i != ti for it in t["items"]}
     items, prov = items_from_runs(runs, old_items, fps, report=report, sources=project.get("sources"),
                                   reserved_ids=reserved, project_dir=project_dir)
@@ -124,6 +126,8 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
         return _result(applied=False, preview=True, version=False, before=before, after=after,
                        report=report, warnings=derived.warnings, text=new_text)
 
+    # Everything that can fail runs before the write, so nothing fails after it.
+    new_text = speech_text.render(speech_text.derive(candidate, project_dir), _title(candidate))
     version = commit_version(project_dir, "version: before speech edit")
     # The temp name must not end in .json: serve's watcher treats any .json (and .tmp-less source
     # extension) write as an overlay source and would push it to the overlay channel. This name is
@@ -137,7 +141,6 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
-    new_text = speech_text.render(speech_text.derive(candidate, project_dir), _title(candidate))
     with open(os.path.join(project_dir, "speech-text.md"), "w", encoding="utf-8") as f:
         f.write(new_text)
     return _result(applied=True, preview=False, version=version, before=before, after=after,

@@ -343,11 +343,12 @@ def parse(text: str) -> tuple:
             break
     if header is None:
         fail("bad_header", "Line 1: the text must start with the <!-- montaj speech text v1 · track <id> · stamp <stamp> --> comment")
-    rows, section = [], None
+    rows, section, seen_cut = [], None, False
     for n, raw in enumerate(lines, 1):
         s = raw.strip()
         if s.startswith("## "):
             section = s[3:].strip().lower()
+            seen_cut = seen_cut or section == "cut"
             continue
         if section != "cut" or not s:
             continue
@@ -366,4 +367,6 @@ def parse(text: str) -> tuple:
                 fail("bad_row", f"Line {n}: unrecognised row {s!r}")
         else:
             fail("bad_row", f"Line {n}: unrecognised row {s!r}; a speech row starts with a line id like A12")
+    if not seen_cut:
+        fail("bad_header", "The text has no ## Cut section; keep the heading from the text speech_text wrote")
     return header, rows
