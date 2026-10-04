@@ -244,14 +244,14 @@ def test_natural_floors_a_join_the_text_set_no_pause_for(fx, gap, tight_kept, na
 
 def test_the_floor_never_crosses_a_word(fx):
     # A13 "pulled" (49) deleted: 0.079 s of certain gap after "lady" (48), none before "her" (50). The floor
-    # takes what the gap has and hard-cuts the glued side; nothing lands inside a kept word.
+    # takes what the gap has and hard-cuts the glued side with tight's pad; nothing lands inside a kept word.
     t = edit(fx.text, "A13 {0.17} The old lady pulled her speckle.", "A13 {0.17} The old lady her speckle.")
     b = build(fx, t, feel="natural")
     W = fx.words
     r = next(r for r in b.runs if 48 in r.words)
     n = b.runs[b.runs.index(r) + 1]
     assert abs(r.s_out - W[49].start) <= EPS and not r.hard_out
-    assert n.hard_in and abs(n.s_in - (W[50].start - NATURAL.hard_cut_pad[1])) <= EPS
+    assert n.hard_in and abs(n.s_in - (W[50].start - TIGHT.hard_cut_pad[1])) <= EPS
 
 
 # ---------------------------------------------------------------- max pause
@@ -281,10 +281,46 @@ def test_a_written_pause_wins_over_the_natural_cap_and_floor(fx):
 
 
 # ---------------------------------------------------------------- hard-cut pads
+# natural's pad grows past tight's only into measured silence between the kept word and its neighbour,
+# never into the neighbour; where words run together it is tight's 0.04/0.02, as before feels existed.
 
 
-def test_natural_pads_an_uncertain_hard_cut(fx):
-    # "I" (29) is the word whisper placed inside a pause; deleting it hard-cuts both sides
+def _heard(b, w):
+    """Seconds of word w the new cut plays."""
+    return sum(max(0.0, min(r.s_out, w.end) - max(r.s_in, w.start)) for r in b.runs if r.kind == "speech")
+
+
+def test_natural_plays_no_more_of_a_deleted_glued_her_than_tight(fx):
+    # A13 "her" (50, 29.51 to 29.69) between glued words: no silence either side, so tight's pads
+    t = edit(fx.text, "A13 {0.17} The old lady pulled her speckle.", "A13 {0.17} The old lady pulled speckle.")
+    her = fx.words[50]
+    tight, natural = _heard(build(fx, t, feel="tight"), her), _heard(build(fx, t, feel="natural"), her)
+    assert abs(tight - 0.06) <= 0.001 and abs(natural - tight) <= EPS, (tight, natural)
+
+
+def test_a_deleted_in_is_not_played_whole(fx):
+    # A2 "in." (23, 10.705 to 10.74, 0.035 s) deleted: glued to "The" after it, so the edge before "The"
+    # keeps tight's 0.02, as before feels existed, and natural no more
+    t = edit(fx.text, "A2 in.", None)
+    w = fx.words[23]
+    tight, natural = _heard(build(fx, t, feel="tight"), w), _heard(build(fx, t, feel="natural"), w)
+    assert abs(natural - tight) <= EPS and natural < (w.end - w.start) - 0.01, (tight, natural)
+
+
+@pytest.mark.parametrize("name", BUILD_CASES)
+def test_natural_plays_no_more_of_any_deleted_word_than_tight(fx, name):
+    fn, max_pause = _edits()[name]
+    t = fn(fx.text)
+    tight, natural = build(fx, t, max_pause, feel="tight"), build(fx, t, max_pause, feel="natural")
+    kept = {i for r in natural.runs for i in r.words}
+    for w in fx.words:
+        if w.idx not in kept:
+            assert _heard(natural, w) <= _heard(tight, w) + EPS, (w.text, _heard(natural, w), _heard(tight, w))
+
+
+def test_natural_keeps_the_wider_pad_where_silence_holds_it(fx):
+    # "I" (29) deleted: 0.219 s of measured silence after "CHAPTER" (28) and 0.765 s before ""Tom!"" (30),
+    # both uncertain gaps, so both hard cuts. Natural keeps its whole 0.08/0.05, tight 0.04/0.02.
     t = edit(fx.text, "A5 {0.78} 1876 CHAPTER {0.22} I", "A5 {0.78} 1876 CHAPTER")
     W = fx.words
     for feel in (TIGHT, NATURAL):
@@ -294,29 +330,28 @@ def test_natural_pads_an_uncertain_hard_cut(fx):
         assert edges == pytest.approx([W[28].end + feel.hard_cut_pad[0], W[30].start - feel.hard_cut_pad[1]], abs=EPS)
 
 
+def test_natural_pad_stops_where_the_silence_does(fx):
+    # "with" (37) deleted: only 0.063 s of silence after "gone" (36) before "with" starts at 22.33, so the
+    # natural pad is 0.063 there (between tight's 0.04 and natural's 0.08) and the edge lands on "with"'s
+    # start; 0.273 s before "that" (38) holds the whole 0.05.
+    b = build(fx, _glued_edits()["a10_with_uncertain"](fx.text), feel="natural")
+    W = fx.words
+    hard = sorted(x for x, is_hard in cut_edges(fx, b.runs) if is_hard)
+    assert hard == pytest.approx([W[37].start, W[38].start - 0.05], abs=EPS)
+    assert _heard(b, W[37]) <= EPS
+
+
 # a6_row_deleted keeps the whole uncertain gap after the inside word "I", an edge the invariant does not
 # model (on either feel); test_speech_build's test_kept_inside_word_keeps_its_whole_gap_at_the_cut holds it.
 @pytest.mark.parametrize("name", [n for n in BUILD_CASES if n != "a6_row_deleted"])
 def test_natural_never_cuts_inside_a_word(fx, name):
     """test_speech_build's invariant, on natural's pads: a placed edge is in a certain gap, or a counted
-    hard cut at a word edge with natural's pad."""
+    hard cut at a word edge with a pad from tight's to natural's."""
     fn, max_pause = _edits()[name]
     b = build(fx, fn(fx.text), max_pause, feel="natural")
-    placed, hard = assert_cut_invariant(fx, b.runs, b.report, pad=NATURAL.hard_cut_pad)
+    placed, hard = assert_cut_invariant(fx, b.runs, b.report, pad=TIGHT.hard_cut_pad, max_pad=NATURAL.hard_cut_pad)
     if name in _glued_edits():
         assert hard > 0
-
-
-def test_natural_pads_reach_further_into_a_deleted_glued_word(fx):
-    # A13 "her" (50, 29.51 to 29.69) deleted between glued words: a glued join has no silence to keep, so
-    # both pads sit inside the deleted word. Natural plays 0.13 s of its 0.18 s, tight 0.06 s.
-    t = edit(fx.text, "A13 {0.17} The old lady pulled her speckle.", "A13 {0.17} The old lady pulled speckle.")
-    her = fx.words[50]
-    for feel, want in (("tight", 0.06), ("natural", 0.13)):
-        b = build(fx, t, feel=feel)
-        heard = sum(max(0.0, min(r.s_out, her.end) - max(r.s_in, her.start)) for r in b.runs if r.kind == "speech")
-        assert abs(heard - want) <= 0.001, (feel, heard)
-        assert {"line": "A13", "words": "her", "seconds": 0.18} in b.report.cut
 
 
 # ---------------------------------------------------------------- the apply

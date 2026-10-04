@@ -113,10 +113,12 @@ def cut_edges(fx, runs):
     return out
 
 
-def assert_cut_invariant(fx, runs, report, pad=HARD_CUT_PAD_S):
+def assert_cut_invariant(fx, runs, report, pad=HARD_CUT_PAD_S, max_pad=None):
     """A cut never lands inside a refined word. A placed edge is either in a certain gap between two
     consecutive refined words (or at the media's start/end), or it is a counted hard cut sitting at
-    a word edge with `pad` (the feel's hard_cut_pad; tight's by default). Returns (placed edges, hard cuts)."""
+    a word edge with `pad` (HARD_CUT_PAD_S by default), or with anything from `pad` to `max_pad` when
+    given (natural's pad, which grows into silence). Returns (placed edges, hard cuts)."""
+    top = max_pad or pad
     W = fx.words
     gaps = [(W[i].end, W[i + 1].start) for i in range(len(W) - 1)
             if (i, i + 1) not in fx.uncertain and W[i + 1].start - W[i].end > EPS]   # glued words have no gap
@@ -127,7 +129,7 @@ def assert_cut_invariant(fx, runs, report, pad=HARD_CUT_PAD_S):
         inside = [w.text for w in W if w.start + EPS < t < w.end - EPS]
         if is_hard:
             hard += 1
-            assert any(abs(t - (w.end + pad[0])) < EPS or abs(t - (w.start - pad[1])) < EPS
+            assert any(w.end + pad[0] - EPS <= t <= w.end + top[0] + EPS or w.start - top[1] - EPS <= t <= w.start - pad[1] + EPS
                        for w in W), f"hard cut at {t:.4f} is not a word edge with its pad"
             continue
         assert not inside, f"cut at {t:.4f} lands inside {inside} and is not counted as a hard cut"

@@ -52,9 +52,10 @@ Where a cut lands
   words at its start) is used too: only the deleted words are cut out and their silence is kept as a
   silence-only run (`Run.words` empty).
 - **Hard cut.** When the gap on a cut's side is empty (glued words) or uncertain (the inside word is deleted), the edge sits at
-  the word edge padded by the feel's `hard_cut_pad` (kept after the last word, before the next) and counts
-  as a hard cut. A source's own start and end are not cuts. So: an edge lies inside a refined word
-  only when it is a counted hard cut.
+  the word edge padded by `HARD_CUT_PAD_S` (kept after the last word, before the next) and counts
+  as a hard cut. The feel's `hard_cut_pad` widens that pad only into the measured silence that runs
+  from the word edge, never past the gap: glued words keep `HARD_CUT_PAD_S`. A source's own start
+  and end are not cuts. So: an edge lies inside a refined word only when it is a counted hard cut.
 
 Times are source seconds; pause values are source seconds too (as derive shows them), so an item
 at `speed` 2 plays a 0.4 s marker as 0.2 s.
@@ -62,7 +63,7 @@ at `speed` 2 plays a 0.4 s marker as 0.2 s.
 Feel (`FEELS`): `tight` is the cut this module made before feels existed, byte for byte (min pause
 0.08, no floor, no cap of its own, pads 0.04/0.02). `natural`, the default, keeps more silence:
 min pause and floor 0.18, unchanged pauses capped at 0.45 unless the call passes `max_pause`,
-pads 0.08/0.05.
+hard-cut pads up to 0.08/0.05 where measured silence holds them.
 """
 import copy
 import math
@@ -88,7 +89,9 @@ class Feel:
     floor: the least pause kept at a join (or free side) the text wrote no marker for, as far as the gaps
       beside it hold it; 0 keeps their natural pause. A marker the text wrote is never floored.
     max_pause: the cap on every pause the text did not change, when the call passes none.
-    hard_cut_pad: kept after the last word and before the next word at a hard cut.
+    hard_cut_pad: the most a hard cut keeps after the last word and before the next word. Past
+      HARD_CUT_PAD_S it only reaches into measured silence, so it never plays more of the neighbouring
+      (deleted) word than HARD_CUT_PAD_S does; where words run together it is HARD_CUT_PAD_S.
     """
     min_pause: float
     floor: float
@@ -195,7 +198,7 @@ class _Source:
         self.inside = inside          # indexes of words whisper placed inside a pause
         self.sils = sils              # measured silences [(start, end)]
         self.end = end                # the source's end, as far as the project knows it
-        self.pad = pad                # the feel's hard_cut_pad
+        self.pad = pad                # the feel's hard_cut_pad: the most a hard cut keeps, see hard_pad
 
     def gap_after(self, i):
         """(lo, hi, certain) of the gap after word i (to the source's end after the last word)."""
@@ -226,7 +229,7 @@ class _Source:
         if i in self.inside:
             return hi, False                                  # the real word is somewhere in the gap: keep it whole
         if hi - lo <= _EPS or not certain:
-            return round(min(lo + self.pad[0], max(self.end, lo)), 6), True
+            return round(min(lo + self.hard_pad(0, lo, hi), max(self.end, lo)), 6), True
         return self.snap(lo + max(0.0, min(amount, hi - lo)), lo, hi), False
 
     def before(self, i, amount):
@@ -237,8 +240,21 @@ class _Source:
         if i in self.inside:
             return lo, False                                  # the real word is somewhere in the gap: keep it whole
         if hi - lo <= _EPS or not certain:
-            return round(max(0.0, hi - self.pad[1]), 6), True
+            return round(max(0.0, hi - self.hard_pad(1, lo, hi)), 6), True
         return self.snap(hi - max(0.0, min(amount, hi - lo)), lo, hi), False
+
+    def hard_pad(self, side, lo, hi):
+        """The pad of a hard cut in the gap [lo, hi]: after the word ending at lo (side 0) or before the
+        word starting at hi (side 1). HARD_CUT_PAD_S, widened toward the feel's pad only as far as the
+        measured silence touching that word edge runs, and never past the gap (the neighbouring word)."""
+        base, most = HARD_CUT_PAD_S[side], self.pad[side]
+        if most <= base:
+            return base
+        if side == 0:
+            room = max((min(b, hi) - lo for a, b in self.sils if a - _MARK_TOL_S <= lo < b), default=0.0)
+        else:
+            room = max((hi - max(a, lo) for a, b in self.sils if a < hi <= b + _MARK_TOL_S), default=0.0)
+        return max(base, min(most, room))
 
     def capacity(self, lo, hi, certain):
         return hi - lo if certain and hi - lo > _EPS else 0.0
