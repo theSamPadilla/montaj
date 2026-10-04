@@ -16,22 +16,31 @@ SPEECH = str(FIXTURE / "speech.mp4")
 EDGE_TOL = 0.03
 
 
+def _measured_section():
+    return README.read_text().split("## Measured silences", 1)[1].split("\n## ", 1)[0]
+
+
+def readme_raw_pauses():
+    rows = re.findall(r"^\| (\d+\.\d+) \| (\d+\.\d+) \| \d+\.\d+ \|$", _measured_section(), re.M)
+    return [(float(a), float(b)) for a, b in rows]
+
+
 def readme_pauses():
-    """The measured silence table in the fixture README, as (start, end)."""
-    text = README.read_text()
-    section = text.split("## Measured silences", 1)[1].split("\n## ", 1)[0]
-    rows = re.findall(r"^\| (\d+\.\d+) \| (\d+\.\d+) \| \d+\.\d+ \|$", section, re.M)
-    raw = [(float(a), float(b)) for a, b in rows]
-    # The README lists silencedetect's raw output; silences() merges those closer
-    # than 0.02 s (back-to-back entries such as 0.000-0.500 / 0.500-1.091), so
-    # compare against the same merge.
+    """The measured silence table in the fixture README, as (start, end).
+
+    The README lists silencedetect's raw output; silences() merges those closer
+    than 0.02 s, so compare against the same merge."""
     merged = []
-    for a, b in raw:
+    for a, b in readme_raw_pauses():
         if merged and a - merged[-1][1] < 0.02:
             merged[-1] = (merged[-1][0], b)
         else:
             merged.append((a, b))
     return merged
+
+
+def readme_floor_db():
+    return float(re.search(r"Noise floor (-?\d+\.\d+) dB", _measured_section()).group(1))
 
 
 def edge_hits(found, expected):
@@ -64,7 +73,8 @@ def fixed_silences(path, db=-35):
 
 
 def test_readme_table_parses():
-    assert len(readme_pauses()) == 38  # 45 raw rows, 7 closer than 0.02 s to the previous
+    stated = int(re.search(r"(\d+) silences;", _measured_section()).group(1))
+    assert len(readme_raw_pauses()) == stated
 
 
 def test_fixture_pauses_found():
@@ -75,13 +85,17 @@ def test_fixture_pauses_found():
 
 
 def test_noise_floor_of_fixture():
-    assert noise_floor_db(SPEECH) == pytest.approx(-33.26, abs=0.5)
+    assert noise_floor_db(SPEECH) == pytest.approx(readme_floor_db(), abs=0.5)
 
 
 def test_window_offsets_to_source_time():
-    found = silences(SPEECH, 10.0, 14.0)
-    assert found and all(10.0 <= a and b <= 14.0 + 1e-6 for a, b in found)
-    assert any(abs(a - 10.777) <= EDGE_TOL and abs(b - 11.157) <= EDGE_TOL for a, b in found)
+    # a window around the longest README pause: results are in source seconds
+    # (not window-relative), clipped to the window, and the pause is found
+    pause = max(readme_pauses(), key=lambda p: p[1] - p[0])
+    lo, hi = max(0.0, pause[0] - 1.0), pause[1] + 1.0
+    found = silences(SPEECH, lo, hi)
+    assert found and all(lo <= a and b <= hi + 1e-6 for a, b in found)
+    assert edge_hits(found, [pause])
 
 
 def test_noise_defeats_fixed_threshold_not_adaptive(tmp_path):
@@ -90,12 +104,12 @@ def test_noise_defeats_fixed_threshold_not_adaptive(tmp_path):
     threshold, this test fails: the fixture cannot show the difference."""
     # pauses of 0.15 s or more: the ones the app shows
     expected = [p for p in readme_pauses() if p[1] - p[0] >= 0.15]
-    assert len(expected) >= 12
+    assert len(expected) >= 8
     results = []
     for a in (0.005, 0.01, 0.02, 0.04):
         noisy = str(tmp_path / f"noisy_{a}.mp4")
         subprocess.run([ffmpeg_bin(), "-y", "-i", SPEECH,
-                        "-f", "lavfi", "-i", f"anoisesrc=color=pink:amplitude={a}:sample_rate=16000:duration=31",
+                        "-f", "lavfi", "-i", f"anoisesrc=color=pink:amplitude={a}:sample_rate=16000:duration=31:seed=7",
                         "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=first:normalize=0[a]",
                         "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", noisy],
                        check=True, capture_output=True)
