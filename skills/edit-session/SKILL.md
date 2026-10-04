@@ -78,6 +78,17 @@ montaj materialize-cut spec.json                                # apply every ke
 
 ---
 
+## Revisions
+
+Treat every revision as one coordinated change to the timeline, not a set of separate edits.
+
+- **Read the project fresh before each revision.** Never work from memory or an earlier read, because the user may have changed it since. Make targeted edits, never a wholesale rewrite.
+- **Move what belongs to a cut together.** When speech is cut or shortened, move everything tied to it in the same edit: images, text, overlays, audio cues, the outro, and any project notes on those times.
+- **Keep the user's own edits.** Change only what the revision asked for.
+- **Check sync afterwards.** Sample the changed sections and confirm each picture and label still lands on its words.
+
+---
+
 ## Overlays
 
 ### What overlays can do
