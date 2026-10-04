@@ -70,6 +70,7 @@ def test_noop_writes_nothing(env):
     mtime = os.stat(env.path).st_mtime_ns
     r = apply(env, env.text)
     assert r["applied"] is False and r["noop"] is True
+    assert r["clamped"] == [] and r["hardCuts"] == 0 and r["warnings"] == [] and "cut" in r
     assert snapshot(env) == before and os.stat(env.path).st_mtime_ns == mtime
     assert not os.path.exists(os.path.join(env.dir, "speech-text.md"))
 
@@ -147,7 +148,7 @@ def test_stale_after_sidecar_change(env, capsys):
 
 
 def test_stale_wrong_track(env, capsys):
-    refused(env, env.text.replace("track trk-0", "track trk-9", 1), "stale", capsys)
+    refused(env, env.text.replace("track trk-0", "track trk-9", 1), "track_not_found", capsys)
 
 
 def test_unknown_line_refused(env, capsys):
@@ -230,6 +231,7 @@ def test_shortening_a_pause_next_to_an_inside_word_keeps_the_gap_whole(env):
     before = snapshot(env)
     r = apply(env, edit_row(env.text, "A6", "{0.77}", "{0.30}"))
     assert r["noop"] is True and snapshot(env) == before     # clip-2 stays whole: nothing to change
+    assert any(c.get("unsure") is True and c["line"] == "A6" for c in r["clamped"]), r["clamped"]
 
 
 def test_deleting_a_pause_next_to_an_inside_word_keeps_the_gap_whole(env):
@@ -237,6 +239,7 @@ def test_deleting_a_pause_next_to_an_inside_word_keeps_the_gap_whole(env):
     before = snapshot(env)
     r = apply(env, edit_row(env.text, "A10", "{0.27} ", ""))
     assert r["noop"] is True and snapshot(env) == before     # clip-3 stays whole
+    assert any(c.get("unsure") is True for c in r["clamped"]), r["clamped"]
 
 
 def test_deleting_an_inside_word_leaves_no_kept_span_over_the_real_word(env):
@@ -314,3 +317,42 @@ def test_deleted_trailing_word_keeps_its_silence_end_to_end(env):
     assert r["applied"] is True and r["clamped"] == []
     again = apply(env, r["text"])
     assert again["noop"] is True
+
+
+# ---- PL44 review (should): track override, version repo, no-op report, mixed track
+
+def test_text_read_with_a_track_override_applies_as_a_noop(env):
+    text = render(derive(env.project, env.dir, track="st-face"), "x")
+    assert "track st-face" in text
+    before = snapshot(env)
+    r = apply(env, text)
+    assert r["noop"] is True and snapshot(env) == before
+
+
+def test_project_inside_another_repo_is_applied_without_a_version_and_says_so(env):
+    shutil.rmtree(os.path.join(env.dir, ".git"))
+    parent = os.path.dirname(env.dir)
+    _git(parent, "init", "-q")
+    _git(parent, "add", "proj/project.json")
+    _git(parent, "commit", "-q", "-m", "someone else's")
+    head = _git(parent, "rev-parse", "HEAD")
+    p = json.loads(open(env.path).read())
+    p["editingPrompt"] = "unsaved"
+    open(env.path, "w").write(json.dumps(p, indent=2))
+    r = apply(env, delete_row(env.text, "A4"))
+    assert r["applied"] is True and r["version"] is False
+    assert any("no version saved" in w for w in r["warnings"]), r["warnings"]
+    assert _git(parent, "rev-parse", "HEAD") == head
+
+
+def test_overlay_item_on_the_speech_track_is_refused_before_any_write(env, capsys):
+    p = json.loads(open(env.path).read())
+    p["tracks"][0]["items"].append({"id": "ov-on-speech", "type": "overlay", "src": os.path.join(env.dir, "overlay.jsx"),
+                                    "start": 1.0, "end": 3.0})
+    open(env.path, "w").write(json.dumps(p, indent=2))
+    before = snapshot(env)
+    with pytest.raises(SystemExit):
+        apply(env, env.text)
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "mixed_track" and "ov-on-speech" in err["message"], err
+    assert snapshot(env) == before

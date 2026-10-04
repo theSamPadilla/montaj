@@ -85,7 +85,9 @@ def test_no_change_is_a_noop(tmp_path):
     (d / "speech-text.md").write_text(read_text(d), encoding="utf-8")
     proc = edit(d)
     assert proc.returncode == 0, proc.stderr
-    assert json.loads(proc.stdout) == {"applied": False, "noop": True}
+    out = json.loads(proc.stdout)
+    assert out["applied"] is False and out["noop"] is True
+    assert out["clamped"] == [] and out["hardCuts"] == 0 and out["warnings"] == []
 
 
 def test_changed_word_fails_and_leaves_project_alone(tmp_path):

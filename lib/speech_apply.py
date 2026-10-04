@@ -16,7 +16,7 @@ import tempfile
 from lib import speech_text
 from lib.common import fail
 from lib.project_tracks import normalize_tracks
-from lib.project_versions import commit_version
+from lib.project_versions import commit_version, is_own_repo
 from lib.speech_build import items_from_runs, runs_from_rows
 from lib.speech_carry import TimeMap, carry, words_by_src
 from lib.speech_lines import sidecar_for
@@ -87,15 +87,21 @@ def _result(*, applied, preview, version, before, after, report, warnings, text)
             "before": before, "after": after, **report.as_dict(), "warnings": warnings, "text": text}
 
 
+def _noop(report, warnings) -> dict:
+    """Nothing to write. The report stays: it says what the build did (a kept gap, a clamp) even when
+    that left the project as it was."""
+    return {"applied": False, "noop": True, **report.as_dict(), "warnings": warnings}
+
+
 def apply(project_path: str, text: str, *, preview: bool, max_pause: float | None) -> dict:
     project_path = os.path.abspath(project_path)
     project_dir = os.path.dirname(project_path)
     with open(project_path, encoding="utf-8") as f:
         project = normalize_tracks(json.load(f))
 
-    derived = speech_text.derive(project, project_dir)
     header, rows = speech_text.parse(text)
-    if header["stamp"] != derived.stamp or header["track"] != derived.track_id:
+    derived = speech_text.derive(project, project_dir, track=header["track"])   # the track the text was read from
+    if header["stamp"] != derived.stamp:
         fail("stale", "The project changed since this text was read. Read it again with speech_text.")
     tracks = project["tracks"]
     ti = next(i for i, t in enumerate(tracks) if t["id"] == derived.track_id)
@@ -113,7 +119,8 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
         return sorted(json.dumps(it, sort_keys=True) for it in its)
 
     if canon(items) == canon(old_items):
-        items = list(old_items)      # unedited: keep the project's own item order
+        # Nothing on the speech track changed, so nothing is carried: an unedited text is a no-op.
+        return _noop(report, derived.warnings)
     tmap = TimeMap(old_items, items, prov, words=words_by_src(derived), project_dir=project_dir)
     candidate, report = carry(project, ti, items, tmap, fps, report=report)
 
@@ -121,19 +128,22 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
         return json.dumps(p, sort_keys=True)
 
     if dump(candidate) == dump(project):
-        return {"applied": False, "noop": True}
+        return _noop(report, derived.warnings)
 
     _validate(candidate)
 
     before, after = _summary(project, ti), _summary(candidate, ti)
     if preview:
-        new_text = speech_text.render(speech_text.derive(candidate, project_dir), _title(candidate))
+        new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id), _title(candidate))
         return _result(applied=False, preview=True, version=False, before=before, after=after,
                        report=report, warnings=derived.warnings, text=new_text)
 
     # Everything that can fail runs before the write, so nothing fails after it.
-    new_text = speech_text.render(speech_text.derive(candidate, project_dir), _title(candidate))
+    new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id), _title(candidate))
     version = commit_version(project_dir, "version: before speech edit")
+    warnings = list(derived.warnings)
+    if not version and not is_own_repo(project_dir):
+        warnings.append("no version saved: the project folder is not its own git repository")
     # The temp name must not end in .json: serve's watcher treats any .json (and .tmp-less source
     # extension) write as an overlay source and would push it to the overlay channel. This name is
     # ignored, and the replace lands as an on_moved event onto project.json, which it broadcasts.
@@ -149,4 +159,4 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     with open(os.path.join(project_dir, "speech-text.md"), "w", encoding="utf-8") as f:
         f.write(new_text)
     return _result(applied=True, preview=False, version=version, before=before, after=after,
-                   report=report, warnings=derived.warnings, text=new_text)
+                   report=report, warnings=warnings, text=new_text)

@@ -198,6 +198,9 @@ def derive(project: dict, project_dir: str, track: str | None = None) -> Derived
                            dur=round(_dur(it), 2)))
             continue
         a, b = float(it.get("inPoint", 0)), float(it.get("outPoint", 0))
+        if key not in letters and (it.get("type") in _NON_SPEECH_TYPES or not it.get("src")):
+            fail("mixed_track", f"Item {it.get('id')} on track {tr['id']} is an overlay, text, caption or sourceless item. "
+                                "The speech track holds speech and images only; pass the track that does.")
         if key not in letters or it.get("loop"):
             cut.append(Row("nospeech", item_ids=[it["id"]], label=letters.get(key) or os.path.basename(key or ""),
                            t0=a, t1=b))
