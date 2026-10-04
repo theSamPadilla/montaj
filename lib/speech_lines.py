@@ -54,7 +54,7 @@ def sidecar_for(item: dict) -> str | None:
         if _sidecar_has_transcription(p):
             return p
     nsrc = item.get("normalizedSrc")
-    if nsrc and item.get("normalizedInPoint", 0) == 0:
+    if nsrc and item.get("normalizedInPoint") == 0:
         p = os.path.splitext(nsrc)[0] + ".json"
         if _sidecar_has_transcription(p):
             return p

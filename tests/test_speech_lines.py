@@ -130,6 +130,27 @@ def test_sidecar_for_normalized(tmp_path):
     assert sidecar_for({"src": str(src)}) is None
 
 
+def test_sidecar_for_normalized_requires_explicit_inpoint_zero(tmp_path):
+    """normalizedSrc sidecar is used only when normalizedInPoint is explicitly 0 (full-source conversion).
+
+    When normalizedInPoint is absent (window-based conversion), do not use the normalizedSrc sidecar
+    even if it exists and has a valid transcription.
+    """
+    src = tmp_path / "clip.mp4"
+    nsrc = tmp_path / "clip_n.mp4"
+    # src has no sidecar
+    # normalizedSrc has a valid sidecar
+    (tmp_path / "clip_n.json").write_text(json.dumps({"transcription": []}))
+
+    # Case 1: normalizedInPoint is absent -> should return None
+    item_without_inpoint = {"src": str(src), "normalizedSrc": str(nsrc)}
+    assert sidecar_for(item_without_inpoint) is None, "normalizedSrc sidecar should not be used when normalizedInPoint is absent"
+
+    # Case 2: normalizedInPoint is explicitly 0 -> should return the normalizedSrc sidecar
+    item_with_inpoint_zero = {"src": str(src), "normalizedSrc": str(nsrc), "normalizedInPoint": 0}
+    assert sidecar_for(item_with_inpoint_zero) == str(tmp_path / "clip_n.json"), "normalizedSrc sidecar should be used when normalizedInPoint is 0"
+
+
 def _fixture():
     words = load_words(os.path.join(FIX, "speech.json"))
     sils = silences(os.path.join(FIX, "speech.mp4"))
