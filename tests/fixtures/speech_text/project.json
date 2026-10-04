@@ -20,9 +20,9 @@
           "type": "video",
           "src": "/FIXTURE/speech.mp4",
           "start": 0.0,
-          "end": 14.1,
-          "inPoint": 1.1,
-          "outPoint": 15.2,
+          "end": 10.1,
+          "inPoint": 0.0,
+          "outPoint": 10.1,
           "sourceWidth": 64,
           "sourceHeight": 64,
           "sourceCrop": {
@@ -41,12 +41,12 @@
                   "easing": "ease-in-out"
                 },
                 {
-                  "t": 7,
+                  "t": 5.05,
                   "value": 0.3,
                   "easing": "ease-in-out"
                 },
                 {
-                  "t": 14.1,
+                  "t": 10.1,
                   "value": 0
                 }
               ]
@@ -57,10 +57,10 @@
           "id": "clip-2",
           "type": "video",
           "src": "/FIXTURE/speech.mp4",
-          "start": 14.1,
-          "end": 22.9,
-          "inPoint": 16.0,
-          "outPoint": 24.8,
+          "start": 10.1,
+          "end": 19.1,
+          "inPoint": 10.7,
+          "outPoint": 19.7,
           "sourceWidth": 64,
           "sourceHeight": 64
         },
@@ -68,9 +68,9 @@
           "id": "clip-3",
           "type": "video",
           "src": "/FIXTURE/speech.mp4",
-          "start": 22.7,
-          "end": 27.1,
-          "inPoint": 25.6,
+          "start": 18.9,
+          "end": 28.8,
+          "inPoint": 20.1,
           "outPoint": 30.0,
           "sourceWidth": 64,
           "sourceHeight": 64
@@ -84,10 +84,10 @@
           "id": "face-1",
           "type": "video",
           "src": "/FIXTURE/speech.mp4",
-          "start": 15.1,
-          "end": 19.1,
-          "inPoint": 17.0,
-          "outPoint": 21.0,
+          "start": 12.1,
+          "end": 16.1,
+          "inPoint": 12.7,
+          "outPoint": 16.7,
           "muted": true,
           "sourceWidth": 64,
           "sourceHeight": 64,
@@ -108,16 +108,16 @@
           "id": "ov-1",
           "type": "overlay",
           "src": "/FIXTURE/overlay.jsx",
-          "start": 10.0,
-          "end": 14.0,
+          "start": 6.6,
+          "end": 10.1,
           "props": {}
         },
         {
           "id": "ov-2",
           "type": "overlay",
           "src": "/FIXTURE/overlay.jsx",
-          "start": 22.0,
-          "end": 24.0,
+          "start": 18.0,
+          "end": 20.0,
           "props": {}
         }
       ]
@@ -128,399 +128,304 @@
     "segments": [
       {
         "id": "cap-1",
-        "text": "discipline are to be understood the marshalling of the army in its proper subdivisions",
-        "start": 0.17,
-        "end": 5.32,
+        "text": "results, of what they once were themselves, and of how they felt and thought and talked, and what queer enterprises they sometimes engaged",
+        "start": 0.0,
+        "end": 9.975,
         "words": [
           {
-            "word": "discipline",
-            "start": 0.17,
-            "end": 0.51
-          },
-          {
-            "word": "are",
-            "start": 0.51,
-            "end": 0.74
-          },
-          {
-            "word": "to",
-            "start": 0.74,
-            "end": 0.89
-          },
-          {
-            "word": "be",
-            "start": 0.89,
-            "end": 1.04
-          },
-          {
-            "word": "understood",
-            "start": 1.04,
-            "end": 1.81
-          },
-          {
-            "word": "the",
-            "start": 1.81,
-            "end": 2.04
-          },
-          {
-            "word": "marshalling",
-            "start": 2.04,
-            "end": 2.88
+            "word": "results,",
+            "start": 0.0,
+            "end": 0.7
           },
           {
             "word": "of",
-            "start": 2.88,
-            "end": 3.03
+            "start": 0.7,
+            "end": 0.92
           },
           {
-            "word": "the",
-            "start": 3.03,
-            "end": 3.26
+            "word": "what",
+            "start": 0.92,
+            "end": 1.18
           },
           {
-            "word": "army",
-            "start": 3.26,
-            "end": 3.56
+            "word": "they",
+            "start": 1.18,
+            "end": 1.5
           },
           {
-            "word": "in",
-            "start": 3.56,
-            "end": 3.71
+            "word": "once",
+            "start": 1.5,
+            "end": 1.87
           },
           {
-            "word": "its",
-            "start": 3.71,
-            "end": 3.95
+            "word": "were",
+            "start": 1.87,
+            "end": 2.14
           },
           {
-            "word": "proper",
-            "start": 3.95,
-            "end": 4.4
+            "word": "themselves,",
+            "start": 2.14,
+            "end": 3.08
           },
           {
-            "word": "subdivisions",
-            "start": 4.4,
-            "end": 5.32
+            "word": "and",
+            "start": 3.08,
+            "end": 3.32
+          },
+          {
+            "word": "of",
+            "start": 3.32,
+            "end": 3.48
+          },
+          {
+            "word": "how",
+            "start": 3.48,
+            "end": 3.72
+          },
+          {
+            "word": "they",
+            "start": 3.72,
+            "end": 4.03
+          },
+          {
+            "word": "felt",
+            "start": 4.03,
+            "end": 4.45
+          },
+          {
+            "word": "and",
+            "start": 4.45,
+            "end": 4.6
+          },
+          {
+            "word": "thought",
+            "start": 4.6,
+            "end": 5.22
+          },
+          {
+            "word": "and",
+            "start": 5.22,
+            "end": 5.42
+          },
+          {
+            "word": "talked,",
+            "start": 5.42,
+            "end": 6.54
+          },
+          {
+            "word": "and",
+            "start": 6.54,
+            "end": 6.8
+          },
+          {
+            "word": "what",
+            "start": 6.8,
+            "end": 7.21
+          },
+          {
+            "word": "queer",
+            "start": 7.21,
+            "end": 7.58
+          },
+          {
+            "word": "enterprises",
+            "start": 7.58,
+            "end": 8.54
+          },
+          {
+            "word": "they",
+            "start": 8.54,
+            "end": 8.89
+          },
+          {
+            "word": "sometimes",
+            "start": 8.89,
+            "end": 9.67
+          },
+          {
+            "word": "engaged",
+            "start": 9.67,
+            "end": 9.975
           }
         ]
       },
       {
         "id": "cap-2",
-        "text": "the graduations of rank among the officers",
-        "start": 5.32,
-        "end": 8.06,
+        "text": "The Author Hartford, 1876 CHAPTER",
+        "start": 10.14,
+        "end": 16.38,
         "words": [
           {
-            "word": "the",
-            "start": 5.32,
-            "end": 5.56
+            "word": "The",
+            "start": 10.14,
+            "end": 10.66
           },
           {
-            "word": "graduations",
-            "start": 5.56,
-            "end": 6.39
+            "word": "Author",
+            "start": 10.66,
+            "end": 11.49
           },
           {
-            "word": "of",
-            "start": 6.39,
-            "end": 6.54
+            "word": "Hartford,",
+            "start": 11.49,
+            "end": 15.2
           },
           {
-            "word": "rank",
-            "start": 6.54,
-            "end": 6.84
+            "word": "1876",
+            "start": 15.2,
+            "end": 15.46
           },
           {
-            "word": "among",
-            "start": 6.84,
-            "end": 7.22
-          },
-          {
-            "word": "the",
-            "start": 7.22,
-            "end": 7.45
-          },
-          {
-            "word": "officers",
-            "start": 7.45,
-            "end": 8.06
+            "word": "CHAPTER",
+            "start": 15.46,
+            "end": 16.38
           }
         ]
       },
       {
         "id": "cap-3",
-        "text": "the maintenance of roads by which supplies may reach the army and the control of military",
-        "start": 8.06,
-        "end": 13.7,
+        "text": "I \"Tom!\" \"Tom!\" \"Tom!\" \"No answer.\"",
+        "start": 16.38,
+        "end": 19.86,
         "words": [
           {
-            "word": "the",
-            "start": 8.06,
-            "end": 8.29
+            "word": "I",
+            "start": 16.38,
+            "end": 16.46
           },
           {
-            "word": "maintenance",
-            "start": 8.29,
-            "end": 9.13
+            "word": "\"Tom!\"",
+            "start": 16.46,
+            "end": 17.46
           },
           {
-            "word": "of",
-            "start": 9.13,
-            "end": 9.28
+            "word": "\"Tom!\"",
+            "start": 17.46,
+            "end": 18.46
           },
           {
-            "word": "roads",
-            "start": 9.28,
-            "end": 9.66
+            "word": "\"Tom!\"",
+            "start": 18.46,
+            "end": 18.96
           },
           {
-            "word": "by",
-            "start": 9.66,
-            "end": 9.82
+            "word": "\"No",
+            "start": 18.97,
+            "end": 19.08
           },
           {
-            "word": "which",
-            "start": 9.82,
-            "end": 10.19
-          },
-          {
-            "word": "supplies",
-            "start": 10.19,
-            "end": 10.8
-          },
-          {
-            "word": "may",
-            "start": 10.8,
-            "end": 11.03
-          },
-          {
-            "word": "reach",
-            "start": 11.03,
-            "end": 11.41
-          },
-          {
-            "word": "the",
-            "start": 11.41,
-            "end": 11.64
-          },
-          {
-            "word": "army",
-            "start": 11.64,
-            "end": 11.94
-          },
-          {
-            "word": "and",
-            "start": 11.94,
-            "end": 12.17
-          },
-          {
-            "word": "the",
-            "start": 12.17,
-            "end": 12.4
-          },
-          {
-            "word": "control",
-            "start": 12.4,
-            "end": 12.94
-          },
-          {
-            "word": "of",
-            "start": 12.94,
-            "end": 13.09
-          },
-          {
-            "word": "military",
-            "start": 13.09,
-            "end": 13.7
+            "word": "answer.\"",
+            "start": 19.08,
+            "end": 19.86
           }
         ]
       },
       {
         "id": "cap-4",
-        "text": "these five heads should be familiar to every general he who knows them will be victorious he who knows them not will fail therefore",
-        "start": 14.145,
-        "end": 22.82,
+        "text": "\"What's gone",
+        "start": 19.86,
+        "end": 21.13,
         "words": [
           {
-            "word": "these",
-            "start": 14.145,
-            "end": 14.35
+            "word": "\"What's",
+            "start": 19.86,
+            "end": 20.66
           },
           {
-            "word": "five",
-            "start": 14.35,
-            "end": 14.68
-          },
-          {
-            "word": "heads",
-            "start": 14.68,
-            "end": 15.09
-          },
-          {
-            "word": "should",
-            "start": 15.09,
-            "end": 15.58
-          },
-          {
-            "word": "be",
-            "start": 15.58,
-            "end": 15.74
-          },
-          {
-            "word": "familiar",
-            "start": 15.74,
-            "end": 16.42
-          },
-          {
-            "word": "to",
-            "start": 16.42,
-            "end": 16.56
-          },
-          {
-            "word": "every",
-            "start": 16.56,
-            "end": 16.97
-          },
-          {
-            "word": "general",
-            "start": 16.97,
-            "end": 17.55
-          },
-          {
-            "word": "he",
-            "start": 17.55,
-            "end": 17.71
-          },
-          {
-            "word": "who",
-            "start": 17.71,
-            "end": 17.96
-          },
-          {
-            "word": "knows",
-            "start": 17.96,
-            "end": 18.37
-          },
-          {
-            "word": "them",
-            "start": 18.37,
-            "end": 18.7
-          },
-          {
-            "word": "will",
-            "start": 18.7,
-            "end": 19.03
-          },
-          {
-            "word": "be",
-            "start": 19.03,
-            "end": 19.19
-          },
-          {
-            "word": "victorious",
-            "start": 19.19,
-            "end": 20.02
-          },
-          {
-            "word": "he",
-            "start": 20.02,
-            "end": 20.18
-          },
-          {
-            "word": "who",
-            "start": 20.18,
-            "end": 20.43
-          },
-          {
-            "word": "knows",
-            "start": 20.43,
-            "end": 20.84
-          },
-          {
-            "word": "them",
-            "start": 20.84,
-            "end": 21.17
-          },
-          {
-            "word": "not",
-            "start": 21.17,
-            "end": 21.42
-          },
-          {
-            "word": "will",
-            "start": 21.42,
-            "end": 21.75
-          },
-          {
-            "word": "fail",
-            "start": 21.75,
-            "end": 22.08
-          },
-          {
-            "word": "therefore",
-            "start": 22.08,
-            "end": 22.82
+            "word": "gone",
+            "start": 20.66,
+            "end": 21.13
           }
         ]
       },
       {
         "id": "cap-5",
-        "text": "in",
-        "start": 22.82,
-        "end": 22.9,
+        "text": "with that boy, I wonder?\" \"You, Tom!\"",
+        "start": 21.13,
+        "end": 25.86,
         "words": [
           {
-            "word": "in",
-            "start": 22.82,
-            "end": 22.9
+            "word": "with",
+            "start": 21.13,
+            "end": 21.6
+          },
+          {
+            "word": "that",
+            "start": 21.6,
+            "end": 22.07
+          },
+          {
+            "word": "boy,",
+            "start": 22.07,
+            "end": 22.64
+          },
+          {
+            "word": "I",
+            "start": 22.64,
+            "end": 22.85
+          },
+          {
+            "word": "wonder?\"",
+            "start": 22.85,
+            "end": 23.98
+          },
+          {
+            "word": "\"You,",
+            "start": 23.98,
+            "end": 24.9
+          },
+          {
+            "word": "Tom!\"",
+            "start": 24.9,
+            "end": 25.86
           }
         ]
       },
       {
         "id": "cap-6",
-        "text": "deliberations when seeking to determine the military conditions",
-        "start": 22.845,
-        "end": 27.1,
+        "text": "\"No answer.\" The old lady pulled her speckle.",
+        "start": 25.86,
+        "end": 28.8,
         "words": [
           {
-            "word": "deliberations",
-            "start": 22.845,
-            "end": 23.38
+            "word": "\"No",
+            "start": 25.86,
+            "end": 26.38
           },
           {
-            "word": "when",
-            "start": 23.38,
-            "end": 23.71
+            "word": "answer.\"",
+            "start": 26.38,
+            "end": 27.36
           },
           {
-            "word": "seeking",
-            "start": 23.71,
-            "end": 24.29
+            "word": "The",
+            "start": 27.36,
+            "end": 27.53
           },
           {
-            "word": "to",
-            "start": 24.29,
-            "end": 24.45
+            "word": "old",
+            "start": 27.53,
+            "end": 27.71
           },
           {
-            "word": "determine",
-            "start": 24.45,
-            "end": 25.19
+            "word": "lady",
+            "start": 27.71,
+            "end": 28.03
           },
           {
-            "word": "the",
-            "start": 25.19,
-            "end": 25.44
+            "word": "pulled",
+            "start": 28.03,
+            "end": 28.31
           },
           {
-            "word": "military",
-            "start": 25.44,
-            "end": 26.1
+            "word": "her",
+            "start": 28.31,
+            "end": 28.49
           },
           {
-            "word": "conditions",
-            "start": 26.1,
-            "end": 27.1
+            "word": "speckle.",
+            "start": 28.49,
+            "end": 28.8
           }
         ]
       }
@@ -532,14 +437,14 @@
         "id": "aud-bed",
         "src": "/FIXTURE/speech.mp4",
         "start": 0,
-        "end": 27.1,
+        "end": 28.8,
         "volume": 0.2
       },
       {
         "id": "aud-line",
         "src": "/FIXTURE/speech.mp4",
-        "start": 22.7,
-        "end": 24.7,
+        "start": 18.9,
+        "end": 20.9,
         "inPoint": 5.0,
         "outPoint": 7.0,
         "volume": 1
@@ -549,15 +454,15 @@
   "markers": [
     {
       "id": "m1",
-      "t": 16.0,
+      "t": 12.0,
       "label": "beat"
     }
   ],
   "notes": [
     {
       "id": "note-1",
-      "t": 18.0,
-      "tEnd": 19.5,
+      "t": 14.0,
+      "tEnd": 15.5,
       "text": "check this line"
     }
   ]
