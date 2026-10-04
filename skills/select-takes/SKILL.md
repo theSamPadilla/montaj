@@ -100,13 +100,13 @@ Run step `crop_spec` with `{"input": "/path/IMG_4893_spec.json", "keeps": [[40.2
 
 The `keeps` field is a **native JSON array** of `[start, end]` pairs — not a string. Use `null` for an open-ended window.
 
-**Important:** the timestamps you pass to `crop_spec` are **virtual-timeline timestamps** — time within the waveform_trim spec's kept audio, not original-file timestamps. If your reference points come from an SRT transcript (which uses original-file timestamps), use `virtual_to_original --inverse` to convert them first (see below).
+**Important:** the timestamps you pass to `crop_spec` are in the time of the spec being cropped (its kept audio back to back), never original-file time. See 9a for which transcript fields are in which time.
 
 Write each cropped spec to `<original>_selected.json` by saving the path returned by the step.
 
-### 9a. Timestamps — SRT is already virtual; use virtual_to_original for seam debugging only
+### 9a. Timestamps: the .srt is in the transcribed spec's time
 
-**SRT timestamps are virtual-timeline timestamps.** The `transcribe` step runs on the extracted audio (the waveform_trim keeps played back-to-back), so its timestamps are relative to that extracted audio — i.e., the virtual timeline. Pass them directly to `crop_spec` without any conversion.
+The `.srt` is in the time of the spec you transcribed, which the words JSON's `montaj.spec` names. Crop that same spec with those times and pass them to `crop_spec` without conversion. The words JSON `offsets` and `timestamps` are source (original-file) time; to use them with `crop_spec`, convert with `virtual_to_original --inverse`. Never crop a different spec with these times.
 
 SRT shows the best take at 8.5s–34.1s → run step `crop_spec` with `{"input": "/path/IMG_4893_spec.json", "keeps": [[8.5, 34.1]]}` and pass the result directly.
 

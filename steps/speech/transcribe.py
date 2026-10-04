@@ -24,6 +24,10 @@ def speech_stats(data):
     return {"word_count": len(words), "speech_s": round(span, 3), "wpm": wpm}
 
 
+def _srt_ts(ms):
+    return f"{ms//3600000:02d}:{ms//60000%60:02d}:{ms//1000%60:02d},{ms%1000:03d}"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Transcribe audio or video using whisper.cpp")
     parser.add_argument("--input", required=True, help="Audio or video file to transcribe")
@@ -87,17 +91,25 @@ def main():
         if tmp_audio and os.path.exists(tmp_audio):
             os.unlink(tmp_audio)
 
-    if trim_spec_data is not None:
-        words_path = f"{output_prefix}.json"
-        if os.path.exists(words_path):
-            data = json.loads(Path(words_path).read_text())
+    words_path = f"{output_prefix}.json"
+    if os.path.exists(words_path):
+        data = json.loads(Path(words_path).read_text())
+        if trim_spec_data is not None:
             for word in data.get("transcription", []):
                 offsets = word.get("offsets", {})
                 if "from" in offsets:
                     offsets["from"] = int(remap_timestamp(offsets["from"] / 1000.0, keeps) * 1000)
                 if "to" in offsets:
                     offsets["to"] = int(remap_timestamp(offsets["to"] / 1000.0, keeps) * 1000)
-            Path(words_path).write_text(json.dumps(data))
+                if "from" in offsets and "to" in offsets:
+                    word["timestamps"] = {"from": _srt_ts(offsets["from"]), "to": _srt_ts(offsets["to"])}
+            # The .srt is left in the spec's own time (keeps back to back).
+            data["montaj"] = {"input": "spec", "spec": os.path.abspath(args.input), "keeps": keeps,
+                              "offsets": "source", "timestamps": "source", "srt": "spec"}
+        else:
+            data["montaj"] = {"input": "file", "offsets": "source",
+                              "timestamps": "source", "srt": "source"}
+        Path(words_path).write_text(json.dumps(data))
 
     srt_path = f"{output_prefix}.srt"
     words_path = f"{output_prefix}.json"

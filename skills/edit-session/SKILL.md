@@ -39,7 +39,7 @@ The transcript must be named after that exact file — e.g. `IMG_4900_fillers_co
 montaj transcribe "/abs/path/to/clip.mp4" --model base.en
 ```
 
-Output: `clip.json` (word-level timings) and `clip.srt`. Always read the fresh `clip.json` before deriving overlay or cut timings.
+Output: `clip.json` (word-level timings) and `clip.srt`. Always read the fresh `clip.json` before deriving overlay or cut timings. The words JSON `offsets` and `timestamps` are source time, while the `.srt` is in the time of the spec that was transcribed (named by `montaj.spec` in the JSON); never apply `.srt` times to a different spec.
 
 ---
 

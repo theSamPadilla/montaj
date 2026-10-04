@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (transcribe, select-takes): a transcript says which time each of its fields is in.** Transcribing a trim spec wrote word `offsets` in source time but its `.srt` and `timestamps` in the spec's own time (its keeps back to back), so the two disagreed by up to 51 s on long clips. `timestamps` now match `offsets`, the words JSON carries a `montaj` block naming the spec, its keeps and each field's time, and `select-takes` says to crop the same spec that was transcribed. (`steps/speech/transcribe.py`, `skills/select-takes/SKILL.md`, `skills/edit-session/SKILL.md`, `tests/steps/test_transcribe_time_base.py`)
+
 ## v5.22.2
 
 - **Fixed (editor, serve): deleting the last note sticks too (PL43).** Same bug and fix as markers: the editor now sends `notes: null` and serve drops the key. (`montaj_assets/editor/src/schema.ts`, `montaj_assets/editor/src/video/timeline/notes.ts`, `montaj_assets/editor/src/video/timeline/__tests__/notes.test.ts`, `montaj_assets/editor/src/video/__tests__/VideoEditor.keymap.test.tsx`, `serve/routes/projects.py`, `tests/test_server_projects_save_validation.py`, `tests/test_server_context.py`)
