@@ -110,7 +110,7 @@ See the [CLI Reference](https://docs.montaj.ag/cli) for the full documentation.
 | Category | Steps |
 |----------|-------|
 | **Inspect** | `probe`, `snapshot`, `analyze_media` |
-| **Clean** | `waveform_trim`, `rm_fillers`, `rm_nonspeech` |
+| **Clean** | `waveform_trim`, `rm_fillers`, `rm_nonspeech`, `speech_text`, `speech_edit` |
 | **Edit** | `materialize_cut`, `resize`, `extract_audio`, `crop_spec` |
 | **Enrich** | `transcribe`, `caption`, `normalize` (full-source, eager default), `normalize_window` (per clip-window, lazy), `lyrics_sync`, `lyrics_render` |
 | **Generate** | `kling_generate`, `generate_image`, `eval_scene` |

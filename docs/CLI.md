@@ -363,6 +363,12 @@ montaj step rm_nonspeech --input spec.json
 montaj step rm_nonspeech --input clip.mp4
 montaj step rm_nonspeech --input clip.mp4 --model base --max-word-gap 0.10 --sentence-edge 0.05
 
+montaj step speech_text --project project.json
+# → numbered transcript lines with their pauses; write it to a file, edit it, then:
+montaj step speech_edit --project project.json --text edited.txt --preview
+montaj step speech_edit --project project.json --text edited.txt
+# --preview reports the change without writing; the real run saves a version first
+
 montaj step crop_spec --input spec.json --keep 8.5:14.8
 # → /path/to/spec_cropped.json  (crops trim spec to a virtual-timeline window, no encode)
 
@@ -555,7 +561,7 @@ exact flags. Full per-step parameter docs: https://docs.montaj.ag/steps
 | `steps/lyrics/` | `caption`, `lyrics_render`, `lyrics_sync` |
 | `steps/media/` | `analyze_media`, `detect_shots`, `fetch`, `fetch_image`, `filmstrip`, `normalize`, `probe`, `search_images`, `search_news`, `shot_sheet`, `snapshot` |
 | `steps/render/` | `sample_frame`, `sample_overlay` |
-| `steps/speech/` | `rm_fillers`, `rm_nonspeech`, `transcribe` |
+| `steps/speech/` | `rm_fillers`, `rm_nonspeech`, `speech_edit`, `speech_text`, `transcribe` |
 | `steps/transform/` | `crop_spec`, `generate_captions`, `materialize_cut`, `normalize_window`, `proxy`, `reframe`, `remove_bg`, `resize`, `virtual_to_original` |
 
 ---

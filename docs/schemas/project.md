@@ -173,6 +173,8 @@ Items in `tracks[0].items` are always `type: "video"`. They have explicit `start
 ]
 ```
 
+**Speech as text.** Nothing about it is stored in the project. `speech_text` derives the text from each source's words JSON sidecar, the speech track's items and the audio, and `speech_edit` applies an edited copy back as ordinary changes to these items and the layers synced to them.
+
 `clip-1`'s `transition` field above is round-tripped but **inert** — nothing
 in the editor or the render pipeline reads it. See the `transition` row below
 and [Transitions](#transitions) for the mechanism that actually blends two

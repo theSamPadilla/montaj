@@ -494,6 +494,8 @@ All steps are agent-callable tools. The agent decides which to run, when, and wi
 
 | Step | What it does |
 |------|-------------|
+| `montaj/speech_text` | Read a project's speech track as numbered transcript lines with their pauses |
+| `montaj/speech_edit` | Apply an edited copy of that text to the timeline in one write (`preview` to inspect first) |
 | `montaj/rm_fillers` | Remove filler words (um, uh, hmm) — outputs trim spec JSON |
 | `montaj/rm_nonspeech` | Remove all non-speech (noisy ambient audio) — outputs trim spec JSON |
 | `montaj/waveform_trim` | Waveform silence analysis — outputs trim spec JSON (near-instant, no encode) |
