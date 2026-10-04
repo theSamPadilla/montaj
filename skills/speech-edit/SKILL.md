@@ -17,7 +17,7 @@ Cut speech by editing its words, not by doing timestamp arithmetic. `speech_text
 
 ## The loop
 
-1. Run `speech_text` (params: `project`, `track`, `unused`). Read `speech-text.md` in the project folder.
+1. Run `speech_text` (params: `project`, `track`, `unused`). Read the file at the result's `path` (`speech-text.md` in the project folder).
 2. Edit the file: with your edit tool, or in the app by rewriting it with `write_file`.
 3. Run `speech_edit` with `text` = the file path and `preview`. Read `cut`, `flagged` and `hardCuts`.
 4. Run it again without `preview`. Read the new text it returns and work from that.
@@ -28,14 +28,22 @@ After `stale`, read again and redo the edit. Never patch the stamp in the header
 
 ```
 <!-- montaj speech text v1 · track trk-0 · stamp 5fb5552700e7 -->
+# My video
+
+A = take1.mp4
+B = take2.mp4
+
 ## Cut
-A1 hey this is sam and today i'm going to show you
-A2 {0.48} after you log in you'll see down here
+
+A1 so today we're going to look at three ways to start
+A2 {0.48} the first one is the simplest
 -- gap 2.00
 -- B 12.40-15.50 no speech
+
 ## Unused
+
 A7 um so the next thing is
-*A9 creating your first video is really really easy
+*A9 the second one takes a little longer
 ```
 
 | Piece | Meaning |
@@ -81,13 +89,13 @@ A pause never grows past what the source has; it is clamped and reported in `cla
 | Code | Fix |
 |---|---|
 | `stale` | The project or a transcript changed since the read. Read again, redo the edit |
-| `changed_words` | A word is not in its line. Restore it |
+| `changed_words` | A word is not in its line, or the row mixes two lines. Restore the word, or split the row in two |
 | `unknown_line` | An id that is not in the text. Copy a real line |
-| `bad_row` | A row mixes two lines or is malformed |
+| `bad_row` | A row is malformed |
 | `bad_marker` | A `{x}` that is not a number |
 | `bad_header` | The header comment was edited |
 | `invalid_result` | The rebuilt project failed validation. Undo the last edit |
-| `carry_conflict` | Something anchored to the old cut cannot be placed. Cut less around it |
+| `carry_conflict` | Overlays on one track would overlap after the edit. Move or delete one, then apply again |
 
 A refusal writes nothing.
 
