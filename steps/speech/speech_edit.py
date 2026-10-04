@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail
 from lib.speech_apply import apply
+from lib.speech_build import DEFAULT_FEEL, FEELS
 
 
 def main():
@@ -17,6 +18,8 @@ def main():
     parser.add_argument("--text", required=True, help="Absolute path of the edited speech text")
     parser.add_argument("--preview", action="store_true", help="Show the result and change nothing")
     parser.add_argument("--max-pause", type=float, default=None, help="Cap unchanged pauses, in seconds")
+    parser.add_argument("--feel", choices=sorted(FEELS), default=DEFAULT_FEEL,
+                        help="natural keeps more silence at each cut; tight is the sharper cut")
     args = parser.parse_args()
 
     project_path = os.path.abspath(args.project)
@@ -28,7 +31,7 @@ def main():
     with open(text_path, encoding="utf-8") as f:
         text = f.read()
 
-    result = apply(project_path, text, preview=args.preview, max_pause=args.max_pause)
+    result = apply(project_path, text, preview=args.preview, max_pause=args.max_pause, feel=args.feel)
     print(json.dumps(result, ensure_ascii=False))
 
 

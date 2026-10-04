@@ -43,8 +43,10 @@ def snapshot(env):
         return f.read(), commits(env)
 
 
-def apply(env, text, preview=False, max_pause=None):
-    return speech_apply.apply(env.path, text, preview=preview, max_pause=max_pause)
+def apply(env, text, preview=False, max_pause=None, feel="tight"):
+    """Applied tight by default: these tests hold the apply's mechanics on tight's cut (test_speech_feel.py
+    holds natural's)."""
+    return speech_apply.apply(env.path, text, preview=preview, max_pause=max_pause, feel=feel)
 
 
 def refused(env, text, code, capsys, **kw):

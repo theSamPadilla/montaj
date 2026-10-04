@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Fixed (serve): deleting a project with `preserve_assets` keeps its uploaded audio too.** An uploaded music track (`storyboard.music.path`), the voiceover and its takes, and every audio track item inside the project move to `<workspace>/_uploads/` once and are returned in the `preserved` map, by the same rules as clips: a file outside the project maps to itself, a symlink maps to its target, a name already in `_uploads` is never overwritten. A described music track has no file and is untouched. (`serve/routes/projects.py`, `tests/test_server_delete_preserve.py`)
+- **Changed (steps, skills): `speech_edit` cuts softer by default, with a `feel` param.** `natural`, the default, keeps at least 0.18 s at a join where the gaps hold it (a deleted marker included), caps unchanged pauses at 0.45 s unless `max-pause` is passed, and pads a hard cut 0.08 s after the last word and 0.05 s before the next. `tight` is the previous cut, byte for byte. (`lib/speech_build.py`, `lib/speech_apply.py`, `steps/speech/speech_edit.py`, `steps/speech/speech_edit.json`, `skills/speech-edit/SKILL.md`, `tests/test_speech_feel.py`, `tests/goldens/speech_edit_tight.json`)
 
 ## v5.23.1
 

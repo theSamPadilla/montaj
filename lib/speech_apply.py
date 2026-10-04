@@ -17,7 +17,7 @@ from lib import speech_text
 from lib.common import fail
 from lib.project_tracks import normalize_tracks
 from lib.project_versions import commit_version, is_own_repo
-from lib.speech_build import items_from_runs, runs_from_rows
+from lib.speech_build import DEFAULT_FEEL, items_from_runs, runs_from_rows
 from lib.speech_carry import TimeMap, carry, words_by_src
 
 # engine/validate.py imports its sibling validate_step by bare name, so engine/ must be on the path.
@@ -74,7 +74,8 @@ def _noop(report, warnings) -> dict:
     return {"applied": False, "noop": True, **report.as_dict(), "warnings": warnings}
 
 
-def apply(project_path: str, text: str, *, preview: bool, max_pause: float | None) -> dict:
+def apply(project_path: str, text: str, *, preview: bool, max_pause: float | None,
+          feel: str = DEFAULT_FEEL) -> dict:
     project_path = os.path.abspath(project_path)
     project_dir = os.path.dirname(project_path)
     with open(project_path, encoding="utf-8") as f:
@@ -90,7 +91,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     fps = (project.get("settings") or {}).get("fps") or 30
 
     runs, report = runs_from_rows(rows, derived, derived.silences,
-                                  max_pause, old_items, project_dir)
+                                  max_pause, old_items, project_dir, feel=feel)
     if not any(r.kind == "speech" for r in runs):
         fail("empty_cut", "The edit leaves no speech in the cut. Delete words or rows, but keep some speech.")
     reserved = {it["id"] for i, t in enumerate(tracks) if i != ti for it in t["items"]}

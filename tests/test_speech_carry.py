@@ -58,13 +58,14 @@ def all_ids(project, skip_track=0):
 
 
 def run(fx, text, project=None, derived=None):
-    """The apply's pipeline up to the write: parse, build (T8), time map, carry (T9)."""
+    """The apply's pipeline up to the write: parse, build (T8), time map, carry (T9). Built tight: the
+    times below are tight's cut (tests/test_speech_feel.py holds the natural one)."""
     project = project if project is not None else fx.project
     before = copy.deepcopy(project)
     d = derived if derived is not None else (fx.derived if project is fx.project else derive(project, fx.pdir))
     old = copy.deepcopy(speech_items(project))
     _, rows = parse(text)
-    runs, rep = runs_from_rows(rows, d, fx.sils, None, old)
+    runs, rep = runs_from_rows(rows, d, fx.sils, None, old, feel="tight")
     items, prov = items_from_runs(runs, old, FPS, report=rep, sources=project.get("sources"),
                                   reserved_ids=all_ids(project))
     tmap = TimeMap(old, items, prov, words=words_by_src(d))

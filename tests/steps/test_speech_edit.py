@@ -83,11 +83,31 @@ def test_max_pause_reaches_apply(tmp_path):
 def test_no_change_is_a_noop(tmp_path):
     d = fixture_copy(tmp_path)
     (d / "speech-text.md").write_text(read_text(d), encoding="utf-8")
-    proc = edit(d)
+    proc = edit(d, "--feel", "tight")
     assert proc.returncode == 0, proc.stderr
     out = json.loads(proc.stdout)
     assert out["applied"] is False and out["noop"] is True
     assert out["clamped"] == [] and out["hardCuts"] == 0 and out["warnings"] == []
+
+
+def test_natural_is_the_default_and_caps_unchanged_pauses_at_045(tmp_path):
+    # the fixture holds pauses over 0.45 s (A4 {1.60}, A11 {0.48}, ...): natural caps them unasked, once
+    d = fixture_copy(tmp_path)
+    (d / "speech-text.md").write_text(read_text(d), encoding="utf-8")
+    assert json.loads(edit(d, "--preview").stdout) == json.loads(edit(d, "--preview", "--feel", "natural").stdout)
+    out = json.loads(edit(d).stdout)
+    assert out["applied"] is True and out["cut"] == [] and out["hardCuts"] == 0
+    assert out["pauses"] and all(p["to"] == 0.45 for p in out["pauses"]), out["pauses"]
+    (d / "speech-text.md").write_text(read_text(d), encoding="utf-8")
+    again = json.loads(edit(d).stdout)
+    assert again["applied"] is False and again["noop"] is True
+
+
+def test_feel_is_declared_like_argparse_takes_it():
+    feel = next(p for p in SCHEMA["params"] if p["name"] == "feel")
+    assert (feel["type"], feel["default"], feel["options"]) == ("enum", "natural", ["natural", "tight"])
+    proc = run_step("speech_edit.py", "--help")
+    assert "--feel {natural,tight}" in proc.stdout
 
 
 def test_changed_word_fails_and_leaves_project_alone(tmp_path):
@@ -133,3 +153,20 @@ def test_serve_resolves_a_project_id(tmp_path, monkeypatch):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["preview"] is True and "A4" in json.dumps(body["cut"])
+
+
+def test_serve_takes_feel_and_refuses_an_unknown_one(tmp_path, monkeypatch):
+    import serve.server
+    ws = tmp_path / "Montaj"
+    ws.mkdir()
+    d = fixture_copy(ws)
+    delete_line(d)
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(ws))
+    monkeypatch.setattr(serve.server, "HEADLESS", True)
+    body = {"project": str(d / "project.json"), "text": str(d / "speech-text.md"), "preview": True}
+    with TestClient(app, raise_server_exceptions=False) as client:
+        ok = client.post("/api/steps/speech_edit", json={**body, "feel": "tight"})
+        bad = client.post("/api/steps/speech_edit", json={**body, "feel": "loose"})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["pauses"] == []          # tight: no cap of its own, so only the deleted line changes
+    assert bad.status_code == 422 and "feel" in bad.text

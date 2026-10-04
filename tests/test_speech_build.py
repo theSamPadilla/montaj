@@ -45,12 +45,13 @@ def speech_items(project):
     return project["tracks"][0]["items"]
 
 
-def build(fx, text, max_pause=None, project=None, derived=None, reserved=()):
+def build(fx, text, max_pause=None, project=None, derived=None, reserved=(), feel="tight"):
+    """Built tight by default: the numbers in this file are tight's cut (test_speech_feel.py holds natural's)."""
     project = project if project is not None else fx.project
     d = derived if derived is not None else fx.derived
     old = copy.deepcopy(speech_items(project))
     _, rows = parse(text)
-    runs, rep = runs_from_rows(rows, d, fx.sils, max_pause, old)
+    runs, rep = runs_from_rows(rows, d, fx.sils, max_pause, old, feel=feel)
     items, prov = items_from_runs(runs, old, FPS, report=rep, sources=project.get("sources"),
                                   reserved_ids=reserved)
     return SimpleNamespace(runs=runs, report=rep, items=items, prov=prov, old=old)
@@ -112,10 +113,10 @@ def cut_edges(fx, runs):
     return out
 
 
-def assert_cut_invariant(fx, runs, report):
+def assert_cut_invariant(fx, runs, report, pad=HARD_CUT_PAD_S):
     """A cut never lands inside a refined word. A placed edge is either in a certain gap between two
     consecutive refined words (or at the media's start/end), or it is a counted hard cut sitting at
-    a word edge with HARD_CUT_PAD_S. Returns (placed edges, hard cuts)."""
+    a word edge with `pad` (the feel's hard_cut_pad; tight's by default). Returns (placed edges, hard cuts)."""
     W = fx.words
     gaps = [(W[i].end, W[i + 1].start) for i in range(len(W) - 1)
             if (i, i + 1) not in fx.uncertain and W[i + 1].start - W[i].end > EPS]   # glued words have no gap
@@ -126,7 +127,7 @@ def assert_cut_invariant(fx, runs, report):
         inside = [w.text for w in W if w.start + EPS < t < w.end - EPS]
         if is_hard:
             hard += 1
-            assert any(abs(t - (w.end + HARD_CUT_PAD_S[0])) < EPS or abs(t - (w.start - HARD_CUT_PAD_S[1])) < EPS
+            assert any(abs(t - (w.end + pad[0])) < EPS or abs(t - (w.start - pad[1])) < EPS
                        for w in W), f"hard cut at {t:.4f} is not a word edge with its pad"
             continue
         assert not inside, f"cut at {t:.4f} lands inside {inside} and is not counted as a hard cut"

@@ -19,7 +19,7 @@ Cut speech by editing its words, not by doing timestamp arithmetic. `speech_text
 
 1. Run `speech_text` (params: `project`, `track`, `unused`). Read the file at the result's `path` (`speech-text.md` in the project folder).
 2. Edit the file: with your edit tool, or in the app by rewriting it with `write_file`.
-3. Run `speech_edit` with `text` = the file path and `preview`. Read `cut`, `flagged` and `hardCuts`.
+3. Run `speech_edit` with `text` = the file path and `preview`. Read `cut`, `flagged` and `hardCuts`. It cuts with `feel` `natural` by default, which keeps some air at each cut; pass `feel: "tight"` only when the user asks for a tighter cut.
 4. Run it again without `preview`. Read the new text it returns and work from that.
 
 After `stale`, read again and redo the edit. Never patch the stamp in the header.
@@ -66,7 +66,7 @@ A7 um so the next thing is
 | cut words | delete them from the row |
 | cut a line | delete the row (or every word, leaving only `A12`) |
 | shorten a pause | change the number: `{0.48}` to `{0.25}` |
-| cut a pause to the minimum (0.08 s) | delete the marker |
+| cut a pause to the minimum (0.18 s, 0.08 s with `tight`) | delete the marker |
 | move | move the row |
 | repeat | copy the row |
 | use an unused take, or restore cut words | copy the line from `## Unused` into `## Cut`, then delete the words you do not want |
@@ -81,7 +81,7 @@ A pause never grows past what the source has; it is clamped and reported in `cla
 - Retake: keep the last complete attempt, unless an earlier one is the only complete one. Keep any setup the later attempt does not repeat.
 - Never stitch fragments of two attempts into one sentence.
 - When unsure, cut less.
-- Pauses: cap at 0.3 s for a talking head, 0.5 s for tutorials and explainers, longer before a topic change. Never cut a pause to nothing between sentences. `max-pause` caps every pause the text did not set itself.
+- Pauses: `natural` caps every pause the text did not set at 0.45 s, which suits a talking head. Pass `max-pause` only for another cap: 0.5 s or more for tutorials and explainers. Write a longer marker before a topic change. Never cut a pause to nothing between sentences. `max-pause` caps every pause the text did not set itself.
 - Tell the user what you cut by what was said, never by line ids.
 
 ## Refusals

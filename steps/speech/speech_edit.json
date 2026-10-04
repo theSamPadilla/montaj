@@ -7,6 +7,7 @@
     {"name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json"},
     {"name": "text", "type": "path", "required": true, "description": "Absolute path of the edited speech text (speech-text.md from speech_text)."},
     {"name": "preview", "type": "bool", "default": false, "description": "Show the result and change nothing."},
-    {"name": "max-pause", "type": "float", "required": false, "min": 0.08, "max": 2.0, "description": "Cap every pause the text did not change, in seconds. 0.3 suits a talking head."}
+    {"name": "max-pause", "type": "float", "required": false, "min": 0.08, "max": 2.0, "description": "Cap every pause the text did not change, in seconds. Default 0.45 with feel natural, none with tight."},
+    {"name": "feel", "type": "enum", "default": "natural", "options": ["natural", "tight"], "description": "natural keeps more silence at each cut (0.18 s at least where the gaps hold it, wider pads at a hard cut). tight is the sharper cut: use it only when the user asks for a tighter cut."}
   ]
 }

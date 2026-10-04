@@ -22,9 +22,10 @@ Where a cut lands
 - **Kept pause.** The pause kept at a join is the sum of the markers written at its positions.
   A marker the text did not change (same value, same neighbouring words as the derived row) counts
   as its exact old value, so an unedited text never moves an edge by the 2-decimal rounding. With
-  no marker written: `MIN_PAUSE_S` when the old cut had a marker between `a` and `b` (the agent
-  deleted it), otherwise the larger of the gap after `a` and the gap before `b` (the natural
-  pause). `max_pause` caps the kept pause of a join only when no marker at that join was edited,
+  no marker written: the feel's `min_pause` when the old cut had a marker between `a` and `b` (the
+  agent deleted it), otherwise the larger of the gap after `a` and the gap before `b` (the natural
+  pause), raised to the feel's `floor`. `max_pause` (the call's, else the feel's) caps the kept
+  pause of a join only when no marker at that join was edited,
   and never splits an uncertain gap: where that pause really lies is unknown, so a cut the text did
   not ask for could take a spoken word (on the fixture, the quiet "I" whisper placed at 16.98 s is
   spoken at about 17.4 s, inside the gap that follows).
@@ -51,12 +52,17 @@ Where a cut lands
   words at its start) is used too: only the deleted words are cut out and their silence is kept as a
   silence-only run (`Run.words` empty).
 - **Hard cut.** When the gap on a cut's side is empty (glued words) or uncertain (the inside word is deleted), the edge sits at
-  the word edge padded by `HARD_CUT_PAD_S` (kept after the last word, before the next) and counts
+  the word edge padded by the feel's `hard_cut_pad` (kept after the last word, before the next) and counts
   as a hard cut. A source's own start and end are not cuts. So: an edge lies inside a refined word
   only when it is a counted hard cut.
 
 Times are source seconds; pause values are source seconds too (as derive shows them), so an item
 at `speed` 2 plays a 0.4 s marker as 0.2 s.
+
+Feel (`FEELS`): `tight` is the cut this module made before feels existed, byte for byte (min pause
+0.08, no floor, no cap of its own, pads 0.04/0.02). `natural`, the default, keeps more silence:
+min pause and floor 0.18, unchanged pauses capped at 0.45 unless the call passes `max_pause`,
+pads 0.08/0.05.
 """
 import copy
 import math
@@ -70,8 +76,32 @@ from lib.speech_align import align_row
 from lib.speech_lines import norm
 
 SNAP_WINDOW_S = 0.15
-HARD_CUT_PAD_S = (0.04, 0.02)   # kept after the last word, kept before the next word
-MIN_PAUSE_S = 0.08
+HARD_CUT_PAD_S = (0.04, 0.02)   # tight: kept after the last word, kept before the next word
+MIN_PAUSE_S = 0.08              # tight: the pause kept where the text deleted a marker
+
+
+@dataclass(frozen=True)
+class Feel:
+    """How soft the cut sounds.
+
+    min_pause: the pause kept where the text deleted a marker.
+    floor: the least pause kept at a join (or free side) the text wrote no marker for, as far as the gaps
+      beside it hold it; 0 keeps their natural pause. A marker the text wrote is never floored.
+    max_pause: the cap on every pause the text did not change, when the call passes none.
+    hard_cut_pad: kept after the last word and before the next word at a hard cut.
+    """
+    min_pause: float
+    floor: float
+    max_pause: float | None
+    hard_cut_pad: tuple
+
+
+# tight is the cut speech_edit made before feels existed, byte for byte; natural is the default.
+FEELS = {
+    "natural": Feel(min_pause=0.18, floor=0.18, max_pause=0.45, hard_cut_pad=(0.08, 0.05)),
+    "tight": Feel(min_pause=MIN_PAUSE_S, floor=0.0, max_pause=None, hard_cut_pad=HARD_CUT_PAD_S),
+}
+DEFAULT_FEEL = "natural"
 
 _TOUCH_S = 0.001        # adjacent runs of one source whose spans touch this closely merge
 _MARK_TOL_S = 0.005     # half the 2-decimal step a marker is written with
@@ -159,12 +189,13 @@ def _key(item: dict, project_dir) -> str | None:
 class _Source:
     """One source's refined words and the gaps between them."""
 
-    def __init__(self, words, uncertain, sils, end, inside=frozenset()):
+    def __init__(self, words, uncertain, sils, end, inside=frozenset(), pad=HARD_CUT_PAD_S):
         self.words = words            # refined Words, words[i].idx == i
         self.uncertain = uncertain    # {(i, i + 1)}
         self.inside = inside          # indexes of words whisper placed inside a pause
         self.sils = sils              # measured silences [(start, end)]
         self.end = end                # the source's end, as far as the project knows it
+        self.pad = pad                # the feel's hard_cut_pad
 
     def gap_after(self, i):
         """(lo, hi, certain) of the gap after word i (to the source's end after the last word)."""
@@ -195,7 +226,7 @@ class _Source:
         if i in self.inside:
             return hi, False                                  # the real word is somewhere in the gap: keep it whole
         if hi - lo <= _EPS or not certain:
-            return round(min(lo + HARD_CUT_PAD_S[0], max(self.end, lo)), 6), True
+            return round(min(lo + self.pad[0], max(self.end, lo)), 6), True
         return self.snap(lo + max(0.0, min(amount, hi - lo)), lo, hi), False
 
     def before(self, i, amount):
@@ -206,7 +237,7 @@ class _Source:
         if i in self.inside:
             return lo, False                                  # the real word is somewhere in the gap: keep it whole
         if hi - lo <= _EPS or not certain:
-            return round(max(0.0, hi - HARD_CUT_PAD_S[1]), 6), True
+            return round(max(0.0, hi - self.pad[1]), 6), True
         return self.snap(hi - max(0.0, min(amount, hi - lo)), lo, hi), False
 
     def capacity(self, lo, hi, certain):
@@ -300,10 +331,13 @@ def _marks_by_word(row, matched, line, order):
 
 
 class _Build:
-    def __init__(self, rows, derived, sils_by_src, max_pause, old_items, project_dir):
+    def __init__(self, rows, derived, sils_by_src, max_pause, old_items, project_dir, feel=DEFAULT_FEEL):
+        if feel not in FEELS:
+            fail("invalid_param", f"Unknown feel {feel!r}: use one of {', '.join(sorted(FEELS))}.")
+        self.feel = FEELS[feel]
         self.rows = rows
         self.d = derived
-        self.max_pause = max_pause
+        self.max_pause = max_pause if max_pause is not None else self.feel.max_pause
         self.report = Report()
         self.project_dir = project_dir
         self.items = list(old_items)
@@ -327,7 +361,7 @@ class _Build:
                          for k in ("outPoint", "sourceDuration") if isinstance(it.get(k), (int, float))])
             unc = {(i, j) for lt, i, j in self.d.uncertain if lt == letter}
             inside = frozenset(i for lt, i in self.d.inside_words if lt == letter)
-            out[src] = _Source(words, unc, sils, end, inside)
+            out[src] = _Source(words, unc, sils, end, inside, pad=self.feel.hard_cut_pad)
         return out
 
     def _metas(self):
@@ -429,9 +463,9 @@ class _Build:
         if any(s.kind == "value" for s in specs):
             p = fixed + sum(s.amount for s in specs if s.kind == "value")
         elif deleted:
-            p = fixed + MIN_PAUSE_S
+            p = fixed + self.feel.min_pause
         else:
-            p = max(natural, fixed)
+            p = max(natural, fixed, self.feel.floor)
         capped = self.max_pause is not None and not edited and p > self.max_pause + _EPS
         if capped:
             p = self.max_pause
@@ -782,18 +816,20 @@ def _lcs_members(a, b):
 
 
 def runs_from_rows(rows, derived, sils_by_src, max_pause: float | None, old_items,
-                   project_dir: str | None = None) -> tuple[list[Run], Report]:
+                   project_dir: str | None = None, *, feel: str = DEFAULT_FEEL) -> tuple[list[Run], Report]:
     """Source runs for the edited rows, in timeline order, and the report of what the build did.
 
     rows: `speech_text.parse(text)[1]`. derived: `speech_text.derive()` of the CURRENT project (the
     one the text was read from). sils_by_src: measured silences per source, keyed like
     `derived.letters` (`speech_pauses.silences` of the media derive read). max_pause: cap for every
-    pause the text did not change, or None. old_items: the speech track's current items, as in
-    project.json; project_dir resolves their relative paths the way derive() did.
-    Refuses with `fail()`: alignment refusals from `speech_align.align_row`, and `unknown_row` for a
-    `-- ... no speech` or `-- image` row that matches no item (those rows are moved or deleted, not edited).
+    pause the text did not change, or None for the feel's own. old_items: the speech track's current
+    items, as in project.json; project_dir resolves their relative paths the way derive() did.
+    feel: a key of FEELS.
+    Refuses with `fail()`: alignment refusals from `speech_align.align_row`, `unknown_row` for a
+    `-- ... no speech` or `-- image` row that matches no item (those rows are moved or deleted, not edited),
+    and `invalid_param` for an unknown feel.
     """
-    return _Build(rows, derived, sils_by_src, max_pause, old_items, project_dir).build()
+    return _Build(rows, derived, sils_by_src, max_pause, old_items, project_dir, feel).build()
 
 
 # ------------------------------------------------------------------ items
