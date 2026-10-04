@@ -7,6 +7,7 @@ timeline, so splitting, repeating or reordering clips never renames a line.
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass, field
 
 from lib import speech_lines, speech_pauses
@@ -274,3 +275,93 @@ def render(d: Derived, title: str, unused: str = "lines") -> str:
             text = " ".join(w.text for w in ln.words)
             out.append(f"{'*' if ln.id in d.partly else ''}{ln.id} {text}")
     return "\n".join(out) + "\n"
+
+
+@dataclass
+class ParsedRow:
+    """One row of the Cut section as written in the text file.
+
+    kind: "speech" | "gap" | "nospeech" | "notranscript" | "image".
+    Speech rows carry line ("A12"), letter ("A"), number (12), tokens (words as written, markers removed)
+    and pauses keyed by position (0 = lead-in, k = before token k, len(tokens) = tail), in seconds.
+    gap/image rows carry dur; nospeech/notranscript rows carry label (source letter), t0 and t1;
+    image rows carry label (file name). lineno is the 1-based line in the text file.
+    """
+    kind: str
+    lineno: int
+    line: str | None = None
+    letter: str | None = None
+    number: int | None = None
+    tokens: list = field(default_factory=list)
+    pauses: dict = field(default_factory=dict)
+    label: str | None = None
+    t0: float | None = None
+    t1: float | None = None
+    dur: float | None = None
+
+
+_HEADER_RE = re.compile(r"^<!--\s*montaj speech text v1\s*·\s*track\s+(\S+)\s*·\s*stamp\s+(\S+)\s*-->\s*$")
+_SPEECH_RE = re.compile(r"^\*?([A-Z]+)(\d+)\s+(.*)$")
+_MARKER_RE = re.compile(r"^\{(\d+(?:\.\d+)?)\}$")
+_NUM = r"(\d+(?:\.\d+)?)"
+_GAP_RE = re.compile(rf"^--\s+gap\s+{_NUM}$")
+_NOSPEECH_RE = re.compile(rf"^--\s+([A-Z]+)\s+{_NUM}-{_NUM}\s+(no speech|no transcript)$")
+_IMAGE_RE = re.compile(rf"^--\s+image\s+(\S.*?)\s+{_NUM}$")
+
+
+def _parse_speech(m, n: int) -> ParsedRow:
+    letter, number, rest = m.group(1), int(m.group(2)), m.group(3)
+    tokens, pauses = [], {}
+    for tok in rest.split():
+        if "{" in tok:
+            mm = _MARKER_RE.match(tok)
+            if not mm:
+                fail("bad_marker", f"Line {n}: bad pause marker {tok!r}; write {{seconds}} as its own word, e.g. {{0.50}}")
+            if len(tokens) in pauses:
+                fail("bad_marker", f"Line {n}: two pause markers in a row")
+            pauses[len(tokens)] = float(mm.group(1))
+        elif "}" in tok:
+            fail("bad_marker", f"Line {n}: stray }} in {tok!r}")
+        else:
+            tokens.append(tok)
+    if not tokens:
+        fail("bad_row", f"Line {n}: row {letter}{number} has no words; delete the row instead")
+    return ParsedRow("speech", n, f"{letter}{number}", letter, number, tokens, pauses)
+
+
+def parse(text: str) -> tuple:
+    """Parse the edited speech text into (header, rows). Rows are the ## Cut section only."""
+    lines = text.splitlines()
+    header = None
+    for n, raw in enumerate(lines, 1):
+        if raw.strip():
+            m = _HEADER_RE.match(raw.strip())
+            if m:
+                header = {"track": m.group(1), "stamp": m.group(2)}
+            break
+    if header is None:
+        fail("bad_header", "Line 1: the text must start with the <!-- montaj speech text v1 · track <id> · stamp <stamp> --> comment")
+    rows, section = [], None
+    for n, raw in enumerate(lines, 1):
+        s = raw.strip()
+        if s.startswith("## "):
+            section = s[3:].strip().lower()
+            continue
+        if section != "cut" or not s:
+            continue
+        m = _SPEECH_RE.match(s)
+        if m:
+            rows.append(_parse_speech(m, n))
+        elif s.startswith("--"):
+            if (m := _GAP_RE.match(s)):
+                rows.append(ParsedRow("gap", n, dur=float(m.group(1))))
+            elif (m := _NOSPEECH_RE.match(s)):
+                kind = "nospeech" if m.group(4) == "no speech" else "notranscript"
+                rows.append(ParsedRow(kind, n, label=m.group(1), t0=float(m.group(2)), t1=float(m.group(3))))
+            elif (m := _IMAGE_RE.match(s)):
+                rows.append(ParsedRow("image", n, label=m.group(1), dur=float(m.group(2))))
+            else:
+                fail("bad_row", f"Line {n}: unrecognised row {s!r}")
+        else:
+            fail("bad_row", f"Line {n}: unrecognised row {s!r}; a speech row starts with a line id like A12")
+    return header, rows

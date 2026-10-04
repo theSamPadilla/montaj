@@ -223,3 +223,74 @@ def test_no_transcript_row_and_warning(tmp_path):
 def test_stamp_constants_are_text_only():
     from lib import speech_lines, speech_pauses
     assert set(speech_text._STAMP_CONSTANTS) <= set(dir(speech_lines)) | set(dir(speech_pauses))
+
+
+# ---- parse (T6) ----
+
+HDR = "<!-- montaj speech text v1 · track trk-0 · stamp abc123def456 -->\n"
+
+
+def parse_fail(text, capsys):
+    with pytest.raises(SystemExit):
+        speech_text.parse(text)
+    return json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+
+
+def test_parse_round_trips_derived_rows(tmp_path):
+    project, pdir = load_project(tmp_path)
+    d = derive(project, pdir)
+    header, rows = speech_text.parse(render(d, project["id"]))
+    assert header == {"track": d.track_id, "stamp": d.stamp}
+    assert len(rows) == len(d.cut)
+    for p, r in zip(rows, d.cut):
+        assert p.kind == r.kind
+        if r.kind == "speech":
+            assert p.line == r.line
+            assert p.tokens == [w.text for w in r.words]
+            assert p.pauses == {k: float("%.2f" % v) for k, v in r.pauses.items()}
+
+
+def test_parse_all_row_kinds_and_fields():
+    text = (HDR + "# t\n\nA = a.mp4\n\n## Cut\n\n"
+            "A12 {0.48} hey there {0.30} you {0.20}\n"
+            "-- gap 2.00\n"
+            "-- B 12.40-15.50 no speech\n"
+            "-- B 1.00-2.50 no transcript\n"
+            "-- image photo.png 3.00\n"
+            "\n## Unused\n\n*A9 not parsed {{ junk\n")
+    header, rows = speech_text.parse(text)
+    assert header == {"track": "trk-0", "stamp": "abc123def456"}
+    s = rows[0]
+    assert (s.kind, s.line, s.letter, s.number, s.lineno) == ("speech", "A12", "A", 12, 8)
+    assert s.tokens == ["hey", "there", "you"]
+    assert s.pauses == {0: 0.48, 2: 0.30, 3: 0.20}
+    assert (rows[1].kind, rows[1].dur) == ("gap", 2.0)
+    assert (rows[2].kind, rows[2].label, rows[2].t0, rows[2].t1) == ("nospeech", "B", 12.4, 15.5)
+    assert rows[3].kind == "notranscript"
+    assert (rows[4].kind, rows[4].label, rows[4].dur) == ("image", "photo.png", 3.0)
+    assert len(rows) == 5
+
+
+def test_parse_leading_star_dropped_and_repeated_ids_kept():
+    _, rows = speech_text.parse(HDR + "## Cut\n*A3 one two\nA3 one\nAA10 x\n")
+    assert [r.line for r in rows] == ["A3", "A3", "AA10"]
+    assert rows[2].letter == "AA" and rows[2].number == 10
+
+
+def test_parse_missing_header(capsys):
+    e = parse_fail("## Cut\nA1 hi\n", capsys)
+    assert e["error"] == "bad_header"
+
+
+def test_parse_bad_marker(capsys):
+    for bad in ("A1 {oops} hi", "A1 hi {0.5", "A1 hi{0.5}", "A1 {0.5}{0.6} hi", "A1 {-1} hi"):
+        e = parse_fail(HDR + "## Cut\n\n" + bad + "\n", capsys)
+        assert e["error"] == "bad_marker", bad
+        assert "Line 4" in e["message"]
+
+
+def test_parse_bad_row(capsys):
+    for bad in ("hello there", "-- gap", "-- gap x", "-- A 1-2 weird", "-- unknown thing", "A1", "A1 {0.5}"):
+        e = parse_fail(HDR + "## Cut\n\n" + bad + "\n", capsys)
+        assert e["error"] == "bad_row", bad
+        assert "Line 4" in e["message"]
