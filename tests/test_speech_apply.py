@@ -1,0 +1,206 @@
+"""speech_apply: one write per speech edit, with a preview, a version first and nothing on refusal (PL44 T10).
+
+Runs on the real speech fixture of tests/fixtures/speech_text (README there), copied to a tmp git repo.
+"""
+import json
+import os
+import shutil
+import subprocess
+
+import pytest
+
+from lib import speech_apply
+from lib.speech_text import derive, render
+
+FIX = os.path.join(os.path.dirname(__file__), "fixtures", "speech_text")
+GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@local"]
+
+
+def _git(pdir, *args):
+    return subprocess.run([*GIT, *args], cwd=pdir, capture_output=True, text=True, check=True).stdout
+
+
+@pytest.fixture
+def env(tmp_path):
+    pdir = tmp_path / "proj"
+    shutil.copytree(FIX, pdir)
+    pj = pdir / "project.json"
+    pj.write_text(pj.read_text().replace("/FIXTURE", str(pdir)))
+    _git(pdir, "init", "-q")
+    _git(pdir, "add", "project.json")
+    _git(pdir, "commit", "-q", "-m", "init")
+    project = json.loads(pj.read_text())
+    text = render(derive(project, str(pdir)), project.get("name") or project["id"])
+    return type("E", (), {"dir": str(pdir), "path": str(pj), "text": text, "project": project})
+
+
+def commits(env):
+    return _git(env.dir, "rev-list", "--count", "HEAD").strip()
+
+
+def snapshot(env):
+    with open(env.path, "rb") as f:
+        return f.read(), commits(env)
+
+
+def apply(env, text, preview=False, max_pause=None):
+    return speech_apply.apply(env.path, text, preview=preview, max_pause=max_pause)
+
+
+def refused(env, text, code, capsys, **kw):
+    before = snapshot(env)
+    with pytest.raises(SystemExit):
+        apply(env, text, **kw)
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == code, err
+    assert snapshot(env) == before
+    return err
+
+
+def delete_row(text, prefix):
+    lines = text.split("\n")
+    hit = [i for i, ln in enumerate(lines) if ln.startswith(prefix + " ")]
+    assert len(hit) == 1, prefix
+    del lines[hit[0]]
+    return "\n".join(lines)
+
+
+def test_noop_writes_nothing(env):
+    before = snapshot(env)
+    mtime = os.stat(env.path).st_mtime_ns
+    r = apply(env, env.text)
+    assert r["applied"] is False and r["noop"] is True
+    assert snapshot(env) == before and os.stat(env.path).st_mtime_ns == mtime
+    assert not os.path.exists(os.path.join(env.dir, "speech-text.md"))
+
+
+def test_preview_writes_nothing_and_matches_apply(env):
+    text = delete_row(env.text, "A4")
+    before = snapshot(env)
+    p = apply(env, text, preview=True)
+    assert p["applied"] is False and p["preview"] is True and p["noop"] is False
+    assert snapshot(env) == before
+    assert not os.path.exists(os.path.join(env.dir, "speech-text.md"))
+    a = apply(env, text)
+    assert a["applied"] is True and a["preview"] is False
+    for k in ("after", "before", "cut", "moved", "pauses", "clamped", "hardCuts", "carried", "flagged", "text"):
+        assert a[k] == p[k], k
+    assert a["cut"] and a["cut"][0]["line"] == "A4"
+
+
+def test_clean_tree_makes_no_version_commit(env):
+    # HEAD already holds the old project, so there is nothing to snapshot
+    n = commits(env)
+    r = apply(env, delete_row(env.text, "A4"))
+    assert r["applied"] is True and r["version"] is False and commits(env) == n
+
+
+def test_apply_makes_one_version_holding_the_old_project(env):
+    # the old project has unsaved changes (as after an editor save): the version captures them
+    p = json.loads(open(env.path).read())
+    p["editingPrompt"] = "unsaved"
+    open(env.path, "w").write(json.dumps(p, indent=2))
+    old = snapshot(env)[0]
+    n = int(commits(env))
+    r = apply(env, delete_row(env.text, "A4"))
+    assert r["version"] is True and int(commits(env)) == n + 1
+    assert _git(env.dir, "log", "-1", "--format=%s").strip() == "version: before speech edit"
+    assert _git(env.dir, "show", "HEAD:project.json").encode() == old
+    assert open(env.path, "rb").read() != old
+    assert r["after"]["duration"] < r["before"]["duration"]
+    assert json.loads(open(env.path).read())["tracks"][0]["items"]
+    # the sidecar text is the re-derived one, and the result carries it
+    md = open(os.path.join(env.dir, "speech-text.md")).read()
+    assert md == r["text"]
+    assert not [f for f in os.listdir(env.dir) if ".tmp" in f]
+
+
+def test_applied_text_is_stable(env):
+    r = apply(env, delete_row(env.text, "A4"))
+    again = apply(env, r["text"])
+    assert again["applied"] is False and again["noop"] is True
+
+
+def test_changed_words_refused(env, capsys):
+    lines = env.text.split("\n")
+    i = next(i for i, ln in enumerate(lines) if ln.startswith("A1 "))
+    toks = lines[i].split(" ")
+    toks[1] = "zzzxqv"
+    lines[i] = " ".join(toks)
+    refused(env, "\n".join(lines), "changed_words", capsys)
+
+
+def test_stale_after_trim(env, capsys):
+    p = json.loads(open(env.path).read())
+    p["tracks"][0]["items"][0]["outPoint"] += 0.001
+    open(env.path, "w").write(json.dumps(p, indent=2))
+    _git(env.dir, "add", "project.json")
+    _git(env.dir, "commit", "-q", "-m", "trim")
+    err = refused(env, env.text, "stale", capsys)
+    assert "speech_text" in err["message"]
+
+
+def test_stale_after_sidecar_change(env, capsys):
+    with open(os.path.join(env.dir, "speech.json"), "a") as f:
+        f.write(" ")
+    refused(env, env.text, "stale", capsys)
+
+
+def test_stale_wrong_track(env, capsys):
+    refused(env, env.text.replace("track trk-0", "track trk-9", 1), "stale", capsys)
+
+
+def test_unknown_line_refused(env, capsys):
+    t = env.text.replace("\n\n## Unused", "\nA999 hello there\n\n## Unused", 1)
+    refused(env, t, "unknown_line", capsys)
+
+
+def test_bad_row_refused(env, capsys):
+    t = env.text.replace("\n\n## Unused", "\nwhat is this\n\n## Unused", 1)
+    refused(env, t, "bad_row", capsys)
+
+
+def test_atomic_when_a_stage_after_the_build_raises(env, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(speech_apply, "carry", boom)
+    before = snapshot(env)
+    with pytest.raises(RuntimeError):
+        apply(env, delete_row(env.text, "A4"))
+    assert snapshot(env) == before
+    assert not [f for f in os.listdir(env.dir) if ".tmp" in f or f == "speech-text.md"]
+
+
+def test_atomic_when_the_write_fails_after_the_version(env, monkeypatch):
+    # a failure inside the replace step leaves project.json untouched (the version commit is harmless)
+    old = open(env.path, "rb").read()
+    def boom(*a, **k):
+        raise OSError("disk")
+    monkeypatch.setattr(speech_apply.os, "replace", boom)
+    with pytest.raises(OSError):
+        apply(env, delete_row(env.text, "A4"))
+    assert open(env.path, "rb").read() == old
+    assert not [f for f in os.listdir(env.dir) if ".tmp" in f]
+
+
+def test_invalid_candidate_refused_with_engine_code(env, monkeypatch, capsys):
+    real = speech_apply.carry
+    def bad(project, *a, **k):
+        new, rep = real(project, *a, **k)
+        new["tracks"][0]["volume"] = "loud"
+        return new, rep
+    monkeypatch.setattr(speech_apply, "carry", bad)
+    seen = []
+    real_validate = speech_apply.validate_project
+    def spy(path):
+        seen.append(path)
+        return real_validate(path)
+    monkeypatch.setattr(speech_apply, "validate_project", spy)
+    before = snapshot(env)
+    with pytest.raises(SystemExit):
+        apply(env, delete_row(env.text, "A4"))
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "invalid_result" and "invalid_field" in err["message"]
+    assert snapshot(env) == before
+    # validated outside the project folder, and cleaned up
+    assert seen and not seen[0].startswith(env.dir) and not os.path.exists(os.path.dirname(seen[0]))
