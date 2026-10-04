@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (editor): timeline pins and note pins are about 1.45x bigger and easier to click.** Stem 2px to 3px, label 10px to 14px, the marker strip 16px to 22px, and the click target reaches 104px right of the flag (was 72px) and 3px left of it. (`montaj_assets/editor/src/video/timeline/canvas/{draw.ts,hit-test.ts}`, `montaj_assets/editor/src/video/timeline/canvas/__tests__/pins.test.tsx`)
+
 ## v5.22.3
 
 - **Changed (skills): edit-session treats a revision as one coordinated change.** It now says to read the project fresh, move everything tied to a cut together, keep the user's own edits and check sync afterwards. (`skills/edit-session/SKILL.md`)

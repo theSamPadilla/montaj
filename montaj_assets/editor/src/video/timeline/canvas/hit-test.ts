@@ -25,7 +25,7 @@
 import type { AudioTrack, CaptionSegment, Marker, VisualItem } from '../../../schema'
 import type { TimelinePin } from '../../../types'
 import { canKeyframe, isKeyframed } from '../../keyframeOps'
-import { AUDIO_ITEM_INSET_PX, type TimelineLayout } from './draw'
+import { AUDIO_ITEM_INSET_PX, PIN_HIT_SLOP_PX, PIN_HIT_WIDTH_PX, type TimelineLayout } from './draw'
 import { KEYFRAME_HIT_HALF_WIDTH_PX, KEYFRAME_STRIP_ZONE_HEIGHT_PX, keyframeDiamondX, keyframeUnionTimes } from './keyframe-strip'
 import { timeToX, xToTime, type Viewport } from './viewport'
 
@@ -382,9 +382,9 @@ export function hitTest(
       const x = timeToX(pin.t, viewport)
       if (Math.round(x) + 0.5 < 0) continue
       const right = pin.tEnd !== undefined
-        ? Math.max(x + MARKER_HIT_WIDTH_PX, timeToX(pin.tEnd, viewport))
-        : x + MARKER_HIT_WIDTH_PX
-      if (point.x >= x && point.x <= right) {
+        ? Math.max(x + PIN_HIT_WIDTH_PX, timeToX(pin.tEnd, viewport))
+        : x + PIN_HIT_WIDTH_PX
+      if (point.x >= x - PIN_HIT_SLOP_PX && point.x <= right) {
         return { kind: 'pin', t, pinId: pin.id, pin }
       }
     }

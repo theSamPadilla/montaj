@@ -578,7 +578,7 @@ export const RULER_STEPS_SECONDS = [
  * exactly as it did before this existed, so no existing layout expectation
  * moves.
  */
-export const MARKER_STRIP_HEIGHT_PX = 16
+export const MARKER_STRIP_HEIGHT_PX = 22
 /** Width of a marker's flag stem, and the gap before its label. */
 export const MARKER_FLAG_WIDTH_PX = 2
 export const MARKER_LABEL_GAP_PX = 4
@@ -587,6 +587,19 @@ export const MARKER_LABEL_BASELINE_PX = 11
 /** Longest label drawn, in characters. Past this the name is clipped with an
  *  ellipsis — a marker is a flag, not a notes field. */
 export const MARKER_LABEL_MAX_CHARS = 24
+
+/** A host pin (and so a note pin) is drawn about 1.45x the marker flag so it is
+ *  easy to click: stem 2px -> 3px, label 10px -> 14px, baseline 11px -> 16px,
+ *  stem height 12px -> 18px (strip 16px -> 22px, minus the 2px top and bottom
+ *  inset). `hitTest`'s pin region reads `PIN_HIT_*` from here, so the picture
+ *  and the target cannot drift. */
+export const PIN_FLAG_WIDTH_PX = 3
+export const PIN_LABEL_FONT = '14px ui-sans-serif, system-ui, sans-serif'
+export const PIN_LABEL_BASELINE_PX = 16
+/** Reach right of a pin's flag: the old 72px label region at the same 1.45x. */
+export const PIN_HIT_WIDTH_PX = 104
+/** Extra hit slop left of a pin's stem, so a click a hair off the line lands. */
+export const PIN_HIT_SLOP_PX = 3
 
 export const ROW_RADIUS_PX = 4           // Tailwind `rounded`
 /** Horizontal inset per side between a clip's time span and its drawn body —
@@ -2007,7 +2020,7 @@ export function drawPins(
 ): void {
   if (pins.length === 0) return
   ctx.save()
-  ctx.font = LABEL_FONT
+  ctx.font = PIN_LABEL_FONT
   ctx.textBaseline = 'alphabetic'
   for (const pin of pins) {
     const x = Math.round(timeToX(pin.t, viewport)) + 0.5
@@ -2021,12 +2034,12 @@ export function drawPins(
       ctx.fillRect(x, rect.y + rect.height - 3, xEnd - x, 3)
       ctx.globalAlpha = 1
     }
-    ctx.fillRect(x, rect.y + 2, MARKER_FLAG_WIDTH_PX, rect.height - 4)
+    ctx.fillRect(x, rect.y + 2, PIN_FLAG_WIDTH_PX, rect.height - 4)
     ctx.fillStyle = note ? palette.colors.pinTextNote : palette.colors.pinText
     const label = pin.label.length > MARKER_LABEL_MAX_CHARS
       ? `${pin.label.slice(0, MARKER_LABEL_MAX_CHARS - 1)}…`
       : pin.label
-    ctx.fillText(label, x + MARKER_FLAG_WIDTH_PX + MARKER_LABEL_GAP_PX, rect.y + MARKER_LABEL_BASELINE_PX)
+    ctx.fillText(label, x + PIN_FLAG_WIDTH_PX + MARKER_LABEL_GAP_PX, rect.y + PIN_LABEL_BASELINE_PX)
   }
   ctx.restore()
 }

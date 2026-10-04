@@ -36,6 +36,8 @@ import {
   LIGHT_TIMELINE_PALETTE,
   MARKER_LABEL_MAX_CHARS,
   MARKER_STRIP_HEIGHT_PX,
+  PIN_HIT_SLOP_PX,
+  PIN_HIT_WIDTH_PX,
   TIMELINE_COLORS,
   computeTimelineLayout,
   drawPins,
@@ -43,7 +45,7 @@ import {
   type DrawContext,
   type TimelineScene,
 } from '../draw'
-import { MARKER_HIT_WIDTH_PX, hitTest, isMarkerHit, isPinHit } from '../hit-test'
+import { hitTest, isMarkerHit, isPinHit } from '../hit-test'
 import {
   NO_MODIFIERS,
   createPointerMachine,
@@ -221,6 +223,16 @@ describe('drawPins', () => {
     expect(fillStyles(r)).toContain(TIMELINE_COLORS.pinText)
   })
 
+  it('draws the bigger flag: 3px stem, 18px tall, 14px label that fits the strip', () => {
+    const r = recordingContext()
+    drawPins(r.ctx, PINS, VIEWPORT, STRIP_RECT, 1000)
+    const stem = r.of('fillRect').find(c => c.args[2] === 3)!
+    expect(stem.args[3]).toBe(MARKER_STRIP_HEIGHT_PX - 4)
+    expect(MARKER_STRIP_HEIGHT_PX - 4).toBe(18)
+    expect(r.of('fillText')[0].args[2]).toBe(16)
+    expect(r.of('fillText')[0].args[2] as number).toBeLessThan(MARKER_STRIP_HEIGHT_PX)
+  })
+
   it('draws nothing at all for an empty list', () => {
     const r = recordingContext()
     drawPins(r.ctx, [], VIEWPORT, STRIP_RECT, 1000)
@@ -314,8 +326,15 @@ describe('hitTest resolves a pin', () => {
     expect(hitTest({ x: PIN_X + 40, y: STRIP_Y }, layout, VIEWPORT, { pins: PINS }).kind).toBe('pin')
   })
 
+  it('hits a click the old 72px region missed, and a few px left of the stem', () => {
+    // 72 + 10 right of the flag used to miss; the bigger flag claims it.
+    expect(hitTest({ x: PIN_X + 82, y: STRIP_Y }, layout, VIEWPORT, { pins: PINS }).kind).toBe('pin')
+    expect(hitTest({ x: PIN_X - PIN_HIT_SLOP_PX, y: STRIP_Y }, layout, VIEWPORT, { pins: PINS }).kind).toBe('pin')
+    expect(hitTest({ x: PIN_X - PIN_HIT_SLOP_PX - 2, y: STRIP_Y }, layout, VIEWPORT, { pins: PINS }).kind).not.toBe('pin')
+  })
+
   it('claims nothing past the label region', () => {
-    const hit = hitTest({ x: PIN_X + MARKER_HIT_WIDTH_PX + 10, y: STRIP_Y }, layout, VIEWPORT, { pins: PINS })
+    const hit = hitTest({ x: PIN_X + PIN_HIT_WIDTH_PX + 10, y: STRIP_Y }, layout, VIEWPORT, { pins: PINS })
     expect(hit.kind).not.toBe('pin')
   })
 
@@ -631,6 +650,6 @@ describe('pin tone and range', () => {
     const layout = computeTimelineLayout(bareProject, ranged)
     expect(hitTest({ x: 700 - 1, y: STRIP_Y }, layout, VIEWPORT, { pins: ranged }).kind).toBe('pin')
     const point = computeTimelineLayout(bareProject, PINS)
-    expect(hitTest({ x: PIN_X + MARKER_HIT_WIDTH_PX + 10, y: STRIP_Y }, point, VIEWPORT, { pins: PINS }).kind).not.toBe('pin')
+    expect(hitTest({ x: PIN_X + PIN_HIT_WIDTH_PX + 10, y: STRIP_Y }, point, VIEWPORT, { pins: PINS }).kind).not.toBe('pin')
   })
 })
