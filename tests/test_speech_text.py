@@ -290,7 +290,7 @@ def test_parse_bad_marker(capsys):
 
 
 def test_parse_bad_row(capsys):
-    for bad in ("hello there", "-- gap", "-- gap x", "-- A 1-2 weird", "-- unknown thing", "A1", "A1 {0.5}"):
+    for bad in ("hello there", "-- gap", "-- gap x", "-- A 1-2 weird", "-- unknown thing"):
         e = parse_fail(HDR + "## Cut\n\n" + bad + "\n", capsys)
         assert e["error"] == "bad_row", bad
         assert "Line 4" in e["message"]
@@ -306,3 +306,11 @@ def test_override_track_without_transcript_fails(tmp_path, capsys):
     e = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
     assert e["error"] == "transcript_missing"
     assert "nosidecar.mp4" in e["message"]
+
+
+def test_parse_emptied_speech_row_is_a_deleted_line():
+    _, rows = speech_text.parse(HDR + "## Cut\nA12\n*A13 {0.30}\nA14 {0.30} {0.40}x\n".replace(" {0.40}x", ""))
+    assert [(r.kind, r.line, r.tokens) for r in rows] == [
+        ("speech", "A12", []), ("speech", "A13", []), ("speech", "A14", [])]
+    assert rows[1].pauses == {0: 0.30}
+    assert rows[0].lineno == 3

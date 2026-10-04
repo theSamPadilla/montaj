@@ -284,7 +284,7 @@ class ParsedRow:
     """One row of the Cut section as written in the text file.
 
     kind: "speech" | "gap" | "nospeech" | "notranscript" | "image".
-    Speech rows carry line ("A12"), letter ("A"), number (12), tokens (words as written, markers removed)
+    Speech rows (tokens [] when the row was emptied: a deleted line) carry line ("A12"), letter ("A"), number (12), tokens (words as written, markers removed)
     and pauses keyed by position (0 = lead-in, k = before token k, len(tokens) = tail), in seconds.
     gap/image rows carry dur; nospeech/notranscript rows carry label (source letter), t0 and t1;
     image rows carry label (file name). lineno is the 1-based line in the text file.
@@ -303,7 +303,7 @@ class ParsedRow:
 
 
 _HEADER_RE = re.compile(r"^<!--\s*montaj speech text v1\s*·\s*track\s+(\S+)\s*·\s*stamp\s+(\S+)\s*-->\s*$")
-_SPEECH_RE = re.compile(r"^\*?([A-Z]+)(\d+)\s+(.*)$")
+_SPEECH_RE = re.compile(r"^\*?([A-Z]+)(\d+)(?:\s+(.*))?$")
 _MARKER_RE = re.compile(r"^\{(\d+(?:\.\d+)?)\}$")
 _NUM = r"(\d+(?:\.\d+)?)"
 _GAP_RE = re.compile(rf"^--\s+gap\s+{_NUM}$")
@@ -312,7 +312,7 @@ _IMAGE_RE = re.compile(rf"^--\s+image\s+(\S.*?)\s+{_NUM}$")
 
 
 def _parse_speech(m, n: int) -> ParsedRow:
-    letter, number, rest = m.group(1), int(m.group(2)), m.group(3)
+    letter, number, rest = m.group(1), int(m.group(2)), m.group(3) or ""
     tokens, pauses = [], {}
     for tok in rest.split():
         if "{" in tok:
@@ -326,8 +326,6 @@ def _parse_speech(m, n: int) -> ParsedRow:
             fail("bad_marker", f"Line {n}: stray }} in {tok!r}")
         else:
             tokens.append(tok)
-    if not tokens:
-        fail("bad_row", f"Line {n}: row {letter}{number} has no words; delete the row instead")
     return ParsedRow("speech", n, f"{letter}{number}", letter, number, tokens, pauses)
 
 
