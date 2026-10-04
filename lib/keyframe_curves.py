@@ -124,6 +124,9 @@ def sample_track(track, local_t):
 
     prev = points[first]
     t = local_t if _finite(local_t) else prev["t"]
+    # NOTE: `hold` jumps exactly AT a point's `t`, so this comparison is exact-float
+    # sensitive: a `t` that rebase shifted by -offset can land 1 ulp off the sample
+    # time and put the jump on the other side of it. Not an error in the port.
     if t < prev["t"]:
         return prev["value"]
 
@@ -162,10 +165,11 @@ def rebase(tracks, offset, duration):
     their own easing. Boundary points are inserted at 0 and at `duration`, valued
     `sample_track(original, offset)` and `sample_track(original, offset + duration)`,
     so both ends are exact. An eased segment cannot be split exactly (a sub-span of a
-    cubic-bezier preset is not a named easing), so the inserted start point takes the
-    easing of the segment it begins, except that a segment cut short at its start
-    with a bezier easing becomes `linear` (`hold` and `linear` split exactly and keep
-    theirs). A track with no usable points is dropped. Inputs are not mutated.
+    cubic-bezier preset is not a named easing), any segment that is shortened, at
+    its start or at its end, becomes `linear` between its exact endpoints when its
+    easing was a bezier. Segments kept whole keep their easing, and `hold` and
+    `linear` split exactly so they keep theirs. The inserted start point takes the
+    easing of the segment it begins (subject to that rule). A track with no usable points is dropped. Inputs are not mutated.
     """
     if not (duration > 0):
         raise ValueError("duration must be positive")
@@ -191,12 +195,19 @@ def rebase(tracks, offset, duration):
         if start_easing is not None and start_easing != "linear":
             first["easing"] = start_easing
         new_points = [first]
+        last_src_t = offset  # original t of the last kept point (start point: offset)
         for p in pts:
             nt = p["t"] - offset
             if 0 < nt < duration:
                 q = dict(p)
                 q["t"] = nt
                 new_points.append(q)
+                last_src_t = p["t"]
+        # The segment leaving the last kept point is cut short at the end when the
+        # original next point lies beyond `end`; a bezier easing there becomes linear.
+        nxt = next((p for p in pts if p["t"] > last_src_t), None)
+        if nxt is not None and nxt["t"] > end and new_points[-1].get("easing") not in (None, "linear", "hold"):
+            del new_points[-1]["easing"]
         new_points.append({"t": float(duration), "value": end_value})
 
         new_track = {k: v for k, v in track.items() if k != "points"}

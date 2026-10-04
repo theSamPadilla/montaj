@@ -143,6 +143,38 @@ def test_rebase_eased_split_is_exact_at_ends_and_linear_between():
         assert rb["points"][0].get("easing", "linear") == "linear"
 
 
+def test_rebase_eased_segment_cut_at_end_is_linear():
+    """Same reason as the start-cut case: a sub-span of a bezier preset is not a named
+    easing, so a segment shortened at its END is linear between its exact endpoints.
+    Covers a start point that begins an eased segment exactly on a point, and a kept
+    interior point whose eased segment runs past the cut. `hold` stays `hold`."""
+    tr = {"prop": "scale", "points": [
+        {"t": 1.0, "value": 0.0, "easing": "ease"},
+        {"t": 2.0, "value": 4.0, "easing": "ease-in-out"},
+        {"t": 6.0, "value": 10.0}]}
+    # start on a point; its segment (1..2) is cut at the end by 1.5
+    (rb,) = rebase([tr], 1.0, 0.5)
+    assert abs(sample_track(rb, 0.0) - 0.0) <= TOL
+    assert abs(sample_track(rb, 0.5) - sample_track(tr, 1.5)) <= TOL
+    for k in range(1, 10):
+        t = 0.5 * k / 10
+        assert abs(sample_track(rb, t) - sample_track(rb, 0.5) * t / 0.5) <= TOL
+    # interior kept point (t=2) whose eased segment (2..6) is cut at 4
+    (rb,) = rebase([tr], 1.0, 3.0)
+    assert rb["points"][1]["t"] == 1.0 and rb["points"][1].get("easing", "linear") == "linear"
+    a, b = sample_track(rb, 1.0), sample_track(rb, 3.0)
+    assert abs(a - 4.0) <= TOL and abs(b - sample_track(tr, 4.0)) <= TOL
+    for k in range(1, 10):
+        t = 1.0 + 2.0 * k / 10
+        assert abs(sample_track(rb, t) - (a + (b - a) * (t - 1.0) / 2.0)) <= TOL
+    # a segment kept whole keeps its easing; a cut hold stays hold
+    (rb,) = rebase([tr], 1.0, 1.0)
+    assert rb["points"][0]["easing"] == "ease"
+    held = {"prop": "x", "points": [{"t": 0.0, "value": 1.0, "easing": "hold"}, {"t": 4.0, "value": 9.0}]}
+    (rb,) = rebase([held], 1.0, 2.0)
+    assert rb["points"][0]["easing"] == "hold"
+
+
 def test_rebase_keeps_points_strictly_inside_and_their_easing():
     tr = {"prop": "scale", "points": [
         {"t": 0.0, "value": 0.0, "easing": "ease"},
