@@ -2902,38 +2902,75 @@ def _clip_original(path: Path) -> Path:
     return candidates[0] if len(candidates) == 1 else path
 
 
-def _preserve_clips(proj: dict, project_dir_resolved: Path, uploads_dir: Path,
-                    preserved: dict[str, str]) -> None:
-    """Keep every video item's footage (`sources` and every track) through the
-    delete, recording `src -> surviving path` in `preserved`.
+def _preserve_path(raw, project_dir_resolved: Path, uploads_dir: Path,
+                   preserved: dict[str, str], moved: dict[Path, str],
+                   original_of=lambda p: p) -> None:
+    """Keep one referenced file through the delete, recording
+    `raw -> surviving path` in `preserved`.
 
     A file inside the project is moved into `uploads_dir`, once however many
-    items name it. Derived files (`proxySrc`, `normalizedSrc`, a normalized
-    master whose original is beside it) are not kept: the next create
-    rebuilds them from the original. A file outside the project is never
-    moved and maps to itself; a symlink inside the project maps to the file
-    it points at, since the link itself goes with the folder."""
-    moved: dict[Path, str] = {}
+    references name it (`moved` is shared across calls). A file outside the
+    project is never moved and maps to itself; a symlink inside the project
+    maps to the file it points at, since the link itself goes with the
+    folder. `original_of` picks the file worth keeping for a path inside the
+    project (a clip's staged original over its normalized master)."""
+    if not isinstance(raw, str) or not raw or raw in preserved:
+        return
+    try:
+        src = Path(raw)
+        if not src.is_file():
+            return
+        real = src.resolve()
+        if not _is_under(real, project_dir_resolved):
+            link_dir = Path(os.path.realpath(src.parent))
+            preserved[raw] = str(real) if _is_under(link_dir, project_dir_resolved) else raw
+            return
+        original = original_of(real)
+        if original not in moved:
+            moved[original] = str(_move_into_uploads(original, uploads_dir))
+        preserved[raw] = moved[original]
+    except Exception:
+        # Best-effort: a single bad file must not block the delete.
+        pass
+
+
+def _preserve_clips(proj: dict, project_dir_resolved: Path, uploads_dir: Path,
+                    preserved: dict[str, str], moved: dict[Path, str]) -> None:
+    """Keep every video item's footage (`sources` and every track) through the
+    delete. Derived files (`proxySrc`, `normalizedSrc`, a normalized master
+    whose original is beside it) are not kept: the next create rebuilds them
+    from the original."""
     for item in _look_migration_items(proj):
-        raw = item.get("src")
-        if not isinstance(raw, str) or raw in preserved:
-            continue
-        try:
-            src = Path(raw)
-            if not src.is_file():
-                continue
-            real = src.resolve()
-            if not _is_under(real, project_dir_resolved):
-                link_dir = Path(os.path.realpath(src.parent))
-                preserved[raw] = str(real) if _is_under(link_dir, project_dir_resolved) else raw
-                continue
-            original = _clip_original(real)
-            if original not in moved:
-                moved[original] = str(_move_into_uploads(original, uploads_dir))
-            preserved[raw] = moved[original]
-        except Exception:
-            # Best-effort: a single bad file must not block the delete.
-            pass
+        _preserve_path(item.get("src"), project_dir_resolved, uploads_dir,
+                       preserved, moved, original_of=_clip_original)
+
+
+def _audio_paths(proj: dict) -> list:
+    """Every audio file the user brought in: an uploaded music track
+    (`storyboard.music.path`), the voiceover and its takes, and every audio
+    track item's `src`. A described track has no file and adds nothing."""
+    paths: list = []
+    music = (proj.get("storyboard") or {}).get("music")
+    if isinstance(music, dict):
+        paths.append(music.get("path"))
+    voiceover = proj.get("voiceover")
+    if isinstance(voiceover, dict):
+        paths.append(voiceover.get("src"))
+        paths.extend(voiceover.get("takes") or [])
+    audio = proj.get("audio")
+    if isinstance(audio, dict):
+        for item in audio.get("tracks") or []:
+            if isinstance(item, dict):
+                paths.append(item.get("src"))
+    return paths
+
+
+def _preserve_audio(proj: dict, project_dir_resolved: Path, uploads_dir: Path,
+                    preserved: dict[str, str], moved: dict[Path, str]) -> None:
+    """Keep uploaded music and voiceover files through the delete, by the same
+    rules as clips (`_preserve_path`)."""
+    for raw in _audio_paths(proj):
+        _preserve_path(raw, project_dir_resolved, uploads_dir, preserved, moved)
 
 
 @router.delete("/projects/{project_id}")
@@ -2968,6 +3005,9 @@ async def delete_project(
     `sources` and all tracks, so going back to setup never loses footage. A
     clip outside the project maps to itself (a symlink inside it, to its
     target) and is never moved.
+
+    Uploaded audio is kept by the same rules (`_preserve_audio`): an uploaded
+    music track, the voiceover and its takes, and every audio track item.
     """
     from fastapi.responses import Response
     preserved: dict[str, str] = {}
@@ -3010,8 +3050,11 @@ async def delete_project(
                             # Best-effort: a single bad file must not block the delete.
                             pass
 
+                moved: dict[Path, str] = {}
                 _preserve_clips(proj, project_dir.resolve(),
-                                resolve_workspace() / "_uploads", preserved)
+                                resolve_workspace() / "_uploads", preserved, moved)
+                _preserve_audio(proj, project_dir.resolve(),
+                                resolve_workspace() / "_uploads", preserved, moved)
             except Exception:
                 # If project.json is unparseable, fall through to the delete.
                 pass

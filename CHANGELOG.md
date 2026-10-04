@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (serve): deleting a project with `preserve_assets` keeps its uploaded audio too.** An uploaded music track (`storyboard.music.path`), the voiceover and its takes, and every audio track item inside the project move to `<workspace>/_uploads/` once and are returned in the `preserved` map, by the same rules as clips: a file outside the project maps to itself, a symlink maps to its target, a name already in `_uploads` is never overwritten. A described music track has no file and is untouched. (`serve/routes/projects.py`, `tests/test_server_delete_preserve.py`)
+
 ## v5.23.1
 
 - **Changed (connectors): ElevenLabs voiceovers default to Eleven v4 (`eleven_v4`).** Same cost as v3, 10,000 characters per request (v3: 5,000), and inline direction tags such as `[laughs]` are performed, not read. `eleven_v3` and the half-cost `eleven_v4_turbo` remain available through the step's `model` override. (`connectors/elevenlabs.py`, `tests/test_connectors_elevenlabs.py`, `docs/CONNECTORS.md`)

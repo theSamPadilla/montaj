@@ -217,3 +217,101 @@ def test_without_preserve_the_project_is_removed_and_nothing_is_kept(workspace):
     assert resp.status_code == 204
     assert not project_dir.exists()
     assert _uploads(workspace) == {}
+
+
+# ---------------------------------------------------------------------------
+# Audio: uploaded music, voiceover files and audio tracks
+# ---------------------------------------------------------------------------
+
+def _patch(project_dir: Path, fn) -> None:
+    p = project_dir / "project.json"
+    proj = json.loads(p.read_text())
+    fn(proj)
+    p.write_text(json.dumps(proj))
+
+
+def test_uploaded_music_is_moved_and_mapped(workspace):
+    pid, project_dir = _new_dir(workspace)
+    music = _file(project_dir / "music" / "song.mp3", b"song")
+    _write(project_dir, pid)
+    _patch(project_dir, lambda p: p["storyboard"].update(music={"mode": "upload", "path": music}))
+
+    preserved = _delete_preserving(pid)
+
+    assert preserved == {music: str(workspace / "_uploads" / "song.mp3")}
+    assert _uploads(workspace) == {"song.mp3": b"song"}
+
+
+def test_described_music_has_no_file_and_maps_nothing(workspace):
+    pid, project_dir = _new_dir(workspace)
+    _write(project_dir, pid)
+    _patch(project_dir, lambda p: p["storyboard"].update(music={"mode": "describe", "prompt": "lofi"}))
+
+    assert _delete_preserving(pid) == {}
+
+
+def test_voiceover_takes_and_audio_tracks_are_moved_once_and_mapped(workspace):
+    pid, project_dir = _new_dir(workspace)
+    take_1 = _file(project_dir / "voiceover" / "take1.wav", b"take one")
+    take_2 = _file(project_dir / "voiceover" / "take2.wav", b"take two")
+    full = _file(project_dir / "voiceover_full.wav", b"joined")
+    bed = _file(project_dir / "music" / "bed.m4a", b"bed")
+    _write(project_dir, pid)
+
+    def add(p):
+        p["voiceover"] = {"src": full, "takes": [take_1, take_2]}
+        # The joined voiceover and the bed also sit on audio tracks: each file
+        # is still moved exactly once.
+        p["audio"] = {"tracks": [
+            {"id": "vo", "src": full, "start": 0, "end": 5},
+            {"id": "bed", "src": bed, "start": 0, "end": 5},
+        ]}
+    _patch(project_dir, add)
+
+    preserved = _delete_preserving(pid)
+
+    uploads = workspace / "_uploads"
+    assert preserved == {
+        full: str(uploads / "voiceover_full.wav"),
+        take_1: str(uploads / "take1.wav"),
+        take_2: str(uploads / "take2.wav"),
+        bed: str(uploads / "bed.m4a"),
+    }
+    assert _uploads(workspace) == {
+        "voiceover_full.wav": b"joined", "take1.wav": b"take one",
+        "take2.wav": b"take two", "bed.m4a": b"bed",
+    }
+
+
+def test_audio_outside_the_project_maps_to_itself_and_a_symlink_to_its_target(workspace, tmp_path):
+    pid, project_dir = _new_dir(workspace)
+    outside = _file(tmp_path / "elsewhere" / "track.mp3", b"mine")
+    target = _file(tmp_path / "elsewhere" / "vo.wav", b"vo")
+    link = project_dir / "voiceover" / "vo.wav"
+    link.parent.mkdir(parents=True)
+    os.symlink(target, link)
+    _write(project_dir, pid)
+
+    def add(p):
+        p["storyboard"]["music"] = {"mode": "upload", "path": outside}
+        p["voiceover"] = {"src": str(link)}
+    _patch(project_dir, add)
+
+    preserved = _delete_preserving(pid)
+
+    assert preserved == {outside: outside, str(link): str(Path(target).resolve())}
+    assert Path(outside).read_bytes() == b"mine" and Path(target).read_bytes() == b"vo"
+    assert _uploads(workspace) == {}
+
+
+def test_an_audio_name_collision_in_uploads_never_overwrites(workspace):
+    pid, project_dir = _new_dir(workspace)
+    _file(workspace / "_uploads" / "song.mp3", b"older upload")
+    music = _file(project_dir / "music" / "song.mp3", b"new song")
+    _write(project_dir, pid)
+    _patch(project_dir, lambda p: p["storyboard"].update(music={"mode": "upload", "path": music}))
+
+    preserved = _delete_preserving(pid)
+
+    assert preserved == {music: str(workspace / "_uploads" / "song_1.mp3")}
+    assert _uploads(workspace) == {"song.mp3": b"older upload", "song_1.mp3": b"new song"}
