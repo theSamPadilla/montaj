@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.24.3
+
 - **Fixed (editor): undo no longer deletes a top-level field that another change added after the edit.** Since 5.24.0 an undo or redo sent every top-level key the restored snapshot lacked but the current state held as `null`, and current state includes what the host pushed since (an SSE frame or `applyExternal`), which the undo history never sees. So renaming a project, then the host adding its first `assets`, then undo saved `assets: null`, and serve's shallow merge deleted the asset list on disk. Each undo step now records the top-level keys its own edit added and removed: undo clears only the keys that edit added (undoing the first note or marker still deletes it), redo clears only the keys it removed, and every other key the restore lacks is omitted, so the host keeps it. A plain edit still clears only the keys it removed itself, and a model's explicit `null` (the last note or marker removed) is sent as before. Video and carousel both. (`montaj_assets/editor/src/state/use-project-sync.ts`, `montaj_assets/editor/src/state/__tests__/use-project-sync.test.tsx`)
 
 ## v5.24.2
