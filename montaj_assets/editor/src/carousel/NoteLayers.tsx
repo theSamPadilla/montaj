@@ -1,4 +1,4 @@
-import type { Ref } from 'react'
+import type { RefObject } from 'react'
 import type { SlidePin } from '../types'
 
 // Note layers over the interactive slide canvas (PL70), passed to SlideCanvas
@@ -51,7 +51,7 @@ export function NotePinLayer({ pins, onPinClick }: { pins: Array<SlidePin & { x:
 /** While a note is armed: a crosshair over the whole slide that takes the next
  *  click and reports it as fractions of the slide box (the slide is drawn at
  *  one uniform scale, so these are fractions of its design size too). */
-export function NoteArmLayer({ onPlace, layerRef }: { onPlace: (point: { x: number; y: number }) => void; layerRef?: Ref<HTMLDivElement> }) {
+export function NoteArmLayer({ onPlace, layerRef }: { onPlace: (point: { x: number; y: number }) => void; layerRef?: RefObject<HTMLDivElement | null> }) {
   return (
     <div
       ref={layerRef}

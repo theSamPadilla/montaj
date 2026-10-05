@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (editor): a host that type-checks the editor source with its own React types builds again.** `NoteArmLayer`'s `layerRef` was typed as React's `Ref`, whose callback form carries a `unique symbol`; when the host compiles the editor beside a second physical copy of `@types/react` (the same version), the two copies' symbols differ and the host's build fails on the carousel. It is now a `RefObject<HTMLDivElement | null>`, which compares by shape. (`montaj_assets/editor/src/carousel/NoteLayers.tsx`)
+
 ## v5.24.0
 
 - **Fixed (editor): undoing the first note or marker deletes it on save.** Undo and redo restore a snapshot that has no `notes` (or `markers`) key, and the host save is a top-level shallow merge that keeps any key the body omits, so the first note or marker came back on reload. The save layer now sends a top-level key that went from present to absent as `null`, which the merge deletes; saves where nothing went absent are unchanged. (`montaj_assets/editor/src/state/use-project-sync.ts`, `montaj_assets/editor/src/state/__tests__/use-project-sync.test.tsx`)
