@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Slider } from '../ui'
+import { Loader } from '../ui/Loader'
 
 /**
  * The editor-relevant slice of a version — matches `VersionEntry` in
@@ -19,7 +20,7 @@ export interface VersionCompareProps {
   versions: CompareVersionEntry[]
   /** The version the user clicked "Compare" on — seeds the LEFT picker. */
   initialLeftHash: string
-  /** Builds the `<img src>` for a rendered frame of `commit` (a version hash,
+  /** Builds the URL fetched for a rendered frame of `commit` (a version hash,
    *  or the sentinel `"working"` for the live on-disk state) at `t` seconds. */
   frameUrl: (id: string, commit: string, t: number) => string
   /** Slider max, in seconds. Defaults to 30 when the host can't cheaply
@@ -43,6 +44,8 @@ const DEFAULT_DURATION_SECONDS = 30
  *  actually drives the `<img src>` — mirrors RenderModal's cover-frame
  *  slider debounce so dragging doesn't fire a frame render per pixel. */
 const SCRUB_DEBOUNCE_MS = 200
+
+const FRAME_ERROR_FALLBACK = "Couldn't render this frame"
 
 /** Human label for a picker option / pane header: "Current (working)" for the
  *  sentinel, else the version's message (falling back to a short hash). */
@@ -73,16 +76,56 @@ function VersionFramePane({
   mode?: 'light' | 'dark'
 }) {
   const src = frameUrl(projectId, commit, t)
+  const [objectUrl, setObjectUrl] = useState<string | null>(null)
+  const [frameEnd, setFrameEnd] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const currentUrl = useRef<string | null>(null)
 
-  // A new src (different commit/time) resets the pane to its loading state —
-  // `onLoadStart` doesn't fire reliably for every `<img>` src swap across
-  // browsers, so gate on the src changing directly.
+  // Fetch (not a bare <img src>) so the server's message and the clamp header
+  // are readable. A new src aborts the in-flight request, so a fast scrub can
+  // never land a stale frame; the previous frame stays up (dimmed) meanwhile.
   useEffect(() => {
+    const ctrl = new AbortController()
     setLoading(true)
-    setError(false)
+    setError(null)
+    ;(async () => {
+      try {
+        const res = await fetch(src, { signal: ctrl.signal })
+        if (!res.ok) {
+          let msg = ''
+          try {
+            const body = await res.json()
+            const m = body?.detail?.message ?? body?.message
+            if (typeof m === 'string') msg = m.trim()
+          } catch { /* not JSON */ }
+          if (ctrl.signal.aborted) return
+          setError(msg || FRAME_ERROR_FALLBACK)
+          setLoading(false)
+          return
+        }
+        const blob = await res.blob()
+        if (ctrl.signal.aborted) return
+        const end = parseFloat(res.headers.get('X-Montaj-Frame-End') ?? '')
+        const next = URL.createObjectURL(blob)
+        if (currentUrl.current) URL.revokeObjectURL(currentUrl.current)
+        currentUrl.current = next
+        setObjectUrl(next)
+        setFrameEnd(Number.isFinite(end) && end > 0 ? end : null)
+        setLoading(false)
+      } catch {
+        if (ctrl.signal.aborted) return
+        setError(FRAME_ERROR_FALLBACK)
+        setLoading(false)
+      }
+    })()
+    return () => ctrl.abort()
   }, [src])
+
+  useEffect(() => () => {
+    if (currentUrl.current) URL.revokeObjectURL(currentUrl.current)
+    currentUrl.current = null
+  }, [])
 
   return (
     <div className="flex-1 min-w-0 flex flex-col gap-1.5">
@@ -90,24 +133,26 @@ function VersionFramePane({
         {label}
       </span>
       <div className="relative aspect-video w-full overflow-hidden rounded-lg border border-[var(--editor-border)] bg-[var(--editor-bg)] flex items-center justify-center">
-        <img
-          key={src}
-          src={src}
-          alt={`${label} frame at ${formatT(t)}`}
-          onLoadStart={() => setLoading(true)}
-          onLoad={() => setLoading(false)}
-          onError={() => { setLoading(false); setError(true) }}
-          className="max-w-full max-h-full object-contain"
-          style={error ? { display: 'none' } : undefined}
-        />
-        {loading && !error && (
-          <span className="absolute inset-0 flex items-center justify-center text-xs text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)]">
-            Loading…
+        {objectUrl && !error && (
+          <img
+            src={objectUrl}
+            alt={`${label} frame at ${formatT(t)}`}
+            className={`max-w-full max-h-full object-contain transition-opacity ${loading ? 'opacity-40' : ''}`}
+          />
+        )}
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <Loader size="sm" label="Rendering frame" />
+          </div>
+        )}
+        {!loading && !error && frameEnd != null && (
+          <span className="absolute top-1.5 right-1.5 rounded bg-black/65 px-1.5 py-0.5 text-[10px] text-white tabular-nums">
+            Ends at {formatT(frameEnd)}
           </span>
         )}
-        {error && (
+        {error && !loading && (
           <span className={`absolute inset-0 flex items-center justify-center text-xs px-3 text-center ${mode === 'light' ? 'text-red-600' : 'text-red-400/90'}`}>
-            Error rendering frame
+            {error}
           </span>
         )}
       </div>

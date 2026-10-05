@@ -14,6 +14,7 @@
  *     [--measure] --out <path>
  *
  *   node sample-frame.js --mode frame --project <path> --at <seconds> --out <path>
+ *     [--clamp-to-end]  past the end: sample the last frame, write <out>.clamped.json
  *
  * stdout: absolute PNG path (or JSON with measurements if --mode overlay --measure)
  * stderr: progress lines prefixed [montaj sample]
@@ -262,7 +263,7 @@ if (isMain) {
       '    [--width W] [--height H] [--props \'...\'] [--google-fonts f1,f2]\n' +
       '    [--duration N] [--measure] --out <path>\n' +
       '  sample-frame.js --mode frame --project <path> --at <seconds> [--sdr-curve <id>]\n' +
-      '    --out <path>\n'
+      '    --out <path> [--clamp-to-end]\n'
     )
     process.exit(1)
   }
@@ -283,6 +284,7 @@ if (isMain) {
   let atArg         = null
   let sdrCurveArg   = null
   let preferProxyArg = false
+  let clampToEndArg = false
   // shared
   let outArg        = null
 
@@ -301,6 +303,7 @@ if (isMain) {
     if (a === '--project')      { projectArg    = argv[++i]; continue }
     if (a === '--at')           { atArg         = parseFloat(argv[++i]); continue }
     if (a === '--sdr-curve')    { sdrCurveArg   = argv[++i]; continue }
+    if (a === '--clamp-to-end') { clampToEndArg = true; continue }
     if (a === '--prefer-proxy') { preferProxyArg = true; continue }
     if (a === '--out')          { outArg        = argv[++i]; continue }
   }
@@ -353,6 +356,7 @@ if (isMain) {
       outPath: resolve(outArg),
       sdrCurve: sdrCurveArg,
       preferProxy: preferProxyArg,
+      clampToEnd: clampToEndArg,
     }).then(result => {
       process.stdout.write(result.pngPath + '\n')
     }).catch(err => {
@@ -735,9 +739,14 @@ export async function sampleFrame({
   outPath,
   sdrCurve = null,
   preferProxy = false,
+  clampToEnd = false,
 }) {
   if (!outPath) throw new Error('outPath is required')
   if (atSeconds == null) throw new Error('atSeconds is required')
+
+  // A sidecar describes ONE render; an old one must never outlive its frame.
+  const clampedSidecar = `${outPath}.clamped.json`
+  rmSync(clampedSidecar, { force: true })
 
   // GC cache on every call
   gcCache()
@@ -751,6 +760,16 @@ export async function sampleFrame({
     project = JSON.parse(readFileSync(projectPath, 'utf8'))
   } else {
     project = projectJson
+  }
+
+  // Opt-in: a time at or past the end samples the last frame instead of
+  // failing. Done before the cache key so the clamped time is what is cached.
+  if (clampToEnd) {
+    const c = clampAtToEnd(atSeconds, getTotalDurationSeconds(project), project.settings?.fps ?? 30)
+    if (c.clamped) {
+      atSeconds = c.at
+      writeFileSync(clampedSidecar, JSON.stringify({ requested: c.requested, at: c.at, end: c.end }))
+    }
   }
 
   // Cache key
@@ -1381,6 +1400,18 @@ function resolveProjectPaths(projectJson, projectDir) {
       track.src = resolve(projectDir, track.src)
     }
   }
+}
+
+/**
+ * Where to sample when a requested time may be past the project's end. The
+ * visibility test is half-open (start <= t < end), so the last frame is
+ * `end - 1/fps`, floored at 0. Times before the end come back unchanged.
+ *
+ * @returns {{ clamped: boolean, requested: number, at: number, end: number }}
+ */
+export function clampAtToEnd(at, end, fps = 30) {
+  if (!(end > 0) || at < end) return { clamped: false, requested: at, at, end }
+  return { clamped: true, requested: at, at: Math.max(0, end - 1 / fps), end }
 }
 
 /** Total project duration in seconds. */

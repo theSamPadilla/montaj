@@ -33,7 +33,7 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 
-import { sampleOverlay, sampleFrame, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION } from '../sample-frame.js'
+import { sampleOverlay, sampleFrame, clampAtToEnd, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION } from '../sample-frame.js'
 import { buildOverlayFilterParts } from '../encode-segment.js'
 import { FFMPEG } from '../ffmpeg-bin.js'
 import { MASTER_LOOK } from '../look.js'
@@ -1679,6 +1679,55 @@ test('(y) a still frame inside an IMAGE clip transition blends, exactly like a v
         `expected img-b at half weight (~128), got b=${b}`)
       assert.equal(g, 0, 'neither source color has a green component')
       assert.equal(a, 255, 'the still frame itself carries no alpha channel')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+// ---------------------------------------------------------------------------
+// (z) --clamp-to-end: a time past the project's end samples the last frame
+// ---------------------------------------------------------------------------
+test('(z1) clampAtToEnd: half-open last frame, floored at 0, untouched before the end', () => {
+  assert.deepEqual(clampAtToEnd(10, 6, 30), { clamped: true, requested: 10, at: 6 - 1 / 30, end: 6 })
+  assert.equal(clampAtToEnd(6, 6, 30).clamped, true, 'the end itself is not visible (half-open)')
+  assert.deepEqual(clampAtToEnd(5.99, 6, 30), { clamped: false, requested: 5.99, at: 5.99, end: 6 })
+  assert.equal(clampAtToEnd(1, 0.01, 30).at, 0, 'floored at 0 when the project is under one frame')
+  assert.equal(clampAtToEnd(9, 0, 30).clamped, false, 'an empty project is left to the caller')
+})
+
+test('(z2) sampleFrame clampToEnd: past the end renders the last frame and writes the sidecar',
+  { timeout: 120_000 }, async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-z2-'))
+    try {
+      const fixture = makeSyntheticFixture(dir)
+      if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+      const outPath = join(dir, 'frame.png')
+
+      // Without the flag: the error is unchanged and no sidecar appears.
+      await assert.rejects(
+        sampleFrame({ projectJson: fixture.project, atSeconds: 50, outPath }),
+        /Requested timestamp 50 is past project end 6/,
+      )
+      assert.equal(existsSync(`${outPath}.clamped.json`), false)
+
+      // A stale sidecar is removed by an unclamped render.
+      writeFileSync(`${outPath}.clamped.json`, '{"stale":true}')
+      await sampleFrame({ projectJson: fixture.project, atSeconds: 1.5, outPath })
+      assert.equal(existsSync(`${outPath}.clamped.json`), false, 'stale sidecar deleted')
+
+      // With the flag: the last frame (clip-1, blue) and the sidecar.
+      await sampleFrame({ projectJson: fixture.project, atSeconds: 50, outPath, clampToEnd: true })
+      const side = JSON.parse(readFileSync(`${outPath}.clamped.json`, 'utf8'))
+      assert.equal(side.requested, 50)
+      assert.equal(side.end, 6)
+      assert.ok(Math.abs(side.at - (6 - 1 / 30)) < 1e-9)
+      const dims = pngDimensions(outPath)
+      const px = readPixelRgba(outPath, dims.w >> 1, dims.h >> 1)
+      assert.ok(px.b > 150 && px.r < 100, `last frame is clip-1 (blue), got R=${px.r} B=${px.b}`)
+
+      // Inside the project the flag changes nothing and writes no sidecar.
+      await sampleFrame({ projectJson: fixture.project, atSeconds: 1.5, outPath, clampToEnd: true })
+      assert.equal(existsSync(`${outPath}.clamped.json`), false)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

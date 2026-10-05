@@ -527,6 +527,114 @@ def test_version_frame_endpoint_working_sentinel_renders_live_state(tmp_path, mo
     assert resp.headers.get("cache-control") == "no-store"
 
 
+def _frame_fake_exec(monkeypatch, *, sidecar=None, returncode=0, stderr=b"", seen=None):
+    """Fake the sample-frame.js subprocess: write a PNG (and optional sidecar)."""
+    real_exec = asyncio.create_subprocess_exec
+
+    async def fake_exec(*args, **kwargs):
+        if "--out" in args:
+            if seen is not None:
+                seen.append(list(args))
+            out_path = Path(args[args.index("--out") + 1])
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            if returncode == 0:
+                out_path.write_bytes(_stub_png())
+                if sidecar is not None:
+                    Path(f"{out_path}.clamped.json").write_text(sidecar)
+
+            class _FakeProc:
+                async def communicate(self):
+                    return b"", stderr
+
+            _FakeProc.returncode = returncode
+            return _FakeProc()
+        return await real_exec(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+
+def _get_working_frame(project_dir, t=1.0):
+    client = TestClient(app, raise_server_exceptions=False)
+    app.state.broadcaster = _StubBroadcaster()
+    app.dependency_overrides[get_project_dir] = lambda: project_dir
+    try:
+        return client.get(f"/api/projects/{PID}/versions/working/frame", params={"t": t})
+    finally:
+        app.dependency_overrides.pop(get_project_dir, None)
+
+
+def test_version_frame_passes_clamp_to_end(tmp_path, monkeypatch):
+    project_dir = tmp_path / "proj"
+    _make_current_project(project_dir, run_count=1)
+    seen = []
+    _frame_fake_exec(monkeypatch, seen=seen)
+    resp = _get_working_frame(project_dir)
+    assert resp.status_code == 200, resp.text
+    assert "--clamp-to-end" in seen[0]
+    assert "X-Montaj-Frame-End" not in resp.headers
+
+
+def test_version_frame_sidecar_becomes_end_header(tmp_path, monkeypatch):
+    project_dir = tmp_path / "proj"
+    _make_current_project(project_dir, run_count=1)
+    _frame_fake_exec(monkeypatch, sidecar='{"requested": 82.95, "at": 52.2465, "end": 52.2798}')
+    resp = _get_working_frame(project_dir, t=82.95)
+    assert resp.status_code == 200, resp.text
+    assert float(resp.headers["X-Montaj-Frame-End"]) == 52.2798
+
+
+def test_version_frame_cache_hit_keeps_end_header(tmp_path, monkeypatch):
+    project_dir = tmp_path / "proj"
+    _make_current_project(project_dir, run_count=1)
+    png = project_dir / "render" / "samples" / "versions" / "deadbeef" / "frame-82.95s.png"
+    png.parent.mkdir(parents=True)
+    png.write_bytes(_stub_png())
+    Path(f"{png}.clamped.json").write_text('{"requested": 82.95, "at": 52.2, "end": 52.2798}')
+
+    async def fake_exec(*args, **kwargs):
+        class _P:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        return _P()  # git rev-parse succeeds; no render may run
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    client = TestClient(app, raise_server_exceptions=False)
+    app.state.broadcaster = _StubBroadcaster()
+    app.dependency_overrides[get_project_dir] = lambda: project_dir
+    try:
+        resp = client.get(f"/api/projects/{PID}/versions/deadbeef/frame", params={"t": 82.95})
+    finally:
+        app.dependency_overrides.pop(get_project_dir, None)
+    assert resp.status_code == 200, resp.text
+    assert float(resp.headers["X-Montaj-Frame-End"]) == 52.2798
+    assert resp.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
+def test_version_frame_malformed_sidecar_is_ignored(tmp_path, monkeypatch):
+    project_dir = tmp_path / "proj"
+    _make_current_project(project_dir, run_count=1)
+    _frame_fake_exec(monkeypatch, sidecar="not json")
+    resp = _get_working_frame(project_dir)
+    assert resp.status_code == 200, resp.text
+    assert "X-Montaj-Frame-End" not in resp.headers
+
+
+def test_version_frame_sampler_failure_surfaces_its_message(tmp_path, monkeypatch):
+    project_dir = tmp_path / "proj"
+    _make_current_project(project_dir, run_count=1)
+    _frame_fake_exec(
+        monkeypatch,
+        returncode=1,
+        stderr=b'[montaj sample] x\n{"error":"sample_failed","message":"Clip source missing"}\n',
+    )
+    resp = _get_working_frame(project_dir)
+    assert resp.status_code == 500, resp.text
+    assert resp.json()["detail"] == {"error": "render_failed", "message": "Clip source missing"}
+
+
 def test_version_frame_endpoint_rejects_negative_t(tmp_path):
     project_dir = tmp_path / "proj"
     project_dir.mkdir(parents=True, exist_ok=True)

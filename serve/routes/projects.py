@@ -3405,6 +3405,20 @@ async def restore_version(project_id: str, commit: str, request: Request, projec
     return restored
 
 
+def _frame_headers(cache_control: str, png: Path) -> dict:
+    """Response headers for a version frame. When the sampler clamped the time to
+    the version's last frame it left ``<png>.clamped.json``; its ``end`` becomes
+    ``X-Montaj-Frame-End`` (seconds). A missing or malformed sidecar adds nothing."""
+    headers = {"Cache-Control": cache_control}
+    try:
+        end = json.loads(Path(f"{png}.clamped.json").read_text())["end"]
+        if isinstance(end, (int, float)) and not isinstance(end, bool) and math.isfinite(end) and end > 0:
+            headers["X-Montaj-Frame-End"] = repr(float(end))
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return headers
+
+
 @router.get("/projects/{project_id}/versions/{commit}/frame")
 async def version_frame(
     project_id: str,
@@ -3453,7 +3467,7 @@ async def version_frame(
         return FileResponse(
             cache_path,
             media_type="image/png",
-            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            headers=_frame_headers("public, max-age=31536000, immutable", cache_path),
         )
 
     # Heal the live project first, for the working copy only (an HDR project whose SDR clips were
@@ -3507,6 +3521,7 @@ async def version_frame(
         "--at", str(t),
         "--out", str(cache_path),
         "--prefer-proxy",
+        "--clamp-to-end",
     ]
     render_proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -3518,7 +3533,21 @@ async def version_frame(
     _, stderr_b = await render_proc.communicate()
     if render_proc.returncode != 0:
         err = (stderr_b or b"").decode("utf-8", errors="replace")[-500:]
-        raise server_error("render_failed", f"sample-frame.js exit {render_proc.returncode}: {err}")
+        # The sampler's last stderr line is {"error", "message"}; the pane shows
+        # that message, so surface it rather than the raw exit text.
+        sampler_msg = None
+        for line in reversed(err.strip().splitlines()):
+            try:
+                m = json.loads(line).get("message")
+            except (ValueError, AttributeError):
+                continue
+            if isinstance(m, str) and m.strip():
+                sampler_msg = m.strip()
+                break
+        raise server_error(
+            "render_failed",
+            sampler_msg or f"sample-frame.js exit {render_proc.returncode}: {err}",
+        )
     if not cache_path.is_file():
         raise server_error("render_failed", "sample-frame.js reported success but no PNG was written")
 
@@ -3528,7 +3557,7 @@ async def version_frame(
     return FileResponse(
         cache_path,
         media_type="image/png",
-        headers={"Cache-Control": cache_header},
+        headers=_frame_headers(cache_header, cache_path),
     )
 
 
