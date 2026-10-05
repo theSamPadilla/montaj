@@ -34,10 +34,11 @@
         "[0:v]format=yuv420p,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv[canvas]",
         "[1:v]setpts=PTS-STARTPTS,scale=670:1190:force_original_aspect_ratio=decrease,pad=670:1190:(ow-iw)/2:(oh-ih)/2[vid1]",
         "[canvas][vid1]overlay=x=340:y=226:format=yuv420:shortest=0[iv1]",
-        "[1:a:0]atrim=0:5,asetpts=PTS-STARTPTS,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1]",
+        "[1:a:0]atrim=0:5,asetpts=PTS-STARTPTS,aresample=async=1000:min_hard_comp=0.02:first_pts=0,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1]",
         "[2:v]scale=1458:2592:force_original_aspect_ratio=increase,crop=1458:2592,format=rgba,setpts=PTS-STARTPTS[img2]",
         "[iv1][img2]overlay=x=-405:y=-182:shortest=0[iv2]",
-        "[iv2]setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout]"
+        "[iv2]setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout]",
+        "[a1]apad=whole_len=240000,atrim=end_sample=240000[aseg]"
       ],
       "args": [
         "-y",
@@ -62,11 +63,11 @@
         "-i",
         "/corpus/geomImage.png",
         "-filter_complex",
-        "[0:v]format=yuv420p,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv[canvas];[1:v]setpts=PTS-STARTPTS,scale=670:1190:force_original_aspect_ratio=decrease,pad=670:1190:(ow-iw)/2:(oh-ih)/2[vid1];[canvas][vid1]overlay=x=340:y=226:format=yuv420:shortest=0[iv1];[1:a:0]atrim=0:5,asetpts=PTS-STARTPTS,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1];[2:v]scale=1458:2592:force_original_aspect_ratio=increase,crop=1458:2592,format=rgba,setpts=PTS-STARTPTS[img2];[iv1][img2]overlay=x=-405:y=-182:shortest=0[iv2];[iv2]setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout]",
+        "[0:v]format=yuv420p,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv[canvas];[1:v]setpts=PTS-STARTPTS,scale=670:1190:force_original_aspect_ratio=decrease,pad=670:1190:(ow-iw)/2:(oh-ih)/2[vid1];[canvas][vid1]overlay=x=340:y=226:format=yuv420:shortest=0[iv1];[1:a:0]atrim=0:5,asetpts=PTS-STARTPTS,aresample=async=1000:min_hard_comp=0.02:first_pts=0,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1];[2:v]scale=1458:2592:force_original_aspect_ratio=increase,crop=1458:2592,format=rgba,setpts=PTS-STARTPTS[img2];[iv1][img2]overlay=x=-405:y=-182:shortest=0[iv2];[iv2]setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout];[a1]apad=whole_len=240000,atrim=end_sample=240000[aseg]",
         "-map",
         "[vout]",
         "-map",
-        "[a1]",
+        "[aseg]",
         "-c:a",
         "pcm_s16le",
         "-ar",

@@ -161,6 +161,29 @@
 // 30 fps), old and new keep the sample count and lag 0 and each is within
 // 1 LSB. The pixel proof on an open-GOP file is
 // open-gop-seek.integration.test.mjs.
+//
+// ── 2026-10-05 · audio filled by timestamp, each segment's audio exactly its
+//    duration — deliberate render change, ALL THREE expected/encode-args.*.json
+//    REGENERATED, and the transition golden below REWRITTEN ──────────────────
+// A clip whose decoded audio samples are fewer than its timestamps claim (an
+// AAC packet dropped with the rest keeping their timestamps, or packets
+// stamped further apart than the samples they hold) ran ahead of its picture:
+// the segment's PCM track keeps no timestamps, so the mp4 mux laid the samples
+// back to back and the holes vanished. Measured on synthetic clips with 0.85%
+// fewer samples: 0.64 s early 75 s in, a 0.72 s hole at the next cut, an
+// export 1.28 s short of its video. Each video item's audio chain now carries
+// `aresample=async=1000:min_hard_comp=0.02:first_pts=0` right after
+// `asetpts=PTS-STARTPTS` (encode-segment.js AUDIO_FILL_BY_TIMESTAMP has why
+// those numbers), and Step 5 pins the segment's audio to exactly
+// round(duration x 48000) samples: a new last filterPart
+// `<label>apad=whole_len=N,atrim=end_sample=N[aseg]`, mapped instead of the
+// label it pads (`-map [a1]` became `-map [aseg]`). Each golden changed by
+// exactly those three things, in filterParts and in the joined
+// -filter_complex; nothing on the video side moved. Rewritten through the
+// override flag, deliberately. A clip whose samples match its timestamps never
+// compensates: its segment PCM is byte-identical to before (measured on
+// 30/82/150 s clips). The proof on real media is
+// audio-timestamp-fill.integration.test.mjs.
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
@@ -374,6 +397,11 @@ describe('encode-args golden: post-swap render pipeline == pre-T7 legacy output'
 describe('transition golden: a clip crossfade, end to end through the real pipeline', () => {
   const CANVAS = '[0:v]format=yuv420p,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv[canvas]'
   const SETPARAMS = 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout]'
+  // The audio fill by timestamp (encode-segment.js AUDIO_FILL_BY_TIMESTAMP) and
+  // the per-segment pin to exactly its duration in samples (2026-10-05).
+  const FILL = 'aresample=async=1000:min_hard_comp=0.02:first_pts=0'
+  const pin = (label, seconds) =>
+    `${label}apad=whole_len=${seconds * 48000},atrim=end_sample=${seconds * 48000}[aseg]`
   // `trim`: PV48's two-stage seek, on an item that starts mid-clip (see the
   // note at the top of this file).
   const fit = (i, trim = '') =>
@@ -389,8 +417,9 @@ describe('transition golden: a clip crossfade, end to end through the real pipel
         CANVAS,
         fit(1),
         '[canvas][vid1]overlay=x=0:y=0:format=yuv420:shortest=0[iv1]',
-        '[1:a:0]atrim=0:3,asetpts=PTS-STARTPTS,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1]',
+        `[1:a:0]atrim=0:3,asetpts=PTS-STARTPTS,${FILL},volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1]`,
         `[iv1]${SETPARAMS}`,
+        pin('[a1]', 3),
       ],
     },
     // The overlap. The canvas is split, each clip composites onto its own
@@ -405,13 +434,14 @@ describe('transition golden: a clip crossfade, end to end through the real pipel
         '[canvas]split=2[xfa1][xfb1]',
         fit(1, 'trim=start=2:duration=1,'),
         '[xfa1][vid1]overlay=x=0:y=0:format=yuv420:shortest=0[iv1]',
-        "[1:a:0]atrim=start=2:duration=1,asetpts=PTS-STARTPTS,volume=1,volume='1-(1*t)':eval=frame,aformat=channel_layouts=stereo:sample_rates=48000[a1]",
+        `[1:a:0]atrim=start=2:duration=1,asetpts=PTS-STARTPTS,${FILL},volume=1,volume='1-(1*t)':eval=frame,aformat=channel_layouts=stereo:sample_rates=48000[a1]`,
         fit(2),
         '[xfb1][vid2]overlay=x=0:y=0:format=yuv420:shortest=0[iv2]',
-        "[2:a:0]atrim=0:1,asetpts=PTS-STARTPTS,volume=1,volume='1*t':eval=frame,aformat=channel_layouts=stereo:sample_rates=48000[a2]",
+        `[2:a:0]atrim=0:1,asetpts=PTS-STARTPTS,${FILL},volume=1,volume='1*t':eval=frame,aformat=channel_layouts=stereo:sample_rates=48000[a2]`,
         "[iv1][iv2]blend=all_expr='A+(B-A)*(1*T)'[xf1]",
         `[xf1]${SETPARAMS}`,
         '[a1][a2]amix=inputs=2:duration=longest:normalize=0[amixed]',
+        pin('[amixed]', 1),
       ],
     },
     // After the overlap: clipB alone. Same shape as the first segment.
@@ -421,8 +451,9 @@ describe('transition golden: a clip crossfade, end to end through the real pipel
         CANVAS,
         fit(1, 'trim=start=1:duration=4,'),
         '[canvas][vid1]overlay=x=0:y=0:format=yuv420:shortest=0[iv1]',
-        '[1:a:0]atrim=start=1:duration=4,asetpts=PTS-STARTPTS,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1]',
+        `[1:a:0]atrim=start=1:duration=4,asetpts=PTS-STARTPTS,${FILL},volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1]`,
         `[iv1]${SETPARAMS}`,
+        pin('[a1]', 4),
       ],
     },
   ]
@@ -600,11 +631,13 @@ describe('freeze mechanism: identical is a no-op, changed is refused', () => {
     // reconstructed from commit 0c5233c — except that source-crop's moved
     // DELIBERATELY with the todo #6 transparent video pad (was 0c4a71dc…c042),
     // and both moved again with the 2026-09-28 bt709 canvas tag (source-crop
-    // was 7edefa3e…322b, source-crop-missing-dims was 01df56ae…3b57); see the
-    // notes at the top of this file for each one-string diff and why.
+    // was 7edefa3e…322b, source-crop-missing-dims was 01df56ae…3b57), and
+    // both again with the 2026-10-05 audio fill by timestamp (source-crop was
+    // f5886f57…1f6f, source-crop-missing-dims was 8d7bc3f8…30c7a1); see the
+    // notes at the top of this file for each diff and why.
     const HASHES = {
-      'source-crop': 'f5886f57e1c2c4e1f4c8bf0746d5c9b48db83aba6732c29c31eb8c6c18271f6f',
-      'source-crop-missing-dims': '8d7bc3f844bd92f1e1b4d16dd14f7442c76ff8614469eadef1b7df91ed30c7a1',
+      'source-crop': '0cc669efbe0c1d67efa4b40b35b5f996aa69fe61c60a56a499862e6ae3ec8bc0',
+      'source-crop-missing-dims': 'd4a221f05a8cb27758d16d869f4f10d16a161b2f0c6a33cce19fa530cee8e122',
     }
     for (const [name, expected] of Object.entries(HASHES)) {
       const bytes = readFileSync(join(EXPECTED_DIR, `encode-args.${name}.json`))

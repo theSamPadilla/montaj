@@ -28,8 +28,9 @@
         "[0:v]format=yuv420p,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv[canvas]",
         "[1:v]setpts=PTS-STARTPTS,crop=1536:972:192:54,scale=1080:1920:force_original_aspect_ratio=decrease,format=yuva420p,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0.0[vid1]",
         "[canvas][vid1]overlay=x=0:y=0:format=yuv420:shortest=0[iv1]",
-        "[1:a:0]atrim=0:5,asetpts=PTS-STARTPTS,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1]",
-        "[iv1]setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout]"
+        "[1:a:0]atrim=0:5,asetpts=PTS-STARTPTS,aresample=async=1000:min_hard_comp=0.02:first_pts=0,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1]",
+        "[iv1]setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout]",
+        "[a1]apad=whole_len=240000,atrim=end_sample=240000[aseg]"
       ],
       "args": [
         "-y",
@@ -48,11 +49,11 @@
         "-i",
         "/corpus/cropVideo.mp4",
         "-filter_complex",
-        "[0:v]format=yuv420p,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv[canvas];[1:v]setpts=PTS-STARTPTS,crop=1536:972:192:54,scale=1080:1920:force_original_aspect_ratio=decrease,format=yuva420p,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0.0[vid1];[canvas][vid1]overlay=x=0:y=0:format=yuv420:shortest=0[iv1];[1:a:0]atrim=0:5,asetpts=PTS-STARTPTS,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1];[iv1]setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout]",
+        "[0:v]format=yuv420p,setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv[canvas];[1:v]setpts=PTS-STARTPTS,crop=1536:972:192:54,scale=1080:1920:force_original_aspect_ratio=decrease,format=yuva420p,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black@0.0[vid1];[canvas][vid1]overlay=x=0:y=0:format=yuv420:shortest=0[iv1];[1:a:0]atrim=0:5,asetpts=PTS-STARTPTS,aresample=async=1000:min_hard_comp=0.02:first_pts=0,volume=1,aformat=channel_layouts=stereo:sample_rates=48000[a1];[iv1]setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709[vout];[a1]apad=whole_len=240000,atrim=end_sample=240000[aseg]",
         "-map",
         "[vout]",
         "-map",
-        "[a1]",
+        "[aseg]",
         "-c:a",
         "pcm_s16le",
         "-ar",

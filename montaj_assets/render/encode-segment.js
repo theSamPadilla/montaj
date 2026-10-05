@@ -57,6 +57,42 @@ const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|bmp|tiff?)$/i
 export const SEEK_PREROLL_S = 2
 
 /**
+ * Lays a video item's decoded audio where its timestamps say (encodeSegment,
+ * Step 2), instead of back to back.
+ *
+ * The segment's PCM track keeps no timestamps: the mp4 muxer writes its samples
+ * in a row. So any hole in the decoded audio was squeezed out at the mux, and
+ * the sound ran ahead of the picture, which `overlay` places by timestamp, by
+ * the sum of the holes. A source has holes when its decoded samples are fewer
+ * than its timestamps claim: an AAC packet dropped with the others' timestamps
+ * kept, or packets stamped further apart than the 1024 samples they hold. Such
+ * a file still reports equal audio and video durations and no packet gaps
+ * (each mp4 packet's duration is the distance to the next), and a stream copy
+ * of it plays in sync. Measured on synthetic clips with 0.85% fewer samples
+ * than timestamps: audio 0.64 s early 75 s into a clip, back in sync at the
+ * next clip, a 0.72 s hole at the cut, an export 1.28 s short of its video.
+ *
+ * Mixed mode, both halves load-bearing:
+ *   - `async=1000`: drift (packets stamped a little apart) is stretched away,
+ *     at most 1000 samples a second, about 2%. Soft compensation settles a
+ *     fixed distance behind: the drift rate times one second, so 0.86% drift
+ *     sits a steady 8.6 ms early (measured, flat over 150 s; comp_duration
+ *     does not change it). A stretch inserts nothing: no zero runs inside the
+ *     sound and no step larger than the source's own.
+ *   - `min_hard_comp=0.02`: a hole over 20 ms is filled with silence, exactly.
+ *     One dropped AAC packet is 21.3 ms at 48 kHz (23.2 ms at 44.1), so it
+ *     always lands here. At 0.025 the same hole was stretched over instead,
+ *     the sound up to 23 ms early. At 0.01 a source drifting 1.5% kept
+ *     crossing the line and took hard fills inside its sound (zero runs in 3
+ *     of 82 beeps); at 0.02, none.
+ * `first_pts=0` holds the start where asetpts put it.
+ *
+ * A source whose samples match its timestamps never compensates: its segment
+ * PCM is byte-identical to before (measured).
+ */
+export const AUDIO_FILL_BY_TIMESTAMP = 'aresample=async=1000:min_hard_comp=0.02:first_pts=0'
+
+/**
  * Split a video item's source seek into an input seek and a decoded remainder
  * (PV48). Returns null for a seek of 0, which needs no split.
  *
@@ -2172,9 +2208,12 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
             ? `,volume='1-(${aprog})':eval=frame`
             : `,volume='${aprog}':eval=frame`
         }
+        // AUDIO_FILL_BY_TIMESTAMP right after asetpts, in source time, ahead of
+        // the tempo chain: it lays the samples where their timestamps say, as
+        // the video side's overlay already does for frames.
         const audioFilter = hasSpeed
-          ? `[${idx}:a:0]${audioTrim},asetpts=PTS-STARTPTS,${atempoChain(speed)},volume=${vol}${fade},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
-          : `[${idx}:a:0]${audioTrim},asetpts=PTS-STARTPTS,volume=${vol}${fade},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
+          ? `[${idx}:a:0]${audioTrim},asetpts=PTS-STARTPTS,${AUDIO_FILL_BY_TIMESTAMP},${atempoChain(speed)},volume=${vol}${fade},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
+          : `[${idx}:a:0]${audioTrim},asetpts=PTS-STARTPTS,${AUDIO_FILL_BY_TIMESTAMP},volume=${vol}${fade},aformat=channel_layouts=stereo:sample_rates=48000[${aLabel}]`
         filterParts.push(audioFilter)
         audioLabels.push(`[${aLabel}]`)
       }
@@ -2267,6 +2306,16 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
     filterParts.push(`${mixInput}amix=inputs=${audioLabels.length}:duration=longest:normalize=0[amixed]`)
     audioLabel = '[amixed]'
   }
+
+  // Every segment's audio is exactly its duration, sample for sample. The join
+  // (compose.js concatSegments) starts each segment where the previous file
+  // ends, which is where its video ends, so an audio track even a little short
+  // left a hole at the cut that the final AAC pass kept as a timestamp jump,
+  // and an export whose last segment was short ended its audio before its
+  // picture. Padded with silence, cut at the sample.
+  const segmentSamples = Math.round(duration * 48000)
+  filterParts.push(`${audioLabel}apad=whole_len=${segmentSamples},atrim=end_sample=${segmentSamples}[aseg]`)
+  audioLabel = '[aseg]'
 
   // --- Step 6: Encode ---
   // Encoder, encoder params, output pix_fmt, and stream-level color metadata
