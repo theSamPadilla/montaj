@@ -334,6 +334,24 @@ export interface Note {
   done?: boolean
 }
 
+/** A private note pinned to a carousel slide (PL70), optionally to a point on
+ *  it. Carousel projects hold these; video projects hold time `Note`s. */
+export interface SlideNote {
+  id: string
+  /** The slide's stable `Slide.id`. */
+  slideId: string
+  /** Point on the slide as fractions 0..1 of the slide's design width (`x`)
+   *  and height (`y`). Both present or both absent; absent is the whole slide. */
+  x?: number
+  y?: number
+  text: string
+  /** Present and true once resolved; absent otherwise. */
+  done?: boolean
+}
+
+/** Any note `project.notes` can hold: a time `Note` or a `SlideNote`. */
+export type ProjectNote = Note | SlideNote
+
 // ── Carousel types ─────────────────────────────────────────────────────────
 export interface ImageElement {
   id: string
@@ -437,8 +455,10 @@ export interface EditorProject {
    *  project has none (`null` only in a save body, where it clears them), so a marker-less project is byte-identical to one from
    *  before the feature existed (the same discipline `captions` follows). */
   markers?: Marker[] | null
-  /** Private operator notes (PL39), kept sorted by `t`. Absent, not `[]`, when empty. */
-  notes?: Note[] | null
+  /** Private operator notes. Absent, not `[]`, when empty. A video project
+   *  holds time `Note`s (PL39), kept sorted by `t`; a carousel holds
+   *  `SlideNote`s (PL70). Video code reads only the entries `isNote` accepts. */
+  notes?: ProjectNote[] | null
   carousel?: { aspect: string }
   profile?: string
   derivedFrom?: string  // ID of the source project this was derived from (e.g. clips workflow)

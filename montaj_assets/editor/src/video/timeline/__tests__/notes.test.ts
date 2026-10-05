@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import type { Note } from '../../../schema'
 import { addNote, setNoteText, setNoteDone, removeNotes, sortedNotes } from '../notes'
 
 const base = { id: 'p', tracks: [] } as any
@@ -11,7 +12,7 @@ describe('addNote', () => {
   it('keeps notes sorted by t', () => {
     const a = addNote(base, 3).project
     const b = addNote(a, 1).project
-    expect(b.notes!.map(n => n.t)).toEqual([1, 3])
+    expect(b.notes!.map(n => (n as Note).t)).toEqual([1, 3])
   })
 })
 describe('setNoteText / setNoteDone', () => {

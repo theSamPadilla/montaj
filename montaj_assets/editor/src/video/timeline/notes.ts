@@ -4,7 +4,9 @@ export function noteId(): string {
   return `note-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
 }
 
-function isNote(n: unknown): n is Note {
+/** A time note: string `id` and `text`, finite `t`. The only kind video code reads;
+ *  a `SlideNote` (or anything else) in `project.notes` is skipped. */
+export function isNote(n: unknown): n is Note {
   return !!n && typeof (n as Note).id === 'string' && typeof (n as Note).t === 'number' && Number.isFinite((n as Note).t)
     && typeof (n as Note).text === 'string'
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, waitFor, act, fireEvent, screen } from '@testing-library/react'
 import type { EditorAdapter, ImageElement, NotesApi, Project, RenderEvent, VersionEntry, WaveformChunk } from '../../types'
+import type { Note } from '../../schema'
 import VideoEditor from '../VideoEditor'
 import { trackItems } from '../timeline/timeline-model'
 import { canvasSurface, installCanvasHarness, selectCanvasItem, timeToClientX } from '../timeline/__tests__/_canvasSelect'
@@ -524,7 +525,7 @@ describe('VideoEditor — N adds a note (PL39)', () => {
     await pressN()
 
     await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
-    expect(lastSaved(adapter).notes![0].t).toBeCloseTo(2, 3)
+    expect((lastSaved(adapter).notes![0] as Note).t).toBeCloseTo(2, 3)
   })
 
   it('with notes locked, calls onLocked once and changes nothing, even when held', async () => {

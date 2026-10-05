@@ -237,3 +237,11 @@ New carousel projects start at `status: "pending"` — same as video projects. T
 2. `montaj render <project_workspace>/project.json`
 
 The project is complete when `render/slide_01.png` … `slide_NN.png` exist.
+
+---
+
+## Notes
+
+The user's own notes on the carousel are in `project.notes`. Each note has a `slideId`, the stable `id` of the slide it is about: find that slide in `project.slides` by `id` (its position there is its slide number). A note with `x` and `y` points at a spot on the slide, as fractions 0..1 of the slide's width and height; a note without them is about the whole slide. A note whose slide no longer exists stays in the list.
+
+Work through the open notes (no `done`). Once you have addressed a note, set `done: true` on it in your next save. Never remove a note or change its text.

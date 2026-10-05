@@ -361,3 +361,39 @@ def test_notes_null_clears_the_stored_notes(project):
     got = client.get(f"/api/projects/{PID}")
     assert got.status_code == 200, got.text
     assert not got.json().get("notes")
+
+
+# ---------------------------------------------------------------------------
+# Slide notes (PL70): a carousel's `notes` hold notes pinned to a slide (and
+# optionally a point on it). serve stores them as they come, like time notes.
+# ---------------------------------------------------------------------------
+
+def test_carousel_slide_notes_round_trip_and_null_still_clears(project):
+    client, project_dir = project
+    carousel = {
+        "id": PID,
+        "projectType": "carousel",
+        "status": "draft",
+        "carousel": {"aspect": "square"},
+        "settings": {"resolution": [1080, 1080]},
+        "slides": [{"id": "s-1", "base_color": "#ffffff", "elements": []}],
+    }
+    (project_dir / "project.json").write_text(json.dumps(carousel))
+    notes = [
+        {"id": "n1", "slideId": "s-1", "x": 0.4, "y": 0.25, "text": "logo too small"},
+        {"id": "n2", "slideId": "s-1", "text": "whole slide", "done": True},
+    ]
+    resp = client.put(f"/api/projects/{PID}", json={"id": PID, "notes": notes})
+    assert resp.status_code == 200, resp.text
+    assert _on_disk(project_dir)["notes"] == notes
+    got = client.get(f"/api/projects/{PID}")
+    assert got.status_code == 200, got.text
+    assert got.json()["notes"] == notes
+    assert got.json()["slides"] == carousel["slides"]
+    resp = client.put(f"/api/projects/{PID}", json={"id": PID, "name": "renamed"})
+    assert resp.status_code == 200, resp.text
+    assert _on_disk(project_dir)["notes"] == notes
+    resp = client.put(f"/api/projects/{PID}", json={"id": PID, "notes": None})
+    assert resp.status_code == 200, resp.text
+    assert "notes" not in resp.json()
+    assert "notes" not in _on_disk(project_dir)

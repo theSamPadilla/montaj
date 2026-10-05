@@ -158,3 +158,28 @@ test("open notes render as a Notes section with m:ss times", () => {
   assert.match(text, /1:05-1:10 tighten/)
   assert.doesNotMatch(renderContextResource({ ok: true, body }), /## Notes/)
 })
+
+test("slide notes render with their slide position and point; time notes unchanged", () => {
+  const body = {
+    active: true,
+    project: { id: "c1", name: "deck", durationSec: 0 },
+    playhead: { sec: 0, frame: 0 },
+    clipAtPlayhead: null,
+    selection: [],
+    transcriptAroundPlayhead: null,
+    ageMs: 10,
+    notes: [
+      { t: 12.4, tEnd: null, text: "caption covers face" },
+      { id: "n1", slide: 3, slideId: "s-c", x: 0.4, y: 0.25, text: "logo  too small" },
+      { id: "n2", slide: 1, slideId: "s-a", text: "whole slide" },
+      { id: "n3", slide: null, slideId: "s-gone", x: 0.1, y: 0.1, text: "was on a deleted slide" },
+    ],
+  }
+  const text = renderContextResource({ ok: true, body })
+  assert.match(text, /## Notes/)
+  assert.match(text, /^- 0:12 caption covers face$/m)
+  assert.match(text, /^- Slide 3 \(40%, 25%\) logo too small$/m)
+  assert.match(text, /^- Slide 1 whole slide$/m)
+  assert.match(text, /^- Removed slide was on a deleted slide$/m)
+  assert.doesNotMatch(text, /NaN|undefined|null/)
+})

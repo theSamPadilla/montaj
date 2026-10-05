@@ -120,8 +120,20 @@ export type { DroppedClipPlacement, PlacedClipResult } from './video/timeline/pl
 export { addMarker, moveMarker, renameMarker, removeMarkers, nextMarkerLabel } from './video/timeline/markers'
 
 // Note model (PL39) — pure mutations over `project.notes`, same contract as markers.
-export { addNote, setNoteText, setNoteDone, removeNotes, sortedNotes } from './video/timeline/notes'
-export type { Note } from './schema'
+export { addNote, setNoteText, setNoteDone, removeNotes, sortedNotes, isNote } from './video/timeline/notes'
+export type { Note, SlideNote, ProjectNote } from './schema'
+// Slide note model (PL70) — a carousel's notes, pinned to a slide and optionally
+// a point on it. Pure mutations over the `project.notes` array; time notes in it
+// are left untouched.
+export {
+  addSlideNote,
+  setSlideNoteText,
+  setSlideNoteDone,
+  setSlideNotePoint,
+  removeSlideNotes,
+  sortedSlideNotes,
+  isSlideNote,
+} from './carousel/notes'
 
 // ── Speed control (slider + preset chips) ────────────────────────────────────
 // Shared by the per-clip inspect modal (host `montaj_assets/ui`) and the

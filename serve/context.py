@@ -288,8 +288,42 @@ def _markers(project: dict) -> list[dict] | None:
     return usable
 
 
+def _is_fraction(v) -> bool:
+    return (
+        isinstance(v, (int, float))
+        and not isinstance(v, bool)
+        and v == v
+        and 0.0 <= v <= 1.0
+    )
+
+
+def _is_slide_note(n) -> bool:
+    """Same rule as the editor's `isSlideNote`: string `id`, `slideId` and
+    `text`, no `t` (a time note is never a slide note), and `x`/`y` both
+    fractions in 0..1 or both absent."""
+    if not (
+        isinstance(n, dict)
+        and isinstance(n.get("id"), str)
+        and isinstance(n.get("slideId"), str)
+        and isinstance(n.get("text"), str)
+        and "t" not in n
+    ):
+        return False
+    has_x, has_y = "x" in n, "y" in n
+    if not has_x and not has_y:
+        return True
+    return has_x and has_y and _is_fraction(n["x"]) and _is_fraction(n["y"])
+
+
 def _notes(project: dict) -> list[dict] | None:
-    """The operator's open notes (not `done`), sorted by time.
+    """The operator's open notes (not `done`).
+
+    Time notes (video, PL39) come first, sorted by time, each `{t, tEnd, text}`.
+    Slide notes (carousel, PL70) follow, each `{id, slide, slideId, x?, y?, text}`
+    where `slide` is the 1-based position of `slideId` in `project.slides`, or
+    None when that slide is gone; they sort by slide (a gone slide last), then
+    `y` (a whole-slide note before any point), then `x`, then `id`, the order
+    the editor's `sortedSlideNotes` uses.
 
     None when there are none, same discipline as `_markers`. Malformed
     entries are skipped.
@@ -310,9 +344,34 @@ def _notes(project: dict) -> list[dict] | None:
         and isinstance(n.get("text"), str)
         and not n.get("done")
     ]
+    usable.sort(key=lambda n: n["t"])
+
+    slides = project.get("slides")
+    position = {
+        s["id"]: i + 1
+        for i, s in enumerate(slides if isinstance(slides, list) else [])
+        if isinstance(s, dict) and isinstance(s.get("id"), str)
+    }
+    slide_notes = []
+    for n in notes:
+        if not _is_slide_note(n) or n.get("done"):
+            continue
+        out = {"id": n["id"], "slide": position.get(n["slideId"]), "slideId": n["slideId"]}
+        if "x" in n:
+            out["x"], out["y"] = float(n["x"]), float(n["y"])
+        out["text"] = n["text"]
+        slide_notes.append(out)
+    inf = float("inf")
+    slide_notes.sort(key=lambda n: (
+        n["slide"] if n["slide"] is not None else inf,
+        n.get("y", -inf),
+        n.get("x", -inf),
+        n["id"],
+    ))
+    usable += slide_notes
+
     if not usable:
         return None
-    usable.sort(key=lambda n: n["t"])
     return usable
 
 

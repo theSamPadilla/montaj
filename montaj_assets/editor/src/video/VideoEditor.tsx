@@ -17,7 +17,7 @@ import { availableResolutionTiers, availableFpsTiers, currentResolutionTier, max
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { collapseGaps, rippleDelete, splitAtTime } from './cuts'
 import { addMarker } from './timeline/markers'
-import { addNote, removeNotes, setNoteDone, setNoteText } from './timeline/notes'
+import { addNote, isNote, removeNotes, setNoteDone, setNoteText } from './timeline/notes'
 import { repairCaptionWords } from './captionRepair'
 import { maxCaptionLane, normalizeCaptionLanes } from './captionLanes'
 import { mergeCaptionProfileDefaults } from './captionProfileDefaults'
@@ -1893,7 +1893,7 @@ function ReviewSurface<P extends Project>({
   const addNoteAt = useCallback((t: number): Note => {
     const { project: updated, id } = addNote(syncProjectRef.current, t)
     void syncMutate(() => updated as P)
-    return updated.notes!.find(n => n.id === id)!
+    return updated.notes!.find((n): n is Note => isNote(n) && n.id === id)!
   }, [syncMutate, syncProjectRef])
 
   /** Every other note write. A write that changes nothing (the same text, an

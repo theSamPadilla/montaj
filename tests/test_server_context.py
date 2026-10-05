@@ -310,6 +310,82 @@ def test_enrich_skips_malformed_notes():
     assert context.enrich("p1", project, state)["notes"] == [{"t": 1.0, "tEnd": None, "text": "a"}]
 
 
+def _carousel() -> dict:
+    return {
+        "id": "c1",
+        "projectType": "carousel",
+        "status": "draft",
+        "carousel": {"aspect": "portrait"},
+        "settings": {"resolution": [1080, 1350]},
+        "slides": [
+            {"id": "s-a", "base_color": "#ffffff", "elements": []},
+            {"id": "s-b", "base_color": "#ffffff", "elements": []},
+            {"id": "s-c", "base_color": "#ffffff", "elements": []},
+        ],
+    }
+
+
+def test_enrich_lists_slide_notes_with_their_slide_position_and_point():
+    project = _carousel()
+    project["notes"] = [
+        {"id": "n3", "slideId": "s-c", "x": 0.4, "y": 0.25, "text": "logo too small"},
+        {"id": "n1", "slideId": "s-a", "text": "whole slide"},
+        {"id": "n2", "slideId": "s-c", "text": "c whole"},
+        {"id": "n4", "slideId": "s-b", "text": "addressed", "done": True},
+    ]
+    state = context.report("c1", {"playheadSec": 0.0, "selectedIds": []})
+    assert context.enrich("c1", project, state)["notes"] == [
+        {"id": "n1", "slide": 1, "slideId": "s-a", "text": "whole slide"},
+        {"id": "n2", "slide": 3, "slideId": "s-c", "text": "c whole"},
+        {"id": "n3", "slide": 3, "slideId": "s-c", "x": 0.4, "y": 0.25, "text": "logo too small"},
+    ]
+
+
+def test_enrich_lists_a_note_on_a_removed_slide_last_with_slide_none():
+    project = _carousel()
+    project["notes"] = [
+        {"id": "gone", "slideId": "s-zzz", "x": 0.1, "y": 0.1, "text": "was on a deleted slide"},
+        {"id": "kept", "slideId": "s-b", "text": "b"},
+    ]
+    state = context.report("c1", {"playheadSec": 0.0, "selectedIds": []})
+    assert context.enrich("c1", project, state)["notes"] == [
+        {"id": "kept", "slide": 2, "slideId": "s-b", "text": "b"},
+        {"id": "gone", "slide": None, "slideId": "s-zzz", "x": 0.1, "y": 0.1, "text": "was on a deleted slide"},
+    ]
+
+
+def test_enrich_skips_malformed_slide_notes():
+    project = _carousel()
+    project["notes"] = [
+        {"id": "ok", "slideId": "s-a", "text": "a"},
+        {"id": "half", "slideId": "s-a", "x": 0.5, "text": "x without y"},
+        {"id": "out", "slideId": "s-a", "x": 1.5, "y": 0.5, "text": "out of range"},
+        {"id": "nos", "text": "no slide"},
+        {"slideId": "s-a", "text": "no id"},
+    ]
+    state = context.report("c1", {"playheadSec": 0.0, "selectedIds": []})
+    assert context.enrich("c1", project, state)["notes"] == [
+        {"id": "ok", "slide": 1, "slideId": "s-a", "text": "a"},
+    ]
+
+
+def test_enrich_time_notes_are_unchanged_beside_slide_notes():
+    # Time notes keep their exact PL39 shape and order, ahead of any slide notes.
+    project = _project()
+    project["slides"] = [{"id": "s-a", "base_color": "#fff", "elements": []}]
+    project["notes"] = [
+        {"id": "sn", "slideId": "s-a", "text": "slide"},
+        {"id": "n2", "t": 8.0, "tEnd": 9.5, "text": "tighten"},
+        {"id": "n1", "t": 2.0, "text": "caption covers face"},
+    ]
+    state = context.report("p1", {"playheadSec": 5.0, "selectedIds": []})
+    assert context.enrich("p1", project, state)["notes"] == [
+        {"t": 2.0, "tEnd": None, "text": "caption covers face"},
+        {"t": 8.0, "tEnd": 9.5, "text": "tighten"},
+        {"id": "sn", "slide": 1, "slideId": "s-a", "text": "slide"},
+    ]
+
+
 client = TestClient(app, raise_server_exceptions=False)
 
 

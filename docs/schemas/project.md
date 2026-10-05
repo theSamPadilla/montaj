@@ -49,7 +49,7 @@ The agent writes project.json as it works — every write pushes to the browser 
 | `tracks` | array | Array of track objects (`{id, items, volume?, muted?, enabled?}`); a legacy array-of-arrays shape is also still read everywhere. `tracks[0]` is the primary footage track. `tracks[1+]` are overlay tracks. Higher-index tracks render on top. `tracks[0]` may have an empty `items` array for animation-only projects. See [tracks](#tracks) below. |
 | `captions` | object | Caption configuration. Always rendered topmost, above all tracks. |
 | `markers` | array | Optional. Operator markers dropped with `M` in the editor — `{id, t, label}`, kept sorted by `t`. Editing aid only: never rendered into output. Surfaced to agents through the context endpoint. See [markers](#markers). |
-| `notes` | array | Optional. Private operator notes added with `N` in the editor, `{id, t, tEnd?, text, done?}`, kept sorted by `t`. Never rendered into output and never shown to reviewers. See [notes](#notes). |
+| `notes` | array | Optional. Private operator notes. A video project holds time notes added with `N` in the editor, `{id, t, tEnd?, text, done?}`, kept sorted by `t`; a carousel project holds slide notes, `{id, slideId, x?, y?, text, done?}`. Never rendered into output and never shown to reviewers. See [notes](#notes). |
 | `audio` | object | Music and ducking config |
 | `derivedFrom` | string | Optional. Set on clip projects fanned out from a source by the `clips` workflow; the source project's id. |
 
@@ -839,6 +839,42 @@ render pipeline or the preview reads `notes`; it never affects output.
 
 **Added with `N` in the editor**, at the current playhead position.
 
+### Slide notes (carousel projects)
+
+A carousel project's `notes` hold slide notes instead: a note pinned to one
+slide, and optionally to a point on it. A video project only holds time notes
+and a carousel project only holds slide notes; code that reads one kind skips
+the other.
+
+```json
+{
+  "notes": [
+    { "id": "note-1", "slideId": "slide-3", "x": 0.4, "y": 0.25, "text": "logo too small" },
+    { "id": "note-2", "slideId": "slide-1", "text": "too much text on this slide", "done": true }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique identifier for this note. |
+| `slideId` | string | The slide's stable `id` (see [`Slide` shape](#slide-shape)), not its position. Find the slide by looking it up in `slides`. |
+| `x` | number | Optional. Horizontal point on the slide, a fraction 0..1 of the slide's design width (0 = left edge). |
+| `y` | number | Optional. Vertical point on the slide, a fraction 0..1 of the slide's design height (0 = top edge). |
+| `text` | string | Operator-entered text. May be empty. |
+| `done` | boolean | Present and `true` once resolved; absent otherwise. |
+
+**`x` and `y` are both present or both absent.** A note with no point is about
+the whole slide.
+
+**A note whose slide was deleted is kept**, not dropped; it no longer belongs
+to any slide.
+
+**Absent, not `[]`, when a project has no notes**, as for time notes.
+
+**Agents set `done: true` once they have addressed a note, and never delete
+it.** The note is the operator's; removing it is theirs to do.
+
 ---
 
 ## Profile
@@ -1260,6 +1296,7 @@ Carousel-specific top-level fields:
 | `projectType` | `"carousel"` | Identifies this project as a carousel. Set at init; immutable. |
 | `carousel.aspect` | string | One of `square`, `portrait`, `vertical`. Locked at creation. Drives `settings.resolution` — `[1080,1080]`, `[1080,1350]`, `[1080,1920]` respectively. |
 | `slides` | `Slide[]` | Ordered slide deck. Element order within a slide is z-order, bottom → top. |
+| `notes` | `SlideNote[]` | Optional. The operator's private notes, each pinned to a slide by its `id`. See [slide notes](#slide-notes-carousel-projects). |
 
 ### `Slide` shape
 

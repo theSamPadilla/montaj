@@ -210,9 +210,20 @@ export function renderContextResource(result) {
   if (Array.isArray(body.notes) && body.notes.length) {
     const mss = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`
     lines.push(``, `## Notes`, ``)
+    const pct = (v) => `${Math.round(v * 100)}%`
     for (const n of body.notes) {
+      const text = String(n.text).replace(/\s+/g, " ").trim()
+      if (typeof n.slideId === "string") {
+        // A carousel's slide note (PL70): its 1-based slide, and the point on it
+        // as percentages of the slide's width and height when it has one.
+        const where = typeof n.slide !== "number" ? "Removed slide"
+          : typeof n.x === "number" && typeof n.y === "number" ? `Slide ${n.slide} (${pct(n.x)}, ${pct(n.y)})`
+          : `Slide ${n.slide}`
+        lines.push(`- ${where} ${text}`)
+        continue
+      }
       const when = typeof n.tEnd === "number" ? `${mss(n.t)}-${mss(n.tEnd)}` : mss(n.t)
-      lines.push(`- ${when} ${String(n.text).replace(/\s+/g, " ").trim()}`)
+      lines.push(`- ${when} ${text}`)
     }
   }
 
