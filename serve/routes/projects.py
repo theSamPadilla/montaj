@@ -3669,11 +3669,32 @@ async def render_zip(project_id: str, project_dir: Path = Depends(get_project_di
     # Skip manifest.json: it's a renderer-side output for agent/CLI tooling, not
     # something the human downloading this archive cares about.
     EXCLUDE = {"manifest.json"}
+    # Renders are not cleaned, so the folder can hold slides from an earlier,
+    # longer render. When the manifest (written last by the renderer) lists the
+    # slides, zip exactly those, in its order. No usable manifest: zip the folder.
+    listed = None
+    try:
+        slides = json.loads((render_dir / "manifest.json").read_text()).get("slides")
+        if isinstance(slides, list):
+            listed = [s.get("file") if isinstance(s, dict) else None for s in slides]
+    except (OSError, ValueError, AttributeError):
+        pass
+    if listed is not None:
+        entries = []
+        for name in listed:
+            if (not isinstance(name, str) or not name or name in (".", "..")
+                    or "/" in name or "\\" in name or Path(name).name != name):
+                raise bad_request("invalid_manifest", f"manifest lists an invalid slide file: {name!r}")
+            entry = render_dir / name
+            if not entry.is_file():
+                raise not_found("not_found", f"manifest lists a slide that is not on disk: {name}")
+            entries.append(entry)
+    else:
+        entries = [e for e in sorted(render_dir.iterdir()) if e.is_file() and e.name not in EXCLUDE]
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for entry in sorted(render_dir.iterdir()):
-            if entry.is_file() and entry.name not in EXCLUDE:
-                zf.write(entry, arcname=entry.name)
+        for entry in entries:
+            zf.write(entry, arcname=entry.name)
     buf.seek(0)
 
     project_name = project_dir.name

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (serve): the carousel ZIP holds only the current render's slides.** Renders are not cleaned, so a carousel cut from five slides to three still had `slide_04.png` and `slide_05.png` in `render/` and the ZIP shipped them. `GET /projects/{id}/render-zip` now zips exactly the files the render's `manifest.json` lists, in its order; a manifest entry that is not a bare file name is a 400, one missing on disk a 404. A folder with no manifest zips as before. (`serve/routes/projects.py`, `tests/test_server_render_zip.py`)
+
 ## v5.24.1
 
 - **Fixed (editor): a host that type-checks the editor source with its own React types builds again.** `NoteArmLayer`'s `layerRef` was typed as React's `Ref`, whose callback form carries a `unique symbol`; when the host compiles the editor beside a second physical copy of `@types/react` (the same version), the two copies' symbols differ and the host's build fails on the carousel. It is now a `RefObject<HTMLDivElement | null>`, which compares by shape. (`montaj_assets/editor/src/carousel/NoteLayers.tsx`)
