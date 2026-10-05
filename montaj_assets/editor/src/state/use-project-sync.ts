@@ -76,6 +76,22 @@ export interface UseProjectSync<P extends Project = Project> {
   projectRef: RefObject<P>
 }
 
+// The host's save is a top-level shallow merge: a key the body omits is KEPT on
+// disk, and only an explicit `null` deletes it. A snapshot restore (undo/redo)
+// or any write that removes a key therefore has to say so. For every top-level
+// key present in `before` and absent in `after`, send it as `null`. Nothing
+// else changes; with no such key the original object is returned untouched.
+function withDeletedKeysNulled<P extends Project>(after: P, before: P): P {
+  let body: Record<string, unknown> | null = null
+  for (const key of Object.keys(before)) {
+    if ((before as Record<string, unknown>)[key] === undefined) continue
+    if ((after as Record<string, unknown>)[key] !== undefined) continue
+    if (!body) body = { ...after }
+    body[key] = null
+  }
+  return (body ?? after) as P
+}
+
 export function useProjectSync<P extends Project = Project>(
   adapter: EditorAdapter<P>,
   projectId: string,
@@ -182,7 +198,7 @@ export function useProjectSync<P extends Project = Project>(
   const save = useCallback(
     async (next: P, snapshot: P) => {
       try {
-        await adapter.saveProject(projectId, next)
+        await adapter.saveProject(projectId, withDeletedKeysNulled(next, snapshot))
       } catch (err) {
         projectRef.current = snapshot
         setProject(snapshot)

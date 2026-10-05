@@ -445,3 +445,54 @@ describe('useProjectSync — onLocalEdit', () => {
     expect(second).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('useProjectSync — optional top-level keys that go absent', () => {
+  const note = (id: string) => ({ id, slideId: 'slide-0', text: id })
+
+  it('undoing the first write of a key saves it as null so serve drops it', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    await act(async () => { await result.current.mutate((p) => ({ ...p, notes: [note('n1')] } as Project)) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+
+    expect('notes' in result.current.project).toBe(false)
+    expect((adapter.saveCalls[1].project as Record<string, unknown>).notes).toBeNull()
+  })
+
+  it('the same holds for markers', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    await act(async () => { await result.current.mutate((p) => ({ ...p, markers: [{ id: 'm1', t: 1, label: '' }] } as Project)) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect((adapter.saveCalls[1].project as Record<string, unknown>).markers).toBeNull()
+  })
+
+  it('undoing the second note saves the remaining note, not null', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    await act(async () => { await result.current.mutate((p) => ({ ...p, notes: [note('n1')] } as Project)) })
+    await act(async () => { await result.current.mutate((p) => ({ ...p, notes: [note('n1'), note('n2')] } as Project)) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect((adapter.saveCalls[2].project as Record<string, unknown>).notes).toEqual([note('n1')])
+  })
+
+  it('a save where nothing went absent is the project itself', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'B' })) })
+    expect(adapter.saveCalls[0].project).toEqual({ ...initial, name: 'B' })
+    expect(Object.keys(adapter.saveCalls[0].project).sort()).toEqual(Object.keys({ ...initial, name: 'B' }).sort())
+  })
+})
+
