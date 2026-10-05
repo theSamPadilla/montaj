@@ -24,6 +24,7 @@ import type {
   OverlayElement,
   Captions,
   Note,
+  SlideNote,
 } from './schema'
 import type { SourcePreviewStore } from './video/source-preview'
 import type { PreRenderOptions } from './video/RenderModal'
@@ -610,13 +611,15 @@ export interface TimelinePin {
 // write back a stale copy. The host draws notes (pins, a list) from the
 // project it receives through `onProjectChange`.
 
-/** The host's opt-in to notes. Absent: N is not bound and no palette entry. */
-export interface NotesOptions {
+/** The host's opt-in to notes. Absent: N is not bound and no palette entry.
+ *  `N` is the note kind the editor adds: a time `Note` in the video editor,
+ *  a `SlideNote` in the carousel editor. */
+export interface NotesOptions<N = Note> {
   /** True: N adds a note. False: N calls `onLocked` (the host shows its paywall). */
   enabled: boolean
   onLocked?: () => void
   /** Called after N (or the palette) adds a note, so the host can focus its text. */
-  onNoteAdded?: (note: Note) => void
+  onNoteAdded?: (note: N) => void
 }
 
 /** Note writes, each one `sync.mutate` (one save, one undo step). A write that
@@ -628,6 +631,46 @@ export interface NotesApi {
   setText: (id: string, text: string) => void
   setDone: (id: string, done: boolean) => void
   remove: (id: string) => void
+}
+
+/** The carousel's note writes (PL70), each one save and one undo step, not
+ *  gated by the project status (the user's own notes are writable whenever
+ *  the editor is up). A write that changes nothing is skipped: no save, no
+ *  undo step. Ids are `SlideNote.id`; points are fractions 0..1 of the slide's
+ *  design width (`x`) and height (`y`), clamped. */
+export interface SlideNotesApi {
+  /** Adds an empty note on `slideId`, at `point` or about the whole slide,
+   *  and returns its id. Does not call `onNoteAdded`: the caller has the id. */
+  add: (slideId: string, point?: { x: number; y: number }) => string
+  setText: (id: string, text: string) => void
+  setDone: (id: string, done: boolean) => void
+  /** Moves the note to `point` on its slide, or with `null` makes it about
+   *  the whole slide. */
+  setPoint: (id: string, point: { x: number; y: number } | null) => void
+  remove: (id: string) => void
+  /** Selects that slide in the editor. An unknown id changes nothing. */
+  selectSlide: (slideId: string) => void
+}
+
+/**
+ * A host-owned mark on a carousel slide (PL70), the carousel's counterpart of
+ * `TimelinePin`. A pin with a point (`x` and `y`, fractions 0..1 of the
+ * slide's design size) is drawn on the canvas while its slide is selected; a
+ * pin without one counts toward a badge on its slide's thumbnail. The package
+ * paints pins and reports a click on one; it never creates, moves or persists
+ * them, and a pin never enters the project document.
+ */
+export interface SlidePin {
+  /** Host-owned id. Reported back verbatim by `onPinClick`. */
+  id: string
+  /** The slide's stable `Slide.id`. */
+  slideId: string
+  x?: number
+  y?: number
+  /** The pin's accessible name and tooltip. Absent: "Note". */
+  label?: string
+  /** A host colour family, set as the pin's `data-tone`. */
+  tone?: string
 }
 
 // ── Adapter ────────────────────────────────────────────────────────────────
@@ -1083,6 +1126,12 @@ export interface EditorSlots {
    * Absent → nothing is rendered in that slot.
    */
   runHistory?: ReactNode
+  /**
+   * Carousel only (PL70): rendered in the right rail under the slide
+   * properties, where a host draws its notes list. The video editor ignores
+   * it. Absent → nothing is rendered there.
+   */
+  notesPanel?: ReactNode
 }
 
 // ── Controls window ───────────────────────────────────────────────────────────
@@ -1215,6 +1264,40 @@ export interface CarouselEditorProps<P extends Project = Project> {
    * before.
    */
   renderControls?: (ctx: ControlsWindowContext) => ReactNode
+
+  // ── Project notes (opt-in, PL70) ──────────────────────────────────────────
+
+  /**
+   * Turns on notes. When `enabled`, N arms a pin on the selected slide: the
+   * next click on the slide adds a note at that point, and Esc or a second N
+   * adds one about the whole slide; a press anywhere else disarms. When not
+   * enabled, N calls `onLocked`. N is ignored with a modifier, as a key
+   * repeat, in a text field and in crop mode. Absent: N is not bound, so a
+   * host that does not opt in sees the editor exactly as before. The editor
+   * draws no note UI of its own beyond the armed cursor; the host draws notes
+   * as `pins` and in its own list (`slots.notesPanel`). See `SlideNotesApi`.
+   */
+  notes?: NotesOptions<SlideNote>
+
+  /**
+   * Hands the host the note writes (`SlideNotesApi`), so the host's notes UI
+   * writes through the editor's project sync instead of saving `notes`
+   * itself. Called with a stable api on mount and with `null` on unmount.
+   * Absent: no api.
+   */
+  onProvideNotesApi?: (api: SlideNotesApi | null) => void
+
+  /**
+   * Host-owned marks on slides (see `SlidePin`). Absent or empty: no pin
+   * layer and no thumbnail badges, the editor exactly as before.
+   */
+  pins?: readonly SlidePin[]
+
+  /**
+   * A click on one of `pins`, by that pin's `id`. The click never selects,
+   * deselects or drags anything underneath. Absent: a pin is inert.
+   */
+  onPinClick?: (id: string) => void
 }
 
 /**

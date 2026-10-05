@@ -55,6 +55,9 @@ export type Action<P extends Project = Project> =
   | { type: 'duplicateElement'; slideId: string; elementId: string; newElement: CarouselElement }
   | { type: 'reorderElement'; slideId: string; elementId: string; direction: 'forward' | 'backward' }
   | { type: 'setOverlayFrame'; slideId: string; elementId: string; frame: number }
+  // The user's own notes (PL70). Replaces `project.notes` wholesale; `null` is
+  // the explicit clear serve needs. Never edit-gated (see use-project-state).
+  | { type: 'setNotes'; notes: P['notes'] }
 
 // ---------------------------------------------------------------------------
 // SSE merge helpers
@@ -324,5 +327,8 @@ export function projectReducer<P extends Project>(state: P, action: Action<P>): 
       })
       return { ...state, slides }
     }
+
+    case 'setNotes':
+      return { ...state, notes: action.notes }
   }
 }

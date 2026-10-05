@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Slide, OverlayElement, ImageElement, OverlayFactory } from '../types'
 import OverlayErrorBoundary from './OverlayErrorBoundary'
 import {
@@ -120,6 +120,13 @@ interface Props {
    * overlays beneath it. Absent → all elements render.
    */
   hiddenElementIds?: string[]
+
+  /**
+   * Layers drawn over the slide (the editor's note pins and armed-note layer,
+   * PL70): rendered last inside the outer box, above the elements, so they
+   * can position themselves in percentages of the slide. Absent → nothing.
+   */
+  children?: ReactNode
 }
 
 // Plain default for the inline editor when we can't read the rendered text's
@@ -206,6 +213,7 @@ export default function SlideCanvas({
   cropElementId,
   onExitCrop,
   hiddenElementIds,
+  children,
 }: Props) {
   const sid = slideId ?? slide.id
   const resolveSrc = resolveImageSrc ?? ((el: ImageElement) => resolveAssetDefault(el.src))
@@ -721,6 +729,7 @@ export default function SlideCanvas({
           )
         })()}
       </div>
+      {children}
     </div>
   )
 }

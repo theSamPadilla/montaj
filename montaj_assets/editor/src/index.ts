@@ -58,6 +58,8 @@ export type {
   TimelinePin,
   NotesOptions,
   NotesApi,
+  SlideNotesApi,
+  SlidePin,
   EditorAdapter,
   EditorContext,
   EditorTheme,

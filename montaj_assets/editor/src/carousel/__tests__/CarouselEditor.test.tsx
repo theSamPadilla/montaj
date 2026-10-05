@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, act, waitFor, fireEvent } from '@testing-library/react'
 import { Keyboard, MousePointer2 } from 'lucide-react'
-import type { CarouselRenderModalContext, ControlsWindowContext, EditorAdapter, ImageElement, Project, RenderEvent } from '../../types'
+import type { CarouselRenderModalContext, ControlsWindowContext, EditorAdapter, ImageElement, Project, RenderEvent, SlideNotesApi, SlidePin } from '../../types'
+import type { SlideNote } from '../../schema'
 import CarouselEditor from '../CarouselEditor'
 import { CAROUSEL_CONTROLS } from '../../ControlsInfoModal'
 import { stubPlatform } from '../../ui/__tests__/platform'
@@ -429,7 +430,7 @@ describe('CarouselEditor — editor-core integration', () => {
         CAROUSEL_CONTROLS.map((s) => s.entries.map((e) => e.label)),
       )
       const keyboard = ctx.sections.find((s) => s.heading === 'Keyboard')!
-      expect(keyboard.entries.map((e) => e.keys)).toEqual([['Ctrl', 'Z'], ['Ctrl', 'Shift', 'Z'], ['Delete']])
+      expect(keyboard.entries.map((e) => e.keys)).toEqual([['Ctrl', 'Z'], ['Ctrl', 'Shift', 'Z'], ['Delete'], ['N']])
 
       const calls = seen.length
       await act(async () => { ctx.onClose() })
@@ -482,5 +483,440 @@ describe('CarouselEditor — platform shortcut labels', () => {
     } finally {
       restore()
     }
+  })
+})
+
+// ── PL70 — the user's own notes on a carousel ─────────────────────────────────
+//
+// Notes are a host opt-in, as in the video editor: with `notes` passed, N on
+// the selected slide arms a pin, and the next click on the slide adds a note at
+// that point (Esc or a second N adds one about the whole slide). Every note
+// write is one save and one undo step, observed here as one `saveProject`.
+
+function twoSlides(overrides: Partial<Project> = {}): Project {
+  return makeProject({
+    slides: [
+      {
+        id: 'slide-0',
+        base_color: '#ffffff',
+        elements: [{ id: 'el-img', type: 'image', src: 'a.png', x: 100, y: 100, w: 200, h: 200, rotation: 0 }],
+      },
+      {
+        id: 'slide-1',
+        base_color: '#000000',
+        elements: [{ id: 'el-b', type: 'image', src: 'b.png', x: 0, y: 0, w: 100, h: 100, rotation: 0 }],
+      },
+    ],
+    ...overrides,
+  })
+}
+
+function lastSave(adapter: FakeAdapter): Project {
+  return adapter.saveCalls[adapter.saveCalls.length - 1].project
+}
+
+async function key(k: string, init: KeyboardEventInit = {}, target: EventTarget = window): Promise<KeyboardEvent> {
+  const e = new KeyboardEvent('keydown', { key: k, cancelable: true, bubbles: true, ...init })
+  await act(async () => { target.dispatchEvent(e) })
+  return e
+}
+
+function armLayer(): HTMLElement | null {
+  return document.querySelector('[data-testid="note-arm-layer"]')
+}
+
+// jsdom lays nothing out, so the layer's box is stubbed: 200 x 400 at (100, 50).
+function stubRect(el: HTMLElement) {
+  el.getBoundingClientRect = () =>
+    ({ left: 100, top: 50, width: 200, height: 400, x: 100, y: 50, right: 300, bottom: 450, toJSON: () => ({}) }) as DOMRect
+}
+
+function interactiveHas(elementId: string): boolean {
+  return document.querySelector(`[data-interactive] [data-element-id="${elementId}"]`) !== null
+}
+
+describe('CarouselEditor — N adds a note (PL70)', () => {
+  it('N arms a pin on the selected slide, and the next click on the slide adds a note at that point', async () => {
+    const adapter = makeFakeAdapter()
+    const onNoteAdded = vi.fn()
+    render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} notes={{ enabled: true, onNoteAdded }} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+
+    const e = await key('n')
+    expect(e.defaultPrevented).toBe(true)
+    // Arming alone writes nothing.
+    expect(adapter.saveCalls).toHaveLength(0)
+    const layer = armLayer()!
+    expect(layer).not.toBeNull()
+    expect(layer.closest('[data-interactive]')).not.toBeNull()
+    expect(layer.style.cursor).toBe('crosshair')
+
+    stubRect(layer)
+    await act(async () => { fireEvent.click(layer, { clientX: 150, clientY: 150 }) })
+
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const notes = lastSave(adapter).notes as SlideNote[]
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toMatchObject({ slideId: 'slide-0', x: 0.25, y: 0.25, text: '' })
+    expect(notes[0].id).toBeTruthy()
+    expect(onNoteAdded).toHaveBeenCalledTimes(1)
+    expect(onNoteAdded).toHaveBeenCalledWith(notes[0])
+    // One click, one note: the pin is disarmed.
+    expect(armLayer()).toBeNull()
+  })
+
+  it('a click outside the slide box still lands on the slide, clamped into 0..1', async () => {
+    const adapter = makeFakeAdapter()
+    render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} notes={{ enabled: true }} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await key('n')
+    const layer = armLayer()!
+    stubRect(layer)
+    await act(async () => { fireEvent.click(layer, { clientX: 400, clientY: 0 }) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect((lastSave(adapter).notes as SlideNote[])[0]).toMatchObject({ x: 1, y: 0 })
+  })
+
+  it.each([['Escape'], ['n']])('N then %s adds a note about the whole slide (no point)', async (second) => {
+    const adapter = makeFakeAdapter()
+    const onNoteAdded = vi.fn()
+    render(<CarouselEditor project={twoSlides()} adapter={adapter} onProjectChange={vi.fn()} notes={{ enabled: true, onNoteAdded }} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+
+    await key('n')
+    const e = await key(second)
+    expect(e.defaultPrevented).toBe(true)
+
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const notes = lastSave(adapter).notes as SlideNote[]
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toEqual({ id: notes[0].id, slideId: 'slide-0', text: '' })
+    expect(onNoteAdded).toHaveBeenCalledWith(notes[0])
+    expect(armLayer()).toBeNull()
+  })
+
+  it('a press anywhere else disarms without adding, and so does selecting another slide', async () => {
+    const adapter = makeFakeAdapter()
+    const provided: Array<SlideNotesApi | null> = []
+    render(
+      <CarouselEditor
+        project={twoSlides()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        notes={{ enabled: true }}
+        onProvideNotesApi={(api) => { provided.push(api) }}
+      />,
+    )
+    await waitFor(() => findInteractiveWrapper('el-img'))
+
+    await key('n')
+    expect(armLayer()).not.toBeNull()
+    await act(async () => { fireEvent.pointerDown(document.body) })
+    expect(armLayer()).toBeNull()
+    // Esc with nothing armed is not a note.
+    const esc = await key('Escape')
+    expect(esc.defaultPrevented).toBe(false)
+
+    await key('n')
+    expect(armLayer()).not.toBeNull()
+    await act(async () => { provided[provided.length - 1]!.selectSlide('slide-1') })
+    await waitFor(() => expect(interactiveHas('el-b')).toBe(true))
+    expect(armLayer()).toBeNull()
+    await key('Escape')
+
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('N in a text input, with a modifier, as a key repeat, or in crop mode writes nothing', async () => {
+    const adapter = makeFakeAdapter()
+    const onNoteAdded = vi.fn()
+    const onLocked = vi.fn()
+    const { findByTitle } = render(
+      <CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} notes={{ enabled: true, onNoteAdded, onLocked }} />,
+    )
+    const wrapper = await waitFor(() => findInteractiveWrapper('el-img'))
+
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    try {
+      const typed = await key('n', {}, input)
+      expect(typed.defaultPrevented).toBe(false)
+      for (const mod of [{ metaKey: true }, { ctrlKey: true }, { altKey: true }]) await key('n', mod)
+      await key('N', { shiftKey: true })
+      await key('n', { repeat: true })
+      expect(armLayer()).toBeNull()
+
+      // Crop mode: select the image, press its Crop button, then N twice (a
+      // second N would add a note if the first had armed).
+      await act(async () => { fireEvent.click(wrapper) })
+      const crop = await findByTitle('Crop image')
+      await act(async () => { fireEvent.click(crop) })
+      await key('n')
+      expect(armLayer()).toBeNull()
+      await key('n')
+
+      expect(adapter.saveCalls).toHaveLength(0)
+      expect(onNoteAdded).not.toHaveBeenCalled()
+      expect(onLocked).not.toHaveBeenCalled()
+    } finally {
+      input.remove()
+    }
+  })
+
+  it('with notes locked, N calls onLocked once, even when held, and writes nothing', async () => {
+    const adapter = makeFakeAdapter()
+    const onLocked = vi.fn()
+    render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} notes={{ enabled: false, onLocked }} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+
+    await key('n')
+    await key('n', { repeat: true })
+    await key('n', { repeat: true })
+    expect(armLayer()).toBeNull()
+    await key('Escape')
+
+    expect(onLocked).toHaveBeenCalledTimes(1)
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('one undo removes the note just added', async () => {
+    const adapter = makeFakeAdapter()
+    render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} notes={{ enabled: true }} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+
+    await key('n')
+    await key('Escape')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(lastSave(adapter).notes).toHaveLength(1)
+
+    await key('z', { ctrlKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(lastSave(adapter).notes ?? []).toEqual([])
+  })
+
+  it('writes a note even while the project status gates slide edits', async () => {
+    const adapter = makeFakeAdapter()
+    render(
+      <CarouselEditor project={makeProject({ status: 'storyboard_ready' })} adapter={adapter} onProjectChange={vi.fn()} notes={{ enabled: true }} />,
+    )
+    await waitFor(() => findInteractiveWrapper('el-img'))
+
+    await key('n')
+    await key('Escape')
+
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(lastSave(adapter).notes).toHaveLength(1)
+    expect(lastSave(adapter).status).toBe('storyboard_ready')
+  })
+
+  it('without notes props, N is not claimed, nothing arms, and there is no pin layer', async () => {
+    const adapter = makeFakeAdapter()
+    const { container } = render(<CarouselEditor project={twoSlides()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+
+    const e = await key('n')
+    expect(e.defaultPrevented).toBe(false)
+    expect(armLayer()).toBeNull()
+    await key('n')
+    await key('Escape')
+
+    expect(adapter.saveCalls).toHaveLength(0)
+    expect(container.querySelector('[data-note-pins]')).toBeNull()
+    expect(container.querySelector('[data-slide-pin-count]')).toBeNull()
+  })
+})
+
+describe('CarouselEditor — onProvideNotesApi (PL70)', () => {
+  async function mountWithApi(project: Project = twoSlides()) {
+    const adapter = makeFakeAdapter()
+    const onNoteAdded = vi.fn()
+    const provided: Array<SlideNotesApi | null> = []
+    const utils = render(
+      <CarouselEditor
+        project={project}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        notes={{ enabled: true, onNoteAdded }}
+        onProvideNotesApi={(api) => { provided.push(api) }}
+      />,
+    )
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    const api = provided[provided.length - 1]
+    if (!api) throw new Error('no notes api was provided')
+    return { adapter, api, provided, onNoteAdded, utils }
+  }
+
+  it('add saves one note per call and returns its id, with or without a point', async () => {
+    const { adapter, api, onNoteAdded } = await mountWithApi()
+    let a = ''
+    let b = ''
+    // Two adds in one tick chain: the second save carries both.
+    await act(async () => {
+      a = api.add('slide-1')
+      b = api.add('slide-0', { x: 0.5, y: 2 })
+    })
+
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(a).toBeTruthy()
+    expect(b).toBeTruthy()
+    expect(lastSave(adapter).notes).toEqual([
+      { id: a, slideId: 'slide-1', text: '' },
+      { id: b, slideId: 'slide-0', x: 0.5, y: 1, text: '' },
+    ])
+    // The caller already has the id; onNoteAdded is the N key's report.
+    expect(onNoteAdded).not.toHaveBeenCalled()
+  })
+
+  it('setText, setDone, setPoint and remove each write once, through the slide note model', async () => {
+    const { adapter, api } = await mountWithApi(twoSlides({ notes: [{ id: 'n1', slideId: 'slide-0', text: '' }] }))
+
+    await act(async () => { api.setText('n1', 'logo too small') })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(lastSave(adapter).notes).toEqual([{ id: 'n1', slideId: 'slide-0', text: 'logo too small' }])
+
+    await act(async () => { api.setDone('n1', true) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(lastSave(adapter).notes).toEqual([{ id: 'n1', slideId: 'slide-0', text: 'logo too small', done: true }])
+
+    await act(async () => { api.setPoint('n1', { x: 0.1, y: 0.9 }) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(lastSave(adapter).notes).toEqual([{ id: 'n1', slideId: 'slide-0', text: 'logo too small', done: true, x: 0.1, y: 0.9 }])
+
+    await act(async () => { api.setPoint('n1', null) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(4))
+    expect(lastSave(adapter).notes).toEqual([{ id: 'n1', slideId: 'slide-0', text: 'logo too small', done: true }])
+
+    await act(async () => { api.remove('n1') })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(5))
+    // The last note gone is an explicit `notes: null` (serve's merge keeps an omitted key).
+    expect(lastSave(adapter).notes).toBeNull()
+  })
+
+  it('a write that changes nothing makes no save and no undo step', async () => {
+    const { adapter, api, utils } = await mountWithApi(twoSlides({ notes: [{ id: 'n1', slideId: 'slide-0', text: 'same' }] }))
+
+    await act(async () => {
+      api.setText('n1', 'same')
+      api.setDone('n1', false)
+      api.setPoint('n1', null)
+      api.remove('nope')
+      api.setText('nope', 'x')
+    })
+
+    expect(adapter.saveCalls).toHaveLength(0)
+    expect((utils.getByLabelText('Undo') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('selectSlide selects that slide; an unknown id changes nothing', async () => {
+    const { api } = await mountWithApi()
+    expect(interactiveHas('el-b')).toBe(false)
+
+    await act(async () => { api.selectSlide('slide-1') })
+    await waitFor(() => expect(interactiveHas('el-b')).toBe(true))
+
+    await act(async () => { api.selectSlide('nope') })
+    expect(interactiveHas('el-b')).toBe(true)
+  })
+
+  it('is one stable api across re-renders, withdrawn with null on unmount', async () => {
+    const { api, provided, utils } = await mountWithApi()
+    await act(async () => { api.add('slide-0') })
+    await act(async () => { api.selectSlide('slide-1') })
+    await act(async () => { api.add('slide-1') })
+
+    expect(new Set(provided.filter(Boolean))).toEqual(new Set([api]))
+    utils.unmount()
+    expect(provided[provided.length - 1]).toBeNull()
+  })
+})
+
+describe('CarouselEditor — note pins (PL70)', () => {
+  const pins: SlidePin[] = [
+    { id: 'p1', slideId: 'slide-0', x: 0.25, y: 0.75, label: 'Logo too small' },
+    { id: 'p2', slideId: 'slide-0', x: 0.5, y: 0.5 },
+    { id: 'p3', slideId: 'slide-0' },
+    { id: 'p4', slideId: 'slide-1', x: 0.1, y: 0.1 },
+    { id: 'p5', slideId: 'slide-1' },
+    { id: 'p6', slideId: 'slide-1' },
+  ]
+
+  it('draws the selected slide pins that have a point as buttons at that point', async () => {
+    const { getByRole, container } = render(
+      <CarouselEditor project={twoSlides()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} pins={pins} onPinClick={vi.fn()} />,
+    )
+    await waitFor(() => findInteractiveWrapper('el-img'))
+
+    const p1 = getByRole('button', { name: 'Logo too small' })
+    expect(p1.closest('[data-interactive]')).not.toBeNull()
+    expect(p1.style.left).toBe('25%')
+    expect(p1.style.top).toBe('75%')
+    const p2 = getByRole('button', { name: 'Note' })
+    expect(p2.style.left).toBe('50%')
+    expect(p2.style.top).toBe('50%')
+    // Only the pins take the pointer; the layer over the slide lets it through.
+    expect(p1.style.pointerEvents).toBe('auto')
+    expect((p1.parentElement as HTMLElement).style.pointerEvents).toBe('none')
+    // A whole-slide pin and another slide's pin are not on this canvas.
+    expect(container.querySelectorAll('[data-interactive] [data-pin-id]')).toHaveLength(2)
+    expect(container.querySelector('[data-pin-id="p3"]')).toBeNull()
+    expect(container.querySelector('[data-pin-id="p4"]')).toBeNull()
+  })
+
+  it('a click on a pin reports its id and keeps the selection', async () => {
+    const adapter = makeFakeAdapter()
+    const onPinClick = vi.fn()
+    const onSelectionChange = vi.fn()
+    const { getByRole } = render(
+      <CarouselEditor
+        project={twoSlides()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        pins={pins}
+        onPinClick={onPinClick}
+        onSelectionChange={onSelectionChange}
+      />,
+    )
+    const wrapper = await waitFor(() => findInteractiveWrapper('el-img'))
+    const lastSelection = () => {
+      const calls = onSelectionChange.mock.calls
+      return calls[calls.length - 1]?.[0]
+    }
+    await act(async () => { fireEvent.click(wrapper) })
+    await waitFor(() => expect(lastSelection()?.id).toBe('el-img'))
+
+    const p1 = getByRole('button', { name: 'Logo too small' })
+    await act(async () => {
+      fireEvent.pointerDown(p1, { clientX: 10, clientY: 10 })
+      fireEvent.pointerMove(window, { clientX: 90, clientY: 90 })
+      fireEvent.pointerUp(window)
+      fireEvent.click(p1)
+    })
+
+    expect(onPinClick).toHaveBeenCalledTimes(1)
+    expect(onPinClick).toHaveBeenCalledWith('p1')
+    expect(lastSelection()?.id).toBe('el-img')
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('counts each slide whole-slide pins on its thumbnail', async () => {
+    const { container } = render(
+      <CarouselEditor project={twoSlides()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} pins={pins} />,
+    )
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    const badges = Array.from(container.querySelectorAll<HTMLElement>('[data-slide-pin-count]'))
+    expect(Object.fromEntries(badges.map((b) => [b.dataset.slidePinCount, b.textContent]))).toEqual({ 'slide-0': '1', 'slide-1': '2' })
+  })
+
+  it('renders the notesPanel slot in the right rail', async () => {
+    const { findByTestId } = render(
+      <CarouselEditor
+        project={makeProject()}
+        adapter={makeFakeAdapter()}
+        onProjectChange={vi.fn()}
+        slots={{ notesPanel: <div data-testid="notes-panel" /> }}
+      />,
+    )
+    const panel = await findByTestId('notes-panel')
+    expect(panel.closest('[data-interactive]')).toBeNull()
   })
 })

@@ -327,7 +327,7 @@ export const VIDEO_CONTROLS: ControlSection[] = [
 ]
 
 /** Controls reference for the carousel editor. Sourced from CarouselEditor's key
- *  handlers (undo/redo, Delete) and the canvas gesture hints. */
+ *  handlers (undo/redo, Delete, the N note key) and the canvas gesture hints. */
 export const CAROUSEL_CONTROLS: ControlSection[] = [
   {
     heading: 'Canvas',
@@ -343,6 +343,7 @@ export const CAROUSEL_CONTROLS: ControlSection[] = [
       { keys: ['⌘', 'Z'], label: 'Undo' },
       { keys: ['⌘', '⇧', 'Z'], label: 'Redo' },
       { keys: ['Delete'], label: 'Remove the selected element' },
+      { keys: ['N'], label: 'Add a note' },
     ],
   },
 ]

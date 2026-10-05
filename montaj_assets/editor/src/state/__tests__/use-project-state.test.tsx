@@ -256,3 +256,46 @@ describe('useProjectState — addSlide is status-gated', () => {
     expect(adapter.saveProject).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('useProjectState — editNotes (PL70)', () => {
+  it('writes notes in a status that gates slide edits: one save, one undo step', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({ status: 'storyboard_ready' })
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.editNotes((n) => [...(n ?? []), { id: 'n1', slideId: 'slide-0', text: '' }])
+    })
+    expect(result.current.project.notes).toEqual([{ id: 'n1', slideId: 'slide-0', text: '' }])
+    expect(adapter.saveCalls).toHaveLength(1)
+    expect(adapter.saveCalls[0].project.notes).toEqual([{ id: 'n1', slideId: 'slide-0', text: '' }])
+    expect(result.current.canUndo).toBe(true)
+
+    act(() => { result.current.undo() })
+    expect(result.current.project.notes).toBeUndefined()
+    expect(result.current.canUndo).toBe(false)
+  })
+
+  it('an edit that returns the same notes writes nothing and pushes no undo step', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({ notes: [{ id: 'n1', slideId: 'slide-0', text: 'x' }] })
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => { await result.current.editNotes((n) => n) })
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(result.current.canUndo).toBe(false)
+  })
+
+  it('reads the live notes, so two edits in one tick chain', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      void result.current.editNotes((n) => [...(n ?? []), { id: 'a', slideId: 'slide-0', text: '' }])
+      await result.current.editNotes((n) => [...(n ?? []), { id: 'b', slideId: 'slide-0', text: '' }])
+    })
+    expect(result.current.project.notes?.map((n) => n.id)).toEqual(['a', 'b'])
+    expect(adapter.saveCalls[adapter.saveCalls.length - 1].project.notes?.map((n) => n.id)).toEqual(['a', 'b'])
+  })
+})

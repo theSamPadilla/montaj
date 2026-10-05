@@ -58,6 +58,15 @@ export interface UseProjectState<P extends Project = Project> {
   reorderSlides: (fromIndex: number, toIndex: number) => Promise<void>
   updateSlide: (slideId: string, patch: Partial<Slide>) => Promise<void>
   setOverlayFrame: (slideId: string, elementId: string, frame: number) => Promise<void>
+  /**
+   * Writes `project.notes` (PL70): `edit` is called once, synchronously, with
+   * the live notes (so two writes in one tick chain), and its result is one
+   * save and one undo step. Not gated by status: the user's own notes are
+   * writable whenever the editor is up, as in the video editor. An edit that
+   * returns the same reference writes nothing (no save, no undo step); the
+   * returned promise is the save's.
+   */
+  editNotes: (edit: (notes: Project['notes']) => Project['notes']) => Promise<void>
   commit: () => Promise<void>
   refetch: () => Promise<void>
   undo: () => void
@@ -232,6 +241,17 @@ export function useProjectState<P extends Project = Project>(
     [mutate],
   )
 
+  // Not in `editGated` above, so `mutate` lets it through in every status.
+  const editNotes = useCallback(
+    (edit: (notes: Project['notes']) => Project['notes']): Promise<void> => {
+      const current = projectRef.current.notes
+      const notes = edit(current)
+      if (notes === current) return Promise.resolve()
+      return mutate({ type: 'setNotes', notes: notes as P['notes'] })
+    },
+    [mutate, projectRef],
+  )
+
   const isEditingAllowed = isEditable(sync.project.status)
 
   return {
@@ -257,6 +277,7 @@ export function useProjectState<P extends Project = Project>(
     reorderSlides,
     updateSlide,
     setOverlayFrame,
+    editNotes,
     commit: sync.commit,
     refetch: sync.refetch,
     undo: sync.undo,

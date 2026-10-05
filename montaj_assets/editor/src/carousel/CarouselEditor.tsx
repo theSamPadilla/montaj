@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw, AlertCircle, Download, Info, Undo2, Redo2 } from 'lucide-react'
-import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory } from '../types'
+import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory, SlideNotesApi } from '../types'
+import type { SlideNote } from '../schema'
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
 import SlideCanvas from './SlideCanvas'
@@ -8,6 +9,9 @@ import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import CarouselRenderModal from './CarouselRenderModal'
 import ControlsInfoModal, { CAROUSEL_CONTROLS, platformSections } from '../ControlsInfoModal'
+import { NoteArmLayer, NotePinLayer, hasPoint } from './NoteLayers'
+import { addSlideNote, setSlideNoteText, setSlideNoteDone, setSlideNotePoint, removeSlideNotes } from './notes'
+import { noteId } from '../video/timeline/notes'
 import { Button } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
 
@@ -30,6 +34,8 @@ interface SlideGridProps {
   onReorder: (fromIdx: number, toIdx: number) => void
   resolveImageSrc?: (element: ImageElement) => string
   compileOverlay?: (template: string) => Promise<OverlayFactory>
+  /** Whole-slide pins per slide id (PL70), drawn as a count on the thumbnail. */
+  pinCounts?: Map<string, number>
 }
 
 function SlideGrid({
@@ -43,6 +49,7 @@ function SlideGrid({
   onReorder,
   resolveImageSrc,
   compileOverlay,
+  pinCounts,
 }: SlideGridProps) {
   const [w, h] = project.settings.resolution
   const THUMB_W = 200
@@ -99,6 +106,14 @@ function SlideGrid({
             <div className="absolute bottom-1 left-1 text-xs text-white bg-black/50 px-1 rounded">
               {idx + 1}
             </div>
+            {pinCounts?.get(slide.id) ? (
+              <div
+                data-slide-pin-count={slide.id}
+                className="absolute bottom-1 right-1 min-w-[1.25rem] text-center text-xs px-1 rounded-full bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] pointer-events-none"
+              >
+                {pinCounts.get(slide.id)}
+              </div>
+            ) : null}
             <div className="absolute top-1 right-1 hidden group-hover:flex gap-1">
               <button
                 onClick={e => { e.stopPropagation(); onDuplicate(slide.id) }}
@@ -153,7 +168,7 @@ function isTypingTarget(t: EventTarget | null): boolean {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, notes, onProvideNotesApi, pins, onPinClick }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -228,6 +243,146 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [state, selectedSlideId, selectedElementId, cropElementId])
+
+  // ── Project notes (PL70) ───────────────────────────────────────────────
+  // The editor is the ONLY writer of `project.notes`. The N flow and the
+  // host's notes api both land in `state.editNotes`: one save and one undo
+  // step per write, never gated by status (see use-project-state).
+  const { editNotes } = state
+  const notesRef = useRef(notes)
+  notesRef.current = notes
+  const slidesRef = useRef(slides)
+  slidesRef.current = slides
+
+  /** Adds an empty note on `slideId` (at `point`, or about the whole slide)
+   *  and returns it as stored: the core of the N flow and `api.add`. */
+  const addNoteOn = useCallback((slideId: string, point?: { x: number; y: number }): SlideNote => {
+    const id = noteId()
+    let added: SlideNote | undefined
+    void editNotes((n) => {
+      const next = addSlideNote(n, { slideId, x: point?.x, y: point?.y, id }).notes
+      added = next[next.length - 1] as SlideNote
+      return next
+    })
+    return added!
+  }, [editNotes])
+
+  /** Every other note write. One that changes nothing writes nothing. */
+  const editNote = useCallback((edit: (n: Project['notes']) => Project['notes']) => {
+    void editNotes(edit)
+  }, [editNotes])
+
+  const selectSlide = useCallback((slideId: string) => {
+    if (!slidesRef.current.some((s) => s.id === slideId)) return
+    setSelectedSlideId(slideId)
+    setSelectedElementId(null)
+    setCropElementId(null)
+  }, [])
+
+  // Host notes api: handed up once (it is stable) and withdrawn with null on
+  // unmount, so the host never writes through an editor that is gone.
+  const notesApi = useMemo<SlideNotesApi>(() => ({
+    add: (slideId, point) => addNoteOn(slideId, point).id,
+    setText: (id, text) => editNote((n) => setSlideNoteText(n, id, text)),
+    setDone: (id, done) => editNote((n) => setSlideNoteDone(n, id, done)),
+    setPoint: (id, point) => editNote((n) => setSlideNotePoint(n, id, point)),
+    remove: (id) => editNote((n) => removeSlideNotes(n, new Set([id]))),
+    selectSlide,
+  }), [addNoteOn, editNote, selectSlide])
+  useEffect(() => {
+    if (!onProvideNotesApi) return
+    onProvideNotesApi(notesApi)
+    return () => onProvideNotesApi(null)
+  }, [onProvideNotesApi, notesApi])
+
+  // N arms a pin on the selected slide. The ref mirrors the state so a second
+  // key in the same tick sees the arm before React re-renders.
+  const [armedSlideId, setArmedSlideId] = useState<string | null>(null)
+  const armedRef = useRef<string | null>(null)
+  const setArmed = useCallback((slideId: string | null) => {
+    armedRef.current = slideId
+    setArmedSlideId(slideId)
+  }, [])
+
+  /** Adds the armed note (at `point`, or about the whole slide) and disarms. */
+  const placeArmedNote = useCallback((point?: { x: number; y: number }) => {
+    const slideId = armedRef.current
+    if (!slideId) return
+    setArmed(null)
+    const note = addNoteOn(slideId, point)
+    notesRef.current?.onNoteAdded?.(note)
+  }, [addNoteOn, setArmed])
+
+  // Disarm when arming no longer makes sense: notes switched off, crop mode,
+  // another slide selected (or the armed one deleted), the canvas hidden.
+  const notesEnabled = !!notes?.enabled
+  useEffect(() => {
+    if (armedSlideId === null) return
+    if (!notesEnabled || cropElementId || armedSlideId !== selectedSlideId || project.status === 'pending') setArmed(null)
+  }, [armedSlideId, notesEnabled, cropElementId, selectedSlideId, project.status, setArmed])
+
+  // A press anywhere but the armed slide disarms without adding. Capture
+  // phase, so a handler that stops propagation cannot keep a stale arm.
+  const armLayerRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (armedSlideId === null) return
+    const onDown = (e: PointerEvent) => {
+      const layer = armLayerRef.current
+      if (layer && e.target instanceof Node && layer.contains(e.target)) return
+      setArmed(null)
+    }
+    window.addEventListener('pointerdown', onDown, true)
+    return () => window.removeEventListener('pointerdown', onDown, true)
+  }, [armedSlideId, setArmed])
+
+  // The key handler is read through a ref so the listener, bound only while
+  // the host passes `notes`, always sees this render's state. Without
+  // `notes`, N and Esc are not claimed at all.
+  const noteKeyRef = useRef<(e: KeyboardEvent) => void>(() => {})
+  noteKeyRef.current = (e: KeyboardEvent) => {
+    if (isTypingTarget(e.target)) return
+    if (e.key === 'Escape') {
+      if (!armedRef.current) return
+      e.preventDefault()
+      placeArmedNote()
+      return
+    }
+    if (e.key.toLowerCase() !== 'n' || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+    // Repeats are dropped: a held N must not arm and place in turn.
+    if (e.repeat || cropElementId) return
+    const opts = notesRef.current
+    if (!opts) return
+    e.preventDefault()
+    if (!opts.enabled) {
+      opts.onLocked?.()
+      return
+    }
+    if (armedRef.current) {
+      placeArmedNote()
+      return
+    }
+    if (!selectedSlideId || project.status === 'pending') return
+    setArmed(selectedSlideId)
+  }
+  const hasNotes = !!notes
+  useEffect(() => {
+    if (!hasNotes) return
+    const onKey = (e: KeyboardEvent) => noteKeyRef.current(e)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [hasNotes])
+
+  // Host pins: the selected slide's pins with a point go on the canvas; the
+  // ones without a point are counted on their slide's thumbnail.
+  const canvasPins = useMemo(
+    () => (pins ?? []).filter((p) => p.slideId === selectedSlideId).filter(hasPoint),
+    [pins, selectedSlideId],
+  )
+  const pinCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const p of pins ?? []) if (!hasPoint(p)) counts.set(p.slideId, (counts.get(p.slideId) ?? 0) + 1)
+    return counts
+  }, [pins])
 
   async function handleRender() {
     setRendering(true)
@@ -413,6 +568,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         onReorder={handleReorderSlides}
         resolveImageSrc={adapter.resolveImageSrc}
         compileOverlay={(t) => adapter.compileOverlay(t)}
+        pinCounts={pinCounts}
       />
 
       {/* CANVAS COLUMN: a pinned toolbar row on top, then the independently
@@ -564,7 +720,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 cropElementId={cropElementId}
                 onExitCrop={() => setCropElementId(null)}
                 hiddenElementIds={hiddenElementIds}
-              />
+              >
+                {canvasPins.length > 0 && <NotePinLayer pins={canvasPins} onPinClick={onPinClick} />}
+                {armedSlideId === selectedSlide.id && <NoteArmLayer layerRef={armLayerRef} onPlace={placeArmedNote} />}
+              </SlideCanvas>
             </div>
             <div className="flex-shrink-0 flex items-center justify-center gap-1.5 text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] max-w-md">
               <span className="text-center">
@@ -629,6 +788,11 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             className="w-full border-l-0"
             mode={mode}
           />
+          {slots?.notesPanel && (
+            <div className="border-t border-[var(--editor-border)]">
+              {slots.notesPanel}
+            </div>
+          )}
         </div>
       </div>
 
