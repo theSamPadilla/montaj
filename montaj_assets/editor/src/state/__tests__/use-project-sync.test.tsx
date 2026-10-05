@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useProjectSync } from '../use-project-sync'
 import type { EditorAdapter, Project, ImageElement, RenderEvent } from '../../types'
+import { removeSlideNotes } from '../../carousel/notes'
+import { removeNotes } from '../../video/timeline/notes'
 
 // ---------------------------------------------------------------------------
 // Fixtures — mirrors the use-project-state test's FakeAdapter, but drives the
@@ -493,6 +495,150 @@ describe('useProjectSync — optional top-level keys that go absent', () => {
     await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'B' })) })
     expect(adapter.saveCalls[0].project).toEqual({ ...initial, name: 'B' })
     expect(Object.keys(adapter.saveCalls[0].project).sort()).toEqual(Object.keys({ ...initial, name: 'B' }).sort())
+  })
+})
+
+// An undo/redo restores a snapshot of the whole project, but the history knows
+// nothing of what the host pushed in between (SSE / applyExternal). So a
+// restore may only clear the top-level keys that the undone (or redone) edit
+// itself added (or removed): a key that arrived from elsewhere since is omitted
+// from the body, and serve's shallow merge keeps it on disk.
+describe('useProjectSync — undo/redo clear only the keys their own edit changed', () => {
+  const note = (id: string) => ({ id, slideId: 'slide-0', text: id })
+  const asset = { id: 'a1', src: 'a1.png', type: 'image' as const }
+  const body = (adapter: FakeAdapter, i: number) => adapter.saveCalls[i].project as Record<string, unknown>
+  // A project with no `assets` key, so the host can be the one to add it.
+  const withoutAssets = (): Project => {
+    const { assets: _a, ...rest } = makeProject()
+    return rest as Project
+  }
+
+  it('undo of an edit after the host added a key never deletes that key', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = withoutAssets()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'Renamed' })) })
+    // The host adds the project's first assets; the undo history never sees it.
+    act(() => { adapter.emit({ ...result.current.projectRef.current!, assets: [asset] }) })
+    expect(result.current.project.assets).toEqual([asset])
+
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+
+    expect(body(adapter, 1).name).toBe('Test Project')
+    expect(body(adapter, 1).assets).not.toBeNull()
+    expect('assets' in body(adapter, 1)).toBe(false)
+  })
+
+  it('undo of the first note after the host added a key clears only notes', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = withoutAssets()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    await act(async () => { await result.current.mutate((p) => ({ ...p, notes: [note('n1')] } as Project)) })
+    act(() => { adapter.emit({ ...result.current.projectRef.current!, assets: [asset] }) })
+
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+
+    expect(body(adapter, 1).notes).toBeNull()
+    expect('assets' in body(adapter, 1)).toBe(false)
+  })
+
+  it('a committed gesture records the keys it added, so its undo clears only those', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = withoutAssets()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    act(() => {
+      result.current.mutateTransient((p) => ({ ...p, notes: [note('n1')] } as Project))
+      result.current.mutateTransient((p) => ({ ...p, notes: [note('n1'), note('n2')] } as Project))
+    })
+    await act(async () => { await result.current.commit() })
+    act(() => { adapter.emit({ ...result.current.projectRef.current!, assets: [asset] }) })
+
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+
+    expect(body(adapter, 1).notes).toBeNull()
+    expect('assets' in body(adapter, 1)).toBe(false)
+  })
+
+  it('redo after the host added a key never deletes that key', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = withoutAssets()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'Renamed' })) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    act(() => { adapter.emit({ ...result.current.projectRef.current!, assets: [asset] }) })
+
+    act(() => { result.current.redo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+
+    expect(body(adapter, 2).name).toBe('Renamed')
+    expect('assets' in body(adapter, 2)).toBe(false)
+  })
+
+  it('redo after undoing the first note restores it', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    await act(async () => { await result.current.mutate((p) => ({ ...p, notes: [note('n1')] } as Project)) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(body(adapter, 1).notes).toBeNull()
+
+    act(() => { result.current.redo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+
+    expect(body(adapter, 2).notes).toEqual([note('n1')])
+    expect(result.current.project.notes).toEqual([note('n1')])
+  })
+
+  it('removing the last carousel note through the notes model saves notes: null', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({ notes: [note('n1')] } as Partial<Project>)
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.mutate((p) => ({ ...p, notes: removeSlideNotes(p.notes, new Set(['n1'])) }))
+    })
+    expect(body(adapter, 0).notes).toBeNull()
+  })
+
+  it('removing the last video note through the notes model saves notes: null', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({ notes: [{ id: 't1', t: 1, text: 'x' }] } as Partial<Project>)
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    await act(async () => { await result.current.mutate((p) => removeNotes(p, new Set(['t1'])) as Project) })
+    expect(body(adapter, 0).notes).toBeNull()
+  })
+
+  it('an edit that drops a key deletes it, undo restores it, redo deletes it again', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({ notes: [note('n1')] } as Partial<Project>)
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.mutate((p) => {
+        const { notes: _n, ...rest } = p
+        return rest as Project
+      })
+    })
+    expect(body(adapter, 0).notes).toBeNull()
+
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(body(adapter, 1).notes).toEqual([note('n1')])
+
+    act(() => { result.current.redo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(body(adapter, 2).notes).toBeNull()
   })
 })
 
