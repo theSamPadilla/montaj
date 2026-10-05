@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.24.5
+
 - **Fixed (editor): a reviewer-comment pin opens the Notes page too.** A click on a `tone: 'review'` host pin now opens the Notes page like a `'note'` pin does, when `slots.notesPanel` is present; a pin with no tone still does not. (`montaj_assets/editor/src/video/VideoEditor.tsx`, `montaj_assets/editor/src/video/__tests__/VideoEditor.notesRail.test.tsx`)
 
 ## v5.24.4
