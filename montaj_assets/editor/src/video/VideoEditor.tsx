@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
-import { AlertCircle, Captions, Crop, Ear, EarOff, Film, HelpCircle, History, Magnet, Maximize2, Minimize2, Redo2, SeparatorVertical, Smartphone, SquareDashedMousePointer, Undo2, Wand2 } from 'lucide-react'
+import { AlertCircle, Captions, Crop, Ear, EarOff, Film, HelpCircle, History, Magnet, Maximize2, Minimize2, NotebookPen, Redo2, SeparatorVertical, Smartphone, SquareDashedMousePointer, Undo2, Wand2 } from 'lucide-react'
 import type { NotesApi, Project, VideoEditorProps } from '../types'
 import type { AudioTrack, EditorProject, Note, VisualItem } from '../schema'
 import { useProjectSync, type UseProjectSync } from '../state/use-project-sync'
@@ -1905,6 +1905,19 @@ function ReviewSurface<P extends Project>({
     void syncMutate(() => updated as P)
   }, [syncMutate, syncProjectRef])
 
+  function revealNotes() {
+    if (slots?.notesPanel) setLeftTabRequest(r => ({ id: 'notes', nonce: r.nonce + 1, persist: false }))
+    else if (slots?.mediaPanel) setLeftTabRequest(r => ({ id: 'media', nonce: r.nonce + 1, persist: false }))
+  }
+
+  /** A click on a host note pin also opens the Notes page (when there is one). */
+  const handlePinClick = onPinClick
+    ? (id: string) => {
+        if (slots?.notesPanel && pins?.find(p => p.id === id)?.tone === 'note') revealNotes()
+        onPinClick(id)
+      }
+    : undefined
+
   /** N and the palette: add a note, or hand the host its locked moment. */
   function handleNoteKey(at: number) {
     const opts = notesRef.current
@@ -1913,9 +1926,10 @@ function ReviewSurface<P extends Project>({
       opts.onLocked?.()
       return
     }
-    // The Notes tab lives in the media panel; the rail may be on Captions or
-    // another tab, so reveal Media (without persisting the choice).
-    if (slots?.mediaPanel) setLeftTabRequest(r => ({ id: 'media', nonce: r.nonce + 1, persist: false }))
+    // Reveal the notes list (without persisting the choice): its own Notes
+    // page when the host passes `slots.notesPanel`, else the Media tab where a
+    // host that renders notes inside its media panel keeps them.
+    revealNotes()
     // Two statements on purpose: `opts.onNoteAdded?.(addNoteAt(at))` would
     // skip evaluating its argument, so no note at all, when a host passes no
     // `onNoteAdded`.
@@ -2639,7 +2653,7 @@ function ReviewSurface<P extends Project>({
           onImportFilesToTimeline={onImportFilesToTimeline}
           pendingDrops={pendingDrops}
           pins={pins}
-          onPinClick={onPinClick}
+          onPinClick={handlePinClick}
         />
       </div>
     </div>
@@ -2880,6 +2894,11 @@ function ReviewSurface<P extends Project>({
       // border: inside a tab panel there is nothing above to divide from.
       content: <div className="flex-1 min-h-0 overflow-hidden flex flex-col">{captionListPanel}</div>,
     })
+  }
+  // The host's notes list, its own page (the carousel draws it in the right
+  // rail instead). Between Captions and Versions.
+  if (slots?.notesPanel) {
+    leftPanelTabs.push({ id: 'notes', label: 'Notes', icon: <NotebookPen size={16} />, content: slots.notesPanel })
   }
   if (adapter.listVersionHistory || slots?.runHistory) {
     leftPanelTabs.push({

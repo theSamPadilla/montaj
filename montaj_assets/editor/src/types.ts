@@ -1127,9 +1127,10 @@ export interface EditorSlots {
    */
   runHistory?: ReactNode
   /**
-   * Carousel only (PL70): rendered in the right rail under the slide
-   * properties, where a host draws its notes list. The video editor ignores
-   * it. Absent → nothing is rendered there.
+   * The host's notes list. The carousel editor renders it in the right rail
+   * under the slide properties (PL70). The video editor renders it as its own
+   * "Notes" page in the left rail (CapCut layout, between Captions and
+   * Versions), and N opens that page. Absent → nothing is rendered.
    */
   notesPanel?: ReactNode
 }

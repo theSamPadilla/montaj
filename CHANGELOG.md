@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Changed (editor): a host notes panel is its own Notes page in the video editor's left rail; N opens it.** `slots.notesPanel` (carousel-only until now) renders as a Notes tab between Captions and Versions in the CapCut layout; N, and a click on a `tone: 'note'` pin, open it. Without `notesPanel`, N still opens Media. (`montaj_assets/editor/src/video/VideoEditor.tsx`, `montaj_assets/editor/src/types.ts`)
 - **Fixed (editor, serve): Compare versions no longer fails past an older version's end, and shows progress while a frame renders.** A time past a shorter version's end used to answer 500; `sample-frame.js --clamp-to-end` (used by the version frame route) now samples the last frame and writes `<out>.clamped.json`, which the route sends as `X-Montaj-Frame-End`, and the pane captions "Ends at 52.3s". A failed render shows the sampler's own message, and the pane keeps the previous frame dimmed under the editor's loader while the next one renders. (`montaj_assets/render/sample-frame.js`, `serve/routes/projects.py`, `montaj_assets/editor/src/video/VersionCompare.tsx`, `montaj_assets/render/test/sample-frame.test.mjs`, `tests/test_versions.py`, `montaj_assets/editor/src/video/__tests__/VersionCompare.test.tsx`)
 
 ## v5.24.3
