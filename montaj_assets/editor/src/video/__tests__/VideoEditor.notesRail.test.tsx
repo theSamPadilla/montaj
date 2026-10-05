@@ -198,22 +198,13 @@ describe('VideoEditor — Notes page in the left rail', () => {
     }
     const click = (id: string) => act(async () => { timelineProps.current!.onPinClick!(id) })
 
-    it.each([['p-review'], ['p-note']])('%s opens the Notes page and still reaches the host', async (id) => {
+    it.each([['p-review'], ['p-note'], ['p-none']])('%s opens the Notes page and still reaches the host', async (id) => {
       const onPinClick = vi.fn()
       await mount(onPinClick)
       await click(id)
       await waitFor(() => expect(screen.getByTestId('notes-list')).toBeTruthy())
       expect(screen.getByRole('tab', { name: 'Notes' }).getAttribute('aria-selected')).toBe('true')
       expect(onPinClick).toHaveBeenCalledWith(id)
-    })
-
-    it('a pin with no tone does not switch tabs, and still reaches the host', async () => {
-      const onPinClick = vi.fn()
-      await mount(onPinClick)
-      await click('p-none')
-      expect(screen.queryByTestId('notes-list')).toBeNull()
-      expect(screen.getByRole('tab', { name: 'Notes' }).getAttribute('aria-selected')).not.toBe('true')
-      expect(onPinClick).toHaveBeenCalledWith('p-none')
     })
   })
 })

@@ -1913,10 +1913,9 @@ function ReviewSurface<P extends Project>({
   /** A click on a host pin that is a row in the notes list (your note or a reviewer comment) also opens the Notes page, when there is one. A pin with no tone is not a notes row. */
   const handlePinClick = onPinClick
     ? (id: string) => {
-        if (slots?.notesPanel) {
-          const tone = pins?.find(p => p.id === id)?.tone
-          if (tone === 'note' || tone === 'review') revealNotes()
-        }
+        // Every host pin is a row in the host's notes list: your notes
+        // ('note') and reviewer comments ('review', the default tone).
+        if (slots?.notesPanel && pins?.some(p => p.id === id)) revealNotes()
         onPinClick(id)
       }
     : undefined
