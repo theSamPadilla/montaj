@@ -347,7 +347,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       placeArmedNote()
       return
     }
-    if (e.key.toLowerCase() !== 'n' || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+    // Cmd, Ctrl and Alt leave N alone; Shift does not, as on video
+    // (`matchesPlainKey`).
+    if (e.key.toLowerCase() !== 'n' || e.metaKey || e.ctrlKey || e.altKey) return
     // Repeats are dropped: a held N must not arm and place in turn.
     if (e.repeat || cropElementId) return
     const opts = notesRef.current

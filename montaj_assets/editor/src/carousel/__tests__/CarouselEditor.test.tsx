@@ -577,6 +577,46 @@ describe('CarouselEditor — N adds a note (PL70)', () => {
     expect((lastSave(adapter).notes as SlideNote[])[0]).toMatchObject({ x: 1, y: 0 })
   })
 
+  // The canvas draws the slide at one uniform scale, so a click's fraction of
+  // the drawn box is its fraction of the slide's design size: the scale
+  // cancels. Pinned at a non-square size and a scale well below 1.
+  it('stores the click as fractions of the design size at any canvas scale', async () => {
+    const adapter = makeFakeAdapter()
+    const project = makeProject({ settings: { resolution: [1080, 1350] } })
+    const { container } = render(<CarouselEditor project={project} adapter={adapter} onProjectChange={vi.fn()} notes={{ enabled: true }} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+
+    // The interactive SlideCanvas box is the design size times the canvas scale.
+    const box = container.querySelector('[data-interactive]') as HTMLElement
+    const boxW = parseFloat(box.style.width)
+    const boxH = parseFloat(box.style.height)
+    const scale = boxW / 1080
+    expect(scale).toBeGreaterThan(0)
+    expect(scale).toBeLessThan(0.9)
+    expect(boxH / 1350).toBeCloseTo(scale, 9)
+
+    await key('n')
+    const layer = armLayer()!
+    // The layer fills the box, so its rect is the box's rect.
+    expect(layer.parentElement).toBe(box)
+    expect([layer.style.width, layer.style.height]).toEqual(['100%', '100%'])
+    const rect = { left: 40, top: 20, width: boxW, height: boxH }
+    for (const el of [box, layer]) {
+      el.getBoundingClientRect = () =>
+        ({ ...rect, x: rect.left, y: rect.top, right: rect.left + boxW, bottom: rect.top + boxH, toJSON: () => ({}) }) as DOMRect
+    }
+
+    // Design point (270, 1012.5) of the 1080 x 1350 slide, in screen pixels.
+    await act(async () => {
+      fireEvent.click(layer, { clientX: rect.left + 270 * scale, clientY: rect.top + 1012.5 * scale })
+    })
+
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const note = (lastSave(adapter).notes as SlideNote[])[0]
+    expect(note.x).toBeCloseTo(270 / 1080, 9)
+    expect(note.y).toBeCloseTo(1012.5 / 1350, 9)
+  })
+
   it.each([['Escape'], ['n']])('N then %s adds a note about the whole slide (no point)', async (second) => {
     const adapter = makeFakeAdapter()
     const onNoteAdded = vi.fn()
@@ -627,7 +667,7 @@ describe('CarouselEditor — N adds a note (PL70)', () => {
     expect(adapter.saveCalls).toHaveLength(0)
   })
 
-  it('N in a text input, with a modifier, as a key repeat, or in crop mode writes nothing', async () => {
+  it('N in a text input, with Cmd, Ctrl or Alt, as a key repeat, or in crop mode writes nothing', async () => {
     const adapter = makeFakeAdapter()
     const onNoteAdded = vi.fn()
     const onLocked = vi.fn()
@@ -641,8 +681,10 @@ describe('CarouselEditor — N adds a note (PL70)', () => {
     try {
       const typed = await key('n', {}, input)
       expect(typed.defaultPrevented).toBe(false)
-      for (const mod of [{ metaKey: true }, { ctrlKey: true }, { altKey: true }]) await key('n', mod)
-      await key('N', { shiftKey: true })
+      for (const mod of [{ metaKey: true }, { ctrlKey: true }, { altKey: true }]) {
+        const e = await key('n', mod)
+        expect(e.defaultPrevented).toBe(false)
+      }
       await key('n', { repeat: true })
       expect(armLayer()).toBeNull()
 
@@ -661,6 +703,23 @@ describe('CarouselEditor — N adds a note (PL70)', () => {
     } finally {
       input.remove()
     }
+  })
+
+  it('Shift+N arms like N, as on video', async () => {
+    const adapter = makeFakeAdapter()
+    const onNoteAdded = vi.fn()
+    render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} notes={{ enabled: true, onNoteAdded }} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+
+    const e = await key('N', { shiftKey: true })
+    expect(e.defaultPrevented).toBe(true)
+    expect(armLayer()).not.toBeNull()
+    await key('N', { shiftKey: true })
+
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const notes = lastSave(adapter).notes as SlideNote[]
+    expect(notes).toEqual([{ id: notes[0].id, slideId: 'slide-0', text: '' }])
+    expect(onNoteAdded).toHaveBeenCalledTimes(1)
   })
 
   it('with notes locked, N calls onLocked once, even when held, and writes nothing', async () => {

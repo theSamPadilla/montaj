@@ -1271,8 +1271,8 @@ export interface CarouselEditorProps<P extends Project = Project> {
    * Turns on notes. When `enabled`, N arms a pin on the selected slide: the
    * next click on the slide adds a note at that point, and Esc or a second N
    * adds one about the whole slide; a press anywhere else disarms. When not
-   * enabled, N calls `onLocked`. N is ignored with a modifier, as a key
-   * repeat, in a text field and in crop mode. Absent: N is not bound, so a
+   * enabled, N calls `onLocked`. N is ignored with Cmd, Ctrl or Alt, as a
+   * key repeat, in a text field and in crop mode. Absent: N is not bound, so a
    * host that does not opt in sees the editor exactly as before. The editor
    * draws no note UI of its own beyond the armed cursor; the host draws notes
    * as `pins` and in its own list (`slots.notesPanel`). See `SlideNotesApi`.
