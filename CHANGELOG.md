@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.24.1
+
 - **Fixed (editor): a host that type-checks the editor source with its own React types builds again.** `NoteArmLayer`'s `layerRef` was typed as React's `Ref`, whose callback form carries a `unique symbol`; when the host compiles the editor beside a second physical copy of `@types/react` (the same version), the two copies' symbols differ and the host's build fails on the carousel. It is now a `RefObject<HTMLDivElement | null>`, which compares by shape. (`montaj_assets/editor/src/carousel/NoteLayers.tsx`)
 
 ## v5.24.0
