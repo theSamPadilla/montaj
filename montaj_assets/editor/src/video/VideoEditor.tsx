@@ -1910,10 +1910,13 @@ function ReviewSurface<P extends Project>({
     else if (slots?.mediaPanel) setLeftTabRequest(r => ({ id: 'media', nonce: r.nonce + 1, persist: false }))
   }
 
-  /** A click on a host note pin also opens the Notes page (when there is one). */
+  /** A click on a host pin that is a row in the notes list (your note or a reviewer comment) also opens the Notes page, when there is one. A pin with no tone is not a notes row. */
   const handlePinClick = onPinClick
     ? (id: string) => {
-        if (slots?.notesPanel && pins?.find(p => p.id === id)?.tone === 'note') revealNotes()
+        if (slots?.notesPanel) {
+          const tone = pins?.find(p => p.id === id)?.tone
+          if (tone === 'note' || tone === 'review') revealNotes()
+        }
         onPinClick(id)
       }
     : undefined

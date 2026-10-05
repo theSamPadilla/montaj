@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (editor): a reviewer-comment pin opens the Notes page too.** A click on a `tone: 'review'` host pin now opens the Notes page like a `'note'` pin does, when `slots.notesPanel` is present; a pin with no tone still does not. (`montaj_assets/editor/src/video/VideoEditor.tsx`, `montaj_assets/editor/src/video/__tests__/VideoEditor.notesRail.test.tsx`)
+
 ## v5.24.4
 
 - **Changed (editor): a host notes panel is its own Notes page in the video editor's left rail; N opens it.** `slots.notesPanel` (carousel-only until now) renders as a Notes tab between Captions and Versions in the CapCut layout; N, and a click on a `tone: 'note'` pin, open it. Without `notesPanel`, N still opens Media. (`montaj_assets/editor/src/video/VideoEditor.tsx`, `montaj_assets/editor/src/types.ts`)

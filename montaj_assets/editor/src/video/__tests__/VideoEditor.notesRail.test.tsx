@@ -3,6 +3,22 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import type { EditorAdapter, ImageElement, Project, RenderEvent, VersionEntry, WaveformChunk } from '../../types'
 import VideoEditor from '../VideoEditor'
 
+// The timeline is a canvas, so a pin click cannot be dispatched from the DOM.
+// Wrap the real Timeline and keep its latest props: the test calls the very
+// onPinClick VideoEditor handed it, which is what the canvas calls on a click.
+const timelineProps = vi.hoisted(() => ({ current: null as null | { onPinClick?: (id: string) => void } }))
+vi.mock('../timeline/Timeline', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../timeline/Timeline')>()
+  const Real = actual.default as unknown as (p: Record<string, unknown>) => unknown
+  return {
+    ...actual,
+    default: (props: { onPinClick?: (id: string) => void }) => {
+      timelineProps.current = props
+      return (Real as unknown as (p: unknown) => React.ReactElement)(props)
+    },
+  }
+})
+
 // A host notes panel is its own Notes page in the left rail (CapCut layout):
 // Media, Captions, Notes, Versions. N opens it.
 
@@ -157,5 +173,47 @@ describe('VideoEditor — Notes page in the left rail', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Captions' }))
     await pressN()
     await waitFor(() => expect(screen.getByRole('tab', { name: 'Media' }).getAttribute('aria-selected')).toBe('true'))
+  })
+
+  describe('a click on a host pin', () => {
+    const pins = [
+      { id: 'p-review', t: 1, label: 'review' as const, tone: 'review' as const },
+      { id: 'p-note', t: 2, label: 'note', tone: 'note' as const },
+      { id: 'p-none', t: 3, label: 'plain' },
+    ].map((p) => ({ ...p, label: p.id }))
+
+    async function mount(onPinClick: (id: string) => void) {
+      render(
+        <VideoEditor
+          project={makeVideoProject()}
+          adapter={makeFakeAdapter()}
+          onProjectChange={vi.fn()}
+          slots={{ mediaPanel: <div>bin</div>, notesPanel: <div data-testid="notes-list">notes</div> }}
+          pins={pins}
+          onPinClick={onPinClick}
+        />,
+      )
+      await screen.findByLabelText('Preview axis')
+      expect(screen.queryByTestId('notes-list')).toBeNull()
+    }
+    const click = (id: string) => act(async () => { timelineProps.current!.onPinClick!(id) })
+
+    it.each([['p-review'], ['p-note']])('%s opens the Notes page and still reaches the host', async (id) => {
+      const onPinClick = vi.fn()
+      await mount(onPinClick)
+      await click(id)
+      await waitFor(() => expect(screen.getByTestId('notes-list')).toBeTruthy())
+      expect(screen.getByRole('tab', { name: 'Notes' }).getAttribute('aria-selected')).toBe('true')
+      expect(onPinClick).toHaveBeenCalledWith(id)
+    })
+
+    it('a pin with no tone does not switch tabs, and still reaches the host', async () => {
+      const onPinClick = vi.fn()
+      await mount(onPinClick)
+      await click('p-none')
+      expect(screen.queryByTestId('notes-list')).toBeNull()
+      expect(screen.getByRole('tab', { name: 'Notes' }).getAttribute('aria-selected')).not.toBe('true')
+      expect(onPinClick).toHaveBeenCalledWith('p-none')
+    })
   })
 })
