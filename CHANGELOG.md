@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.24.10
+
 - **Added (serve): project creation and save report phase durations in a `Server-Timing` header (no names or paths).** (`project/init.py`, `serve/routes/projects.py`)
 - **Added (serve): a step that writes a file takes `_project` and saves into the project's assets folder when `out` is left off or is a plain name.** `generate_image` and the other generate steps need no path from the caller; the reply carries the resolved `out`. A taken name gets `-2`, `-3`; any other `out` is used as given. (`serve/routes/steps.py`, `steps/generate/*.json`)
 
