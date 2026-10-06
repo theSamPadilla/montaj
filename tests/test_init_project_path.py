@@ -24,6 +24,12 @@ def run_init(*args, env_override=None):
     )
 
 
+def _err(stderr: str) -> dict:
+    """Parse init's JSON error, ignoring the trailing MONTAJ_TIMING line."""
+    return json.loads("".join(l for l in stderr.splitlines(keepends=True)
+                              if not l.startswith("MONTAJ_TIMING ")))
+
+
 def _project_path_from_stdout(stdout: str) -> Path:
     lines = [ln for ln in stdout.strip().split("\n") if ln.strip()]
     return Path(lines[-1])
@@ -109,7 +115,7 @@ def test_existing_target_dir_raises_project_path_exists(tmp_path):
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
     assert result.returncode != 0
-    err = json.loads(result.stderr)
+    err = _err(result.stderr)
     assert err["error"] == "project_path_exists"
 
 
@@ -128,7 +134,7 @@ def test_double_create_same_path_second_fails(tmp_path):
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
     assert r2.returncode != 0
-    err = json.loads(r2.stderr)
+    err = _err(r2.stderr)
     assert err["error"] == "project_path_exists"
 
 
@@ -155,7 +161,7 @@ def test_invalid_project_path_rejected(tmp_path, bad_path, reason):
     )
     assert result.returncode != 0, f"{reason}: expected failure but got success"
     # stderr should be a structured JSON error with the validator's code
-    err = json.loads(result.stderr)
+    err = _err(result.stderr)
     assert err["error"] == "invalid_project_path", f"{reason}: got {err['error']}"
 
 
@@ -167,7 +173,7 @@ def test_single_dot_segment_rejected(tmp_path):
         env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)},
     )
     assert result.returncode != 0
-    err = json.loads(result.stderr)
+    err = _err(result.stderr)
     assert err["error"] == "invalid_project_path"
 
 

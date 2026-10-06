@@ -53,6 +53,40 @@ PROXY_INLINE_MAX_TOTAL_SEC = 300.0
 _IS_WINDOWS = sys.platform == "win32"
 
 
+# --- Phase timing -----------------------------------------------------------
+# Durations only (ms, per phase, summed over repeated work). Emitted as one
+# stderr line at exit so serve can report them in a Server-Timing header.
+_PHASES: dict = {}
+_PHASES_LOCK = threading.Lock()
+
+
+def _add_phase(phase: str, started: float) -> None:
+    ms = (time.perf_counter() - started) * 1000.0
+    with _PHASES_LOCK:
+        _PHASES[phase] = _PHASES.get(phase, 0.0) + ms
+
+
+def _timed(phase: str, fn):
+    def wrapper(*a, **k):
+        t0 = time.perf_counter()
+        try:
+            return fn(*a, **k)
+        finally:
+            _add_phase(phase, t0)
+    wrapper.__name__ = getattr(fn, "__name__", "wrapper")
+    wrapper.__doc__ = getattr(fn, "__doc__", None)
+    return wrapper
+
+
+def _write_project_json(project_path: str, project: dict) -> None:
+    t0 = time.perf_counter()
+    try:
+        with open(project_path, "w") as f:
+            json.dump(project, f, indent=2)
+    finally:
+        _add_phase("write", t0)
+
+
 def _probe_duration(path: str) -> float | None:
     """Source duration in seconds, or None when the file can't be read.
 
@@ -99,6 +133,11 @@ def _probe_duration(path: str) -> float | None:
         return None
 
 
+_probe_duration = _timed("probe", _probe_duration)
+probe_video = _timed("probe", probe_video)
+normalize = _timed("probe", normalize)
+
+
 def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = False) -> str:
     """Copy (or symlink) *src* into *dest_dir*, avoiding name collisions with a numeric suffix.
 
@@ -141,6 +180,9 @@ def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = Fals
     else:
         shutil.copy2(src, dest)
     return dest
+
+
+_copy_into_workspace = _timed("copy", _copy_into_workspace)
 
 
 def _cleanup_staged_uploads(staged: set) -> None:
@@ -194,6 +236,14 @@ def validate_project_path(value: str) -> str:
 
 
 def git(args, cwd):
+    t0 = time.perf_counter()
+    try:
+        return _git(args, cwd)
+    finally:
+        _add_phase("git_init" if args and args[0] == "init" else "git_commit", t0)
+
+
+def _git(args, cwd):
     result = subprocess.run(
         ["git"] + args, cwd=cwd, capture_output=True, text=True,
         env={**os.environ,
@@ -265,8 +315,7 @@ def _build_carousel_project(args, workspace_dir: str, assets: list) -> None:
     }
 
     project_path = os.path.join(workspace_dir, "project.json")
-    with open(project_path, "w") as f:
-        json.dump(project, f, indent=2)
+    _write_project_json(project_path, project)
 
     git(["add", "project.json"], cwd=workspace_dir)
     git(["commit", "-m", "init: new project"], cwd=workspace_dir)
@@ -274,7 +323,7 @@ def _build_carousel_project(args, workspace_dir: str, assets: list) -> None:
     print(project_path)
 
 
-def main():
+def _main():
     parser = argparse.ArgumentParser(description="Initialize a montaj project workspace")
     parser.add_argument("--clips", nargs="*", default=[], help="Input clip paths")
     parser.add_argument("--assets", nargs="*", default=[], help="Asset file paths (images, logos, etc.)")
@@ -1150,8 +1199,7 @@ def main():
         project["storyboard"] = storyboard
 
     project_path = os.path.join(workspace_dir, "project.json")
-    with open(project_path, "w") as f:
-        json.dump(project, f, indent=2)
+    _write_project_json(project_path, project)
 
     git(["add", "project.json"], cwd=workspace_dir)
     git(["commit", "-m", "init: new project"], cwd=workspace_dir)
@@ -1159,6 +1207,26 @@ def main():
     _cleanup_staged_uploads(staged_uploads)
 
     print(project_path)
+
+
+_PHASE_ORDER = ("git_init", "copy", "probe", "git_commit", "write")
+
+
+def _emit_timing(t0: float) -> None:
+    try:
+        total = int(round((time.perf_counter() - t0) * 1000.0))
+        phases = {k: int(round(_PHASES[k])) for k in _PHASE_ORDER if k in _PHASES}
+        print("MONTAJ_TIMING " + json.dumps({"total": total, "phases": phases}), file=sys.stderr)
+    except Exception:
+        pass
+
+
+def main():
+    t0 = time.perf_counter()
+    try:
+        _main()
+    finally:
+        _emit_timing(t0)
 
 
 if __name__ == "__main__":

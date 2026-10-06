@@ -17,7 +17,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from urllib.parse import urlparse
 
@@ -905,12 +905,68 @@ def _git_commit_sync(project_dir: Path, message: str) -> None:
     commit_version(project_dir, message)
 
 
+_TIMING_PREFIX = "MONTAJ_TIMING "
+_TIMING_PHASES = ("git_init", "copy", "probe", "git_commit", "write")
+
+
+def _set_server_timing(response: Response, value: str | None) -> None:
+    if value:
+        response.headers["Server-Timing"] = value
+
+
+def _split_init_timing(stderr: str) -> tuple[str, dict | None]:
+    """Remove init's MONTAJ_TIMING line from stderr; return (stderr, parsed or None).
+
+    Malformed lines are dropped too and parse to None, so a bad line never
+    reaches an error message or breaks the route. Values are kept only as ints.
+    """
+    kept: list[str] = []
+    timing = None
+    for line in stderr.splitlines(keepends=True):
+        if not line.startswith(_TIMING_PREFIX):
+            kept.append(line)
+            continue
+        try:
+            raw = json.loads(line[len(_TIMING_PREFIX):])
+            total = raw["total"]
+            phases = raw.get("phases", {})
+            if isinstance(total, bool) or not isinstance(total, (int, float)):
+                raise ValueError
+            parsed = {"total": int(total), "phases": {}}
+            for k in _TIMING_PHASES:
+                v = phases.get(k) if isinstance(phases, dict) else None
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    parsed["phases"][k] = int(v)
+            timing = parsed
+        except Exception:
+            timing = None
+    return "".join(kept), timing
+
+
+def _server_timing_header(timings: dict) -> str | None:
+    """Server-Timing value from {"spawn": ms, "init": {...} | None}. Durations only."""
+    parts: list[str] = []
+    spawn = timings.get("spawn")
+    init = timings.get("init")
+    if spawn is not None:
+        parts.append(f"spawn;dur={int(spawn)}")
+    if init:
+        parts.append(f"init;dur={init['total']}")
+        if spawn is not None:
+            parts.append(f"startup;dur={max(0, int(spawn) - init['total'])}")
+        for k in _TIMING_PHASES:
+            if k in init["phases"]:
+                parts.append(f"{k};dur={init['phases'][k]}")
+    return ", ".join(parts) or None
+
+
 async def _run_init_subprocess(
     cmd: list[str],
     *,
     timeout: int = 1800,
     broadcaster: "SSEBroadcaster | None" = None,
     background_normalize: bool = False,
+    timings: dict | None = None,
 ) -> dict:
     """Spawn project/init.py via subprocess, capture stdout (project path), and
     return the parsed project.json dict. Raises HTTPException on any failure.
@@ -932,6 +988,7 @@ async def _run_init_subprocess(
     an already-open editor is lost.
     """
     debug_log = os.environ.get("MONTAJ_DEBUG") == "1"
+    spawn_started = time.perf_counter()
 
     try:
         if debug_log:
@@ -988,6 +1045,13 @@ async def _run_init_subprocess(
     except FileNotFoundError as e:
         raise server_error("init_failed", str(e))
 
+    # Init's own timing line comes off stderr before anything reads it, so it
+    # can never show up inside an error message.
+    stderr, init_timing = _split_init_timing(stderr)
+    if timings is not None:
+        timings["spawn"] = int(round((time.perf_counter() - spawn_started) * 1000.0))
+        timings["init"] = init_timing
+
     if returncode != 0:
         try:
             err = json.loads(stderr)
@@ -1036,7 +1100,7 @@ async def _run_init_subprocess(
 # ---------------------------------------------------------------------------
 
 @router.post("/run", status_code=201)
-async def run_project(request: Request, body: dict = Body(...)):
+async def run_project(request: Request, response: Response, body: dict = Body(...)):
     """Create a project by invoking project/init.py, and stream its progress.
 
     Init settings are accepted under two body keys:
@@ -1116,7 +1180,12 @@ async def run_project(request: Request, body: dict = Body(...)):
                     raise bad_request("file_not_found", f"Asset not found: {asset}")
             cmd += ["--assets"] + [str(a) for a in assets]
 
-        return await _run_init_subprocess(cmd, broadcaster=getattr(request.app.state, "broadcaster", None))
+        timings: dict = {}
+        project = await _run_init_subprocess(
+            cmd, broadcaster=getattr(request.app.state, "broadcaster", None), timings=timings,
+        )
+        _set_server_timing(response, _server_timing_header(timings))
+        return project
 
     if not prompt:
         raise bad_request("missing_field", "'prompt' is required")
@@ -1393,11 +1462,14 @@ async def run_project(request: Request, body: dict = Body(...)):
     # normalize + audio fast path + resolution preservation, realistic init time is
     # seconds to a few minutes even on heavy footage.
     broadcaster = getattr(request.app.state, "broadcaster", None)
+    timings = {}
     project = await _run_init_subprocess(
         cmd,
         broadcaster=broadcaster,
         background_normalize=background_normalize,
+        timings=timings,
     )
+    _set_server_timing(response, _server_timing_header(timings))
     if youtube is None:
         return project
     # Returned WITH the record, so the editor's first paint has the spinner.
@@ -3205,7 +3277,8 @@ async def _queue_previews_for_changed_items(
 
 
 @router.put("/projects/{project_id}")
-async def save_project(project_id: str, body: dict = Body(...), request: Request = None, project_dir: Path = Depends(get_project_dir)):
+async def save_project(project_id: str, response: Response, body: dict = Body(...), request: Request = None, project_dir: Path = Depends(get_project_dir)):
+    save_started = time.perf_counter()
     if body.get("id") != project_id:
         raise bad_request("id_mismatch", "Body id must match URL id")
     project_path = project_dir / "project.json"
@@ -3297,6 +3370,7 @@ async def save_project(project_id: str, body: dict = Body(...), request: Request
     ):
         _active_renders.add(project_id)
         asyncio.create_task(_run_carousel_render_detached(project_id, project_dir))
+    response.headers["Server-Timing"] = f"save;dur={int(round((time.perf_counter() - save_started) * 1000.0))}"
     return merged
 
 

@@ -19,10 +19,14 @@ from lib.project_tracks import track_items
 def run_init(*args, env_override=None):
     import os
     e = {**os.environ, **(env_override or {})}
-    return subprocess.run(
+    r = subprocess.run(
         [sys.executable, INIT_PY, *args],
         capture_output=True, text=True, env=e
     )
+    # init ends with one MONTAJ_TIMING stderr line; tests read stderr as init's own output.
+    r.stderr = "".join(l for l in r.stderr.splitlines(keepends=True)
+                       if not l.startswith("MONTAJ_TIMING "))
+    return r
 
 
 def _user_workflow_env(tmp_path, name, project_type, ws=None):
@@ -1349,7 +1353,7 @@ def test_init_with_invalid_id_rejected(tmp_path, monkeypatch, bad_id):
         capture_output=True, text=True,
     )
     assert result.returncode != 0
-    err = json.loads(result.stderr)
+    err = json.loads("".join(l for l in result.stderr.splitlines(keepends=True) if not l.startswith("MONTAJ_TIMING ")))
     assert err["error"] == "invalid_id"
     # No project directory should have been created on validation failure.
     assert not (tmp_path / "bad-id-test").exists()
