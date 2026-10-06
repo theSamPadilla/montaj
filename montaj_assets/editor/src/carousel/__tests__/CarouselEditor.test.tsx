@@ -979,3 +979,60 @@ describe('CarouselEditor — note pins (PL70)', () => {
     expect(panel.closest('[data-interactive]')).toBeNull()
   })
 })
+
+describe('CarouselEditor — pendingSurface', () => {
+  const pending = () => makeProject({ status: 'pending' })
+
+  it("default: a pending project shows the pending block, not the slide", async () => {
+    const adapter = makeFakeAdapter()
+    const { findByText, container } = render(
+      <CarouselEditor project={pending()} adapter={adapter} onProjectChange={vi.fn()} />,
+    )
+    await findByText('Message your agent to start')
+    expect(container.textContent).toContain('project id:')
+    // Only the slide list thumbnail; no canvas for the selected slide.
+    expect(document.querySelectorAll('[data-element-id="el-img"]')).toHaveLength(1)
+  })
+
+  it("'host': a pending project shows the slides, not the pending block", async () => {
+    const adapter = makeFakeAdapter()
+    const { queryByText, container } = render(
+      <CarouselEditor
+        project={pending()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        pendingSurface="host"
+        slots={{ pendingStatus: <div data-testid="pending-status" /> }}
+      />,
+    )
+    // Slide list thumbnail plus the selected slide's canvas.
+    await waitFor(() => expect(document.querySelectorAll('[data-element-id="el-img"]').length).toBe(2))
+    expect(container.querySelector('[data-testid="pending-status"]')).toBeNull()
+    expect(queryByText('Message your agent to start')).toBeNull()
+    expect(container.textContent).not.toContain('project id:')
+  })
+
+  it("'host': Render is disabled while pending", async () => {
+    const adapter = makeFakeAdapter()
+    const { findByTitle } = render(
+      <CarouselEditor project={pending()} adapter={adapter} onProjectChange={vi.fn()} pendingSurface="host" />,
+    )
+    const btn = await findByTitle('Wait for the agent to finish before rendering')
+    expect((btn as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it("'host': no starter slide is auto-created while pending", async () => {
+    const adapter = makeFakeAdapter()
+    const { findByTitle } = render(
+      <CarouselEditor
+        project={makeProject({ status: 'pending', slides: [] })}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        pendingSurface="host"
+      />,
+    )
+    await findByTitle('Wait for the agent to finish before rendering')
+    await act(async () => { await new Promise(r => setTimeout(r, 50)) })
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+})

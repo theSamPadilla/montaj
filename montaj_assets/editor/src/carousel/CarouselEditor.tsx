@@ -168,7 +168,7 @@ function isTypingTarget(t: EventTarget | null): boolean {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, notes, onProvideNotesApi, pins, onPinClick }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, notes, onProvideNotesApi, pins, onPinClick, pendingSurface = 'default' }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -386,6 +386,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     return counts
   }, [pins])
 
+  // `pendingSurface="host"`: the host draws the pending UI, so a pending
+  // project shows the slides as they arrive. Render and note arming stay off.
+  const showPendingSurface = project.status === 'pending' && pendingSurface !== 'host'
+
   async function handleRender() {
     setRendering(true)
     try {
@@ -414,8 +418,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   }
 
   useEffect(() => {
+    if (pendingSurface === 'host') return
     adapter.getInfo?.().then(info => setSkillPath(info.root_skill_path ?? null)).catch(() => {})
-  }, [adapter])
+  }, [adapter, pendingSurface])
 
   // Auto-select first slide, or re-select when the current one disappears.
   useEffect(() => {
@@ -636,7 +641,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         {/* SCROLL AREA: the slide viewport. ResizeObserver lives here so
             canvasScale measures the slide-rendering area, not the toolbar. */}
         <div ref={canvasContainerRef} className="relative flex-1 flex flex-col items-center justify-center gap-4 overflow-y-auto min-h-0 p-4">
-        {project.status === 'pending' ? (
+        {showPendingSurface ? (
           <div className="flex flex-col items-center gap-6 text-center max-w-lg w-full">
             {slots?.pendingStatus ?? (
               <div className="flex flex-col items-center gap-2">
@@ -759,7 +764,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         {/* RIGHT: the slide editor (add-element toolbar + property panel),
             beside the canvas with its own independent vertical scroll. */}
         <div className="w-[24rem] flex-shrink-0 border-l border-[var(--editor-border)] flex flex-col overflow-y-auto min-h-0 h-full bg-[var(--editor-bg)]">
-          {selectedSlide && project.status !== 'pending' && (
+          {selectedSlide && !showPendingSurface && (
             <div className="px-4 py-2 border-b border-[var(--editor-border)]">
               <AddElementMenu
                 project={project}

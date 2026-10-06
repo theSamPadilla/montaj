@@ -4,6 +4,10 @@ All notable changes to `@bycrux/editor` are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+- **Added: the carousel editor takes `pendingSurface="host"`.** While a project is pending it shows the slide list and the selected slide's canvas, so slides appear as they are added, and draws no pending block of its own, leaving the prompt and progress to the host. Render stays disabled and no starter slide is created while pending. `'default'` is unchanged. Same option as the video editor's.
+
 ## 2.0.5
 
 - **Fixed: an opaque overlay that does not cover the canvas no longer blacks out the footage.** `planTick` read any active `opaque: true` overlay as covering the frame, so a photo at scale 0.38 hid the clip behind black. It now reads `@bycrux/timeline-core`'s `opaqueReplacesPicture` (opaque AND scale 1, no offset or rotation, no keyframes other than `opacity`), the rule render uses. Needs `@bycrux/timeline-core` 0.4.0. See the root CHANGELOG (Unreleased).

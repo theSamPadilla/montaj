@@ -1225,6 +1225,18 @@ export interface CarouselEditorProps<P extends Project = Project> {
   slots?: EditorSlots
   readOnly?: boolean
   /**
+   * What renders while `project.status === 'pending'`:
+   * - `'default'` — the built-in pending block in place of the slides (agent
+   *   prompt, `slots.pendingStatus`, project id).
+   * - `'host'` — the normal slide list and canvas, so slides show as they are
+   *   added. The editor draws no pending UI of its own; the prompt and progress
+   *   are the host's. Render stays disabled and no starter slide is created
+   *   while pending. Editing and slide selection work as in a draft, as on
+   *   VideoEditor. `slots.pendingStatus` is unused in this mode.
+   * Defaults to `'default'`.
+   */
+  pendingSurface?: 'default' | 'host'
+  /**
    * Editor-only set of element ids to hide from the interactive canvas. The host
    * owns this state; the package never persists it (hidden elements are omitted
    * from the canvas render only, never from `saveProject`). Lets a host
