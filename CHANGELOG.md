@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.24.7
+
 - **Added (editor): the carousel editor takes `pendingSurface="host"`.** While a project is pending it shows the slide list and canvas, so slides appear as they are added, and leaves the prompt and progress to the host. Render stays disabled and no starter slide is created while pending; `'default'` is unchanged. (`montaj_assets/editor/src/carousel/CarouselEditor.tsx`, `montaj_assets/editor/src/types.ts`)
 
 ## v5.24.6
