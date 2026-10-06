@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.24.9
+
 - **Fixed (serve): deleting a project on Windows no longer fails on git's read-only files.** Project delete, file delete and re-init clear the read-only bit and retry a file that is in use. A failed delete answers `{"error": "delete_failed"}`. (`lib/fs_remove.py`, `serve/routes/projects.py`, `project/init.py`)
 
 ## v5.24.8
