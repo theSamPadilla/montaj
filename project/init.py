@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, fps_from_rate, modal_dims
 from lib.common import SAFE_NAME, fail, ffprobe_bin, progress
+from lib.fs_remove import rmtree_force
 from lib.remote_io import fetch_to_disk, parse_allowed_hosts
 from lib.color_provenance import ProbeError, proxy_source_for
 from lib.normalize import normalize, normalized_output_path, is_normalized, probe_video
@@ -510,7 +511,7 @@ def main():
         for result in fetch_results:
             if result.get("status") == "error":
                 # Clean up partially-created project dir before failing.
-                shutil.rmtree(workspace_dir, ignore_errors=True)
+                rmtree_force(workspace_dir, ignore_errors=True)
                 fail(result.get("error", "fetch_error"),
                      f"Remote fetch failed for {result.get('destPath', '?')}: "
                      f"{result.get('message', '')}")

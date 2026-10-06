@@ -36,6 +36,7 @@ from serve.routes.files import save_upload
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, canvas_for_footage, fps_from_rate, modal_dims
 from lib.ingest import ingest_source
 from lib.project_versions import commit_version
+from lib.fs_remove import rmtree_force
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
 from lib.project_tracks import normalize_tracks, track_items
@@ -3062,7 +3063,10 @@ async def delete_project(
     # PL28: stop a YouTube download first, so yt-dlp is not writing into the
     # folder being removed.
     await _cancel_source_download(project_id)
-    shutil.rmtree(project_dir)
+    try:
+        rmtree_force(project_dir)
+    except OSError as e:
+        raise server_error("delete_failed", f"Couldn't delete this project: {e}")
 
     if preserve_assets:
         return {"preserved": preserved}
@@ -4169,7 +4173,7 @@ async def delete_files(
             if target.is_dir() and not target.is_symlink():
                 # rmtree refuses to follow a symlink-to-directory (raises OSError).
                 # We want symmetric refusal — never recurse through a symlink.
-                shutil.rmtree(target)
+                rmtree_force(target)
             elif target.exists() or target.is_symlink():
                 target.unlink()
             # else: missing — treat as success (idempotent)
