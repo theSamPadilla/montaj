@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.24.11
+
 - **Fixed (serve): a project's version snapshot is no longer listed or opened as a project.** Comparing versions writes `<project>/render/versions/<commit>/project.json` with the project's own id; `GET /api/projects` listed it as a second copy of the project, and after a full scan `find_project_dir` could resolve the project to the snapshot folder, sending its reads and saves there. Discovery now skips any `project.json` inside another project's folder; plain folders above a project (`teamA/abc`) are unaffected. (`serve/common.py`, `serve/routes/projects.py`, `tests/test_server_snapshot_discovery.py`)
 
 ## v5.24.10
