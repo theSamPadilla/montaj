@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.24.8
+
 - **Fixed (serve): `/api/files` resolves a project-relative path when given `project=<id>`.** A slide image stored relative to its project (`photo.png`, `assets/photo.png`) now loads in the editor the way the renderer resolves it, instead of 404ing against serve's working directory. Backslash separators work too; the resolved path must stay inside that project (a `..` or symlink hop into a sibling project is a 403) on top of the usual allowed-roots check, an unknown project is a 404, and a relative path without `project` behaves as before. (`serve/routes/files.py`, `tests/test_server_files.py`)
 
 ## v5.24.7
