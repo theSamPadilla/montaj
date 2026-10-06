@@ -17,6 +17,22 @@ MONTAJ_ROOT = Path(__file__).resolve().parent.parent
 _project_dir_cache: dict[str, Path] = {}
 
 
+def is_nested_project_json(path: Path, workspace: Path) -> bool:
+    """True when `path` (a project.json under `workspace`) sits inside another
+    project's folder: a folder above it, below the workspace, holds a
+    project.json of its own. Such a file belongs to that project and is never a
+    project itself. Comparing versions writes one at
+    `<project>/render/versions/<commit>/project.json`, a snapshot carrying the
+    project's own id. Plain folders above a project (`teamA/abc`) hold no
+    project.json, so nested layouts are unaffected."""
+    folder = path.parent.parent
+    while folder != workspace and folder != folder.parent:
+        if (folder / "project.json").is_file():
+            return True
+        folder = folder.parent
+    return False
+
+
 def find_project_dir(workspace: Path, project_id: str) -> Path | None:
     """Find the project directory for a given project id.
 
@@ -32,11 +48,11 @@ def find_project_dir(workspace: Path, project_id: str) -> Path | None:
     single read of that project's project.json, so a moved/deleted project
     just falls through to a full rescan instead of returning stale data.
 
-    INVARIANT: exactly one `project.json` per project, at the project's root
-    directory. If a future feature ever writes a `project.json` inside a
-    subdirectory of a project (e.g., per-segment metadata), discovery would
-    silently misbehave because rglob would match both. Either preserve this
-    invariant or move to a depth-capped scan.
+    A project is the TOPMOST folder holding a project.json: a project.json
+    nested inside a project's folder (`is_nested_project_json`) is skipped.
+    Comparing versions writes such a snapshot, with the project's own id, and
+    before this rule a full scan cached the last match per id, which pointed
+    the project's later reads and saves at the snapshot folder.
     """
     cached = _project_dir_cache.get(project_id)
     if cached is not None:
@@ -49,6 +65,8 @@ def find_project_dir(workspace: Path, project_id: str) -> Path | None:
         del _project_dir_cache[project_id]
 
     for p in workspace.rglob("project.json"):
+        if is_nested_project_json(p, workspace):
+            continue
         try:
             pid = json.loads(p.read_text()).get("id")
         except (OSError, ValueError, AttributeError):

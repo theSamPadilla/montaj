@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 
 from serve.common import (
     MONTAJ_ROOT,
-    resolve_workspace, find_project_dir, get_project_dir,
+    resolve_workspace, find_project_dir, get_project_dir, is_nested_project_json,
     run_subprocess,
     not_found, bad_request, forbidden, server_error,
     validate_project_subpath, _is_under,
@@ -1487,7 +1487,10 @@ async def run_project(request: Request, response: Response, body: dict = Body(..
 async def list_projects(status: str | None = None):
     workspace = resolve_workspace()
     projects = []
-    for p in sorted(workspace.rglob("project.json"), key=lambda f: f.stat().st_mtime, reverse=True):
+    # A project.json nested in a project's folder (a Compare versions snapshot)
+    # is not a project of its own: listed, it showed the project twice.
+    found = [p for p in workspace.rglob("project.json") if not is_nested_project_json(p, workspace)]
+    for p in sorted(found, key=lambda f: f.stat().st_mtime, reverse=True):
         try:
             proj = json.loads(p.read_text())
         except Exception:
