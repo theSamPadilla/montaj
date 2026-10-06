@@ -368,3 +368,76 @@ def test_write_file_non_string_content_rejected(write_client, roots):
     assert resp.status_code == 400
     assert resp.json()["detail"]["error"] == "bad_request"
     assert not target.exists()
+
+
+# ── project-relative paths (?project=<id>) ───────────────────────────────────
+
+@pytest.fixture
+def proj_client(client, roots, monkeypatch):
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(roots["workspace"]))
+    proj = roots["workspace"] / "2026-05-02-test"
+    (proj / "photo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (proj / "assets").mkdir()
+    (proj / "assets" / "x.png").write_bytes(b"\x89PNG\r\n\x1a\nx")
+    return client
+
+
+def test_files_project_relative_serves_file(proj_client):
+    r = proj_client.get("/api/files", params={"path": "photo.png", "project": "abc"})
+    assert r.status_code == 200
+    assert r.content.startswith(b"\x89PNG")
+
+
+def test_files_project_relative_subfolder(proj_client):
+    r = proj_client.get("/api/files", params={"path": "assets/x.png", "project": "abc"})
+    assert r.status_code == 200
+    assert r.content.endswith(b"x")
+
+
+def test_files_project_relative_windows_separator(proj_client):
+    r = proj_client.get("/api/files", params={"path": "assets\\x.png", "project": "abc"})
+    assert r.status_code == 200
+
+
+def test_files_project_with_absolute_path_unchanged(proj_client, roots):
+    p = roots["workspace"] / "2026-05-02-test" / "photo.png"
+    r = proj_client.get("/api/files", params={"path": str(p), "project": "abc"})
+    assert r.status_code == 200
+    r = proj_client.get("/api/files", params={"path": str(p), "project": "nope"})
+    assert r.status_code == 200
+
+
+def test_files_relative_without_project_still_404(proj_client):
+    r = proj_client.get("/api/files", params={"path": "photo.png"})
+    assert r.status_code == 404
+
+
+def test_files_project_relative_escape_refused(proj_client, roots):
+    (roots["tmp_path"] / "outside.txt").write_text("secret")
+    r = proj_client.get("/api/files", params={"path": "../../outside.txt", "project": "abc"})
+    assert r.status_code in (403, 404)
+    assert b"secret" not in r.content
+
+
+def test_files_unknown_project_404(proj_client):
+    r = proj_client.get("/api/files", params={"path": "photo.png", "project": "nope"})
+    assert r.status_code == 404
+    assert "nope" in r.text
+
+
+def test_files_project_relative_sibling_project_refused(proj_client, roots):
+    other = roots["workspace"] / "2026-05-02-other"
+    other.mkdir()
+    (other / "project.json").write_text('{"id": "zzz", "name": "other"}')
+    (other / "x.png").write_bytes(b"\x89PNG\r\n\x1a\nother")
+    r = proj_client.get("/api/files", params={"path": "../2026-05-02-other/x.png", "project": "abc"})
+    assert r.status_code == 403
+
+
+def test_files_project_relative_symlink_escape_refused(proj_client, roots):
+    other = roots["workspace"] / "2026-05-02-other2"
+    other.mkdir()
+    (other / "y.png").write_bytes(b"\x89PNG\r\n\x1a\nother")
+    (roots["workspace"] / "2026-05-02-test" / "link.png").symlink_to(other / "y.png")
+    r = proj_client.get("/api/files", params={"path": "link.png", "project": "abc"})
+    assert r.status_code == 403

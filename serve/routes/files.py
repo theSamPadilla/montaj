@@ -10,7 +10,7 @@ from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from serve.common import (
-    resolve_workspace, _is_under, _allowed_file_roots,
+    resolve_workspace, find_project_dir, _is_under, _allowed_file_roots,
     not_found, bad_request, server_error, forbidden,
 )
 from serve.sse import sse_stream, SSEBroadcaster, JSX_GLOBAL_CHANNEL
@@ -182,7 +182,7 @@ async def write_file(request: Request):
 
 
 @router.get("/files")
-async def serve_file(path: str, request: Request):
+async def serve_file(path: str, request: Request, project: str | None = None):
     """Serve a local file by absolute path with range-request support.
 
     Range support is required for browsers to stream video without downloading
@@ -192,8 +192,21 @@ async def serve_file(path: str, request: Request):
     one of the roots in `_allowed_file_roots()` — workspace, the global overlay
     library, or a profile's assets. Anything else returns 403. Suitable for
     sidecar deploys reached over the network.
+
+    With `project=<id>` and a RELATIVE `path`, the path is taken relative to
+    that project's directory (the way the renderer resolves a stored src), then
+    goes through every check below unchanged, so `../` escapes are still
+    refused. An absolute `path` ignores `project`.
     """
-    p = Path(path)
+    project_root: Path | None = None
+    if project and not _is_abs(path) and not path.startswith(("/", "\\")):
+        project_dir = find_project_dir(resolve_workspace(), project)
+        if project_dir is None:
+            raise not_found("not_found", f"Project not found: {project}")
+        project_root = project_dir
+        p = project_dir / path.replace("\\", "/")
+    else:
+        p = Path(path)
     if not p.is_file():
         # macOS screenshot filenames use NARROW NO-BREAK SPACE (\u202f) before AM/PM,
         # but paths written by the agent (or pasted) use a regular space.
@@ -220,6 +233,10 @@ async def serve_file(path: str, request: Request):
         resolved = p.resolve()
     except OSError:
         raise forbidden("forbidden", "Path is outside the allowed roots")
+    # A project-relative src must stay inside its own project (no `..` or
+    # symlink hop into a sibling project), on top of the allowed-roots check.
+    if project_root is not None and not _is_under(resolved, project_root.resolve()):
+        raise forbidden("forbidden", "Path is outside the project")
     if not any(_is_under(resolved, root) for root in _allowed_file_roots()):
         raise forbidden("forbidden", "Path is outside the allowed roots")
     p = resolved  # use the canonicalized path for stat/serve below
