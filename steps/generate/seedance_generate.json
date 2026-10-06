@@ -7,7 +7,7 @@
   },
   "params": [
     {"name": "prompt", "type": "string", "required": true, "description": "Scene description"},
-    {"name": "out", "type": "path", "required": true, "description": "Output .mp4 path"},
+    {"name": "out", "type": "path", "required": true, "description": "Output .mp4 path. Optional with _project: saved in the project's assets folder."},
     {"name": "image", "type": "path", "required": false, "description": "Starting image (first frame). Mutually exclusive with --ref-image."},
     {"name": "end-image", "type": "path", "required": false, "description": "Ending image. Requires --image."},
     {"name": "ref-image", "type": "path", "required": false, "repeatable": true, "description": "Reference image (repeatable). Mutually exclusive with --image."},

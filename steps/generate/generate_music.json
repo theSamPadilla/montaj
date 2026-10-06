@@ -9,7 +9,7 @@
     {"name": "prompt", "type": "string", "required": true,
      "description": "Text description of the music (genre, mood, instrumentation, BPM)"},
     {"name": "out", "type": "string", "required": true,
-     "description": "Output audio file path. The extension is advisory — the file is named after the container the vendor actually returns (mp3 in practice), never re-encoded to match. Read the emitted path rather than assuming this one."},
+     "description": "Output audio file path. The extension is advisory — the file is named after the container the vendor actually returns (mp3 in practice), never re-encoded to match. Read the emitted path rather than assuming this one. Optional with _project: saved in the project's assets folder."},
     {"name": "vendor", "type": "enum", "required": false, "default": "gemini",
      "options": ["gemini", "elevenlabs"],
      "description": "Music vendor to use. ElevenLabs music needs their paid plan."},

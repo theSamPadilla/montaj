@@ -7,7 +7,7 @@
   },
   "params": [
     {"name": "prompt", "type": "string", "required": false, "description": "Scene description (max 2500 chars). Required in single-shot mode and in multi-shot intelligence mode; invalid in multi-shot customize mode."},
-    {"name": "out", "type": "path", "required": true, "description": "Output .mp4 path"},
+    {"name": "out", "type": "path", "required": true, "description": "Output .mp4 path. Optional with _project: saved in the project's assets folder."},
     {"name": "first-frame", "type": "path", "required": false, "description": "Starting image. Not supported in multi-shot mode."},
     {"name": "last-frame", "type": "path", "required": false, "description": "Ending image (requires --first-frame). Not supported in multi-shot mode."},
     {"name": "ref-image", "type": "path", "required": false, "repeatable": true, "description": "Reference image (max 7)"},

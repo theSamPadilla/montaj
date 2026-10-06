@@ -270,6 +270,82 @@ def resolve_project_param(schema: dict, body: dict) -> None:
         })
     body["project"] = str(found / "project.json")
 
+_OUT_EXT = {"image": ".png", "audio": ".mp3", "video": ".mp4"}
+_RESERVED_OUTS: set[str] = set()
+
+
+def _project_dir_for(value) -> Path:
+    """The folder of the project named by `_project`: an id, or a folder with a
+    project.json. Either way it must resolve (symlinks followed) to a folder
+    inside the workspace; anything else is a 422 naming `project`."""
+    found = None
+    if isinstance(value, str) and value.strip():
+        v = value.strip()
+        path = Path(v).expanduser()
+        if path.is_absolute():
+            if path.is_dir() and (path / "project.json").is_file():
+                found = path
+        else:
+            f = find_project_dir(resolve_workspace(), v)
+            found = Path(f) if f is not None else None
+    if found is not None:
+        real = Path(os.path.realpath(found))
+        ws = Path(os.path.realpath(resolve_workspace()))
+        if (real / "project.json").is_file() and real != ws and ws in real.parents:
+            return real
+    raise HTTPException(422, detail={
+        "error": "invalid_params",
+        "message": f'No project "{value}" in the workspace. "_project" takes the project id or its folder.',
+    })
+
+
+def _is_plain_name(out) -> bool:
+    return (isinstance(out, str) and out not in ("", ".", "..")
+            and "/" not in out and "\\" not in out and not Path(out).is_absolute())
+
+
+def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
+    """`_project` (reserved, popped here): a step that declares `out` saves into
+    the project's assets folder when `out` is left off or is a plain file name
+    (no separator, not . or ..): `<step>-<YYYYMMDD-HHMMSS><ext>`, or the name
+    with the extension of the step's output type when it has none. Any other
+    `out` passes through unchanged. A name already taken gets -2, -3, ... The
+    result never leaves `<project>/assets/` (a symlinked assets is a 422).
+    Returns the resolved path, or None when nothing was resolved."""
+    from datetime import datetime
+    project = body.pop("_project", None)
+    if project is None:
+        return None
+    pdir = _project_dir_for(project)
+    if not any(p.get("name") == "out" for p in schema.get("params") or []):
+        return None
+    out = body.get("out")
+    if out is not None and not _is_plain_name(out):
+        return None
+    ext = _OUT_EXT.get((schema.get("output") or {}).get("type"), "")
+    if out is None:
+        stem, suffix = f"{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}", ext
+    else:
+        stem, suffix = os.path.splitext(out)
+        if not suffix:
+            stem, suffix = out, ext
+    assets = pdir / "assets"
+    if assets.is_symlink():
+        raise HTTPException(422, detail={
+            "error": "invalid_params", "message": 'The project\'s "assets" folder is a symlink; "_project" will not write through it.'})
+    assets.mkdir(exist_ok=True)
+    n = 1
+    while True:
+        cand = assets / (f"{stem}{suffix}" if n == 1 else f"{stem}-{n}{suffix}")
+        if not cand.exists() and str(cand) not in _RESERVED_OUTS:
+            break
+        n += 1
+    if Path(os.path.realpath(cand.parent)) != Path(os.path.realpath(assets)) or cand.parent != assets:
+        raise HTTPException(422, detail={"error": "invalid_params", "message": "resolved output left the project's assets folder"})
+    _RESERVED_OUTS.add(str(cand))
+    body["out"] = str(cand)
+    return str(cand)
+
 
 def wrap_output(stdout: str, schema: dict) -> dict:
     """Wrap bare file paths as JSON. Steps that already return JSON pass through."""
@@ -321,6 +397,7 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
             env = {**os.environ, **overlay}
             secret_values = list(overlay.values())
 
+    resolved_out = resolve_project_out(name, schema, body)
     resolve_project_param(schema, body)
     validate_params(schema, body)
     cli_args = build_cli_args(schema, body)
@@ -374,7 +451,10 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
             err = json.loads(_scrub_secrets(json.dumps(err), secret_values))
         raise HTTPException(500, detail=err)
 
-    return wrap_output(stdout_text, schema)
+    result = wrap_output(stdout_text, schema)
+    if resolved_out and isinstance(result, dict):
+        result.setdefault("out", resolved_out)
+    return result
 
 
 async def _run_to_job(job_id: str, name: str, schema: dict, py_path: Path, body: dict) -> None:

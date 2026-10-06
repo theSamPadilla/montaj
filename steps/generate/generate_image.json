@@ -7,7 +7,7 @@
   },
   "params": [
     {"name": "prompt", "type": "string", "required": true, "description": "Text description of the image"},
-    {"name": "out", "type": "path", "required": true, "description": "Output image path (.png)"},
+    {"name": "out", "type": "path", "required": true, "description": "Output image path (.png). Optional with _project: saved in the project's assets folder."},
     {"name": "provider", "type": "enum", "required": false, "default": "gemini",
      "options": ["gemini", "openai"],
      "description": "Which vendor to use"},

@@ -13,7 +13,7 @@
     {"name": "voice", "type": "string", "required": true,
      "description": "Voice identifier (vendor-specific). For Kling: voice_id or alias from TTS_VOICES. For Gemini: prebuilt voice name (e.g. 'Kore', 'Puck'). For ElevenLabs: a voice_id or a premade voice name."},
     {"name": "out", "type": "string", "required": true,
-     "description": "Output audio file path (.mp3 or .wav)"},
+     "description": "Output audio file path (.mp3 or .wav). Optional with _project: saved in the project's assets folder."},
     {"name": "vendor", "type": "enum", "required": false, "default": "kling",
      "options": ["kling", "gemini", "elevenlabs"],
      "description": "TTS vendor to use"},
