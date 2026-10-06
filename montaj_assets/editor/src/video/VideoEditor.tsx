@@ -84,9 +84,9 @@ const MAX_RAIL_PX = 720
 const DEFAULT_RAIL_PX = 300
 const MIN_MAIN_PX = 320
 
-// ── CapCut media-panel width (opt-in via slots.mediaPanel) ─────────────────
+// ── Media-panel width (opt-in via slots.mediaPanel) ─────────────────
 // The left media column's width, mirroring the right rail on the same axis.
-// Only consulted by the CapCut layout branch; classic layouts never read it.
+// Only consulted by the media-panel layout branch; classic layouts never read it.
 const MEDIA_PANEL_WIDTH_STORAGE_KEY = 'montaj.editor.mediaPanelWidth'
 /** Default matches today's `w-72` assets column so the switch feels familiar. */
 const DEFAULT_MEDIA_PANEL_PX = 288
@@ -944,7 +944,7 @@ function ReviewSurface<P extends Project>({
     if (selectedCaptionId) setLeftTabRequest(r => ({ id: 'captions', nonce: r.nonce + 1 }))
   }, [selectedCaptionId])
   const [rippleMode, setRippleMode]   = useState(false)
-  // CapCut's "preview axis", off by default. Off changes nothing: clicking the
+  // The "preview axis", off by default. Off changes nothing: clicking the
   // timeline moves the red playhead and the preview follows it, as always. On,
   // a yellow cursor line tracks the pointer across the timeline and the preview
   // shows THAT frame while the playhead stays put — hover to look around, click
@@ -978,7 +978,7 @@ function ReviewSurface<P extends Project>({
     DEFAULT_RAIL_PX,
     reviveNumberInRange(MIN_RAIL_PX, MAX_RAIL_PX),
   )
-  // The left media column's width (CapCut layout only). Same persist/clamp
+  // The left media column's width (media-panel layout only). Same persist/clamp
   // pattern as the rail; ignored entirely unless `slots.mediaPanel` is present.
   const [mediaPanelWidth, setMediaPanelWidth] = usePersistentState(
     MEDIA_PANEL_WIDTH_STORAGE_KEY,
@@ -1031,7 +1031,7 @@ function ReviewSurface<P extends Project>({
     document.body.style.userSelect = 'none'
   }, [railWidth, setRailWidth])
 
-  /** Drag the media-column divider (CapCut layout). The divider sits on the
+  /** Drag the media-column divider (media-panel layout). The divider sits on the
    *  column's RIGHT edge, so dragging RIGHT must WIDEN it — hence the delta is
    *  ADDED (the mirror image of `startRailDrag`, whose rail grows leftward).
    *  `MIN_MAIN_PX` still guards the preview column's minimum width. */
@@ -2041,7 +2041,7 @@ function ReviewSurface<P extends Project>({
 
   // Fullscreen preview (T5). `previewRegionRef` is attached to the
   // `previewRegion` wrapper div below — the ONE shared node both editor
-  // layouts (CapCut and classic) render, so a single ref/toggle covers both.
+  // layouts (media-panel and classic) render, so a single ref/toggle covers both.
   // `isFullscreen` is kept in sync with the REAL fullscreen state via the
   // `fullscreenchange` listener, not just set optimistically on toggle: the
   // browser can exit fullscreen on its own (Escape, tab switch) without ever
@@ -2059,8 +2059,7 @@ function ReviewSurface<P extends Project>({
     else void previewRegionRef.current?.requestFullscreen()
   }, [])
 
-  // Social-media preview chrome (mirrors CapCut's "Preview your video for
-  // social media" picker) — a viewing aid only, off ("None") by default.
+  // Social-media preview chrome (a platform picker) — a viewing aid only, off ("None") by default.
   // Drawn inside the aspect-ratio box (over the video) rather than the
   // controls row below it, by SocialSafeZoneOverlay itself. Persisted into
   // project settings (see handleSocialPreviewChange below) the same way
@@ -2082,8 +2081,8 @@ function ReviewSurface<P extends Project>({
       keyHint: ['S'],
       matches: matchesKey('s'),
       // When the preview axis (A) is on, `S` splits at the AXIS time
-      // (`hoverScrub`) rather than the playhead — split where you're looking,
-      // as CapCut does. Falls back to the playhead when the axis is off or
+      // (`hoverScrub`) rather than the playhead — split where you're looking.
+      // Falls back to the playhead when the axis is off or
       // nothing is being hovered (`get()` is null). Targeting is unchanged:
       // `handleSplit` → `splitAtTime(base, at, primarySelectedId ?? null)`
       // splits the selected item at that time, or the base track when nothing
@@ -2184,7 +2183,7 @@ function ReviewSurface<P extends Project>({
       action: () => toggleFullscreen(),
     },
     {
-      // A for Axis. CapCut binds this to plain `S`, which Split owns here —
+      // A for Axis. Plain `S` is the usual binding, but Split owns it here —
       // and `video.split` is `matchesKey('s')`, a bare key test with no
       // modifier check (deliberately: it reproduces the pre-keymap split
       // handler verbatim), so any S-based chord would be swallowed by it.
@@ -2323,9 +2322,9 @@ function ReviewSurface<P extends Project>({
 
   // ── Shared layout pieces ─────────────────────────────────────────────────
   // The preview, row divider, timeline pane and right rail are identical in both
-  // layouts; only their arrangement differs (classic column vs. CapCut top-row +
+  // layouts; only their arrangement differs (classic column vs. media-panel top-row +
   // full-width timeline). Factoring them into local render values keeps the
-  // classic path byte-for-byte unchanged and lets the CapCut branch reuse the
+  // classic path byte-for-byte unchanged and lets the media-panel branch reuse the
   // exact same nodes rather than duplicating this JSX.
 
   // The preview column: video area on top, a slim controls row on chrome
@@ -2376,8 +2375,8 @@ function ReviewSurface<P extends Project>({
                 onPlayingChange={setPreviewPlaying}
                 scrubHandleRef={scrubHandleRef}
                 hoverScrub={hoverScrub}
-                // Social-media preview chrome (mirrors CapCut's "Preview your
-                // video for social media" picker) — it previews what platform
+                // Social-media preview chrome (a platform
+                // picker) — it previews what platform
                 // UI would sit ON TOP of the picture, so PreviewPlayer mounts
                 // it INSIDE its own preview surface (same coordinate space AND
                 // stacking context as the picture, rather than as a sibling
@@ -2671,7 +2670,7 @@ function ReviewSurface<P extends Project>({
 
   // ── Pieces shared by the two layouts' side columns ────────────────────────
   // The caption editor and the version list live in the CLASSIC right rail and
-  // in the CapCut LEFT panel's Captions / Versions tabs. Built once here, with
+  // in the media-panel layout's LEFT panel's Captions / Versions tabs. Built once here, with
   // one set of props, so the two layouts can never drift apart — only one of
   // them mounts per render, so sharing the element is free.
   const captionListPanel = (
@@ -2721,10 +2720,10 @@ function ReviewSurface<P extends Project>({
    * floating "Edit overlay" dialog used to show.
    *
    * ONE node, rendered by BOTH layouts — the classic right rail below and the
-   * CapCut `propertiesPanel` further down. That is not incidental tidiness: the
+   * media-panel layout's `propertiesPanel` further down. That is not incidental tidiness: the
    * dialog this replaces was mounted at the top level and its Pencil button
    * lived in the controls bar, so BOTH were layout-independent. Giving the tabs
-   * only to the CapCut column would have left classic hosts (Hub, LP) with a
+   * only to the media-panel column would have left classic hosts (Hub, LP) with a
    * Transform inspector and no way to reach an overlay's text at all.
    *
    * A COMPACT INLINE tab strip, deliberately not `LeftPanelTabs`: that
@@ -2737,7 +2736,7 @@ function ReviewSurface<P extends Project>({
    * and accessible language.
    *
    * `aria-pressed` rather than `role="tab"`, for CaptionListPanel's reason (and
-   * `TabNav`'s own doc comment): the CapCut LEFT rail is a real tablist, and a
+   * `TabNav`'s own doc comment): the media-panel layout's LEFT rail is a real tablist, and a
    * second set of tabs in the same tree makes `getByRole('tab', …)` ambiguous
    * in the host's own tests.
    *
@@ -2786,7 +2785,7 @@ function ReviewSurface<P extends Project>({
     />
   )
 
-  // Right rail — CLASSIC LAYOUTS ONLY (Hub / LP). The CapCut layout replaces it
+  // Right rail — CLASSIC LAYOUTS ONLY (Hub / LP). The media-panel layout replaces it
   // with the properties-only `propertiesPanel` below and moves this rail's
   // captions and versions into the left panel's tabs.
   // Version history + run history slot, the sidebar caption list,
@@ -2874,7 +2873,7 @@ function ReviewSurface<P extends Project>({
     </div>
   )
 
-  // Left panel (CapCut layout only): the editor's browser column — Media,
+  // Left panel (media-panel layout only): the editor's browser column — Media,
   // Captions and Versions behind a vertical icon rail — in a width-resizable
   // column, with a col-resize divider on its RIGHT edge. Captions and version
   // history used to stack into the right rail; in this layout that rail is
@@ -2944,7 +2943,7 @@ function ReviewSurface<P extends Project>({
     </>
   )
 
-  // Right properties panel (CapCut layout only) — the contextual inspector for
+  // Right properties panel (media-panel layout only) — the contextual inspector for
   // whatever is selected, in place of the classic stacked rail.
   //
   // ALWAYS rendered, never gated on the selection (Sam): a column that came and
@@ -3119,7 +3118,7 @@ function ReviewSurface<P extends Project>({
       {/* Save-error banner — a failed sync.mutate/commit rolls the edit back
           silently otherwise (see CarouselEditor's identical banner). Sits on
           the outermost container so it is visible above BOTH layout branches
-          below (CapCut and classic) rather than needing its own copy in each. */}
+          below (media-panel and classic) rather than needing its own copy in each. */}
       {sync.lastError && (
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 px-3 py-2 rounded-md border border-red-500/40 bg-red-950/80 text-red-200 text-xs">
           <AlertCircle size={14} />
@@ -3128,7 +3127,7 @@ function ReviewSurface<P extends Project>({
         </div>
       )}
       {slots?.mediaPanel ? (
-        /* CapCut layout (opt-in via slots.mediaPanel): three columns across the
+        /* Media-panel layout (opt-in via slots.mediaPanel): three columns across the
            top — [left panel | preview | properties] — with a full-width timeline
            strip below. `splitRef` wraps the WHOLE top-row + timeline region so the
            row divider trades height between them (MIN_PREVIEW_PANE_PX now guards

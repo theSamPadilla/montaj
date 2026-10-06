@@ -5,8 +5,8 @@
 // track-level size/color/font controls), "Styles" (the live style gallery,
 // CaptionStyleGallery.tsx) and "Captions" (the list itself, and the sub-tab
 // every mount opens on) — so the list stays the prominent thing in a
-// ~300px-wide column. Mounted by BOTH VideoEditor layouts: the CapCut left
-// panel's Captions tab and the classic right rail.
+// ~300px-wide column. Mounted by BOTH VideoEditor layouts: the media-panel
+// layout's Captions tab and the classic right rail.
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { AlignCenter, AlignLeft, AlignRight, Loader2, RefreshCw, Search, Trash2 } from 'lucide-react'
 import type { Project, OverlayFactory } from '../types'

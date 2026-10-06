@@ -18,7 +18,7 @@ import type { Rect } from './draw'
 
 /**
  * Share of a clip's height given to the waveform; the frames band takes the
- * rest. An even split is a deliberate departure from CapCut's frames-heavy
+ * rest. An even split is a deliberate departure from a frames-heavy
  * ~70/30 — audio is what you actually cut against in a talking-head edit, and
  * the frames band stays legible at half of a 120px row.
  */

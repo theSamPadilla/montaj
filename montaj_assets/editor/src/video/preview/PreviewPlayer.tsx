@@ -119,8 +119,8 @@ interface PreviewPlayerProps {
    */
   hoverScrub?: HoverScrub
   /**
-   * Social-platform preview chrome (mirrors CapCut's "Preview your video for
-   * social media" picker) — see `SocialSafeZoneOverlay`. Absent/falsy/
+   * Social-platform preview chrome (a platform
+   * picker) — see `SocialSafeZoneOverlay`. Absent/falsy/
    * unrecognized → no-op, same contract as that component's own `platform`
    * prop, which this passes straight through. Threaded in here (rather than
    * mounted by the host as a sibling of `PreviewPlayer`) so it lands INSIDE

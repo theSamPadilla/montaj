@@ -103,8 +103,8 @@ function renderSegment(seg, key, { fps, t, color, fontSize, fontFamily, fontWeig
   //   - Caption text edited in the browser editor is spread uniformly
   //     across the segment's EXISTING duration; the floor call made there
   //     is inert by construction (a uniform spread can never satisfy the
-  //     donation gate), and that is deliberate — montaj follows CapCut
-  //     here, where editing a caption's text never changes its duration.
+  //     donation gate), and that is deliberate — editing a caption's text never
+  //     changes its duration.
   //
   // So this opacity floor is still load-bearing and must NOT be removed as
   // redundant with the generation-time one: the two are jointly necessary.

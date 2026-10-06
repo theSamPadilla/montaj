@@ -1092,13 +1092,13 @@ export interface EditorSlots {
   /** Rendered into the editor's assets/media panel area. */
   assetsPanel?: ReactNode
   /**
-   * Rendered in the left media column of the CapCut layout. When present, the
+   * Rendered in the left media column of the media-panel layout. When present, the
    * editor renders the three-column + full-width-timeline layout; otherwise
    * the classic layout is unchanged.
    */
   mediaPanel?: ReactNode
   /**
-   * Rendered in the CapCut layout's right properties panel when nothing is
+   * Rendered in the media-panel layout's right properties panel when nothing is
    * selected, in place of the editor's generic centered "Select an element"
    * empty state. Hosts use it to brand the empty panel (Montaj shows its
    * logo). Absent → the generic default shows. No effect in the classic layout.
@@ -1129,7 +1129,7 @@ export interface EditorSlots {
   /**
    * The host's notes list. The carousel editor renders it in the right rail
    * under the slide properties (PL70). The video editor renders it as its own
-   * "Notes" page in the left rail (CapCut layout, between Captions and
+   * "Notes" page in the left rail (media-panel layout, between Captions and
    * Versions), and N opens that page. Absent → nothing is rendered.
    */
   notesPanel?: ReactNode

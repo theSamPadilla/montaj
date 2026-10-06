@@ -45,7 +45,7 @@ import { NumberField, Slider, cn, stepValue } from '../ui'
  * `allProps` below — that split runs through the header actions as well as
  * the Scale row itself.
  *
- * Every control obeys the SAME CapCut-style auto-keyframe rule, keyframeOps'
+ * Every control obeys the SAME auto-keyframe rule, keyframeOps'
  * {@link writeProp}: editing a prop that's already keyframed drops a keyframe
  * at the playhead instead of overwriting the static scalar; editing an
  * unkeyframed prop writes the scalar. The preview's drag, resize and rotate
@@ -55,7 +55,7 @@ import { NumberField, Slider, cn, stepValue } from '../ui'
  * when the gesture ends; discrete actions (steppers, align, reset, diamonds)
  * fire one `onChange`.
  *
- * Each diamond means "a keyframe sits at the playhead" (CapCut): filled only
+ * Each diamond means "a keyframe sits at the playhead": filled only
  * when one does, and a click adds or removes that ONE keyframe. It never
  * deletes the animation; see keyframeOps' `removeKeyframeAt` for what removing
  * the last keyframe leaves behind.
@@ -466,7 +466,7 @@ function NumberCell({ row, name = row.name, prefix, value, onPreview, onCommit, 
 }
 
 /** A scale number box with its `%` suffix and stepper. Scale is shown as a
- *  PERCENTAGE (CapCut: 1 => 100%) while the stored scalar stays a multiplier,
+ *  PERCENTAGE (1 => 100%) while the stored scalar stays a multiplier,
  *  so only what is typed and displayed converts — `value` and `onStep` are
  *  still multiplier-side, exactly as the slider and `handleStep` always were.
  *  One component rather than the inline markup this used to be, because the
@@ -634,7 +634,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     onChange(next)
   }
 
-  // Position (offsetX + offsetY) keyed as a pair: CapCut shows one diamond for
+  // Position (offsetX + offsetY) keyed as a pair: one diamond for
   // Position. Filled when EITHER axis has a keyframe at the playhead (a typed
   // X edit or a horizontal drag keys only offsetX, and that is still a
   // position keyframe). A click removes those keyframes, or adds one to both
@@ -652,7 +652,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
     onChange(next)
   }
 
-  // Scale is shown as a PERCENTAGE (CapCut: 1 => 100%). The box reports percent;
+  // Scale is shown as a PERCENTAGE (1 => 100%). The box reports percent;
   // the stored scalar stays a multiplier, so convert on the way in. The slider
   // and stepper stay on the multiplier (the Slider below / handleStep). Takes
   // the prop so the unlocked per-axis boxes convert through the same path as
@@ -781,7 +781,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
 
       <div className="flex flex-col gap-2 p-2">
         {/* ── Scale ─────────────────────────────────────────────────────
-            LOCKED (the default, and every legacy overlay): one row (CapCut)
+            LOCKED (the default, and every legacy overlay): one row
             — slider + a PERCENTAGE value (1 => 100%) + stepper + keyframe
             unit, all writing the uniform `scale`.
 
@@ -836,7 +836,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
         )}
 
         {/* ── Uniform scale ─────────────────────────────────────────────
-            Its own labelled toggle row (CapCut) instead of a bare link icon.
+            Its own labelled toggle row instead of a bare link icon.
             ON means the item scales through one uniform `scale`; turning it
             off splits that into `scaleX`/`scaleY`, and back on collapses
             them again — see handleUniformToggle for both tiebreaks. The
@@ -869,7 +869,7 @@ export default function OverlayInspector({ item, clock, onPreview, onCommit, onC
         </div>
 
         {/* ── Position ───────────────────────────────────────────────────
-            X and Y with ONE keyframe unit for the pair on the right (CapCut),
+            X and Y with ONE keyframe unit for the pair on the right,
             not a diamond crammed in after each axis.
 
             `flex-wrap`: label 56 + X and Y ~96 each + keyframe unit 64 + gaps

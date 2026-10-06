@@ -1,6 +1,6 @@
 /// <reference types="vitest/globals" />
 /**
- * Selection follows a retimed diamond (CapCut-correct operator decision):
+ * Selection follows a retimed diamond (operator decision):
  * dragging the SELECTED diamond to a new time must keep it selected AT THAT
  * NEW TIME — not drop the selection because `selectedKeyframe` still names
  * the OLD `t`, which `moveKeyframe` has just vacated.

@@ -45,7 +45,7 @@ export const MAX_PX_PER_SECOND = 2000
  *  from the content is a deliberate improvement (it gives drop room past the
  *  last clip) — but only so far. At `0.5` the content bottoms out filling HALF
  *  the surface width (one content-length of drop room past the end), instead of
- *  shrinking to a sliver: CapCut caps its max zoom-out the same way, and a
+ *  shrinking to a sliver: a
  *  quarter-width timeline (the old `0.25`) is more empty canvas than anyone
  *  needs to reach the end. `MIN_PX_PER_SECOND` still floors this for a project
  *  long enough that half-width would fall below it. */

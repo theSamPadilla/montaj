@@ -209,7 +209,7 @@ describe('floorWordDurations', () => {
       // This pins that the editor-side call sites (captionRepair.ts,
       // makeCaptionEdit.ts) are currently inert, not that they work. That is
       // the intended behaviour, not a latent bug: a uniform editor spread is
-      // deliberately left unfloored to match CapCut (edited caption text
+      // deliberately left unfloored (edited caption text
       // never changes the caption's duration; lengthen or split it instead).
       // Don't "fix" this test by making it non-vacuous in the direction of
       // asserting the floor should fire here — that would be reintroducing

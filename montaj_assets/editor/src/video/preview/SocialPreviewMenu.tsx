@@ -4,8 +4,7 @@ import { Check, Instagram, Music2, Slash, Youtube, type LucideIcon } from 'lucid
 import type { SocialPreviewPlatform } from './SocialSafeZoneOverlay'
 
 /**
- * Platform picker for the realistic social-media preview chrome — mirrors
- * CapCut's "Preview your video for social media" menu. Opened from the
+ * Platform picker for the realistic social-media preview chrome. Opened from the
  * preview controls-row button (see VideoEditor.tsx); lists TikTok, YouTube
  * Shorts and Instagram Reels, plus a "None" entry that clears the selection.
  *

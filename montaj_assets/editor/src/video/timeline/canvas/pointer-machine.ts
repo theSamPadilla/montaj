@@ -1992,7 +1992,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
             if (normalized !== committed.captions) committed = { ...committed, captions: normalized }
           }
           effects.push({ type: 'commit', project: committed })
-          // CapCut-correct retime: the diamond you dragged is the diamond you
+          // Selection-following retime: the diamond you dragged is the diamond you
           // have selected, even though its `t` just changed underneath the
           // selection's old value. Only follows when the dragged diamond WAS
           // the selected one (`ctx.selectedKeyframe` matches this gesture's

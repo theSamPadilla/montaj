@@ -124,8 +124,7 @@ const SAMPLE_FPS = 30
  *  `karaoke`'s left-to-right sweep and `highlight-box`/`outline`'s box
  *  hopping both read as a single jump rather than a run across a sentence.
  *  Four words gives every per-word style room to actually demonstrate
- *  itself — CapCut's own style-picker cards use a comparable four-word
- *  sample for the same reason.
+ *  itself.
  *
  *  The timings are chosen so no template's short-word guard fires: `pop`
  *  only runs its exit fade on words longer than 6 frames, and every word

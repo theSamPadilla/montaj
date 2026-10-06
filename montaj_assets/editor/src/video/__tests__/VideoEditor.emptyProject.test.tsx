@@ -11,7 +11,7 @@ import { installCanvasHarness, selectCanvasItem } from '../timeline/__tests__/_c
 //
 //   1. `slots.previewEmptyState` replaces the preview's "No clips" label, so a
 //      host can make the whole empty preview a drop target.
-//   2. The CapCut left rail opens on Media, even over a persisted tab.
+//   2. The media-panel layout's left rail opens on Media, even over a persisted tab.
 //   3. "Generate captions" waits until the timeline has audio to transcribe.
 
 const MEDIA_PANEL = <div data-testid="media-panel">Footage bin</div>

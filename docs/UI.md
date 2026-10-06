@@ -184,7 +184,7 @@ for a properties panel to grow.
 ### Left panel: tabbed browser
 
 `video/panels/LeftPanelTabs.tsx` is a generic tab shell: a vertical icon rail
-(icon above a short label, CapCut-style) beside a content pane. It knows nothing
+(icon above a short label) beside a content pane. It knows nothing
 about what is in its tabs. The host passes an array of
 `{ id, icon, label, content }`, so a new tab is one array entry and no change to
 the shell. Today it carries three:
@@ -316,7 +316,7 @@ the timeline is inert and the browser keeps its default handling.
 
 `CaptionListPanel` has its own sub-tab switch above its content, **Format**
 (the default), **Styles**, and **Captions**. It is one node rendered by both
-layouts — the CapCut left panel's Captions tab and the classic right rail — so
+layouts — the media-panel layout's Captions tab and the classic right rail — so
 neither layout can drift from the other. The active sub-tab persists across
 reloads (`localStorage`, key `montaj.editor.captionPanelTab`); a `'style'`
 value left over from an earlier build maps to `'format'`. That migration is
@@ -671,7 +671,7 @@ for the same reason. Overlays are unaffected and still animate opacity normally
 - **Setting a key.** Each property gets its own keyframe diamond toggle in
   the right-hand **Transform** panel (`OverlayInspector.tsx`, see "Properties
   panel" below). Clicking it drops a keyframe at the playhead with the
-  property's current value. CapCut-style auto-keyframe-on-edit: once a
+  property's current value. Auto-keyframe-on-edit: once a
   property already has at least one keyframe, changing its value with the
   playhead parked (dragging the overlay, editing its number field, moving the
   scale slider or the rotate dial) drops a new keyframe automatically, no

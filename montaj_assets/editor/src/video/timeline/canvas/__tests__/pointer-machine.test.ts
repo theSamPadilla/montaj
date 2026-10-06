@@ -1542,7 +1542,7 @@ describe('keyframe drag (SP9b T3.3)', () => {
     expect(moved.start).not.toBe(2)
   })
 
-  describe('selection follows a retimed diamond (CapCut-correct)', () => {
+  describe('selection follows a retimed diamond', () => {
     it('carries the selection from the old t to the new one, on the SAME commit that applies the retime', () => {
       // ctx.selectedKeyframe names the diamond BEFORE the drag (t=0.5) — the
       // one being dragged here. Without the fix `selectedKeyframe` would keep

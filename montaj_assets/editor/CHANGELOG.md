@@ -237,8 +237,8 @@ Everything below shipped between 1.0.0 and 1.5.1; per-version headings were not 
 - **Fixed: dragging the selected keyframe diamond no longer drops its selection.**
   Retiming a selected diamond used to leave the selection pointing at the OLD
   time, which the drag had just vacated, so the diamond visually deselected the
-  instant you dropped it. The selection now follows the diamond to its new time,
-  matching CapCut — Delete still removes the followed keyframe.
+  instant you dropped it. The selection now follows the diamond to its new time;
+  Delete still removes the followed keyframe.
 
 - **Video and image clips can be keyframed.** A clip's position, scale and
   rotation now animate over its own lifetime, using the same keyframe controls,

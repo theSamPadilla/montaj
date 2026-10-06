@@ -25,13 +25,13 @@
  * AND THAT INERTNESS IS DELIBERATE — do not "fix" it by widening the
  * segment. The only way to give n words a floor inside a fixed segment is
  * to make the segment longer (a uniform spread has no surplus to
- * redistribute: `dur < floor` implies `segDur < n * floor`), and montaj
- * follows CapCut here — editing a caption's text never moves its end.
+ * redistribute: `dur < floor` implies `segDur < n * floor`), and in montaj
+ * editing a caption's text never moves its end.
  * Duration is the user's to set; a caption holding more words than it has
  * room for shows them fast, and the remedy is to lengthen or split the
  * caption, both of which the timeline supports via caption trim handles.
  * Auto-growing a caption because its text changed would surprise anyone
- * coming from CapCut. See MASTER.md open thread 1.
+ * used to other editors. See MASTER.md open thread 1.
  *
  * THE ONE DIVERGENCE: caption.py runs at the flatten, before any segment
  * exists, so its transcript-final word has no `seg_end` to clamp against and

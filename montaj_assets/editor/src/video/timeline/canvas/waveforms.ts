@@ -181,7 +181,7 @@ export const WAVEFORM_COLORS = {
   clip: 'rgba(255,255,255,0.6)',
   /** Darkens the waveform band relative to the clip fill so the lower half
    *  reads as its own lane rather than bars floating on the clip — the
-   *  separation CapCut gets from a distinct band colour. */
+   *  separation a distinct band colour would give. */
   clipBand: 'rgba(0,0,0,0.22)',
   /** Sits inside `AudioTrackRow`'s emerald bar; brighter than the fill so it
    *  reads as drawn "on top of" it, echoing `TIMELINE_COLORS.audioRing`. */

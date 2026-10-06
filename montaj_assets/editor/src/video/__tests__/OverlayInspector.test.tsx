@@ -187,7 +187,7 @@ describe('OverlayInspector — keyframe diamond', () => {
     expect(valueAt(next, 'scale', 0)).toBe(1.2)
   })
 
-  // The diamond means "a keyframe sits at the playhead" (CapCut). It used to
+  // The diamond means "a keyframe sits at the playhead". It used to
   // mean "this property is animated at all", and its click deleted the whole
   // animation under a label that said "at playhead".
   it('is filled only when a keyframe sits at the playhead, not whenever the prop is animated', () => {

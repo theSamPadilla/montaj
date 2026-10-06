@@ -101,7 +101,7 @@ export interface TimelineCanvasProps {
   snapBoundaries?: number[]
   /** Trims close the gap they open, as they do on the DOM rows. */
   rippleMode?: boolean
-  /** CapCut's "preview axis", off by default. On, a yellow cursor line tracks
+  /** The "preview axis", off by default. On, a yellow cursor line tracks
    *  the pointer across this surface and `onHoverScrub` reports the time under
    *  it, so the host can show that frame in the preview while the playhead
    *  stays where it is. Off, this surface behaves exactly as it always has:

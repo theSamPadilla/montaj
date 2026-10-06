@@ -427,8 +427,7 @@ export function enableKeyframing(item: VisualItem, prop: KeyframeProp, atT: numb
 /**
  * Turn keyframing OFF for `prop`: remove its track entirely and write the
  * value the curve held at `atT` into the item's static scalar, so the
- * overlay does not jump the instant keyframing is switched off (the
- * CapCut-style behaviour this is modelled on). The value is read via
+ * overlay does not jump the instant keyframing is switched off. The value is read via
  * {@link valueAt} BEFORE the track is removed — `valueAt` needs the track
  * still in place to sample it. Non-finite `atT` is ignored.
  */
@@ -446,7 +445,7 @@ export function disableKeyframing(item: VisualItem, prop: KeyframeProp, atT: num
 // missing: it wrote static scalars that a keyframed property hides.
 
 /**
- * THE auto-keyframe write rule (CapCut-style). A prop that is already animated
+ * THE auto-keyframe write rule. A prop that is already animated
  * gets a keyframe at `localT` (updating the one already there, if any), so an
  * edit mid-animation refines the curve instead of detaching from it. A prop
  * that is not animated takes the static scalar.

@@ -19,7 +19,7 @@ vi.mock('../timeline/Timeline', async (importOriginal) => {
   }
 })
 
-// A host notes panel is its own Notes page in the left rail (CapCut layout):
+// A host notes panel is its own Notes page in the left rail (media-panel layout):
 // Media, Captions, Notes, Versions. N opens it.
 
 function makeVideoProject(overrides: Partial<Project> = {}): Project {

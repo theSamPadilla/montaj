@@ -4,8 +4,7 @@
  * engagement rail, caption/credit block, and the app's own bottom tab bar /
  * add-comment bar) semi-transparently over the video preview, so
  * the operator can see roughly what the app's own UI will sit on top of their
- * content once posted. Mirrors CapCut's "Preview your video for social media"
- * picker — TikTok, YouTube Shorts and Instagram Reels, each with its own
+ * content once posted. A platform picker offers TikTok, YouTube Shorts and Instagram Reels, each with its own
  * layout, chosen from `SocialPreviewMenu` (see that file and its trigger in
  * VideoEditor.tsx).
  *

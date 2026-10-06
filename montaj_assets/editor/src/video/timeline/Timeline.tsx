@@ -68,7 +68,7 @@ interface TimelineProps {
   onEditCaption?: (id: string) => void
   rippleMode?: boolean
   /**
-   * CapCut's "preview axis" toggle, owned by VideoEditor's track-controls bar
+   * The "preview axis" toggle, owned by VideoEditor's track-controls bar
    * and OFF by default — off is exactly the behaviour this timeline has always
    * had, so omitting it changes nothing. On, a yellow cursor line tracks the
    * pointer and `onHoverScrub` reports the time under it.

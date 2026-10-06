@@ -231,7 +231,7 @@ describe('moveItemAcrossTracks — kind lock (video vs overlay)', () => {
 // off) path and must keep passing byte-for-byte — that is the whole contract
 // of the flag being optional. These tests are the ON path: a colliding
 // target track stops being disqualifying and instead gets pushed open to fit
-// the dropped item, CapCut-style.
+// the dropped item.
 
 describe('moveItemAcrossTracks — ripple-insert (makeSpace: true)', () => {
   it('ripple-inserts on the target track instead of fanning out when it collides', () => {

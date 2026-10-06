@@ -36,7 +36,7 @@ export function parseTimecode(input: string): number | null {
  * `m:ss.f` (or `h:mm:ss.f` once the value reaches an hour) — one decimal
  * place, rounded to the nearest tenth of a second.
  *
- * Deliberately NOT frames (no CapCut-style `hh:mm:ss:ff`): `parseTimecode`
+ * Deliberately NOT frames (no `hh:mm:ss:ff`): `parseTimecode`
  * above has no notion of frames — its trailing fractional part is seconds
  * only — so a frames-style display would silently mis-parse if a user
  * copied it into the command palette's "go to time" field (a trailing

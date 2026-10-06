@@ -5,12 +5,12 @@ import type { ImageElement } from '../../types'
 import VideoEditor from '../VideoEditor'
 import { installCanvasHarness, selectCanvasItem, type CanvasItemSelector } from '../timeline/__tests__/_canvasSelect'
 
-// ── Layout gating: classic vs. CapCut media-panel branch ─────────────────────
+// ── Layout gating: classic vs. media-panel branch ─────────────────────
 // ReviewSurface renders the classic layout (preview above a timeline pane, plus
 // the version rail) UNLESS the host supplies `slots.mediaPanel`, which switches
-// it to the CapCut layout: [media | preview | rail] across the top with a
+// it to the media-panel layout: [media | preview | rail] across the top with a
 // full-width timeline strip below. These tests assert the gate both directions —
-// the media panel appears/disappears, and (in CapCut) the timeline strip is a
+// the media panel appears/disappears, and (in the media-panel layout) the timeline strip is a
 // sibling below the top row rather than nested inside the preview column.
 
 function makeVideoProject(overrides: Partial<Project> = {}): Project {
@@ -82,8 +82,8 @@ beforeEach(() => {
 })
 afterEach(() => vi.restoreAllMocks())
 
-describe('VideoEditor — layout gating (classic vs. CapCut media panel)', () => {
-  it('renders the CapCut layout when slots.mediaPanel is provided', async () => {
+describe('VideoEditor — layout gating (classic vs. media panel)', () => {
+  it('renders the media-panel layout when slots.mediaPanel is provided', async () => {
     const adapter = makeFakeAdapter()
     const { getByTestId, getByLabelText, getByRole } = render(
       <VideoEditor
@@ -105,7 +105,7 @@ describe('VideoEditor — layout gating (classic vs. CapCut media panel)', () =>
     // VideoEditor.propertiesPanel.test.tsx for the tab behaviour itself.
     fireEvent.click(await waitFor(() => getByRole('tab', { name: 'Media' })))
     const media = await waitFor(() => getByTestId('media-panel'))
-    // The CapCut-only media-column resize divider exists.
+    // The media-column resize divider exists.
     expect(getByLabelText('Resize media panel')).toBeTruthy()
 
     // Structural: the timeline strip (its Controls button lives in the timeline
@@ -131,7 +131,7 @@ describe('VideoEditor — layout gating (classic vs. CapCut media panel)', () =>
 
     // The classic timeline pane still renders (its Controls button is present)…
     await waitFor(() => getByLabelText('Editor controls & shortcuts'))
-    // …and the CapCut media panel is entirely inert: no media-panel content and
+    // …and the media panel is entirely inert: no media-panel content and
     // no media-column resize divider.
     expect(queryByTestId('media-panel')).toBeNull()
     expect(queryByLabelText('Resize media panel')).toBeNull()

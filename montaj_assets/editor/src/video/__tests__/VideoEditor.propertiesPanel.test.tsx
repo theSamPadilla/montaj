@@ -5,7 +5,7 @@ import type { EditorAdapter, ImageElement, Project, RenderEvent, VersionEntry, W
 import VideoEditor from '../VideoEditor'
 import { installCanvasHarness, selectCanvasItem } from '../timeline/__tests__/_canvasSelect'
 
-// ── The CapCut layout's right properties panel ───────────────────────────────
+// ── The media-panel layout's right properties panel ───────────────────────────────
 //
 // The clip/audio inspector used to be a host-rendered MODAL, opened by a
 // double-click on the timeline and wired through the `renderClipInspector`
@@ -119,7 +119,7 @@ async function cropTabBodyButton(): Promise<HTMLButtonElement> {
   })
 }
 
-function renderCapCut(
+function renderMediaPanelLayout(
   project: Project,
   adapter: EditorAdapter<Project>,
   { slots, ...props }: { slots?: Record<string, unknown> } & Record<string, unknown> = {},
@@ -140,7 +140,7 @@ beforeEach(() => {
   // test would decide which tab this one opens on.
   localStorage.clear()
   // The caption panel now has Style / Captions sub-tabs defaulting to Style;
-  // the CapCut-left-panel test wants the transcript ('caption one') visible.
+  // the left-panel test wants the transcript ('caption one') visible.
   localStorage.setItem('montaj.editor.captionPanelTab', JSON.stringify('captions'))
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -161,10 +161,10 @@ beforeEach(() => {
 })
 afterEach(() => vi.restoreAllMocks())
 
-describe('VideoEditor — CapCut right properties panel', () => {
+describe('VideoEditor — right properties panel (media-panel layout)', () => {
   it('always renders the column, showing the generic empty state when nothing is selected', async () => {
     const project = makeProject()
-    renderCapCut(project, makeFakeAdapter(project))
+    renderMediaPanelLayout(project, makeFakeAdapter(project))
 
     // The column's divider is the structural tell that it mounted at all —
     // with NOTHING selected, which is the whole point of "always visible".
@@ -174,7 +174,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
 
   it('renders the host-supplied propertiesEmptyState slot instead of the default when nothing is selected', async () => {
     const project = makeProject()
-    renderCapCut(project, makeFakeAdapter(project), {
+    renderMediaPanelLayout(project, makeFakeAdapter(project), {
       slots: { propertiesEmptyState: <div data-testid="host-empty">host empty</div> },
     })
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
@@ -186,7 +186,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
   it('swaps in the clip properties when a video clip is selected, defaulting to Transform', async () => {
     onTestFinished(installCanvasHarness())
     const project = makeProject()
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
 
     selectCanvasItem(container, project, { type: 'video' })
@@ -202,7 +202,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
   it('switching to the Speed tab reveals the speed control (video only)', async () => {
     onTestFinished(installCanvasHarness())
     const project = makeProject()
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { type: 'video' })
     await screen.findByLabelText('Scale')
@@ -220,7 +220,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
   it('switching to the Volume tab reveals volume and mute controls', async () => {
     onTestFinished(installCanvasHarness())
     const project = makeProject()
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { type: 'video' })
     await screen.findByLabelText('Scale')
@@ -235,7 +235,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
     const project = makeProject({
       audio: { tracks: [{ id: 'a0', src: 'vo.wav', start: 0, end: 4 }] },
     } as unknown as Partial<Project>)
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
 
     selectCanvasItem(container, project, { id: 'a0' })
@@ -261,7 +261,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
     const renderGenerationPanel = vi.fn(({ clipId }: { clipId: string }) => (
       <div data-testid="generation-panel">Regenerate {clipId}</div>
     ))
-    const { container } = renderCapCut(project, makeFakeAdapter(project), { renderGenerationPanel, regenEnabled: true })
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project), { renderGenerationPanel, regenEnabled: true })
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
 
     // Not called with nothing selected — it hangs off the clip branch, and the
@@ -315,7 +315,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
       return <div data-testid="generation-panel">seeded for {seededFor}</div>
     }
     const renderGenerationPanel = vi.fn(({ clipId }: { clipId: string }) => <FakeRegenForm clipId={clipId} />)
-    const { container } = renderCapCut(project, makeFakeAdapter(project), { renderGenerationPanel, regenEnabled: true })
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project), { renderGenerationPanel, regenEnabled: true })
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
 
     selectCanvasItem(container, project, { id: 'clip-0' })
@@ -341,7 +341,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
       audio: { tracks: [{ id: 'a0', src: 'vo.wav', start: 0, end: 4 }] },
     } as unknown as Partial<Project>)
     const renderGenerationPanel = vi.fn(() => <div data-testid="generation-panel">Regenerate</div>)
-    const { container } = renderCapCut(project, makeFakeAdapter(project), { renderGenerationPanel })
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project), { renderGenerationPanel })
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
 
     selectCanvasItem(container, project, { id: 'a0' })
@@ -356,7 +356,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
     onTestFinished(installCanvasHarness())
     const project = makeProject()
     const adapter = makeFakeAdapter(project)
-    const { container } = renderCapCut(project, adapter)
+    const { container } = renderMediaPanelLayout(project, adapter)
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { type: 'video' })
     fireEvent.click(await clipTab('Speed'))
@@ -384,7 +384,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
     onTestFinished(installCanvasHarness())
     const project = makeProject()
     const adapter = makeFakeAdapter(project)
-    const { container } = renderCapCut(project, adapter)
+    const { container } = renderMediaPanelLayout(project, adapter)
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
 
     // Ripple on FIRST — the fixture has no gaps, so enabling it is a no-op and
@@ -409,7 +409,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
     onTestFinished(installCanvasHarness())
     const project = makeProject()
     const adapter = makeFakeAdapter(project)
-    const { container } = renderCapCut(project, adapter)
+    const { container } = renderMediaPanelLayout(project, adapter)
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { type: 'video' })
     fireEvent.click(await clipTab('Speed'))
@@ -439,7 +439,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
       ]],
     } as unknown as Partial<Project>)
     const adapter = makeFakeAdapter(project)
-    const { container } = renderCapCut(project, adapter)
+    const { container } = renderMediaPanelLayout(project, adapter)
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { type: 'video' })
     fireEvent.click(await clipTab('Volume'))
@@ -461,7 +461,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
     const project = makeProject({
       tracks: [[{ id: 'img-0', type: 'image', src: 'photo.jpg', start: 0, end: 4 }]],
     } as unknown as Partial<Project>)
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
 
     selectCanvasItem(container, project, { type: 'image' })
@@ -480,7 +480,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
         [{ id: 'img-1', type: 'image', src: 'photo.jpg', start: 0, end: 4 }],
       ],
     } as unknown as Partial<Project>)
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
 
     selectCanvasItem(container, project, { id: 'img-1' })
@@ -492,13 +492,13 @@ describe('VideoEditor — CapCut right properties panel', () => {
   it('offers no Generate tab for an ordinary video clip with no generation provenance', async () => {
     onTestFinished(installCanvasHarness())
     // The default fixture: a plain video clip, no `generation` field, and
-    // `renderCapCut` here passes neither `regenEnabled` nor
+    // `renderMediaPanelLayout` here passes neither `regenEnabled` nor
     // `renderGenerationPanel`. This is the shipping shape of every
     // non-ai_video project — the Generate tab must not appear for it, or
     // every ordinary video clip in every ordinary project grows a dead,
     // empty tab.
     const project = makeProject()
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
 
     // clip-0 is the tracks[0] video with a src — also the crop target, so
@@ -523,7 +523,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
       ],
     } as unknown as Partial<Project>)
     const renderGenerationPanel = vi.fn(() => <div data-testid="generation-panel">Regenerate</div>)
-    const { container } = renderCapCut(project, makeFakeAdapter(project), { regenEnabled: true, renderGenerationPanel })
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project), { regenEnabled: true, renderGenerationPanel })
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
 
     selectCanvasItem(container, project, { id: 'clip-1' })
@@ -535,7 +535,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
   it("clicking the Crop tab's button enters crop mode and stays entered on a second click (unlike the toolbar's toggle)", async () => {
     onTestFinished(installCanvasHarness())
     const project = makeProject()
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     // clip-0 is the tracks[0] video with a src — the crop target.
     selectCanvasItem(container, project, { id: 'clip-0' })
@@ -557,7 +557,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
     const project = makeProject({
       tracks: [[{ id: 'img-0', type: 'image', src: 'photo.jpg', start: 0, end: 4 }]],
     } as unknown as Partial<Project>)
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     const toolbar = screen.getByLabelText('Crop source') as HTMLButtonElement
     expect(toolbar.disabled).toBe(true)
@@ -576,7 +576,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
       tracks: [[{ id: 'img-0', type: 'image', src: 'photo.jpg', start: 0, end: 4 }]],
     } as unknown as Partial<Project>)
     const adapter = makeFakeAdapter(project)
-    const { container } = renderCapCut(project, adapter)
+    const { container } = renderMediaPanelLayout(project, adapter)
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { id: 'img-0' })
 
@@ -609,7 +609,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
       tracks: [[{ id: 'img-0', type: 'image', src: 'photo.jpg', start: 0, end: 4 }]],
     } as unknown as Partial<Project>)
     const adapter = makeFakeAdapter(project)
-    const { container } = renderCapCut(project, adapter)
+    const { container } = renderMediaPanelLayout(project, adapter)
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { id: 'img-0' })
 
@@ -646,7 +646,7 @@ describe('VideoEditor — CapCut right properties panel', () => {
       }]],
     } as unknown as Partial<Project>)
     const adapter = makeFakeAdapter(project)
-    const { container } = renderCapCut(project, adapter)
+    const { container } = renderMediaPanelLayout(project, adapter)
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { id: 'img-0' })
 
@@ -721,7 +721,7 @@ describe('VideoEditor — the Crop tab and tool key a video crop (PV55 phase 2)'
     stubVideoProbe({ w: 1920, h: 1080 })
     const project = videoProject()
     const adapter = makeFakeAdapter(project)
-    const { container } = renderCapCut(project, adapter)
+    const { container } = renderMediaPanelLayout(project, adapter)
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { id: 'clip-0' })
 
@@ -746,7 +746,7 @@ describe('VideoEditor — the Crop tab and tool key a video crop (PV55 phase 2)'
     // its own src: the probe caches per src for the whole file
     const project = videoProject({ src: 'unprobed.mp4' })
     const adapter = makeFakeAdapter(project)
-    const { container } = renderCapCut(project, adapter)
+    const { container } = renderMediaPanelLayout(project, adapter)
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { id: 'clip-0' })
 
@@ -769,7 +769,7 @@ describe('VideoEditor — the Crop tab and tool key a video crop (PV55 phase 2)'
     stubModalResizeObserver()
     const project = videoProject({ sourceWidth: 1920, sourceHeight: 1080, keyframes: CROP_KEYS })
     const adapter = makeFakeAdapter(project)
-    const { container } = renderCapCut(project, adapter)
+    const { container } = renderMediaPanelLayout(project, adapter)
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { id: 'clip-0' })
 
@@ -798,7 +798,7 @@ describe('VideoEditor — the Crop tab and tool key a video crop (PV55 phase 2)'
     stubModalResizeObserver()
     const project = videoProject({ sourceWidth: 1920, sourceHeight: 1080 })
     const adapter = makeFakeAdapter(project)
-    const { container } = renderCapCut(project, adapter)
+    const { container } = renderMediaPanelLayout(project, adapter)
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { id: 'clip-0' })
 
@@ -817,12 +817,12 @@ describe('VideoEditor — the Crop tab and tool key a video crop (PV55 phase 2)'
   })
 })
 
-// ── The CapCut left panel ────────────────────────────────────────────────────
+// ── The media-panel left panel───────────────────────────────────────────────
 // Media, Captions and Versions now live behind an icon rail on the LEFT, where
 // captions and version history used to stack into the right rail. Tabs are lazy:
 // only the active one is mounted, so "the media panel is on screen" is now
-// "the Media tab is selected", not "the editor is in the CapCut layout".
-describe('VideoEditor — CapCut left panel tabs', () => {
+// "the Media tab is selected", not "the editor is in the media-panel layout".
+describe('VideoEditor — left panel tabs (media-panel layout)', () => {
   function makeCaptionedProject(): Project {
     return makeProject({
       captions: { style: 'pop', segments: [{ id: 'cap-0', text: 'caption one', start: 0, end: 1 }] },
@@ -831,7 +831,7 @@ describe('VideoEditor — CapCut left panel tabs', () => {
 
   it('opens on Captions and keeps Media behind its own tab', async () => {
     const project = makeCaptionedProject()
-    renderCapCut(project, makeFakeAdapter(project))
+    renderMediaPanelLayout(project, makeFakeAdapter(project))
 
     const captionsTab = await screen.findByRole('tab', { name: 'Captions' })
     expect(captionsTab.getAttribute('aria-selected')).toBe('true')
@@ -845,7 +845,7 @@ describe('VideoEditor — CapCut left panel tabs', () => {
 
   it('puts version history and the host runHistory slot together under Versions', async () => {
     const project = makeCaptionedProject()
-    renderCapCut(project, makeFakeAdapter(project), {
+    renderMediaPanelLayout(project, makeFakeAdapter(project), {
       slots: { runHistory: <div data-testid="run-history">Previous runs</div> },
     })
 
@@ -855,7 +855,7 @@ describe('VideoEditor — CapCut left panel tabs', () => {
 
   it('offers no Captions tab on a project with no captions and a host that cannot generate them', async () => {
     const project = makeProject() // no `captions`, adapter has no generateCaptions
-    renderCapCut(project, makeFakeAdapter(project))
+    renderMediaPanelLayout(project, makeFakeAdapter(project))
 
     await waitFor(() => screen.getByRole('tab', { name: 'Media' }))
     expect(screen.queryByRole('tab', { name: 'Captions' })).toBeNull()
@@ -922,7 +922,7 @@ describe('VideoEditor — overlay properties tabs', () => {
   it('opens on the Content tab, showing the overlay\'s own props', async () => {
     onTestFinished(installCanvasHarness())
     const project = makeOverlayProject()
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
 
     selectCanvasItem(container, project, { type: 'overlay' })
@@ -940,7 +940,7 @@ describe('VideoEditor — overlay properties tabs', () => {
   it('switching to Transform swaps in the keyframe inspector', async () => {
     onTestFinished(installCanvasHarness())
     const project = makeOverlayProject()
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { type: 'overlay' })
 
@@ -961,7 +961,7 @@ describe('VideoEditor — overlay properties tabs', () => {
     // in its lazy `useState` initializer, and never again.
     localStorage.setItem('montaj.editor.overlayPanelTab', JSON.stringify('transform'))
     const project = makeOverlayProject()
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { type: 'overlay' })
 
@@ -974,7 +974,7 @@ describe('VideoEditor — overlay properties tabs', () => {
     onTestFinished(installCanvasHarness())
     localStorage.setItem('montaj.editor.overlayPanelTab', JSON.stringify('effects'))
     const project = makeOverlayProject()
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { type: 'overlay' })
 
@@ -987,7 +987,7 @@ describe('VideoEditor — overlay properties tabs', () => {
     onTestFinished(installCanvasHarness())
     const project = makeOverlayProject()
     const adapter = makeFakeAdapter(project)
-    const { container } = renderCapCut(project, adapter)
+    const { container } = renderMediaPanelLayout(project, adapter)
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { type: 'overlay' })
 
@@ -1012,7 +1012,7 @@ describe('VideoEditor — overlay properties tabs', () => {
   it('a preview double-click keeps the overlay on the Content tab and opens no dialog', async () => {
     onTestFinished(installCanvasHarness())
     const project = makeOverlayProject()
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { type: 'overlay' })
     await screen.findByLabelText('text')
@@ -1033,7 +1033,7 @@ describe('VideoEditor — overlay properties tabs', () => {
   it('no longer offers an "Edit overlay" button in the controls bar', async () => {
     onTestFinished(installCanvasHarness())
     const project = makeOverlayProject()
-    const { container } = renderCapCut(project, makeFakeAdapter(project))
+    const { container } = renderMediaPanelLayout(project, makeFakeAdapter(project))
     await waitFor(() => screen.getByLabelText('Resize sidebar'))
     selectCanvasItem(container, project, { type: 'overlay' })
 

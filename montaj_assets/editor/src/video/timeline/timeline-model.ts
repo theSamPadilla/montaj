@@ -439,7 +439,7 @@ export function resolveTargetTrackIdx(
  * byte-identical to before. When `makeSpace` is true (the pointer machine
  * passes `ctx.rippleMode`), a collision at the pointed-at track
  * (`resolveTargetTrackIdx`'s `targetIdx`)
- * stops being disqualifying, CapCut-style: instead of fanning out to another
+ * stops being disqualifying: instead of fanning out to another
  * track, the drop lands exactly where the drag points and PUSHES every item
  * on that track whose `start` is at/after the dropped item's own `start` to
  * the right by the dropped item's duration, making room for it in place. The
