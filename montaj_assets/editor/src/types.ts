@@ -1337,6 +1337,15 @@ export interface CarouselEditorProps<P extends Project = Project> {
    * deselects or drags anything underneath. Absent: a pin is inert.
    */
   onPinClick?: (id: string) => void
+
+  /**
+   * The selected slide changed, to `slideId`, however it changed: a click in
+   * the slide list, a slide added or duplicated, the selected slide deleted,
+   * or the notes api's `selectSlide`. Not called on mount for the slide
+   * selected then, and not called when the same slide is picked again.
+   * Absent: nothing reported.
+   */
+  onSelectedSlideChange?: (slideId: string | null) => void
 }
 
 /**

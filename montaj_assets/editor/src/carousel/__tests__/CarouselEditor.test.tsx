@@ -974,6 +974,41 @@ describe('CarouselEditor — note pins (PL70)', () => {
     expect(p1().querySelector('[data-pin-text]')!.textContent).toBe('Logo too small')
   })
 
+  it('reports a change of selected slide by id, not on mount and not when the same slide is picked again (§143)', async () => {
+    const onSelectedSlideChange = vi.fn()
+    const provided: Array<SlideNotesApi | null> = []
+    render(
+      <CarouselEditor
+        project={twoSlides()}
+        adapter={makeFakeAdapter()}
+        onProjectChange={vi.fn()}
+        notes={{ enabled: true }}
+        onProvideNotesApi={(api) => { provided.push(api) }}
+        onSelectedSlideChange={onSelectedSlideChange}
+      />,
+    )
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    expect(onSelectedSlideChange).not.toHaveBeenCalled()
+
+    // The slide list thumbnail: the element drawn outside the interactive canvas.
+    const thumb = (elementId: string) =>
+      Array.from(document.querySelectorAll<HTMLElement>(`[data-element-id="${elementId}"]`)).find((el) => !el.closest('[data-interactive]'))!
+
+    await act(async () => { fireEvent.click(thumb('el-b')) })
+    await waitFor(() => expect(interactiveHas('el-b')).toBe(true))
+    expect(onSelectedSlideChange).toHaveBeenCalledTimes(1)
+    expect(onSelectedSlideChange).toHaveBeenLastCalledWith('slide-1')
+
+    await act(async () => { fireEvent.click(thumb('el-b')) })
+    await act(async () => { provided[provided.length - 1]!.selectSlide('slide-1') })
+    expect(onSelectedSlideChange).toHaveBeenCalledTimes(1)
+
+    await act(async () => { provided[provided.length - 1]!.selectSlide('slide-0') })
+    await waitFor(() => expect(interactiveHas('el-img')).toBe(true))
+    expect(onSelectedSlideChange).toHaveBeenCalledTimes(2)
+    expect(onSelectedSlideChange).toHaveBeenLastCalledWith('slide-0')
+  })
+
   it('counts each slide whole-slide pins on its thumbnail', async () => {
     const { container } = render(
       <CarouselEditor project={twoSlides()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} pins={pins} />,

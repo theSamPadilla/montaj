@@ -168,7 +168,7 @@ function isTypingTarget(t: EventTarget | null): boolean {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, pendingSurface = 'default' }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default' }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -432,6 +432,18 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       setCropElementId(null)
     }
   }, [slides, selectedSlideId])
+
+  // Tell the host when the selected slide changes, however it changed. The
+  // slide selected at mount is not reported; picking the same slide again is
+  // not a change.
+  const onSelectedSlideChangeRef = useRef(onSelectedSlideChange)
+  onSelectedSlideChangeRef.current = onSelectedSlideChange
+  const reportedSlideIdRef = useRef(selectedSlideId)
+  useEffect(() => {
+    if (reportedSlideIdRef.current === selectedSlideId) return
+    reportedSlideIdRef.current = selectedSlideId
+    onSelectedSlideChangeRef.current?.(selectedSlideId)
+  }, [selectedSlideId])
 
   // Auto-create a starter slide for a non-pending project that ended up empty.
   const initialSlideCreatedRef = useRef(false)

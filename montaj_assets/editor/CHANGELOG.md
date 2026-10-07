@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## Unreleased
 
 - **Changed: carousel note pins are text chips.** A pin is an 18 px badge with its `label` (accent for `tone: 'self'`, amber for `'review'`) instead of a dot. `SlidePin` gains `text` and `active`; `CarouselEditor` gains `pinDisplay` (`'badge'` default, `'chip'` adds the note's first words, collapsing to the badge where pins crowd until hovered). The `active` pin shows its whole text, or a blinking caret while empty. Past x 0.6 a pin opens leftward. The armed note cursor is an arrow with a chip, crosshair as fallback. New export: `SlidePinDisplay`.
+- **Added: `CarouselEditor` takes `onSelectedSlideChange(slideId)`.** Called whenever the selected slide changes (the slide list, a slide added, duplicated or deleted, the notes api's `selectSlide`); not for the slide selected at mount, and not when the same slide is picked again.
 
 ## 2.0.7
 
