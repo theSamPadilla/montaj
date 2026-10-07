@@ -1186,3 +1186,24 @@ def test_untagged_bt709_source_keeps_its_colours(tmp_path):
     s = probe["streams"][0]
     assert (s.get("color_space"), s.get("color_transfer"), s.get("color_primaries")) == ("bt709",) * 3
     assert probe["format"]["tags"]["comment"] == nm.UNTAGGED_MASTER_MARKER
+
+
+# ── odd source dimensions ─────────────────────────────────────────────────────
+
+def test_normalize_sdr_reencode_rounds_odd_dimensions_to_even(tmp_path):
+    """libx264 yuv420p refuses odd sizes ("height not divisible by 2", then
+    "Could not open encoder before EOF"). The SDR re-encode floors each side to
+    even, like the segment encoder does."""
+    src = tmp_path / "odd.mp4"
+    out = tmp_path / "out.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=1081x1921:rate=30:duration=1",
+         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv444p", str(src)],
+        check=True, capture_output=True, timeout=60)
+    result = normalize(str(src), str(out), "sdr_bt709")
+    assert result == str(out)
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=width,height", "-of", "csv=p=0", str(out)],
+        check=True, capture_output=True, text=True)
+    assert r.stdout.strip() == "1080,1920"

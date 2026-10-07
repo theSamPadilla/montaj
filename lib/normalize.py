@@ -551,6 +551,12 @@ def _build_ffmpeg_cmd(
         if is_hdr_to_sdr and not used_fallback_tonemap and HDR_TO_SDR_DENOISE_VF:
             vf_parts.append(HDR_TO_SDR_DENOISE_VF)
         vf_parts.append(conv_filter)
+    # yuv420p needs even sides: libx264 refuses an odd one ("height not divisible
+    # by 2", then "Could not open encoder before EOF"). Floor to even, as the
+    # segment encoder does (encode-segment.js). Only when a side is odd, so the
+    # filter chain of every even-sized source stays byte-identical.
+    if (info.get("display_width") or 0) % 2 or (info.get("display_height") or 0) % 2:
+        vf_parts.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
     vf_parts.append(f"format={spec['output_pix_fmt']}")
     vf = ",".join(vf_parts)
 

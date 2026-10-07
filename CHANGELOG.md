@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (normalize): the SDR re-encode rounds odd video dimensions down to even.** A 1081x1921 clip that needed re-encoding failed with "Could not open encoder before EOF / -22" because libx264 yuv420p refuses an odd side; `lib/normalize.py` had no guard (the segment encoder did). It now adds `scale=trunc(iw/2)*2:trunc(ih/2)*2` when a side is odd; even-sized sources get the identical filter chain as before.
+
 - **Fixed (render): an ffmpeg failure now carries ffmpeg's last lines, not its version banner.** The audio mix, the loudness pass, concat, segment encode, SDR derive, frame sampling and the Python normalize/proxy/voiceover/beat/stem/filmstrip steps wrapped ffmpeg's whole stderr (banner first, ~2,000 characters) or a short character slice of it, so a cap that keeps the head showed the banner and lost the real line (`Error opening input file ... No such file or directory`), and normalize's 500-character tail cut off "height not divisible by 2". One helper per language (`ffmpegErrorTail` in `montaj_assets/render/ffmpeg-error.js`, `ffmpeg_error_tail` in `lib/common.py`) drops the banner and keeps the last 10 non-empty lines.
 
 ## v5.24.12
