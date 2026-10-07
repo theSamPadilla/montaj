@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.0.7
+
+- **Added: `EditorAdapter.canIsolateVoice`.** A host without stem separation sets it to `false`, and Audio polish hides Isolate voice. Omitted, it shows as before.
+
 ## 2.0.6
 
 - **Added: the carousel editor takes `pendingSurface="host"`.** While a project is pending it shows the slide list and the selected slide's canvas, so slides appear as they are added, and draws no pending block of its own, leaving the prompt and progress to the host. Render stays disabled and no starter slide is created while pending. `'default'` is unchanged. Same option as the video editor's.

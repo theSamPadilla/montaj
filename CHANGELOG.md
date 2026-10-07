@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.24.16
+
 - **Changed (init): a B-roll project no longer needs a voiceover.** `project/init.py` refused a `broll` workflow without `--voiceover-asset` (`missing_argument`); it now makes the project with no `voiceover` key, so a B-roll edit can be footage cut to a music track or to text on screen, or left silent. `--voiceover-asset` is still refused for any other project type. (`project/init.py`, `tests/test_init.py`)
 
 - **Changed (skills): no skill points at a file the agent cannot open.** Five carousel lines named paths on a developer's machine, and skills sent the agent to `docs/schemas/project.md`, `docs/schemas/workflow.md` and `docs/UI.md`, which an agent in an app cannot read (and the wheel does not ship `docs/schemas/`). Each line now says what it pointed at (the keyframe shape on a clip, an image item's fields) or drops a pointer whose sentence already said it, and CLI install advice is marked as for the command line only. `tests/test_skills_reachable.py` keeps every skill so. (`skills/SKILL.md`, `skills/carousel/SKILL.md`, `skills/image-search/SKILL.md`, `skills/onboarding/SKILL.md`, `skills/write-overlay/SKILL.md`, `tests/test_skills_reachable.py`)
