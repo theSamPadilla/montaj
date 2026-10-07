@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.24.14
+
 - **Fixed (render): a render that runs out of disk says so, with the space to free, and leaves nothing behind.** Each overlay and caption chunk keeps its PNG frames in TMPDIR until it is encoded, and every worker captures at once, so the space a render needs grows with the video's length (measured on a 47 s 1080x1920 project: 468 MB peak in TMPDIR, 306 MB new in the project; a 10-minute captioned video needs several GB). Three changes:
   - A disk check runs before anything heavy is written. It estimates TMPDIR and the project's disk separately (summed when they share one disk, Windows paths included) and refuses only a render that certainly will not fit, with `{"error":"insufficient_disk","message":"Not enough free space to export. Free up N.N GB and try again.","needBytes","freeBytes","path","phase":"preflight","estimate"}`.
   - A render that runs out mid-way (Node's ENOSPC, or ffmpeg's "No space left on device") fails with the same code and the expected need, instead of a generic `render_error`.
