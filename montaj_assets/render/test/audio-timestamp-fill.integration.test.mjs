@@ -14,10 +14,10 @@
 // Real ffmpeg, the real compose() (planSegments, encodeSegmentGroup, the
 // concat join). One timeline of three clips, butt-joined, each with a white
 // frame and a 1 kHz beep at every half second past a whole one (k + 0.5 s) of
-// its own timeline. Not at k: an item read from inPoint 0 is input-seeked
-// (`-ss 0`), which starts the AAC decoder without its priming packet and
-// garbles the clip's first ~700 samples before and after this fix alike, so a
-// beep at 0 s would measure that instead:
+// its own timeline. Not at k: until §94 an item read from inPoint 0 was
+// input-seeked (`-ss 0`), which started the AAC decoder without its priming
+// packet and garbled the clip's first ~700 samples, so a beep at 0 s measured
+// that instead (audio-first-samples.integration.test.mjs covers it now):
 //   - clean: samples match timestamps. Its segment PCM must be the samples
 //     its decoder gives for the same read, byte for byte (the fill never
 //     engages).
@@ -128,12 +128,12 @@ function makeClip({ name, dur }) {
 }
 
 /**
- * Stereo s16 PCM of a file's first audio stream. `byPts` lays samples at their
- * timestamps; `seek0` reads it the way the segment encoder reads a clip from
- * inPoint 0 (`-ss 0` on the input).
+ * Stereo s16 PCM of a file's first audio stream, decoded from its first packet
+ * (as the segment encoder reads a clip from inPoint 0 since §94). `byPts` lays
+ * samples at their timestamps.
  */
-function pcm(file, { byPts = false, seek0 = false } = {}) {
-  const r = spawnSync(FFMPEG, ['-v', 'error', ...(seek0 ? ['-ss', '0'] : []), '-i', file, '-map', '0:a:0',
+function pcm(file, { byPts = false } = {}) {
+  const r = spawnSync(FFMPEG, ['-v', 'error', '-i', file, '-map', '0:a:0',
     ...(byPts ? ['-af', 'aresample=async=1:min_hard_comp=0:first_pts=0'] : []),
     '-f', 's16le', '-ac', '2', '-ar', String(SR), '-'], { maxBuffer: 1 << 28, timeout: 60_000 })
   if (r.status !== 0) throw new Error(`decode failed: ${r.stderr}`)
@@ -285,7 +285,7 @@ test('a clean clip\'s audio is untouched: its segment PCM is its decoder\'s own 
   const { segments, videoItems } = await render()
   const c = CLIPS.find((x) => x.name === 'clean')
   const seg = pcm(segments[c.segment])
-  const src = pcm(videoItems[CLIPS.indexOf(c)].src, { seek0: true }).subarray(0, c.dur * SR * 2)
+  const src = pcm(videoItems[CLIPS.indexOf(c)].src).subarray(0, c.dur * SR * 2)
   assert.equal(seg.length, src.length)
   assert.ok(Buffer.from(seg.buffer, seg.byteOffset, seg.byteLength)
     .equals(Buffer.from(src.buffer, src.byteOffset, src.byteLength)), 'clean segment PCM differs from its source')

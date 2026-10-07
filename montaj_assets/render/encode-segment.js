@@ -1355,16 +1355,22 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // the single seek's `-t` did: it counts from the first frame kept, which is
   // not always at the seek instant. The input's `-t` is only an upper bound
   // now, one second past the end so it can never cut a frame the trim keeps.
-  // A seek of 0 keeps the single-seek strings byte for byte.
   const seek = twoStageSeek(actualIn)
+  // An input seek of 0 is no `-ss` at all (§94). Even `-ss 0` seeks: it lands
+  // on the AAC packet at 0 and skips the priming packet stamped before it, so
+  // the decoder starts cold and garbles the clip's first ~700 samples
+  // (measured: up to 17394 off on a beep of 16383). Read from the first
+  // packet, the decoder primes itself and drops the priming samples, and the
+  // timestamps come out the same (pinned by audio-first-samples.integration).
+  const seekArgs = (t) => (t > 0 ? ['-ss', String(t)] : [])
   // -err_detect ignore_err + -max_error_rate 1.0: tolerate broken audio
   // packets from iPhone .MOV sources (see encodeSegment for full comment).
   const inputArgs = [
     '-err_detect', 'ignore_err',
     '-max_error_rate', '1.0',
     ...(seek
-      ? ['-ss', String(seek.near), '-t', String(Number(seek.fine) + srcDur + 1), '-i', item.src]
-      : ['-ss', String(actualIn), '-t', String(srcDur), '-i', item.src]),
+      ? [...seekArgs(seek.near), '-t', String(Number(seek.fine) + srcDur + 1), '-i', item.src]
+      : ['-t', String(srcDur), '-i', item.src]),
   ]
   const trimStep = seek ? `trim=start=${seek.fine}:duration=${srcDur},` : ''
   const audioTrim = seek ? `atrim=start=${seek.fine}:duration=${srcDur}` : `atrim=0:${srcDur}`

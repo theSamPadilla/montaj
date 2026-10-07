@@ -143,7 +143,10 @@ function videoFilter(parts) { return parts.join(';') }
  * and `duration` is the trim's `duration=`, or the input `-t` without a trim.
  */
 function sourceWindow(inputArgs, filterParts) {
-  const ss = Number(inputArgs[inputArgs.indexOf('-ss') + 1])
+  // No -ss is an input seek of 0 (§94: even `-ss 0` seeks, and skips the AAC
+  // priming packet).
+  const at = inputArgs.indexOf('-ss')
+  const ss = at < 0 ? 0 : Number(inputArgs[at + 1])
   const m = /^\[\d+:v\]trim=start=([^:]+):duration=([^,]+),/.exec(filterParts[0])
   return m
     ? { seek: ss + Number(m[1]), duration: m[2] }
@@ -1854,7 +1857,10 @@ test('twoStageSeek: near + fine is exactly the microseconds of the single -ss it
   }
 })
 
-test('two-stage seek: a seek of 0 emits the single-seek strings byte for byte', async () => {
+// §94: even `-ss 0` seeks. It lands on the AAC packet at 0 and skips the
+// priming packet before it, which garbles the clip's first ~700 samples
+// (audio-first-samples.integration.test.mjs has the real-media proof).
+test('two-stage seek: a seek of 0 emits no input seek at all, and no trim', async () => {
   const seg = {
     start: 0, end: 5, items: [
       { type: 'video', src: '/clip.mp4', start: 0, end: 5, inPoint: 0,
@@ -1863,10 +1869,26 @@ test('two-stage seek: a seek of 0 emits the single-seek strings byte for byte', 
   }
   const { inputs, filterParts } = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
   assert.deepEqual(inputs.slice(inputs.indexOf('/clip.mp4') - 5, inputs.indexOf('/clip.mp4') + 1),
-    ['-ss', '0', '-t', '5', '-i', '/clip.mp4'])
+    ['-max_error_rate', '1.0', '-t', '5', '-i', '/clip.mp4'])
+  assert.equal(inputs.includes('-ss'), false)
   assert.match(filterParts[1], /^\[1:v\]setpts=PTS-STARTPTS,scale=/)
   assert.ok(filterParts.some((f) => f.startsWith('[1:a:0]atrim=0:5,asetpts=PTS-STARTPTS,')))
   assert.doesNotMatch(filterParts.join(';'), /trim=start=/)
+})
+
+test('two-stage seek: a near seek of 0 (actualIn under the preroll) emits no input seek, only the trim', async () => {
+  const seg = {
+    start: 0, end: 2, items: [
+      { type: 'video', src: '/clip.mp4', start: 0, end: 2, inPoint: 1.25,
+        trackIdx: 0, scale: 1, offsetX: 0, offsetY: 0, opacity: 1, muted: false },
+    ], overlays: [], vw: 1920, vh: 1080, fps: 30,
+  }
+  const { inputs, filterParts } = await encodeSegment(seg, '/tmp/test.mp4', { _dryRun: true })
+  assert.deepEqual(inputs.slice(inputs.indexOf('/clip.mp4') - 3, inputs.indexOf('/clip.mp4') + 1),
+    ['-t', '4.25', '-i', '/clip.mp4'])
+  assert.equal(inputs.includes('-ss'), false)
+  assert.match(filterParts[1], /^\[1:v\]trim=start=1\.25:duration=2,setpts=PTS-STARTPTS,/)
+  assert.ok(filterParts.some((f) => f.startsWith('[1:a:0]atrim=start=1.25:duration=2,asetpts=PTS-STARTPTS,')))
 })
 
 test('two-stage seek: video and audio trim the same source window after an early input seek', async () => {

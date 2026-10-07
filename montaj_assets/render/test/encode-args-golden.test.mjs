@@ -184,6 +184,26 @@
 // compensates: its segment PCM is byte-identical to before (measured on
 // 30/82/150 s clips). The proof on real media is
 // audio-timestamp-fill.integration.test.mjs.
+//
+// ── 2026-10-06 · §94 (no input seek of 0) — deliberate render change, ALL
+//    THREE expected/encode-args.*.json REGENERATED ────────────────────────────
+// An input seek of 0 was still `-ss 0`, and even that seeks: it lands on the
+// AAC packet at 0 and skips the priming packet stamped before it (pts -1024),
+// so the decoder starts cold. Measured on a clip whose beep starts at sample
+// 0: 700 samples differ from a plain decode, up to 17394 off on a beep of
+// 16383. On a source whose video starts after its audio (video start 0.1 s),
+// `-ss 0` also put the whole clip's audio 1024 samples (21.3 ms) early. An
+// input seek of 0 is now no `-ss` at all, on both paths: a clip read from
+// inPoint 0, and a two-stage seek whose `near` is 0. Each golden changed by
+// exactly that, `"-ss", "0"` gone from inputs and from args; nothing else
+// moved. Rewritten through the override flag, deliberately. Measured before
+// landing, old against new through the real compose(), 8 cases (H.264 with
+// B-frames, open-GOP x265, video starting 0.1 s after audio, no edit list;
+// each from 0 and from 1.25 s): video framemd5-identical in all 8. Audio
+// against a plain decode of the source: H.264 and x265 exact before and after;
+// late video from 1024 samples early (from 0) and 1 LSB off (from 1.25) to
+// exact; no edit list unchanged (identical PCM before and after). The proof on
+// real media is audio-first-samples.integration.test.mjs.
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
@@ -633,11 +653,13 @@ describe('freeze mechanism: identical is a no-op, changed is refused', () => {
     // and both moved again with the 2026-09-28 bt709 canvas tag (source-crop
     // was 7edefa3e…322b, source-crop-missing-dims was 01df56ae…3b57), and
     // both again with the 2026-10-05 audio fill by timestamp (source-crop was
-    // f5886f57…1f6f, source-crop-missing-dims was 8d7bc3f8…30c7a1); see the
+    // f5886f57…1f6f, source-crop-missing-dims was 8d7bc3f8…30c7a1), and both
+    // again with the 2026-10-06 §94 no input seek of 0 (source-crop was
+    // 0cc669ef…8bc0, source-crop-missing-dims was d4a221f0…e122); see the
     // notes at the top of this file for each diff and why.
     const HASHES = {
-      'source-crop': '0cc669efbe0c1d67efa4b40b35b5f996aa69fe61c60a56a499862e6ae3ec8bc0',
-      'source-crop-missing-dims': 'd4a221f05a8cb27758d16d869f4f10d16a161b2f0c6a33cce19fa530cee8e122',
+      'source-crop': '851921c789901367c82829ac9a59a9752c58f5ac6c726ffd5a003e3bb675aaf1',
+      'source-crop-missing-dims': '0ae3595a88f9b28ced0d00987f86c28b12516b51622d452c745dcee4ab3441de',
     }
     for (const [name, expected] of Object.entries(HASHES)) {
       const bytes = readFileSync(join(EXPECTED_DIR, `encode-args.${name}.json`))
