@@ -32,11 +32,13 @@ unchanged (the editor gives id-less audio tracks an id on open, a split or
 duplicated clip gets a new id, an asset can be placed on a track, a track can
 be repointed at a file another entry uses). Nothing else (`proxySrc`, overlay
 props, captions, the voiceover) is touched, and an unchanged path is never
-copied, so a repeat save costs nothing. The one exception is a copy that
-failed (an error, not a file left on purpose: over the cap, past the budget
-or short of disk): its path is saved, so no longer new, and `retry_later`
-keeps it, in this process and bounded, for the project's next save to try
-again whatever that save carries.
+copied, so a repeat save costs nothing. The one exception is a copy not yet
+saved: from its start until its patch has dealt with it, `retry_later` keeps
+it (bounded) in this process and in `assets/.copy-pending.json`, so a copy
+that failed (an error, not a file left on purpose: over the cap, past the
+budget or short of disk), or one serve stopped in the middle of, is planned
+again by the project's next save whatever that save carries. A copy in
+flight in this process is not planned twice.
 
 What is copied (`borrowed`): an existing, non-symlink file whose literal path
 (`normpath(abspath(p))`, never the realpath) is under the workspace, outside
@@ -69,9 +71,16 @@ variant of its path), and this process also remembers its copies, so a record
 that could not be written still gives the copy back. Copies of one source
 into one project take turns (a thread lock in this process), so two saves in
 flight make one copy. Temporary files a crash left behind (in `assets/`, and
-project.json's own in the project folder) are swept at the next copy once
-they are an hour old.
+project.json's own in the project folder) are swept at the next copy, and
+when the project is opened, once they are an hour old.
+
+A deleted project stays deleted: a copy creates `assets/` (never its
+parents) only while the project's project.json exists, and `delete_project`
+marks the folder (`project_deleting`) while it removes it, so a copy in
+flight stops before it creates `assets/`, gives a copy its final name or
+writes a record, removing its temp file, and its patch is skipped.
 """
+import contextlib
 import json
 import os
 import shutil
@@ -80,7 +89,7 @@ import threading
 import time
 import uuid
 import weakref
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 
 from lib.project_tracks import normalize_tracks
 from project.init import _free_name, _try_clone
@@ -92,6 +101,8 @@ DISK_HEADROOM_BYTES = 1024 ** 3       # left free after a plain copy
 STALE_TEMP_SECONDS = 3600             # a temp file this old is a crash's leftover
 ASSETS_DIR = "assets"
 RECORD_NAME = ".copied.json"
+PENDING_NAME = ".copy-pending.json"   # copies not yet saved (`retry_later`)
+_PENDING_FILE_MAX_BYTES = 1024 ** 2   # a bigger one is not read
 PROJECT_FILE = "project.json"
 _TEMP_PREFIX = ".copying-"
 _STAGING_DIRS = (".imports", "_uploads")
@@ -118,13 +129,20 @@ _MEMO_SIZE = 1024
 _memo: "OrderedDict[tuple, dict]" = OrderedDict()
 _memo_lock = threading.Lock()
 
-# Failed copies for a project's next save to try again (`retry_later`):
-# {project key: {key: src}}. Oldest project, and a project's oldest file,
-# dropped first.
+# Copies not yet saved, for a project's next save to plan again
+# (`retry_later`): {project key: {key: src}}, as `assets/.copy-pending.json`
+# holds them, read from it when not held here. Oldest project, and a
+# project's oldest file, dropped first. `_in_flight` counts, per project, the
+# copies this process is running now ({project key: Counter of keys}).
 _PENDING_PROJECTS = 64
 _PENDING_PER_PROJECT = 256
 _pending: "OrderedDict[str, dict[str, str]]" = OrderedDict()
+_in_flight: "dict[str, Counter]" = {}
 _pending_lock = threading.Lock()
+
+# Projects `delete_project` is removing now ({project key: count}).
+_deleting: Counter = Counter()
+_deleting_lock = threading.Lock()
 
 
 def _norm(path: str) -> str:
@@ -342,42 +360,179 @@ def _project_key(project_dir) -> str:
     return _key(str(project_dir))
 
 
+@contextlib.contextmanager
+def project_deleting(project_dir):
+    """For as long as the block runs, the project is being deleted: a copy in
+    flight for it stops (`_Gone`) and its patch is skipped (`project_gone`).
+    The project's copies not yet saved are forgotten at the end."""
+    project = _project_key(project_dir)
+    with _deleting_lock:
+        _deleting[project] += 1
+    try:
+        yield
+    finally:
+        with _deleting_lock:
+            _deleting[project] -= 1
+            if _deleting[project] <= 0:
+                del _deleting[project]
+        with _pending_lock:
+            _pending.pop(project, None)
+
+
+def _is_deleting(project_dir) -> bool:
+    with _deleting_lock:
+        return _deleting.get(_project_key(project_dir), 0) > 0
+
+
+def project_gone(project_dir) -> bool:
+    """The project is being deleted, or has no project.json any more."""
+    return _is_deleting(project_dir) or not os.path.isfile(os.path.join(str(project_dir), PROJECT_FILE))
+
+
+class _Gone(Exception):
+    """The project was deleted (or is being deleted) during its copy."""
+
+
+def _pending_path(project_dir) -> str:
+    return os.path.join(str(project_dir), ASSETS_DIR, PENDING_NAME)
+
+
+def _read_pending(project_dir) -> dict[str, str]:
+    """`assets/.copy-pending.json` as `{key: src}`; {} when it is missing,
+    unreadable, too big or not the shape written, and never more than
+    _PENDING_PER_PROJECT files (the newest)."""
+    try:
+        with open(_pending_path(project_dir), "rb") as f:
+            raw = f.read(_PENDING_FILE_MAX_BYTES + 1)
+        if len(raw) > _PENDING_FILE_MAX_BYTES:
+            return {}
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        files = {_key(src): src for src in data.values() if isinstance(src, str) and src and _p.isabs(src)}
+    except (OSError, ValueError, RecursionError):
+        return {}
+    return dict(list(files.items())[-_PENDING_PER_PROJECT:])
+
+
+def _write_pending(project_dir, files: dict[str, str]) -> None:
+    """Best effort: the file holds `files`, or is removed when it is empty.
+    Never creates `assets/`, and never writes into a project that is gone or
+    being deleted."""
+    path = _pending_path(project_dir)
+    try:
+        if project_gone(project_dir):
+            return
+        if not files:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        elif os.path.isdir(os.path.dirname(path)):
+            _write_json(path, files)
+    except Exception as exc:
+        print(f"[montaj] save_media: could not keep the copies still to save in {path}: {exc}")
+
+
+def _held(project_dir, project: str) -> dict[str, str]:
+    """The project's copies not yet saved, under `_pending_lock`: as held
+    here, or else as its file has them (and then held here)."""
+    kept = _pending.get(project)
+    if kept is None:
+        kept = _read_pending(project_dir)
+        if not kept:
+            return {}
+        _pending[project] = kept
+    _pending.move_to_end(project)
+    while len(_pending) > _PENDING_PROJECTS:
+        _pending.popitem(last=False)
+    return kept
+
+
+def _keep(project_dir, project: str, kept: dict[str, str]) -> None:
+    """Hold `kept` for the project, here and in its file. Under `_pending_lock`."""
+    if kept:
+        _pending[project] = kept
+        _pending.move_to_end(project)
+        while len(_pending) > _PENDING_PROJECTS:
+            _pending.popitem(last=False)
+    else:
+        _pending.pop(project, None)
+    _write_pending(project_dir, kept)
+
+
 def retry_later(project_dir, files: dict[str, str]) -> None:
-    """Keep `{key: src}`, files whose copy into the project failed, for the
-    project's next save to plan again (`pending_media`), though their paths
-    are saved by then and so no longer new. In this process only, bounded."""
+    """Keep `{key: src}` for the project's next save to plan again
+    (`pending_media`), though their paths are saved by then and so no longer
+    new: a copy about to start (so one serve stopped in the middle of is not
+    lost) and one that failed. Kept until a patch has dealt with it
+    (`settle_copies`) or it was left on purpose (`forget_pending`): in this
+    process, bounded, and in `assets/.copy-pending.json` while `assets/`
+    exists."""
     if not files:
         return
     project = _project_key(project_dir)
     with _pending_lock:
-        kept = _pending.pop(project, {})
+        kept = dict(_held(project_dir, project))
         for key, src in files.items():
             kept.pop(key, None)
             kept[key] = src
         while len(kept) > _PENDING_PER_PROJECT:
             del kept[next(iter(kept))]
-        _pending[project] = kept
-        while len(_pending) > _PENDING_PROJECTS:
-            _pending.popitem(last=False)
+        _keep(project_dir, project, kept)
 
 
 def pending_media(project_dir) -> dict[str, str]:
-    """The project's files to try again (`retry_later`), `{key: src}`."""
+    """The project's copies not yet saved (`retry_later`) that no copy in
+    this process is running now, `{key: src}`."""
+    project = _project_key(project_dir)
     with _pending_lock:
-        return dict(_pending.get(_project_key(project_dir), ()))
+        kept = _held(project_dir, project)
+        busy = _in_flight.get(project) or {}
+        return {key: src for key, src in kept.items() if not busy.get(key)}
 
 
 def forget_pending(project_dir, keys) -> None:
-    """Drop `keys` from the project's files to try again."""
+    """Drop `keys` from the project's copies not yet saved."""
+    if not keys:
+        return
     project = _project_key(project_dir)
     with _pending_lock:
-        kept = _pending.get(project)
-        if kept is None:
-            return
-        for key in keys:
-            kept.pop(key, None)
-        if not kept:
-            del _pending[project]
+        _forget(project_dir, project, keys)
+
+
+def _forget(project_dir, project: str, keys) -> None:
+    held = _held(project_dir, project)
+    kept = {key: src for key, src in held.items() if key not in keys}
+    if len(kept) != len(held):
+        _keep(project_dir, project, kept)
+
+
+def begin_copies(project_dir, keys) -> None:
+    """A copy of `keys` starts in this process (`settle_copies` ends it)."""
+    project = _project_key(project_dir)
+    with _pending_lock:
+        _in_flight.setdefault(project, Counter()).update(list(keys))
+
+
+def settle_copies(project_dir, keys, settled) -> None:
+    """The copy of `keys` begun by `begin_copies` is over, and its patch dealt
+    with `settled` (swapped in, or nothing holds the path any more): those
+    are dropped from the copies not yet saved, unless another copy of one is
+    still running here."""
+    project = _project_key(project_dir)
+    with _pending_lock:
+        busy = _in_flight.get(project)
+        if busy is not None:
+            busy.subtract(list(keys))
+            busy = +busy
+            if busy:
+                _in_flight[project] = busy
+            else:
+                del _in_flight[project]
+        done = {key for key in settled if not (busy or {}).get(key)}
+        if done:
+            _forget(project_dir, project, done)
 
 
 def _size(n: float) -> str:
@@ -403,13 +558,16 @@ def _read_record(assets_dir: str) -> dict:
 
 
 def _write_record(assets_dir: str, record: dict) -> None:
-    """Temp file (a unique name) + os.replace: the record is whole or the old
+    _write_json(os.path.join(assets_dir, RECORD_NAME), record)
+
+
+def _write_json(path: str, data: dict) -> None:
+    """Temp file (a unique name) + os.replace: the file is whole or the old
     one."""
-    path = os.path.join(assets_dir, RECORD_NAME)
     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(record, f, indent=2, sort_keys=True)
+            json.dump(data, f, indent=2, sort_keys=True)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -433,8 +591,7 @@ def _valid_copy(entry, st: os.stat_result, assets_dir: str) -> str | None:
     if not isinstance(entry, dict):
         return None
     name = entry.get("name")
-    if (not isinstance(name, str) or not name or os.path.basename(name) != name
-            or name == RECORD_NAME or name.startswith(_TEMP_PREFIX)):
+    if not isinstance(name, str) or not name or os.path.basename(name) != name or _reserved(name):
         return None
     if entry.get("size") != st.st_size or entry.get("mtimeNs") != st.st_mtime_ns:
         return None
@@ -463,6 +620,24 @@ def _recorded_copy(record: dict, real: str, st: os.stat_result, assets_dir: str)
         if dest is not None:
             return dest
     return None
+
+
+def _reserved(name: str) -> bool:
+    """A name in `assets/` that is this module's own, never a copy's."""
+    return name in (RECORD_NAME, PENDING_NAME) or name.startswith(_TEMP_PREFIX)
+
+
+def _make_assets(project_dir: str, assets_dir: str) -> None:
+    """Create `assets/`, never its parents, for a project that still exists
+    and is not being deleted; `_Gone` otherwise."""
+    if project_gone(project_dir):
+        raise _Gone()
+    try:
+        os.mkdir(assets_dir)
+    except FileExistsError:
+        pass
+    except FileNotFoundError:
+        raise _Gone() from None
 
 
 def _publish(tmp: str, assets_dir: str, name: str) -> str:
@@ -502,8 +677,10 @@ def _copy_one(path: str, size: int, assets_dir: str, spent: list) -> str:
     any size; else a plain copy within the cap, the save's budget (`spent[0]`
     is what its earlier plain copies came to) and the free space, or `_Left`.
     Works under a unique temporary name, removed on any failure, so it never
-    clobbers or deletes another file."""
-    os.makedirs(assets_dir, exist_ok=True)
+    clobbers or deletes another file. `_Gone` (its temp removed) when the
+    project is deleted before the copy is given its name."""
+    project_dir = os.path.dirname(assets_dir)
+    _make_assets(project_dir, assets_dir)
     tmp = os.path.join(assets_dir, f"{_TEMP_PREFIX}{uuid.uuid4().hex}{os.path.splitext(path)[1]}")
     made = False
     try:
@@ -522,7 +699,10 @@ def _copy_one(path: str, size: int, assets_dir: str, spent: list) -> str:
             made = True
             shutil.copy2(path, tmp)
             spent[0] += size
-        return _publish(tmp, assets_dir, os.path.basename(path))
+        if _is_deleting(project_dir):
+            raise _Gone()
+        name = os.path.basename(path)
+        return _publish(tmp, assets_dir, f"media{name}" if _reserved(name) else name)
     except BaseException:
         if made:
             try:
@@ -533,8 +713,9 @@ def _copy_one(path: str, size: int, assets_dir: str, spent: list) -> str:
 
 
 def _is_copy_temp(name: str) -> bool:
-    """A copy's temp file or a record write's, in `assets/`."""
-    return name.startswith(_TEMP_PREFIX) or (name.startswith(RECORD_NAME + ".") and name.endswith(".tmp"))
+    """A copy's temp file, or a record's or the pending file's write's, in `assets/`."""
+    return name.startswith(_TEMP_PREFIX) or (
+        name.endswith(".tmp") and (name.startswith(RECORD_NAME + ".") or name.startswith(PENDING_NAME + ".")))
 
 
 def _is_project_temp(name: str) -> bool:
@@ -562,6 +743,17 @@ def _sweep_stale_temps(folder: str, is_temp) -> None:
                     pass
     except OSError:
         pass
+
+
+def sweep_stale_temps(project_dir) -> None:
+    """The temp sweep of a copy (`_sweep_stale_temps`) for a project being
+    opened, so a project that never copies again is cleaned too: one listing
+    of its folder and one of `assets/`. Never raises."""
+    try:
+        _sweep_stale_temps(str(project_dir), _is_project_temp)
+        _sweep_stale_temps(os.path.join(str(project_dir), ASSETS_DIR), _is_copy_temp)
+    except Exception as exc:
+        print(f"[montaj] save_media: could not sweep temp files in {project_dir}: {exc}")
 
 
 def _source_lock(assets_dir: str, st: os.stat_result) -> threading.Lock:
@@ -602,14 +794,26 @@ def copy_borrowed_media(wanted: dict[str, str], project_dir) -> tuple[dict[str, 
     again (`retry_later`).
 
     Returns `({key: copy path}, warnings)`: a sentence per file left where it
-    is (not copied, or the copy failed).
+    is (not copied, or the copy failed). Nothing at all, quietly, for a
+    project that is gone or being deleted: no `assets/` made, no copy left.
     """
-    assets_dir = os.path.join(str(project_dir), ASSETS_DIR)
-    _sweep_stale_temps(str(project_dir), _is_project_temp)
+    project_dir = str(project_dir)
+    assets_dir = os.path.join(project_dir, ASSETS_DIR)
+    if project_gone(project_dir):
+        return {}, []
+    _sweep_stale_temps(project_dir, _is_project_temp)
     _sweep_stale_temps(assets_dir, _is_copy_temp)
+    try:
+        _make_assets(project_dir, assets_dir)
+    except _Gone:
+        return {}, []
+    except OSError:
+        pass   # each copy below fails over it, and is kept to try again
+    retry_later(project_dir, wanted)   # kept until the patch deals with it, so a restart cannot lose it
     spent = [0]
     made: dict[str, str] = {}
     warnings: list[str] = []
+    left: list[str] = []
     for key, src in wanted.items():
         path = _norm(src)
         try:
@@ -619,18 +823,26 @@ def copy_borrowed_media(wanted: dict[str, str], project_dir) -> tuple[dict[str, 
                 dest = _recorded_copy(_read_record(assets_dir), real, st, assets_dir)
                 if dest is None:
                     dest = _copy_one(path, st.st_size, assets_dir, spent)
+                    if _is_deleting(project_dir):
+                        raise _Gone()
                     try:
                         _remember(assets_dir, real, _record_entry(st, dest))
                     except Exception as exc:  # the copy stands, and this process remembers it
                         print(f"[montaj] save_media: could not record a copy in {assets_dir}: {exc}")
+        except _Gone:
+            return {}, []
         except _Left as why:
             warnings.append(f"Not copied into the project: {src} ({why}), so the project still depends on it.")
+            left.append(key)
             continue
         except Exception as exc:
+            if project_gone(project_dir):
+                return {}, []
             warnings.append(f"Not copied into the project: {src} ({exc}), so the project still depends on it.")
             retry_later(project_dir, {key: src})
             continue
         made[key] = dest
+    forget_pending(project_dir, left)   # left on purpose: never tried again
     return made, warnings
 
 

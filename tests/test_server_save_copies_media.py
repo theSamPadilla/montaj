@@ -1714,3 +1714,369 @@ def test_stale_project_json_temps_are_swept_by_a_copying_save(this, other, monke
     assert resp.status_code == 200, resp.text
     assert [p for p in stale if os.path.lexists(p)] == []
     assert all(os.path.exists(p) for p in kept)
+
+
+# ===========================================================================
+# §126 late-copy review: a delete during a copy, a restart mid-copy, temps
+# swept when a project opens, a project unreadable at patch time.
+# ===========================================================================
+
+def _write_spy(monkeypatch) -> list:
+    """Every project.json write from now on (the save's own write is earlier)."""
+    writes: list = []
+    real = projects_mod._write_project_json
+    monkeypatch.setattr(projects_mod, "_write_project_json", lambda p, proj: writes.append(p) or real(p, proj))
+    return writes
+
+
+def _restart(monkeypatch):
+    """What a serve restart forgets: everything this process kept in memory."""
+    monkeypatch.setattr(save_media, "_pending", collections.OrderedDict())
+    monkeypatch.setattr(save_media, "_memo", collections.OrderedDict())
+    monkeypatch.setattr(save_media, "_in_flight", {}, raising=False)
+
+
+def _json_keys(value) -> set:
+    """Every object key anywhere in a JSON value."""
+    if isinstance(value, dict):
+        return set(value) | {k for v in value.values() for k in _json_keys(v)}
+    if isinstance(value, list):
+        return {k for v in value for k in _json_keys(v)}
+    return set()
+
+
+def test_a_delete_during_a_copy_removes_the_project_and_the_copy_makes_nothing(this, other, monkeypatch):
+    """Measured on the first cut: the copy recreated `<project>/assets/outro.wav`
+    and `.copied.json` after the delete, with no project.json beside them."""
+    pid, folder = this
+    src = _file(other / "assets" / "outro.wav")
+    slow = _SlowCopy(monkeypatch)
+    frames = _Frames()
+    app.state.broadcaster = frames
+
+    async def go(c):
+        put = asyncio.create_task(_aput(c, pid, audio={"tracks": [{"id": "sfx", "src": src}]}))
+        await slow.wait_started()
+        writes = _write_spy(monkeypatch)
+        deleted = await asyncio.wait_for(c.delete(f"/api/projects/{pid}"), 5)
+        gone_at_once = not folder.exists()
+        slow.release.set()
+        saved = await asyncio.wait_for(put, 5)
+        await _until(lambda: not projects_mod._save_copy_tasks)
+        return deleted, gone_at_once, saved, writes
+
+    deleted, gone_at_once, saved, writes = _run(go)
+    assert deleted.status_code == 204, deleted.text
+    assert deleted.content == b"", "the delete's normal answer"
+    assert gone_at_once
+    assert saved.status_code == 200, saved.text
+    assert not folder.exists(), sorted(str(p.relative_to(folder)) for p in folder.rglob("*"))
+    assert writes == [], "the patch wrote into a deleted project"
+    assert len(frames.frames) == 1, "only the save itself was announced"
+    assert "copied" not in saved.json() and "warnings" not in saved.json()
+    assert Path(src).is_file()
+
+
+def test_a_copy_for_a_project_whose_project_json_is_gone_creates_nothing(this, other):
+    pid, folder = this
+    src = _file(other / "assets" / "outro.wav")
+    (folder / "project.json").unlink()
+
+    made, warnings = save_media.copy_borrowed_media({save_media._key(src): src}, folder)
+
+    assert made == {} and warnings == []
+    assert not (folder / "assets").exists(), "a copy created assets/ in a project that is gone"
+    assert save_media.pending_media(folder) == {}
+
+
+@pytest.mark.parametrize("when", ["copying", "named"])
+def test_a_delete_starting_during_a_copy_stops_it_before_it_is_named_or_recorded(this, other, fake_clone, monkeypatch, when):
+    """The delete begins while the copy's temp file is being made (the copy
+    removes its temp and is never named), or just after it was named (it is
+    never recorded). What is left, the delete removes."""
+    pid, folder = this
+    src = _file(other / "assets" / "outro.wav")
+    deleting = save_media.project_deleting(folder)
+    step = "_try_clone" if when == "copying" else "_publish"
+    real = getattr(save_media, step)
+
+    def then_delete(*a, **k):
+        result = real(*a, **k)
+        deleting.__enter__()
+        return result
+
+    monkeypatch.setattr(save_media, step, then_delete)
+    try:
+        made, warnings = save_media.copy_borrowed_media({save_media._key(src): src}, folder)
+    finally:
+        deleting.__exit__(None, None, None)
+
+    assert made == {} and warnings == []
+    left = sorted(p.name for p in (folder / "assets").iterdir() if p.name != save_media.PENDING_NAME)
+    assert left == ([] if when == "copying" else ["outro.wav"]), left
+
+
+def test_a_delete_whose_folder_is_not_empty_yet_is_tried_again(this, monkeypatch):
+    """An entry landed in the folder while it was being removed (a copy, any
+    writer): the delete tries again rather than leaving half a project."""
+    pid, folder = this
+    real = projects_mod.rmtree_force
+    calls = []
+
+    def busy_once(path, *a, **k):
+        calls.append(save_media.project_gone(path))
+        if len(calls) == 1:
+            (Path(path) / "assets").mkdir(exist_ok=True)
+            raise OSError(errno.ENOTEMPTY, "Directory not empty", str(path))
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(projects_mod, "rmtree_force", busy_once)
+
+    resp = client.delete(f"/api/projects/{pid}")
+
+    assert resp.status_code == 204, resp.text
+    assert not folder.exists() and calls == [True, True], "copies stop while the folder is removed"
+    assert not save_media._is_deleting(folder)
+
+
+def test_the_patch_leaves_a_different_project_in_the_same_folder_alone(this, other, monkeypatch):
+    pid, folder = this
+    src = _file(other / "assets" / "outro.wav")
+    slow = _SlowCopy(monkeypatch)
+
+    async def go(c):
+        a = asyncio.create_task(_aput(c, pid, audio={"tracks": [{"id": "sfx", "src": src}]}))
+        await slow.wait_started()
+        (folder / "project.json").write_text(json.dumps({**_on_disk(folder), "id": "p-newcomer"}))
+        slow.release.set()
+        return await a
+
+    resp = _run(go)
+    assert resp.status_code == 200, resp.text
+    disk = _on_disk(folder)
+    assert disk["id"] == "p-newcomer"
+    assert disk["audio"]["tracks"] == [{"id": "sfx", "src": src}], "the patch wrote into another project"
+    assert "copied" not in resp.json()
+
+
+def test_a_copy_that_never_patched_is_saved_by_the_next_save_after_a_restart(this, other, monkeypatch):
+    """Serve stopped after the copy and before its patch: the next save,
+    whatever it carries, reuses the copy and swaps it in."""
+    pid, folder = this
+    src = _file(other / "assets" / "outro.wav")
+    dest = str(folder / "assets" / "outro.wav")
+    on_disk = _on_disk(folder)
+    on_disk["audio"] = {"tracks": [{"id": "sfx", "src": src}]}
+    (folder / "project.json").write_text(json.dumps(on_disk))
+    made, _ = save_media.copy_borrowed_media({save_media._key(src): src}, folder)
+    assert made == {save_media._key(src): dest}
+    _restart(monkeypatch)
+
+    resp = _put(pid, name="after the restart")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["copied"] == [{"from": src, "to": dest}]
+    disk = _on_disk(folder)
+    assert disk["audio"]["tracks"] == [{"id": "sfx", "src": dest}] and disk["name"] == "after the restart"
+    assert _assets(folder) == ["outro.wav"], "the copy made before the restart is reused"
+    assert not (folder / "assets" / ".copy-pending.json").exists(), "settled once swapped"
+    assert "copied" not in _put(pid, name="later").json()
+
+
+def test_a_save_during_a_copy_does_not_plan_that_copy_again(this, other, fake_clone, monkeypatch):
+    """The plan is on disk from the copy's start; a save landing while the
+    copy runs does not take it for one to try again (it would wait on it)."""
+    pid, folder = this
+    src = _file(other / "assets" / "outro.wav")
+    dest = str(folder / "assets" / "outro.wav")
+    started, release = threading.Event(), threading.Event()
+    real = save_media._copy_one
+    calls = []
+
+    def held(*a, **k):
+        calls.append(a[0])
+        started.set()
+        assert release.wait(10), "copy never released"
+        return real(*a, **k)
+
+    monkeypatch.setattr(save_media, "_copy_one", held)
+
+    async def go(c):
+        a = asyncio.create_task(_aput(c, pid, audio={"tracks": [{"id": "sfx", "src": src}]}))
+        await _until(started.is_set)
+        during = json.loads((folder / "assets" / ".copy-pending.json").read_text())
+        rb = await asyncio.wait_for(_aput(c, pid, name="renamed"), 5)
+        release.set()
+        return await a, rb, during
+
+    ra, rb, during = _run(go)
+    assert list(during.values()) == [src]
+    assert rb.status_code == 200 and "copied" not in rb.json() and "warnings" not in rb.json()
+    assert ra.json()["copied"] == [{"from": src, "to": dest}]
+    assert len(calls) == 1
+    assert _on_disk(folder)["name"] == "renamed"
+    assert not (folder / "assets" / ".copy-pending.json").exists()
+
+
+def test_a_pending_copy_no_entry_holds_any_more_is_dropped(this, other):
+    pid, folder = this
+    src = _file(other / "assets" / "outro.wav")
+    pending = _file(folder / "assets" / ".copy-pending.json", json.dumps({save_media._key(src): src}).encode())
+
+    resp = _put(pid, name="next")
+
+    assert resp.status_code == 200 and "copied" not in resp.json()
+    assert not os.path.exists(pending)
+
+
+@pytest.mark.parametrize("content", [b"{not json", b"[1, 2]", b'{"k": 5, "r": "relative.wav"}',
+                                     b"[" * 100_000, b" " * (2 << 20)],
+                         ids=["broken", "list", "wrong-values", "deep", "too-big"])
+def test_an_unreadable_pending_file_never_fails_a_save(this, other, content):
+    pid, folder = this
+    _file(folder / "assets" / ".copy-pending.json", content)
+    src = _file(other / "assets" / "outro.wav")
+
+    resp = _put(pid, audio={"tracks": [{"id": "a", "src": src}]})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["copied"] == [{"from": src, "to": str(folder / "assets" / "outro.wav")}]
+
+
+def test_the_pending_copies_never_reach_project_json(this, other, monkeypatch):
+    pid, folder = this
+    src = _file(other / "assets" / "outro.wav")
+
+    def failing(*a, **k):
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(save_media, "_copy_one", failing)
+    before = set(_on_disk(folder))
+    first = _put(pid, audio={"tracks": [{"id": "s", "src": src}]})
+    second = client.put(f"/api/projects/{pid}", json=_whole_body(folder, name="next"))
+
+    pending = json.loads((folder / "assets" / ".copy-pending.json").read_text())
+    assert list(pending.values()) == [src], "the failed copy is kept to try again"
+    disk = _on_disk(folder)
+    assert set(disk) == before, "project.json gained a field"
+    for proj in (disk, first.json(), second.json()):
+        keys = _json_keys(proj)
+        assert not {k for k in keys if "pending" in k.lower()}, keys
+        assert not set(pending) & keys, "a pending entry was merged into the project"
+    assert ".copy-pending" not in (folder / "project.json").read_text()
+
+
+def test_opening_a_project_sweeps_stale_temps(this, monkeypatch):
+    """Temps a crash left are removed when the project is opened, not only
+    when it copies again."""
+    pid, folder = this
+    assets = folder / "assets"
+    stale = [_file(assets / ".copying-0123abcd.wav"), _file(assets / ".copied.json.0123abcd.tmp"),
+             _file(assets / ".copy-pending.json.0123abcd.tmp"),
+             _file(folder / "project.json.4242.0123abcd.tmp", b"{}")]
+    kept = [_file(assets / "keep.wav"), _file(assets / ".copied.json", b"{}"),
+            _file(assets / ".copy-pending.json.bak", b"{}"), _file(folder / "notes.json.1.tmp", b"{}")]
+    later = time.time() + 2 * 3600
+    monkeypatch.setattr(save_media, "_now", lambda: later)
+
+    resp = client.get(f"/api/projects/{pid}")
+
+    assert resp.status_code == 200, resp.text
+    assert [p for p in stale if os.path.lexists(p)] == []
+    assert all(os.path.exists(p) for p in kept)
+
+
+def test_opening_a_project_never_fails_over_the_sweep(this, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("sweep failed")
+
+    monkeypatch.setattr(save_media, "_sweep_stale_temps", boom)
+
+    assert client.get(f"/api/projects/{this[0]}").status_code == 200
+
+
+def test_a_project_unreadable_at_patch_time_is_tried_again_by_the_next_save(this, other, monkeypatch):
+    """Another program was part way through a non-atomic write of
+    project.json when the patch read it: the copy is not dropped."""
+    pid, folder = this
+    src = _file(other / "assets" / "outro.wav")
+    dest = str(folder / "assets" / "outro.wav")
+    slow = _SlowCopy(monkeypatch)
+
+    async def go(c):
+        a = asyncio.create_task(_aput(c, pid, audio={"tracks": [{"id": "sfx", "src": src}]}))
+        await slow.wait_started()
+        whole = (folder / "project.json").read_text()
+        (folder / "project.json").write_text(whole[: len(whole) // 2])
+        slow.release.set()
+        resp = await a
+        (folder / "project.json").write_text(whole)
+        return resp
+
+    resp = _run(go)
+    assert resp.status_code == 200, resp.text
+    assert "copied" not in resp.json()
+    assert [w for w in resp.json()["warnings"] if src in w], resp.json()
+    assert _on_disk(folder)["audio"]["tracks"] == [{"id": "sfx", "src": src}]
+
+    again = _put(pid, name="next")
+
+    assert again.json()["copied"] == [{"from": src, "to": dest}]
+    assert _on_disk(folder)["audio"]["tracks"] == [{"id": "sfx", "src": dest}]
+    assert _assets(folder) == ["outro.wav"]
+
+
+def test_a_failing_announcement_of_the_patch_still_reports_its_copy(this, other):
+    pid, folder = this
+    src = _file(other / "assets" / "outro.wav")
+    dest = str(folder / "assets" / "outro.wav")
+
+    class Flaky:
+        def __init__(self):
+            self.calls = 0
+
+        def publish(self, project_id, frame):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("a subscriber went away")
+
+    app.state.broadcaster = Flaky()
+
+    resp = _put(pid, audio={"tracks": [{"id": "sfx", "src": src}]})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["copied"] == [{"from": src, "to": dest}]
+    assert "warnings" not in resp.json()
+    assert _on_disk(folder)["audio"]["tracks"] == [{"id": "sfx", "src": dest}]
+
+
+def test_a_save_cancelled_just_after_its_patch_still_runs_its_follow_ups(this, other, followups, monkeypatch):
+    """The request goes away in the moment between the patch and the save
+    resuming: the follow-ups (previews, dims) still run on the patched project."""
+    pid, folder = this
+    src = _file(other / "clip.mp4")
+    dest = str(folder / "assets" / "clip.mp4")
+    previous = _on_disk(folder)
+    (folder / "project.json").write_text(json.dumps({**previous, "tracks": _tracks(_video("clip-0", src))}))
+    real = projects_mod._finish_save_copy
+    handler = {}
+
+    def finish_then_cancel(*a, **k):
+        result = real(*a, **k)
+        handler["task"].cancel()
+        return result
+
+    monkeypatch.setattr(projects_mod, "_finish_save_copy", finish_then_cancel)
+
+    async def go():
+        task = asyncio.ensure_future(projects_mod._copy_and_patch_media(
+            pid, folder, previous, {save_media._key(src): src}, (), _StubBroadcaster(), True))
+        handler["task"] = task
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await _until(lambda: followups["dims"], timeout=3)
+
+    asyncio.run(go())
+    assert _items(folder)[0]["src"] == dest
+    assert [p["tracks"][0]["items"][0]["src"] for p in followups["previews"]] == [dest]
+    assert [p["tracks"][0]["items"][0]["src"] for p in followups["dims"]] == [dest]

@@ -1,5 +1,6 @@
 """POST /run and all /projects/{id}* endpoints, plus _git_commit_sync helper."""
 import asyncio
+import errno
 import io
 import json
 import math
@@ -44,7 +45,8 @@ from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allow
 from lib.youtube import classify_error, parse_printed_path, parse_youtube_url, ytdlp_argv
 from project.init import _copy_into_workspace
 from serve.save_media import (
-    apply_borrowed_media, copy_borrowed_media, forget_pending, pending_media, plan_borrowed_media, retry_later,
+    apply_borrowed_media, begin_copies, copy_borrowed_media, forget_pending, pending_media, plan_borrowed_media,
+    project_deleting, project_gone, retry_later, settle_copies, sweep_stale_temps,
 )
 from serve.sse import SSEBroadcaster, sse_stream
 
@@ -2818,6 +2820,13 @@ async def get_project(project_id: str, request: Request = None, project_dir: Pat
     project_path = project_dir / "project.json"
     project = json.loads(project_path.read_text())
     broadcaster = getattr(request.app.state, "broadcaster", None) if request is not None else None
+    # §126: temp files a crash left in the folder and its assets/ (a copy's, a
+    # write's), once an hour old, so a project that never copies again is
+    # cleaned too. Two listings, never fails the open.
+    try:
+        sweep_stale_temps(project_dir)
+    except Exception:
+        pass
 
     # Lazy track-shape migration: converge a legacy `tracks: [[item]]` project to
     # the object shape `tracks: [{"id", "items"}]` the moment it's opened. This
@@ -3161,17 +3170,38 @@ async def delete_project(
                 # If project.json is unparseable, fall through to the delete.
                 pass
 
-    # PL28: stop a YouTube download first, so yt-dlp is not writing into the
-    # folder being removed.
-    await _cancel_source_download(project_id)
-    try:
-        rmtree_force(project_dir)
-    except OSError as e:
-        raise server_error("delete_failed", f"Couldn't delete this project: {e}")
+    # §126: while the folder is removed, a save's copy into it stops (no
+    # assets/ made again, no copy named or recorded) and its patch is skipped.
+    with project_deleting(project_dir):
+        # PL28: stop a YouTube download first, so yt-dlp is not writing into the
+        # folder being removed.
+        await _cancel_source_download(project_id)
+        try:
+            await _remove_project_dir(project_dir)
+        except OSError as e:
+            raise server_error("delete_failed", f"Couldn't delete this project: {e}")
 
     if preserve_assets:
         return {"preserved": preserved}
     return Response(status_code=204)
+
+
+_DELETE_RETRY_SECONDS = (0.1, 0.1, 0.1)
+
+
+async def _remove_project_dir(project_dir: Path) -> None:
+    """rmtree_force, tried again a few times while the folder is "not empty":
+    an entry landed in it while it was being removed (a copy a save started
+    before the delete, any other writer), so a delete never leaves half a
+    project."""
+    for pause in (*_DELETE_RETRY_SECONDS, None):
+        try:
+            rmtree_force(project_dir)
+            return
+        except OSError as e:
+            if pause is None or e.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                raise
+        await asyncio.sleep(pause)
 
 
 async def _run_carousel_render_detached(project_id: str, project_dir: Path, scale: int | None = None):
@@ -3336,9 +3366,14 @@ def _plan_save_media(
         return {}, {}
 
 
+_PATCH_GONE = "gone"
+_PATCH_UNREADABLE = "unreadable"
+_PATCH_OTHER_PROJECT = "other project"
+
+
 def _patch_copied_media(
-    project_path: Path, previous: dict, made: dict, also=(),
-) -> "tuple[dict, str, list] | None":
+    project_path: Path, previous: dict, made: dict, also=(), project_id: "str | None" = None,
+) -> "tuple[dict, str, list] | str | None":
     """The patch (§126): re-read project.json (in the current tracks shape,
     whatever another writer left), point each entry that is new or changed
     against `previous` (the project before the save), or holds a file of
@@ -3346,11 +3381,22 @@ def _patch_copied_media(
     its copy, and write. No await between the read and the write, as
     `_apply_project_edits`, and the save's body is never merged again, so a
     write that landed during the copy (an ingest, another save) is kept. None
-    when nothing is left to swap or the project can't be read."""
+    when nothing is left to swap; nothing written, and `_PATCH_GONE` when
+    project.json is gone, `_PATCH_UNREADABLE` when it can't be read (another
+    program part way through writing it: the copies are kept to try again),
+    `_PATCH_OTHER_PROJECT` when it is now another project (its id is not
+    `project_id`)."""
     try:
-        project = normalize_tracks(json.loads(project_path.read_text()))
-    except (OSError, ValueError):
-        return None
+        project = json.loads(project_path.read_text())
+    except FileNotFoundError:
+        return _PATCH_GONE
+    except (OSError, ValueError, RecursionError):
+        return _PATCH_UNREADABLE
+    if not isinstance(project, dict):
+        return _PATCH_UNREADABLE
+    if project_id is not None and project.get("id") != project_id:
+        return _PATCH_OTHER_PROJECT
+    project = normalize_tracks(project)
     copied = apply_borrowed_media(previous, project, made, also)
     if not copied:
         return None
@@ -3363,8 +3409,25 @@ def _finish_save_copy(
 ) -> "tuple[dict | None, dict]":
     """The copy's completion, on the event loop, once: take its result, run
     the patch, announce it like any write so an open editor picks the copies
-    up, and keep what failed for the next save to try again. Returns (the
-    project as patched, or None when nothing was swapped; the report)."""
+    up, and keep what failed, or was copied but not saved, for the next save
+    to try again (`settle_copies` drops only what the patch dealt with).
+    Nothing at all for a project deleted meanwhile. Returns (the project as
+    patched, or None when nothing was swapped; the report)."""
+    settled: set = set()
+    try:
+        if project_gone(project_dir):
+            settled = set(wanted)
+            return None, {}
+        return _finish_copy_and_patch(project_id, project_dir, previous, wanted, also, task, broadcaster, settled)
+    finally:
+        settle_copies(project_dir, wanted, settled)
+
+
+def _finish_copy_and_patch(
+    project_id: str, project_dir: Path, previous: dict, wanted: dict, also, task: "asyncio.Future",
+    broadcaster: "SSEBroadcaster", settled: set,
+) -> "tuple[dict | None, dict]":
+    """`_finish_save_copy`'s work; adds to `settled` the keys the patch dealt with."""
     if task.cancelled() or task.exception() is not None:
         why = "the copy was cancelled" if task.cancelled() else task.exception()
         print(f"[montaj] save_project: could not copy borrowed media for {project_id}: {why}")
@@ -3377,20 +3440,35 @@ def _finish_save_copy(
         made, warnings = task.result()
     patched, report = None, {}
     if made:
+        failed: dict = {}
+        why = None
         try:
-            result = _patch_copied_media(project_dir / "project.json", previous, made, also)
+            result = _patch_copied_media(project_dir / "project.json", previous, made, also, project_id)
         except Exception as e:
             print(f"[montaj] save_project: could not save the copied paths for {project_id}: {e}")
-            result = None
+            result, why = None, e
             failed = {key: src for key, src in wanted.items() if key in made}
+        if result is _PATCH_GONE or result is _PATCH_OTHER_PROJECT:
+            settled.update(wanted)
+            result = None
+        elif result is _PATCH_UNREADABLE:
+            why = "project.json could not be read"
+            failed = {key: src for key, src in wanted.items() if key in made}
+            result = None
+        elif why is None:
+            settled.update(made)
+        if failed:
             warnings = warnings + [
-                f"Copied into the project but not saved: {src} ({e}), so the project still depends on it."
+                f"Copied into the project but not saved: {src} ({why}), so the project still depends on it."
                 for src in failed.values()
             ]
             retry_later(project_dir, failed)
         if result is not None:
             patched, text, report["copied"] = result
-            broadcaster.publish(project_id, _sse_data_frame(text))
+            try:
+                broadcaster.publish(project_id, _sse_data_frame(text))
+            except Exception as e:   # written all the same: the report still says so
+                print(f"[montaj] save_project: could not announce the copied paths for {project_id}: {e}")
     if warnings:
         report["warnings"] = warnings
     if report:
@@ -3447,6 +3525,7 @@ async def _copy_and_patch_media(
         if late and follow_ups and result[0] is not None:
             _late_save_follow_ups(project_id, project_dir, previous, result[0], broadcaster)
 
+    begin_copies(project_dir, wanted)   # ended by `_finish_save_copy`, however the copy ends
     task = asyncio.ensure_future(asyncio.to_thread(copy_borrowed_media, wanted, project_dir))
     _save_copy_tasks.add(task)
     task.add_done_callback(_save_copy_tasks.discard)
@@ -3464,6 +3543,9 @@ async def _copy_and_patch_media(
     except asyncio.CancelledError:
         if not outcome.done():
             late = True
+        elif follow_ups and outcome.result()[0] is not None:
+            # Patched, and then the request went away before the save resumed.
+            _late_save_follow_ups(project_id, project_dir, previous, outcome.result()[0], broadcaster)
         raise
 
 
@@ -3538,14 +3620,18 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
     # synchronous read-modify-write that swaps only the copied paths
     # (`_patch_copied_media`), so a write that landed meanwhile (an ingest,
     # another save) is kept. The answer waits up to _SAVE_COPY_WAIT_SECONDS
-    # for that patch; a later one still lands. A copy that failed before is
-    # tried again here (`pending`), whatever this save carries. Best-effort:
+    # for that patch; a later one still lands. A copy not saved before (it
+    # failed, the project was unreadable at its patch, or serve stopped
+    # mid-copy) is tried again here (`pending`), whatever this save carries,
+    # unless it is still running in this process. Best-effort:
     # the save never fails over it; the answer says what it did.
     wanted, pending = _plan_save_media(
         project_id, existing, merged, project_dir, any(key in body for key in _SAVE_MEDIA_KEYS))
     text = _write_project_json(project_path, merged)
     if pending:
-        forget_pending(project_dir, pending)   # tried again now; one that fails again is kept again
+        # Kept until this save's patch deals with them; one no entry holds, or
+        # no longer borrowed, has nothing left to do.
+        forget_pending(project_dir, set(pending) - set(wanted))
     retrying = set(wanted) & set(pending)
     # Broadcast immediately — before the git commit so the UI update is instant.
     # Don't rely on the file watcher which can miss updates during SSE reconnect windows.
