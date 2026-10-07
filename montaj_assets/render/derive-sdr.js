@@ -23,6 +23,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
+import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { buildColorConversionFilter, hasZscale, hasLut3d } from './encode-segment.js'
 import { specFor, detectFromTransfer, isHdr } from './color-space.js'
 
@@ -181,7 +182,7 @@ export async function deriveSdr(masterPath, outputPath, opts = {}) {
   if (result.status !== 0) {
     const detail = result.error ? result.error.message
                  : result.timedOut ? `timed out after ${DERIVE_TIMEOUT_MS / 1000}s`
-                 : (result.stderr || '').trim().slice(-500)
+                 : ffmpegErrorTail(result.stderr)
     throw new Error(`ffmpeg SDR derive failed (${masterPath} → ${outputPath}):\n${detail}`)
   }
 

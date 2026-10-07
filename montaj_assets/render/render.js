@@ -21,6 +21,7 @@ import { prefetchPropsUrls }              from './page-guard.js'
 import { namedPropsUrls }                 from './overlay-build.js'
 import { compose, embedThumbnail }        from './compose.js'
 import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
+import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { requireValidKey, detectFromTransfer, smartDetect, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { pMap }                           from './p-map.js'
 import { fileHasAudio, probeVideoGeometry } from './encode-segment.js'
@@ -1760,7 +1761,7 @@ async function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedS
         // Preserve original behaviour: on failure, fall back to the source path.
         // Surface stderr to render's log so the user sees what went wrong.
         log(`normalize of ${basename(src)} failed (${signal ? `killed by ${signal}` : `exit ${code}`}); rendering the unconformed source`)
-        if (stderr.trim()) log(`normalize stderr: ${stderr.trim().slice(-500)}`)
+        if (stderr.trim()) log(`normalize stderr: ${ffmpegErrorTail(stderr)}`)
         resolve(src)
         return
       }
@@ -1824,7 +1825,7 @@ async function stripExtraAudioStreams(src) {
     proc.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8') })
     proc.on('close', (code) => {
       if (code !== 0) {
-        if (stderr.trim()) log(`audio-strip stderr: ${stderr.trim().slice(-500)}`)
+        if (stderr.trim()) log(`audio-strip stderr: ${ffmpegErrorTail(stderr)}`)
         // Fall back to the original file — encode-segment will still use [a:0]
         // and may still trip the bug, but no worse than before this fix.
         resolve(src)

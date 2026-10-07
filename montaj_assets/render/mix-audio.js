@@ -15,6 +15,7 @@ import { tmpdir } from 'os'
 import { audioSourceWindow } from '@bycrux/timeline-core'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { externalizeFilterGraph } from './filter-script.js'
+import { ffmpegErrorTail } from './ffmpeg-error.js'
 
 const FFMPEG_TIMEOUT_MS = 600_000
 
@@ -293,14 +294,14 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness
           '-movflags', '+faststart',
           outputPath,
         ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
-        if (result.status !== 0) throw new Error(`ffmpeg loudness normalize failed:\n${result.stderr}`)
+        if (result.status !== 0) throw new Error(`ffmpeg loudness normalize failed:\n${ffmpegErrorTail(result.stderr)}`)
         return
       }
     }
     const result = spawnSync(FFMPEG, [
       '-y', '-i', videoPath, '-c', 'copy', outputPath,
     ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
-    if (result.status !== 0) throw new Error(`ffmpeg copy failed:\n${result.stderr}`)
+    if (result.status !== 0) throw new Error(`ffmpeg copy failed:\n${ffmpegErrorTail(result.stderr)}`)
     return
   }
 
@@ -338,5 +339,5 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness
     script.cleanup()
   }
 
-  if (result.status !== 0) throw new Error(`ffmpeg audio mix failed:\n${result.stderr}`)
+  if (result.status !== 0) throw new Error(`ffmpeg audio mix failed:\n${ffmpegErrorTail(result.stderr)}`)
 }

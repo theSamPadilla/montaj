@@ -20,7 +20,7 @@ The sys.path.insert below adds lib/ itself so `from common import ...` works in 
 import sys, os, json, subprocess, argparse, glob, re, functools
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
-from common import fail, require_file, progress, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path
+from common import ffmpeg_error_tail, fail, require_file, progress, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types.colorspace` works
 from lib.types.colorspace import (
@@ -674,7 +674,7 @@ def _run_atomic_encode(cmd, tmp_path: str, out_path: str, *, label: str, timeout
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if r.returncode != 0:
-            fail("encode_error", f"{label} failed:\n{(r.stderr or '')[-500:]}")
+            fail("encode_error", f"{label} failed:\n{ffmpeg_error_tail(r.stderr)}")
         os.replace(tmp_path, out_path)
     finally:
         # On success the temp was renamed away (FileNotFoundError); on any

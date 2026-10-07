@@ -35,6 +35,7 @@ import { spawn, spawnSync } from 'child_process'
 import { mkdirSync, rmSync } from 'fs'
 import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
+import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { specFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
@@ -2365,7 +2366,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   if (result.status !== 0) {
     // spawn() can throw, or the script fail to write, before any stderr exists.
     const cause = result.error ? `${result.error.message}\n` : ''
-    throw new Error(`ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s):\n${cause}${(result.stderr || '').slice(-500)}`)
+    throw new Error(`ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s):\n${cause}${ffmpegErrorTail(result.stderr)}`)
   }
 
   // An exit code of 0 does not promise a picture: a graph can end without a
@@ -2426,7 +2427,7 @@ export async function encodeSegmentGroup(group, outputPath, opts = {}) {
     if (result.status !== 0) {
       const cause = result.error ? `${result.error.message}\n` : ''
       throw new Error(`ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s, `
-        + `${parts.length} short parts joined):\n${cause}${(result.stderr || '').slice(-500)}`)
+        + `${parts.length} short parts joined):\n${cause}${ffmpegErrorTail(result.stderr)}`)
     }
     assertSegmentHasVideo(outputPath, { start, end })
   } finally {

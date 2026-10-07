@@ -34,6 +34,7 @@ import { isMain as isMainModule } from './is-main.js'
 import { toFileHref, propFilePath } from './file-url.js'
 import { pMap } from './p-map.js'
 import { FFMPEG } from './ffmpeg-bin.js'
+import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { externalizeFilterGraph } from './filter-script.js'
 import { isHdr } from './color-space.js'
 import { sdrLayerFor, gradeKeyFor, probeMedia } from './sdr-layer.js'
@@ -1083,7 +1084,7 @@ export async function sampleFrame({
       const result = spawnSync(FFMPEG, ffmpegExtractArgs, { encoding: 'utf8', timeout: 60_000 })
 
       if (result.status !== 0) {
-        throw new Error(`ffmpeg video frame extract failed: ${result.stderr?.slice(-300)}`)
+        throw new Error(`ffmpeg video frame extract failed: ${ffmpegErrorTail(result.stderr)}`)
       }
 
       videoFramePaths.set(ri, framePng)
@@ -1299,7 +1300,7 @@ export async function sampleFrame({
   }
 
   if (compResult.status !== 0) {
-    throw new Error(`ffmpeg composite failed:\n${compResult.stderr?.slice(-500)}`)
+    throw new Error(`ffmpeg composite failed:\n${ffmpegErrorTail(compResult.stderr)}`)
   }
 
   // Cleanup temp files

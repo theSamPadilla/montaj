@@ -23,7 +23,7 @@ the downbeat; beats before the downbeat are a pickup.
 import argparse, array, json, math, operator, os, subprocess, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, ffmpeg_bin, ffprobe_value
+from common import ffmpeg_error_tail, fail, require_file, ffmpeg_bin, ffprobe_value
 
 METHOD = "bandflux-autocorr-v1"
 SR = 22050
@@ -63,7 +63,7 @@ def decode_bands(path, timeout=600):
     except subprocess.TimeoutExpired:
         fail("timeout", f"ffmpeg decode timed out after {timeout}s: {path}")
     if r.returncode != 0:
-        fail("unexpected_error", f"ffmpeg decode failed: {r.stderr.decode(errors='replace')[:4000]}")
+        fail("unexpected_error", f"ffmpeg decode failed: {ffmpeg_error_tail(r.stderr)}")
     a = array.array("f")
     raw = r.stdout
     a.frombytes(raw[: len(raw) - len(raw) % (4 * BANDS)])

@@ -6,7 +6,7 @@ import json, os, subprocess, sys, argparse
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, ffmpeg_bin, ffprobe_bin
+from common import ffmpeg_error_tail, fail, require_file, check_output, ffmpeg_bin, ffprobe_bin
 
 
 STEM_NAMES = ["vocals", "drums", "bass", "other"]
@@ -33,7 +33,7 @@ def _decode(np, path, sr):
     r = subprocess.run([ffmpeg_bin(), "-v", "error", "-i", path, "-map", "0:a:0",
                         "-f", "f32le", "-ar", str(sr), *mix, "-"], capture_output=True)
     if r.returncode != 0:
-        fail("decode_failed", r.stderr.decode(errors="replace").strip()[-500:])
+        fail("decode_failed", ffmpeg_error_tail(r.stderr))
     return np.frombuffer(r.stdout, "<f4").reshape(-1, 2).T.copy()
 
 
@@ -44,7 +44,7 @@ def _encode(np, samples, sr, out_path):
                         "-ar", str(sr), "-i", "-", "-c:a", "pcm_f32le", out_path],
                        input=data, capture_output=True)
     if r.returncode != 0:
-        fail("encode_failed", r.stderr.decode(errors="replace").strip()[-500:])
+        fail("encode_failed", ffmpeg_error_tail(r.stderr))
 
 
 def separate(audio_path, stems_requested, model_name, out_dir):

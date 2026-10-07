@@ -16,6 +16,7 @@ import { mkdirSync, writeFileSync, rmSync, renameSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { randomBytes } from 'crypto'
 import { FFMPEG } from './ffmpeg-bin.js'
+import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { planSegments, groupShortSegments, MIN_SEGMENT_FRAMES } from './segment-plan.js'
 import { markCards } from './cover-probe.js'
 import { encodeSegmentGroup, buildVividLutChain, hasLut3d, twoStageSeek } from './encode-segment.js'
@@ -314,7 +315,7 @@ export function embedThumbnail(outputPath, colorSpace, opts = {}) {
     extract = extractAt(0)
   }
   if (extract.status !== 0) {
-    clog(`thumbnail extract failed (skipping): ${(extract.stderr || '').trim().slice(-300)}`)
+    clog(`thumbnail extract failed (skipping): ${ffmpegErrorTail(extract.stderr, 3)}`)
     rmSync(tmpJpg, { force: true })
     return
   }
@@ -336,7 +337,7 @@ export function embedThumbnail(outputPath, colorSpace, opts = {}) {
 
   rmSync(tmpJpg, { force: true })
   if (mux.status !== 0) {
-    clog(`thumbnail mux failed (skipping): ${(mux.stderr || '').trim().slice(-300)}`)
+    clog(`thumbnail mux failed (skipping): ${ffmpegErrorTail(mux.stderr, 3)}`)
     rmSync(tmpMp4, { force: true })
     return
   }
@@ -389,7 +390,7 @@ function concatSegments(segments, outputPath) {
   rmSync(listFile, { force: true })
   if (result.status !== 0) {
     rmSync(tmpPath, { force: true })
-    throw new Error(`ffmpeg concat failed:\n${result.stderr}`)
+    throw new Error(`ffmpeg concat failed:\n${ffmpegErrorTail(result.stderr)}`)
   }
   renameSync(tmpPath, outputPath)
 }

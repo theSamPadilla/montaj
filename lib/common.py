@@ -40,12 +40,31 @@ def check_output(path: str):
         fail("empty_output", f"Output file is empty: {path}")
 
 
+_FFMPEG_BANNER = re.compile(
+    r"^(ffmpeg version|ffprobe version|\s*built with|\s*configuration:|\s*lib\w+\s+\d+\.\s*\d+\.\s*\d+)"
+)
+
+
+def ffmpeg_error_tail(stderr, lines: int = 10) -> str:
+    """The last `lines` non-empty lines of ffmpeg's stderr, banner dropped.
+
+    ffmpeg's stderr opens with a ~2,000-character version/configuration banner
+    and puts the real reason last. Wrapping the whole thing (or a short
+    character slice of it) into an error either loses the reason to a cap that
+    keeps the head, or cuts it off the tail.
+    """
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    kept = [l for l in (stderr or "").splitlines() if l.strip() and not _FFMPEG_BANNER.match(l)]
+    return "\n".join(kept[-lines:])
+
+
 def run(cmd: list[str], timeout: int = 300, check: bool = True, cwd: str = None) -> subprocess.CompletedProcess:
     """Run a command without a shell, capture output. ``cwd`` defaults to the
     caller's own (unchanged)."""
     r = subprocess.run(cmd, shell=False, capture_output=True, text=True, timeout=timeout, cwd=cwd)
     if check and r.returncode != 0:
-        fail("unexpected_error", f"Command failed: {' '.join(cmd)}\n{r.stderr[:4000]}")
+        fail("unexpected_error", f"Command failed: {' '.join(cmd)}\n{ffmpeg_error_tail(r.stderr, 20)}")
     return r
 
 

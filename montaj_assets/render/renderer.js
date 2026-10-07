@@ -14,6 +14,7 @@ import { tmpdir, homedir } from 'os'
 import { randomBytes } from 'crypto'
 import os from 'os'
 import { FFMPEG } from './ffmpeg-bin.js'
+import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { adaptiveChunkSize, workerCap } from './chunk-plan.js'
 import { toFileHref } from './file-url.js'
 import { subframeTimes, motionBlurFilter } from './motion-blur.js'
@@ -419,7 +420,7 @@ function spawnAsync(cmd, args, errorPrefix) {
     let stderr = ''
     proc.stderr.on('data', d => { stderr += d })
     proc.on('close', code => {
-      if (code !== 0) reject(new Error(`${errorPrefix}:\n${stderr}`))
+      if (code !== 0) reject(new Error(`${errorPrefix}:\n${ffmpegErrorTail(stderr)}`))
       else resolve()
     })
     proc.on('error', reject)
@@ -450,7 +451,7 @@ function concatChunks(chunkPaths, outputPath) {
   ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
 
   if (result.status !== 0) {
-    throw new Error(`ffmpeg chunk concat failed:\n${result.stderr}`)
+    throw new Error(`ffmpeg chunk concat failed:\n${ffmpegErrorTail(result.stderr)}`)
   }
 
   for (const p of chunkPaths) rmSync(p, { force: true })

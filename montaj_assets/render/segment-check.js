@@ -14,6 +14,7 @@
  *     segment that differs is either a concat error or a silently wrong film.
  */
 import { spawnSync } from 'child_process'
+import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { basename } from 'path'
 import { FFPROBE } from './ffmpeg-bin.js'
 
@@ -26,7 +27,7 @@ export function probeSegmentStreams(file) {
       + 'color_transfer,color_primaries,r_frame_rate,sample_rate,channels,sample_fmt,nb_read_packets',
     '-of', 'json', file], { encoding: 'utf8', timeout: 60_000 })
   if (r.status !== 0) {
-    throw new Error(`cannot read segment ${basename(file)}: ${(r.stderr || r.error?.message || '').trim().slice(-300)}`)
+    throw new Error(`cannot read segment ${basename(file)}: ${(ffmpegErrorTail(r.stderr) || r.error?.message || '')}`)
   }
   return JSON.parse(r.stdout).streams ?? []
 }

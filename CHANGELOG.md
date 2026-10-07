@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (render): an ffmpeg failure now carries ffmpeg's last lines, not its version banner.** The audio mix, the loudness pass, concat, segment encode, SDR derive, frame sampling and the Python normalize/proxy/voiceover/beat/stem/filmstrip steps wrapped ffmpeg's whole stderr (banner first, ~2,000 characters) or a short character slice of it, so a cap that keeps the head showed the banner and lost the real line (`Error opening input file ... No such file or directory`), and normalize's 500-character tail cut off "height not divisible by 2". One helper per language (`ffmpegErrorTail` in `montaj_assets/render/ffmpeg-error.js`, `ffmpeg_error_tail` in `lib/common.py`) drops the banner and keeps the last 10 non-empty lines.
+
 ## v5.24.12
 
 - **Fixed (render tests): `windows-argv-cap.test.mjs` is green again; the render itself did not change.** Since 5.20.5 every segment encode is followed by `segment-check.js`'s ffprobe probe, which reads JSON. The test pointed ffprobe at its ffmpeg stub, which printed nothing, so every encode that exited 0 threw `Unexpected end of JSON input` (the eased-zoom leaf test and its 6 checks, and the two-concurrent-encodes test). ffprobe now has its own stub answering one video stream with frames. The source scan also read the short-part join's `-filter_complex` (5.20.5) as inline, but both encodes in `encode-segment.js` go through `runFfmpeg`, which hands every graph to `externalizeFilterGraph`. The scan now counts a `runFfmpeg` call as a route, and a new leaf test proves the join's graph reaches ffmpeg as a file and is removed. (`montaj_assets/render/test/windows-argv-cap.test.mjs`)

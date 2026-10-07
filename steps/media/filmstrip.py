@@ -20,7 +20,7 @@ nb_frames is always set explicitly to the actual chunk size.
 import json, math, os, sys, argparse, shutil, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, run, check_output, get_duration, ffmpeg_bin
+from common import ffmpeg_error_tail, fail, require_file, run, check_output, get_duration, ffmpeg_bin
 
 
 # How far back to retry when a seek lands past the last decodable frame.
@@ -54,7 +54,7 @@ def extract_tile(src: str, t: float, dest: str, width: int, timeout: int):
         r = attempt(t - back)
     if r.returncode == 0 and ok():
         return
-    fail("unexpected_error", f"Could not extract a frame at {t:.3f}s from {src}\n{r.stderr[:4000]}")
+    fail("unexpected_error", f"Could not extract a frame at {t:.3f}s from {src}\n{ffmpeg_error_tail(r.stderr)}")
 
 
 def tile_sheet(work: str, count: int, cols: int, dest: str, timeout: int):

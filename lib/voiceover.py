@@ -19,7 +19,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
-from common import ffmpeg_bin, ffprobe_bin, fail, run
+from common import ffmpeg_bin, ffmpeg_error_tail, ffprobe_bin, fail, run
 
 
 def _has_audio(path: str) -> bool:
@@ -92,7 +92,7 @@ def concat_takes(paths: list, out_path: str) -> str:
         # Last few lines, not last N characters: ffmpeg's stderr opens with
         # stream dumps, so a character slice reliably cuts mid-word and hides
         # the actual error at the bottom.
-        tail = "\n".join((result.stderr or "").strip().splitlines()[-3:])
+        tail = ffmpeg_error_tail(result.stderr, 3)
         fail("ffmpeg_error", f"Voiceover concat failed: {tail[-500:]}")
 
     return out_path
