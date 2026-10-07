@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.24.17
+
 - **Fixed (render, sample_overlay, sample_frame): Google Fonts arrive in any shape, and a family that does not load is a warning, never a failed step.** An agent passed sample_overlay `["DM+Serif+Display", "DM+Sans:wght@700"]` as one string; it was split on commas, the brackets and quotes went into the stylesheet URL, Google answered 400 with an HTML page, and the refused stylesheet failed the step. Now:
   - `google-fonts.js` reads a list, a JSON-array string or a comma list (a comma inside a spec, `ital,wght@0,400;1,700`, does not split it), trims and de-quotes each family, writes spaces as `+`, and drops an entry that cannot be a Google family, naming it on stderr. Every renderer cleans its `googleFonts` through it: sample_overlay, sample_frame's overlays, render and export, and carousels.
   - Each family gets its own stylesheet `<link>`, so a family Google refuses fails alone instead of taking the others with it.
