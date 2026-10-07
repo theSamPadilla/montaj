@@ -43,6 +43,9 @@ from lib.project_tracks import normalize_tracks, track_items
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from lib.youtube import classify_error, parse_printed_path, parse_youtube_url, ytdlp_argv
 from project.init import _copy_into_workspace
+from serve.save_media import (
+    apply_borrowed_media, copy_borrowed_media, forget_pending, pending_media, plan_borrowed_media, retry_later,
+)
 from serve.sse import SSEBroadcaster, sse_stream
 
 from lib.common import SAFE_NAME as _SAFE_NAME, DEFAULT_WHISPER_MODEL, ffmpeg_bin, ffprobe_bin, node_child_env, whisper_model_missing
@@ -527,12 +530,35 @@ def _parse_clip_urls(raw, clips, remote_clips) -> dict | None:
     return parsed
 
 
+_REPLACE_TRIES = 5
+_REPLACE_PAUSE_SECONDS = 0.05
+
+
 def _write_project_json(project_path: Path, project: dict) -> str:
-    """tmp + os.replace, as `_apply_project_edits`. Returns the text written."""
+    """tmp + os.replace, as `_apply_project_edits`, under a temp name of its
+    own (pid + random), so two writers at once, in serve or in another process
+    (the CLI render's colour heal writes `project.json.tmp`), never share one.
+    A replace refused with PermissionError (Windows: an antivirus or the
+    indexer holding project.json for a moment) is tried again a few times,
+    50 ms apart, before the write fails. Returns the text written."""
     text = json.dumps(project, indent=2)
-    tmp = str(project_path) + ".tmp"
-    Path(tmp).write_text(text)
-    os.replace(tmp, project_path)
+    tmp = f"{project_path}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        Path(tmp).write_text(text)
+        for attempt in range(_REPLACE_TRIES):
+            try:
+                os.replace(tmp, project_path)
+                break
+            except PermissionError:
+                if attempt == _REPLACE_TRIES - 1:
+                    raise
+                time.sleep(_REPLACE_PAUSE_SECONDS)   # on the loop, but at most 0.2 s and only then
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return text
 
 
@@ -3279,6 +3305,168 @@ async def _queue_previews_for_changed_items(
         print(f"[montaj] save_project: could not queue previews for {project_id}: {e}")
 
 
+_SAVE_MEDIA_KEYS = ("tracks", "sources", "assets", "audio")
+_SAVE_REPORT_KEYS = ("copied", "warnings")
+"""The answer's own fields (§126). Dropped from a body before the merge, so an
+editor or agent that saves an answer back never stores them."""
+_SAVE_COPY_WAIT_SECONDS = 30.0
+"""How long a save waits for the patch of its copies of borrowed media (§126)
+before it answers without them. The copy goes on, and its own completion runs
+the patch whenever it finishes, also after the request went away."""
+_save_copy_tasks: set = set()
+"""Every copy a save started, and every late patch's follow-ups, kept until
+they finish (a save may stop waiting, or its request may go away)."""
+
+
+def _plan_save_media(
+    project_id: str, existing: dict, merged: dict, project_dir: Path, carries_media: bool,
+) -> "tuple[dict, dict]":
+    """(`plan_borrowed_media`'s `{key: src}`, the project's earlier failed
+    copies it looked at again, `{key: src}`). Nothing when the save carries no
+    media key and the project has no failed copy to try again, or when the
+    check fails, the workspace's own lookup included (the save never fails
+    over it)."""
+    try:
+        pending = pending_media(project_dir)
+        if not carries_media and not pending:
+            return {}, {}
+        return plan_borrowed_media(existing, merged, project_dir, resolve_workspace(), pending), pending
+    except Exception as e:
+        print(f"[montaj] save_project: could not check borrowed media for {project_id}: {e}")
+        return {}, {}
+
+
+def _patch_copied_media(
+    project_path: Path, previous: dict, made: dict, also=(),
+) -> "tuple[dict, str, list] | None":
+    """The patch (§126): re-read project.json (in the current tracks shape,
+    whatever another writer left), point each entry that is new or changed
+    against `previous` (the project before the save), or holds a file of
+    `also` (tried again by this save), and still holds a copied file's path at
+    its copy, and write. No await between the read and the write, as
+    `_apply_project_edits`, and the save's body is never merged again, so a
+    write that landed during the copy (an ingest, another save) is kept. None
+    when nothing is left to swap or the project can't be read."""
+    try:
+        project = normalize_tracks(json.loads(project_path.read_text()))
+    except (OSError, ValueError):
+        return None
+    copied = apply_borrowed_media(previous, project, made, also)
+    if not copied:
+        return None
+    return project, _write_project_json(project_path, project), copied
+
+
+def _finish_save_copy(
+    project_id: str, project_dir: Path, previous: dict, wanted: dict, also, task: "asyncio.Future",
+    broadcaster: "SSEBroadcaster",
+) -> "tuple[dict | None, dict]":
+    """The copy's completion, on the event loop, once: take its result, run
+    the patch, announce it like any write so an open editor picks the copies
+    up, and keep what failed for the next save to try again. Returns (the
+    project as patched, or None when nothing was swapped; the report)."""
+    if task.cancelled() or task.exception() is not None:
+        why = "the copy was cancelled" if task.cancelled() else task.exception()
+        print(f"[montaj] save_project: could not copy borrowed media for {project_id}: {why}")
+        made, warnings = {}, [
+            f"Not copied into the project: {src} ({why}), so the project still depends on it."
+            for src in wanted.values()
+        ]
+        retry_later(project_dir, wanted)
+    else:
+        made, warnings = task.result()
+    patched, report = None, {}
+    if made:
+        try:
+            result = _patch_copied_media(project_dir / "project.json", previous, made, also)
+        except Exception as e:
+            print(f"[montaj] save_project: could not save the copied paths for {project_id}: {e}")
+            result = None
+            failed = {key: src for key, src in wanted.items() if key in made}
+            warnings = warnings + [
+                f"Copied into the project but not saved: {src} ({e}), so the project still depends on it."
+                for src in failed.values()
+            ]
+            retry_later(project_dir, failed)
+        if result is not None:
+            patched, text, report["copied"] = result
+            broadcaster.publish(project_id, _sse_data_frame(text))
+    if warnings:
+        report["warnings"] = warnings
+    if report:
+        print(f"[montaj] save_project {project_id}: copied {len(report.get('copied', []))} borrowed "
+              f"file(s), {len(warnings)} left in place")
+    return patched, report
+
+
+def _late_save_follow_ups(
+    project_id: str, project_dir: Path, previous: dict, patched: dict, broadcaster: "SSEBroadcaster",
+) -> None:
+    """What `save_project` does after an in-time patch (queue previews for the
+    items it repointed, probe their dims), for a patch that came after the
+    save answered: a preview queued for the borrowed path would never land,
+    since `_apply_project_edits` matches an item by id AND src. Detached."""
+    async def run():
+        try:
+            await _queue_previews_for_changed_items(project_id, project_dir, previous, patched, broadcaster)
+            await ensure_source_dims(project_id, project_dir, patched, broadcaster)
+        except Exception as e:
+            print(f"[montaj] save_project: follow-ups of a late copy failed for {project_id}: {e}")
+
+    task = asyncio.ensure_future(run())
+    _save_copy_tasks.add(task)
+    task.add_done_callback(_save_copy_tasks.discard)
+
+
+async def _copy_and_patch_media(
+    project_id: str, project_dir: Path, previous: dict, wanted: dict, also, broadcaster: "SSEBroadcaster",
+    follow_ups: bool,
+) -> "tuple[dict | None, dict]":
+    """After the save's own write: copy `wanted` into the project off the
+    event loop, with no lock. The copy's completion runs the patch
+    (`_finish_save_copy`) on the loop, exactly once, whenever it finishes,
+    and the save waits at most `_SAVE_COPY_WAIT_SECONDS` for that same patch.
+    One that comes later (past the wait, or after the request went away) is
+    saved and announced all the same, and then runs the save's follow-ups on
+    the patched project when `follow_ups`. Returns (the project as patched,
+    or None when nothing was swapped in time; the report for the answer).
+    Never raises over the copy: the save already stands."""
+    outcome = asyncio.get_running_loop().create_future()
+    late = False
+
+    def finished(task):
+        try:
+            result = _finish_save_copy(project_id, project_dir, previous, wanted, also, task, broadcaster)
+        except Exception as e:
+            print(f"[montaj] save_project: could not finish copying borrowed media for {project_id}: {e}")
+            result = (None, {"warnings": [
+                f"Not copied into the project: {src} ({e}), so the project still depends on it."
+                for src in wanted.values()
+            ]})
+        outcome.set_result(result)
+        if late and follow_ups and result[0] is not None:
+            _late_save_follow_ups(project_id, project_dir, previous, result[0], broadcaster)
+
+    task = asyncio.ensure_future(asyncio.to_thread(copy_borrowed_media, wanted, project_dir))
+    _save_copy_tasks.add(task)
+    task.add_done_callback(_save_copy_tasks.discard)
+    task.add_done_callback(finished)   # before any await: the patch runs however this ends
+    try:
+        return await asyncio.wait_for(asyncio.shield(outcome), _SAVE_COPY_WAIT_SECONDS)
+    except asyncio.TimeoutError:
+        if outcome.done():
+            return outcome.result()
+        late = True
+        return None, {"warnings": [
+            f"Still copying into the project after {_SAVE_COPY_WAIT_SECONDS:g} s: {src}; saved with this "
+            "path for now, and with the copy's once it is done." for src in wanted.values()
+        ]}
+    except asyncio.CancelledError:
+        if not outcome.done():
+            late = True
+        raise
+
+
 @router.put("/projects/{project_id}")
 async def save_project(project_id: str, response: Response, body: dict = Body(...), request: Request = None, project_dir: Path = Depends(get_project_dir)):
     save_started = time.perf_counter()
@@ -3293,6 +3481,9 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
     # creation-time metadata (name, workflow, editingPrompt, projectType,
     # runCount, settings, profile, …) gets wiped. To explicitly clear a field,
     # callers must send it as null in the body.
+    # The answer's own fields (§126: `copied`, `warnings`) never reach
+    # project.json, even from a client that saves an answer back.
+    body = {key: value for key, value in body.items() if key not in _SAVE_REPORT_KEYS}
     merged = {**existing, **body}
     # The editor deletes its last marker/note by sending `markers: null` /
     # `notes: null` (an omitted key would keep the old list through the merge
@@ -3336,23 +3527,48 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
                 "message": "Project not saved. Fix these overlay items: " + "; ".join(overlay_errors),
                 "errors": overlay_errors,
             })
-    text = json.dumps(merged, indent=2)
-    project_path.write_text(text)
+    # §126: a new or changed media path into another project's folder, the
+    # import staging area or uploads is copied into this project, so deleting
+    # that other project (or sweeping the staging area) can never break this
+    # one (serve/save_media.py has the rule). Deciding takes stat calls only.
+    # The save itself is written as it always was, borrowed paths and all,
+    # with no await between its read and its write, and with nothing to copy
+    # (the usual save) that is all. Otherwise the copy runs after the write,
+    # off the loop and with no lock, and its own completion runs a second
+    # synchronous read-modify-write that swaps only the copied paths
+    # (`_patch_copied_media`), so a write that landed meanwhile (an ingest,
+    # another save) is kept. The answer waits up to _SAVE_COPY_WAIT_SECONDS
+    # for that patch; a later one still lands. A copy that failed before is
+    # tried again here (`pending`), whatever this save carries. Best-effort:
+    # the save never fails over it; the answer says what it did.
+    wanted, pending = _plan_save_media(
+        project_id, existing, merged, project_dir, any(key in body for key in _SAVE_MEDIA_KEYS))
+    text = _write_project_json(project_path, merged)
+    if pending:
+        forget_pending(project_dir, pending)   # tried again now; one that fails again is kept again
+    retrying = set(wanted) & set(pending)
     # Broadcast immediately — before the git commit so the UI update is instant.
     # Don't rely on the file watcher which can miss updates during SSE reconnect windows.
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     broadcaster.publish(project_id, _sse_data_frame(text))
+    # Only relevant when this body could have touched a video item's (id, src),
+    # or a copy tried again may repoint one.
+    follow_ups = "tracks" in body or "sources" in body or bool(retrying)
+    current, media_report = merged, {}
+    if wanted:
+        patched, media_report = await _copy_and_patch_media(
+            project_id, project_dir, existing, wanted, retrying, broadcaster, follow_ups)
+        current = patched if patched is not None else merged
     # Queue editor previews (proxies) for whatever video items this save just
     # added or repointed — an agent placing a clip via PUT (the only way a
     # clip's src reaches disk outside of import) must not leave it stuck on
     # "Preparing preview…" until someone clicks "Generate previews" by hand.
-    # Only relevant when this body could have touched a video item's (id, src).
-    if "tracks" in body or "sources" in body:
-        await _queue_previews_for_changed_items(project_id, project_dir, existing, merged, broadcaster)
+    if follow_ups:
+        await _queue_previews_for_changed_items(project_id, project_dir, existing, current, broadcaster)
     # Probe dims for clips this save wrote without them. Detached: the PUT never
     # waits on ffprobe; the heal's SSE frame updates an open editor.
-    if "tracks" in body or "sources" in body:
-        dims_task = asyncio.create_task(ensure_source_dims(project_id, project_dir, merged, broadcaster))
+    if follow_ups:
+        dims_task = asyncio.create_task(ensure_source_dims(project_id, project_dir, current, broadcaster))
         _source_dims_task_refs.add(dims_task)
         dims_task.add_done_callback(_source_dims_task_refs.discard)
     # Auto-commit to git on status transitions — run in a thread so it doesn't block the event loop
@@ -3374,7 +3590,8 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
         _active_renders.add(project_id)
         asyncio.create_task(_run_carousel_render_detached(project_id, project_dir))
     response.headers["Server-Timing"] = f"save;dur={int(round((time.perf_counter() - save_started) * 1000.0))}"
-    return merged
+    # The report rides on the answer only, never in project.json.
+    return {**current, **media_report} if media_report else current
 
 
 @router.get("/projects/{project_id}/versions")

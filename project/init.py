@@ -138,6 +138,60 @@ probe_video = _timed("probe", probe_video)
 normalize = _timed("probe", normalize)
 
 
+_CLONEFILE = []  # [fn or None] once looked up
+
+
+def _clonefile_fn():
+    """macOS clonefile(2) through ctypes, or None where there is none (another
+    OS, or a libc without it). Looked up once. Tests patch this to force the
+    plain-copy path."""
+    if not _CLONEFILE:
+        fn = None
+        if sys.platform == "darwin":
+            try:
+                import ctypes
+                fn = ctypes.CDLL(None, use_errno=True).clonefile
+                fn.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
+                fn.restype = ctypes.c_int
+            except (OSError, AttributeError):
+                fn = None
+        _CLONEFILE.append(fn)
+    return _CLONEFILE[0]
+
+
+def _try_clone(src: str, dest: str) -> bool:
+    """APFS-clone *src* to the new file *dest* (instant, no extra space until
+    either side changes; keeps mode and timestamps, like copy2). True when it
+    cloned; False where there is no clone (another OS) or it failed (not APFS,
+    another volume, ...), having made nothing. Never overwrites, and never
+    writes through a symlink: a *dest* entry that exists raises
+    FileExistsError."""
+    fn = _clonefile_fn()
+    if fn is None:
+        return False
+    if fn(os.fsencode(src), os.fsencode(dest), 0) == 0:
+        return True
+    import ctypes, errno
+    err = ctypes.get_errno()
+    if err == errno.EEXIST:
+        raise FileExistsError(err, os.strerror(err), dest)
+    return False
+
+
+def _free_name(dest_dir: str, name: str, prefix: str) -> str:
+    """*dest_dir*/*name*, or the first ``<base>_<prefix><N><ext>`` (N from 2)
+    nothing holds. Any entry counts as taken, a dangling symlink included
+    (``lexists``): copying to a dangling link's name would write through it."""
+    dest = os.path.join(dest_dir, name)
+    if os.path.lexists(dest):
+        base, ext = os.path.splitext(name)
+        counter = 2
+        while os.path.lexists(os.path.join(dest_dir, f"{base}_{prefix}{counter}{ext}")):
+            counter += 1
+        dest = os.path.join(dest_dir, f"{base}_{prefix}{counter}{ext}")
+    return dest
+
+
 def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = False) -> str:
     """Copy (or symlink) *src* into *dest_dir*, avoiding name collisions with a numeric suffix.
 
@@ -156,12 +210,7 @@ def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = Fals
     dest = os.path.join(dest_dir, name)
     if os.path.abspath(src) == os.path.abspath(dest):
         return dest  # already in workspace
-    if os.path.exists(dest):
-        base, ext = os.path.splitext(name)
-        counter = 2
-        while os.path.exists(os.path.join(dest_dir, f"{base}_{prefix}{counter}{ext}")):
-            counter += 1
-        dest = os.path.join(dest_dir, f"{base}_{prefix}{counter}{ext}")
+    dest = _free_name(dest_dir, name, prefix)
     if link:
         try:
             os.symlink(os.path.abspath(src), dest)
