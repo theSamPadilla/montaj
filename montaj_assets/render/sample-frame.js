@@ -10,7 +10,9 @@
  *
  * CLI:
  *   node sample-frame.js --mode overlay --component <path> [--frame N] [--fps N]
- *     [--width W] [--height H] [--props '{...}'] [--google-fonts font1,font2]
+ *     [--width W] [--height H] [--props '{...}'] [--google-fonts font1,font2]...
+ *   --google-fonts may repeat, and each value may be a comma list or a JSON
+ *   array; google-fonts.js reads them all (§140).
  *     [--measure] --out <path>
  *
  *   node sample-frame.js --mode frame --project <path> --at <seconds> --out <path>
@@ -30,6 +32,7 @@ import { createHash } from 'crypto'
 
 import { bundleComponent, cleanupBundle, resolveFilePath } from './bundle.js'
 import { overlayPageLaunchOptions, installPageGuard, prefetchPropsUrls } from './page-guard.js'
+import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
 import { isMain as isMainModule } from './is-main.js'
 import { toFileHref, propFilePath } from './file-url.js'
 import { pMap } from './p-map.js'
@@ -299,7 +302,7 @@ if (isMain) {
     if (a === '--width')        { widthArg      = parseInt(argv[++i], 10); continue }
     if (a === '--height')       { heightArg     = parseInt(argv[++i], 10); continue }
     if (a === '--props')        { try { propsArg = JSON.parse(argv[++i]) } catch { fail('invalid_props', `--props is not valid JSON`) }; continue }
-    if (a === '--google-fonts') { googleFontsArg = argv[++i].split(',').filter(Boolean); continue }
+    if (a === '--google-fonts') { googleFontsArg.push(argv[++i]); continue }
     if (a === '--measure')      { measureArg    = true; continue }
     if (a === '--project')      { projectArg    = argv[++i]; continue }
     if (a === '--at')           { atArg         = parseFloat(argv[++i]); continue }
@@ -336,7 +339,7 @@ if (isMain) {
       outPath: resolve(outArg),
     }).then(result => {
       if (measureArg) {
-        process.stdout.write(JSON.stringify({ pngPath: result.pngPath, measurements: result.measurements }) + '\n')
+        process.stdout.write(JSON.stringify({ pngPath: result.pngPath, measurements: result.measurements, ...(result.warnings?.length ? { warnings: result.warnings } : {}) }) + '\n')
       } else {
         process.stdout.write(result.pngPath + '\n')
       }
@@ -468,6 +471,8 @@ export async function sampleOverlay({
   // may depend on things outside the cache key (the workspace, the network).
   // Nor is one captured with an image still loading: it may be missing it.
   let degraded = false
+  // §140: what the caller should know although the sample succeeded.
+  const warnings = []
 
   try {
     // The props' http(s) URLs, fetched by Node before the page loads; the page
@@ -489,8 +494,16 @@ export async function sampleOverlay({
     // line for a request the guard blocked is not one: the guard logs the block,
     // and the overlay's own fallback is what the sample shows.
     const pageErrors = []
+    // §140: a family Google refuses, or a font the network cannot fetch, is a
+    // warning, not a page error: the overlay draws with its fallback font.
+    const fontFailures = new Set()
     page.on('pageerror', err => pageErrors.push(err.message))
-    page.on('console', msg => { if (msg.type() === 'error' && !guard.isBlockNoise(msg)) pageErrors.push(msg.text()) })
+    page.on('console', msg => {
+      if (msg.type() !== 'error' || guard.isBlockNoise(msg)) return
+      const font = fontLoadFailure({ type: msg.type(), text: msg.text(), url: msg.location()?.url })
+      if (!font) { pageErrors.push(msg.text()); return }
+      if (!fontFailures.has(font)) { fontFailures.add(font); log(fontFailureWarning([font])) }
+    })
 
     // networkidle0 is critical for font loading — fonts are not loaded until
     // React commits to DOM, and we need the woff2 fetches to complete before
@@ -679,7 +692,8 @@ export async function sampleOverlay({
     // wait) keeps this sample out of the cache, so a blank is never served again.
     const imagesLoading = imagesMissed.length > 0 || await page.evaluate(() =>
       [...document.images].some(img => img.loading !== 'lazy' && !img.complete))
-    degraded = guard.blocked.size > 0 || imagesLoading
+    degraded = guard.blocked.size > 0 || imagesLoading || fontFailures.size > 0
+    if (fontFailures.size > 0) warnings.push(fontFailureWarning(fontFailures))
 
     // Screenshot — transparent PNG (omitBackground: true matches the renderer)
     mkdirSync(dirname(outPath), { recursive: true })
@@ -714,9 +728,9 @@ export async function sampleOverlay({
   }
 
   if (measure) {
-    return { pngPath: outPath, measurements, inputs: recordedInputs, degraded }
+    return { pngPath: outPath, measurements, inputs: recordedInputs, degraded, warnings }
   }
-  return { pngPath: outPath, inputs: recordedInputs, degraded }
+  return { pngPath: outPath, inputs: recordedInputs, degraded, warnings }
 }
 
 // ---------------------------------------------------------------------------

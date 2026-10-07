@@ -56,7 +56,7 @@
       "name": "google-fonts",
       "type": "string",
       "required": false,
-      "description": "Comma-separated Google Fonts spec (e.g. 'Syne:wght@800')"
+      "description": "Google Fonts to load: a list such as [\"DM Serif Display\", \"DM Sans:wght@700\"], or a comma list. A family that does not load is a warning; the sample still renders with its fallback font."
     },
     {
       "name": "measure",

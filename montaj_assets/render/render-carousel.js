@@ -25,6 +25,7 @@ import { randomBytes }                                    from 'crypto'
 import { toFileHref, fontsCssHref, assetResolverSource } from './file-url.js'
 import { overlayEsbuildOptions, overlayReadBoundary }     from './overlay-build.js'
 import { overlayPageLaunchOptions, installPageGuard, prefetchPropsUrls, overlayPageCspMeta, pageNeedsGoogleFonts } from './page-guard.js'
+import { parseGoogleFonts } from './google-fonts.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -743,6 +744,13 @@ function reportVendoredFonts(vendoredKeys, fellThrough, faceIndex) {
 
 // `connectUrls`: the slide's props URLs, which the CSP's connect-src names.
 function generateHtml(width, height, googleFonts = [], fontsBaseDir = '', connectUrls = []) {
+  // §140: whatever shape and spelling the entries arrive in, they become clean
+  // specs here (google-fonts.js); one that cannot be a Google family is dropped
+  // and named, and each family gets its own <link> below, so a family Google
+  // refuses fails alone instead of taking the others with it.
+  const { fonts: cleanFonts, dropped: droppedFonts } = parseGoogleFonts(googleFonts)
+  if (droppedFonts.length) console.error(`[montaj] fonts: not a Google Fonts family, skipped: ${droppedFonts.map(f => JSON.stringify(f)).join(', ')}`)
+  googleFonts = cleanFonts
   // Each entry is appended verbatim as a `family=...` parameter on the Google
   // Fonts CSS2 API URL (entries are pre-formatted, e.g. "Archivo+Black" /
   // "Inter:wght@400;600;700;800" — spaces as '+'). We intentionally do NOT
@@ -789,7 +797,7 @@ function generateHtml(width, height, googleFonts = [], fontsBaseDir = '', connec
     fellThrough.length === 0 ? '' : `
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?${fellThrough.map(f => `family=${f}`).join('&')}&display=swap">`
+${fellThrough.map(f => `<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=${f}&display=swap">`).join('\n')}`
   const fontLinks =
     googleFonts.length === 0 ? ''
     : (vendored.length ? `

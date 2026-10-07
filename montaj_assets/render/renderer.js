@@ -19,6 +19,7 @@ import { adaptiveChunkSize, workerCap } from './chunk-plan.js'
 import { toFileHref } from './file-url.js'
 import { subframeTimes, motionBlurFilter } from './motion-blur.js'
 import { overlayPageLaunchOptions, installPageGuard } from './page-guard.js'
+import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
 
 const FFMPEG_TIMEOUT_MS  = 600_000
 
@@ -290,7 +291,17 @@ async function captureAndEncodeChunk(browser, job, frameDir) {
   // A request the page guard aborted is logged by the guard; Chromium's own
   // console line for it is not a page error.
   let isBlockNoise = () => false
-  page.on('console', msg => { if (msg.type() === 'error' && !isBlockNoise(msg)) pageErrors.push(msg.text()) })
+  // §140: a family Google refuses, or a font the network cannot fetch, is
+  // named in the render log. The render never failed on it (MEASURED: page
+  // errors here only explain a page that did not start), it drew the overlay
+  // in its fallback font without a word; now it says which family.
+  const fontFailures = new Set()
+  page.on('console', msg => {
+    if (msg.type() !== 'error' || isBlockNoise(msg)) return
+    const font = fontLoadFailure({ type: msg.type(), text: msg.text(), url: msg.location()?.url })
+    if (!font) { pageErrors.push(msg.text()); return }
+    if (!fontFailures.has(font)) { fontFailures.add(font); console.error(fontFailureWarning([font])) }
+  })
 
   // The page guard (page-guard.js) decides every request: a read outside the
   // boundary or a request off the machine is aborted, a props URL is served

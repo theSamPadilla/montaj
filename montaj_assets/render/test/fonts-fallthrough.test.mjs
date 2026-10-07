@@ -69,6 +69,8 @@ const FONTS_CSS_HREF_IMPORT =
   `import { fontsCssHref } from ${JSON.stringify(pathToFileURL(join(__dirname, '..', 'file-url.js')).href)}\n`
   // generateHtml's CSP comes from page-guard.js (PV54), likewise by absolute URL.
   + `import { overlayPageCspMeta } from ${JSON.stringify(pathToFileURL(join(__dirname, '..', 'page-guard.js')).href)}\n`
+  // generateHtml cleans its googleFonts with google-fonts.js (§140), likewise.
+  + `import { parseGoogleFonts } from ${JSON.stringify(pathToFileURL(join(__dirname, '..', 'google-fonts.js')).href)}\n`
 
 function extractCarouselHtml() {
   const src = readFileSync(join(__dirname, '..', 'render-carousel.js'), 'utf8')
@@ -200,7 +202,7 @@ describe('fonts: with no base, the page is byte-identical to the pre-fall-throug
     }
     // Likewise './overlay-build.js', which bundle.js has imported since PV49
     // (the shared esbuild options), and './page-guard.js' since PV54 (the CSP).
-    for (const sibling of ['overlay-build.js', 'page-guard.js']) {
+    for (const sibling of ['overlay-build.js', 'page-guard.js', 'google-fonts.js']) {
       if (!existsSync(join(HARNESS, sibling))) {
         symlinkSync(join(__dirname, '..', sibling), join(HARNESS, sibling))
       }
@@ -301,7 +303,9 @@ describe('fonts: families the vendored set does not declare fall through to Goog
       assert.doesNotMatch(html, /fonts\.css/)
       assert.match(html, /<link rel="preconnect" href="https:\/\/fonts\.googleapis\.com">/)
       assert.match(html, /<link rel="preconnect" href="https:\/\/fonts\.gstatic\.com" crossorigin>/)
-      assert.match(html, /css2\?family=Anton&family=Syne:wght@800&display=swap/)
+      // One <link> per family (§140), so a family Google refuses fails alone.
+      assert.match(html, /css2\?family=Anton&display=swap/)
+      assert.match(html, /css2\?family=Syne:wght@800&display=swap/)
       assert.equal(warnings.length, 2, 'the digest line, then the fall-through line')
       assert.match(warnings[0], /vendored set [0-9a-f]{8} \(2 families\)/)
       assert.match(warnings[1], /not in the vendored set/)
@@ -383,7 +387,8 @@ describe('fonts: a missing or malformed families.json', () => {
         // stylesheet whose coverage is unknown is worse than no stylesheet —
         // it is the thing that makes a fallback face look intentional.
         assert.doesNotMatch(html, /fonts\.css/)
-        assert.match(html, /css2\?family=Inter:wght@400&family=Anton&display=swap/)
+        assert.match(html, /css2\?family=Inter:wght@400&display=swap/)
+        assert.match(html, /css2\?family=Anton&display=swap/)
         assert.equal(warnings.length, 1)
         assert.match(warnings[0], /no readable families\.json/)
         assert.match(warnings[0], /treating NOTHING as vendored/)
@@ -550,35 +555,30 @@ describe('fonts: the vendored-set digest is identical across the renderers and t
 })
 
 // ---------------------------------------------------------------------------
-// The escaping asymmetry between the two renderers is PRESERVED
+// An entry that cannot be a family never reaches either page (§140)
 // ---------------------------------------------------------------------------
 //
-// bundle.js runs googleFonts entries through `escapeFontSpec` before
-// interpolating them into the href; render-carousel.js does not. That
-// asymmetry predates the fall-through and is not this change's to fix — but
-// the fall-through re-routes every entry through a new code path, so pin that
-// it survived the re-route rather than being quietly normalised away.
-describe('fonts: the fall-through path escapes exactly as the direct path did', () => {
+// bundle.js used to escape three characters of each entry and render-carousel.js
+// none, an asymmetry pinned here until §140. Both renderers now clean their
+// googleFonts first (google-fonts.js), and an entry that cannot be a Google
+// family is dropped and named, so neither page carries one, through the
+// fall-through path or the direct one, and the asymmetry is gone.
+describe('fonts: an entry that cannot be a family reaches neither renderer\'s page, base or no base', () => {
   const HOSTILE = ['A&evil=1', 'Anton" onload="window.__pwned=1']
+  const googleLinks = (h) => [...h.matchAll(/<link rel="stylesheet" href="(https:\/\/fonts\.googleapis[^"]*)">/g)].map(m => m[1])
 
-  test('bundle.js escapes a fallen-through entry the same way it escapes a direct one', () => {
-    const base = fontsBase(['Inter'])
-    const [viaBase] = capturingStderr(() => bundleHtml(1080, 1920, false, HOSTILE, base))
-    const [direct] = capturingStderr(() => bundleHtml(1080, 1920, false, HOSTILE, ''))
-    const tag = (h) => h.match(/<link rel="stylesheet" href="https:\/\/fonts\.googleapis[^]*?>/)[0]
-    assert.equal(tag(viaBase), tag(direct))
-    assert.match(viaBase, /family=A&amp;evil=1/)
-    assert.doesNotMatch(viaBase, /onload="window/)
-  })
-
-  test('render-carousel.js still does NOT escape — the existing asymmetry is preserved, not "fixed"', () => {
-    const base = fontsBase(['Inter'])
-    const [viaBase] = capturingStderr(() => carouselHtml(1080, 1350, HOSTILE, base))
-    const [direct] = capturingStderr(() => carouselHtml(1080, 1350, HOSTILE, ''))
-    const tag = (h) => h.match(/<link rel="stylesheet" href="https:\/\/fonts\.googleapis[^]*?>/)[0]
-    assert.equal(tag(viaBase), tag(direct))
-    assert.match(viaBase, /family=A&evil=1/)
-  })
+  for (const [label, render] of [['bundle.js', (f, b) => bundleHtml(1080, 1920, false, f, b)], ['render-carousel.js', (f, b) => carouselHtml(1080, 1350, f, b)]]) {
+    test(`${label}: the hostile entries are dropped and named; the family beside them still loads`, () => {
+      const base = fontsBase(['Inter'])
+      const [viaBase, warnings] = capturingStderr(() => render([...HOSTILE, 'Anton'], base))
+      const [direct] = capturingStderr(() => render([...HOSTILE, 'Anton'], ''))
+      for (const html of [viaBase, direct]) {
+        assert.deepEqual(googleLinks(html), ['https://fonts.googleapis.com/css2?family=Anton&display=swap'])
+        assert.doesNotMatch(html, /evil|onload/)
+      }
+      assert.ok(warnings.some(w => /not a Google Fonts family, skipped/.test(w) && w.includes('A&evil=1')), warnings.join('\n'))
+    })
+  }
 })
 
 // ---------------------------------------------------------------------------

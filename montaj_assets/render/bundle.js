@@ -17,6 +17,7 @@ import { randomBytes } from 'crypto'
 import { propFilePath, toFileHref, fontsCssHref } from './file-url.js'
 import { overlayEsbuildOptions, overlayInputsFromMetafile, overlayReadBoundary, resolveFilePath } from './overlay-build.js'
 import { overlayPageCspMeta, pageNeedsGoogleFonts } from './page-guard.js'
+import { parseGoogleFonts } from './google-fonts.js'
 
 // resolveFilePath lives in overlay-build.js now (the read boundary resolves
 // props paths with it too); re-exported for this file's existing importers.
@@ -759,6 +760,13 @@ function reportVendoredFonts(vendoredKeys, fellThrough, faceIndex) {
 // fetch() a URL its props name.
 export function generateHtml(width, height, opaque = false, googleFonts = [], fontsBaseDir = '', connectUrls = []) {
   const bgRule = opaque ? '' : 'background: transparent;'
+  // §140: whatever shape and spelling the entries arrive in, they become clean
+  // specs here (google-fonts.js); one that cannot be a Google family is dropped
+  // and named, and each family gets its own <link> below, so a family Google
+  // refuses fails alone instead of taking the others with it.
+  const { fonts: cleanFonts, dropped: droppedFonts } = parseGoogleFonts(googleFonts)
+  if (droppedFonts.length) console.error(`[montaj] fonts: not a Google Fonts family, skipped: ${droppedFonts.map(f => JSON.stringify(f)).join(', ')}`)
+  googleFonts = cleanFonts
   // Each entry in googleFonts is appended as a `family=...` parameter on the
   // Google Fonts CSS2 API URL. Callers format entries as "Anton" /
   // "Playfair+Display:ital@1" / "Roboto:wght@400;700" (spaces as +). We
@@ -815,7 +823,7 @@ export function generateHtml(width, height, opaque = false, googleFonts = [], fo
     fellThrough.length === 0 ? '' : `
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?${fellThrough.map(f => `family=${escapeFontSpec(f)}`).join('&')}&display=swap">`
+${fellThrough.map(f => `<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=${escapeFontSpec(f)}&display=swap">`).join('\n')}`
   const fontLinks =
     googleFonts.length === 0 ? ''
     : (vendored.length ? `

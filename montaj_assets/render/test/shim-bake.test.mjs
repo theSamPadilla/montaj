@@ -276,18 +276,13 @@ function stylesheetLinkTag(html) {
 }
 
 describe('generateHtml: googleFonts entries cannot break out of the href attribute', () => {
-  test('(l) an attribute-breakout entry introduces no unescaped double-quote inside the href value', () => {
-    // Baseline: exactly the two delimiting quotes of `rel="stylesheet"` plus
-    // the two of `href="...swap"` — four, whatever the font text is, as long
-    // as it carries no quote of its own.
-    const baselineQuotes = (stylesheetLinkTag(generateHtml(1080, 1920, false, ['Baseline'])).match(/"/g) ?? []).length
-
-    const tag = stylesheetLinkTag(generateHtml(1080, 1920, false, ['Anton" onload="window.__pwned=1']))
-    const quoteCount = (tag.match(/"/g) ?? []).length
-    // An unescaped fix regression would add the entry's own two raw quotes on
-    // top of the baseline count — asserting EQUAL, not just "some", pins that
-    // no unescaped `"` of any kind survived into the tag.
-    assert.equal(quoteCount, baselineQuotes, `expected only the delimiting quotes, got: ${tag}`)
+  // §140: an entry that cannot be a Google family is dropped before the page
+  // is written (google-fonts.js), so none of these reaches the href at all.
+  test('(l) an attribute-breakout entry is dropped: no quote of its own reaches the page, and its neighbour still links', () => {
+    const html = generateHtml(1080, 1920, false, ['Baseline', 'Anton" onload="window.__pwned=1'])
+    assert.doesNotMatch(html, /onload|__pwned/)
+    const tag = stylesheetLinkTag(html)
+    assert.equal(tag, '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baseline&display=swap">')
   })
 
   test('(l) a tag-injection entry cannot open a <script> element', () => {
@@ -295,10 +290,10 @@ describe('generateHtml: googleFonts entries cannot break out of the href attribu
     assert.doesNotMatch(html, /<script>alert/i)
   })
 
-  test('(l) a literal & is escaped so it cannot start a second, attacker-controlled query param', () => {
-    const html = generateHtml(1080, 1920, false, ['A&evil=1'])
-    assert.doesNotMatch(html, /family=A&evil=1/)
-    assert.match(html, /family=A&amp;evil=1/)
+  test('(l) an entry with a literal & is dropped, so it cannot start a second, attacker-controlled query param', () => {
+    const html = generateHtml(1080, 1920, false, ['A&evil=1', 'Anton'])
+    assert.doesNotMatch(html, /evil/)
+    assert.match(html, /family=Anton&display=swap/)
   })
 
   test('(l) a normal font spec with the literal + : @ ; Google requires passes through completely unchanged', () => {

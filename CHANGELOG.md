@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Fixed (render, sample_overlay, sample_frame): Google Fonts arrive in any shape, and a family that does not load is a warning, never a failed step.** An agent passed sample_overlay `["DM+Serif+Display", "DM+Sans:wght@700"]` as one string; it was split on commas, the brackets and quotes went into the stylesheet URL, Google answered 400 with an HTML page, and the refused stylesheet failed the step. Now:
+  - `google-fonts.js` reads a list, a JSON-array string or a comma list (a comma inside a spec, `ital,wght@0,400;1,700`, does not split it), trims and de-quotes each family, writes spaces as `+`, and drops an entry that cannot be a Google family, naming it on stderr. Every renderer cleans its `googleFonts` through it: sample_overlay, sample_frame's overlays, render and export, and carousels.
+  - Each family gets its own stylesheet `<link>`, so a family Google refuses fails alone instead of taking the others with it.
+  - A refused stylesheet or a font the network cannot fetch is logged as `[montaj] fonts: could not load …; the overlay used its fallback font.` In sample_overlay and sample_frame it used to fail the step; in render and export it never failed (measured) and the fallback font went unmentioned. A sample with one is not cached, and `--measure` output carries it in `warnings`.
+  - sample_overlay and `montaj sample overlay` take `--google-fonts` more than once (serve passes a list param as one flag per element; argparse kept only the last).
+  - An entry that cannot be a family no longer reaches either page, so render-carousel.js's unescaped interpolation of `googleFonts` is gone with it.
+
+  (`montaj_assets/render/google-fonts.js`, `bundle.js`, `render-carousel.js`, `sample-frame.js`, `renderer.js`, `steps/render/sample_overlay.py`, `steps/render/sample_overlay.json`, `cli/commands/sample.py`, `montaj_assets/render/test/google-fonts.test.mjs`, `test/fonts-fallthrough.test.mjs`, `test/shim-bake.test.mjs`, `tests/steps/test_sample_overlay_google_fonts.py`)
+
 ## v5.24.16
 
 - **Changed (init): a B-roll project no longer needs a voiceover.** `project/init.py` refused a `broll` workflow without `--voiceover-asset` (`missing_argument`); it now makes the project with no `voiceover` key, so a B-roll edit can be footage cut to a music track or to text on screen, or left silent. `--voiceover-asset` is still refused for any other project type. (`project/init.py`, `tests/test_init.py`)

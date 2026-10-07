@@ -34,7 +34,8 @@ def main():
     parser.add_argument("--width",        type=int, default=1080, help="Canvas width in pixels (default: 1080)")
     parser.add_argument("--height",       type=int, default=1920, help="Canvas height in pixels (default: 1920)")
     parser.add_argument("--props",        default="{}", help="Props JSON string (default: '{}')")
-    parser.add_argument("--google-fonts", default="",   help="Comma-separated Google Fonts spec (e.g. 'Syne:wght@800')")
+    parser.add_argument("--google-fonts", action="append", default=[],
+                        help="Google Fonts to load: a family or spec (e.g. 'Syne:wght@800'), a comma list, or a JSON array. Repeat the flag for more. A family that does not load is a warning; the sample still renders.")
     parser.add_argument("--measure",      action="store_true",
                         help="Return bounding-box / overflow measurements as JSON instead of a bare PNG path")
     parser.add_argument("--out",          required=True,  help="Output PNG path")
@@ -53,8 +54,9 @@ def main():
     ]
     if args.duration is not None:
         cmd += ["--duration", str(args.duration)]
-    if args.google_fonts:
-        cmd += ["--google-fonts", args.google_fonts]
+    # Every value as its own flag, untouched: sample-frame.js reads each one (§140).
+    for fonts in args.google_fonts:
+        cmd += ["--google-fonts", fonts]
     if args.measure:
         cmd.append("--measure")
 

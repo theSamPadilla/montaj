@@ -41,8 +41,8 @@ def register(subparsers):
                       help="Canvas height in pixels (default: 1920)")
     p_ov.add_argument("--props",        default="{}",
                       help="Props JSON string (default: '{}')")
-    p_ov.add_argument("--google-fonts", default="",
-                      help="Comma-separated Google Fonts spec (e.g. 'Syne:wght@800')")
+    p_ov.add_argument("--google-fonts", action="append", default=[],
+                      help="Google Fonts to load: a family or spec (e.g. 'Syne:wght@800'), a comma list, or a JSON array. Repeat the flag for more. A family that does not load is a warning; the sample still renders.")
     p_ov.add_argument("--measure",      action="store_true",
                       help="Return per-element bounding-box / overflow data as JSON")
     add_global_flags(p_ov)
@@ -94,8 +94,8 @@ def _handle_overlay(args):
     ]
     if args.duration is not None:
         cmd += ["--duration", str(args.duration)]
-    if args.google_fonts:
-        cmd += ["--google-fonts", args.google_fonts]
+    for fonts in args.google_fonts:
+        cmd += ["--google-fonts", fonts]
     if args.measure:
         cmd.append("--measure")
 
