@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url'
 const CAP = 32_767
 const WORK = mkdtempSync(join(tmpdir(), 'montaj-argv-cap-'))
 const STUB = join(WORK, 'ffmpeg-stub.cjs')
+const PROBE_STUB = join(WORK, 'ffprobe-stub.cjs')
 
 // On `-filters` it lists zscale and lut3d, so the live path takes the branch
 // `_dryRun` pins (both probes true). Otherwise it logs its argv and the content
@@ -48,10 +49,20 @@ process.exit(Number(process.env.WIN1B_STUB_EXIT || 0))
 `, { mode: 0o755 })
 chmodSync(STUB, 0o755)
 
+// §116: every segment encode is followed by segment-check.js's probe (5.20.5,
+// assertSegmentHasVideo), which reads ffprobe's JSON. Answered here with one
+// video stream that has frames; the encode stub above logs only ffmpeg calls.
+// Pointing ffprobe at the encode stub printed nothing, and JSON.parse('') threw
+// out of every encode that exited 0.
+writeFileSync(PROBE_STUB, `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({ streams: [{ index: 0, codec_type: 'video', codec_name: 'hevc', nb_read_packets: '150' }] }))
+`, { mode: 0o755 })
+chmodSync(PROBE_STUB, 0o755)
+
 process.env.MONTAJ_FFMPEG = STUB
-process.env.MONTAJ_FFPROBE = STUB
+process.env.MONTAJ_FFPROBE = PROBE_STUB
 const { FFMPEG } = await import('../ffmpeg-bin.js')
-const { encodeSegment } = await import('../encode-segment.js')
+const { encodeSegment, encodeSegmentGroup } = await import('../encode-segment.js')
 const { mixAudioIntoVideo, buildAudioTrackFilters, loudnessFilter } = await import('../mix-audio.js')
 // sample-frame.js fixes its cache dir from tmpdir() at import, so TMPDIR moves
 // inside WORK first. (The mix test below sets and restores its own TMPDIR.)
@@ -165,18 +176,27 @@ describe('no render source builds an inline -filter_complex spawn', () => {
   test('a source that builds a -filter_complex pair also calls externalizeFilterGraph', () => {
     // Callers keep building the inline pair (so _dryRun and the goldens pin the
     // graph) and hand it to the helper before the spawn. Every literal needs a
-    // call, so a second spawn in a file that already has one call still fails.
-    // filter-script.js itself is the helper and is excluded. Comments are
-    // stripped first. The leaf tests prove the calls are live.
+    // route, so a second spawn in a file that already has one still fails. A
+    // route is a direct externalizeFilterGraph call, or a call of
+    // encode-segment.js's runFfmpeg, which makes that call for every spawn
+    // (§116: its two encodes, the segment and the short-part join, share it, so
+    // counting only the helper's one call read the join as inline). Its own
+    // inner call is then not a route of its own. filter-script.js itself is the
+    // helper and is excluded. Comments are stripped first. The leaf tests prove
+    // the routes are live.
     const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1')
+    const count = (src, re) => (src.match(re) || []).length
     const hits = sources
       .filter((f) => f !== 'filter-script.js')
       .map((f) => {
         const src = strip(readFileSync(join(RENDER_DIR, f), 'utf8'))
-        return [f, (src.match(/['"]-filter_complex['"]/g) || []).length, (src.match(/\bexternalizeFilterGraph\(/g) || []).length]
+        const direct = count(src, /\bexternalizeFilterGraph\(/g)
+        const runner = /\bfunction runFfmpeg\([^)]*\)\s*\{[^]*?\bexternalizeFilterGraph\(/.test(src)
+        const runs = runner ? count(src, /\brunFfmpeg\(/g) - count(src, /\bfunction runFfmpeg\(/g) : 0
+        return [f, count(src, /['"]-filter_complex['"]/g), direct - (runner ? 1 : 0) + runs]
       })
-      .filter(([, literals, calls]) => literals > calls)
-      .map(([f, literals, calls]) => `${f}: ${literals} literal(s), ${calls} call(s)`)
+      .filter(([, literals, routes]) => literals > routes)
+      .map(([f, literals, routes]) => `${f}: ${literals} literal(s), ${routes} route(s)`)
     assert.deepEqual(hits, [], `inline -filter_complex with too few externalizeFilterGraph calls: ${hits.join('; ')}`)
   })
 })
@@ -291,6 +311,31 @@ describe('the script is removed on every way out', () => {
     assert.equal(paths.length, 2)
     assert.notEqual(paths[0], paths[1])
     for (const p of paths) assert.equal(existsSync(p), false)
+    assert.deepEqual(scriptsIn(dir), [])
+  })
+
+  // §116: the short-part join (757e846b, encodeSegmentGroup) is the second
+  // -filter_complex in encode-segment.js. It reaches ffmpeg through runFfmpeg,
+  // so by file like the segment's own graph.
+  test('a short-part group: each part and the join go by -/filter_complex, and every script is gone', async () => {
+    const dir = join(WORK, 'group.segments')
+    const outputPath = join(dir, 'seg-000.mp4')
+    const part = (start, end) => ({ ...segmentFor(join(WORK, 'photo.png')), start, end, colorSpace: 'sdr_bt709' })
+    const group = { start: 0, end: 0.1, parts: [part(0, 0.05), part(0.05, 0.1)] }
+    const dry = await encodeSegmentGroup(group, outputPath, { _dryRun: true })
+    const joinGraph = dry.args[dry.args.indexOf('-filter_complex') + 1]
+    const log = freshLog()
+    await encodeSegmentGroup(group, outputPath)
+    const calls = readLog(log)
+    assert.equal(calls.length, 3, `two parts and the join, got ${calls.length} call(s)`)
+    for (const c of calls) {
+      assert.ok(c.argv.includes('-/filter_complex'), 'no -/filter_complex in argv')
+      assert.ok(!c.argv.includes('-filter_complex'), '-filter_complex is still in argv')
+    }
+    const joined = calls[2]
+    assert.equal(joined.argv.at(-1), outputPath)
+    assert.equal(joined.scripts.find((x) => x.opt === '-/filter_complex')?.content, joinGraph)
+    for (const p of calls.flatMap((c) => c.scripts).map((x) => x.path)) assert.equal(existsSync(p), false)
     assert.deepEqual(scriptsIn(dir), [])
   })
 
