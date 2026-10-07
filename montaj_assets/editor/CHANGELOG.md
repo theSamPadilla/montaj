@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+- **Changed: carousel note pins are text chips.** A pin is an 18 px badge with its `label` (accent for `tone: 'self'`, amber for `'review'`) instead of a dot. `SlidePin` gains `text` and `active`; `CarouselEditor` gains `pinDisplay` (`'badge'` default, `'chip'` adds the note's first words, collapsing to the badge where pins crowd until hovered). The `active` pin shows its whole text, or a blinking caret while empty. Past x 0.6 a pin opens leftward. The armed note cursor is an arrow with a chip, crosshair as fallback. New export: `SlidePinDisplay`.
+
 ## 2.0.7
 
 - **Added: `EditorAdapter.canIsolateVoice`.** A host without stem separation sets it to `false`, and Audio polish hides Isolate voice. Omitted, it shows as before.

@@ -168,7 +168,7 @@ function isTypingTarget(t: EventTarget | null): boolean {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, notes, onProvideNotesApi, pins, onPinClick, pendingSurface = 'default' }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, pendingSurface = 'default' }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -728,7 +728,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 onExitCrop={() => setCropElementId(null)}
                 hiddenElementIds={hiddenElementIds}
               >
-                {canvasPins.length > 0 && <NotePinLayer pins={canvasPins} onPinClick={onPinClick} />}
+                {canvasPins.length > 0 && <NotePinLayer pins={canvasPins} pinDisplay={pinDisplay} onPinClick={onPinClick} />}
                 {armedSlideId === selectedSlide.id && <NoteArmLayer layerRef={armLayerRef} onPlace={placeArmedNote} />}
               </SlideCanvas>
             </div>

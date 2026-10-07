@@ -549,7 +549,9 @@ describe('CarouselEditor — N adds a note (PL70)', () => {
     const layer = armLayer()!
     expect(layer).not.toBeNull()
     expect(layer.closest('[data-interactive]')).not.toBeNull()
-    expect(layer.style.cursor).toBe('crosshair')
+    // An arrow with a chip, falling back to a crosshair (§143).
+    expect(layer.style.cursor).toContain('data:image/svg+xml')
+    expect(layer.style.cursor).toMatch(/,\s*crosshair$/)
 
     stubRect(layer)
     await act(async () => { fireEvent.click(layer, { clientX: 150, clientY: 150 }) })
@@ -955,6 +957,21 @@ describe('CarouselEditor — note pins (PL70)', () => {
     expect(onPinClick).toHaveBeenCalledWith('p1')
     expect(lastSelection()?.id).toBe('el-img')
     expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('draws badges by default and chips with pinDisplay="chip" (§143)', async () => {
+    const withText: SlidePin[] = [{ id: 'p1', slideId: 'slide-0', x: 0.25, y: 0.75, label: '1', text: 'Logo too small' }]
+    const { container, rerender } = render(
+      <CarouselEditor project={twoSlides()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} pins={withText} />,
+    )
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    const p1 = () => container.querySelector<HTMLElement>('[data-interactive] [data-pin-id="p1"]')!
+    expect(p1().dataset.pinForm).toBe('badge')
+    expect(p1().querySelector('[data-pin-text]')).toBeNull()
+
+    rerender(<CarouselEditor project={twoSlides()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} pins={withText} pinDisplay="chip" />)
+    expect(p1().dataset.pinForm).toBe('chip')
+    expect(p1().querySelector('[data-pin-text]')!.textContent).toBe('Logo too small')
   })
 
   it('counts each slide whole-slide pins on its thumbnail', async () => {

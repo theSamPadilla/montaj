@@ -669,9 +669,20 @@ export interface SlidePin {
   y?: number
   /** The pin's accessible name and tooltip. Absent: "Note". */
   label?: string
-  /** A host colour family, set as the pin's `data-tone`. */
+  /** A host colour family, set as the pin's `data-tone`. The badge is the
+   *  editor accent, or amber for `'review'`. */
   tone?: string
+  /** The note's text: a chip's first words, an active pin's whole text.
+   *  Absent: the pin shows its badge only. */
+  text?: string
+  /** The host's selected note. Shows its whole text in either display, and
+   *  a blinking caret while the text is empty. */
+  active?: boolean
 }
+
+/** How a carousel pin rests (`CarouselEditorProps.pinDisplay`): a badge with
+ *  its `label`, or a chip with the note's first words beside it. */
+export type SlidePinDisplay = 'badge' | 'chip'
 
 // ── Adapter ────────────────────────────────────────────────────────────────
 
@@ -1312,6 +1323,14 @@ export interface CarouselEditorProps<P extends Project = Project> {
    * layer and no thumbnail badges, the editor exactly as before.
    */
   pins?: readonly SlidePin[]
+
+  /**
+   * How `pins` rest on the canvas. `'badge'` (the default): a circle with the
+   * pin's `label`. `'chip'`: the badge with the note's first words (`text`),
+   * collapsing to the badge where pins crowd until hovered. Either way the
+   * `active` pin shows its whole text, and past x 0.6 a pin opens leftward.
+   */
+  pinDisplay?: SlidePinDisplay
 
   /**
    * A click on one of `pins`, by that pin's `id`. The click never selects,

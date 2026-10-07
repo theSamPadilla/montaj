@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (editor): carousel note pins are text chips.** A pin is an 18 px badge with its `label`, accent for `tone: 'self'`, amber for `'review'`. New `CarouselEditor` prop `pinDisplay` (`'badge'` default, or `'chip'`) adds the note's first words (`SlidePin.text`) in a dark pill, collapsing to the badge where pins crowd until hovered; the `active` pin shows its whole text (a caret while empty, blinking unless reduced motion is on); past x 0.6 a pin opens leftward. The note cursor is an arrow with a chip, crosshair as fallback. (`montaj_assets/editor/src/carousel/NoteLayers.tsx`, `CarouselEditor.tsx`, `types.ts`, `index.ts`, `__tests__/NoteLayers.test.tsx`, `__tests__/CarouselEditor.test.tsx`)
+
 ## v5.24.17
 
 - **Fixed (render, sample_overlay, sample_frame): Google Fonts arrive in any shape, and a family that does not load is a warning, never a failed step.** An agent passed sample_overlay `["DM+Serif+Display", "DM+Sans:wght@700"]` as one string; it was split on commas, the brackets and quotes went into the stylesheet URL, Google answered 400 with an HTML page, and the refused stylesheet failed the step. Now:

@@ -60,6 +60,7 @@ export type {
   NotesApi,
   SlideNotesApi,
   SlidePin,
+  SlidePinDisplay,
   EditorAdapter,
   EditorContext,
   EditorTheme,
