@@ -200,6 +200,26 @@ def _watcher_spelling(real: Path) -> str:
     return str(real)
 
 
+_ABS_PATH = re.compile(r"(?<![\w.@-])(?:[A-Za-z]:[\\/]|/)[^\s\"'`<>|*?]+")
+
+
+def _first_error_line(message: str, base: Path | None) -> str:
+    """esbuild's first line, absolute paths shortened: relative to `base` when
+    inside it, else the bare file name. Capped at 300 characters."""
+    line = next((ln.strip() for ln in (message or "").splitlines() if ln.strip()), "")
+
+    def _short(m: "re.Match[str]") -> str:
+        raw = m.group(0)
+        try:
+            if base is not None:
+                return Path(raw).relative_to(base).as_posix()
+        except ValueError:
+            pass
+        return re.split(r"[\\/]", raw.rstrip("\\/"))[-1]
+
+    return _ABS_PATH.sub(_short, line)[:300]
+
+
 @router.get("/overlays/bundle")
 async def bundle_overlay(path: str = Query(default=""), project: str = Query(default="")):
     """Bundle one overlay (and what it imports) for the editor preview.
@@ -217,6 +237,12 @@ async def bundle_overlay(path: str = Query(default=""), project: str = Query(def
     if not path:
         raise bad_request("bad_request", "path must be an absolute file path")
     entry = Path(path)
+    project_base: Path | None = None
+    if project:
+        try:
+            project_base = Path(os.path.normpath(get_project_dir(project)))
+        except Exception:
+            project_base = None
     if not entry.is_absolute():
         if not project:
             raise bad_request("bad_request", "path must be an absolute file path")
@@ -303,7 +329,11 @@ async def bundle_overlay(path: str = Query(default=""), project: str = Query(def
         m = _ESBUILD_LOC.match(message)
         if not m:
             _log.warning("overlay bundle build failed with no parseable location: %s", (message or stderr)[-500:])
-            raise HTTPException(422, detail={"error": "build_failed", "message": "build failed"})
+            raise HTTPException(422, detail={
+                "error": "build_failed",
+                "message": "build failed",
+                "firstError": _first_error_line(message or stderr, project_base),
+            })
         # esbuild echoes the offending token, so a syntax error in a file
         # outside the allowed roots would leak that file's text.
         real = Path(m.group(1)).resolve()

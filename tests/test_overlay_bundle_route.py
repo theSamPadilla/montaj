@@ -252,7 +252,29 @@ def test_exit_2_message_without_location_is_generic(env):
     r = _run_mocked(env, _FakeProc(rc=2, out=out))
     assert r.status_code == 422
     assert r.json()["detail"]["message"] == "build failed"
-    assert "hunter2" not in r.text
+    # esbuild's first line is deliberately in `firstError` now (§136); the
+    # message and the log-only stderr stay generic.
+    assert r.json()["detail"]["firstError"] == 'oops "hunter2-SECRET"'
+
+
+def test_exit_2_message_without_location_carries_first_error_paths_shortened(env):
+    _, _, ws = env
+    msg = f'Could not resolve "{ws}/ov/ov.jsx"\n  second line {ws}/x'
+    out = json.dumps({"ok": False, "error": "build_failed", "message": msg}).encode()
+    r = _run_mocked(env, _FakeProc(rc=2, out=out))
+    assert r.status_code == 422
+    d = r.json()["detail"]
+    assert d["error"] == "build_failed" and d["message"] == "build failed"
+    assert d["firstError"] == 'Could not resolve "ov.jsx"'
+    assert str(ws) not in r.text and "second line" not in r.text
+
+
+def test_first_error_is_project_relative_and_capped():
+    base = Path("/w/proj")
+    f = overlays_route._first_error_line
+    assert f('Could not resolve "/w/proj/ov/a.jsx" and "/etc/x/b.js"', base) == 'Could not resolve "ov/a.jsx" and "b.js"'
+    assert f("react/jsx-runtime missing", None) == "react/jsx-runtime missing"
+    assert len(f("x" * 1000, None)) == 300
 
 
 def test_exit_2_outside_roots_is_403_without_esbuild_text(env):

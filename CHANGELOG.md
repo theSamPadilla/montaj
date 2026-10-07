@@ -11,6 +11,8 @@
 
   (`montaj_assets/render/google-fonts.js`, `bundle.js`, `render-carousel.js`, `sample-frame.js`, `renderer.js`, `steps/render/sample_overlay.py`, `steps/render/sample_overlay.json`, `cli/commands/sample.py`, `montaj_assets/render/test/google-fonts.test.mjs`, `test/fonts-fallthrough.test.mjs`, `test/shim-bake.test.mjs`, `tests/steps/test_sample_overlay_google_fonts.py`)
 
+- **Changed (serve): an overlay preview build failure with no location answers 422 with `firstError`, esbuild's first error line with paths shortened** (project-relative, else the bare file name; 300 characters at most), next to the unchanged `error` and `message: "build failed"`, so the editor and the agent can say what failed. (`serve/routes/overlays.py`, `tests/test_overlay_bundle_route.py`)
+
 - **Fixed (render): the editor's overlay preview build no longer uses the app's own folder as esbuild's working dir.** `preview-bundle.js` used the process cwd (the app bundle's folder under serve); export and `sample_overlay` keep it in render's own folder and were never affected. Inferred cause of one user's "overlay error: build failed" on every overlay in the preview only. (`montaj_assets/render/preview-bundle.js`, `montaj_assets/render/test/preview-bundle.test.mjs`)
 
 ## v5.24.16
