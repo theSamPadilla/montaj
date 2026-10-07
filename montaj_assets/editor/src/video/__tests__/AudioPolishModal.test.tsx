@@ -108,9 +108,11 @@ function renderModal(opts: {
   project?: Project
   handler?: Handler
   selectionIds?: string[]
+  canIsolateVoice?: boolean
 } = {}): Harness {
   const baseline = opts.project ?? makeProject()
   const spy = makeAdapter(opts.handler)
+  if (opts.canIsolateVoice !== undefined) spy.adapter.canIsolateVoice = opts.canIsolateVoice
   const drafts: Project[] = []
   // The modal always pushes `() => draft`, so the argument it is applied to is
   // irrelevant; passing the baseline mirrors what useProjectSync would do.
@@ -287,6 +289,21 @@ describe('AudioPolishModal — analysis', () => {
     expect(h.spy.calls.filter(c => c.piece === 'silence-check')).toHaveLength(1)
     expect(h.spy.calls.filter(c => c.piece === 'voice')).toHaveLength(1)
     expect(h.spy.calls.filter(c => c.piece === 'silence')).toHaveLength(2)
+  })
+})
+
+describe('AudioPolishModal — a host without stem separation', () => {
+  it('never offers Isolate voice when the host sets canIsolateVoice to false, and keeps the other three', () => {
+    renderModal({ canIsolateVoice: false })
+    expect(screen.queryByRole('checkbox', { name: 'Isolate voice' })).toBeNull()
+    for (const label of ['Remove silence', 'Remove filler words', 'Match loudness']) {
+      expect(screen.getByRole('checkbox', { name: label })).toBeTruthy()
+    }
+  })
+
+  it('offers Isolate voice when the host leaves canIsolateVoice out', () => {
+    renderModal()
+    expect(screen.getByRole('checkbox', { name: 'Isolate voice' })).toBeTruthy()
   })
 })
 

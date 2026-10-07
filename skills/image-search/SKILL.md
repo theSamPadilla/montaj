@@ -66,7 +66,7 @@ Search returns more than you need. Before committing:
   "fit": "cover", "sourceCrop": { "x": 0.1, "y": 0, "w": 0.8, "h": 1 } }
 ```
 
-Omit `sourceCrop` for the whole photo. `offsetX`, `offsetY` and `scale` place it smaller than the frame. Fields: `docs/schemas/project.md`, "`type: \"image\"`".
+Omit `sourceCrop` for the whole photo. `offsetX`, `offsetY` and `scale` place it smaller than the frame. An image item's fields: `id`, `type: "image"`, `src`, `start`, `end`, `offsetX`, `offsetY`, `scale`, `opacity`, and `sourceCrop` when it shows part of the photo.
 - **In an animated graphic** — only when the photo is part of a motion graphic (a card that animates in with text). Then pass the local path via `props` to a JSX overlay: load skills `overlay` and `write-overlay`.
 - **Register every image as a project asset — required, whether or not it is also placed.** Add each image you download into the project to `project.assets[]` as `{ "id": "asset-N", "src": "<absolute path>", "type": "image", "name": "<short name>" }`, with N continuing the existing numbering. The editor's Assets panel lists `project.assets`, so an unregistered image looks missing there. Saving the project normally is enough.
 

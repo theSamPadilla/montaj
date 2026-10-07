@@ -95,13 +95,11 @@ The Editor tab drives the core flow: upload clips + prompt → watch the agent w
 
 Four tabs: **Editor**, **Workflows** (node graph), **Overlays** (live JSX preview), **Profiles** (style profiles).
 
-See [docs/UI.md](docs/UI.md) for the full breakdown.
-
 ---
 
 ## Getting started
 
-Start the server using `montaj serve`. If you get warnings or errors, bubble them up to the user with the easiest way to fix them (running `montaj install ui`, etc.).
+In the Montaj app the server is already running; never ask its user to run a command. On the command line only, start it with `montaj serve`, and if it warns or fails, tell the user the easiest fix (such as `montaj install ui`).
 
 Ask the user:
 

@@ -1030,6 +1030,13 @@ export interface EditorAdapter<P extends Project = Project> {
    * removal/keep to the project.
    */
   analyzeAudioPolish?(args: AnalyzeAudioPolishArgs): Promise<AudioPolishAnalysis>
+
+  /**
+   * False when this host cannot separate a voice from what is behind it (it
+   * has no stem separation): Audio polish then never offers Isolate voice.
+   * Omitted keeps it.
+   */
+  canIsolateVoice?: boolean
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────

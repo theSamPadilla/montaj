@@ -23,8 +23,6 @@ A carousel is N still slides at one fixed aspect ratio, rendered to `slide_01.pn
 
 The aspect is **locked at project creation** — Instagram and TikTok enforce uniformity across all slides in a carousel. Read it from `project.carousel.aspect`; read pixel dimensions from `project.settings.resolution` (`[width, height]`). Never attempt to change the aspect after init.
 
-Reference: `/Users/Sam/Work/ByCrux/dev/montaj/lib/types/carousel.py` — `CAROUSEL_ASPECTS`, `CAROUSEL_RESOLUTIONS`.
-
 ---
 
 ## Sub-skills
@@ -93,13 +91,11 @@ Key rules:
 - Text and shapes are overlays, not dedicated element types.
 - `frame` selects which frame of an overlay's animation gets statically rendered. Default: the overlay's declared `staticFrame`, or `duration - 1` (end of entrance animation) when `staticFrame` is absent.
 
-Reference: `/Users/Sam/Work/ByCrux/dev/montaj/montaj_assets/render/templates/slide.jsx` — the React component that receives and renders this shape.
-
 ---
 
 ## 4 — Generating images
 
-Use the existing `generate_image` step (`/Users/Sam/Work/ByCrux/dev/montaj/steps/generate/generate_image.json`). Always generate at the project's native resolution so the image fills the slide without scaling artifacts.
+Use the existing `generate_image` step. Always generate at the project's native resolution so the image fills the slide without scaling artifacts.
 
 ```bash
 montaj generate-image \
@@ -136,10 +132,8 @@ Save the JSX under the project workspace (e.g. `<workspace>/overlays/headline.js
 
 Carousel-specific rules layered on top of `write-overlay`:
 
-- **Position belongs to the slide, not the overlay.** Do not set `offsetX`, `offsetY`, or `scale` in `overlay.props` — the slide-side `x/y/w/h/rotation` always win, and the renderer forces those three fields to identity at render time (see `slide.jsx`).
+- **Position belongs to the slide, not the overlay.** Do not set `offsetX`, `offsetY`, or `scale` in `overlay.props` — the slide-side `x/y/w/h/rotation` always win, and the renderer forces those three fields to identity at render time.
 - **Pick the static frame explicitly.** Carousels render a single still frame from the overlay's animation. If the JSX module exports `staticFrame`, use that value. Otherwise default to `duration - 1` (the settled pose after any entrance animation). Always store the resolved value explicitly in `project.json` — do not rely on defaults.
-
-Reference: `/Users/Sam/Work/ByCrux/dev/montaj/docs/plans/2026-05-04-image-carousel.md` — Decisions section ("Overlay-coordinate precedence", "Static rendering of frame-driven overlays").
 
 ### Typography for carousels
 
@@ -220,8 +214,6 @@ montaj render <project_workspace>/project.json
 Output: `<project_workspace>/render/slide_01.png` … `slide_NN.png` plus a `manifest.json` describing the run.
 
 The renderer (`render-carousel.js`) launches Puppeteer, bundles each slide's JSX via esbuild, screenshots at the project resolution, and writes PNGs. No ffmpeg, no audio, no video encoding. Pass `--out <dir>` to write PNGs elsewhere; pass `--clean` to delete only prior `slide_*.png` + `manifest.json` without touching any coexisting video renders.
-
-Reference: `/Users/Sam/Work/ByCrux/dev/montaj/montaj_assets/render/render-carousel.js`.
 
 ---
 

@@ -305,6 +305,12 @@ export default function AudioPolishModal<P extends Project = Project>({
   const baseline = baselineRef.current
 
   const [pieces, setPieces] = useState<Record<Piece, boolean>>(DEFAULT_PIECES)
+  // A host without stem separation sets `canIsolateVoice: false`, and the
+  // piece is never offered, so it can never be switched on either.
+  const shownPieces = useMemo(
+    () => PIECES.filter(p => p.id !== 'voice' || adapter.canIsolateVoice !== false),
+    [adapter],
+  )
   const [language, setLanguage] = useState('en')
   const [targetId, setTargetId] = useState<TargetId>('youtube')
   const [customLufs, setCustomLufs] = useState(-14)
@@ -470,7 +476,7 @@ export default function AudioPolishModal<P extends Project = Project>({
     const analyze = adapter.analyzeAudioPolish
     if (!analyze || runningRef.current) return
 
-    const enabled = PIECES.filter(p => pieces[p.id]).map(p => p.id)
+    const enabled = shownPieces.filter(p => pieces[p.id]).map(p => p.id)
     if (enabled.length === 0 || targets.length === 0) return
 
     runningRef.current = true
@@ -642,7 +648,7 @@ export default function AudioPolishModal<P extends Project = Project>({
     })
     setPhase('review')
     runningRef.current = false
-  }, [adapter, projectId, targets, pieces, language, targetLufs, baseline])
+  }, [adapter, projectId, targets, pieces, shownPieces, language, targetLufs, baseline])
 
   // ── Derived display state ─────────────────────────────────────────────────
 
@@ -675,7 +681,7 @@ export default function AudioPolishModal<P extends Project = Project>({
     [analysis, pieces, approved],
   )
 
-  const anyPiece = PIECES.some(p => pieces[p.id])
+  const anyPiece = shownPieces.some(p => pieces[p.id])
   const busy = phase === 'analysing'
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -709,7 +715,7 @@ export default function AudioPolishModal<P extends Project = Project>({
         {/* Settings */}
         <div className="px-5 py-4 border-b border-[var(--editor-border)] flex flex-col gap-4">
           <div className="grid grid-cols-2 gap-2">
-            {PIECES.map(p => (
+            {shownPieces.map(p => (
               <label
                 key={p.id}
                 className="flex items-start gap-2 rounded-lg border border-[var(--editor-border)] p-2.5 cursor-pointer hover:bg-[color-mix(in_srgb,var(--editor-text)_5%,transparent)] transition-colors"
@@ -872,7 +878,7 @@ export default function AudioPolishModal<P extends Project = Project>({
                 {/* Every enabled piece this clip cannot take, with the planner's
                     own wording. Rendered verbatim: no period appended, no
                     rephrasing. Loudness never appears here, it runs on any clip. */}
-                {PIECES.filter(p => pieces[p.id] && !supports(clip, p.id)).map(p => (
+                {shownPieces.filter(p => pieces[p.id] && !supports(clip, p.id)).map(p => (
                   <p
                     key={p.id}
                     className={`self-start text-[11px] px-2 py-0.5 rounded ${mode === 'light' ? 'bg-amber-50 border border-amber-300 text-amber-800' : 'bg-amber-400/10 border border-amber-400/40 text-amber-300'}`}
