@@ -48,6 +48,8 @@ fs.appendFileSync(process.env.WIN1B_STUB_LOG, JSON.stringify({ argv, scripts }) 
 process.exit(Number(process.env.WIN1B_STUB_EXIT || 0))
 `, { mode: 0o755 })
 chmodSync(STUB, 0o755)
+// The inputs the stubbed encodes name: the encoders re-check that their files exist.
+for (const f of ['photo.png', 'a.wav', 'b.wav', 'v.mp4']) writeFileSync(join(WORK, f), '')
 
 // §116: every segment encode is followed by segment-check.js's probe (5.20.5,
 // assertSegmentHasVideo), which reads ffprobe's JSON. Answered here with one

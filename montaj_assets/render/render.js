@@ -238,7 +238,8 @@ if (isMain) {
     out: outArg, workers: workersArg, clean: cleanArg,
     exportMode, sdrCurve,
   }).catch(err => {
-    fail('render_error', err.message)
+    // A file deleted after validateProjectFiles ran: same code, same message.
+    fail(err.code === 'missing_files' ? 'missing_files' : 'render_error', err.message)
   })
 }
 

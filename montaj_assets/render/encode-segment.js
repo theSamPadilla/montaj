@@ -35,7 +35,7 @@ import { spawn, spawnSync } from 'child_process'
 import { mkdirSync, rmSync } from 'fs'
 import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
-import { ffmpegErrorTail } from './ffmpeg-error.js'
+import { ffmpegErrorTail, assertInputsExist, fileInputsOf } from './ffmpeg-error.js'
 import { specFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
@@ -2358,6 +2358,9 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   ]
 
   if (opts._dryRun) return { inputs, filterParts, args }
+
+  // Preflight ran long before this segment's turn; a file deleted since fails by name.
+  assertInputsExist(fileInputsOf(inputs))
 
   const result = await runFfmpeg(args, FFMPEG_TIMEOUT_MS, dirname(outputPath))
 

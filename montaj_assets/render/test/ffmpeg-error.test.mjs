@@ -3,8 +3,9 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ffmpegErrorTail } from '../ffmpeg-error.js'
+import { ffmpegErrorTail, assertInputsExist, fileInputsOf } from '../ffmpeg-error.js'
 import { mixAudioIntoVideo } from '../mix-audio.js'
+import { encodeSegment } from '../encode-segment.js'
 
 const BANNER = [
   'ffmpeg version 8.1.2 Copyright (c) 2000-2026 the FFmpeg developers',
@@ -39,6 +40,42 @@ test('mixAudioIntoVideo: a failing mix carries ffmpeg\'s last line, not its bann
     assert.throws(
       () => mixAudioIntoVideo(video, [{ id: 't', src: audio, start: 0, end: 1 }], join(dir, 'o.mp4')),
       e => !e.message.includes('configuration:') && !e.message.includes('ffmpeg version') && e.message.length < 1500,
+    )
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('assertInputsExist names the missing file with code missing_files', () => {
+  assert.throws(() => assertInputsExist(['/nope/a.mp3']), e =>
+    e.code === 'missing_files' && e.message === 'Referenced files not found:\n  /nope/a.mp3')
+  assert.doesNotThrow(() => assertInputsExist([undefined, '']))
+})
+
+test('fileInputsOf skips lavfi generators', () => {
+  assert.deepEqual(fileInputsOf(['-f', 'lavfi', '-i', 'color=c=black', '-t', '1', '-i', '/a.mov', '-i', '/b.png']), ['/a.mov', '/b.png'])
+})
+
+test('mixAudioIntoVideo: a track deleted after validation fails with missing_files, not an ffmpeg error', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mix-gone-'))
+  try {
+    const video = join(dir, 'v.mp4')
+    writeFileSync(video, 'x')
+    const gone = join(dir, 'deleted.mp3')
+    assert.throws(
+      () => mixAudioIntoVideo(video, [{ id: 't', src: gone, start: 0, end: 1 }], join(dir, 'o.mp4')),
+      e => e.code === 'missing_files' && e.message.includes(gone) && !/ffmpeg/.test(e.message),
+    )
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('encodeSegment: a clip deleted after validation fails with missing_files', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'seg-gone-'))
+  try {
+    const gone = join(dir, 'deleted.mp4')
+    const item = { type: 'video', src: gone, start: 0, end: 1, inPoint: 0, outPoint: 1, trackIdx: 0,
+                   sourceWidth: 640, sourceHeight: 360, probedWidth: 640, probedHeight: 360 }
+    await assert.rejects(
+      encodeSegment({ start: 0, end: 1, items: [item], overlays: [], vw: 640, vh: 360, fps: 30 }, join(dir, 'o.mp4')),
+      e => e.code === 'missing_files' && e.message.includes(gone),
     )
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

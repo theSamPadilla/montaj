@@ -15,7 +15,7 @@ import { tmpdir } from 'os'
 import { audioSourceWindow } from '@bycrux/timeline-core'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { externalizeFilterGraph } from './filter-script.js'
-import { ffmpegErrorTail } from './ffmpeg-error.js'
+import { ffmpegErrorTail, assertInputsExist } from './ffmpeg-error.js'
 
 const FFMPEG_TIMEOUT_MS = 600_000
 
@@ -272,6 +272,8 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness
   // Pre-filter: helpers also skip muted tracks internally, but we need the
   // count here for the early-exit branch and to avoid an empty filter graph.
   const unmuted = (audioTracks ?? []).filter(t => !t.muted)
+  // validateProjectFiles ran long ago; a file deleted since must fail by name.
+  assertInputsExist(unmuted.map(t => t.src))
   if (unmuted.length === 0) {
     // No project.audio.tracks to mix, but the video's OWN clip audio (from
     // compose.js's segment encode) still lives in `videoPath` and still needs
