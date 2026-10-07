@@ -71,14 +71,17 @@ export function resolveChunkSize(longest, targetWorkers, subframes, configChunkS
  * @param {{ workers?: number, chunkSize?: number }} [config]
  * @returns {Promise<Array<{ id: string, webmPath: string, startSeconds: number, endSeconds: number }>>}
  */
-export async function renderAllSegments(segments, config = {}) {
-  if (segments.length === 0) return []
-  for (const seg of segments) {
-    if (!seg.boundary || typeof seg.boundary.allows !== 'function') {
-      throw new TypeError(`renderAllSegments: segment ${seg.id} has no read boundary (bundleComponent returns one)`)
-    }
-  }
-
+/**
+ * The chunk plan renderAllSegments runs: every segment cut into chunks of
+ * `chunkSize` frames, and how many browser workers capture them at once. Also
+ * what render.js's disk check (disk-space.js, §128) sizes TMPDIR from, since
+ * each worker holds its whole chunk's frames until the chunk is encoded.
+ *
+ * @param {Array<{ frameCount: number, opaque?: boolean }>} segments
+ * @param {{ workers?: number, chunkSize?: number, motionBlur?: number }} [config]
+ * @returns {{ jobs: object[], workerCount: number, chunkSize: number, subframes: number }}
+ */
+export function planChunks(segments, config = {}) {
   const userConfig    = readMontajConfig()
   const longest       = segments.reduce((m, s) => Math.max(m, s.frameCount), 0)
   const targetWorkers = config.workers ?? userConfig.render?.workers ?? os.cpus().length
@@ -104,6 +107,18 @@ export async function renderAllSegments(segments, config = {}) {
   }
 
   const workerCount = Math.min(workerCap(targetWorkers, os.totalmem()), jobs.length)
+  return { jobs, workerCount, chunkSize, subframes }
+}
+
+export async function renderAllSegments(segments, config = {}) {
+  if (segments.length === 0) return []
+  for (const seg of segments) {
+    if (!seg.boundary || typeof seg.boundary.allows !== 'function') {
+      throw new TypeError(`renderAllSegments: segment ${seg.id} has no read boundary (bundleComponent returns one)`)
+    }
+  }
+
+  const { jobs, workerCount } = planChunks(segments, config)
   // The resolver rule is per browser, and one pool renders every segment, so
   // the font hosts resolve when ANY page links Google Fonts. Each page's guard
   // still lets them through only for a page that links them.
@@ -132,10 +147,18 @@ export async function renderAllSegments(segments, config = {}) {
     return puppeteer.launch(overlayPageLaunchOptions({ needsGoogleFonts, disableWebSecurity: true }))
   }
 
-  await Promise.all(
+  // §128: the first failed chunk fails the render, but only once every worker
+  // has stopped: the other browsers are closed at once (their chunk in
+  // flight then fails too), each chunk's frames are removed on its way out,
+  // and each browser's profile with it. Failing the moment the first chunk
+  // failed left frames and profiles behind when the process exited.
+  const live = new Set(browsers)
+  let firstFailure = null
+  const settled = await Promise.allSettled(
     browsers.map(async (browser, workerIdx) => {
       let currentBrowser = browser
       let jobsOnThisBrowser = 0
+      try {
       while (true) {
         const job = queue.shift()
         if (!job) break
@@ -152,15 +175,33 @@ export async function renderAllSegments(segments, config = {}) {
 
         // Recycle browser to flush memory after RECYCLE_AFTER jobs
         if (jobsOnThisBrowser >= RECYCLE_AFTER && queue.length > 0) {
+          live.delete(currentBrowser)
           await currentBrowser.close()
           currentBrowser = await launchBrowser()
+          live.add(currentBrowser)
           jobsOnThisBrowser = 0
           log(`worker ${workerIdx}: browser recycled`)
         }
       }
-      await currentBrowser.close()
+      } catch (err) {
+        // A failed chunk fails the render (§128): the other workers start no
+        // new chunk, so a full disk is not filled further, and stop the one
+        // they are on.
+        queue.length = 0
+        if (!firstFailure) {
+          firstFailure = err
+          for (const other of live) if (other !== currentBrowser) other.close().catch(() => {})
+        }
+        throw err
+      } finally {
+        live.delete(currentBrowser)
+        await currentBrowser.close().catch(() => {})
+      }
     })
   )
+  if (firstFailure) throw firstFailure
+  const failed = settled.find(r => r.status === 'rejected')
+  if (failed) throw failed.reason
 
   // Reassemble multi-chunk segments
   const results = []
@@ -207,10 +248,21 @@ export function captureOptionsFor(job) {
 }
 
 async function renderChunk(browser, job) {
-  const { id, htmlPath, fps, width, height, frameStart, frameEnd, chunkIndex, outputPath, captureScale, subframes = 1 } = job
+  const { id, chunkIndex } = job
 
   const frameDir = join(tmpdir(), `montaj-frames-${id}-c${chunkIndex}-${randomBytes(4).toString('hex')}`)
   mkdirSync(frameDir, { recursive: true })
+  // Removed on every way out (§128): a chunk that failed, a full disk
+  // included, used to leave its frames behind for the next attempt to trip on.
+  try {
+    return await captureAndEncodeChunk(browser, job, frameDir)
+  } finally {
+    rmSync(frameDir, { recursive: true, force: true })
+  }
+}
+
+async function captureAndEncodeChunk(browser, job, frameDir) {
+  const { id, htmlPath, fps, width, height, frameStart, frameEnd, chunkIndex, outputPath, captureScale, subframes = 1 } = job
 
   const page = await browser.newPage()
   // deviceScaleFactor supersamples the capture: the viewport reported to CSS
@@ -384,8 +436,6 @@ async function renderChunk(browser, job) {
     '-reserve_index_space', '1000000',     // seek index at file start → no backward scan needed
     chunkMkv,
   ], `ffmpeg PNG→ffv1 failed (segment ${id} chunk ${chunkIndex})`)
-
-  rmSync(frameDir, { recursive: true, force: true })
 
   return { webmPath: chunkMkv }
 }

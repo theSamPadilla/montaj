@@ -16,7 +16,9 @@ import { spawnSync, spawn } from 'child_process'
 
 import { bundleComponent, cleanupBundle } from './bundle.js'
 import { isMain as isMainModule }        from './is-main.js'
-import { renderAllSegments }              from './renderer.js'
+import { renderAllSegments, planChunks }  from './renderer.js'
+import { estimateRenderDisk, checkDiskSpace, diskFailure, isDiskFull } from './disk-space.js'
+import { tmpdir }                         from 'os'
 import { prefetchPropsUrls }              from './page-guard.js'
 import { namedPropsUrls }                 from './overlay-build.js'
 import { compose, embedThumbnail }        from './compose.js'
@@ -34,6 +36,10 @@ import { loudnessFilter }                 from './mix-audio.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
+// §128: where this render writes and what it is estimated to need, set by
+// main's disk check and read by the mid-render disk failure (the catch below).
+let diskRun = null
+
 const isMain = isMainModule(import.meta.url, process.argv[1])
 // MONTAJ_ROOT is two levels above montaj_assets/render/ (i.e. the Python project root).
 const MONTAJ_ROOT = process.env.MONTAJ_ROOT || join(__dirname, '..', '..')
@@ -238,6 +244,15 @@ if (isMain) {
     out: outArg, workers: workersArg, clean: cleanArg,
     exportMode, sdrCurve,
   }).catch(err => {
+    // §128: a disk that ran out mid-render is said plainly, with the space the
+    // render is expected to need (disk-space.js), never as a generic failure.
+    // A failed render leaves no bundle behind (§128): a retry finds the same room.
+    for (const dir of diskRun?.workDirs ?? []) { try { cleanupBundle(dir) } catch {} }
+    if (isDiskFull(err)) {
+      const check = diskRun ? checkDiskSpace({ ...diskRun, estimate: diskRun.estimate.expected }) : null
+      const f = diskFailure({ phase: 'mid-render', estimate: diskRun?.estimate ?? null, check })
+      fail(f.code, f.message, f.extra)
+    }
     // A file deleted after validateProjectFiles ran: same code, same message.
     fail(err.code === 'missing_files' ? 'missing_files' : 'render_error', err.message)
   })
@@ -541,6 +556,29 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   const captureScale = captureScaleFor(settings.resolution)
   for (const spec of segmentSpecs) spec.captureScale = captureScale
 
+  // 2a. Disk (§128). Before anything heavy is written: each overlay chunk's
+  //     frames go to TMPDIR and the segments and export to the project's disk
+  //     (disk-space.js). Refused only when the render certainly will not fit
+  //     (the lower bound); a render that runs out later fails the same way.
+  {
+    const plan = planChunks(segmentSpecs, { workers, motionBlur })
+    diskRun = {
+      tmpDir: tmpdir(),
+      projectDir: renderDir,
+      estimate: estimateRenderDisk({
+        segments: segmentSpecs.map(spec => ({ frames: spec.frameCount, sparse: spec.id === 'captions' })),
+        width: renderWidth, height: renderHeight, captureScale, subframes: plan.subframes,
+        workerCount: plan.workerCount, chunkSize: plan.chunkSize,
+        durationSeconds: getTotalDurationSeconds(projectJson),
+      }),
+    }
+    const check = checkDiskSpace({ ...diskRun, estimate: diskRun.estimate.lower })
+    if (check?.short) {
+      const f = diskFailure({ phase: 'preflight', estimate: diskRun.estimate, check })
+      fail(f.code, f.message, f.extra)
+    }
+  }
+
   // colorTransfer and hasAudio, once per unique source (see stampSourceProbes).
   const transferCache = new Map()
   stampSourceProbes(videoItems, transferCache)
@@ -598,6 +636,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   log(`rendering ${segmentSpecs.length} segment(s) with Puppeteer...`)
 
   const workDirs = []
+  if (diskRun) diskRun.workDirs = workDirs
 
   for (let i = 0; i < segmentSpecs.length; i++) {
     const spec = segmentSpecs[i]
@@ -1862,8 +1901,8 @@ function log(msg) {
   process.stderr.write(`${C.cyan}[montaj render]${C.reset} ${msg}\n`)
 }
 
-function fail(code, message) {
-  process.stderr.write(JSON.stringify({ error: code, message }) + '\n')
+function fail(code, message, extra = {}) {
+  process.stderr.write(JSON.stringify({ error: code, message, ...extra }) + '\n')
   process.exit(1)
 }
 
