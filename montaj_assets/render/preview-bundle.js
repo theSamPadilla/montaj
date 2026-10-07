@@ -50,7 +50,8 @@
  * `<col>` is 0-based, both exactly as esbuild reports them.
  */
 import esbuild from 'esbuild'
-import { resolve, isAbsolute } from 'path'
+import { resolve, isAbsolute, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import { statSync } from 'fs'
 import { overlayEsbuildOptions, overlayInputsFromMetafile, overlayReadBoundary, PREVIEW_NAMESPACE } from './overlay-build.js'
 import { isMain } from './is-main.js'
@@ -219,7 +220,11 @@ function formatBuildMessage(msg, absWorkingDir) {
 }
 
 /** The esbuild options for one preview build. Exported for tests. */
-export function previewEsbuildOptions(entryPath, absWorkingDir = process.cwd()) {
+// render's own dir, as the export build uses (overlay-build.js absWorkingDir):
+// never the caller's cwd, which in the app is its bundle folder.
+const RENDER_DIR = dirname(fileURLToPath(import.meta.url))
+
+export function previewEsbuildOptions(entryPath, absWorkingDir = RENDER_DIR) {
   // The entry is named exactly: the caller chose it (serve checks it is under
   // its roots); what it imports must be under the boundary's.
   const base = overlayEsbuildOptions({ boundary: overlayReadBoundary({ files: [entryPath] }) })
@@ -249,7 +254,7 @@ export async function bundleOverlayForPreview(entryPath) {
   if (typeof entryPath !== 'string' || !isAbsolute(entryPath)) {
     throw new TypeError(`bundleOverlayForPreview: expected an absolute path, got ${JSON.stringify(entryPath)}`)
   }
-  const absWorkingDir = process.cwd()
+  const absWorkingDir = RENDER_DIR
   let result
   try {
     result = await esbuild.build(previewEsbuildOptions(entryPath, absWorkingDir))

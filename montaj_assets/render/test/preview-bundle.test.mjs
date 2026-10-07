@@ -9,7 +9,7 @@
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'child_process'
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, realpathSync } from 'fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, realpathSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
@@ -318,6 +318,27 @@ describe('preview bundle: TypeScript', () => {
       join(FIX, 'chain', 'lib', 'b.js'),
       join(FIX, 'typed.tsx'),
     ])
+  })
+})
+
+describe('preview bundle: working dir', () => {
+  // Inferred cause of "build failed" on every overlay in an app: the preview
+  // used process.cwd() (the app bundle) as esbuild's working dir. Export keeps
+  // it in render's own dir, so the preview must not depend on the cwd at all.
+  test('builds with a process cwd that no longer exists', async () => {
+    const start = process.cwd()
+    const tmp = mkdtempSync(join(tmpdir(), 'pv-cwd-'))
+    const gone = join(tmp, 'gone')
+    mkdirSync(gone)
+    process.chdir(gone)
+    rmSync(gone, { recursive: true })
+    try {
+      const out = await bundleOverlayForPreview(join(FIX, 'chain', 'entry.jsx'))
+      assert.ok(out.code.length > 0)
+    } finally {
+      process.chdir(start)
+      rmSync(tmp, { recursive: true, force: true })
+    }
   })
 })
 

@@ -11,6 +11,8 @@
 
   (`montaj_assets/render/google-fonts.js`, `bundle.js`, `render-carousel.js`, `sample-frame.js`, `renderer.js`, `steps/render/sample_overlay.py`, `steps/render/sample_overlay.json`, `cli/commands/sample.py`, `montaj_assets/render/test/google-fonts.test.mjs`, `test/fonts-fallthrough.test.mjs`, `test/shim-bake.test.mjs`, `tests/steps/test_sample_overlay_google_fonts.py`)
 
+- **Fixed (render): the editor's overlay preview build no longer uses the app's own folder as esbuild's working dir.** `preview-bundle.js` used the process cwd (the app bundle's folder under serve); export and `sample_overlay` keep it in render's own folder and were never affected. Inferred cause of one user's "overlay error: build failed" on every overlay in the preview only. (`montaj_assets/render/preview-bundle.js`, `montaj_assets/render/test/preview-bundle.test.mjs`)
+
 ## v5.24.16
 
 - **Changed (init): a B-roll project no longer needs a voiceover.** `project/init.py` refused a `broll` workflow without `--voiceover-asset` (`missing_argument`); it now makes the project with no `voiceover` key, so a B-roll edit can be footage cut to a music track or to text on screen, or left silent. `--voiceover-asset` is still refused for any other project type. (`project/init.py`, `tests/test_init.py`)
