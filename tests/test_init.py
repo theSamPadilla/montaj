@@ -2055,13 +2055,17 @@ def test_init_voiceover_accepts_a_video_file(tmp_path):
     assert Path(data["voiceover"]["src"]).suffix == ".mp4"
 
 
-def test_init_broll_without_voiceover_fails(tmp_path):
+def test_init_broll_without_voiceover_is_a_project_with_no_voiceover(tmp_path):
+    # A voiceover is optional: footage with music, or silent footage with
+    # text on screen, is a B-roll edit too. No voiceover means no key.
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")
     result = run_init("--workflow", "broll", "--clips", str(clip), "--prompt", "test",
                       env_override=_user_workflow_env(tmp_path, "broll", "broll"))
-    assert result.returncode == 1
-    assert json.loads(result.stderr.strip().splitlines()[-1])["error"] == "missing_argument"
+    assert result.returncode == 0, result.stderr
+    data = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert data["projectType"] == "broll"
+    assert "voiceover" not in data
 
 
 def test_init_voiceover_missing_file_fails(tmp_path):

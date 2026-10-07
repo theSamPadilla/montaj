@@ -555,14 +555,13 @@ def _main():
         if not os.path.isfile(asset):
             fail("file_not_found", f"Asset not found: {asset}")
 
-    # Voiceover is required by (and exclusive to) broll projects. Checked here,
-    # before makedirs below, so a rejected init leaves no partial workspace.
+    # A voiceover is exclusive to broll projects, and optional there: without
+    # one, a broll edit is footage cut to music or to text on screen, and the
+    # project has no "voiceover". Checked here, before makedirs below, so a
+    # rejected init leaves no partial workspace.
     if args.voiceover_asset and early_project_type != "broll":
         fail("invalid_argument",
              "--voiceover-asset is only valid for broll workflows")
-    if early_project_type == "broll" and not args.voiceover_asset:
-        fail("missing_argument",
-             "broll projects require --voiceover-asset")
     for _vo in (args.voiceover_asset or []):
         if not os.path.isfile(_vo):
             fail("file_not_found", f"File not found: {_vo}")
