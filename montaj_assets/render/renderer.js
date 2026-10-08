@@ -112,6 +112,10 @@ export function planChunks(segments, config = {}) {
   return { jobs, workerCount, chunkSize, subframes }
 }
 
+let lastPlan = null
+/** The worker count and chunk size the running render planned; null until it has. */
+export function currentRenderPlan() { return lastPlan }
+
 export async function renderAllSegments(segments, config = {}) {
   if (segments.length === 0) return []
   for (const seg of segments) {
@@ -120,7 +124,9 @@ export async function renderAllSegments(segments, config = {}) {
     }
   }
 
-  const { jobs, workerCount } = planChunks(segments, config)
+  const { jobs, workerCount, chunkSize } = planChunks(segments, config)
+  lastPlan = { workers: workerCount, chunkFrames: chunkSize }
+  log(`workers=${workerCount} chunk=${chunkSize}`)
   // The resolver rule is per browser, and one pool renders every segment, so
   // the font hosts resolve when ANY page links Google Fonts. Each page's guard
   // still lets them through only for a page that links them.

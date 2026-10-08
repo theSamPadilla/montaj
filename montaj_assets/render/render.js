@@ -16,7 +16,8 @@ import { spawnSync, spawn } from 'child_process'
 
 import { bundleComponent, cleanupBundle } from './bundle.js'
 import { isMain as isMainModule }        from './is-main.js'
-import { renderAllSegments, planChunks }  from './renderer.js'
+import { renderAllSegments, planChunks, currentRenderPlan }  from './renderer.js'
+import { isChildKilled }              from './child-killed.js'
 import { estimateRenderDisk, checkDiskSpace, diskFailure, isDiskFull } from './disk-space.js'
 import { tmpdir }                         from 'os'
 import { prefetchPropsUrls }              from './page-guard.js'
@@ -253,6 +254,7 @@ if (isMain) {
       const f = diskFailure({ phase: 'mid-render', estimate: diskRun?.estimate ?? null, check })
       fail(f.code, f.message, f.extra)
     }
+    if (isChildKilled(err)) fail('child_killed', err.message, { child: err.child, signal: err.signal, phase: err.phase })
     // A file deleted after validateProjectFiles ran: same code, same message.
     fail(err.code === 'missing_files' ? 'missing_files' : 'render_error', err.message)
   })
@@ -1901,11 +1903,23 @@ function log(msg) {
   process.stderr.write(`${C.cyan}[montaj render]${C.reset} ${msg}\n`)
 }
 
+/**
+ * The one JSON line a failed render writes to stderr. `extra` never overrides
+ * `error`/`message`; `plan` ({ workers, chunkFrames }, null until the render
+ * has planned its chunks) rides along so a failure says how the work was split.
+ */
+function failLine(code, message, extra = {}, plan = null) {
+  const { error: _e, message: _m, ...rest } = extra ?? {}
+  const line = { error: code, message, ...rest }
+  if (plan) { line.workers = plan.workers; line.chunkFrames = plan.chunkFrames }
+  return JSON.stringify(line)
+}
+
 function fail(code, message, extra = {}) {
-  process.stderr.write(JSON.stringify({ error: code, message, ...extra }) + '\n')
+  process.stderr.write(failLine(code, message, extra, currentRenderPlan()) + '\n')
   process.exit(1)
 }
 
-export { stampSourceProbes, getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
+export { failLine, stampSourceProbes, getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
          EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport, captureScaleFor,
          UNTAGGED_MASTER_MARKER, originalOfSdrMaster }
