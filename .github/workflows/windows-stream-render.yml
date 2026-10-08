@@ -18,9 +18,14 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: montaj_assets/render/package-lock.json
+          cache-dependency-path: |
+            montaj_assets/render/package-lock.json
+            montaj_assets/overlay-runtime/package-lock.json
       - name: Install ffmpeg
         run: choco install ffmpeg -y --no-progress
+      - name: Install overlay runtime deps (overlay bundles import them)
+        run: npm ci
+        working-directory: montaj_assets/overlay-runtime
       - name: Install render engine deps (downloads Chrome)
         run: npm ci
         working-directory: montaj_assets/render
