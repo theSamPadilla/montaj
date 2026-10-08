@@ -1,0 +1,74 @@
+import sys
+from pathlib import Path
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "lib"))
+sys.path.insert(0, str(ROOT / "steps" / "media"))
+import creator_diagnostic as cd  # noqa: E402
+
+
+def items(*views):
+    return [{"url": f"https://example.com/p/{i}", "path": None, "views": v, "likes": None,
+             "posted_at": None, "caption": None} for i, v in enumerate(views)]
+
+
+def test_parse_items_needs_exactly_one_of_url_or_path():
+    assert cd.parse_items('[{"url": "https://example.com/p/1", "views": 5}]')[0]["views"] == 5
+    for bad in ('[]', '{}', 'nope', '[{"url": "a", "path": "b"}]', '[{}]', '[' + ','.join(['{"url":"u"}'] * 31) + ']'):
+        with pytest.raises(SystemExit):
+            cd.parse_items(bad)
+
+
+def test_select_most_viewed_then_newest_first_on_ties():
+    chosen, by = cd.select_items(items(10, None, 50, 50, 3), 3)
+    assert by == "views"
+    assert [c["url"][-1] for c in chosen] == ["2", "3", "0"]
+
+
+def test_select_newest_when_no_views_and_single_mode():
+    chosen, by = cd.select_items(items(None, None, None), 2)
+    assert (by, len(chosen)) == ("latest", 2)
+    assert cd.select_items(items(7), 10)[1] == "single"
+
+
+def test_median_aspect_and_on_beat_share():
+    assert cd.median([3, None, 1, 2]) == 2
+    assert cd.median([None]) is None
+    assert cd.aspect_label(1080, 1920) == "9:16"
+    assert cd.aspect_label(1080, 1350) == "4:5"
+    assert cd.aspect_label(1920, 1080) == "16:9"
+    assert cd.aspect_label(1000, 700) == "1000:700"
+    assert cd.on_beat_share([1.0, 2.05, 3.5], [1.02, 2.0, 3.0]) == pytest.approx(2 / 3, abs=1e-3)
+    assert cd.on_beat_share([], [1.0]) is None
+
+
+def test_shot_and_speech_metrics():
+    shots = [{"start": 0.0, "duration": 2.0}, {"start": 2.0, "duration": 1.0}, {"start": 3.0, "duration": 3.0}]
+    m, cuts = cd.shot_metrics(shots, 6.0)
+    assert cuts == [2.0, 3.0]
+    assert m["cuts_per_min"] == 20.0 and m["shot_median_s"] == 2.0 and m["first_cut_s"] == 2.0
+    words = [{"text": " Stop", "start": 0.4, "end": 0.7}, {"text": " scrolling", "start": 0.7, "end": 1.2},
+             {"text": " now", "start": 3.5, "end": 3.9}]
+    s = cd.speech_metrics(words, 6.0)
+    assert s["first_word_s"] == 0.4 and s["opening_line"] == "Stop scrolling"
+    assert s["wpm"] == pytest.approx(3 / (3.5 / 60), abs=0.1)
+    assert cd.speech_metrics([], 6.0)["speech_share"] == 0.0
+
+
+def test_deletable_only_inside_media_or_inbox(tmp_path):
+    media, inbox, other = tmp_path / "_media", tmp_path / "inbox", tmp_path / "keep"
+    for d in (media, inbox, other):
+        d.mkdir()
+    assert cd.deletable(media / "a.mp4", media, None)
+    assert cd.deletable(inbox / "b.mp4", media, inbox)
+    assert not cd.deletable(other / "c.mp4", media, inbox)
+    assert not cd.deletable(tmp_path / "inbox-evil" / "d.mp4", media, inbox)
+
+
+def test_summarize_medians_and_music_share():
+    v = lambda **k: {"duration_s": 30, "aspect": "9:16", "cuts_per_min": 20, "shot_median_s": 2, "first_cut_s": 1,
+                     "wpm": 180, "speech_share": 0.9, "first_word_s": 0.3, "on_beat_share": None,
+                     "music": {"bpm": None, "confidence": 0.1, "likely": False}, "palette": ["#000000"], **k}
+    s = cd.summarize([v(cuts_per_min=10), v(cuts_per_min=30, music={"bpm": 120.0, "confidence": 0.8, "likely": True})])
+    assert s["videos"] == 2 and s["cuts_per_min"] == 20 and s["music_share"] == 0.5 and s["bpm"] == 120.0

@@ -1,0 +1,13 @@
+{
+  "name": "creator_diagnostic",
+  "description": "Measure how a creator edits from up to 30 of their posts (links or local video files): cut rate, shot lengths, speech pace, opening line, music and beat-cutting, aspect, length and palette. Medians over the most-viewed `top` posts plus per-video values, with a shot sheet and an opening frame per video. One item gives a one-video breakdown. Videos it downloads, and videos in `inbox`, are deleted once measured.",
+  "output": { "type": "json", "description": "{out, diagnostic, measured, failed}. diagnostic.json (schema 1) and stills/ are in out." },
+  "params": [
+    { "name": "items", "type": "string", "required": true, "description": "JSON array of up to 30 posts, newest first: [{\"url\": \"...\"} or {\"path\": \"...\"}, plus optional \"views\", \"likes\", \"posted_at\" (YYYY-MM-DD), \"caption\"]" },
+    { "name": "out", "type": "path", "description": "Folder for diagnostic.json and stills/ (default: a new temp folder)" },
+    { "name": "inbox", "type": "path", "description": "Folder holding videos saved for this run; each is deleted once measured" },
+    { "name": "top", "type": "int", "default": 10, "min": 1, "max": 30, "description": "How many posts to measure: the most-viewed, else the newest" },
+    { "name": "whisper-model", "type": "string", "default": "large-v3-turbo-q5_0", "description": "Speech model" },
+    { "name": "language", "type": "string", "default": "auto", "description": "Spoken language code, or auto" }
+  ]
+}
