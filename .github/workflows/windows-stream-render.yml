@@ -1,0 +1,37 @@
+name: Windows stream render
+
+# On demand only. Proves on a real Windows runner that overlay frames stream
+# from Chrome into ffmpeg's stdin (image2pipe) and produce the same frames as
+# the old file-based path, and that a full export with captions renders.
+# Run before an app release pins an engine change to this path.
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-stream-render:
+    name: Windows streamed overlay render
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: montaj_assets/render/package-lock.json
+      - name: Install ffmpeg
+        run: choco install ffmpeg -y --no-progress
+      - name: Install render engine deps (downloads Chrome)
+        run: npm ci
+        working-directory: montaj_assets/render
+      - name: ffmpeg in use
+        run: ffmpeg -hide_banner -version
+      - name: Chunk encode arguments
+        run: node --test --test-name-pattern="chunkEncodeArgs" test/stream-frames.test.mjs
+        working-directory: montaj_assets/render
+      - name: Streamed chunks match the file-based path (real Chrome, Windows pipes, framemd5)
+        run: node --test --test-timeout=900000 test/stream-parity.integration.test.mjs
+        working-directory: montaj_assets/render
+      - name: End-to-end export with captions (render.js)
+        run: node --test --test-timeout=900000 test/disk-preflight.integration.test.mjs
+        working-directory: montaj_assets/render
