@@ -122,3 +122,25 @@ def test_single_item_and_all_failed(tmp_path, fake_whisper_env):
     bad = run_step_env("creator_diagnostic.py", fake_whisper_env, "--items", json.dumps([{"path": str(tmp_path / "nope.mp4")}]),
                        "--out", str(tmp_path / "o2"), "--whisper-model", "base.en", "--language", "en")
     assert bad.returncode == 1 and "no_videos_measured" in bad.stderr
+
+
+class _Proc:
+    def __init__(self, rc, out="", err=""):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+
+def test_fetch_one_returns_path_and_meta(monkeypatch, tmp_path):
+    out = json.dumps({"paths": [str(tmp_path / "x.mp4")], "videos": [{"view_count": 1200, "description": "hi", "upload_date": "20261001"}]})
+    monkeypatch.setattr(cd.subprocess, "run", lambda *a, **k: _Proc(0, out))
+    path, meta = cd.fetch_one("https://example.com/p/1", tmp_path)
+    assert path.endswith("x.mp4") and meta["view_count"] == 1200
+    merged = cd.merge_meta({"url": "u", "path": None, "views": None, "likes": None, "posted_at": None, "caption": None}, meta)
+    assert merged["views"] == 1200 and merged["posted_at"] == "2026-10-01" and merged["caption"] == "hi"
+
+
+def test_fetch_one_failure_carries_the_fetch_code(monkeypatch, tmp_path):
+    err = json.dumps({"error": "unavailable", "message": "Video unavailable"})
+    monkeypatch.setattr(cd.subprocess, "run", lambda *a, **k: _Proc(1, "", "noise\n" + err))
+    with pytest.raises(cd.SkipVideo) as e:
+        cd.fetch_one("https://example.com/p/1", tmp_path)
+    assert e.value.code == "unavailable"

@@ -169,12 +169,41 @@ class SkipVideo(Exception):
         self.code, self.message = code, message
 
 
+def _last_json(text):
+    for line in reversed((text or "").strip().splitlines()):
+        try:
+            obj = json.loads(line)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            continue
+    return {}
+
+
 def fetch_one(url, media_dir):
-    raise SkipVideo("not_supported", "links come in Task 3")
+    """Download one post with the fetch step (yt-dlp). Returns (path, meta)."""
+    cmd = [sys.executable, str(HERE / "fetch.py"), "--url", url, "--out", str(media_dir), "--meta", "--limit", "1"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        raise SkipVideo("timeout", "the download took over 15 minutes")
+    if proc.returncode != 0:
+        err = _last_json(proc.stderr)
+        raise SkipVideo(err.get("error", "fetch_failed"), err.get("message", "the download failed"))
+    data = _last_json(proc.stdout)
+    paths = data.get("paths") or []
+    if not paths:
+        raise SkipVideo("fetch_failed", "nothing was downloaded")
+    return paths[0], (data.get("videos") or [{}])[0]
 
 
 def merge_meta(it, meta):
-    return it
+    d = meta.get("upload_date")
+    return {**it,
+            "views": it["views"] if it["views"] is not None else _count(meta.get("view_count")),
+            "likes": it["likes"] if it["likes"] is not None else _count(meta.get("like_count")),
+            "posted_at": it["posted_at"] or (f"{d[:4]}-{d[4:6]}-{d[6:8]}" if isinstance(d, str) and len(d) == 8 else None),
+            "caption": it["caption"] or ((meta.get("description") or "")[:300] or None)}
 
 
 def _frame(path, at, dest):
