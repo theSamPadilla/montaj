@@ -16,7 +16,7 @@ import { spawnSync, spawn } from 'child_process'
 
 import { bundleComponent, cleanupBundle } from './bundle.js'
 import { isMain as isMainModule }        from './is-main.js'
-import { renderAllSegments, planChunks, currentRenderPlan }  from './renderer.js'
+import { renderAllSegments, planChunks, currentRenderPlan, stopSignal }  from './renderer.js'
 import { isChildKilled }              from './child-killed.js'
 import { estimateRenderDisk, checkDiskSpace, diskFailure, isDiskFull } from './disk-space.js'
 import { tmpdir }                         from 'os'
@@ -254,7 +254,13 @@ if (isMain) {
       const f = diskFailure({ phase: 'mid-render', estimate: diskRun?.estimate ?? null, check })
       fail(f.code, f.message, f.extra)
     }
-    if (isChildKilled(err)) fail('child_killed', err.message, { child: err.child, signal: err.signal, phase: err.phase })
+    // A SIGTERM or SIGHUP from outside (serve cancelling this render, or a
+    // newer export superseding it) is a stop, not the system killing a child:
+    // Puppeteer SIGKILLs Chrome on it and ffmpeg gets it with the group, so the
+    // child that died of it keeps the render_error line (PL83 review).
+    if (isChildKilled(err) && !stopSignal()) {
+      fail('child_killed', err.message, { child: err.child, signal: err.signal, phase: err.phase })
+    }
     // A file deleted after validateProjectFiles ran: same code, same message.
     fail(err.code === 'missing_files' ? 'missing_files' : 'render_error', err.message)
   })
@@ -1905,13 +1911,15 @@ function log(msg) {
 
 /**
  * The one JSON line a failed render writes to stderr. `extra` never overrides
- * `error`/`message`; `plan` ({ workers, chunkFrames }, null until the render
- * has planned its chunks) rides along so a failure says how the work was split.
+ * `error`/`message`, and an empty message is the code; `plan` ({ workers,
+ * chunkFrames }, null until the render has planned its chunks) rides along so
+ * a failure says how the work was split, each field only when an integer.
  */
 function failLine(code, message, extra = {}, plan = null) {
   const { error: _e, message: _m, ...rest } = extra ?? {}
-  const line = { error: code, message, ...rest }
-  if (plan) { line.workers = plan.workers; line.chunkFrames = plan.chunkFrames }
+  const line = { error: code, message: message || code, ...rest }
+  if (Number.isInteger(plan?.workers)) line.workers = plan.workers
+  if (Number.isInteger(plan?.chunkFrames)) line.chunkFrames = plan.chunkFrames
   return JSON.stringify(line)
 }
 

@@ -7,6 +7,27 @@
  */
 
 /**
+ * Every `phase` a child_killed error can carry: the app reads it to say where
+ * the export died, so it is a fixed list. A new call site names one of these,
+ * or adds it here; child-killed.test.mjs fails a call site whose phase is not
+ * listed, and a listed phase no call site emits.
+ */
+export const CHILD_KILLED_PHASES = Object.freeze([
+  'overlay-load',       // Chrome: loading a chunk's overlay page
+  'overlay-capture',    // Chrome: capturing a chunk's frames
+  'overlay-encode',     // ffmpeg: a chunk's PNGs into FFV1
+  'chunk-concat',       // ffmpeg: joining a segment's chunks
+  'sdr-derive',         // ffmpeg: the SDR rendition derived from an HDR master
+  'segment-encode',     // ffmpeg: composing one segment
+  'segment-group-join', // ffmpeg: joining short segments into one encode
+  'segment-concat',     // ffmpeg: joining the segments into the output
+  'audio-mix',          // ffmpeg: mixing the audio tracks
+  'audio-copy',         // ffmpeg: copying the output through, no audio tracks to mix
+  'loudness-measure',   // ffmpeg: measuring loudness
+  'loudness-normalize', // ffmpeg: normalizing loudness
+])
+
+/**
  * @param {{child: string, signal: string, phase?: string, message: string}} p
  * @returns {Error & {code: 'child_killed', child: string, signal: string, phase?: string}}
  */

@@ -1,0 +1,5 @@
+{
+  "line": "{\"error\":\"child_killed\",\"message\":\"Chrome was killed by SIGKILL (overlay-capture, segment captions chunk 0)\",\"child\":\"chrome\",\"signal\":\"SIGKILL\",\"phase\":\"overlay-capture\",\"workers\":1,\"chunkFrames\":600}",
+  "capturedAt": "2026-10-08T08:49:32.332Z",
+  "chrome": "Google Chrome for Testing 127.0.6533.88"
+}

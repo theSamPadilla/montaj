@@ -1,0 +1,5 @@
+{
+  "line": "{\"error\":\"child_killed\",\"message\":\"ffmpeg segment encode failed (0.00-20.00s):\\n  Duration: N/A, start: 0.000000, bitrate: 768 kb/s\\n  Stream #3:0: Audio: pcm_u8, 48000 Hz, stereo, u8, 768 kb/s\\nStream mapping:\\n  Stream #0:0 (wrapped_avframe) -> format:default\\n  Stream #1:0 (h264) -> setparams:default\\n  Stream #2:0 (ffv1) -> format:default\\n  Stream #3:0 (pcm_u8) -> atrim:default\\n  setparams:default -> Stream #0:0 (libx264)\\n  atrim:default -> Stream #0:1 (pcm_s16le)\\nPress [q] to stop, [?] for help\",\"child\":\"ffmpeg\",\"signal\":\"SIGKILL\",\"phase\":\"segment-encode\",\"workers\":2,\"chunkFrames\":300}",
+  "capturedAt": "2026-10-08T08:49:29.116Z",
+  "ffmpeg": "ffmpeg version 8.1.2-https://www.martin-riedl.de Copyright (c) 2000-2026 the FFmpeg developers"
+}

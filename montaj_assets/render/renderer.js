@@ -15,7 +15,7 @@ import { randomBytes } from 'crypto'
 import os from 'os'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
-import { childKilledError, isChildKilled, syncResultError } from './child-killed.js'
+import { childKilledError, isChildKilled, syncResultError, CHILD_KILLED_PHASES } from './child-killed.js'
 import { adaptiveChunkSize, workerCap } from './chunk-plan.js'
 import { toFileHref } from './file-url.js'
 import { subframeTimes, motionBlurFilter } from './motion-blur.js'
@@ -117,6 +117,7 @@ let lastPlan = null
 export function currentRenderPlan() { return lastPlan }
 
 export async function renderAllSegments(segments, config = {}) {
+  lastPlan = null // never the last render's plan
   if (segments.length === 0) return []
   for (const seg of segments) {
     if (!seg.boundary || typeof seg.boundary.allows !== 'function') {
@@ -231,6 +232,40 @@ export async function renderAllSegments(segments, config = {}) {
 const CHROME_EXIT_WAIT_MS = 1000
 
 /**
+ * A stop from outside is not a kill (PL83 review). Serve cancels a render, or
+ * supersedes it with a newer export, by SIGTERM to its process group (Chrome
+ * runs in a group of its own). Puppeteer's own SIGTERM/SIGHUP handler (on by
+ * default) then keeps Node alive and SIGKILLs each Chrome's group itself,
+ * around the worker's close(), so the death read as the system killing
+ * Chrome. One listener per signal, installed while any worker is live, marks
+ * every live worker closing first and remembers the signal for stopSignal().
+ * One per browser would print MaxListenersExceededWarning past 10 workers.
+ * A live worker is a live Chrome, so Puppeteer's handler is always installed
+ * beside this one, which therefore never keeps Node alive on a SIGTERM alone.
+ */
+const STOP_SIGNALS = ['SIGTERM', 'SIGHUP']
+const liveWorkers = new Map() // worker → marks it closing
+let stopSignalSeen = null
+
+function onStopSignal(signal) {
+  stopSignalSeen ??= signal
+  for (const markClosing of liveWorkers.values()) markClosing()
+}
+
+function trackWorker(worker, markClosing) {
+  if (liveWorkers.size === 0) for (const s of STOP_SIGNALS) process.on(s, onStopSignal)
+  liveWorkers.set(worker, markClosing)
+}
+
+function untrackWorker(worker) {
+  if (!liveWorkers.delete(worker) || liveWorkers.size > 0) return
+  for (const s of STOP_SIGNALS) process.off(s, onStopSignal)
+}
+
+/** The SIGTERM or SIGHUP that stopped this process from outside while a worker was live, or null. */
+export function stopSignal() { return stopSignalSeen }
+
+/**
  * One worker's Chrome, launched with every overlay page's flags (page-guard.js),
  * --disable-dev-shm-usage included: the sidecar container's /dev/shm is the
  * 64MB Docker default, which a 4K (2160x3840) render overruns.
@@ -242,7 +277,8 @@ const CHROME_EXIT_WAIT_MS = 1000
  * `{ signal, code, reason }`. A page passed to `watchPage()` whose renderer
  * dies calls it too, with `signal: null` (Chrome reports a crash, not why), and
  * `reason: 'page-crash'`; the browser itself stays up. `dead` holds the
- * browser's death once seen.
+ * browser's death once seen. A SIGTERM or SIGHUP to the process marks every
+ * live worker closing (onStopSignal), so a cancel is never a death either.
  *
  * MEASURED (puppeteer 22.15, Chrome 127): on a SIGKILL the connection drops
  * ~1 ms before the process's exit is seen, so a drop waits for the exit (up
@@ -257,6 +293,11 @@ export async function launchWorkerBrowser({ needsGoogleFonts = false } = {}) {
   let dead = null
   let exitWait = null
   const listeners = new Set()
+  const worker = {
+    browser, close, onDeath, watchPage, deathWithin,
+    get dead() { return dead },
+    get closing() { return closing },
+  }
 
   const notify = info => {
     if (closing) return
@@ -269,7 +310,13 @@ export async function launchWorkerBrowser({ needsGoogleFonts = false } = {}) {
     notify(info)
   }
 
-  proc?.once('exit', (code, signal) => die({ reason: 'exit', signal: signal ?? null, code: code ?? null }))
+  const exited = (code, signal) => {
+    untrackWorker(worker)
+    die({ reason: 'exit', signal: signal ?? null, code: code ?? null })
+  }
+  trackWorker(worker, () => { closing = true; clearTimeout(exitWait) })
+  if (proc && (proc.exitCode !== null || proc.signalCode !== null)) exited(proc.exitCode, proc.signalCode)
+  else proc?.once('exit', exited)
   browser.on('disconnected', () => {
     if (closing || dead) return
     if (!proc) return die({ reason: 'disconnected', signal: null, code: null })
@@ -293,6 +340,7 @@ export async function launchWorkerBrowser({ needsGoogleFonts = false } = {}) {
   async function close() {
     closing = true
     clearTimeout(exitWait)
+    untrackWorker(worker)
     try {
       await browser.close()
     } catch (err) {
@@ -313,11 +361,7 @@ export async function launchWorkerBrowser({ needsGoogleFonts = false } = {}) {
     })
   }
 
-  return {
-    browser, close, onDeath, watchPage, deathWithin,
-    get dead() { return dead },
-    get closing() { return closing },
-  }
+  return worker
 }
 
 /** The child_killed error of a Chrome death seen during `phase`. */
@@ -607,7 +651,7 @@ async function encodeChunkFrames(job, frameDir) {
     '-cluster_size_limit',  '2000000',     // finite-size clusters → no EBML unknown-size errors
     '-reserve_index_space', '1000000',     // seek index at file start → no backward scan needed
     chunkMkv,
-  ], `ffmpeg PNG→ffv1 failed (segment ${id} chunk ${chunkIndex})`)
+  ], `ffmpeg PNG→ffv1 failed (segment ${id} chunk ${chunkIndex})`, 'overlay-encode')
 
   return { webmPath: chunkMkv }
 }
@@ -636,7 +680,14 @@ function progressBar(label, done, total, startMs) {
   return `  ${tag}  ${String(pct).padStart(3)}%|${bar}| ${done}/${total} [${fmt(elapsed)}<${fmt(remaining)}]`
 }
 
-export function spawnAsync(cmd, args, errorPrefix, phase = 'ffmpeg') {
+/**
+ * Runs ffmpeg; a death by signal rejects child_killed with `phase`, which is
+ * required and one of CHILD_KILLED_PHASES (the app reads it).
+ */
+export function spawnAsync(cmd, args, errorPrefix, phase) {
+  if (!CHILD_KILLED_PHASES.includes(phase)) {
+    throw new TypeError(`spawnAsync: phase ${JSON.stringify(phase)} is not one of CHILD_KILLED_PHASES`)
+  }
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, args)
     let stderr = ''

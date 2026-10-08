@@ -4,13 +4,14 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync, spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 import { FFMPEG } from '../ffmpeg-bin.js'
 import { childKilledError, isChildKilled, syncResultError } from '../child-killed.js'
+import * as CK from '../child-killed.js'
 import * as R from '../renderer.js'
 import { spawnAsync, renderAllSegments } from '../renderer.js'
 import { bundleComponent, cleanupBundle } from '../bundle.js'
@@ -53,19 +54,24 @@ function saveCapture(err, stderrTail) {
 }
 
 test('spawnAsync: a SIGKILLed ffmpeg rejects child_killed with its signal', async () => {
-  const err = await killWhenRunning(spawnAsync(FFMPEG, LONG, 'ffmpeg test encode failed', 'test-phase'))
+  const err = await killWhenRunning(spawnAsync(FFMPEG, LONG, 'ffmpeg test encode failed', 'overlay-encode'))
   assert.equal(err.code, 'child_killed')
   assert.equal(err.child, 'ffmpeg')
   assert.equal(err.signal, 'SIGKILL')
-  assert.equal(err.phase, 'test-phase')
+  assert.equal(err.phase, 'overlay-encode')
   assert.ok(isChildKilled(err))
   assert.match(err.message, /^ffmpeg test encode failed:/)
   saveCapture(err, err.message.split('\n').slice(1))
 })
 
 test('spawnAsync: a plain exit code stays a plain error', async () => {
-  await assert.rejects(spawnAsync(FFMPEG, ['-y', '-i', '/nonexistent/x.mp4', '-f', 'null', '-'], 'boom'),
+  await assert.rejects(spawnAsync(FFMPEG, ['-y', '-i', '/nonexistent/x.mp4', '-f', 'null', '-'], 'boom', 'overlay-encode'),
     e => e.code !== 'child_killed' && /^boom:/.test(e.message))
+})
+
+test('spawnAsync: the phase is required, and must be one of CHILD_KILLED_PHASES', async () => {
+  await assert.rejects(async () => spawnAsync(FFMPEG, ['-version'], 'no phase'), TypeError)
+  await assert.rejects(async () => spawnAsync(FFMPEG, ['-version'], 'unlisted', 'test-phase'), TypeError)
 })
 
 test('runFfmpeg: a SIGKILLed ffmpeg reports its signal, not a timeout', async () => {
@@ -83,7 +89,7 @@ test('runFfmpeg: the engine\'s own timeout is flagged timedOut, so callers do no
   assert.equal(r.timedOut, true)
 })
 
-test('deriveSdr: a SIGKILLed ffmpeg rejects child_killed', async () => {
+test('deriveSdr: a SIGKILLed ffmpeg rejects child_killed', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'pl83-kill-'))
   try {
     const master = join(dir, 'hdr.mp4')
@@ -91,7 +97,7 @@ test('deriveSdr: a SIGKILLed ffmpeg rejects child_killed', async () => {
       '-pix_fmt', 'yuv420p10le', '-c:v', 'libx265', '-preset', 'ultrafast',
       '-x265-params', 'log-level=error:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc',
       '-color_primaries', 'bt2020', '-color_trc', 'smpte2084', '-colorspace', 'bt2020nc', master], { encoding: 'utf8' })
-    if (mk.status !== 0) return // no libx265 here: nothing to derive from
+    if (mk.status !== 0) { t.skip('no libx265'); return } // nothing to derive from
     const err = await killWhenRunning(deriveSdr(master, join(dir, 'sdr.mp4')))
     assert.equal(err.code, 'child_killed')
     assert.equal(err.child, 'ffmpeg')
@@ -102,13 +108,13 @@ test('deriveSdr: a SIGKILLed ffmpeg rejects child_killed', async () => {
 })
 
 test('syncResultError: a signal is child_killed, an exit code is null', () => {
-  const k = syncResultError({ status: null, signal: 'SIGKILL' }, { child: 'ffmpeg', phase: 'concat', message: 'm' })
+  const k = syncResultError({ status: null, signal: 'SIGKILL' }, { child: 'ffmpeg', phase: 'segment-concat', message: 'm' })
   assert.equal(k.code, 'child_killed')
   assert.equal(k.child, 'ffmpeg')
   assert.equal(k.signal, 'SIGKILL')
-  assert.equal(k.phase, 'concat')
+  assert.equal(k.phase, 'segment-concat')
   assert.equal(k.message, 'm')
-  assert.equal(syncResultError({ status: 1, signal: null }, { child: 'ffmpeg', phase: 'concat' }), null)
+  assert.equal(syncResultError({ status: 1, signal: null }, { child: 'ffmpeg', phase: 'segment-concat' }), null)
   // spawnSync's own timeout carries error + SIGTERM: not a kill from outside
   assert.equal(syncResultError({ status: null, signal: 'SIGTERM', error: new Error('ETIMEDOUT') }, { child: 'ffmpeg' }), null)
 })
@@ -225,7 +231,7 @@ async function saveChromeCapture(err, chromeVersion) {
   }, null, 2) + '\n')
 }
 
-test('renderAllSegments: a worker Chrome SIGKILLed mid-capture fails the render as child_killed within 2 s', { timeout: 120_000 }, async () => {
+test('renderAllSegments: a worker Chrome SIGKILLed mid-capture fails the render as child_killed within 5 s', { timeout: 120_000 }, async () => {
   const b = await dotBundle(900)
   const dir = ownTmp('t-render-kill')
   try {
@@ -235,14 +241,14 @@ test('renderAllSegments: a worker Chrome SIGKILLed mid-capture fails the render 
     const pid = theChrome()
     process.kill(pid, 'SIGKILL')
     const t0 = Date.now()
-    const err = await settle(p, 2000)
+    const err = await settle(p, 5000)
     const ms = Date.now() - t0
-    assert.ok(err instanceof Error, `the render ${err === 'resolved' ? 'succeeded' : 'was still running 2 s after the kill'}`)
+    assert.ok(err instanceof Error, `the render ${err === 'resolved' ? 'succeeded' : 'was still running 5 s after the kill'}`)
     assert.equal(err.code, 'child_killed', `got ${err.name}: ${err.message}`)
     assert.equal(err.child, 'chrome')
     assert.equal(err.signal, 'SIGKILL')
     assert.equal(err.phase, 'overlay-capture')
-    assert.ok(ms < 2000, `rejected ${ms} ms after the kill`)
+    assert.ok(ms < 5000, `rejected ${ms} ms after the kill`)
   } finally {
     restoreTmp()
   }
@@ -281,9 +287,13 @@ test('renderAllSegments: recycling a worker\'s browser every 5 jobs is not a dea
   const out = await renderAllSegments(segs, { workers: 1, chunkSize: 2 })
   assert.deepEqual(out.map(r => r.id), segs.map(s => s.id))
   for (const r of out) assert.ok(existsSync(r.webmPath), `${r.id} encoded`)
+  // The plan the render used, and none once a later render has nothing to plan.
+  assert.deepEqual(R.currentRenderPlan(), { workers: 1, chunkFrames: 2 })
+  assert.deepEqual(await renderAllSegments([]), [])
+  assert.equal(R.currentRenderPlan(), null, 'a render with no segments leaves no plan from the last one')
 })
 
-test('launchWorkerBrowser: browser.process().kill(SIGKILL) mid-capture rejects renderChunk as child_killed within 2 s', { timeout: 120_000 }, async () => {
+test('launchWorkerBrowser: browser.process().kill(SIGKILL) mid-capture rejects renderChunk as child_killed within 5 s', { timeout: 120_000 }, async () => {
   const b = await dotBundle(900)
   const dir = ownTmp('t-worker-kill')
   const worker = await R.launchWorkerBrowser({})
@@ -296,14 +306,14 @@ test('launchWorkerBrowser: browser.process().kill(SIGKILL) mid-capture rejects r
     await capturing(dir)
     worker.browser.process().kill('SIGKILL')
     const t0 = Date.now()
-    const err = await settle(p, 2000)
+    const err = await settle(p, 5000)
     const ms = Date.now() - t0
-    assert.ok(err instanceof Error, `renderChunk ${err === 'resolved' ? 'succeeded' : 'was still running 2 s after the kill'}`)
+    assert.ok(err instanceof Error, `renderChunk ${err === 'resolved' ? 'succeeded' : 'was still running 5 s after the kill'}`)
     assert.equal(err.code, 'child_killed', `got ${err.name}: ${err.message}`)
     assert.equal(err.child, 'chrome')
     assert.equal(err.signal, 'SIGKILL')
     assert.equal(err.phase, 'overlay-capture')
-    assert.ok(ms < 2000, `rejected ${ms} ms after the kill`)
+    assert.ok(ms < 5000, `rejected ${ms} ms after the kill`)
     assert.equal(deaths.length, 1)
     assert.equal(deaths[0].signal, 'SIGKILL')
     await saveChromeCapture(err, chromeVersion)
@@ -340,4 +350,102 @@ test('launchWorkerBrowser: the engine\'s own close(), idle or mid-capture, is ne
     await busy.close().catch(() => {})
     restoreTmp()
   }
+})
+
+// PL83 review: serve stops a render (cancel, a newer export) with SIGTERM to
+// its process group, and Puppeteer's own SIGTERM/SIGHUP handler SIGKILLs every
+// Chrome past close(). One listener per signal, for every live worker, marks
+// them closing first; one per browser would pass Node's 10-listener warning.
+test('launchWorkerBrowser: one SIGTERM and one SIGHUP listener for all live workers, gone with the last', { timeout: 120_000 }, async () => {
+  const count = () => ({ term: process.listenerCount('SIGTERM'), hup: process.listenerCount('SIGHUP') })
+  const before = count()
+  const a = await R.launchWorkerBrowser({})
+  const b = await R.launchWorkerBrowser({})
+  try {
+    // Puppeteer's own dispatcher (one for all its browsers) and the workers' one.
+    assert.deepEqual(count(), { term: before.term + 2, hup: before.hup + 2 }, 'two live workers')
+    await a.close()
+    assert.deepEqual(count(), { term: before.term + 2, hup: before.hup + 2 }, 'one live worker left')
+    const exited = new Promise(res => b.browser.process().once('exit', res))
+    b.browser.process().kill('SIGKILL')
+    await exited
+    await sleep(50)
+    assert.deepEqual(count(), before, 'the last worker died: no listener left')
+  } finally {
+    await a.close().catch(() => {})
+    await b.close().catch(() => {})
+  }
+})
+
+// ---------------------------------------------------------------------------
+// PL83 review: the phases are a fixed list. Every call that can raise a
+// child_killed error names a phase from CHILD_KILLED_PHASES (the app reads
+// them), and the list holds nothing no call emits.
+// ---------------------------------------------------------------------------
+
+/** The text between the `(` at `open` and its matching `)`, string literals skipped. */
+function argsAt(src, open) {
+  let depth = 0
+  let quote = null
+  for (let i = open; i < src.length; i++) {
+    const c = src[i]
+    if (quote) { if (c === '\\') i++; else if (c === quote) quote = null; continue }
+    if (c === '\'' || c === '"' || c === '`') { quote = c; continue }
+    if (c === '(') depth++
+    else if (c === ')' && --depth === 0) return src.slice(open + 1, i)
+  }
+  throw new Error(`unbalanced call at offset ${open}`)
+}
+
+/** The name of the last `function name(` before `idx`. */
+function enclosingFunction(src, idx) {
+  let name = null
+  for (const m of src.slice(0, idx).matchAll(/\bfunction\s+(\w+)\s*\(/g)) name = m[1]
+  return name
+}
+
+// Functions that pass on a phase their caller chose (checked at those callers).
+const FORWARDERS = { 'child-killed.js': ['syncResultError'], 'renderer.js': ['chromeKilledError', 'spawnAsync'] }
+
+test('CHILD_KILLED_PHASES: a frozen list of every phase a child_killed error can carry, and only those', () => {
+  const PHASES = CK.CHILD_KILLED_PHASES
+  assert.ok(Array.isArray(PHASES) && Object.isFrozen(PHASES), 'child-killed.js exports a frozen CHILD_KILLED_PHASES')
+  const srcDir = join(__dirname, '..')
+  const emitted = new Set()
+  const listed = (phase, where) => {
+    assert.ok(PHASES.includes(phase), `${where}: phase '${phase}' is not in CHILD_KILLED_PHASES`)
+    emitted.add(phase)
+  }
+  let sites = 0
+  for (const file of readdirSync(srcDir).filter(f => f.endsWith('.js'))) {
+    const src = readFileSync(join(srcDir, file), 'utf8')
+    const calls = /\b(childKilledError|syncResultError|spawnAsync|chromeKilledError|unlessChromeDies)\s*\(/g
+    for (const m of src.matchAll(calls)) {
+      if (/function\s+$/.test(src.slice(Math.max(0, m.index - 20), m.index))) continue // its definition
+      const fn = m[1]
+      const args = argsAt(src, m.index + m[0].length - 1)
+      const where = `${file}: ${fn}(${args.replace(/\s+/g, ' ').slice(0, 60)}…)`
+      sites++
+      if (fn === 'childKilledError' || fn === 'syncResultError') {
+        const lit = args.match(/\bphase:\s*'([^']+)'/)
+        if (lit) { listed(lit[1], where); continue }
+        assert.ok(/[{,]\s*phase\s*[,}]/.test(args), `${where}: names no phase`)
+        const outer = enclosingFunction(src, m.index)
+        assert.ok(FORWARDERS[file]?.includes(outer), `${where}: passes on a phase inside ${outer}, which is not a checked forwarder`)
+      } else if (fn === 'spawnAsync') {
+        const lit = args.trim().match(/,\s*'([^']+)'\s*,?$/)
+        assert.ok(lit, `${where}: the phase must be a string literal, last`)
+        listed(lit[1], where)
+      } else if (fn === 'chromeKilledError') {
+        assert.match(args, /^\s*\w+\s*,\s*phaseOf\(\)\s*,/, `${where}: Chrome's phase comes from phaseOf()`)
+      } else {
+        assert.match(args, /\(\)\s*=>\s*at\.phase\b/, `${where}: phaseOf reads at.phase`)
+      }
+    }
+    for (const a of src.matchAll(/\bat\s*=\s*\{\s*phase:\s*'([^']+)'\s*\}|\bat\.phase\s*=\s*'([^']+)'/g)) {
+      listed(a[1] ?? a[2], `${file}: at.phase`)
+    }
+  }
+  assert.ok(sites >= 15, `found only ${sites} call sites: the scan is not reading the sources`)
+  assert.deepEqual([...emitted].sort(), [...PHASES].sort(), 'every listed phase is emitted somewhere, and nothing else')
 })

@@ -392,7 +392,7 @@ function concatSegments(segments, outputPath) {
   if (result.status !== 0) {
     rmSync(tmpPath, { force: true })
     const message = `ffmpeg concat failed:\n${ffmpegErrorTail(result.stderr)}`
-    throw syncResultError(result, { child: 'ffmpeg', phase: 'concat', message }) ?? new Error(message)
+    throw syncResultError(result, { child: 'ffmpeg', phase: 'segment-concat', message }) ?? new Error(message)
   }
   renameSync(tmpPath, outputPath)
 }
