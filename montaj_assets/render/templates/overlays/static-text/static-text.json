@@ -9,6 +9,11 @@
     { "name": "color",         "type": "string", "default": "#111111",     "format": "color" },
     { "name": "textAlign",     "type": "string", "default": "center",      "enum": ["left", "center", "right"] },
     { "name": "textTransform", "type": "string", "default": "none",        "enum": ["none", "uppercase", "lowercase", "capitalize"] },
-    { "name": "bgColor",       "type": "string", "default": "transparent", "format": "color" }
+    { "name": "bgColor",       "type": "string", "default": "transparent", "format": "color" },
+    { "name": "effect",        "type": "string", "default": "none",        "enum": ["none", "shadow", "outline", "glow"] },
+    { "name": "effectColor",   "type": "string", "default": "#000000",     "format": "color" },
+    { "name": "effectStrength", "type": "string", "default": "60" },
+    { "name": "fit",           "type": "string", "default": "false",       "enum": ["false", "true"] },
+    { "name": "minFontSize",   "type": "string", "default": "24" }
   ]
 }

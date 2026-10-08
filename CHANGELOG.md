@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Added (editor, render): one-click text effects, fit to box, and align to slide in the carousel inspector.** The `static-text` overlay takes five new props: `effect` (`none`, `shadow`, `outline`, `glow`), `effectColor`, `effectStrength` (`"0"`..`"100"`), `fit` (`"true"` shrinks the text to the largest whole px size that fits the box without breaking a word) and `minFontSize` (the floor, default `"24"`). Effects are sized in `em`, so they follow a fitted size. Fit measures the laid-out text through a callback ref, not a hook, so the editor preview (which calls an overlay directly) and the render fit the same way with their own font metrics, and fit again once webfonts land. The inspector shows Effect presets with a color and a strength slider, and a Fit to box switch, for an overlay that declares them; every element gets an Align row (left, center, right, top, middle, bottom of the slide, by the box a rotated element covers). Existing text keeps its look: the props default to no effect and no fit. The editable-text skill names the new props.
+
 ## v5.24.19
 
 - **Changed (editor): carousel slide thumbnails show note bubbles.** Each thumbnail with open notes shows a small speech bubble per tone at its bottom right, yours (accent) before reviews (amber), counting all of that slide's `pins`, with a point or without, numbered only past one. A click on a bubble selects the slide and calls `onPinClick` with that tone's first pin; it neither selects twice nor starts a drag. Replaces the thumbnail count of whole-slide pins (`data-slide-pin-count` is gone; bubbles carry `data-slide-note-bubble` and `data-tone`). (`montaj_assets/editor/src/carousel/CarouselEditor.tsx`, `NoteLayers.tsx`, `types.ts`, `__tests__/CarouselEditor.test.tsx`)

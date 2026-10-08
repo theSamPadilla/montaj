@@ -51,6 +51,10 @@ The 9 props are the *editable surface*; the *values* of the defaults are the aes
 
 The 9 props are a floor, not a ceiling. The agent may add any other props (gradients, accents, icon refs, subtitle blocks, animation timing for non-text-style features, etc.). The contract only says these 9 must be present and applied; nothing limits what else the overlay accepts.
 
+### Effects and fit (optional, editor-backed).
+
+Five more props light up editor controls when an overlay declares them: `effect` (`none` | `shadow` | `outline` | `glow`), `effectColor`, `effectStrength` (`"0"`..`"100"`), `fit` (`"true"` shrinks the text until it fits the box) and `minFontSize` (the size fit never goes below). Copy their handling from the canonical reference rather than writing your own: it sizes the effects in `em`, so they follow a fitted size, and it fits through a callback ref with no React hooks, because the editor preview calls the overlay function directly and a hook there breaks. Prefer `fit: "true"` with a `minFontSize` at the role's floor (see the carousel skill's sizes) over guessing a size for long copy.
+
 ## Worked examples
 
 **Hook headline** — large, bold, sans, centered:

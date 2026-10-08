@@ -3,7 +3,7 @@
 Tests four cases from the 2026-05-24-add-text-overlay plan (Task 6):
   1. GET /api/overlays/system returns at least the static-text entry.
   2. The entry's jsxPath exists on disk and is readable.
-  3. The entry's props list matches the static-text.json schema (9 named props
+  3. The entry's props list matches the static-text.json schema (14 named props
      with correct defaults).
   4. GET /api/overlays (user-library) does NOT include static-text.
      Path.home is patched to an empty tmp dir to isolate from the developer's
@@ -39,6 +39,11 @@ EXPECTED_PROPS = [
     {"name": "textAlign",     "type": "string", "default": "center",      "enum": ["left", "center", "right"]},
     {"name": "textTransform", "type": "string", "default": "none",        "enum": ["none", "uppercase", "lowercase", "capitalize"]},
     {"name": "bgColor",       "type": "string", "default": "transparent", "format": "color"},
+    {"name": "effect",        "type": "string", "default": "none",        "enum": ["none", "shadow", "outline", "glow"]},
+    {"name": "effectColor",   "type": "string", "default": "#000000",     "format": "color"},
+    {"name": "effectStrength", "type": "string", "default": "60"},
+    {"name": "fit",           "type": "string", "default": "false",       "enum": ["false", "true"]},
+    {"name": "minFontSize",   "type": "string", "default": "24"},
 ]
 
 

@@ -12,6 +12,8 @@ import type {
 import { Button, cn, inspectorInputClass, NumberField, stepValue, SwatchInput } from '../ui'
 import { Loader } from '../ui/Loader'
 import { TextFormattingToolbar } from '../text/TextFormattingToolbar'
+import { TextEffectControls } from '../text/TextEffectControls'
+import { AlignControls } from './AlignControls'
 
 // Shared small muted label that sits just above an inspector control.
 const fieldLabelClass = 'text-[11px] uppercase tracking-wide text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]'
@@ -321,6 +323,13 @@ export default function SlidePropertyPanel({
             {numInput('Rotation', element.rotation ?? 0, v => onElementChange({ rotation: v }), { min: -360, max: 360 })}
           </div>
 
+          <AlignControls
+            element={element}
+            width={project.settings.resolution[0]}
+            height={project.settings.resolution[1]}
+            onChange={patch => onElementChange(patch)}
+          />
+
           {/* Image-specific */}
           {element.type === 'image' && (
             <div className="flex flex-col gap-2">
@@ -355,6 +364,16 @@ export default function SlidePropertyPanel({
                   & size pickers) for overlays exposing the standard text contract. */}
               {updateOverlayProp && (
                 <TextFormattingToolbar
+                  slideId={slide.id}
+                  element={overlayEl}
+                  updateOverlayProp={updateOverlayProp}
+                  mode={mode}
+                />
+              )}
+
+              {/* Effect presets and Fit, for a template that takes them (static-text). */}
+              {updateOverlayProp && (
+                <TextEffectControls
                   slideId={slide.id}
                   element={overlayEl}
                   updateOverlayProp={updateOverlayProp}
