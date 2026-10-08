@@ -10,8 +10,8 @@ import puppeteer from 'puppeteer'
 import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { spawnSync, spawn } from 'child_process'
-import { tmpdir, homedir } from 'os'
-import { randomBytes } from 'crypto'
+import { once } from 'events'
+import { homedir } from 'os'
 import os from 'os'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
@@ -28,8 +28,8 @@ const FFMPEG_TIMEOUT_MS  = 600_000
 /**
  * Chunk size in OUTPUT frames for a render at `subframes` sub-frames/frame.
  *
- * Motion blur multiplies per-chunk work (N sub-frame captures + temp PNGs per
- * output frame), so a chunk sized on output frames alone gets N× more
+ * Motion blur multiplies per-chunk work (N sub-frame captures per output
+ * frame), so a chunk sized on output frames alone gets N× more
  * expensive under blur without shrinking. Sizing on `longest * subframes`
  * instead keeps a blurred chunk's actual rendered-image count in the same
  * ballpark as an unblurred one, then converting back down to output frames
@@ -76,8 +76,7 @@ export function resolveChunkSize(longest, targetWorkers, subframes, configChunkS
 /**
  * The chunk plan renderAllSegments runs: every segment cut into chunks of
  * `chunkSize` frames, and how many browser workers capture them at once. Also
- * what render.js's disk check (disk-space.js, §128) sizes TMPDIR from, since
- * each worker holds its whole chunk's frames until the chunk is encoded.
+ * what render.js's disk check (disk-space.js, §128) sizes its estimate from.
  *
  * @param {Array<{ frameCount: number, opaque?: boolean }>} segments
  * @param {{ workers?: number, chunkSize?: number, motionBlur?: number }} [config]
@@ -430,40 +429,161 @@ export function captureOptionsFor(job) {
 }
 
 /**
- * One chunk on one worker (launchWorkerBrowser): capture its frames, encode
- * them. Exported for tests.
+ * One chunk on one worker (launchWorkerBrowser): its frames, captured straight
+ * into the ffmpeg that encodes them. Exported for tests.
+ *
+ * §131: the chunk's ffmpeg starts first and reads the screenshots from its
+ * stdin, so no frame touches the disk. Each frame used to be a PNG in TMPDIR
+ * until its chunk was encoded, workers x chunk frames at once, and the chunk
+ * grows with the longest overlay: GBs for a long captioned video.
+ *
+ * Any failure (the capture, Chrome, ffmpeg, a props image not served) stops
+ * the chunk's ffmpeg and removes its partial MKV before the chunk fails.
  */
 export async function renderChunk(worker, job) {
-  const { id, chunkIndex } = job
+  const { id, chunkIndex, outputPath } = job
+  const chunkMkv = outputPath.replace(/\.\w+$/, '') + `-chunk-${chunkIndex}.mkv`
+  mkdirSync(dirname(chunkMkv), { recursive: true })
 
-  const frameDir = join(tmpdir(), `montaj-frames-${id}-c${chunkIndex}-${randomBytes(4).toString('hex')}`)
-  mkdirSync(frameDir, { recursive: true })
-  // Removed on every way out (§128): a chunk that failed, a full disk
-  // included, used to leave its frames behind for the next attempt to trip on.
+  const what = `ffmpeg PNG→ffv1 failed (segment ${id} chunk ${chunkIndex})`
+  const sink = frameSink(spawnAsync(FFMPEG, chunkEncodeArgs(job, chunkMkv), what, 'overlay-encode'), what)
   try {
-    return await captureAndEncodeChunk(worker, job, frameDir)
-  } finally {
-    rmSync(frameDir, { recursive: true, force: true })
+    // PL83: a Chrome the system kills mid-capture, or a page whose renderer
+    // dies, fails the chunk at once as child_killed, naming the phase.
+    const at = { phase: 'overlay-load' }
+    const guard = await unlessChromeDies(worker, captureChunkFrames(worker, job, sink, at),
+      () => at.phase, `segment ${id} chunk ${chunkIndex}`)
+    // A props image the page asked for and could not get fails the render,
+    // naming it, rather than exporting without it (page-guard.js).
+    guard.assertPropsServed()
+    await sink.end()
+  } catch (err) {
+    await sink.abort()
+    rmSync(chunkMkv, { force: true })
+    throw err
+  }
+  return { webmPath: chunkMkv }
+}
+
+/**
+ * Writes a chunk's frames into its ffmpeg's stdin (§131). `encode` is the
+ * running ffmpeg's promise (spawnAsync), which settles when it exits.
+ *
+ * `write` awaits 'drain' whenever ffmpeg has not taken the last frame yet.
+ * Without that, a capture faster than its encode would pile the frames up in
+ * memory instead: the same GBs that used to be on disk.
+ *
+ * A write to an ffmpeg that has died fails with EPIPE. That error is only
+ * recorded, and the exit decides the chunk's error, so a killed ffmpeg still
+ * fails as child_killed with phase overlay-encode, and an ffmpeg that failed
+ * on its own still names its last lines. A dead ffmpeg is noticed at the next
+ * frame, which stops the capture.
+ */
+function frameSink(encode, what) {
+  const { stdin } = encode.child
+  let stdinError = null
+  stdin.on('error', err => { stdinError ??= err })
+  let outcome = null
+  const exited = encode.then(() => { outcome = { ok: true } }, err => { outcome = { err } })
+  const stopped = () => outcome !== null || stdinError !== null
+  const exitError = async () => {
+    await exited
+    if (outcome.err) return outcome.err
+    const why = stdinError ? ` (${stdinError.code ?? stdinError.message})` : ''
+    return new Error(`${what}:\nffmpeg stopped reading the chunk's frames before the last one${why}`)
+  }
+
+  return {
+    /** One frame, in order; resolves once ffmpeg can take the next. */
+    async write(frame) {
+      if (stopped()) throw await exitError()
+      if (stdin.write(frame)) return
+      // once() rejects on the EPIPE, already recorded; an exit settles it too,
+      // and then takes its listeners off.
+      const off = new AbortController()
+      try {
+        await Promise.race([once(stdin, 'drain', { signal: off.signal }).catch(() => {}), exited])
+      } finally {
+        off.abort()
+      }
+      if (stopped()) throw await exitError()
+    },
+    /** The last frame was written: ffmpeg finishes the MKV. */
+    async end() {
+      if (stopped()) throw await exitError()
+      stdin.end()
+      await exited
+      if (outcome.err || stdinError) throw await exitError()
+    },
+    /** The chunk failed: stop its ffmpeg and wait for it to be gone. */
+    async abort() {
+      stdin.destroy()
+      if (!outcome) encode.child.kill('SIGKILL')
+      await exited
+    },
   }
 }
 
-async function captureAndEncodeChunk(worker, job, frameDir) {
-  const { id, chunkIndex } = job
-
-  // PL83: a Chrome the system kills mid-capture, or a page whose renderer
-  // dies, fails the chunk at once as child_killed, naming the phase.
-  const at = { phase: 'overlay-load' }
-  const guard = await unlessChromeDies(worker, captureChunkFrames(worker, job, frameDir, at),
-    () => at.phase, `segment ${id} chunk ${chunkIndex}`)
-  // A props image the page asked for and could not get fails the render,
-  // naming it, rather than exporting without it (page-guard.js).
-  guard.assertPropsServed()
-
-  return encodeChunkFrames(job, frameDir)
+/**
+ * The chunk's encode: PNG screenshots read from stdin (image2pipe) into FFV1
+ * in MKV, written to `chunkMkv`. Only the input changed when the frames moved
+ * from files to the pipe (§131); everything after `-i` is as it was.
+ *
+ * yuva420p for transparent overlays; yuv420p for opaque (no alpha needed).
+ * FFV1 codec preserves alpha (yuva420p) losslessly.
+ *
+ * Container choice: MKV with cluster_size_limit + reserve_index_space.
+ *   - NUT was used previously to avoid EBML unknown-size clusters, but the NUT muxer
+ *     fails to write the end-of-file index for large files (large frames, many frames),
+ *     causing "no index at the end" and backward timestamp scan failures during compose.
+ *   - MKV with -cluster_size_limit <N> forces finite-size clusters (no unknown-size
+ *     EBML elements), fixing the concurrent-decode EBML error that originally drove the
+ *     switch to NUT.
+ *   - reserve_index_space writes the seek index at the start of the file, ensuring
+ *     fast and reliable seeking without a backward scan.
+ *   - -g 1: every FFV1 frame is a keyframe — required so the MKV muxer places a
+ *     cluster boundary (and thus a cue point) before every frame, enabling accurate
+ *     per-frame seeking used by the compose filter graph.
+ *
+ * Exported for tests.
+ */
+export function chunkEncodeArgs(job, chunkMkv) {
+  const { fps, subframes = 1 } = job
+  const { pixFmt, omitBackground } = captureOptionsFor(job)
+  // Motion blur off: args are exactly as before (render goldens depend on it).
+  const blurVf = motionBlurFilter(subframes, { alpha: omitBackground })
+  const inputRate = blurVf ? String(fps * subframes) : String(fps)
+  // Chrome writes a transparent capture's fully opaque frames as RGB PNG, the
+  // rest as RGBA. ffmpeg rebuilds the filter graph at each flip by default,
+  // and the blur graph is stateful: setpts=PTS-STARTPTS restarts at 0, so -r
+  // drops the rebuilt graph's frames as late until they catch up (an opaque
+  // card vanished from the segment). -reinit_filter 0 keeps one graph; premultiply takes planar
+  // formats only, so the scaler ffmpeg inserts ahead of it converts each frame.
+  // Not on the opaque path: its captures are always RGB, and tmix there reads
+  // the input format directly, so a flip would be misread rather than converted.
+  const keepGraph = blurVf && omitBackground ? ['-reinit_filter', '0'] : []
+  return [
+    '-y',
+    ...keepGraph,
+    // Each screenshot is a whole PNG; the png parser splits the stream into
+    // frames, decoded one by one as the files were, RGB or RGBA per frame.
+    '-f',                   'image2pipe',
+    '-c:v',                 'png',
+    '-framerate',           inputRate,
+    '-i',                   'pipe:0',
+    ...(blurVf ? ['-vf', blurVf, '-r', String(fps)] : []),
+    '-c:v',                 'ffv1',
+    '-g',                   '1',           // all-keyframe → MKV places cluster/cue at every frame
+    '-pix_fmt',             pixFmt,
+    '-f',                   'matroska',
+    '-cluster_size_limit',  '2000000',     // finite-size clusters → no EBML unknown-size errors
+    '-reserve_index_space', '1000000',     // seek index at file start → no backward scan needed
+    chunkMkv,
+  ]
 }
 
-/** Loads the chunk's page and screenshots its frames into `frameDir`; returns its page guard. */
-async function captureChunkFrames(worker, job, frameDir, at) {
+/** Loads the chunk's page and streams its frames into `sink` (frameSink); returns its page guard. */
+async function captureChunkFrames(worker, job, sink, at) {
   const { id, htmlPath, width, height, frameStart, frameEnd, captureScale, subframes = 1 } = job
 
   const page = worker.watchPage(await worker.browser.newPage())
@@ -562,7 +682,7 @@ async function captureChunkFrames(worker, job, frameDir, at) {
   for (let frame = frameStart; frame < frameEnd; frame++) {
     const localIdx = frame - frameStart
     // With motion blur on, each output frame captures `subframes` screenshots at
-    // f + i/subframes, numbered consecutively; the encode averages each group.
+    // f + i/subframes, written in order; the encode averages each group.
     const times = subframeTimes(frame, subframes)
     for (let s = 0; s < times.length; s++) {
       const t = times[s]
@@ -589,9 +709,11 @@ async function captureChunkFrames(worker, job, frameDir, at) {
       // 3. Double rAF: first fires after layout+paint, second fires after the result
       //    has been composited — guarantees the screenshot sees the current frame.
       await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
-      const shotIdx = localIdx * subframes + s
-      const framePath = join(frameDir, `frame-${String(shotIdx).padStart(6, '0')}.png`)
-      await page.screenshot({ path: framePath, omitBackground: captureOptionsFor(job).omitBackground })
+      // 4. Into the chunk's ffmpeg (§131): the same PNG bytes a `path`
+      //    screenshot wrote to disk. png is Puppeteer's default; named here
+      //    because omitBackground applies to png only.
+      const frame = await page.screenshot({ type: 'png', omitBackground: captureOptionsFor(job).omitBackground })
+      await sink.write(frame)
     }
     if ((localIdx + 1) % reportEvery === 0 || localIdx + 1 === totalFrames) {
       log(progressBar(id, localIdx + 1, totalFrames, renderStartMs))
@@ -600,60 +722,6 @@ async function captureChunkFrames(worker, job, frameDir, at) {
 
   await page.close()
   return guard
-}
-
-/** Encodes a captured chunk's PNG sequence into its FFV1 MKV. */
-async function encodeChunkFrames(job, frameDir) {
-  const { id, fps, chunkIndex, outputPath, subframes = 1 } = job
-
-  // Encode PNG sequence → FFV1 in MKV.
-  // yuva420p for transparent overlays; yuv420p for opaque (no alpha needed).
-  // FFV1 codec preserves alpha (yuva420p) losslessly.
-  //
-  // Container choice: MKV with cluster_size_limit + reserve_index_space.
-  //   - NUT was used previously to avoid EBML unknown-size clusters, but the NUT muxer
-  //     fails to write the end-of-file index for large files (large frames, many frames),
-  //     causing "no index at the end" and backward timestamp scan failures during compose.
-  //   - MKV with -cluster_size_limit <N> forces finite-size clusters (no unknown-size
-  //     EBML elements), fixing the concurrent-decode EBML error that originally drove the
-  //     switch to NUT.
-  //   - reserve_index_space writes the seek index at the start of the file, ensuring
-  //     fast and reliable seeking without a backward scan.
-  //   - -g 1: every FFV1 frame is a keyframe — required so the MKV muxer places a
-  //     cluster boundary (and thus a cue point) before every frame, enabling accurate
-  //     per-frame seeking used by the compose filter graph.
-  const chunkMkv = outputPath.replace(/\.\w+$/, '') + `-chunk-${chunkIndex}.mkv`
-  mkdirSync(dirname(chunkMkv), { recursive: true })
-
-  const { pixFmt, omitBackground } = captureOptionsFor(job)
-  // Motion blur off: args are exactly as before (render goldens depend on it).
-  const blurVf = motionBlurFilter(subframes, { alpha: omitBackground })
-  const inputRate = blurVf ? String(fps * subframes) : String(fps)
-  // Chrome writes a transparent capture's fully opaque frames as RGB PNG, the
-  // rest as RGBA. ffmpeg rebuilds the filter graph at each flip by default,
-  // and the blur graph is stateful: setpts=PTS-STARTPTS restarts at 0, so -r
-  // drops the rebuilt graph's frames as late until they catch up (an opaque
-  // card vanished from the segment). -reinit_filter 0 keeps one graph; premultiply takes planar
-  // formats only, so the scaler ffmpeg inserts ahead of it converts each frame.
-  // Not on the opaque path: its captures are always RGB, and tmix there reads
-  // the input format directly, so a flip would be misread rather than converted.
-  const keepGraph = blurVf && omitBackground ? ['-reinit_filter', '0'] : []
-  await spawnAsync(FFMPEG, [
-    '-y',
-    ...keepGraph,
-    '-framerate',           inputRate,
-    '-i',                   join(frameDir, 'frame-%06d.png'),
-    ...(blurVf ? ['-vf', blurVf, '-r', String(fps)] : []),
-    '-c:v',                 'ffv1',
-    '-g',                   '1',           // all-keyframe → MKV places cluster/cue at every frame
-    '-pix_fmt',             pixFmt,
-    '-f',                   'matroska',
-    '-cluster_size_limit',  '2000000',     // finite-size clusters → no EBML unknown-size errors
-    '-reserve_index_space', '1000000',     // seek index at file start → no backward scan needed
-    chunkMkv,
-  ], `ffmpeg PNG→ffv1 failed (segment ${id} chunk ${chunkIndex})`, 'overlay-encode')
-
-  return { webmPath: chunkMkv }
 }
 
 const TTY = process.stderr.isTTY
@@ -683,13 +751,18 @@ function progressBar(label, done, total, startMs) {
 /**
  * Runs ffmpeg; a death by signal rejects child_killed with `phase`, which is
  * required and one of CHILD_KILLED_PHASES (the app reads it).
+ *
+ * The returned promise carries the process as `.child`, for a caller that
+ * writes to its stdin (renderChunk streams a chunk's frames into it, §131).
+ * That caller handles stdin's 'error'.
  */
 export function spawnAsync(cmd, args, errorPrefix, phase) {
   if (!CHILD_KILLED_PHASES.includes(phase)) {
     throw new TypeError(`spawnAsync: phase ${JSON.stringify(phase)} is not one of CHILD_KILLED_PHASES`)
   }
-  return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args)
+  let child
+  const done = new Promise((resolve, reject) => {
+    const proc = child = spawn(cmd, args)
     let stderr = ''
     proc.stderr.on('data', d => { stderr += d })
     proc.on('close', (code, signal) => {
@@ -700,6 +773,7 @@ export function spawnAsync(cmd, args, errorPrefix, phase) {
     })
     proc.on('error', reject)
   })
+  return Object.assign(done, { child })
 }
 
 function readMontajConfig() {

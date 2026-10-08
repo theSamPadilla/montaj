@@ -148,7 +148,10 @@ const realTmp = process.env.TMPDIR
 const bundles = []
 
 before(() => {
-  base = realpathSync(mkdtempSync(join(tmpdir(), 'pl83-chrome-')))
+  // Not 'chrome' in the name: the chunk's ffmpeg (§131) runs during the
+  // capture, its output path is under `base`, and theChrome() finds Chrome by
+  // matching its command line.
+  base = realpathSync(mkdtempSync(join(tmpdir(), 'pl83-worker-')))
   const ws = join(base, 'ws')
   mkdirSync(join(ws, 'proj', 'overlays'), { recursive: true })
   process.env.MONTAJ_WORKSPACE_DIR = ws
@@ -185,7 +188,7 @@ function chunkJob(seg) {
   return { ...seg, opaque: false, subframes: 1, frameStart: 0, frameEnd: seg.frameCount, chunkIndex: 0, totalChunks: 1 }
 }
 
-/** A TMPDIR of the test's own, so its frame dirs can be watched. */
+/** A TMPDIR of the test's own (Chrome's profile goes there). */
 function ownTmp(name) {
   const dir = join(base, name)
   mkdirSync(dir, { recursive: true })
@@ -198,12 +201,29 @@ function restoreTmp() {
   else process.env.TMPDIR = realTmp
 }
 
-/** Resolves once a chunk under `dir` has captured `n` frames: the capture loop is running. */
-async function capturing(dir, n = 3) {
+// The progress lines renderer.js logs while a chunk captures (one per 5% of
+// its frames), counted off this process's stderr. Frames stream into the
+// chunk's ffmpeg (§131), so no PNG lands in TMPDIR to show the capture under way.
+const PROGRESS = /\| \d+\/\d+ \[/
+let progressLines = 0
+const realStderrWrite = process.stderr.write
+before(() => {
+  process.stderr.write = function (chunk, ...rest) {
+    if (PROGRESS.test(String(chunk))) progressLines++
+    return realStderrWrite.call(this, chunk, ...rest)
+  }
+})
+after(() => { process.stderr.write = realStderrWrite })
+
+/**
+ * Resolves once a chunk has logged a progress line after this call: the
+ * capture loop is running. Called right after starting the render, which logs
+ * none before its first await.
+ */
+async function capturing() {
+  const since = progressLines
   for (let i = 0; i < 2400; i++) {
-    for (const d of readdirSync(dir).filter(x => x.startsWith('montaj-frames-'))) {
-      try { if (readdirSync(join(dir, d)).filter(f => f.endsWith('.png')).length >= n) return } catch {}
-    }
+    if (progressLines > since) return
     await sleep(25)
   }
   throw new Error('the capture never started')
@@ -233,11 +253,11 @@ async function saveChromeCapture(err, chromeVersion) {
 
 test('renderAllSegments: a worker Chrome SIGKILLed mid-capture fails the render as child_killed within 5 s', { timeout: 120_000 }, async () => {
   const b = await dotBundle(900)
-  const dir = ownTmp('t-render-kill')
+  ownTmp('t-render-kill')
   try {
     const p = renderAllSegments([segment(b, 'dot', 900)], { workers: 1, chunkSize: 900 })
     p.catch(() => {})
-    await capturing(dir)
+    await capturing()
     const pid = theChrome()
     process.kill(pid, 'SIGKILL')
     const t0 = Date.now()
@@ -256,12 +276,12 @@ test('renderAllSegments: a worker Chrome SIGKILLed mid-capture fails the render 
 
 test('renderAllSegments: a page whose renderer is killed mid-capture fails as child_killed, chrome, no signal', { timeout: 120_000 }, async () => {
   const b = await dotBundle(900)
-  const dir = ownTmp('t-render-crash')
+  ownTmp('t-render-crash')
   let chrome
   try {
     const p = renderAllSegments([segment(b, 'dot', 900)], { workers: 1, chunkSize: 900 })
     p.catch(() => {})
-    await capturing(dir)
+    await capturing()
     chrome = theChrome()
     const renderers = childPids(chrome, 'type=renderer')
     assert.ok(renderers.length > 0, 'Chrome has renderer processes')
@@ -295,7 +315,7 @@ test('renderAllSegments: recycling a worker\'s browser every 5 jobs is not a dea
 
 test('launchWorkerBrowser: browser.process().kill(SIGKILL) mid-capture rejects renderChunk as child_killed within 5 s', { timeout: 120_000 }, async () => {
   const b = await dotBundle(900)
-  const dir = ownTmp('t-worker-kill')
+  ownTmp('t-worker-kill')
   const worker = await R.launchWorkerBrowser({})
   try {
     const chromeVersion = await worker.browser.version()
@@ -303,7 +323,7 @@ test('launchWorkerBrowser: browser.process().kill(SIGKILL) mid-capture rejects r
     worker.onDeath(info => deaths.push(info))
     const p = R.renderChunk(worker, chunkJob(segment(b, 'wk', 900)))
     p.catch(() => {})
-    await capturing(dir)
+    await capturing()
     worker.browser.process().kill('SIGKILL')
     const t0 = Date.now()
     const err = await settle(p, 5000)
@@ -325,7 +345,7 @@ test('launchWorkerBrowser: browser.process().kill(SIGKILL) mid-capture rejects r
 
 test('launchWorkerBrowser: the engine\'s own close(), idle or mid-capture, is never a death', { timeout: 120_000 }, async () => {
   const b = await dotBundle(900)
-  const dir = ownTmp('t-worker-close')
+  ownTmp('t-worker-close')
   // Idle: the recycle path closes a browser between jobs.
   const idle = await R.launchWorkerBrowser({})
   const idleDeaths = []
@@ -338,7 +358,7 @@ test('launchWorkerBrowser: the engine\'s own close(), idle or mid-capture, is ne
   try {
     const p = R.renderChunk(busy, chunkJob(segment(b, 'wc', 900)))
     p.catch(() => {})
-    await capturing(dir)
+    await capturing()
     await busy.close()
     const err = await settle(p, 5000)
     assert.ok(err instanceof Error, `renderChunk ${err === 'resolved' ? 'succeeded' : 'was still running 5 s after close()'}`)

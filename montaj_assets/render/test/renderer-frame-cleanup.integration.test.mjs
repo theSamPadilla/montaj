@@ -1,16 +1,22 @@
 // render/test/renderer-frame-cleanup.integration.test.mjs
 //
-// §128: a chunk that fails after its frames are captured leaves no PNGs behind.
-// renderChunk removed its frame dir only on success, so a failed chunk (a full
-// disk included) left its frames in TMPDIR, and an AI retrying the render
-// found less room each time.
+// §128: a failed chunk leaves nothing behind. renderChunk removed its frame
+// dir only on success, so a failed chunk (a full disk included) left its
+// frames in TMPDIR, and an AI retrying the render found less room each time.
 //
-// Real Chrome, a real bundle. The chunk fails after capture: its output path
-// sits under a regular file, so making the chunk's directory throws.
+// §131: frames now stream into the chunk's ffmpeg and never reach TMPDIR, so
+// what a failed chunk could leave is its ffmpeg running and a partial MKV.
+// These cases check TMPDIR stays free of frames, no chunk ffmpeg outlives the
+// render, and no chunk MKV is left. A failure mid-capture, deterministic, is
+// in stream-frames.test.mjs.
+//
+// Real Chrome, a real bundle. A chunk fails when its output path sits under a
+// regular file, so making the chunk's directory throws.
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, readdirSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, readdirSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { bundleComponent, cleanupBundle } from '../bundle.js'
@@ -24,6 +30,27 @@ const JSX = `export default function Dot() {
 
 let base, ws, overlay
 const realTmp = process.env.TMPDIR
+
+/** Frame dirs or frame PNGs anywhere under `dir` (a dir that vanishes mid-walk, a Chrome profile, is skipped). */
+function framesUnder(dir) {
+  const found = []
+  const walk = d => {
+    let entries
+    try { entries = readdirSync(d, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (/^montaj-frames-/.test(e.name) || /^frame-\d+\.png$/.test(e.name)) found.push(join(d, e.name))
+      if (e.isDirectory()) walk(join(d, e.name))
+    }
+  }
+  walk(dir)
+  return found
+}
+
+/** This process's chunk encoders still running (pgrep -f on their stdin input). */
+function chunkEncoders() {
+  const r = spawnSync('pgrep', ['-P', String(process.pid), '-f', 'image2pipe'], { encoding: 'utf8' })
+  return r.stdout.split('\n').map(Number).filter(Boolean)
+}
 
 before(() => {
   base = realpathSync(mkdtempSync(join(tmpdir(), 'montaj-frame-cleanup-')))
@@ -40,12 +67,12 @@ after(() => {
   if (base) rmSync(base, { recursive: true, force: true })
 })
 
-test('a chunk that fails after capturing its frames leaves no frame dir in TMPDIR', { timeout: 120_000 }, async () => {
+test('a chunk that fails leaves no frames in TMPDIR and no encoder running', { timeout: 120_000 }, async () => {
   const bundle = await bundleComponent({
     componentPath: overlay, props: {}, fps: 30, durationFrames: 4, width: SIZE, height: SIZE,
     projectDir: join(ws, 'proj'),
   })
-  // Frames go to a TMPDIR of this test's own, read by renderChunk at call time.
+  // A TMPDIR of this test's own, where frames went before §131.
   const frames = join(base, 'tmp')
   mkdirSync(frames)
   process.env.TMPDIR = frames
@@ -57,8 +84,8 @@ test('a chunk that fails after capturing its frames leaves no frame dir in TMPDI
       frameCount: 4, startSeconds: 0, endSeconds: 4 / 30, outputPath: join(blocker, 'seg', 'dot.mkv'),
       boundary: bundle.boundary, needsGoogleFonts: bundle.needsGoogleFonts,
     }], { workers: 1, chunkSize: 4 }))
-    const left = readdirSync(frames).filter(n => n.startsWith('montaj-frames-'))
-    assert.deepEqual(left, [], 'the failed chunk\'s frames are gone')
+    assert.deepEqual(framesUnder(frames), [], 'no frames in TMPDIR')
+    assert.deepEqual(chunkEncoders(), [], 'no chunk ffmpeg left running')
   } finally {
     process.env.TMPDIR = realTmp ?? ''
     if (realTmp === undefined) delete process.env.TMPDIR
@@ -80,13 +107,16 @@ test('when one worker\'s chunk fails, the others stop and clean up before the re
     boundary: bundle.boundary, needsGoogleFonts: bundle.needsGoogleFonts }
   try {
     await assert.rejects(renderAllSegments([
-      // Fails right after its 2 frames: its chunk dir cannot be made.
+      // Fails at once: its chunk dir cannot be made.
       { ...common, id: 'quick', frameCount: 2, startSeconds: 0, endSeconds: 2 / 30, outputPath: join(blocker, 'q', 'quick.mkv') },
-      // Still capturing when the first fails.
+      // Loading or capturing, its ffmpeg running, when the first fails.
       { ...common, id: 'long', frameCount: 120, startSeconds: 0, endSeconds: 4, outputPath: join(base, 'segs', 'long.mkv') },
     ], { workers: 2, chunkSize: 120 }))
-    const left = readdirSync(frames).filter(n => n.startsWith('montaj-frames-'))
-    assert.deepEqual(left, [], 'no worker left its frames behind')
+    assert.deepEqual(framesUnder(frames), [], 'no worker left frames in TMPDIR')
+    assert.deepEqual(chunkEncoders(), [], 'the stopped worker\'s chunk ffmpeg is gone')
+    const segs = join(base, 'segs')
+    const mkvs = existsSync(segs) ? readdirSync(segs).filter(n => n.endsWith('.mkv')) : []
+    assert.deepEqual(mkvs, [], 'the stopped worker left no partial chunk MKV')
   } finally {
     if (realTmp === undefined) delete process.env.TMPDIR
     else process.env.TMPDIR = realTmp

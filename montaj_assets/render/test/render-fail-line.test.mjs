@@ -7,7 +7,7 @@
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, readdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -127,13 +127,15 @@ function stopRender(run) {
 
 const lastLine = run => run.stderr.trim().split('\n').pop()
 
-/** Resolves once a chunk under `dir` has captured `n` frames: the capture is under way. */
-async function capturing(dir, run, n = 3) {
+/**
+ * Resolves once the render has logged a chunk's progress line (one per 5% of
+ * its frames): the capture is under way. Frames stream into the chunk's ffmpeg
+ * (§131), so no PNG lands in TMPDIR to show it.
+ */
+async function capturing(run) {
   const deadline = Date.now() + 180_000
   while (Date.now() < deadline && run.child.exitCode === null) {
-    for (const d of readdirSync(dir).filter(x => x.startsWith('montaj-frames-'))) {
-      try { if (readdirSync(join(dir, d)).filter(f => f.endsWith('.png')).length >= n) return } catch {}
-    }
+    if (/\| \d+\/\d+ \[/.test(run.stderr)) return
     await sleep(25)
   }
   assert.fail(`the capture never started\n${run.stderr.slice(-800)}`)
@@ -183,11 +185,13 @@ test('SIGKILL of the render\'s compose ffmpeg: last stderr line is child_killed,
 })
 
 test('SIGKILL of a worker\'s Chrome mid-capture: last stderr line is child_killed, chrome, overlay-capture', { skip: SKIP, timeout: 240_000 }, async () => {
-  const dir = project('chrome-kill')
+  // Not 'chrome' in the project's name: the chunk's ffmpeg (§131) runs during
+  // the capture, a child of render.js too, with its output path under `dir`.
+  const dir = project('browser-kill')
   const run = startRender(dir, ['--workers', '1'])
   try {
-    await capturing(dir, run)
-    await killDescendant(run, r => r.ppid === run.child.pid && /Chrom/i.test(r.args))
+    await capturing(run)
+    await killDescendant(run, r => r.ppid === run.child.pid && /Chrom/i.test(r.args) && !r.args.includes('image2pipe'))
     const { code } = await run.exited
     assert.equal(code, 1, run.stderr.slice(-800))
     const line = lastLine(run)
@@ -213,7 +217,7 @@ test('SIGTERM to the render\'s process group mid-capture (a cancel) is never chi
   const dir = project('sigterm')
   const run = startRender(dir, ['--workers', '2'])
   try {
-    await capturing(dir, run)
+    await capturing(run)
     process.kill(-run.child.pid, 'SIGTERM')
     const done = await Promise.race([run.exited, sleep(60_000).then(() => null)])
     assert.ok(done, `render.js was still running 60 s after SIGTERM\n${run.stderr.slice(-800)}`)
