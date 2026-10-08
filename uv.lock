@@ -984,7 +984,7 @@ wheels = [
 
 [[package]]
 name = "montaj"
-version = "5.24.22"
+version = "5.25.0"
 source = { editable = "." }
 dependencies = [
     { name = "curl-cffi" },
