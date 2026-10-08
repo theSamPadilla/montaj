@@ -152,3 +152,145 @@ def summarize(videos):
         "on_beat_share": median(col("on_beat_share")),
         "palette": top_colors([v.get("palette") for v in videos]),
     }
+
+
+import argparse
+import shutil
+import subprocess
+import tempfile
+from datetime import datetime, timezone
+
+from common import DEFAULT_WHISPER_MODEL, ffmpeg_bin, get_duration, progress, require_whisper_model, transcribe_words  # noqa: E402
+
+
+class SkipVideo(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code, self.message = code, message
+
+
+def fetch_one(url, media_dir):
+    raise SkipVideo("not_supported", "links come in Task 3")
+
+
+def merge_meta(it, meta):
+    return it
+
+
+def _frame(path, at, dest):
+    # -ss before -i on a non-zero time (never -ss 0: it still seeks)
+    subprocess.run([ffmpeg_bin(), "-y", "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1",
+                    "-vf", "scale=720:-2", "-q:v", "3", str(dest)], check=True, timeout=120)
+
+
+def _size(path):
+    # load lib/normalize.py by path: a test process may have steps/media first on sys.path
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("montaj_lib_normalize", ROOT / "lib" / "normalize.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    info = mod.probe_video(str(path)) or {}
+    return info.get("display_width"), info.get("display_height")
+
+
+def _music(path, cuts):
+    import detect_beats
+    try:
+        b = detect_beats.analyze(str(path))
+    except SystemExit:  # no_audio / too_short: no music to report
+        return {"bpm": None, "confidence": None, "likely": False}, None
+    conf = float(b.get("bpm_confidence") or 0)
+    likely = conf >= MUSIC_CONFIDENCE and bool(b.get("bpm"))
+    music = {"bpm": round(float(b["bpm"]), 1) if likely else None, "confidence": round(conf, 3), "likely": likely}
+    return music, (on_beat_share(cuts, b.get("beats") or []) if likely else None)
+
+
+def _palette(path):
+    try:
+        from profiles.analyze import extract_colors
+        return extract_colors(str(path), n=6)
+    except Exception:
+        return []
+
+
+def measure_video(path, stills, n, model, language):
+    import detect_shots
+    import shot_sheet
+    det = detect_shots.detect(str(path), 0.25, 0.4, 1800)
+    duration = det.get("duration") or get_duration(str(path))
+    w, h = _size(path)
+    shots_m, cuts = shot_metrics(det["shots"], duration)
+    speech = speech_metrics(transcribe_words(str(path), model=model, language=language), duration)
+    music, beat_share = _music(path, cuts)
+    sheet_dir = stills / f"v{n:02d}"
+    sheets = shot_sheet.build(str(path), det["shots"], str(sheet_dir), 1, 4, 1280, 12, 600)["sheets"]
+    sheet = stills / f"sheet-{n:02d}.jpg"
+    shutil.move(sheets[0]["path"], sheet)
+    shutil.rmtree(sheet_dir, ignore_errors=True)
+    opening = stills / f"open-{n:02d}.jpg"
+    _frame(path, min(0.5, max(duration - 0.1, 0.05)), opening)
+    return {"duration_s": round(duration, 2), "width": w, "height": h, "aspect": aspect_label(w, h),
+            "shots": len(det["shots"]), **shots_m, **speech, "music": music, "on_beat_share": beat_share,
+            "palette": _palette(path), "sheet": f"stills/{sheet.name}", "opening_still": f"stills/{opening.name}"}
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Measure a creator's editing style from their posts")
+    ap.add_argument("--items", required=True)
+    ap.add_argument("--out")
+    ap.add_argument("--inbox")
+    ap.add_argument("--top", type=int, default=10)
+    ap.add_argument("--whisper-model", default=DEFAULT_WHISPER_MODEL)
+    ap.add_argument("--language", default="auto")
+    a = ap.parse_args()
+    items = parse_items(a.items)
+    if not 1 <= a.top <= MAX_ITEMS:
+        fail("invalid_argument", f"--top must be 1 to {MAX_ITEMS}")
+    require_whisper_model(a.whisper_model, a.language)  # exits whisper_model_missing before any download
+    chosen, by = select_items(items, a.top)
+    out = Path(a.out) if a.out else Path(tempfile.mkdtemp(prefix="montaj-creator-"))
+    stills, media_dir = out / "stills", out / "_media"
+    stills.mkdir(parents=True, exist_ok=True)
+    videos, failed = [], []
+    try:
+        for n, it in enumerate(chosen, 1):
+            source = it["url"] or Path(it["path"]).name
+            progress(f"video {n} of {len(chosen)}: {source}")
+            path = None
+            try:
+                if it["url"]:
+                    media_dir.mkdir(exist_ok=True)
+                    path, meta = fetch_one(it["url"], media_dir)
+                    it = merge_meta(it, meta)
+                else:
+                    path = it["path"]
+                    if not Path(path).is_file():
+                        raise SkipVideo("not_found", f"no file at {path}")
+                v = measure_video(Path(path), stills, n, a.whisper_model, a.language)
+                videos.append({"source": it["url"] or source, "views": it["views"], "likes": it["likes"],
+                               "posted_at": it["posted_at"], "caption": it["caption"], **v})
+            except SkipVideo as e:
+                failed.append({"source": source, "code": e.code, "message": e.message})
+            except SystemExit:  # a helper called fail(); its JSON is already on stderr
+                failed.append({"source": source, "code": "measure_failed", "message": "a measuring step failed (see the progress log)"})
+            except (subprocess.SubprocessError, OSError, KeyError, IndexError, ValueError) as e:
+                failed.append({"source": source, "code": "measure_failed", "message": str(e)[:200] or type(e).__name__})
+            finally:
+                if path and deletable(path, media_dir, a.inbox):
+                    Path(path).unlink(missing_ok=True)
+    finally:
+        shutil.rmtree(media_dir, ignore_errors=True)
+    if not videos:
+        fail("no_videos_measured", f"none of {len(chosen)} posts could be measured: "
+             + "; ".join(f"{f['source']} ({f['code']})" for f in failed)[:600])
+    doc = {"schema": 1, "mode": "single" if by == "single" else "creator",
+           "measured_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+           "selection": {"given": len(items), "measured": len(videos), "by": by},
+           "summary": summarize(videos), "videos": videos, "failed": failed}
+    (out / "diagnostic.json").write_text(json.dumps(doc, indent=2))
+    print(json.dumps({"out": str(out), "diagnostic": str(out / "diagnostic.json"),
+                      "measured": len(videos), "failed": len(failed)}))
+
+
+if __name__ == "__main__":
+    main()

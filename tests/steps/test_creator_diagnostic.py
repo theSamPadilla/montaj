@@ -72,3 +72,53 @@ def test_summarize_medians_and_music_share():
                      "music": {"bpm": None, "confidence": 0.1, "likely": False}, "palette": ["#000000"], **k}
     s = cd.summarize([v(cuts_per_min=10), v(cuts_per_min=30, music={"bpm": 120.0, "confidence": 0.8, "likely": True})])
     assert s["videos"] == 2 and s["cuts_per_min"] == 20 and s["music_share"] == 0.5 and s["bpm"] == 120.0
+
+
+import json
+import shutil
+import subprocess
+from tests.conftest import HAS_FFMPEG, run_step_env  # same helpers as test_detect_shots.py
+
+
+def _clip(path, seconds=6):
+    # three solid shots with a sine tone (as test_detect_shots.py:12-31)
+    subprocess.run(["ffmpeg", "-y", "-v", "error",
+                    "-f", "lavfi", "-i", "color=black:s=360x640:d=2", "-f", "lavfi", "-i", "color=white:s=360x640:d=2",
+                    "-f", "lavfi", "-i", "color=gray:s=360x640:d=2", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+                    "-filter_complex", "[0][1][2]concat=n=3:v=1:a=0[v]", "-map", "[v]", "-map", "3:a",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(path)], check=True)
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg missing")
+def test_measures_ranks_writes_stills_and_deletes_only_inbox(tmp_path, fake_whisper_env):
+    inbox, keep, out = tmp_path / "inbox", tmp_path / "keep", tmp_path / "out"
+    inbox.mkdir(); keep.mkdir()
+    _clip(inbox / "a.mp4"); _clip(inbox / "b.mp4"); _clip(keep / "c.mp4")
+    items = [{"path": str(inbox / "a.mp4"), "views": 10}, {"path": str(inbox / "b.mp4"), "views": 900},
+             {"path": str(keep / "c.mp4"), "views": 50}]
+    proc = run_step_env("creator_diagnostic.py", fake_whisper_env, "--items", json.dumps(items), "--out", str(out),
+                        "--inbox", str(inbox), "--top", "2", "--whisper-model", "base.en", "--language", "en")
+    assert proc.returncode == 0, proc.stderr
+    doc = json.loads((out / "diagnostic.json").read_text())
+    assert doc["schema"] == 1 and doc["mode"] == "creator"
+    assert doc["selection"] == {"given": 3, "measured": 2, "by": "views"}
+    assert [v["views"] for v in doc["videos"]] == [900, 50]
+    v = doc["videos"][0]
+    assert v["aspect"] == "9:16" and v["cuts_per_min"] > 0 and v["shot_median_s"] is not None
+    assert (out / v["sheet"]).is_file() and (out / v["opening_still"]).is_file()
+    assert not (inbox / "b.mp4").exists()          # measured, in inbox: deleted
+    assert (inbox / "a.mp4").exists()              # not chosen: untouched
+    assert (keep / "c.mp4").exists()               # outside inbox: kept
+    assert not (out / "_media").exists()
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg missing")
+def test_single_item_and_all_failed(tmp_path, fake_whisper_env):
+    _clip(tmp_path / "one.mp4")
+    ok = run_step_env("creator_diagnostic.py", fake_whisper_env, "--items", json.dumps([{"path": str(tmp_path / "one.mp4")}]),
+                      "--out", str(tmp_path / "o1"), "--whisper-model", "base.en", "--language", "en")
+    assert ok.returncode == 0, ok.stderr
+    assert json.loads((tmp_path / "o1" / "diagnostic.json").read_text())["mode"] == "single"
+    bad = run_step_env("creator_diagnostic.py", fake_whisper_env, "--items", json.dumps([{"path": str(tmp_path / "nope.mp4")}]),
+                       "--out", str(tmp_path / "o2"), "--whisper-model", "base.en", "--language", "en")
+    assert bad.returncode == 1 and "no_videos_measured" in bad.stderr
