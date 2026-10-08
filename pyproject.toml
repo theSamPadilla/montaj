@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "montaj"
-version = "5.26.0"
+version = "5.26.1"
 description = "The open-source engine behind Montaj, the free AI video editor for Mac. Video editing toolkit for AI agents: CLI, MCP and HTTP."
 readme = "README.md"
 license = "MIT"

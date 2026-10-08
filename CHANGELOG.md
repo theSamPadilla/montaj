@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.26.1
+
 - **Fixed (steps): `creator_diagnostic`'s inbox** cannot be your home folder or a root, deletes only files directly inside it, and leaves a `_media` folder it did not create.
 
 ## v5.26.0
