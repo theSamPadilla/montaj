@@ -783,7 +783,7 @@ describe('CarouselEditor — N adds a note (PL70)', () => {
 
     expect(adapter.saveCalls).toHaveLength(0)
     expect(container.querySelector('[data-note-pins]')).toBeNull()
-    expect(container.querySelector('[data-slide-pin-count]')).toBeNull()
+    expect(container.querySelector('[data-slide-note-bubble]')).toBeNull()
   })
 })
 
@@ -1009,13 +1009,129 @@ describe('CarouselEditor — note pins (PL70)', () => {
     expect(onSelectedSlideChange).toHaveBeenLastCalledWith('slide-0')
   })
 
-  it('counts each slide whole-slide pins on its thumbnail', async () => {
+  // §149: a thumbnail shows where notes live, a bubble per tone.
+  function threeSlides(): Project {
+    const p = twoSlides()
+    return { ...p, slides: [...p.slides!, { id: 'slide-2', base_color: '#888888', elements: [] }] }
+  }
+  const bubbles = (container: HTMLElement, slideId: string) =>
+    Array.from(container.querySelectorAll<HTMLElement>(`[data-slide-note-bubble="${slideId}"]`))
+  const thumbOf = (container: HTMLElement, slideId: string) =>
+    container.querySelector<HTMLElement>(`[data-slide-thumb="${slideId}"]`)!
+
+  it('each thumbnail shows a bubble per tone, yours first, counting pins with or without a point, a number only past one (§149)', async () => {
+    const toned: SlidePin[] = [
+      { id: 'a1', slideId: 'slide-0', x: 0.2, y: 0.2, tone: 'self' },
+      { id: 'a2', slideId: 'slide-0', tone: 'review' },
+      { id: 'a3', slideId: 'slide-0', tone: 'self' },
+      // Reviews first from the host; an unknown tone and no tone count as yours.
+      { id: 'b1', slideId: 'slide-1', x: 0.5, y: 0.5, tone: 'review' },
+      { id: 'b2', slideId: 'slide-1', tone: 'review' },
+      { id: 'b3', slideId: 'slide-1', tone: 'note' },
+    ]
     const { container } = render(
-      <CarouselEditor project={twoSlides()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} pins={pins} />,
+      <CarouselEditor project={threeSlides()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} pins={toned} />,
     )
     await waitFor(() => findInteractiveWrapper('el-img'))
-    const badges = Array.from(container.querySelectorAll<HTMLElement>('[data-slide-pin-count]'))
-    expect(Object.fromEntries(badges.map((b) => [b.dataset.slidePinCount, b.textContent]))).toEqual({ 'slide-0': '1', 'slide-1': '2' })
+
+    const shape = (slideId: string) =>
+      bubbles(container, slideId).map((b) => [b.tagName, b.dataset.tone, b.getAttribute('aria-label'), b.textContent])
+    expect(shape('slide-0')).toEqual([
+      ['BUTTON', 'self', '2 notes', '2'],
+      ['BUTTON', 'review', '1 review', ''],
+    ])
+    expect(shape('slide-1')).toEqual([
+      ['BUTTON', 'self', '1 note', ''],
+      ['BUTTON', 'review', '2 reviews', '2'],
+    ])
+    expect(bubbles(container, 'slide-2')).toEqual([])
+    // Each bubble sits in its own thumbnail, which still shows its number.
+    for (const [i, id] of ['slide-0', 'slide-1', 'slide-2'].entries()) {
+      const thumb = thumbOf(container, id)
+      for (const b of bubbles(container, id)) expect(b.closest('[data-slide-thumb]')).toBe(thumb)
+      expect(Array.from(thumb.querySelectorAll('div')).some((d) => d.textContent === String(i + 1))).toBe(true)
+    }
+    expect(container.querySelector('[data-slide-pin-count]')).toBeNull()
+  })
+
+  it('a click on a bubble selects its slide and opens that tone first note, and nothing else takes the press (§149)', async () => {
+    const toned: SlidePin[] = [
+      { id: 'r1', slideId: 'slide-1', x: 0.5, y: 0.5, tone: 'review' },
+      { id: 's1', slideId: 'slide-1', tone: 'self' },
+      { id: 'r2', slideId: 'slide-1', tone: 'review' },
+      { id: 's2', slideId: 'slide-1', x: 0.1, y: 0.9, tone: 'self' },
+    ]
+    const onPinClick = vi.fn()
+    const onSelectedSlideChange = vi.fn()
+    const { container } = render(
+      <CarouselEditor
+        project={twoSlides()}
+        adapter={makeFakeAdapter()}
+        onProjectChange={vi.fn()}
+        pins={toned}
+        onPinClick={onPinClick}
+        onSelectedSlideChange={onSelectedSlideChange}
+      />,
+    )
+    await waitFor(() => findInteractiveWrapper('el-img'))
+
+    // What reaches the document past the bubble: the thumbnail's own click
+    // handler would see anything that does.
+    const leaked: string[] = []
+    const types = ['click', 'pointerdown', 'mousedown']
+    const spy = (e: Event) => { if ((e.target as HTMLElement).closest?.('[data-slide-note-bubble]')) leaked.push(e.type) }
+    for (const t of types) document.addEventListener(t, spy)
+    try {
+      const [, review] = bubbles(container, 'slide-1')
+      await act(async () => {
+        fireEvent.pointerDown(review)
+        fireEvent.mouseDown(review)
+        fireEvent.click(review)
+      })
+      await waitFor(() => expect(interactiveHas('el-b')).toBe(true))
+      expect(onSelectedSlideChange).toHaveBeenCalledTimes(1)
+      expect(onSelectedSlideChange).toHaveBeenLastCalledWith('slide-1')
+      expect(onPinClick).toHaveBeenCalledTimes(1)
+      expect(onPinClick).toHaveBeenLastCalledWith('r1')
+
+      const [self] = bubbles(container, 'slide-1')
+      await act(async () => { fireEvent.click(self) })
+      expect(onPinClick).toHaveBeenCalledTimes(2)
+      expect(onPinClick).toHaveBeenLastCalledWith('s1')
+      expect(onSelectedSlideChange).toHaveBeenCalledTimes(1)
+      expect(leaked).toEqual([])
+    } finally {
+      for (const t of types) document.removeEventListener(t, spy)
+    }
+  })
+
+  it('a drag from a bubble moves nothing; a drag from the thumbnail still reorders (§149)', async () => {
+    const adapter = makeFakeAdapter()
+    const { container } = render(
+      <CarouselEditor project={twoSlides()} adapter={adapter} onProjectChange={vi.fn()} pins={[{ id: 'r1', slideId: 'slide-1', tone: 'review' }]} />,
+    )
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    const [bubble] = bubbles(container, 'slide-1')
+    const target = thumbOf(container, 'slide-0')
+
+    let started = true
+    await act(async () => {
+      started = fireEvent.dragStart(bubble)
+      fireEvent.dragOver(target)
+      fireEvent.drop(target)
+      fireEvent.dragEnd(bubble)
+    })
+    expect(started).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(0)
+
+    // The control: the same drag from the thumbnail moves the slide.
+    await act(async () => {
+      fireEvent.dragStart(thumbOf(container, 'slide-1'))
+      fireEvent.dragOver(target)
+      fireEvent.drop(target)
+    })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(lastSave(adapter).slides!.map((s) => s.id)).toEqual(['slide-1', 'slide-0'])
   })
 
   it('renders the notesPanel slot in the right rail', async () => {

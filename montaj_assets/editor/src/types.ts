@@ -655,8 +655,9 @@ export interface SlideNotesApi {
 /**
  * A host-owned mark on a carousel slide (PL70), the carousel's counterpart of
  * `TimelinePin`. A pin with a point (`x` and `y`, fractions 0..1 of the
- * slide's design size) is drawn on the canvas while its slide is selected; a
- * pin without one counts toward a badge on its slide's thumbnail. The package
+ * slide's design size) is drawn on the canvas while its slide is selected.
+ * Every pin, with a point or without, counts toward a note bubble on its
+ * slide's thumbnail, one bubble per tone (yours, reviews). The package
  * paints pins and reports a click on one; it never creates, moves or persists
  * them, and a pin never enters the project document.
  */
@@ -1320,7 +1321,7 @@ export interface CarouselEditorProps<P extends Project = Project> {
 
   /**
    * Host-owned marks on slides (see `SlidePin`). Absent or empty: no pin
-   * layer and no thumbnail badges, the editor exactly as before.
+   * layer and no thumbnail bubbles, the editor exactly as before.
    */
   pins?: readonly SlidePin[]
 
@@ -1334,7 +1335,9 @@ export interface CarouselEditorProps<P extends Project = Project> {
 
   /**
    * A click on one of `pins`, by that pin's `id`. The click never selects,
-   * deselects or drags anything underneath. Absent: a pin is inert.
+   * deselects or drags anything underneath. A click on a thumbnail's note
+   * bubble selects that slide and reports the first pin of the bubble's tone,
+   * in the order of `pins`. Absent: a pin is inert.
    */
   onPinClick?: (id: string) => void
 

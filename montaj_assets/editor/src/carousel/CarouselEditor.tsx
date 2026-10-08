@@ -9,7 +9,7 @@ import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import CarouselRenderModal from './CarouselRenderModal'
 import ControlsInfoModal, { CAROUSEL_CONTROLS, platformSections } from '../ControlsInfoModal'
-import { NoteArmLayer, NotePinLayer, hasPoint } from './NoteLayers'
+import { DARK_TEXT, NoteArmLayer, NotePinLayer, badgeColor, hasPoint } from './NoteLayers'
 import { addSlideNote, setSlideNoteText, setSlideNoteDone, setSlideNotePoint, removeSlideNotes } from './notes'
 import { noteId } from '../video/timeline/notes'
 import { Button } from '../ui'
@@ -34,8 +34,72 @@ interface SlideGridProps {
   onReorder: (fromIdx: number, toIdx: number) => void
   resolveImageSrc?: (element: ImageElement) => string
   compileOverlay?: (template: string) => Promise<OverlayFactory>
-  /** Whole-slide pins per slide id (PL70), drawn as a count on the thumbnail. */
-  pinCounts?: Map<string, number>
+  /** Each slide's pin ids by tone, in the host's order (§149). */
+  noteTones?: Map<string, NoteTones>
+  onPinClick?: (id: string) => void
+}
+
+/** A slide's pin ids by tone: `'review'`, and every other tone as yours. */
+interface NoteTones {
+  self: string[]
+  review: string[]
+}
+
+const BUBBLE_TONES = [
+  { tone: 'self', one: 'note', many: 'notes' },
+  { tone: 'review', one: 'review', many: 'reviews' },
+] as const
+
+const stopEvent = (e: React.SyntheticEvent) => e.stopPropagation()
+
+/**
+ * A tone's notes on a slide thumbnail (§149): a small speech bubble in the
+ * tone's colour, numbered past one note. It takes its own press, so the
+ * thumbnail neither selects twice nor starts a drag from it.
+ */
+function NoteBubble({ slideId, tone, count, label, onOpen }: { slideId: string; tone: string; count: number; label: string; onOpen: () => void }) {
+  const color = badgeColor(tone)
+  return (
+    <button
+      type="button"
+      data-slide-note-bubble={slideId}
+      data-tone={tone}
+      aria-label={label}
+      title={label}
+      // Draggable so the drag starts here, where it is cancelled, and not on the thumbnail.
+      draggable
+      onDragStart={(e) => { e.preventDefault(); e.stopPropagation() }}
+      onPointerDown={stopEvent}
+      onMouseDown={stopEvent}
+      onClick={(e) => { e.stopPropagation(); onOpen() }}
+      style={{
+        position: 'relative',
+        height: 13,
+        minWidth: 16,
+        padding: count > 1 ? '0 4px' : 0,
+        border: 'none',
+        borderRadius: 6.5,
+        backgroundColor: color,
+        boxShadow: '0 0 0 1.5px #fff',
+        filter: 'drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.4))',
+        color: DARK_TEXT,
+        fontFamily: 'inherit',
+        fontSize: 9,
+        fontWeight: 700,
+        lineHeight: '13px',
+        textAlign: 'center',
+        cursor: 'pointer',
+        pointerEvents: 'auto',
+      }}
+    >
+      {count > 1 ? count : null}
+      {/* The tail: its fill covers the ring where it meets the body. */}
+      <svg aria-hidden="true" width="6" height="5" viewBox="0 0 6 5" style={{ position: 'absolute', left: 3, top: 12, overflow: 'visible' }}>
+        <path d="M0 0 L1 4 L5 0 Z" style={{ fill: color }} />
+        <path d="M0 0.75 L1 4 L5 0.75" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round" />
+      </svg>
+    </button>
+  )
 }
 
 function SlideGrid({
@@ -49,7 +113,8 @@ function SlideGrid({
   onReorder,
   resolveImageSrc,
   compileOverlay,
-  pinCounts,
+  noteTones,
+  onPinClick,
 }: SlideGridProps) {
   const [w, h] = project.settings.resolution
   const THUMB_W = 200
@@ -84,54 +149,68 @@ function SlideGrid({
         <span className="text-xs font-semibold text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] uppercase tracking-wider">Slides</span>
       </div>
       <div className="flex-1 overflow-y-auto py-2 flex flex-col gap-2 px-2">
-        {slides.map((slide, idx) => (
-          <div
-            key={slide.id}
-            draggable
-            onDragStart={() => handleDragStart(idx)}
-            onDragOver={e => handleDragOver(e, idx)}
-            onDrop={() => handleDrop(idx)}
-            onDragEnd={handleDragEnd}
-            onClick={() => onSelect(slide.id)}
-            className={`group relative flex-shrink-0 cursor-pointer rounded overflow-hidden border transition-colors ${
-              selectedSlideId === slide.id
-                ? 'border-[var(--editor-accent)]'
-                : dragOverIdx === idx
-                ? 'border-[var(--editor-accent)] opacity-70'
-                : 'border-[var(--editor-border)] hover:border-[var(--editor-accent)]'
-            }`}
-            style={{ width: THUMB_W, height: thumbH }}
-          >
-            <SlideCanvas slide={slide} width={w} height={h} interactive={false} scale={scale} resolveImageSrc={resolveImageSrc} compileOverlay={compileOverlay} />
-            <div className="absolute bottom-1 left-1 text-xs text-white bg-black/50 px-1 rounded">
-              {idx + 1}
-            </div>
-            {pinCounts?.get(slide.id) ? (
-              <div
-                data-slide-pin-count={slide.id}
-                className="absolute bottom-1 right-1 min-w-[1.25rem] text-center text-xs px-1 rounded-full bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] pointer-events-none"
-              >
-                {pinCounts.get(slide.id)}
+        {slides.map((slide, idx) => {
+          const tones = noteTones?.get(slide.id)
+          return (
+            <div
+              key={slide.id}
+              data-slide-thumb={slide.id}
+              draggable
+              onDragStart={() => handleDragStart(idx)}
+              onDragOver={e => handleDragOver(e, idx)}
+              onDrop={() => handleDrop(idx)}
+              onDragEnd={handleDragEnd}
+              onClick={() => onSelect(slide.id)}
+              className={`group relative flex-shrink-0 cursor-pointer rounded overflow-hidden border transition-colors ${
+                selectedSlideId === slide.id
+                  ? 'border-[var(--editor-accent)]'
+                  : dragOverIdx === idx
+                  ? 'border-[var(--editor-accent)] opacity-70'
+                  : 'border-[var(--editor-border)] hover:border-[var(--editor-accent)]'
+              }`}
+              style={{ width: THUMB_W, height: thumbH }}
+            >
+              <SlideCanvas slide={slide} width={w} height={h} interactive={false} scale={scale} resolveImageSrc={resolveImageSrc} compileOverlay={compileOverlay} />
+              <div className="absolute bottom-1 left-1 text-xs text-white bg-black/50 px-1 rounded">
+                {idx + 1}
               </div>
-            ) : null}
-            <div className="absolute top-1 right-1 hidden group-hover:flex gap-1">
-              <button
-                onClick={e => { e.stopPropagation(); onDuplicate(slide.id) }}
-                className="text-xs bg-black/60 text-white px-1 py-0.5 rounded hover:bg-black/80"
-                title="Duplicate slide"
-              >
-                ⧉
-              </button>
-              <button
-                onClick={e => { e.stopPropagation(); onDelete(slide.id) }}
-                className="text-xs bg-black/60 text-red-400 px-1 py-0.5 rounded hover:bg-black/80"
-                title="Delete slide"
-              >
-                ×
-              </button>
+              {tones ? (
+                <div style={{ position: 'absolute', right: 5, bottom: 7, display: 'flex', gap: 5, pointerEvents: 'none' }}>
+                  {BUBBLE_TONES.map(({ tone, one, many }) => {
+                    const ids = tones[tone]
+                    if (ids.length === 0) return null
+                    return (
+                      <NoteBubble
+                        key={tone}
+                        slideId={slide.id}
+                        tone={tone}
+                        count={ids.length}
+                        label={`${ids.length} ${ids.length === 1 ? one : many}`}
+                        onOpen={() => { onSelect(slide.id); onPinClick?.(ids[0]) }}
+                      />
+                    )
+                  })}
+                </div>
+              ) : null}
+              <div className="absolute top-1 right-1 hidden group-hover:flex gap-1">
+                <button
+                  onClick={e => { e.stopPropagation(); onDuplicate(slide.id) }}
+                  className="text-xs bg-black/60 text-white px-1 py-0.5 rounded hover:bg-black/80"
+                  title="Duplicate slide"
+                >
+                  ⧉
+                </button>
+                <button
+                  onClick={e => { e.stopPropagation(); onDelete(slide.id) }}
+                  className="text-xs bg-black/60 text-red-400 px-1 py-0.5 rounded hover:bg-black/80"
+                  title="Delete slide"
+                >
+                  ×
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
       <div className="p-2 border-t border-[var(--editor-border)]">
         <Button size="sm" variant="outline" onClick={onAdd} className="w-full text-xs">
@@ -374,16 +453,20 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     return () => window.removeEventListener('keydown', onKey)
   }, [hasNotes])
 
-  // Host pins: the selected slide's pins with a point go on the canvas; the
-  // ones without a point are counted on their slide's thumbnail.
+  // Host pins: the selected slide's pins with a point go on the canvas; every
+  // slide's pins, with a point or without, are bubbles on its thumbnail.
   const canvasPins = useMemo(
     () => (pins ?? []).filter((p) => p.slideId === selectedSlideId).filter(hasPoint),
     [pins, selectedSlideId],
   )
-  const pinCounts = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const p of pins ?? []) if (!hasPoint(p)) counts.set(p.slideId, (counts.get(p.slideId) ?? 0) + 1)
-    return counts
+  const noteTones = useMemo(() => {
+    const bySlide = new Map<string, NoteTones>()
+    for (const p of pins ?? []) {
+      let tones = bySlide.get(p.slideId)
+      if (!tones) bySlide.set(p.slideId, (tones = { self: [], review: [] }))
+      tones[p.tone === 'review' ? 'review' : 'self'].push(p.id)
+    }
+    return bySlide
   }, [pins])
 
   // `pendingSurface="host"`: the host draws the pending UI, so a pending
@@ -587,7 +670,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         onReorder={handleReorderSlides}
         resolveImageSrc={adapter.resolveImageSrc}
         compileOverlay={(t) => adapter.compileOverlay(t)}
-        pinCounts={pinCounts}
+        noteTones={noteTones}
+        onPinClick={onPinClick}
       />
 
       {/* CANVAS COLUMN: a pinned toolbar row on top, then the independently

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (editor): carousel slide thumbnails show note bubbles.** Each thumbnail with open notes shows a small speech bubble per tone at its bottom right, yours (accent) before reviews (amber), counting all of that slide's `pins`, with a point or without, numbered only past one. A click on a bubble selects the slide and calls `onPinClick` with that tone's first pin; it neither selects twice nor starts a drag. Replaces the thumbnail count of whole-slide pins (`data-slide-pin-count` is gone; bubbles carry `data-slide-note-bubble` and `data-tone`). (`montaj_assets/editor/src/carousel/CarouselEditor.tsx`, `NoteLayers.tsx`, `types.ts`, `__tests__/CarouselEditor.test.tsx`)
+
 ## v5.24.18
 
 - **Changed (editor): carousel note pins are text chips.** A pin is an 18 px badge with its `label`, accent for `tone: 'self'`, amber for `'review'`. New `CarouselEditor` prop `pinDisplay` (`'badge'` default, or `'chip'`) adds the note's first words (`SlidePin.text`) in a dark pill, collapsing to the badge where pins crowd until hovered; the `active` pin shows its whole text (a caret while empty, blinking unless reduced motion is on); past x 0.6 a pin opens leftward. The note cursor is an arrow with a chip, crosshair as fallback. New prop `onSelectedSlideChange(slideId)` reports each change of selected slide (not the one at mount), so a host can close an open note when the user moves on. (`montaj_assets/editor/src/carousel/NoteLayers.tsx`, `CarouselEditor.tsx`, `types.ts`, `index.ts`, `__tests__/NoteLayers.test.tsx`, `__tests__/CarouselEditor.test.tsx`)

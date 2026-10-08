@@ -20,7 +20,8 @@ const PILL_PAD = 2
 const PILL_BORDER = 1
 /** From a pill's outer corner to its badge's centre, which sits on the point. */
 const PILL_ANCHOR = PILL_BORDER + PILL_PAD + BADGE / 2
-const DARK_TEXT = '#030712'
+/** Text on a tone colour. */
+export const DARK_TEXT = '#030712'
 const REVIEW_AMBER = '#f5b544'
 /** Past this x a pin opens to the left, so its text stays on the slide. */
 const OPEN_LEFT_PAST = 0.6
@@ -35,7 +36,8 @@ const CARET_CSS =
   `.${CARET_CLASS}{animation:montajNoteCaret 1.06s step-end infinite}` +
   `@media (prefers-reduced-motion: reduce){.${CARET_CLASS}{animation:none}}`
 
-function badgeColor(tone: string | undefined): string {
+/** A tone's colour: amber for `'review'`, the editor accent for any other. */
+export function badgeColor(tone: string | undefined): string {
   return tone === 'review' ? REVIEW_AMBER : 'var(--editor-accent)'
 }
 
