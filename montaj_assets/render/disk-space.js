@@ -2,19 +2,23 @@
 //
 // Will this render fit on disk (§128)? A render writes in two places:
 //
-//   - TMPDIR: each overlay and caption chunk's PNG frames (renderer.js
-//     renderChunk), kept until that chunk is encoded. Every worker captures a
-//     chunk at once, and a chunk grows with the longest overlay (chunk-plan.js
-//     adaptiveChunkSize), so the peak grows with the video's length: captions
-//     span all of it.
+//   - TMPDIR: a small constant per worker. Overlay and caption frames are NOT
+//     written there: each screenshot streams into its chunk's ffmpeg over
+//     image2pipe (renderer.js renderChunk, §131), so TMPDIR holds only each
+//     worker's Chrome profile and the bundles, whatever the video's length.
+//     (Before §131 it held every worker's chunk of PNG frames, which grew with
+//     the longest overlay; captions span the whole video.)
 //   - the project's disk: the overlay FFV1 chunks and the video segments
 //     (render/segments), normalized masters, and the export.
 //
 // MEASURED 2026-10-07 on a 47 s 1080x1920 project (21 caption segments, 11
-// overlays, 12 workers): 468 MB peak in TMPDIR, 306 MB new in the project. A
-// Chrome capture of a caption frame is about 0.04 bytes per pixel, a dense
-// overlay frame about 0.65; the FFV1 chunk of the captions about 0.015, of a
-// dense overlay about 0.2; the export about 5 Mbps.
+// overlays, 12 workers), before streaming: 468 MB peak in TMPDIR, 306 MB new in
+// the project. The FFV1 chunk of the captions is about 0.015 bytes per pixel,
+// of a dense overlay about 0.2; the export about 5 Mbps.
+//
+// MEASURED with streaming (§131 Task 6), a 60 s 1080x1920 captioned project, 12
+// workers: peak TMPDIR 132 MB (271 MB before, 138 MB of it PNGs); what remains
+// is mostly Chrome profiles, about 121 MB for 12 workers, so about 10 MB each.
 //
 // The preflight refuses only a render that certainly will not fit: the LOWER
 // bound counts every frame at the sparse rate and half the workers' chunks on
@@ -30,8 +34,10 @@ import { statfsSync, statSync } from 'node:fs'
 const GB = 1e9
 const MEASURED_PIXELS = 1080 * 1920
 
+// TMPDIR per worker (a Chrome profile; no frames), measured as above. The
+// lower bound takes half, so it stays under what a real run uses.
+export const TMP_BYTES_PER_WORKER = 10e6
 // Lower bound (the preflight).
-export const SPARSE_BYTES_PER_PIXEL = 0.03
 export const FFV1_SPARSE_BYTES_PER_PIXEL = 0.01
 export const OUTPUT_FLOOR_BYTES_PER_SECOND = 1e6 / 8
 // Expected (what a mid-render failure asks for).
@@ -48,31 +54,25 @@ export const OUTPUT_BYTES_PER_SECOND = 5e6 / 8
  * @param {Array<{ frames: number, sparse: boolean }>} p.segments  overlay and caption segments; `sparse` for captions
  * @param {number} p.width @param {number} p.height  the capture canvas (renderWidth x renderHeight)
  * @param {number} [p.captureScale]  device pixels per CSS pixel (render.js captureScaleFor)
- * @param {number} [p.subframes]     motion-blur screenshots per frame
+ * @param {number} [p.subframes]     unused since overlay frames stream (kept for callers)
  * @param {number} [p.workerCount]   browser workers (renderer.js planChunks)
- * @param {number} [p.chunkSize]     frames per chunk (renderer.js planChunks)
+ * @param {number} [p.chunkSize]     unused since overlay frames stream (kept for callers)
  * @param {number} p.durationSeconds the timeline's length
  * @returns {{ lower: {tmpBytes: number, projectBytes: number}, expected: {tmpBytes: number, projectBytes: number} }}
  */
-export function estimateRenderDisk({ segments, width, height, captureScale = 1, subframes = 1, workerCount = 1, chunkSize, durationSeconds }) {
+export function estimateRenderDisk({ segments, width, height, captureScale = 1, workerCount = 1, durationSeconds }) {
   const px = width * height * captureScale * captureScale
   const frames = segments.reduce((n, s) => n + s.frames, 0)
-  const captured = frames * subframes
-  const perChunk = Math.max(1, chunkSize ?? frames) * subframes
-  const atOnce = Math.min(captured, Math.max(1, workerCount) * perChunk)
-  // Frames on disk at once are a mix of the segments; weigh their density by frames.
-  const capturedDensity = frames > 0
-    ? segments.reduce((n, s) => n + s.frames * (s.sparse ? CAPTION_BYTES_PER_PIXEL : DENSE_BYTES_PER_PIXEL), 0) / frames
-    : 0
+  const tmpExpected = Math.max(1, workerCount) * TMP_BYTES_PER_WORKER
   const ffv1Expected = segments.reduce((n, s) => n + s.frames * px * (s.sparse ? FFV1_CAPTION_BYTES_PER_PIXEL : FFV1_DENSE_BYTES_PER_PIXEL), 0)
   const outputScale = (width * height) / MEASURED_PIXELS
   return {
     lower: {
-      tmpBytes: Math.round(0.5 * atOnce * px * SPARSE_BYTES_PER_PIXEL),
+      tmpBytes: Math.round(0.5 * tmpExpected),
       projectBytes: Math.round(frames * px * FFV1_SPARSE_BYTES_PER_PIXEL + 2 * durationSeconds * OUTPUT_FLOOR_BYTES_PER_SECOND),
     },
     expected: {
-      tmpBytes: Math.round(atOnce * px * capturedDensity),
+      tmpBytes: tmpExpected,
       projectBytes: Math.round(ffv1Expected + 2 * durationSeconds * OUTPUT_BYTES_PER_SECOND * outputScale),
     },
   }

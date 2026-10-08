@@ -9,7 +9,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   estimateRenderDisk, checkDiskSpace, insufficientDiskMessage, isDiskFull, diskFailure,
-  SPARSE_BYTES_PER_PIXEL,
+  TMP_BYTES_PER_WORKER,
 } from '../disk-space.js'
 
 const GB = 1e9
@@ -32,13 +32,23 @@ test('the lower bound stays under what the measured render really used', () => {
   assert.ok(lower.projectBytes > 0 && lower.projectBytes < 306e6, `project lower bound ${lower.projectBytes}`)
 })
 
-test('the TMPDIR need grows with the longest overlay, since every worker captures a chunk at once', () => {
+test('the TMPDIR need is a small per-worker constant: it no longer scales with frames or chunk size', () => {
+  // Overlay frames stream into ffmpeg (§131), so TMPDIR holds only each worker's
+  // Chrome profile. MEASURED in Task 6, a 60 s 1080x1920 captioned project, 12
+  // workers: 132 MB peak, about 121 MB of it profiles, so about 10 MB a worker.
+  assert.equal(TMP_BYTES_PER_WORKER, 10e6)
   const minute = estimateRenderDisk({ ...MEASURED, segments: [{ frames: 1800, sparse: true }], chunkSize: 150, durationSeconds: 60 })
   const tenMinutes = estimateRenderDisk({ ...MEASURED, segments: [{ frames: 18000, sparse: true }], chunkSize: 1500, durationSeconds: 600 })
-  assert.ok(tenMinutes.lower.tmpBytes >= 9 * minute.lower.tmpBytes, 'ten times the captions, about ten times the frames on disk')
-  // 18000 sparse 1080x1920 frames, half held at once: the floor of what a real run holds.
-  assert.equal(tenMinutes.lower.tmpBytes, Math.round(0.5 * 18000 * 1080 * 1920 * SPARSE_BYTES_PER_PIXEL))
-  assert.ok(tenMinutes.expected.tmpBytes > tenMinutes.lower.tmpBytes)
+  assert.equal(tenMinutes.expected.tmpBytes, minute.expected.tmpBytes)
+  assert.equal(tenMinutes.lower.tmpBytes, minute.lower.tmpBytes)
+  assert.equal(tenMinutes.expected.tmpBytes, 12 * 10e6)
+  assert.ok(tenMinutes.lower.tmpBytes < tenMinutes.expected.tmpBytes)
+  assert.ok(tenMinutes.expected.tmpBytes < 200e6, 'not the 10+ GB the PNG frames needed')
+  // The project's disk still grows with the video.
+  assert.ok(tenMinutes.expected.projectBytes > 9 * minute.expected.projectBytes)
+  assert.ok(tenMinutes.lower.projectBytes > 9 * minute.lower.projectBytes)
+  // One worker needs a twelfth.
+  assert.equal(estimateRenderDisk({ ...MEASURED, workerCount: 1 }).expected.tmpBytes, 10e6)
 })
 
 test('one disk: TMPDIR and the project share its free space', () => {

@@ -3,6 +3,8 @@
 ## Unreleased
 
 - **Changed (render): overlay frames stream into the chunk's ffmpeg instead of PNG files in TMPDIR.** Each chunk's ffmpeg now starts before its capture and reads the screenshots from stdin (`-f image2pipe -c:v png -framerate <rate> -i pipe:0` in place of the `frame-%06d.png` pattern; every other argument unchanged), and each write awaits `drain`, so a capture faster than its encode waits instead of holding frames in memory. TMPDIR no longer holds workers x chunk frames, which grew with the longest overlay (GBs for a long captioned video). A failed chunk (the capture, Chrome, ffmpeg, a props image not served) kills its ffmpeg and removes the partial MKV; an ffmpeg that dies mid-chunk is noticed at the next frame and still fails as `child_killed`, phase `overlay-encode` (its EPIPE is recorded, never unhandled). New export `chunkEncodeArgs(job, chunkMkv)`; `spawnAsync`'s promise carries the process as `.child`. (`montaj_assets/render/renderer.js`)
+- **Changed (render): the disk check no longer reserves space for overlay frames.** Since they stream into ffmpeg, the TMPDIR need is a constant per worker (`TMP_BYTES_PER_WORKER`, 10 MB, a Chrome profile, measured), not a function of frame count and chunk size: a 10-minute 1080x1920 captioned export on 12 workers is estimated at 120 MB of TMPDIR (was 1.5 GB), 60 MB as the preflight's lower bound. The project-disk terms and the `insufficient_disk` line are unchanged. (`montaj_assets/render/disk-space.js`)
+- **Tested (render): streamed and file-based overlay chunks are frame-identical.** A framemd5 parity test compares the two paths across alpha, opaque, motion blur on and off, and subframes. (`montaj_assets/render/test/`)
 
 ## v5.24.21
 
