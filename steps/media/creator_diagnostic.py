@@ -90,8 +90,19 @@ def on_beat_share(cut_times, beats, window=ON_BEAT_S):
 
 
 def deletable(path, media_dir, inbox):
+    """Downloads in _media (anywhere under it) and files directly inside the inbox, nothing deeper."""
     p = Path(path).resolve()
-    return any(root and p.is_relative_to(Path(root).resolve()) for root in (media_dir, inbox))
+    if media_dir and p.is_relative_to(Path(media_dir).resolve()):
+        return True
+    return bool(inbox) and p.parent == Path(inbox).resolve()
+
+
+def check_inbox(inbox):
+    """The inbox is deleted from, so it can never be a root, the home folder, or a folder holding it."""
+    p = Path(inbox).resolve()
+    home = Path.home().resolve()
+    if p == Path(p.anchor) or p == home or p in home.parents:
+        fail("invalid_argument", f"--inbox cannot be {p}: pick a folder just for these videos")
 
 
 def shot_metrics(shots, duration):
@@ -276,12 +287,15 @@ def main():
     items = parse_items(a.items)
     if not 1 <= a.top <= MAX_ITEMS:
         fail("invalid_argument", f"--top must be 1 to {MAX_ITEMS}")
+    if a.inbox:
+        check_inbox(a.inbox)
     require_whisper_model(a.whisper_model, a.language)  # exits whisper_model_missing before any download
     chosen, by = select_items(items, a.top)
     out = Path(a.out) if a.out else Path(tempfile.mkdtemp(prefix="montaj-creator-"))
     stills, media_dir = out / "stills", out / "_media"
     stills.mkdir(parents=True, exist_ok=True)
     videos, failed = [], []
+    made_media = False  # only a _media folder this run created is removed at the end
     try:
         for n, it in enumerate(chosen, 1):
             source = it["url"] or Path(it["path"]).name
@@ -289,7 +303,9 @@ def main():
             path = None
             try:
                 if it["url"]:
-                    media_dir.mkdir(exist_ok=True)
+                    if not media_dir.exists():
+                        media_dir.mkdir()
+                        made_media = True
                     path, meta = fetch_one(it["url"], media_dir)
                     it = merge_meta(it, meta)
                 else:
@@ -309,7 +325,8 @@ def main():
                 if path and deletable(path, media_dir, a.inbox):
                     Path(path).unlink(missing_ok=True)
     finally:
-        shutil.rmtree(media_dir, ignore_errors=True)
+        if made_media:
+            shutil.rmtree(media_dir, ignore_errors=True)
     if not videos:
         fail("no_videos_measured", f"none of {len(chosen)} posts could be measured: "
              + "; ".join(f"{f['source']} ({f['code']})" for f in failed)[:600])

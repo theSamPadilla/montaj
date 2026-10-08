@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (steps): `creator_diagnostic`'s inbox** cannot be your home folder or a root, deletes only files directly inside it, and leaves a `_media` folder it did not create.
+
 ## v5.26.0
 
 - **Added (steps): `creator_diagnostic`.** It measures how a creator edits from up to 30 posts (links or local files), picks the most-viewed `top` (default 10) or one post, and writes medians plus per-video cut rate, shot lengths, speech pace, opening line, music and beat-cutting, aspect, length and palette. Each video keeps a shot sheet (about 1280 px wide) and an opening frame. Downloads and `inbox` files are deleted once measured. The root skill follows a profile's adopted block.

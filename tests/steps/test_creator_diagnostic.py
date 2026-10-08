@@ -64,6 +64,9 @@ def test_deletable_only_inside_media_or_inbox(tmp_path):
     assert cd.deletable(inbox / "b.mp4", media, inbox)
     assert not cd.deletable(other / "c.mp4", media, inbox)
     assert not cd.deletable(tmp_path / "inbox-evil" / "d.mp4", media, inbox)
+    (inbox / "sub").mkdir()
+    assert not cd.deletable(inbox / "sub" / "e.mp4", media, inbox)  # nested: kept
+    assert cd.deletable(inbox / "b.mp4", media, inbox)              # direct child: still deleted
 
 
 def test_summarize_medians_and_music_share():
@@ -153,3 +156,30 @@ def test_fetch_one_with_no_file_path_skips_the_post(monkeypatch, tmp_path):
     with pytest.raises(cd.SkipVideo) as e:
         cd.fetch_one("https://example.com/p/1", tmp_path)
     assert e.value.code == "fetch_failed"
+
+
+def _one(tmp_path, env, inbox, home):
+    items = [{"path": str(tmp_path / "nope.mp4")}]
+    return run_step_env("creator_diagnostic.py", {**env, "HOME": str(home)}, "--items", json.dumps(items),
+                        "--out", str(tmp_path / "out"), "--inbox", str(inbox),
+                        "--whisper-model", "base.en", "--language", "en")
+
+
+def test_inbox_cannot_be_home_an_ancestor_of_home_or_a_root(tmp_path, fake_whisper_env):
+    home = tmp_path / "users" / "me"
+    home.mkdir(parents=True)
+    for bad in (home, home.parent, tmp_path, Path("/")):
+        proc = _one(tmp_path, fake_whisper_env, bad, home)
+        assert proc.returncode == 1 and "invalid_argument" in proc.stderr, (bad, proc.stderr)
+    ok = tmp_path / "inbox"
+    ok.mkdir()
+    assert "invalid_argument" not in _one(tmp_path, fake_whisper_env, ok, home).stderr
+
+
+def test_leaves_a_media_folder_it_did_not_create(tmp_path, fake_whisper_env):
+    out = tmp_path / "out"
+    (out / "_media").mkdir(parents=True)
+    (out / "_media" / "theirs.txt").write_text("keep")
+    proc = _one(tmp_path, fake_whisper_env, tmp_path / "inbox", Path.home())
+    assert "no_videos_measured" in proc.stderr  # got past the model check, to the final cleanup
+    assert (out / "_media" / "theirs.txt").read_text() == "keep"
