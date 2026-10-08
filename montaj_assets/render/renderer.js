@@ -15,7 +15,7 @@ import { randomBytes } from 'crypto'
 import os from 'os'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
-import { childKilledError, syncResultError } from './child-killed.js'
+import { childKilledError, isChildKilled, syncResultError } from './child-killed.js'
 import { adaptiveChunkSize, workerCap } from './chunk-plan.js'
 import { toFileHref } from './file-url.js'
 import { subframeTimes, motionBlurFilter } from './motion-blur.js'
@@ -129,8 +129,8 @@ export async function renderAllSegments(segments, config = {}) {
   log(`launching ${workerCount} browser worker(s) for ${jobs.length} job(s)...`)
 
   // Launch browser pool
-  const browsers = await Promise.all(
-    Array.from({ length: workerCount }, () => launchBrowser())
+  const workers = await Promise.all(
+    Array.from({ length: workerCount }, () => launchWorkerBrowser({ needsGoogleFonts }))
   )
 
   log(`browsers ready`)
@@ -142,23 +142,18 @@ export async function renderAllSegments(segments, config = {}) {
 
   const RECYCLE_AFTER = 5  // restart browser every N jobs to prevent memory bloat
 
-  async function launchBrowser() {
-    // Every overlay page's flags (page-guard.js), --disable-dev-shm-usage
-    // included: the sidecar container's /dev/shm is the 64MB Docker default,
-    // which a 4K (2160x3840) render overruns.
-    return puppeteer.launch(overlayPageLaunchOptions({ needsGoogleFonts, disableWebSecurity: true }))
-  }
-
   // §128: the first failed chunk fails the render, but only once every worker
   // has stopped: the other browsers are closed at once (their chunk in
   // flight then fails too), each chunk's frames are removed on its way out,
   // and each browser's profile with it. Failing the moment the first chunk
   // failed left frames and profiles behind when the process exited.
-  const live = new Set(browsers)
+  // Every close here is the worker's own close() (PL83), so none of them is
+  // taken for a Chrome the system killed.
+  const live = new Set(workers)
   let firstFailure = null
   const settled = await Promise.allSettled(
-    browsers.map(async (browser, workerIdx) => {
-      let currentBrowser = browser
+    workers.map(async (worker, workerIdx) => {
+      let current = worker
       let jobsOnThisBrowser = 0
       try {
       while (true) {
@@ -168,7 +163,7 @@ export async function renderAllSegments(segments, config = {}) {
           ? `${job.id} chunk ${job.chunkIndex + 1}/${job.totalChunks}`
           : job.id
         log(`rendering ${label} (${job.frameEnd - job.frameStart} frames)...`)
-        const { webmPath } = await renderChunk(currentBrowser, job)
+        const { webmPath } = await renderChunk(current, job)
         jobsDone++
         jobsOnThisBrowser++
         log(`encoded ${label} (${jobsDone}/${jobs.length} done)`)
@@ -177,10 +172,10 @@ export async function renderAllSegments(segments, config = {}) {
 
         // Recycle browser to flush memory after RECYCLE_AFTER jobs
         if (jobsOnThisBrowser >= RECYCLE_AFTER && queue.length > 0) {
-          live.delete(currentBrowser)
-          await currentBrowser.close()
-          currentBrowser = await launchBrowser()
-          live.add(currentBrowser)
+          live.delete(current)
+          await current.close()
+          current = await launchWorkerBrowser({ needsGoogleFonts })
+          live.add(current)
           jobsOnThisBrowser = 0
           log(`worker ${workerIdx}: browser recycled`)
         }
@@ -192,12 +187,12 @@ export async function renderAllSegments(segments, config = {}) {
         queue.length = 0
         if (!firstFailure) {
           firstFailure = err
-          for (const other of live) if (other !== currentBrowser) other.close().catch(() => {})
+          for (const other of live) if (other !== current) other.close().catch(() => {})
         }
         throw err
       } finally {
-        live.delete(currentBrowser)
-        await currentBrowser.close().catch(() => {})
+        live.delete(current)
+        await current.close().catch(() => {})
       }
     })
   )
@@ -220,6 +215,141 @@ export async function renderAllSegments(segments, config = {}) {
   }
 
   return results
+}
+
+// ---------------------------------------------------------------------------
+// A worker's Chrome (PL83)
+// ---------------------------------------------------------------------------
+
+/** How long a dropped connection waits for Chrome's exit, which carries the signal. */
+const CHROME_EXIT_WAIT_MS = 1000
+
+/**
+ * One worker's Chrome, launched with every overlay page's flags (page-guard.js),
+ * --disable-dev-shm-usage included: the sidecar container's /dev/shm is the
+ * 64MB Docker default, which a 4K (2160x3840) render overruns.
+ *
+ * A Chrome the system kills (for memory, a SIGKILL) is told apart from one the
+ * engine closes: every close the engine makes (recycle, close-on-failure, the
+ * siblings of a failed worker) goes through `close()`, which marks the browser
+ * as closing first, and only a death while not closing calls `onDeath`, with
+ * `{ signal, code, reason }`. A page passed to `watchPage()` whose renderer
+ * dies calls it too, with `signal: null` (Chrome reports a crash, not why), and
+ * `reason: 'page-crash'`; the browser itself stays up. `dead` holds the
+ * browser's death once seen.
+ *
+ * MEASURED (puppeteer 22.15, Chrome 127): on a SIGKILL the connection drops
+ * ~1 ms before the process's exit is seen, so a drop waits for the exit (up
+ * to CHROME_EXIT_WAIT_MS) to learn the signal.
+ *
+ * @param {{ needsGoogleFonts?: boolean }} [opts]
+ */
+export async function launchWorkerBrowser({ needsGoogleFonts = false } = {}) {
+  const browser = await puppeteer.launch(overlayPageLaunchOptions({ needsGoogleFonts, disableWebSecurity: true }))
+  const proc = browser.process()
+  let closing = false
+  let dead = null
+  let exitWait = null
+  const listeners = new Set()
+
+  const notify = info => {
+    if (closing) return
+    for (const cb of [...listeners]) cb(info)
+  }
+  const die = info => {
+    clearTimeout(exitWait)
+    if (closing || dead) return
+    dead = info
+    notify(info)
+  }
+
+  proc?.once('exit', (code, signal) => die({ reason: 'exit', signal: signal ?? null, code: code ?? null }))
+  browser.on('disconnected', () => {
+    if (closing || dead) return
+    if (!proc) return die({ reason: 'disconnected', signal: null, code: null })
+    exitWait = setTimeout(() => die({ reason: 'disconnected', signal: proc.signalCode ?? null, code: proc.exitCode ?? null }), CHROME_EXIT_WAIT_MS)
+    exitWait.unref?.()
+  })
+
+  /** Calls `cb(info)` on a death the engine did not cause; returns the unsubscribe. */
+  function onDeath(cb) {
+    listeners.add(cb)
+    return () => listeners.delete(cb)
+  }
+
+  /** Makes `page`'s crash a death of this worker. */
+  function watchPage(page) {
+    page.on('error', err => notify({ reason: 'page-crash', signal: null, code: null, message: err?.message }))
+    return page
+  }
+
+  /** The engine's own close: never a death. Quiet on a browser already dead. */
+  async function close() {
+    closing = true
+    clearTimeout(exitWait)
+    try {
+      await browser.close()
+    } catch (err) {
+      if (!dead) throw err
+    }
+  }
+
+  /**
+   * The death, if Chrome is dead or dies within `ms`; null at once while
+   * closing. For a call that failed just before its death was seen.
+   */
+  function deathWithin(ms) {
+    if (dead) return Promise.resolve(dead)
+    if (closing) return Promise.resolve(null)
+    return new Promise(resolve => {
+      const off = onDeath(info => { clearTimeout(t); off(); resolve(info) })
+      const t = setTimeout(() => { off(); resolve(closing ? null : dead) }, ms)
+    })
+  }
+
+  return {
+    browser, close, onDeath, watchPage, deathWithin,
+    get dead() { return dead },
+    get closing() { return closing },
+  }
+}
+
+/** The child_killed error of a Chrome death seen during `phase`. */
+function chromeKilledError(info, phase, what) {
+  const how = info.reason === 'page-crash' ? 'Chrome\'s overlay page crashed'
+    : info.signal ? `Chrome was killed by ${info.signal}`
+    : info.code != null ? `Chrome exited with code ${info.code}`
+    : 'Chrome disconnected'
+  return childKilledError({ child: 'chrome', signal: info.signal ?? null, phase, message: `${how} (${phase}, ${what})` })
+}
+
+/**
+ * `work` (a capture in flight on `worker`), unless the worker's Chrome dies
+ * first: then a child_killed error, `child: 'chrome'`, with the signal and the
+ * phase `phaseOf()` names at that moment. A crashed page's screenshot hangs
+ * until protocolTimeout (MEASURED), so the death does not wait for the work.
+ * A call that fails with Chrome gone ('Target closed' while not closing) waits
+ * briefly for the death to be seen, since the drop comes before the exit.
+ */
+async function unlessChromeDies(worker, work, phaseOf, what) {
+  work.catch(() => {}) // a capture that lost the race rejects later, unawaited
+  let off = () => {}
+  const died = new Promise((_, reject) => {
+    const fail = info => reject(chromeKilledError(info, phaseOf(), what))
+    if (worker.dead) fail(worker.dead)
+    else off = worker.onDeath(fail)
+  })
+  try {
+    return await Promise.race([work, died])
+  } catch (err) {
+    if (isChildKilled(err) || worker.closing) throw err
+    if (worker.browser.connected && err?.name !== 'TargetCloseError') throw err
+    const info = await worker.deathWithin(CHROME_EXIT_WAIT_MS + 500)
+    if (info) throw chromeKilledError(info, phaseOf(), what)
+    throw err
+  } finally {
+    off()
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +379,11 @@ export function captureOptionsFor(job) {
   return { omitBackground: needsAlpha, pixFmt: needsAlpha ? 'yuva420p' : 'yuv420p' }
 }
 
-async function renderChunk(browser, job) {
+/**
+ * One chunk on one worker (launchWorkerBrowser): capture its frames, encode
+ * them. Exported for tests.
+ */
+export async function renderChunk(worker, job) {
   const { id, chunkIndex } = job
 
   const frameDir = join(tmpdir(), `montaj-frames-${id}-c${chunkIndex}-${randomBytes(4).toString('hex')}`)
@@ -257,16 +391,32 @@ async function renderChunk(browser, job) {
   // Removed on every way out (§128): a chunk that failed, a full disk
   // included, used to leave its frames behind for the next attempt to trip on.
   try {
-    return await captureAndEncodeChunk(browser, job, frameDir)
+    return await captureAndEncodeChunk(worker, job, frameDir)
   } finally {
     rmSync(frameDir, { recursive: true, force: true })
   }
 }
 
-async function captureAndEncodeChunk(browser, job, frameDir) {
-  const { id, htmlPath, fps, width, height, frameStart, frameEnd, chunkIndex, outputPath, captureScale, subframes = 1 } = job
+async function captureAndEncodeChunk(worker, job, frameDir) {
+  const { id, chunkIndex } = job
 
-  const page = await browser.newPage()
+  // PL83: a Chrome the system kills mid-capture, or a page whose renderer
+  // dies, fails the chunk at once as child_killed, naming the phase.
+  const at = { phase: 'overlay-load' }
+  const guard = await unlessChromeDies(worker, captureChunkFrames(worker, job, frameDir, at),
+    () => at.phase, `segment ${id} chunk ${chunkIndex}`)
+  // A props image the page asked for and could not get fails the render,
+  // naming it, rather than exporting without it (page-guard.js).
+  guard.assertPropsServed()
+
+  return encodeChunkFrames(job, frameDir)
+}
+
+/** Loads the chunk's page and screenshots its frames into `frameDir`; returns its page guard. */
+async function captureChunkFrames(worker, job, frameDir, at) {
+  const { id, htmlPath, width, height, frameStart, frameEnd, captureScale, subframes = 1 } = job
+
+  const page = worker.watchPage(await worker.browser.newPage())
   // deviceScaleFactor supersamples the capture: the viewport reported to CSS
   // stays width × height, so overlay JSX authored in design pixels lays out
   // identically, while the screenshot comes back at `captureScale`× device
@@ -355,6 +505,7 @@ async function captureAndEncodeChunk(browser, job, frameDir) {
   }
 
   // Screenshot each frame
+  at.phase = 'overlay-capture'
   const totalFrames = frameEnd - frameStart
   const reportEvery = Math.max(1, Math.floor(totalFrames / 20))
   const renderStartMs = Date.now()
@@ -398,9 +549,12 @@ async function captureAndEncodeChunk(browser, job, frameDir) {
   }
 
   await page.close()
-  // A props image the page asked for and could not get fails the render,
-  // naming it, rather than exporting without it (page-guard.js).
-  guard.assertPropsServed()
+  return guard
+}
+
+/** Encodes a captured chunk's PNG sequence into its FFV1 MKV. */
+async function encodeChunkFrames(job, frameDir) {
+  const { id, fps, chunkIndex, outputPath, subframes = 1 } = job
 
   // Encode PNG sequence → FFV1 in MKV.
   // yuva420p for transparent overlays; yuv420p for opaque (no alpha needed).

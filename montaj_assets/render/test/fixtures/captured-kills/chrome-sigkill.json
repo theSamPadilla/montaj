@@ -1,0 +1,6 @@
+{
+  "message": "Chrome was killed by SIGKILL (overlay-capture, segment wk chunk 0)",
+  "signal": "SIGKILL",
+  "capturedAt": "2026-10-08T07:13:05.895Z",
+  "chromeVersion": "Chrome/127.0.6533.88"
+}
