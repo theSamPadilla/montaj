@@ -191,7 +191,7 @@ def fetch_one(url, media_dir):
         err = _last_json(proc.stderr)
         raise SkipVideo(err.get("error", "fetch_failed"), err.get("message", "the download failed"))
     data = _last_json(proc.stdout)
-    paths = data.get("paths") or []
+    paths = [p for p in (data.get("paths") or []) if p]
     if not paths:
         raise SkipVideo("fetch_failed", "nothing was downloaded")
     return paths[0], (data.get("videos") or [{}])[0]

@@ -144,3 +144,12 @@ def test_fetch_one_failure_carries_the_fetch_code(monkeypatch, tmp_path):
     with pytest.raises(cd.SkipVideo) as e:
         cd.fetch_one("https://example.com/p/1", tmp_path)
     assert e.value.code == "unavailable"
+
+
+def test_fetch_one_with_no_file_path_skips_the_post(monkeypatch, tmp_path):
+    # fetch.py lists a path even when yt-dlp reported none; that post is skipped, not a crash
+    out = json.dumps({"paths": [None], "videos": [{"view_count": 5}]})
+    monkeypatch.setattr(cd.subprocess, "run", lambda *a, **k: _Proc(0, out))
+    with pytest.raises(cd.SkipVideo) as e:
+        cd.fetch_one("https://example.com/p/1", tmp_path)
+    assert e.value.code == "fetch_failed"
