@@ -150,9 +150,9 @@ export async function renderAllSegments(segments, config = {}) {
 
   // §128: the first failed chunk fails the render, but only once every worker
   // has stopped: the other browsers are closed at once (their chunk in
-  // flight then fails too), each chunk's frames are removed on its way out,
+  // flight then fails too), each chunk's ffmpeg is stopped and its partial MKV removed on its way out,
   // and each browser's profile with it. Failing the moment the first chunk
-  // failed left frames and profiles behind when the process exited.
+  // failed left encoders and profiles behind when the process exited.
   // Every close here is the worker's own close() (PL83), so none of them is
   // taken for a Chrome the system killed.
   const live = new Set(workers)
@@ -479,13 +479,18 @@ export async function renderChunk(worker, job) {
  * on its own still names its last lines. A dead ffmpeg is noticed at the next
  * frame, which stops the capture.
  */
-function frameSink(encode, what) {
-  const { stdin } = encode.child
-  let stdinError = null
-  stdin.on('error', err => { stdinError ??= err })
+export function frameSink(encode, what) {
+  // exited first: a failed spawn (EMFILE/ENFILE) rejects `encode` and leaves
+  // child.stdin null, and that rejection must be handled before anything else.
   let outcome = null
   const exited = encode.then(() => { outcome = { ok: true } }, err => { outcome = { err } })
-  const stopped = () => outcome !== null || stdinError !== null
+  const { stdin } = encode.child ?? {}
+  let stdinError = null
+  stdin?.on('error', err => { stdinError ??= err })
+  // One abort when ffmpeg exits: it settles any wait for 'drain' and removes its listeners.
+  const gone = new AbortController()
+  exited.then(() => gone.abort())
+  const stopped = () => !stdin || outcome !== null || stdinError !== null
   const exitError = async () => {
     await exited
     if (outcome.err) return outcome.err
@@ -500,12 +505,7 @@ function frameSink(encode, what) {
       if (stdin.write(frame)) return
       // once() rejects on the EPIPE, already recorded; an exit settles it too,
       // and then takes its listeners off.
-      const off = new AbortController()
-      try {
-        await Promise.race([once(stdin, 'drain', { signal: off.signal }).catch(() => {}), exited])
-      } finally {
-        off.abort()
-      }
+      await once(stdin, 'drain', { signal: gone.signal }).catch(() => {})
       if (stopped()) throw await exitError()
     },
     /** The last frame was written: ffmpeg finishes the MKV. */
@@ -517,7 +517,7 @@ function frameSink(encode, what) {
     },
     /** The chunk failed: stop its ffmpeg and wait for it to be gone. */
     async abort() {
-      stdin.destroy()
+      stdin?.destroy()
       if (!outcome) encode.child.kill('SIGKILL')
       await exited
     },
@@ -712,8 +712,8 @@ async function captureChunkFrames(worker, job, sink, at) {
       // 4. Into the chunk's ffmpeg (§131): the same PNG bytes a `path`
       //    screenshot wrote to disk. png is Puppeteer's default; named here
       //    because omitBackground applies to png only.
-      const frame = await page.screenshot({ type: 'png', omitBackground: captureOptionsFor(job).omitBackground })
-      await sink.write(frame)
+      const png = await page.screenshot({ type: 'png', omitBackground: captureOptionsFor(job).omitBackground })
+      await sink.write(png)
     }
     if ((localIdx + 1) % reportEvery === 0 || localIdx + 1 === totalFrames) {
       log(progressBar(id, localIdx + 1, totalFrames, renderStartMs))

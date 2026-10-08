@@ -5,7 +5,7 @@
 //   - TMPDIR: a small constant per worker. Overlay and caption frames are NOT
 //     written there: each screenshot streams into its chunk's ffmpeg over
 //     image2pipe (renderer.js renderChunk, §131), so TMPDIR holds only each
-//     worker's Chrome profile and the bundles, whatever the video's length.
+//     worker's Chrome profile and each segment's bundle, whatever the video's length.
 //     (Before §131 it held every worker's chunk of PNG frames, which grew with
 //     the longest overlay; captions span the whole video.)
 //   - the project's disk: the overlay FFV1 chunks and the video segments
@@ -36,13 +36,17 @@ const MEASURED_PIXELS = 1080 * 1920
 
 // TMPDIR per worker (a Chrome profile; no frames), measured as above. The
 // lower bound takes half, so it stays under what a real run uses.
+// PLATFORM: measured on macOS at 1080p only. On Linux, --disable-dev-shm-usage
+// may put Chrome's shared memory in TMPDIR (inferred, not measured); Windows
+// is unmeasured.
 export const TMP_BYTES_PER_WORKER = 10e6
+// TMPDIR per segment: each segment keeps its bundle dir there for the whole
+// render (render.js). MEASURED 11.7 MB for a one-line overlay.
+export const BUNDLE_BYTES = 12e6
 // Lower bound (the preflight).
 export const FFV1_SPARSE_BYTES_PER_PIXEL = 0.01
 export const OUTPUT_FLOOR_BYTES_PER_SECOND = 1e6 / 8
 // Expected (what a mid-render failure asks for).
-export const CAPTION_BYTES_PER_PIXEL = 0.04
-export const DENSE_BYTES_PER_PIXEL = 0.65
 export const FFV1_CAPTION_BYTES_PER_PIXEL = 0.015
 export const FFV1_DENSE_BYTES_PER_PIXEL = 0.2
 export const OUTPUT_BYTES_PER_SECOND = 5e6 / 8
@@ -54,16 +58,14 @@ export const OUTPUT_BYTES_PER_SECOND = 5e6 / 8
  * @param {Array<{ frames: number, sparse: boolean }>} p.segments  overlay and caption segments; `sparse` for captions
  * @param {number} p.width @param {number} p.height  the capture canvas (renderWidth x renderHeight)
  * @param {number} [p.captureScale]  device pixels per CSS pixel (render.js captureScaleFor)
- * @param {number} [p.subframes]     unused since overlay frames stream (kept for callers)
  * @param {number} [p.workerCount]   browser workers (renderer.js planChunks)
- * @param {number} [p.chunkSize]     unused since overlay frames stream (kept for callers)
  * @param {number} p.durationSeconds the timeline's length
  * @returns {{ lower: {tmpBytes: number, projectBytes: number}, expected: {tmpBytes: number, projectBytes: number} }}
  */
 export function estimateRenderDisk({ segments, width, height, captureScale = 1, workerCount = 1, durationSeconds }) {
   const px = width * height * captureScale * captureScale
   const frames = segments.reduce((n, s) => n + s.frames, 0)
-  const tmpExpected = Math.max(1, workerCount) * TMP_BYTES_PER_WORKER
+  const tmpExpected = Math.max(1, workerCount) * TMP_BYTES_PER_WORKER + segments.length * BUNDLE_BYTES
   const ffv1Expected = segments.reduce((n, s) => n + s.frames * px * (s.sparse ? FFV1_CAPTION_BYTES_PER_PIXEL : FFV1_DENSE_BYTES_PER_PIXEL), 0)
   const outputScale = (width * height) / MEASURED_PIXELS
   return {

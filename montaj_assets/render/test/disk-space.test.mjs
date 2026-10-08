@@ -9,7 +9,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   estimateRenderDisk, checkDiskSpace, insufficientDiskMessage, isDiskFull, diskFailure,
-  TMP_BYTES_PER_WORKER,
+  TMP_BYTES_PER_WORKER, BUNDLE_BYTES,
 } from '../disk-space.js'
 
 const GB = 1e9
@@ -22,7 +22,7 @@ const fakeDisk = (free, dev = { '/tmp': 1, '/proj/render': 1 }) => ({
 // whole video (1410 frames) and 11 short overlays (about 900 frames).
 const MEASURED = {
   segments: [{ frames: 1410, sparse: true }, { frames: 900, sparse: false }],
-  width: 1080, height: 1920, captureScale: 1, subframes: 1, workerCount: 12, chunkSize: 120, durationSeconds: 47.2,
+  width: 1080, height: 1920, captureScale: 1, workerCount: 12, durationSeconds: 47.2,
 }
 
 test('the lower bound stays under what the measured render really used', () => {
@@ -32,23 +32,32 @@ test('the lower bound stays under what the measured render really used', () => {
   assert.ok(lower.projectBytes > 0 && lower.projectBytes < 306e6, `project lower bound ${lower.projectBytes}`)
 })
 
-test('the TMPDIR need is a small per-worker constant: it no longer scales with frames or chunk size', () => {
+test('the TMPDIR need is a small per-worker constant plus a bundle per segment: it no longer scales with frames or chunk size', () => {
   // Overlay frames stream into ffmpeg (§131), so TMPDIR holds only each worker's
   // Chrome profile. MEASURED in Task 6, a 60 s 1080x1920 captioned project, 12
   // workers: 132 MB peak, about 121 MB of it profiles, so about 10 MB a worker.
   assert.equal(TMP_BYTES_PER_WORKER, 10e6)
-  const minute = estimateRenderDisk({ ...MEASURED, segments: [{ frames: 1800, sparse: true }], chunkSize: 150, durationSeconds: 60 })
-  const tenMinutes = estimateRenderDisk({ ...MEASURED, segments: [{ frames: 18000, sparse: true }], chunkSize: 1500, durationSeconds: 600 })
+  const minute = estimateRenderDisk({ ...MEASURED, segments: [{ frames: 1800, sparse: true }], durationSeconds: 60 })
+  const tenMinutes = estimateRenderDisk({ ...MEASURED, segments: [{ frames: 18000, sparse: true }], durationSeconds: 600 })
   assert.equal(tenMinutes.expected.tmpBytes, minute.expected.tmpBytes)
   assert.equal(tenMinutes.lower.tmpBytes, minute.lower.tmpBytes)
-  assert.equal(tenMinutes.expected.tmpBytes, 12 * 10e6)
+  assert.equal(tenMinutes.expected.tmpBytes, 12 * 10e6 + BUNDLE_BYTES)
   assert.ok(tenMinutes.lower.tmpBytes < tenMinutes.expected.tmpBytes)
-  assert.ok(tenMinutes.expected.tmpBytes < 200e6, 'not the 10+ GB the PNG frames needed')
+  assert.ok(tenMinutes.expected.tmpBytes < 200e6, 'not the 1.5 GB the PNG frames needed')
   // The project's disk still grows with the video.
   assert.ok(tenMinutes.expected.projectBytes > 9 * minute.expected.projectBytes)
   assert.ok(tenMinutes.lower.projectBytes > 9 * minute.lower.projectBytes)
-  // One worker needs a twelfth.
-  assert.equal(estimateRenderDisk({ ...MEASURED, workerCount: 1 }).expected.tmpBytes, 10e6)
+  // One worker needs a twelfth of the profiles (MEASURED has two segments).
+  assert.equal(estimateRenderDisk({ ...MEASURED, workerCount: 1 }).expected.tmpBytes, 10e6 + 2 * BUNDLE_BYTES)
+})
+
+test('each segment keeps a bundle in TMPDIR for the whole render: the TMPDIR need grows with the segment count', () => {
+  const seg = { frames: 30, sparse: false }
+  const tmp = n => estimateRenderDisk({ ...MEASURED, segments: Array.from({ length: n }, () => seg) })
+  assert.equal(BUNDLE_BYTES, 12e6)
+  assert.equal(tmp(11).expected.tmpBytes - tmp(1).expected.tmpBytes, 10 * BUNDLE_BYTES)
+  assert.ok(tmp(11).lower.tmpBytes > tmp(1).lower.tmpBytes, 'the lower bound counts them too')
+  assert.ok(tmp(11).lower.tmpBytes < tmp(11).expected.tmpBytes, 'and keeps half')
 })
 
 test('one disk: TMPDIR and the project share its free space', () => {

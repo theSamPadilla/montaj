@@ -564,8 +564,9 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   const captureScale = captureScaleFor(settings.resolution)
   for (const spec of segmentSpecs) spec.captureScale = captureScale
 
-  // 2a. Disk (§128). Before anything heavy is written: each overlay chunk's
-  //     frames go to TMPDIR and the segments and export to the project's disk
+  // 2a. Disk (§128). Before anything heavy is written: each worker's
+  //     Chrome profile and each segment's bundle go to TMPDIR (frames stream
+  //     into ffmpeg and are never written) and the segments and export to the project's disk
   //     (disk-space.js). Refused only when the render certainly will not fit
   //     (the lower bound); a render that runs out later fails the same way.
   {
@@ -575,8 +576,8 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
       projectDir: renderDir,
       estimate: estimateRenderDisk({
         segments: segmentSpecs.map(spec => ({ frames: spec.frameCount, sparse: spec.id === 'captions' })),
-        width: renderWidth, height: renderHeight, captureScale, subframes: plan.subframes,
-        workerCount: plan.workerCount, chunkSize: plan.chunkSize,
+        width: renderWidth, height: renderHeight, captureScale,
+        workerCount: plan.workerCount,
         durationSeconds: getTotalDurationSeconds(projectJson),
       }),
     }

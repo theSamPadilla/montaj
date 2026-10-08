@@ -17,7 +17,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, realpathSyn
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { estimateRenderDisk } from '../disk-space.js'
+import { estimateRenderDisk, checkDiskSpace } from '../disk-space.js'
 import { FFMPEG } from '../ffmpeg-bin.js'
 
 const RENDER_JS = join(dirname(fileURLToPath(import.meta.url)), '..', 'render.js')
@@ -91,19 +91,27 @@ test('a disk with room lets the same render through the check', { skip: SKIP, ti
   assert.match(r.stderr, /with Puppeteer/, 'it went on to capture')
 })
 
-test('a long captioned video passes a disk that held only its per-worker TMPDIR need and its project files', { skip: SKIP, timeout: 300_000 }, async () => {
-  // 10 minutes of captions at 1080x1920 with 12 workers: the PNG frames in TMPDIR
-  // alone used to need about 1.5 GB. They stream now (§131), so the check asks for
-  // 12 x 10 MB of TMPDIR plus the project's own files.
+test('a long captioned video passes a disk that holds its project files and a per-worker TMPDIR, though not the PNG frames it used to need', () => {
+  // 10 minutes of captions at 1080x1920 with 12 workers. The PNG frames in TMPDIR
+  // alone used to be counted: the old lower bound was 0.5 x 18000 frames x
+  // 1080x1920 x 0.03 bytes = 560 MB. They stream now (§131), so the lower bound
+  // is the profiles and the bundle only.
+  const OLD_TMP_LOWER = 0.5 * 18000 * 1080 * 1920 * 0.03
   const est = estimateRenderDisk({
-    segments: [{ frames: 18000, sparse: true }], width: 1080, height: 1920, workerCount: 12, chunkSize: 1500, durationSeconds: 600,
+    segments: [{ frames: 18000, sparse: true }], width: 1080, height: 1920, workerCount: 12, durationSeconds: 600,
   })
   assert.ok(est.lower.tmpBytes < 100e6, `tmp lower bound ${est.lower.tmpBytes}`)
-  assert.ok(est.expected.tmpBytes <= 120e6, `tmp expected ${est.expected.tmpBytes}`)
-  const dir = project()
-  // Room for this 2 s render's real needs, nowhere near the old frame space.
-  const r = render(dir, { MONTAJ_TEST_DISK_FREE_BYTES: String(est.expected.tmpBytes + 2e9) })
-  assert.doesNotMatch(r.stderr, /insufficient_disk/)
+  assert.ok(OLD_TMP_LOWER > est.lower.tmpBytes + 400e6)
+  // Free space between the new lower bound and the old one: one disk, so the
+  // two needs add. Passes now; the old bound (560 MB of frames) refused it.
+  const free = est.lower.projectBytes + est.lower.tmpBytes + 200e6
+  const disk = {
+    statfs: () => ({ bavail: Math.floor(free / 4096), bsize: 4096 }),
+    stat: () => ({ dev: 1 }),
+  }
+  const check = checkDiskSpace({ tmpDir: '/tmp', projectDir: '/proj/render', estimate: est.lower, ...disk })
+  assert.equal(check.short, null, 'the render is let through')
+  assert.ok(free < est.lower.projectBytes + OLD_TMP_LOWER, 'a disk the old lower bound would have refused')
 })
 
 test('render.js maps a disk that ran out mid-render to the same line, after removing its bundles', () => {

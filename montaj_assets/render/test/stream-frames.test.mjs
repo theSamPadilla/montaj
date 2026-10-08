@@ -418,3 +418,23 @@ test('backpressure: an ffmpeg that reads nothing stops the capture within a fram
     await worker.close().catch(() => {})
   }
 })
+
+// A spawn that fails (EMFILE/ENFILE) rejects the encode and leaves child.stdin
+// null. That must fail the chunk with the spawn's error, not throw a TypeError
+// before the rejection is handled (an unhandled rejection kills the render
+// with no failure line).
+test('a failed ffmpeg spawn (no stdin): write and end reject with the spawn error; nothing unhandled', async () => {
+  const stray = trapUnhandled()
+  try {
+    const spawnErr = Object.assign(new Error('spawn ffmpeg EMFILE'), { code: 'EMFILE' })
+    const encode = Object.assign(Promise.reject(spawnErr), { child: { stdin: null, kill() {} } })
+    const sink = R.frameSink(encode, 'ffmpeg PNG→ffv1 failed (segment x chunk 0)')
+    await assert.rejects(sink.write(Buffer.from('x')), e => e === spawnErr)
+    await assert.rejects(sink.end(), e => e === spawnErr)
+    await sink.abort()
+    await sleep(50)
+    assert.deepEqual(stray.errors.map(e => e?.message ?? String(e)), [], 'nothing unhandled')
+  } finally {
+    stray.off()
+  }
+})

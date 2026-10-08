@@ -95,29 +95,41 @@ test('a chunk that fails leaves no frames in TMPDIR and no encoder running', { t
 
 test('when one worker\'s chunk fails, the others stop and clean up before the render fails', { timeout: 180_000 }, async () => {
   const bundle = await bundleComponent({
-    componentPath: overlay, props: {}, fps: 30, durationFrames: 120, width: SIZE, height: SIZE,
+    componentPath: overlay, props: {}, fps: 30, durationFrames: 900, width: SIZE, height: SIZE,
     projectDir: join(ws, 'proj'),
   })
   const frames = join(base, 'tmp2')
   mkdirSync(frames)
   process.env.TMPDIR = frames
-  const blocker = join(base, 'not-a-dir-2')
-  writeFileSync(blocker, 'x')
   const common = { htmlPath: bundle.htmlPath, fps: 30, width: SIZE, height: SIZE, captureScale: 1,
     boundary: bundle.boundary, needsGoogleFonts: bundle.needsGoogleFonts }
+  const segs = join(base, 'segs')
+  const longMkv = join(segs, 'long-chunk-0.mkv')
+  // ffmpeg creates the MKV only after probing ~150 piped frames (MEASURED in
+  // stream-frames.test.mjs), so the stopped chunk has a partial MKV on disk by
+  // the time the other chunk's encoder is killed here to fail the render.
+  let sawLongMkv = false
+  let killed = false
+  const watch = setInterval(() => {
+    if (!existsSync(longMkv)) return
+    sawLongMkv = true
+    if (killed) return
+    const r = spawnSync('pgrep', ['-P', String(process.pid), '-f', 'quick-chunk'], { encoding: 'utf8' })
+    for (const pid of r.stdout.split('\n').map(Number).filter(Boolean)) { process.kill(pid, 'SIGKILL'); killed = true }
+  }, 5)
   try {
     await assert.rejects(renderAllSegments([
-      // Fails at once: its chunk dir cannot be made.
-      { ...common, id: 'quick', frameCount: 2, startSeconds: 0, endSeconds: 2 / 30, outputPath: join(blocker, 'q', 'quick.mkv') },
-      // Loading or capturing, its ffmpeg running, when the first fails.
-      { ...common, id: 'long', frameCount: 120, startSeconds: 0, endSeconds: 4, outputPath: join(base, 'segs', 'long.mkv') },
-    ], { workers: 2, chunkSize: 120 }))
+      { ...common, id: 'quick', frameCount: 900, startSeconds: 0, endSeconds: 30, outputPath: join(base, 'segs', 'quick.mkv') },
+      { ...common, id: 'long', frameCount: 900, startSeconds: 0, endSeconds: 30, outputPath: join(segs, 'long.mkv') },
+    ], { workers: 2, chunkSize: 900 }))
+    assert.ok(sawLongMkv, 'the stopped chunk had a partial MKV on disk when the render failed')
+    assert.ok(killed, 'the failing chunk\'s ffmpeg was killed')
     assert.deepEqual(framesUnder(frames), [], 'no worker left frames in TMPDIR')
     assert.deepEqual(chunkEncoders(), [], 'the stopped worker\'s chunk ffmpeg is gone')
-    const segs = join(base, 'segs')
     const mkvs = existsSync(segs) ? readdirSync(segs).filter(n => n.endsWith('.mkv')) : []
     assert.deepEqual(mkvs, [], 'the stopped worker left no partial chunk MKV')
   } finally {
+    clearInterval(watch)
     if (realTmp === undefined) delete process.env.TMPDIR
     else process.env.TMPDIR = realTmp
     cleanupBundle(bundle.workDir)

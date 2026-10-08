@@ -75,12 +75,19 @@ const FLIP = `export default function Flip() {
 }
 `
 
+// FLIP with a dot that keeps moving on the canvas (wraps), so a long chunk's
+// frames stay distinct.
+const LONG = FLIP.replace('left: frame * 0.9', 'left: (frame * 0.9) % 50').replace('Flip()', 'Long()')
+
 const CASES = [
   { name: 'alpha',        jsx: ALPHA,  size: 256, fps: 30, frames: 30, opaque: false, subframes: 1 },
   { name: 'opaque',       jsx: OPAQUE, size: 96,  fps: 30, frames: 30, opaque: true,  subframes: 1 },
   { name: 'blur off',     jsx: FLIP,   size: 64,  fps: 60, frames: 60, opaque: false, subframes: 1 },
   { name: 'blur on',      jsx: FLIP,   size: 64,  fps: 60, frames: 60, opaque: false, subframes: 3 },
   // A chunk that does not start at the segment's first frame.
+  // Longer than ffmpeg's probe of a piped input (about 150 frames, MEASURED in
+  // stream-frames.test.mjs): the steady state production chunks run in.
+  { name: 'past probe',   jsx: LONG,   size: 64,  fps: 60, frames: 240, opaque: false, subframes: 3 },
   { name: 'subframes 4',  jsx: OPAQUE, size: 96,  fps: 30, frames: 60, opaque: true,  subframes: 4, chunk: [15, 45] },
 ]
 
