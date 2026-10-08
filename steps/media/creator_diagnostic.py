@@ -223,7 +223,8 @@ def measure_video(path, stills, n, model, language):
     speech = speech_metrics(transcribe_words(str(path), model=model, language=language), duration)
     music, beat_share = _music(path, cuts)
     sheet_dir = stills / f"v{n:02d}"
-    sheets = shot_sheet.build(str(path), det["shots"], str(sheet_dir), 1, 4, 1280, 12, 600)["sheets"]
+    # width is per tile: four 320 px tiles make a sheet about 1280 px wide
+    sheets = shot_sheet.build(str(path), det["shots"], str(sheet_dir), 1, 4, 320, 12, 600)["sheets"]
     sheet = stills / f"sheet-{n:02d}.jpg"
     shutil.move(sheets[0]["path"], sheet)
     shutil.rmtree(sheet_dir, ignore_errors=True)
