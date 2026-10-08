@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.0.9
+
 - **Changed: carousel slide thumbnails show note bubbles instead of a whole-slide pin count.** One small speech bubble per tone (yours, then reviews, in the pin colours) counts all of that slide's `pins`, with a point or without, and is numbered only past one. A click selects the slide and calls `onPinClick` with that tone's first pin, without the thumbnail's own click or a drag. `data-slide-pin-count` is replaced by `data-slide-note-bubble` (with `data-tone`); thumbnails carry `data-slide-thumb`.
 
 ## 2.0.8

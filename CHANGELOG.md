@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.24.19
+
 - **Changed (editor): carousel slide thumbnails show note bubbles.** Each thumbnail with open notes shows a small speech bubble per tone at its bottom right, yours (accent) before reviews (amber), counting all of that slide's `pins`, with a point or without, numbered only past one. A click on a bubble selects the slide and calls `onPinClick` with that tone's first pin; it neither selects twice nor starts a drag. Replaces the thumbnail count of whole-slide pins (`data-slide-pin-count` is gone; bubbles carry `data-slide-note-bubble` and `data-tone`). (`montaj_assets/editor/src/carousel/CarouselEditor.tsx`, `NoteLayers.tsx`, `types.ts`, `__tests__/CarouselEditor.test.tsx`)
 
 ## v5.24.18
