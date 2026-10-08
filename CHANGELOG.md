@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Added (steps): `creator_diagnostic`.** It measures how a creator edits from up to 30 posts (links or local files), picks the most-viewed `top` (default 10) or one post, and writes medians plus per-video cut rate, shot lengths, speech pace, opening line, music and beat-cutting, aspect, length and palette. Each video keeps a shot sheet (about 1280 px wide) and an opening frame. Downloads and `inbox` files are deleted once measured. The root skill follows a profile's adopted block.
+
 ## v5.25.0
 
 - **Added (render, serve, CLI): carousel export as PDF.** `render-carousel.js --pdf` (`montaj render --pdf`; serve always passes it for a carousel render, including the auto-render on `final`) also writes `carousel.pdf` beside the slide PNGs: one page per slide, each page the slide's PNG itself (pixel-identical to the PNG export) at the slide's design size in points. 8-bit RGB PNGs pass through into the PDF unchanged; no new dependency. `GET /projects/{id}/render-pdf` downloads it (404 unless the manifest lists it). A render with a failed slide writes no PDF (`manifest.json` `pdf: null`), a render without `--pdf` removes any `carousel.pdf` left by an earlier run, and a PDF that cannot be built or written is skipped with a warning (manifest `pdf: null`); the slides still export. The PDF is written atomically (temp file, then rename). (`montaj_assets/render/carousel-pdf.js`, `render-carousel.js`)

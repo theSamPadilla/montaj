@@ -37,6 +37,7 @@ For HTTP and CLI, **load skill `native`** — it defines how every `_contract` v
 - **CLI mode, no project yet** — run `montaj profile list`. If profiles exist, ask the user if they wish to apply one.
 - **Profile snapshot in project.json** — when `profile` is set, project.json also contains `profileSnapshot` with three fields:
   - `styleProfilePath` — absolute path to the profile's `style_profile.md`. Load it live for editorial direction analyzed from the creator's content (pacing, palette, tone). Field is **omitted** when the file did not exist at project init.
+  - If `style_profile.md` holds a block between `<!-- montaj:adopted:start -->` and `<!-- montaj:adopted:end -->`, the creator chose those rules from other creators. Follow them as direction for pacing, captions, music and openings, in the same way as the rest of the profile; the snapshot `summary` still wins on a conflict.
   - `summary` — hand-written guidance about how to use this asset library, frozen at init. Asset-library-specific rules ("always end with bumper.mov", "logo bottom-right at 60% opacity"). Distinct from `style_profile.md`: that's analysis-derived; this is hand-curated.
   - `availableAssets` — list of `{filename, description, tags}` entries the user has curated. Frozen at init.
 - **Selection is human-driven.** The user picks specific assets via the editor side panel; included assets land in `project.assets[]` with the same shape as any other asset. **Never call the include-asset endpoint on the user's behalf without explicit instruction.**
