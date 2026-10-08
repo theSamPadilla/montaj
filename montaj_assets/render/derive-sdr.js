@@ -24,6 +24,7 @@ import { existsSync } from 'node:fs'
 
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
+import { childKilledError } from './child-killed.js'
 import { buildColorConversionFilter, hasZscale, hasLut3d } from './encode-segment.js'
 import { specFor, detectFromTransfer, isHdr } from './color-space.js'
 
@@ -176,14 +177,18 @@ export async function deriveSdr(masterPath, outputPath, opts = {}) {
     const timer = setTimeout(() => { timedOut = true; proc.kill('SIGKILL') }, DERIVE_TIMEOUT_MS)
     proc.stderr.on('data', (d) => { stderr += d.toString('utf8') })
     proc.on('error', (err) => { clearTimeout(timer); resolve({ status: null, stderr, error: err }) })
-    proc.on('close', (status) => { clearTimeout(timer); resolve({ status, stderr, timedOut }) })
+    proc.on('close', (status, signal) => { clearTimeout(timer); resolve({ status, signal, stderr, timedOut }) })
   })
 
   if (result.status !== 0) {
     const detail = result.error ? result.error.message
                  : result.timedOut ? `timed out after ${DERIVE_TIMEOUT_MS / 1000}s`
                  : ffmpegErrorTail(result.stderr)
-    throw new Error(`ffmpeg SDR derive failed (${masterPath} → ${outputPath}):\n${detail}`)
+    const message = `ffmpeg SDR derive failed (${masterPath} → ${outputPath}):\n${detail}`
+    if (result.signal && !result.timedOut) {
+      throw childKilledError({ child: 'ffmpeg', signal: result.signal, phase: 'sdr-derive', message })
+    }
+    throw new Error(message)
   }
 
   return outputPath

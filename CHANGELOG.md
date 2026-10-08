@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (render): a killed ffmpeg is reported as `child_killed` with its signal.** A segment encode, chunk or segment concat, audio mix, loudness pass or SDR derive whose ffmpeg dies from a signal (the OS killing it, a SIGKILL) now fails with `code: 'child_killed'`, `child`, `signal` and `phase`, keeping the existing message and stderr tail, instead of a bare exit failure. The engine's own timeouts are not kills and keep their error. (`montaj_assets/render/child-killed.js`, `renderer.js`, `encode-segment.js`, `compose.js`, `mix-audio.js`, `derive-sdr.js`)
+
 ## v5.24.20
 
 - **Added (editor, render): one-click text effects, fit to box, and align to slide in the carousel inspector.** The `static-text` overlay takes five new props: `effect` (`none`, `shadow`, `outline`, `glow`), `effectColor`, `effectStrength` (`"0"`..`"100"`), `fit` (`"true"` shrinks the text to the largest whole px size that fits the box without breaking a word) and `minFontSize` (the floor, default `"24"`). Effects are sized in `em`, so they follow a fitted size. Fit measures the laid-out text through a callback ref, not a hook, so the editor preview (which calls an overlay directly) and the render fit the same way with their own font metrics, and fit again once webfonts land. The inspector shows Effect presets with a color and a strength slider, and a Fit to box switch, for an overlay that declares them; every element gets an Align row (left, center, right, top, middle, bottom of the slide, by the box a rotated element covers). Existing text keeps its look: the props default to no effect and no fit. The editable-text skill names the new props.

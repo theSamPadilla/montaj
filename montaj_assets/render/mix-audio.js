@@ -16,6 +16,7 @@ import { audioSourceWindow } from '@bycrux/timeline-core'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { externalizeFilterGraph } from './filter-script.js'
 import { ffmpegErrorTail, assertInputsExist } from './ffmpeg-error.js'
+import { syncResultError } from './child-killed.js'
 
 const FFMPEG_TIMEOUT_MS = 600_000
 
@@ -254,6 +255,10 @@ function audioIsSilent(inputs, lufs, graph = null) {
   } finally {
     script.cleanup()
   }
+  // A kill is not a "not silent" answer: report it rather than carry on.
+  const killed = syncResultError(result, { child: 'ffmpeg', phase: 'loudness-measure',
+    message: `ffmpeg loudness measure failed:\n${ffmpegErrorTail(result.stderr)}` })
+  if (killed) throw killed
   if (result.status !== 0) return false
   return isSilentInputI(parseLoudnormInputI(result.stderr))
 }
@@ -296,14 +301,20 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness
           '-movflags', '+faststart',
           outputPath,
         ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
-        if (result.status !== 0) throw new Error(`ffmpeg loudness normalize failed:\n${ffmpegErrorTail(result.stderr)}`)
+        if (result.status !== 0) {
+          const message = `ffmpeg loudness normalize failed:\n${ffmpegErrorTail(result.stderr)}`
+          throw syncResultError(result, { child: 'ffmpeg', phase: 'loudness-normalize', message }) ?? new Error(message)
+        }
         return
       }
     }
     const result = spawnSync(FFMPEG, [
       '-y', '-i', videoPath, '-c', 'copy', outputPath,
     ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
-    if (result.status !== 0) throw new Error(`ffmpeg copy failed:\n${ffmpegErrorTail(result.stderr)}`)
+    if (result.status !== 0) {
+      const message = `ffmpeg copy failed:\n${ffmpegErrorTail(result.stderr)}`
+      throw syncResultError(result, { child: 'ffmpeg', phase: 'audio-copy', message }) ?? new Error(message)
+    }
     return
   }
 
@@ -341,5 +352,8 @@ export function mixAudioIntoVideo(videoPath, audioTracks, outputPath, { loudness
     script.cleanup()
   }
 
-  if (result.status !== 0) throw new Error(`ffmpeg audio mix failed:\n${ffmpegErrorTail(result.stderr)}`)
+  if (result.status !== 0) {
+    const message = `ffmpeg audio mix failed:\n${ffmpegErrorTail(result.stderr)}`
+    throw syncResultError(result, { child: 'ffmpeg', phase: 'audio-mix', message }) ?? new Error(message)
+  }
 }

@@ -1,0 +1,18 @@
+{
+  "message": "ffmpeg test encode failed:\n  Stream #0:0: Video: wrapped_avframe, rgb24, 320x240 [SAR 1:1 DAR 4:3], 30 fps, 30 tbr, 30 tbn\nStream mapping:\n  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> wrapped_avframe (native))\nPress [q] to stop, [?] for help\nOutput #0, null, to 'pipe:':\n  Metadata:\n    encoder         : Lavf62.12.102\n  Stream #0:0: Video: wrapped_avframe, rgb24(pc, gbr/unknown/unknown, progressive), 320x240 [SAR 1:1 DAR 4:3], q=2-31, 200 kb/s, 30 fps, 30 tbn\n    Metadata:\n      encoder         : Lavc62.28.102 wrapped_avframe",
+  "stderrTail": [
+    "  Stream #0:0: Video: wrapped_avframe, rgb24, 320x240 [SAR 1:1 DAR 4:3], 30 fps, 30 tbr, 30 tbn",
+    "Stream mapping:",
+    "  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> wrapped_avframe (native))",
+    "Press [q] to stop, [?] for help",
+    "Output #0, null, to 'pipe:':",
+    "  Metadata:",
+    "    encoder         : Lavf62.12.102",
+    "  Stream #0:0: Video: wrapped_avframe, rgb24(pc, gbr/unknown/unknown, progressive), 320x240 [SAR 1:1 DAR 4:3], q=2-31, 200 kb/s, 30 fps, 30 tbn",
+    "    Metadata:",
+    "      encoder         : Lavc62.28.102 wrapped_avframe"
+  ],
+  "signal": "SIGKILL",
+  "capturedAt": "2026-10-08T06:58:27.265Z",
+  "ffmpeg": "ffmpeg version 8.1.2-https://www.martin-riedl.de Copyright (c) 2000-2026 the FFmpeg developers"
+}

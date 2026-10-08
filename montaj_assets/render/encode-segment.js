@@ -36,6 +36,7 @@ import { mkdirSync, rmSync } from 'fs'
 import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { ffmpegErrorTail, assertInputsExist, fileInputsOf } from './ffmpeg-error.js'
+import { childKilledError } from './child-killed.js'
 import { specFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
@@ -154,7 +155,7 @@ function logFfmpegStderr(stderr) {
  * SIGKILL). A cancel kills the process without either, which is why the caller
  * passes the render's own segments dir: compose wipes it on every render.
  */
-function runFfmpeg(args, timeoutMs, scriptDir) {
+export function runFfmpeg(args, timeoutMs, scriptDir) {
   return new Promise((resolve) => {
     let script
     let proc
@@ -178,7 +179,7 @@ function runFfmpeg(args, timeoutMs, scriptDir) {
     proc.on('close', (status, signal) => {
       clearTimeout(timer)
       script.cleanup()
-      resolve({ status, signal: timedOut ? 'SIGKILL' : signal, stderr })
+      resolve({ status, signal: timedOut ? 'SIGKILL' : signal, timedOut, stderr })
     })
   })
 }
@@ -2369,7 +2370,11 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   if (result.status !== 0) {
     // spawn() can throw, or the script fail to write, before any stderr exists.
     const cause = result.error ? `${result.error.message}\n` : ''
-    throw new Error(`ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s):\n${cause}${ffmpegErrorTail(result.stderr)}`)
+    const message = `ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s):\n${cause}${ffmpegErrorTail(result.stderr)}`
+    if (result.signal && !result.timedOut) {
+      throw childKilledError({ child: 'ffmpeg', signal: result.signal, phase: 'segment-encode', message })
+    }
+    throw new Error(message)
   }
 
   // An exit code of 0 does not promise a picture: a graph can end without a
@@ -2429,8 +2434,12 @@ export async function encodeSegmentGroup(group, outputPath, opts = {}) {
     if (result.stderr) logFfmpegStderr(result.stderr)
     if (result.status !== 0) {
       const cause = result.error ? `${result.error.message}\n` : ''
-      throw new Error(`ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s, `
-        + `${parts.length} short parts joined):\n${cause}${ffmpegErrorTail(result.stderr)}`)
+      const message = `ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s, `
+        + `${parts.length} short parts joined):\n${cause}${ffmpegErrorTail(result.stderr)}`
+      if (result.signal && !result.timedOut) {
+        throw childKilledError({ child: 'ffmpeg', signal: result.signal, phase: 'segment-group-join', message })
+      }
+      throw new Error(message)
     }
     assertSegmentHasVideo(outputPath, { start, end })
   } finally {

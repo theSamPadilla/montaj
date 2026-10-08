@@ -15,6 +15,7 @@ import { randomBytes } from 'crypto'
 import os from 'os'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
+import { childKilledError, syncResultError } from './child-killed.js'
 import { adaptiveChunkSize, workerCap } from './chunk-plan.js'
 import { toFileHref } from './file-url.js'
 import { subframeTimes, motionBlurFilter } from './motion-blur.js'
@@ -475,13 +476,15 @@ function progressBar(label, done, total, startMs) {
   return `  ${tag}  ${String(pct).padStart(3)}%|${bar}| ${done}/${total} [${fmt(elapsed)}<${fmt(remaining)}]`
 }
 
-function spawnAsync(cmd, args, errorPrefix) {
+export function spawnAsync(cmd, args, errorPrefix, phase = 'ffmpeg') {
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, args)
     let stderr = ''
     proc.stderr.on('data', d => { stderr += d })
-    proc.on('close', code => {
-      if (code !== 0) reject(new Error(`${errorPrefix}:\n${ffmpegErrorTail(stderr)}`))
+    proc.on('close', (code, signal) => {
+      const message = `${errorPrefix}:\n${ffmpegErrorTail(stderr)}`
+      if (signal) reject(childKilledError({ child: 'ffmpeg', signal, phase, message }))
+      else if (code !== 0) reject(new Error(message))
       else resolve()
     })
     proc.on('error', reject)
@@ -512,7 +515,8 @@ function concatChunks(chunkPaths, outputPath) {
   ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
 
   if (result.status !== 0) {
-    throw new Error(`ffmpeg chunk concat failed:\n${ffmpegErrorTail(result.stderr)}`)
+    const message = `ffmpeg chunk concat failed:\n${ffmpegErrorTail(result.stderr)}`
+    throw syncResultError(result, { child: 'ffmpeg', phase: 'chunk-concat', message }) ?? new Error(message)
   }
 
   for (const p of chunkPaths) rmSync(p, { force: true })

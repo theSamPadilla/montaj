@@ -17,6 +17,7 @@ import { dirname, join, resolve } from 'path'
 import { randomBytes } from 'crypto'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
+import { syncResultError } from './child-killed.js'
 import { planSegments, groupShortSegments, MIN_SEGMENT_FRAMES } from './segment-plan.js'
 import { markCards } from './cover-probe.js'
 import { encodeSegmentGroup, buildVividLutChain, hasLut3d, twoStageSeek } from './encode-segment.js'
@@ -390,7 +391,8 @@ function concatSegments(segments, outputPath) {
   rmSync(listFile, { force: true })
   if (result.status !== 0) {
     rmSync(tmpPath, { force: true })
-    throw new Error(`ffmpeg concat failed:\n${ffmpegErrorTail(result.stderr)}`)
+    const message = `ffmpeg concat failed:\n${ffmpegErrorTail(result.stderr)}`
+    throw syncResultError(result, { child: 'ffmpeg', phase: 'concat', message }) ?? new Error(message)
   }
   renameSync(tmpPath, outputPath)
 }
