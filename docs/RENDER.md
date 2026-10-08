@@ -549,6 +549,10 @@ Pass `--scale N` (where N is `1`, `2`, or `3`) to rasterize slides at N× the ba
 
 The design canvas and overlay coordinates are unchanged; only the output PNG pixel dimensions scale.
 
+### PDF (`--pdf`)
+
+`render-carousel.js --pdf` (and `montaj render --pdf`) also writes `render/carousel.pdf`: one page per slide, each page the slide PNG itself at the design size in points. The manifest gets `pdf: "carousel.pdf"`, or `null` when a slide failed or the PDF could not be written (a warning, never a failed run). A render without `--pdf` removes any earlier `carousel.pdf`. Serve always passes `--pdf` for carousels (including the auto-render on `final`); download it with `GET /api/projects/{id}/render-pdf`.
+
 ### Manifest fields added by `--scale`
 
 The render manifest gains two top-level fields (`outputResolution`, `scale`) and each `slides[i]` entry exposes both `designWidth`/`designHeight` (always design coords) and `width`/`height` (actual PNG pixel dims). At `scale=1` the two pairs are identical; at the default `scale=2` `width`/`height` are double the design coords.

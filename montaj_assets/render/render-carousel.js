@@ -3,7 +3,7 @@
  * render-carousel.js — Render a carousel project.json into per-slide PNGs.
  *
  * Usage:
- *   node render-carousel.js --project-json <path> [--out <dir>] [--clean] [--scale <1|2|3>]
+ *   node render-carousel.js --project-json <path> [--out <dir>] [--clean] [--scale <1|2|3>] [--pdf]
  *
  * --scale defaults to 2 (high-DPI): slides rasterize at 2× the design canvas
  * (e.g. portrait 1080×1350 → 2160×2700 PNGs) so they stay crisp on desktop /
@@ -11,13 +11,17 @@
  * at the design resolution, so layout/coordinates are pixel-identical to 1×.
  * Pass --scale 1 to opt back into 1× (design-resolution) output.
  *
+ * --pdf also writes carousel.pdf beside the PNGs: one page per slide, each page
+ * the slide PNG itself at the design size. Skipped (manifest pdf: null) when any
+ * slide failed or the PDF cannot be written (a warning, never a failed run). A render without --pdf deletes a carousel.pdf an earlier run left.
+ *
  * stdout: absolute path to the output directory (follows step output convention)
  * stderr: progress lines + JSON error on failure
  * exit 0 on success, exit 1 on failure
  */
 import esbuild        from 'esbuild'
 import puppeteer      from 'puppeteer'
-import { readFileSync, writeFileSync, mkdirSync, rmSync, readdirSync, unlinkSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, rmSync, readdirSync, unlinkSync, existsSync, renameSync } from 'fs'
 import { resolve, join, dirname }                         from 'path'
 import { fileURLToPath }                                  from 'url'
 import { tmpdir }                                         from 'os'
@@ -26,6 +30,7 @@ import { toFileHref, fontsCssHref, assetResolverSource } from './file-url.js'
 import { overlayEsbuildOptions, overlayReadBoundary }     from './overlay-build.js'
 import { overlayPageLaunchOptions, installPageGuard, prefetchPropsUrls, overlayPageCspMeta, pageNeedsGoogleFonts } from './page-guard.js'
 import { parseGoogleFonts } from './google-fonts.js'
+import { pngsToPdf } from './carousel-pdf.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -63,6 +68,10 @@ function fail(code, message) {
 // explicitly passed --scale (1, 3) still wins.
 const DEFAULT_SCALE = 2
 
+const PDF_FILE = 'carousel.pdf'
+// Written in outDir (a rename across filesystems fails), then renamed over PDF_FILE.
+const PDF_TMP  = '.carousel.pdf.tmp'
+
 // ---------------------------------------------------------------------------
 // CLI argument parsing
 // ---------------------------------------------------------------------------
@@ -70,7 +79,7 @@ const DEFAULT_SCALE = 2
 const argv = process.argv.slice(2)
 
 if (!argv.length || argv[0] === '--help') {
-  process.stderr.write('Usage: render-carousel.js --project-json <path> [--out <dir>] [--clean] [--scale <1|2|3>]\n')
+  process.stderr.write('Usage: render-carousel.js --project-json <path> [--out <dir>] [--clean] [--scale <1|2|3>] [--pdf]\n')
   process.exit(1)
 }
 
@@ -78,11 +87,13 @@ let projectJsonArg = null
 let outArg         = null
 let cleanArg       = false
 let scaleArg       = DEFAULT_SCALE
+let pdfArg         = false
 
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--project-json') { projectJsonArg = argv[++i]; continue }
   if (argv[i] === '--out')          { outArg         = argv[++i]; continue }
   if (argv[i] === '--clean')        { cleanArg       = true;      continue }
+  if (argv[i] === '--pdf')          { pdfArg         = true;      continue }
   if (argv[i] === '--scale') {
     const raw = argv[++i]
     const n = Number(raw)
@@ -93,7 +104,7 @@ for (let i = 0; i < argv.length; i++) {
     continue
   }
   process.stderr.write(`Unknown argument: ${argv[i]}\n`)
-  process.stderr.write('Usage: render-carousel.js --project-json <path> [--out <dir>] [--clean] [--scale <1|2|3>]\n')
+  process.stderr.write('Usage: render-carousel.js --project-json <path> [--out <dir>] [--clean] [--scale <1|2|3>] [--pdf]\n')
   process.exit(1)
 }
 
@@ -101,7 +112,7 @@ if (!projectJsonArg) {
   fail('missing_argument', '--project-json is required')
 }
 
-main(projectJsonArg, { out: outArg, clean: cleanArg, scale: scaleArg }).catch(err => {
+main(projectJsonArg, { out: outArg, clean: cleanArg, scale: scaleArg, pdf: pdfArg }).catch(err => {
   fail('render_error', err.message ?? String(err))
 })
 
@@ -109,7 +120,7 @@ main(projectJsonArg, { out: outArg, clean: cleanArg, scale: scaleArg }).catch(er
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
+async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE, pdf = false }) {
   const absProjectPath = resolve(projectJsonPath)
   const projectDir     = dirname(absProjectPath)
 
@@ -133,16 +144,23 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
   // 2. Resolve output directory
   const outDir = out ? resolve(out) : join(projectDir, 'render')
 
-  // --clean: selectively delete only carousel render artifacts (slide_*.png + manifest.json)
+  // --clean: selectively delete only carousel render artifacts (slide_*.png, manifest.json)
   // so that coexisting video renders (final.mp4, etc.) in the same render/ dir are not lost.
   if (clean && existsSync(outDir)) {
     for (const f of readdirSync(outDir)) {
       if (/^slide_\d+\.png$/.test(f) || f === 'manifest.json') {
-        unlinkSync(join(outDir, f))
+        // A locked file (Windows EBUSY/EPERM) must not fail the render before it starts.
+        try { unlinkSync(join(outDir, f)) } catch (err) { log(`could not remove ${f}: ${err.message}`) }
       }
     }
   }
   mkdirSync(outDir, { recursive: true })
+
+  // A PDF from an earlier run never outlives the slides it was made from: this
+  // run either rewrites it (below) or leaves none.
+  for (const f of [PDF_FILE, PDF_TMP]) {
+    try { rmSync(join(outDir, f), { force: true }) } catch (err) { log(`could not remove ${f}: ${err.message}`) }
+  }
 
   // 3. Launch Puppeteer once for the whole run: once per resolver rule, since
   //    a browser opens the Google Fonts hosts or does not (page-guard.js). A
@@ -255,7 +273,28 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
     }
   }
 
-  // 4. Write manifest
+  // 4. PDF: one page per slide PNG just written, only when every slide rendered.
+  //    Never fatal: serve always asks for it, and a PDF that cannot be built or
+  //    written must not turn a good PNG export into a failed render.
+  let pdfFile = null
+  if (pdf && failures.length > 0) {
+    log(`no ${PDF_FILE} written: ${failures.length} slide(s) failed`)
+  } else if (pdf && manifestSlides.length > 0) {
+    try {
+      const pngs = manifestSlides.map(s => readFileSync(join(outDir, s.file)))
+      const t0 = Date.now()
+      writeFileSync(join(outDir, PDF_TMP), pngsToPdf(pngs, { pageWidth: width, pageHeight: height }))
+      renameSync(join(outDir, PDF_TMP), join(outDir, PDF_FILE))
+      pdfFile = PDF_FILE
+      log(`pdf: ${pngs.length} pages in ${Date.now() - t0} ms`)
+      log(`  → ${join(outDir, PDF_FILE)}`)
+    } catch (err) {
+      log(`pdf failed: ${err?.message ?? String(err)}`)
+      try { rmSync(join(outDir, PDF_TMP), { recursive: true, force: true }) } catch { /* nothing to clean */ }
+    }
+  }
+
+  // 5. Write manifest
   const outputResolution = [width * scale, height * scale]
   const manifest = {
     aspect,
@@ -273,6 +312,7 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE }) {
     // id + error) for any slide that failed — callers should treat a non-empty
     // failures[] as a partial render.
     failures,
+    pdf: pdfFile,
   }
   writeFileSync(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2))
 

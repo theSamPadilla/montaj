@@ -28,7 +28,7 @@ def _log_probe_failures(healed) -> None:
 
 
 def main(project_path=None, out=None, workers=None, clean=False, scale=None, montaj_root=None,
-         export=None, sdr_curve=None):
+         export=None, sdr_curve=None, pdf=False):
     # Determine project type so we can dispatch to the correct renderer.
     project_type = None
     if project_path and os.path.isfile(project_path):
@@ -51,6 +51,7 @@ def main(project_path=None, out=None, workers=None, clean=False, scale=None, mon
         if out:    cmd += ["--out", out]
         if clean:  cmd.append("--clean")
         if scale is not None: cmd += ["--scale", str(scale)]
+        if pdf:   cmd.append("--pdf")
     else:
         # Heal an HDR project whose SDR clips were converted in place before
         # PV42, so the export grades each layer by its origin. Never raises.

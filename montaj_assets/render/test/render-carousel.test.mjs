@@ -326,3 +326,87 @@ test('a slide that measures its text at mount matches the same text at hardcoded
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ---------------------------------------------------------------------------
+// --pdf: one PDF page per slide PNG
+// ---------------------------------------------------------------------------
+
+/** Concatenated IDAT bytes of a PNG file. */
+function idatBytes(png) {
+  const parts = []
+  let p = 8
+  while (p < png.length) {
+    const len = png.readUInt32BE(p)
+    if (png.toString('latin1', p + 4, p + 8) === 'IDAT') parts.push(png.subarray(p + 8, p + 8 + len))
+    p += 12 + len
+  }
+  return Buffer.concat(parts)
+}
+
+test('--pdf writes carousel.pdf: one page per slide, the slide PNGs as images, design-size pages', () => {
+  const dir = writeTempProject(buildPortraitFixtureProject(2))
+  try {
+    const { status } = runRenderer(['--project-json', join(dir, 'project.json'), '--pdf'])
+    assert.equal(status, 0)
+    const out = join(dir, 'render')
+    const manifest = JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8'))
+    assert.equal(manifest.pdf, 'carousel.pdf')
+    const pdf = readFileSync(join(out, 'carousel.pdf'))
+    const text = pdf.toString('latin1')
+    assert.equal(text.match(/\/Type \/Page\b(?!s)/g).length, 2)
+    assert.equal(text.match(/\/MediaBox \[0 0 1080 1350\]/g).length, 2)
+    for (const f of ['slide_01.png', 'slide_02.png']) {
+      assert.ok(pdf.includes(idatBytes(readFileSync(join(out, f)))), `${f} IDAT is in the PDF`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a render without --pdf removes a stale carousel.pdf and records pdf: null', () => {
+  const dir = writeTempProject(buildFixtureProject(1))
+  try {
+    mkdirSync(join(dir, 'render'), { recursive: true })
+    writeFileSync(join(dir, 'render', 'carousel.pdf'), 'stale')
+    const { status } = runRenderer(['--project-json', join(dir, 'project.json'), '--scale', '1'])
+    assert.equal(status, 0)
+    assert.equal(existsSync(join(dir, 'render', 'carousel.pdf')), false)
+    assert.equal(JSON.parse(readFileSync(join(dir, 'render', 'manifest.json'), 'utf8')).pdf, null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a failed slide with --pdf writes no carousel.pdf, manifest pdf is null, exit 1', () => {
+  const project = buildFixtureProject(2)
+  // An overlay template that does not exist fails that slide only.
+  project.slides[1].elements = [{ type: 'overlay', id: 'o', overlay: { template: '/nonexistent/overlay.jsx' } }]
+  const dir = writeTempProject(project)
+  try {
+    const { status } = runRenderer(['--project-json', join(dir, 'project.json'), '--scale', '1', '--pdf'])
+    assert.equal(status, 1)
+    assert.equal(existsSync(join(dir, 'render', 'carousel.pdf')), false)
+    const manifest = JSON.parse(readFileSync(join(dir, 'render', 'manifest.json'), 'utf8'))
+    assert.equal(manifest.pdf, null)
+    assert.equal(manifest.failures.length, 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a PDF write error is a warning: exit 0, PNGs kept, manifest pdf null', () => {
+  const dir = writeTempProject(buildFixtureProject(1))
+  try {
+    // A non-empty directory where the temp file goes: the stale cleanup's rmSync
+    // (not recursive) cannot remove it, and the PDF write into it fails.
+    mkdirSync(join(dir, 'render', '.carousel.pdf.tmp', 'x'), { recursive: true })
+    const { status, stderr } = runRenderer(['--project-json', join(dir, 'project.json'), '--scale', '1', '--pdf'])
+    assert.equal(status, 0)
+    assert.ok(existsSync(join(dir, 'render', 'slide_01.png')))
+    const manifest = JSON.parse(readFileSync(join(dir, 'render', 'manifest.json'), 'utf8'))
+    assert.equal(manifest.pdf, null)
+    assert.match(stderr, /pdf failed/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

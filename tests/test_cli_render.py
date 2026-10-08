@@ -175,3 +175,17 @@ class TestRenderExportFlags:
         with pytest.raises(SystemExit) as exc_info:
             parser.parse_args(["render", "project.json", "--sdr-curve", "nonexistent"])
         assert exc_info.value.code != 0
+
+
+class TestRenderPdfFlag:
+    def test_pdf_flag_reaches_render_main(self, monkeypatch):
+        import cli.commands.render as render_mod
+
+        seen = []
+        monkeypatch.setattr(render_mod, "render_main", lambda **kw: seen.append(kw))
+        parser = _build_parser()
+        for argv in (["render", "project.json"], ["render", "project.json", "--pdf"]):
+            args = parser.parse_args(argv)
+            args.func(args)
+        assert seen[0]["pdf"] is False
+        assert seen[1]["pdf"] is True

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from serve.common import (
     MONTAJ_ROOT,
@@ -3221,7 +3221,7 @@ async def _run_carousel_render_detached(project_id: str, project_dir: Path, scal
         node_bin = shutil.which("node")
         if not node_bin or not render_script.is_file():
             return
-        args = [node_bin, str(render_script), "--project-json", str(render_input)]
+        args = [node_bin, str(render_script), "--project-json", str(render_input), "--pdf"]
         if scale is not None:
             args += ["--scale", str(scale)]
         env = node_child_env()
@@ -4081,7 +4081,7 @@ async def render_zip(project_id: str, project_dir: Path = Depends(get_project_di
     # In-memory zip — carousel renders are small (≤ ~10 PNGs at 1080×).
     # Skip manifest.json: it's a renderer-side output for agent/CLI tooling, not
     # something the human downloading this archive cares about.
-    EXCLUDE = {"manifest.json"}
+    EXCLUDE = {"manifest.json", "carousel.pdf"}
     # Renders are not cleaned, so the folder can hold slides from an earlier,
     # longer render. When the manifest (written last by the renderer) lists the
     # slides, zip exactly those, in its order. No usable manifest: zip the folder.
@@ -4115,8 +4115,31 @@ async def render_zip(project_id: str, project_dir: Path = Depends(get_project_di
         buf,
         media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="{project_name}-slides.zip"',
+            "Content-Disposition": f"attachment; filename*=utf-8''{quote(project_name + '-slides.zip')}",
         },
+    )
+
+
+@router.get("/projects/{project_id}/render-pdf")
+async def render_pdf(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """Serve <project>/render/carousel.pdf as a download.
+
+    404 when there is no PDF, or when the manifest (written last by the renderer)
+    says `pdf` is null or omits it, so a partial render never serves one."""
+    render_dir = project_dir / "render"
+    pdf_path = render_dir / "carousel.pdf"
+    if not pdf_path.is_file():
+        raise not_found("not_found", "no carousel pdf")
+    try:
+        listed = json.loads((render_dir / "manifest.json").read_text()).get("pdf")
+    except (OSError, ValueError, AttributeError):
+        listed = None
+    if listed != "carousel.pdf":
+        raise not_found("not_found", "no carousel pdf")
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        filename=f"{project_dir.name}.pdf",
     )
 
 
@@ -4146,7 +4169,8 @@ async def list_outputs(project_id: str, project_dir: Path = Depends(get_project_
 @router.get("/projects/{project_id}/renders")
 async def list_renders(project_id: str, project_dir: Path = Depends(get_project_dir)):
     """Depth-1 listing of <project_dir>/render/ — the rendered carousel slide
-    PNGs (slide_NN.png).
+    PNGs (slide_NN.png), and every other file there, manifest.json and
+    carousel.pdf included.
 
     Carousel renders write here, NOT to output/ (the video-workflow staging
     dir, which is empty for carousels). Returns ABSOLUTE paths so callers can
@@ -4651,7 +4675,8 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     if project_type == "carousel":
         render_input = normalize_carousel_assets(project_path)
         render_script = Path(render_runtime_dir()) / "render-carousel.js"
-        script_args = ["--project-json", str(render_input)]
+        # Always write carousel.pdf: the app links to it next to the slides zip.
+        script_args = ["--project-json", str(render_input), "--pdf"]
         if scale is not None:
             script_args += ["--scale", str(scale)]
     else:

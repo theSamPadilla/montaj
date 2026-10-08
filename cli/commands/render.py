@@ -19,6 +19,11 @@ def register(subparsers):
         help="High-DPI multiplier for carousel renders (1, 2, or 3; default 2). Pass 1 for design-resolution output. Ignored for video projects.",
     )
     p.add_argument(
+        "--pdf",
+        action="store_true",
+        help="Carousel renders also write carousel.pdf beside the PNGs, one page per slide. Ignored for video projects.",
+    )
+    p.add_argument(
         "--export",
         choices=["auto", "sdr", "both"],
         default=None,
@@ -59,4 +64,5 @@ def handle(args):
         scale=args.scale,
         export=args.export,
         sdr_curve=args.sdr_curve,
+        pdf=args.pdf,
     )

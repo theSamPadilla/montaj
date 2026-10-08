@@ -183,6 +183,166 @@ class TestServeRenderCarouselPath:
             f"Expected '2' after '--scale', got: {args[scale_idx + 1]}"
         )
 
+    def _captured_render_args(self, carousel_project_dir, tmp_path, monkeypatch, query):
+        from serve.common import get_project_dir
+
+        fake_cache_dir = tmp_path / _FAKE_CACHE_DIR_SUFFIX
+        fake_cache_dir.mkdir(parents=True, exist_ok=True)
+        (fake_cache_dir / "render-carousel.js").touch()
+        (fake_cache_dir / "render.js").touch()
+        monkeypatch.setattr("serve.routes.projects.render_runtime_dir", lambda: str(fake_cache_dir))
+
+        captured = {}
+
+        async def fake_create_subprocess(*args, **kwargs):
+            captured["args"] = list(args)
+            proc = MagicMock()
+            proc.pid = 99999
+            proc.stdout = AsyncMock()
+            proc.stderr = AsyncMock()
+            proc.stdout.__aiter__ = AsyncMock(return_value=iter([]))
+            proc.stderr.read = AsyncMock(return_value=b"")
+            proc.wait = AsyncMock(return_value=0)
+            proc.returncode = 0
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess)
+        app.dependency_overrides[get_project_dir] = lambda: carousel_project_dir
+        try:
+            with client.stream("POST", f"/api/projects/{carousel_project_dir.name}/render{query}") as resp:
+                for chunk in resp.iter_bytes():
+                    break
+        except Exception:
+            pass
+        finally:
+            app.dependency_overrides.pop(get_project_dir, None)
+        assert captured, "create_subprocess_exec was never called"
+        return captured["args"]
+
+    def test_carousel_render_always_passes_pdf(self, carousel_project_dir, tmp_path, monkeypatch):
+        """POST /render on a carousel always puts --pdf on the command line."""
+        for q in ("", "?scale=2"):
+            assert "--pdf" in self._captured_render_args(carousel_project_dir, tmp_path, monkeypatch, q)
+
+    def test_video_render_never_passes_pdf(self, carousel_project_dir, tmp_path, monkeypatch):
+        pj = carousel_project_dir / "project.json"
+        data = json.loads(pj.read_text())
+        data["projectType"] = "video"
+        pj.write_text(json.dumps(data))
+        args = self._captured_render_args(carousel_project_dir, tmp_path, monkeypatch, "")
+        assert "--pdf" not in args and any(str(a).endswith("render.js") for a in args)
+
+    def test_auto_render_on_final_passes_pdf(self, carousel_project_dir, monkeypatch, tmp_path):
+        """The detached auto-render also writes the PDF, so it never deletes one."""
+        from serve.routes import projects as projects_mod
+
+        fake = tmp_path / "rt"
+        fake.mkdir()
+        (fake / "render-carousel.js").touch()
+        monkeypatch.setattr(projects_mod, "render_runtime_dir", lambda: str(fake))
+        monkeypatch.setattr(projects_mod.shutil, "which", lambda _n: "/usr/bin/node")
+        captured = {}
+
+        async def fake_exec(*args, **kwargs):
+            captured["args"] = list(args)
+            proc = MagicMock()
+            proc.communicate = AsyncMock(return_value=(b"", b""))
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        projects_mod._active_renders.add("p")
+        asyncio.run(projects_mod._run_carousel_render_detached("p", carousel_project_dir))
+        assert "--pdf" in captured["args"]
+
+    def test_render_zip_excludes_pdf(self, carousel_project_dir):
+        """render-zip zips the manifest's slide PNGs only, never carousel.pdf."""
+        import io, zipfile
+        from serve.common import get_project_dir
+
+        render = carousel_project_dir / "render"
+        render.mkdir(exist_ok=True)
+        (render / "slide_01.png").write_bytes(b"png")
+        (render / "carousel.pdf").write_bytes(b"pdf")
+        (render / "manifest.json").write_text(json.dumps({"slides": [{"file": "slide_01.png"}], "pdf": "carousel.pdf"}))
+        app.dependency_overrides[get_project_dir] = lambda: carousel_project_dir
+        try:
+            resp = client.get(f"/api/projects/{carousel_project_dir.name}/render-zip")
+        finally:
+            app.dependency_overrides.pop(get_project_dir, None)
+        assert resp.status_code == 200
+        assert zipfile.ZipFile(io.BytesIO(resp.content)).namelist() == ["slide_01.png"]
+
+    def _get(self, project_dir, route):
+        from serve.common import get_project_dir
+
+        app.dependency_overrides[get_project_dir] = lambda: project_dir
+        try:
+            return client.get(f"/api/projects/{project_dir.name}/{route}")
+        finally:
+            app.dependency_overrides.pop(get_project_dir, None)
+
+    def test_render_pdf_serves_the_file(self, carousel_project_dir):
+        render = carousel_project_dir / "render"
+        render.mkdir(exist_ok=True)
+        (render / "carousel.pdf").write_bytes(b"%PDF-1.4 x")
+        (render / "manifest.json").write_text(json.dumps({"slides": [], "pdf": "carousel.pdf"}))
+        resp = self._get(carousel_project_dir, "render-pdf")
+        assert resp.status_code == 200
+        assert resp.content == b"%PDF-1.4 x"
+        assert resp.headers["content-type"] == "application/pdf"
+        assert resp.headers["content-disposition"] == f'attachment; filename="{carousel_project_dir.name}.pdf"'
+
+    def test_render_pdf_404_without_file(self, carousel_project_dir):
+        assert self._get(carousel_project_dir, "render-pdf").status_code == 404
+        (carousel_project_dir / "render").mkdir(exist_ok=True)
+        assert self._get(carousel_project_dir, "render-pdf").status_code == 404
+
+    def test_render_pdf_404_when_manifest_pdf_null_or_missing(self, carousel_project_dir):
+        render = carousel_project_dir / "render"
+        render.mkdir(exist_ok=True)
+        (render / "carousel.pdf").write_bytes(b"stale")
+        for manifest in ({"slides": [], "pdf": None}, {"slides": []}):
+            (render / "manifest.json").write_text(json.dumps(manifest))
+            assert self._get(carousel_project_dir, "render-pdf").status_code == 404
+
+    def test_render_zip_fallback_excludes_pdf(self, carousel_project_dir):
+        import io, zipfile
+        render = carousel_project_dir / "render"
+        render.mkdir(exist_ok=True)
+        (render / "slide_01.png").write_bytes(b"png")
+        (render / "carousel.pdf").write_bytes(b"pdf")
+        (render / "manifest.json").unlink(missing_ok=True)
+        resp = self._get(carousel_project_dir, "render-zip")
+        assert resp.status_code == 200
+        assert zipfile.ZipFile(io.BytesIO(resp.content)).namelist() == ["slide_01.png"]
+
+    def _odd_name_download(self, tmp_path, route, files):
+        from urllib.parse import unquote
+        from serve.common import get_project_dir
+
+        d = tmp_path / 'say "hi" ✨'
+        (d / "render").mkdir(parents=True)
+        for name, data in files.items():
+            (d / "render" / name).write_bytes(data)
+        (d / "render" / "manifest.json").write_text(json.dumps({"slides": [{"file": "slide_01.png"}], "pdf": "carousel.pdf"}))
+        app.dependency_overrides[get_project_dir] = lambda: d
+        try:
+            resp = client.get(f"/api/projects/anything/{route}")
+        finally:
+            app.dependency_overrides.pop(get_project_dir, None)
+        assert resp.status_code == 200
+        cd = resp.headers["content-disposition"]
+        assert "filename*=utf-8''" in cd
+        return unquote(cd.split("filename*=utf-8''", 1)[1])
+
+    def test_render_pdf_filename_survives_odd_project_name(self, tmp_path):
+        got = self._odd_name_download(tmp_path, "render-pdf", {"carousel.pdf": b"%PDF"})
+        assert got == 'say "hi" ✨.pdf'
+
+    def test_render_zip_filename_survives_odd_project_name(self, tmp_path):
+        got = self._odd_name_download(tmp_path, "render-zip", {"slide_01.png": b"png"})
+        assert got == 'say "hi" ✨-slides.zip'
+
     def test_carousel_render_rejects_invalid_scale(
         self, carousel_project_dir, tmp_path, monkeypatch
     ):
@@ -353,3 +513,25 @@ class TestCliRenderCarouselPath:
         assert "montaj_assets" not in script_arg, (
             f"Script must not reference site-packages montaj_assets/render: {script_arg}"
         )
+
+
+class TestCliRenderCarouselPdf:
+    def _args(self, tmp_path, monkeypatch, project_type, **kw):
+        project_json = tmp_path / "project.json"
+        project_json.write_text(json.dumps({"projectType": project_type}))
+        captured = {}
+        monkeypatch.setattr(os, "execvpe", lambda f, a, e: captured.update(args=list(a)))
+        from project import render as render_module
+        import importlib
+        importlib.reload(render_module)
+        monkeypatch.setattr(render_module, "render_runtime_dir", lambda: str(tmp_path / "rt"))
+        monkeypatch.setattr(os, "execvpe", lambda f, a, e: captured.update(args=list(a)))
+        render_module.main(project_path=str(project_json), **kw)
+        return captured["args"]
+
+    def test_carousel_pdf_flag(self, tmp_path, monkeypatch):
+        assert "--pdf" in self._args(tmp_path, monkeypatch, "carousel", pdf=True)
+        assert "--pdf" not in self._args(tmp_path, monkeypatch, "carousel")
+
+    def test_video_ignores_pdf(self, tmp_path, monkeypatch):
+        assert "--pdf" not in self._args(tmp_path, monkeypatch, "video", pdf=True)
