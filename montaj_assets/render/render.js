@@ -9,7 +9,7 @@
  * stderr: progress lines + JSON error on failure
  * exit 0 on success, exit 1 on failure
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync, openSync, writeSync, closeSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync, openSync, writeSync, closeSync, renameSync } from 'fs'
 import { resolve, join, dirname, basename, extname } from 'path'
 import { fileURLToPath } from 'url'
 import { spawnSync, spawn } from 'child_process'
@@ -1836,6 +1836,11 @@ async function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedS
 // non-deterministic apac contamination this fixes)
 // ---------------------------------------------------------------------------
 
+// Numbers each audio-strip temporary file: prepareVideoItems strips two items
+// at a time, and items cut from one clip share a src, so two copies of the
+// same file can run at once in this one process.
+let audioStripSeq = 0
+
 async function stripExtraAudioStreams(src) {
   // Probe: how many audio streams does this file have?
   const probe = spawnSync(FFPROBE, [
@@ -1863,6 +1868,11 @@ async function stripExtraAudioStreams(src) {
     } catch { /* fall through to re-extract */ }
   }
 
+  // `out` is a cache trusted on mtime alone (above, and sample_frame), so it is
+  // only ever a complete copy or absent: ffmpeg writes a temporary file beside
+  // it, renamed onto it only on exit 0 (lib/normalize._run_atomic_encode's
+  // rule). The .mp4 ending lets ffmpeg pick the muxer.
+  const tmp = `${out}.tmp.${process.pid}.${++audioStripSeq}.mp4`
   return new Promise((resolve) => {
     // -map 0:v -map 0:a:0 — copy all video streams plus the FIRST audio stream
     // only. -c copy keeps everything stream-copy (fast, no re-encode). The
@@ -1873,22 +1883,30 @@ async function stripExtraAudioStreams(src) {
       '-i', src,
       '-map', '0:v', '-map', '0:a:0',
       '-c', 'copy',
-      out,
+      tmp,
     ])
     let stderr = ''
     proc.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8') })
     proc.on('close', (code) => {
-      if (code !== 0) {
-        if (stderr.trim()) log(`audio-strip stderr: ${ffmpegErrorTail(stderr)}`)
-        // Fall back to the original file — encode-segment will still use [a:0]
-        // and may still trip the bug, but no worse than before this fix.
-        resolve(src)
-        return
+      if (code === 0) {
+        try {
+          renameSync(tmp, out)
+          resolve(out)
+          return
+        } catch (err) {
+          log(`audio-strip could not move its copy into place: ${err.message}`)
+        }
+      } else if (stderr.trim()) {
+        log(`audio-strip stderr: ${ffmpegErrorTail(stderr)}`)
       }
-      resolve(out)
+      // Fall back to the original file — encode-segment will still use [a:0]
+      // and may still trip the bug, but no worse than before this fix.
+      rmSync(tmp, { force: true })
+      resolve(src)
     })
     proc.on('error', (err) => {
       log(`audio-strip spawn error: ${err.message}`)
+      rmSync(tmp, { force: true })
       resolve(src)
     })
   })
@@ -1938,4 +1956,5 @@ export { failLine, stampSourceProbes, getTotalDurationSeconds, collectPuppeteerS
          EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport, captureScaleFor,
          UNTAGGED_MASTER_MARKER, originalOfSdrMaster,
          // glass-plate.js renders the base composite through the export's own item preparation.
-         resolveProjectPaths, validateProjectFiles, repointStaleUntaggedMasters, prepareVideoItems, prepareSdrPass, outputSize }
+         resolveProjectPaths, validateProjectFiles, repointStaleUntaggedMasters, prepareVideoItems, prepareSdrPass, outputSize,
+         stripExtraAudioStreams }
