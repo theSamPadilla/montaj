@@ -162,27 +162,31 @@ This now applies to **video** text overlays, not just carousel slides — the vi
 
 A lower overlay track does not help: every item is its own page, so its `backdrop-filter` blurs nothing of the footage. Instead, run `glass_plate` and let the component draw the blurred footage itself.
 
-1. `glass_plate --project <p> --item <overlay item id>` returns `{frames, fps, size}`: one blurred JPEG per frame of the item's range (video and image tracks only, short edge 270, `--sigma` 2.2, `--short-edge`, `--out`). Plate frame `n` is the screen frame under the overlay's frame `n`, so the plate must be made for the same item (same range) that draws it. Pass `frames` to the component as the prop `plate`.
+1. `glass_plate --project <p> --item <overlay item id>` returns `{frames, fps, size, canvas}`: one blurred JPEG per frame of the item's range (video and image tracks only, short edge 270, `--sigma` 2.2, `--short-edge`, `--out`). Plate frame `n` is the screen frame under the overlay's frame `n`, so the plate must be made for the same item (same range) that draws it. Pass `frames` to the component as the prop `plate` and `canvas` as `canvas`.
 2. To pin a shape to moving footage, run `track_points --project <p> --item <id> --anchors '[{"id":"a","x":600,"y":430}]'`, one anchor per element, placed on visible detail in the item's first frame (design pixels, 1080 short edge). It returns `{tracks: {a: [[x,y] per frame]}, minScore, ...}`; pass `tracks.a` as `track`. A `minScore` that is low means the anchor lost its patch; -9 means it left the frame and coasted.
 
 ```jsx
-// Glass card: the plate frame fills the project, shifted so it lines up with the screen.
+// Glass card: the plate frame fills the design canvas, shifted so it lines up with the screen.
 export default function Glass() {
-  const { plate, track, canvas = [1080, 1920], w = 520, h = 220, x = 280, y = 700 } = props
-  const [cx, cy] = track ? track[Math.min(frame, track.length - 1)] : [x + w / 2, y + h / 2]
+  const { plate, canvas, track, w = 520, h = 220, x = 280, y = 700 } = props
+  // One entry per whole frame; `frame` is fractional under motionBlur, so floor and clamp it.
+  const at = (list) => list[Math.max(0, Math.min(Math.floor(frame), list.length - 1))]
+  const [cx, cy] = track ? at(track) : [x + w / 2, y + h / 2]
   const left = cx - w / 2, top = cy - h / 2
   return (
     <div style={{ position: 'absolute', left, top, width: w, height: h, borderRadius: 36, overflow: 'hidden',
       boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.28)' }}>
-      <img src={plate[Math.min(frame, plate.length - 1)]}
-        style={{ position: 'absolute', left: -left, top: -top, width: canvas[0], height: canvas[1] }} />
+      <img src={at(plate)}
+        style={{ position: 'absolute', left: -left, top: -top, width: canvas[0], height: canvas[1], maxWidth: 'none' }} />
       <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.14)' }} />
     </div>
   )
 }
 ```
 
-The plate image is drawn at the design canvas size (`canvas`, `[w, h]`, the `canvas` field of `track_points`) at `left: -x, top: -y`, so the part inside the shape is exactly the footage behind it. Then a tint, then a rim. Animated children go in sibling elements above the glass, not in the plate layer.
+The plate image is drawn at the design canvas size (`canvas`, `[w, h]`, the `canvas` field of `glass_plate` and of `track_points`) at `left: -x, top: -y`, so the part inside the shape is exactly the footage behind it. `maxWidth: 'none'` keeps the preview's base CSS from shrinking it. Then a tint, then a rim. Animated children go in sibling elements above the glass, not in the plate layer.
+
+It lines up only when the overlay item drawing the plate is full-canvas, with no offset, scale, rotation or keyframes on the item. The plate holds the video and image tracks only: an opaque overlay underneath is not in it.
 
 ---
 
