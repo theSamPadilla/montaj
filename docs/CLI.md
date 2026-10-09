@@ -559,7 +559,7 @@ exact flags. Full per-step parameter docs: https://docs.montaj.ag/steps
 | `steps/edit/` | `cross_cut`, `jump_cut`, `montage` |
 | `steps/generate/` | `generate_image`, `generate_music`, `generate_voiceover`, `kling_generate` |
 | `steps/lyrics/` | `caption`, `lyrics_render`, `lyrics_sync` |
-| `steps/media/` | `analyze_media`, `detect_shots`, `fetch`, `fetch_image`, `filmstrip`, `normalize`, `probe`, `search_images`, `search_news`, `shot_sheet`, `snapshot`, `track_points` |
+| `steps/media/` | `analyze_media`, `detect_shots`, `fetch`, `fetch_image`, `filmstrip`, `normalize`, `paper_cutout`, `probe`, `search_images`, `search_news`, `shot_sheet`, `snapshot`, `track_points` |
 | `steps/render/` | `glass_plate`, `sample_frame`, `sample_overlay` |
 | `steps/speech/` | `rm_fillers`, `rm_nonspeech`, `speech_edit`, `speech_text`, `transcribe` |
 | `steps/transform/` | `crop_spec`, `generate_captions`, `materialize_cut`, `normalize_window`, `proxy`, `reframe`, `remove_bg`, `resize`, `virtual_to_original` |
