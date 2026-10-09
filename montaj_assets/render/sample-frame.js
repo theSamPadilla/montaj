@@ -33,6 +33,7 @@ import { createHash } from 'crypto'
 import { bundleComponent, cleanupBundle, resolveFilePath } from './bundle.js'
 import { overlayPageLaunchOptions, installPageGuard, prefetchPropsUrls } from './page-guard.js'
 import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
+import { threeFrameRetry, isThreeFrameBlank } from './three-frame.js'
 import { isMain as isMainModule } from './is-main.js'
 import { toFileHref, propFilePath } from './file-url.js'
 import { pMap } from './p-map.js'
@@ -141,6 +142,10 @@ const SHORT_EDGE_TARGET = 1080
  * 11: an opaque overlay hides the footage only when it covers the whole canvas
  *    (timeline-core `opaqueReplacesPicture`). A frame cached before holds black
  *    around a scaled one.
+ * 12: PL85.1, a 3D canvas is drawn after r3f has rendered the sampled frame,
+ *    and a frame it did not draw is retried or fails (three-frame.js). A PNG
+ *    cached before may hold the canvas blank, or frame 0's scene for a later
+ *    frame.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -148,7 +153,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 11
+const SAMPLE_CACHE_VERSION = 12
 
 // ---------------------------------------------------------------------------
 // Input manifests
@@ -364,7 +369,8 @@ if (isMain) {
     }).then(result => {
       process.stdout.write(result.pngPath + '\n')
     }).catch(err => {
-      process.stderr.write(JSON.stringify({ error: 'sample_failed', message: err.message }) + '\n')
+      const error = isThreeFrameBlank(err) ? 'three_frame_blank' : 'sample_failed'
+      process.stderr.write(JSON.stringify({ error, message: err.message }) + '\n')
       process.exit(1)
     })
   } else {
@@ -524,7 +530,10 @@ export async function sampleOverlay({
     // may trigger a React re-render that throws (e.g. a broken component).
     // Such throws manifest as page errors, not as a rejected promise from
     // page.evaluate, so we must check pageErrors afterwards.
-    await page.evaluate(f => window.__setFrame(f), frame)
+    // A 3D canvas that did not draw the frame is set again, then the sample
+    // fails as three_frame_blank (three-frame.js), never a blank 3D sample.
+    const threeRetry = threeFrameRetry({ page, frame, overlay: basename(componentPath), log, pageErrors })
+    let three = await threeRetry.set()
 
     // Check immediately after __setFrame invocation for render errors.
     // If the component throws during React reconciliation, it shows up here
@@ -698,12 +707,20 @@ export async function sampleOverlay({
     // Screenshot — transparent PNG (omitBackground: true matches the renderer)
     mkdirSync(dirname(outPath), { recursive: true })
     await page.screenshot({ path: outPath, omitBackground: true })
+    // A 3D canvas that lost its drawing during the capture (a lost WebGL
+    // context, a resize): draw it again and capture again, bounded.
+    for (let lost; (lost = await threeRetry.lost(three)); ) {
+      threeRetry.failed(lost)
+      three = await threeRetry.set()
+      await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
+      await page.screenshot({ path: outPath, omitBackground: true })
+    }
 
     await page.close()
   } catch (err) {
     // Re-surface page errors as structured error if __setFrame wasn't available
     if (!err.sampleError && err.message) {
-      err.sampleError = 'overlay_eval_failed'
+      err.sampleError = isThreeFrameBlank(err) ? 'three_frame_blank' : 'overlay_eval_failed'
     }
     throw err
   } finally {

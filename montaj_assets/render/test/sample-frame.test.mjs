@@ -989,7 +989,7 @@ test('(q2b) buildOverlayCacheKey: SAMPLE_CACHE_VERSION is part of the key', () =
   // bump that reached only buildFrameCacheKey re-served pre-fix overlay PNGs.
   const componentPath = fileURLToPath(import.meta.url)
   const args = [componentPath, {}, 0, 1080, 1920, [], false, 30]
-  assert.equal(SAMPLE_CACHE_VERSION, 11)  // opaque hides footage only over the whole canvas
+  assert.equal(SAMPLE_CACHE_VERSION, 12)  // a 3D canvas drawn for the sampled frame, or the sample fails
   assert.equal(buildOverlayCacheKey(...args, '', SAMPLE_CACHE_VERSION), buildOverlayCacheKey(...args))
   assert.notEqual(buildOverlayCacheKey(...args, '', SAMPLE_CACHE_VERSION - 1), buildOverlayCacheKey(...args))
   assert.notEqual(buildOverlayCacheKey(...args, '/Users/x/fonts/a', SAMPLE_CACHE_VERSION - 1),

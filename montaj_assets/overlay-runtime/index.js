@@ -2,7 +2,7 @@ import * as React                       from 'react'
 import { interpolate, spring }          from './helpers.js'
 import { springStep, springSum }        from './springs.js'
 import { captionOuterStyle, captionInnerStyle } from './position.js'
-import { makeUseThreeFrame }            from './three-bridge.js'
+import { makeUseThreeFrame, drawThreeFrame, threeCaptureCheck } from './three-bridge.js'
 import { makeCanvas }                   from './canvas-wrapper.js'
 import { makeUseCanvas2DFrame }         from './canvas2d-bridge.js'
 import { Ph, FaSolid, FaBrands, FaIcon } from './icons.js'
@@ -32,6 +32,8 @@ export const Canvas            = makeCanvas('render')
 export const useCanvas2DFrame  = makeUseCanvas2DFrame('render')
 export { Ph, FaSolid, FaBrands, FaIcon, THREE }
 export { makeUseThreeFrame, makeCanvas, makeUseCanvas2DFrame }
+// The render shim's side of the 3D canvases (bundle.js): not overlay globals.
+export { drawThreeFrame, threeCaptureCheck }
 export {
   BarChart, Bar,
   LineChart, Line,

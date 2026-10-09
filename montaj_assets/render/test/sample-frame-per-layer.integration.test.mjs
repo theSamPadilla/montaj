@@ -187,7 +187,7 @@ t('6. an HLG item whose normalizedSrc is a graded SDR master is not graded again
 })
 
 t('7. the cache key carries the sample cache version', () => {
-  assert.equal(SAMPLE_CACHE_VERSION, 11)  // opaque hides footage only over the whole canvas
+  assert.equal(SAMPLE_CACHE_VERSION, 12)  // a 3D canvas drawn for the sampled frame, or the sample fails
   const p = { settings: { colorSpace: 'hdr_hlg' } }
   const now = buildFrameCacheKey(null, p, 1)
   assert.equal(buildFrameCacheKey(null, p, 1, null, false, SAMPLE_CACHE_VERSION), now)

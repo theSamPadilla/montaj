@@ -1,5 +1,6 @@
 import { createElement, useEffect } from 'react'
 import { Canvas as R3FCanvas, useThree } from '@react-three/fiber'
+import { THREE_MARK, ThreeCommitProbe } from './three-bridge.js'
 
 // r3f measures its container via react-use-measure, which (despite our passing
 // `offsetSize: true` via the `resize` prop) ends up using the post-transform
@@ -51,8 +52,13 @@ function PreviewForceSize() {
 /**
  * Returns a Canvas component configured for the given context.
  *
- *   - 'render':  r3f's Canvas, unchanged. Respects user-authored
- *                frameloop="never" (mandated for render-correctness).
+ *   - 'render':  r3f's Canvas. Respects user-authored frameloop="never"
+ *                (mandated for render-correctness). Such a Canvas also marks
+ *                its host element with the frame it was rendered for
+ *                (THREE_MARK) and mounts a ThreeCommitProbe in its scene, so
+ *                the shim's drawThreeFrame (three-bridge.js) can wait for r3f
+ *                to commit that frame and know whether it drew. Any other
+ *                frameloop gets r3f's Canvas unchanged.
  *
  *   - 'preview': a wrapper that *overrides* the user's frameloop prop to
  *                "always". In preview, frameloop="never" would mean the Canvas
@@ -65,7 +71,21 @@ function PreviewForceSize() {
  *                ancestor CSS transforms don't shrink the rendered scene.
  */
 export function makeCanvas(context) {
-  if (context === 'render') return R3FCanvas
+  if (context === 'render') {
+    return function RenderCanvas({ children, ...rest }) {
+      if (rest.frameloop !== 'never') return createElement(R3FCanvas, rest, children)
+      // The shim sets window.frame before committing a frame; r3f spreads
+      // unknown props onto its host <div>, which carries the mark.
+      const token = String(window.frame)
+      const kids = Array.isArray(children) ? children : (children == null ? [] : [children])
+      return createElement(
+        R3FCanvas,
+        { ...rest, [THREE_MARK]: token },
+        createElement(ThreeCommitProbe, { key: '__montaj_three_commit__', token }),
+        ...kids,
+      )
+    }
+  }
   if (context === 'preview') {
     // Warn ONCE per session if an author passes frameloop="never" and we're
     // overriding it. Authors follow the skill's render-correctness rule

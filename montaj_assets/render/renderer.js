@@ -8,7 +8,7 @@
  */
 import puppeteer from 'puppeteer'
 import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
-import { join, dirname } from 'path'
+import { join, dirname, basename } from 'path'
 import { spawnSync, spawn } from 'child_process'
 import { once } from 'events'
 import { homedir } from 'os'
@@ -21,6 +21,7 @@ import { toFileHref } from './file-url.js'
 import { subframeTimes, motionBlurFilter } from './motion-blur.js'
 import { overlayPageLaunchOptions, installPageGuard } from './page-guard.js'
 import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
+import { captureWithThree } from './three-frame.js'
 
 const FFMPEG_TIMEOUT_MS  = 600_000
 
@@ -686,33 +687,37 @@ async function captureChunkFrames(worker, job, sink, at) {
     const times = subframeTimes(frame, subframes)
     for (let s = 0; s < times.length; s++) {
       const t = times[s]
-      // 1. Tell React to update to this frame (flushSync commits DOM synchronously
-      //    and stamps data-rendered-frame on <html> so we can verify below).
-      await page.evaluate((f) => window.__setFrame(f), t)
-      // 2. Wait until the DOM attribute confirms this exact frame has been committed.
-      //    This is more reliable than rAF alone — rAF in headless Chrome can fire
-      //    before the compositor has flushed, producing stale screenshots.
-      await page.waitForFunction(
-        (f) => document.documentElement.dataset.renderedFrame === String(f),
-        { timeout: 10000 },
-        t,
-      )
-      // 2b. An image the props name with no extension is fetched when the page
-      //     asks for it, so wait for it to arrive before capturing this frame
-      //     (page-guard.js settleOnDemand; at once when the props name none).
-      await guard.settleOnDemand()
-      // 2c. And for every image on the page: an overlay that mounts one only
-      //     from a later frame inserts it in the commit just made, on a fresh
-      //     page at the first frame of every chunk (page-guard.js settleImages).
-      //     Capped; past the cap the frame is captured anyway and the image named.
-      await guard.settleImages()
-      // 3. Double rAF: first fires after layout+paint, second fires after the result
-      //    has been composited — guarantees the screenshot sees the current frame.
-      await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
-      // 4. Into the chunk's ffmpeg (§131): the same PNG bytes a `path`
-      //    screenshot wrote to disk. png is Puppeteer's default; named here
-      //    because omitBackground applies to png only.
-      const png = await page.screenshot({ type: 'png', omitBackground: captureOptionsFor(job).omitBackground })
+      // 1. Tell React to update to this frame (flushSync commits DOM synchronously,
+      //    draws any 3D canvas and stamps data-rendered-frame on <html> so we can
+      //    verify below). A 3D canvas that did not draw the frame, before the
+      //    capture or by the end of it, has the frame set and captured again,
+      //    then fails the chunk as three_frame_blank (three-frame.js).
+      const png = await captureWithThree(page, t, async () => {
+        // 2. Wait until the DOM attribute confirms this exact frame has been committed.
+        //    This is more reliable than rAF alone — rAF in headless Chrome can fire
+        //    before the compositor has flushed, producing stale screenshots.
+        await page.waitForFunction(
+          (f) => document.documentElement.dataset.renderedFrame === String(f),
+          { timeout: 10000 },
+          t,
+        )
+        // 2b. An image the props name with no extension is fetched when the page
+        //     asks for it, so wait for it to arrive before capturing this frame
+        //     (page-guard.js settleOnDemand; at once when the props name none).
+        await guard.settleOnDemand()
+        // 2c. And for every image on the page: an overlay that mounts one only
+        //     from a later frame inserts it in the commit just made, on a fresh
+        //     page at the first frame of every chunk (page-guard.js settleImages).
+        //     Capped; past the cap the frame is captured anyway and the image named.
+        await guard.settleImages()
+        // 3. Double rAF: first fires after layout+paint, second fires after the result
+        //    has been composited — guarantees the screenshot sees the current frame.
+        await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
+        // 4. Into the chunk's ffmpeg (§131): the same PNG bytes a `path`
+        //    screenshot wrote to disk. png is Puppeteer's default; named here
+        //    because omitBackground applies to png only.
+        return page.screenshot({ type: 'png', omitBackground: captureOptionsFor(job).omitBackground })
+      }, { overlay: overlayName(job), log, pageErrors })
       await sink.write(png)
     }
     if ((localIdx + 1) % reportEvery === 0 || localIdx + 1 === totalFrames) {
@@ -722,6 +727,11 @@ async function captureChunkFrames(worker, job, sink, at) {
 
   await page.close()
   return guard
+}
+
+/** How a three_frame_blank error names the chunk's overlay: its file and its segment. */
+function overlayName(job) {
+  return job.componentPath ? `${basename(job.componentPath)} (${job.id})` : job.id
 }
 
 const TTY = process.stderr.isTTY

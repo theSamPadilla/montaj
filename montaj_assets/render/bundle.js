@@ -260,7 +260,7 @@ function __bakeStyle(f) {
 import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
-import { makeOverlayGlobals } from 'montaj-overlay-runtime'
+import { makeOverlayGlobals, drawThreeFrame, threeCaptureCheck } from 'montaj-overlay-runtime'
 import Component from ${JSON.stringify(componentPath)}
 ${bakeImport}
 // Overlay components use frame, fps, duration, props, interpolate, spring, Ph, FaIcon,
@@ -388,31 +388,9 @@ function __remount() {
   __fontsDirty = false
   __setEpoch?.(e => e + 1)
 }
-// A remounted <Canvas> builds a new WebGL renderer, and r3f does that
-// asynchronously: the old useThreeFrame deletes \`__renderThree\` during the
-// remount and the new one registers a few animation frames later (measured:
-// about 70ms), after this frame would already have been captured blank. So after
-// a remount, wait for a fresh registration, capped at 2s.
-function __threeRemounted(previous) {
-  const deadline = performance.now() + 2000
-  return new Promise(resolve => {
-    const poll = () => {
-      const current = window.__renderThree
-      if (current && current !== previous) return resolve()
-      if (performance.now() > deadline) {
-        console.warn('[montaj] Three.js canvas did not re-register within 2s of a font remount')
-        return resolve()
-      }
-      requestAnimationFrame(poll)
-    }
-    poll()
-  })
-}
 window.__setFrame = async (n) => {
   await __waitForFonts()
   window.frame = n  // update global before React re-renders
-  let three = window.__renderThree
-  let remounted = __fontsDirty
   flushSync(() => {
     __setFrame?.(n)
     if (__fontsDirty) __remount()
@@ -420,19 +398,19 @@ window.__setFrame = async (n) => {
   document.documentElement.getBoundingClientRect()
   if (document.fonts?.status === 'loading' && document.fonts.ready !== __fontsWaitedOn) {
     await __fontsReadyOrTimeout()
-    // Only fall back to the pre-commit registration when step 2's remount
-    // deleted it; a Canvas that left the tree on this frame must not be waited on.
-    if (!remounted) three = window.__renderThree
     flushSync(__remount)
-    remounted = true
   }
-  if (remounted && three) await __threeRemounted(three)
-  // If the overlay mounted a <Canvas> and called useThreeFrame, force Three's
-  // WebGL draw to complete now so Puppeteer's next screenshot reflects this
-  // frame. No-op for overlays that don't use Three (the global is never set).
-  window.__renderThree?.()
+  // Draw every 3D canvas for this frame (montaj-overlay-runtime's
+  // three-bridge.js): it waits for r3f to have rendered this frame, a remounted
+  // Canvas included, then draws, and says which canvas could not be drawn.
+  // The caller retries such a frame, then fails it as three_frame_blank
+  // (three-frame.js). null, without waiting, when the page has no 3D canvas.
+  const three = await drawThreeFrame()
   document.documentElement.dataset.renderedFrame = String(n)
+  return three
 }
+// After the capture: whether a canvas lost its drawing since (three-frame.js).
+window.__montajThreeCheck = threeCaptureCheck
 `
 }
 

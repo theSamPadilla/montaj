@@ -18,6 +18,7 @@ import { bundleComponent, cleanupBundle } from './bundle.js'
 import { isMain as isMainModule }        from './is-main.js'
 import { renderAllSegments, planChunks, currentRenderPlan, stopSignal }  from './renderer.js'
 import { isChildKilled }              from './child-killed.js'
+import { isThreeFrameBlank }          from './three-frame.js'
 import { estimateRenderDisk, checkDiskSpace, diskFailure, isDiskFull } from './disk-space.js'
 import { tmpdir }                         from 'os'
 import { prefetchPropsUrls }              from './page-guard.js'
@@ -260,6 +261,11 @@ if (isMain) {
     // child that died of it keeps the render_error line (PL83 review).
     if (isChildKilled(err) && !stopSignal()) {
       fail('child_killed', err.message, { child: err.child, signal: err.signal, phase: err.phase })
+    }
+    // A 3D overlay frame that did not draw, retried (three-frame.js): named,
+    // never exported blank.
+    if (isThreeFrameBlank(err)) {
+      fail('three_frame_blank', err.message, { overlay: err.overlay, frame: err.frame, reason: err.reason })
     }
     // A file deleted after validateProjectFiles ran: same code, same message.
     fail(err.code === 'missing_files' ? 'missing_files' : 'render_error', err.message)

@@ -44,7 +44,7 @@ A pool of N Chromium browsers (default: `os.cpus().length`, cap at job count) re
 **Per-job flow:**
 1. Open a new page, set viewport to design resolution (1080×1920).
 2. Navigate to the bundled HTML file.
-3. For each frame: call `window.__setFrame(f)`, wait for `data-rendered-frame` attribute to confirm paint, double-rAF to ensure compositor flush, screenshot to PNG.
+3. For each frame: call `window.__setFrame(f)`, wait for `data-rendered-frame` attribute to confirm paint, double-rAF to ensure compositor flush, screenshot to PNG. `__setFrame` also draws each 3D canvas (`<Canvas frameloop="never">`) once r3f has rendered that frame. A 3D canvas that did not draw it (not rendered in time, a lost WebGL context, a resize after the draw, no `useThreeFrame()`) has the frame set and captured again, twice at most, then the render fails with `three_frame_blank` (`three-frame.js`).
 4. Encode PNG sequence → FFV1 in a **MKV container** (see Container Choice below).
 5. If a segment exceeds `chunkSize` frames, it is split into chunks and concatenated after encoding.
 
