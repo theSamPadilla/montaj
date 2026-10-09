@@ -16,7 +16,9 @@ around the last position plus the last velocity, by normalized cross
 correlation, refined to subpixel with a parabola on each axis. A local patch,
 never a global shift: a global shift reads whatever moves most (wind, a
 foreground) as camera motion. A candidate window that leaves the frame scores
--9, and the minimum score per anchor is reported.
+-9. While the patch at the predicted position is out of frame the point
+coasts on its last velocity and scores -9. The minimum score per anchor is
+reported.
 
 numpy comes from the rvm extra (the app's runtime has it); it is imported
 lazily and a missing one fails by name.
@@ -201,10 +203,24 @@ def _start(np, img, st, P):
 def _step(np, img, st, P, R):
     px, py = st.x, st.y
     ex, ey = int(round(px + st.vx)), int(round(py + st.vy))
+    h, w = img.shape
+    if ex - P < 0 or ex + P > w or ey - P < 0 or ey + P > h:
+        # The patch at the predicted position is out of frame, so there is
+        # nothing to match it against: matching the windows that still fit
+        # pins the point to the frame edge. Coast on the last velocity
+        # (unchanged) and match again from the next prediction.
+        st.x, st.y = px + st.vx, py + st.vy
+        st.low = NO_FIT
+        st.pts.append((st.x, st.y))
+        return
     m = _ncc_map(np, img, st.t, ex, ey, P, R)
     j, i = np.unravel_index(np.argmax(m), m.shape)
-    dx = _vertex(m[j, i], m[j, i - 1], m[j, i + 1]) if 0 < i < 2 * R else 0.0
-    dy = _vertex(m[j, i], m[j - 1, i], m[j + 1, i]) if 0 < j < 2 * R else 0.0
+    # A neighbour out of frame scores NO_FIT and would bend the parabola
+    # toward the edge: that axis keeps the whole-pixel position.
+    dx = (_vertex(m[j, i], m[j, i - 1], m[j, i + 1])
+          if 0 < i < 2 * R and NO_FIT not in (m[j, i - 1], m[j, i + 1]) else 0.0)
+    dy = (_vertex(m[j, i], m[j - 1, i], m[j + 1, i])
+          if 0 < j < 2 * R and NO_FIT not in (m[j - 1, i], m[j + 1, i]) else 0.0)
     nx, ny = ex + i - R + dx, ey + j - R + dy
     st.vx, st.vy = nx - px, ny - py
     st.x, st.y = nx, ny

@@ -249,6 +249,55 @@ def test_an_anchor_on_a_fixed_background_stays_put_while_the_foreground_moves(fx
         assert out["minScore"][a["id"]] > 0.9
 
 
+# Leaving the frame: the square from the known-path test on a straight line out
+# through the left edge; its patch (56 working px) is out of frame for the last
+# 5-6 of 40 frames. While the window at the predicted position is out of frame
+# the point coasts on its last velocity, so on a line it stays on the truth.
+# Measured: worst error 0.02 px on both paths, every step the true step. Before
+# coasting (6273d1e2) the point stuck at the frame edge and was 60 px (slow)
+# and 72 px (fast) off by the last frame, with a 30 px jump on the slow path.
+# Coasting with the parabola still bent by an out-of-frame neighbour drifted
+# 1 px per frame out (6 px by the last frame).
+EXIT_N = 40
+EXIT_PATHS = {"slow": ((130.0, 270.0), (-3.0, 0.0)), "fast": ((230.0, 300.0), (-6.0, -1.0))}  # working px
+MAX_EXIT_ERR = 0.5
+SEARCH = 7
+
+
+def _exit_frames(c0, v):
+    bg = _grey(_waves(1, 16, 10, 60), *_grid(0, SRC_W, 0, SRC_H), 100, 25)
+    obj = _waves(2, 16, 8, 40)
+    for n in range(EXIT_N):
+        cx, cy = c0[0] + v[0] * n, c0[1] + v[1] * n
+        x0, y0 = int(round(cx)) - OBJ, int(round(cy)) - OBJ
+        xs, ys = _grid(x0, x0 + 2 * OBJ, y0, y0 + 2 * OBJ)
+        tex = _grey(obj, xs - np.float32(cx), ys - np.float32(cy), 150, 45)
+        a, b = max(x0, 0), min(x0 + 2 * OBJ, SRC_W)
+        frame = bg.copy()
+        if b > a:
+            frame[y0:y0 + 2 * OBJ, a:b] = tex[:, a - x0:b - x0]
+        yield frame
+
+
+@pytest.mark.parametrize("name", list(EXIT_PATHS))
+def test_a_point_whose_patch_leaves_the_frame_coasts_on_its_velocity(fx, name):
+    c0, v = EXIT_PATHS[name]
+    project = _make_project(fx["root"], f"exit-{name}", _exit_frames(c0, v), EXIT_N / FPS, [1920, 1080])
+    out = _track(fx, project, json.dumps([{"id": "a", "x": c0[0] * K, "y": c0[1] * K}]), "--smooth", "none")
+    track = out["tracks"]["a"]
+    truth = [(K * (c0[0] + v[0] * n), K * (c0[1] + v[1] * n)) for n in range(EXIT_N)]
+    gone = next(n for n in range(EXIT_N) if truth[n][0] < K * 28)     # first frame the patch is out
+    assert EXIT_N - gone >= 5
+
+    step_max = K * (math.hypot(*v) + SEARCH)
+    steps = [math.dist(track[n], track[n - 1]) for n in range(1, EXIT_N)]
+    assert max(steps) <= step_max, f"{name}: a step of {max(steps):.1f} px (true {K * math.hypot(*v):.1f})"
+    errors = [math.dist(p, t) for p, t in zip(track, truth)]
+    report = " ".join(f"{e:.2f}" for e in errors[gone - 3:])
+    assert max(errors) <= MAX_EXIT_ERR, f"{name}: error from frame {gone - 3} (out from {gone}): {report}"
+    assert out["minScore"]["a"] == -9.0     # the frames it coasted are reported
+
+
 def test_temporary_frames_are_removed(fx, known_raw, known_ma5):
     left = [n for n in os.listdir(fx["tmp"]) if n.startswith(("montaj-track-points", "montaj-glass-plate"))]
     assert left == []
