@@ -251,13 +251,18 @@ def test_an_anchor_on_a_fixed_background_stays_put_while_the_foreground_moves(fx
 
 # Leaving the frame: the square from the known-path test on a straight line out
 # through the left edge; its patch (56 working px) is out of frame for the last
-# 5-6 of 40 frames. While the window at the predicted position is out of frame
-# the point coasts on its last velocity, so on a line it stays on the truth.
+# 5-6 of 40 frames. Once the patch is leaving (the best window against the edge
+# while the search is clamped, or either with a poor score) the point coasts on
+# its last velocity, so on a line it stays on the truth.
 # Measured: worst error 0.02 px on both paths, every step the true step. Before
 # coasting (6273d1e2) the point stuck at the frame edge and was 60 px (slow)
 # and 72 px (fast) off by the last frame, with a 30 px jump on the slow path.
 # Coasting with the parabola still bent by an out-of-frame neighbour drifted
-# 1 px per frame out (6 px by the last frame).
+# 1 px per frame out (6 px by the last frame). Coasting only on a window
+# against the edge scoring below 0.9 took a poor window inside the frame once
+# the patch was well out (steps of 40.5 and 49.5 px); adding "or a clamped
+# search scoring below 0.9" still took the edge window when the patch was 2 px
+# over it (it scores 0.92 there), and the fast path drifted 24 px.
 EXIT_N = 40
 EXIT_PATHS = {"slow": ((130.0, 270.0), (-3.0, 0.0)), "fast": ((230.0, 300.0), (-6.0, -1.0))}  # working px
 MAX_EXIT_ERR = 0.5
@@ -296,6 +301,81 @@ def test_a_point_whose_patch_leaves_the_frame_coasts_on_its_velocity(fx, name):
     report = " ".join(f"{e:.2f}" for e in errors[gone - 3:])
     assert max(errors) <= MAX_EXIT_ERR, f"{name}: error from frame {gone - 3} (out from {gone}): {report}"
     assert out["minScore"]["a"] == -9.0     # the frames it coasted are reported
+
+
+def _square_frames(centres):
+    """The known-path square at each centre (working px, floats), cut off at
+    every frame edge, over the known-path background."""
+    bg = _grey(_waves(1, 16, 10, 60), *_grid(0, SRC_W, 0, SRC_H), 100, 25)
+    obj = _waves(2, 16, 8, 40)
+    for cx, cy in centres:
+        x0, y0 = int(round(cx)) - OBJ, int(round(cy)) - OBJ
+        xs, ys = _grid(x0, x0 + 2 * OBJ, y0, y0 + 2 * OBJ)
+        tex = _grey(obj, xs - np.float32(cx), ys - np.float32(cy), 150, 45)
+        a, b = max(x0, 0), min(x0 + 2 * OBJ, SRC_W)
+        c, d = max(y0, 0), min(y0 + 2 * OBJ, SRC_H)
+        frame = bg.copy()
+        if b > a and d > c:
+            frame[c:d, a:b] = tex[c - y0:d - y0, a - x0:b - x0]
+        yield frame
+
+
+# Stopping near an edge: the square slides toward the left (or bottom) edge and
+# stops at frame 28 with its whole patch inside the frame, 4 (3) working px
+# from the edge. On the first stopped frame the prediction, the last position
+# plus the last velocity, puts the patch partly out of frame; the clamped
+# search finds it. Measured: 0.01 px on both. Coasting whenever the predicted
+# patch was out of frame (8e7c0774) ran off: 132 and 134 px by the last frame.
+# A patch that stops exactly flush with the edge is read as leaving and coasts.
+STOP_N, STOP_AT = 40, 28
+STOP_PATHS = {"left": ((200.0, 270.0), (-6.0, 0.0)), "bottom": ((480.0, 341.0), (1.0, 6.0))}  # working px
+
+
+def _stop_truth(c0, v, n):
+    k = min(n, STOP_AT)
+    return (c0[0] + v[0] * k, c0[1] + v[1] * k)
+
+
+@pytest.mark.parametrize("name", list(STOP_PATHS))
+def test_a_point_that_stops_near_the_edge_stays_on_it(fx, name):
+    c0, v = STOP_PATHS[name]
+    truth = [_stop_truth(c0, v, n) for n in range(STOP_N)]
+    half = 28                                           # the patch's half side, working px
+    stop = truth[-1]
+    assert half <= min(stop[0], SRC_W - stop[0], stop[1], SRC_H - stop[1]) <= half + 4
+    project = _make_project(fx["root"], f"stop-{name}", _square_frames(truth), STOP_N / FPS, [1920, 1080])
+    out = _track(fx, project, json.dumps([{"id": "a", "x": c0[0] * K, "y": c0[1] * K}]), "--smooth", "none")
+    errors = [math.dist(p, (K * t[0], K * t[1])) for p, t in zip(out["tracks"]["a"], truth)]
+    worst = max(range(STOP_N), key=lambda n: errors[n])
+    report = " ".join(f"{e:.2f}" for e in errors[STOP_AT - 2:])
+    assert errors[worst] <= MAX_PATH_ERR, f"{name}: worst {errors[worst]:.2f} px at frame {worst}; from {STOP_AT - 2}: {report}"
+
+
+# Leave and return: out through the left edge at 6 working px a frame, then
+# back. The patch is out for frames 18-22 (18 px out at most), flush with the
+# edge at 23 and inside from 24. Measured: 0.00 px from frame 24 (24-72 px on
+# frames 21-23, coasting out while the square comes back). Without the
+# velocity reset the match at 24 set a 30 px/frame step and the point was lost
+# (1273 px by the last frame); coasting on the predicted patch alone never
+# came back (456 px).
+RET_N = 40
+
+
+def _ret_truth(n):
+    return (float(130 - 6 * n if n <= 20 else 10 + 6 * (n - 20)), 270.0)
+
+
+def test_a_point_whose_patch_leaves_and_comes_back_is_found_again(fx):
+    truth = [_ret_truth(n) for n in range(RET_N)]
+    project = _make_project(fx["root"], "return", _square_frames(truth), RET_N / FPS, [1920, 1080])
+    out = _track(fx, project, json.dumps([{"id": "a", "x": truth[0][0] * K, "y": truth[0][1] * K}]),
+                 "--smooth", "none")
+    errors = [math.dist(p, (K * t[0], K * t[1])) for p, t in zip(out["tracks"]["a"], truth)]
+    inside = [n for n in range(RET_N) if truth[n][0] > 28]        # the patch has a px to spare
+    assert [n for n in inside if n > 20][0] == 24
+    report = " ".join(f"{n}:{errors[n]:.2f}" for n in range(16, RET_N))
+    assert max(errors[n] for n in inside) <= MAX_PATH_ERR, report
+    assert out["minScore"]["a"] == -9.0
 
 
 def test_temporary_frames_are_removed(fx, known_raw, known_ma5):
