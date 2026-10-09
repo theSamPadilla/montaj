@@ -1,0 +1,136 @@
+{
+  "name": "paper_cutout",
+  "description": "Turn an image into a torn-paper cutout, a PNG with alpha. The shape (mask) is printed on paper in two inks or its own colour, with an optional cream border and red sticker outline, then torn: a wandering edge with a white fibrous core and stray fibres, crumple and crease relief lit from the top left, grain, and a soft shadow down and to the right with a contact line. The PNG is cropped to the paper and its shadow. Every px parameter is measured after resizing to width. The same seed and parameters give the same bytes. Needs numpy (the rvm extra).",
+  "input": {
+    "type": "image",
+    "description": "Source image"
+  },
+  "output": {
+    "type": "image",
+    "description": "{ path: the PNG with alpha, width, height } in px"
+  },
+  "params": [
+    {
+      "name": "mask",
+      "type": "enum",
+      "required": false,
+      "default": "alpha",
+      "options": ["alpha", "white", "black", "ellipse", "rect"],
+      "description": "Which part of the image is the paper. alpha: its transparency (an image without any falls back to white). white: what is darker than thresh, for a shape on white. black: what is lighter than thresh, for a shape on black. ellipse: the ellipse filling the image. rect: the whole image."
+    },
+    {
+      "name": "thresh",
+      "type": "int",
+      "required": false,
+      "min": 1,
+      "max": 255,
+      "description": "Luminance that separates the shape from the background for white and black. Omit for 235 (white) or 25 (black)."
+    },
+    {
+      "name": "width",
+      "type": "int",
+      "required": false,
+      "default": 900,
+      "min": 1,
+      "description": "The image is resized to this width in px first; the height follows its aspect."
+    },
+    {
+      "name": "halftone",
+      "type": "float",
+      "required": false,
+      "default": 0,
+      "min": 0,
+      "description": "Halftone dot pitch in px for the two-ink face. 0 is a continuous tone. Ignored with keep-color."
+    },
+    {
+      "name": "mono",
+      "type": "bool",
+      "required": false,
+      "default": false,
+      "description": "Two inks, ink on cream paper. This is already the face whenever keep-color is off; keep-color wins over it."
+    },
+    {
+      "name": "keep-color",
+      "type": "bool",
+      "required": false,
+      "default": false,
+      "description": "Keep the image's own colour, saturated by vivid, instead of two inks."
+    },
+    {
+      "name": "border",
+      "type": "int",
+      "required": false,
+      "default": 10,
+      "min": 0,
+      "description": "Cream paper border around the shape, in px. 0 tears the image itself."
+    },
+    {
+      "name": "outline",
+      "type": "int",
+      "required": false,
+      "default": 0,
+      "min": 0,
+      "description": "Red sticker outline outside the border, in px. 0 for none."
+    },
+    {
+      "name": "tear",
+      "type": "float",
+      "required": false,
+      "default": 5,
+      "min": 0,
+      "description": "How far the torn edge wanders, in px."
+    },
+    {
+      "name": "core",
+      "type": "float",
+      "required": false,
+      "default": 4,
+      "min": 0,
+      "description": "Width of the white fibrous core along the torn edge, in px."
+    },
+    {
+      "name": "crumple",
+      "type": "float",
+      "required": false,
+      "default": 0.6,
+      "min": 0,
+      "max": 1,
+      "description": "Crumple and crease relief, from 0 (flat) to 1."
+    },
+    {
+      "name": "vivid",
+      "type": "float",
+      "required": false,
+      "default": 1.2,
+      "min": 0,
+      "description": "Saturation with keep-color: 1 keeps the image's, more is more vivid."
+    },
+    {
+      "name": "shadow",
+      "type": "string",
+      "required": false,
+      "default": "10,14",
+      "description": "Shadow offset DX,DY in px, down and to the right (0 or more). 0,0 for no shadow."
+    },
+    {
+      "name": "crop",
+      "type": "string",
+      "required": false,
+      "description": "Crop the source first: x0,y0,x1,y1 in source px."
+    },
+    {
+      "name": "seed",
+      "type": "int",
+      "required": false,
+      "default": 1,
+      "min": 0,
+      "description": "Seed for the tear, fibres, creases and grain. Another seed gives another tear."
+    },
+    {
+      "name": "out",
+      "type": "string",
+      "required": false,
+      "description": "Output .png path. Default <input stem>_paper.png beside the input. Optional with _project: saved in the project's assets folder."
+    }
+  ]
+}

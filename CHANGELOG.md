@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Added (steps): `paper_cutout`.** It turns an image into a torn-paper cutout, a PNG with alpha: the shape (`mask`: its transparency, a white or black background, an ellipse or the whole image) printed in two inks, continuous or halftone, or in its own colour (`keep-color`), with an optional cream border and red sticker outline, then torn (a wandering edge with a white fibrous core and stray fibres), crumpled and creased in relief lit from the top left, grained, and given a soft shadow down and to the right with a contact line. Output `{path, width, height}`, cropped to the paper and its shadow; the same seed gives the same bytes. Needs numpy (the rvm extra); no new dependency.
+
 ## v5.27.0
 
 - **Added (steps): `glass_plate`.** It renders the footage under an item (video and image tracks only, the item's range, project fps) through the export's own render path, blurs it and writes `NNNN.jpg` frames (short edge 270, sigma 2.2 by default). Output `{frames, fps, size, canvas}`, `canvas` being the overlay design canvas to draw a frame at. A glass shape draws the current plate frame, since an overlay's `backdrop-filter` cannot see the footage. The JPEGs hold BT.601 full-range values, which is how a browser decodes them, so saturated colours match the export. Only the clips under the item are prepared (normalized, audio-stripped, remove_bg). The frames are rendered aside and replace the previous plate only once all are written, so a failed run keeps it; `out` cannot be a root, the home folder or a folder holding it. (`montaj_assets/render/glass-plate.js`, `render.js` `prepareSdrPass({ prepare })`)
