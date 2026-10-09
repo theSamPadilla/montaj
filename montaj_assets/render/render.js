@@ -1931,4 +1931,6 @@ function fail(code, message, extra = {}) {
 
 export { failLine, stampSourceProbes, getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
          EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport, captureScaleFor,
-         UNTAGGED_MASTER_MARKER, originalOfSdrMaster }
+         UNTAGGED_MASTER_MARKER, originalOfSdrMaster,
+         // glass-plate.js renders the base composite through the export's own item preparation.
+         resolveProjectPaths, validateProjectFiles, repointStaleUntaggedMasters, prepareVideoItems, prepareSdrPass, outputSize }

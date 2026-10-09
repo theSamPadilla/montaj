@@ -1,0 +1,54 @@
+{
+  "name": "glass_plate",
+  "description": "Render the footage under one item (normally an overlay) as small blurred frames, one JPEG per frame, for frosted glass. An overlay is captured in its own page and composited afterwards, so CSS backdrop-filter in it sees nothing; a glass shape shows the plate frame of the current frame instead, positioned at screen coordinates. The plate is the project's video and image tracks only (never overlays or captions), drawn by the export's own render path for the item's range at project fps, so transforms, crops, speed and the HDR-to-SDR look already match the export. Plate frame n is the screen frame under the overlay's frame n; gaps with no footage are black. Returns { frames: [absolute paths], fps, size: [w, h] }, one frame per project frame in the item's range: round(end * fps) - round(start * fps).",
+  "input": {
+    "type": "project",
+    "description": "The project id, its folder, or the absolute path of its project.json"
+  },
+  "output": {
+    "type": "json",
+    "description": "{ frames: [absolute JPEG paths, 0000.jpg on], fps: project fps, size: [w, h] }"
+  },
+  "params": [
+    {
+      "name": "project",
+      "type": "path",
+      "required": true,
+      "description": "The project id, its folder, or the absolute path of its project.json"
+    },
+    {
+      "name": "item",
+      "type": "string",
+      "required": true,
+      "description": "Id of the item the plate is for, normally the overlay item. Its start and end set the range. Any item in the project is accepted; an unknown id is an error."
+    },
+    {
+      "name": "short-edge",
+      "type": "int",
+      "required": false,
+      "default": 270,
+      "min": 2,
+      "description": "Short edge of the plate in px; the long edge keeps the project's aspect. Both are rounded to even."
+    },
+    {
+      "name": "sigma",
+      "type": "float",
+      "required": false,
+      "default": 2.2,
+      "min": 0,
+      "description": "Gaussian blur sigma in plate pixels (2.2 at 270 is about 8 px at 1080). 0 writes the frames unblurred."
+    },
+    {
+      "name": "sdr-curve",
+      "type": "string",
+      "required": false,
+      "description": "Look curve id for the HDR-to-SDR grade (see montaj_assets/luts/looks.json: 'natural1', the default; 'vivid1'; 'vivid1-neutral'), as render's --sdr-curve. Omit to use the default look."
+    },
+    {
+      "name": "out",
+      "type": "path",
+      "required": false,
+      "description": "Folder for the frames. Defaults to <project_dir>/plates/<item>/. Stale NNNN.jpg frames in it are removed first; nothing else is touched."
+    }
+  ]
+}

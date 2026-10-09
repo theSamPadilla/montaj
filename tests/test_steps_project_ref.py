@@ -30,6 +30,7 @@ def _real_schema(rel):
 
 SAMPLE_FRAME = _real_schema("render/sample_frame.json")
 CONTACT_SHEET = _real_schema("render/contact_sheet.json")
+GLASS_PLATE = _real_schema("render/glass_plate.json")
 
 
 @pytest.fixture()
@@ -44,7 +45,8 @@ def project(tmp_path, monkeypatch):
     return pid, pdir
 
 
-@pytest.mark.parametrize("schema", [SAMPLE_FRAME, CONTACT_SHEET], ids=["sample_frame", "contact_sheet"])
+@pytest.mark.parametrize("schema", [SAMPLE_FRAME, CONTACT_SHEET, GLASS_PLATE],
+                         ids=["sample_frame", "contact_sheet", "glass_plate"])
 def test_project_id_resolves_to_its_project_json(project, schema):
     pid, pdir = project
     body = {"project": pid, "at": 1.0}
