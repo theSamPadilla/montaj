@@ -183,3 +183,13 @@ def test_leaves_a_media_folder_it_did_not_create(tmp_path, fake_whisper_env):
     proc = _one(tmp_path, fake_whisper_env, tmp_path / "inbox", Path.home())
     assert "no_videos_measured" in proc.stderr  # got past the model check, to the final cleanup
     assert (out / "_media" / "theirs.txt").read_text() == "keep"
+
+
+def test_music_threshold_from_measured_clips(monkeypatch):
+    # §163: on 9 speech-only clips bpm_confidence peaked at 0.32; a bed 18 dB under
+    # speech reached 0.403. The threshold sits in that gap (0.36).
+    import detect_beats
+    for conf, likely in ((0.403, True), (0.36, True), (0.33, False), (0.195, False)):
+        monkeypatch.setattr(detect_beats, "analyze", lambda p, c=conf: {"bpm": 100.0, "bpm_confidence": c, "beats": []})
+        music, _ = cd._music("x.mp4", [])
+        assert music["likely"] is likely, (conf, music)

@@ -25,7 +25,14 @@ from common import fail  # noqa: E402
 
 MAX_ITEMS = 30
 ON_BEAT_S = 0.08
-MUSIC_CONFIDENCE = 0.5
+# detect_beats' bpm_confidence at or above which a video counts as having music.
+# MEASURED (§163, 2026-10-08) on clips on this machine whose music is known from how
+# they were made: 9 speech-only recordings (raw phone takes, podcast clips, a call, a
+# speech + sfx mix) peaked at 0.32; music beds alone scored 0.67-0.74; a bed 12 dB
+# under speech 0.60, one 18 dB under 0.40. 0.36 sits in the gap above speech. Music
+# under talk mostly scores 0.08-0.24 (two voiceover + music mixes 0.09 and 0.16), so
+# this detects music-led audio, not a quiet bed under a speaker.
+MUSIC_CONFIDENCE = 0.36
 OPENING_S = 3.0
 _ASPECTS = (("9:16", 9 / 16), ("4:5", 4 / 5), ("1:1", 1.0), ("16:9", 16 / 9))
 

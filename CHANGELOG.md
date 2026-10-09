@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (steps): `creator_diagnostic`'s music threshold is 0.36 (was 0.5)**, set from measured clips: speech-only recordings peaked at 0.32 `bpm_confidence`, music beds alone scored 0.67-0.74, a bed 12 dB under speech 0.60 and one 18 dB under 0.40. It now counts that last case, which 0.5 missed; it still does not see a quiet bed under talk (0.08-0.24), so `music` means music-led audio. (`steps/media/creator_diagnostic.py`)
+
 ## v5.28.1
 
 - **Fixed (editor): a sped-up clip on the main track previewed at normal speed** when the preview uses the `<video>` player (a project the playback engine cannot take). Scrubbing showed the source frame as if the clip ran at 1x, playback ran at 1x, and the playhead drifted against the export. The main track now seeks to `inPoint + speed * elapsed`, plays at `playbackRate = speed` and reports time as `(source - inPoint) / speed`, as clips on other tracks and the export already did; loops wrap in source time. (`montaj_assets/editor/src/video/preview/useVideoPlayback.ts`; editor 2.0.11)
