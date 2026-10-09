@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from serve import lockfile
 from serve.common import resolve_workspace
@@ -98,7 +99,28 @@ async def lifespan(app: FastAPI):
         vite_proc.wait()
 
 
+class _TrustedHostsFromEnv:
+    """Refuse (400) a Host outside MONTAJ_SERVE_TRUSTED_HOSTS (comma-separated).
+
+    A page whose hostname resolves to 127.0.0.1 (DNS rebinding) is otherwise
+    same-origin with serve. `montaj serve` sets 127.0.0.1,localhost unless
+    --network. Read per request, not when `app` is built at import, so the
+    check holds however early serve.server was imported. Unset means no check
+    (TestClient's Host is `testserver`)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        hosts = [h.strip() for h in os.environ.get("MONTAJ_SERVE_TRUSTED_HOSTS", "").split(",") if h.strip()]
+        if not hosts:
+            await self.app(scope, receive, send)
+            return
+        await TrustedHostMiddleware(self.app, allowed_hosts=hosts, www_redirect=False)(scope, receive, send)
+
+
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(_TrustedHostsFromEnv)
 
 # All API routes live under /api so they never collide with React Router paths.
 # The SPA catch-all at the bottom handles everything else cleanly.

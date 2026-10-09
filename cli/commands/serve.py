@@ -79,6 +79,10 @@ def handle(args):
         )
 
     os.environ["MONTAJ_SERVE_PORT"] = str(args.port)
+    # serve refuses any other Host (DNS rebinding; serve/server.py). Not with
+    # --network: other devices arrive with this machine's LAN name.
+    if not args.network:
+        os.environ["MONTAJ_SERVE_TRUSTED_HOSTS"] = "127.0.0.1,localhost"
     if args.debug:
         os.environ["MONTAJ_DEBUG"] = "1"
         print(cyan("debug: streaming subprocess stderr (init progress, etc.) live"), file=sys.stderr)

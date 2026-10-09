@@ -590,6 +590,7 @@ def _serve(monkeypatch):
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: started.append(1))
     monkeypatch.delenv("MONTAJ_HEADLESS", raising=False)
     monkeypatch.setenv("MONTAJ_SERVE_PORT", "3999")  # handle() sets it; restore after
+    monkeypatch.setenv("MONTAJ_SERVE_TRUSTED_HOSTS", "")  # same; left set, it 400s later TestClients
     args = types.SimpleNamespace(port=3999, network=False, debug=False, headless=False)
     serve_cmd.handle(args)
     return started
@@ -670,6 +671,7 @@ def _serve_headless(monkeypatch):
     monkeypatch.setattr(uvicorn, "run", lambda *a, **k: started.append(1))
     monkeypatch.delenv("MONTAJ_HEADLESS", raising=False)
     monkeypatch.setenv("MONTAJ_SERVE_PORT", "3999")  # handle() sets it; restore after
+    monkeypatch.setenv("MONTAJ_SERVE_TRUSTED_HOSTS", "")  # same; left set, it 400s later TestClients
     args = types.SimpleNamespace(port=3999, network=False, debug=False, headless=True)
     serve_cmd.handle(args)
     return started
