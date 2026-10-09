@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.0.11
+
 - **Fixed: a sped-up clip on the main track previews at its speed** in the `<video>` player: seek, `playbackRate` and reported time all apply `speed`, as `OverlayVideo` and timeline-core's `seekTime` do.
 
 ## 2.0.10

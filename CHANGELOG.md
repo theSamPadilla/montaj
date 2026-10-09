@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.28.1
+
 - **Fixed (editor): a sped-up clip on the main track previewed at normal speed** when the preview uses the `<video>` player (a project the playback engine cannot take). Scrubbing showed the source frame as if the clip ran at 1x, playback ran at 1x, and the playhead drifted against the export. The main track now seeks to `inPoint + speed * elapsed`, plays at `playbackRate = speed` and reports time as `(source - inPoint) / speed`, as clips on other tracks and the export already did; loops wrap in source time. (`montaj_assets/editor/src/video/preview/useVideoPlayback.ts`; editor 2.0.11)
 
 ## v5.28.0
