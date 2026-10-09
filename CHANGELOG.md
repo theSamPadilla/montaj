@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.28.3
+
 - **Changed (skills): `onboarding` is a guided first session in the Montaj app.** Called with `get_skill` after install, it says what Montaj is, checks the connection with `get_plan` (and what to do when it fails), asks what the user wants first (their own footage, a template, or their style profile) and walks the first edit: getting the clips in, `create_project`, the edit, reviewing in the editor, Export and where the file is kept. It then names the other skills instead of explaining them. The command-line orientation (`montaj serve`, local paths, the old tabs) is gone; one line points command-line users to the root skill.
 
 ## v5.28.2
