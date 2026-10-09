@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Added (steps): `glass_plate`.** It renders the footage under an item (video and image tracks only, the item's range, project fps) through the export's own render path, blurs it and writes `NNNN.jpg` frames (short edge 270, sigma 2.2 by default). Output `{frames, fps, size}`. A glass shape draws the current plate frame, since an overlay's `backdrop-filter` cannot see the footage.
+- **Added (steps): `track_points`.** It follows anchor points through the footage under an item (frame-0 patch match, velocity prediction, subpixel, smoothed) so shapes can be pinned to moving footage. Output `{tracks, minScore, fps, frames, scale, workingSize, canvas}` in design-canvas pixels. Needs numpy.
+- **Changed (skills): `write-overlay` and `overlay`** no longer recommend a `backdrop-filter` card on a lower track (it blurs nothing of the footage); frosted glass over footage uses `glass_plate`, and `track_points` pins elements to moving footage.
 - **Fixed (render): `sample_frame` on a sped-up clip** showed the source frame as if the clip ran at normal speed; it now shows the frame the export renders.
 
 ## v5.26.1

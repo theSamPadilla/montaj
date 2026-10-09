@@ -48,6 +48,8 @@ A pool of N Chromium browsers (default: `os.cpus().length`, cap at job count) re
 4. Encode PNG sequence → FFV1 in a **MKV container** (see Container Choice below).
 5. If a segment exceeds `chunkSize` frames, it is split into chunks and concatenated after encoding.
 
+**Plates.** Each overlay item is its own transparent page, composited over the footage afterwards, so CSS `backdrop-filter` never sees the footage or another item. Frosted glass uses the `glass_plate` step: it renders the footage under the item's range through this pipeline, blurs it, and the component draws plate frame `n` inside its glass shape at screen coordinates. `track_points` supplies per-frame positions for shapes pinned to moving footage.
+
 **Browser recycling:** each worker restarts its browser every 5 jobs (`RECYCLE_AFTER = 5`). After many segments, browser processes accumulate memory and can start timing out on `page.evaluate()` calls. Recycling flushes that state.
 
 **Segment directory:** always wiped at the start of each render (`render/segments/`). Stale files from a failed previous run cause FFV1 decode errors during compose — never rely on leftover segment files.

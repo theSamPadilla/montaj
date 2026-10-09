@@ -81,7 +81,7 @@ export default function List() {
 
 > **Expose text styling as props to make an overlay editable.** A text overlay is only restyleable in the editor's properties panel for the props it declares — see "Make text overlays editable in the properties panel" below, which applies to video overlays too. **Carousel text overlays follow a stricter, required version of that contract:** every text-bearing overlay must accept its font size, family, weight, style, color, alignment, transform, and background as props with string defaults — see skill `editable-text`.
 
-When an overlay needs a background, prefer a solid semi-transparent color over `backdropFilter: blur()`. See the track-splitting section below.
+When an overlay needs a background, prefer a solid semi-transparent color. Frosted glass over the footage is a different thing: see "Frosted glass over footage" below, never `backdropFilter`.
 
 ### Rules
 
@@ -92,7 +92,7 @@ When an overlay needs a background, prefer a solid semi-transparent color over `
 - **Opaque overlays** — when `"opaque": true` is set on the item in project.json, the root element's CSS controls the entire frame. You may freely set `background`, gradients, images, or any CSS on the root. Use this for full-frame covers, title cards, and animation sections.
 - **Absolute positioning** — the component fills the full video frame (1080 on the short edge, aspect of `project.settings.resolution`). The Puppeteer viewport is always 1080-short-edge regardless of output resolution; the renderer captures it at the output's pixel density (see "Sharp at 4K" below). Place elements with `position: absolute`. Author all `fontSize`, padding, and `width` values at 1080-design coordinates — they have one consistent meaning across every resolution the project might render at.
 - **No side effects** — no API calls, no filesystem access, no global state mutations.
-- **`backdropFilter` caution** — `backdrop-filter: blur(...)` causes Chrome to create a separate GPU compositor layer that can be cached and replayed as a stale frame during rendering. Avoid putting `backdrop-filter` on any element whose children animate — the blur container will flash or freeze. See the track-splitting guidance below.
+- **`backdropFilter` never sees the footage** — each overlay item is captured in its own transparent page and composited over the footage afterwards, so `backdrop-filter` cannot blur the video, nor another overlay item. It blurs only what is behind it inside the same component. Frosted glass over footage needs the `glass_plate` step (below). Where `backdrop-filter` is fine: blurring the component's own lower layers. Keep it off any element whose children animate: Chrome caches its GPU layer and replays a stale frame.
 
 ### Sharp at 4K
 
@@ -158,103 +158,31 @@ This now applies to **video** text overlays, not just carousel slides — the vi
 
 ---
 
-## Splitting background from content across tracks
+## Frosted glass over footage
 
-The most reliable way to use frosted-glass / blurred card backgrounds is to **put the background on a separate, lower track** and the animated content on a higher track. The render pipeline composites tracks in order, so the content renders on top.
+A lower overlay track does not help: every item is its own page, so its `backdrop-filter` blurs nothing of the footage. Instead, run `glass_plate` and let the component draw the blurred footage itself.
 
-**Why this works:** A background card with `backdrop-filter` is essentially static — it fades in, then stays put. When Chrome's headless compositor caches the GPU layer for it, the cache is *correct* (the layer genuinely hasn't changed). The content overlay on the higher track has no `backdrop-filter`, so there's no caching issue and animations render cleanly every frame.
-
-**When to split:**
-
-| Background behavior | Animated content | Verdict |
-|---------------------|-----------------|---------|
-| Static or simple fade only | Any — text, icons, logos staggering in | **Split** |
-| Shakes, bounces, or translates together with content | Content must move with the background | **Keep together** (no backdrop-filter, use solid `background` instead) |
-
-**How to split in project.json:**
-
-```json
-{
-  "tracks": [
-    { "id": "trk-0", "items": [] },
-    {
-      "id": "trk-1",
-      "items": [
-        {
-          "id": "ov-card-bg",
-          "type": "overlay",
-          "src": "/path/overlays/card-bg.jsx",
-          "start": 2.0,
-          "end": 6.0
-        }
-      ]
-    },
-    {
-      "id": "trk-2",
-      "items": [
-        {
-          "id": "ov-card-content",
-          "type": "overlay",
-          "src": "/path/overlays/card-content.jsx",
-          "start": 2.0,
-          "end": 6.0
-        }
-      ]
-    }
-  ]
-}
-```
-
-**Background component — no animated children:**
+1. `glass_plate --project <p> --item <overlay item id>` returns `{frames, fps, size}`: one blurred JPEG per frame of the item's range (video and image tracks only, short edge 270, `--sigma` 2.2, `--short-edge`, `--out`). Plate frame `n` is the screen frame under the overlay's frame `n`, so the plate must be made for the same item (same range) that draws it. Pass `frames` to the component as the prop `plate`.
+2. To pin a shape to moving footage, run `track_points --project <p> --item <id> --anchors '[{"id":"a","x":600,"y":430}]'`, one anchor per element, placed on visible detail in the item's first frame (design pixels, 1080 short edge). It returns `{tracks: {a: [[x,y] per frame]}, minScore, ...}`; pass `tracks.a` as `track`. A `minScore` that is low means the anchor lost its patch; -9 means it left the frame and coasted.
 
 ```jsx
-// overlays/card-bg.jsx
-// Just a frosted card that fades in. No children that animate opacity.
-const opacity = interpolate(frame, [0, Math.round(fps * 0.27)], [0, 1])
-
-export default function CardBg() {
+// Glass card: the plate frame fills the project, shifted so it lines up with the screen.
+export default function Glass() {
+  const { plate, track, canvas = [1080, 1920], w = 520, h = 220, x = 280, y = 700 } = props
+  const [cx, cy] = track ? track[Math.min(frame, track.length - 1)] : [x + w / 2, y + h / 2]
+  const left = cx - w / 2, top = cy - h / 2
   return (
-    <div style={{ position: 'absolute', bottom: 340, left: 0, right: 0, display: 'flex', justifyContent: 'center', opacity }}>
-      <div style={{
-        background: 'rgba(0,0,0,0.84)',
-        backdropFilter: 'blur(24px)',
-        borderRadius: 36,
-        padding: '44px 72px',
-        border: '1px solid rgba(255,255,255,0.10)',
-        minWidth: 560,
-        minHeight: 200,
-      }} />
+    <div style={{ position: 'absolute', left, top, width: w, height: h, borderRadius: 36, overflow: 'hidden',
+      boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.28)' }}>
+      <img src={plate[Math.min(frame, plate.length - 1)]}
+        style={{ position: 'absolute', left: -left, top: -top, width: canvas[0], height: canvas[1] }} />
+      <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.14)' }} />
     </div>
   )
 }
 ```
 
-**Content component — no backdrop-filter:**
-
-```jsx
-// overlays/card-content.jsx
-// Animated items rendered on top of the background card.
-const s1 = spring({ frame: Math.max(0, frame - 4), fps, stiffness: 300, damping: 24 })
-
-export default function CardContent() {
-  return (
-    <div style={{ position: 'absolute', bottom: 340, left: 0, right: 0, display: 'flex', justifyContent: 'center' }}>
-      <div style={{ padding: '44px 72px', minWidth: 560 }}>
-        <div style={{ opacity: Math.min(1, s1 * 2.5), transform: `translateX(${interpolate(s1, [0, 1], [-24, 0])}px)` }}>
-          <Ph.CheckCircle size={52} weight="fill" color="#34d399" />
-        </div>
-      </div>
-    </div>
-  )
-}
-```
-
-**When you can't split** (background and content animate together as one unit — e.g., a card that shakes on impact), skip `backdrop-filter` entirely and use a solid or semi-transparent `background` instead:
-
-```jsx
-// Instead of backdropFilter: 'blur(24px)'
-background: 'rgba(10,10,10,0.88)'  // solid dark — visually similar, no GPU layer caching
-```
+The plate image is drawn at the design canvas size (`canvas`, `[w, h]`, the `canvas` field of `track_points`) at `left: -x, top: -y`, so the part inside the shape is exactly the footage behind it. Then a tint, then a rim. Animated children go in sibling elements above the glass, not in the plate layer.
 
 ---
 
