@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (skills): `onboarding` is a guided first session in the Montaj app.** Called with `get_skill` after install, it says what Montaj is, checks the connection with `get_plan` (and what to do when it fails), asks what the user wants first (their own footage, a template, or their style profile) and walks the first edit: getting the clips in, `create_project`, the edit, reviewing in the editor, Export and where the file is kept. It then names the other skills instead of explaining them. The command-line orientation (`montaj serve`, local paths, the old tabs) is gone; one line points command-line users to the root skill.
+
 ## v5.28.2
 
 - **Changed (steps): `creator_diagnostic`'s music threshold is 0.36 (was 0.5)**, set from measured clips: speech-only recordings peaked at 0.32 `bpm_confidence`, music beds alone scored 0.67-0.74, a bed 12 dB under speech 0.60 and one 18 dB under 0.40. It now counts that last case, which 0.5 missed; it still does not see a quiet bed under talk (0.08-0.24), so `music` means music-led audio. (`steps/media/creator_diagnostic.py`)
