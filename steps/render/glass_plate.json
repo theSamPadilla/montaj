@@ -42,7 +42,7 @@
       "name": "sdr-curve",
       "type": "string",
       "required": false,
-      "description": "Look curve id for the HDR-to-SDR grade (see montaj_assets/luts/looks.json: 'natural1', the default; 'vivid1'; 'vivid1-neutral'), as render's --sdr-curve. Omit to use the default look."
+      "description": "Look curve id for the HDR-to-SDR grade (one of: 'natural1', the default; 'vivid1'; 'vivid1-neutral'), as render's --sdr-curve. Omit to use the default look."
     },
     {
       "name": "out",

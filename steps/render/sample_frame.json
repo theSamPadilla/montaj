@@ -26,7 +26,7 @@
       "name": "sdr-curve",
       "type": "string",
       "required": false,
-      "description": "Look curve id for the HDR-to-SDR grade (see montaj_assets/luts/looks.json: 'natural1', the default and what the editor preview shows; 'vivid1'; 'vivid1-neutral'). Meaningless on SDR projects: ignored with a stderr warning, not an error. Omit to use the default look."
+      "description": "Look curve id for the HDR-to-SDR grade (one of: 'natural1', the default and what the editor preview shows; 'vivid1'; 'vivid1-neutral'). Meaningless on SDR projects: ignored with a stderr warning, not an error. Omit to use the default look."
     },
     {
       "name": "prefer-proxy",

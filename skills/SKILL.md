@@ -144,7 +144,7 @@ waveform_trim → trim spec → rm_nonspeech → trim spec → transcribe
 
 ## Workflows
 
-Read the assigned workflow from `workflows/{name}.json` (filesystem only — not served via API).
+Read the assigned workflow with the `get_workflow` tool when you have it (the Montaj app serves its templates through it, recipe included); otherwise read `workflows/{name}.json` from the filesystem.
 
 **Built-in workflows:**
 - `overlays` (the default): silence trim, remove non-speech, transcribe, select takes, remove fillers, overlays
