@@ -362,23 +362,40 @@ def test_a_flat_frame0_patch_is_refused_by_id(fx):
     assert "sky" in json.loads(proc.stderr)["message"]
 
 
+# numpy is blocked, and every temporary folder or child process the step makes
+# is logged: the step removes its temporary folder on the way out, so an empty
+# TMPDIR afterwards alone would not show that the render never started.
 BLOCK_NUMPY = """
-import runpy, sys
+import os, runpy, subprocess, sys, tempfile
 class _NoNumpy:
     def find_spec(self, name, path=None, target=None):
         if name == "numpy" or name.startswith("numpy."):
             raise ImportError("No module named 'numpy'", name="numpy")
 sys.meta_path.insert(0, _NoNumpy())
+def _logged(real, what):
+    def call(*a, **k):
+        with open(os.environ["TRACK_POINTS_MADE"], "a") as f:
+            f.write(what + "\\n")
+        return real(*a, **k)
+    return call
+tempfile.mkdtemp = _logged(tempfile.mkdtemp, "mkdtemp")
+subprocess.Popen = _logged(subprocess.Popen, "Popen")
 sys.argv = [sys.argv[1]] + sys.argv[2:]
 runpy.run_path(sys.argv[0], run_name="__main__")
 """
 
 
-def test_missing_numpy_fails_with_the_extra_to_install(fx):
+def test_missing_numpy_fails_with_the_extra_to_install(fx, tmp_path):
+    made = tmp_path / "made.log"
+    made.write_text("")
     proc = subprocess.run(
         [sys.executable, "-c", BLOCK_NUMPY, str(STEP), "--project", str(fx["known"]), "--item", "ov",
          "--anchors", '[{"id": "a", "x": 960, "y": 540}]'],
-        capture_output=True, text=True, env=fx["env"], timeout=120)
+        capture_output=True, text=True, env={**fx["env"], "TRACK_POINTS_MADE": str(made)}, timeout=120)
     assert_error(proc, "missing_dependency")
     msg = json.loads(proc.stderr)["message"]
     assert "numpy" in msg and "montaj[rvm]" in msg
+    # It failed before rendering anything: no temporary folder, no renderer.
+    assert made.read_text().split() == []
+    left = [n for n in os.listdir(fx["tmp"]) if n.startswith(("montaj-track-points", "montaj-glass-plate"))]
+    assert left == []

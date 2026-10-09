@@ -26,7 +26,7 @@
       "name": "anchors",
       "type": "string",
       "required": true,
-      "description": "JSON array of anchors, inline or the path of a .json file: [{\"id\": \"tile1\", \"x\": 600, \"y\": 430}], each a point on visible detail in the item's first frame, in design-canvas pixels. Ids are unique and name the tracks. An anchor whose patch does not fit inside the frame, or sits on a flat patch, is refused by id."
+      "description": "A string: the anchors as JSON text, e.g. '[{\"id\": \"tile1\", \"x\": 600, \"y\": 430}]', or the path of a .json file holding that array. Pass the JSON as a string, not as an array value. Each anchor is a point on visible detail in the item's first frame, in design-canvas pixels. Ids are unique and name the tracks. An anchor whose patch does not fit inside the frame, or sits on a flat patch, is refused by id."
     },
     {
       "name": "patch",
