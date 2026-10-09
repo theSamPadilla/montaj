@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.28.2
+
 - **Changed (steps): `creator_diagnostic`'s music threshold is 0.36 (was 0.5)**, set from measured clips: speech-only recordings peaked at 0.32 `bpm_confidence`, music beds alone scored 0.67-0.74, a bed 12 dB under speech 0.60 and one 18 dB under 0.40. It now counts that last case, which 0.5 missed; it still does not see a quiet bed under talk (0.08-0.24), so `music` means music-led audio. (`steps/media/creator_diagnostic.py`)
 - **Changed (skills, steps): text an AI could not act on.** The root skill reads an assigned workflow with `get_workflow` when it has that tool (the app serves its templates through it) instead of saying workflows are never served; `sample_frame` and `glass_plate` list the look curves instead of pointing at a source file; `track_points` says the app includes numpy instead of naming an install extra.
 
