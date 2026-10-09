@@ -169,7 +169,8 @@ import { transitionPairs, transitionProgress } from './transitions.js'
  *   in/outPoint for either would be fabrication. Both still expose their file
  *   through `item.src`.
  * @property {number} seek
- *   Always `inPointOrZero + max(0, t - item.start)`. The `window` field tells
+ *   For a video item `inPoint + speed * max(0, t - item.start)` (speed
+ *   defaults to 1); for the rest `max(0, t - item.start)`. The `window` field tells
  *   you which coordinate system that lands in:
  *     • `window !== null` → a position INSIDE `window.src`, i.e. exactly
  *       `seekTime(item, t, variant)` (useVideoPlayback.ts:680 /
@@ -753,11 +754,14 @@ function resolveItem(item, kind, trackIdx, t, variant, crossfade) {
   const geometry = geometryAt(item, kind, elapsed)
   if (kind === 'video') {
     const window = sourceWindow(item, variant)
-    // Identical to `seekTime(item, t, variant)` by construction — that function
-    // is `sourceWindow(item, variant).inPoint + max(0, t - item.start)`. Reusing
-    // the window we already computed just avoids resolving it twice; the test
-    // suite asserts the two agree.
-    return { item, trackIdx, kind, window, seek: window.inPoint + elapsed, geometry, crossfade }
+    // Identical to `seekTime(item, t, variant)`:
+    //   sourceWindow(item, variant).inPoint + (item.speed ?? 1) * max(0, t - item.start)
+    // Reusing the window we already computed avoids resolving it twice. The
+    // speed factor turns elapsed TIMELINE seconds into SOURCE seconds, so it
+    // applies here and NOT to `geometry`, whose keyframes ride the timeline
+    // clock (`elapsed`). The test suite asserts the two agree at speed 1, 2
+    // and 0.5.
+    return { item, trackIdx, kind, window, seek: window.inPoint + (item.speed ?? 1) * elapsed, geometry, crossfade }
   }
   // Images and overlays have no source window; `seek` is elapsed time into the
   // item itself. See the `ResolvedItem` typedef for why.

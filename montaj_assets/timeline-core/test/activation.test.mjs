@@ -912,6 +912,16 @@ describe('resolveAt: window and seek', () => {
       closeTo(v.seek, 3, 'rebased inPoint 1 + elapsed 2')
     })
 
+    for (const speed of [2, 0.5]) {
+      test(`${variant}: a VIDEO item at speed ${speed} seeks where seekTime does (speed applied to elapsed)`, () => {
+        const sped = { ...VIDEO, speed, end: 10 + 14 / speed }
+        const sp = project([[sped]])
+        const v = resolveAt(sp, 12, { variant }).items.find((r) => r.kind === 'video')
+        closeTo(v.seek, seekTime(sped, 12, variant), `speed ${speed}: seek agrees with seekTime`)
+        closeTo(v.seek, v.window.inPoint + speed * 2, `speed ${speed}: inPoint + speed * elapsed`)
+      })
+    }
+
     test(`${variant}: an IMAGE item has NO source window (window === null) and seek is dwell time`, () => {
       const i = resolveAt(p, 12, { variant }).items.find((r) => r.kind === 'image')
       assert.equal(i.window, null, 'a still has no source timeline to seek in')

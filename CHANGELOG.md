@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (render): `sample_frame` on a sped-up clip** showed the source frame as if the clip ran at normal speed; it now shows the frame the export renders.
+
 ## v5.26.1
 
 - **Fixed (steps): `creator_diagnostic`'s inbox** cannot be your home folder or a root, deletes only files directly inside it, and leaves a `_media` folder it did not create.

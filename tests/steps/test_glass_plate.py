@@ -16,16 +16,11 @@ The reference for each plate frame is montaj's own sample_frame at that screen
 frame's time, on a copy of the project without the overlay tracks, shrunk to
 the plate size (area) and blurred with the same sigma. Two choices keep it an
 honest reference:
-  - It samples through `--prefer-proxy`, the clip itself standing in as its
-    own proxy. sample_frame's master path seeks with the resolver's `seek`
-    (timeline-core activation.js resolveItem), which leaves out the clip's
-    speed: on the speed-2 clip it shows the frame half as far in, measured at a
-    mean abs of 71-78 against this plate. The proxy path seeks with
-    inPoint + speed * elapsed, the export's and the editor's rule (seekTime).
-  - The pattern is grey. The proxy path decodes saturated colour with a
-    different matrix than the export (measured: about 8 mean abs on testsrc2's
-    colour bars at speed 1, where the master path matches the plate to 1.5).
-    Grey has no chroma, so only position and timing are compared.
+  - The reference path is the normal one (master footage, no proxy), the
+    export's seek rule included: before the resolver's `seek` applied a clip's
+    speed, sample_frame showed the speed-2 clip's frame half as far in.
+  - The pattern is grey, so only position and timing are compared and
+    colour-matrix differences cannot move the means.
 """
 import json
 import os
@@ -69,14 +64,13 @@ def _ffmpeg(*args):
     subprocess.run([FFMPEG_BIN, "-v", "error", "-y", *args], check=True, capture_output=True, timeout=120)
 
 
-def _clips(src, proxy=False):
-    extra = {"proxySrc": src} if proxy else {}
+def _clips(src):
     return [
         {"id": "a", "type": "video", "src": src, "start": 0.25, "end": 1.5,
          "inPoint": 0.5, "outPoint": 3.0, "speed": 2,
-         "scale": 0.8, "offsetX": 10, "offsetY": -5, **extra},
+         "scale": 0.8, "offsetX": 10, "offsetY": -5},
         {"id": "b", "type": "video", "src": src, "start": 1.75, "end": 2.5,
-         "inPoint": 3.0, "outPoint": 3.75, **extra},
+         "inPoint": 3.0, "outPoint": 3.75},
     ]
 
 
@@ -112,7 +106,7 @@ def fixture(tmp_path_factory):
     ref = root / "ref"
     ref.mkdir()
     (ref / "project.json").write_text(json.dumps(_project("plate-ref", [
-        {"id": "trk-0", "items": _clips(str(clip), proxy=True)},
+        {"id": "trk-0", "items": _clips(str(clip))},
     ])))
     # sample_frame keeps a cross-process frame cache under $TMPDIR: a private
     # one, so no earlier run can answer for this one.
@@ -144,7 +138,7 @@ def _reference(fixture, screen_frame, size):
     small = fixture["root"] / f"ref-{screen_frame:04d}-small.png"
     proc = subprocess.run(
         [sys.executable, str(SAMPLE_FRAME), "--project", str(fixture["ref"] / "project.json"),
-         "--at", repr(screen_frame / FPS), "--prefer-proxy", "--out", str(full)],
+         "--at", repr(screen_frame / FPS), "--out", str(full)],
         capture_output=True, text=True, env=fixture["env"], timeout=120)
     assert proc.returncode == 0, proc.stderr
     w, h = size

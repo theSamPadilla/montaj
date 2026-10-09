@@ -990,13 +990,14 @@ export async function sampleFrame({
       if (hdrProject && !useProxy) {
         layer = sdrLayerFor(item)
         window = sourceWindow(layer.item, 'render')
-        // Keep whatever elapsed-time term the resolver used for ri.seek.
+        // ri.seek is inPoint + speed * elapsed (== seekTime), so this offset is
+        // already speed-scaled SOURCE seconds; do not multiply by speed again.
         seekOffsetFromRi = ri.seek - ri.window.inPoint
       }
       const src = useProxy
         ? item.proxySrc
         : resolveVideoSource(window.src, { sdrOrigin: layer !== null && !layer.grade && !layer.cutoutKey })
-      // ri.seek is the resolver's speed-aware seekTime, but rebased for a
+      // ri.seek is the resolver's seekTime (speed-aware), but rebased for a
       // normalizedSrc cache. The proxy is un-rebased, so recompute in the item's
       // own source coords (still speed-aware) when using it.
       const seekTime = useProxy
