@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+- **Fixed: a sped-up clip on the main track previews at its speed** in the `<video>` player: seek, `playbackRate` and reported time all apply `speed`, as `OverlayVideo` and timeline-core's `seekTime` do.
+
 ## 2.0.10
 
 - **Added: carousel text effects and fit.** The inspector offers Effect presets (None, Shadow, Outline, Glow) with color and strength, a Fit to box switch (shrinks to a minimum size), and an Align row (six buttons, aligned to the slide). The export draws the same effect and fitted size as the preview.

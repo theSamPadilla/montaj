@@ -65,6 +65,17 @@ interface MontajVideoElement extends HTMLVideoElement {
  * all) — the `?? ''` below is a type narrowing, not a runtime fallback; see the
  * `src` note on `SourceWindow` in timeline-core's index.d.ts.
  */
+/**
+ * A clip's speed (montaj/speed): source-seconds per project-second. The main
+ * track's <video> seeks to `inPoint + S·(t − start)`, plays at `playbackRate = S`
+ * and reports `start + (source − inPoint) / S`, matching timeline-core's
+ * `seekTime` and `OverlayVideo`. Undefined, zero or negative reads as 1.
+ */
+function clipSpeed(clip: { speed?: number } | undefined): number {
+  const s = clip?.speed
+  return typeof s === 'number' && s > 0 ? s : 1
+}
+
 function playbackSrcFor(clip: { src?: string; nobg_preview_src?: string; normalizedSrc?: string; proxySrc?: string }): string {
   // gateProxy (SP3 fix B2): strip an unsupported/failed proxy BEFORE the tier
   // chain runs, so unsupported browsers fall through to normalizedSrc/src
@@ -681,6 +692,7 @@ export function useVideoPlayback(
     if (nv) {
       const src = fileUrlRef.current(playbackSrcFor(nc))
       if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = effectiveInPoint(nc) }
+      nv.playbackRate = clipSpeed(nc)
       const gain = ensureVideoGain(ns)
       if (gain) gain.gain.value = mutedRef.current ? 0 : clipGain(videoTrack, nc)
       playSoon(nv)
@@ -744,15 +756,18 @@ export function useVideoPlayback(
       applyClipVolume(clip)
       const inPoint = effectiveInPoint(clip)
       const clipOutPoint = effectiveOutPoint(clip)
+      const speed = clipSpeed(clip)
+      video.playbackRate = speed
       if (clip.loop && clipOutPoint != null) {
+        // loopDur is in SOURCE seconds; loopOffsetRef holds PROJECT seconds.
         const loopDur = clipOutPoint - inPoint
-        const elapsed = currentTime - clip.start
-        const loops   = Math.floor(elapsed / loopDur)
-        loopOffsetRef.current = loops * loopDur
-        video.currentTime = inPoint + (elapsed % loopDur)
+        const srcElapsed = speed * (currentTime - clip.start)
+        const loops   = Math.floor(srcElapsed / loopDur)
+        loopOffsetRef.current = loops * loopDur / speed
+        video.currentTime = inPoint + (srcElapsed % loopDur)
       } else {
         loopOffsetRef.current = 0
-        video.currentTime = Math.max(inPoint, inPoint + (currentTime - clip.start))
+        video.currentTime = Math.max(inPoint, inPoint + speed * (currentTime - clip.start))
       }
     } finally {
       // Delay clearing seekingRef so the pause/play events the browser fires
@@ -798,6 +813,7 @@ export function useVideoPlayback(
         preloadSrcRef.current = nextSrc
         inactiveVideo.src = nextSrc
         inactiveVideo.currentTime = effectiveInPoint(clips[nextIdx])
+        inactiveVideo.playbackRate = clipSpeed(clips[nextIdx])
         const inactiveSlot = (1 - slot) as 0 | 1
         const nextGain = ensureVideoGain(inactiveSlot)
         if (nextGain) nextGain.gain.value = mutedRef.current ? 0 : clipGain(videoTrack, clips[nextIdx])
@@ -816,11 +832,11 @@ export function useVideoPlayback(
     // Natural EOF is paused as well, which is what `ended` distinguishes.
     if ((video.currentTime >= outPoint && !video.paused) || video.ended) {
       if (clip.loop) {
-        const projectT = clip.start + loopOffsetRef.current + (video.currentTime - clipInPoint)
+        const projectT = clip.start + loopOffsetRef.current + (video.currentTime - clipInPoint) / clipSpeed(clip)
         if (projectT < clip.end) {
           // Still within the clip's project window — loop the source video
           const loopDur = outPoint - clipInPoint
-          loopOffsetRef.current += loopDur
+          loopOffsetRef.current += loopDur / clipSpeed(clip)
           video.currentTime = clipInPoint
           return
         }
@@ -858,6 +874,7 @@ export function useVideoPlayback(
               nextVideo.src = nextSrc
               nextVideo.currentTime = effectiveInPoint(next)
             }
+            nextVideo.playbackRate = clipSpeed(next)
             const nextGain = ensureVideoGain(nextSlot)
             if (nextGain) nextGain.gain.value = mutedRef.current ? 0 : clipGain(videoTrack, next)
             playSoon(nextVideo)
@@ -891,7 +908,7 @@ export function useVideoPlayback(
       return
     }
 
-    const t = clip.start + loopOffsetRef.current + (video.currentTime - clipInPoint)
+    const t = clip.start + loopOffsetRef.current + (video.currentTime - clipInPoint) / clipSpeed(clip)
 
     // For looping clips, stop when project time reaches clip.end mid-loop
     if (clip.loop && t >= clip.end) {
