@@ -214,7 +214,8 @@ def _errors(track):
 
 
 def test_output_is_design_canvas_tracks_one_per_plate_frame(known_raw):
-    assert set(known_raw) == {"tracks", "minScore", "fps", "frames", "scale", "workingSize", "canvas"}
+    assert set(known_raw) == {"tracks", "minScore", "lostFrames", "fps", "frames", "scale", "workingSize",
+                              "canvas"}
     assert known_raw["fps"] == FPS
     assert known_raw["frames"] == N
     assert known_raw["canvas"] == [1920, 1080]
@@ -225,6 +226,7 @@ def test_output_is_design_canvas_tracks_one_per_plate_frame(known_raw):
     assert track[0] == [round(ANCHOR[0], 2), round(ANCHOR[1], 2)]
     assert all(v == round(v, 2) for p in track for v in p)
     assert known_raw["minScore"]["sq"] > 0.9
+    assert known_raw["lostFrames"] == {"sq": 0}
 
 
 @pytest.mark.parametrize("mode", ["none", "ma5"])
@@ -376,6 +378,121 @@ def test_a_point_whose_patch_leaves_and_comes_back_is_found_again(fx):
     report = " ".join(f"{n}:{errors[n]:.2f}" for n in range(16, RET_N))
     assert max(errors[n] for n in inside) <= MAX_PATH_ERR, report
     assert out["minScore"]["a"] == -9.0
+
+
+# Losing the patch inside the frame: the square moves slowly on a line and on
+# frames 14-21 shows unrelated noise instead of its texture (a new draw each
+# frame), then comes back where its path puts it. A match on the noise is not
+# the patch: the point coasts on its last confident motion, slowing, and picks
+# the square up again on the frame it returns.
+# Measured: steps of 1.80, 1.43 .. 0.38 design px while lost (the last
+# confident motion, x0.8 a frame), found again 0.14 px off on frame 22,
+# minScore 0.016, lostFrames 8. 6a2f2440 took the best window on the noise:
+# steps of 15 to 82 px, 500 px off on frame 22, out of the frame at
+# (2500, 1708) by the last frame, minScore -9.
+LOSE_N, LOSE_FROM, LOSE_TO = 40, 14, 22
+LOSE_C0, LOSE_V = (360.0, 250.0), (0.8, 0.4)     # working px, and px per frame
+
+
+def _load_step():
+    spec = importlib.util.spec_from_file_location("track_points_step", STEP)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _lose_truth(n):
+    return (LOSE_C0[0] + LOSE_V[0] * n, LOSE_C0[1] + LOSE_V[1] * n)
+
+
+def _lose_frames():
+    bg = _grey(_waves(1, 16, 10, 60), *_grid(0, SRC_W, 0, SRC_H), 100, 25)
+    obj = _waves(2, 16, 8, 40)
+    for n in range(LOSE_N):
+        cx, cy = _lose_truth(n)
+        x0, y0 = int(round(cx)) - OBJ, int(round(cy)) - OBJ
+        frame = bg.copy()
+        if LOSE_FROM <= n < LOSE_TO:
+            noise = np.random.default_rng(100 + n).normal(150, 45, (2 * OBJ, 2 * OBJ))
+            frame[y0:y0 + 2 * OBJ, x0:x0 + 2 * OBJ] = np.clip(noise, 0, 255).astype(np.uint8)
+        else:
+            xs, ys = _grid(x0, x0 + 2 * OBJ, y0, y0 + 2 * OBJ)
+            frame[y0:y0 + 2 * OBJ, x0:x0 + 2 * OBJ] = _grey(obj, xs - np.float32(cx), ys - np.float32(cy), 150, 45)
+        yield frame
+
+
+def test_a_point_that_loses_its_patch_inside_the_frame_slows_to_a_stop_and_finds_it_again(fx):
+    truth = [_lose_truth(n) for n in range(LOSE_N)]
+    project = _make_project(fx["root"], "lose", _lose_frames(), LOSE_N / FPS, [1920, 1080])
+    out = _track(fx, project, json.dumps([{"id": "a", "x": truth[0][0] * K, "y": truth[0][1] * K}]),
+                 "--smooth", "none")
+    track = out["tracks"]["a"]
+    steps = [math.dist(track[n], track[n - 1]) for n in range(1, LOSE_N)]
+    lost = steps[LOSE_FROM - 1:LOSE_TO - 1]          # the steps into frames 14-21
+    errors = [math.dist(p, (K * t[0], K * t[1])) for p, t in zip(track, truth)]
+    report = (f"steps while lost: {' '.join(f'{s:.1f}' for s in lost)}; error from frame {LOSE_TO}: "
+              f"{' '.join(f'{e:.2f}' for e in errors[LOSE_TO:])}; last point {track[-1]}; "
+              f"minScore {out['minScore']['a']}")
+    # No acceleration while lost: no step longer than the true motion plus 1 px,
+    # none longer than the one before it, and slowing, so a long loss settles.
+    assert max(lost) <= K * (math.hypot(*LOSE_V) + 1), report
+    assert all(b <= a + 0.05 for a, b in zip(lost, lost[1:])), report
+    assert lost[-1] <= 0.5 * lost[0], report
+    # It stays in the frame and reports a lost patch, never one that left the frame.
+    assert all(0 <= x <= 1920 and 0 <= y <= 1080 for x, y in track), report
+    assert -9.0 < out["minScore"]["a"] < _load_step().LOST_BELOW, report
+    assert out["lostFrames"] == {"a": LOSE_TO - LOSE_FROM}, report
+    # Found again on the frame the square comes back.
+    assert max(errors[LOSE_TO:]) <= MAX_PATH_ERR, report
+
+
+def test_a_confident_wrong_match_cannot_make_the_point_accelerate_faster_than_half_the_search(monkeypatch):
+    # Every frame's best match scores 0.6 at the far edge of the search window
+    # (7 working px past the prediction), as over unrelated texture that keeps
+    # matching ahead of the point. The predicted motion may follow by at most
+    # half the search radius a frame. 6a2f2440 took all of it: -7 working px a
+    # frame more each frame, -56 after 8.
+    mod = _load_step()
+    R = SEARCH
+    m = np.full((2 * R + 1, 2 * R + 1), 0.1)
+    m[0, R] = 0.6
+    monkeypatch.setattr(mod, "_ncc_map", lambda *a: m)
+    st = mod._Anchor({"id": "a", "x": 960, "y": 900}, 480, 450)
+    img = np.zeros((SRC_H, SRC_W), np.float32)
+    vy = [st.vy]
+    for _ in range(8):
+        mod._step(np, img, st, 28, R)
+        vy.append(st.vy)
+    changes = [abs(b - a) for a, b in zip(vy, vy[1:])]
+    assert max(changes) <= R / 2 + 1e-9, f"velocity per frame: {vy}"
+    assert vy[-1] == pytest.approx(-R / 2 * 8)
+
+
+def test_a_lost_point_is_not_found_again_on_the_rim_of_its_search(monkeypatch):
+    # While lost, a best window on the rim of the search is a slope running out
+    # of the window, not the patch: the point keeps coasting. A peak inside the
+    # window finds it again. Without this rule the shirt anchor in LOST_BELOW's
+    # measurement was found again at 0.43 on a corner of its search the frame
+    # after it was lost, ran 20-37 px a frame and reached the frame edge (-9).
+    mod = _load_step()
+    R = SEARCH
+
+    def peak(i, score):
+        m = np.zeros((2 * R + 1, 2 * R + 1))
+        m[R, i] = score
+        return m
+
+    maps = [peak(R, 0.1), peak(2 * R, 0.6), peak(R + 3, 0.6)]
+    monkeypatch.setattr(mod, "_ncc_map", lambda *a: maps.pop(0))
+    st = mod._Anchor({"id": "a", "x": 960, "y": 540}, 480, 270)
+    st.vx = 2.0
+    img = np.zeros((SRC_H, SRC_W), np.float32)
+    mod._step(np, img, st, 28, R)               # 0.1: lost, coasts 2 px
+    assert (st.lost_frames, st.x, st.vx) == (1, 482.0, pytest.approx(1.6))
+    mod._step(np, img, st, 28, R)               # 0.6 on the rim: still lost
+    assert (st.lost_frames, st.x, st.vx) == (2, pytest.approx(483.6), pytest.approx(1.28))
+    mod._step(np, img, st, 28, R)               # 0.6 inside the window: found
+    assert (st.lost, st.lost_frames, st.x, st.vx) == (False, 2, 488.0, pytest.approx(1.28))
 
 
 def test_temporary_frames_are_removed(fx, known_raw, known_ma5):

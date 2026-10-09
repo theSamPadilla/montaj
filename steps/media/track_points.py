@@ -21,7 +21,19 @@ a point that stops near an edge is still found. The point coasts on its last
 velocity, scoring -9, when its patch is leaving the frame: the best window is
 against the edge (a neighbour out of frame) while the search was clamped, or
 either of those with a score below COAST_BELOW. A match after a coast starts
-the motion again from 0. The minimum score per anchor is reported.
+the motion again from 0.
+
+Inside the frame, a best match scoring below LOST_BELOW is not the patch (it is
+covered, changed, or the search is over unrelated texture): the point is lost.
+A lost match never feeds the velocity. The point coasts on its last confident
+velocity, damped by LOST_DAMP each lost frame so a long loss settles, and the
+search goes on around the prediction. It is found again on the first match at
+or over LOST_BELOW that is a peak inside the search window (a maximum on the
+window's rim is a slope, not the patch); that frame keeps the coasting
+velocity and the next match measures it again. A confident match changes the
+velocity by at most ACCEL * search on each axis per frame, so a match that is
+confident but wrong cannot compound into a runaway. The minimum score per
+anchor and the number of lost frames are reported.
 
 numpy comes from the rvm extra (the app's runtime has it); it is imported
 lazily and a missing one fails by name.
@@ -48,6 +60,29 @@ WORKING_SHORT_EDGE = 540
 
 NO_FIT = -9.0          # the score of a candidate window that leaves the frame
 COAST_BELOW = 0.9      # a match at or over the edge scoring below this is a patch leaving
+# A best match scoring below LOST_BELOW is not the patch. Measured with the
+# default patch and search on two real 72-frame clips, a forest shot with the
+# camera moving and an HDR phone clip of a person (best score per frame against
+# the frame-0 patch; "followed" means within 15 px of an independent
+# frame-to-frame track of small points inside the patch):
+#  - a patch that went: an anchor on the person's shirt scored -0.25 on the
+#    frame its patch disappeared (-0.43 where the frame-to-frame track put
+#    it); 6a2f2440's tracker ran off from there, out of the frame 8 frames on;
+#  - patches that fade and are still followed: forest anchors followed for all
+#    72 frames dipped to 0.19-0.23; anchors placed for real use bottomed out
+#    at 0.42 (forest) and 0.65 (phone clip).
+# On a grid of 105 anchors over each clip, 0.3 is the lowest threshold that
+# ran no anchor off: 6a2f2440 ran off 10 forest and 9 phone-clip anchors to
+# -9, 0.2 still ran off 3. The cost is the fading patches under 0.3: they
+# coast to a stop and report lostFrames. 24 forest anchors come over 100 px
+# from the frame-to-frame track at some frame, against 17 under 6a2f2440 and
+# 47 at 0.4; no phone-clip anchor's mean distance to it grows by 5 px. No
+# threshold separates a patch that fades into look-alike texture: one forest
+# anchor started running at 0.46 and kept matching other foliage at
+# 0.40-0.57. ACCEL is what holds that one.
+LOST_BELOW = 0.3
+LOST_DAMP = 0.8        # a lost point's velocity shrinks by this each lost frame
+ACCEL = 0.5            # a confident match changes the velocity by at most ACCEL * search per axis
 SMOOTH_MODES = ("ma5", "quad", "none")
 MIN_PATCH = 16
 
@@ -167,6 +202,8 @@ class _Anchor:
         self.vx = self.vy = 0.0
         self.low = 1.0
         self.coasting = False
+        self.lost = False                      # the last frame had no confident match
+        self.lost_frames = 0
         self.t = None
         self.pts = [(float(cx), float(cy))]
 
@@ -191,15 +228,30 @@ def _step(np, img, st, P, R):
     clamped = (ex, ey) != (rx, ry)
     m = _ncc_map(np, img, st.t, ex, ey, P, R)
     j, i = np.unravel_index(np.argmax(m), m.shape)
+    score = float(m[j, i])
     pinned = NO_FIT in [m[b, a] for b, a in ((j, i - 1), (j, i + 1), (j - 1, i), (j + 1, i))
                         if 0 <= a <= 2 * R and 0 <= b <= 2 * R]
     # Leaving: the best window is against the edge while the motion carries the
     # patch past it, or either one with a poor match. A patch 2 px over the
     # edge still scores about 0.92 there, so the score alone cannot tell.
-    if (pinned and clamped) or ((pinned or clamped) and m[j, i] < COAST_BELOW):
+    if (pinned and clamped) or ((pinned or clamped) and score < COAST_BELOW):
         st.x, st.y = px + st.vx, py + st.vy
         st.low = NO_FIT
         st.coasting = True
+        st.pts.append((st.x, st.y))
+        return
+    st.low = min(st.low, score)
+    # Lost: the match is not the patch, so it moves neither the point nor its
+    # velocity. Taking it is what ran points off: over unrelated texture the
+    # best window sits toward the rim ahead of the point, the velocity grows by
+    # that much and the next search starts further out. While lost, a maximum
+    # on the window's rim is not a return either: the score may rise past it.
+    rim = not (0 < i < 2 * R and 0 < j < 2 * R)
+    if score < LOST_BELOW or (st.lost and rim):
+        st.x, st.y = px + st.vx, py + st.vy
+        st.vx, st.vy = st.vx * LOST_DAMP, st.vy * LOST_DAMP
+        st.lost = True
+        st.lost_frames += 1
         st.pts.append((st.x, st.y))
         return
     # A neighbour out of frame scores NO_FIT and would bend the parabola
@@ -209,11 +261,19 @@ def _step(np, img, st, P, R):
     dy = (_vertex(m[j, i], m[j - 1, i], m[j + 1, i])
           if 0 < j < 2 * R and NO_FIT not in (m[j - 1, i], m[j + 1, i]) else 0.0)
     nx, ny = ex + i - R + dx, ey + j - R + dy
-    # After a coast the last position was a guess: the motion restarts from 0.
-    st.vx, st.vy = (0.0, 0.0) if st.coasting else (nx - px, ny - py)
-    st.coasting = False
+    if st.coasting:
+        # After a coast out of the frame the last position was a guess: the
+        # motion restarts from 0.
+        st.vx, st.vy = 0.0, 0.0
+    elif not st.lost:
+        # The motion follows the match by at most ACCEL * R per axis a frame.
+        a = ACCEL * R
+        st.vx += min(max(nx - px - st.vx, -a), a)
+        st.vy += min(max(ny - py - st.vy, -a), a)
+    # Found again after a loss: the last position was a guess, so this frame
+    # keeps the coasting velocity and the next match measures the motion.
+    st.coasting = st.lost = False
     st.x, st.y = nx, ny
-    st.low = min(st.low, float(m[j, i]))
     st.pts.append((nx, ny))
 
 
@@ -357,16 +417,18 @@ def main():
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
-    tracks, min_score = {}, {}
+    tracks, min_score, lost_frames = {}, {}, {}
     for st in states:
         # The anchor rides with its patch: frame 0 is the anchor itself.
         pts = [[st.a["x"] + (x - st.cx0) / sx, st.a["y"] + (y - st.cy0) / sy] for x, y in st.pts]
         tracks[st.a["id"]] = [[round(x, 2), round(y, 2)] for x, y in smooth(pts, args.smooth)]
         min_score[st.a["id"]] = round(st.low, 3)
+        lost_frames[st.a["id"]] = st.lost_frames
 
     print(json.dumps({
         "tracks": tracks,
         "minScore": min_score,
+        "lostFrames": lost_frames,
         "fps": fps,
         "frames": count,
         "scale": scale,
