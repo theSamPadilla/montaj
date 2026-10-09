@@ -24,7 +24,6 @@ numpy comes from the rvm extra (the app's runtime has it); it is imported
 lazily and a missing one fails by name.
 """
 import json
-import math
 import os
 import shutil
 import subprocess
@@ -34,16 +33,13 @@ import tempfile
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
 from cli.deps import render_runtime_dir
+from lib.canvas import DESIGN_SHORT_EDGE, design_canvas
 from lib.common import ffmpeg_bin, ffmpeg_error_tail, node_child_env, fail, require_file
 from lib.project_tracks import track_items
 
 # The runtime copy of the render engine, as glass_plate.py resolves it.
 GLASS_PLATE_JS = os.path.join(render_runtime_dir(), "glass-plate.js")
 
-# The overlay design canvas: 1080 on the short edge (render.js SHORT_EDGE_TARGET),
-# portrait 1080x1920 when the project has no settings.resolution.
-DESIGN_SHORT_EDGE = 1080
-DESIGN_FALLBACK = (1080, 1920)
 # Tracking works at half the design canvas, whatever the export resolution.
 WORKING_SHORT_EDGE = 540
 
@@ -70,26 +66,6 @@ def _find_item(project, item_id):
 
 def _is_number(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) != float("inf")
-
-
-def _js_round(v):
-    """Math.round: half up, as render.js rounds the design canvas."""
-    return int(math.floor(v + 0.5))
-
-
-def design_canvas(settings):
-    """[w, h] of the overlay design canvas, as render.js computes it."""
-    res = settings.get("resolution") if isinstance(settings, dict) else None
-    aw, ah = DESIGN_FALLBACK
-    if isinstance(res, (list, tuple)) and len(res) >= 2:
-        try:
-            w, h = float(res[0]), float(res[1])
-        except (TypeError, ValueError):
-            w = h = 0.0
-        if w > 0 and h > 0 and math.isfinite(w) and math.isfinite(h):
-            aw, ah = w, h
-    k = DESIGN_SHORT_EDGE / min(aw, ah)
-    return [_js_round(aw * k / 2) * 2, _js_round(ah * k / 2) * 2]
 
 
 def _load_anchors(value):

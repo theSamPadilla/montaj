@@ -1024,34 +1024,39 @@ async function prepareVideoItems(videoItems, targetFor,
  * item decodes, every item gets `gradeFrom` (gradeKeyFor: the Vivid source key,
  * or null for no grade) and `alphaGrade` (a cutout of HDR footage). The key is
  * never taken from a probe made before normalize.
+ *
+ * `prepare` (default: every item) picks the video items that are probed,
+ * prepared and graded; the rest are returned as collectAllItems made them.
+ * glass-plate.js passes it to prepare only the clips under one item's range.
  */
-async function prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir }) {
+async function prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir, prepare = null }) {
   const project = structuredClone(pristineProject)
   project.settings = { ...(project.settings ?? {}), colorSpace: 'sdr_bt709' }
   applySdrLayers(project)
   repointStaleUntaggedMasters(project)
   const { imageItems, videoItems } = collectAllItems(project)
+  const toPrepare = prepare ? videoItems.filter(prepare) : videoItems
 
   // A remove_bg item with no cached cutout has nothing to grade as a cutout, so
   // the SDR export shows it as its plain source: say so rather than diverge quietly.
-  for (const item of videoItems) {
+  for (const item of toPrepare) {
     if (item.remove_bg && !item.nobg_src) {
       log(`WARNING: ${basename(item.src)} has remove_bg but no nobg_src; it is rendered ungraded in the SDR export`)
     }
   }
 
   const transferCache = new Map()
-  stampSourceProbes(videoItems, transferCache)
+  stampSourceProbes(toPrepare, transferCache)
 
   const targetFor = (item) => {
     const layer = item[SDR_LAYER]
     const hdrOrigin = layer.grade && layer.cutoutKey === null
     return hdrOrigin && isHdr(detectFromTransfer(item.colorTransfer)) ? projectColorSpace : 'sdr_bt709'
   }
-  await prepareVideoItems(videoItems, targetFor,
+  await prepareVideoItems(toPrepare, targetFor,
     { settings: project.settings, workspaceDir, transferCache, timingLabel: 'SDR pass' })
 
-  for (const item of videoItems) {
+  for (const item of toPrepare) {
     const layer = item[SDR_LAYER]
     item.gradeFrom  = gradeKeyFor(layer, item.colorTransfer)
     item.alphaGrade = layer.cutoutKey !== null

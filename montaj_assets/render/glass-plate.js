@@ -14,7 +14,15 @@
  * per-layer SDR pass), split by planSegments and drawn by encodeSegment, the
  * same calls the export makes before it adds overlays. So every scale, crop,
  * offset, speed and crossfade, and the HDR-to-SDR look of the SDR export, are
- * already in it. Overlays and captions are never drawn.
+ * already in it. Overlays and captions are never drawn. Only the clips that can
+ * show in the item's range are prepared (plateItemFilter); the working colour
+ * space is still detected from every clip, as the export detects it.
+ *
+ * Colour: the parts are untagged yuv420p holding BT.709 limited-range values.
+ * A browser decodes a JPEG as BT.601 full range (JFIF), so the JPEG frames are
+ * converted to that matrix and range before encoding, and PNG frames to RGB
+ * from BT.709 limited range. Left to ffmpeg's defaults, a saturated red came
+ * out (210, 0, 73) in the overlay where sample_frame shows (228, 24, 72).
  *
  * Frame mapping: an overlay's frame 0 is screen frame round(start * fps), and
  * it has round(end * fps) - round(start * fps) frames (render.js
@@ -25,6 +33,8 @@
  *   plateRange(project, itemId)               → { item, fps, startFrame, endFrame }
  *   plateSize(width, height, shortEdge)       → [w, h]
  *   rangeParts(segments, startFrame, endFrame, fps, vw, vh) → segment parts
+ *   plateItemFilter(settings, videoItems, startFrame, endFrame, fps) → (item) => boolean
+ *   plateFrameFilter(ext, sigma)              → the -vf chain for the frames
  *   renderBaseParts({ projectPath, itemId, shortEdge, sdrCurve, workDir })
  *     → { parts: [{ path, startFrame, frames }], fps, size, startFrame, endFrame }
  *   renderPlates({ projectPath, itemId, shortEdge, sigma, sdrCurve, outDir, ext })
@@ -136,6 +146,37 @@ export function rangeParts(segments, startFrame, endFrame, fps, vw, vh) {
 }
 
 /**
+ * Which video items a plate prepares (normalize, audio strip, remove_bg): the
+ * ones that can show in the screen frames [startFrame, endFrame). planSegments
+ * counts an item active in a segment it covers to within one frame
+ * (timeline-core activeIn), so the span is widened by a frame each side.
+ * Without settings.resolution the export's frame size is probed from the first
+ * clip's prepared file (render.js outputSize), so that clip is prepared too.
+ */
+export function plateItemFilter(settings, videoItems, startFrame, endFrame, fps) {
+  const lo = (startFrame - 1) / fps - 1e-6
+  const hi = (endFrame + 1) / fps + 1e-6
+  const sizeItem = settings.resolution ? null
+    : [...videoItems].sort((a, b) => a.trackIdx - b.trackIdx)[0] ?? null
+  // By id: the HDR path prepares the SDR pass's own copies of the items.
+  return (item) => !(item.start >= hi || item.end <= lo)
+    || (sizeItem !== null && item.id === sizeItem.id)
+}
+
+/**
+ * The -vf chain that turns a part (untagged yuv420p, BT.709 limited range) into
+ * plate frames: the blur, then a JPEG's BT.601 full-range YCbCr, which is how a
+ * browser decodes it, or a PNG's RGB.
+ */
+export function plateFrameFilter(ext, sigma) {
+  const blur = sigma > 0 ? [`gblur=sigma=${sigma}`] : []
+  const convert = ext === 'jpg'
+    ? ['scale=in_color_matrix=bt709:in_range=tv:out_color_matrix=bt601:out_range=pc', 'format=yuvj420p']
+    : ['scale=in_color_matrix=bt709:in_range=tv', 'format=rgb24']
+  return [...blur, ...convert].join(',')
+}
+
+/**
  * The working colour space the export would use, without render.js's write
  * back to project.json (a plate never edits the project): settings.colorSpace
  * when set, else smart-detected from the clips' probed transfers, else SDR.
@@ -149,12 +190,13 @@ function workingColorSpace(settings, videoItems) {
 }
 
 /**
- * The project's image and video items, prepared exactly as the export prepares
- * them, in render.js main()'s order. An SDR project takes the export's own
- * pass; an HDR project takes the per-layer SDR pass that `--export sdr` uses,
- * because a plate is drawn in an overlay page, which is SDR.
+ * The project's image and video items, the ones under the range prepared
+ * exactly as the export prepares them, in render.js main()'s order. An SDR
+ * project takes the export's own pass; an HDR project takes the per-layer SDR
+ * pass that `--export sdr` uses, because a plate is drawn in an overlay page,
+ * which is SDR. Items outside the range are returned unprepared: no part draws them.
  */
-async function prepareBaseItems(projectPath) {
+async function prepareBaseItems(projectPath, { startFrame, endFrame, fps }) {
   const projectJson = JSON.parse(readFileSync(projectPath, 'utf8'))
   const projectDir = dirname(projectPath)
   resolveProjectPaths(projectJson, projectDir)
@@ -166,13 +208,14 @@ async function prepareBaseItems(projectPath) {
   const transferCache = new Map()
   stampSourceProbes(videoItems, transferCache)
   const projectColorSpace = workingColorSpace(settings, videoItems)
+  const inRange = plateItemFilter(settings, videoItems, startFrame, endFrame, fps)
 
   let prepared
   if (isHdr(projectColorSpace)) {
-    const sdr = await prepareSdrPass(pristine, { projectColorSpace, workspaceDir: projectDir })
+    const sdr = await prepareSdrPass(pristine, { projectColorSpace, workspaceDir: projectDir, prepare: inRange })
     prepared = { imageItems: sdr.imageItems, videoItems: sdr.videoItems }
   } else {
-    await prepareVideoItems(videoItems, () => projectColorSpace,
+    await prepareVideoItems(videoItems.filter(inRange), () => projectColorSpace,
       { settings, workspaceDir: projectDir, transferCache })
     prepared = { imageItems, videoItems }
   }
@@ -193,7 +236,7 @@ export async function renderBaseParts({ projectPath, itemId, shortEdge = 270, sd
   const raw = JSON.parse(readFileSync(absProject, 'utf8'))
   const { fps, startFrame, endFrame } = plateRange(raw, itemId)
 
-  const { imageItems, videoItems, settings } = await prepareBaseItems(absProject)
+  const { imageItems, videoItems, settings } = await prepareBaseItems(absProject, { startFrame, endFrame, fps })
   const [outW, outH] = outputSize(settings, videoItems,
     settings.resolution?.[0] ?? DESIGN_FALLBACK[0], settings.resolution?.[1] ?? DESIGN_FALLBACK[1])
   const [vw, vh] = plateSize(outW, outH, shortEdge)
@@ -228,7 +271,7 @@ export async function renderPlates({ projectPath, itemId, shortEdge = 270, sigma
   try {
     const { parts, fps, size, startFrame, endFrame } =
       await renderBaseParts({ projectPath, itemId, shortEdge, sdrCurve, workDir })
-    const vf = sigma > 0 ? ['-vf', `gblur=sigma=${sigma}`] : []
+    const vf = ['-vf', plateFrameFilter(ext, sigma)]
     const quality = ext === 'jpg' ? ['-q:v', '3'] : []
     for (const part of parts) {
       const args = [

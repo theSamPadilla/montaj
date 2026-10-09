@@ -1,7 +1,10 @@
-"""Which canvas a project takes from its footage.
+"""Which canvas a project takes from its footage, and the overlay design canvas.
 
 One rule for `project/init.py` (clips at create) and serve (footage added to a
-project created without any), so the two cannot drift."""
+project created without any), so the two cannot drift. design_canvas is the
+overlays' own coordinate space, shared by the steps that report in it
+(glass_plate, track_points)."""
+import math
 from collections import Counter
 
 # settings.resolutionSource values. Absent on carousels and on projects made
@@ -10,6 +13,34 @@ SOURCE_EXPLICIT = "explicit"
 SOURCE_FOOTAGE = "footage"
 SOURCE_DEFAULT = "default"
 # settings.fpsSource takes the same three values.
+
+# The overlay design canvas: 1080 on the short edge (render.js SHORT_EDGE_TARGET),
+# portrait 1080x1920 when the project has no settings.resolution.
+DESIGN_SHORT_EDGE = 1080
+DESIGN_FALLBACK = (1080, 1920)
+
+
+def _js_round(v):
+    """Math.round: half up, as render.js rounds the design canvas."""
+    return int(math.floor(v + 0.5))
+
+
+def design_canvas(settings) -> list[int]:
+    """[w, h] of the overlay design canvas, as render.js computes it: 1080 on the
+    short edge with the aspect of settings.resolution, both rounded to even.
+    The overlay's coordinates whatever the export resolution: [1920, 1080] for
+    any 16:9 project."""
+    res = settings.get("resolution") if isinstance(settings, dict) else None
+    aw, ah = DESIGN_FALLBACK
+    if isinstance(res, (list, tuple)) and len(res) >= 2:
+        try:
+            w, h = float(res[0]), float(res[1])
+        except (TypeError, ValueError):
+            w = h = 0.0
+        if w > 0 and h > 0 and math.isfinite(w) and math.isfinite(h):
+            aw, ah = w, h
+    k = DESIGN_SHORT_EDGE / min(aw, ah)
+    return [_js_round(aw * k / 2) * 2, _js_round(ah * k / 2) * 2]
 
 
 def modal_dims(pairs) -> tuple[int, int] | None:

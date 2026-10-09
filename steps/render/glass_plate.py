@@ -10,12 +10,18 @@ scaled to a short edge, gaussian-blurred and written one JPEG per frame.
 Plate frame n is screen frame round(start * fps) + n, the frame the overlay's
 frame n is composited over, and there are round(end * fps) - round(start * fps)
 of them: the overlay's own frame count (render.js collectPuppeteerSegments).
+
+The frames are rendered into a temporary folder inside the output folder and
+moved in only once every one is written, so a failed run leaves the previous
+plate as it was.
 """
-import os, re, sys, argparse, subprocess, json
+import os, re, sys, argparse, subprocess, json, shutil, tempfile
+from pathlib import Path
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
 from cli.deps import render_runtime_dir
+from lib.canvas import design_canvas
 from lib.common import node_child_env, fail, require_file
 from lib.look import curve_ids
 from lib.project_tracks import track_items
@@ -46,6 +52,15 @@ def _find_item(project, item_id):
 
 def _is_number(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) != float("inf")
+
+
+def _check_out(out_dir):
+    """Frames are deleted from the output folder, so it can never be a root, the
+    home folder, or a folder holding it (creator_diagnostic.check_inbox's rule)."""
+    p = Path(out_dir).resolve()
+    home = Path.home().resolve()
+    if p == Path(p.anchor) or p == home or p in home.parents:
+        fail("invalid_out", f"--out cannot be {p}: pick a folder just for these frames")
 
 
 def main():
@@ -98,19 +113,18 @@ def main():
     else:
         # The id becomes a folder name: one that is not a single plain segment
         # would land the frames somewhere else, so it needs an explicit --out.
-        if args.item in ("", ".", "..") or "/" in args.item or "\\" in args.item:
+        # A colon too: on Windows "C:x" is relative to drive C, not to plates/.
+        if args.item in ("", ".", "..") or any(c in args.item for c in "/\\:"):
             fail("invalid_item", f"Item id \"{args.item}\" cannot name a folder; pass --out.")
         out_dir = os.path.join(os.path.dirname(project_path), "plates", args.item)
     if os.path.exists(out_dir) and not os.path.isdir(out_dir):
         fail("invalid_out", f"--out {out_dir} exists and is not a folder")
-    os.makedirs(out_dir, exist_ok=True)
-
-    # A shorter range than last time must not leave the old tail behind, so the
-    # count on disk is exact. Only frames this step names are removed.
-    for name in os.listdir(out_dir):
-        path = os.path.join(out_dir, name)
-        if FRAME_FILE.match(name) and (os.path.islink(path) or os.path.isfile(path)):
-            os.remove(path)  # a link goes as a link: ffmpeg must not write through it
+    _check_out(out_dir)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        stage = tempfile.mkdtemp(prefix=".glass-plate-", dir=out_dir)
+    except OSError as e:
+        fail("invalid_out", f"Could not make the frames folder {out_dir}: {e}")
 
     cmd = [
         "node", GLASS_PLATE_JS,
@@ -118,17 +132,53 @@ def main():
         "--item", args.item,
         "--short-edge", str(args.short_edge),
         "--sigma", str(args.sigma),
-        "--out-dir", out_dir,
+        "--out-dir", stage,
     ]
     if args.sdr_curve is not None:
         cmd += ["--sdr-curve", args.sdr_curve]
 
-    result = subprocess.run(cmd, check=False, capture_output=True, env=node_child_env())
-    sys.stdout.write(result.stdout.decode("utf-8", errors="replace"))
-    sys.stdout.flush()
-    sys.stderr.write(result.stderr.decode("utf-8", errors="replace"))
-    sys.stderr.flush()
-    sys.exit(result.returncode)
+    try:
+        result = subprocess.run(cmd, check=False, capture_output=True, env=node_child_env())
+        sys.stderr.write(result.stderr.decode("utf-8", errors="replace"))
+        sys.stderr.flush()
+        if result.returncode != 0:
+            # The previous plate stays: nothing in out_dir has been touched.
+            sys.stdout.write(result.stdout.decode("utf-8", errors="replace"))
+            sys.stdout.flush()
+            sys.exit(result.returncode)
+        try:
+            plate = json.loads(result.stdout.decode("utf-8", errors="replace"))
+        except ValueError:
+            fail("glass_plate_failed", "The plate renderer returned no result.")
+        frames = _swap_in(plate["frames"], out_dir)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+    print(json.dumps({
+        "frames": frames,
+        "fps": plate["fps"],
+        "size": plate["size"],
+        "canvas": design_canvas(project.get("settings") or {}),
+    }))
+
+
+def _swap_in(staged, out_dir):
+    """Replace the plate in out_dir with the staged frames. A shorter range than
+    last time must not leave the old tail behind, so the count on disk is exact;
+    only frames this step names are removed."""
+    frames = []
+    try:
+        for name in os.listdir(out_dir):
+            path = os.path.join(out_dir, name)
+            if FRAME_FILE.match(name) and (os.path.islink(path) or os.path.isfile(path)):
+                os.remove(path)  # a link goes as a link, never what it points to
+        for src in staged:
+            dst = os.path.join(out_dir, os.path.basename(src))
+            os.replace(src, dst)
+            frames.append(dst)
+    except OSError as e:
+        fail("invalid_out", f"Could not write the frames into {out_dir}: {e}")
+    return frames
 
 
 if __name__ == "__main__":

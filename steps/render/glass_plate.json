@@ -1,13 +1,13 @@
 {
   "name": "glass_plate",
-  "description": "Render the footage under one item (normally an overlay) as small blurred frames, one JPEG per frame, for frosted glass. An overlay is captured in its own page and composited afterwards, so CSS backdrop-filter in it sees nothing; a glass shape shows the plate frame of the current frame instead, positioned at screen coordinates. The plate is the project's video and image tracks only (never overlays or captions), drawn by the export's own render path for the item's range at project fps, so transforms, crops, speed and the HDR-to-SDR look already match the export. Plate frame n is the screen frame under the overlay's frame n; gaps with no footage are black. Returns { frames: [absolute paths], fps, size: [w, h] }, one frame per project frame in the item's range: round(end * fps) - round(start * fps).",
+  "description": "Render the footage under one item (normally an overlay) as small blurred frames, one JPEG per frame, for frosted glass. An overlay is captured in its own page and composited afterwards, so CSS backdrop-filter in it sees nothing; a glass shape shows the plate frame of the current frame instead, positioned at screen coordinates. The plate is the project's video and image tracks only (never overlays or captions), drawn by the export's own render path for the item's range at project fps, so transforms, crops, speed and the HDR-to-SDR look already match the export. Plate frame n is the screen frame under the overlay's frame n; gaps with no footage are black. Draw it at the design canvas size (canvas) shifted to screen coordinates. It lines up only when the overlay item drawing it is full-canvas, with no offset, scale, rotation or keyframes on the item, and only the video and image tracks are in it: an opaque overlay underneath is not. Returns { frames: [absolute paths], fps, size: [w, h], canvas: [w, h] }, one frame per project frame in the item's range: round(end * fps) - round(start * fps). canvas is the overlay design canvas (1080 on the short edge, the aspect of settings.resolution), the size to draw a plate frame at.",
   "input": {
     "type": "project",
     "description": "The project id, its folder, or the absolute path of its project.json"
   },
   "output": {
     "type": "json",
-    "description": "{ frames: [absolute JPEG paths, 0000.jpg on], fps: project fps, size: [w, h] }"
+    "description": "{ frames: [absolute JPEG paths, 0000.jpg on], fps: project fps, size: [w, h] of the frames, canvas: [w, h] of the overlay design canvas }"
   },
   "params": [
     {
@@ -48,7 +48,7 @@
       "name": "out",
       "type": "path",
       "required": false,
-      "description": "Folder for the frames. Defaults to <project_dir>/plates/<item>/. Stale NNNN.jpg frames in it are removed first; nothing else is touched."
+      "description": "Folder for the frames. Defaults to <project_dir>/plates/<item>/ (an item id with a path separator or a colon needs an explicit out). Never a root, the home folder or a folder holding it. The new frames are written aside and replace the NNNN.jpg frames in it only once all are written, so a failed run keeps the previous plate; nothing else in the folder is touched."
     }
   ]
 }
