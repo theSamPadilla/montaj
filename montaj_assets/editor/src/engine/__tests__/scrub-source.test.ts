@@ -10,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createHoverScrub } from '../../video/hover-scrub'
 import type { AcquiredDemux } from '../index'
 import {
+  MIX_GRAIN_HIGH_LATENCY_S,
+  MIX_GRAIN_S,
   MOVE_EPSILON_S,
   RELEASE_FADE_S,
   THROTTLE_MS,
@@ -190,6 +192,121 @@ describe('T7 guard — Bluetooth/high-latency auto-disable', () => {
     expect(resolve).not.toHaveBeenCalled()
     expect(onError).toHaveBeenCalledTimes(1) // still just the one warning, not one per attempt
 
+    source.dispose()
+  })
+})
+
+// ── Mixer mode (§190 T4) ─────────────────────────────────────────────────────
+
+describe('mixer mode — grains from the mixer, not the main thread', () => {
+  function mixed(over: Partial<FakeCtx> = {}) {
+    installCtx(fakeCtx(over))
+    const mix = vi.fn()
+    const resolve = vi.fn(() => null)
+    const onError = vi.fn()
+    const source = createScrubSource({
+      acquireDemux: notCalledAcquireDemux,
+      resolve,
+      mixerScrub: () => mix,
+      onError,
+    })
+    source.setEnabled(true)
+    return { mix, resolve, onError, source }
+  }
+
+  it('sends the position, a direction from the move, and the full grain; resolve and demux are never used', () => {
+    scriptNow([1000, 1100, 1200, 1300])
+    const { mix, resolve, source } = mixed()
+    const hover = createHoverScrub()
+    source.attach(hover)
+    hover.set(2)
+    hover.set(2.5)
+    hover.set(2.1)
+    expect(mix.mock.calls).toEqual([
+      [2, 1, MIX_GRAIN_S],
+      [2.5, 1, MIX_GRAIN_S],
+      [2.1, -1, MIX_GRAIN_S],
+    ])
+    expect(resolve).not.toHaveBeenCalled()
+    source.dispose()
+  })
+
+  it('keeps the throttle and the move epsilon', () => {
+    scriptNow([1000, 1000 + THROTTLE_MS / 2, 1000 + THROTTLE_MS + 100, 1000 + 2 * THROTTLE_MS + 200])
+    const { mix, source } = mixed()
+    const hover = createHoverScrub()
+    source.attach(hover)
+    hover.set(1)
+    hover.set(1.05) // inside the throttle
+    hover.set(1 + MOVE_EPSILON_S / 2) // past it, but a sub-epsilon move
+    expect(mix).toHaveBeenCalledTimes(1)
+    hover.set(1.1)
+    expect(mix).toHaveBeenCalledTimes(2)
+    source.dispose()
+  })
+
+  it('does not switch off over a high-latency output: the grain is shorter, and nothing is reported', () => {
+    scriptNow([1000, 1100])
+    const { mix, onError, source } = mixed({ outputLatency: 0.15 })
+    const hover = createHoverScrub()
+    source.attach(hover)
+    hover.set(1)
+    hover.set(1.5)
+    expect(mix.mock.calls.map((c) => c[2])).toEqual([MIX_GRAIN_HIGH_LATENCY_S, MIX_GRAIN_HIGH_LATENCY_S])
+    expect(MIX_GRAIN_HIGH_LATENCY_S).toBeLessThan(MIX_GRAIN_S)
+    expect(onError).not.toHaveBeenCalled()
+    source.dispose()
+  })
+
+  it('jog (a playhead drag, the reverse shuttle) goes the same way, with the direction it is given', () => {
+    scriptNow([1000, 1100, 1200])
+    const { mix, source } = mixed()
+    source.jog(3)
+    source.jog(3.4)
+    source.jog(3.0, -1)
+    expect(mix.mock.calls).toEqual([
+      [3, 1, MIX_GRAIN_S],
+      [3.4, 1, MIX_GRAIN_S],
+      [3.0, -1, MIX_GRAIN_S],
+    ])
+    source.dispose()
+  })
+
+  it('jog is silent when the scrub setting is off', () => {
+    scriptNow([1000])
+    const { mix, source } = mixed()
+    source.setEnabled(false)
+    source.jog(3)
+    expect(mix).not.toHaveBeenCalled()
+    source.dispose()
+  })
+
+  it('outside mixer mode jog does nothing, and hover is today\'s path', () => {
+    installCtx(fakeCtx())
+    scriptNow([1000, 1100])
+    const resolve = vi.fn((t: number) => fixedTarget(t))
+    const source = createScrubSource({ acquireDemux: hangingAcquireDemux, resolve, mixerScrub: () => null })
+    source.setEnabled(true)
+    source.jog(1)
+    expect(resolve).not.toHaveBeenCalled()
+    const hover = createHoverScrub()
+    source.attach(hover)
+    hover.set(1)
+    expect(resolve).toHaveBeenCalledTimes(1)
+    source.dispose()
+  })
+
+  it('outside mixer mode the high-latency guard still switches scrub off', () => {
+    installCtx(fakeCtx({ outputLatency: 0.15 }))
+    const resolve = vi.fn(() => null)
+    const onError = vi.fn()
+    const source = createScrubSource({ acquireDemux: notCalledAcquireDemux, resolve, mixerScrub: () => null, onError })
+    source.setEnabled(true)
+    const hover = createHoverScrub()
+    source.attach(hover)
+    hover.set(1)
+    expect(resolve).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledTimes(1)
     source.dispose()
   })
 })

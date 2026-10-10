@@ -77,6 +77,8 @@ interface TimelineProps {
   /** The time under the pointer while the axis is on, null when it leaves.
    *  Fires per mousemove — VideoEditor routes it into an external store. */
   onHoverScrub?: (time: number | null) => void
+  /** §190 T4: the playhead was pressed or dragged to this time; makes it audible. */
+  onScrubDrag?: (time: number) => void
   /** Resolves a waveform chunk's host path into a displayable URL. */
   resolveFilePath?: ResolveFilePath
   /** Zoom-bucketed peaks fetcher for the canvas timeline's waveforms (T6),
@@ -351,7 +353,7 @@ const EASING_LABELS: Record<EasingName, string> = {
   hold: 'Hold',
 }
 
-export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, modalOpen = false, onOpenGoToTime, actionsRef, mode = 'dark', onImportFilesToTimeline, pendingDrops, pins, onPinClick }: TimelineProps) {
+export default function Timeline({ project, clock, onProjectChange, onOverlayEdit, selectedIds = [], onSelectIds, onInspectClip, onInspectAudio, onEditCaption, rippleMode = false, previewAxis = false, onHoverScrub, onScrubDrag, resolveFilePath, getWaveformPeaks, getFilmstrip, regenEnabled, isClipQueued, renderSubcutRegen, modalOpen = false, onOpenGoToTime, actionsRef, mode = 'dark', onImportFilesToTimeline, pendingDrops, pins, onPinClick }: TimelineProps) {
 
   // Click/shift-click handler — additive selection on shift or meta (cmd/ctrl).
   // Under D1, captions share `selectedIds` with everything else, so there is
@@ -1087,6 +1089,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
               rippleMode={rippleMode}
               previewAxis={previewAxis}
               onHoverScrub={onHoverScrub}
+              onScrubDrag={onScrubDrag}
               onSelectItem={handleSelectItem}
               onSelectItems={handleSelectItems}
               selectedKeyframe={selectedKeyframe}

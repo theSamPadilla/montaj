@@ -392,6 +392,16 @@ describe('scrub on the ruler', () => {
     expect(d.machine.state.kind).toBe('dragging')
   })
 
+  it('asks for an audible scrub beside every seek of the drag, and nowhere else (§190 T4)', () => {
+    const d = new Driver(makeContext())
+    expect(of(d.down(510, RULER_Y), 'scrubDrag')).toEqual([{ type: 'scrubDrag', time: 5 }])
+    expect(of(d.move(560, RULER_Y), 'scrubDrag')).toEqual([{ type: 'scrubDrag', time: expect.closeTo(5.6) }])
+    // A click on empty track area seeks, and is not a drag of the playhead.
+    const c = new Driver(makeContext())
+    c.down(EMPTY.x, EMPTY.y)
+    expect(of(c.up(EMPTY.x, EMPTY.y), 'scrubDrag')).toEqual([])
+  })
+
   it('clears the selection, so scrubbing drops what was selected', () => {
     // Otherwise a clip stayed selected while you scrubbed somewhere else, and
     // the next split or ripple-delete hit an item nowhere near the playhead.

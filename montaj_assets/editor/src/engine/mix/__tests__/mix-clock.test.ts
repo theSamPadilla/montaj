@@ -378,6 +378,23 @@ describe('plan, params and stats', () => {
     expect(r.lastNode()).toEqual({ t: 'params', master: 0.7 })
   })
 
+  it('scrub sends a grain request to the Worker, only while paused (§190 T4)', async () => {
+    const r = await rig()
+    const last = () => r.workerSent[r.workerSent.length - 1].msg
+    r.clock.scrub(2.5, -1, 0.08)
+    expect(last()).toEqual({ t: 'scrub', time: 2.5, dir: -1, lenS: 0.08 })
+    const n = r.workerSent.length
+    r.clock.scrub(Number.NaN, 1, 0.08)
+    r.clock.scrub(1, 1, 0)
+    expect(r.workerSent.length).toBe(n)
+    r.clock.play()
+    r.clock.scrub(1, 1, 0.08)
+    expect(r.workerSent.length).toBe(n)
+    r.clock.pause()
+    r.clock.scrub(1, 1, 0.08)
+    expect(last()).toEqual({ t: 'scrub', time: 1, dir: 1, lenS: 0.08 })
+  })
+
   it('stats carry the report, the Worker stats and the MasterClock fields', async () => {
     const r = await rig()
     r.report({ renderedFrames: 4800, underrunFrames: 12, primingFrames: 300, starving: ['x'], queuedFrames: 24000 })

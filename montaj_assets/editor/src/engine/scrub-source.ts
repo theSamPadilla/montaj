@@ -30,6 +30,19 @@
  * in from and out to zero — no edge discontinuity, no click, whatever position
  * it starts at. A per-grain `GainNode` lets stop-on-release ramp to silence.
  *
+ * ── Mixer mode (§190 T4) ────────────────────────────────────────────────────
+ * When the engine runs the preview mixer (`mixerScrub()` is non-null) none of
+ * the above applies: the grain is rendered off the main thread by the mixer's
+ * Worker, from the conformed audio cache, for EVERY segment active at the
+ * position (clips, lanes, overlay-video audio), forward or backward, and the
+ * worklet sounds it at the mix's live gains with mutes respected. A gap is
+ * silent because no segment is active. This module then only decides WHEN a
+ * grain fires (the same throttle and move epsilon), in which direction (the
+ * sign of the move since the last grain) and how long it is: output latency
+ * past `SCRUB_LATENCY_THRESHOLD_S` no longer turns scrub off, it shortens the
+ * grain. Dragging the playhead and the reverse shuttle reach the same path
+ * through `jog`; both are silent outside mixer mode, as they always were.
+ *
  * ── Shared demux LRU ────────────────────────────────────────────────────────
  * Demuxing is expensive; the engine already keeps a per-`src` LRU behind
  * `Engine.acquireDemux` (`./index.ts`). The scrubber holds AT MOST ONE pin at
@@ -43,6 +56,7 @@ import { sampleAtOrBefore, type ChunkSource } from './demux'
 import { normalizeAudioCodec, audioTrackIsDecodable } from './audio-clock'
 import type { AcquiredDemux } from './index'
 import type { HoverScrub } from '../video/hover-scrub'
+import type { MixerScrub } from './index'
 
 // ── Tuning ───────────────────────────────────────────────────────────────────
 
@@ -77,6 +91,17 @@ const FAST_DRAG_VELOCITY_S_PER_S = 2.5
 /** Never widen the gap past this — even the fastest drag should still jog audibly. */
 const MAX_THROTTLE_MS = 96
 
+/**
+ * Mixer-mode grain lengths, in output seconds. The usual one matches the ~80ms
+ * the packet grain makes. Past the latency threshold a grain reaches the ear
+ * late wherever it is, so a long one only smears the stale position across more
+ * time: 40ms, half as long, is still four periods of a 100 Hz voice, enough to
+ * keep the timbre, and lands as a tick of where the pointer was. Exported for
+ * scrub-source.test.ts.
+ */
+export const MIX_GRAIN_S = 0.08
+export const MIX_GRAIN_HIGH_LATENCY_S = 0.04
+
 /** Where in the timeline a scrub position lands, resolved by the host wiring. */
 export interface ScrubTarget {
   /** The clip's editing proxy — exactly what the engine would decode (`item.proxySrc`). */
@@ -101,6 +126,11 @@ export interface ScrubSourceOptions {
    * mirroring `scheduler.ts`'s `planTick` — see `./scrub-resolve.ts`.
    */
   resolve: (projectS: number) => ScrubTarget | null
+  /**
+   * §190 T4: the engine's mixer scrub, read on every move. Non-null only in
+   * mixer mode, where it replaces `acquireDemux` and `resolve` altogether.
+   */
+  mixerScrub?: () => MixerScrub | null
   /** Advisory errors (decode/fetch). None stop the scrubber. */
   onError?: (message: string) => void
 }
@@ -109,6 +139,13 @@ export interface ScrubSource {
   /** Turn audible scrubbing on/off. Off by default; caller toggles it. */
   setEnabled(on: boolean): void
   enabled(): boolean
+  /**
+   * §190 T4: an audible scrub at project time `t` from a gesture other than
+   * hover (a playhead drag, the reverse shuttle), through the hover path's
+   * throttle and move epsilon. `dir` defaults to the sign of the move since the
+   * last grain. Mixer mode only: elsewhere it does nothing.
+   */
+  jog(t: number, dir?: 1 | -1): void
   /** Subscribe to a hover-scrub store; returns an unsubscribe. */
   attach(hover: HoverScrub): () => void
   /** Silence any ringing grains immediately. */
@@ -170,7 +207,7 @@ export function releaseGrain(
 }
 
 export function createScrubSource(options: ScrubSourceOptions): ScrubSource {
-  const { acquireDemux, resolve, onError } = options
+  const { acquireDemux, resolve, mixerScrub, onError } = options
   const ctx = getSharedAudioContext()
 
   let on = false
@@ -411,7 +448,15 @@ export function createScrubSource(options: ScrubSourceOptions): ScrubSource {
       stop()
       return
     }
-    if (!latencyOk()) return
+    scrubAt(t, null, false)
+  }
+
+  function scrubAt(t: number, dir: 1 | -1 | null, mixerOnly: boolean): void {
+    const mix = mixerScrub?.() ?? null
+    if (!mix) {
+      if (mixerOnly) return
+      if (!latencyOk()) return
+    }
     const nowMs = performance.now()
     const dtMs = nowMs - lastFireMs
     if (dtMs < THROTTLE_MS) return
@@ -428,6 +473,13 @@ export function createScrubSource(options: ScrubSourceOptions): ScrubSource {
         THROTTLE_MS * (velocity / FAST_DRAG_VELOCITY_S_PER_S),
       )
       if (dtMs < scaledThrottle) return
+    }
+    if (mix) {
+      const length = latencySeconds(ctx) > SCRUB_LATENCY_THRESHOLD_S ? MIX_GRAIN_HIGH_LATENCY_S : MIX_GRAIN_S
+      mix(t, dir ?? (t < lastFiredMediaS ? -1 : 1), length)
+      lastFireMs = nowMs
+      lastFiredMediaS = t
+      return
     }
     const target = resolve(t)
     if (!target) return
@@ -456,10 +508,15 @@ export function createScrubSource(options: ScrubSourceOptions): ScrubSource {
         return
       }
       // Surface the Bluetooth/high-latency hint immediately on enable rather
-      // than waiting for the first scrub move to discover it.
-      latencyOk()
+      // than waiting for the first scrub move to discover it. Not in mixer
+      // mode, where a slow output only shortens the grain.
+      if (!mixerScrub?.()) latencyOk()
     },
     enabled: () => on,
+    jog(t: number, dir?: 1 | -1) {
+      if (!on || disposed) return
+      scrubAt(t, dir ?? null, true)
+    },
     attach(hover: HoverScrub) {
       return hover.subscribe(() => onScrub(hover.get()))
     },

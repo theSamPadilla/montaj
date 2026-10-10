@@ -51,6 +51,17 @@
  *     state there depends on key audio the mixer has not fetched, so it
  *     settles within the attack and release time constants instead.
  *
+ *  7. **Scrub grains** (§190 T4). The Worker posts Hann-windowed grains of a
+ *     segment (`t: 'grain'`) that sound at once, whatever the clock does: they
+ *     are summed into the output after the transport's run, so they play while
+ *     paused. A grain is scaled on arrival by the segment's TARGET gain (its
+ *     base gain times the live override, 0 when muted: the smoothed value only
+ *     advances while the clock renders), its plan fades at the grain's
+ *     timeline position, and the master gain's target; ducking is not applied.
+ *     A grain that arrives while the clock runs is dropped (the playing mix
+ *     is the sound then). Sixteen preallocated slots, the oldest recycled
+ *     when full, so `process()` allocates nothing for them either.
+ *
  * Starvation is split in two for the HUD: `primingFrames` (a segment that was
  * already active when its generation began, or when it joined the plan,
  * waiting for its first block: the seek-to-sound wait) and `underrunFrames`
@@ -66,6 +77,9 @@ export const mixProcessorSource = `'use strict';
 var CURVE_LINEAR = 0;
 var CURVE_EXP = 1;
 var CURVE_LOG = 2;
+
+// Scrub grains sounding at once: a few segments, each with a few overlapping grains.
+var GRAIN_SLOTS = 16;
 
 var S_PAUSED = 0;
 var S_PLAYING = 1;
@@ -155,6 +169,9 @@ class MontajMixProcessor extends AudioWorkletProcessor {
     this.segById = new Map();
     this.overrides = new Map();     // id -> { mute, gain }; survives plan changes
 
+    this.grains = [];
+    for (var gi = 0; gi < GRAIN_SLOTS; gi++) this.grains.push({ pcm: null, frames: 0, pos: 0, gain: 0 });
+
     this.gainBuf = new Float32Array(128);
     this.lastReportAt = -1e9;
     this.reportPending = false;
@@ -206,6 +223,7 @@ class MontajMixProcessor extends AudioWorkletProcessor {
       this.state = S_PAUSED;
       this.segs = [];
       this.segById = new Map();
+      for (var d = 0; d < this.grains.length; d++) this.grains[d].pcm = null;
       if (this.wport) {
         this.wport.onmessage = null;
         if (typeof this.wport.close === 'function') this.wport.close();
@@ -228,7 +246,31 @@ class MontajMixProcessor extends AudioWorkletProcessor {
       }
     } else if (m.t === 'segments') {
       this.applySegments(m.segs || []);
+    } else if (m.t === 'grain') {
+      this.addGrain(m);
     }
+  }
+
+  addGrain(m) {
+    if (this.state !== S_PAUSED) return;
+    var seg = this.segById.get(m.id);
+    if (!seg || seg.ver !== m.ver) return;
+    var gain = seg.gTarget * this.mgTarget;
+    if (seg.hasFade) gain *= this.fadeEnv(seg, m.time);
+    if (!(gain > 0)) return;
+    // A free slot, else the one furthest through its grain.
+    var slot = null;
+    var best = -1;
+    for (var i = 0; i < this.grains.length; i++) {
+      var g = this.grains[i];
+      if (g.pcm === null) { slot = g; break; }
+      var done = g.pos / g.frames;
+      if (done > best) { best = done; slot = g; }
+    }
+    slot.pcm = m.pcm;
+    slot.frames = m.frames;
+    slot.pos = 0;
+    slot.gain = gain;
   }
 
   // ── transport ─────────────────────────────────────────────────────────────
@@ -513,12 +555,33 @@ class MontajMixProcessor extends AudioWorkletProcessor {
       }
     }
 
+    this.mixGrains(L, R, n);
+
     if (this.reportPending || currentTime - this.lastReportAt >= this.reportIntervalS) {
       this.lastReportAt = currentTime;
       this.reportPending = false;
       this.report(n);
     }
     return !this.disposed;
+  }
+
+  mixGrains(L, R, n) {
+    var grains = this.grains;
+    for (var i = 0; i < grains.length; i++) {
+      var g = grains[i];
+      var pcm = g.pcm;
+      if (pcm === null) continue;
+      var m = g.frames - g.pos;
+      if (m > n) m = n;
+      var p = g.pos * 2;
+      var gain = g.gain;
+      for (var j = 0; j < m; j++, p += 2) {
+        L[j] += pcm[p] * gain;
+        if (R !== null) R[j] += pcm[p + 1] * gain;
+      }
+      g.pos += m;
+      if (g.pos >= g.frames) g.pcm = null;
+    }
   }
 
   renderRun(L, R, off, len) {

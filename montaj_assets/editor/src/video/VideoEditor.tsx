@@ -1176,6 +1176,7 @@ function ReviewSurface<P extends Project>({
     const scrubber = createScrubSource({
       acquireDemux: (src) => scrubHandleRef.current!.acquireDemux(src),
       resolve: (projectS) => (scrubHandleRef.current ? resolve(projectS) : null),
+      mixerScrub: () => scrubHandleRef.current?.mixerScrub() ?? null,
       onError: (message) => console.error('[montaj] scrub-source:', message),
     })
     scrubber.setEnabled(currentAudibleScrub)
@@ -1187,6 +1188,9 @@ function ReviewSurface<P extends Project>({
       scrubberRef.current = null
     }
   }, [hoverScrub, sync.projectRef])
+
+  // Dragging the playhead is audible too (mixer mode only; jog is a no-op elsewhere).
+  const handleScrubDrag = useCallback((t: number) => scrubberRef.current?.jog(t), [])
 
   // Flip the live scrubber's enabled flag when the settings toggle changes,
   // without tearing down and recreating it — `setEnabled` also stops any
@@ -1215,6 +1219,7 @@ function ReviewSurface<P extends Project>({
       play: () => { if (!transportRef.current?.isPlaying()) transportRef.current?.togglePlay() },
       pause: () => { if (transportRef.current?.isPlaying()) transportRef.current.togglePlay() },
       setRate: (rate) => transportRef.current?.setRate(rate),
+      grain: (t, dir) => scrubberRef.current?.jog(t, dir),
     })
   }
   const shuttle = shuttleRef.current
@@ -2634,6 +2639,7 @@ function ReviewSurface<P extends Project>({
           onOverlayEdit={commitTimelineEdit}
           previewAxis={previewAxis}
           onHoverScrub={handleHoverScrub}
+          onScrubDrag={handleScrubDrag}
           selectedIds={selectedIds}
           onSelectIds={setSelectedIds}
           // No `onInspectClip` / `onInspectAudio`: the clip-inspect modal they

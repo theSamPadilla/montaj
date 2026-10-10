@@ -39,6 +39,15 @@
  *     `{ gen, id, ver, k0 }`. `k0` is the output frame, placed with the
  *     worklet's own expression: `Math.round((tl - anchorTime) * outRate / rate)`.
  *
+ *  7. **Scrub grains** (§190 T4). `{ t: 'scrub', time, dir, lenS }` from main:
+ *     for every plan segment active at timeline `time`, one Hann-windowed grain
+ *     of its source read from the same block cache (fetched by range when
+ *     cold), cubic-resampled at the clip's speed, backwards when `dir` is -1,
+ *     clipped to the segment's span so it never reads past a cut. Each goes to
+ *     the worklet as `{ t: 'grain' }`, which applies the live gain and mute. A
+ *     grain waiting on a cold block is retried as blocks land, and dropped
+ *     once it is older than `GRAIN_EXPIRE_MS` or three newer ones are queued.
+ *
  * Errors (a failed fetch) go to main as `{ t: 'error' }`; the block is retried
  * after 500 ms, doubling per failure up to 8 s, while the worklet counts the
  * segment as starving. Stats go to
@@ -78,7 +87,7 @@ var streams = new Map();   // id -> stream, for the current generation
 
 var stats = {
   t: 'stats', planGen: 0, gen: 0, cacheBytes: 0, cacheBlocks: 0, cacheEvictions: 0,
-  fetches: 0, fetchBytes: 0, fetchErrors: 0, inflight: 0, blocksPosted: 0, framesPosted: 0,
+  fetches: 0, fetchBytes: 0, fetchErrors: 0, inflight: 0, blocksPosted: 0, framesPosted: 0, grains: 0,
   convertMs: 0, stretchMs: 0, resampleMs: 0, resampledFrames: 0, stretchedFrames: 0,
 };
 var lastStatsAt = -1e9;
@@ -802,12 +811,87 @@ function fill(st, want) {
   return got < want ? out.slice(0, got * 2) : out;
 }
 
+// ── scrub grains ───────────────────────────────────────────────────────────
+var GRAIN_MAX_PENDING = 3;   // newer scrubs bump the oldest waiting one
+var GRAIN_EXPIRE_MS = 300;   // a grain this late no longer belongs to where the pointer is
+var GRAIN_MIN_FRAMES = 64;   // a sliver at a segment edge is not worth a message
+var scrubs = [];
+
+function onScrub(m) {
+  var len = fin(m.lenS, 0);
+  var time = fin(m.time, NaN);
+  if (!(len > 0) || time !== time) return;
+  scrubs.push({ time: time, dir: m.dir < 0 ? -1 : 1, lenS: len, at: now(), done: {} });
+  while (scrubs.length > GRAIN_MAX_PENDING) scrubs.shift();
+  schedulePump();
+}
+
+// One segment's grain, or null while a source block it needs is on its way.
+// n output frames; the source is read at speed * srcRate / outRate source
+// frames per output frame (the clip's speed, so the pitch follows it, as a
+// tape scrub does), forwards or backwards from the position.
+function renderGrain(s, sc) {
+  var avail = sc.dir > 0 ? s.tlEnd - sc.time : sc.time - s.tlStart;
+  var n = Math.floor(Math.min(sc.lenS, avail) * outRate);
+  if (!(n >= GRAIN_MIN_FRAMES)) return { frames: 0 };
+  var step = sc.dir * s.speed * s.sampleRate / outRate;
+  var x0 = (s.srcIn + (sc.time - s.tlStart) * s.speed) * s.sampleRate;
+  var xe = x0 + step * (n - 1);
+  var lo = Math.floor(Math.min(x0, xe)) - 1;
+  var hi = Math.floor(Math.max(x0, xe)) + 2;
+  var src = new Float32Array((hi - lo + 1) * 2);
+  if (!readSource(s, lo, hi - lo + 1, src)) return null;
+  var out = new Float32Array(n * 2);
+  var span = n > 1 ? n - 1 : 1;
+  for (var j = 0; j < n; j++) {
+    var x = x0 + step * j;
+    var xi = Math.floor(x);
+    var t = x - xi;
+    var tm1 = t - 1, tm2 = t - 2, tp1 = t + 1;
+    var c0 = -t * tm1 * tm2 / 6;
+    var c1 = tp1 * tm1 * tm2 / 2;
+    var c2 = -tp1 * t * tm2 / 2;
+    var c3 = tp1 * t * tm1 / 6;
+    var b = (xi - 1 - lo) * 2;
+    var w = 0.5 * (1 - Math.cos(2 * Math.PI * j / span));
+    out[j * 2] = w * (c0 * src[b] + c1 * src[b + 2] + c2 * src[b + 4] + c3 * src[b + 6]);
+    out[j * 2 + 1] = w * (c0 * src[b + 1] + c1 * src[b + 3] + c2 * src[b + 5] + c3 * src[b + 7]);
+  }
+  return { frames: n, pcm: out };
+}
+
+function serveScrubs() {
+  if (scrubs.length === 0) return;
+  var t0 = now();
+  var keep = [];
+  for (var i = 0; i < scrubs.length; i++) {
+    var sc = scrubs[i];
+    if (t0 - sc.at > GRAIN_EXPIRE_MS) continue;
+    var waiting = false;
+    for (var j = 0; j < plan.length; j++) {
+      var s = plan[j];
+      if (sc.done[s.id] === s.ver) continue;
+      if (!(sc.time >= s.tlStart && sc.time < s.tlEnd)) continue;
+      var g = port ? renderGrain(s, sc) : null;
+      if (g === null) { waiting = true; continue; }
+      sc.done[s.id] = s.ver;
+      if (g.frames > 0) {
+        port.postMessage({ t: 'grain', id: s.id, ver: s.ver, time: sc.time, frames: g.frames, pcm: g.pcm }, [g.pcm.buffer]);
+        stats.grains++;
+      }
+    }
+    if (waiting) keep.push(sc);
+  }
+  scrubs = keep;
+}
+
 var pumpScheduled = false;
 function schedulePump() {
   if (pumpScheduled || disposed) return;
   pumpScheduled = true;
   Promise.resolve().then(function () {
     pumpScheduled = false;
+    serveScrubs();
     pump();
   });
 }
@@ -886,11 +970,14 @@ self.onmessage = function (ev) {
     schedulePump();
   } else if (m.t === 'plan') {
     setPlan(m);
+  } else if (m.t === 'scrub') {
+    onScrub(m);
   } else if (m.t === 'stats') {
     postStats();
   } else if (m.t === 'dispose') {
     disposed = true;
     streams.clear();
+    scrubs = [];
     cache.clear();
     if (port) {
       port.onmessage = null;

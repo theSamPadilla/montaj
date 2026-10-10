@@ -337,8 +337,17 @@ export interface Engine {
    * instead of re-demuxing the proxy privately. Release exactly once.
    */
   acquireDemux(src: string): Promise<AcquiredDemux>
+  /**
+   * §190 T4: the scrub grain sink, or `null` outside mixer mode (today's drag
+   * scrub stays on `acquireDemux`). Read it per gesture, not once: the mode
+   * switches while paused or at a seek.
+   */
+  mixerScrub(): MixerScrub | null
   dispose(): void
 }
+
+/** One scrub grain of every segment active at `projectS`: see `MixClock.scrub`. */
+export type MixerScrub = (projectS: number, dir: 1 | -1, lenS: number) => void
 
 // ── Painter ─────────────────────────────────────────────────────────────────
 
@@ -1150,6 +1159,8 @@ interface MixerControl {
   /** Before `scheduler.seek()`: the other place a switch may happen while playing. */
   beforeSeek(): void
   projectChanged(project: Project): void
+  /** The mixer's scrub, in mixer mode only. */
+  scrubPort(): MixerScrub | null
   dispose(): void
 }
 
@@ -1380,6 +1391,10 @@ function createMixerControl(
       request(project)
       queueRebuild()
     },
+    scrubPort() {
+      const mix = clock
+      return inMixer && mix ? (t, dir, lenS) => mix.scrub(t, dir, lenS) : null
+    },
     dispose() {
       if (disposed) return
       disposed = true
@@ -1540,6 +1555,7 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
       },
     },
     acquireDemux: (src: string) => host.acquirePinnedDemux(src),
+    mixerScrub: () => mixer?.scrubPort() ?? null,
     dispose() {
       if (disposed) return
       disposed = true

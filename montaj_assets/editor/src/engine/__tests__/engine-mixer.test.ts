@@ -114,6 +114,8 @@ class FakeMix implements MixClock {
   readonly seeks: number[] = []
   readonly plans: MixPlan[] = []
   readonly params: Array<Record<string, MixParam>> = []
+  readonly scrubs: Array<[number, 1 | -1, number]> = []
+  readonly rates: number[] = []
   now() {
     return this.t
   }
@@ -132,9 +134,16 @@ class FakeMix implements MixClock {
     this.t = projectS
     this.floor = projectS
   }
-  setRate() {}
-  setTransportRate() {}
+  setRate(rate: number) {
+    this.rates.push(rate)
+  }
+  setTransportRate(rate: number) {
+    this.rates.push(rate)
+  }
   setVolume() {}
+  scrub(time: number, dir: 1 | -1, lenS: number) {
+    this.scrubs.push([time, dir, lenS])
+  }
   setPlan(plan: MixPlan) {
     this.plans.push(plan)
   }
@@ -491,6 +500,54 @@ describe('engine in mixer mode', () => {
     r.engine.dispose()
     expect(r.mix.disposed).toBe(true)
     expect(r.conform.disposed).toBe(false)
+  })
+})
+
+describe('engine: shuttle and scrub in mixer mode (§190 T4)', () => {
+  it('hands out no scrub sink until mixer mode, then one that reaches the MixClock', async () => {
+    const r = rig()
+    r.engine.seek(1)
+    await flush()
+    expect(r.engine.mixerScrub()).toBeNull()
+    r.conform.land('/media/a.mov')
+    await flush()
+    const sink = r.engine.mixerScrub()
+    expect(sink).not.toBeNull()
+    sink!(2.5, -1, 0.08)
+    expect(r.mix.scrubs).toEqual([[2.5, -1, 0.08]])
+    r.engine.dispose()
+  })
+
+  it('and none again once an edit sends the session back to today\'s path', async () => {
+    const r = await inMixer(1)
+    expect(r.engine.mixerScrub()).not.toBeNull()
+    r.engine.updateProject(project([mainClip(), mainClip({ id: 'b', src: '/media/b.mov', proxySrc: '/proxies/b_proxy.mp4', start: 5, end: 8 })]))
+    await flush()
+    expect(r.engine.mixerScrub()).toBeNull()
+    r.engine.dispose()
+  })
+
+  it('the transport rate, forward or backward, reaches the MixClock, paused or playing', async () => {
+    const r = await inMixer(1)
+    r.engine.setRate(2)
+    r.engine.setRate(-2)
+    r.engine.setRate(1)
+    expect(r.mix.rates).toEqual([2, -2, 1])
+    r.engine.play()
+    r.engine.setRate(4)
+    expect(last(r.mix.rates)).toBe(4)
+    r.engine.dispose()
+  })
+
+  it('a rate set before the switch is carried onto the MixClock with the transport', async () => {
+    const r = rig()
+    r.engine.seek(1)
+    await flush()
+    r.engine.setRate(2)
+    r.conform.land('/media/a.mov')
+    await flush()
+    expect(last(r.mix.rates)).toBe(2)
+    r.engine.dispose()
   })
 })
 

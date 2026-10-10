@@ -236,6 +236,12 @@ export type MainToWorker =
       maxInflight?: number
     }
   | { t: 'plan'; planGen: number; segments: MixSegment[] }
+  /**
+   * §190 T4: one scrub grain at timeline `time`, `lenS` output seconds long
+   * (read backwards when `dir` is -1). The Worker renders it for every
+   * segment active there and posts each to the worklet as a `grain`.
+   */
+  | { t: 'scrub'; time: number; dir: 1 | -1; lenS: number }
   | { t: 'stats' }
   | { t: 'dispose' }
 
@@ -270,6 +276,13 @@ export type WorkerToWorklet =
       /** Interleaved stereo float32, `frames * 2` long. Transferred. */
       pcm: Float32Array
     }
+  /**
+   * §190 T4: a Hann-windowed scrub grain of one segment, from the conformed
+   * cache at natural pitch. The worklet sums it into the output at once,
+   * independently of the clock (it sounds while paused), with the segment's
+   * live gain and mute, its plan fades at `time` and the master gain.
+   */
+  | { t: 'grain'; id: string; ver: number; time: number; frames: number; pcm: Float32Array }
 
 /** Worker → main. */
 export interface MixWorkerStats {
@@ -285,6 +298,8 @@ export interface MixWorkerStats {
   inflight: number
   blocksPosted: number
   framesPosted: number
+  /** Scrub grains posted (§190 T4). */
+  grains: number
   /** Cumulative milliseconds in each stage, for the CPU budget. */
   convertMs: number
   stretchMs: number

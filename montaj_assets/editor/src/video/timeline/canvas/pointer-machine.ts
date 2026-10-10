@@ -167,6 +167,9 @@ export type Cursor = 'default' | 'pointer' | 'grab' | 'grabbing' | 'ew-resize' |
 export type PointerEffect =
   /** `clock.set` — move the playhead. */
   | { type: 'seek'; time: number }
+  /** §190 T4: the playhead was pressed or dragged to `time`; `onScrubDrag`, so
+   *  the drag is audible. Beside a `seek`, from `applyScrub` only. */
+  | { type: 'scrubDrag'; time: number }
   /** Timeline's `handleSelectItem(id, additive)`. */
   | { type: 'select'; id: string | null; additive: boolean }
   /** `onProjectChange` — a live, uncommitted edit. Fires once per move. */
@@ -1633,7 +1636,7 @@ function applyScrub(ctx: PointerContext, point: Point, snap: SnapState, lastProj
   const raw = clamp(xToTime(point.x, ctx.viewport), 0, ctx.totalDuration)
   const snapped = applySnap(raw, playheadSnapPoints(ctx), ctx.viewport, snap, ctx.snapConfig)
   return {
-    effects: [{ type: 'seek', time: snapped.time }],
+    effects: [{ type: 'seek', time: snapped.time }, { type: 'scrubDrag', time: snapped.time }],
     snap: snapped.state,
     lastProject,
     guide: directSnapGuide(snapped),

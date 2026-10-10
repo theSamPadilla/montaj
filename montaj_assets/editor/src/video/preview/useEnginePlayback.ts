@@ -64,6 +64,7 @@ import {
   NO_MIXER,
   track0VideoItems,
   type AcquiredDemux,
+  type MixerScrub,
   type Engine,
   type EngineStats,
   type EngineStatus,
@@ -188,6 +189,8 @@ export interface EnginePlayback {
    * Stable identity, like `getStats`.
    */
   acquireDemux: (src: string) => Promise<AcquiredDemux>
+  /** §190 T4: the engine's scrub grain sink, `null` outside mixer mode. Read per gesture. Stable identity. */
+  mixerScrub: () => MixerScrub | null
   /**
    * §190: whether the preview mixer plays this overlay-track video's sound
    * (by the item's `src`), in which case its `<video>` must play muted. False
@@ -685,6 +688,8 @@ export function useEnginePlayback(
     return engine.acquireDemux(src)
   }, [])
 
+  const mixerScrub = useCallback((): MixerScrub | null => engineRef.current?.mixerScrub() ?? null, [])
+
   return {
     isPlaying: status.transport === 'playing',
     setIsPlaying,
@@ -699,6 +704,7 @@ export function useEnginePlayback(
     attachCanvas,
     getStats,
     acquireDemux,
+    mixerScrub,
     audioInMix,
   }
 }

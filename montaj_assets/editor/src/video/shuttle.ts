@@ -19,6 +19,10 @@ import type { PlaybackClock } from './playback-clock'
  *    then an rAF loop steps `clock.set(clock.get() + rate * dt)`. This touches
  *    only the clock, never the engine or <video> elements directly, so it works
  *    identically over both playback paths.
+ *    §190 T4: in mixer mode the loop also sounds reversed grains at each step
+ *    (`deps.grain`, the scrub's own throttle), so J is audible. The mixer has a
+ *    reverse rate of its own (`MixClock.setRate` takes negatives), but the
+ *    scheduler decodes forward only, so the picture could not follow it.
  */
 export type ShuttleRate = -4 | -2 | -1 | 0 | 1 | 2 | 4
 
@@ -54,6 +58,9 @@ export interface ShuttleDeps {
    *  shuttle magnitude (1/2/4) for audible fast-forward; reverse and stop reset
    *  it to 1x before pausing/scrubbing so nothing plays at a stale rate. */
   setRate: (rate: number) => void
+  /** §190 T4: sound the reverse loop's position (a backwards scrub grain). Called
+   *  at each step with the new time; the callee throttles. Absent: J stays silent. */
+  grain?: (t: number, dir: -1) => void
   /** Injectable for tests; defaults to `requestAnimationFrame`/`cancelAnimationFrame`. */
   raf?: (cb: (ms: number) => void) => number
   caf?: (id: number) => void
@@ -112,6 +119,7 @@ export function createShuttleController(deps: ShuttleDeps): ShuttleController {
       const next = Math.max(0, Math.min(duration, deps.clock.get() + rate * dt))
       deps.clock.set(next)
       lastWritten = next
+      deps.grain?.(next, -1)
       if (next <= 0 || next >= duration) { stop(); return }
     }
     lastMs = ms

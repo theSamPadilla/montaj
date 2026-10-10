@@ -28,6 +28,7 @@
  * | `stats()`                  | a superset of `MasterClockStats`: `samplesConsumed` is `renderedFrames`, `underrunFrames` excludes the seek-to-sound wait (`primingFrames`), and `queuedFrames` is the smallest lead over the active segments. |
  * | `dispose()`                | same; never closes the shared AudioContext.                    |
  * | (none)                     | `setPlan`, `setParams`: the segments, and live mute and gain per segment. |
+ * | (none)                     | `scrub`: one grain of every active segment at a timeline position, paused only (§190 T4). |
  *
  * The other structural difference T3 inherits: there is no clip-boundary clock
  * swap. Cuts, gaps and speed edits change the plan, never the clock.
@@ -107,6 +108,13 @@ export interface MixClock {
   setPlan(plan: MixPlan): void
   /** Live per-segment overrides, merged into what was set before; smoothed over 10 ms. */
   setParams(params: Record<string, MixParam>): void
+  /**
+   * §190 T4: sound one grain (`lenS` output seconds, Hann-windowed) of every
+   * segment active at timeline `time`, read backwards when `dir` is -1. The
+   * grains come from the conformed cache in the Worker and sum into the output
+   * independently of the clock. A no-op while the clock plays.
+   */
+  scrub(time: number, dir: 1 | -1, lenS: number): void
   stats(): MixClockStats
   dispose(): void
 }
@@ -434,6 +442,10 @@ export async function createMixClock(options: MixClockOptions = {}): Promise<Mix
       planGen += 1
       const segments: MixSegment[] = plan.segments.map((s) => ({ ...s, url: absoluteUrl(s.url, baseUrl) }))
       worker.postMessage({ t: 'plan', planGen, segments })
+    },
+    scrub(time: number, dir: 1 | -1, lenS: number) {
+      if (disposed || playing || !Number.isFinite(time) || !(lenS > 0)) return
+      worker.postMessage({ t: 'scrub', time, dir: dir < 0 ? -1 : 1, lenS })
     },
     setParams(params: Record<string, MixParam>) {
       post({ t: 'params', segments: params })

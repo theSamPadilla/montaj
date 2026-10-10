@@ -14,7 +14,7 @@ import { useVideoPlayback } from './useVideoPlayback'
 import { useEnginePlayback, type EnginePlayback } from './useEnginePlayback'
 import EngineSurface from './EngineSurface'
 import { checkProjectShapeEligibility, evaluateEngineEligibility, engineRequiredReason } from '../../engine/eligibility'
-import type { AcquiredDemux } from '../../engine'
+import type { AcquiredDemux, MixerScrub } from '../../engine'
 import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } from '../hover-scrub'
 import { sourceCropVideoStyle } from './sourceCropStyle'
@@ -50,6 +50,8 @@ export interface TransportHandle {
  */
 export interface ScrubHandle {
   acquireDemux: (src: string) => Promise<AcquiredDemux>
+  /** §190 T4: the mixer's scrub grain sink while the engine is in mixer mode, else null. */
+  mixerScrub: () => MixerScrub | null
 }
 
 /** Stable no-op for the legacy playback path, which has no transport-rate knob. */
@@ -520,11 +522,12 @@ function PreviewSurface({
   // drag-scrub's capability gate. `acquireDemux` is a stable-identity callback
   // (see `useEnginePlayback`), so this effect only re-runs on a mode change.
   const acquireDemux = playback.mode === 'engine' ? playback.acquireDemux : undefined
+  const mixerScrub = playback.mode === 'engine' ? playback.mixerScrub : undefined
   useEffect(() => {
-    if (!scrubHandleRef || !acquireDemux) return
-    scrubHandleRef.current = { acquireDemux }
+    if (!scrubHandleRef || !acquireDemux || !mixerScrub) return
+    scrubHandleRef.current = { acquireDemux, mixerScrub }
     return () => { scrubHandleRef.current = null }
-  }, [scrubHandleRef, acquireDemux])
+  }, [scrubHandleRef, acquireDemux, mixerScrub])
 
   const captionTrack = useMemo(() => project.captions, [project])
 

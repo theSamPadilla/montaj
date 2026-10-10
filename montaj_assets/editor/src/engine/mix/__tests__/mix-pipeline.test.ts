@@ -242,4 +242,26 @@ describe('MixClock + processor + Worker', () => {
     }
     expect(p.clock.stats().primingFrames).toBe(0)
   })
+
+  it('a scrub grain sounds while paused, at the mix\'s live gain, and a muted segment stays silent (§190 T4)', async () => {
+    const p = await pipeline(splitSine())
+    p.clock.setPlan(PLAN)
+    await p.settle()
+    p.clock.seek(1.2) // B plays here; the clock stays paused
+    await p.settle()
+    p.clock.scrub(1.2, 1, 0.08)
+    await p.settle()
+    await p.render(40)
+    const peak = Math.max(...p.out.slice(0, 3840).map(Math.abs))
+    expect(peak).toBeGreaterThan(0.45) // a 0.5 sine under a Hann window peaks near 0.5
+    expect(Math.max(...p.out.slice(3840 + 256).map(Math.abs))).toBe(0)
+    expect(p.proc.k).toBe(0)
+
+    p.out.length = 0
+    p.clock.setParams({ B: { mute: true } })
+    p.clock.scrub(1.2, 1, 0.08)
+    await p.settle()
+    await p.render(40)
+    expect(Math.max(...p.out.map(Math.abs))).toBe(0)
+  })
 })

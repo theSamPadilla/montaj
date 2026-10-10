@@ -187,6 +187,20 @@ describe('TimelineCanvas — pointer wiring', () => {
     act(() => { document.dispatchEvent(mouse('mouseup', 600, RULER_Y)) })
   })
 
+  it('hands the playhead drag to onScrubDrag on press and on every move, but not a click-seek (§190 T4)', () => {
+    const onScrubDrag = vi.fn()
+    const { surface } = mount({ onScrubDrag })
+    act(() => { surface.dispatchEvent(mouse('mousedown', 900, RULER_Y)) })
+    act(() => { document.dispatchEvent(mouse('mousemove', 600, RULER_Y)) })
+    act(() => { document.dispatchEvent(mouse('mouseup', 600, RULER_Y)) })
+    expect(onScrubDrag.mock.calls.map((c) => c[0])).toEqual([9, 6])
+
+    onScrubDrag.mockClear()
+    act(() => { surface.dispatchEvent(mouse('mousedown', 500, ROW_Y)) })
+    act(() => { document.dispatchEvent(mouse('mouseup', 500, ROW_Y)) })
+    expect(onScrubDrag).not.toHaveBeenCalled()
+  })
+
   it('drags a marquee across empty track area and selects what it caught', () => {
     const { surface, onSelectItems } = mount()
     act(() => { surface.dispatchEvent(mouse('mousedown', 900, ROW_Y)) })

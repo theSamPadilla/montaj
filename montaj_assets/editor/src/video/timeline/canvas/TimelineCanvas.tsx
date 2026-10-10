@@ -113,6 +113,9 @@ export interface TimelineCanvasProps {
    *  leaves or a gesture starts. Fires per mousemove, so the host must route it
    *  to an external store rather than React state. */
   onHoverScrub?: (time: number | null) => void
+  /** §190 T4: the playhead was pressed or dragged to this time. The host makes
+   *  it audible (the same grain path hover uses). Fires per move. */
+  onScrubDrag?: (time: number) => void
   /** Timeline's `handleSelectItem` — additive rules and the item↔caption
    *  exclusivity stay owned there, so both surfaces select identically. */
   onSelectItem?: (id: string | null, additive: boolean) => void
@@ -439,6 +442,7 @@ export default function TimelineCanvas({
   rippleMode = false,
   previewAxis = false,
   onHoverScrub,
+  onScrubDrag,
   onSelectItem,
   onSelectItems,
   selectedKeyframe = null,
@@ -834,12 +838,12 @@ export default function TimelineCanvas({
   // handlers bound once on mount never read a stale project or callback.
   const pointerRef = useRef({
     project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis, pins,
-    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onGestureActiveChange, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu, onPinClick,
+    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onGestureActiveChange, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onScrubDrag, onFadeCurveMenu, onKeyframeMenu, onPinClick,
     onImportFilesToTimeline,
   })
   pointerRef.current = {
     project, layout, selectedIds, selectedKeyframe, snapBoundaries, totalDuration, fps, rippleMode, previewAxis, pins,
-    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onGestureActiveChange, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onFadeCurveMenu, onKeyframeMenu, onPinClick,
+    onSelectItem, onSelectItems, onSelectKeyframe, onProjectChange, onOverlayEdit, onGestureActiveChange, onInspectClip, onInspectAudio, onEditCaption, onHoverScrub, onScrubDrag, onFadeCurveMenu, onKeyframeMenu, onPinClick,
     // Read by the drag handlers below, which are bound ONCE on mount — a
     // file-drop hook read from the closure instead of from here would be the
     // one the host passed on the very first render, forever.
@@ -869,6 +873,7 @@ export default function TimelineCanvas({
     for (const effect of effects) {
       switch (effect.type) {
         case 'seek':          clock.set(effect.time); break
+        case 'scrubDrag':     p.onScrubDrag?.(effect.time); break
         case 'select':        p.onSelectItem?.(effect.id, effect.additive); break
         case 'selectKeyframe': p.onSelectKeyframe?.({ itemId: effect.itemId, t: effect.t }); break
         case 'projectChange': p.onProjectChange?.(effect.project); edited = true; break
