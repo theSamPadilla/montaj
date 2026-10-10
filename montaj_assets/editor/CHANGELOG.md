@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.1.2
+
+- Fixed: with no source footage, the export dialog's resolution choices are never capped below 1080, so choosing 720p can be undone.
+- Changed: overlapping scrub grains pass a soft limiter, so scrubbing never clips. Steady playback is unchanged.
+
 ## 2.1.1
 
 - Fixed: after a pause, a click back on the play-start position seeks instead of being taken for the engine's own echo (`video/preview/useEnginePlayback.ts`).
