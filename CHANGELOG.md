@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.29.2
+
 - **Fixed (serve): the 3D Hub templates could not be installed.** Their stage component (`model3d_stage.jsx`, about 80 KB) is written through `PUT /api/projects/{id}/overlays/{name}`, which refused any overlay over 64 KB with a 413, so "Use in new project" and New project → 3D model failed with "Couldn't load this workflow". The cap is now 512 KB. (`serve/routes/projects.py`)
 
 ## v5.29.1
