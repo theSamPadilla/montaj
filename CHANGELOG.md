@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.29.1
+
 - **Fixed (editor): clicking back on the spot where playback started did nothing after a pause.** Play, pause within about 2 s, then click the ruler where you pressed play (0:00, say): the playhead readout moved but the preview did not, and Play resumed from the pause. The engine holds the play-start time for its first ticks, so that value was still in the hook's record of its own recent times and the click was taken for an echo of one. While paused, that held value now counts as a seek. (`montaj_assets/editor/src/video/preview/useEnginePlayback.ts`)
 
 ## v5.29.0
