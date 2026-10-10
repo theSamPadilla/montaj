@@ -15,10 +15,11 @@
 //   1. No gap at a boundary: two segments that meet exactly (A ends where B
 //      starts) come out continuous. The longest run of near-zero samples
 //      across the join stays under 1 ms.
-//   2. The clock tracks the AudioContext: MixClock.now() against the
-//      context's currentTime stays within 5 ms (the context advances in
-//      device-buffer bursts, so the error is judged by its median, with a
-//      looser bound on the worst sample).
+//   2. The clock tracks the audio: MixClock.now() against the position the
+//      recorder node actually received (the sine's rising zero crossings fix
+//      which context frame carried source frame 0) stays within 5 ms (the
+//      context advances in device-buffer bursts, so the error is judged by
+//      its median, with a looser bound on the worst sample).
 //   3. Mute takes effect within 15 ms: after setParams({ mute }), the output
 //      is below -60 dB (relative to the level just before) 15 ms of context
 //      time later, and stays there.
@@ -108,18 +109,39 @@ t.teardown = () => {
   t.rec.disconnect()
 }
 
-// now() against currentTime, every 20 ms for ms milliseconds. The truth line
-// is anchored on the worklet's own report (timelineTime at contextTime).
-t.trackClock = (ms, t0) => new Promise((resolve) => {
+// now() sampled every 20 ms for ms milliseconds, each with the context frame
+// it was read at (currentTime, on the recording's axis).
+t.trackClock = (ms) => new Promise((resolve) => {
   const out = []
-  let c0 = null
   const iv = setInterval(() => {
-    const st = t.clock.stats()
-    if (c0 === null) c0 = st.contextTime - (st.timelineTime - t0)
-    out.push({ now: t.clock.now(), ct: t.ctx.currentTime, c0 })
+    out.push({ now: t.clock.now(), frame: t.ctx.currentTime * ${SR} - t.base })
   }, 20)
   setTimeout(() => { clearInterval(iv); resolve(out) }, ms)
 })
+
+// The recording's frame (fractional) that carried source frame 0 of a sine of
+// hz that starts at phase 0: every rising zero crossing sits at source frame
+// k * SR / hz exactly, so each one gives the answer; the median of them is it.
+// The 5 ms play fade-in scales the amplitude and moves no crossing. Play began
+// at source frame srcStart; the first sample past 0.02 is within a fraction of
+// a millisecond of it, which is well inside half a period (1.1 ms at 440 Hz)
+// and so picks the integer k.
+t.sourceZeroFrame = (hz, from, to, srcStart) => {
+  const x = t.buf
+  let start = from
+  while (start < to && Math.abs(x[start]) < 0.02) start++
+  const period = ${SR} / hz
+  const est = []
+  for (let f = start; f < to - 1; f++) {
+    if (x[f] <= 0 && x[f + 1] > 0) {
+      const cross = f + -x[f] / (x[f + 1] - x[f])
+      const k = Math.round((srcStart + cross - start) / period)
+      est.push(cross - k * period)
+    }
+  }
+  est.sort((a, b) => a - b)
+  return { f0: est[Math.floor(est.length / 2)], n: est.length, spread: est[est.length - 1] - est[0] }
+}
 `
 
 async function buildPage(workDir) {
@@ -204,11 +226,19 @@ after(async () => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // Build the plan, park at `at`, and wait until the Worker has fed the mixer.
-async function prepare(plan, at) {
+// Returns false (and skips the test) when the context does not run at the
+// fixtures' 48 kHz: the PCM files are 48 kHz and the engine plays them
+// as-is, so another rate would test a resampling nobody asked for.
+async function prepare(t, plan, at) {
   const sr = await page.evaluate((p) => window.__t.setup(p), plan)
-  assert.equal(sr, SR, 'the context must run at 48 kHz for this test')
+  if (sr !== SR) {
+    await page.evaluate(() => window.__t.teardown())
+    t.skip(`the AudioContext runs at ${sr} Hz, the fixtures are ${SR} Hz`)
+    return false
+  }
   await page.evaluate((t) => window.__t.clock.seek(t), at)
   await page.waitForFunction((n) => window.__t.clock.stats().queuedFrames > n, { timeout: 8000 }, SR / 2).catch(() => {})
+  return true
 }
 
 async function finish() {
@@ -220,14 +250,14 @@ async function finish() {
 
 const rms = (a) => Math.sqrt(a.reduce((s, v) => s + v * v, 0) / a.length)
 
-test('two segments that meet exactly play with no gap at the boundary', { timeout: 60_000 }, async () => {
+test('two segments that meet exactly play with no gap at the boundary', { timeout: 60_000 }, async (t) => {
   const plan = {
     segments: [
       { id: 'A', url: '/pcm/a.pcm', tlStart: 0.2, tlEnd: 0.8, srcIn: 0, frames: SR * SECONDS },
       { id: 'B', url: '/pcm/b.pcm', tlStart: 0.8, tlEnd: 1.6, srcIn: 0.3, frames: SR * SECONDS },
     ],
   }
-  await prepare(plan, 0.5)
+  if (!(await prepare(t, plan, 0.5))) return
   const m0 = await page.evaluate(() => { const m = window.__t.mark(); window.__t.clock.play(); return m })
   await sleep(1100)
   await page.evaluate(() => window.__t.clock.pause())
@@ -254,36 +284,50 @@ test('two segments that meet exactly play with no gap at the boundary', { timeou
   assert.ok(rms(x.slice(start + 18000, start + 25000)) > 0.25, 'segment B is not sounding')
 })
 
-test('MixClock.now() tracks the AudioContext clock within 5 ms', { timeout: 60_000 }, async () => {
+test('MixClock.now() tracks the audio the recorder receives within 5 ms', { timeout: 60_000 }, async (t) => {
   const T0 = 0.5
   const plan = { segments: [{ id: 'A', url: '/pcm/a.pcm', tlStart: 0, tlEnd: 4, srcIn: 0, frames: SR * SECONDS }] }
-  await prepare(plan, T0)
-  await page.evaluate(() => window.__t.clock.play())
+  if (!(await prepare(t, plan, T0))) return
+  const m0 = await page.evaluate(() => { const m = window.__t.mark(); window.__t.clock.play(); return m })
   await sleep(300) // reports flowing
-  const samples = await page.evaluate((t0) => window.__t.trackClock(1500, t0), T0)
-  await page.evaluate(() => window.__t.clock.pause())
+  const samples = await page.evaluate(() => window.__t.trackClock(1500))
+  const m1 = await page.evaluate(() => { const m = window.__t.mark(); window.__t.clock.pause(); return m })
+  await sleep(100)
   await finish()
 
+  // The independent truth: which recorded frame carried source frame 0, read
+  // off the audio itself. At rate 1 the timeline second at recorded frame f is
+  // then (f - f0) / SR. Neither the worklet's reports nor now() take part.
+  const { f0, n, spread } = await page.evaluate(
+    (a, z, s) => window.__t.sourceZeroFrame(440, a, z, s), Math.max(0, m0 - 960), Math.floor(m1), T0 * SR)
+  assert.ok(n > 400, `only ${n} zero crossings found, the recording has no tone`)
+  assert.ok(spread < 0.5, `zero crossings disagree by ${spread.toFixed(3)} frames, so the truth is not clean`)
+
   assert.ok(samples.length > 40, `only ${samples.length} samples`)
-  // Timeline time the context says it is at: T0 plus the context time since the clock started.
-  const errMs = samples.map((s) => (s.now - (T0 + (s.ct - s.c0))) * 1000)
+  // Positive: now() is ahead of the audio the recorder has received.
+  const errMs = samples.map((s) => (s.now - (s.frame - f0) / SR) * 1000)
   const abs = errMs.map(Math.abs).sort((a, b) => a - b)
   const median = abs[Math.floor(abs.length / 2)]
   const worst = abs[abs.length - 1]
+  const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length
   // eslint-disable-next-line no-console
-  console.log(`[mix clock] ${samples.length} samples, |now - currentTime| median ${median.toFixed(2)} ms, worst ${worst.toFixed(2)} ms`)
+  console.log(`[mix clock] ${samples.length} samples, |now - recorded position| median ${median.toFixed(2)} ms, worst ${worst.toFixed(2)} ms, mean offset ${mean(errMs).toFixed(2)} ms`)
+  // The bound: currentTime on the main thread moves in render-quantum steps
+  // (2.7 ms at 128 frames, more with a device buffer), and the report that
+  // now() extrapolates from arrives at most every 50 ms and is itself read a
+  // quantum or two late, so a few ms of honest jitter; a constant offset past
+  // 5 ms (an audible lip-sync error) fails.
   assert.ok(median <= 5, `median error ${median.toFixed(2)} ms`)
   assert.ok(worst <= 25, `worst error ${worst.toFixed(2)} ms`)
   // And it is not drifting: the last quarter's mean error matches the first quarter's.
   const q = Math.floor(errMs.length / 4)
-  const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length
   const drift = mean(errMs.slice(-q)) - mean(errMs.slice(0, q))
   assert.ok(Math.abs(drift) <= 5, `the error drifted ${drift.toFixed(2)} ms over the run`)
 })
 
-test('mute silences the output within 15 ms', { timeout: 60_000 }, async () => {
+test('mute silences the output within 15 ms', { timeout: 60_000 }, async (t) => {
   const plan = { segments: [{ id: 'A', url: '/pcm/a.pcm', tlStart: 0, tlEnd: 4, srcIn: 0, frames: SR * SECONDS }] }
-  await prepare(plan, 0)
+  if (!(await prepare(t, plan, 0))) return
   await page.evaluate(() => window.__t.clock.play())
   await sleep(500)
   // The context frame at the call is at or before the one the mute lands on, so
