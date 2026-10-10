@@ -532,16 +532,19 @@ export function useVideoPlayback(
 
   // §190: the preview mixer. Built once per mount; the <video> is the clock, so
   // every call below hands it the video's own time. A rejecting createMixClock
-  // (no AudioWorklet, no Worker) leaves this null for good: today's path.
+  // (no AudioWorklet, no Worker) leaves this null for good: today's path. A
+  // muted host (the project grid's hover preview) builds none: it has no sound
+  // to carry, and a mixer would conform sources it only hovered.
   const projectRef = useRef(project)
   projectRef.current = project
   useEffect(() => {
-    if (mixerDepsRef.current === false) return
+    if (mixerDepsRef.current === false || mutedRef.current) return
     const mix = createLegacyMixer(mixerDepsRef.current, {
       playing: () => isPlayingRef.current,
       time: () => lastTimeRef.current,
       project: () => projectRef.current,
       onChange: (state) => { mixOnRef.current = state.active; setMixer(state) },
+      onError: (m) => console.warn('[montaj] ' + m),
     })
     mixerRef.current = mix
     return () => { mix.dispose(); mixerRef.current = null; mixOnRef.current = false }

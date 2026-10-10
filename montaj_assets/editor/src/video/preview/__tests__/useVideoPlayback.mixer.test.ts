@@ -105,9 +105,9 @@ describe('useVideoPlayback with the preview mixer', () => {
 
   const live = () => elements.filter((el) => (el.getAttribute('src') ?? '') !== '')
 
-  async function mount(deps: typeof mixerDeps = mixerDeps) {
+  async function mount(deps: typeof mixerDeps = mixerDeps, muted = false) {
     const view = renderHook(
-      ({ t }: { t: number }) => useVideoPlayback(project(), t, () => {}, (p) => p, false, deps),
+      ({ t }: { t: number }) => useVideoPlayback(project(), t, () => {}, (p) => p, muted, deps),
       { initialProps: { t: 0 } },
     )
     const video = document.createElement('video')
@@ -189,6 +189,13 @@ describe('useVideoPlayback with the preview mixer', () => {
     act(() => { view.result.current.setIsPlaying(false) })
     expect(gain()).toBeCloseTo(0.8, 10)
     expect(live()).toHaveLength(2)
+  })
+
+  it('a muted host (the project grid hover) never builds a mixer', async () => {
+    const createMixClock = vi.fn(() => Promise.resolve(clock as unknown as MixClock))
+    const { gain } = await mount({ ...mixerDeps as object, createMixClock }, true)
+    expect(createMixClock).not.toHaveBeenCalled()
+    expect(gain()).toBe(0)
   })
 
   it('mixerDeps false never builds a mixer', async () => {

@@ -541,6 +541,8 @@ export function useEnginePlayback(
       onError: handleError,
       onMixerChange: handleMixer,
       startProjectS: currentTimeRef.current,
+      // A muted host has no sound to carry: no MixClock, no conforms.
+      ...(mutedRef.current ? { mixer: false as const } : {}),
     })
     engineRef.current = engine
     lastEmittedRef.current = currentTimeRef.current

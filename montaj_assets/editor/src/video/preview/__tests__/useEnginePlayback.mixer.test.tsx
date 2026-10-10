@@ -36,6 +36,7 @@ interface FakeEngine {
     onTime?: (t: number, raw?: number) => void
     onStatusChange?: (s: EngineStatus) => void
     onMixerChange?: (s: MixerState) => void
+    mixer?: false | object
   }
   transport: EngineStatus['transport']
   play(): void
@@ -116,8 +117,8 @@ describe('useEnginePlayback in mixer mode', () => {
     delete (window as unknown as { __montajSharedCtx?: unknown }).__montajSharedCtx
   })
 
-  function setup() {
-    const view = renderHook(({ p }: { p: Project }) => useEnginePlayback(p, 0, () => {}, (path) => path), {
+  function setup(muted = false) {
+    const view = renderHook(({ p }: { p: Project }) => useEnginePlayback(p, 0, () => {}, (path) => path, muted), {
       initialProps: { p: project() },
     })
     return { view, engine: engines[engines.length - 1] }
@@ -125,6 +126,11 @@ describe('useEnginePlayback in mixer mode', () => {
 
   /** Elements still loading a lane: a removed one has its `src` cleared. */
   const live = () => elements.filter((el) => (el.getAttribute('src') ?? '') !== '')
+
+  it('a muted host builds its engine without a mixer; an audible one leaves the default', () => {
+    expect(setup(true).engine.deps.mixer).toBe(false)
+    expect(setup(false).engine.deps.mixer).toBeUndefined()
+  })
 
   it("outside mixer mode every lane plays through its own element, as today", () => {
     setup()
