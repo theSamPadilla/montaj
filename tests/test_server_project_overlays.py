@@ -140,6 +140,28 @@ def test_put_overlay_rejects_oversized_body(project_id):
     assert res.json()["detail"]["error"] == "payload_too_large"
 
 
+def test_put_overlay_accepts_a_100kb_template_stage(project_id):
+    # The 3D Hub templates install a ~80 KB stage component through this route;
+    # under the old 64 KB cap every install failed with a 413.
+    pad = "// " + "x" * 96 + "\n"
+    body = "export default function Stage() {\n" + pad * 1000 + "  return null\n}\n"
+    size = len(body.encode())
+    assert 100_000 <= size < 128 * 1024
+    res = client.put(
+        f"/api/projects/{project_id}/overlays/model3d_stage",
+        content=body.encode(),
+        headers={"Content-Type": "text/plain"},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["bytes"] == size
+
+
+def test_overlay_cap_is_512kb():
+    from serve.routes.projects import OVERLAY_MAX_BYTES
+
+    assert OVERLAY_MAX_BYTES == 512 * 1024
+
+
 def test_put_overlay_rejects_empty_body(project_id):
     res = client.put(
         f"/api/projects/{project_id}/overlays/empty-body",

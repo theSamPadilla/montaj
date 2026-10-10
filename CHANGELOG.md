@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (serve): the 3D Hub templates could not be installed.** Their stage component (`model3d_stage.jsx`, about 80 KB) is written through `PUT /api/projects/{id}/overlays/{name}`, which refused any overlay over 64 KB with a 413, so "Use in new project" and New project → 3D model failed with "Couldn't load this workflow". The cap is now 512 KB. (`serve/routes/projects.py`)
+
 ## v5.29.1
 
 - **Fixed (editor): clicking back on the spot where playback started did nothing after a pause.** Play, pause within about 2 s, then click the ruler where you pressed play (0:00, say): the playhead readout moved but the preview did not, and Play resumed from the pause. The engine holds the play-start time for its first ticks, so that value was still in the hook's record of its own recent times and the click was taken for an echo of one. While paused, that held value now counts as a seek. (`montaj_assets/editor/src/video/preview/useEnginePlayback.ts`)
