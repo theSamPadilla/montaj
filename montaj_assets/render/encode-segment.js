@@ -1811,15 +1811,19 @@ function atempoChain(speed) {
  * @param {object} [item]
  * @param {number} segStart
  * @param {number} segEnd
- * @returns {{ role: 'from' | 'to', p0: number, p1: number } | null}
+ * @returns {{ role: 'from' | 'to', p0: number, p1: number, start: number, end: number } | null}
  */
 function crossfadeIn(item, segStart, segEnd) {
   const cf = item?.crossfade
   if (!cf) return null
-  const p0 = transitionProgress(cf, segStart)
-  const p1 = transitionProgress(cf, segEnd)
-  if (!(p1 > p0)) return null
-  return { role: cf.role, p0, p1 }
+  // A clip in two pairs back to back carries both spans (render.js); at most
+  // one of them overlaps a given segment, so the first that moves here wins.
+  for (const span of Array.isArray(cf) ? cf : [cf]) {
+    const p0 = transitionProgress(span, segStart)
+    const p1 = transitionProgress(span, segEnd)
+    if (p1 > p0) return { role: span.role, p0, p1, start: span.start, end: span.end }
+  }
+  return null
 }
 
 /**
@@ -1878,17 +1882,18 @@ function matchCrossfadePairs(items, segStart, segEnd) {
   const partnerOf = new Map()
   const paired = new Set()
   for (const from of items) {
-    if (crossfadeIn(from, segStart, segEnd)?.role !== 'from') continue
-    const span = from.crossfade
+    // The span ACTIVE in this segment, not the item's field: a clip in two
+    // pairs carries both, and only one is the pair being matched here.
+    const span = crossfadeIn(from, segStart, segEnd)
+    if (span?.role !== 'from') continue
     // `!paired.has(c)` keeps two simultaneous transitions from claiming the
     // same incoming item; missing trackIdx reads as 0, matching timeline-core's
     // `byTrackIdx` (segment-plan.js's sort comparator).
-    const to = items.find((c) =>
-      !paired.has(c) &&
-      (c.trackIdx ?? 0) === (from.trackIdx ?? 0) &&
-      c.crossfade?.start === span.start &&
-      c.crossfade?.end === span.end &&
-      crossfadeIn(c, segStart, segEnd)?.role === 'to')
+    const to = items.find((c) => {
+      if (paired.has(c) || (c.trackIdx ?? 0) !== (from.trackIdx ?? 0)) return false
+      const cs = crossfadeIn(c, segStart, segEnd)
+      return cs?.role === 'to' && cs.start === span.start && cs.end === span.end
+    })
     if (!to) continue
     partnerOf.set(from, to)
     paired.add(from)

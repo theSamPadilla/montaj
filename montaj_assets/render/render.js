@@ -1505,16 +1505,30 @@ function collectAllItems(projectJson) {
     // Written on EVERY clip, `null` when it is not transitioning, so this field
     // is authoritative rather than something a hand-authored project item could
     // leak through the passthrough spread.
+    //
+    // A clip in TWO pairs back to back (A→B then B→C: the incoming side of one,
+    // the outgoing side of the next) carries BOTH spans, as an array; the
+    // segment decides which one it is in (encode-segment.js `crossfadeIn`). A
+    // single stamp let the second pair overwrite the first, and the export
+    // hard-cut A→B, picture and sound, while the preview blended it (§195). A
+    // clip in one pair keeps the plain object, so every existing graph is
+    // byte-identical.
     const clips = (track.items ?? []).filter(it => it.type === 'image' || it.type === 'video')
-    for (const it of clips) {
-      const emit = emitted.get(it)
-      if (emit) emit.crossfade = null
+    const spans = new Map()
+    const stamp = (emit, cf) => {
+      if (!emit) return
+      if (!spans.has(emit)) spans.set(emit, [])
+      spans.get(emit).push(cf)
     }
     for (const pair of transitionPairs(clips)) {
-      const from = emitted.get(pair.from)
-      const to   = emitted.get(pair.to)
-      if (from) from.crossfade = { role: 'from', start: pair.start, end: pair.end }
-      if (to)   to.crossfade   = { role: 'to',   start: pair.start, end: pair.end }
+      stamp(emitted.get(pair.from), { role: 'from', start: pair.start, end: pair.end })
+      stamp(emitted.get(pair.to),   { role: 'to',   start: pair.start, end: pair.end })
+    }
+    for (const it of clips) {
+      const emit = emitted.get(it)
+      if (!emit) continue
+      const list = spans.get(emit)
+      emit.crossfade = !list ? null : list.length === 1 ? list[0] : list
     }
   }
 

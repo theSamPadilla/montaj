@@ -375,8 +375,8 @@ const v = (id: string, start: number, end: number, over: Partial<VisualItem> = {
 // One project with every clip shape: a main-track crossfade into a clip at
 // speed 2, a butt cut into one at speed 0.5, a video-into-image crossfade,
 // overlay-track videos crossfading at their own levels (one above 1, one sped
-// up), a track volume, a muted clip and a muted track. No clip is in two pairs:
-// there the export drops the first transition (see audio-plan.ts's header).
+// up), a track volume, a muted clip and a muted track. A clip in two pairs back
+// to back has its own project below (TWO_PAIR_PROJECT).
 const CLIP_PROJECT: EditorProject = {
   id: 'p',
   status: 'draft',
@@ -405,44 +405,67 @@ const CLIP_PROJECT: EditorProject = {
 // crossfades and the clips, as an overlay or caption boundary would cut them.
 const CUTS = [0, 1.7, 2, 3, 4, 4.4, 5, 5.5, 5.8, 6, 7.25, 8, 9, 10.2, 11.5, 11.8, 12, 14, 15]
 
-describe('clips == the export (collectAllItems + encodeSegment)', () => {
-  it('per segment: the same source window, speed, level and crossfade ramp; muted clips silent in both', async () => {
-    const plan = buildMixPlan(CLIP_PROJECT, lookupAll()).plan.segments
-    const planBySrc = new Map(plan.map((s) => [s.url.replace(/\.pcm$/, ''), s]))
-    // As compose.js:88 hands them to the encoder: images, then videos.
-    const { imageItems, videoItems } = collectAllItems(CLIP_PROJECT)
-    const items = [...imageItems, ...videoItems]
-    let chains = 0
-    let ramps = 0
-    for (let c = 0; c < CUTS.length - 1; c++) {
-      const [s, e] = [CUTS[c], CUTS[c + 1]]
-      const exported = await exportSegmentAudio(items, s, e)
-      const planned = plan.filter((p) => p.tlStart < e && (p.tlEnd as number) > s)
-      expect([...exported.keys()].sort(), `sources heard in [${s}, ${e}]`).toEqual(
-        planned.map((p) => p.url.replace(/\.pcm$/, '')).sort(),
-      )
-      for (const [src, x] of exported) {
-        const p = planBySrc.get(src)!
-        const where = `${p.id} in [${s}, ${e}]`
-        chains++
-        expect(x.srcStart, `${where}: source start`).toBeCloseTo((p.srcIn ?? 0) + (s - p.tlStart) * (p.speed ?? 1), 9)
-        expect(x.srcDur, `${where}: source consumed`).toBeCloseTo((e - s) * (p.speed ?? 1), 9)
-        expect(x.speed, `${where}: speed`).toBeCloseTo(p.speed ?? 1, 12)
-        expect(x.volume, `${where}: level`).toBeCloseTo(p.gain ?? 1, 12)
-        if (x.ramp) ramps++
-        // The export steps its ramp once per audio frame (`eval=frame`); the
-        // mixer runs it per sample. The ramp itself is what must agree.
-        for (const f of [0, 0.25, 0.5, 0.75, 1]) {
-          const t = f * (e - s)
-          const want = (p.gain ?? 1) * (x.ramp ? x.ramp(t) : 1)
-          const got = planGain(p, s + t)
-          expect(Math.abs(got - want), `${where}: level at ${s + t}: plan ${got}, export ${want}`).toBeLessThan(1e-9)
-        }
+/** Plan vs export, segment by segment: the same sources, source windows, speed, level and crossfade ramp. */
+async function compareClipsToExport(project: EditorProject, cuts: number[]) {
+  const plan = buildMixPlan(project, lookupAll()).plan.segments
+  const planBySrc = new Map(plan.map((s) => [s.url.replace(/\.pcm$/, ''), s]))
+  // As compose.js:88 hands them to the encoder: images, then videos.
+  const { imageItems, videoItems } = collectAllItems(project)
+  const items = [...imageItems, ...videoItems]
+  let chains = 0
+  let ramps = 0
+  for (let c = 0; c < cuts.length - 1; c++) {
+    const [s, e] = [cuts[c], cuts[c + 1]]
+    const exported = await exportSegmentAudio(items, s, e)
+    const planned = plan.filter((p) => p.tlStart < e && (p.tlEnd as number) > s)
+    expect([...exported.keys()].sort(), `sources heard in [${s}, ${e}]`).toEqual(
+      planned.map((p) => p.url.replace(/\.pcm$/, '')).sort(),
+    )
+    for (const [src, x] of exported) {
+      const p = planBySrc.get(src)!
+      const where = `${p.id} in [${s}, ${e}]`
+      chains++
+      expect(x.srcStart, `${where}: source start`).toBeCloseTo((p.srcIn ?? 0) + (s - p.tlStart) * (p.speed ?? 1), 9)
+      expect(x.srcDur, `${where}: source consumed`).toBeCloseTo((e - s) * (p.speed ?? 1), 9)
+      expect(x.speed, `${where}: speed`).toBeCloseTo(p.speed ?? 1, 12)
+      expect(x.volume, `${where}: level`).toBeCloseTo(p.gain ?? 1, 12)
+      if (x.ramp) ramps++
+      // The export steps its ramp once per audio frame (`eval=frame`); the
+      // mixer runs it per sample. The ramp itself is what must agree.
+      for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+        const t = f * (e - s)
+        const want = (p.gain ?? 1) * (x.ramp ? x.ramp(t) : 1)
+        const got = planGain(p, s + t)
+        expect(Math.abs(got - want), `${where}: level at ${s + t}: plan ${got}, export ${want}`).toBeLessThan(1e-9)
       }
     }
+  }
+  return { chains, ramps, planIds: plan.map((p) => p.id).sort() }
+}
+
+// A→B then B→C with B in both pairs: the incoming side of the first and the
+// outgoing side of the second. The export once kept only B's second role and
+// hard-cut A→B (§195); both must ramp, as the plan does.
+const TWO_PAIR_PROJECT: EditorProject = {
+  id: 'p2',
+  status: 'draft',
+  settings: { resolution: [1080, 1920] },
+  tracks: [{ id: 't0', items: [v('A', 0, 5), v('B', 4, 9, { inPoint: 2 }), v('C', 8, 12)] }] as VisualTrack[],
+}
+
+describe('clips == the export (collectAllItems + encodeSegment)', () => {
+  it('per segment: the same source window, speed, level and crossfade ramp; muted clips silent in both', async () => {
+    const { chains, ramps, planIds } = await compareClipsToExport(CLIP_PROJECT, CUTS)
     // The fixture exercised what it is for: audio chains in every clip shape, and ramps.
     expect(chains).toBeGreaterThan(15)
     expect(ramps).toBe(10)
-    expect(plan.map((p) => p.id).sort()).toEqual(['clip:A', 'clip:B', 'clip:C', 'clip:O', 'clip:P'])
+    expect(planIds).toEqual(['clip:A', 'clip:B', 'clip:C', 'clip:O', 'clip:P'])
+  })
+
+  it('a clip in two transitions back to back: both ramp in the export as in the plan', async () => {
+    const { ramps, planIds } = await compareClipsToExport(TWO_PAIR_PROJECT, [0, 4, 4.5, 5, 8, 8.5, 9, 12])
+    // A→B over [4, 5] and B→C over [8, 9], each cut in two: 2 chains ramp per piece.
+    expect(ramps).toBe(8)
+    expect(planIds).toEqual(['clip:A', 'clip:B', 'clip:C'])
   })
 })

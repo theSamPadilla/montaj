@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (render): a clip in two transitions back to back lost the first one in the export.** With A crossfading into B and B into C, the export hard-cut from A to B (and played both clips' sound at full level over the overlap) while the preview blended them. Each clip stamped one crossfade, so B's second transition overwrote its first; a clip now carries both spans and each segment uses the one it falls in. Projects with no clip in two transitions export byte-identically. (`montaj_assets/render/render.js`, `encode-segment.js`)
+
 ## v5.29.2
 
 - **Fixed (serve): the 3D Hub templates could not be installed.** Their stage component (`model3d_stage.jsx`, about 80 KB) is written through `PUT /api/projects/{id}/overlays/{name}`, which refused any overlay over 64 KB with a 413, so "Use in new project" and New project → 3D model failed with "Couldn't load this workflow". The cap is now 512 KB. (`serve/routes/projects.py`)

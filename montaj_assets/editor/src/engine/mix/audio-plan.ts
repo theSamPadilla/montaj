@@ -47,16 +47,16 @@
  * before the new plan. `audioSourcePaths` still lists muted sources, so an
  * unmute finds its conform waiting.
  *
- * ## Two things the plan does NOT follow the export into
+ * ## One thing the plan does NOT follow the export into
  *
  * - **`loop`.** The export never reads it (timeline-core KNOWN-DIVERGENCES
  *   `loop-not-rendered-transition-dead-field`), so a looped clip's audio runs
  *   on through its source here too, as it exports.
- * - **A clip in two pairs** (the incoming side of one crossfade and the
- *   outgoing side of the next) gets both ramps here, as the resolver's
- *   `crossfadesAt` gives the picture both blends. The export's stamp loop
- *   (render.js:1513-1518) overwrites the first role with the second, so it
- *   drops the first of those two transitions, picture and sound.
+ *
+ * A clip in two pairs back to back (the incoming side of one crossfade and the
+ * outgoing side of the next) gets both ramps, as the resolver's `crossfadesAt`
+ * gives the picture both blends and, since §195, the export stamps both spans
+ * (render.js `collectAllItems`); the parity spec holds the two together.
  */
 import { audioSourceWindow, transitionPairs } from '@bycrux/timeline-core'
 import type { AudioTrack, EditorProject, VisualItem, VisualTrack } from '../../schema'
