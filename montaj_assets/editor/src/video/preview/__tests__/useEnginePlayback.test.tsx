@@ -264,6 +264,64 @@ describe('useEnginePlayback clock bridge', () => {
     expect(engine.seeks).toEqual([7])
   })
 
+  // The engine HOLDS the play-start position for its first ticks (the audible
+  // time is floored at it until the sound reaches the speaker: scheduler.ts
+  // `pictureTime`), so that value sits in the echo ring for the next ~2 s. A
+  // click back on it once paused elsewhere is a seek, not this hook's echo.
+  const playHeldThenRamp = (engine: FakeEngine, start: number) => {
+    act(() => { engine.setTransport('playing') })
+    act(() => {
+      for (let i = 0; i < 10; i++) engine.emit(start)
+      for (let i = 1; i <= 90; i++) engine.emit(start + i / 60)
+    })
+  }
+
+  it('a click back on the play start after a pause seeks, from 0', () => {
+    const { view, engine } = setup()
+    playHeldThenRamp(engine, 0)
+    act(() => { engine.setTransport('paused') })
+    act(() => { view.rerender({ t: engine.now }) })
+    act(() => { view.rerender({ t: 0 }) })
+    expect(engine.seeks).toEqual([0])
+  })
+
+  it('a click back on the play start after a pause seeks, from mid-timeline', () => {
+    const { view, engine } = setup(makeProject(), 5)
+    playHeldThenRamp(engine, 5)
+    act(() => { engine.setTransport('paused') })
+    act(() => { view.rerender({ t: engine.now }) })
+    act(() => { view.rerender({ t: 5 }) })
+    expect(engine.seeks).toEqual([5])
+  })
+
+  it('while playing, a stale snapshot of the held play start is still an echo', () => {
+    const { view, engine } = setup()
+    playHeldThenRamp(engine, 0)
+    act(() => { view.rerender({ t: 0 }) })
+    expect(engine.seeks).toEqual([])
+  })
+
+  it('paused during the hold, the play start is where the playhead already is: no seek', () => {
+    const { view, engine } = setup()
+    act(() => { engine.setTransport('playing') })
+    act(() => { for (let i = 0; i < 5; i++) engine.emit(0) })
+    act(() => { engine.setTransport('paused') })
+    act(() => { view.rerender({ t: 0 }) })
+    expect(engine.seeks).toEqual([])
+  })
+
+  it('pinned tradeoff: after a pause, a late echo carrying the held play start seeks', () => {
+    // A store fed in order cannot deliver this (it already holds the pause
+    // position), and a click on the play start looks exactly like it. The
+    // click wins; this spec makes any change to that choice deliberate.
+    const { view, engine } = setup()
+    playHeldThenRamp(engine, 0)
+    act(() => { view.rerender({ t: 1 }) }) // the store lagging behind the clock
+    act(() => { engine.setTransport('paused') })
+    act(() => { view.rerender({ t: 0 }) }) // the late commit of the held start
+    expect(engine.seeks).toEqual([0])
+  })
+
   it('never seeks a disposed engine', () => {
     // Between project identities (and on unmount) the engine is torn down. The
     // bridge holds the store as its mirror while there is nothing to drive, so

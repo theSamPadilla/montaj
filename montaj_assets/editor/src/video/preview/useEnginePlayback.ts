@@ -325,7 +325,15 @@ export function useEnginePlayback(
     ring.push(t)
     if (ring.length > EMIT_HISTORY) ring.splice(0, ring.length - EMIT_HISTORY)
   }
-  const isEcho = (t: number) => emittedRef.current.includes(t)
+  // The segment's first emission is the one value the engine HOLDS for many
+  // ticks (§190 `pictureTime`'s floor, or 0 clamped), so it stays in the ring.
+  // Once paused somewhere else, a click back on it is a seek, not an echo.
+  const isEcho = (t: number) => {
+    const ring = emittedRef.current
+    if (!ring.includes(t)) return false
+    if (t === ring[0] && t !== lastEmittedRef.current && !isEnginePlaying()) return false
+    return true
+  }
 
   /**
    * The transport as of RIGHT NOW, not as of the last published status.

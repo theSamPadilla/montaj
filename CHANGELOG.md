@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (editor): clicking back on the spot where playback started did nothing after a pause.** Play, pause within about 2 s, then click the ruler where you pressed play (0:00, say): the playhead readout moved but the preview did not, and Play resumed from the pause. The engine holds the play-start time for its first ticks, so that value was still in the hook's record of its own recent times and the click was taken for an echo of one. While paused, that held value now counts as a seek. (`montaj_assets/editor/src/video/preview/useEnginePlayback.ts`)
+
 ## v5.29.0
 
 - **Changed (editor): the preview's sound is mixed from one clock, the way professional editors do it.** No silence at a cut, a crossfade blends both clips' audio, audio lanes and overlay videos stay on the same clock as the main track, and the picture, overlays and playhead are painted at the time you hear (the output latency is compensated, so Bluetooth no longer puts the picture ahead of the sound). Seeking starts sound sooner, and scrubbing (playhead drag and the reverse shuttle) is audible on lanes and in reverse. The mixer follows the export's own rules for speed, fades, curves, volume, mute and ducking. A source that cannot be prepared keeps the previous preview behaviour. Mechanism: serve decodes each audio source once, from the original, to a cached PCM file, and one AudioWorklet mixes every segment and owns the project clock, fed by a Worker. (`montaj_assets/editor/src/engine/mix/`, `engine/scheduler.ts`, `engine/index.ts`, `engine/scrub-source.ts`, `video/preview/legacy-mixer.ts`)
