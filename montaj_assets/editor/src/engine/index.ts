@@ -1368,7 +1368,16 @@ function createMixerControl(
 
   return {
     beforePlay() {
-      if (rebuildQueued) rebuild()
+      // The end of the timeline and a loop-end stop pause the transport inside
+      // the scheduler, never through `pause()`: this is where their switch lands.
+      if (admitPending) {
+        admit()
+        rebuild()
+      } else if (rebuildQueued) {
+        rebuild()
+      } else {
+        settle(false)
+      }
     },
     afterPause() {
       if (admitPending) {

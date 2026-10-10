@@ -245,8 +245,12 @@ function rig(
     createMixClock?: () => Promise<MixClock>
     /** `false`: the real builder and source list. */
     builder?: false | ((project: Project, lookup: ConformLookup) => ProjectMixPlan)
+    /** Hand-pumped frames: `tick()` runs the queued ones. */
+    pump?: boolean
+    project?: Project
   } = {},
 ) {
+  const frames: Array<() => void> = []
   const mix = new FakeMix()
   const conform = fakeConform()
   const errors: string[] = []
@@ -254,7 +258,7 @@ function rig(
   const deps: EngineDeps = {
     fileUrl: (p) => p,
     nowMs: () => 0,
-    requestFrame: () => 1,
+    requestFrame: over.pump ? (cb) => frames.push(cb) : () => 1,
     cancelFrame: () => {},
     onError: (m) => errors.push(m),
     onMixerChange: (s) => mixerStates.push(s),
@@ -264,8 +268,11 @@ function rig(
       ...(over.builder === false ? {} : { buildMixPlan: over.builder ?? fakeBuilder, audioSourcePaths: fakeSources }),
     },
   }
-  const engine = createEngine(project(), deps)
-  return { engine, mix, conform, errors, mixerStates }
+  const engine = createEngine(over.project ?? project(), deps)
+  const tick = () => {
+    for (const cb of frames.splice(0)) cb()
+  }
+  return { engine, mix, conform, errors, mixerStates, tick }
 }
 
 beforeEach(() => {
@@ -353,6 +360,55 @@ describe('engine: which path carries the sound', () => {
     expect(last(r.mixerStates)?.active).toBe(true)
     expect(r.mix.seeks.length).toBe(1)
     expect(r.mix.playing).toBe(false)
+    r.engine.dispose()
+  })
+
+  it('a conform that landed mid-play is admitted at the next play after the timeline ended on its own', async () => {
+    const r = rig({ pump: true })
+    r.engine.seek(1)
+    await flush()
+    r.conform.land('/media/a.mov')
+    await flush()
+    r.engine.play()
+    r.conform.land('/media/music.mp3')
+    await flush()
+    expect(last(r.mix.plans)!.segments.map((s) => s.id)).toEqual(['clip:a'])
+
+    // The end stops the transport inside the scheduler: nothing calls pause().
+    r.mix.t = 6
+    r.tick()
+    expect(r.engine.status().transport).toBe('ended')
+    const seeks = r.mix.seeks.length
+    r.engine.play()
+    expect(r.mix.seeks.length).toBe(seeks)
+    expect(last(r.mix.plans)!.segments.map((s) => s.id)).toEqual(['clip:a', 'lane:m'])
+    expect(last(r.mixerStates)?.unconformedLanes.size).toBe(0)
+    r.engine.dispose()
+  })
+
+  it('an edit that wants out of the mixer is applied at the next play after a loop-end stop', async () => {
+    const looped = mainClip({ loop: true, inPoint: 0, outPoint: 2, start: 0, end: 5 })
+    const r = rig({ pump: true, project: project([looped]) })
+    r.engine.seek(1)
+    await flush()
+    r.conform.land('/media/a.mov')
+    await flush()
+    expect(last(r.mixerStates)?.active).toBe(true)
+    r.engine.play()
+    r.mix.t = 1
+    r.tick()
+    r.engine.updateProject(project([looped, mainClip({ id: 'b', src: '/media/b.mov', proxySrc: '/proxies/b_proxy.mp4', start: 5, end: 8 })]))
+    await flush()
+    expect(last(r.mixerStates)?.active).toBe(true)
+
+    // Mid-loop at its end: the scheduler parks the transport at 5, paused.
+    r.mix.t = 5.2
+    r.tick()
+    expect(r.engine.status().transport).toBe('paused')
+    expect(last(r.mixerStates)?.active).toBe(true)
+    r.engine.play()
+    expect(last(r.mixerStates)?.active).toBe(false)
+    expect(last(r.mix.plans)).toEqual({ segments: [] })
     r.engine.dispose()
   })
 
