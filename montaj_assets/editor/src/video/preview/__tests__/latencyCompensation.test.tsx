@@ -2,9 +2,12 @@
  * T1 — the clock → painter bridge subtracts the shared AudioContext's
  * `outputLatency + baseLatency` on every emit, so the painted playhead
  * matches what is actually AUDIBLE (not what the frames-consumed clock
- * has counted). Both the engine bridge (`useEnginePlayback.emitTime`)
- * and the `<video>` fallback bridge (`useVideoPlayback`'s playback-advance
- * callsites) go through this compensation.
+ * has counted). The `<video>` fallback bridge (`useVideoPlayback`'s
+ * playback-advance callsites) does it itself. On the engine path §190 moved
+ * the subtraction INTO the engine (`scheduler.ts`'s `pictureTime`), so the
+ * canvas paints at the audible time too, not only the playhead: the hook now
+ * forwards what the engine emits, and the subtraction's own properties are in
+ * `engine/__tests__/engine-mixer.test.ts`.
  *
  * The fake ctx (`stubCtx`) is written straight into `window.__montajSharedCtx`
  * because `getSharedAudioContext()` only rebuilds when the cached entry is
@@ -214,7 +217,7 @@ describe('<video> fallback bridge — useVideoPlayback', () => {
 // `useEnginePlayback.test.tsx`.
 interface FakeEngine {
   deps: {
-    onTime?: (t: number) => void
+    onTime?: (t: number, raw?: number) => void
     onStatusChange?: (s: EngineStatus) => void
     onError?: (m: string) => void
     startProjectS?: number
@@ -223,7 +226,8 @@ interface FakeEngine {
   transport: EngineStatus['transport']
   now: number
   seeks: number[]
-  emit(t: number): void
+  /** `t` is the audible time the engine painted at, `raw` its clock's own. */
+  emit(t: number, raw?: number): void
   setTransport(t: EngineStatus['transport']): void
 }
 
@@ -257,7 +261,7 @@ vi.mock('../../../engine', async (importOriginal) => {
         transport: 'paused',
         now: deps.startProjectS ?? 0,
         seeks: [],
-        emit(t: number) { engine.now = t; deps.onTime?.(t) },
+        emit(t: number, raw?: number) { engine.now = raw ?? t; deps.onTime?.(t, raw ?? t) },
         setTransport(t) { engine.transport = t; deps.onStatusChange?.(status()) },
         attach: () => {},
         play: () => { engine.transport = 'playing'; deps.onStatusChange?.(status()) },
@@ -306,40 +310,31 @@ describe('engine bridge — useEnginePlayback.emitTime', () => {
   beforeEach(() => { engines.length = 0 })
   afterEach(() => { clearCtx() })
 
-  it('emits now() - outputLatency during playback (spec: 0.03 → t-0.03)', () => {
+  it('forwards the engine\'s audible time unchanged during playback (no second subtraction)', () => {
+    // The engine painted the canvas at 1.47 (its clock read 1.5, 30 ms of
+    // output latency). The playhead must land on the same 1.47, not 1.44.
     stubCtx({ outputLatency: 0.03, baseLatency: 0 })
     const { engine, onTimeUpdate } = setupEngine()
 
     act(() => { engine.setTransport('playing') })
     onTimeUpdate.mockClear()
-    act(() => { engine.emit(1.5) })
+    act(() => { engine.emit(1.47, 1.5) })
 
-    expect(onTimeUpdate).toHaveBeenCalledWith(expect.closeTo(1.5 - 0.03, 6))
+    expect(onTimeUpdate).toHaveBeenLastCalledWith(1.47)
   })
 
-  it('sums outputLatency and baseLatency during playback', () => {
-    stubCtx({ outputLatency: 0.03, baseLatency: 0.005 })
-    const { engine, onTimeUpdate } = setupEngine()
-
-    act(() => { engine.setTransport('playing') })
-    onTimeUpdate.mockClear()
-    act(() => { engine.emit(1.5) })
-
-    expect(onTimeUpdate).toHaveBeenCalledWith(expect.closeTo(1.5 - 0.035, 6))
-  })
-
-  it('re-reads latency LIVE across ticks (device switch)', () => {
+  it('follows a live latency change only through what the engine emits', () => {
     const ctx = stubCtx({ outputLatency: 0.03, baseLatency: 0 })
     const { engine, onTimeUpdate } = setupEngine()
 
     act(() => { engine.setTransport('playing') })
-    onTimeUpdate.mockClear()
-    act(() => { engine.emit(1.0) })
-    expect(onTimeUpdate).toHaveBeenLastCalledWith(expect.closeTo(1.0 - 0.03, 6))
+    act(() => { engine.emit(0.97, 1.0) })
+    expect(onTimeUpdate).toHaveBeenLastCalledWith(0.97)
 
+    // A Bluetooth output arrives: the engine reads it on its next tick.
     ctx.outputLatency = 0.2
-    act(() => { engine.emit(2.0) })
-    expect(onTimeUpdate).toHaveBeenLastCalledWith(expect.closeTo(2.0 - 0.2, 6))
+    act(() => { engine.emit(1.8, 2.0) })
+    expect(onTimeUpdate).toHaveBeenLastCalledWith(1.8)
   })
 
   it('does NOT compensate when the transport is paused (no seek/scrub-display regression)', () => {
@@ -354,17 +349,6 @@ describe('engine bridge — useEnginePlayback.emitTime', () => {
 
     act(() => { engine.emit(5.0) })
     expect(onTimeUpdate).toHaveBeenLastCalledWith(5.0)
-  })
-
-  it('clamps the emitted time at zero when latency exceeds the current time', () => {
-    stubCtx({ outputLatency: 0.5, baseLatency: 0 })
-    const { engine, onTimeUpdate } = setupEngine()
-
-    act(() => { engine.setTransport('playing') })
-    onTimeUpdate.mockClear()
-    act(() => { engine.emit(0.1) })
-
-    expect(onTimeUpdate).toHaveBeenLastCalledWith(0)
   })
 })
 
@@ -416,7 +400,7 @@ describe('engine bridge — syncAudioTracks callsites outside emitTime', () => {
     const engine = engines[engines.length - 1] as FakeEngine
 
     act(() => { engine.setTransport('playing') })
-    act(() => { engine.emit(10) }) // raw=10, painted=9 (1s latency) — mirrors diverge here
+    act(() => { engine.emit(9, 10) }) // raw=10, painted=9 (1s latency) — mirrors diverge here
 
     // Add the audio track mid-session, WITHOUT another emit: the effect must
     // read the mirrored RAW time, not the painted one.
@@ -438,7 +422,7 @@ describe('engine bridge — syncAudioTracks callsites outside emitTime', () => {
     const engine = engines[engines.length - 1] as FakeEngine
 
     act(() => { engine.setTransport('playing') })
-    act(() => { engine.emit(10) }) // raw=10, painted=9; the direct emitTime call already seeks correctly
+    act(() => { engine.emit(9, 10) }) // raw=10, painted=9; the direct emitTime call already seeks correctly
 
     // Knock the element off both candidate targets so the NEXT resync — from
     // the transport-transition effect alone, no intervening emit — is the

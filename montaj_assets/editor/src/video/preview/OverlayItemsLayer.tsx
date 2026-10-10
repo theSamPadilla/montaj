@@ -468,6 +468,11 @@ interface OverlayItemsLayerProps {
   fileUrl: (path: string) => string
   /** The player's own mute (PreviewPlayer's `muted`, for a silent host such as a hover preview). */
   muted?: boolean
+  /**
+   * §190: the engine's preview mixer plays this video item's sound (by its
+   * `src`), so its `<video>` plays muted. Absent on the `<video>` path.
+   */
+  audioInMix?: (src: string) => boolean
 }
 
 export default function OverlayItemsLayer({
@@ -494,6 +499,7 @@ export default function OverlayItemsLayer({
   watchFile,
   fileUrl,
   muted = false,
+  audioInMix,
 }: OverlayItemsLayerProps) {
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
   // An overlay `src` may be relative to the project (`overlays/x.jsx`). Bound
@@ -916,7 +922,11 @@ export default function OverlayItemsLayer({
                     inPoint={item.inPoint ?? 0}
                     speed={item.speed ?? 1}
                     isPlaying={isPlaying}
-                    muted={muted || audio.muted}
+                    // In mixer mode the mixer plays this item's audio, from
+                    // the conform of its ORIGINAL `src` (whatever file the
+                    // element itself loads); the element sounding too would
+                    // double it, and out of sync.
+                    muted={muted || audio.muted || !!audioInMix?.(item.src)}
                     volume={audio.volume}
                     visible={visible}
                     cropStyle={cropStyle}

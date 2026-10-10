@@ -50,13 +50,61 @@
  *     the parsed sample index and whatever bytes have already been pulled, so a
  *     re-entered source starts warm. What lingers is now bounded by
  *     `demux.ts`'s resident-byte budgets rather than by the file's size.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * §190: THE PREVIEW MIXER, AND WHEN IT TAKES OVER
+ * ─────────────────────────────────────────────────────────────────────────
+ * The engine builds ONE `MixClock` per session (`createMixClock`, mix/). It
+ * rejects where AudioWorklet or Worker is missing, and the session then stays
+ * on today's per-clip clocks for good. Once it exists, the conform client
+ * (mix/conform-client.ts) asks serve for every source's conformed PCM, and the
+ * plan builder (mix/audio-plan.ts) turns project + conforms into the mixer's
+ * plan.
+ *
+ * **Mixer mode** = the MixClock exists AND the plan left no main-track source
+ * out (`unconformedMain` empty). Then the scheduler runs on the project clock
+ * (`setProjectClock`), sessions carry wall clocks, and the lanes and
+ * overlay videos the plan covers go quiet in the hook (`onMixerChange`).
+ * Anything else is today's path, WHOLE: two clocks never drive the picture.
+ *
+ * The mode switches only while paused or at a seek, never mid-play, and what
+ * the plan may use is frozen while playing for the same reason: a conform that
+ * lands mid-play is admitted at the next pause or seek (`admitted`), so a lane
+ * never hands over from its `<audio>` element to the mixer under the user's
+ * ear. Edits still reach the plan live (a volume drag, a trim), coalesced to
+ * one rebuild per task, and `setPlan` only when the plan actually changed; the
+ * Worker diffs segments by their audio mapping, so a gain or fade change
+ * refetches nothing. The builder leaves a muted clip OUT of the plan, so a
+ * segment the plan drops while the mixer sounds is muted first (`setParams`
+ * ramps it) and the plan follows the ramp (`MIX_DROP_DELAY_MS`).
  */
 import { designCanvas, sourceWindow } from '@bycrux/timeline-core'
 import type { EditorProject as Project, VisualItem } from '../schema'
-import { createMasterClock, createWallClock, type ClipTimebase } from './audio-clock'
+import { peekSharedAudioContext, latencySeconds } from '../video/preview/audio-context'
+import {
+  createMasterClock,
+  createWallClock,
+  type ClipTimebase,
+  type MasterClock,
+} from './audio-clock'
 import { demux, type DemuxedSource } from './demux'
 import { createFrameServer, type FrameServer, type HardwarePref } from './frame-server'
 import type { FileUrlResolver } from './media-loader'
+import {
+  audioSourcePaths,
+  buildMixPlan,
+  type ConformLookup,
+  type ProjectMixPlan,
+} from './mix/audio-plan'
+import { createConformClient, type ConformClient } from './mix/conform-client'
+import {
+  createMixClock,
+  type MixClock,
+  type MixClockOptions,
+  type MixParam,
+  type MixPlan,
+} from './mix/mix-clock'
+import { MIX_SMOOTHING_S } from './mix/mix-protocol'
 import {
   createScheduler,
   type ClipSource,
@@ -134,8 +182,13 @@ export interface EngineDeps {
    * scrub. Pass a stable function that reads a ref — the engine captures this
    * once at construction and is not rebuilt when a React callback identity
    * changes.
+   *
+   * §190: `projectS` is the AUDIBLE time, already latency-compensated: the
+   * canvas was painted at it, so the playhead and the overlays paint at it too.
+   * `rawS` is the clock's own time, for an `<audio>` element on the same graph
+   * (which the output latency delays exactly as it delays the clock).
    */
-  onTime?: (projectS: number) => void
+  onTime?: (projectS: number, rawS: number) => void
   /** Fires only when the status actually changes, never per tick. Same stability note as `onTime`. */
   onStatusChange?: (status: EngineStatus) => void
   /** Decoder, loader and paint failures. Advisory: none of them stop the transport. */
@@ -150,6 +203,49 @@ export interface EngineDeps {
   cancelFrame?: (handle: number) => void
   /** Wall-clock seam, forwarded to every fallback clock. Defaults to `performance.now`. */
   nowMs?: () => number
+  /**
+   * §190: the preview mixer's seams, each defaulting to the real one. `false`
+   * keeps the session on today's per-clip clocks.
+   */
+  mixer?: EngineMixerDeps | false
+  /** §190: what the mixer carries, whenever that changes. Same stability note as `onTime`. */
+  onMixerChange?: (state: MixerState) => void
+  /**
+   * §190: `outputLatency + baseLatency` of the shared context, read live per
+   * tick; today's path paints this far behind its clock. Default: the shared
+   * context's, 0 before one exists.
+   */
+  latencyS?: () => number
+}
+
+export interface EngineMixerDeps {
+  /** Default `createMixClock`. Rejecting keeps the session on today's path. */
+  createMixClock?: (options: MixClockOptions) => Promise<MixClock>
+  /** Default `buildMixPlan`. Throwing is "no plan", which is today's path. */
+  buildMixPlan?: (project: Project, lookup: ConformLookup) => ProjectMixPlan
+  /** Default `audioSourcePaths`. */
+  audioSourcePaths?: (project: Project) => string[]
+  /** Default a same-origin `createConformClient()`, which the engine disposes. An injected one is the caller's. */
+  conform?: ConformClient
+}
+
+/**
+ * §190: what the preview mixer carries, for the hook's own audio elements.
+ * Outside mixer mode (`active: false`) the hook keeps every element it has today.
+ */
+export interface MixerState {
+  /** The mixer plays the project's audio (mixer mode). */
+  active: boolean
+  /** Lane sources the plan left out: they keep their `<audio>` elements. */
+  unconformedLanes: ReadonlySet<string>
+  /** Overlay-track video sources the plan left out: their `<video>` keeps its own sound. */
+  unconformedOverlays: ReadonlySet<string>
+}
+
+export const NO_MIXER: MixerState = {
+  active: false,
+  unconformedLanes: new Set(),
+  unconformedOverlays: new Set(),
 }
 
 /** A read-only view of whatever clock is currently driving the transport. */
@@ -179,7 +275,11 @@ export interface EngineStats {
   dropped: number
   /** Frames buffered ahead in the active clip's decode-ahead pipeline. 0 with no active session. */
   buffered: number
-  /** Which clock is driving the transport right now — same value as `EngineStatus.clock`. */
+  /**
+   * Which clock is driving the transport right now — same value as
+   * `EngineStatus.clock`. §190: `'audio'` throughout in mixer mode, where the
+   * driving clock is the MixClock.
+   */
   clock: 'audio' | 'fallback'
 }
 
@@ -357,6 +457,14 @@ interface Session {
    * the rest of the session's life. Undefined until the server is acquired.
    */
   serverKey?: string
+  /**
+   * §190: built (or reclocked) for mixer mode, with a wall clock in place of an
+   * audio one (`SourceRequest.noAudioClock`). A mode switch flips it on a live
+   * session WITHOUT a respawn (`reclock`): the decoder and the picture stay.
+   */
+  noAudioClock: boolean
+  /** Bumped per `reclock`; an audio clock built for an older one is discarded. */
+  clockGen: number
   /** Rebuild attempts already spent on this clip — see {@link MAX_SESSION_RETRIES}. */
   retries: number
   /**
@@ -435,7 +543,9 @@ class EngineSourceHost implements SourceHost {
         want.src !== session.src ||
         want.item.start !== session.start ||
         sourceWindow(want.item, 'preview').inPoint !== session.inPoint ||
-        !!want.item.muted !== session.muted ||
+        // Mute decides the clock's KIND, so it respawns, but only where a clip
+        // has an audio clock at all: in mixer mode the plan carries mute.
+        (!want.noAudioClock && !session.noAudioClock && !!want.item.muted !== session.muted) ||
         (want.item.speed ?? 1) !== session.speed ||
         // A clip that BECOMES the incoming side of a blend has to move onto a
         // decoder of its own, and a live session cannot change servers. It is
@@ -456,6 +566,19 @@ class EngineSourceHost implements SourceHost {
     for (const request of requests) {
       const session = this.sessions.get(request.clipId)
       if (session?.exclusive && !request.exclusiveServer) this.demoteServer(session)
+    }
+    // §190: a mode switch swaps a live session's clock in place, never its
+    // decoder: a respawn would drop the picture to `preparing` at every switch,
+    // and a newly added clip can cause two in a second (out of the mixer while
+    // its conform runs, back in when it lands). A session still building reads
+    // the flag when it gets to its clock.
+    for (const request of requests) {
+      const session = this.sessions.get(request.clipId)
+      if (!session || session.noAudioClock === !!request.noAudioClock) continue
+      session.noAudioClock = !!request.noAudioClock
+      session.muted = !!request.item.muted
+      session.volume = request.item.volume ?? 1
+      if (session.source) this.reclock(session, request)
     }
     // A clip's volume can change without a rebuild: push it straight to the
     // live clock (`MasterClock.setVolume`) rather than tearing the session
@@ -550,6 +673,8 @@ class EngineSourceHost implements SourceHost {
       volume: request.item.volume ?? 1,
       speed: request.item.speed ?? 1,
       exclusive: !!request.exclusiveServer,
+      noAudioClock: !!request.noAudioClock,
+      clockGen: 0,
       retries,
       retryAfterMs: 0,
     }
@@ -594,19 +719,27 @@ class EngineSourceHost implements SourceHost {
       }
       // Never rejects: a muted clip, a track with no decodable audio, a browser
       // without WebCodecs audio — all resolve to a wall clock with a reason.
-      const clock = await createMasterClock({
-        audio: demuxed.audio,
-        timebase,
-        startProjectS: request.anchorProjectS,
-        volume: request.item.volume,
-        muted: request.item.muted,
-        onError: this.deps.onError,
-        nowMs: this.deps.nowMs,
-      })
+      // In mixer mode the project clock carries the sound: no decoder at all.
+      let clock = session.noAudioClock
+        ? this.mixerWallClock(request.anchorProjectS)
+        : await createMasterClock({
+            audio: demuxed.audio,
+            timebase,
+            startProjectS: request.anchorProjectS,
+            volume: request.item.volume,
+            muted: request.item.muted,
+            onError: this.deps.onError,
+            nowMs: this.deps.nowMs,
+          })
       if (session.cancelled) {
         clock.dispose()
         this.releaseServer(session)
         return
+      }
+      // The mode switched to the mixer while the audio clock was being built.
+      if (session.noAudioClock && clock.kind === 'audio') {
+        clock.dispose()
+        clock = this.mixerWallClock(request.anchorProjectS)
       }
       session.source = {
         clipId: session.clipId,
@@ -637,6 +770,61 @@ class EngineSourceHost implements SourceHost {
     session.status = 'failed'
     session.reason = reason
     session.retryAfterMs = this.now() + SESSION_RETRY_BASE_MS * 2 ** session.retries
+  }
+
+  /** A mixer-mode session's clock: the scheduler never drives it, it only satisfies `ClipSource`. */
+  private mixerWallClock(startProjectS: number): MasterClock {
+    return createWallClock(startProjectS, 'the preview mixer carries the audio', this.deps.nowMs)
+  }
+
+  /**
+   * §190: swap a live session's clock for the mode the request asks, keeping its
+   * decoder. Into the mixer the audio clock goes at once: the scheduler has
+   * already moved onto the project clock (`setProjectClock` runs before the
+   * `retain` that gets here). Back out, the audio clock is built off the cached
+   * demux and handed over when it lands; until then the session's wall clock
+   * stands in, as it does for a muted clip.
+   *
+   * Either way the session gets a NEW `ClipSource`, so the scheduler sees the
+   * change: it reads `state()` right after `retain`, and is told
+   * (`sourceChanged`) when the async half lands.
+   */
+  private reclock(session: Session, request: SourceRequest): void {
+    const source = session.source
+    if (!source) return
+    const gen = ++session.clockGen
+    if (session.noAudioClock) {
+      source.clock.dispose()
+      session.source = { ...source, clock: this.mixerWallClock(request.anchorProjectS) }
+      return
+    }
+    void (async () => {
+      try {
+        const demuxed = await this.acquireDemux(session.src)
+        const clock = await createMasterClock({
+          audio: demuxed.audio,
+          timebase: source.timebase,
+          startProjectS: request.anchorProjectS,
+          volume: session.volume,
+          muted: session.muted,
+          onError: this.deps.onError,
+          nowMs: this.deps.nowMs,
+        })
+        const live = session.source
+        if (this.disposed || session.cancelled || gen !== session.clockGen || !live) {
+          clock.dispose()
+          return
+        }
+        // A volume edit while it was building went to the wall clock, which drops it.
+        clock.setVolume(session.volume)
+        // The wall clock it replaces holds nothing, and the scheduler may read
+        // it until it adopts this one, so it is left to the collector.
+        session.source = { ...live, clock }
+        this.scheduler?.sourceChanged(session.clipId)
+      } catch (err) {
+        this.deps.onError?.(`engine: ${session.src} audio clock — ${err instanceof Error ? err.message : String(err)}`)
+      }
+    })()
   }
 
   private dropSession(clipId: string): void {
@@ -938,6 +1126,279 @@ export function fpsFromPaintTimes(prunedTimesMs: readonly number[], nowMs: numbe
   return span > 0 ? (prunedTimesMs.length / span) * 1000 : 0
 }
 
+// ── §190: the mixer's control loop ──────────────────────────────────────────
+
+/** What the mixer plays outside mixer mode: nothing, so its Worker fetches nothing. */
+const EMPTY_PLAN: MixPlan = { segments: [] }
+
+/**
+ * How long a plan that drops a sounding segment waits behind that segment's
+ * mute: the mute ramps over `MIX_SMOOTHING_S` in the worklet, and a segment the
+ * plan drops stops dead, mid-waveform. The margin covers the plan's extra hop
+ * through the Worker.
+ */
+export const MIX_DROP_DELAY_MS = MIX_SMOOTHING_S * 1000 + 5
+
+const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err))
+
+/** The engine's hooks into the mixer, around each transport call. See this file's §190 header. */
+interface MixerControl {
+  /** Before `scheduler.play()`: an edit queued in this same task settles its mode first. */
+  beforePlay(): void
+  /** After `scheduler.pause()`: admit what landed mid-play, and switch if the plan says so. */
+  afterPause(): void
+  /** Before `scheduler.seek()`: the other place a switch may happen while playing. */
+  beforeSeek(): void
+  projectChanged(project: Project): void
+  dispose(): void
+}
+
+function createMixerControl(
+  mixer: EngineMixerDeps,
+  scheduler: Scheduler,
+  deps: EngineDeps,
+  currentProject: () => Project,
+): MixerControl {
+  const buildPlan = mixer.buildMixPlan ?? buildMixPlan
+  const sourcePaths = mixer.audioSourcePaths ?? audioSourcePaths
+  let clock: MixClock | null = null
+  let conform: ConformClient | null = null
+  let ownsConform = false
+  let unsubscribe: (() => void) | null = null
+  let disposed = false
+  let built: ProjectMixPlan | null = null
+  let inMixer = false
+  let postedPlan: string | null = null
+  /** Segment ids in the plan the mixer last got. */
+  let postedIds = new Set<string>()
+  /** Segments this muted on their way out. The worklet keeps an override across plans, so a return must clear it. */
+  const fadedOut = new Set<string>()
+  let pendingPlan: { key: string; timer: ReturnType<typeof setTimeout> } | null = null
+  let rebuildQueued = false
+  /** A conform landed while playing: admitted at the next pause or seek. */
+  let admitPending = false
+  /** What `onMixerChange` last said. The hook starts at `NO_MIXER`, so that is not news. */
+  let published = 'off'
+  const requested = new Set<string>()
+  /** Sources whose conform the plan may use. Grows only while paused or at a seek. */
+  const admitted = new Set<string>()
+
+  const playing = () => scheduler.status().transport === 'playing'
+
+  /** A builder that throws is a bug worth one line in the log, not one per edit. */
+  let lastFault = ''
+  const fault = (what: string, err: unknown) => {
+    const message = `preview mixer: ${what}: ${messageOf(err)}`
+    if (message === lastFault) return
+    lastFault = message
+    deps.onError?.(message)
+  }
+
+  const lookup: ConformLookup = (src) => (admitted.has(src) ? (conform?.lookup(src) ?? null) : null)
+
+  const admit = () => {
+    admitPending = false
+    if (!conform) return
+    for (const path of requested) if (conform.lookup(path)) admitted.add(path)
+  }
+
+  const request = (project: Project) => {
+    if (!conform) return
+    let paths: string[]
+    try {
+      paths = sourcePaths(project)
+    } catch (err) {
+      fault('audio sources', err)
+      return
+    }
+    for (const path of paths) requested.add(path)
+    conform.request(paths)
+  }
+
+  const sendPlan = (plan: MixPlan, key: string) => {
+    pendingPlan = null
+    if (!clock || disposed) return
+    postedPlan = key
+    postedIds = new Set(plan.segments.map((s) => s.id))
+    clock.setPlan(plan)
+  }
+
+  /**
+   * Hand the mixer a plan, if it changed. The builder leaves a muted (or
+   * deleted) clip OUT of the plan rather than at gain 0, and a dropped segment
+   * would stop with a click, so while the mixer is sounding each one is muted
+   * first (`setParams` ramps it) and the plan follows once the ramp is done. A
+   * segment coming back has that mute cleared; the plan alone brings it in.
+   */
+  const postPlan = (plan: MixPlan) => {
+    if (!clock) return
+    const key = JSON.stringify(plan)
+    if (key === (pendingPlan?.key ?? postedPlan)) return
+    if (pendingPlan) clearTimeout(pendingPlan.timer)
+    pendingPlan = null
+    const ids = new Set(plan.segments.map((s) => s.id))
+    const params: Record<string, MixParam> = {}
+    for (const id of fadedOut) {
+      if (!ids.has(id)) continue
+      params[id] = { mute: false }
+      fadedOut.delete(id)
+    }
+    let dropping = false
+    if (clock.playing) {
+      for (const id of postedIds) {
+        if (ids.has(id) || fadedOut.has(id)) continue
+        params[id] = { mute: true }
+        fadedOut.add(id)
+        dropping = true
+      }
+    }
+    if (Object.keys(params).length > 0) clock.setParams(params)
+    if (!dropping) {
+      sendPlan(plan, key)
+      return
+    }
+    pendingPlan = { key, timer: setTimeout(() => sendPlan(plan, key), MIX_DROP_DELAY_MS) }
+  }
+
+  const publish = () => {
+    const state: MixerState =
+      inMixer && built
+        ? {
+            active: true,
+            unconformedLanes: new Set(built.unconformedLanes),
+            unconformedOverlays: new Set(built.unconformedOverlays),
+          }
+        : NO_MIXER
+    const key = state.active
+      ? JSON.stringify([[...state.unconformedLanes].sort(), [...state.unconformedOverlays].sort()])
+      : 'off'
+    if (key === published) return
+    published = key
+    deps.onMixerChange?.(state)
+  }
+
+  /** Into or out of mixer mode when the plan says so: while paused, or at a seek. */
+  const settle = (atSeek: boolean) => {
+    if (!clock) return
+    const want = !!built && built.unconformedMain.length === 0
+    if (want === inMixer || (!atSeek && playing())) return
+    inMixer = want
+    if (want) {
+      // The plan reaches the Worker before the clock's seek reaches the worklet.
+      postPlan(built!.plan)
+      scheduler.setProjectClock(clock)
+    } else {
+      scheduler.setProjectClock(null)
+      postPlan(EMPTY_PLAN)
+    }
+    publish()
+  }
+
+  const rebuild = (atSeek = false) => {
+    rebuildQueued = false
+    if (disposed || !clock) return
+    try {
+      built = buildPlan(currentProject(), lookup)
+    } catch (err) {
+      // No plan is today's path, which plays everything.
+      built = null
+      fault('plan', err)
+    }
+    settle(atSeek)
+    // Still in the mixer while playing past a plan that wants out (an edit
+    // added an unconformed clip): it plays what it can until the next pause.
+    if (inMixer && built) postPlan(built.plan)
+    publish()
+  }
+
+  const queueRebuild = () => {
+    if (rebuildQueued || disposed) return
+    rebuildQueued = true
+    queueMicrotask(() => {
+      if (rebuildQueued) rebuild()
+    })
+  }
+
+  const onConform = () => {
+    if (playing()) {
+      admitPending = true
+      return
+    }
+    admit()
+    queueRebuild()
+  }
+
+  const create = mixer.createMixClock ?? createMixClock
+  void Promise.resolve()
+    .then(() => create({ startTime: deps.startProjectS ?? 0, onError: deps.onError, nowMs: deps.nowMs }))
+    .then(
+      (mix) => {
+        if (disposed) {
+          mix.dispose()
+          return
+        }
+        clock = mix
+        if (mixer.conform) {
+          conform = mixer.conform
+        } else {
+          conform = createConformClient()
+          ownsConform = true
+        }
+        unsubscribe = conform.onChange(onConform)
+        request(currentProject())
+        admit()
+        rebuild()
+      },
+      () => {
+        // Not `onError`: no AudioWorklet or no Worker is a capability, not a
+        // fault, and today's path is the whole answer to it.
+      },
+    )
+
+  return {
+    beforePlay() {
+      if (rebuildQueued) rebuild()
+    },
+    afterPause() {
+      if (admitPending) {
+        admit()
+        rebuild()
+      } else {
+        settle(false)
+      }
+    },
+    beforeSeek() {
+      if (admitPending) {
+        admit()
+        rebuild(true)
+      } else {
+        settle(true)
+      }
+    },
+    projectChanged(project) {
+      if (!clock) return
+      request(project)
+      queueRebuild()
+    },
+    dispose() {
+      if (disposed) return
+      disposed = true
+      if (pendingPlan) clearTimeout(pendingPlan.timer)
+      pendingPlan = null
+      unsubscribe?.()
+      if (ownsConform) conform?.dispose()
+      clock?.dispose()
+      clock = null
+    },
+  }
+}
+
+/** The shared context's output latency, 0 until something on the gesture stack made one. */
+function sharedContextLatency(): number {
+  const ctx = peekSharedAudioContext()
+  return ctx ? latencySeconds(ctx) : 0
+}
+
 export function createEngine(project: Project, deps: EngineDeps): Engine {
   const host = new EngineSourceHost(deps)
   const scheduler = createScheduler({
@@ -948,6 +1409,7 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
     onError: deps.onError,
     prewarmLeadS: deps.prewarmLeadS,
     startProjectS: deps.startProjectS,
+    latencyS: deps.latencyS ?? sharedContextLatency,
   })
   host.bind(scheduler)
 
@@ -997,6 +1459,9 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
     if (canvas.height !== h) canvas.height = h
   }
 
+  const mixer =
+    deps.mixer === false ? null : createMixerControl(deps.mixer ?? {}, scheduler, deps, () => currentProject)
+
   return {
     attach(next: HTMLCanvasElement | null) {
       canvas = next
@@ -1023,14 +1488,17 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
       })
     },
     play() {
+      mixer?.beforePlay()
       scheduler.play()
       start()
     },
     pause() {
       scheduler.pause()
       stop()
+      mixer?.afterPause()
     },
     seek(projectS: number) {
+      mixer?.beforeSeek()
       scheduler.seek(projectS)
       if (scheduler.status().transport !== 'playing') stop()
     },
@@ -1041,6 +1509,7 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
       currentProject = next
       sizeCanvas()
       scheduler.setProject(next)
+      mixer?.projectChanged(next)
     },
     status: () => scheduler.status(),
     stats(): EngineStats {
@@ -1077,6 +1546,8 @@ export function createEngine(project: Project, deps: EngineDeps): Engine {
       stop()
       scheduler.dispose()
       host.disposeAll()
+      // After the scheduler, which never disposes the project clock it was handed.
+      mixer?.dispose()
       paintTimesMs = []
     },
   }

@@ -26,7 +26,11 @@
  *     (plan decision 5) with the legacy element/GainNode lifecycle kept
  *     verbatim; only the per-tick sync arithmetic is rewritten, onto
  *     `timeline-core`'s `audioWindow`, and driven from the engine tick rather
- *     than from a React effect on `currentTime`.
+ *     than from a React effect on `currentTime`. §190: in mixer mode the
+ *     preview mixer plays every lane its plan covers, and those lanes get no
+ *     element at all (`MixerState`); a lane the plan left out keeps exactly
+ *     today's element. Overlay-track videos follow the same rule through
+ *     `audioInMix`.
  *
  * ─────────────────────────────────────────────────────────────────────────
  * WHAT IT DELIBERATELY DOES NOT OWN
@@ -57,13 +61,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { audioWindow } from '@bycrux/timeline-core'
 import {
   createEngine,
+  NO_MIXER,
   track0VideoItems,
   type AcquiredDemux,
   type Engine,
   type EngineStats,
   type EngineStatus,
+  type MixerState,
 } from '../../engine'
-import { getSharedAudioContext, latencySeconds, peekSharedAudioContext, resumeAudioContextFromGesture } from './audio-context'
+import { getSharedAudioContext, resumeAudioContextFromGesture } from './audio-context'
 import { laneSourceExhausted } from './audioLane'
 import type { EditorProject as Project, VisualItem } from '../../schema'
 import { enabledTrackItems } from '../timeline/timeline-model'
@@ -182,6 +188,13 @@ export interface EnginePlayback {
    * Stable identity, like `getStats`.
    */
   acquireDemux: (src: string) => Promise<AcquiredDemux>
+  /**
+   * §190: whether the preview mixer plays this overlay-track video's sound
+   * (by the item's `src`), in which case its `<video>` must play muted. False
+   * outside mixer mode and for a source the plan left out. Changes identity
+   * only when what the mixer carries changes.
+   */
+  audioInMix: (src: string) => boolean
 }
 
 export function useEnginePlayback(
@@ -228,6 +241,8 @@ export function useEnginePlayback(
   // never sets `engine: {enabled: true}`, so this hook — and the gap — is
   // unreached. If a future host DOES combine `engine.enabled` with `muted`,
   // primary clip audio will still play; that combination needs its own task.
+  // §190: in mixer mode the lanes the plan covers have no GainNode here
+  // either, so the same combination would hear them too.
   const mutedRef = useRef(muted)
   useEffect(() => { mutedRef.current = muted }, [muted])
 
@@ -240,6 +255,8 @@ export function useEnginePlayback(
   const isCanvasProject = clips.length === 0
 
   const [status, setStatus] = useState<EngineStatus>(IDLE_STATUS)
+  /** §190: what the preview mixer carries. Today's path until the engine says otherwise. */
+  const [mixer, setMixer] = useState<MixerState>(NO_MIXER)
   const transportRef = useRef<EngineStatus['transport']>('idle')
 
   const engineRef = useRef<Engine | null>(null)
@@ -331,9 +348,13 @@ export function useEnginePlayback(
   // lane is (re)synced so a lane that starts or resumes mid-shuttle inherits it.
   const transportRateRef = useRef(1)
 
+  // The lanes that play through an `<audio>` element. §190: in mixer mode,
+  // only the ones the plan left out; the mixer plays the rest, and an element
+  // as well would play them twice.
   const unmutedAudioTracks = useMemo(
-    () => (project.audio?.tracks ?? []).filter(t => !t.muted && t.src),
-    [project.audio?.tracks],
+    () => (project.audio?.tracks ?? []).filter(t =>
+      !t.muted && t.src && !(mixer.active && !mixer.unconformedLanes.has(t.src))),
+    [project.audio?.tracks, mixer],
   )
   const audioTrackIdentity = useMemo(
     () => unmutedAudioTracks.map(t => `${t.id}:${t.src}`).join('|'),
@@ -463,34 +484,25 @@ export function useEnginePlayback(
   // ── Engine lifecycle ──────────────────────────────────────────────────────
 
   /** Mirror-then-forward. The ORDER is the bridge's whole contract. */
-  const emitTime = useCallback((t: number) => {
-    // `t` is frames-CONSUMED time (`samplesConsumed / sampleRate + anchor`);
-    // those frames become audible `latencySeconds` later. Painting to `t`
-    // while playing puts the picture ahead of the ear by that gap ("laggy
-    // audio") — subtract live off the shared context so a device switch
-    // (which changes `outputLatency`) is picked up on the very next tick.
-    //
-    // Skipped when NOT playing: the paused path's onTime fires from
-    // `scheduler.apply` on seek-land with the exact seek target, and
-    // compensating that would offset the scrubbed-to display.
+  const emitTime = useCallback((t: number, raw: number = t) => {
+    // `t` is the AUDIBLE time: the engine has already taken the output latency
+    // off its frames-consumed clock (§190, `scheduler.ts`'s `pictureTime`), and
+    // painted the canvas at it. The playhead and the overlays paint at the same
+    // value, so all three agree, and while paused it is the exact seek target.
+    // This used to subtract the latency here, which left the canvas alone at
+    // the raw clock and the picture ahead of the ear by the whole gap.
     //
     // The store, `rememberEmitted` and `lastEmittedRef` all mirror the
     // AUDIBLE value so the echo coming back through `currentTime` compares
-    // cleanly. `syncAudioTracks` gets the RAW `t`, though: `<audio>` elements
+    // cleanly. `syncAudioTracks` gets the RAW time, though: `<audio>` elements
     // are frames-consumed devices on the same graph, and syncing them to the
-    // audible value would double-lag their output by `latencySeconds`.
+    // audible value would double-lag their output by the latency.
     const playing = isEnginePlaying()
-    // `peek` never creates: production reaches the playing branch only after
-    // `togglePlay`'s gesture, which has already minted the shared ctx via
-    // `getSharedAudioContext()`. No ctx means no gesture yet, and the
-    // frames-consumed clock has nothing audible behind it to lag.
-    const ctx = playing ? peekSharedAudioContext() : undefined
-    const painted = ctx ? Math.max(0, t - latencySeconds(ctx)) : t
-    lastEmittedRef.current = painted
-    lastRawTimeRef.current = t
-    rememberEmitted(painted)
-    onTimeRef.current(painted)
-    syncAudioTracks(t, playing)
+    lastEmittedRef.current = t
+    lastRawTimeRef.current = raw
+    rememberEmitted(t)
+    onTimeRef.current(t)
+    syncAudioTracks(raw, playing)
   }, [syncAudioTracks])
 
   const handleStatus = useCallback((next: EngineStatus) => {
@@ -502,6 +514,10 @@ export function useEnginePlayback(
 
   const handleError = useCallback((message: string) => {
     console.warn(`[montaj] ${message}`)
+  }, [])
+
+  const handleMixer = useCallback((next: MixerState) => {
+    setMixer(next)
   }, [])
 
   // One engine per project IDENTITY. Edits go through `updateProject` below;
@@ -520,6 +536,7 @@ export function useEnginePlayback(
       onTime: emitTime,
       onStatusChange: handleStatus,
       onError: handleError,
+      onMixerChange: handleMixer,
       startProjectS: currentTimeRef.current,
     })
     engineRef.current = engine
@@ -536,8 +553,10 @@ export function useEnginePlayback(
       engineRef.current = null
       transportRef.current = 'idle'
       engine.dispose()
+      // The next engine starts on today's path and says so only on a change.
+      setMixer(NO_MIXER)
     }
-  }, [projectId, emitTime, handleStatus, handleError])
+  }, [projectId, emitTime, handleStatus, handleError, handleMixer])
 
   // Project EDITS. `updateProject` re-runs the tick against the new timeline —
   // and is the path a `preparing` clip resolves through when SSE delivers its
@@ -655,6 +674,11 @@ export function useEnginePlayback(
 
   const getStats = useCallback((): EngineStats | null => engineRef.current?.stats() ?? null, [])
 
+  const audioInMix = useCallback(
+    (src: string) => mixer.active && !mixer.unconformedOverlays.has(src),
+    [mixer],
+  )
+
   const acquireDemux = useCallback((src: string): Promise<AcquiredDemux> => {
     const engine = engineRef.current
     if (!engine) return Promise.reject(new Error('scrub-source: engine not attached'))
@@ -675,5 +699,6 @@ export function useEnginePlayback(
     attachCanvas,
     getStats,
     acquireDemux,
+    audioInMix,
   }
 }
