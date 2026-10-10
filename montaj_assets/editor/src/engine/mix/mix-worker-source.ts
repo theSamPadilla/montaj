@@ -20,8 +20,9 @@
  *     new transport generation (a seek or a rate change) drops every stream and
  *     refills from the new position; a clock report moves the fill horizon.
  *  3. **Feeding.** Every active or upcoming segment is kept `aheadS` (1.5 s)
- *     ahead of the clock, topped up once its lead falls `refillS` below that.
- *     Conformed PCM comes in by `fetch(url, { headers: { Range } })` in
+ *     ahead of the clock (0.5 s while paused), topped up once its lead falls
+ *     `refillS` below that. Conformed PCM comes in by
+ *     `fetch(url, { headers: { Range }, cache: 'no-store' })` in
  *     `blockS` (0.25 s) source blocks, through an LRU block cache capped at
  *     `cacheBytes` (64 MB). int16 becomes float32, mono becomes stereo.
  *  4. **Rate.** Per-clip speed times the transport rate is the source seconds
@@ -739,7 +740,7 @@ function requestBlock(s, b) {
   var url = s.url, fmt = s.format, ch = s.channels;
   inflight.set(key, true);
   stats.fetches++;
-  fetch(url, { headers: { Range: 'bytes=' + from + '-' + to } })
+  fetch(url, { headers: { Range: 'bytes=' + from + '-' + to }, cache: 'no-store' })
     .then(function (res) {
       if (res.status === 416) return null; // past the end of the file
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -898,7 +899,8 @@ function schedulePump() {
 
 function pump() {
   if (disposed || !port || gen < 0) return;
-  var ahead = Math.round(aheadS * outRate);
+  // Paused, a short lead: a playhead drag is a stream of seeks, each a refill per segment.
+  var ahead = Math.round((playing ? aheadS : Math.min(aheadS, 0.5)) * outRate);
   var refill = Math.round(refillS * outRate);
   var maxPost = Math.max(128, Math.round(maxPostS * outRate));
   var order = [];

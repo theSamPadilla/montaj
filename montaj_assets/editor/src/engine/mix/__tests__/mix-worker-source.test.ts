@@ -291,6 +291,10 @@ describe('the Worker feeds the worklet', () => {
     })
     rig.fromWorklet({ t: 'transport', gen: 0, anchorTime: 0, rate: 1, k: 0, playing: false })
     await rig.settle()
+    // Paused, the lead is 0.5 s: A starts at 1 s, past it.
+    expect(blocks(rig)).toHaveLength(0)
+    rig.fromWorklet({ t: 'clock', gen: 0, k: 0, playing: true })
+    await rig.settle()
 
     const segs = rig.fromWorker.find((m) => m.t === 'segments') as Msg & { segs: Array<Record<string, unknown>> }
     expect(segs.planGen).toBe(1)
@@ -330,11 +334,42 @@ describe('the Worker feeds the worklet', () => {
     for (const b of bs) for (const j of [0, b.frames - 1]) expect(frameIndex(b.pcm, j)).toBe(b.k0 + j - 24000)
   })
 
+  it('fetches PCM with cache: no-store, so Chromium\'s HTTP cache never holds it', async () => {
+    const f = fakeFetch({ [URL_A]: indexFile(SR * 4) })
+    const inits: Array<{ cache?: string }> = []
+    const rig = workerRig((url: string, init: { headers?: Record<string, string>; cache?: string }) => {
+      inits.push(init)
+      return f.fetch(url, init)
+    })
+    rig.send({ t: 'plan', planGen: 1, segments: [{ id: 'A', url: URL_A, tlStart: 0, tlEnd: 3, gain: 1 }] })
+    rig.fromWorklet({ t: 'transport', gen: 0, anchorTime: 0, rate: 1, k: 0, playing: false })
+    await rig.settle()
+    expect(inits.length).toBeGreaterThan(0)
+    expect(inits.every((i) => i.cache === 'no-store')).toBe(true)
+  })
+
+  it('paused, a stream fills 0.5 s ahead (a drag is a stream of seeks); on play it tops up to 1.5 s', async () => {
+    const f = fakeFetch({ [URL_A]: indexFile(SR * 4) })
+    const rig = workerRig(f.fetch)
+    rig.send({ t: 'plan', planGen: 1, segments: [{ id: 'A', url: URL_A, tlStart: 0, tlEnd: 3, gain: 1 }] })
+    rig.fromWorklet({ t: 'transport', gen: 0, anchorTime: 0, rate: 1, k: 0, playing: false })
+    await rig.settle()
+    let bs = blocks(rig)
+    expect(bs[bs.length - 1].k0 + bs[bs.length - 1].frames).toBe(24000)
+
+    rig.fromWorklet({ t: 'clock', gen: 0, k: 0, playing: true })
+    await rig.settle()
+    bs = blocks(rig)
+    expect(bs[bs.length - 1].k0 + bs[bs.length - 1].frames).toBe(72000)
+    for (let i = 1; i < bs.length; i++) expect(bs[i].k0).toBe(bs[i - 1].k0 + bs[i - 1].frames)
+  })
+
   it('a new generation drops the old streams and refills from the new position; the cache spares refetches', async () => {
     const f = fakeFetch({ [URL_A]: indexFile(SR * 4) })
     const rig = workerRig(f.fetch)
     rig.send({ t: 'plan', planGen: 1, segments: [{ id: 'A', url: URL_A, tlStart: 1, tlEnd: 2.5, srcIn: 0.5 }] })
-    rig.fromWorklet({ t: 'transport', gen: 0, anchorTime: 0, rate: 1, k: 0, playing: false })
+    // Playing, so the first fill is the full 1.5 s lead (paused it is 0.5 s).
+    rig.fromWorklet({ t: 'transport', gen: 0, anchorTime: 0, rate: 1, k: 0, playing: true })
     await rig.settle()
     const fetchesBefore = f.log.length
 
