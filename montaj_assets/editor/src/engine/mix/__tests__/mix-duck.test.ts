@@ -153,10 +153,12 @@ describe('the key is the lower stages', () => {
     rig.fromWorker({
       t: 'segments',
       planGen: 1,
+      // The others first: a same-stage segment then sorts AHEAD of D, so a key
+      // taken per segment rather than per stage would include it.
       segs: [
+        ...others.map((o) => seg(o.id, { ...span, stage: o.stage })),
         seg('K', { ...span, stage: 0 }),
         seg('D', { ...span, stage: 1, duck: duck(4, 10, 500) }),
-        ...others.map((o) => seg(o.id, { ...span, stage: o.stage })),
       ],
     })
     rig.fromWorker(constBlock('K', 0, 0, START, SR, keyValue))
