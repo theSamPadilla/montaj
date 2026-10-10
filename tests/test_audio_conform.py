@@ -322,3 +322,77 @@ def test_evict_ages_out_silent_entries(ws):
     ac.evict()
     assert not (d / "stale.json").exists()
     assert (d / "fresh.json").exists()
+
+
+def test_conform_follows_timestamp_hole(client, ws):
+    """A 300 ms timestamp hole is filled, as the export does (§190 T8 M1)."""
+    src = ws / "hole.m4a"
+    _ff("-f", "lavfi", "-i", "sine=f=440:d=1:r=48000",
+        "-af", "asetpts='if(gte(N,24000),PTS+0.3/TB,PTS)'", "-c:a", "aac", str(src))
+    client.post("/api/audio/conform", json={"paths": [str(src)]})
+    st = _wait_ready(client, src)
+    assert abs(st["frames"] - 62400) <= 1024
+
+
+def test_post_hit_updates_last_access(client, ws):
+    import json
+    src = _tone(ws / "a.wav")
+    client.post("/api/audio/conform", json={"paths": [str(src)]})
+    _wait_ready(client, src)
+    _wait_idle()
+    j = next(ac.cache_dir().glob("*.json"))
+    meta = json.loads(j.read_text())
+    meta["lastAccess"] = 1.0
+    j.write_text(json.dumps(meta))
+    assert client.post("/api/audio/conform", json={"paths": [str(src)]}).json()["results"][0]["status"] == "ready"
+    assert json.loads(j.read_text())["lastAccess"] > 1000.0
+
+
+def test_post_hit_protects_entry_from_eviction(client, ws):
+    import json
+    a, b = _tone(ws / "a.wav"), _tone(ws / "b.wav", freq=880)
+    for p in (a, b):
+        client.post("/api/audio/conform", json={"paths": [str(p)]})
+        _wait_ready(client, p)
+    _wait_idle()
+    ka, kb = ac.key_for(a)[0], ac.key_for(b)[0]
+    d = ac.cache_dir()
+    for k, t in ((ka, 100.0), (kb, 200.0)):  # A older than B
+        meta = json.loads((d / f"{k}.json").read_text())
+        meta["lastAccess"] = t
+        (d / f"{k}.json").write_text(json.dumps(meta))
+    client.post("/api/audio/conform", json={"paths": [str(a)]})
+    size = (d / f"{ka}.pcm").stat().st_size
+    assert ac.evict(max_bytes=size) == [kb]
+    assert (d / f"{ka}.pcm").exists()
+
+
+def test_evict_continues_past_undeletable_entry(ws, monkeypatch):
+    d = ac.cache_dir()
+    d.mkdir(parents=True)
+    for k, t in (("a", 1), ("b", 2), ("c", 3)):
+        _entry(d, k, 1000, t)
+    real = Path.unlink
+    def flaky(self, *a, **k):
+        if self.name == "a.pcm":
+            raise PermissionError("in use")
+        return real(self, *a, **k)
+    monkeypatch.setattr(Path, "unlink", flaky)
+    ac.evict(max_bytes=1000)
+    assert not (d / "b.pcm").exists()
+    assert (d / "c.pcm").exists()
+
+
+def test_shutdown_cancels_queued_futures(ws, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    pool = ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(ac, "_pool", pool)
+    gate = threading.Event()
+    pool.submit(gate.wait)
+    queued = pool.submit(lambda: 1)
+    try:
+        ac.shutdown()
+        assert queued.cancelled()
+    finally:
+        gate.set()

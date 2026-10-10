@@ -1,7 +1,7 @@
 """Conformed audio cache: every audio source decoded once to 48 kHz stereo PCM.
 
 Cache layout: `<workspace>/.cache/conformed-audio/<key>.pcm` plus `<key>.json`.
-`key` = sha1(abs path + size + mtime_ns), so an edited source gets a new key.
+`key` = sha1(CONFORM_VERSION + abs path + size + mtime_ns), so an edited source gets a new key.
 A source with no audio stream is recorded as `silent` (json only, no pcm).
 The preview mixer reads the pcm by byte range through /api/files.
 
@@ -30,6 +30,13 @@ _BYTES_PER_SAMPLE = {"pcm_s16le": 2, "pcm_f32le": 4}
 SAMPLE_RATE = 48000
 CHANNELS = 2
 
+# Bump when the conform output changes, so older cached entries are never reused.
+CONFORM_VERSION = 2
+# The export runs every clip's audio through this (encode-segment.js:95,
+# AUDIO_FILL_BY_TIMESTAMP), so its sample n is the source's timestamp n/48000.
+# The conform must do the same, or everything after a timestamp hole plays early.
+AUDIO_FILL_BY_TIMESTAMP = "aresample=async=1000:min_hard_comp=0.02:first_pts=0"
+
 CACHE_MAX_BYTES = 2 * 1024 ** 3  # 2 GB per workspace (Sam, 2026-10-09)
 MAX_JOBS = 2
 PROBE_TIMEOUT = 30                 # s, each ffprobe call
@@ -57,7 +64,7 @@ def key_for(src: Path) -> tuple[str, os.stat_result]:
     st = src.stat()
     if not stat.S_ISREG(st.st_mode):
         raise OSError(f"not a regular file: {src}")
-    raw = f"{src}\0{st.st_size}\0{st.st_mtime_ns}".encode()
+    raw = f"{CONFORM_VERSION}\0{src}\0{st.st_size}\0{st.st_mtime_ns}".encode()
     return hashlib.sha1(raw).hexdigest(), st
 
 
@@ -127,7 +134,7 @@ def _conform(src: Path, key: str, st: os.stat_result) -> None:
     try:
         r = subprocess.run(
             [ffmpeg_bin(), "-v", "error", "-y", "-i", str(src), "-map", "0:a:0",
-             "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE),
+             "-af", AUDIO_FILL_BY_TIMESTAMP, "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE),
              "-f", _FFMPEG_FMT[FORMAT], str(tmp)],
             capture_output=True, text=True, timeout=timeout,
         )
@@ -161,6 +168,14 @@ def _run_job(src: Path, key: str, st: os.stat_result) -> None:
                 _running.pop(key, None)
 
 
+def _unlink(path: Path) -> None:
+    """Windows refuses to delete a file FileResponse holds open; leave it for the next sweep."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def evict(max_bytes: int | None = None) -> list[str]:
     """Delete least-recently-accessed entries until total pcm bytes <= cap.
     Entries with a running job are never deleted. Returns evicted keys."""
@@ -186,9 +201,9 @@ def evict(max_bytes: int | None = None) -> list[str]:
             continue
         if meta.get("silent"):
             if now - meta.get("lastAccess", 0) > SILENT_MAX_AGE:
-                js.unlink(missing_ok=True)
+                _unlink(js)
         elif not (d / f"{key}.pcm").exists():  # orphan: pcm evicted, json rewritten
-            js.unlink(missing_ok=True)
+            _unlink(js)
     entries = []
     for pcm in d.glob("*.pcm"):
         key = pcm.stem
@@ -205,8 +220,8 @@ def evict(max_bytes: int | None = None) -> list[str]:
             break
         if key in running:
             continue
-        (d / f"{key}.json").unlink(missing_ok=True)
-        (d / f"{key}.pcm").unlink(missing_ok=True)
+        _unlink(d / f"{key}.json")
+        _unlink(d / f"{key}.pcm")
         total -= size
         gone.append(key)
     return gone
@@ -224,10 +239,13 @@ def start(src: Path) -> dict:
             return {"status": "running"}
         meta = _read_meta(d, key)
         if meta and (meta.get("silent") or (d / f"{key}.pcm").is_file()):
-            return _from_meta(d, key, meta)
-        _failed.pop(key, None)
-        _running[key] = _pool.submit(_run_job, src, key, st)
-    return {"status": "running"}
+            hit = meta
+        else:
+            _failed.pop(key, None)
+            _running[key] = _pool.submit(_run_job, src, key, st)
+            return {"status": "running"}
+    _touch(d, key, hit)
+    return _from_meta(d, key, hit)
 
 
 def _url(pcm: Path) -> str:
@@ -244,6 +262,15 @@ def _from_meta(d: Path, key: str, meta: dict) -> dict:
             "frames": meta["frames"], "bytes": meta["bytes"]}
 
 
+def _touch(d: Path, key: str, meta: dict) -> None:
+    """Record a cache hit, so the LRU evicts what is unused, not what is oldest."""
+    meta["lastAccess"] = time.time()
+    try:
+        _atomic_write_json(d / f"{key}.json", meta)
+    except OSError:
+        pass
+
+
 def lookup(src: Path) -> dict:
     """Status of the conform for `src`. Never starts a job. A hit updates lastAccess."""
     try:
@@ -256,12 +283,14 @@ def lookup(src: Path) -> dict:
             return {"status": "running"}
     meta = _read_meta(d, key)
     if meta and (meta.get("silent") or (d / f"{key}.pcm").is_file()):
-        meta["lastAccess"] = time.time()
-        try:
-            _atomic_write_json(d / f"{key}.json", meta)
-        except OSError:
-            pass
+        _touch(d, key, meta)
         return _from_meta(d, key, meta)
     if key in _failed:
         return {"status": "failed", "error": _failed[key]}
     return {"status": "missing"}
+
+
+def shutdown() -> None:
+    """Drop queued conforms so serve's exit does not wait on them. A running ffmpeg
+    finishes (or times out) on its own; subprocess.run keeps no handle to kill."""
+    _pool.shutdown(wait=False, cancel_futures=True)

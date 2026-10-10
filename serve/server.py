@@ -89,6 +89,8 @@ async def lifespan(app: FastAPI):
     # does not take it along: kill it here. Its project resumes on open.
     from serve.routes.projects import kill_source_downloads
     kill_source_downloads()
+    from serve.audio_conform import shutdown as shutdown_audio_conform
+    shutdown_audio_conform()
     watcher.stop()
     overlay_watcher.stop()
     lockfile.remove()
