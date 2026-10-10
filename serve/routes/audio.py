@@ -24,6 +24,8 @@ def _checked(path: str) -> Path:
         raise forbidden("forbidden", "Path is outside the allowed roots")
     if not any(_is_under(resolved, root) for root in _allowed_file_roots()):
         raise forbidden("forbidden", "Path is outside the allowed roots")
+    if resolved.exists() and not resolved.is_file():
+        raise bad_request("not_a_file", f"Not a regular file: {path}")
     return resolved
 
 

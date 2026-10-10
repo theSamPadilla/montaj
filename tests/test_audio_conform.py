@@ -239,3 +239,86 @@ def test_concurrent_requests_join_one_job(client, ws, monkeypatch):
         client.post("/api/audio/conform", json={"paths": [str(src)]})
     _wait_ready(client, src)
     assert len(calls) == 1
+
+
+def test_hung_ffmpeg_times_out_and_frees_slot(client, ws, monkeypatch):
+    src = _tone(ws / "a.wav")
+    fake = ws / "fake_ffmpeg.sh"
+    fake.write_text("#!/bin/sh\nfor last; do :; done\necho x > \"$last\"\nsleep 30\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(ac, "ffmpeg_bin", lambda: str(fake))
+    monkeypatch.setattr(ac, "FFMPEG_BASE_TIMEOUT", 0.3)
+    monkeypatch.setattr(ac, "FFMPEG_DURATION_FACTOR", 0)
+    t0 = time.time()
+    client.post("/api/audio/conform", json={"paths": [str(src)]})
+    r = _wait_ready(client, src, timeout=10)
+    assert r == {"path": str(src), "status": "failed", "error": "timeout"}
+    assert time.time() - t0 < 10
+    assert not ac._running
+    d = ac.cache_dir()
+    assert not list(d.glob("*.tmp")) and not list(d.glob("*.pcm"))
+
+
+def test_ffmpeg_timeout_is_capped():
+    assert ac._ffmpeg_timeout(0) == ac.FFMPEG_BASE_TIMEOUT
+    assert ac._ffmpeg_timeout(10) == ac.FFMPEG_BASE_TIMEOUT + 2 * 10
+    assert ac._ffmpeg_timeout(10 ** 9) == ac.FFMPEG_MAX_TIMEOUT
+
+
+def test_fifo_refused(client, ws):
+    fifo = ws / "pipe.wav"
+    os.mkfifo(fifo)
+    r = client.post("/api/audio/conform", json={"paths": [str(fifo)]})
+    assert r.status_code == 400
+    assert client.get("/api/audio/conformed", params={"path": str(fifo)}).status_code == 400
+    assert ac.start(fifo) == {"status": "missing"}
+    assert ac.lookup(fifo) == {"status": "missing"}
+
+
+def test_tmp_names_unique_per_process_and_thread(ws, monkeypatch):
+    src = _tone(ws / "a.wav")
+    seen = []
+    real = subprocess.run
+    def spy(cmd, *a, **k):
+        if cmd[0] == ac.ffmpeg_bin():
+            seen.append(cmd[-1])
+        return real(cmd, *a, **k)
+    monkeypatch.setattr(ac.subprocess, "run", spy)
+    key, st = ac.key_for(src)
+    ac._conform(src, key, st)
+    name = Path(seen[0]).name
+    assert name == f"{key}.{os.getpid()}.{__import__('threading').get_ident()}.pcm.tmp"
+
+
+def test_evict_sweeps_old_orphan_tmp_only(ws):
+    d = ac.cache_dir()
+    d.mkdir(parents=True)
+    old, new = d / "a.1.2.pcm.tmp", d / "b.1.2.pcm.tmp"
+    old.write_bytes(b"x")
+    new.write_bytes(b"x")
+    t = time.time() - 7200
+    os.utime(old, (t, t))
+    ac.evict()
+    assert not old.exists() and new.exists()
+
+
+def test_evict_sweeps_orphan_json(ws):
+    import json
+    d = ac.cache_dir()
+    d.mkdir(parents=True)
+    (d / "orphan.json").write_text(json.dumps({"lastAccess": time.time(), "silent": False}))
+    _entry(d, "live", 10, time.time())
+    ac.evict()
+    assert not (d / "orphan.json").exists()
+    assert (d / "live.json").exists() and (d / "live.pcm").exists()
+
+
+def test_evict_ages_out_silent_entries(ws):
+    import json
+    d = ac.cache_dir()
+    d.mkdir(parents=True)
+    (d / "stale.json").write_text(json.dumps({"silent": True, "lastAccess": time.time() - 31 * 86400}))
+    (d / "fresh.json").write_text(json.dumps({"silent": True, "lastAccess": time.time() - 86400}))
+    ac.evict()
+    assert not (d / "stale.json").exists()
+    assert (d / "fresh.json").exists()

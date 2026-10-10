@@ -10,6 +10,7 @@ Capped per workspace (CACHE_MAX_BYTES, least-recently-accessed evicted).
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import threading
 import time
@@ -31,6 +32,12 @@ CHANNELS = 2
 
 CACHE_MAX_BYTES = 2 * 1024 ** 3  # 2 GB per workspace (Sam, 2026-10-09)
 MAX_JOBS = 2
+PROBE_TIMEOUT = 30                 # s, each ffprobe call
+FFMPEG_BASE_TIMEOUT = 120          # s, plus FFMPEG_DURATION_FACTOR x source duration
+FFMPEG_DURATION_FACTOR = 2
+FFMPEG_MAX_TIMEOUT = 30 * 60       # s
+TMP_MAX_AGE = 3600                 # s, orphan .pcm.tmp older than this is swept
+SILENT_MAX_AGE = 30 * 86400        # s, silent entries not accessed this long are swept
 
 
 def cache_max_bytes() -> int:
@@ -48,6 +55,8 @@ def cache_dir() -> Path:
 
 def key_for(src: Path) -> tuple[str, os.stat_result]:
     st = src.stat()
+    if not stat.S_ISREG(st.st_mode):
+        raise OSError(f"not a regular file: {src}")
     raw = f"{src}\0{st.st_size}\0{st.st_mtime_ns}".encode()
     return hashlib.sha1(raw).hexdigest(), st
 
@@ -71,15 +80,32 @@ _failed: dict[str, str] = {}         # key -> error text (memory only; retried o
 _pool = ThreadPoolExecutor(max_workers=MAX_JOBS, thread_name_prefix="audio-conform")
 
 
-def _has_audio(src: Path) -> bool:
-    r = subprocess.run(
-        [ffprobe_bin(), "-v", "error", "-select_streams", "a:0",
-         "-show_entries", "stream=index", "-of", "csv=p=0", str(src)],
-        capture_output=True, text=True,
-    )
+def _probe(src: Path, *args: str) -> str:
+    try:
+        r = subprocess.run([ffprobe_bin(), "-v", "error", *args, str(src)],
+                           capture_output=True, text=True, timeout=PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:  # run() kills the child before raising
+        raise RuntimeError("timeout") from None
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip()[-400:] or "ffprobe failed")
-    return bool(r.stdout.strip())
+    return r.stdout.strip()
+
+
+def _has_audio(src: Path) -> bool:
+    return bool(_probe(src, "-select_streams", "a:0",
+                       "-show_entries", "stream=index", "-of", "csv=p=0"))
+
+
+def _duration(src: Path) -> float:
+    try:
+        return max(0.0, float(_probe(src, "-show_entries", "format=duration",
+                                     "-of", "csv=p=0")))
+    except ValueError:
+        return 0.0
+
+
+def _ffmpeg_timeout(duration: float) -> float:
+    return min(FFMPEG_MAX_TIMEOUT, FFMPEG_BASE_TIMEOUT + FFMPEG_DURATION_FACTOR * duration)
 
 
 def _conform(src: Path, key: str, st: os.stat_result) -> None:
@@ -95,17 +121,21 @@ def _conform(src: Path, key: str, st: os.stat_result) -> None:
         meta.update(format=None, frames=0, bytes=0, silent=True)
         _atomic_write_json(d / f"{key}.json", meta)
         return
-    pcm, tmp = d / f"{key}.pcm", d / f"{key}.pcm.tmp"
+    timeout = _ffmpeg_timeout(_duration(src))
+    pcm = d / f"{key}.pcm"
+    tmp = d / f"{key}.{os.getpid()}.{threading.get_ident()}.pcm.tmp"
     try:
         r = subprocess.run(
             [ffmpeg_bin(), "-v", "error", "-y", "-i", str(src), "-map", "0:a:0",
              "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE),
              "-f", _FFMPEG_FMT[FORMAT], str(tmp)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, timeout=timeout,
         )
         if r.returncode != 0:
             raise RuntimeError(r.stderr.strip()[-400:] or "ffmpeg failed")
         os.replace(tmp, pcm)
+    except subprocess.TimeoutExpired:  # run() killed the child; finally removes tmp
+        raise RuntimeError("timeout") from None
     finally:
         tmp.unlink(missing_ok=True)
     nbytes = pcm.stat().st_size
@@ -121,8 +151,9 @@ def _run_job(src: Path, key: str, st: os.stat_result) -> None:
     except Exception as exc:  # noqa: BLE001 - recorded, surfaced as status=failed
         _failed[key] = str(exc)
     finally:
-        # Evict BEFORE leaving _running so this job's own entry is protected
-        # from the sweep only by being newest; other running jobs are skipped.
+        # Evict BEFORE leaving _running: evict() snapshots _running under _lock
+        # and skips those keys, so this job's own entry (and any other running
+        # one) is never deleted. The lock guards _running, not the files.
         try:
             evict()
         finally:
@@ -139,6 +170,25 @@ def evict(max_bytes: int | None = None) -> list[str]:
         return []
     with _lock:
         running = set(_running)
+    now = time.time()
+    for tmp in d.glob("*.pcm.tmp"):  # crashed conforms
+        try:
+            if now - tmp.stat().st_mtime > TMP_MAX_AGE:
+                tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    for js in d.glob("*.json"):
+        key = js.stem
+        if key in running:
+            continue
+        meta = _read_meta(d, key)
+        if meta is None:
+            continue
+        if meta.get("silent"):
+            if now - meta.get("lastAccess", 0) > SILENT_MAX_AGE:
+                js.unlink(missing_ok=True)
+        elif not (d / f"{key}.pcm").exists():  # orphan: pcm evicted, json rewritten
+            js.unlink(missing_ok=True)
     entries = []
     for pcm in d.glob("*.pcm"):
         key = pcm.stem
