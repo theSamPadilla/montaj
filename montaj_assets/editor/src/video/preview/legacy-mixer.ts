@@ -80,6 +80,9 @@ export function createLegacyMixer(deps: LegacyMixerDeps, host: LegacyMixerHost):
   let rebuildQueued = false
   let admitPending = false
   let published = 'off'
+  /** The video's last time and whether it has stopped advancing (buffering) with the mixer left behind. */
+  let lastT = 0
+  let stalled = false
   const requested = new Set<string>()
   const admitted = new Set<string>()
 
@@ -245,9 +248,19 @@ export function createLegacyMixer(deps: LegacyMixerDeps, host: LegacyMixerHost):
 
   return {
     setPlaying(playing, projectS) {
+      stalled = false
+      lastT = projectS
       if (playing) {
-        if (rebuildQueued) rebuild()
+        // The mixer's clock is still paused here: a switch point.
+        const was = inMixer
+        if (admitPending) {
+          admit()
+          rebuild(true)
+        } else if (rebuildQueued) rebuild(true)
+        else settle(true)
         if (!inMixer || !clock) return
+        // A switch in already seeked and started it.
+        if (!was) return
         if (Math.abs(clock.now() - projectS) > MIX_DRIFT_S) clock.seek(projectS)
         clock.play()
         return
@@ -261,6 +274,8 @@ export function createLegacyMixer(deps: LegacyMixerDeps, host: LegacyMixerHost):
       }
     },
     seek(projectS) {
+      stalled = false
+      lastT = projectS
       const was = inMixer
       if (admitPending) {
         admit()
@@ -272,8 +287,23 @@ export function createLegacyMixer(deps: LegacyMixerDeps, host: LegacyMixerHost):
       if (inMixer && was) clock?.seek(projectS)
     },
     follow(projectS) {
+      const advanced = projectS !== lastT
+      lastT = projectS
+      if (stalled) {
+        // The video is buffering: the mixer waits for it rather than replaying the same stretch.
+        if (!advanced || !clock) return
+        stalled = false
+        clock.seek(projectS)
+        if (host.playing()) clock.play()
+        return
+      }
       if (!inMixer || !clock || !clock.playing) return
-      if (Math.abs(clock.now() - projectS) > MIX_DRIFT_S) clock.seek(projectS)
+      if (Math.abs(clock.now() - projectS) > MIX_DRIFT_S) {
+        if (!advanced) {
+          stalled = true
+          clock.pause()
+        } else clock.seek(projectS)
+      }
     },
     setVolume(next) {
       volume = next

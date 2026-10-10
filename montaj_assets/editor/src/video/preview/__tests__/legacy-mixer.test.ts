@@ -163,6 +163,57 @@ describe('legacy mixer (the <video> path)', () => {
     expect(clock.calls).toEqual(['seek:9.959'])
   })
 
+  it('a stalled video pauses the mixer instead of re-seeking it, and the video moving again resumes it', async () => {
+    await start()
+    await settled()
+    playing = true
+    mixer.setPlaying(true, 5)
+    clock.calls.length = 0
+    // The video is buffering at 5.0 while the mixer runs on.
+    clock.mixNow = 5.03
+    mixer.follow(5)
+    expect(clock.calls).toEqual([])
+    clock.mixNow = 5.05
+    mixer.follow(5)
+    expect(clock.calls).toEqual(['pause'])
+    clock.mixNow = 5.3
+    mixer.follow(5)
+    mixer.follow(5)
+    expect(clock.calls).toEqual(['pause'])
+    mixer.follow(5.02)
+    expect(clock.calls).toEqual(['pause', 'seek:5.02', 'play'])
+  })
+
+  it('an edit mid-play that flips the wanted mode waits for the pause or a seek', async () => {
+    await start()
+    await settled()
+    playing = true
+    mixer.setPlaying(true, 1)
+    expect(states.map((s) => s.active)).toEqual([true])
+    plan = WAITING
+    mixer.projectChanged(PROJECT)
+    await settled()
+    expect(states.map((s) => s.active)).toEqual([true])
+    expect(clock.calls).not.toContain('pause')
+    mixer.seek(2)
+    expect(states.map((s) => s.active)).toEqual([true, false])
+  })
+
+  it('a switch queued while the video was not playing happens when it starts', async () => {
+    plan = WAITING
+    await start()
+    await settled()
+    expect(states).toHaveLength(0)
+    plan = READY
+    conform.fire()
+    // Not yet rebuilt (a microtask away), and the video starts first.
+    playing = true
+    videoT = 4
+    mixer.setPlaying(true, 4)
+    expect(states.map((s) => s.active)).toEqual([true])
+    expect(clock.calls.slice(-2)).toEqual(['seek:4', 'play'])
+  })
+
   it('does not follow while the mixer is paused or not in charge', async () => {
     plan = WAITING
     await start()
