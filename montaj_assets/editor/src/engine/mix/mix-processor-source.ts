@@ -38,6 +38,18 @@
  *     queues and the report objects are built in `onmessage`, and the report
  *     and clock messages reuse one object each (the structured clone that
  *     `postMessage` makes is the only per-report cost, ~20 times a second).
+ *  6. **Ducking** (§190 T3), as the export applies it: render/mix-audio.js:162-179
+ *     runs a ducked lane through ffmpeg `sidechaincompress`, keyed by the mix
+ *     built before it. Segments mix in `stage` order, so when a stage begins
+ *     the output buffers hold exactly the lower stages' sum, before the bus
+ *     gain: that is the key. A ducked segment's detector runs over it on every
+ *     frame the clock renders, active or not (the export's runs through the
+ *     whole stream, the lane's leading silence included), with
+ *     af_sidechaincompress.c's detector and gain computer (RMS, channels
+ *     averaged, knee 2.82843; `exportDuckGain` in mix-protocol.ts is the
+ *     reference). The detector keeps its state across a seek: the export's
+ *     state there depends on key audio the mixer has not fetched, so it
+ *     settles within the attack and release time constants instead.
  *
  * Starvation is split in two for the HUD: `primingFrames` (a segment that was
  * already active when its generation began, or when it joined the plan,
@@ -84,6 +96,32 @@ function shape(curve, x) {
 
 function fin(v, d) {
   return typeof v === 'number' && v === v && v !== Infinity && v !== -Infinity ? v : d;
+}
+
+function clamp(v, lo, hi) {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+// sidechaincompress's default knee; the export leaves it as it is.
+var DUCK_KNEE = 2.82843;
+
+// af_sidechaincompress.c output_gain (downward, RMS detection, knee > 1): the
+// gain for detector level ls, a mean square above the knee's start. Inside the
+// knee it is ffmpeg's hermite_interpolation(slope, kneeStart, kneeStop,
+// kneeStart, compKneeStop, 1, 1 / ratio), written out.
+function duckGain(d, ls) {
+  var slope = 0.5 * Math.log(ls);
+  var gain;
+  if (slope < d.kneeStop) {
+    var w = d.kneeStop - d.kneeStart;
+    var t = (slope - d.kneeStart) / w;
+    var p0 = d.kneeStart, p1 = d.compKneeStop, m0 = w, m1 = w / d.ratio;
+    var t2 = t * t;
+    gain = (2 * p0 + m0 - 2 * p1 + m1) * (t2 * t) + (-3 * p0 - 2 * m0 + 3 * p1 - m1) * t2 + m0 * t + p0;
+  } else {
+    gain = (slope - d.thres) / d.ratio + d.thres;
+  }
+  return Math.exp(gain - slope);
 }
 
 class MontajMixProcessor extends AudioWorkletProcessor {
@@ -328,7 +366,32 @@ class MontajMixProcessor extends AudioWorkletProcessor {
       g: 0, gTarget: 0, gStep: 0, gLeft: 0, fresh: true,
       eg: 1, egStep: 0, egLeft: 0,
       fed: false, wasStarving: false, activeAtStart: false, starved: false, starvedFrames: 0,
+      stage: 0, dk: null, db: null,
     };
+  }
+
+  // A ducked segment's compressor: sidechaincompress's derived constants
+  // (af_sidechaincompress.c compressor_config_output) at this context's rate,
+  // and the detector state, kept across plan changes. ffmpeg rejects an option
+  // outside its range (and the export with it); the preview clamps to it.
+  setDuck(seg, d) {
+    if (!d || typeof d !== 'object') { seg.dk = null; return; }
+    var thr = clamp(fin(d.threshold, 0.125), 0.000976563, 1);
+    var ratio = clamp(fin(d.ratio, 2), 1, 20);
+    var att = clamp(fin(d.attackMs, 20), 0.01, 2000);
+    var rel = clamp(fin(d.releaseMs, 250), 0.01, 9000);
+    var dk = seg.dk || { ls: 0 };
+    var ks = thr / Math.sqrt(DUCK_KNEE);
+    dk.thres = Math.log(thr);
+    dk.ratio = ratio;
+    dk.adjKneeStart = ks * ks;
+    dk.kneeStart = Math.log(ks);
+    dk.kneeStop = Math.log(thr * Math.sqrt(DUCK_KNEE));
+    dk.compKneeStop = (dk.kneeStop - dk.thres) / ratio + dk.thres;
+    dk.att = Math.min(1, 1 / (att * this.sr / 4000));
+    dk.rel = Math.min(1, 1 / (rel * this.sr / 4000));
+    seg.dk = dk;
+    if (seg.db === null || seg.db.length < this.gainBuf.length) seg.db = new Float32Array(this.gainBuf.length);
   }
 
   applySegments(list) {
@@ -354,6 +417,8 @@ class MontajMixProcessor extends AudioWorkletProcessor {
       seg.curveIn = curveCode(p.curveIn);
       seg.curveOut = curveCode(p.curveOut);
       seg.hasFade = seg.fadeIn > 0 || (seg.fadeOut > 0 && seg.tlEnd !== Infinity);
+      seg.stage = fin(p.stage, 0);
+      this.setDuck(seg, p.duck);
       this.place(seg);
       // Already playing when it joined: its wait for a first block is priming.
       if (joined) seg.activeAtStart = seg.kStart <= this.k && this.k < seg.kEnd;
@@ -361,6 +426,8 @@ class MontajMixProcessor extends AudioWorkletProcessor {
       next.push(seg);
       byId.set(seg.id, seg);
     }
+    // Mix order (stable, so equal stages keep the plan's order).
+    next.sort(function (a, b) { return a.stage - b.stage; });
     this.segs = next;
     this.segById = byId;
   }
@@ -428,7 +495,10 @@ class MontajMixProcessor extends AudioWorkletProcessor {
     var L = out[0];
     var R = out.length > 1 ? out[1] : null;
     var n = L.length;
-    if (this.gainBuf.length < n) this.gainBuf = new Float32Array(n); // warm-up only
+    if (this.gainBuf.length < n) { // warm-up only
+      this.gainBuf = new Float32Array(n);
+      for (var d = 0; d < this.segs.length; d++) if (this.segs[d].db !== null) this.segs[d].db = new Float32Array(n);
+    }
 
     var off = 0;
     while (off < n && this.state !== S_PAUSED) {
@@ -465,7 +535,17 @@ class MontajMixProcessor extends AudioWorkletProcessor {
 
     var kRun = this.k;
     var segs = this.segs;
-    for (var s = 0; s < segs.length; s++) this.mixSeg(segs[s], L, R, off, len, kRun);
+    // Stage by stage (segs are sorted by stage). When a stage begins, L and R
+    // hold the lower stages' sum: the key its ducked segments are compressed by.
+    var s = 0;
+    while (s < segs.length) {
+      var e = s;
+      var st = segs[s].stage;
+      for (; e < segs.length && segs[e].stage === st; e++) {
+        if (segs[e].dk !== null) this.duckRun(segs[e], L, R, off, len, kRun);
+      }
+      for (; s < e; s++) this.mixSeg(segs[s], L, R, off, len, kRun);
+    }
 
     for (var j = 0; j < len; j++) {
       var g = gb[j];
@@ -474,6 +554,28 @@ class MontajMixProcessor extends AudioWorkletProcessor {
     }
     this.k = kRun + len;
     this.renderedFrames += len;
+  }
+
+  // sidechaincompress's detector over this run's key (L and R as they stand),
+  // into seg.db: a one-pole follower of the squared channel average, rising
+  // with the attack coefficient and falling with the release's. The gain is
+  // computed only where the segment plays and the level is past the knee's start.
+  duckRun(seg, L, R, off, len, kRun) {
+    var d = seg.dk, db = seg.db;
+    var ls = d.ls, att = d.att, rel = d.rel, adj = d.adjKneeStart;
+    var a = seg.kStart - kRun, b = seg.kEnd - kRun;
+    for (var j = 0; j < len; j++) {
+      var x = L[off + j];
+      if (x < 0) x = -x;
+      if (R !== null) {
+        var y = R[off + j];
+        x = (x + (y < 0 ? -y : y)) * 0.5;
+      }
+      x *= x;
+      ls += (x - ls) * (x > ls ? att : rel);
+      db[j] = j >= a && j < b && ls > adj ? duckGain(d, ls) : 1;
+    }
+    d.ls = ls;
   }
 
   mixSeg(seg, L, R, off, len, kRun) {
@@ -525,11 +627,13 @@ class MontajMixProcessor extends AudioWorkletProcessor {
       var g = seg.g, gStep = seg.gStep, gLeft = seg.gLeft, gT = seg.gTarget;
       var eg = seg.eg, egStep = seg.egStep, egLeft = seg.egLeft;
       var fade = seg.hasFade;
+      var db = seg.dk !== null ? seg.db : null;
       for (var j = i; j < stop2; j++, p += 2) {
         if (gLeft > 0) { g += gStep; if (--gLeft === 0) g = gT; }
         var e = g;
         if (egLeft > 0) { eg += egStep; if (--egLeft === 0) eg = 1; e *= eg; }
         if (fade) e *= this.fadeEnv(seg, anchor + rate * (kRun + j) / sr);
+        if (db !== null) e *= db[j];
         var o = off + j;
         L[o] += pcm[p] * e;
         if (R !== null) R[o] += pcm[p + 1] * e;

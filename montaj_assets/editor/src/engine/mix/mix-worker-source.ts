@@ -514,12 +514,17 @@ function normSeg(s) {
     fadeOut: Math.max(0, fin(s.fadeOut, 0)),
     curveIn: curveName(s.curveIn) || curve,
     curveOut: curveName(s.curveOut) || curve,
+    // §190 T3: mix order and ducking, the worklet's alone (it sorts and clamps).
+    stage: fin(s.stage, 0),
+    duck: s.duck && typeof s.duck === 'object' ? s.duck : null,
     ver: 0,
     sig: '',
   };
 }
 
-// What decides the audio a segment's blocks hold. A change here is a new version.
+// What decides the audio a segment's blocks hold. A change here is a new
+// version. Gain, fades, stage and ducking are not in it: they are applied in the
+// worklet, so changing one keeps the stream and every block already posted.
 function sigOf(s) {
   return [s.url, s.format, s.sampleRate, s.channels, s.dataOffset, s.tlStart, s.srcIn, s.speed].join('|');
 }
@@ -563,6 +568,7 @@ function postSegments() {
     segs.push({
       id: s.id, ver: s.ver, tlStart: s.tlStart, tlEnd: s.tlEnd, gain: s.gain,
       fadeIn: s.fadeIn, fadeOut: s.fadeOut, curveIn: s.curveIn, curveOut: s.curveOut,
+      stage: s.stage, duck: s.duck,
     });
   }
   port.postMessage({ t: 'segments', planGen: planGen, segs: segs });

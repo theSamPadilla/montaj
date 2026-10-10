@@ -87,6 +87,24 @@ export type MixCurve = 'linear' | 'exp' | 'log'
 
 export type MixPcmFormat = 'pcm_s16le' | 'pcm_f32le'
 
+/**
+ * §190 T3: a ducked segment's compressor, ducking as the export applies it.
+ * These are ffmpeg `sidechaincompress`'s own options, the four the export sets
+ * (render/mix-audio.js:162-176); the rest stay at ffmpeg's defaults (knee
+ * 2.82843, RMS detection, channels averaged, makeup 1, mix 1), which the
+ * worklet holds as constants. The plan builder makes these from a track's
+ * `ducking` exactly as the export does (`exportDuckParams`, audio-plan.ts).
+ */
+export interface MixDuck {
+  /** Linear level the gain reduction starts at. The export passes 0.02 (-34 dBFS). */
+  threshold: number
+  /** 1..20. */
+  ratio: number
+  /** Milliseconds, as ffmpeg takes them: its detector's time constant is a quarter of this. */
+  attackMs: number
+  releaseMs: number
+}
+
 /** One stretch of one source on the timeline. */
 export interface MixSegment {
   /** Unique within a plan. Live overrides (`setParams`) are keyed by it. */
@@ -123,6 +141,16 @@ export interface MixSegment {
   curveIn?: MixCurve
   /** Overrides `curve` for the fade-out. */
   curveOut?: MixCurve
+  /**
+   * Mix stage: the order the export sums its sources in. Default 0. A ducked
+   * segment's sidechain key is the sum of every segment at a LOWER stage, as
+   * the export keys each ducked lane by the mix built before it (the clips'
+   * audio, then the lanes in order: render/mix-audio.js:154-186). Same-stage
+   * segments are never in each other's key.
+   */
+  stage?: number
+  /** Duck this segment under the lower stages (see `stage`). Absent or null: not ducked. */
+  duck?: MixDuck | null
 }
 
 export interface MixPlan {
@@ -224,6 +252,8 @@ export interface MixSegmentParams {
   fadeOut: number
   curveIn: MixCurve
   curveOut: MixCurve
+  stage: number
+  duck: MixDuck | null
 }
 
 /** Worker → worklet. */
@@ -300,4 +330,42 @@ export function exportFadeGain(curve: MixCurve, x: number): number {
     return g < 0 ? 0 : g > 1 ? 1 : g
   }
   return Math.exp(-11.512925464970227 * (1 - c))
+}
+
+/** ffmpeg sidechaincompress's default knee, which the export leaves as it is. */
+export const DUCK_KNEE = 2.82843
+
+/**
+ * ffmpeg sidechaincompress's gain for a detector level, as the export applies
+ * it: libavfilter af_sidechaincompress.c `output_gain`, downward mode with RMS
+ * detection and the default knee. Above the knee it is the textbook
+ * `-(1 - 1/ratio) * (level dB - threshold dB)`; inside it, ffmpeg's Hermite
+ * segment. Below the knee's start, 1.
+ *
+ * `meanSquare` is the detector's value: a one-pole follower of the key's
+ * squared channel-averaged |sample| (rising with `1 / (attackMs * sr / 4000)`,
+ * falling with the release's). A key of constant |x| = a settles at a².
+ * Checked against the export's ffmpeg 8.1.2 (captured values in
+ * __tests__/mix-duck.test.ts), as the worklet's own copy is.
+ */
+export function exportDuckGain(duck: MixDuck, meanSquare: number): number {
+  const thres = Math.log(duck.threshold)
+  const kneeStartLin = duck.threshold / Math.sqrt(DUCK_KNEE)
+  if (!(meanSquare > kneeStartLin * kneeStartLin)) return 1
+  const kneeStart = Math.log(kneeStartLin)
+  const kneeStop = Math.log(duck.threshold * Math.sqrt(DUCK_KNEE))
+  const slope = 0.5 * Math.log(meanSquare)
+  let gain = (slope - thres) / duck.ratio + thres
+  if (slope < kneeStop) {
+    // hermite_interpolation(slope, kneeStart, kneeStop, kneeStart, compressedKneeStop, 1, 1 / ratio)
+    const w = kneeStop - kneeStart
+    const t = (slope - kneeStart) / w
+    const p0 = kneeStart
+    const p1 = (kneeStop - thres) / duck.ratio + thres
+    const m0 = w
+    const m1 = w / duck.ratio
+    const t2 = t * t
+    gain = (2 * p0 + m0 - 2 * p1 + m1) * (t2 * t) + (-3 * p0 - 2 * m0 + 3 * p1 - m1) * t2 + m0 * t + p0
+  }
+  return Math.exp(gain - slope)
 }

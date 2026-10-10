@@ -295,7 +295,10 @@ describe('the Worker feeds the worklet', () => {
     const segs = rig.fromWorker.find((m) => m.t === 'segments') as Msg & { segs: Array<Record<string, unknown>> }
     expect(segs.planGen).toBe(1)
     expect(segs.segs).toEqual([
-      { id: 'A', ver: 0, tlStart: 1, tlEnd: 2.5, gain: 0.8, fadeIn: 0.1, fadeOut: 0, curveIn: 'linear', curveOut: 'linear' },
+      {
+        id: 'A', ver: 0, tlStart: 1, tlEnd: 2.5, gain: 0.8, fadeIn: 0.1, fadeOut: 0, curveIn: 'linear', curveOut: 'linear',
+        stage: 0, duck: null,
+      },
     ])
 
     // A spans k [48000, 120000); the horizon is 1.5 s = 72000 frames.
@@ -370,6 +373,24 @@ describe('the Worker feeds the worklet', () => {
     const v1 = blocks(rig).filter((b) => b.ver === 1)
     expect(v1[0].k0).toBe(0)
     expect(frameIndex(v1[0].pcm, 0)).toBe(48000)
+  })
+
+  it('forwards stage and ducking to the worklet; changing either keeps the version and the stream (§190 T3)', async () => {
+    const f = fakeFetch({ [URL_A]: indexFile(SR * 4) })
+    const rig = workerRig(f.fetch)
+    const base = { id: 'A', url: URL_A, tlStart: 0, tlEnd: 3, srcIn: 0 }
+    rig.send({ t: 'plan', planGen: 1, segments: [base] })
+    rig.fromWorklet({ t: 'transport', gen: 0, anchorTime: 0, rate: 1, k: 0, playing: true })
+    await rig.settle()
+    const n0 = blocks(rig).length
+
+    const duck = { threshold: 0.02, ratio: 4, attackMs: 300, releaseMs: 500 }
+    rig.send({ t: 'plan', planGen: 2, segments: [{ ...base, stage: 3, duck }] })
+    await rig.settle()
+    const segMsgs = rig.fromWorker.filter((m) => m.t === 'segments') as Array<Msg & { segs: Array<Record<string, unknown>> }>
+    expect(segMsgs[0].segs[0]).toMatchObject({ stage: 0, duck: null })
+    expect(segMsgs[segMsgs.length - 1].segs[0]).toMatchObject({ ver: 0, stage: 3, duck })
+    expect(blocks(rig).length).toBe(n0)
   })
 
   it('stretches at speed x rate != 1 with the pitch kept, and fills exactly its span', async () => {
