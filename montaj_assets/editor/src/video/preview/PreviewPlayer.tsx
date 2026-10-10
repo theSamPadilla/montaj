@@ -825,7 +825,7 @@ function PreviewSurface({
         clearOverlayCache={clearOverlayCache}
         watchFile={watchFile}
         fileUrl={fileUrl}
-        audioInMix={playback.mode === 'engine' ? playback.audioInMix : undefined}
+        audioInMix={playback.audioInMix}
       />
 
       {/* Audio elements are managed programmatically in the playback hook */}

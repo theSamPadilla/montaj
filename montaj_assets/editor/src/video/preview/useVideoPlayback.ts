@@ -15,6 +15,8 @@ import {
   type MontajWindow,
 } from './audio-context'
 import type { EditorProject as Project, VisualItem, VisualTrack } from '../../schema'
+import { NO_MIXER, type MixerState } from '../../engine'
+import { createLegacyMixer, type LegacyMixer, type LegacyMixerDeps } from './legacy-mixer'
 import { audioEnd, effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../timeline/timeline-model'
 
 // Typed extension for video elements that cache their GainNode
@@ -135,6 +137,9 @@ export function useVideoPlayback(
   onTimeUpdate: (t: number) => void,
   fileUrl: (path: string) => string,
   muted = false,
+  // §190: the preview mixer's seams, each defaulting to the real one. `false`
+  // keeps today's path, the way `useEnginePlayback`'s `mixer` option does.
+  mixerDeps: LegacyMixerDeps | false = {},
 ) {
   // Double-buffer video elements for seamless clip transitions
   const video0Ref     = useRef<HTMLVideoElement>(null)
@@ -179,6 +184,14 @@ export function useVideoPlayback(
   const isPlayingRef = useRef(false)
   // Keep ref in sync so effects with narrow deps can read current playing state
   useEffect(() => { isPlayingRef.current = isPlaying }, [isPlaying])
+  // §190: what the preview mixer carries (see legacy-mixer.ts). While it is
+  // active the main-track <video>s are silenced here and the lanes it covers
+  // get no <audio> element; the <video> stays the clock and the mixer follows.
+  const [mixer, setMixer] = useState<MixerState>(NO_MIXER)
+  const mixOnRef = useRef(false)
+  const mixerRef = useRef<LegacyMixer | null>(null)
+  const mixerDepsRef = useRef(mixerDeps)
+  mixerDepsRef.current = mixerDeps
   const [showVideo, setShowVideo] = useState(true)
   // Bumped when a proxy fails to decode (SP3 fix B2) — the clip-identity
   // effect depends on it, so the bump forces the reload that drops the
@@ -208,6 +221,7 @@ export function useVideoPlayback(
   // Scrubs never come through here: the scrub effect updates `lastTimeRef`
   // without emitting, so seek/scrub display is unaffected.
   const emitTime = useCallback((t: number) => {
+    mixerRef.current?.follow(t)
     // `peek` never creates: production reaches this only during playback, whose
     // gesture-anchored `togglePlay` has already minted the shared ctx — no ctx
     // means no gesture yet, so the frames-consumed clock has nothing audible
@@ -341,7 +355,13 @@ export function useVideoPlayback(
   function applyClipVolume(clip: { muted?: boolean; volume?: number }) {
     const slot = activeSlotRef.current
     const gain = getVideoGain(slot)
-    if (gain) gain.gain.value = mutedRef.current ? 0 : clipGain(videoTrack, clip)
+    if (gain) gain.gain.value = videoGain(clip)
+  }
+
+  // A main-track <video>'s gain. §190: silent while the preview mixer plays the
+  // main track's sound; the element is still wired, so its gain is the switch.
+  function videoGain(clip: { muted?: boolean; volume?: number }): number {
+    return mutedRef.current || mixOnRef.current ? 0 : clipGain(videoTrack, clip)
   }
 
   // Apply video clip volume via Web Audio GainNode (supports > 1.0 amplification).
@@ -355,7 +375,11 @@ export function useVideoPlayback(
     const clip = clips[idx]
     if (!clip) return
     applyClipVolume(clip)
-  }, [clips, videoTrack, activeSlot, muted])
+    // The preloaded next clip's gain was set when it loaded: follow the mixer too.
+    const next = clips[idx + 1]
+    const nextGain = getVideoGain((1 - activeSlotRef.current) as 0 | 1)
+    if (next && nextGain) nextGain.gain.value = videoGain(next)
+  }, [clips, videoTrack, activeSlot, muted, mixer])
 
   // maxEnd for the canvas rAF clock — the furthest visual/caption end. Kept in
   // a ref, updated by its own cheap effect, so the rAF effect below doesn't tear
@@ -435,8 +459,10 @@ export function useVideoPlayback(
   // project spread, so we stabilize by comparing the *identity key* (id+muted+src)
   // rather than array reference so we don't tear down audio elements on volume drag.
   const unmutedAudioTracks = useMemo(() => {
-    return (project.audio?.tracks ?? []).filter(t => !t.muted && t.src)
-  }, [project.audio?.tracks])
+    // §190: in mixer mode only the lanes the plan left out keep an element.
+    return (project.audio?.tracks ?? []).filter(t =>
+      !t.muted && t.src && !(mixer.active && !mixer.unconformedLanes.has(t.src)))
+  }, [project.audio?.tracks, mixer])
 
   // Stable key: only changes when the set of unmuted track ids or their src changes.
   // Volume, start/end, inPoint/outPoint changes do NOT trigger element create/destroy.
@@ -503,6 +529,30 @@ export function useVideoPlayback(
       if (gain) gain.gain.value = mutedRef.current ? 0 : (track.volume ?? 1)
     }
   }, [unmutedAudioTracks, muted])
+
+  // §190: the preview mixer. Built once per mount; the <video> is the clock, so
+  // every call below hands it the video's own time. A rejecting createMixClock
+  // (no AudioWorklet, no Worker) leaves this null for good: today's path.
+  const projectRef = useRef(project)
+  projectRef.current = project
+  useEffect(() => {
+    if (mixerDepsRef.current === false) return
+    const mix = createLegacyMixer(mixerDepsRef.current, {
+      playing: () => isPlayingRef.current,
+      time: () => lastTimeRef.current,
+      project: () => projectRef.current,
+      onChange: (state) => { mixOnRef.current = state.active; setMixer(state) },
+    })
+    mixerRef.current = mix
+    return () => { mix.dispose(); mixerRef.current = null; mixOnRef.current = false }
+  }, [])
+  useEffect(() => { mixerRef.current?.projectChanged(project) }, [project])
+  useEffect(() => {
+    // A seek's pause/play events are not the user's; the seek settles it below.
+    if (seekingRef.current) return
+    mixerRef.current?.setPlaying(isPlaying, lastTimeRef.current)
+  }, [isPlaying])
+  useEffect(() => { mixerRef.current?.setVolume(muted ? 0 : 1) }, [muted, mixer])
 
   // Cleanup on unmount only. The shared AudioContext (window.__montajSharedCtx)
   // is intentionally NOT closed — it's window-scoped and reused across remounts
@@ -694,7 +744,7 @@ export function useVideoPlayback(
       if (preloadSrcRef.current !== src) { nv.src = src; nv.currentTime = effectiveInPoint(nc) }
       nv.playbackRate = clipSpeed(nc)
       const gain = ensureVideoGain(ns)
-      if (gain) gain.gain.value = mutedRef.current ? 0 : clipGain(videoTrack, nc)
+      if (gain) gain.gain.value = videoGain(nc)
       playSoon(nv)
     }
     void (activeSlotRef.current === 0 ? video0Ref.current : video1Ref.current)?.pause()
@@ -709,6 +759,7 @@ export function useVideoPlayback(
     if (Math.abs(currentTime - lastTimeRef.current) < 0.05) return
     cancelGap()
     lastTimeRef.current = currentTime
+    mixerRef.current?.seek(currentTime)
     const idx = clips.findIndex(c => currentTime >= c.start && currentTime < c.end)
     if (idx === -1) {
       // Scrubbed into a gap or image section — hide the main video so it doesn't bleed through
@@ -778,6 +829,7 @@ export function useVideoPlayback(
         const v = getActiveVideo()
         if (!v) return
         setIsPlaying(!v.paused)
+        mixerRef.current?.setPlaying(!v.paused, lastTimeRef.current)
         syncAudioTracks(lastTimeRef.current, !v.paused)
       }, 100)
     }
@@ -816,7 +868,7 @@ export function useVideoPlayback(
         inactiveVideo.playbackRate = clipSpeed(clips[nextIdx])
         const inactiveSlot = (1 - slot) as 0 | 1
         const nextGain = ensureVideoGain(inactiveSlot)
-        if (nextGain) nextGain.gain.value = mutedRef.current ? 0 : clipGain(videoTrack, clips[nextIdx])
+        if (nextGain) nextGain.gain.value = videoGain(clips[nextIdx])
       }
     }
 
@@ -876,7 +928,7 @@ export function useVideoPlayback(
             }
             nextVideo.playbackRate = clipSpeed(next)
             const nextGain = ensureVideoGain(nextSlot)
-            if (nextGain) nextGain.gain.value = mutedRef.current ? 0 : clipGain(videoTrack, next)
+            if (nextGain) nextGain.gain.value = videoGain(next)
             playSoon(nextVideo)
           }
 
@@ -1037,6 +1089,13 @@ export function useVideoPlayback(
     if (video.paused) { playFromGesture(video) } else { video.pause() }
   }
 
+  // §190: whether the preview mixer plays this overlay-track video's sound
+  // (OverlayItemsLayer mutes it when it does). Same rule as useEnginePlayback.
+  const audioInMix = useCallback(
+    (src: string) => mixer.active && !mixer.unconformedOverlays.has(src),
+    [mixer],
+  )
+
   return {
     video0Ref,
     video1Ref,
@@ -1054,5 +1113,6 @@ export function useVideoPlayback(
     clips,
     tracks0NonVideo,
     overlayTracks,
+    audioInMix,
   }
 }
