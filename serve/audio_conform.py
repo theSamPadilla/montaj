@@ -5,13 +5,18 @@ Cache layout: `<workspace>/.cache/conformed-audio/<key>.pcm` plus `<key>.json`.
 A source with no audio stream is recorded as `silent` (json only, no pcm).
 The preview mixer reads the pcm by byte range through /api/files.
 
-Capped per workspace (CACHE_MAX_BYTES, least-recently-accessed evicted).
+Capped per workspace (CACHE_MAX_BYTES, least-recently-accessed evicted; entries
+used within PROTECT_SECONDS are never evicted, so an open project keeps its sources).
+The ffmpeg runs at low priority, and `.cache` is excluded from Time Machine.
 """
 import hashlib
 import json
 import os
+import logging
+import shutil
 import stat
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -38,6 +43,8 @@ CONFORM_VERSION = 2
 AUDIO_FILL_BY_TIMESTAMP = "aresample=async=1000:min_hard_comp=0.02:first_pts=0"
 
 CACHE_MAX_BYTES = 2 * 1024 ** 3  # 2 GB per workspace (Sam, 2026-10-09)
+PROTECT_SECONDS = 30 * 60          # s, entries accessed within this are never evicted
+NICE_LEVEL = 10                    # POSIX niceness of the conform's ffmpeg
 MAX_JOBS = 2
 PROBE_TIMEOUT = 30                 # s, each ffprobe call
 FFMPEG_BASE_TIMEOUT = 120          # s, plus FFMPEG_DURATION_FACTOR x source duration
@@ -54,6 +61,47 @@ def cache_max_bytes() -> int:
         return int(v) if v else CACHE_MAX_BYTES
     except ValueError:
         return CACHE_MAX_BYTES
+
+
+_log = logging.getLogger(__name__)
+
+
+def _nice_bin() -> str | None:
+    if os.path.exists("/usr/bin/nice"):
+        return "/usr/bin/nice"
+    return shutil.which("nice")
+
+
+def _low_priority(cmd: list[str]) -> tuple[list[str], dict]:
+    """(argv, subprocess kwargs) that run `cmd` at low priority, so a conform started
+    while the user exports does not fight the export for CPU. POSIX prefixes `nice`
+    (no preexec_fn: it can deadlock in a threaded process); no nice, no prefix."""
+    if sys.platform == "win32":
+        return cmd, {"creationflags": subprocess.BELOW_NORMAL_PRIORITY_CLASS}
+    nice = _nice_bin()
+    return ([nice, "-n", str(NICE_LEVEL), *cmd] if nice else cmd), {}
+
+
+_TM_ATTR = "com.apple.metadata:com_apple_backup_excludeItem"
+_tm_done: set[str] = set()  # dirs already excluded this process
+
+
+def _exclude_from_backup(d: Path) -> None:
+    """Mark `d` excluded from Time Machine (macOS, sticky per-item xattr; no tmutil,
+    no sudo). Once per process per dir. Never fails or delays a conform."""
+    if sys.platform != "darwin":
+        return
+    key = str(d)
+    if key in _tm_done:
+        return
+    _tm_done.add(key)
+    try:
+        r = subprocess.run(["/usr/bin/xattr", "-w", _TM_ATTR, "com.apple.backupd", key],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            _log.debug("backup exclusion of %s failed: %s", key, r.stderr.strip())
+    except Exception as exc:  # noqa: BLE001 - missing binary, timeout, anything
+        _log.debug("backup exclusion of %s failed: %s", key, exc)
 
 
 def cache_dir() -> Path:
@@ -81,6 +129,7 @@ def _read_meta(d: Path, key: str) -> dict | None:
         return None
 
 
+_warned_over_budget = False  # log the over-budget case once per process
 _lock = threading.Lock()
 _running: dict[str, "object"] = {}   # key -> Future
 _failed: dict[str, str] = {}         # key -> error text (memory only; retried on next POST)
@@ -118,6 +167,7 @@ def _ffmpeg_timeout(duration: float) -> float:
 def _conform(src: Path, key: str, st: os.stat_result) -> None:
     d = cache_dir()
     d.mkdir(parents=True, exist_ok=True)
+    _exclude_from_backup(d.parent)
     now = time.time()
     meta = {
         "source": str(src), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
@@ -132,12 +182,11 @@ def _conform(src: Path, key: str, st: os.stat_result) -> None:
     pcm = d / f"{key}.pcm"
     tmp = d / f"{key}.{os.getpid()}.{threading.get_ident()}.pcm.tmp"
     try:
-        r = subprocess.run(
+        argv, extra = _low_priority(
             [ffmpeg_bin(), "-v", "error", "-y", "-i", str(src), "-map", "0:a:0",
              "-af", AUDIO_FILL_BY_TIMESTAMP, "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE),
-             "-f", _FFMPEG_FMT[FORMAT], str(tmp)],
-            capture_output=True, text=True, timeout=timeout,
-        )
+             "-f", _FFMPEG_FMT[FORMAT], str(tmp)])
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, **extra)
         if r.returncode != 0:
             raise RuntimeError(r.stderr.strip()[-400:] or "ffmpeg failed")
         os.replace(tmp, pcm)
@@ -178,7 +227,8 @@ def _unlink(path: Path) -> None:
 
 def evict(max_bytes: int | None = None) -> list[str]:
     """Delete least-recently-accessed entries until total pcm bytes <= cap.
-    Entries with a running job are never deleted. Returns evicted keys."""
+    Entries with a running job, or accessed within PROTECT_SECONDS, are never
+    deleted (the cache may sit over the cap until they age out). Returns evicted keys."""
     cap = cache_max_bytes() if max_bytes is None else max_bytes
     d = cache_dir()
     if not d.is_dir():
@@ -215,15 +265,24 @@ def evict(max_bytes: int | None = None) -> list[str]:
         entries.append((meta.get("lastAccess", 0), key, size))
     total = sum(e[2] for e in entries)
     gone = []
-    for _, key, size in sorted(entries):
+    protected_only = False
+    for last, key, size in sorted(entries):
         if total <= cap:
             break
         if key in running:
+            continue
+        if now - last < PROTECT_SECONDS:  # lastAccess is time.time() seconds
+            protected_only = True
             continue
         _unlink(d / f"{key}.json")
         _unlink(d / f"{key}.pcm")
         total -= size
         gone.append(key)
+    global _warned_over_budget
+    if protected_only and total > cap and not _warned_over_budget:
+        _warned_over_budget = True
+        _log.info("conformed-audio cache is over budget (%d > %d bytes): the rest "
+                  "was used within the last %d s and is kept", total, cap, PROTECT_SECONDS)
     return gone
 
 

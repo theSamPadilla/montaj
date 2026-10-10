@@ -192,6 +192,11 @@ def test_eviction_after_conform_with_small_cap(client, ws, monkeypatch):
     client.post("/api/audio/conform", json={"paths": [str(a)]})
     _wait_ready(client, a)
     _wait_idle()
+    import json
+    ja = next(ac.cache_dir().glob("*.json"))  # age it past the protection window
+    meta = json.loads(ja.read_text())
+    meta["lastAccess"] = 1.0
+    ja.write_text(json.dumps(meta))
     monkeypatch.setenv("MONTAJ_CONFORM_CACHE_BYTES", str(250_000))  # one 1 s entry is ~192 KB
     b = _tone(ws / "b.wav", freq=880)
     client.post("/api/audio/conform", json={"paths": [str(b)]})
@@ -280,7 +285,7 @@ def test_tmp_names_unique_per_process_and_thread(ws, monkeypatch):
     seen = []
     real = subprocess.run
     def spy(cmd, *a, **k):
-        if cmd[0] == ac.ffmpeg_bin():
+        if ac.ffmpeg_bin() in cmd:
             seen.append(cmd[-1])
         return real(cmd, *a, **k)
     monkeypatch.setattr(ac.subprocess, "run", spy)
@@ -396,3 +401,154 @@ def test_shutdown_cancels_queued_futures(ws, monkeypatch):
         assert queued.cancelled()
     finally:
         gate.set()
+
+
+# --- §191: low priority, backup exclusion, recent-use protection ---
+
+class _FakeRun:
+    def __init__(self, real, calls):
+        self.real, self.calls = real, calls
+
+    def __call__(self, cmd, *a, **k):
+        self.calls.append((cmd, k))
+        return self.real(cmd, *a, **k)
+
+
+def _ffmpeg_calls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ac.subprocess, "run", _FakeRun(subprocess.run, calls))
+    return calls
+
+
+def _conform_ffmpeg_call(client, ws, monkeypatch):
+    calls = _ffmpeg_calls(monkeypatch)
+    src = _tone(ws / "a.wav")
+    client.post("/api/audio/conform", json={"paths": [str(src)]})
+    _wait_ready(client, src)
+    ff = [c for c in calls if "-af" in c[0]]
+    assert len(ff) == 1
+    return ff[0]
+
+
+def test_conform_ffmpeg_gets_posix_priority(client, ws, monkeypatch):
+    monkeypatch.setattr(ac.sys, "platform", "linux")
+    fake = ws / "fake_nice.sh"  # drops "-n 10" and runs the rest
+    fake.write_text('#!/bin/sh\nshift 2\nexec "$@"\n')
+    fake.chmod(0o755)
+    monkeypatch.setattr(ac, "_nice_bin", lambda: str(fake))
+    cmd, kw = _conform_ffmpeg_call(client, ws, monkeypatch)
+    assert cmd[:3] == [str(fake), "-n", "10"]
+    assert "preexec_fn" not in kw and "creationflags" not in kw
+    assert kw["timeout"] > 0 and kw["capture_output"] is True
+
+
+def test_posix_argv_starts_with_nice(monkeypatch):
+    monkeypatch.setattr(ac.sys, "platform", "linux")
+    monkeypatch.setattr(ac, "_nice_bin", lambda: "/usr/bin/nice")
+    argv, kw = ac._low_priority(["ffmpeg", "-i", "x"])
+    assert argv == ["/usr/bin/nice", "-n", "10", "ffmpeg", "-i", "x"] and kw == {}
+
+
+def test_no_nice_runs_ffmpeg_unprefixed(monkeypatch):
+    monkeypatch.setattr(ac.sys, "platform", "linux")
+    monkeypatch.setattr(ac.os.path, "exists", lambda p: False)
+    monkeypatch.setattr(ac.shutil, "which", lambda n: None)
+    assert ac._low_priority(["ffmpeg", "-i", "x"]) == (["ffmpeg", "-i", "x"], {})
+
+
+def test_nice_falls_back_to_path_lookup(monkeypatch):
+    monkeypatch.setattr(ac.sys, "platform", "linux")
+    monkeypatch.setattr(ac.os.path, "exists", lambda p: False)
+    monkeypatch.setattr(ac.shutil, "which", lambda n: "/opt/nice")
+    assert ac._low_priority(["f"])[0] == ["/opt/nice", "-n", "10", "f"]
+
+
+def test_conform_ffmpeg_gets_windows_priority(monkeypatch):
+    monkeypatch.setattr(ac.sys, "platform", "win32")
+    monkeypatch.setattr(ac.subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0x4000, raising=False)
+    assert ac._low_priority(["f"]) == (["f"], {"creationflags": 0x4000})
+
+
+def test_backup_exclusion_called_once_on_darwin(client, ws, monkeypatch):
+    monkeypatch.setattr(ac.sys, "platform", "darwin")
+    ac._tm_done.clear()
+    calls = []
+    real = subprocess.run
+    def fake(cmd, *a, **k):
+        if cmd and cmd[0] == "/usr/bin/xattr":
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return real(cmd, *a, **k)
+    monkeypatch.setattr(ac.subprocess, "run", fake)
+    for n in ("a", "b"):
+        src = _tone(ws / f"{n}.wav")
+        client.post("/api/audio/conform", json={"paths": [str(src)]})
+        _wait_ready(client, src)
+    assert calls == [["/usr/bin/xattr", "-w", "com.apple.metadata:com_apple_backup_excludeItem",
+                      "com.apple.backupd", str(ws / ".cache")]]
+
+
+def test_backup_exclusion_skipped_off_darwin(client, ws, monkeypatch):
+    monkeypatch.setattr(ac.sys, "platform", "linux")
+    ac._tm_done.clear()
+    calls = _ffmpeg_calls(monkeypatch)
+    src = _tone(ws / "a.wav")
+    client.post("/api/audio/conform", json={"paths": [str(src)]})
+    _wait_ready(client, src)
+    assert not [c for c in calls if c[0][0] == "/usr/bin/xattr"]
+
+
+@pytest.mark.parametrize("exc", [FileNotFoundError("x"), subprocess.TimeoutExpired("x", 5)])
+def test_backup_exclusion_error_never_fails_conform(client, ws, monkeypatch, exc):
+    monkeypatch.setattr(ac.sys, "platform", "darwin")
+    ac._tm_done.clear()
+    real = subprocess.run
+    def fake(cmd, *a, **k):
+        if cmd and cmd[0] == "/usr/bin/xattr":
+            raise exc
+        return real(cmd, *a, **k)
+    monkeypatch.setattr(ac.subprocess, "run", fake)
+    src = _tone(ws / "a.wav")
+    client.post("/api/audio/conform", json={"paths": [str(src)]})
+    assert _wait_ready(client, src)["status"] == "ready"
+
+
+@pytest.mark.skipif(not (ac.sys.platform == "darwin" and os.path.exists("/usr/bin/xattr")),
+                    reason="macOS only")
+def test_backup_exclusion_real_xattr(tmp_path):
+    ac._tm_done.discard(str(tmp_path))
+    ac._exclude_from_backup(tmp_path)
+    out = subprocess.run(["/usr/bin/xattr", "-p", "com.apple.metadata:com_apple_backup_excludeItem",
+                          str(tmp_path)], capture_output=True, text=True)
+    assert out.stdout.strip() == "com.apple.backupd"
+
+
+def test_recent_entry_survives_eviction_old_one_goes(ws):
+    d = ac.cache_dir()
+    d.mkdir(parents=True)
+    now = time.time()
+    _entry(d, "old", 1000, now - ac.PROTECT_SECONDS - 60)
+    _entry(d, "recent", 1000, now - 60)
+    assert ac.evict(max_bytes=1000) == ["old"]
+    assert (d / "recent.pcm").exists()
+
+
+def test_recent_entry_spared_even_when_oldest(ws):
+    d = ac.cache_dir()
+    d.mkdir(parents=True)
+    now = time.time()
+    _entry(d, "recent", 1000, now - 60)
+    _entry(d, "newer", 1000, now - 10)
+    _entry(d, "old", 1000, now - 5000)
+    assert ac.evict(max_bytes=1000) == ["old"]
+
+
+def test_over_budget_with_only_recent_entries_evicts_nothing(ws):
+    d = ac.cache_dir()
+    d.mkdir(parents=True)
+    now = time.time()
+    for k in "abc":
+        _entry(d, k, 1000, now - 5)
+    ac._warned_over_budget = False
+    assert ac.evict(max_bytes=1000) == []
+    assert len(list(d.glob("*.pcm"))) == 3
