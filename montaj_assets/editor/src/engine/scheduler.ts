@@ -73,6 +73,32 @@
  *   canvas       `isCanvasProject` — a project with no track-0 video items runs
  *                the whole timeline on the fallback clock with picture
  *                `'black'`; the overlay/caption DOM layers do the drawing.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * §190: THE PROJECT CLOCK, AND THE PICTURE AT THE AUDIBLE INSTANT
+ * ─────────────────────────────────────────────────────────────────────────
+ * Two modes, never mixed. Today's path is everything above: one `MasterClock`
+ * per main-track clip, swapped at every cut. In MIXER mode
+ * (`setProjectClock`) the preview mixer's ONE clock (`ProjectClock`, which
+ * `MixClock` satisfies) drives the transport for the whole timeline: cuts,
+ * gaps and speed edits change the plan the mixer plays and never the clock,
+ * so the ownership swap below is skipped, and the sessions the host builds
+ * carry a wall clock instead of an audio one (`SourceRequest.noAudioClock`).
+ * The engine (`index.ts`) decides the mode, and switches it only while paused
+ * or at a seek.
+ *
+ * In both modes the picture is planned at the AUDIBLE time: the clock counts
+ * frames handed to the audio graph, which reach the speaker
+ * `outputLatency + baseLatency` later, so painting at the clock put the
+ * picture that far ahead of the sound (37 ms measured headless, 100-300 ms on
+ * Bluetooth). Mixer mode reads `ProjectClock.displayNow()`; today's path
+ * subtracts the latency from its clock, floored at the play or seek position so
+ * the picture holds rather than steps back when playback starts. Everything the
+ * SOUND depends on (whose clock carries it, the loop-end stop, the end) stays
+ * on the clock's own time, so a clip's audio still stops and starts exactly at
+ * its cut. `onTime` carries both: the audible time first, for the playhead and
+ * the overlays, and the clock's own time for anything that is itself an audio
+ * device on the graph (the `<audio>` lanes).
  */
 import {
   geometryAt,
@@ -792,6 +818,22 @@ export interface SourceRequest {
    * either way because `demuxCache` is keyed by `src` independently of this map.
    */
   exclusiveServer?: boolean
+  /**
+   * §190 mixer mode: the project clock carries this clip's sound, so the
+   * session gets a wall clock and no audio decoder. Omitted on today's path,
+   * so its requests stay byte-identical to what they were.
+   */
+  noAudioClock?: boolean
+}
+
+/**
+ * §190: the preview mixer's ONE project clock. `MixClock` (mix/mix-clock.ts)
+ * satisfies it. In mixer mode it drives the transport in place of every
+ * per-clip clock; the scheduler never disposes it (the engine does).
+ */
+export interface ProjectClock extends MasterClock {
+  /** Timeline seconds audible now: what the picture and the playhead paint at. */
+  displayNow(): number
 }
 
 /**
@@ -860,8 +902,12 @@ export interface SchedulerDeps {
   host: SourceHost
   painter?: Painter | null
   resolver?: SceneResolver
-  /** Playhead, every tick. T6 bridges this to the editor's `clock.set`. */
-  onTime?: (projectS: number) => void
+  /**
+   * Playhead, every tick. T6 bridges this to the editor's `clock.set`.
+   * `projectS` is the AUDIBLE time the picture was planned at; `rawS` is the
+   * clock's own (frames handed to the audio graph), equal to it while paused.
+   */
+  onTime?: (projectS: number, rawS: number) => void
   /** Called only when the status actually changes, never per tick. */
   onStatusChange?: (status: EngineStatus) => void
   onError?: (message: string) => void
@@ -869,6 +915,12 @@ export interface SchedulerDeps {
   prewarmLeadS?: number
   /** Where playback starts. Defaults to 0. */
   startProjectS?: number
+  /**
+   * §190: seconds between a frame reaching the audio graph and the speaker
+   * (`outputLatency + baseLatency`), read live every tick because a device
+   * switch changes it. Today's path paints this far behind its clock. Default 0.
+   */
+  latencyS?: () => number
 }
 
 export interface Scheduler {
@@ -892,8 +944,14 @@ export interface Scheduler {
   /** The host calls this when a clip's load resolves or fails. */
   sourceChanged(clipId: string): void
   status(): EngineStatus
-  /** Current playhead in project seconds. */
+  /** The driving clock's time in project seconds (frames handed to the audio graph; the playhead is `onTime`'s). */
   now(): number
+  /**
+   * §190: hand the transport to the preview mixer's project clock, or back to
+   * the per-clip clocks with `null`. Playing survives it, but the engine only
+   * calls this while paused or at a seek, never mid-play.
+   */
+  setProjectClock(clock: ProjectClock | null): void
   dispose(): void
 }
 
@@ -906,18 +964,39 @@ interface AppliedSnapshot {
   status: SourceState['status']
   picture: Picture
   wraps: number
+  /** `wraps` of the clip the SOUND was in (today's path re-seeks its clock on a wrap). Equal to `wraps` unless the picture trails the clock across a cut. */
+  audioWraps: number
 }
 
 class SchedulerImpl implements Scheduler {
   private project: Project
   private readonly host: SourceHost
   private readonly resolver: SceneResolver
-  private readonly onTime?: (projectS: number) => void
+  private readonly onTime?: (projectS: number, rawS: number) => void
   private readonly onStatusChange?: (status: EngineStatus) => void
   private readonly onError?: (message: string) => void
   private readonly prewarmLeadS: number
+  private readonly latencyS: () => number
 
   private painter: Painter | null
+
+  /**
+   * §190 mixer mode: the project clock, which is then also `clock`. Never
+   * disposed here; `clockOwner`/`clockSource` stay null while it is set.
+   */
+  private projectClock: ProjectClock | null = null
+  /**
+   * Today's path paints `latency` behind its clock, but never below this while
+   * playing: the play or seek position, so a start holds the picture for the
+   * latency instead of stepping it back (MixClock's `displayNow` holds the same way).
+   */
+  private displayFloor = 0
+  /** Clock time minus picture time at the last playing tick. Non-zero ⇒ `pause` repaints at the frozen clock. */
+  private paintLag = 0
+  /** The session the picture came from at the last tick. Its change is a media discontinuity. */
+  private pictureSource: ClipSource | null = null
+  /** The clip the SOUND was in at the last tick: `clipId` unless the picture trails the clock across a cut. */
+  private audioClipId: string | null = null
 
   /**
    * Always non-null. Ours to dispose when `clockOwner === null` (a wall-clock
@@ -975,6 +1054,7 @@ class SchedulerImpl implements Scheduler {
     this.onStatusChange = deps.onStatusChange
     this.onError = deps.onError
     this.prewarmLeadS = deps.prewarmLeadS ?? PREWARM_LEAD_S
+    this.latencyS = deps.latencyS ?? (() => 0)
     this.painter = deps.painter ?? null
     this.clips = track0VideoItems(deps.project)
     this.clipsTrack = track0Track(deps.project)
@@ -1006,21 +1086,32 @@ class SchedulerImpl implements Scheduler {
       return
     }
     this.transport = 'playing'
+    this.displayFloor = t
     this.clock.play()
     this.apply(t, { force: true })
   }
 
   pause(): void {
     if (this.disposed) return
-    if (this.transport === 'playing') this.transport = 'paused'
+    const wasPlaying = this.transport === 'playing'
+    if (wasPlaying) this.transport = 'paused'
     this.clock.pause()
     this.stopStream()
+    // The picture trailed the clock by the output latency, and the clock froze
+    // where the SOUND stops: bring the picture (and the playhead) to it, or the
+    // paused frame would sit `paintLag` behind the position play resumes from.
+    if (wasPlaying && this.paintLag !== 0) {
+      this.paintLag = 0
+      this.apply(this.clock.now(), { force: true })
+      return
+    }
     this.publish()
   }
 
   seek(projectS: number): void {
     if (this.disposed) return
     const t = Math.max(0, projectS)
+    this.displayFloor = t
     if (t >= this.transportEnd) {
       // Scrubbed past the end. Legacy: the scrub effect's no-next-clip branch
       // pauses the active video and calls `setIsPlaying(false)` — "the picture
@@ -1089,9 +1180,32 @@ class SchedulerImpl implements Scheduler {
   sourceChanged(clipId: string): void {
     if (this.disposed) return
     // Only the clip currently on screen can change what is painted; a prewarmed
-    // clip landing early changes nothing until its boundary arrives.
-    if (clipId !== this.clipId) return
+    // clip landing early changes nothing until its boundary arrives. The clip
+    // the sound is in counts too: its clock is the one to adopt.
+    if (clipId !== this.clipId && clipId !== this.audioClipId) return
     this.apply(this.clock.now(), { force: true })
+  }
+
+  setProjectClock(clock: ProjectClock | null): void {
+    if (this.disposed || clock === this.projectClock) return
+    const t = this.clock.now()
+    const playing = this.transport === 'playing'
+    // Let go of whatever carried time. A per-clip clock stays with its session
+    // (the host reclocks it in the `retain` below); a wall clock is ours.
+    this.clock.pause()
+    if (!this.projectClock && this.clockOwner === null) this.clock.dispose()
+    this.projectClock = clock
+    this.clockOwner = null
+    this.clockSource = null
+    // Back on today's path this is a placeholder: the apply below adopts the
+    // active clip's own clock through the ordinary ownership swap.
+    this.clock = clock ?? this.host.fallbackClock(t)
+    this.clock.seek(t)
+    if (this.transportRate !== 1) this.clock.setTransportRate(this.transportRate)
+    if (playing) this.clock.play()
+    this.displayFloor = t
+    this.seekGen++
+    this.apply(t, { force: true })
   }
 
   status(): EngineStatus {
@@ -1115,7 +1229,8 @@ class SchedulerImpl implements Scheduler {
     this.seekGen++
     this.stopStream()
     this.stopBlendStream()
-    if (this.clockOwner === null) this.clock.dispose()
+    if (!this.projectClock && this.clockOwner === null) this.clock.dispose()
+    this.projectClock = null
     this.clockOwner = null
     this.clockSource = null
     this.host.retain([])
@@ -1135,25 +1250,35 @@ class SchedulerImpl implements Scheduler {
    * only a genuine discontinuity (`seeked`, a boundary, a loop wrap, a rebuilt
    * session) does that, so a project edit during playback — an overlay drag
    * spreads the project object every frame — cannot stutter the picture.
+   *
+   * `t` is the CLOCK's time. The picture is planned at `pictureTime(t)`, the
+   * audible instant (this file's §190 header); the sound's decisions read a
+   * second plan at `t`. The two are one plan whenever they coincide, which is
+   * always while paused and always with no output latency.
    */
   private apply(t: number, opts: { force?: boolean; seeked?: boolean }): void {
     if (this.disposed) return
     if (this.transport === 'idle') this.transport = 'paused'
 
-    const plan = planTick(this.project, t, this.clips, this.resolver)
+    const tp = this.pictureTime(t, opts.seeked === true)
+    const plan = planTick(this.project, tp, this.clips, this.resolver)
+    const audioPlan = tp === t ? plan : planTick(this.project, t, this.clips, this.resolver)
     const nextClipId = plan.active?.clipId ?? null
+    const audioClipId = audioPlan.active?.clipId ?? null
 
     // ── 1. Loop-end stop — the legacy hook's THIRD loopOffset site ──────────
     // A looping clip whose project window ends mid-loop stops the transport at
     // `clip.end` rather than advancing to whatever comes next. Detected on the
     // tick that leaves the clip, since `resolveAt` is half-open and simply
     // stops returning it at `end`. See `endsOnLoopBoundary` for the other case.
+    // On the SOUND's clip and time: detected at the picture's, the clip after
+    // it would already be audible for the output latency when the stop lands.
     const leaving = this.lastLoopClip
     if (
       leaving &&
       this.transport === 'playing' &&
       !opts.seeked &&
-      nextClipId !== leaving.clipId &&
+      audioClipId !== leaving.clipId &&
       t >= (leaving.item.end ?? 0) &&
       !endsOnLoopBoundary(leaving.item, leaving.window)
     ) {
@@ -1169,19 +1294,23 @@ class SchedulerImpl implements Scheduler {
     // ── 2. Release the outgoing session BEFORE the host can dispose it ──────
     // `retain` below drops everything not in the new set, and a dropped session
     // takes its clock and its worker with it. Anything still pointing at the
-    // outgoing session has to let go here, while it is definitely alive.
-    if (nextClipId !== this.clipId) {
-      this.stopStream()
-      if (this.clockOwner !== null) this.clock.pause()
-    }
+    // outgoing session has to let go here, while it is definitely alive. The
+    // picture's stream follows the picture's clip; the clock follows the sound's.
+    if (nextClipId !== this.clipId) this.stopStream()
+    if (audioClipId !== this.audioClipId && this.clockOwner !== null) this.clock.pause()
 
     // ── 3. Declare the live-session set (prewarm lives here) ───────────────
-    this.retainFor(plan, t)
+    this.retainFor(plan, audioPlan, t)
 
     const state: SourceState = plan.active
       ? this.host.state(plan.active.clipId)
       : { status: 'idle' }
     const source = state.status === 'ready' ? state.source : null
+    let audioSource = source
+    if (audioPlan !== plan) {
+      const audioState = audioPlan.active ? this.host.state(audioPlan.active.clipId) : null
+      audioSource = audioState?.status === 'ready' ? audioState.source : null
+    }
 
     // ── 4. Picture ─────────────────────────────────────────────────────────
     let picture: Picture
@@ -1209,14 +1338,21 @@ class SchedulerImpl implements Scheduler {
     }
 
     // ── 5. Clock ownership ─────────────────────────────────────────────────
-    const owner = source ? plan.active!.clipId : null
-    const ownerChanged = owner !== this.clockOwner || source !== this.clockSource
+    // Mixer mode has ONE clock for the whole timeline: a cut, a gap or a
+    // crossfade changes the plan the mixer plays, never the clock, so nothing
+    // here swaps, and a seek is the project clock's seek (seek-to-sound).
+    // Today's path hands the clock to the clip the SOUND is in.
+    const owner = this.projectClock || !audioSource ? null : audioPlan.active!.clipId
+    const ownerChanged =
+      !this.projectClock && (owner !== this.clockOwner || audioSource !== this.clockSource)
+    const sessionChanged = source !== this.pictureSource
+    this.pictureSource = source
     if (ownerChanged) {
       if (this.clockOwner === null) this.clock.dispose()
       const wasPlaying = this.transport === 'playing'
-      this.clock = source ? source.clock : this.host.fallbackClock(t)
+      this.clock = audioSource ? audioSource.clock : this.host.fallbackClock(t)
       this.clockOwner = owner
-      this.clockSource = source
+      this.clockSource = audioSource
       // Anchored at `t`, NOT at the incoming clip's `start`.
       //
       // Legacy snaps (`lastTimeRef.current = next.start; onTimeUpdate(next.start)`)
@@ -1236,10 +1372,21 @@ class SchedulerImpl implements Scheduler {
     } else if (opts.seeked) {
       this.clock.seek(t)
       this.seekGen++
+    } else if (sessionChanged) {
+      // The picture moved to another session without the clock moving with it:
+      // always in mixer mode, and briefly after a cut while the picture trails
+      // the sound. A paused seek still in flight from the old one must not land.
+      this.seekGen++
     }
+    // A new session for the SAME frame (the host reclocking a session at a mode
+    // switch hands back a new object) would otherwise match the paused key and
+    // never repaint the seek the line above just discarded. Every other new
+    // session arrives through `preparing`, which has already cleared the key.
+    if (sessionChanged) this.paintedKey = null
 
     const clipChanged = nextClipId !== this.clipId
     this.clipId = nextClipId
+    this.audioClipId = audioClipId
     const pictureChanged = picture !== this.picture
     this.picture = picture
     this.pictureReason = reason
@@ -1256,7 +1403,7 @@ class SchedulerImpl implements Scheduler {
     // path opens its own. And on a PAUSE mid-blend, the seek path stops that
     // stream from underneath this bookkeeping; forgetting the session here is
     // what lets a resume open a fresh one instead of assuming the old one lives.
-    const incoming = picture === 'video' ? this.blendSideFor(plan, source, t) : null
+    const incoming = picture === 'video' ? this.blendSideFor(plan, source, tp) : null
     if (!incoming || this.transport !== 'playing') this.stopBlendStream()
 
     if (source && plan.active) {
@@ -1266,8 +1413,10 @@ class SchedulerImpl implements Scheduler {
       )
       const wrapped = (this.applied?.wraps ?? 0) !== plan.active.placement.wraps
       // A discontinuity in MEDIA time — the only thing a decode session cares
-      // about. `force` is absent on purpose (see the method doc).
-      const discontinuity = ownerChanged || clipChanged || wrapped || opts.seeked === true
+      // about. `force` is absent on purpose (see the method doc). A new session
+      // is one (a cut, or the same clip rebuilt); on today's path with no
+      // output latency that is exactly when the clock's owner changes.
+      const discontinuity = sessionChanged || clipChanged || wrapped || opts.seeked === true
 
       if (this.transport === 'playing') {
         if (incoming && (this.blendStream !== incoming.source || discontinuity)) {
@@ -1283,12 +1432,6 @@ class SchedulerImpl implements Scheduler {
           this.stopStream()
           source.frameServer.startStream(mediaUs)
           this.streamingSource = source
-          // A wrap resets the PICTURE's media position to the loop window's
-          // start while project time keeps climbing; the audio clock's ring
-          // must restart at that same media position too, or it keeps
-          // decoding from the pre-wrap mapping (`MasterClock.seek`'s `mediaS`
-          // param exists exactly for this).
-          if (wrapped) source.clock.seek(t, plan.active.placement.mediaS)
         }
         // The stream owns the canvas while playing; whatever a paused seek had
         // put there is long gone.
@@ -1314,22 +1457,57 @@ class SchedulerImpl implements Scheduler {
       this.stopStream()
     }
 
+    // A wrap resets the PICTURE's media position to the loop window's start
+    // while project time keeps climbing; on today's path the audio clock's ring
+    // must restart at that same media position too, or it keeps decoding from
+    // the pre-wrap mapping (`MasterClock.seek`'s `mediaS` param exists exactly
+    // for this). Read off the sound's clip, at the clock's time. In mixer mode
+    // the plan carries a looped clip's audio the way the export does
+    // (audio-plan.ts's `loop` note), and nothing is re-seeked.
+    const audioWraps = audioPlan.active?.placement.wraps ?? 0
+    if (
+      !this.projectClock &&
+      this.transport === 'playing' &&
+      audioSource &&
+      audioPlan.active &&
+      (this.applied?.audioWraps ?? 0) !== audioWraps
+    ) {
+      audioSource.clock.seek(t, audioPlan.active.placement.mediaS)
+    }
+
     // ── 7. Surface ─────────────────────────────────────────────────────────
     if (picture !== 'video' && (pictureChanged || opts.force)) {
       this.painter?.clear()
       this.paintedKey = null
     }
 
-    this.lastLoopClip = plan.active?.placement.looping ? plan.active : null
+    this.lastLoopClip = audioPlan.active?.placement.looping ? audioPlan.active : null
     this.applied = {
       t,
       clipId: nextClipId,
       status: state.status,
       picture,
       wraps: plan.active?.placement.wraps ?? 0,
+      audioWraps,
     }
-    this.onTime?.(t)
+    this.paintLag = this.transport === 'playing' ? t - tp : 0
+    this.onTime?.(tp, t)
     this.publish()
+  }
+
+  /**
+   * Where the PICTURE is when the clock reads `t`: the audible instant (this
+   * file's §190 header). The clock's own time while paused and on a seek,
+   * where it is exactly where the user put it.
+   */
+  private pictureTime(t: number, seeked: boolean): number {
+    if (seeked || this.transport !== 'playing') return t
+    if (this.projectClock) return this.projectClock.displayNow()
+    const latency = this.latencyS()
+    if (!(latency > 0)) return t
+    const rate = this.transportRate
+    const v = t - rate * latency
+    return rate > 0 ? Math.max(v, this.displayFloor) : Math.min(v, this.displayFloor)
   }
 
   /**
@@ -1350,8 +1528,12 @@ class SchedulerImpl implements Scheduler {
    * (`withTrackAudio`). The plan's own items are untouched — only what crosses
    * into the host is derived — so the picture side keeps reading the project's
    * real objects.
+   *
+   * `audioPlan` is the clock-time plan (see `apply`). Its active clip is the
+   * picture plan's `next` whenever the two differ, but it is named outright:
+   * its clock carries the sound from the cut on, whatever the prewarm lead.
    */
-  private retainFor(plan: TickPlan, t: number): void {
+  private retainFor(plan: TickPlan, audioPlan: TickPlan, t: number): void {
     const requests: SourceRequest[] = []
     if (plan.active && plan.active.src) {
       requests.push({
@@ -1359,6 +1541,7 @@ class SchedulerImpl implements Scheduler {
         item: withTrackAudio(this.clipsTrack, plan.active.item),
         src: plan.active.src,
         anchorProjectS: t,
+        ...(this.projectClock ? { noAudioClock: true } : {}),
       })
     }
     // The incoming side of a crossfade, named outright. `prev` happens to cover
@@ -1390,7 +1573,15 @@ class SchedulerImpl implements Scheduler {
         !!src && src === plan.active?.src,
       )
     }
-    if (plan.next && plan.next.start - t <= this.prewarmLeadS) {
+    const audioActive = audioPlan === plan ? null : audioPlan.active
+    if (audioActive) {
+      this.pushRetain(requests, {
+        item: audioActive.item,
+        clipId: audioActive.clipId,
+        start: audioActive.item.start,
+      })
+    }
+    if (plan.next && plan.next.start - plan.t <= this.prewarmLeadS) {
       this.pushRetain(requests, plan.next)
     }
     if (plan.prev) {
@@ -1425,6 +1616,7 @@ class SchedulerImpl implements Scheduler {
       // comparison reads it as a plain boolean, and an undefined field keeps
       // every non-blend request byte-identical to what it was before 9b.
       ...(exclusiveServer ? { exclusiveServer: true } : {}),
+      ...(this.projectClock ? { noAudioClock: true } : {}),
     })
   }
 
