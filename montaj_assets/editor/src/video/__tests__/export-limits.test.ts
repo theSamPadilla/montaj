@@ -165,6 +165,32 @@ describe('availableResolutionTiers', () => {
     expect(tiers.some(([w, h]) => Math.min(w, h) === 1440)).toBe(false)
   })
 
+  // §199: the export dialog writes the chosen tier into settings.resolution, so a
+  // cap taken from that setting alone was one-way: pick 720p once on a project
+  // with no footage dims and 1080p was gone from the choices for good.
+  it('a canvas project lowered to 720p still offers 1080p, so the choice can be undone', () => {
+    const p = makeProject({ settings: { resolution: [720, 1280] }, tracks: vtracks([]) })
+    const shorts = availableResolutionTiers(p).map(([w, h]) => Math.min(w, h))
+    expect(shorts).toEqual([720, 1080])
+    expect(currentResolutionTier(p)).toEqual([720, 1280])
+  })
+
+  it('clips with unknown source dims lowered to 720p still offer 1080p', () => {
+    const p = makeProject({
+      settings: { resolution: [1280, 720] },
+      tracks: vtracks([videoClip({ sourceWidth: undefined, sourceHeight: undefined })]),
+    })
+    expect(availableResolutionTiers(p).map(([w, h]) => Math.min(w, h))).toEqual([720, 1080])
+  })
+
+  it('known footage still caps: a 720p source never offers 1080p', () => {
+    const p = makeProject({
+      settings: { resolution: [720, 1280] },
+      tracks: vtracks([videoClip({ sourceWidth: 720, sourceHeight: 1280 })]),
+    })
+    expect(availableResolutionTiers(p).map(([w, h]) => Math.min(w, h))).toEqual([720])
+  })
+
   it('falls back to a single entry equal to settings.resolution when source is below every tier', () => {
     const p = makeProject({
       settings: { resolution: [1080, 1920] },

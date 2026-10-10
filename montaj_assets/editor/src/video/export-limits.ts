@@ -10,6 +10,10 @@ export const STANDARD_RESOLUTION_TIERS = [720, 1080, 1440, 2160] as const
 
 export const STANDARD_FPS_TIERS = [24, 30, 60] as const
 
+/** The lowest short side the resolution choices are capped at when no footage
+ *  dims say otherwise: the design size a project starts at. */
+const NO_SOURCE_CAP_FLOOR = 1080
+
 // ── Internal helpers ────────────────────────────────────────────────────────
 
 /** Max, across video items with known source dims, of `min(sourceWidth, sourceHeight)`.
@@ -87,7 +91,11 @@ export function maxExportFps(project: Project): number {
  *  is below every standard tier. */
 export function availableResolutionTiers(project: Project): Array<[number, number]> {
   const maxShort = maxSourceShortSide(project)
-  const capShort = maxShort ?? Math.min(...project.settings.resolution)
+  // No footage dims to cap at (a canvas project, or clips with unknown dims):
+  // the project's own resolution, but never below 1080. The export dialog
+  // writes the chosen tier into `settings.resolution`, so a cap taken from it
+  // alone was one-way: pick 720p once and 1080p was gone for good (§199).
+  const capShort = maxShort ?? Math.max(Math.min(...project.settings.resolution), NO_SOURCE_CAP_FLOOR)
 
   const tiers = STANDARD_RESOLUTION_TIERS.filter(t => t <= capShort).map(t => tierToResolution(t, project))
   return tiers.length > 0 ? tiers : [project.settings.resolution]

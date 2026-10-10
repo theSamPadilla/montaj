@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (editor): on a project with no footage, choosing 720p in the export dialog removed 1080p from the choices for good.** The resolution choices were capped at the project's own resolution, which the dialog itself writes; with no footage dims to cap at, the cap is now never below 1080, so the choice can be undone. Known footage still caps as before. (`montaj_assets/editor/src/video/export-limits.ts`)
+
 ## v5.29.3
 
 - **Fixed (render): a clip in two transitions back to back lost the first one in the export.** With A crossfading into B and B into C, the export hard-cut from A to B (and played both clips' sound at full level over the overlap) while the preview blended them. Each clip stamped one crossfade, so B's second transition overwrote its first; a clip now carries both spans and each segment uses the one it falls in. Projects with no clip in two transitions export byte-identically. (`montaj_assets/render/render.js`, `encode-segment.js`)
