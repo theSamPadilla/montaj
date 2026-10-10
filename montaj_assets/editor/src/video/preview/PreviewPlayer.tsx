@@ -807,6 +807,7 @@ function PreviewSurface({
         isPlaying={isPlaying}
         isCanvasProject={isCanvasProject}
         overlayTracks={overlayTracks}
+        muted={!!muted}
         tracks0NonVideo={tracks0NonVideo}
         renderScale={renderScale}
         selectedOverlayId={selectedOverlayId}

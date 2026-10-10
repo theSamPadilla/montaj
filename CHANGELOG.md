@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (editor): muting a whole video track did not silence its clips in the preview** when the track sits above the main one. A clip on an upper track plays through its own `<video>` element, which read only the clip's own mute, so the track's mute (and its volume) were ignored and each clip had to be muted one by one; the export already honoured both. That element now folds the track in with `effectiveItemAudio`, as the main track, the playback engine and the export do: mute is either/or, volume multiplies (capped at full volume, the most a `<video>` element can play). It also follows the player's own `muted` (a silent host such as a hover preview), which it ignored as well. (`montaj_assets/editor/src/video/preview/OverlayItemsLayer.tsx`, `PreviewPlayer.tsx`)
+
 ## v5.28.4
 
 - **Maintenance release.** No functional changes; the Montaj app pins it so templates can require the app version that ships with it.

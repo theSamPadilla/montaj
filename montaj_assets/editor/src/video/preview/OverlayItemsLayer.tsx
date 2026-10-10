@@ -4,7 +4,7 @@ import { isProxyUsable, markProxyFailed } from './proxySupport'
 import { mediaBoxStyle, perAxisRatio } from './transformStyle'
 import { sourceCropVideoStyle } from './sourceCropStyle'
 import CroppedImage from './CroppedImage'
-import type { EditorProject as Project, VisualItem } from '../../schema'
+import type { EditorProject as Project, VisualItem, VisualTrack } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
 import { getOverlayDesignCanvas } from '../design-canvas'
@@ -12,7 +12,7 @@ import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
 import { useFontEpoch } from '../../lib/use-font-epoch'
 import type { Corner, Edge, OverlayChanges } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
-import { enabledTrackItems, withEnabledItemTracks } from '../timeline/timeline-model'
+import { effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../timeline/timeline-model'
 
 // Mount video items this many seconds before item.start so the frame is ready.
 //
@@ -25,9 +25,10 @@ import { enabledTrackItems, withEnabledItemTracks } from '../timeline/timeline-m
 const VIDEO_PRELOAD_S = 0.4
 
 // Synced video overlay — seeks to the correct position within the item's inPoint/outPoint range
-function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlaying, muted, visible, cropStyle, onSrcError }: {
+function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlaying, muted, volume = 1, visible, cropStyle, onSrcError }: {
   src: string; currentTime: number; itemStart: number; inPoint: number; speed?: number
-  isPlaying: boolean; muted?: boolean; visible: boolean
+  /** The clip's EFFECTIVE mute and volume (`effectiveItemAudio`): its track's settings folded in. */
+  isPlaying: boolean; muted?: boolean; volume?: number; visible: boolean
   /** The item's `sourceCrop` as CSS (`sourceCropVideoStyle`), or null to contain the whole source. */
   cropStyle?: React.CSSProperties | null
   onSrcError?: () => void
@@ -38,6 +39,18 @@ function OverlayVideo({ src, currentTime, itemStart, inPoint, speed = 1, isPlayi
   const visibleRef   = useRef(visible)
   useEffect(() => { isPlayingRef.current = isPlaying }, [isPlaying])
   useEffect(() => { visibleRef.current   = visible   }, [visible])
+
+  // This element is not wired through a Web Audio graph (unlike the base
+  // track's slots in useVideoPlayback.ts), so its own mute and volume ARE what
+  // is heard. Set as properties: React's `muted` attribute is not reliably
+  // reflected after mount. A `<video>` cannot amplify, so a boost past 1 plays
+  // at full volume (the export can go louder).
+  useEffect(() => {
+    const v = ref.current
+    if (!v) return
+    v.muted = !!muted
+    v.volume = Math.min(1, Math.max(0, volume))
+  }, [muted, volume])
 
   // On mount: seek to the frame that will be shown at itemStart so it's ready when it becomes visible.
   // Do NOT call play() here — the play/pause effect handles that and runs on mount too.
@@ -453,6 +466,8 @@ interface OverlayItemsLayerProps {
   clearOverlayCache?: (src?: string) => void
   watchFile?: (path: string, onChange: () => void, projectId?: string) => () => void
   fileUrl: (path: string) => string
+  /** The player's own mute (PreviewPlayer's `muted`, for a silent host such as a hover preview). */
+  muted?: boolean
 }
 
 export default function OverlayItemsLayer({
@@ -478,6 +493,7 @@ export default function OverlayItemsLayer({
   clearOverlayCache,
   watchFile,
   fileUrl,
+  muted = false,
 }: OverlayItemsLayerProps) {
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
   // An overlay `src` may be relative to the project (`overlays/x.jsx`). Bound
@@ -508,6 +524,19 @@ export default function OverlayItemsLayer({
   // identical track array 30-60 times a second. Keyed on `project` it runs once
   // per edit, and only the genuinely time-dependent `resolveAt` runs per frame.
   const previewProject = useMemo(() => withEnabledItemTracks(project), [project])
+
+  // Each item's own track, by item id, for the audio fold below: an overlay
+  // track's video plays through its own element, so its track's mute and
+  // volume are folded in here (`effectiveItemAudio`, the rule render.js's
+  // `collectAllItems` applies to the export). By id, because the item arrays
+  // this layer is handed carry no track settings.
+  const trackOfItem = useMemo(() => {
+    const byId = new Map<string, VisualTrack>()
+    for (const track of enabledTracks(project)) {
+      for (const item of track.items ?? []) byId.set(item.id, track)
+    }
+    return byId
+  }, [project])
 
   // The resolver's Scene at this instant — the SAME `resolveAt` call the canvas
   // engine's `previewResolver` makes (engine/scheduler.ts), so this layer and
@@ -834,6 +863,7 @@ export default function OverlayItemsLayer({
 
           // Video items (preview uses raw src; remove_bg compositing only happens at final render)
           if (item.type === 'video' && item.src) {
+            const audio = effectiveItemAudio(trackOfItem.get(item.id), item)
             // The export crops the source BEFORE fitting it to the box
             // (encode-segment.js: `crop=` ahead of `scale=…:decrease`), and only
             // when the item records its source dims; `sourceCropVideoStyle` makes
@@ -886,7 +916,8 @@ export default function OverlayItemsLayer({
                     inPoint={item.inPoint ?? 0}
                     speed={item.speed ?? 1}
                     isPlaying={isPlaying}
-                    muted={item.muted}
+                    muted={muted || audio.muted}
+                    volume={audio.volume}
                     visible={visible}
                     cropStyle={cropStyle}
                     key={`vid-${item.id}`}
