@@ -433,8 +433,8 @@ export interface EditorProject {
      *  default for every project until the operator picks a platform). */
     socialPreview?: 'tiktok' | 'youtube' | 'instagram'
     /** Whether dragging the playhead plays audible scrub grains (tape
-     *  jog-wheel feel) — see engine/scrub-source.ts. Default false (opt-in);
-     *  an explicit `true` persists the operator's opt-in. */
+     *  jog-wheel feel) — see engine/scrub-source.ts. Default true; an
+     *  explicit `false` persists the operator's opt-out (the ear button). */
     audibleScrub?: boolean
     /** Sub-frame motion blur: N (1-8) evenly spaced sub-frames captured per
      *  output frame and averaged. Absent or 1 = off. Render time and temp disk

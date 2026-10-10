@@ -1160,7 +1160,9 @@ function ReviewSurface<P extends Project>({
   // Declared ahead of the scrub effect below (rather than alongside
   // currentSocialPreview further down) because that effect
   // reads it to seed the scrubber's initial enabled state.
-  const currentAudibleScrub = project.settings?.audibleScrub ?? false
+  // On by default (Sam, 2026-10-09); a project that turned it off saved an
+  // explicit `false`, which keeps it off.
+  const currentAudibleScrub = project.settings?.audibleScrub ?? true
 
   // Audible drag-scrub: one grain-per-move scrubber for the life of the
   // surface, attached to the same hover store the preview reads. `resolve`
@@ -1233,8 +1235,8 @@ function ReviewSurface<P extends Project>({
   // Persist the audible drag-scrub toggle into project settings — same
   // save-then-sync idiom: a real user edit through sync.mutate. SET-always (unlike
   // handleSocialPreviewChange's omit-key below): a boolean has no natural
-  // "unset" state, and default-off means an explicit `true` has to persist
-  // the operator's opt-in.
+  // "unset" state, and default-on means an explicit `false` has to persist
+  // the operator's opt-out.
   const handleAudibleScrubChange = useCallback((on: boolean) => {
     void syncMutate(() => {
       const cur = syncProjectRef.current

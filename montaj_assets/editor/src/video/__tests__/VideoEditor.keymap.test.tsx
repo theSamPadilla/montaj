@@ -1079,3 +1079,35 @@ describe('VideoEditor — preview controls row', () => {
     expect(screen.getByLabelText('Zoom in').closest('div')?.textContent).toContain('1.0×')
   })
 })
+
+// Sam, 2026-10-09: scrubbing plays audio by default. The ear button turns it
+// off, and that choice is saved as an explicit `audibleScrub: false`, so it
+// sticks; a project that never touched it gets the new default.
+describe('VideoEditor — audible scrub is on by default', () => {
+  const ear = () => screen.getByRole('button', { name: 'Toggle audible drag-scrub' })
+
+  it('a project that never set it scrubs with audio', async () => {
+    const project = makeVideoProject()
+    render(<VideoEditor project={project} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByLabelText('Preview axis')
+    expect(ear()).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('a project that turned it off keeps it off', async () => {
+    const project = makeVideoProject({ settings: { resolution: [1080, 1920], fps: 30, audibleScrub: false } } as Partial<Project>)
+    render(<VideoEditor project={project} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByLabelText('Preview axis')
+    expect(ear()).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('the ear button turns it off and saves that, so it sticks', async () => {
+    const adapter = makeFakeAdapter()
+    const project = makeVideoProject()
+    render(<VideoEditor project={project} adapter={adapter} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByLabelText('Preview axis')
+    fireEvent.click(ear())
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+    expect(lastSaved(adapter).settings?.audibleScrub).toBe(false)
+    expect(ear()).toHaveAttribute('aria-pressed', 'false')
+  })
+})

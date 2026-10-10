@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Changed (editor): scrubbing plays audio by default** (the ear button turns it off). A project that turned it off keeps it off. (`montaj_assets/editor/src/video/VideoEditor.tsx`)
 - **Fixed (editor): muting a whole video track did not silence its clips in the preview** when the track sits above the main one. A clip on an upper track plays through its own `<video>` element, which read only the clip's own mute, so the track's mute (and its volume) were ignored and each clip had to be muted one by one; the export already honoured both. That element now folds the track in with `effectiveItemAudio`, as the main track, the playback engine and the export do: mute is either/or, volume multiplies (capped at full volume, the most a `<video>` element can play). It also follows the player's own `muted` (a silent host such as a hover preview), which it ignored as well. (`montaj_assets/editor/src/video/preview/OverlayItemsLayer.tsx`, `PreviewPlayer.tsx`)
 - **Fixed (overlay runtime): a 3D overlay drew as a small box in the top-left of the editor preview** instead of filling the frame. The preview scales the design canvas with a CSS transform, and the 3D canvas re-measured its container after that transform on every re-render; it now measures the container's layout size (`resize: { offsetSize: true }`), so 3D overlays fill the frame in the editor preview as they do in renders. (`montaj_assets/overlay-runtime/canvas-wrapper.js`)
 

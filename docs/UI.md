@@ -590,9 +590,9 @@ already shares, and both apply to the WebCodecs engine and the legacy
   parallel with (and never touching) the master playback graph.
 - **The toggle.** An ear button sits in the editor toolbar, alongside the
   other editing tools (undo/redo, split, snap, crop, audio polish). It
-  reflects and sets `settings.audibleScrub` on the project, off by default
-  (opt in), and persists per project the same way the other preview settings
-  do.
+  reflects and sets `settings.audibleScrub` on the project, on by default
+  (turning it off saves an explicit `false`), and persists per project the
+  same way the other preview settings do.
 - **Device caveat.** Past about 80ms of combined output latency, the toggle
   disables itself automatically — a grain fired at a scrub position that far
   behind no longer reads as instant. Bluetooth output commonly reports
