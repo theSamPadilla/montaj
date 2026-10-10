@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.1.0
+
 - **Changed: the preview mixes its audio from one clock.** Once serve has conformed the sources, one AudioWorklet mixes the main track, overlay videos and lanes with the export's rules (speed, crossfades, fades, curves, ducking, mute), so there is no silence at cuts, and the picture, overlays and playhead are painted at the audible time (output latency compensated). Scrubbing and the reverse shuttle sound lanes and reversed audio. The `<video>` player uses the same mixer; an unconformed source keeps the previous behaviour. Needs serve's `POST /api/audio/conform` and `GET /api/audio/conformed`; a host without them stays on the previous path.
 
 ## 2.0.11

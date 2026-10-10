@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.29.0
+
 - **Changed (editor): the preview's sound is mixed from one clock, the way professional editors do it.** No silence at a cut, a crossfade blends both clips' audio, audio lanes and overlay videos stay on the same clock as the main track, and the picture, overlays and playhead are painted at the time you hear (the output latency is compensated, so Bluetooth no longer puts the picture ahead of the sound). Seeking starts sound sooner, and scrubbing (playhead drag and the reverse shuttle) is audible on lanes and in reverse. The mixer follows the export's own rules for speed, fades, curves, volume, mute and ducking. A source that cannot be prepared keeps the previous preview behaviour. Mechanism: serve decodes each audio source once, from the original, to a cached PCM file, and one AudioWorklet mixes every segment and owns the project clock, fed by a Worker. (`montaj_assets/editor/src/engine/mix/`, `engine/scheduler.ts`, `engine/index.ts`, `engine/scrub-source.ts`, `video/preview/legacy-mixer.ts`)
 - **Added (serve): `POST /api/audio/conform` and `GET /api/audio/conformed?path=`.** The first starts a conform of up to a batch of audio paths into 48 kHz int16 stereo PCM under `<workspace>/.cache/conformed-audio/` (keyed by path, size and mtime; 2 GB per workspace, least recently used evicted) and answers a status per path (`running`, `ready`, `silent`, `failed`, `missing`); the second reports one path without starting a job. The PCM is read by byte range through `/api/files`. (`serve/routes/audio.py`, `serve/audio_conform.py`)
 - **Changed (editor): scrubbing plays audio by default** (the ear button turns it off). A project that turned it off keeps it off. (`montaj_assets/editor/src/video/VideoEditor.tsx`)
