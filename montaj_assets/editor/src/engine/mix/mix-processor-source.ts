@@ -116,6 +116,20 @@ function clamp(v, lo, hi) {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
+var LIMIT_KNEE = 0.9;
+var LIMIT_ROOM = 0.1; // 1 - LIMIT_KNEE
+
+// Identity up to LIMIT_KNEE; above it the excess u (in units of the room left)
+// goes through u / (1 + u), which has slope 1 at the knee and approaches 1 from
+// below, so the output is continuous, smooth and within [-1, 1].
+function softLimit(x) {
+  var a = x < 0 ? -x : x;
+  if (a <= LIMIT_KNEE) return x;
+  var u = (a - LIMIT_KNEE) / LIMIT_ROOM;
+  var y = LIMIT_KNEE + LIMIT_ROOM * (u / (1 + u));
+  return x < 0 ? -y : y;
+}
+
 // sidechaincompress's default knee; the export leaves it as it is.
 var DUCK_KNEE = 2.82843;
 
@@ -565,8 +579,14 @@ class MontajMixProcessor extends AudioWorkletProcessor {
     return !this.disposed;
   }
 
+  // Grains from several lanes, and overlapping grains, sum with no headroom, so
+  // a fast scrub over loud material could pass full scale. Where grains were
+  // added, the bus goes through softLimit: untouched up to 0.9, then a smooth
+  // knee that approaches 1 and never reaches past it. The steady path (no
+  // grains) never gets here.
   mixGrains(L, R, n) {
     var grains = this.grains;
+    var top = 0;
     for (var i = 0; i < grains.length; i++) {
       var g = grains[i];
       var pcm = g.pcm;
@@ -581,6 +601,11 @@ class MontajMixProcessor extends AudioWorkletProcessor {
       }
       g.pos += m;
       if (g.pos >= g.frames) g.pcm = null;
+      if (m > top) top = m;
+    }
+    for (var q = 0; q < top; q++) {
+      L[q] = softLimit(L[q]);
+      if (R !== null) R[q] = softLimit(R[q]);
     }
   }
 

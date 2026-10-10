@@ -204,8 +204,8 @@ describe('worklet: scrub grains', () => {
     rig.fromWorker(constGrain('A', 128, 1))
     expect(Array.from(rig.render(1)[0]).every((v) => v === 0)).toBe(true)
     rig.send({ t: 'params', segments: { A: { mute: false } } })
-    rig.fromWorker(constGrain('A', 128, 1))
-    expect(rig.render(1)[0][10]).toBeCloseTo(1, 6)
+    rig.fromWorker(constGrain('A', 128, 0.8))
+    expect(rig.render(1)[0][10]).toBeCloseTo(0.8, 6)
   })
 
   it('take the master gain and the plan\'s fades at the grain\'s timeline position', () => {
@@ -230,6 +230,37 @@ describe('worklet: scrub grains', () => {
     rig.fromWorker(constGrain('A', 256, 1))
     const [L] = rig.render(1) // nothing is queued for A, so the mix is silent; the grain is not heard
     expect(L[100]).toBe(0)
+  })
+
+  it('are limited where they sum: several loud grains stay within full scale, smoothly', () => {
+    const rig = paused([seg('A'), seg('B', { ver: 2 }), seg('C', { ver: 3 })])
+    rig.fromWorker(constGrain('A', 256, 0.9))
+    rig.fromWorker(constGrain('B', 256, 0.8, { ver: 2 }))
+    rig.fromWorker(constGrain('C', 256, -1, { ver: 3 })) // negative side, too
+    rig.fromWorker(constGrain('A', 256, 0.9))
+    rig.fromWorker(constGrain('B', 256, 0.8, { ver: 2 }))
+    const [L, R] = rig.render(2) // 0.9 + 0.8 + 0.9 + 0.8 - 1 = 2.4 before the limiter
+    for (const ch of [L, R]) {
+      for (let i = 0; i < 256; i++) expect(Math.abs(ch[i])).toBeLessThanOrEqual(1)
+      expect(ch[10]).toBeGreaterThan(0.9) // louder than the knee, not flattened to it
+      expect(ch[10]).toBeLessThan(1)
+    }
+    const neg = paused([seg('A'), seg('B', { ver: 2 })])
+    neg.fromWorker(constGrain('A', 128, -0.9))
+    neg.fromWorker(constGrain('B', 128, -0.9, { ver: 2 }))
+    const v = neg.render(1)[0][10]
+    expect(v).toBeLessThan(-0.9)
+    expect(v).toBeGreaterThanOrEqual(-1)
+  })
+
+  it('leave a single grain at normal level untouched, up to the knee', () => {
+    for (const l of [0.01, 0.5, 0.9, -0.9]) {
+      const rig = paused()
+      rig.fromWorker(constGrain('A', 128, l))
+      const [L, R] = rig.render(1)
+      expect(Math.abs(L[10] - l)).toBeLessThan(1e-6)
+      expect(Math.abs(R[10] - l)).toBeLessThan(1e-6)
+    }
   })
 
   it('allocate nothing while they sound: fixed slots, no typed arrays made in process()', () => {

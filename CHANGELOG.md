@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Changed (serve): the audio conform cache is gentler on the machine and keeps a project's own sources.** The conform's ffmpeg runs at low priority (nice 10; below-normal on Windows), so opening a project while exporting does not slow the export; `.cache` is excluded from Time Machine on macOS (the sticky per-item exclusion, no prompt); and entries used in the last 30 minutes are never evicted, so a project whose sources together exceed the 2 GB budget no longer evicts files the open editor is reading (the cache may sit over budget until they age out). (`serve/audio_conform.py`)
+- **Fixed (editor): a fast scrub over loud audio could clip.** The scrub grains of several lanes, and overlapping grains, were summed with no headroom, so the preview output could pass full scale. Where grains sound, the sum now goes through a soft limiter (untouched up to 0.9, then a smooth knee that stays within full scale); playback is unchanged. (`montaj_assets/editor/src/engine/mix/mix-processor-source.ts`)
 - **Fixed (editor): on a project with no footage, choosing 720p in the export dialog removed 1080p from the choices for good.** The resolution choices were capped at the project's own resolution, which the dialog itself writes; with no footage dims to cap at, the cap is now never below 1080, so the choice can be undone. Known footage still caps as before. (`montaj_assets/editor/src/video/export-limits.ts`)
 
 ## v5.29.3
