@@ -1,53 +1,25 @@
-import { createElement, useEffect } from 'react'
-import { Canvas as R3FCanvas, useThree } from '@react-three/fiber'
+import { createElement } from 'react'
+import { Canvas as R3FCanvas } from '@react-three/fiber'
 import { THREE_MARK, ThreeCommitProbe } from './three-bridge.js'
 
-// r3f measures its container via react-use-measure, which (despite our passing
-// `offsetSize: true` via the `resize` prop) ends up using the post-transform
-// `getBoundingClientRect()` dimensions for the canvas style + WebGL viewport.
-// In the Montaj UI preview, the design canvas (1080×1920) sits inside a
-// CSS-transformed ancestor (`transform: scale(0.x)`) that fits the preview
-// pane, so r3f sees e.g. 245×113 px and sets canvas.style.width=247px. The
-// ancestor transform then scales the canvas *visually* by another 0.x, so 3D
-// content renders at ~5× shrinkage relative to where the same JSX places it
-// in the final MP4. Visible symptom: in preview the cube appears tiny and
-// off-center, but in the rendered .mp4 it's correctly sized.
+// Preview sizing. The editor preview fits the design canvas (e.g. 1080×1920)
+// into its pane with an ancestor CSS `transform: scale(s)`. r3f measures its
+// container with react-use-measure, which by default reads
+// getBoundingClientRect(): the POST-transform size. r3f then sizes the canvas
+// (style and drawing buffer) to that shrunk rect, and the ancestor transform
+// shrinks it again, so the scene drew as a small box in the top-left corner.
+// r3f re-applies its measured size on every render of <Canvas> (a layout
+// effect calls root.configure({ size })), and the editor re-renders overlays
+// every frame and every scrub, so correcting the size once is not enough: the
+// measurement itself has to be right.
 //
-// We patch this by mounting a child component inside <Canvas> that calls
-// `gl.setSize(parent.offsetWidth, parent.offsetHeight)` from inside r3f's
-// state, then re-applies on any subsequent resize via ResizeObserver. The
-// `offsetWidth`/`offsetHeight` of the canvas's parent (r3f's measurement div)
-// are unaffected by ancestor transforms, so we get layout-space dimensions
-// here even though r3f's own measurement does not.
+// The preview Canvas therefore passes `resize: { offsetSize: true }`, which
+// makes react-use-measure (2.1.x) report the container's
+// offsetWidth/offsetHeight: layout-space, unaffected by ancestor transforms.
+// Measured in render/test/preview-canvas-offset-size.puppeteer.test.mjs.
 //
-// The render context does NOT need this — it runs in a full 1080×1920 layout
+// The render context does NOT need this: it runs in a full 1080×1920 layout
 // inside Puppeteer with no CSS transform ancestor.
-function PreviewForceSize() {
-  const gl = useThree((s) => s.gl)
-  const setSize = useThree((s) => s.setSize)
-  useEffect(() => {
-    const canvas = gl.domElement
-    const measureFrom = canvas.parentElement // r3f's containerRef div, sized 100%/100% of the user's overlay container
-    if (!measureFrom) return
-    let raf = 0
-    const apply = () => {
-      const w = measureFrom.offsetWidth
-      const h = measureFrom.offsetHeight
-      if (w > 0 && h > 0) setSize(w, h, true)
-    }
-    apply()
-    const ro = new ResizeObserver(() => {
-      cancelAnimationFrame(raf)
-      raf = requestAnimationFrame(apply)
-    })
-    ro.observe(measureFrom)
-    return () => {
-      ro.disconnect()
-      cancelAnimationFrame(raf)
-    }
-  }, [gl, setSize])
-  return null
-}
 
 /**
  * Returns a Canvas component configured for the given context.
@@ -67,8 +39,9 @@ function PreviewForceSize() {
  *                the scene. The trade-off: preview is RAF-driven and not
  *                perfectly frame-accurate to a scrubbed video position, but
  *                it's visually correct — sufficient for "what will this look
- *                like" review. Also forces offsetSize-based measurement so
- *                ancestor CSS transforms don't shrink the rendered scene.
+ *                like" review. Also measures its container with offsetSize
+ *                (resize: { offsetSize: true }) so ancestor CSS transforms
+ *                don't shrink the rendered scene.
  */
 export function makeCanvas(context) {
   if (context === 'render') {
@@ -106,8 +79,7 @@ export function makeCanvas(context) {
       const kids = Array.isArray(children) ? children : (children == null ? [] : [children])
       return createElement(
         R3FCanvas,
-        { ...rest, frameloop: 'always' },
-        createElement(PreviewForceSize, { key: '__montaj_force_size__' }),
+        { ...rest, frameloop: 'always', resize: { offsetSize: true, ...rest.resize } },
         ...kids,
       )
     }
