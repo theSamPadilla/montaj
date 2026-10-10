@@ -230,6 +230,36 @@ describe('fade curves match the export (ffmpeg afade)', () => {
     })
   }
 
+  it('overlapping fades multiply, as the export\'s two chained afade filters do', () => {
+    // A 0.1 s segment with a 0.1 s fade-in and a 0.1 s fade-out: the fades span
+    // the whole segment and overlap. Linear: in = i / 4800, out = (4800 - i) / 4800.
+    const START = 480
+    const rig = processorRig()
+    rig.fromWorker({
+      t: 'segments',
+      planGen: 1,
+      segs: [
+        seg('F', {
+          tlStart: START / SR,
+          tlEnd: START / SR + 0.1,
+          fadeIn: 0.1,
+          fadeOut: 0.1,
+          curveIn: 'linear',
+          curveOut: 'linear',
+        }),
+      ],
+    })
+    rig.fromWorker(constBlock('F', 0, 0, START, 4800, 1))
+    play(rig)
+    const [L] = rig.render(40)
+    for (const i of [600, 1200, 2400, 3600, 4200]) {
+      const product = (i / 4800) * ((4800 - i) / 4800)
+      const lower = Math.min(i / 4800, (4800 - i) / 4800)
+      expect(closeTo(L[START + i], product), `[${i}] = ${L[START + i]}, product ${product}, min ${lower}`).toBe(true)
+      expect(Math.abs(L[START + i] - lower)).toBeGreaterThan(0.01)
+    }
+  })
+
   it('defaults an unnamed curve to exp, the export default', () => {
     const rig = processorRig()
     rig.fromWorker({
