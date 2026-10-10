@@ -417,6 +417,38 @@ describe('the Worker feeds the worklet', () => {
     expect(rig.internals.state().stats.resampledFrames).toBeGreaterThan(0)
   })
 
+  it('a segment that starts mid-file reads the real frame before it into the resampler', async () => {
+    const SRC = 44100
+    const tone = pcmS16(SRC * 3, SRC, (t) => 0.5 * Math.sin(2 * Math.PI * 1000 * t))
+    const f = fakeFetch({ [URL_A]: tone })
+    const rig = workerRig(f.fetch)
+    rig.send({ t: 'plan', planGen: 1, segments: [{ id: 'A', url: URL_A, sampleRate: SRC, tlStart: 0, tlEnd: 1, srcIn: 1 }] })
+    rig.fromWorklet({ t: 'transport', gen: 0, anchorTime: 0, rate: 1, k: 0, playing: true })
+    await rig.settle()
+    const ratio = SRC / SR
+    const first = blocks(rig)[0]
+    // Output j reads source frame SRC + j * ratio. No frame is assumed: the error
+    // is the interpolation's plus int16 quantization (1.5e-5).
+    for (let j = 0; j < 4; j++) {
+      const want = 0.5 * Math.sin((2 * Math.PI * 1000 * (SRC + j * ratio)) / SRC)
+      expect(Math.abs(first.pcm[j * 2] - want), `output ${j}`).toBeLessThan(1e-4)
+    }
+  })
+
+  it('at file frame 0 the frame before the start still equals the first', async () => {
+    const SRC = 44100
+    const tone = pcmS16(SRC * 3, SRC, (t) => 0.5 * Math.sin(2 * Math.PI * 1000 * t))
+    const f = fakeFetch({ [URL_A]: tone })
+    const rig = workerRig(f.fetch)
+    rig.send({ t: 'plan', planGen: 1, segments: [{ id: 'A', url: URL_A, sampleRate: SRC, tlStart: 0, tlEnd: 1 }] })
+    rig.fromWorklet({ t: 'transport', gen: 0, anchorTime: 0, rate: 1, k: 0, playing: true })
+    await rig.settle()
+    const first = blocks(rig)[0]
+    const want = 0.5 * Math.sin((2 * Math.PI * 1000 * (SRC / SR)) / SRC)
+    // The edge: small, but not the interpolation's accuracy.
+    expect(Math.abs(first.pcm[2] - want)).toBeLessThan(2e-3)
+  })
+
   it('plays backwards at a negative rate', async () => {
     const f = fakeFetch({ [URL_A]: indexFile(SR * 4) })
     const rig = workerRig(f.fetch)

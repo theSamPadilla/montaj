@@ -314,9 +314,10 @@ function createStreamStretch(channels, factor, exact) {
 // ratio = input frames per output frame (srcRate / outRate). Output frame j of
 // the stream reads input position j * ratio, computed from j itself (never
 // accumulated), so the output does not depend on how the input was chunked and
-// cannot drift. The frame before the first input frame is taken to equal it,
-// which skews the stream's second output sample slightly (under 2e-3 on a
-// full-scale 1 kHz tone); the transport fade-in covers it.
+// cannot drift. The frame before the first input frame is the one prime()
+// gives it; a stream that starts at file frame 0 has none and takes it to equal
+// the first frame, which skews the second output sample slightly (under 2e-3 on
+// a full-scale 1 kHz tone); the transport fade-in covers it.
 function createResampler(ratio) {
   var buf = new Float32Array(16384 * 2);
   var n = 0;        // frames held; buf[0] is the frame before the first unread one
@@ -332,6 +333,14 @@ function createResampler(ratio) {
   }
 
   return {
+    // The real frame before the first pushed one (stereo, 2 floats).
+    prime: function (c) {
+      if (primed) return;
+      ensure(1);
+      buf[0] = c[0]; buf[1] = c[1];
+      n = 1;
+      primed = true;
+    },
     push: function (c) {
       var f = c.length / 2;
       if (f === 0) return;
@@ -614,6 +623,10 @@ function createStream(s, kFrom) {
     stretch: Math.abs(absV - 1) > 1e-9 ? createStreamStretch(2, 1 / absV, true) : null,
     waiting: false,
     resampling: s.sampleRate !== outRate,
+    // A resampled stream that starts mid-file, unstretched and forwards, hands
+    // its resampler the real frame before the start.
+    needsPrior: s.sampleRate !== outRate && v > 0 && Math.abs(absV - 1) <= 1e-9
+      && Math.round((s.srcIn + (tl - s.tlStart) * s.speed) * s.sampleRate) > 0,
     sink: s.sampleRate !== outRate ? createResampler(s.sampleRate / outRate) : createFifo(),
   };
 }
@@ -763,6 +776,12 @@ function fill(st, want) {
     if (st.resampling) { stats.resampleMs += now() - t0; stats.resampledFrames += n; }
     got += n;
     if (got >= want) break;
+    if (st.needsPrior) {
+      var prior = new Float32Array(2);
+      if (!readSource(st.seg, st.srcNext - 1, 1, prior)) break;
+      st.sink.prime(prior);
+      st.needsPrior = false;
+    }
     var chunk = readChunk(st, SRC_CHUNK);
     if (chunk === null) break;
     if (st.stretch) {
