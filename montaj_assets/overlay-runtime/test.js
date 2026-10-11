@@ -219,3 +219,19 @@ for (const name of ['springStep', 'springSum']) {
   assert.equal(typeof previewGlobals[name], 'function', `preview.${name} must be a function`)
 }
 await import('./springs.test.js')
+
+// §208: the preview 3D Canvas draws at the size it is shown, not its layout size.
+{
+  const { previewDpr } = await import('./canvas-wrapper.js')
+  // A 1080-wide design shown 320 wide on a Retina screen: 2 × 320 / 1080.
+  assert.equal(previewDpr(2, 320, 1080), (2 * 320) / 1080)
+  // Never above 2 (a full-size or enlarged preview), never below 0.25 (a thumbnail).
+  assert.equal(previewDpr(3, 1080, 1080), 2)
+  assert.equal(previewDpr(2, 2160, 1080), 2)
+  assert.equal(previewDpr(1, 10, 1080), 0.25)
+  // Not measurable yet (no layout, hidden): the screen's own ratio, capped.
+  assert.equal(previewDpr(2, 0, 1080), 2)
+  assert.equal(previewDpr(1, 320, 0), 1)
+  assert.equal(previewDpr(undefined, 320, 1080), 320 / 1080)
+}
+console.log('overlay-runtime: previewDpr OK')

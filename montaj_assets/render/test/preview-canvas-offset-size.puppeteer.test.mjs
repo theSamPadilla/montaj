@@ -176,13 +176,14 @@ test('preview Canvas keeps the design size under a scaled ancestor across re-ren
       + `not the post-transform rect (${DESIGN.width * PREVIEW_SCALE}×${DESIGN.height * PREVIEW_SCALE}). ${report}`)
     // So on screen it covers exactly what the container covers.
     assert.deepEqual(m.canvasRect, m.containerRect, `canvas must cover the container on screen. ${report}`)
-    // And the WebGL drawing buffer is sized for that layout size at the page's dpr.
-    assert.deepEqual(
-      { w: m.canvasAttr.w / m.dpr, h: m.canvasAttr.h / m.dpr }, m.container,
-      `canvas width/height attributes over dpr must equal the container's offset size. ${report}`)
-    assert.deepEqual(
-      { w: m.drawingBuffer.w / m.dpr, h: m.drawingBuffer.h / m.dpr }, m.container,
-      `WebGL drawing buffer over dpr must equal the container's offset size. ${report}`)
+    // §208: and the WebGL drawing buffer holds the pixels it is SHOWN at (the
+    // scaled rect at the page's dpr), not its layout size at that dpr, which
+    // drew ${1 / PREVIEW_SCALE}x as many pixels per side for nothing. Within a pixel of rounding.
+    const shown = { w: m.containerRect.w * m.dpr, h: m.containerRect.h * m.dpr }
+    for (const [what, got] of [['canvas width/height attributes', m.canvasAttr], ['WebGL drawing buffer', m.drawingBuffer]]) {
+      assert.ok(Math.abs(got.w - shown.w) <= 1 && Math.abs(got.h - shown.h) <= 1,
+        `${what} must match the shown size at the page's dpr (${shown.w}×${shown.h}), not the layout size. ${report}`)
+    }
   } finally {
     await browser.close()
     rmSync(workDir, { recursive: true, force: true })

@@ -1,4 +1,4 @@
-import { createElement } from 'react'
+import { createElement, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Canvas as R3FCanvas } from '@react-three/fiber'
 import { THREE_MARK, ThreeCommitProbe } from './three-bridge.js'
 
@@ -20,6 +20,25 @@ import { THREE_MARK, ThreeCommitProbe } from './three-bridge.js'
 //
 // The render context does NOT need this: it runs in a full 1080×1920 layout
 // inside Puppeteer with no CSS transform ancestor.
+//
+// Preview drawing buffer (§208). Sized from the layout size, the buffer was the
+// design size times devicePixelRatio (2160×3840 on a Retina Mac) for a canvas
+// shown a few hundred pixels wide, redrawn every animation frame with MSAA:
+// measured 28 fps paused on a 3D overlay. The preview Canvas therefore passes
+// r3f a `dpr` of devicePixelRatio × shown width / layout width (previewDpr), so
+// the buffer matches the pixels on screen (97 fps). It is measured after every
+// render (the editor re-renders overlays each frame and each scrub, and an
+// ancestor transform fires no ResizeObserver) and on a window resize. An
+// author's own `dpr` is for render; the preview ignores it. Render is unchanged.
+const MIN_PREVIEW_DPR = 0.25
+const MAX_PREVIEW_DPR = 2
+
+/** The preview Canvas's dpr: the screen pixels per layout pixel, clamped. */
+export function previewDpr(devicePixelRatio, shownWidth, layoutWidth) {
+  const screen = devicePixelRatio > 0 ? devicePixelRatio : 1
+  if (!(shownWidth > 0) || !(layoutWidth > 0)) return Math.min(MAX_PREVIEW_DPR, screen)
+  return Math.min(MAX_PREVIEW_DPR, Math.max(MIN_PREVIEW_DPR, (screen * shownWidth) / layoutWidth))
+}
 
 /**
  * Returns a Canvas component configured for the given context.
@@ -41,7 +60,8 @@ import { THREE_MARK, ThreeCommitProbe } from './three-bridge.js'
  *                it's visually correct — sufficient for "what will this look
  *                like" review. Also measures its container with offsetSize
  *                (resize: { offsetSize: true }) so ancestor CSS transforms
- *                don't shrink the rendered scene.
+ *                don't shrink the rendered scene, and draws at the shown size
+ *                (dpr from previewDpr), not the layout size.
  */
 export function makeCanvas(context) {
   if (context === 'render') {
@@ -66,7 +86,26 @@ export function makeCanvas(context) {
     // preview — visibility helps diagnose "why does preview look different
     // from render" without forcing every JSX file to know about contexts.
     let warned = false
-    return function PreviewCanvas({ children, ...rest }) {
+    return function PreviewCanvas({ children, ref: authorRef, ...rest }) {
+      const canvasRef = useRef(null)
+      const [dpr, setDpr] = useState(1)
+      const measure = useCallback(() => {
+        const canvas = canvasRef.current
+        if (!canvas) return
+        const next = previewDpr(window.devicePixelRatio, canvas.getBoundingClientRect().width, canvas.offsetWidth)
+        // A sub-2% change is rounding: never a re-render for it.
+        setDpr((prev) => (Math.abs(next - prev) > prev * 0.02 ? next : prev))
+      }, [])
+      useLayoutEffect(measure)
+      useEffect(() => {
+        window.addEventListener('resize', measure)
+        return () => window.removeEventListener('resize', measure)
+      }, [measure])
+      const ref = useCallback((el) => {
+        canvasRef.current = el
+        if (typeof authorRef === 'function') authorRef(el)
+        else if (authorRef) authorRef.current = el
+      }, [authorRef])
       if (!warned && rest.frameloop === 'never') {
         // eslint-disable-next-line no-console
         console.warn(
@@ -79,7 +118,7 @@ export function makeCanvas(context) {
       const kids = Array.isArray(children) ? children : (children == null ? [] : [children])
       return createElement(
         R3FCanvas,
-        { ...rest, frameloop: 'always', resize: { offsetSize: true, ...rest.resize } },
+        { ...rest, ref, dpr, frameloop: 'always', resize: { offsetSize: true, ...rest.resize } },
         ...kids,
       )
     }
