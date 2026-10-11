@@ -63,6 +63,7 @@ export function InlineTextEditor({
   return (
     <textarea
       ref={ref}
+      aria-label="Edit text"
       value={value}
       onChange={handleChange}
       onKeyDown={handleKeyDown}

@@ -95,10 +95,14 @@ export default function CommandPalette({ commands, initialMode = 'list', onGoToT
 
   return createPortal(
     <div
+      role="presentation"
       className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/70 backdrop-blur-sm text-[var(--editor-text)]"
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
         className="relative w-full max-w-lg flex flex-col bg-[var(--editor-bg)] border border-[var(--editor-border)] rounded-lg shadow-2xl mx-4 overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
@@ -111,6 +115,7 @@ export default function CommandPalette({ commands, initialMode = 'list', onGoToT
               value={gotoValue}
               onChange={(e) => { setGotoValue(e.target.value); setGotoError(false) }}
               onKeyDown={handleGotoKeyDown}
+              aria-label="Go to time"
               placeholder="mm:ss, hh:mm:ss, or seconds"
               className="w-full bg-transparent text-sm text-[var(--editor-text)] placeholder-[color-mix(in_srgb,var(--editor-text)_25%,transparent)] outline-none border border-[var(--editor-border)] rounded px-2 py-1.5"
             />
@@ -126,6 +131,7 @@ export default function CommandPalette({ commands, initialMode = 'list', onGoToT
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={handleListKeyDown}
+                aria-label="Search commands"
                 placeholder="Type a command…"
                 className="w-full bg-transparent text-sm text-[var(--editor-text)] placeholder-[color-mix(in_srgb,var(--editor-text)_25%,transparent)] outline-none"
               />

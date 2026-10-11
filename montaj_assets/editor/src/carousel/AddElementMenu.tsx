@@ -184,6 +184,7 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
           <textarea
             className="w-full bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded px-2 py-1.5 text-xs text-[var(--editor-text)] placeholder-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] resize-none focus:outline-none focus:border-[var(--editor-accent)]"
             rows={3}
+            aria-label="Describe the image to generate"
             placeholder="Describe the image to generate…"
             value={prompt}
             onChange={e => setPrompt(e.target.value)}

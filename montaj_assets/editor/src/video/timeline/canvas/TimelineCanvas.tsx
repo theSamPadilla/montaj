@@ -1542,6 +1542,8 @@ export default function TimelineCanvas({
     <div
       ref={containerRef}
       data-timeline-canvas
+      role="group"
+      aria-label="Timeline tracks"
       // Focusable (not tab-stoppable) so a pointer-down can focus it
       // programmatically — see the `down` handler above — satisfying
       // Timeline's root-focus guard for Delete/Enter without adding this

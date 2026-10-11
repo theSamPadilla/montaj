@@ -114,6 +114,7 @@ export function TextFormattingToolbar({
 
   return (
     <div
+      role="presentation"
       className="rounded-lg border border-[var(--editor-border)] bg-[var(--editor-surface)] text-[var(--editor-text)] shadow-md"
       onPointerDown={(e) => e.stopPropagation()}
       onPointerMove={(e) => e.stopPropagation()}

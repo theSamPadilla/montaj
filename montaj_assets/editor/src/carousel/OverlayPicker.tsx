@@ -100,10 +100,11 @@ export default function OverlayPicker({ open, onClose, project, adapter, onPick,
 
   return (
     <div
+      role="presentation"
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 text-[var(--editor-text)]"
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
-      <div className="bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+      <div role="dialog" aria-modal="true" aria-label="Add overlay" className="bg-[var(--editor-surface)] border border-[var(--editor-border)] rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--editor-border)]">
           <h2 className="text-sm font-semibold text-[var(--editor-text)]">Add Overlay</h2>
           <button

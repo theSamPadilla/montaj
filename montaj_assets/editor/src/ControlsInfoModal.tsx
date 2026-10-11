@@ -110,6 +110,7 @@ export default function ControlsInfoModal({ title, sections, onClose }: Controls
       onClick={onClose}
     >
       <div
+        role="presentation"
         className="relative mx-4 flex max-h-[86vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border shadow-2xl"
         style={{
           background: 'var(--editor-surface)',

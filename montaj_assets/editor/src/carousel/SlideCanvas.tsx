@@ -393,6 +393,8 @@ export default function SlideCanvas({
   return (
     <div
       data-interactive={interactive ? 'true' : undefined}
+      role={interactive ? 'group' : 'presentation'}
+      aria-label={interactive ? 'Slide canvas' : undefined}
       style={{
         width: displayW,
         height: displayH,
@@ -563,6 +565,8 @@ export default function SlideCanvas({
               ref={setWrapperRef(element.id)}
               data-element-wrapper
               data-element-id={element.id}
+              role={interactive ? 'group' : 'presentation'}
+              aria-label={interactive ? `${element.type} element` : undefined}
               style={wrapperStyle}
               onClick={interactive ? (e) => { e.stopPropagation(); onSelect?.(element.id) } : undefined}
               onPointerDown={handlePointerDownDrag}

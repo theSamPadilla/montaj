@@ -1110,7 +1110,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
           role="dialog"
           aria-label={`${expandedCurve.label} preview`}
         >
-          <div className="relative flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+          <div role="presentation" className="relative flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
             {canNavCurves && (
               <button
                 onClick={() => goCurve(-1)}
@@ -1126,6 +1126,9 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
               src={expandedUrl}
               alt={`${expandedCurve.label} sample frame`}
               onClick={() => { if (canNavCurves) goCurve(1) }}
+              role={canNavCurves ? 'button' : 'img'}
+              tabIndex={canNavCurves ? 0 : undefined}
+              onKeyDown={canNavCurves ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goCurve(1) } } : undefined}
               className={`max-h-[82vh] max-w-[88vw] rounded-lg object-contain shadow-2xl ${canNavCurves ? 'cursor-pointer' : ''}`}
             />
             {canNavCurves && (
@@ -1138,7 +1141,7 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
               </button>
             )}
           </div>
-          <div className="flex items-center gap-2 text-xs" onClick={(e) => e.stopPropagation()}>
+          <div role="presentation" className="flex items-center gap-2 text-xs" onClick={(e) => e.stopPropagation()}>
             <span className="font-semibold text-white/90">{expandedCurve.label}</span>
             {expandedCurve.id === DEFAULT_SDR_CURVE && (
               <span className="text-[10px] px-1 py-px rounded bg-white/15 text-white/70">default</span>

@@ -161,6 +161,15 @@ function SlideGrid({
               onDrop={() => handleDrop(idx)}
               onDragEnd={handleDragEnd}
               onClick={() => onSelect(slide.id)}
+              role="button"
+              tabIndex={0}
+              aria-label={`Slide ${idx + 1}`}
+              aria-pressed={selectedSlideId === slide.id}
+              onKeyDown={e => {
+                // Only the thumbnail itself: its duplicate/delete buttons keep their own keys.
+                if (e.target !== e.currentTarget) return
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(slide.id) }
+              }}
               className={`group relative flex-shrink-0 cursor-pointer rounded overflow-hidden border transition-colors ${
                 selectedSlideId === slide.id
                   ? 'border-[var(--editor-accent)]'

@@ -988,6 +988,8 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       // background. Content taller than the pane still scrolls.
       className="flex min-h-full flex-col gap-2 px-3 py-3 select-none outline-none"
       tabIndex={0}
+      role="group"
+      aria-label="Timeline"
       onClick={handleContainerClick}
     >
 
@@ -1174,6 +1176,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
             <div
               data-timeline-chrome
               data-testid="fade-curve-menu-backdrop"
+              aria-hidden="true" // click-away layer, not a control: Escape closes the menu for keyboard users
               className="fixed inset-0 z-40"
               onClick={() => setFadeCurveMenu(null)}
               onContextMenu={(e) => { e.preventDefault(); setFadeCurveMenu(null) }}
@@ -1236,6 +1239,7 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
             <div
               data-timeline-chrome
               data-testid="keyframe-menu-backdrop"
+              aria-hidden="true" // click-away layer, not a control: Escape closes the menu for keyboard users
               className="fixed inset-0 z-40"
               onClick={() => setKeyframeMenu(null)}
               onContextMenu={(e) => { e.preventDefault(); setKeyframeMenu(null) }}

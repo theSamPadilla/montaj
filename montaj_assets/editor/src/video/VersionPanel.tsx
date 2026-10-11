@@ -104,6 +104,7 @@ export default function VersionPanel({ versions, restoring, onRestore, onSaveVer
           type="text"
           value={nameInput}
           onChange={e => setNameInput(e.target.value)}
+          aria-label="Version name"
           placeholder="Name (optional)"
           disabled={saving || !onSaveVersion}
           className="min-w-0 flex-1 h-8 text-[11px] bg-[var(--editor-bg)] border border-[var(--editor-border)] rounded-md px-2 text-[var(--editor-text)] placeholder:text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] focus:outline-none focus:border-[var(--editor-accent)] disabled:opacity-40"

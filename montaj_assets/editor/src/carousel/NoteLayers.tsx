@@ -238,6 +238,8 @@ export function NoteArmLayer({ onPlace, layerRef }: { onPlace: (point: { x: numb
     <div
       ref={layerRef}
       data-testid="note-arm-layer"
+      role="button"
+      aria-label="Place note"
       style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', cursor: ARM_CURSOR, zIndex: 30 }}
       onPointerDown={(e) => { e.preventDefault(); e.stopPropagation() }}
       onClick={(e) => {

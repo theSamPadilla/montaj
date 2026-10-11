@@ -667,7 +667,7 @@ function PreviewSurface({
     <div style={FIT_PARENT_STYLE}>
     <div ref={containerRef} data-montaj-preview-frame="" className="relative bg-black overflow-hidden rounded" style={{ ...fitBoxStyle(RENDER_W, RENDER_H), isolation: 'isolate' }}>
       {isCanvasProject ? (
-        <div className="absolute inset-0 cursor-pointer" style={{ zIndex: 10 }} onClick={togglePlay} />
+        <div className="absolute inset-0 cursor-pointer" style={{ zIndex: 10 }} role="button" aria-label="Play or pause" onClick={togglePlay} />
       ) : clips.length === 0 ? (
         <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-sm">
           No clips
@@ -789,6 +789,8 @@ function PreviewSurface({
         <div
           className="absolute inset-0 cursor-pointer"
           style={{ zIndex: 10 }}
+          role="button"
+          aria-label="Play or pause"
           onClick={togglePlay}
         />
       )}
