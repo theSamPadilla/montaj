@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.1.3
+
+- Fixed: 23 controls had no accessible name or role, so a screen reader or an AI driving the editor could not tell them apart. Fields are named, click targets get a role, and click-away layers are hidden from the tree.
+
 ## 2.1.2
 
 - Fixed: with no source footage, the export dialog's resolution choices are never capped below 1080, so choosing 720p can be undone.
