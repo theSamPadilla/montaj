@@ -989,7 +989,9 @@ test('(q2b) buildOverlayCacheKey: SAMPLE_CACHE_VERSION is part of the key', () =
   // bump that reached only buildFrameCacheKey re-served pre-fix overlay PNGs.
   const componentPath = fileURLToPath(import.meta.url)
   const args = [componentPath, {}, 0, 1080, 1920, [], false, 30]
-  assert.equal(SAMPLE_CACHE_VERSION, 12)  // a 3D canvas drawn for the sampled frame, or the sample fails
+  // 12: a 3D canvas drawn for the sampled frame, or the sample fails; 13: a sampled frame draws
+  // the captions (§59). A floor, not a pin: a revert fails here, a later bump does not.
+  assert.ok(Number.isInteger(SAMPLE_CACHE_VERSION) && SAMPLE_CACHE_VERSION >= 13, `SAMPLE_CACHE_VERSION ${SAMPLE_CACHE_VERSION}`)
   assert.equal(buildOverlayCacheKey(...args, '', SAMPLE_CACHE_VERSION), buildOverlayCacheKey(...args))
   assert.notEqual(buildOverlayCacheKey(...args, '', SAMPLE_CACHE_VERSION - 1), buildOverlayCacheKey(...args))
   assert.notEqual(buildOverlayCacheKey(...args, '/Users/x/fonts/a', SAMPLE_CACHE_VERSION - 1),
