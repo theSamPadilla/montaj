@@ -46,8 +46,12 @@
  *     [--sigma S]        gaussian sigma on the small frame (default 2.2; 0 = no blur)
  *     [--sdr-curve <id>] look curve for every HDR-to-SDR conversion
  *     [--ext jpg|png]    frame format (default jpg)
+ *     [--parts-only]     write only the unblurred lossless parts into --out-dir
+ *                        (no frames, --sigma and --ext unused); the caller owns
+ *                        and removes the folder
  *
  * stdout: { "frames": [absolute paths], "fps": <project fps>, "size": [w, h] }
+ *   with --parts-only, renderBaseParts' answer instead
  * stderr: progress lines prefixed [montaj glass-plate], JSON error on failure
  * exit 0 success, exit 1 failure
  */
@@ -319,7 +323,7 @@ function fail(code, message) {
 
 if (isMain) {
   const argv = process.argv.slice(2)
-  const opts = { shortEdge: 270, sigma: 2.2, sdrCurve: null, ext: 'jpg' }
+  const opts = { shortEdge: 270, sigma: 2.2, sdrCurve: null, ext: 'jpg', partsOnly: false }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--project')    { opts.projectPath = argv[++i]; continue }
@@ -329,11 +333,12 @@ if (isMain) {
     if (a === '--sigma')      { opts.sigma = Number(argv[++i]); continue }
     if (a === '--sdr-curve')  { opts.sdrCurve = argv[++i]; continue }
     if (a === '--ext')        { opts.ext = argv[++i]; continue }
+    if (a === '--parts-only') { opts.partsOnly = true; continue }
     fail('invalid_argument', `unknown argument ${JSON.stringify(a)}`)
   }
   if (!opts.projectPath || opts.itemId == null || !opts.outDir) {
     fail('missing_argument', 'Usage: glass-plate.js --project <project.json> --item <id> --out-dir <dir> '
-      + '[--short-edge N] [--sigma S] [--sdr-curve <id>] [--ext jpg|png]')
+      + '[--short-edge N] [--sigma S] [--sdr-curve <id>] [--ext jpg|png] [--parts-only]')
   }
   if (!existsSync(opts.projectPath)) fail('file_not_found', `project.json not found: ${opts.projectPath}`)
   if (!Number.isInteger(opts.shortEdge) || opts.shortEdge < 0 || opts.shortEdge === 1) {
@@ -347,7 +352,12 @@ if (isMain) {
   }
   if (!['jpg', 'png'].includes(opts.ext)) fail('invalid_argument', `--ext must be jpg or png, got ${opts.ext}`)
 
-  renderPlates(opts).then(
+  // §175: a tracker reads the parts as they are; frames written beside them
+  // would be most of the step's disk.
+  const run = opts.partsOnly
+    ? renderBaseParts({ ...opts, workDir: resolve(opts.outDir) })
+    : renderPlates(opts)
+  run.then(
     result => process.stdout.write(JSON.stringify(result) + '\n'),
     err => fail(err.plateCode ?? 'glass_plate_failed', err.message),
   )

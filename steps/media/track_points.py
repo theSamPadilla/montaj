@@ -5,6 +5,8 @@ A glass overlay pins its shapes to the footage with `track`: one centre per
 overlay frame. This step makes those tracks from the footage exactly as placed
 on screen: the non-overlay composite glass_plate draws for the item's range
 (montaj_assets/render/glass-plate.js, unblurred), at half the design canvas.
+The renderer's lossless parts are decoded straight into the tracker (§175):
+no frame is written to disk, and the parts' room is checked before rendering.
 
 Coordinates are design-canvas pixels, the overlay's own: 1080 on the short
 edge with the aspect of settings.resolution (render.js), whatever the export
@@ -57,6 +59,18 @@ GLASS_PLATE_JS = os.path.join(render_runtime_dir(), "glass-plate.js")
 
 # Tracking works at half the design canvas, whatever the export resolution.
 WORKING_SHORT_EDGE = 540
+
+# The renderer's lossless parts (FFV1) per working pixel per frame. Measured
+# 2026-10-10 on four real clips at 960x540: 0.15 (a talking head), 0.17, 0.45
+# and 0.52 (textured, moving). A 60 s item at 30 fps is 140-490 MB of parts.
+PART_BYTES_PER_PIXEL = 0.6
+# Room left over once the parts are written.
+DISK_MARGIN_BYTES = 256 * 1024 * 1024
+# The parts read as the PNG frames this step used to write read: RGB from
+# BT.709 limited range (glass-plate.js plateFrameFilter), then grey. Byte for
+# byte the same frames (measured 2026-10-10, 600 frames); `format=gray` alone
+# takes the luma plane and is not.
+PART_TO_GREY = "scale=in_color_matrix=bt709:in_range=tv,format=rgb24,format=gray"
 
 NO_FIT = -9.0          # the score of a candidate window that leaves the frame
 COAST_BELOW = 0.9      # a match at or over the edge scoring below this is a patch leaving
@@ -277,16 +291,16 @@ def _step(np, img, st, P, R):
     st.pts.append((nx, ny))
 
 
-def _render_plate(project_path, item_id, work_dir):
-    """The unblurred composite for the item's range at WORKING_SHORT_EDGE, one
-    PNG per frame in work_dir. Returns glass-plate.js's {frames, fps, size}."""
+def _render_parts(project_path, item_id, work_dir):
+    """The unblurred composite for the item's range at WORKING_SHORT_EDGE, as
+    the renderer's lossless parts in work_dir. Returns renderBaseParts'
+    {parts: [{path, startFrame, frames}], fps, size, startFrame, endFrame}."""
     cmd = [
         "node", GLASS_PLATE_JS,
         "--project", project_path,
         "--item", item_id,
         "--short-edge", str(WORKING_SHORT_EDGE),
-        "--sigma", "0",
-        "--ext", "png",
+        "--parts-only",
         "--out-dir", work_dir,
     ]
     result = subprocess.run(cmd, check=False, capture_output=True, env=node_child_env())
@@ -306,28 +320,54 @@ def _render_plate(project_path, item_id, work_dir):
         fail("glass_plate_failed", f"The footage renderer returned no result: {stderr[-2000:]}")
 
 
-def _frames(np, work_dir, fps, count, w, h):
-    """The rendered PNGs as grey uint8 frames, one at a time, through ffmpeg."""
-    pattern = os.path.join(work_dir.replace("%", "%%"), "%04d.png")
-    proc = subprocess.Popen(
-        [ffmpeg_bin(), "-v", "error", "-nostdin", "-start_number", "0", "-framerate", str(fps),
-         "-i", pattern, "-frames:v", str(count), "-vf", "format=gray",
-         "-f", "rawvideo", "-pix_fmt", "gray", "-"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    size = w * h
+def _free_bytes(path):
+    """Free space on path's disk. MONTAJ_TEST_DISK_FREE_BYTES (tests only)
+    replaces it, as in the renderer's disk-space.js."""
+    forced = os.environ.get("MONTAJ_TEST_DISK_FREE_BYTES")
+    if forced:
+        return int(forced)
+    return shutil.disk_usage(path).free
+
+
+def _check_disk(tmp_dir, frames, w, h):
+    """Refuse before rendering when the parts cannot fit. A disk that cannot be
+    read never blocks the step."""
+    need = int(frames * w * h * PART_BYTES_PER_PIXEL) + DISK_MARGIN_BYTES
     try:
-        for n in range(count):
-            buf = proc.stdout.read(size)
-            if len(buf) != size:
+        free = _free_bytes(tmp_dir)
+    except OSError:
+        return
+    if free < need:
+        fail("insufficient_disk",
+             f"Not enough free space to track this item: it needs about {need / 1e9:.1f} GB in "
+             f"{tmp_dir} and {free / 1e9:.1f} GB is free. Free up some space or track a shorter item.")
+
+
+def _frames(np, parts, w, h):
+    """The parts as grey uint8 frames, one at a time, through ffmpeg."""
+    size = w * h
+    n = 0
+    total = sum(part["frames"] for part in parts)
+    for part in parts:
+        proc = subprocess.Popen(
+            [ffmpeg_bin(), "-v", "error", "-nostdin", "-i", part["path"],
+             "-frames:v", str(part["frames"]), "-vf", PART_TO_GREY,
+             "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            for _ in range(part["frames"]):
+                buf = proc.stdout.read(size)
+                if len(buf) != size:
+                    proc.kill()
+                    proc.wait()
+                    fail("track_frames_missing",
+                         f"Decoded {n} of {total} frames.{ffmpeg_error_tail(proc.stderr.read())}")
+                n += 1
+                yield np.frombuffer(buf, np.uint8).reshape(h, w)
+        finally:
+            if proc.poll() is None:
                 proc.kill()
-                proc.wait()
-                fail("track_frames_missing",
-                     f"Decoded {n} of {count} frames.{ffmpeg_error_tail(proc.stderr.read())}")
-            yield np.frombuffer(buf, np.uint8).reshape(h, w)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait()
+            proc.wait()
 
 
 def main():
@@ -392,11 +432,17 @@ def main():
         if a["x"] - half < 0 or a["x"] + half > canvas_w or a["y"] - half < 0 or a["y"] + half > canvas_h:
             _out_of_frame(a, half, half, canvas_w, canvas_h, "frame")
 
+    # Before rendering: room for the parts, sized from the working canvas.
+    fps0 = (project.get("settings") or {}).get("fps") or 30
+    frames0 = max(1, round(item["end"] * fps0) - round(item["start"] * fps0))
+    _check_disk(tempfile.gettempdir(), frames0, round(canvas_w * scale), round(canvas_h * scale))
+
     work_dir = tempfile.mkdtemp(prefix="montaj-track-points-")
     try:
-        plate = _render_plate(project_path, args.item, work_dir)
+        plate = _render_parts(project_path, args.item, work_dir)
         fps = plate["fps"]
-        count = len(plate["frames"])
+        parts = plate["parts"]
+        count = sum(part["frames"] for part in parts)
         w, h = plate["size"]
         sx, sy = w / canvas_w, h / canvas_h
 
@@ -407,7 +453,7 @@ def main():
                 _out_of_frame(a, P / sx, P / sy, canvas_w, canvas_h, "rendered frame")
             states.append(_Anchor(a, cx, cy))
 
-        for n, raw in enumerate(_frames(np, work_dir, fps, count, w, h)):
+        for n, raw in enumerate(_frames(np, parts, w, h)):
             img = raw.astype(np.float32)
             for st in states:
                 if n == 0:

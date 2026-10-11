@@ -500,6 +500,33 @@ def test_temporary_frames_are_removed(fx, known_raw, known_ma5):
     assert left == []
 
 
+def test_too_little_disk_for_the_parts_is_refused_before_rendering(fx):
+    # §175: 1 MB free cannot hold the parts of a 2-second item; nothing is rendered.
+    proc = _run(fx, "--project", str(fx["known"]), "--item", "ov", "--anchors", '[{"id": "a", "x": 960, "y": 540}]',
+                env={**fx["env"], "MONTAJ_TEST_DISK_FREE_BYTES": str(1_000_000)})
+    assert_error(proc, "insufficient_disk")
+    assert "GB" in json.loads(proc.stderr)["message"]
+    left = [n for n in os.listdir(fx["tmp"]) if n.startswith(("montaj-track-points", "montaj-glass-plate"))]
+    assert left == []
+
+
+def test_the_renderer_is_asked_for_its_parts_never_frames(monkeypatch, tmp_path):
+    # §175: frames written beside the parts were most of the step's disk.
+    mod = _load_step()
+    seen = []
+    answer = {"parts": [], "fps": 30, "size": [960, 540], "startFrame": 0, "endFrame": 0}
+
+    def fake_run(cmd, **k):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(answer).encode(), b"")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    assert mod._render_parts("/p/project.json", "ov", str(tmp_path)) == answer
+    cmd = seen[0]
+    assert "--parts-only" in cmd and "--ext" not in cmd and "--sigma" not in cmd
+    assert cmd[cmd.index("--out-dir") + 1] == str(tmp_path)
+
+
 def test_ma5_averages_a_shrinking_symmetric_window_at_the_edges():
     spec = importlib.util.spec_from_file_location("track_points_step", STEP)
     mod = importlib.util.module_from_spec(spec)
