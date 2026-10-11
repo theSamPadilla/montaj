@@ -91,6 +91,22 @@ def assert_error(proc: subprocess.CompletedProcess, code: str | None = None):
 
 # ── video fixture ─────────────────────────────────────────────────────────────
 
+@pytest.fixture(autouse=True)
+def _audio_conform_pool_survives_lifespan():
+    """serve's lifespan exit (any `with TestClient(app)`) shuts serve.audio_conform's
+    module-level pool for good. Right for a serve process, which exits next; wrong for
+    one pytest process: every later conform test raised "cannot schedule new futures
+    after shutdown" (19 failures in the 5.30.0 release run, after
+    tests/steps/test_proxy_step.py, test_speech_edit.py and test_speech_text.py). Every
+    test starts with a live pool: checked before it, not after the one that shut it, since a
+    module-scoped client shuts it only after that module's last test has torn down."""
+    mod = sys.modules.get("serve.audio_conform")
+    if mod is not None and getattr(mod._pool, "_shutdown", False):
+        from concurrent.futures import ThreadPoolExecutor
+        mod._pool = ThreadPoolExecutor(max_workers=mod.MAX_JOBS, thread_name_prefix="audio-conform")
+    yield
+
+
 @pytest.fixture(scope="session")
 def test_video(tmp_path_factory) -> Path:
     """3-second 640×480 black video with silent audio. Generated once per session."""
