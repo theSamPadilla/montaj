@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fixed (render): a sampled frame now shows the captions.** `sample_frame` composited the footage, images and overlays but never the caption track, so the user's AI checked a captioned project's styling and placement without ever seeing a caption. A sampled frame now draws the captions as the export does, on top, from one shared caption spec (`caption-spec.js`, which the export's `captions` segment now reads too, unchanged). The sample cache is re-keyed (version 13), so a frame cached before is not served again without its captions. (`montaj_assets/render/sample-frame.js`, `caption-spec.js`, `render.js`)
 - **Fixed (serve): deleting a project no longer breaks another project that uses its files.** A project could point at media inside another project's folder (saved before 5.24.15 made a save copy borrowed media in, or written past a save), so deleting that other project left it with missing files, even mid-render. Before the folder is removed, every other project that uses files in it now gets its own copies in its `assets/` (the save's copy, clone where possible) and those entries are repointed, announced to an open editor. Nothing is deleted (409) while such a project is rendering (`in_use_by_render`) or when a file could not be copied (`in_use_not_copied`). (`serve/routes/projects.py`, `serve/save_media.py`)
 
 ## v5.29.4

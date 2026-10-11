@@ -36,6 +36,7 @@ import { MASTER_LOOK, curveIds }          from './look.js'
 import { resolveMotionBlur }              from './motion-blur.js'
 import { loudnessFilter }                 from './mix-audio.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
+import { captionOverlayFields }           from './caption-spec.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 // §128: where this render writes and what it is estimated to need, set by
@@ -1249,44 +1250,17 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
     }
   }
 
-  // Captions: top-level projectJson.captions object (unchanged from v0.1)
-  const captions = projectJson.captions
-  if (captions?.segments?.length > 0 || captions?.style) {
+  // Captions: top-level projectJson.captions object (unchanged from v0.1).
+  // The template, props and fonts come from caption-spec.js, shared with
+  // sample-frame.js so a sampled frame draws the captions the export draws.
+  const caption = captionOverlayFields(projectJson.captions)
+  if (caption) {
     const frameCount = Math.round(totalSecs * fps)
-    // googleFonts is a spec-level field (consumed by bundleComponent), not a
-    // prop on the caption component — pull it out before spreading the rest
-    // into captionTheme.
-    let { style: _captStyle, segments: _captSegs, googleFonts: captionFonts, ...captionTheme } = captions
-    // Normalise the legacy lowercase `fontsize` key (used by the old ffmpeg
-    // path / editor) to the camelCase `fontSize` prop the JSX templates
-    // expect. Never send both.
-    if (captionTheme.fontsize != null) {
-      captionTheme.fontSize = captionTheme.fontsize
-      delete captionTheme.fontsize
-    }
-    // The 'clean' style is built around Figtree — default its google font
-    // when the caller hasn't specified one AND hasn't chosen their own font
-    // family. Otherwise a project asking for e.g. Baloo 2 would also fetch
-    // Figtree, and if the chosen family string is malformed the CSS cascade
-    // would silently fall back to Figtree rather than to system-ui, which is
-    // a confusing failure mode.
-    if (captions.style === 'clean' && (captionFonts == null || captionFonts.length === 0) && captionTheme.fontFamily == null) {
-      captionFonts = ['Figtree:wght@700']
-    }
-    if (captions.style === 'accent') {
-      // PL41. Spaces are '+' (bundle.js:762-767 interpolates specs raw into the
-      // googleapis URL). A persisted project can carry a bare string. The
-      // editor's ACCENT_CAPTION_FONTS (captionStyleDefaults.ts) is the other
-      // copy of this list; keep the two identical.
-      const ACCENT_FONTS = ['Inter+Tight:wght@700', 'Playfair+Display:ital,wght@1,700', 'Caveat:wght@700']
-      const given = Array.isArray(captionFonts) ? captionFonts : captionFonts ? [captionFonts] : []
-      captionFonts = [...new Set([...given, ...ACCENT_FONTS])]
-    }
     specs.push({
       id:            'captions',
-      componentPath: captionTemplatePath(captions.style),
-      props:         { segments: captions.segments || [], ...captionTheme },
-      googleFonts:   captionFonts ?? [],
+      componentPath: caption.componentPath,
+      props:         caption.props,
+      googleFonts:   caption.googleFonts,
       frameCount,
       fps,
       startSeconds:  0,
@@ -1576,21 +1550,6 @@ async function processVideoItems(videoItems, workspaceDir) {
 // ---------------------------------------------------------------------------
 // Caption / overlay template path resolution
 // ---------------------------------------------------------------------------
-
-function captionTemplatePath(style) {
-  const styleMap = {
-    'word-by-word':  'word-by-word.jsx',
-    'pop':           'pop.jsx',
-    'karaoke':       'karaoke.jsx',
-    'subtitle':      'subtitle.jsx',
-    'highlight-box': 'highlight-box.jsx',
-    'outline':       'outline.jsx',
-    'clean':         'clean.jsx',
-    'accent':        'accent.jsx',
-  }
-  const file = styleMap[style] ?? 'subtitle.jsx'
-  return join(__dirname, 'templates', 'captions', file)
-}
 
 function overlayTemplatePath(item) {
   if (item.type === 'overlay') return resolve(item.src)

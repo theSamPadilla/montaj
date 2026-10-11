@@ -56,6 +56,7 @@ import {
 } from './encode-segment.js'
 import { resolveAt, sourceWindow, opaqueReplacesPicture, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
+import { captionOverlayFields } from './caption-spec.js'
 
 /**
  * The pre-SP6b Hable chain: the ONLY place this file tonemaps with Hable, used
@@ -146,6 +147,8 @@ const SHORT_EDGE_TARGET = 1080
  *    and a frame it did not draw is retried or fails (three-frame.js). A PNG
  *    cached before may hold the canvas blank, or frame 0's scene for a later
  *    frame.
+ * 13: §59, a sampled frame draws the captions (caption-spec.js, the export's
+ *    own caption overlay). A frame cached before holds none.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -153,7 +156,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 12
+const SAMPLE_CACHE_VERSION = 13
 
 // ---------------------------------------------------------------------------
 // Input manifests
@@ -957,6 +960,33 @@ export async function sampleFrame({
       opaque:       ov.opaque ?? false,
     }
   }, OVERLAY_CONCURRENCY)
+
+  // §59: the captions, drawn as the export draws them (caption-spec.js, the
+  // `captions` segment render.js composites after every overlay): one overlay
+  // over the whole film, sampled at this instant, on top. Without it the
+  // user's AI checked a captioned project without ever seeing a caption.
+  const caption = captionOverlayFields(resolvedProject.captions)
+  if (caption) {
+    const result = await sampleOverlay({
+      componentPath: caption.componentPath,
+      props: caption.props,
+      frame: Math.round(atSeconds * fps),
+      fps,
+      width: renderWidth,
+      height: renderHeight,
+      googleFonts: caption.googleFonts,
+      measure: false,
+      durationFrames: Math.max(1, Math.round(totalDuration * fps)),
+      outPath: join(tmpdir(), `montaj-sample-captions-${randomHex()}.png`),
+      projectDir,
+    })
+    overlayInputLists.push(result.inputs)
+    if (result.degraded) degraded = true
+    overlayPngs.push({
+      webmPath: result.pngPath, startSeconds: 0,
+      offsetX: 0, offsetY: 0, scale: 1, scaleX: 1, scaleY: 1, rotation: 0, opacity: 1, opaque: false,
+    })
+  }
 
   // --- Step 2: Extract video frames via accurate seek ---
   // For HDR projects: apply tonemap inline during extraction so the extracted

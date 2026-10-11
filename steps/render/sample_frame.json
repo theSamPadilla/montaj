@@ -1,6 +1,6 @@
 {
   "name": "sample_frame",
-  "description": "Render a fully composited project frame at a given timestamp to PNG (video + image items + active overlay JSXs, no audio).",
+  "description": "Render a fully composited project frame at a given timestamp to PNG (video + image items + active overlay JSXs + the captions, drawn as the export draws them; no audio).",
   "input": {
     "type": "project",
     "description": "The project id, its folder, or the absolute path of its project.json"

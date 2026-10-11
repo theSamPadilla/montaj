@@ -1732,3 +1732,43 @@ test('(z2) sampleFrame clampToEnd: past the end renders the last frame and write
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+// ---------------------------------------------------------------------------
+// (§59) a sampled frame draws the captions, as the export does
+// ---------------------------------------------------------------------------
+
+test('(§59) sampleFrame: the captions are drawn (the export\'s own caption overlay), and only where a segment is active', { timeout: 180_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'montaj-sf-test-u-'))
+  try {
+    const fixture = makeSyntheticFixture(dir)
+    if (!fixture) { t.skip('ffmpeg synthetic source generation failed'); return }
+    // Footage only, so the caption is the one thing that can differ.
+    const plain = { ...fixture.project, tracks: [fixture.project.tracks[0]] }
+    const captioned = {
+      ...plain,
+      captions: {
+        style: 'subtitle',
+        segments: [{ id: 'c1', start: 1.0, end: 2.5, text: 'HELLO CAPTIONS', words: [] }],
+      },
+    }
+
+    const withCaption = join(dir, 'with-caption.png')
+    const withoutCaption = join(dir, 'without-caption.png')
+    const outsideSegment = join(dir, 'outside-segment.png')
+    await sampleFrame({ projectJson: captioned, atSeconds: 1.5, outPath: withCaption })
+    await sampleFrame({ projectJson: plain, atSeconds: 1.5, outPath: withoutCaption })
+    await sampleFrame({ projectJson: captioned, atSeconds: 0.5, outPath: outsideSegment })
+
+    // The caption's text and its backing box add detail a flat frame does not
+    // have (test (i)'s reasoning), so the captioned frame compresses larger.
+    const sizeWith = statSync(withCaption).size
+    const sizeWithout = statSync(withoutCaption).size
+    assert.ok(sizeWith > sizeWithout, `captioned frame (${sizeWith} bytes) should be larger than the plain one (${sizeWithout} bytes)`)
+    // Before the segment starts nothing is drawn: the frame is (close to) the
+    // plain one, not the captioned one.
+    assert.ok(Math.abs(statSync(outsideSegment).size - sizeWithout) < sizeWith - sizeWithout,
+      'a frame outside every segment should be (close to) the plain frame, not the captioned one')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

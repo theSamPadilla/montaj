@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Render a fully composited frame from a project at a given timestamp to PNG.
 
-Extracts the video frame, active image items, and active overlay JSXs at the
-requested timestamp, composites them at project resolution, and writes a PNG.
+Extracts the video frame, active image items, active overlay JSXs and the
+captions (as the export draws them) at the requested timestamp, composites
+them at project resolution, and writes a PNG.
 """
 import os, sys, argparse, subprocess, json
 
