@@ -5,6 +5,7 @@ the process; this module only builds its argv and reads what it printed.
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -62,10 +63,99 @@ def ytdlp_argv(url: str, out_dir, video_id: str) -> list[str]:
         "--socket-timeout", "30",
         "--continue",
         "--print", "after_move:filepath",
+        # §51: the title (the project's name when it has none) and the whole
+        # download's size, before it starts, then one progress line per update.
+        # All start with "[", so parse_printed_path skips them.
+        "--print", f"before_dl:{MONTAJ_PREFIX} title %(title)j",
+        "--print", f"before_dl:{MONTAJ_PREFIX} size %(filesize,filesize_approx)s",
+        "--progress-template",
+        f"download:{MONTAJ_PREFIX} progress %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s",
+        "--newline",
         "--no-quiet",
         "-o", str(Path(out_dir) / f"youtube-{video_id}.%(ext)s"),
         url,
     ]
+
+
+MONTAJ_PREFIX = "[montaj]"
+TITLE_MAX = 120
+
+
+def _count(token: str) -> int | None:
+    """A byte count yt-dlp printed, or None for NA, a float's junk or anything else."""
+    try:
+        n = int(float(token))
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
+def parse_montaj_line(line: str):
+    """One of our own lines (ytdlp_argv's prints and progress template), else None:
+    ("title", str) | ("size", int | None) | ("progress", downloaded, total | None)."""
+    line = (line or "").strip()
+    if not line.startswith(MONTAJ_PREFIX + " "):
+        return None
+    kind, _, rest = line[len(MONTAJ_PREFIX) + 1:].partition(" ")
+    if kind == "title":
+        try:
+            title = json.loads(rest)
+        except ValueError:
+            return None
+        if not isinstance(title, str):
+            return None
+        title = " ".join(title.split())[:TITLE_MAX].strip()
+        return ("title", title) if title else None
+    if kind == "size":
+        return ("size", _count(rest))
+    if kind == "progress":
+        parts = rest.split()
+        if len(parts) != 3:
+            return None
+        down = _count(parts[0])
+        if down is None:
+            return None
+        return ("progress", down, _count(parts[1]) or _count(parts[2]))
+    return None
+
+
+class DownloadProgress:
+    """The whole download's percent from yt-dlp's per-stream progress. The
+    format is a video stream then an audio stream (two downloads, each from
+    0), so a stream's own percent restarts; this one never goes back, and it
+    stays below 100 until the file is in place (the merge still follows).
+
+    With the whole size known (the `size` line: a merged format's is the sum
+    of its parts), it is the bytes of finished streams plus the current one
+    over that size. Without it, the current stream's own percent."""
+
+    CAP = 99
+
+    def __init__(self):
+        self.total = None
+        self._finished = 0
+        self._down = 0
+        self._stream_total = None
+        self.percent = 0
+
+    def size(self, total) -> None:
+        self.total = total if isinstance(total, int) and total > 0 else None
+
+    def update(self, downloaded: int, stream_total) -> int:
+        if downloaded < self._down:
+            # A new stream started: the last one is done.
+            self._finished += self._stream_total or self._down
+        self._down = downloaded
+        if stream_total:
+            self._stream_total = stream_total
+        if self.total:
+            pct = (self._finished + downloaded) * 100 // self.total
+        elif self._stream_total:
+            pct = downloaded * 100 // self._stream_total
+        else:
+            pct = 0
+        self.percent = max(self.percent, min(self.CAP, int(pct)))
+        return self.percent
 
 
 def parse_printed_path(stdout: str) -> str | None:

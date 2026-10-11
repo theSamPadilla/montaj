@@ -757,6 +757,7 @@ A project created from a YouTube link (`POST /api/run` with `clipUrls: ["<watch 
 | `kind` | string | `"youtube"`. |
 | `url` | string | The canonical watch link (every other query parameter dropped). |
 | `status` | string | `"downloading"`, `"done"` or `"failed"`. Independent of the project's own `status`, which stays the agent lifecycle (`pending`). |
+| `percent` | integer | Only while `downloading`, once yt-dlp reports progress: the whole download (video and audio streams together) from 0 to 99, never going back. Written at most once a second. |
 | `jobId` | string | Only while `downloading`. A `serve/jobs.py` job: `GET /api/steps/jobs/{jobId}` answers `running`, then `done` with the clip as `result`, or `error` with `{"error": <code>, "message"}`. This is what the MCP `get_step_result` waits on. |
 | `clipId` | string | Only when `done`: the `sources` entry the download became. |
 | `error` | string | Only when `failed`, one code: `unavailable` (private, removed, age-restricted, members-only, region-locked), `blocked` (bot check, sign-in, HTTP 429), `offline`, `too_long` (over 3 hours, or a live stream), `too_large` (over 4 GB), `no_space`, `failed` (anything else). |
@@ -766,7 +767,9 @@ The record is kept after `done` as the source's provenance.
 - **Request.** `clipUrls` takes one link; Shorts are refused (`400 invalid_clip_url`), and so is any other link. It is either/or with `clips` and `remoteClips` (`400 mutually_exclusive`). The link counts as footage for a workflow's `requires_clips`.
 - **Download.** 1080p H.264 where available, to `<project>/youtube-<id>.mp4`. Capped at 3 hours (`--match-filters duration<=10800`) and 4 GB (`--max-filesize 4G`). The argv is `lib/youtube.py` `ytdlp_argv`.
 - **Done.** The file is ingested lazily, as `POST /projects/{id}/sources` does, and appended to `sources`. While the project is `pending` the same item also goes on `tracks[0].items`, in init's shape (`start` and `end` 0); a `draft` project gets it in `sources` only. Then the proxy is queued and the canvas and fps follow the footage (*Canvas and frame rate from the first footage*). This step is idempotent, keyed by the file's path: a source already at that `src` is reused.
+- **Name.** A project with no `name` takes the video's title (up to 120 characters) as soon as yt-dlp knows it, before the download; a project with a name keeps it.
 - **Failed.** Every `youtube-<id>.*` file yt-dlp left in the project folder is deleted.
+- **Retry.** `POST /projects/{id}/source-download/retry` starts a `failed` download again from its `url`, under a new `jobId`, and answers `{"sourceDownload": <the downloading record>}`. Anything but a `failed` record is `409 not_failed`.
 - **Resume.** The job registry is in-process. `GET /projects/{id}` restarts a record that says `downloading` with no live download (serve restarted, or a stale save wrote an old record back) under a new `jobId`; yt-dlp continues the partial, and a complete file is not downloaded again. One download per project at a time.
 - **Cancel.** `DELETE /projects/{id}` kills the download before removing the folder. Serve's shutdown kills every running download and leaves its record `downloading`, to resume on the next open.
 

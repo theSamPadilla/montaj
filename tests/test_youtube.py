@@ -55,10 +55,56 @@ def test_argv_is_the_plan_list_exactly():
         "--socket-timeout", "30",
         "--continue",
         "--print", "after_move:filepath",
+        "--print", "before_dl:[montaj] title %(title)j",
+        "--print", "before_dl:[montaj] size %(filesize,filesize_approx)s",
+        "--progress-template",
+        "download:[montaj] progress %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s",
+        "--newline",
         "--no-quiet",
         "-o", str(Path("/p/proj") / "youtube-dQw4w9WgXcQ.%(ext)s"),
         CANON,
     ]
+
+
+# §51: our own lines. The title line's shape was measured (yt-dlp 2026.03.17,
+# jNQXAC9IVRw, 2026-10-11): `[montaj] title "Me at the zoo"`, before the download.
+def test_parse_montaj_line():
+    p = youtube.parse_montaj_line
+    assert p('[montaj] title "Me at the zoo"') == ("title", "Me at the zoo")
+    assert p('[montaj] title "  two\\nlines\\tand   spaces "') == ("title", "two lines and spaces")
+    assert p('[montaj] title "' + "x" * 300 + '"') == ("title", "x" * youtube.TITLE_MAX)
+    assert p('[montaj] title ""') is None
+    assert p("[montaj] title NA") is None
+    assert p("[montaj] title 3") is None
+    assert p("[montaj] size 635110") == ("size", 635110)
+    assert p("[montaj] size NA") == ("size", None)
+    assert p("[montaj] progress 150 600 NA") == ("progress", 150, 600)
+    assert p("[montaj] progress 150 NA 612.5") == ("progress", 150, 612)
+    assert p("[montaj] progress 150 NA NA") == ("progress", 150, None)
+    assert p("[montaj] progress NA 600 NA") is None
+    assert p("[montaj] progress 1 2") is None
+    assert p("[download]  14.9% of  422.93KiB") is None
+    assert p("/p/proj/youtube-x.mp4") is None
+    # parse_printed_path never takes one of ours for the file.
+    assert youtube.parse_printed_path('[montaj] title "/etc/passwd"\n[montaj] size 1\n') is None
+
+
+def test_download_progress_with_the_whole_size_spans_both_streams_and_never_goes_back():
+    d = youtube.DownloadProgress()
+    d.size(1000)
+    assert [d.update(n, 600) for n in (0, 300, 600)] == [0, 30, 60]
+    # The audio stream starts from 0: the video's 600 bytes are kept.
+    assert [d.update(n, 400) for n in (0, 100, 400)] == [60, 70, 99]
+    assert d.percent == 99, "never 100: the merge still follows"
+
+
+def test_download_progress_without_a_size_is_the_stream_percent_and_never_goes_back():
+    d = youtube.DownloadProgress()
+    d.size(None)
+    assert [d.update(n, 200) for n in (0, 50, 100)] == [0, 25, 50]
+    assert [d.update(n, 100) for n in (0, 20, 90)] == [50, 50, 90]
+    e = youtube.DownloadProgress()
+    assert e.update(10, None) == 0, "no size at all: 0, never a guess"
 
 
 def _fixture(name):

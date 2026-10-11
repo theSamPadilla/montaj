@@ -42,7 +42,9 @@ from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwarg
 from lib.overlay_validation import overlay_item_errors
 from lib.project_tracks import normalize_tracks, track_items
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
-from lib.youtube import classify_error, parse_printed_path, parse_youtube_url, ytdlp_argv
+from lib.youtube import (
+    DownloadProgress, classify_error, parse_montaj_line, parse_printed_path, parse_youtube_url, ytdlp_argv,
+)
 from project.init import _copy_into_workspace
 from serve.save_media import (
     apply_borrowed_media, begin_copies, borrowed_from, copy_borrowed_media, forget_pending, pending_media,
@@ -482,9 +484,13 @@ async def _run_ingest_detached(
 # here, in a detached task, and adds the clip as init would have. Serve is the
 # only writer of the record:
 #
-#   {"kind": "youtube", "url", "status": "downloading", "jobId"}
+#   {"kind": "youtube", "url", "status": "downloading", "jobId", "percent"?}
 #   {"kind": "youtube", "url", "status": "done", "clipId"}
 #   {"kind": "youtube", "url", "status": "failed", "error": <code>}
+#
+# §51: `percent` (0-99, never back) appears once yt-dlp reports progress, a
+# project with no name takes the video's title, and
+# `POST /projects/{id}/source-download/retry` starts a failed one again.
 #
 # `jobId` is a serve/jobs.py job, so `GET /api/steps/jobs/{jobId}` (what the
 # MCP `get_step_result` polls) answers `done` with the clip or `error` with
@@ -502,6 +508,8 @@ _source_download_procs: dict[str, "asyncio.subprocess.Process"] = {}
 # max-filesize notice and the ERROR lines are all at the end; the progress
 # lines before them can run to megabytes on a long video.
 _YTDLP_TAIL_BYTES = 256 * 1024
+# §51: `percent` is written (and broadcast) at most this often.
+_PERCENT_WRITE_INTERVAL_S = 1.0
 
 _SOURCE_DOWNLOAD_MESSAGES = {
     "unavailable": "This video can't be downloaded: it is private, removed, age-restricted, members-only or not available in this region.",
@@ -659,11 +667,14 @@ async def _spawn_ytdlp(argv: list[str]) -> "asyncio.subprocess.Process":
     )
 
 
-async def _read_tail(stream, limit: int = _YTDLP_TAIL_BYTES) -> str:
-    """Drain `stream` to EOF, keeping only its last `limit` bytes."""
+async def _read_tail(stream, limit: int = _YTDLP_TAIL_BYTES, on_line=None) -> str:
+    """Drain `stream` to EOF, keeping only its last `limit` bytes. With
+    `on_line`, each line (ended by \\n or \\r: yt-dlp rewrites its progress
+    line with \\r) is handed to it as it arrives; a raising callback is ignored."""
     if stream is None:
         return ""
     buf = bytearray()
+    pending = bytearray()
     while True:
         chunk = await stream.read(65536)
         if not chunk:
@@ -671,7 +682,92 @@ async def _read_tail(stream, limit: int = _YTDLP_TAIL_BYTES) -> str:
         buf += chunk
         if len(buf) > limit:
             del buf[:-limit]
+        if on_line is None:
+            continue
+        pending += chunk
+        *lines, rest = re.split(rb"[\r\n]", bytes(pending))
+        pending = bytearray(rest[-limit:])
+        for line in lines:
+            if line:
+                try:
+                    on_line(line.decode("utf-8", errors="replace"))
+                except Exception:
+                    pass
+    if on_line is not None and pending:
+        try:
+            on_line(pending.decode("utf-8", errors="replace"))
+        except Exception:
+            pass
     return buf.decode("utf-8", errors="replace")
+
+
+def _update_downloading_record(project_dir: Path, job_id: str, change) -> str | None:
+    """Read, `change(project, record)`, write: only while the record is still
+    this job's download, and only when `change` returns True. Synchronous, so
+    no await falls between the read and the write. Returns the text written."""
+    project_path = Path(project_dir) / "project.json"
+    try:
+        project = json.loads(project_path.read_text())
+    except (OSError, ValueError):
+        return None
+    record = project.get("sourceDownload")
+    if not isinstance(record, dict) or record.get("status") != "downloading" or record.get("jobId") != job_id:
+        return None
+    if not change(project, record):
+        return None
+    try:
+        return _write_project_json(project_path, project)
+    except OSError:
+        return None
+
+
+def _source_download_line_handler(project_id: str, project_dir: Path, job_id: str,
+                                  broadcaster: "SSEBroadcaster | None", *, clock=time.monotonic):
+    """§51: what yt-dlp prints, as it prints it. The title names a project
+    that has none; progress sets the record's `percent` (rising, at most once
+    per _PERCENT_WRITE_INTERVAL_S)."""
+    progress = DownloadProgress()
+    last = {"at": None, "percent": None}
+
+    def publish(text):
+        if text is not None and broadcaster is not None:
+            broadcaster.publish(project_id, _sse_data_frame(text))
+
+    def name_it(title):
+        def change(project, _record):
+            if isinstance(project.get("name"), str) and project["name"].strip():
+                return False
+            project["name"] = title
+            return True
+        publish(_update_downloading_record(project_dir, job_id, change))
+
+    def set_percent(pct):
+        def change(_project, record):
+            if record.get("percent") == pct:
+                return False
+            record["percent"] = pct
+            return True
+        publish(_update_downloading_record(project_dir, job_id, change))
+
+    def on_line(line):
+        event = parse_montaj_line(line)
+        if event is None:
+            return
+        if event[0] == "title":
+            name_it(event[1])
+        elif event[0] == "size":
+            progress.size(event[1])
+        elif event[0] == "progress":
+            pct = progress.update(event[1], event[2])
+            now = clock()
+            if last["percent"] is not None and pct <= last["percent"]:
+                return
+            if last["at"] is not None and now - last["at"] < _PERCENT_WRITE_INTERVAL_S:
+                return
+            last["at"], last["percent"] = now, pct
+            set_percent(pct)
+
+    return on_line
 
 
 def _kill_source_download_proc(proc) -> None:
@@ -706,7 +802,8 @@ async def _run_source_download(
         if path is None:
             proc = await _spawn_ytdlp(ytdlp_argv(url, project_dir, video_id))
             _source_download_procs[project_id] = proc
-            stdout, stderr = await asyncio.gather(_read_tail(proc.stdout), _read_tail(proc.stderr))
+            on_line = _source_download_line_handler(project_id, project_dir, job_id, broadcaster)
+            stdout, stderr = await asyncio.gather(_read_tail(proc.stdout, on_line=on_line), _read_tail(proc.stderr))
             returncode = await proc.wait()
             # The file path comes from the printed line only: with --no-quiet
             # stdout is also yt-dlp's log, and a duration or size skip exits 0.
@@ -852,6 +949,29 @@ def kill_source_downloads() -> None:
         task.cancel()
     for proc in list(_source_download_procs.values()):
         _kill_source_download_proc(proc)
+
+
+@router.post("/projects/{project_id}/source-download/retry")
+async def retry_source_download(project_id: str, request: Request, project_dir: Path = Depends(get_project_dir)):
+    """§51: start a failed YouTube download again, from the link in its
+    record, under a new `jobId`. 409 `not_failed` unless the record is
+    `failed`. Answers `{"sourceDownload": <the downloading record>}`."""
+    try:
+        project = json.loads((project_dir / "project.json").read_text())
+    except (OSError, ValueError):
+        raise not_found("not_found", "Project not found")
+    record = project.get("sourceDownload")
+    if not isinstance(record, dict) or record.get("status") != "failed":
+        raise HTTPException(409, detail={"error": "not_failed", "message": "Only a failed download can be tried again."})
+    parsed = parse_youtube_url(record.get("url"))
+    if not parsed["ok"]:
+        raise bad_request("invalid_clip_url", "The download's link is not a YouTube watch or youtu.be link")
+    # No await since the read above, so the record is still the failed one.
+    started = _start_source_download(project_id, project_dir, record["url"], parsed["id"],
+                                     request.app.state.broadcaster)
+    if started is None:
+        raise HTTPException(409, detail={"error": "not_failed", "message": "This download is already running."})
+    return {"sourceDownload": started["sourceDownload"]}
 
 
 OVERLAY_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")

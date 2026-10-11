@@ -610,3 +610,143 @@ def test_shutdown_kills_live_downloads_and_keeps_the_record_resumable(tmp_path, 
     assert not pid_alive(proc.pid)
     record = _read(project_dir)["sourceDownload"]
     assert record["status"] == "downloading", "a quit must leave the download to resume on open"
+
+
+# ---------------------------------------------------------------------------
+# §51: progress percent, the title as the name, and retry
+# ---------------------------------------------------------------------------
+
+def _with_progress(project_dir: Path, *, title="Me at the zoo", size=1000) -> tuple[int, str, str]:
+    """The captured run with our own lines (ytdlp_argv's prints and progress
+    template) in front: a video stream of 600 bytes, then audio of 400."""
+    code, out, err = _ok_output(project_dir)
+    lines = [f"[montaj] title {json.dumps(title)}", f"[montaj] size {size}"]
+    lines += [f"[montaj] progress {d} 600 NA" for d in (0, 150, 300, 600)]
+    # yt-dlp rewrites a progress line with \r; the audio stream starts again from 0.
+    lines += ["\r".join(f"[montaj] progress {d} NA 400" for d in (0, 200, 400))]
+    return code, "\n".join(lines) + "\n" + out, err
+
+
+def _percents(rec: _Recorder, pid: str) -> list[int]:
+    out = []
+    for f in _data_frames(rec, pid):
+        sd = f.get("sourceDownload") or {}
+        if sd.get("status") == "downloading" and "percent" in sd:
+            out.append(sd["percent"])
+    return out
+
+
+def test_progress_sets_a_rising_percent_below_100_then_done_drops_it(tmp_path, monkeypatch, finalize_stubs):
+    monkeypatch.setattr(projects_mod, "_PERCENT_WRITE_INTERVAL_S", 0)
+    pid = str(uuid.uuid4())
+    project_dir = tmp_path / "p"
+    _write_project(project_dir, pid)
+    _stub_spawn(monkeypatch, _with_progress(project_dir), writes=[project_dir / f"youtube-{VID}.mp4"])
+    rec = _Recorder()
+
+    _download(pid, project_dir, rec)
+
+    # Video 0..600 of 1000, then audio 0..400 on top of it, never back, never 100.
+    assert _percents(rec, pid) == [0, 15, 30, 60, 80, 99]
+    assert _read(project_dir)["sourceDownload"] == {"kind": "youtube", "url": URL, "status": "done", "clipId": "clip-0"}
+
+
+def test_percent_writes_are_throttled(tmp_path, monkeypatch, finalize_stubs):
+    monkeypatch.setattr(projects_mod, "_PERCENT_WRITE_INTERVAL_S", 3600)
+    pid = str(uuid.uuid4())
+    project_dir = tmp_path / "p"
+    _write_project(project_dir, pid)
+    _stub_spawn(monkeypatch, _with_progress(project_dir), writes=[project_dir / f"youtube-{VID}.mp4"])
+    rec = _Recorder()
+
+    _download(pid, project_dir, rec)
+
+    assert _percents(rec, pid) == [0], "the first report, then nothing until the interval passes"
+
+
+def test_a_project_with_no_name_takes_the_video_title_and_a_named_one_keeps_its_own(tmp_path, monkeypatch, finalize_stubs):
+    for given, want in ((None, "Me at the zoo"), ("", "Me at the zoo"), ("My cut", "My cut")):
+        pid = str(uuid.uuid4())
+        project_dir = tmp_path / pid
+        _write_project(project_dir, pid)
+        if given is not None:
+            p = _read(project_dir)
+            p["name"] = given
+            (project_dir / "project.json").write_text(json.dumps(p))
+        _stub_spawn(monkeypatch, _with_progress(project_dir), writes=[project_dir / f"youtube-{VID}.mp4"])
+        rec = _Recorder()
+        _download(pid, project_dir, rec)
+        assert _read(project_dir).get("name") == want, given
+        if given is None:
+            assert any(f.get("name") == want and f["sourceDownload"]["status"] == "downloading"
+                       for f in _data_frames(rec, pid)), "the editor hears the name before the download ends"
+
+
+def test_a_failed_download_still_names_the_project(tmp_path, monkeypatch, finalize_stubs):
+    pid = str(uuid.uuid4())
+    project_dir = tmp_path / "p"
+    _write_project(project_dir, pid)
+    code, out, err = _fixture("bot_check")
+    _stub_spawn(monkeypatch, (code, '[montaj] title "A blocked one"\n' + out, err))
+    _download(pid, project_dir, _Recorder())
+    project = _read(project_dir)
+    assert project["sourceDownload"]["status"] == "failed"
+    assert project["name"] == "A blocked one"
+
+
+def _request(broadcaster):
+    from types import SimpleNamespace
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(broadcaster=broadcaster)))
+
+
+def test_retry_starts_a_failed_download_again_under_a_new_job(tmp_path, monkeypatch, finalize_stubs):
+    pid = str(uuid.uuid4())
+    project_dir = tmp_path / "p"
+    _write_project(project_dir, pid, record={"kind": "youtube", "url": URL, "status": "failed", "error": "blocked"})
+    target = project_dir / f"youtube-{VID}.mp4"
+    spawned = _stub_spawn(monkeypatch, _ok_output(project_dir), writes=[target])
+    rec = _Recorder()
+
+    async def go():
+        answer = await projects_mod.retry_source_download(pid, _request(rec), project_dir)
+        await projects_mod._source_download_tasks[pid]
+        return answer
+
+    answer = asyncio.run(go())
+
+    assert answer["sourceDownload"]["status"] == "downloading"
+    assert answer["sourceDownload"]["url"] == URL
+    assert spawned == [ytdlp_argv(URL, project_dir, VID)]
+    assert _read(project_dir)["sourceDownload"]["status"] == "done"
+    frames = _data_frames(rec, pid)
+    assert frames[0]["sourceDownload"]["status"] == "downloading"
+
+
+@pytest.mark.parametrize("record", [
+    None,
+    {"kind": "youtube", "url": URL, "status": "done", "clipId": "clip-0"},
+    {"kind": "youtube", "url": URL, "status": "downloading", "jobId": "f" * 32},
+])
+def test_retry_refuses_anything_but_a_failed_download(tmp_path, monkeypatch, record):
+    from fastapi import HTTPException
+    pid = str(uuid.uuid4())
+    project_dir = tmp_path / "p"
+    _write_project(project_dir, pid, record=record)
+    spawned = _stub_spawn_blocking(monkeypatch)
+    before = (project_dir / "project.json").read_text()
+
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(projects_mod.retry_source_download(pid, _request(_Recorder()), project_dir))
+
+    assert e.value.status_code == 409
+    assert e.value.detail["error"] == "not_failed"
+    assert spawned == []
+    assert (project_dir / "project.json").read_text() == before
+
+
+def test_retry_route_is_served(workspace, monkeypatch):
+    pid = str(uuid.uuid4())
+    _write_project(workspace / "p", pid, record={"kind": "youtube", "url": URL, "status": "done", "clipId": "clip-0"})
+    resp = client.post(f"/api/projects/{pid}/source-download/retry")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["error"] == "not_failed"
