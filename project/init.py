@@ -53,6 +53,21 @@ PROXY_INLINE_MAX_TOTAL_SEC = 300.0
 _IS_WINDOWS = sys.platform == "win32"
 
 
+# An asset's or style ref's kind, from its file.
+_VIDEO_EXTENSIONS = (".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi")
+_AUDIO_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".flac")
+
+
+def _media_kind(path: str) -> str:
+    """video, audio or image, by extension (any case); anything else is an image, as before."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in _VIDEO_EXTENSIONS:
+        return "video"
+    if ext in _AUDIO_EXTENSIONS:
+        return "audio"
+    return "image"
+
+
 # --- Phase timing -----------------------------------------------------------
 # Durations only (ms, per phase, summed over repeated work). Emitted as one
 # stderr line at exit so serve can report them in a Server-Timing header.
@@ -1108,8 +1123,10 @@ def _main():
             f"(parallel speedup {speedup:.2f}x)"
         )
 
+    # Typed from the file: an intake's "footage or images" sends both, and an
+    # agent or the editor that reads `type` must not take a video for an image.
     assets = [
-        {"id": f"asset-{i}", "src": copy_into_workspace(os.path.abspath(a), "asset"), "type": "image", "name": os.path.basename(a)}
+        {"id": f"asset-{i}", "src": copy_into_workspace(os.path.abspath(a), "asset"), "type": _media_kind(a), "name": os.path.basename(a)}
         for i, a in enumerate(args.assets)
     ]
 
@@ -1215,10 +1232,7 @@ def _main():
             if not os.path.isfile(src_path):
                 fail("file_not_found", f"Style ref not found: {src_path}")
             copied = copy_into_workspace(os.path.abspath(src_path), "styleref")
-            ext = os.path.splitext(copied)[1].lower()
-            kind = "video" if ext in (".mp4", ".mov", ".webm", ".mkv") else \
-                   "audio" if ext in (".mp3", ".wav", ".m4a", ".aac", ".flac") else \
-                   "image"
+            kind = _media_kind(copied)
             style_refs_stub.append({
                 "id": f"style{i+1}",
                 "kind": kind,

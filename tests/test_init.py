@@ -468,6 +468,20 @@ def test_assets_array_untouched_with_project_type(tmp_path):
     assert project["assets"][0]["name"] == "logo.png"
 
 
+def test_assets_are_typed_from_the_file(tmp_path):
+    # An intake's "footage or images" sends both; a video asset must not say image.
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake")
+    files = {"logo.png": "image", "broll.MOV": "video", "cut.m4v": "video", "voice.m4a": "audio", "scan.heic": "image"}
+    for name in files:
+        (tmp_path / name).write_bytes(b"fake")
+    result = run_init("--clips", str(clip), "--assets", *[str(tmp_path / n) for n in files], "--prompt", "test",
+                      env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    project = json.loads(_project_path_from_stdout(result.stdout).read_text())
+    assert {a["name"]: a["type"] for a in project["assets"]} == files
+
+
 # ---------------------------------------------------------------------------
 # Real-video tests — parallelism, modal resolution, override, contract
 # (require ffmpeg)
