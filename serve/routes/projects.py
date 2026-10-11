@@ -45,7 +45,8 @@ from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allow
 from lib.youtube import classify_error, parse_printed_path, parse_youtube_url, ytdlp_argv
 from project.init import _copy_into_workspace
 from serve.save_media import (
-    apply_borrowed_media, begin_copies, copy_borrowed_media, forget_pending, pending_media, plan_borrowed_media,
+    apply_borrowed_media, begin_copies, borrowed_from, copy_borrowed_media, forget_pending, pending_media,
+    plan_borrowed_media,
     project_deleting, project_gone, retry_later, settle_copies, sweep_stale_temps,
 )
 from serve.sse import SSEBroadcaster, sse_stream
@@ -3093,6 +3094,7 @@ async def delete_project(
     project_id: str,
     preserve_assets: bool = False,
     project_dir: Path = Depends(get_project_dir),
+    request: Request = None,
 ):
     """Delete a project's workspace directory.
 
@@ -3123,8 +3125,13 @@ async def delete_project(
 
     Uploaded audio is kept by the same rules (`_preserve_audio`): an uploaded
     music track, the voiceover and its takes, and every audio track item.
+
+    §126 (b), first of all: another project using files in this one keeps
+    them (`_rescue_dependents`), or nothing is deleted (409).
     """
     from fastapi.responses import Response
+    broadcaster = getattr(getattr(getattr(request, "app", None), "state", None), "broadcaster", None)
+    await _rescue_dependents(project_id, project_dir, broadcaster)
     preserved: dict[str, str] = {}
     if preserve_assets:
         project_path = project_dir / "project.json"
@@ -3191,6 +3198,83 @@ async def delete_project(
 
 
 _DELETE_RETRY_SECONDS = (0.1, 0.1, 0.1)
+
+
+def _dependents_of(project_id: str, project_dir: Path) -> "list[tuple[str, Path, dict, dict]]":
+    """(id, folder, project, `{key: src}`) for every other project in the
+    workspace with entries pointing at files inside `project_dir`
+    (`borrowed_from`, the save's own rules for what a project borrows). A
+    project.json that cannot be read is skipped, as the list skips it."""
+    workspace = resolve_workspace()
+    try:
+        doomed = project_dir.resolve()
+    except OSError:
+        doomed = project_dir
+    out = []
+    for path in workspace.rglob("project.json"):
+        if is_nested_project_json(path, workspace):
+            continue
+        folder = path.parent
+        try:
+            if folder.resolve() == doomed:
+                continue
+            other = json.loads(path.read_text())
+        except (OSError, ValueError, RecursionError):
+            continue
+        if not isinstance(other, dict) or other.get("id") == project_id:
+            continue
+        other = normalize_tracks(other)
+        wanted = borrowed_from(other, folder, project_dir, workspace)
+        if wanted:
+            out.append((other.get("id"), folder, other, wanted))
+    return out
+
+
+async def _rescue_dependents(project_id: str, project_dir: Path, broadcaster: "SSEBroadcaster | None") -> None:
+    """§126 (b): before a project's folder goes, every other project that
+    points at files in it gets its own copies, the way a save copies borrowed
+    media (`copy_borrowed_media`, then `_finish_save_copy`'s patch of just
+    those entries, announced to an open editor). Measured 2026-10-07: a
+    project's outro sound pointed into another project's folder, that project
+    was deleted, and the render failed. A save copies new borrowed paths since
+    5.24.15; this covers paths saved before that, and anything written past a
+    save.
+
+    Unlike a save, the delete waits for every copy to end: the folder must
+    outlive them. Nothing is deleted (409) when a dependent is rendering (its
+    render already resolved these paths) or when a file could not be copied
+    (over the cap, short of disk, an error): the dependent would break. The
+    copies already made stay; they are harmless."""
+    dependents = _dependents_of(project_id, project_dir)
+    if not dependents:
+        return
+    rendering = [d for d in dependents if d[0] in _active_renders]
+    if rendering:
+        name = rendering[0][2].get("name") or rendering[0][0]
+        raise HTTPException(409, detail={
+            "error": "in_use_by_render",
+            "message": f"\"{name}\" uses files in this project and is rendering. Try again when it finishes.",
+        })
+    left: list[str] = []
+    for other_id, folder, other, wanted in dependents:
+        begin_copies(folder, wanted)   # ended by `_finish_save_copy`, however the copy ends
+        task = asyncio.ensure_future(asyncio.to_thread(copy_borrowed_media, wanted, folder))
+        _save_copy_tasks.add(task)
+        task.add_done_callback(_save_copy_tasks.discard)
+        await asyncio.wait({task})
+        patched, report = _finish_save_copy(other_id, folder, other, wanted, set(wanted), task, broadcaster)
+        if patched is not None and broadcaster is not None:
+            _late_save_follow_ups(other_id, folder, other, patched, broadcaster)
+        if report.get("warnings"):
+            left.append(other.get("name") or other_id)
+        print(f"[montaj] delete_project {project_id}: copied {len(report.get('copied', []))} file(s) into "
+              f"{other_id}, which used them")
+    if left:
+        raise HTTPException(409, detail={
+            "error": "in_use_not_copied",
+            "message": f"\"{left[0]}\" uses files in this project that could not be copied into it, "
+                       "so nothing was deleted.",
+        })
 
 
 async def _remove_project_dir(project_dir: Path) -> None:

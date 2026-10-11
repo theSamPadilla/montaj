@@ -293,6 +293,35 @@ def borrowed(src, project_dir, workspace) -> bool:
     return _borrowed(src, _Where(project_dir, workspace))
 
 
+def borrowed_from(project, project_dir, folder, workspace) -> dict[str, str]:
+    """`{key: src}`, one per file `project` (whose folder is `project_dir`)
+    borrows from inside `folder`, another project's folder about to be deleted
+    (§126 b): an entry `_refs` looks at whose absolute `src` is in `folder`
+    (literally or by another spelling of it, as `_in_project` judges this
+    project's own folder) and that the save would copy (`borrowed`). Every
+    such entry counts, changed or not: these are the paths the delete would
+    break. Stat calls only."""
+    where = _Where(project_dir, workspace)
+    doomed = _Where(folder, workspace)
+    wanted: dict[str, str] = {}
+    looked: set = set()
+    for _, entry in _refs(project):
+        src = entry.get("src")
+        if not isinstance(src, str) or not _p.isabs(src):
+            continue
+        key = _key(src)
+        if key in looked:
+            continue
+        looked.add(key)
+        path = _norm(src)
+        root = doomed.root(path)
+        if root is None or not _in_project(path, doomed, root):
+            continue
+        if _borrowed(src, where):
+            wanted[key] = src
+    return wanted
+
+
 def _refs(project) -> list[tuple[str, dict]]:
     """(family, entry) for every entry whose `src` may be copied: track video
     and image items and `sources` ("clip"), `assets` and `audio.tracks`."""

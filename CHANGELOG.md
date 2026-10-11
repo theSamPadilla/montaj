@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (serve): deleting a project no longer breaks another project that uses its files.** A project could point at media inside another project's folder (saved before 5.24.15 made a save copy borrowed media in, or written past a save), so deleting that other project left it with missing files, even mid-render. Before the folder is removed, every other project that uses files in it now gets its own copies in its `assets/` (the save's copy, clone where possible) and those entries are repointed, announced to an open editor. Nothing is deleted (409) while such a project is rendering (`in_use_by_render`) or when a file could not be copied (`in_use_not_copied`). (`serve/routes/projects.py`, `serve/save_media.py`)
+
 ## v5.29.4
 
 - **Changed (serve): the audio conform cache is gentler on the machine and keeps a project's own sources.** The conform's ffmpeg runs at low priority (nice 10; below-normal on Windows), so opening a project while exporting does not slow the export; `.cache` is excluded from Time Machine on macOS (the sticky per-item exclusion, no prompt); and entries used in the last 30 minutes are never evicted, so a project whose sources together exceed the 2 GB budget no longer evicts files the open editor is reading (the cache may sit over budget until they age out). (`serve/audio_conform.py`)
