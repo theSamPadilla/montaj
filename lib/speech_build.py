@@ -509,6 +509,14 @@ class _Build:
         if old is not None and abs(kept - old) >= _MARK_TOL_S:
             self.report.pauses.append({"line": line, "from": round(old, 2), "to": round(kept, 2)})
 
+    def _folded(self, info):
+        """§79: the wordless items derive read into this row's tail marker (Row.folded), as join pieces
+        (info, inPoint, outPoint, item id). Only for the row that was its item's last."""
+        m = info.meta
+        if m is None or not m.last_in_item:
+            return []
+        return [(info, t0, t1, iid) for iid, t0, t1 in getattr(m.row, "folded", None) or []]
+
     def _join_old(self, prev, info, a, b):
         """The pause the old cut kept at this join, or None when the old cut had no such join."""
         if prev is info:
@@ -521,7 +529,7 @@ class _Build:
             return None
         if m1.row.words[-1].idx != a.idx or m2.row.words[0].idx != b.idx:
             return None
-        tail = self._old_amount(m1, m1.n) or 0.0
+        tail = (self._old_amount(m1, m1.n) or 0.0) + sum(t1 - t0 for _, t0, t1 in getattr(m1.row, "folded", None) or [])
         return tail + self._old_amount(m2, 0)
 
     # -------------------------------------------------------------- joins and free sides
@@ -596,8 +604,9 @@ class _Build:
         consecutive = prev.src == info.src and b.idx == a.idx + 1
 
         if fl and fr:
-            self._note(info.line, old, fl.amount + fr.amount, p, edited)
-            return _Edge(fl.edge, old=fl.item), _Edge(fr.edge, old=fr.item), []
+            folded = self._folded(prev)
+            self._note(info.line, old, fl.amount + fr.amount + _span(folded), p, edited)
+            return _Edge(fl.edge, old=fl.item), _Edge(fr.edge, old=fr.item), folded
         if consecutive:
             gap = b.start - a.end
             if not ga[2] and p < gap - _MARK_TOL_S:
@@ -625,24 +634,37 @@ class _Build:
         if prev.src == info.src and a.idx < b.idx and left.t >= right.t - _EPS:
             return None   # pads or snapping met: nothing left to cut between them
         kept = (left.t - a.end) + (b.start - right.t)
-        pieces = []
         short = p - kept
+        # §79: an unchanged tail marker puts back the wordless items derive read into it.
+        pieces = self._folded(prev) if fl else []
+        kept += _span(pieces)
         if edited and not consecutive and short > _MARK_TOL_S:
             # The gaps beside the two words cannot hold the pause the text asked for. Silence that followed deleted words
             # at the end of a's old item (or preceded deleted words at the start of b's) is there too:
-            # cut out only those words and keep their silence.
-            tail = None if fl else self._trailing_silence(prev, a, info, b)
+            # cut out only those words and keep their silence. An edited tail marker that holds
+            # wordless items (§79) takes their silence first, in order.
+            if not fl:
+                for minfo, t0, t1, iid in self._folded(prev):
+                    if short <= _MARK_TOL_S:
+                        break
+                    t = min(short, t1 - t0)
+                    pieces.append((minfo, t0, t0 + t, iid if t >= t1 - t0 - _EPS else None))
+                    short -= t
+                    kept += t
+            tail = None if fl or pieces else self._trailing_silence(prev, a, info, b)
+            tail_piece = None
             if tail:
                 t = min(short, tail[1])
-                pieces.append((prev, tail[0], tail[0] + t))
+                tail_piece = (prev, tail[0], tail[0] + t)
+                pieces.append(tail_piece)
                 short -= t
             lead = None if fr else self._leading_silence(prev, a, info, b)
             if lead and short > _MARK_TOL_S:
                 u = min(short, lead[1])
                 pieces.append((info, lead[0] - u, lead[0]))
                 kept += u
-            if tail:
-                kept += pieces[0][2] - pieces[0][1]
+            if tail_piece:
+                kept += tail_piece[2] - tail_piece[1]
         self._note(info.line, old, kept, p, edited)
         return left, right, pieces
 
@@ -673,6 +695,10 @@ class _Build:
         edge = _Edge(*src.after(a.idx, p))
         self._note(info.line, None, edge.t - a.end, p, edited)
         return edge
+
+    def _free_tail_pieces(self, info):
+        """§79: an unchanged tail marker with nothing after it still puts back its wordless items."""
+        return self._folded(info) if self._spec(info, len(info.words)).kind == "fixed" else []
 
     # -------------------------------------------------------------- special rows
 
@@ -750,10 +776,22 @@ class _Build:
             return Run(info.src, edge.t, edge.t, info.ri, info.line, item_id=origin, old_in=edge.old,
                        hard_in=edge.hard)
 
+        def piece(minfo, t0, t1, ri_, old=None):
+            """A silence-only run between two edges. `old`: the wordless item it puts back whole (§79),
+            whose edges it keeps, so it is that item again and never merges into its neighbours."""
+            r = open_(minfo, _Edge(t0, old=old))
+            r.row_index = ri_
+            if old:
+                r.item_id = old
+            r.s_out, r.old_out = t1, old
+            runs.append(r)
+
         for ri, row in enumerate(self.rows):
             if row.kind != "speech":
                 if cur is not None:
                     close(self._free_tail(prev[0]))
+                    for minfo, t0, t1, old in self._free_tail_pieces(prev[0]):
+                        piece(minfo, t0, t1, prev[0].ri, old)
                 cur = prev = None
                 runs.append(self._special(ri, row, gaps, reused))
                 continue
@@ -765,15 +803,15 @@ class _Build:
                     edges = self._join(prev[0], prev[1], info, k)
                     if edges is not None:
                         close(edges[0])
-                        for minfo, t0, t1 in edges[2]:
-                            cur = open_(minfo, _Edge(t0))
-                            cur.row_index = info.ri
-                            close(_Edge(t1))
+                        for p in edges[2]:
+                            piece(p[0], p[1], p[2], info.ri, p[3] if len(p) > 3 else None)
                         cur = open_(info, edges[1])
                 cur.words.append(w.idx)
                 prev = (info, k)
         if cur is not None:
             close(self._free_tail(prev[0]))
+            for minfo, t0, t1, old in self._free_tail_pieces(prev[0]):
+                piece(minfo, t0, t1, prev[0].ri, old)
         runs = self._merge(runs)
         for r in runs:
             r.hard_cuts = int(r.hard_in) + int(r.hard_out)
@@ -825,6 +863,11 @@ class _Build:
             if i not in in_lcs and line in old_by_line and line not in moved:
                 moved.append(line)
         self.report.moved = moved
+
+
+def _span(pieces):
+    """Seconds of source the join pieces keep."""
+    return sum(p[2] - p[1] for p in pieces)
 
 
 def _lcs_members(a, b):

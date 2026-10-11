@@ -30,6 +30,8 @@ class Row:
     """One line of the cut. kind: "speech" | "gap" | "nospeech" | "notranscript" | "image".
 
     pauses are keyed by position: 0 is the lead-in, k is the gap before word k, len(words) is the tail.
+    folded (speech rows): wordless items read as part of the tail marker, as (item id, inPoint, outPoint)
+    in timeline order (see _fold_kept_silences).
     """
     kind: str
     line: str | None = None
@@ -40,6 +42,7 @@ class Row:
     t0: float | None = None
     t1: float | None = None
     dur: float | None = None
+    folded: list = field(default_factory=list)
 
 
 @dataclass
@@ -143,6 +146,46 @@ def _pause(v: float, pauses: dict, key: int):
         pauses[key] = v
 
 
+# A wordless piece within this much of a measured silence's edges lies inside it.
+_FOLD_TOL_S = 0.02
+
+
+def _fold_kept_silences(cut: list, wordless: dict, measured: dict, items_by_id: dict) -> list:
+    """§79: a wordless piece that is silence, between two speech rows, is the pause after the row
+    before it, so it reads as that row's tail marker and not as a `-- no speech` row.
+
+    It is what speech_build keeps of a deleted edge word's silence (a silence-only item). Folded: a
+    run of `wordless` rows (index -> source key) right after the last row of a speech item of the same
+    source, each inside one measured silence of that source, followed by a speech row. The row's tail
+    becomes its own tail plus the pieces, and `Row.folded` lists them, so speech_build puts the same
+    items back when the marker is unchanged. Anything else stays a no-speech row."""
+    out, i = [], 0
+    while i < len(cut):
+        r = cut[i]
+        out.append(r)
+        i += 1
+        if r.kind != "speech" or (i < len(cut) and cut[i].item_ids == r.item_ids):
+            continue
+        letter = re.match(r"[A-Z]+", r.line).group(0)
+        j, group = i, []
+        while j < len(cut) and j in wordless and cut[j].label == letter:
+            sils = measured.get(wordless[j]) or []
+            w = cut[j]
+            if not any(s - _FOLD_TOL_S <= w.t0 and w.t1 <= e + _FOLD_TOL_S for s, e in sils):
+                break
+            group.append(w)
+            j += 1
+        if not group or j >= len(cut) or cut[j].kind != "speech":
+            continue
+        own = items_by_id.get(r.item_ids[0]) if r.item_ids else None
+        tail = max(0.0, float(own.get("outPoint", 0)) - r.words[-1].end) if own else 0.0
+        r.pauses.pop(len(r.words), None)
+        _pause(tail + sum(w.t1 - w.t0 for w in group), r.pauses, len(r.words))
+        r.folded = [(w.item_ids[0], w.t0, w.t1) for w in group]
+        i = j
+    return out
+
+
 def derive(project: dict, project_dir: str, track: str | None = None, sils: dict | None = None) -> Derived:
     """`sils`: silences already measured per source key (a previous Derived.silences); reused, not measured again."""
     idx = speech_track_index(project, track, project_dir)
@@ -190,7 +233,7 @@ def derive(project: dict, project_dir: str, track: str | None = None, sils: dict
         lines[k] = split_lines(letter, refined)
     line_of = {k: {w.idx: ln for ln in lines[k] for w in ln.words} for k in keys}
 
-    cut, played = [], {k: set() for k in keys}
+    cut, played, wordless = [], {k: set() for k in keys}, {}
     end_so_far, warnings = 0.0, []
     for it in items:
         if float(it["start"]) - end_so_far >= frame - 1e-9:
@@ -218,6 +261,7 @@ def derive(project: dict, project_dir: str, track: str | None = None, sils: dict
             continue
         ws = [w for w in words[key] if a <= (w.start + w.end) / 2 < b]
         if not ws:
+            wordless[len(cut)] = key
             cut.append(Row("nospeech", item_ids=[it["id"]], label=letters[key], t0=a, t1=b))
             continue
         played[key].update(w.idx for w in ws)
@@ -238,6 +282,7 @@ def derive(project: dict, project_dir: str, track: str | None = None, sils: dict
                 _pause(max(0.0, b - rw[-1].end), pauses, len(rw))
             cut.append(Row("speech", line=ln.id, words=rw, pauses=pauses, item_ids=[it["id"]]))
             prev_end = rw[-1].end
+    cut = _fold_kept_silences(cut, wordless, measured, {it["id"]: it for it in items})
 
     all_lines, unused, partly = {}, [], set()
     for k in keys:

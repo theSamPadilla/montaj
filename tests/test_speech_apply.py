@@ -4,6 +4,7 @@ Runs on the real speech fixture of tests/fixtures/speech_text (README there), co
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -319,6 +320,51 @@ def test_deleted_trailing_word_keeps_its_silence_end_to_end(env):
     assert r["applied"] is True and r["clamped"] == []
     again = apply(env, r["text"])
     assert again["noop"] is True
+
+
+def _cut_lines(text):
+    return text.split("## Cut", 1)[1].split("## Unused", 1)[0].strip().splitlines()
+
+
+def _tail(line):
+    m = re.search(r"\{(\d+\.\d\d)\}$", line)
+    return float(m.group(1)) if m else None
+
+
+def test_kept_silence_of_a_deleted_edge_word_reads_as_the_rows_tail_marker(env):
+    # §79: A8's "Tom!" ended clip-2; with it deleted and A7 asking for a tail, the silence after it is
+    # kept as its own wordless item. Read back it is A7's tail marker, never a `-- no speech` row.
+    t = edit_row(env.text, "A7", '"Tom!"', '"Tom!" {0.17}')
+    t = delete_row(t, "A8")
+    r = apply(env, t)
+    assert r["applied"] is True and r["clamped"] == []
+    cut = _cut_lines(r["text"])
+    assert not [ln for ln in cut if "no speech" in ln], cut
+    a7 = next(ln for ln in cut if ln.startswith("A7 "))
+    assert abs(_tail(a7) - 0.17) <= 0.02, a7
+    assert cut[cut.index(a7) + 1].startswith("A9 "), cut
+    # the same text again changes nothing: the folded silence is rebuilt as the item it was
+    before = snapshot(env)
+    again = apply(env, r["text"])
+    assert again["noop"] is True and again["pauses"] == [] and snapshot(env) == before
+
+
+def test_a_folded_tail_marker_edited_smaller_trims_its_silence(env):
+    # §79: an edited marker that holds a kept silence takes that silence first, trimmed to what it asks
+    t = edit_row(env.text, "A7", '"Tom!"', '"Tom!" {0.17}')
+    r = apply(env, delete_row(t, "A8"))
+    a7 = next(ln for ln in _cut_lines(r["text"]) if ln.startswith("A7 "))
+    trimmed = apply(env, r["text"].replace(a7, re.sub(r"\{\d+\.\d\d\}$", "{0.10}", a7)))
+    assert trimmed["applied"] is True and trimmed["clamped"] == []
+    cut = _cut_lines(trimmed["text"])
+    assert not [ln for ln in cut if "no speech" in ln], cut
+    # 0.10 s is under SHOW_PAUSE_S, so the row shows no marker; the kept silence is 0.10 s of its item
+    a7t = next(ln for ln in cut if ln.startswith("A7 "))
+    assert _tail(a7t) is None, a7t
+    items = json.loads(open(env.path).read())["tracks"][0]["items"]
+    kept = [it for it in items if 19.5 < float(it["inPoint"]) < float(it["outPoint"]) <= 19.7]
+    assert len(kept) == 1 and abs(float(kept[0]["outPoint"]) - float(kept[0]["inPoint"]) - 0.10) < 0.005, kept
+    assert apply(env, trimmed["text"])["noop"] is True
 
 
 # ---- PL44 review (should): track override, version repo, no-op report, mixed track
