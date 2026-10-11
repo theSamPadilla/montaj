@@ -311,15 +311,22 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
     with the extension of the step's output type when it has none. Any other
     `out` passes through unchanged. A name already taken gets -2, -3, ... The
     result never leaves `<project>/assets/` (a symlinked assets is a 422).
+    An `out` param marked `"projectDefault": "step"` is left off when it is
+    left off: that step keeps its own stable place in the project, replaced on
+    a re-run (glass_plate's `plates/<item>/`), where a timestamped name would
+    leave every earlier run behind (§176).
     Returns the resolved path, or None when nothing was resolved."""
     from datetime import datetime
     project = body.pop("_project", None)
     if project is None:
         return None
     pdir = _project_dir_for(project)
-    if not any(p.get("name") == "out" for p in schema.get("params") or []):
+    out_param = next((p for p in schema.get("params") or [] if p.get("name") == "out"), None)
+    if out_param is None:
         return None
     out = body.get("out")
+    if out is None and out_param.get("projectDefault") == "step":
+        return None
     if out is not None and not _is_plain_name(out):
         return None
     ext = _OUT_EXT.get((schema.get("output") or {}).get("type"), "")

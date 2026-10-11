@@ -154,3 +154,28 @@ def test_final_parent_assertion_catches_a_name_that_slipped_the_plain_check(env,
     monkeypatch.setattr(steps_mod, "_is_plain_name", lambda out: True)
     r = _post(_project=pid, out="../escape.png")
     assert r.status_code == 422 and not calls
+
+
+def test_a_step_with_its_own_stable_folder_keeps_it(env, monkeypatch):
+    # §176: glass_plate replaces <project>/plates/<item>/ in place on a re-run;
+    # a timestamped assets folder per run left every earlier plate behind.
+    pid, pdir, calls = env
+    schema = json.loads((Path(STEPS_DIR) / "render/glass_plate.json").read_text())
+    monkeypatch.setattr(steps_mod, "scan_steps", lambda: {"glass_plate": (schema, Path("x.py"))})
+
+    async def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return json.dumps({"frames": [], "fps": 30, "size": [480, 270], "canvas": [1920, 1080]}) + "\n", "", 0
+
+    monkeypatch.setattr(steps_mod, "run_subprocess", fake_run)
+    for _ in range(2):
+        r = client.post("/api/steps/glass_plate", json={"project": str(pdir / "project.json"), "item": "ov", "_project": pid})
+        assert r.status_code == 200, r.text
+        assert "--out" not in calls[-1]
+        assert "out" not in r.json()
+    assert not (pdir / "assets").exists()
+    # A plain name the caller gives still lands in assets, as for every step.
+    r = client.post("/api/steps/glass_plate", json={"project": str(pdir / "project.json"), "item": "ov", "_project": pid, "out": "plate-a"})
+    assert r.status_code == 200, r.text
+    assert calls[-1][calls[-1].index("--out") + 1] == str(pdir / "assets" / "plate-a")
+

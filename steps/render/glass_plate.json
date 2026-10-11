@@ -48,6 +48,7 @@
       "name": "out",
       "type": "path",
       "required": false,
+      "projectDefault": "step",
       "description": "Folder for the frames. Defaults to <project_dir>/plates/<item>/ (an item id with a path separator or a colon needs an explicit out). Never a root, the home folder or a folder holding it. The new frames are written aside and replace the NNNN.jpg frames in it only once all are written, so a failed run keeps the previous plate; nothing else in the folder is touched."
     }
   ]
