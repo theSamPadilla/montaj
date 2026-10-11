@@ -25,6 +25,14 @@ META_PRINT = ("after_move:%(.{id,title,description,view_count,like_count,comment
               "upload_date,duration,webpage_url,filepath})j")
 DESCRIPTION_MAX = 2200
 
+# With --max-filesize, every video the run considers prints this marker at
+# yt-dlp's after_filter stage, before any size check. --print makes yt-dlp
+# quiet, so a video refused for its size (--max-filesize on the file's
+# Content-Length, or the size --match-filter on the chosen format) says nothing
+# and exits 0 (measured, yt-dlp 2026.03.17): seen but never saved means too
+# large.
+SEEN = "montaj-seen"
+
 
 def _is_youtube(url):
     host = (urlparse(url if "://" in url else "https://" + url).hostname or "").lower()
@@ -92,6 +100,21 @@ def classify_failure(url, returncode, stdout, stderr):
     return code, _HINTS[code]
 
 
+def _fail_with(code, hint, stderr):
+    """The failure JSON on stderr, then exit 1. stderr_tail goes FIRST: the MCP
+    wrapper keeps only the last 2000 chars of stderr, so the code and hint must
+    come last."""
+    tail = stderr_tail(stderr)
+    print(json.dumps({
+        "stderr_tail": tail,
+        "hint": hint,
+        "code": code,
+        "error": code,
+        "message": f"{code}: {hint}\n{tail}",
+    }), file=sys.stderr)
+    sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Download a video from a URL using yt-dlp")
     parser.add_argument("--url",    required=True, help="URL to download (video, profile, or playlist)")
@@ -99,6 +122,8 @@ def main():
     parser.add_argument("--format", default="bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                         help="yt-dlp format selector")
     parser.add_argument("--limit",  type=int, help="Max number of videos to download from a playlist or channel")
+    parser.add_argument("--max-filesize", type=int,
+                        help="Refuse, before downloading, a video larger than this many bytes when its size is known")
     parser.add_argument("--meta",   action="store_true",
                         help="Also return each video's id, title, caption text, views, likes, comments, upload date and duration as JSON")
     args = parser.parse_args()
@@ -131,6 +156,14 @@ def main():
     if args.limit:
         cmd += ["--max-downloads", str(args.limit)]
 
+    if args.max_filesize:
+        n = args.max_filesize
+        # The chosen format's size (a merged format's is the sum of its parts),
+        # unknown sizes let through, then the file's own Content-Length.
+        cmd += ["--match-filter", f"filesize<=?{n} & filesize_approx<=?{n}",
+                "--max-filesize", str(n),
+                "--print", f"after_filter:{SEEN} %(id)s"]
+
     # If out has no extension treat it as a directory
     if os.path.isdir(out) or not os.path.splitext(out)[1]:
         os.makedirs(out, exist_ok=True)
@@ -151,27 +184,28 @@ def main():
         # stderr_tail goes FIRST in the JSON: the MCP wrapper keeps only the
         # last 2000 chars of stderr, so the code and hint must come last.
         code, hint = classify_failure(args.url, r.returncode, r.stdout, r.stderr)
-        tail = stderr_tail(r.stderr)
-        print(json.dumps({
-            "stderr_tail": tail,
-            "hint": hint,
-            "code": code,
-            "error": code,
-            "message": f"{code}: {hint}\n{tail}",
-        }), file=sys.stderr)
-        sys.exit(1)
+        _fail_with(code, hint, r.stderr)
+
+    lines = [line.strip() for line in r.stdout.strip().splitlines() if line.strip()]
+    seen = [line for line in lines if line.startswith(SEEN + " ")]
+    output = [line for line in lines if not line.startswith(SEEN + " ")]
+
+    def nothing_saved():
+        if seen:
+            _fail_with("too_large", _HINTS["too_large"], r.stderr)
+        fail("no_output", "yt-dlp produced no output files")
 
     if args.meta:
-        got = parse_meta_lines(r.stdout)
+        got = parse_meta_lines("\n".join(output))
         if not got:
-            fail("no_output", "yt-dlp produced no output files")
+            nothing_saved()
         print(json.dumps(got))
         return
 
-    paths = [line.strip() for line in r.stdout.strip().splitlines() if line.strip()]
+    paths = output
 
     if not paths:
-        fail("no_output", "yt-dlp produced no output files")
+        nothing_saved()
 
     if len(paths) == 1:
         print(paths[0])

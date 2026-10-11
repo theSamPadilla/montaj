@@ -29,6 +29,11 @@
       "description": "Max number of videos to download from a playlist or channel"
     },
     {
+      "name": "max-filesize",
+      "type": "int",
+      "description": "Refuse, before downloading, a video larger than this many bytes when its size is known (the chosen format's size, or the file's Content-Length); the error is too_large"
+    },
+    {
       "name": "meta",
       "type": "bool",
       "default": false,
