@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import CommandPalette from '../video/CommandPalette'
 import { InlineTextEditor } from '../text/InlineTextEditor'
 import { NoteArmLayer } from '../carousel/NoteLayers'
@@ -11,7 +12,7 @@ afterEach(() => cleanup())
 
 // Components too heavy to mount here are covered by asserting the attribute in
 // the source of the exact element (matched by a nearby anchor string).
-const SRC = join(__dirname, '..')
+const SRC = dirname(dirname(fileURLToPath(import.meta.url)))
 const src = (p: string) => readFileSync(join(SRC, p), 'utf8')
 describe('editor controls are named for the accessibility tree', () => {
   it('CommandPalette: dialog, and both inputs are named (goto and list)', () => {
