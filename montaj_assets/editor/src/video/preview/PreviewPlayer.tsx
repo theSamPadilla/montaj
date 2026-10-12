@@ -84,6 +84,11 @@ interface PreviewPlayerProps {
    *  caption at a time, as before. */
   captionApplyToAll?: boolean
   onCaptionAllSegmentsChange?: (patch: CaptionEditAllPatch) => void
+  /** Every selected caption and their commit channel, passed through to
+   *  CaptionPreview: with "Apply to all" off, dragging or resizing one of a
+   *  multi-selection moves or sizes all of them by the same relative change. */
+  selectedCaptionIds?: readonly string[]
+  onCaptionSegmentsChange?: (patches: Record<string, CaptionEditAllPatch>) => void
   /**
    * SP4 — mirrors `VideoEditorProps['engine']` (see `../../types.ts`).
    * Absent/`{enabled: false}` (default): no effect, the legacy `<video>` slots
@@ -439,6 +444,8 @@ function PreviewSurface({
   onCaptionSegmentChange,
   captionApplyToAll,
   onCaptionAllSegmentsChange,
+  selectedCaptionIds,
+  onCaptionSegmentsChange,
   engine,
   transportRef,
   onPlayingChange,
@@ -848,6 +855,8 @@ function PreviewSurface({
           onCaptionSegmentChange={onCaptionSegmentChange}
           applyToAll={captionApplyToAll}
           onCaptionAllSegmentsChange={onCaptionAllSegmentsChange}
+          selectedCaptionIds={selectedCaptionIds}
+          onCaptionSegmentsChange={onCaptionSegmentsChange}
           designCanvas={[RENDER_W, RENDER_H]}
         />
       )}

@@ -100,3 +100,43 @@ export function makeCaptionEditAll(
     onCaptionEdit?.(updated)
   }
 }
+
+/**
+ * The selection sibling of `makeCaptionEditAll`: a DIFFERENT patch per
+ * segment, keyed by id, landed as one project change so the host records one
+ * undo step for the whole selection. Used when "Apply to all" is off and
+ * several captions are selected, where each caption keeps its own geometry
+ * and takes the same relative change (see `captionGroupDragPatches`).
+ *
+ * The same field guard as "Apply to all": only `ALL_SEGMENT_FIELDS` are read,
+ * so text and timing can never be written across a selection. Ids that match
+ * no segment are ignored. A no-op (no callback) when nothing would change.
+ */
+export function makeCaptionEditMany(
+  project: Project,
+  onProjectChange?: (p: Project) => void,
+  onCaptionEdit?: (p: Project) => void,
+) {
+  return (patches: Record<string, CaptionEditAllPatch>) => {
+    const captions = project.captions
+    if (!captions) return
+    let changed = false
+    const segments = captions.segments.map((s) => {
+      // Own keys only: project.json is hand-editable, so an id like
+      // `constructor` must not read through to Object.prototype.
+      const patch = s.id !== undefined && Object.prototype.hasOwnProperty.call(patches, s.id) ? patches[s.id] : undefined
+      if (!patch) return s
+      const definedPatch: CaptionEditAllPatch = {}
+      for (const key of ALL_SEGMENT_FIELDS) {
+        if (patch[key] !== undefined && patch[key] !== s[key]) (definedPatch as Record<string, unknown>)[key] = patch[key]
+      }
+      if (Object.keys(definedPatch).length === 0) return s
+      changed = true
+      return { ...s, ...definedPatch }
+    })
+    if (!changed) return
+    const updated = { ...project, captions: { ...captions, segments } }
+    onProjectChange?.(updated)
+    onCaptionEdit?.(updated)
+  }
+}

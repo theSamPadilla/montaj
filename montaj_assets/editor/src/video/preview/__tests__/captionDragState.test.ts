@@ -5,6 +5,8 @@ import {
   CAPTION_MIN_SCALE,
   captionDragGeometry,
   captionDragPatch,
+  captionFollowerPatch,
+  captionGroupDragPatches,
   hasEscapedClickSlop,
   liveCaptionSegments,
   measureCaptionContentRect,
@@ -214,6 +216,87 @@ describe('liveCaptionSegments', () => {
   it('on: text and timing are untouched', () => {
     const out = liveCaptionSegments(segments, moveDrag, moveLive, true)
     expect(out.map(s => [s.id, s.text, s.start, s.end])).toEqual(segments.map(s => [s.id, s.text, s.start, s.end]))
+  })
+})
+
+// "Apply to all" off with several captions selected: the rest of the selection
+// takes the dragged caption's CHANGE on its own geometry, so the selected
+// captions keep their offsets from each other.
+describe('a selection drag (group)', () => {
+  const segments = [
+    { id: 'cap-0', text: 'zero', start: 0, end: 1, offsetX: 5, offsetY: -2, scale: 1.2 },
+    { id: 'cap-1', text: 'one', start: 1, end: 2 },
+    { id: 'cap-2', text: 'two', start: 2, end: 3, offsetX: -30, scale: 0.5 },
+  ]
+  const group = ['cap-0', 'cap-1', 'cap-2']
+  // cap-1 starts at 0/0 and is dragged to 12/34: a delta of +12/+34.
+  const moveDrag = drag({ id: 'cap-1', group })
+  const moveLive = { offsetX: 12, offsetY: 34, scale: 1 }
+  // cap-1 starts at scale 1 and is sized to 1.5: a factor of 1.5.
+  const resizeDrag = drag({ id: 'cap-1', type: 'resize-se', group })
+  const resizeLive = { offsetX: 0, offsetY: 0, scale: 1.5 }
+
+  it('live: a move moves every selected caption by the same delta, each keeping its own size', () => {
+    const out = liveCaptionSegments(segments, moveDrag, moveLive, false)
+    expect(out.map(s => [s.offsetX, s.offsetY])).toEqual([[17, 32], [12, 34], [-18, 34]])
+    expect(out.map(s => s.scale)).toEqual([1.2, 1, 0.5])
+  })
+
+  it("live: a resize multiplies every selected caption's own size, each keeping its own position", () => {
+    const out = liveCaptionSegments(segments, resizeDrag, resizeLive, false)
+    expect(out[0].scale).toBeCloseTo(1.8, 10)
+    expect(out[1].scale).toBe(1.5)
+    expect(out[2].scale).toBeCloseTo(0.75, 10)
+    expect(out[0]).toMatchObject({ offsetX: 5, offsetY: -2 })
+    expect(out[2]).toMatchObject({ offsetX: -30 })
+  })
+
+  it('live: captions outside the selection are returned as is', () => {
+    const out = liveCaptionSegments(segments, drag({ id: 'cap-1', group: ['cap-1', 'cap-2'] }), moveLive, false)
+    expect(out[0]).toBe(segments[0])
+    expect(out[2]).toMatchObject({ offsetX: -18, offsetY: 34 })
+  })
+
+  it('live: "Apply to all" wins over the selection (same absolute value, every caption)', () => {
+    const out = liveCaptionSegments(segments, moveDrag, moveLive, true)
+    expect(out.map(s => [s.offsetX, s.offsetY])).toEqual([[12, 34], [12, 34], [12, 34]])
+  })
+
+  it('no group when the dragged caption is not in it, or it holds only one caption', () => {
+    expect(captionGroupDragPatches(segments, drag({ id: 'cap-1', group: ['cap-0', 'cap-2'] }), moveLive)).toBeNull()
+    expect(captionGroupDragPatches(segments, drag({ id: 'cap-1', group: ['cap-1'] }), moveLive)).toBeNull()
+    expect(captionGroupDragPatches(segments, drag({ id: 'cap-1' }), moveLive)).toBeNull()
+    const out = liveCaptionSegments(segments, drag({ id: 'cap-1', group: ['cap-0', 'cap-2'] }), moveLive, false)
+    expect(out[0]).toBe(segments[0])
+    expect(out[2]).toBe(segments[2])
+  })
+
+  it('release: one patch per selected caption, matching the live preview, move writing only offsets', () => {
+    expect(captionGroupDragPatches(segments, moveDrag, moveLive)).toEqual({
+      'cap-0': { offsetX: 17, offsetY: 32 },
+      'cap-1': { offsetX: 12, offsetY: 34 },
+      'cap-2': { offsetX: -18, offsetY: 34 },
+    })
+  })
+
+  it('release: a resize writes only the scale', () => {
+    const patches = captionGroupDragPatches(segments, resizeDrag, resizeLive)!
+    expect(Object.keys(patches).sort()).toEqual(group)
+    expect(patches['cap-1']).toEqual({ scale: 1.5 })
+    expect(Object.keys(patches['cap-0'])).toEqual(['scale'])
+    expect(patches['cap-0'].scale).toBeCloseTo(1.8, 10)
+  })
+
+  it("a follower's scale clamps to the same bounds as the dragged one", () => {
+    const big = { offsetX: 0, offsetY: 0, scale: 4 }
+    expect(captionFollowerPatch(drag({ type: 'resize-se', initScale: 1 }), big, { scale: 2 }).scale).toBe(CAPTION_MAX_SCALE)
+    const small = { offsetX: 0, offsetY: 0, scale: 0.1 }
+    expect(captionFollowerPatch(drag({ type: 'resize-se', initScale: 1 }), small, { scale: 0.5 }).scale).toBe(CAPTION_MIN_SCALE)
+  })
+
+  it('a dragged caption stored at scale 0 shares no factor', () => {
+    expect(captionFollowerPatch(drag({ type: 'resize-se', initScale: 0 }), { offsetX: 0, offsetY: 0, scale: 0.4 }, { scale: 2 }))
+      .toEqual({ scale: 2 })
   })
 })
 

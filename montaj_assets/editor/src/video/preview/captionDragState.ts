@@ -55,6 +55,10 @@ export interface CaptionDragState {
   initOffsetX: number
   initOffsetY: number
   initScale: number
+  /** Every caption that moves with this one when "Apply to all" is off: the
+   *  operator's caption selection, captured at mousedown and including `id`.
+   *  Absent, or `id` not in it, or fewer than two: this caption alone. */
+  group?: readonly string[]
 }
 
 /** A caption segment's positioning geometry, with schema defaults filled in. */
@@ -202,6 +206,63 @@ export function captionDragPatch(
     : { scale: geom.scale }
 }
 
+/** The gesture's group, when it has one: the selection captured at mousedown,
+ *  only if it holds the dragged caption and at least one other. */
+function captionDragGroup(drag: CaptionDragState): ReadonlySet<string> | null {
+  if (!drag.group || drag.group.length < 2 || !drag.group.includes(drag.id)) return null
+  return new Set(drag.group)
+}
+
+/**
+ * The patch for a caption that FOLLOWS the dragged one as part of a selection
+ * (not "Apply to all"): the same CHANGE, applied to its own geometry, so the
+ * selected captions keep their offsets from each other. A move adds the
+ * dragged caption's delta, snap included, to this caption's own offsets. A
+ * resize multiplies this caption's own scale by the dragged one's factor,
+ * clamped to the same bounds; scale is about each caption's own centre, so a
+ * clamp changes only that caption's size and never another's position.
+ */
+export function captionFollowerPatch(
+  drag: CaptionDragState,
+  live: CaptionGeometry,
+  seg: Pick<CaptionSegment, 'offsetX' | 'offsetY' | 'scale'>,
+): Pick<CaptionSegment, 'offsetX' | 'offsetY' | 'scale'> {
+  const g = readCaptionGeometry(seg)
+  if (drag.type === 'move') {
+    return {
+      offsetX: g.offsetX + (live.offsetX - drag.initOffsetX),
+      offsetY: g.offsetY + (live.offsetY - drag.initOffsetY),
+    }
+  }
+  // A dragged caption stored at scale 0 has no factor to share; leave the
+  // others alone rather than dividing by zero.
+  const factor = drag.initScale > 0 ? live.scale / drag.initScale : 1
+  return { scale: Math.min(CAPTION_MAX_SCALE, Math.max(CAPTION_MIN_SCALE, g.scale * factor)) }
+}
+
+/**
+ * What a release commits when the gesture has a group (see `group` on
+ * CaptionDragState): one patch per selected caption, keyed by id, the dragged
+ * one's from `captionDragPatch` and every other's from `captionFollowerPatch`.
+ * Null when the gesture has no group, which means one caption, as before.
+ * `segments` must be the geometry from BEFORE the gesture, which it is: the
+ * live preview never writes to the project.
+ */
+export function captionGroupDragPatches(
+  segments: readonly Pick<CaptionSegment, 'id' | 'offsetX' | 'offsetY' | 'scale'>[],
+  drag: CaptionDragState,
+  live: CaptionGeometry,
+): Record<string, Pick<CaptionSegment, 'offsetX' | 'offsetY' | 'scale'>> | null {
+  const group = captionDragGroup(drag)
+  if (!group) return null
+  const patches: Record<string, Pick<CaptionSegment, 'offsetX' | 'offsetY' | 'scale'>> = {}
+  for (const s of segments) {
+    if (!s.id || !group.has(s.id)) continue
+    patches[s.id] = s.id === drag.id ? captionDragPatch(drag, live) : captionFollowerPatch(drag, live, s)
+  }
+  return patches
+}
+
 /**
  * The segments to hand the template while a gesture is in flight, so the
  * caption follows the pointer before anything is committed.
@@ -209,7 +270,9 @@ export function captionDragPatch(
  * The dragged segment takes the live geometry. With `applyToAll` (the captions
  * panel's "Apply to all") every other segment takes `captionDragPatch` of it
  * too: the same ABSOLUTE position on a move, the same scale on a resize,
- * exactly what the release commits to every segment. Off, every other segment
+ * exactly what the release commits to every segment. Off, the other captions
+ * in the gesture's `group` (the selection) take `captionFollowerPatch`, the
+ * same RELATIVE change the release commits to them, and every other segment
  * is returned as is (same object).
  */
 export function liveCaptionSegments<T extends Pick<CaptionSegment, 'id' | 'offsetX' | 'offsetY' | 'scale'>>(
@@ -219,9 +282,12 @@ export function liveCaptionSegments<T extends Pick<CaptionSegment, 'id' | 'offse
   applyToAll: boolean,
 ): T[] {
   const patch = applyToAll ? captionDragPatch(drag, live) : null
+  const group = applyToAll ? null : captionDragGroup(drag)
   return segments.map(s => {
     if (s.id === drag.id) return { ...s, offsetX: live.offsetX, offsetY: live.offsetY, scale: live.scale }
-    return patch ? { ...s, ...patch } : s
+    if (patch) return { ...s, ...patch }
+    if (group && s.id && group.has(s.id)) return { ...s, ...captionFollowerPatch(drag, live, s) }
+    return s
   })
 }
 

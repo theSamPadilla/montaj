@@ -19,10 +19,14 @@ import VideoEditor from '../VideoEditor'
 // what a real drag's mid-gesture frame and end-of-gesture commit look like.
 let latestOnProjectChange: ((p: Project) => void) | undefined
 let latestOnOverlayEdit: ((p: Project) => void) | undefined
+// The timeline's selection setter, so a test can make the Cmd-click /
+// Shift-click / marquee selection the real timeline would.
+let latestOnSelectIds: ((ids: string[]) => void) | undefined
 vi.mock('../timeline/Timeline', () => ({
-  default: (props: { onProjectChange?: (p: Project) => void; onOverlayEdit?: (p: Project) => void }) => {
+  default: (props: { onProjectChange?: (p: Project) => void; onOverlayEdit?: (p: Project) => void; onSelectIds?: (ids: string[]) => void }) => {
     latestOnProjectChange = props.onProjectChange
     latestOnOverlayEdit = props.onOverlayEdit
+    latestOnSelectIds = props.onSelectIds
     return null
   },
 }))
@@ -89,6 +93,7 @@ beforeEach(() => {
   }
   latestOnProjectChange = undefined
   latestOnOverlayEdit = undefined
+  latestOnSelectIds = undefined
 })
 afterEach(() => vi.restoreAllMocks())
 
@@ -403,6 +408,66 @@ describe('VideoEditor — captions "Apply to all"', () => {
     await undo()
     await waitFor(() => expect(segments()).toEqual(variedCaptions.segments))
     await waitFor(() => expect(undoButton().disabled).toBe(true))
+  })
+
+  // ── Off, with several captions selected on the timeline ───────────────────
+  // A drag or resize lands on every SELECTED caption as the same relative
+  // change (each keeps its offset from the others), in one undo step.
+  describe('off, several captions selected', () => {
+    const select = async (ids: string[]) => {
+      await waitFor(() => expect(latestOnSelectIds).toBeTypeOf('function'))
+      await act(async () => { latestOnSelectIds!(ids) })
+    }
+
+    it('a preview drag moves every selected caption by the same delta, and one undo reverts all of them', async () => {
+      const view = mount()
+      await waitFor(() => expect(view.checkbox().checked).toBe(false))
+      await select(['s0', 's1', 's2'])
+      await view.dragCaption()
+      // s0 5/0 → 15/10; s1 0/-8 → 10/2; s2 0/0 → 10/10: +10/+10 each.
+      await waitFor(() => expect(view.segments().map(seg => [seg.offsetX, seg.offsetY])).toEqual([[15, 10], [10, 2], [10, 10]]))
+      expect(view.segments().map(seg => seg.scale)).toEqual([undefined, 1.5, undefined])
+
+      await waitFor(() => expect(view.undoButton().disabled).toBe(false))
+      await view.undo()
+      await waitFor(() => expect(view.segments()).toEqual(variedCaptions.segments))
+      // Exactly one undo entry covered the whole selection.
+      await waitFor(() => expect(view.undoButton().disabled).toBe(true))
+    })
+
+    it('a corner resize multiplies every selected caption\'s own size, and one undo reverts all of them', async () => {
+      const view = mount()
+      await waitFor(() => expect(view.checkbox().checked).toBe(false))
+      await select(['s0', 's1'])
+      await view.resizeCaption()
+      // s0 1 → 1.2; s1 1.5 → 1.8 (× 1.2); s2 is not selected.
+      await waitFor(() => expect(view.segments()[0].scale).toBeCloseTo(1.2))
+      expect(view.segments()[1].scale).toBeCloseTo(1.8)
+      expect(view.segments()[2]).toEqual(variedCaptions.segments[2])
+
+      await view.undo()
+      await waitFor(() => expect(view.segments()).toEqual(variedCaptions.segments))
+      await waitFor(() => expect(view.undoButton().disabled).toBe(true))
+    })
+
+    it('the dragged caption is outside the selection: only it moves', async () => {
+      const view = mount()
+      await waitFor(() => expect(view.checkbox().checked).toBe(false))
+      await select(['s1', 's2'])
+      await view.dragCaption()
+      await waitFor(() => expect(view.segments()[0]).toMatchObject({ id: 's0', offsetX: 15, offsetY: 10 }))
+      expect(view.segments()[1]).toEqual(variedCaptions.segments[1])
+      expect(view.segments()[2]).toEqual(variedCaptions.segments[2])
+    })
+
+    it('"Apply to all" on still wins: every caption takes the same absolute position', async () => {
+      const view = mount()
+      await waitFor(() => expect(view.checkbox().checked).toBe(false))
+      fireEvent.click(view.checkbox())
+      await select(['s0', 's1'])
+      await view.dragCaption()
+      await waitFor(() => expect(view.segments().map(seg => [seg.offsetX, seg.offsetY])).toEqual([[15, 10], [15, 10], [15, 10]]))
+    })
   })
 
   it('on: a drag does not wipe a color pick that is still waiting on its blur', async () => {

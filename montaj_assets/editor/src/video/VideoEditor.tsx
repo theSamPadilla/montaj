@@ -24,7 +24,7 @@ import { mergeCaptionProfileDefaults } from './captionProfileDefaults'
 import Timeline, { type TimelineActions, type TimelineMode } from './timeline/Timeline'
 import { geometryAt, visualDuration } from '@bycrux/timeline-core'
 import { audioEnd, computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, effectiveItemAudio, enabledTrackItems, enabledTracks, mapTrackItems, normalizeAudioTracks, trackItems, withEnabledItemTracks } from './timeline/timeline-model'
-import { makeCaptionEdit, makeCaptionEditAll, type CaptionEditAllPatch, type CaptionEditPatch } from './timeline/makeCaptionEdit'
+import { makeCaptionEdit, makeCaptionEditAll, makeCaptionEditMany, type CaptionEditAllPatch, type CaptionEditPatch } from './timeline/makeCaptionEdit'
 import PreviewPlayer, { type TransportHandle, type ScrubHandle } from './preview/PreviewPlayer'
 import { fitBoxStyle } from './preview/fitBox'
 import SocialPreviewMenu, { PlatformGlyph, platformOption } from './preview/SocialPreviewMenu'
@@ -911,6 +911,12 @@ function ReviewSurface<P extends Project>({
   // one caption id in `selectedIds` — taking the first is correct, the
   // preview only ever shows one box.
   const selectedCaptionId = selectedIds.find(id => captionIdSet.has(id)) ?? null
+  // Every caption id in the selection, for the preview: with "Apply to all"
+  // off, dragging one of several selected captions moves all of them.
+  const selectedCaptionIds = useMemo(
+    () => selectedIds.filter(id => captionIdSet.has(id)),
+    [selectedIds, captionIdSet],
+  )
   // Transport state for the context report. PreviewPlayer pushes it on a real
   // play/pause change only, so this re-renders the surface per toggle, never per frame.
   const [previewPlaying, setPreviewPlaying] = useState(false)
@@ -1801,6 +1807,15 @@ function ReviewSurface<P extends Project>({
     makeCaptionEditAll(syncProjectRef.current, (p) => void syncMutate(() => p as P))(patch)
   }, [syncProjectRef, syncMutate, syncDiscardTransient])
 
+  // The selection variant, for "Apply to all" off with several captions
+  // selected: a preview drag or resize lands on each selected caption as its
+  // own patch (the same relative change, see `captionGroupDragPatches`), in
+  // ONE project change, so one undo step covers the whole selection. Commits
+  // like the single-segment path above, through `commitCaptionProject`.
+  const handleCaptionSegmentsChange = useCallback((patches: Record<string, CaptionEditAllPatch>) => {
+    makeCaptionEditMany(syncProjectRef.current, commitCaptionProject)(patches)
+  }, [syncProjectRef, commitCaptionProject])
+
   // Delete one caption segment by id — CaptionListPanel's per-row trash
   // button. Captions have no "add" affordance (R4: they come from
   // transcription; Regenerate rebuilds the whole track), so this is the only
@@ -2377,6 +2392,8 @@ function ReviewSurface<P extends Project>({
                 onCaptionSegmentChange={handleCaptionSegmentChange}
                 captionApplyToAll={captionApplyToAll}
                 onCaptionAllSegmentsChange={handleCaptionAllSegmentsChange}
+                selectedCaptionIds={selectedCaptionIds}
+                onCaptionSegmentsChange={handleCaptionSegmentsChange}
                 engine={engine}
                 transportRef={transportRef}
                 onPlayingChange={setPreviewPlaying}

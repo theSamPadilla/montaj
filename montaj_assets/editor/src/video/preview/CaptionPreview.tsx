@@ -42,6 +42,7 @@ import type { CaptionEditAllPatch, CaptionEditPatch } from '../timeline/makeCapt
 import {
   captionDragGeometry,
   captionDragPatch,
+  captionGroupDragPatches,
   hasEscapedClickSlop,
   liveCaptionSegments,
   measureCaptionContentRect,
@@ -104,6 +105,16 @@ interface CaptionPreviewProps {
   /** Commit a finished drag/resize onto EVERY segment, as the same absolute
    *  values. Only called while `applyToAll` is on. */
   onCaptionAllSegmentsChange?: (patch: CaptionEditAllPatch) => void
+  /** Every selected caption id (the timeline's Cmd-click, Shift-click or
+   *  marquee), `selectedCaptionId` among them. With "Apply to all" off, a
+   *  drag or resize of a selected caption moves or sizes every one of them by
+   *  the same relative change, live and on release through
+   *  `onCaptionSegmentsChange`. Absent: `[selectedCaptionId]`. */
+  selectedCaptionIds?:      readonly string[]
+  /** Commit a finished drag/resize onto several segments at once, one patch
+   *  per id, as one change. Absent: a selection drag commits the dragged
+   *  caption alone, as before. */
+  onCaptionSegmentsChange?: (patches: Record<string, CaptionEditAllPatch>) => void
   /** The project's design canvas, `getOverlayDesignCanvas(settings.resolution)`:
    *  the box the templates lay captions out in, and the one render.js captures
    *  them at. Required rather than defaulted to 9:16 — a fixed 1080 × 1920
@@ -123,6 +134,8 @@ export default function CaptionPreview({
   onCaptionSegmentChange,
   applyToAll = false,
   onCaptionAllSegmentsChange,
+  selectedCaptionIds,
+  onCaptionSegmentsChange,
   designCanvas,
 }: CaptionPreviewProps) {
   const [RENDER_W, RENDER_H] = designCanvas
@@ -148,6 +161,14 @@ export default function CaptionPreview({
   const allMode = applyToAll && !!onCaptionAllSegmentsChange
   const allChangeRef = useRef(allMode ? onCaptionAllSegmentsChange : undefined)
   allChangeRef.current = allMode ? onCaptionAllSegmentsChange : undefined
+  // The selection's commit channel, for a drag with a group. Same ref reason.
+  const manyChangeRef = useRef(onCaptionSegmentsChange)
+  manyChangeRef.current = onCaptionSegmentsChange
+  // Read at release: the group's patches are relative to the geometry from
+  // before the gesture, which is what the track still holds then.
+  const segmentsRef = useRef(track.segments)
+  segmentsRef.current = track.segments
+  const selectedSet = new Set(selectedCaptionIds ?? (selectedCaptionId ? [selectedCaptionId] : []))
 
   // Scale the design-canvas layer to fit the actual player size. The player's
   // width is what is observed, and the scale derived from it per render, so a
@@ -187,10 +208,12 @@ export default function CaptionPreview({
 
   // The ONE segment the selection box addresses. With several captions on
   // screen "the active one" is ambiguous, so: the operator's current selection
-  // if it is among them, otherwise the highest-lane one — the caption painted
-  // last, and therefore the one visually on top at that instant.
+  // if it is among them (the primary one first, then any other selected
+  // caption), otherwise the highest-lane one — the caption painted last, and
+  // therefore the one visually on top at that instant.
   const targetSeg =
     (selectedCaptionId ? activeSegs.find(s => s.id === selectedCaptionId) : undefined)
+    ?? activeSegs.find(s => !!s.id && selectedSet.has(s.id))
     ?? activeSegs[activeSegs.length - 1]
     ?? null
 
@@ -199,7 +222,7 @@ export default function CaptionPreview({
   // exactly as it was: a passive, click-through caption overlay.
   const targetId    = targetSeg?.id
   const canInteract = !!targetId && !!(onSelectCaption || onCaptionSegmentChange)
-  const isSelected  = canInteract && selectedCaptionId === targetId
+  const isSelected  = canInteract && !!targetId && selectedSet.has(targetId)
 
   // The box unmounts when the playhead leaves a segment, so a pending
   // mouseleave never arrives and the hover hairline would carry over onto the
@@ -228,8 +251,9 @@ export default function CaptionPreview({
   useEffect(() => { ensureGoogleFontsLoaded(fontsToLoad) }, [String(fontsToLoad)])
 
   // Live drag preview: overlay the in-flight geometry onto the dragged segment,
-  // and with "Apply to all" onto every segment as the same absolute value (see
-  // `liveCaptionSegments`). The templates read offsetX/offsetY/scale straight
+  // with "Apply to all" onto every segment as the same absolute value, and
+  // otherwise onto the rest of a multi-selection as the same relative change
+  // (see `liveCaptionSegments`). The templates read offsetX/offsetY/scale straight
   // off the segment, so this is all it takes for the captions to follow the
   // cursor.
   const segments = live && drag
@@ -267,7 +291,13 @@ export default function CaptionPreview({
       const l = liveRef.current
       if (l) {
         const patch = captionDragPatch(d!, l)
+        // "Apply to all" wins over a selection; a selection (two or more
+        // captions, the dragged one among them) wins over one caption.
+        const groupPatches = allChangeRef.current || !manyChangeRef.current
+          ? null
+          : captionGroupDragPatches(segmentsRef.current, d!, l)
         if (allChangeRef.current) allChangeRef.current(patch)
+        else if (groupPatches) manyChangeRef.current!(groupPatches)
         else changeRef.current?.(l.id, patch)
       }
       setDrag(null)
@@ -292,13 +322,20 @@ export default function CaptionPreview({
     // Select and begin the gesture in the same press: unlike overlays (selected
     // from the timeline) the preview box IS the caption's selection affordance,
     // so requiring a separate click first would just cost a click.
-    if (selectedCaptionId !== targetId) onSelectCaption?.(targetId)
+    // Pressing a caption that is already part of a multi-selection keeps the
+    // selection, so the whole selection moves; pressing any other caption
+    // selects it alone, as a plain click does elsewhere.
+    const inSelection = selectedSet.has(targetId)
+    if (!inSelection) onSelectCaption?.(targetId)
     if (!onCaptionSegmentChange) return
     const g = readCaptionGeometry(targetSeg)
     setDrag({
       id: targetId, type,
       initX: e.clientX, initY: e.clientY,
       initOffsetX: g.offsetX, initOffsetY: g.offsetY, initScale: g.scale,
+      // Only a host that can commit several captions at once gets a group;
+      // otherwise the live preview would show captions the release leaves.
+      group: inSelection && onCaptionSegmentsChange ? [...selectedSet] : undefined,
     })
   }
 

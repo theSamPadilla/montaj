@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { Project } from '../../../types'
 import type { CaptionSegment } from '../../../schema'
-import { makeCaptionEdit, makeCaptionEditAll } from '../makeCaptionEdit'
+import { makeCaptionEdit, makeCaptionEditAll, makeCaptionEditMany } from '../makeCaptionEdit'
 
 function seg(overrides: Partial<CaptionSegment> = {}): CaptionSegment {
   return { id: 'cap-0', text: 'hello world', start: 0, end: 2, ...overrides }
@@ -212,5 +212,51 @@ describe('makeCaptionEditAll', () => {
     // One segment differing is enough to write.
     makeCaptionEditAll(same, onProjectChange)({ offsetX: 3, offsetY: 5 })
     expect(onProjectChange).toHaveBeenCalledTimes(1)
+  })
+})
+
+// "Apply to all" off, several captions selected: each selected caption gets
+// its OWN patch (the same relative change, computed by the preview), in one
+// project change so the host records one undo step.
+describe('makeCaptionEditMany', () => {
+  const three = () => project([
+    seg({ id: 'cap-0', text: 'zero', start: 0, end: 1, offsetX: 5, offsetY: -2, scale: 1.2 }),
+    seg({ id: 'cap-1', text: 'one', start: 1, end: 2 }),
+    seg({ id: 'cap-2', text: 'two', start: 2, end: 3, offsetX: -30, scale: 0.5 }),
+  ])
+
+  it('writes each listed segment its own patch and leaves the rest as they were', () => {
+    const onProjectChange = vi.fn()
+    const p = three()
+    makeCaptionEditMany(p, onProjectChange)({ 'cap-0': { offsetX: 15, offsetY: 8 }, 'cap-2': { offsetX: -20, offsetY: 10 } })
+    const segments = onProjectChange.mock.calls[0][0].captions.segments as CaptionSegment[]
+    expect(segments.map(s => [s.offsetX, s.offsetY])).toEqual([[15, 8], [undefined, undefined], [-20, 10]])
+    expect(segments[1]).toBe(p.captions!.segments[1])
+    expect(segments.map(s => s.scale)).toEqual([1.2, undefined, 0.5])
+  })
+
+  it('writes only position, size and color: text or timing in a patch never lands', () => {
+    const onProjectChange = vi.fn()
+    makeCaptionEditMany(three(), onProjectChange)({ 'cap-0': { scale: 2, text: 'x', start: 9, end: 10 } as never })
+    const segments = onProjectChange.mock.calls[0][0].captions.segments as CaptionSegment[]
+    expect(segments[0]).toMatchObject({ text: 'zero', start: 0, end: 1, scale: 2 })
+  })
+
+  it('is one project change: each callback fires once, with the same updated project', () => {
+    const onProjectChange = vi.fn()
+    const onCaptionEdit = vi.fn()
+    makeCaptionEditMany(three(), onProjectChange, onCaptionEdit)({ 'cap-0': { scale: 2 }, 'cap-1': { scale: 3 } })
+    expect(onProjectChange).toHaveBeenCalledTimes(1)
+    expect(onCaptionEdit).toHaveBeenCalledTimes(1)
+    expect(onProjectChange.mock.calls[0][0]).toBe(onCaptionEdit.mock.calls[0][0])
+  })
+
+  it('is a no-op with no captions, unknown ids, or values already held: no empty undo step', () => {
+    const onProjectChange = vi.fn()
+    makeCaptionEditMany({ id: 'p1' } as unknown as Project, onProjectChange)({ 'cap-0': { scale: 2 } })
+    makeCaptionEditMany(three(), onProjectChange)({})
+    makeCaptionEditMany(three(), onProjectChange)({ nope: { scale: 2 }, constructor: { scale: 2 } })
+    makeCaptionEditMany(three(), onProjectChange)({ 'cap-0': { offsetX: 5, scale: 1.2 }, 'cap-2': { scale: undefined } })
+    expect(onProjectChange).not.toHaveBeenCalled()
   })
 })

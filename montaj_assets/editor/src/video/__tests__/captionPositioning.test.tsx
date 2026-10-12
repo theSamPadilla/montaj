@@ -267,6 +267,108 @@ describe('CaptionPreview — "Apply to all" moves every segment', () => {
   })
 })
 
+// ── 1c. "Apply to all" off, several captions selected ─────────────────────
+// The drag lands on every SELECTED caption as the same relative change.
+
+describe('CaptionPreview — a multi-selection moves together', () => {
+  const track: Captions = {
+    style: 'clean',
+    segments: [
+      seg({ id: 'cap-0', text: 'first', start: 0, end: 2, offsetX: 20, scale: 1.5 }),
+      seg({ id: 'cap-1', text: 'second', start: 2, end: 4 }),
+      seg({ id: 'cap-2', text: 'third', start: 4, end: 6, offsetY: -30 }),
+    ],
+  }
+
+  async function mountAndDrag(props: {
+    selectedCaptionIds?: string[]
+    applyToAll?: boolean
+    withManyChannel?: boolean
+  }) {
+    const onSelectCaption = vi.fn()
+    const onCaptionSegmentChange = vi.fn()
+    const onCaptionAllSegmentsChange = vi.fn()
+    const onCaptionSegmentsChange = vi.fn()
+    const seen: CaptionSegment[][] = []
+    const { container } = render(
+      <CaptionPreview
+        track={track}
+        currentTime={2.5} // active segment = cap-1
+        fps={30}
+        compileOverlay={makeCompileOverlay((p) => seen.push(p.segments as CaptionSegment[]))}
+        resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        designCanvas={[RENDER_W, RENDER_H]}
+        selectedCaptionId={props.selectedCaptionIds?.[0]}
+        selectedCaptionIds={props.selectedCaptionIds}
+        onSelectCaption={onSelectCaption}
+        onCaptionSegmentChange={onCaptionSegmentChange}
+        applyToAll={props.applyToAll}
+        onCaptionAllSegmentsChange={onCaptionAllSegmentsChange}
+        onCaptionSegmentsChange={props.withManyChannel === false ? undefined : onCaptionSegmentsChange}
+      />,
+    )
+    await waitFor(() => expect(container.querySelector('[style*="z-index: 50"]')).not.toBeNull())
+    const box = getSelectionBox(container)
+    fireEvent.mouseDown(box, { clientX: 500, clientY: 500 })
+    fireEvent.mouseMove(document, { clientX: 500 + 108, clientY: 500 + 192 }) // +10% x, +10% y at scale 1
+    const live = seen[seen.length - 1]
+    fireEvent.mouseUp(document)
+    return { onSelectCaption, onCaptionSegmentChange, onCaptionAllSegmentsChange, onCaptionSegmentsChange, live }
+  }
+
+  it('three selected, drag the one on screen: all three move by the same delta, live and on release, in one commit', async () => {
+    const r = await mountAndDrag({ selectedCaptionIds: ['cap-0', 'cap-1', 'cap-2'] })
+    // Pressing a caption that is part of the selection keeps the selection.
+    expect(r.onSelectCaption).not.toHaveBeenCalled()
+    expect(r.live.map((s) => [s.offsetX, s.offsetY])).toEqual([[30, 10], [10, 10], [10, -20]])
+    expect(r.onCaptionSegmentsChange).toHaveBeenCalledTimes(1)
+    expect(r.onCaptionSegmentsChange).toHaveBeenCalledWith({
+      'cap-0': { offsetX: 30, offsetY: 10 },
+      'cap-1': { offsetX: 10, offsetY: 10 },
+      'cap-2': { offsetX: 10, offsetY: -20 },
+    })
+    expect(r.onCaptionSegmentChange).not.toHaveBeenCalled()
+    expect(r.onCaptionAllSegmentsChange).not.toHaveBeenCalled()
+  })
+
+  it('the box addresses a selected caption on screen even when the first selected one is off screen', async () => {
+    // cap-0 is selected first but is not on screen at 2.5 s; cap-1 is.
+    const r = await mountAndDrag({ selectedCaptionIds: ['cap-0', 'cap-1'] })
+    expect(r.onSelectCaption).not.toHaveBeenCalled()
+    expect(r.onCaptionSegmentsChange).toHaveBeenCalledWith({
+      'cap-0': { offsetX: 30, offsetY: 10 },
+      'cap-1': { offsetX: 10, offsetY: 10 },
+    })
+  })
+
+  it('the dragged caption is outside the selection: it alone is selected and moved', async () => {
+    const r = await mountAndDrag({ selectedCaptionIds: ['cap-0', 'cap-2'] })
+    expect(r.onSelectCaption).toHaveBeenCalledWith('cap-1')
+    expect(r.live[0]).toBe(track.segments[0])
+    expect(r.live[2]).toBe(track.segments[2])
+    expect(r.onCaptionSegmentChange).toHaveBeenCalledWith('cap-1', { offsetX: 10, offsetY: 10 })
+    expect(r.onCaptionSegmentsChange).not.toHaveBeenCalled()
+  })
+
+  it('a single selection is unchanged: one caption, the single-segment channel', async () => {
+    const r = await mountAndDrag({ selectedCaptionIds: ['cap-1'] })
+    expect(r.onCaptionSegmentChange).toHaveBeenCalledWith('cap-1', { offsetX: 10, offsetY: 10 })
+    expect(r.onCaptionSegmentsChange).not.toHaveBeenCalled()
+  })
+
+  it('"Apply to all" on wins over the selection: every caption, the same absolute position', async () => {
+    const r = await mountAndDrag({ selectedCaptionIds: ['cap-0', 'cap-1'], applyToAll: true })
+    expect(r.onCaptionAllSegmentsChange).toHaveBeenCalledWith({ offsetX: 10, offsetY: 10 })
+    expect(r.onCaptionSegmentsChange).not.toHaveBeenCalled()
+  })
+
+  it('a host with no selection channel: the dragged caption alone, live and on release', async () => {
+    const r = await mountAndDrag({ selectedCaptionIds: ['cap-0', 'cap-1'], withManyChannel: false })
+    expect(r.live[0]).toBe(track.segments[0])
+    expect(r.onCaptionSegmentChange).toHaveBeenCalledWith('cap-1', { offsetX: 10, offsetY: 10 })
+  })
+})
+
 // ── 2. Offsets survive a save/reload round-trip ─────────────────────────────
 
 function makeVideoProject(overrides: Partial<Project> = {}): Project {
