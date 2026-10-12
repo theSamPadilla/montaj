@@ -65,7 +65,7 @@ describe('ControlsInfoModal', () => {
     const videoLabels = VIDEO_CONTROLS.flatMap((s) => s.entries.map((e) => e.label))
     const carouselLabels = CAROUSEL_CONTROLS.flatMap((s) => s.entries.map((e) => e.label))
     expect(videoLabels).toEqual(expect.arrayContaining(['Split at the playhead']))
-    expect(carouselLabels).toEqual(expect.arrayContaining(['Double-click text to edit it']))
+    expect(carouselLabels).toEqual(expect.arrayContaining(['Double-click text to edit it', 'Shift-click to select several']))
     expect(VIDEO_CONTROLS.length).toBeGreaterThan(0)
     expect(CAROUSEL_CONTROLS.length).toBeGreaterThan(0)
   })
