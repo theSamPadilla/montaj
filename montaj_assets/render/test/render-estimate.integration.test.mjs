@@ -52,7 +52,10 @@ function project() {
     '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3',
     '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv444p',
     // Tagged, so a master of it is reused on its date alone (an untagged
-    // source's master also needs normalize's marker).
+    // source's master also needs normalize's marker). The frames carry the
+    // tags too (setparams): ffmpeg 8 writes a frame's own colour properties
+    // over the output flags, and lavfi's are unknown.
+    '-vf', 'setparams=colorspace=bt709:color_trc=bt709:color_primaries=bt709:range=tv',
     '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
     '-c:a', 'aac', '-shortest', join(dir, 'clip.mp4')],
   { encoding: 'utf8' })
