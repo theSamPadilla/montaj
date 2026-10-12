@@ -28,6 +28,13 @@ interface Props {
   element?: CarouselElement
   onSlideChange: (patch: Partial<Slide>) => void
   onElementChange: (patch: Partial<CarouselElement>) => void
+  /**
+   * Every selected element (§156). With two or more, the panel shows only the
+   * align buttons, aligning them to the box they cover, through
+   * `onAlignSelection`.
+   */
+  selection?: CarouselElement[]
+  onAlignSelection?: (patches: Array<{ id: string } & ({ x: number } | { y: number })>) => void
   onDeleteSlide: (id: string) => void
   onDuplicateSlide: (id: string) => void
   onDeleteElement: (slideId: string, elementId: string) => void
@@ -201,6 +208,8 @@ export default function SlidePropertyPanel({
   element,
   onSlideChange,
   onElementChange,
+  selection,
+  onAlignSelection,
   onDeleteSlide,
   onDuplicateSlide,
   onDeleteElement,
@@ -282,6 +291,18 @@ export default function SlidePropertyPanel({
         </div>
       </div>
 
+      {/* Several elements selected: only the align buttons, aligning to the selection. */}
+      {!element && selection && selection.length > 1 && onAlignSelection && (
+        <div className="flex flex-col gap-4 border-t border-[var(--editor-border)] p-4">
+          <AlignControls
+            elements={selection}
+            width={project.settings.resolution[0]}
+            height={project.settings.resolution[1]}
+            onChange={onAlignSelection}
+          />
+        </div>
+      )}
+
       {/* Element section */}
       {element && (
         <div className="flex flex-col gap-4 border-t border-[var(--editor-border)] p-4">
@@ -327,7 +348,7 @@ export default function SlidePropertyPanel({
             element={element}
             width={project.settings.resolution[0]}
             height={project.settings.resolution[1]}
-            onChange={patch => onElementChange(patch)}
+            onChange={onElementChange}
           />
 
           {/* Image-specific */}

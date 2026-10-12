@@ -13,6 +13,7 @@ import { OverlayPreview } from '../preview/OverlayPreview'
 import { CanvasCropOverlay } from '../crop/CanvasCropOverlay'
 import { InlineTextEditor } from '../text/InlineTextEditor'
 import { ensureGoogleFontsLoaded } from '../lib/google-fonts'
+import { groupDragMove, type GroupDragResult, type GroupMember } from './groupDrag'
 
 // Neutral fallback used only when no host `resolveImageSrc` is injected. The
 // package must not synthesize a host-shaped URL (e.g. Montaj's `/api/files`):
@@ -84,8 +85,17 @@ interface Props {
   width: number
   height: number
   interactive?: boolean
+  /** The one selected element: it gets the resize, rotate and crop handles. */
   selectedElementId?: string | null
   onSelect?: (id: string | null) => void
+  /**
+   * Every selected element, in click order (§156). Each draws the selection
+   * outline; dragging one of them when there are two or more moves them all.
+   * Absent → just `selectedElementId`.
+   */
+  selectedElementIds?: string[]
+  /** Shift-click on an element: add it to the selection or take it out. Absent → shift-click selects as a plain click. */
+  onToggleSelect?: (id: string) => void
   scale?: number
   resolveImageSrc?: (element: ImageElement) => string
   /**
@@ -200,6 +210,8 @@ export default function SlideCanvas({
   interactive = false,
   selectedElementId,
   onSelect,
+  selectedElementIds,
+  onToggleSelect,
   scale = 1,
   resolveImageSrc,
   compileOverlay,
@@ -218,6 +230,7 @@ export default function SlideCanvas({
   const sid = slideId ?? slide.id
   const resolveSrc = resolveImageSrc ?? ((el: ImageElement) => resolveAssetDefault(el.src))
   const hiddenSet = hiddenElementIds && hiddenElementIds.length ? new Set(hiddenElementIds) : null
+  const selectedIds = selectedElementIds ?? (selectedElementId ? [selectedElementId] : [])
 
   // Refs to each element wrapper so gesture previews can mutate DOM directly.
   const wrapperRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -365,18 +378,54 @@ export default function SlideCanvas({
   // ── Pointer wiring shared by drag/resize/rotate ──
   // We attach window-level move/up listeners while a gesture is active so the
   // gesture keeps tracking outside the element bounds.
-  const activeGesture = useRef<'drag' | 'resize' | 'rotate' | null>(null)
+  const activeGesture = useRef<'drag' | 'resize' | 'rotate' | 'group' | null>(null)
+
+  // ── Group drag (§156): every selected element moves by one delta, one undo step ──
+  const groupRef = useRef<{ start: { x: number; y: number }; members: GroupMember[]; latest: GroupDragResult | null } | null>(null)
+  const [groupGuides, setGroupGuides] = useState<SnapGuide[]>([])
+  // Set when a group drag moved something, so the click that ends it does not
+  // collapse the selection to the element under the pointer.
+  const groupMovedRef = useRef(false)
+  const groupHandlers = useRef({ move: (_c: { x: number; y: number }) => {}, up: () => {} })
+  groupHandlers.current = {
+    move: (cursor) => {
+      const g = groupRef.current
+      if (!g) return
+      const result = groupDragMove(g.members, { dx: cursor.x - g.start.x, dy: cursor.y - g.start.y }, scale, { w: width, h: height })
+      g.latest = result
+      setGroupGuides(result.guides)
+      for (const p of result.positions) {
+        const m = g.members.find((mm) => mm.id === p.id)
+        applyPreviewTransform(p.id, p.x, p.y, m?.rotation ?? 0)
+      }
+    },
+    up: () => {
+      const g = groupRef.current
+      groupRef.current = null
+      setGroupGuides([])
+      const result = g?.latest
+      if (!result || (result.dx === 0 && result.dy === 0)) return
+      groupMovedRef.current = true
+      void (async () => {
+        for (const p of result.positions) await moveElement?.(sid, p.id, Math.round(p.x), Math.round(p.y))
+        await commit?.()
+      })()
+    },
+  }
+
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
       const cursor = { x: e.clientX, y: e.clientY }
       if (activeGesture.current === 'drag') drag.onPointerMove(cursor)
       else if (activeGesture.current === 'resize') resize.onPointerMove(cursor)
       else if (activeGesture.current === 'rotate') rotate.onPointerMove(cursor)
+      else if (activeGesture.current === 'group') groupHandlers.current.move(cursor)
     }
     const onUp = () => {
       if (activeGesture.current === 'drag') drag.onPointerUp()
       else if (activeGesture.current === 'resize') resize.onPointerUp()
       else if (activeGesture.current === 'rotate') rotate.onPointerUp()
+      else if (activeGesture.current === 'group') groupHandlers.current.up()
       activeGesture.current = null
     }
     window.addEventListener('pointermove', onMove)
@@ -402,7 +451,10 @@ export default function SlideCanvas({
         position: 'relative',
         flexShrink: 0,
       }}
-      onClick={interactive ? () => onSelect?.(null) : undefined}
+      onClick={interactive ? () => {
+        if (groupMovedRef.current) { groupMovedRef.current = false; return }
+        onSelect?.(null)
+      } : undefined}
     >
       {/* Inner native-resolution layer. Elements are positioned at native coords
           and the wrapper transform applies translate(...*scale) so gesture
@@ -418,7 +470,7 @@ export default function SlideCanvas({
         }}
       >
         {/* Snap guides — drawn at the drag hook's reported guide axes. */}
-        {interactive && drag.guides.map((g: SnapGuide, i) =>
+        {interactive && (groupGuides.length > 0 ? groupGuides : drag.guides).map((g: SnapGuide, i) =>
           g.axis === 'x' ? (
             <div
               key={`gx-${i}`}
@@ -457,6 +509,8 @@ export default function SlideCanvas({
         {slide.elements.map((element) => {
           // Editor-only visibility: omit hidden elements from this canvas.
           if (hiddenSet?.has(element.id)) return null
+          // Outlined when selected at all; handles only for the one selected element.
+          const isOutlined = selectedIds.includes(element.id)
           const isSelected = selectedElementId === element.id
           const inCrop = cropState?.elementId === element.id
           const isRotated = (element.rotation ?? 0) !== 0
@@ -471,7 +525,7 @@ export default function SlideCanvas({
             transformOrigin: 'center center',
             pointerEvents: interactive ? 'auto' : 'none',
             userSelect: 'none',
-            outline: isSelected ? '1px solid var(--editor-selection)' : 'none',
+            outline: isSelected || isOutlined ? '1px solid var(--editor-selection)' : 'none',
             cursor: interactive ? 'grab' : 'default',
           }
 
@@ -479,6 +533,23 @@ export default function SlideCanvas({
             if (!interactive || inCrop || editingId === element.id) return
             e.preventDefault()
             e.stopPropagation()
+            groupMovedRef.current = false
+            // Shift toggles membership and drags nothing. Crop mode ignores shift.
+            if (e.shiftKey && onToggleSelect && !cropState) {
+              onToggleSelect(element.id)
+              return
+            }
+            // A press on a member of a multi-selection drags the whole group.
+            if (selectedIds.length > 1 && selectedIds.includes(element.id)) {
+              const members: GroupMember[] = []
+              for (const id of selectedIds) {
+                const m = slide.elements.find((el) => el.id === id)
+                if (m) members.push({ id: m.id, x: m.x, y: m.y, w: m.w, h: m.h, rotation: m.rotation })
+              }
+              groupRef.current = { start: { x: e.clientX, y: e.clientY }, members, latest: null }
+              activeGesture.current = 'group'
+              return
+            }
             onSelect?.(element.id)
             activeGesture.current = 'drag'
             drag.onPointerDown(
@@ -568,7 +639,14 @@ export default function SlideCanvas({
               role={interactive ? 'group' : 'presentation'}
               aria-label={interactive ? `${element.type} element` : undefined}
               style={wrapperStyle}
-              onClick={interactive ? (e) => { e.stopPropagation(); onSelect?.(element.id) } : undefined}
+              onClick={interactive ? (e) => {
+                e.stopPropagation()
+                // The press already toggled it.
+                if (e.shiftKey && onToggleSelect && !cropState) return
+                // A group drag just ended here: keep the selection.
+                if (groupMovedRef.current) { groupMovedRef.current = false; return }
+                onSelect?.(element.id)
+              } : undefined}
               onPointerDown={handlePointerDownDrag}
               onDoubleClick={
                 interactive && element.type === 'overlay'

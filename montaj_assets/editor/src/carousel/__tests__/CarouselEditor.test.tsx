@@ -1204,3 +1204,229 @@ describe('CarouselEditor — pendingSurface', () => {
     expect(adapter.saveCalls).toHaveLength(0)
   })
 })
+
+// ── Multi-select (§156) ──────────────────────────────────────────────────────
+//
+// Shift-click adds an element to the selection or takes it out. Every selected
+// element draws the selection outline; the handles and the element panel are
+// for exactly one. Dragging a member of a multi-selection moves all of them,
+// Delete removes all of them, and the align buttons align them to the box the
+// selection covers: each in one save and one undo step.
+
+function threeElements(): Project {
+  return makeProject({
+    slides: [
+      {
+        id: 'slide-0',
+        base_color: '#ffffff',
+        elements: [
+          { id: 'el-a', type: 'image', src: 'a.png', x: 100, y: 100, w: 200, h: 100, rotation: 0 },
+          { id: 'el-b', type: 'image', src: 'b.png', x: 500, y: 400, w: 100, h: 300, rotation: 0 },
+          { id: 'el-c', type: 'image', src: 'c.png', x: 700, y: 700, w: 100, h: 100, rotation: 0 },
+        ],
+      },
+      { id: 'slide-1', base_color: '#000000', elements: [] },
+    ],
+  })
+}
+
+// A click alone, as the tests above select: a press would also start (and
+// commit) a single-element drag.
+async function plainClick(id: string) {
+  await act(async () => { fireEvent.click(findInteractiveWrapper(id)) })
+}
+
+// This jsdom has no PointerEvent, so fireEvent.pointer* falls back to a plain
+// Event and drops shiftKey and clientX/Y. A MouseEvent named for the pointer
+// event carries them, and React handles it by its name.
+function pointer(target: EventTarget, type: 'pointerdown' | 'pointermove' | 'pointerup', init: MouseEventInit = {}) {
+  target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, ...init }))
+}
+
+async function shiftClick(id: string) {
+  const w = findInteractiveWrapper(id)
+  await act(async () => {
+    pointer(w, 'pointerdown', { shiftKey: true, clientX: 10, clientY: 10 })
+    pointer(window, 'pointerup')
+    fireEvent.click(w, { shiftKey: true })
+  })
+}
+
+async function dragFrom(id: string, to: { clientX: number; clientY: number }) {
+  await act(async () => {
+    pointer(findInteractiveWrapper(id), 'pointerdown', { clientX: 100, clientY: 100 })
+    pointer(window, 'pointermove', to)
+    pointer(window, 'pointerup')
+  })
+}
+
+function outlined(id: string): boolean {
+  return findInteractiveWrapper(id).style.outline.includes('solid')
+}
+
+function handlesOn(id: string): boolean {
+  return findInteractiveWrapper(id).querySelector('[data-testid="resize-handle-nw"]') !== null
+}
+
+function elementsOf(p: Project) {
+  return p.slides![0].elements
+}
+
+describe('CarouselEditor: multi-select (§156)', () => {
+  it('shift-click toggles; each selected element is outlined; handles and the element panel only for one', async () => {
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={threeElements()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-a'))
+
+    await plainClick('el-a')
+    expect(outlined('el-a')).toBe(true)
+    expect(handlesOn('el-a')).toBe(true)
+    expect(r.queryByRole('group', { name: 'Align to slide' })).not.toBeNull()
+    expect(r.queryByTitle('Crop image')).not.toBeNull()
+
+    await shiftClick('el-b')
+    expect(outlined('el-a')).toBe(true)
+    expect(outlined('el-b')).toBe(true)
+    expect(outlined('el-c')).toBe(false)
+    expect(handlesOn('el-a')).toBe(false)
+    expect(handlesOn('el-b')).toBe(false)
+    // The element panel is gone; only the align buttons, aligning to the selection.
+    expect(r.queryByTitle('Crop image')).toBeNull()
+    expect(r.queryByRole('group', { name: 'Align to slide' })).toBeNull()
+    expect(r.queryByRole('group', { name: 'Align' })).not.toBeNull()
+
+    // Shift-click again takes it out: back to one, handles back.
+    await shiftClick('el-b')
+    expect(outlined('el-b')).toBe(false)
+    expect(handlesOn('el-a')).toBe(true)
+
+    // A plain click resets to just that one.
+    await shiftClick('el-b')
+    await plainClick('el-c')
+    expect(outlined('el-a')).toBe(false)
+    expect(outlined('el-b')).toBe(false)
+    expect(outlined('el-c')).toBe(true)
+    expect(handlesOn('el-c')).toBe(true)
+
+    // A click on the empty canvas clears.
+    await shiftClick('el-a')
+    await act(async () => { fireEvent.click(document.querySelector('[data-interactive]') as HTMLElement) })
+    expect(outlined('el-a')).toBe(false)
+    expect(outlined('el-c')).toBe(false)
+
+    // Selecting another slide clears too.
+    await plainClick('el-a')
+    await shiftClick('el-b')
+    await act(async () => { fireEvent.click(document.querySelector('[data-slide-thumb="slide-1"]') as HTMLElement) })
+    await act(async () => { fireEvent.click(document.querySelector('[data-slide-thumb="slide-0"]') as HTMLElement) })
+    expect(outlined('el-a')).toBe(false)
+    expect(outlined('el-b')).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('onSelectionChange reports the one element, the last clicked of several, and null', async () => {
+    const onSelectionChange = vi.fn()
+    render(<CarouselEditor project={threeElements()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} onSelectionChange={onSelectionChange} />)
+    await waitFor(() => findInteractiveWrapper('el-a'))
+    const last = () => onSelectionChange.mock.calls[onSelectionChange.mock.calls.length - 1]?.[0]
+
+    await plainClick('el-a')
+    expect(last()?.id).toBe('el-a')
+    await shiftClick('el-c')
+    expect(last()?.id).toBe('el-c')
+    await shiftClick('el-b')
+    expect(last()?.id).toBe('el-b')
+    await act(async () => { fireEvent.click(document.querySelector('[data-interactive]') as HTMLElement) })
+    expect(last()).toBeNull()
+  })
+
+  it('Delete removes every selected element in one save, and one undo brings them all back', async () => {
+    const adapter = makeFakeAdapter()
+    render(<CarouselEditor project={threeElements()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-a'))
+    await plainClick('el-a')
+    await shiftClick('el-c')
+
+    await key('Delete')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter)).map(e => e.id)).toEqual(['el-b'])
+
+    await key('z', { ctrlKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(elementsOf(lastSave(adapter)).map(e => e.id)).toEqual(['el-a', 'el-b', 'el-c'])
+  })
+
+  it('dragging a member moves the whole selection by one delta, in one save and one undo step', async () => {
+    const adapter = makeFakeAdapter()
+    render(<CarouselEditor project={threeElements()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-a'))
+    await plainClick('el-a')
+    await shiftClick('el-b')
+
+    await dragFrom('el-b', { clientX: 140, clientY: 160 })
+    await act(async () => { fireEvent.click(findInteractiveWrapper('el-b')) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const [a, b, c] = elementsOf(lastSave(adapter))
+    const dx = a.x - 100
+    const dy = a.y - 100
+    expect(dx).toBeGreaterThan(0)
+    expect(dy).toBeGreaterThan(0)
+    expect([b.x - 500, b.y - 400]).toEqual([dx, dy])
+    expect([c.x, c.y]).toEqual([700, 700])
+    // The click that ends the drag keeps the selection.
+    expect(outlined('el-a')).toBe(true)
+    expect(outlined('el-b')).toBe(true)
+
+    await key('z', { ctrlKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    const undone = elementsOf(lastSave(adapter))
+    expect(undone.map(e => [e.x, e.y])).toEqual([[100, 100], [500, 400], [700, 700]])
+  })
+
+  it('dragging an unselected element selects only it and moves only it', async () => {
+    const adapter = makeFakeAdapter()
+    render(<CarouselEditor project={threeElements()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-a'))
+    await plainClick('el-a')
+    await shiftClick('el-b')
+    const saves = adapter.saveCalls.length
+
+    await dragFrom('el-c', { clientX: 140, clientY: 160 })
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(saves))
+    const [a, b, c] = elementsOf(lastSave(adapter))
+    expect([a.x, a.y, b.x, b.y]).toEqual([100, 100, 500, 400])
+    expect(c.x).not.toBe(700)
+    expect(outlined('el-a')).toBe(false)
+    expect(outlined('el-c')).toBe(true)
+  })
+
+  it('the align buttons align the selection to the box it covers, in one undo step', async () => {
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={threeElements()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-a'))
+    await plainClick('el-a')
+    await shiftClick('el-b')
+
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align bottom' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    // Union bottom is B's (700): A's bottom moves there, B stays.
+    expect(elementsOf(lastSave(adapter)).map(e => [e.x, e.y])).toEqual([[100, 600], [500, 400], [700, 700]])
+
+    await key('z', { ctrlKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(elementsOf(lastSave(adapter)).map(e => [e.x, e.y])).toEqual([[100, 100], [500, 400], [700, 700]])
+  })
+
+  it('in crop mode shift-click acts as a plain click', async () => {
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={threeElements()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-a'))
+    await plainClick('el-a')
+    await act(async () => { fireEvent.click(await r.findByTitle('Crop image')) })
+
+    await shiftClick('el-b')
+    expect(outlined('el-a')).toBe(false)
+    expect(outlined('el-b')).toBe(true)
+    expect(handlesOn('el-b')).toBe(true)
+  })
+})

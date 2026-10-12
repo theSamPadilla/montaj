@@ -267,8 +267,30 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   }, [project, onProjectChange])
 
   const [selectedSlideId, setSelectedSlideId] = useState<string | null>(slides[0]?.id ?? null)
-  const [selectedElementId, setSelectedElementId] = useState<string | null>(null)
+  // The selected elements, in click order (§156). `selectedElementId` is the
+  // one selected element, null when none or several are: the handles, the
+  // element panel and crop all key off it, so a single selection behaves as
+  // it always has.
+  const [selectedElementIds, setSelectedElementIds] = useState<string[]>([])
+  const setSelectedElementId = useCallback((id: string | null) => {
+    setSelectedElementIds(id ? [id] : [])
+  }, [])
   const [cropElementId, setCropElementId] = useState<string | null>(null)
+
+  const selectedSlide = slides.find(s => s.id === selectedSlideId)
+  // Only ids still on the selected slide count: a removed element leaves the set.
+  const liveSelectedIds = useMemo(
+    () => selectedElementIds.filter(id => selectedSlide?.elements.some(el => el.id === id)),
+    [selectedElementIds, selectedSlide],
+  )
+  useEffect(() => {
+    if (liveSelectedIds.length !== selectedElementIds.length) setSelectedElementIds(liveSelectedIds)
+  }, [liveSelectedIds, selectedElementIds])
+  const selectedElementId = liveSelectedIds.length === 1 ? liveSelectedIds[0] : null
+  const selectedElements = useMemo(
+    () => liveSelectedIds.map(id => selectedSlide!.elements.find(el => el.id === id)!),
+    [liveSelectedIds, selectedSlide],
+  )
 
   const [skillPath, setSkillPath] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
@@ -314,23 +336,29 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     return () => window.removeEventListener('keydown', onKey)
   }, [state])
 
-  // ── Keyboard shortcut: Delete / Backspace removes the selected element. ──
+  // ── Keyboard shortcut: Delete / Backspace removes the selected elements. ──
   // Guarded against text inputs (so editing an overlay's text or a panel field
   // never deletes the element) and against crop mode (Backspace there belongs to
   // the crop UI). Deleting mutates project state, so the canvas + thumbnails
-  // re-render without the element immediately.
+  // re-render without the element immediately. Several selected go in one
+  // slide write, so one undo brings them all back.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (isTypingTarget(e.target)) return
       if (e.key !== 'Delete' && e.key !== 'Backspace') return
-      if (!selectedSlideId || !selectedElementId || cropElementId) return
+      if (!selectedSlide || liveSelectedIds.length === 0 || cropElementId) return
       e.preventDefault()
-      void state.removeElement(selectedSlideId, selectedElementId)
+      if (liveSelectedIds.length === 1) {
+        void state.removeElement(selectedSlide.id, liveSelectedIds[0])
+      } else {
+        const gone = new Set(liveSelectedIds)
+        void state.updateSlide(selectedSlide.id, { elements: selectedSlide.elements.filter(el => !gone.has(el.id)) })
+      }
       setSelectedElementId(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [state, selectedSlideId, selectedElementId, cropElementId])
+  }, [state, selectedSlide, liveSelectedIds, cropElementId, setSelectedElementId])
 
   // ── Project notes (PL70) ───────────────────────────────────────────────
   // The editor is the ONLY writer of `project.notes`. The N flow and the
@@ -634,14 +662,41 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (selectedSlideId) void state.updateSlide(selectedSlideId, patch)
   }
 
-  const selectedSlide = slides.find(s => s.id === selectedSlideId)
   const selectedElement = selectedSlide?.elements.find(el => el.id === selectedElementId)
 
   // Notify the host of selection changes so it can drive selection-aware chrome
-  // (e.g. a regen action in a toolbar slot). Fires with the element or null.
+  // (e.g. a regen action in a toolbar slot). Fires with one element or null:
+  // with several selected, the last one clicked.
+  const reportedElement = selectedElements.length > 0 ? selectedElements[selectedElements.length - 1] : null
   useEffect(() => {
-    onSelectionChange?.(selectedElement ?? null)
-  }, [selectedElement, onSelectionChange])
+    onSelectionChange?.(reportedElement)
+  }, [reportedElement, onSelectionChange])
+
+  // Shift-click (§156): add the element to the selection, or take it out.
+  // An armed note pin ignores it.
+  const toggleSelect = useCallback((id: string) => {
+    if (armedRef.current) return
+    setSelectedElementIds(ids => (ids.includes(id) ? ids.filter(i => i !== id) : [...ids, id]))
+  }, [])
+
+  // Align several selected elements to the box they cover: moves only, one save
+  // and one undo step for the lot.
+  function handleAlignSelection(patches: Array<{ id: string } & ({ x: number } | { y: number })>) {
+    if (!selectedSlide) return
+    const moves = patches.flatMap(p => {
+      const el = selectedSlide.elements.find(e => e.id === p.id)
+      if (!el) return []
+      const x = 'x' in p ? p.x : el.x
+      const y = 'y' in p ? p.y : el.y
+      return x === el.x && y === el.y ? [] : [{ id: el.id, x, y }]
+    })
+    if (moves.length === 0) return
+    const slideId = selectedSlide.id
+    void (async () => {
+      for (const m of moves) await state.moveElement(slideId, m.id, m.x, m.y)
+      await state.commit()
+    })()
+  }
 
   const [w, h] = project.settings.resolution
   const canvasContainerRef = useRef<HTMLDivElement>(null)
@@ -819,6 +874,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 interactive
                 selectedElementId={selectedElementId}
                 onSelect={id => { setSelectedElementId(id); if (id !== cropElementId) setCropElementId(null) }}
+                selectedElementIds={liveSelectedIds}
+                onToggleSelect={toggleSelect}
                 scale={canvasScale}
                 resolveImageSrc={adapter.resolveImageSrc}
                 compileOverlay={(t) => adapter.compileOverlay(t)}
@@ -884,6 +941,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             project={project}
             slide={selectedSlide}
             element={selectedElement}
+            selection={selectedElements}
+            onAlignSelection={handleAlignSelection}
             adapter={adapter}
             onSlideChange={handleSlideChange}
             onElementChange={handlePanelElementChange}
