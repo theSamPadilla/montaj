@@ -10,7 +10,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { AlignCenter, AlignLeft, AlignRight, Loader2, RefreshCw, Search, Trash2 } from 'lucide-react'
 import type { Project, OverlayFactory } from '../types'
-import type { Captions } from '../schema'
 import type { PlaybackClock } from './playback-clock'
 import type { CaptionEditPatch } from './timeline/makeCaptionEdit'
 import { EditableSegment } from './timeline/EditableSegment'
