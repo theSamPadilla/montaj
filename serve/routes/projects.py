@@ -4800,6 +4800,192 @@ async def delete_files(
     )
 
 
+async def _render_body(request: Request) -> dict:
+    """The optional JSON body of POST /render and /render/estimate:
+    { "export": "auto"|"sdr"|"both", "sdrCurve": <curve id>, "name": <output
+    basename>, "cover": <seconds> }. Absent/empty body → today's behavior
+    (render.js's own defaults). Mirrors the rerun route's tolerant-parse
+    pattern; a GET-style POST with no body is not an error, and neither is a
+    body that is not an object."""
+    try:
+        body = await request.json()
+    except Exception:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _validate_render_body(body: dict) -> None:
+    """422 on an `export` or `sdrCurve` render.js would refuse."""
+    export = body.get("export")
+    if export is not None and export not in ("auto", "sdr", "both"):
+        raise HTTPException(422, detail={
+            "error": "invalid_argument",
+            "message": f"export must be one of auto, sdr, both (got {export!r})",
+        })
+    sdr_curve = body.get("sdrCurve")
+    if sdr_curve is not None and sdr_curve not in curve_ids():
+        raise HTTPException(422, detail={
+            "error": "invalid_argument",
+            "message": f"sdrCurve must be one of {curve_ids()} (got {sdr_curve!r})",
+        })
+
+
+def _render_js_args(project_dir: Path, project_path: Path, body: dict) -> tuple[list[str], Path]:
+    """render.js's arguments for a video render from a validated render body,
+    and the MP4 it writes: the project, ``--out output/<name>.mp4`` (the
+    video-workflow staging dir that /outputs lists, instead of render.js's
+    default render/<name>.mp4), then ``--export``/``--sdr-curve`` when given.
+    Shared by the render and estimate routes, so an estimate plans exactly the
+    render the same body starts. Creates nothing (the render route makes
+    output/ itself).
+
+    `name` picks the output basename, sanitized (see _sanitize_output_name) so
+    it can never escape output/."""
+    output_dir = project_dir / "output"
+    name = body.get("name")
+    safe_name = _sanitize_output_name(name, project_dir.name) if isinstance(name, str) else project_dir.name
+    output_path = output_dir / f"{safe_name}.mp4"
+    if output_path.resolve().parent != output_dir.resolve():
+        # Sanitization already forbids path separators, so this should be
+        # unreachable — but never write outside output/ regardless.
+        raise server_error("invalid_argument", "invalid output name")
+    script_args = [str(project_path), "--out", str(output_path)]
+    if body.get("export"):
+        script_args += ["--export", body["export"]]
+    if body.get("sdrCurve"):
+        script_args += ["--sdr-curve", body["sdrCurve"]]
+    return script_args, output_path
+
+
+def _estimate_overrides(body: dict) -> list[str]:
+    """render.js --estimate's stand-ins for settings the export window has not
+    saved yet: ``--resolution WxH`` from a body `resolution` of two positive
+    integers, ``--fps N`` from a positive finite number. Anything absent or
+    malformed is left out, and the project's own setting applies."""
+    args: list[str] = []
+    resolution = body.get("resolution")
+    if (
+        isinstance(resolution, (list, tuple)) and len(resolution) == 2
+        and all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in resolution)
+    ):
+        args += ["--resolution", f"{resolution[0]}x{resolution[1]}"]
+    fps = body.get("fps")
+    if (
+        isinstance(fps, (int, float)) and not isinstance(fps, bool)
+        and math.isfinite(fps) and fps > 0
+    ):
+        args += ["--fps", repr(float(fps)) if isinstance(fps, float) else str(fps)]
+    return args
+
+
+# How long an estimate may take. It probes each source with ffprobe and
+# renders nothing, so seconds; past this the app gets no estimate (no warning).
+_ESTIMATE_TIMEOUT_S = 60
+
+
+def _no_estimate(error: str | None = None) -> dict:
+    """The estimate route's "no estimate" answer, which the app reads as no warning."""
+    out: dict = {"estimate": None, "volumes": []}
+    if error:
+        out["error"] = error
+    return out
+
+
+def _estimate_error_from(stderr: str, returncode: int | None) -> str:
+    """render.js's own failure message (its last JSON line on stderr), else a short tail."""
+    for line in reversed(stderr.strip().splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict) and (parsed.get("message") or parsed.get("error")):
+                return str(parsed.get("message") or parsed.get("error"))
+    tail = stderr.strip().splitlines()[-1:] if stderr.strip() else []
+    return tail[0] if tail else f"render.js --estimate exited {returncode}"
+
+
+@router.post("/projects/{project_id}/render/estimate")
+async def render_estimate(project_id: str, request: Request, project_dir: Path = Depends(get_project_dir)):
+    """How much disk the render with this body would need, asked before it starts
+    (§213), so the export window can warn first.
+
+    Takes POST /render's body, plus optional `resolution` ([width, height]) and
+    `fps` that stand in for project settings not saved yet (never written).
+    Runs ``render.js --estimate`` with the render's own arguments and
+    environment, and returns its JSON:
+    ``{"estimate": {"lower": {"tmpBytes", "projectBytes"}, "expected": {...}},
+    "volumes": [{"path", "needBytes", "freeBytes"}]}``.
+
+    It writes nothing (no output/ dir, no git snapshot, no colour-provenance
+    heal) and never touches the render slot: an estimate during a render
+    neither waits for it nor supersedes it. A carousel has no estimate, and any
+    failure to estimate is ``{"estimate": null, "volumes": [], "error": ...}``,
+    still 200: the app treats no estimate as no warning. A bad `export` or
+    `sdrCurve` is the render's own 422.
+    """
+    project_path = project_dir / "project.json"
+    body = await _render_body(request)
+    _validate_render_body(body)
+
+    try:
+        project = json.loads(project_path.read_text())
+    except Exception as e:
+        return _no_estimate(f"project.json unreadable: {e}")
+    if isinstance(project, dict) and project.get("projectType") == "carousel":
+        return _no_estimate()
+
+    script_args, _ = _render_js_args(project_dir, project_path, body)
+    render_script = Path(render_runtime_dir()) / "render.js"
+    if not render_script.is_file():
+        return _no_estimate(f"{render_script.name} not found")
+    node_bin = shutil.which("node")
+    if not node_bin:
+        return _no_estimate("node not found in PATH")
+
+    env = node_child_env()
+    env["MONTAJ_ROOT"] = str(MONTAJ_ROOT)
+    cmd = [node_bin, str(render_script), *script_args, "--estimate", *_estimate_overrides(body)]
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(MONTAJ_ROOT),
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_ESTIMATE_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        if proc is not None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+        return _no_estimate(f"render.js --estimate took longer than {_ESTIMATE_TIMEOUT_S}s")
+    except Exception as e:
+        return _no_estimate(f"render.js --estimate could not run: {e}")
+
+    err_text = stderr.decode(errors="replace") if stderr else ""
+    if proc.returncode != 0:
+        return _no_estimate(_estimate_error_from(err_text, proc.returncode))
+    lines = (stdout.decode(errors="replace") if stdout else "").strip().splitlines()
+    try:
+        result = json.loads(lines[-1])
+        estimate, volumes = result["estimate"], result["volumes"]
+        if not isinstance(volumes, list) or not all(
+            isinstance(estimate.get(k), dict) and isinstance(estimate[k].get("tmpBytes"), (int, float))
+            and isinstance(estimate[k].get("projectBytes"), (int, float))
+            for k in ("lower", "expected")
+        ):
+            raise ValueError("unexpected shape")
+    except Exception:
+        return _no_estimate("render.js --estimate printed no estimate")
+    return {"estimate": estimate, "volumes": volumes}
+
+
 @router.post("/projects/{project_id}/render")
 async def render_project(project_id: str, request: Request, project_dir: Path = Depends(get_project_dir)):
     """Render the project. Streams progress as SSE log/done/error events.
@@ -4838,36 +5024,13 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
         if scale not in (1, 2, 3):
             raise HTTPException(400, detail={"error": "invalid_argument", "message": "scale must be 1, 2, or 3"})
 
-    # Optional JSON body: { "export": "auto"|"sdr"|"both", "sdrCurve": <curve id> }.
-    # Absent/empty body → today's behavior (render.js's own defaults). Mirrors the
-    # rerun route's tolerant-parse pattern above; a GET-style POST with no body is
-    # not an error here.
-    body = {}
-    try:
-        body = await request.json()
-    except Exception:
-        pass
+    body = await _render_body(request)
+    _validate_render_body(body)
 
-    export = body.get("export")
-    if export is not None and export not in ("auto", "sdr", "both"):
-        raise HTTPException(422, detail={
-            "error": "invalid_argument",
-            "message": f"export must be one of auto, sdr, both (got {export!r})",
-        })
-    sdr_curve = body.get("sdrCurve")
-    if sdr_curve is not None and sdr_curve not in curve_ids():
-        raise HTTPException(422, detail={
-            "error": "invalid_argument",
-            "message": f"sdrCurve must be one of {curve_ids()} (got {sdr_curve!r})",
-        })
-
-    # Optional output naming + poster-frame extraction. `name` picks the output
-    # basename (sanitized — see _sanitize_output_name — so it can never escape
-    # output_dir); `cover` is a timeline timestamp (seconds) to grab as a
-    # sidecar JPEG once the render succeeds. Both are video-only (the carousel
-    # branch below never sets output_path, so cover extraction is skipped for
-    # carousels regardless of what's in the body).
-    name = body.get("name")
+    # Optional poster-frame extraction: `cover` is a timeline timestamp
+    # (seconds) to grab as a sidecar JPEG once the render succeeds. Video-only
+    # (the carousel branch below never sets output_path, so cover extraction is
+    # skipped for carousels regardless of what's in the body).
     cover_raw = body.get("cover")
     cover: float | None = None
     if isinstance(cover_raw, (int, float)) and not isinstance(cover_raw, bool) and cover_raw >= 0:
@@ -4889,21 +5052,8 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
             script_args += ["--scale", str(scale)]
     else:
         render_script = Path(render_runtime_dir()) / "render.js"
-        # Write the MP4 into the project's output/ dir (the video-workflow staging
-        # dir that /outputs lists) instead of render.js's default render/<name>.mp4.
-        output_dir = project_dir / "output"
-        output_dir.mkdir(exist_ok=True)
-        safe_name = _sanitize_output_name(name, project_dir.name) if isinstance(name, str) else project_dir.name
-        output_path = output_dir / f"{safe_name}.mp4"
-        if output_path.resolve().parent != output_dir.resolve():
-            # Sanitization already forbids path separators, so this should be
-            # unreachable — but never write outside output/ regardless.
-            raise server_error("invalid_argument", "invalid output name")
-        script_args = [str(project_path), "--out", str(output_path)]
-        if export:
-            script_args += ["--export", export]
-        if sdr_curve:
-            script_args += ["--sdr-curve", sdr_curve]
+        script_args, output_path = _render_js_args(project_dir, project_path, body)
+        output_path.parent.mkdir(exist_ok=True)
         # Snapshot the current project.json into git before kicking off the
         # detached render, so every export creates a recoverable version.
         # _git_commit_sync is no-op-safe on a clean tree, so back-to-back
