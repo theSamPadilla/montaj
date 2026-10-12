@@ -82,6 +82,28 @@ export interface CaptionSegment {
   // PL41: the Accent style draws this segment as a hero block (two staggered lines at the running size,
   // words cut on as spoken) instead of running captions; other styles ignore it
   hero?: boolean
+  // Per-segment text styling: the same fields as the track's (below), set on
+  // one caption by the Format tab when "Apply to all" is off. Precedence:
+  // the segment's value, else the track's, else the style's own default, so a
+  // segment without them renders exactly as before. Read by the JSX caption
+  // templates only (each resolves them per segment, see `segmentTheme` in
+  // render/templates/captions/*.jsx); the ffmpeg `drawtext` branch ignores
+  // them, as it ignores `color` above. `fontSize` is camelCase here, unlike
+  // the track's legacy `fontsize`. `googleFonts` travels with `fontFamily`, as
+  // on the track: both renderers fetch the union of the track's and every
+  // segment's specs. Listed in `video/captionSegmentStyle.ts`.
+  fontSize?: number
+  fontFamily?: string
+  googleFonts?: string[]
+  fontWeight?: number | string
+  textTransform?: CaptionTextTransform
+  textAlign?: string
+  letterSpacing?: string
+  lineHeight?: number | string
+  accentColor?: string
+  highlightColor?: string
+  activeColor?: string
+  backgroundColor?: string
 }
 
 /**

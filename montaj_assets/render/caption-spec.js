@@ -60,6 +60,16 @@ export function captionOverlayFields(captions) {
     const given = Array.isArray(captionFonts) ? captionFonts : captionFonts ? [captionFonts] : []
     captionFonts = [...new Set([...given, ...ACCENT_FONTS])]
   }
+  // A caption can carry its own fontFamily with its own googleFonts (the
+  // editor's per-caption styling). Fetch those too, after the track's. Added
+  // only when a segment has some, so a project without them is unchanged;
+  // and after the defaults above, which describe the track's own face.
+  const segmentFonts = (captions.segments || []).flatMap(s =>
+    Array.isArray(s?.googleFonts) ? s.googleFonts : typeof s?.googleFonts === 'string' ? [s.googleFonts] : [])
+  if (segmentFonts.length > 0) {
+    const given = Array.isArray(captionFonts) ? captionFonts : captionFonts ? [captionFonts] : []
+    captionFonts = [...new Set([...given, ...segmentFonts])]
+  }
   return {
     componentPath: captionTemplatePath(captions.style),
     props:         { segments: captions.segments || [], ...captionTheme },

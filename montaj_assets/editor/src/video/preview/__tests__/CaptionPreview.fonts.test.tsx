@@ -72,6 +72,32 @@ describe('CaptionPreview — Google Fonts injection', () => {
     })
   })
 
+  it('also loads a caption\'s own googleFonts (per-caption font)', async () => {
+    const track: Captions = {
+      style: 'clean',
+      googleFonts: ['Baloo+2:wght@700'],
+      segments: [
+        { id: 'cap-0', text: 'hello', start: 0, end: 2 },
+        { id: 'cap-1', text: 'there', start: 2, end: 4, fontFamily: '"Caveat", cursive', googleFonts: ['Caveat:wght@700'] },
+      ],
+    }
+
+    render(
+      <CaptionPreview
+        track={track}
+        currentTime={1}
+        fps={30}
+        compileOverlay={compileOverlay}
+        resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        designCanvas={[1080, 1920]}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(fontLinks().some((l) => l.href.includes('family=Caveat:wght@700'))).toBe(true)
+    })
+  })
+
   it('adds no stylesheet for a track with no googleFonts', async () => {
     // The <link> from the case above is still in document.head (jsdom's
     // document is per-file and RTL's cleanup only removes its own container),

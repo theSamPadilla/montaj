@@ -244,6 +244,11 @@ describe('VideoEditor — captions "Apply to all"', () => {
       const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
       return last.captions!.segments
     }
+    /** The text color each caption shows: its own, else the track's. */
+    const colors = () => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      return last.captions!.segments.map(seg => seg.color ?? last.captions!.color)
+    }
     const checkbox = () => view.getByRole('checkbox', { name: 'Apply to all' }) as HTMLInputElement
     const undoButton = () => view.getByLabelText('Undo') as HTMLButtonElement
     /** The preview's selection box: the caption layer's only interactive element. */
@@ -283,7 +288,7 @@ describe('VideoEditor — captions "Apply to all"', () => {
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true }))
       })
     }
-    return { ...view, adapter, onProjectChange, segments, checkbox, undoButton, dragCaption, resizeCaption, recolorCaption, undo }
+    return { ...view, adapter, onProjectChange, segments, colors, checkbox, undoButton, dragCaption, resizeCaption, recolorCaption, undo }
   }
 
   it('is off by default, and nothing is stored until it is used', async () => {
@@ -398,12 +403,12 @@ describe('VideoEditor — captions "Apply to all"', () => {
   })
 
   it('on: a text color pick colors every caption, and one undo reverts all of them', async () => {
-    const { checkbox, recolorCaption, segments, undoButton, undo } = mount()
+    const { checkbox, recolorCaption, segments, colors, undoButton, undo } = mount()
     await waitFor(() => expect(checkbox().checked).toBe(false))
     fireEvent.click(checkbox())
 
     await recolorCaption('#123456')
-    await waitFor(() => expect(segments().map(seg => seg.color)).toEqual(['#123456', '#123456', '#123456']))
+    await waitFor(() => expect(colors()).toEqual(['#123456', '#123456', '#123456']))
 
     await undo()
     await waitFor(() => expect(segments()).toEqual(variedCaptions.segments))
@@ -468,6 +473,102 @@ describe('VideoEditor — captions "Apply to all"', () => {
       await view.dragCaption()
       await waitFor(() => expect(view.segments().map(seg => [seg.offsetX, seg.offsetY])).toEqual([[15, 10], [15, 10], [15, 10]]))
     })
+
+    // Format edits follow the same rule (§221 part 2): off, exactly the
+    // selected captions; on, every caption. It used to write the track, so
+    // one selected caption's font size changed every caption.
+    const commitFontSize = async (view: ReturnType<typeof mount>, value: string) => {
+      fireEvent.click(view.getByRole('button', { name: 'Format' }))
+      const input = await view.findByLabelText('Caption font size')
+      fireEvent.change(input, { target: { value } })
+      fireEvent.blur(input)
+    }
+    const fontSizes = (view: ReturnType<typeof mount>) => {
+      const last = view.onProjectChange.mock.calls[view.onProjectChange.mock.calls.length - 1][0] as Project
+      return last.captions!.segments.map(seg => seg.fontSize ?? last.captions!.fontsize)
+    }
+
+    it('the font size of one selected caption changes that caption only, and one undo reverts it', async () => {
+      const view = mount()
+      await waitFor(() => expect(view.checkbox().checked).toBe(false))
+      await select(['s1'])
+      await commitFontSize(view, '72')
+      await waitFor(() => expect(fontSizes(view)).toEqual([undefined, 72, undefined]))
+      await view.undo()
+      await waitFor(() => expect(view.segments()).toEqual(variedCaptions.segments))
+      await waitFor(() => expect(view.undoButton().disabled).toBe(true))
+    })
+
+    it('the font size of a hand-picked set changes exactly those, in one undo step', async () => {
+      const view = mount()
+      await waitFor(() => expect(view.checkbox().checked).toBe(false))
+      await select(['s0', 's2'])
+      await commitFontSize(view, '72')
+      await waitFor(() => expect(fontSizes(view)).toEqual([72, undefined, 72]))
+      await view.undo()
+      await waitFor(() => expect(view.segments()).toEqual(variedCaptions.segments))
+      await waitFor(() => expect(view.undoButton().disabled).toBe(true))
+    })
+
+    // Pressing a caption on the preview selects it without blurring the
+    // field (the press prevents default), so the field's commit lands after
+    // the selection changed. It must still go to the caption it was typed on.
+    it('a size typed on one caption commits to that caption even when another is pressed on the preview before the field blurs', async () => {
+      const view = mount()
+      await waitFor(() => expect(view.checkbox().checked).toBe(false))
+      await select(['s1'])
+      fireEvent.click(view.getByRole('button', { name: 'Format' }))
+      const input = await view.findByLabelText('Caption font size')
+      fireEvent.change(input, { target: { value: '72' } })
+      // s0 is the caption on screen at 0 s; pressing its box selects it.
+      const box = view.container.querySelector('[style*="z-index: 50"]')!.firstElementChild as HTMLElement
+      fireEvent.mouseDown(box, { clientX: 500, clientY: 500 })
+      fireEvent.mouseUp(document)
+      fireEvent.blur(input)
+      await waitFor(() => expect(view.undoButton().disabled).toBe(false))
+      expect(view.segments()[0]).toEqual(variedCaptions.segments[0])
+      expect(view.segments()[1].fontSize).toBe(72)
+      expect(view.segments()[2]).toEqual(variedCaptions.segments[2])
+      await view.undo()
+      await waitFor(() => expect(view.segments()).toEqual(variedCaptions.segments))
+    })
+
+    // A pick that ends on the colour it started from commits nothing, so its
+    // live preview has to be taken back: on a mixed selection the preview gave
+    // every selected caption the first one's colour, and with "Apply to all"
+    // it removed every caption's own colour. Left in place, the next commit
+    // (here a move) would save it.
+    it.each([
+      { name: 'off, a mixed selection', on: false },
+      { name: 'on', on: true },
+    ])('$name: a colour pick that ends on its starting colour puts the preview back', async ({ on }) => {
+      const view = mount()
+      await waitFor(() => expect(view.checkbox().checked).toBe(false))
+      if (on) fireEvent.click(view.checkbox())
+      // s0 has no colour of its own (the swatch shows white), s1 has green.
+      await select(['s0', 's1'])
+      fireEvent.click(view.getByRole('button', { name: 'Format' }))
+      const input = await view.findByLabelText('Selected segment text color')
+      fireEvent.change(input, { target: { value: '#123456' } })
+      await waitFor(() => expect(view.colors()[0]).toBe('#123456'))
+      fireEvent.change(input, { target: { value: '#ffffff' } })
+      fireEvent.blur(input, { target: { value: '#ffffff' } })
+      await waitFor(() => expect(view.segments()).toEqual(variedCaptions.segments))
+      expect(view.undoButton().disabled).toBe(true)
+      // The next commit saves only what it changed.
+      await view.dragCaption()
+      await waitFor(() => expect(view.undoButton().disabled).toBe(false))
+      expect(view.segments().map(seg => seg.color)).toEqual(variedCaptions.segments.map(seg => seg.color))
+    })
+
+    it('"Apply to all" on: the font size changes every caption', async () => {
+      const view = mount()
+      await waitFor(() => expect(view.checkbox().checked).toBe(false))
+      fireEvent.click(view.checkbox())
+      await select(['s1'])
+      await commitFontSize(view, '72')
+      await waitFor(() => expect(fontSizes(view)).toEqual([72, 72, 72]))
+    })
   })
 
   it('on: a drag does not wipe a color pick that is still waiting on its blur', async () => {
@@ -482,11 +583,11 @@ describe('VideoEditor — captions "Apply to all"', () => {
     fireEvent.click(view.getByRole('button', { name: 'Format' }))
     const input = await view.findByLabelText('Selected segment text color')
     fireEvent.change(input, { target: { value: '#123456' } })
-    await waitFor(() => expect(view.segments().map(seg => seg.color)).toEqual(['#123456', '#123456', '#123456']))
+    await waitFor(() => expect(view.colors()).toEqual(['#123456', '#123456', '#123456']))
 
     await view.dragCaption()
     await waitFor(() => expect(view.segments().map(seg => [seg.offsetX, seg.offsetY])).toEqual([[15, 10], [15, 10], [15, 10]]))
-    expect(view.segments().map(seg => seg.color)).toEqual(['#123456', '#123456', '#123456'])
+    expect(view.colors()).toEqual(['#123456', '#123456', '#123456'])
   })
 
   // ── Undo after a live-previewed change ─────────────────────────────────────

@@ -21,6 +21,10 @@ export interface SwatchInputProps {
   /** Fired on blur (picker closed) — for callers that preview live via onChange
    *  and persist only on commit. Omit to treat every onChange as final. */
   onCommit?: (v: string) => void
+  /** Fired on blur when a pick happened but ended on the colour it started
+   *  from, so `onCommit` does not fire. A caller whose `onChange` preview
+   *  changed more than this one value (several items at once) undoes it here. */
+  onCancel?: () => void
   ariaLabel: string
   /** Render the hex string next to the swatch. Default true. */
   showValue?: boolean
@@ -34,6 +38,7 @@ export function SwatchInput({
   value,
   onChange,
   onCommit,
+  onCancel,
   ariaLabel,
   showValue = true,
   size = 'md',
@@ -63,7 +68,8 @@ export function SwatchInput({
           onBlur={e => {
             const pick = pickRef.current
             pickRef.current = null
-            if (!pick || pick.start.toLowerCase() === pick.last.toLowerCase()) return
+            if (!pick) return
+            if (pick.start.toLowerCase() === pick.last.toLowerCase()) { onCancel?.(); return }
             onCommit?.(e.target.value)
           }}
           className="absolute inset-0 h-full w-full cursor-pointer opacity-0"

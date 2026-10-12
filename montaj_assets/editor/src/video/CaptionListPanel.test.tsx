@@ -55,8 +55,8 @@ function renderPanel(opts: {
   /** What `clock.get()` returns: where the playhead is. */
   playheadTime?: number
   /** Set (true or false) → the host wires "Apply to all": the checkbox shows
-   *  with this value and the all-segments commit channel is supplied. Left
-   *  undefined → neither prop is passed, as for a host that has not wired it. */
+   *  with this value. Left undefined → not passed, as for a host that has not
+   *  wired it (off). */
   applyToAll?: boolean
 } = {}) {
   const {
@@ -81,10 +81,9 @@ function renderPanel(opts: {
   const onCaptionSegmentDelete = vi.fn()
   const onRegenerateCaptions = withRegenerate ? vi.fn() : undefined
   const onApplyToAllChange = vi.fn()
-  const onCaptionAllSegmentsChange = vi.fn()
   const applyToAllProps = applyToAll === undefined
     ? {}
-    : { applyToAll, onApplyToAllChange, onCaptionAllSegmentsChange }
+    : { applyToAll, onApplyToAllChange }
 
   const view = render(
     <CaptionListPanel
@@ -108,7 +107,6 @@ function renderPanel(opts: {
   return {
     ...view,
     onApplyToAllChange,
-    onCaptionAllSegmentsChange,
     project,
     clock,
     onSelectCaption,
@@ -406,7 +404,7 @@ describe('CaptionListPanel relocated style controls', () => {
     expect((screen.getByLabelText('Selected segment text color') as HTMLInputElement).value).toBe('#00ff00')
   })
 
-  it('when a segment is selected, the base swatch previews via onProjectChange (segment-scoped) and commits via onCaptionSegmentChange — never onCaptionEdit', () => {
+  it('when a segment is selected, the base swatch previews and commits on that segment only, as its own color', () => {
     const { onProjectChange, onCaptionEdit, onCaptionSegmentChange } = renderPanel({
       selectedIds: ['cap-1'],
       extra: { color: '#ffffff' },
@@ -420,13 +418,14 @@ describe('CaptionListPanel relocated style controls', () => {
     expect(previewed.captions.segments[1].color).toBe('#123456')
     expect(previewed.captions.segments[0].color).toBeUndefined()
     expect(previewed.captions.color).toBe('#ffffff')
-    expect(onCaptionSegmentChange).not.toHaveBeenCalled()
     expect(onCaptionEdit).not.toHaveBeenCalled()
 
     fireEvent.blur(input, { target: { value: '#123456' } })
-    expect(onCaptionSegmentChange).toHaveBeenCalledTimes(1)
-    expect(onCaptionSegmentChange).toHaveBeenCalledWith('cap-1', { color: '#123456' })
-    expect(onCaptionEdit).not.toHaveBeenCalled()
+    expect(onCaptionEdit).toHaveBeenCalledTimes(1)
+    const committed = onCaptionEdit.mock.calls[0][0]
+    expect(committed.captions.segments.map((x: { color?: string }) => x.color)).toEqual([undefined, '#123456', undefined])
+    expect(committed.captions.color).toBe('#ffffff')
+    expect(onCaptionSegmentChange).not.toHaveBeenCalled()
     // The commit did not also fire another live preview.
     expect(onProjectChange).toHaveBeenCalledTimes(1)
   })
@@ -480,13 +479,12 @@ describe('CaptionListPanel relocated style controls', () => {
       { name: 'accent color', opts: { style: 'karaoke' as const }, label: 'Caption highlight color', original: '#ffffff', other: '#123456' },
     ]
     it.each(swatches)('$name: a blur with no pick writes nothing', ({ opts, label, original }) => {
-      const { onProjectChange, onCaptionEdit, onCaptionSegmentChange, onCaptionAllSegmentsChange } = renderPanel(opts)
+      const { onProjectChange, onCaptionEdit, onCaptionSegmentChange } = renderPanel(opts)
       expandFormat()
       const input = screen.getByLabelText(label) as HTMLInputElement
       fireEvent.blur(input, { target: { value: original } })
       expect(onCaptionEdit).not.toHaveBeenCalled()
       expect(onCaptionSegmentChange).not.toHaveBeenCalled()
-      expect(onCaptionAllSegmentsChange).not.toHaveBeenCalled()
       expect(onProjectChange).not.toHaveBeenCalled()
     })
 
@@ -1026,7 +1024,7 @@ describe('CaptionListPanel — Apply to all', () => {
   })
 
   it('off: the selected segment color previews and commits on that segment only', () => {
-    const { onProjectChange, onCaptionSegmentChange, onCaptionAllSegmentsChange } = renderPanel({
+    const { onProjectChange, onCaptionEdit } = renderPanel({
       applyToAll: false,
       selectedIds: ['cap-1'],
     })
@@ -1038,13 +1036,13 @@ describe('CaptionListPanel — Apply to all', () => {
     expect(previewed.captions!.segments.map(s => s.color)).toEqual([undefined, '#123456', undefined])
 
     fireEvent.blur(input, { target: { value: '#123456' } })
-    expect(onCaptionSegmentChange).toHaveBeenCalledTimes(1)
-    expect(onCaptionSegmentChange).toHaveBeenCalledWith('cap-1', { color: '#123456' })
-    expect(onCaptionAllSegmentsChange).not.toHaveBeenCalled()
+    expect(onCaptionEdit).toHaveBeenCalledTimes(1)
+    const committed = onCaptionEdit.mock.calls[0][0] as Project
+    expect(committed.captions!.segments.map(s => s.color)).toEqual([undefined, '#123456', undefined])
   })
 
-  it('on: the selected segment color previews on every segment and commits the same color to all, once', () => {
-    const { onProjectChange, onCaptionSegmentChange, onCaptionAllSegmentsChange, onCaptionEdit } = renderPanel({
+  it('on: the selected segment color goes on the track and off every caption, once', () => {
+    const { onProjectChange, onCaptionSegmentChange, onCaptionEdit } = renderPanel({
       applyToAll: true,
       selectedIds: ['cap-1'],
       segments: [
@@ -1059,26 +1057,28 @@ describe('CaptionListPanel — Apply to all', () => {
     fireEvent.change(input, { target: { value: '#123456' } })
     expect(onProjectChange).toHaveBeenCalledTimes(1)
     const previewed = onProjectChange.mock.calls[0][0] as Project
-    expect(previewed.captions!.segments.map(s => s.color)).toEqual(['#123456', '#123456', '#123456'])
+    expect(previewed.captions!.color).toBe('#123456')
+    expect(previewed.captions!.segments.map(s => s.color)).toEqual([undefined, undefined, undefined])
 
     fireEvent.blur(input, { target: { value: '#123456' } })
-    expect(onCaptionAllSegmentsChange).toHaveBeenCalledTimes(1)
-    expect(onCaptionAllSegmentsChange).toHaveBeenCalledWith({ color: '#123456' })
+    expect(onCaptionEdit).toHaveBeenCalledTimes(1)
+    const committed = onCaptionEdit.mock.calls[0][0] as Project
+    expect(committed.captions!.color).toBe('#123456')
+    expect(committed.captions!.segments.map(s => s.color)).toEqual([undefined, undefined, undefined])
     // One commit per gesture, through one channel.
     expect(onCaptionSegmentChange).not.toHaveBeenCalled()
-    expect(onCaptionEdit).not.toHaveBeenCalled()
     expect(onProjectChange).toHaveBeenCalledTimes(1)
   })
 
   it('on: a blur with no pick commits nothing, so tabbing past the swatch never recolors every caption', () => {
-    const { onProjectChange, onCaptionSegmentChange, onCaptionAllSegmentsChange } = renderPanel({
+    const { onProjectChange, onCaptionSegmentChange, onCaptionEdit } = renderPanel({
       applyToAll: true,
       selectedIds: ['cap-1'],
     })
     fireEvent.click(screen.getByRole('button', { name: 'Format' }))
     const input = screen.getByLabelText('Selected segment text color') as HTMLInputElement
     fireEvent.blur(input, { target: { value: input.value } })
-    expect(onCaptionAllSegmentsChange).not.toHaveBeenCalled()
+    expect(onCaptionEdit).not.toHaveBeenCalled()
     expect(onCaptionSegmentChange).not.toHaveBeenCalled()
     expect(onProjectChange).not.toHaveBeenCalled()
 
@@ -1086,25 +1086,149 @@ describe('CaptionListPanel — Apply to all', () => {
     fireEvent.change(input, { target: { value: '#123456' } })
     fireEvent.blur(input, { target: { value: '#123456' } })
     fireEvent.blur(input, { target: { value: '#123456' } })
-    expect(onCaptionAllSegmentsChange).toHaveBeenCalledTimes(1)
+    expect(onCaptionEdit).toHaveBeenCalledTimes(1)
   })
 
   it('on: a text edit still changes one segment only', () => {
-    const { onCaptionSegmentChange, onCaptionAllSegmentsChange } = renderPanel({ applyToAll: true })
+    const { onCaptionSegmentChange, onCaptionEdit } = renderPanel({ applyToAll: true })
     const span = screen.getByText('hello world')
     span.textContent = 'hello universe'
     fireEvent.blur(span)
+    expect(onCaptionSegmentChange).toHaveBeenCalledTimes(1)
     expect(onCaptionSegmentChange).toHaveBeenCalledWith('cap-0', { text: 'hello universe' })
-    expect(onCaptionAllSegmentsChange).not.toHaveBeenCalled()
+    expect(onCaptionEdit).not.toHaveBeenCalled()
   })
 
   it('on, with nothing selected: the swatch is the track color, which already applies to all', () => {
-    const { onCaptionEdit, onCaptionAllSegmentsChange } = renderPanel({ applyToAll: true })
+    const { onCaptionEdit } = renderPanel({ applyToAll: true })
     fireEvent.click(screen.getByRole('button', { name: 'Format' }))
     const input = screen.getByLabelText('Caption text color') as HTMLInputElement
     fireEvent.change(input, { target: { value: '#76b900' } })
     fireEvent.blur(input, { target: { value: '#76b900' } })
+    expect(onCaptionEdit).toHaveBeenCalledTimes(1)
     expect(onCaptionEdit.mock.calls[0][0].captions.color).toBe('#76b900')
-    expect(onCaptionAllSegmentsChange).not.toHaveBeenCalled()
+  })
+})
+
+// ── Where a Format-tab edit lands (§221) ─────────────────────────────────────
+// Every caption edit follows one rule: "Apply to all" on, every caption; off,
+// exactly the selected captions (as their own values); off with nothing
+// selected, the track. It used to write the track whatever was selected, so
+// changing the font size of one selected caption changed all of them.
+describe('CaptionListPanel — Format edits land on the selection unless "Apply to all"', () => {
+  // cap-0 carries its own size already, so "keeps its own" and "loses it"
+  // can both be seen.
+  const SEGS: CaptionSegment[] = [
+    { id: 'cap-0', text: 'hello world', start: 0, end: 2, fontSize: 30 },
+    { id: 'cap-1', text: 'goodbye now', start: 2, end: 4 },
+    { id: 'cap-2', text: 'the end', start: 4, end: 6 },
+  ]
+  const commitFontSize = (value: string) => {
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+    const input = screen.getByLabelText('Caption font size') as HTMLInputElement
+    fireEvent.change(input, { target: { value } })
+    fireEvent.blur(input)
+  }
+  const committed = (onCaptionEdit: ReturnType<typeof vi.fn>) => {
+    expect(onCaptionEdit).toHaveBeenCalledTimes(1)
+    return (onCaptionEdit.mock.calls[0][0] as Project).captions!
+  }
+
+  it('off, one caption selected: the font size changes that caption only', () => {
+    const { onCaptionEdit } = renderPanel({ segments: SEGS, applyToAll: false, selectedIds: ['cap-1'] })
+    commitFontSize('72')
+    const c = committed(onCaptionEdit)
+    expect(c.segments.map(s => s.fontSize)).toEqual([30, 72, undefined])
+    expect(c.fontsize).toBeUndefined()
+  })
+
+  it('off, several captions selected: the font size changes exactly those', () => {
+    const { onCaptionEdit } = renderPanel({ segments: SEGS, applyToAll: false, selectedIds: ['cap-1', 'clip-x', 'cap-2'] })
+    commitFontSize('72')
+    const c = committed(onCaptionEdit)
+    expect(c.segments.map(s => s.fontSize)).toEqual([30, 72, 72])
+    expect(c.fontsize).toBeUndefined()
+  })
+
+  it('on: the font size goes on the track and every caption\'s own size is removed', () => {
+    const { onCaptionEdit } = renderPanel({ segments: SEGS, applyToAll: true, selectedIds: ['cap-1'] })
+    commitFontSize('72')
+    const c = committed(onCaptionEdit)
+    expect(c.fontsize).toBe(72)
+    expect(c.segments.map(s => s.fontSize)).toEqual([undefined, undefined, undefined])
+  })
+
+  it('off, nothing selected: the track, and a caption with its own size keeps it', () => {
+    const { onCaptionEdit } = renderPanel({ segments: SEGS, applyToAll: false })
+    commitFontSize('72')
+    const c = committed(onCaptionEdit)
+    expect(c.fontsize).toBe(72)
+    expect(c.segments.map(s => s.fontSize)).toEqual([30, undefined, undefined])
+  })
+
+  it('shows the first selected caption\'s own value, else the track\'s', () => {
+    renderPanel({ segments: SEGS, selectedIds: ['cap-0'], extra: { fontsize: 50 } })
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+    expect((screen.getByLabelText('Caption font size') as HTMLInputElement).value).toBe('30')
+    cleanup()
+    renderPanel({ segments: SEGS, selectedIds: ['cap-1'], extra: { fontsize: 50 } })
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+    expect((screen.getByLabelText('Caption font size') as HTMLInputElement).value).toBe('50')
+  })
+
+  // Every other control on the tab, off with two captions selected: each one
+  // writes those two captions and leaves the track and the third alone.
+  const controls: { name: string; act: () => void; key: keyof CaptionSegment; value: unknown }[] = [
+    { name: 'letter spacing', act: () => { const i = screen.getByLabelText('Caption letter spacing'); fireEvent.change(i, { target: { value: '0.2' } }); fireEvent.blur(i) }, key: 'letterSpacing', value: '0.2em' },
+    { name: 'line height', act: () => { const i = screen.getByLabelText('Caption line height'); fireEvent.change(i, { target: { value: '1.5' } }); fireEvent.blur(i) }, key: 'lineHeight', value: 1.5 },
+    { name: 'case', act: () => fireEvent.click(screen.getByRole('button', { name: 'Lowercase' })), key: 'textTransform', value: 'lowercase' },
+    { name: 'alignment', act: () => fireEvent.click(screen.getByRole('button', { name: 'Align left' })), key: 'textAlign', value: 'left' },
+    { name: 'bold off', act: () => fireEvent.click(screen.getByRole('button', { name: 'Bold' })), key: 'fontWeight', value: 400 },
+    { name: 'text color', act: () => { const i = screen.getByLabelText('Selected segment text color'); fireEvent.change(i, { target: { value: '#123456' } }); fireEvent.blur(i, { target: { value: '#123456' } }) }, key: 'color', value: '#123456' },
+    { name: 'accent color', act: () => { const i = screen.getByLabelText('Caption highlight color'); fireEvent.change(i, { target: { value: '#123456' } }); fireEvent.blur(i, { target: { value: '#123456' } }) }, key: 'highlightColor', value: '#123456' },
+  ]
+  it.each(controls)('off, two selected: $name lands on those two only', ({ act, key, value }) => {
+    const { onCaptionEdit, project } = renderPanel({ applyToAll: false, selectedIds: ['cap-0', 'cap-2'] })
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+    act()
+    const c = committed(onCaptionEdit)
+    expect(c.segments.map(s => s[key])).toEqual([value, undefined, value])
+    // The track is untouched.
+    const { segments: _a, ...trackAfter } = c
+    const { segments: _b, ...trackBefore } = project.captions!
+    expect(trackAfter).toEqual(trackBefore)
+  })
+
+  it('bold back on, with the track set to a weight: the selected captions get the style\'s own weight', () => {
+    const { onCaptionEdit } = renderPanel({ applyToAll: false, selectedIds: ['cap-1'], extra: { fontWeight: 400 } })
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Bold' }))
+    // karaoke's own weight is 700.
+    expect(committed(onCaptionEdit).segments.map(s => s.fontWeight)).toEqual([undefined, 700, undefined])
+  })
+
+  it('bold back on, with no track weight: the selected caption\'s own weight is removed', () => {
+    const { onCaptionEdit } = renderPanel({
+      applyToAll: false,
+      selectedIds: ['cap-1'],
+      segments: [THREE_SEGS[0], { ...THREE_SEGS[1], fontWeight: 400 }, THREE_SEGS[2]],
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+    expect(screen.getByRole('button', { name: 'Bold' }).getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(screen.getByRole('button', { name: 'Bold' }))
+    const c = committed(onCaptionEdit)
+    expect(c.segments[1]).not.toHaveProperty('fontWeight')
+  })
+
+  it.each([900, 'bold'])('bold back on, with the track already bold (%s): the selected caption\'s own weight is removed', (trackWeight) => {
+    const { onCaptionEdit } = renderPanel({
+      applyToAll: false,
+      selectedIds: ['cap-1'],
+      extra: { fontWeight: trackWeight },
+      segments: [THREE_SEGS[0], { ...THREE_SEGS[1], fontWeight: 400 }, THREE_SEGS[2]],
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Bold' }))
+    expect(committed(onCaptionEdit).segments[1]).not.toHaveProperty('fontWeight')
   })
 })

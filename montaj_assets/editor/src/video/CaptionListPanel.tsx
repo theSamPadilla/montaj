@@ -12,7 +12,7 @@ import { AlignCenter, AlignLeft, AlignRight, Loader2, RefreshCw, Search, Trash2 
 import type { Project, OverlayFactory } from '../types'
 import type { Captions } from '../schema'
 import type { PlaybackClock } from './playback-clock'
-import type { CaptionEditAllPatch, CaptionEditPatch } from './timeline/makeCaptionEdit'
+import type { CaptionEditPatch } from './timeline/makeCaptionEdit'
 import { EditableSegment } from './timeline/EditableSegment'
 import { formatTime } from './timeline/utils'
 import { NumberField, Slider, stepValue, SwatchInput } from '../ui'
@@ -21,7 +21,8 @@ import { playheadInside } from './captionSeek'
 import { FontFamilyPicker, findFontOption } from '../text/FontPicker'
 import CaptionStyleGallery from './CaptionStyleGallery'
 import TabNav from './panels/TabNav'
-import { CAPTION_STYLE_FONT_SIZE, CAPTION_STYLE_LETTER_SPACING, CAPTION_STYLE_LINE_HEIGHT, CAPTION_STYLE_TEXT_TRANSFORM } from './captionStyleDefaults'
+import { CAPTION_STYLE_FONT_SIZE, CAPTION_STYLE_FONT_WEIGHT, CAPTION_STYLE_LETTER_SPACING, CAPTION_STYLE_LINE_HEIGHT, CAPTION_STYLE_TEXT_TRANSFORM } from './captionStyleDefaults'
+import { applyCaptionStyle, captionStyleScope, captionStyleValue, type CaptionStylePatch, type CaptionStyleScope } from './captionSegmentStyle'
 
 /** Which of the panel's three sub-tabs is showing: the caption transcript,
  *  the fine formatting controls, or the style gallery. Plain component state,
@@ -197,23 +198,18 @@ export interface CaptionListPanelProps {
    *  audio). Used only to derive which segment (if any) is selected. */
   selectedIds: string[]
   onSelectCaption: (id: string | null) => void
-  /** Commit a single-segment patch — text edits and the per-segment color
-   *  swatch. */
+  /** Commit a single-segment patch: text edits. */
   onCaptionSegmentChange?: (segmentId: string, patch: CaptionEditPatch) => void
-  /** "Apply to all": whether a caption move, resize or text color change
-   *  lands on every caption instead of one. Controlled: the host owns the
-   *  value (and remembers it), because the preview acts on it too. Absent →
-   *  off. */
+  /** "Apply to all": whether a caption edit (a move or resize in the
+   *  preview, or any Format-tab control) lands on every caption. Off, it
+   *  lands on exactly the selected captions (see captionSegmentStyle.ts).
+   *  Controlled: the host owns the value (and remembers it), because the
+   *  preview acts on it too. Absent → off. */
   applyToAll?: boolean
   /** The header checkbox was toggled. Absent → the checkbox is not shown. */
   onApplyToAllChange?: (next: boolean) => void
-  /** Commit the same absolute values onto EVERY segment, as one change. Used
-   *  by the selected segment's color swatch while `applyToAll` is on. Absent →
-   *  the swatch writes the selected segment only, as if the checkbox were
-   *  off. */
-  onCaptionAllSegmentsChange?: (patch: CaptionEditAllPatch) => void
-  /** Whole-project commit — style/fontsize/track-color changes and "Remove
-   *  all". */
+  /** Whole-project commit: every Format-tab control, the style gallery and
+   *  "Remove all". */
   onCaptionEdit?: (project: Project) => void
   /** Live preview only, no save, no undo entry — fontsize drag and
    *  track/segment color picks fire this on every intermediate value. */
@@ -273,7 +269,6 @@ export default function CaptionListPanel({
   onCaptionSegmentChange,
   applyToAll = false,
   onApplyToAllChange,
-  onCaptionAllSegmentsChange,
   onCaptionEdit,
   onProjectChange,
   onCaptionSegmentDelete,
@@ -303,7 +298,6 @@ export default function CaptionListPanel({
       onCaptionSegmentChange={onCaptionSegmentChange}
       applyToAll={applyToAll}
       onApplyToAllChange={onApplyToAllChange}
-      onCaptionAllSegmentsChange={onCaptionAllSegmentsChange}
       onCaptionEdit={onCaptionEdit}
       onProjectChange={onProjectChange}
       onCaptionSegmentDelete={onCaptionSegmentDelete}
@@ -332,7 +326,6 @@ function CaptionListPanelBody({
   onCaptionSegmentChange,
   applyToAll = false,
   onApplyToAllChange,
-  onCaptionAllSegmentsChange,
   onCaptionEdit,
   onProjectChange,
   onCaptionSegmentDelete,
@@ -368,22 +361,30 @@ function CaptionListPanelBody({
   // release/blur/Enter so mid-gesture updates don't each trigger a server PUT.
   // Both the slider and the box read and write THIS state, so they stay in
   // lockstep and the preview tracks the edit as it happens.
-  const styleFontSize = captionTrack ? CAPTION_STYLE_FONT_SIZE[captionTrack.style] ?? 46 : 46
-  const [fontsize, setFontsize] = useState(captionTrack?.fontsize ?? styleFontSize)
-  useEffect(() => {
-    setFontsize(captionTrack?.fontsize ?? styleFontSize)
-  }, [captionTrack?.fontsize, styleFontSize])
-
-  // The selected segment, if any — derived from the unified `selectedIds`
-  // the same way VideoEditor derives its own `selectedCaptionId` mirror: a
-  // marquee can put more than one caption id in there, but only the preview's
-  // single selection box (and this swatch) needs to pick one, so take the
-  // first that resolves to a real segment.
-  const selectedSeg = useMemo(() => {
-    if (!captionTrack) return undefined
+  // The selected captions, derived from the unified `selectedIds` (a
+  // Cmd-click, Shift-click or marquee can hold several). The Format tab
+  // writes to exactly these while "Apply to all" is off, and shows the first
+  // one's values.
+  const selectedSegs = useMemo(() => {
+    if (!captionTrack) return []
     const idSet = new Set(selectedIds)
-    return captionTrack.segments.find(s => s.id && idSet.has(s.id))
+    return captionTrack.segments.filter(s => s.id && idSet.has(s.id))
   }, [captionTrack, selectedIds])
+  const selectedSeg = selectedSegs[0]
+  // Where a Format-tab edit lands: every caption, the selected ones, or (off
+  // with nothing selected) the track.
+  const styleScope = captionStyleScope(applyToAll, selectedSegs.map(s => s.id as string))
+  // A styling value in force for what the tab shows: the first selected
+  // caption's own, else the track's. Undefined → the style's own default.
+  const styleValue = <F extends Parameters<typeof captionStyleValue>[2]>(field: F) =>
+    captionTrack ? captionStyleValue(captionTrack, selectedSeg, field) : undefined
+
+  const styleFontSize = captionTrack ? CAPTION_STYLE_FONT_SIZE[captionTrack.style] ?? 46 : 46
+  const fontsizeInForce = styleValue('fontsize') ?? styleFontSize
+  const [fontsize, setFontsize] = useState(fontsizeInForce)
+  useEffect(() => {
+    setFontsize(fontsizeInForce)
+  }, [fontsizeInForce])
 
   // One group per lane (0..maxLane, holes included) via the same module the
   // canvas timeline reads lanes through — see captionLanes.ts. `multiLane`
@@ -522,77 +523,61 @@ function CaptionListPanelBody({
   // which fails the `>= 600` check, so a project carrying the keyword read as
   // OFF even though it renders bold. Checked as its own case rather than
   // folded into the numeric one.
-  const isBoldKeyword = typeof captionTrack?.fontWeight === 'string'
-    && ['bold', 'bolder'].includes(captionTrack.fontWeight.trim().toLowerCase())
+  const weightInForce = styleValue('fontWeight')
+  const isBoldKeyword = typeof weightInForce === 'string'
+    && ['bold', 'bolder'].includes(weightInForce.trim().toLowerCase())
   const boldOn = captionTrack
-    ? (captionTrack.fontWeight == null || isBoldKeyword || Number(captionTrack.fontWeight) >= 600)
+    ? (weightInForce == null || isBoldKeyword || Number(weightInForce) >= 600)
     : false
 
   // onChange = live preview only (cheap, no PUT); onCommit persists once.
-  // `Partial<Captions>`, not `Record<string, string>`: the text-styling
-  // controls below write a `string[]` (googleFonts) and a number
-  // (lineHeight), and stringifying those to fit a narrower patch type would
-  // put values in the project that the caption templates can't read.
-  const liveTrack = (patch: Partial<Captions>) => {
-    if (!project.captions) return
-    onProjectChange?.({ ...project, captions: { ...project.captions, ...patch } })
-  }
-  const commitTrack = (patch: Partial<Captions>) => {
-    if (!project.captions) return
-    onCaptionEdit?.({ ...project, captions: { ...project.captions, ...patch } })
-  }
-  // Deletes a key from the persisted captions object entirely, rather than
-  // overwriting it. `commitTrack` above can only ADD/OVERWRITE keys via its
-  // patch spread — writing `{ [key]: undefined }` through it would leave the
-  // key present (with an `undefined` value) in the live-preview project, but
-  // JSON.stringify DROPS `undefined` keys on the way to the server, so the
-  // preview and the persisted project would end up disagreeing about whether
-  // the field is set at all. Building the object explicitly and destructuring
-  // the key out of it is the only way both paths agree. Used by the Bold
-  // toggle: switching bold back ON has to DELETE `fontWeight`, not write 700
-  // (see the toggle's own comment for why a flat 700 is wrong).
-  const commitTrackOmitting = (key: keyof Captions) => {
-    if (!project.captions) return
-    const { [key]: _dropped, ...rest } = project.captions
-    onCaptionEdit?.({ ...project, captions: rest as Captions })
-  }
-  // Per-segment color: when a real segment is selected, the base swatch
-  // targets ITS color instead of the track's. Live preview still flows
-  // through `onProjectChange` — a locally patched project, exactly the
-  // channel every other control here uses for live preview — but the commit
-  // goes through `onCaptionSegmentChange`, the single-segment patch channel,
-  // instead of rewriting the whole captions object through `onCaptionEdit`.
-  // Each fires from exactly one of SwatchInput's onChange/onCommit, so one
-  // gesture produces exactly one commit — never both channels for one value.
+  // Both land the patch where `styleScope` says (see captionSegmentStyle.ts):
+  // "Apply to all" on, the track, with that field's override removed from
+  // every caption; off, exactly the selected captions, as their own values;
+  // off with nothing selected, the track. A key set to `undefined` is removed
+  // there instead. Every commit is one whole-project change, so one undo step.
   //
-  // With "Apply to all" on (and a host that wired its commit channel), the
-  // same color goes onto EVERY segment: the live preview patches them all, and
-  // the commit goes through `onCaptionAllSegmentsChange` instead, still
-  // exactly one commit per gesture.
-  const colorAll = applyToAll && !!onCaptionAllSegmentsChange
-  // Set by a pick, cleared by its commit. The swatch commits on BLUR, which
-  // also fires when nothing was picked (tabbing past it, or opening the picker
-  // and closing it). For one segment that rewrites its own color onto itself;
-  // for all of them it would copy the selected caption's color over every
-  // other caption's with no pick made, so the all-segments commit needs one.
-  const segColorPickedRef = useRef(false)
-  const liveSegColor = (v: string) => {
-    if (!project.captions || !selectedSeg) return
-    segColorPickedRef.current = true
-    onProjectChange?.({
-      ...project,
-      captions: {
-        ...project.captions,
-        segments: project.captions.segments.map(s => colorAll || s.id === selectedSeg.id ? { ...s, color: v } : s),
-      },
-    })
+  // A gesture keeps the scope it STARTED with. A typed value commits on blur,
+  // and pressing another caption on the preview selects it without blurring
+  // the field (the press prevents default), so by the blur `styleScope`
+  // already names the new caption while the project still holds the live
+  // value on the old one: committing at the new scope would save both. The
+  // first live preview records its scope and the project from before it; the
+  // commit uses that scope, and a gesture that ends without one (a colour
+  // pick back on its starting colour) puts the project back.
+  const gestureRef = useRef<{ scope: CaptionStyleScope; before: Project } | null>(null)
+  const liveStyle = (patch: CaptionStylePatch) => {
+    if (!project.captions) return
+    gestureRef.current ??= { scope: styleScope, before: project }
+    onProjectChange?.({ ...project, captions: applyCaptionStyle(project.captions, patch, gestureRef.current.scope) })
   }
-  const commitSegColor = (v: string) => {
-    const picked = segColorPickedRef.current
-    segColorPickedRef.current = false
-    if (!selectedSeg?.id) return
-    if (!colorAll) onCaptionSegmentChange?.(selectedSeg.id, { color: v })
-    else if (picked) onCaptionAllSegmentsChange?.({ color: v })
+  const commitStyle = (patch: CaptionStylePatch) => {
+    const scope = gestureRef.current?.scope ?? styleScope
+    gestureRef.current = null
+    if (!project.captions) return
+    onCaptionEdit?.({ ...project, captions: applyCaptionStyle(project.captions, patch, scope) })
+  }
+  const cancelStyle = () => {
+    const before = gestureRef.current?.before
+    gestureRef.current = null
+    if (before) onProjectChange?.(before)
+  }
+  // Bold back ON means "the style's own weight", which is the ABSENT key (see
+  // the toggle below). On the selected captions with the track itself set to a
+  // weight that is not bold, an absent override would show that weight, so
+  // those captions get the style's own weight written out. A track that is
+  // already bold just loses the override, like the captions around it.
+  const turnBoldOn = () => {
+    if (!captionTrack) return
+    const tw = captionTrack.fontWeight
+    const trackNotBold = tw != null
+      && !(typeof tw === 'string' && ['bold', 'bolder'].includes(tw.trim().toLowerCase()))
+      && !(Number(tw) >= 600)
+    if (styleScope.kind === 'segments' && trackNotBold) {
+      commitStyle({ fontWeight: CAPTION_STYLE_FONT_WEIGHT[captionTrack.style] ?? 700 })
+    } else {
+      commitStyle({ fontWeight: undefined })
+    }
   }
 
   return (
@@ -611,8 +596,8 @@ function CaptionListPanelBody({
               <span className="ml-1.5 text-[color-mix(in_srgb,var(--editor-text)_40%,transparent)] normal-case tracking-normal">{segs.length}</span>
             )}
           </span>
-          {/* "Apply to all": a caption move, resize or text color change lands
-              on every caption instead of one. In the header, not inside a tab,
+          {/* "Apply to all": a caption move, resize or Format-tab change lands
+              on every caption instead of the selected ones. In the header, not inside a tab,
               so it shows on Format, Styles and Captions alike; on this row
               rather than beside the tab strip because the three tabs already
               fill a 288px rail. Mounts with the tabs (there must be captions
@@ -738,15 +723,11 @@ function CaptionListPanelBody({
                     max={CAPTION_FONT_SIZE_MAX}
                     value={fontsize}
                     onChange={v => {
-                      if (!project.captions) return
                       const next = clampToRange(v, CAPTION_FONT_SIZE_MIN, CAPTION_FONT_SIZE_MAX)
                       setFontsize(next)
-                      onProjectChange?.({ ...project, captions: { ...project.captions, fontsize: next } })
+                      liveStyle({ fontsize: next })
                     }}
-                    onCommit={v => {
-                      if (!project.captions) return
-                      onCaptionEdit?.({ ...project, captions: { ...project.captions, fontsize: clampToRange(v, CAPTION_FONT_SIZE_MIN, CAPTION_FONT_SIZE_MAX) } })
-                    }}
+                    onCommit={v => commitStyle({ fontsize: clampToRange(v, CAPTION_FONT_SIZE_MIN, CAPTION_FONT_SIZE_MAX) })}
                   />
                   <NumberField
                     name="Caption font size"
@@ -757,21 +738,16 @@ function CaptionListPanelBody({
                     max={CAPTION_FONT_SIZE_MAX}
                     value={fontsize}
                     onPreview={v => {
-                      if (!project.captions) return
                       const next = clampToRange(v, CAPTION_FONT_SIZE_MIN, CAPTION_FONT_SIZE_MAX)
                       setFontsize(next)
                       // Live preview only — cheap local-state update, no save.
-                      onProjectChange?.({ ...project, captions: { ...project.captions, fontsize: next } })
+                      liveStyle({ fontsize: next })
                     }}
-                    onCommit={v => {
-                      if (!project.captions) return
-                      onCaptionEdit?.({ ...project, captions: { ...project.captions, fontsize: clampToRange(v, CAPTION_FONT_SIZE_MIN, CAPTION_FONT_SIZE_MAX) } })
-                    }}
+                    onCommit={v => commitStyle({ fontsize: clampToRange(v, CAPTION_FONT_SIZE_MIN, CAPTION_FONT_SIZE_MAX) })}
                     onStep={d => {
-                      if (!project.captions) return
                       const next = stepValue(fontsize, d, { step: 1, min: CAPTION_FONT_SIZE_MIN, max: CAPTION_FONT_SIZE_MAX })
                       setFontsize(next)
-                      onCaptionEdit?.({ ...project, captions: { ...project.captions, fontsize: next } })
+                      commitStyle({ fontsize: next })
                     }}
                   />
                 </div>
@@ -786,9 +762,10 @@ function CaptionListPanelBody({
                     showValue={false}
                     title={selectedSeg ? 'Selected segment text color' : 'Caption text color'}
                     ariaLabel={selectedSeg ? 'Selected segment text color' : 'Caption text color'}
-                    value={toHex(selectedSeg ? (selectedSeg.color ?? captionTrack.color) : captionTrack.color, '#ffffff')}
-                    onChange={v => selectedSeg ? liveSegColor(v) : liveTrack({ color: v })}
-                    onCommit={v => selectedSeg ? commitSegColor(v) : commitTrack({ color: v })}
+                    value={toHex(styleValue('color'), '#ffffff')}
+                    onChange={v => liveStyle({ color: v })}
+                    onCommit={v => commitStyle({ color: v })}
+                    onCancel={cancelStyle}
                   />
                   {accent && (
                     <SwatchInput
@@ -796,23 +773,25 @@ function CaptionListPanelBody({
                       showValue={false}
                       title={`Caption ${accent.label.toLowerCase()} color`}
                       ariaLabel={`Caption ${accent.label.toLowerCase()} color`}
-                      value={toHex(captionTrack[accent.field], accent.def)}
-                      onChange={v => liveTrack({ [accent.field]: v })}
-                      onCommit={v => commitTrack({ [accent.field]: v })}
+                      value={toHex(styleValue(accent.field), accent.def)}
+                      onChange={v => liveStyle({ [accent.field]: v })}
+                      onCommit={v => commitStyle({ [accent.field]: v })}
+                      onCancel={cancelStyle}
                     />
                   )}
                 </div>
 
                 {/* ── Text styling ──
-                    Every control here writes a track-level `Captions` field
-                    that all seven JSX caption templates already read as a
-                    prop, so one write reaches the editor preview and the
-                    export together — no separate render-side plumbing. */}
+                    Every control here writes a styling field the JSX caption
+                    templates read, on the track or on the selected captions
+                    (`styleScope`), so one write reaches the editor preview
+                    and the export together — no separate render-side
+                    plumbing. */}
                 <div className="flex flex-col gap-1.5 border-t border-[var(--editor-border)] pt-2">
                   <div className={rowClass}>
                     <span className={rowLabelClass} aria-hidden="true">Font</span>
                     <FontFamilyPicker
-                      value={captionTrack.fontFamily ?? ''}
+                      value={styleValue('fontFamily') ?? ''}
                       onChange={value => {
                         // `fontFamily` and `googleFonts` MUST be written in ONE
                         // patch. A family whose font file is never fetched
@@ -833,7 +812,7 @@ function CaptionListPanelBody({
                         // option's own `value`, so this always finds the option
                         // the operator just clicked.
                         const opt = findFontOption(value)
-                        commitTrack({ fontFamily: value, googleFonts: opt?.spec ? [opt.spec] : [] })
+                        commitStyle({ fontFamily: value, googleFonts: opt?.spec ? [opt.spec] : [] })
                       }}
                       className="flex-1 min-w-0"
                       buttonClassName="flex h-7 w-full items-center gap-1 rounded border border-[var(--editor-border)] bg-[var(--editor-surface)] px-1.5 text-[11px] text-[var(--editor-text)] hover:border-[var(--editor-accent)] focus:outline-none focus:border-[var(--editor-accent)]"
@@ -850,8 +829,8 @@ function CaptionListPanelBody({
                       // project at all. Writing 700 here would flatten every
                       // style onto the same weight and quietly break each
                       // style's look — so turning bold back ON has to DELETE
-                      // the key (via `commitTrackOmitting`), never re-write it.
-                      onClick={() => boldOn ? commitTrack({ fontWeight: 400 }) : commitTrackOmitting('fontWeight')}
+                      // the key (via `turnBoldOn`), never re-write it.
+                      onClick={() => boldOn ? commitStyle({ fontWeight: 400 }) : turnBoldOn()}
                       className={`${chipClass(boldOn)} font-bold shrink-0`}
                     >
                       B
@@ -870,7 +849,7 @@ function CaptionListPanelBody({
                           'none' (written when the operator turns a case back
                           off) is not "absent" and never falls back. */}
                       {CASES.map(({ value, glyph, label }) => {
-                        const effectiveTransform = captionTrack.textTransform ?? CAPTION_STYLE_TEXT_TRANSFORM[captionTrack.style]
+                        const effectiveTransform = styleValue('textTransform') ?? CAPTION_STYLE_TEXT_TRANSFORM[captionTrack.style]
                         const active = effectiveTransform === value
                         return (
                           <button
@@ -882,7 +861,7 @@ function CaptionListPanelBody({
                             // 'none' rather than dropping the key: an absent
                             // field can't overwrite the value already saved on
                             // the project, so "off" has to be said out loud.
-                            onClick={() => commitTrack({ textTransform: active ? 'none' : value })}
+                            onClick={() => commitStyle({ textTransform: active ? 'none' : value })}
                             className={`${chipClass(active)} font-mono`}
                           >
                             {glyph}
@@ -900,14 +879,14 @@ function CaptionListPanelBody({
                     <span className={rowLabelClass} aria-hidden="true">Alignment</span>
                     <div role="group" aria-label="Caption text alignment" className="flex items-center gap-1">
                       {ALIGNMENTS.map(({ value, Icon, label }) => {
-                        const active = captionTrack.textAlign === value
+                        const active = styleValue('textAlign') === value
                         return (
                           <button
                             key={value}
                             type="button"
                             aria-label={label}
                             aria-pressed={active}
-                            onClick={() => commitTrack({ textAlign: value })}
+                            onClick={() => commitStyle({ textAlign: value })}
                             className={`${chipClass(active)} flex items-center justify-center px-1.5`}
                           >
                             <Icon size={11} />
@@ -932,14 +911,14 @@ function CaptionListPanelBody({
                       min={-0.1}
                       max={0.5}
                       step={0.01}
-                      value={parseEmValue(captionTrack.letterSpacing)}
+                      value={parseEmValue(styleValue('letterSpacing'))}
                       placeholder={parseEmValue(CAPTION_STYLE_LETTER_SPACING[captionTrack.style])}
                       // NumberField doesn't clamp a typed value (native
                       // min/max are a spinner hint only) — reuse the same
                       // clamp+round the retired StepperField's `numeric()`
                       // applied, on both the live and the committed write.
-                      onPreview={n => liveTrack({ letterSpacing: `${roundTo(clampToRange(n, -0.1, 0.5), 3)}em` })}
-                      onCommit={n => commitTrack({ letterSpacing: `${roundTo(clampToRange(n, -0.1, 0.5), 3)}em` })}
+                      onPreview={n => liveStyle({ letterSpacing: `${roundTo(clampToRange(n, -0.1, 0.5), 3)}em` })}
+                      onCommit={n => commitStyle({ letterSpacing: `${roundTo(clampToRange(n, -0.1, 0.5), 3)}em` })}
                       onStep={d => {
                         // Nudge off whatever is actually IN FORCE — the
                         // stored value, or (nothing stored) the active
@@ -947,9 +926,9 @@ function CaptionListPanelBody({
                         // never off a bare 0, which would ignore what the
                         // caption is really rendering at right now.
                         const base = Number(
-                          parseEmValue(captionTrack.letterSpacing) || parseEmValue(CAPTION_STYLE_LETTER_SPACING[captionTrack.style]) || 0,
+                          parseEmValue(styleValue('letterSpacing')) || parseEmValue(CAPTION_STYLE_LETTER_SPACING[captionTrack.style]) || 0,
                         )
-                        commitTrack({ letterSpacing: `${stepValue(base, d, { step: 0.01, min: -0.1, max: 0.5 })}em` })
+                        commitStyle({ letterSpacing: `${stepValue(base, d, { step: 0.01, min: -0.1, max: 0.5 })}em` })
                       }}
                     />
                   </div>
@@ -961,15 +940,15 @@ function CaptionListPanelBody({
                       min={0.8}
                       max={2.5}
                       step={0.05}
-                      value={parseUnitlessValue(captionTrack.lineHeight)}
+                      value={parseUnitlessValue(styleValue('lineHeight'))}
                       placeholder={parseUnitlessValue(CAPTION_STYLE_LINE_HEIGHT[captionTrack.style])}
-                      onPreview={n => liveTrack({ lineHeight: roundTo(clampToRange(n, 0.8, 2.5), 2) })}
-                      onCommit={n => commitTrack({ lineHeight: roundTo(clampToRange(n, 0.8, 2.5), 2) })}
+                      onPreview={n => liveStyle({ lineHeight: roundTo(clampToRange(n, 0.8, 2.5), 2) })}
+                      onCommit={n => commitStyle({ lineHeight: roundTo(clampToRange(n, 0.8, 2.5), 2) })}
                       onStep={d => {
                         const base = Number(
-                          parseUnitlessValue(captionTrack.lineHeight) || parseUnitlessValue(CAPTION_STYLE_LINE_HEIGHT[captionTrack.style]) || 0,
+                          parseUnitlessValue(styleValue('lineHeight')) || parseUnitlessValue(CAPTION_STYLE_LINE_HEIGHT[captionTrack.style]) || 0,
                         )
-                        commitTrack({ lineHeight: stepValue(base, d, { step: 0.05, min: 0.8, max: 2.5 }) })
+                        commitStyle({ lineHeight: stepValue(base, d, { step: 0.05, min: 0.8, max: 2.5 }) })
                       }}
                     />
                   </div>

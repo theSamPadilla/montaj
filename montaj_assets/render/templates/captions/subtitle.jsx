@@ -25,7 +25,7 @@ export default function Subtitle({
   const active = activeSegments(segments, t)
   if (!active.length) return null
 
-  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, { frame, fps, color, backgroundColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }))}</>
+  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, segmentTheme(seg, { frame, fps, color, backgroundColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform })))}</>
 }
 
 /**
@@ -102,4 +102,24 @@ function renderSegment(seg, key, { frame, fps, color, backgroundColor, fontSize,
       </div>
     </div>
   )
+}
+
+/**
+ * One segment's theme: a styling field set on the segment wins over the
+ * track's (the props above), which wins over this template's default. Only
+ * fields this template's theme already carries are taken, and a segment with
+ * none of them gets the theme object itself, so a project without per-caption
+ * styling renders exactly as before. Duplicated in all eight templates (they
+ * can import nothing but montaj/render); keep the list identical in each and
+ * in step with the editor's video/captionSegmentStyle.ts.
+ */
+const SEGMENT_STYLE_FIELDS = ['color', 'fontSize', 'fontFamily', 'fontWeight', 'textTransform', 'textAlign', 'letterSpacing', 'lineHeight', 'accentColor', 'highlightColor', 'activeColor', 'backgroundColor']
+function segmentTheme(seg, theme) {
+  let out = theme
+  for (const k of SEGMENT_STYLE_FIELDS) {
+    if (seg[k] == null || !(k in theme)) continue
+    if (out === theme) out = { ...theme }
+    out[k] = seg[k]
+  }
+  return out
 }

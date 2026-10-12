@@ -1781,8 +1781,11 @@ function ReviewSurface<P extends Project>({
   }, [syncProjectRef, commitCaptionProject])
 
   // The segment-wide variant, for "Apply to all": a preview drag (offsetX/
-  // offsetY), a corner resize (scale) or the selected segment's text color
-  // lands on EVERY segment as the same absolute value. `makeCaptionEditAll`
+  // offsetY) or a corner resize (scale) lands on EVERY segment as the same
+  // absolute value. (The Format tab's text color used to come here too; it now
+  // commits through `commitCaptionProject` with the rest of the Format tab, see
+  // captionSegmentStyle.ts. The color handling below stays for any caller
+  // that sends one.) `makeCaptionEditAll`
   // builds the whole change as one project, and it goes through ONE
   // `sync.mutate`, so it is one undo step and one queued save however many
   // captions there are. One callback only, for the reason given above.
@@ -2707,7 +2710,8 @@ function ReviewSurface<P extends Project>({
       onCaptionSegmentChange={handleCaptionSegmentChange}
       applyToAll={captionApplyToAll}
       onApplyToAllChange={setCaptionApplyToAll}
-      onCaptionAllSegmentsChange={handleCaptionAllSegmentsChange}
+      // Every Format-tab control commits through here, landing on the track
+      // or the selected captions per "Apply to all" (captionSegmentStyle.ts).
       onCaptionEdit={commitCaptionProject}
       onProjectChange={handleProjectChange}
       onCaptionSegmentDelete={handleCaptionSegmentDelete}

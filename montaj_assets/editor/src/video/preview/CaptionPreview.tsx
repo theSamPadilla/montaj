@@ -38,6 +38,7 @@ import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
 import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
 import { captionFontsFor } from '../captionStyleDefaults'
+import { captionGoogleFonts } from '../captionSegmentStyle'
 import type { CaptionEditAllPatch, CaptionEditPatch } from '../timeline/makeCaptionEdit'
 import {
   captionDragGeometry,
@@ -247,7 +248,12 @@ export default function CaptionPreview({
   // Depend on the joined list rather than the array: `track` is a fresh object
   // on every project edit, and String() flattens both the typed string[] and the
   // bare string persisted projects occasionally carry (see google-fonts.ts).
-  const fontsToLoad = captionFontsFor(track.style, googleFonts)
+  // A caption with its own font (per-caption styling) brings its own specs;
+  // load the union then, and exactly the track's list otherwise.
+  const fontsToLoad = captionFontsFor(
+    track.style,
+    track.segments.some(s => s.googleFonts !== undefined) ? captionGoogleFonts(track) : googleFonts,
+  )
   useEffect(() => { ensureGoogleFontsLoaded(fontsToLoad) }, [String(fontsToLoad)])
 
   // Live drag preview: overlay the in-flight geometry onto the dragged segment,
