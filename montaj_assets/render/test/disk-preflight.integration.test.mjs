@@ -2,9 +2,8 @@
 //
 // §128: a render that certainly will not fit on disk is refused before it
 // writes anything heavy, with the one line the app's failure card and the AI
-// read: {"error":"insufficient_disk","message":"Not enough free space to
-// export. Free up N.N GB and try again.","needBytes",...,"freeBytes",...,
-// "path",...}. The real render.js, spawned; MONTAJ_TEST_DISK_FREE_BYTES stands
+// read: {"error":"insufficient_disk","message":"Out of disk space. Free up N
+// GB and export again.","needBytes",...,"freeBytes",...,"path",...}. The real render.js, spawned; MONTAJ_TEST_DISK_FREE_BYTES stands
 // in for a nearly full disk.
 //
 // GATING: needs libx264 (MONTAJ_FFMPEG picks the binary). A missing capability
@@ -72,8 +71,10 @@ test('a disk that certainly cannot hold the render refuses it before any work, w
   assert.equal(r.status, 1, r.stderr)
   const line = lastJsonLine(r.stderr)
   assert.equal(line.error, 'insufficient_disk')
-  assert.match(line.message, /^Not enough free space to export\. Free up \d+\.\d GB and try again\.$/)
+  assert.match(line.message, /^Out of disk space\. Free up \d+ GB and export again\.$/)
   assert.ok(line.needBytes > 1000, `needBytes ${line.needBytes}`)
+  // §213: the sentence and needBytes come from the EXPECTED need, never the lower bound.
+  assert.equal(line.needBytes, line.estimate.expected.tmpBytes + line.estimate.expected.projectBytes)
   assert.equal(line.freeBytes, 1000)
   assert.equal(line.path, join(dir, 'render'), 'one disk here: the project is named')
   assert.equal(line.phase, 'preflight')
@@ -121,6 +122,10 @@ test('render.js maps a disk that ran out mid-render to the same line, after remo
   const handler = src.slice(at, src.indexOf('\n  })\n', at))
   assert.match(handler, /cleanupBundle\(dir\)/)
   assert.match(handler, /if \(isDiskFull\(err\)\)/)
+  // §213: the render's own segments go before the free space is measured, so
+  // the sentence asks for what the user really has to free.
+  const scratch = handler.indexOf('diskRun?.scratch')
+  assert.ok(scratch > handler.indexOf('isDiskFull') && scratch < handler.indexOf('checkDiskSpace('), 'scratch removed, then measured')
   assert.match(handler, /phase: 'mid-render'/)
   assert.ok(handler.indexOf('isDiskFull') < handler.indexOf("'render_error'"), 'before the generic failure')
 })

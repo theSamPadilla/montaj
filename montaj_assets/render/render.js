@@ -4,10 +4,20 @@
  *
  * Usage:
  *   node render/render.js <project.json> [--out <path>] [--workers <n>] [--clean]
+ *   node render/render.js <project.json> --estimate [--out <path>] [--workers <n>]
+ *       [--export <mode>] [--resolution <W>x<H>] [--fps <n>]
  *
  * stdout: absolute path to the final MP4 (follows step output convention)
  * stderr: progress lines + JSON error on failure
  * exit 0 on success, exit 1 on failure
+ *
+ * --estimate (§213): plan the render exactly as far as its disk check, print
+ * one JSON line, `{"estimate":{"lower":{"tmpBytes","projectBytes"},"expected":
+ * {...}},"volumes":[{"path","needBytes","freeBytes"}]}` (volumes against the
+ * expected need), and exit 0. It writes nothing, fetches nothing, normalizes
+ * nothing and launches no browser; it only reads the project and probes its
+ * sources. --resolution and --fps stand in for the project's settings, for an
+ * estimate asked before a settings change is saved; they apply to --estimate only.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync, openSync, writeSync, closeSync, renameSync } from 'fs'
 import { resolve, join, dirname, basename, extname } from 'path'
@@ -19,14 +29,14 @@ import { isMain as isMainModule }        from './is-main.js'
 import { renderAllSegments, planChunks, currentRenderPlan, stopSignal }  from './renderer.js'
 import { isChildKilled }              from './child-killed.js'
 import { isThreeFrameBlank }          from './three-frame.js'
-import { estimateRenderDisk, checkDiskSpace, diskFailure, isDiskFull } from './disk-space.js'
+import { estimateRenderDisk, checkDiskSpace, diskFailure, isDiskFull, dirBytes } from './disk-space.js'
 import { tmpdir }                         from 'os'
 import { prefetchPropsUrls }              from './page-guard.js'
 import { namedPropsUrls }                 from './overlay-build.js'
 import { compose, embedThumbnail }        from './compose.js'
 import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
-import { requireValidKey, detectFromTransfer, smartDetect, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
+import { requireValidKey, detectFromTransfer, smartDetect, isHdr, specFor, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { pMap }                           from './p-map.js'
 import { fileHasAudio, probeVideoGeometry } from './encode-segment.js'
 import { probeColorTransfer }             from './derive-sdr.js'
@@ -107,6 +117,13 @@ const DROPPED_PREVIEW_FIELDS = ['proxySrc', 'nobg_preview_src']
 const UNTAGGED_MASTER_MARKER = 'montaj: untagged source read as BT.709'
 const SDR_MASTER_SUFFIX = '_normalized_sdr_bt709.mp4'
 const VIDEO_EXT = /^\.(mp4|mov|m4v|mkv|webm|avi|mts|m2ts|ts|3gp|mxf|mpg|mpeg|wmv|flv)$/i
+
+// Twins of lib/normalize.py's MAX_KEYFRAME_INTERVAL_S and KEYFRAME_PROBE_WINDOW_S:
+// the disk estimate (planVideoItemWrites) asks whether normalize would re-encode
+// a source with the same test is_normalized() applies. Up here for the same
+// temporal-dead-zone reason: render.js --estimate runs to its end with no await.
+const MAX_KEYFRAME_INTERVAL_S = 10
+const KEYFRAME_PROBE_WINDOW_S = 10
 
 // The SDR pass's layer (sdr-layer.js's sdrLayerFor) for one video item, carried
 // on the item under a symbol. collectAllItems copies an item with object spread,
@@ -208,7 +225,7 @@ if (isMain) {
 
   if (!argv.length || argv[0] === '--help') {
     process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean] '
-      + '[--export <auto|sdr|both>] [--sdr-curve <id>]\n')
+      + '[--export <auto|sdr|both>] [--sdr-curve <id>] [--estimate [--resolution <W>x<H>] [--fps <n>]]\n')
     process.exit(1)
   }
 
@@ -218,6 +235,9 @@ if (isMain) {
   let cleanArg     = false
   let exportArg    = null
   let sdrCurveArg  = null
+  let estimateArg  = false
+  let resolutionArg = null
+  let fpsArg       = null
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out')        { outArg       = argv[++i]; continue }
@@ -225,6 +245,9 @@ if (isMain) {
     if (argv[i] === '--clean')      { cleanArg     = true; continue }
     if (argv[i] === '--export')     { exportArg    = argv[++i]; continue }
     if (argv[i] === '--sdr-curve')  { sdrCurveArg  = argv[++i]; continue }
+    if (argv[i] === '--estimate')   { estimateArg  = true; continue }
+    if (argv[i] === '--resolution') { resolutionArg = argv[++i]; continue }
+    if (argv[i] === '--fps')        { fpsArg       = argv[++i]; continue }
     if (!projectArg) projectArg = argv[i]
   }
 
@@ -236,14 +259,24 @@ if (isMain) {
   // nothing instead of surfacing after a 10-minute render.
   let exportMode = 'auto'
   let sdrCurve   = null
+  let overrides  = null
   try {
     exportMode = resolveExportMode(exportArg)
     sdrCurve   = resolveSdrCurve(sdrCurveArg)
+    overrides  = resolveEstimateOverrides({ resolution: resolutionArg, fps: fpsArg })
   } catch (err) {
     fail('invalid_argument', err.message)
   }
+  if (overrides && !estimateArg) fail('invalid_argument', '--resolution and --fps apply to --estimate only')
 
-  main(projectArg, {
+  if (estimateArg) {
+    // §213: one JSON line on stdout, exit 0. A project the estimate cannot plan
+    // fails like a render would (JSON on stderr, exit 1); serve reads that as
+    // "no estimate".
+    estimateMain(projectArg, { out: outArg, workers: workersArg, exportMode, overrides })
+      .then((result) => { process.stdout.write(JSON.stringify(result) + '\n') })
+      .catch((err) => fail(err.code === 'missing_files' ? 'missing_files' : 'estimate_error', err.message))
+  } else main(projectArg, {
     out: outArg, workers: workersArg, clean: cleanArg,
     exportMode, sdrCurve,
   }).catch(err => {
@@ -252,7 +285,14 @@ if (isMain) {
     // A failed render leaves no bundle behind (§128): a retry finds the same room.
     for (const dir of diskRun?.workDirs ?? []) { try { cleanupBundle(dir) } catch {} }
     if (isDiskFull(err)) {
-      const check = diskRun ? checkDiskSpace({ ...diskRun, estimate: diskRun.estimate.expected }) : null
+      // §213: its overlay chunks and video segments are useless now (the next
+      // render deletes them before writing its own), and they are what filled
+      // the disk. Removed first, so the free space measured, and the space the
+      // sentence asks for, is what the user really has.
+      for (const dir of diskRun?.scratch ?? []) { try { rmSync(dir, { recursive: true, force: true }) } catch {} }
+      const check = diskRun
+        ? checkDiskSpace({ tmpDir: diskRun.tmpDir, projectDir: diskRun.projectDir, estimate: diskRun.estimate.expected })
+        : null
       const f = diskFailure({ phase: 'mid-render', estimate: diskRun?.estimate ?? null, check })
       fail(f.code, f.message, f.extra)
     }
@@ -297,6 +337,28 @@ function resolveSdrCurve(value) {
       + `Check montaj_assets/luts/looks.json.`)
   }
   return value
+}
+
+/**
+ * Validate --estimate's `--resolution <W>x<H>` and `--fps <n>` (§213). Returns
+ * null when neither is given, else `{ resolution?: [w, h], fps?: n }`; throws
+ * on a malformed value. serve passes them only when well formed.
+ */
+function resolveEstimateOverrides({ resolution = null, fps = null } = {}) {
+  if (resolution == null && fps == null) return null
+  const overrides = {}
+  if (resolution != null) {
+    const m = /^(\d+)x(\d+)$/.exec(String(resolution))
+    const [w, h] = m ? [Number(m[1]), Number(m[2])] : [0, 0]
+    if (!(w > 0 && h > 0)) throw new Error(`--resolution must be <width>x<height> in pixels, got ${JSON.stringify(resolution)}`)
+    overrides.resolution = [w, h]
+  }
+  if (fps != null) {
+    const n = Number(fps)
+    if (!(Number.isFinite(n) && n > 0)) throw new Error(`--fps must be a positive number, got ${JSON.stringify(fps)}`)
+    overrides.fps = n
+  }
+  return overrides
 }
 
 /**
@@ -371,15 +433,30 @@ function planExport({ exportMode, projectColorSpace, outputPath }) {
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdrCurve = null }) {
+/**
+ * Step 1 of a render, shared with --estimate (§213): read and validate the
+ * project, resolve its paths and settings, and name where the render writes.
+ * Reads only: no file is written or created. `requireFinal` is the render's
+ * status check (an estimate is asked before the project is final);
+ * `overrides` (--estimate's `{ resolution, fps }`) stand in for the project's
+ * settings, in memory only.
+ */
+function loadRenderProject(projectPath, { out = null, requireFinal = true, overrides = null } = {}) {
   // 1. Validate + resolve paths
   const absProjectPath = resolve(projectPath)
   if (!existsSync(absProjectPath)) fail('file_not_found', `project.json not found: ${absProjectPath}`)
 
   const projectJson = JSON.parse(readFileSync(absProjectPath, 'utf8'))
 
-  if (projectJson.status !== 'final') {
+  if (requireFinal && projectJson.status !== 'final') {
     fail('invalid_status', `Project status must be 'final', got '${projectJson.status ?? 'undefined'}'`)
+  }
+  if (overrides) {
+    projectJson.settings = {
+      ...(projectJson.settings ?? {}),
+      ...(overrides.resolution ? { resolution: overrides.resolution } : {}),
+      ...(overrides.fps ? { fps: overrides.fps } : {}),
+    }
   }
 
   const projectDir = dirname(absProjectPath)
@@ -419,6 +496,19 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   const workspaceDir = projectDir
   const renderDir    = join(workspaceDir, 'render')
   const segDir       = join(renderDir, 'segments')
+  const outputPath   = out ? resolve(out) : join(renderDir, `${safeFilename(projectJson.name)}.mp4`)
+
+  return {
+    absProjectPath, projectJson, pristineProject, settings, fps, motionBlur,
+    renderWidth, renderHeight, projectDir, workspaceDir, renderDir, segDir, outputPath,
+  }
+}
+
+async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdrCurve = null }) {
+  const {
+    absProjectPath, projectJson, pristineProject, settings, fps, motionBlur,
+    renderWidth, renderHeight, projectDir, workspaceDir, renderDir, segDir, outputPath,
+  } = loadRenderProject(projectPath, { out })
 
   // Concurrent-render guard. The segment wipe below is destructive — if a second
   // render starts while the first is still encoding, the wipe deletes the first
@@ -467,8 +557,6 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   // Always wipe segments from previous runs — stale files cause FFV1 decode errors in compose.
   rmSync(segDir, { recursive: true, force: true })
   mkdirSync(segDir, { recursive: true })
-
-  const outputPath = out ? resolve(out) : join(renderDir, `${safeFilename(projectJson.name)}.mp4`)
 
   // Early exit: ffmpeg drawtext path — bypass Puppeteer, delegate to lyrics_render.py
   if (projectJson.renderMode === 'ffmpeg-drawtext') {
@@ -571,63 +659,23 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   const captureScale = captureScaleFor(settings.resolution)
   for (const spec of segmentSpecs) spec.captureScale = captureScale
 
-  // 2a. Disk (§128). Before anything heavy is written: each worker's
-  //     Chrome profile and each segment's bundle go to TMPDIR (frames stream
-  //     into ffmpeg and are never written) and the segments and export to the project's disk
-  //     (disk-space.js). Refused only when the render certainly will not fit
-  //     (the lower bound); a render that runs out later fails the same way.
-  {
-    const plan = planChunks(segmentSpecs, { workers, motionBlur })
-    diskRun = {
-      tmpDir: tmpdir(),
-      projectDir: renderDir,
-      estimate: estimateRenderDisk({
-        segments: segmentSpecs.map(spec => ({ frames: spec.frameCount, sparse: spec.id === 'captions' })),
-        width: renderWidth, height: renderHeight, captureScale,
-        workerCount: plan.workerCount,
-        durationSeconds: getTotalDurationSeconds(projectJson),
-      }),
-    }
-    const check = checkDiskSpace({ ...diskRun, estimate: diskRun.estimate.lower })
-    if (check?.short) {
-      const f = diskFailure({ phase: 'preflight', estimate: diskRun.estimate, check })
-      fail(f.code, f.message, f.extra)
-    }
-  }
-
   // colorTransfer and hasAudio, once per unique source (see stampSourceProbes).
   const transferCache = new Map()
   stampSourceProbes(videoItems, transferCache)
 
   // Project working color space — drives normalize CLI flag, segment encoder
-  // codec/pix_fmt, and per-item conversion filter.
-  //
-  // Resolution order:
-  //   1. settings.colorSpace present → validate strictly (hand-edited bad
-  //      values fail loudly rather than silently coercing).
-  //   2. Missing → smart-detect from probed transfers (modal-wins, mirrors
-  //      init.py). This handles legacy projects predating the colorSpace
-  //      field: without backfill they'd default to SDR and trigger normalize
-  //      on every iPhone-HLG clip. Persist the resolved key back to project.json
-  //      so subsequent renders skip the detection step.
-  //   3. No video items at all (canvas project) → default SDR.
-  let projectColorSpace
-  if (settings.colorSpace != null) {
-    projectColorSpace = requireValidKey(settings.colorSpace)
-  } else if (videoItems.length > 0) {
-    const detectedKeys = videoItems
-      .filter(it => !(it.remove_bg && it.nobg_src && it.src === it.nobg_src))
-      .map(it => detectFromTransfer(it.colorTransfer))
-    projectColorSpace = smartDetect(detectedKeys)
-    log(`colorSpace not set — smart-detected ${projectColorSpace} from ${detectedKeys.length} clip(s); writing back to project.json`)
+  // codec/pix_fmt, and per-item conversion filter. See resolveProjectColorSpace.
+  // A smart-detected key is persisted back to project.json so subsequent
+  // renders skip the detection step.
+  const { colorSpace: projectColorSpace, detectedFrom } = resolveProjectColorSpace(settings, videoItems)
+  if (detectedFrom != null) {
+    log(`colorSpace not set — smart-detected ${projectColorSpace} from ${detectedFrom} clip(s); writing back to project.json`)
     // Re-read the raw JSON to patch settings.colorSpace — projectJson in memory
     // has been mutated by resolveProjectPaths (relative srcs → absolute), and
     // serialising that would corrupt the on-disk project.json.
     const rawProject = JSON.parse(readFileSync(absProjectPath, 'utf8'))
     rawProject.settings = { ...(rawProject.settings ?? {}), colorSpace: projectColorSpace }
     writeFileSync(absProjectPath, JSON.stringify(rawProject, null, 2))
-  } else {
-    projectColorSpace = DEFAULT_COLOR_SPACE
   }
 
   // 2b. Export plan — what this render emits, and where compose writes. Resolved
@@ -636,6 +684,28 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   //     expensive work rather than after it.
   const exportPlan = planExport({ exportMode, projectColorSpace, outputPath })
   if (exportPlan.notice) log(exportPlan.notice)
+
+  // 2c. Disk (§128, §213). Before anything heavy is written: each worker's
+  //     Chrome profile and each segment's bundle go to TMPDIR (frames stream
+  //     into ffmpeg and are never written); the overlay chunks, the masters
+  //     normalize will build, the video segments and the export go to the
+  //     project's disk (planDisk, disk-space.js). Refused only when the render
+  //     certainly will not fit (the lower bound); a render that runs out later
+  //     fails the same way. The same plan --estimate prints.
+  {
+    const disk = planDisk({
+      projectJson, pristineProject, settings, workers, motionBlur, segmentSpecs, videoItems, captureScale,
+      renderWidth, renderHeight, projectColorSpace, exportPlan, workspaceDir, segDir,
+    })
+    diskRun = { tmpDir: tmpdir(), projectDir: renderDir, estimate: disk.estimate, scratch: disk.scratch }
+    const at = { tmpDir: diskRun.tmpDir, projectDir: diskRun.projectDir, reclaimBytes: disk.reclaimBytes }
+    const check = checkDiskSpace({ ...at, estimate: disk.estimate.lower })
+    if (check?.short) {
+      // Refused on the lower bound; the sentence asks for the expected need.
+      const f = diskFailure({ phase: 'preflight', estimate: disk.estimate, check: checkDiskSpace({ ...at, estimate: disk.estimate.expected }) })
+      fail(f.code, f.message, f.extra)
+    }
+  }
 
   // 3 to 4b. Conform every video item to the project's own colour space: the
   //     HDR pass, exactly what it always was. Skipped under --export sdr on
@@ -816,6 +886,275 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   // serve's job.result) still sees the same thing it always has, and the SDR
   // sibling follows on line 2.
   process.stdout.write(exportPlan.outputs.join('\n') + '\n')
+}
+
+/**
+ * The project's working colour space:
+ *   1. settings.colorSpace present → validated strictly (a hand-edited bad
+ *      value fails loudly rather than silently coercing).
+ *   2. Missing → smart-detected from the probed transfers (modal-wins, mirrors
+ *      init.py). This handles legacy projects predating the colorSpace field:
+ *      without it they'd default to SDR and trigger normalize on every
+ *      iPhone-HLG clip. `detectedFrom` is then the number of clips read, and
+ *      main() persists the key; --estimate does not.
+ *   3. No video items at all (canvas project) → default SDR.
+ */
+function resolveProjectColorSpace(settings, videoItems) {
+  if (settings.colorSpace != null) return { colorSpace: requireValidKey(settings.colorSpace), detectedFrom: null }
+  if (videoItems.length > 0) {
+    const detectedKeys = videoItems
+      .filter(it => !(it.remove_bg && it.nobg_src && it.src === it.nobg_src))
+      .map(it => detectFromTransfer(it.colorTransfer))
+    return { colorSpace: smartDetect(detectedKeys), detectedFrom: detectedKeys.length }
+  }
+  return { colorSpace: DEFAULT_COLOR_SPACE, detectedFrom: null }
+}
+
+/**
+ * render.js --estimate (§213): main() as far as its disk check (2c), writing
+ * nothing. No lock, no wipe of render/segments, no URL prefetch, no
+ * project.json write-back, no normalize, bundle, browser or compose: the
+ * project is read and its sources probed. Returns `{ estimate, volumes }`,
+ * volumes being checkDiskSpace against the EXPECTED need (one entry when TMPDIR
+ * and the project share a disk), or [] when a disk cannot be read. Paths are
+ * absolute, as in the insufficient_disk line.
+ *
+ * Mirrors main() step for step; a change to what main() writes before or at
+ * its peak belongs in planDisk, which both run.
+ */
+async function estimateMain(projectPath, { out = null, workers = null, exportMode = 'auto', overrides = null } = {}) {
+  const {
+    projectJson, pristineProject, settings, fps, motionBlur,
+    renderWidth, renderHeight, workspaceDir, renderDir, segDir, outputPath,
+  } = loadRenderProject(projectPath, { out, requireFinal: false, overrides })
+
+  let estimate, reclaimBytes
+  if (projectJson.renderMode === 'ffmpeg-drawtext') {
+    // lyrics_render.py writes the export and its poster copy, nothing else: no
+    // overlay capture, no masters. Counted as one SDR compose at the design
+    // canvas, which errs high by the segments it does not write.
+    estimate = estimateRenderDisk({
+      segments: [], width: renderWidth, height: renderHeight, workerCount: 0,
+      durationSeconds: getTotalDurationSeconds(projectJson),
+      output: { width: renderWidth, height: renderHeight, fps }, passes: ['sdr_bt709'],
+    })
+    reclaimBytes = 0
+  } else {
+    const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
+    const { videoItems } = collectAllItems(projectJson)
+    const captureScale = captureScaleFor(settings.resolution)
+    stampSourceProbes(videoItems, new Map())
+    const { colorSpace: projectColorSpace } = resolveProjectColorSpace(settings, videoItems)
+    const exportPlan = planExport({ exportMode, projectColorSpace, outputPath })
+    const disk = planDisk({
+      projectJson, pristineProject, settings, workers, motionBlur, segmentSpecs, videoItems, captureScale,
+      renderWidth, renderHeight, projectColorSpace, exportPlan, workspaceDir, segDir,
+    })
+    estimate = disk.estimate
+    reclaimBytes = disk.reclaimBytes
+  }
+  const check = checkDiskSpace({ tmpDir: tmpdir(), projectDir: renderDir, estimate: estimate.expected, reclaimBytes })
+  return { estimate, volumes: check?.volumes ?? [] }
+}
+
+/**
+ * The disk plan main()'s check (2c) and --estimate share (§213): what this
+ * render will write, sized by estimateRenderDisk, and the scratch it deletes.
+ *
+ * Counted: the overlay chunks (planChunks' workers and chunk size), every
+ * compose the export plan runs (its colour space, at the export's size and
+ * frame rate), and, per pass, the masters, audio-strip copies and cutouts that
+ * pass's preparation will write (planVideoItemWrites; for the SDR pass, on the
+ * items planSdrPass gives it). A master both passes need is counted once.
+ *
+ * `scratch` is what the render deletes before writing its own: render/segments
+ * (main() wipes it at the start) and each compose's `<export>.segments`
+ * (compose.js wipes it before encoding). Its size, `reclaimBytes`, counts as
+ * free space.
+ *
+ * Masters are assumed to be on the project's disk (serve imports sources into
+ * the project); a source elsewhere is counted there anyway, which errs high.
+ * A plan that cannot be made (a probe that fails hard) counts no source files
+ * and says so: the estimate never fails a render on its own.
+ */
+function planDisk({
+  projectJson, pristineProject, settings, workers, motionBlur, segmentSpecs, videoItems, captureScale,
+  renderWidth, renderHeight, projectColorSpace, exportPlan, workspaceDir, segDir,
+}) {
+  const plan = planChunks(segmentSpecs, { workers, motionBlur })
+  const writes = { masters: new Map(), copies: new Map(), cutouts: new Map() }
+  const add = (planned) => {
+    for (const kind of Object.keys(writes)) for (const w of planned[kind]) writes[kind].set(w.path, w)
+  }
+  try {
+    if (exportPlan.composePath) {
+      add(planVideoItemWrites(videoItems, () => projectColorSpace, { settings, workspaceDir }))
+    }
+    if (exportPlan.derivePath) {
+      const sdr = planSdrPass(pristineProject, { projectColorSpace })
+      add(planVideoItemWrites(sdr.toPrepare, sdr.targetFor, { settings: sdr.project.settings, workspaceDir }))
+    }
+  } catch (err) {
+    log(`disk estimate: could not plan the source files this render writes (${err.message}); counting none`)
+  }
+  const [outWidth, outHeight] = outputSize(settings, videoItems, renderWidth, renderHeight)
+  const estimate = estimateRenderDisk({
+    segments: segmentSpecs.map(spec => ({ frames: spec.frameCount, sparse: spec.id === 'captions' })),
+    width: renderWidth, height: renderHeight, captureScale,
+    workerCount: plan.workerCount, chunkFrames: plan.chunkSize,
+    durationSeconds: getTotalDurationSeconds(projectJson),
+    output: { width: outWidth, height: outHeight, fps: settings.fps || 30 },
+    passes: [
+      ...(exportPlan.composePath ? [projectColorSpace] : []),
+      ...(exportPlan.derivePath ? ['sdr_bt709'] : []),
+    ],
+    masters: [...writes.masters.values()],
+    copies: [...writes.copies.values()],
+    cutouts: [...writes.cutouts.values()],
+  })
+  const scratch = [segDir, ...exportPlan.outputs.map(p => `${p}.segments`)]
+  return { plan, estimate, scratch, reclaimBytes: scratch.reduce((n, dir) => n + dirBytes(dir), 0) }
+}
+
+/**
+ * What prepareVideoItems (steps 3 to 4) would WRITE for these items, deciding
+ * exactly as it does and writing nothing (§213):
+ *   - 3, normalize: an item normalize skips (a cutout, a lazy cache) writes
+ *     nothing; nor does one whose master is already built and fresh
+ *     (normalizedMasterCache, the render's own test), or whose source already
+ *     conforms (isConformant, a twin of lib/normalize.py's is_normalized).
+ *     Anything else is a master of the WHOLE source, at the target space.
+ *   - 3b, audio strip: a source left as is with more than one audio stream
+ *     and no fresh `_audioclean.mp4` is copied (a stream copy: its size).
+ *   - 4, remove_bg: an item with no cached cutout gets one of the file it
+ *     decodes, in render/.
+ * Returns `{ masters, copies, cutouts }`, each keyed by `path`, sized for
+ * estimateRenderDisk. Reads files and probes sources only.
+ */
+function planVideoItemWrites(videoItems, targetFor, { settings, workspaceDir }) {
+  const masters = [], copies = [], cutouts = []
+  const planned = new Set()
+  const probes = new Map()
+  const probe = (path) => {
+    if (!probes.has(path)) probes.set(path, probeSourceForNormalize(path))
+    return probes.get(path)
+  }
+  for (const item of videoItems) {
+    if (item.remove_bg && item.nobg_src && item.src === item.nobg_src) continue
+    let src = item.src
+    let isNewMaster = false
+    if (!shouldSkipNormalize(settings, item)) {
+      const target = targetFor(item)
+      const tonemapped = isHdr(detectFromTransfer(item.colorTransfer)) && target === 'sdr_bt709'
+      const sdrStretch = !isHdr(detectFromTransfer(item.colorTransfer)) && isHdr(target)
+      const out = buildNormalizedOutputPath(src, target, tonemapped, sdrStretch)
+      if (planned.has(out) || normalizedMasterCache(out, src, target, tonemapped,
+        { untaggedSource: item.colorTransfer === 'unknown' }) === 'fresh') {
+        src = out
+      } else {
+        const info = probe(src)
+        // A probe that fails here fails normalize too, which falls back to the source.
+        if (info && !isConformant(info, target)) {
+          masters.push({ path: out, durationSeconds: info.durationSeconds, width: info.width, height: info.height, fps: info.fps, colorSpace: target })
+          planned.add(out)
+          src = out
+          isNewMaster = true
+        }
+      }
+    }
+    // The file on disk now that holds what `src` will hold (a planned file
+    // does not exist yet), for the cutout's size below.
+    const readable = planned.has(src) ? item.src : src
+    // A master normalize builds has one audio stream: nothing to strip.
+    if (!isNewMaster && !planned.has(src) && audioStreamCount(src) > 1) {
+      const copy = audioCleanPath(src)
+      if (!planned.has(copy) && !isFreshCopy(copy, src)) {
+        let bytes = 0
+        try { bytes = statSync(src).size } catch {}
+        copies.push({ path: copy, bytes })
+        planned.add(copy)
+      }
+      src = copy
+    }
+    if (item.remove_bg && !(item.nobg_src && existsSync(item.nobg_src))) {
+      const cutout = `${join(workspaceDir, 'render', basename(src, extname(src)))}_nobg.mov`
+      const info = probe(readable)
+      if (info && !planned.has(cutout)) {
+        cutouts.push({ path: cutout, durationSeconds: info.durationSeconds, width: info.width, height: info.height, fps: info.fps })
+        planned.add(cutout)
+      }
+    }
+  }
+  return { masters, copies, cutouts }
+}
+
+/**
+ * The source facts normalize's conformance test and the disk estimate need:
+ * `{ width, height, fps, durationSeconds, pixFmt, transfer, maxKeyframeInterval }`,
+ * or null when ffprobe cannot read the file. Two ffprobe calls, the second
+ * reading only the first KEYFRAME_PROBE_WINDOW_S of packets (as
+ * lib/normalize.py's _probe_max_keyframe_interval does).
+ */
+function probeSourceForNormalize(path) {
+  const r = spawnSync(FFPROBE, [
+    '-v', 'quiet', '-select_streams', 'v:0',
+    '-show_entries', 'stream=width,height,pix_fmt,color_transfer,r_frame_rate:format=duration',
+    '-of', 'json', path,
+  ], { encoding: 'utf8', timeout: 30_000 })
+  if (r.status !== 0) return null
+  let video, format
+  try {
+    const parsed = JSON.parse(r.stdout)
+    video = parsed.streams?.[0]
+    format = parsed.format ?? {}
+  } catch {
+    return null
+  }
+  if (!video?.width || !video?.height) return null
+  const [num, den] = String(video.r_frame_rate ?? '30/1').split('/').map(Number)
+  const fps = num > 0 && den > 0 ? Math.round(num / den) : 30
+  return {
+    width: video.width,
+    height: video.height,
+    fps: fps || 30,
+    durationSeconds: Math.max(0, Number(format.duration) || 0),
+    pixFmt: video.pix_fmt ?? null,
+    transfer: video.color_transfer || 'unknown',
+    maxKeyframeInterval: probeMaxKeyframeInterval(path),
+  }
+}
+
+/** Twin of lib/normalize.py _probe_max_keyframe_interval: 999 when unreadable or under two keyframes. */
+function probeMaxKeyframeInterval(path) {
+  const r = spawnSync(FFPROBE, [
+    '-v', 'quiet', '-select_streams', 'v:0',
+    '-show_entries', 'packet=pts_time,flags',
+    '-read_intervals', `%+${KEYFRAME_PROBE_WINDOW_S}`,
+    '-of', 'csv=p=0', path,
+  ], { encoding: 'utf8', timeout: 30_000 })
+  if (r.status !== 0) return 999
+  const times = []
+  for (const line of (r.stdout || '').trim().split('\n')) {
+    const [pts, flags] = line.split(',')
+    if (flags?.includes('K') && Number.isFinite(Number(pts)) && pts !== '') times.push(Number(pts))
+  }
+  if (times.length < 2) return 999
+  let gap = 0
+  for (let i = 1; i < times.length; i++) gap = Math.max(gap, times[i] - times[i - 1])
+  return gap
+}
+
+/**
+ * Twin of lib/normalize.py is_normalized(): the source already matches
+ * `target` (a transfer and pixel format color_space.json lists for it, and a
+ * keyframe interval within MAX_KEYFRAME_INTERVAL_S), so normalize returns it
+ * unchanged and writes nothing.
+ */
+function isConformant(info, target) {
+  const spec = specFor(target)
+  return spec.transferValues.includes(info.transfer ?? 'unknown')
+    && spec.pixFmts.includes(info.pixFmt)
+    && info.maxKeyframeInterval <= MAX_KEYFRAME_INTERVAL_S
 }
 
 /**
@@ -1037,12 +1376,8 @@ async function prepareVideoItems(videoItems, targetFor,
  * glass-plate.js passes it to prepare only the clips under one item's range.
  */
 async function prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir, prepare = null }) {
-  const project = structuredClone(pristineProject)
-  project.settings = { ...(project.settings ?? {}), colorSpace: 'sdr_bt709' }
-  applySdrLayers(project)
-  repointStaleUntaggedMasters(project)
-  const { imageItems, videoItems } = collectAllItems(project)
-  const toPrepare = prepare ? videoItems.filter(prepare) : videoItems
+  const { project, imageItems, videoItems, toPrepare, targetFor, transferCache } =
+    planSdrPass(pristineProject, { projectColorSpace, prepare })
 
   // A remove_bg item with no cached cutout has nothing to grade as a cutout, so
   // the SDR export shows it as its plain source: say so rather than diverge quietly.
@@ -1052,14 +1387,6 @@ async function prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir
     }
   }
 
-  const transferCache = new Map()
-  stampSourceProbes(toPrepare, transferCache)
-
-  const targetFor = (item) => {
-    const layer = item[SDR_LAYER]
-    const hdrOrigin = layer.grade && layer.cutoutKey === null
-    return hdrOrigin && isHdr(detectFromTransfer(item.colorTransfer)) ? projectColorSpace : 'sdr_bt709'
-  }
   await prepareVideoItems(toPrepare, targetFor,
     { settings: project.settings, workspaceDir, transferCache, timingLabel: 'SDR pass' })
 
@@ -1069,6 +1396,31 @@ async function prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir
     item.alphaGrade = layer.cutoutKey !== null
   }
   return { project, imageItems, videoItems }
+}
+
+/**
+ * The SDR pass's project, items and per-item target, before anything is
+ * prepared: prepareSdrPass's first half, shared with the disk estimate
+ * (planDisk). Reads only (probes). See prepareSdrPass for what each layer is
+ * prepared into.
+ */
+function planSdrPass(pristineProject, { projectColorSpace, prepare = null }) {
+  const project = structuredClone(pristineProject)
+  project.settings = { ...(project.settings ?? {}), colorSpace: 'sdr_bt709' }
+  applySdrLayers(project)
+  repointStaleUntaggedMasters(project)
+  const { imageItems, videoItems } = collectAllItems(project)
+  const toPrepare = prepare ? videoItems.filter(prepare) : videoItems
+
+  const transferCache = new Map()
+  stampSourceProbes(toPrepare, transferCache)
+
+  const targetFor = (item) => {
+    const layer = item[SDR_LAYER]
+    const hdrOrigin = layer.grade && layer.cutoutKey === null
+    return hdrOrigin && isHdr(detectFromTransfer(item.colorTransfer)) ? projectColorSpace : 'sdr_bt709'
+  }
+  return { project, imageItems, videoItems, toPrepare, targetFor, transferCache }
 }
 
 /**
@@ -1737,35 +2089,48 @@ function repointStaleUntaggedMasters(projectJson) {
   }
 }
 
+/**
+ * Whether the master `out` of `src` can be reused: 'fresh' (reuse it), 'stale'
+ * (an untagged source's SDR master built before the marker: rebuild it) or
+ * 'missing' (absent, older than its source, or unreadable). normalizeIfNeeded's
+ * idempotency cache, shared with the disk estimate (planVideoItemWrites).
+ *
+ * Idempotency cache: if the deterministic output already exists and is
+ * fresher than the source, the previous render already paid the cost — skip
+ * the python spawn entirely. Critical for legacy projects whose tracks[0]
+ * srcs point at never-normalized originals: without this, every render
+ * re-encodes every clip from scratch (minutes per clip on a 4K HEVC source).
+ * mtime check (not just existsSync) means re-recording or replacing a source
+ * file correctly invalidates the cached output.
+ *
+ * One more condition, for an UNTAGGED source's SDR master only: it must carry
+ * UNTAGGED_MASTER_MARKER. Without it the master was built reading the source
+ * as BT.601 and has that conversion baked in, so it is rebuilt, in place.
+ * Every other master (tagged or HDR sources, the iPhone `_<look>` ones) is
+ * reused on mtime alone and costs no probe.
+ */
+function normalizedMasterCache(out, src, projectColorSpace, tonemapped, { untaggedSource = false } = {}) {
+  if (!existsSync(out)) return 'missing'
+  try {
+    const srcStat = statSync(src)
+    const outStat = statSync(out)
+    if (outStat.mtimeMs < srcStat.mtimeMs) return 'missing'
+    if (!(untaggedSource && projectColorSpace === 'sdr_bt709' && !tonemapped)
+        || hasUntaggedMasterMarker(out)) {
+      return 'fresh'
+    }
+    return 'stale'
+  } catch {
+    return 'missing'
+  }
+}
+
 async function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedSource = false, sdrStretch = false } = {}) {
   const out = buildNormalizedOutputPath(src, projectColorSpace, tonemapped, sdrStretch)
 
-  // Idempotency cache: if the deterministic output already exists and is
-  // fresher than the source, the previous render already paid the cost — skip
-  // the python spawn entirely. Critical for legacy projects whose tracks[0]
-  // srcs point at never-normalized originals: without this, every render
-  // re-encodes every clip from scratch (minutes per clip on a 4K HEVC source).
-  // mtime check (not just existsSync) means re-recording or replacing a source
-  // file correctly invalidates the cached output.
-  //
-  // One more condition, for an UNTAGGED source's SDR master only: it must carry
-  // UNTAGGED_MASTER_MARKER. Without it the master was built reading the source
-  // as BT.601 and has that conversion baked in, so it is rebuilt here, in
-  // place. Every other master (tagged or HDR sources, the iPhone `_<look>`
-  // ones) is reused on mtime alone and costs no probe.
-  if (existsSync(out)) {
-    try {
-      const srcStat = statSync(src)
-      const outStat = statSync(out)
-      if (outStat.mtimeMs >= srcStat.mtimeMs) {
-        if (!(untaggedSource && projectColorSpace === 'sdr_bt709' && !tonemapped)
-            || hasUntaggedMasterMarker(out)) {
-          return out
-        }
-        log(`rebuilding ${basename(out)}: it was built before untagged sources were read as BT.709`)
-      }
-    } catch { /* fall through to re-encode */ }
-  }
+  const cache = normalizedMasterCache(out, src, projectColorSpace, tonemapped, { untaggedSource })
+  if (cache === 'fresh') return out
+  if (cache === 'stale') log(`rebuilding ${basename(out)}: it was built before untagged sources were read as BT.709`)
 
   return new Promise((resolve) => {
     const proc = spawn(PYTHON, [
@@ -1820,32 +2185,47 @@ async function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedS
 // same file can run at once in this one process.
 let audioStripSeq = 0
 
-async function stripExtraAudioStreams(src) {
-  // Probe: how many audio streams does this file have?
+/** How many audio streams `src` has; null when ffprobe cannot read it. */
+function audioStreamCount(src) {
   const probe = spawnSync(FFPROBE, [
     '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index',
     '-of', 'csv=p=0', src,
   ], { encoding: 'utf8', timeout: 30_000 })
+  if (probe.status !== 0) return null
+  return probe.stdout.trim().split('\n').filter(Boolean).length
+}
 
-  if (probe.status !== 0) {
+/** The audio-strip copy's deterministic path. */
+function audioCleanPath(src) {
+  return src.replace(/(\.\w+)$/, '_audioclean.mp4')
+}
+
+/** `out` exists and is at least as new as `src` (unreadable: false, so it is made again). */
+function isFreshCopy(out, src) {
+  if (!existsSync(out)) return false
+  try {
+    return statSync(out).mtimeMs >= statSync(src).mtimeMs
+  } catch {
+    return false
+  }
+}
+
+async function stripExtraAudioStreams(src) {
+  // Probe: how many audio streams does this file have?
+  const streams = audioStreamCount(src)
+
+  if (streams === null) {
     // Probe failure — leave the file alone; encode-segment will surface any real issue.
     return src
   }
-  const audioStreamCount = probe.stdout.trim().split('\n').filter(Boolean).length
-  if (audioStreamCount <= 1) {
+  if (streams <= 1) {
     // Already has at most one audio stream; nothing to strip.
     return src
   }
 
   // Idempotency: deterministic output path, skip if already fresh.
-  const out = src.replace(/(\.\w+)$/, '_audioclean.mp4')
-  if (existsSync(out)) {
-    try {
-      const srcStat = statSync(src)
-      const outStat = statSync(out)
-      if (outStat.mtimeMs >= srcStat.mtimeMs) return out
-    } catch { /* fall through to re-extract */ }
-  }
+  const out = audioCleanPath(src)
+  if (isFreshCopy(out, src)) return out
 
   // `out` is a cache trusted on mtime alone (above, and sample_frame), so it is
   // only ever a complete copy or absent: ffmpeg writes a temporary file beside
@@ -1933,6 +2313,8 @@ function fail(code, message, extra = {}) {
 
 export { failLine, stampSourceProbes, getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
          EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport, captureScaleFor,
+         // §213: the disk estimate's planning, for its tests.
+         resolveEstimateOverrides, planVideoItemWrites, isConformant, normalizedMasterCache, estimateMain,
          UNTAGGED_MASTER_MARKER, originalOfSdrMaster,
          // glass-plate.js renders the base composite through the export's own item preparation.
          resolveProjectPaths, validateProjectFiles, repointStaleUntaggedMasters, prepareVideoItems, prepareSdrPass, outputSize,
