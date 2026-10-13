@@ -252,7 +252,9 @@ def apply_translation(captions, lang, phrases) -> dict:
         if seg_id:
             claimed.add(seg_id)
         recut.append(_segment_from_words(run, _carried_fields(first), seg_id))
-    recut = mint_ids(recut, _ids(kept))
+    # A phrase that starts inside an already-claimed segment gets a new id that
+    # no caption had before, so an old id never comes to name different text.
+    recut = mint_ids(recut, _ids(kept) | _ids(source))
 
     lane = max([_lane(s) for s in kept] + [0]) + 1
     row = [

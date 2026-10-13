@@ -270,11 +270,16 @@ function renderHero(seg, key, th, translations = []) {
 
 /** §244: a translation under its caption, as accent's plain line: its base
  *  font and colour at a line size (its own size is meant for three words at
- *  most), no accents and no word-by-word cut-on. */
+ *  most), no accents and no word-by-word cut-on. The caption's 0.76 line
+ *  height lets its descenders hang about 0.22 of its size below its box, so
+ *  the line keeps that much clear above it (MEASURED on a sampled frame: with
+ *  the stack's gap alone, the g of "developing" touched the line). */
 const LINE_SCALE = 0.3
+const LINE_CLEARANCE = 0.22
 function renderLine(seg, th, frame, fps) {
   return (
     <div key={seg.id ?? seg.start} data-caption-id={seg.id} style={{
+      marginTop: Math.round(th.fontSize * LINE_CLEARANCE),
       fontFamily: th.fontFamily,
       fontWeight: th.fontWeight,
       fontSize: Math.round(th.fontSize * LINE_SCALE),

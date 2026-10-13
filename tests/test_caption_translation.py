@@ -69,6 +69,16 @@ def test_phrase_aligned_recut_keeps_real_word_timings_and_pairs_each_line():
     assert len(ids) == len(set(ids)) == 4
 
 
+def test_a_new_phrase_id_never_reuses_an_old_caption_id():
+    caps = captions()
+    caps["segments"][0]["id"] = "cap-0"
+    caps["segments"][1]["id"] = "cap-1"
+    # Phrase 2 starts inside cap-0 (its last word "you"), which phrase 1 keeps;
+    # cap-1 is freed by the re-cut but must not be handed to phrase 2.
+    out = apply_translation(caps, "es", PHRASES)
+    assert [s["id"] for s in row(out, 0)] == ["cap-0", "cap-2"]
+
+
 def test_matching_ignores_case_and_punctuation():
     phrases = [{"source": "so JUST to give you an example", "text": "a"}, {"source": "you cant develop wheels", "text": "b"}]
     assert len(row(apply_translation(captions(), "es", phrases), 1)) == 2
