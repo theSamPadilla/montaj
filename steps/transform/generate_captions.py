@@ -12,9 +12,10 @@ timeline position — then runs the full pipeline as subprocesses:
                        NOT a trim spec, so timestamps are project-time).
   3. caption         — group words into styled caption segments.
 
-It then merges any prior caption theme (position/color/fontsize/bgColor) into
-the new track, writes project.json, cleans up temp files, and prints the track
-JSON as the step result.
+It then finishes the new track exactly as the SSE route does
+(lib/caption_translation.py: every prior theme key carried forward, segment
+ids minted, translated rows kept and re-cut), writes project.json, cleans up
+temp files, and prints the track JSON as the step result.
 
 Async driving (montaj_step async:true + montaj_step_status) is handled
 generically by the serve route — this step is a plain CLI subprocess.
@@ -29,15 +30,11 @@ MONTAJ_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", ".."))
 
 sys.path.insert(0, os.path.join(MONTAJ_ROOT, "lib"))
 from common import fail, run, require_whisper_model, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES, whisper_runaway_timeout_for  # noqa: E402
+from caption_translation import finish_regenerated_track, merge_caption_theme as _merge_theme  # noqa: E402
 
 sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
 from serve.caption_job import build_audio_mix_spec  # noqa: E402
-
-# Caption-theme keys carried forward from a prior caption track. Mirrors the
-# SSE route's merge in serve/routes/projects.py.
-THEME_KEYS = ("position", "color", "fontsize", "bgColor", "accentColor")
-
 
 def resolve_style(args_style, project: dict) -> str:
     """style = explicit arg, else prior captions.style, else 'pop'.
@@ -49,16 +46,12 @@ def resolve_style(args_style, project: dict) -> str:
 
 
 def merge_caption_theme(track: dict, prev) -> dict:
-    """Carry forward theme keys from a prior caption track into a fresh one.
-
-    Mutates and returns `track`. A theme key is copied only when present in
-    `prev` and NOT already present in `track`. Mirrors the SSE route exactly.
+    """Carry forward every prior caption-track key except `style` and
+    `segments` into a fresh one. Mutates and returns `track`; a key already on
+    `track` wins. The SSE route's merge (it used to be five keys here, so a
+    font, weight or per-style colour was lost on this path only).
     """
-    prev = prev or {}
-    for k in THEME_KEYS:
-        if k in prev and k not in track:
-            track[k] = prev[k]
-    return track
+    return _merge_theme(prev, track)
 
 
 def main():
@@ -137,10 +130,11 @@ def main():
         run([sys.executable, caption_py,
              "--input", words_json_path, "--style", style, "--out", track_path])
 
-        # 5. Load the track, carry forward the prior theme, persist onto project.
+        # 5. Load the track, finish it like the SSE route (theme, ids, kept
+        #    translations), persist onto project.
         with open(track_path, encoding="utf-8") as f:
             track = json.load(f)
-        merge_caption_theme(track, project.get("captions"))
+        track = finish_regenerated_track(project.get("captions"), track)
         project["captions"] = track
         with open(project_path, "w") as f:
             json.dump(project, f, indent=2)

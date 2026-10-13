@@ -2,7 +2,7 @@
 
 `sanitize_theme` and `seed_prev` only ever fill fields the prior caption
 track lacks. The regenerated track's own values still win over whatever
-this module seeds, via `_merge_caption_theme` in serve/routes/projects.py.
+this module seeds, via `merge_caption_theme` in lib/caption_translation.py.
 """
 
 _COLOR_KEYS = (

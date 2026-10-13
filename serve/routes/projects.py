@@ -40,6 +40,7 @@ from lib.project_versions import commit_version
 from lib.fs_remove import rmtree_force
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
+from lib.caption_translation import TranslationError, apply_translation, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme
 from lib.project_tracks import normalize_tracks, track_items
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from lib.youtube import (
@@ -5215,10 +5216,7 @@ def _merge_caption_theme(prev: dict, track: dict) -> dict:
     are the whole point of the regeneration. A value the pipeline itself
     produced on `track` always wins over the carried-forward one.
     """
-    for k, v in prev.items():
-        if k not in ("style", "segments") and k not in track:
-            track[k] = v
-    return track
+    return _lib_merge_caption_theme(prev, track)
 
 
 async def _run_caption_pipeline(
@@ -5352,7 +5350,9 @@ async def _run_caption_pipeline(
     # Persist the caption track onto the project and broadcast.
     track = json.loads(track_path.read_text())
     prev = seed_prev(project.get("captions") or {}, theme)
-    track = _merge_caption_theme(prev, track)
+    # Theme carried forward, ids minted, translated rows kept and re-cut at
+    # their phrase boundaries (lib/caption_translation.py).
+    track = finish_regenerated_track(prev, track)
     project["captions"] = track
     text = json.dumps(project, indent=2)
     project_path.write_text(text)
@@ -5603,6 +5603,43 @@ async def put_project_overlay(
         },
         status_code=201 if created else 200,
     )
+
+
+@router.post("/projects/{project_id}/captions/translation")
+async def caption_translation(project_id: str, body: dict = Body(...), request: Request = None, project_dir: Path = Depends(get_project_dir)):
+    """Write a translated caption row (§244), replace it, or remove it.
+
+    Body: {"lang": "es", "phrases": [{"source": <the source words of the
+    phrase, in order>, "text": <the translated line>}, ...]}. The phrases cover
+    the caption words in order; the source row is re-cut at them and the
+    translated row gets the same start and end per phrase
+    (lib/caption_translation.py). `phrases: []` removes that language's row.
+    Answers {lang, lane, phrases, captions}.
+    """
+    if project_id in _active_caption_jobs:
+        raise HTTPException(409, detail={
+            "error": "concurrent_caption_job",
+            "message": "Captions are being generated for this project. Translate once they are done.",
+        })
+    if not isinstance(body, dict):
+        raise bad_request("bad_body", "Send {lang, phrases}.")
+    project_path = project_dir / "project.json"
+    project = json.loads(project_path.read_text())
+    try:
+        captions = apply_translation(project.get("captions"), body.get("lang"), body.get("phrases"))
+    except TranslationError as e:
+        raise bad_request(e.code, e.message)
+    project["captions"] = captions
+    text = _write_project_json(project_path, project)
+    broadcaster: SSEBroadcaster = request.app.state.broadcaster
+    broadcaster.publish(project_id, _sse_data_frame(text))
+    row = [s for s in captions["segments"] if is_translation(s) and s.get("lang") == body.get("lang")]
+    return {
+        "lang": body.get("lang"),
+        "lane": row[0].get("lane") if row else None,
+        "phrases": len(row),
+        "captions": captions,
+    }
 
 
 @router.get("/projects/{project_id}/captions/status")
