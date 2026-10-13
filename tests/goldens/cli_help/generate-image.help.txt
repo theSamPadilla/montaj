@@ -1,30 +1,20 @@
-usage: montaj generate-image [-h] --prompt PROMPT
-                             [--provider {gemini,kinovi,openai}]
+usage: montaj generate-image [-h] --prompt PROMPT [--provider {gemini,openai}]
                              [--ref-image REF_IMAGE] [--size SIZE]
                              [--aspect-ratio ASPECT_RATIO] [--model MODEL]
-                             [--resolution RESOLUTION] [--quality QUALITY]
                              [--json] [--out PATH] [--quiet]
 
 options:
   -h, --help            show this help message and exit
   --prompt PROMPT       Text description of the image
-  --provider {gemini,kinovi,openai}
+  --provider {gemini,openai}
                         Which vendor to use
   --ref-image REF_IMAGE
                         Reference image(s) for conditioned generation
   --size SIZE           Image dimensions (vendor-dependent)
   --aspect-ratio ASPECT_RATIO
-                        Gemini and Kinovi. E.g. '9:16', '1:1' (Kinovi: per
-                        model, e.g. gpt-image-2 and seedream-5.0-pro also
-                        auto). Ignored by OpenAI.
+                        Gemini only. E.g. '9:16', '1:1'. Ignored by OpenAI.
   --model MODEL         Override the connector's default model for the chosen
-                        provider. Kinovi: nanobanana-pro (default),
-                        nanobanana2, gpt-image-2, seedream-5.0-pro.
-  --resolution RESOLUTION
-                        Kinovi only: 1k, 2k or 4k (model-dependent;
-                        nanobanana2 2k/4k, seedream-5.0-pro 1k/2k).
-  --quality QUALITY     Kinovi gpt-image-2 only: low, medium or high (price
-                        rises with it).
+                        provider
   --json                Output result as JSON
   --out PATH            Output file path
   --quiet               Suppress progress output

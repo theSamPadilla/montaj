@@ -223,14 +223,6 @@ _PROVIDER_INFO = {
             "api_key": "API key from the fal.ai dashboard",
         },
     },
-    "kinovi": {
-        "display": "Kinovi",
-        "desc": "Video and image generation (Seedance, Wan, Nano Banana, GPT Image)",
-        "url": "https://kinovi.ai/api-keys",
-        "keys": {
-            "api_key": "API key from kinovi.ai/api-keys",
-        },
-    },
     "elevenlabs": {
         "display": "ElevenLabs",
         "desc": "Voiceover, sound effects and music",

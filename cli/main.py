@@ -74,7 +74,6 @@ _STEP_COMMANDS = {
     "generate-music":     {"required_out": True, "forward_json": True},
     "generate-sfx":       {"required_out": True, "forward_json": True},
     "generate-voiceover": {"required_out": True, "forward_json": True, "xor": ("text", "text_file")},
-    "kinovi-generate":    {"required_out": True, "forward_json": True},
     "kling-generate":     {"required_out": True},
     "lyrics-render":      {"emit_json": False, "file_prechecks": ["captions", "audio"]},
     "lyrics-sync":        {"emit_json": False, "file_prechecks": ["lyrics"]},
@@ -100,7 +99,7 @@ _REGISTRATION_ORDER = (
     "create-step", "validate", "install", "credentials", "update",
     "remove-bg", "kling-generate", "analyze-media", "generate-image",
     "generate-voiceover", "generate-music", "detect-shots", "shot-sheet",
-    "detect-beats", "seedance-generate", "generate-sfx", "kinovi-generate",
+    "detect-beats", "seedance-generate", "generate-sfx",
 )
 
 # Individual step commands — available but not listed in top-level help.
@@ -114,7 +113,7 @@ _HIDDEN = {
     "remove-bg",
     "kling-generate", "analyze-media", "generate-image", "generate-voiceover",
     "generate-music", "detect-shots", "shot-sheet",
-    "detect-beats", "seedance-generate", "generate-sfx", "kinovi-generate",
+    "detect-beats", "seedance-generate", "generate-sfx",
 }
 
 

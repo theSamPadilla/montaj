@@ -40,10 +40,6 @@ INVALID_API_KEY = "invalid_api_key"
 MODEL_RETIRED = "model_retired"
 INSUFFICIENT_CREDIT = "insufficient_credit"
 UNREACHABLE = "unreachable"
-# The vendor (or the model under it) refused the content: moderation, a real
-# person's face, a copyrighted reference. Changing the prompt or reference is
-# the fix, not the key or the credit.
-CONTENT_REFUSED = "content_refused"
 
 _KEY_WORDS = ("api key", "api_key", "apikey", "access key", "secret key", "invalid token",
               "token is invalid", "token expired", "invalid authentication", "incorrect api key")

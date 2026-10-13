@@ -40,15 +40,13 @@ class TestProvidersRegistered:
     """T7: kling, fal and elevenlabs join gemini/openai. serpapi has no
     check_key() and is not registered here."""
 
-    def test_providers_map_is_the_six_generation_vendors(self, step_module):
-        # §227: kinovi joins (its check is GET /account, which also reads the balance).
+    def test_providers_map_is_the_five_generation_vendors(self, step_module):
         assert step_module.PROVIDERS == {
             "gemini": "connectors.gemini",
             "openai": "connectors.openai",
             "kling": "connectors.kling",
             "fal": "connectors.fal",
             "elevenlabs": "connectors.elevenlabs",
-            "kinovi": "connectors.kinovi",
         }
 
     def test_unlisted_provider_rejected_by_argparse(self, step_module, monkeypatch, capsys):

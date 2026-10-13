@@ -1,7 +1,7 @@
 """Shared ConnectorError.reason -> fail() mapping for every generate step.
 
 kling_generate, generate_image, generate_voiceover, generate_music,
-seedance_generate, kinovi_generate and generate_sfx all wrap a connector call in
+seedance_generate and generate_sfx all wrap a connector call in
 ``except ConnectorError as e:`` and used to hand-roll their own
 reason -> fail() code table (or, worse, silently collapse every reason but
 invalid_api_key into "api_error" — generate_image's old OpenAI path did
@@ -21,7 +21,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 from lib.common import fail  # noqa: E402
 from connectors import (  # noqa: E402
-    ConnectorError, INVALID_API_KEY, INSUFFICIENT_CREDIT, MODEL_RETIRED, UNREACHABLE, CONTENT_REFUSED,
+    ConnectorError, INVALID_API_KEY, INSUFFICIENT_CREDIT, MODEL_RETIRED, UNREACHABLE,
 )
 
 # ConnectorError.reason -> fail() code. Anything else (including reason=None,
@@ -31,7 +31,6 @@ _FAIL_CODES = {
     INSUFFICIENT_CREDIT: "insufficient_credit",
     MODEL_RETIRED: "model_retired",
     UNREACHABLE: "provider_unreachable",
-    CONTENT_REFUSED: "content_refused",
 }
 
 
