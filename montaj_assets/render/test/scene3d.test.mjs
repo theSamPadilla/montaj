@@ -15,14 +15,15 @@ import { SCENE3D_SRC, SCENE3D_STAGE_ENV, Scene3dError, isScene3dItem, materializ
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const RENDER_JS = join(__dirname, '..', 'render.js')
 
+const SCENE_JSON = JSON.stringify({ model: { name: 'm' }, moves: {}, scene: {} })
 function world({ main = true, scenes = [], stage = true } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'montaj-scene3d-'))
   const stageFile = join(dir, 'engine', 'model3d_stage.jsx')
   if (stage) { mkdirSync(dirname(stageFile), { recursive: true }); writeFileSync(stageFile, 'export default () => null') }
   const project = join(dir, 'project')
   mkdirSync(join(project, 'models'), { recursive: true })
-  if (main) writeFileSync(join(project, 'models', 'active.json'), '{}')
-  for (const s of scenes) { mkdirSync(join(project, 'models', 'scenes', s), { recursive: true }); writeFileSync(join(project, 'models', 'scenes', s, 'active.json'), '{}') }
+  if (main) writeFileSync(join(project, 'models', 'active.json'), SCENE_JSON)
+  for (const s of scenes) { mkdirSync(join(project, 'models', 'scenes', s), { recursive: true }); writeFileSync(join(project, 'models', 'scenes', s, 'active.json'), SCENE_JSON) }
   return { dir, project, stageFile, env: stage ? { [SCENE3D_STAGE_ENV]: stageFile } : {} }
 }
 const scene = (props, extra = {}) => ({ id: 's1', type: 'overlay', src: SCENE3D_SRC, start: 1, end: 4, props, ...extra })
@@ -35,7 +36,7 @@ test('a scene item becomes the plain overlay of the host stage, with the scene f
     assert.equal(materializeScene3d(p, w.project, { env: w.env }), 1)
     const it = p.tracks[0][0]
     assert.equal(it.src, w.stageFile)
-    assert.deepEqual(it.props, { scene: 'hands', inPoint: 2.5, extra: 'kept', sceneFile: join(w.project, 'models', 'scenes', 'hands', 'active.json') })
+    assert.deepEqual(it.props, { scene: 'hands', inPoint: 2.5, extra: 'kept', sceneFile: join(w.project, 'models', 'scenes', 'hands', 'active.json'), sceneData: JSON.parse(SCENE_JSON) })
     assert.equal(it.offsetX, 5, 'the overlay\'s own fields are untouched')
     assert.equal(isScene3dItem(it), false)
     assert.equal(materializeScene3d(p, w.project, { env: w.env }), 0, 'a second pass finds nothing')
@@ -49,6 +50,7 @@ test('no scene name is the project\'s own scene (models/active.json); inPoint de
     materializeScene3d(p, w.project, { env: w.env })
     assert.equal(p.tracks[0][0].props.sceneFile, join(w.project, 'models', 'active.json'))
     assert.equal(p.tracks[0][0].props.inPoint, 0)
+    assert.deepEqual(p.tracks[0][0].props.sceneData, JSON.parse(SCENE_JSON))
     const none = projectOf({ ...scene({}), props: undefined })
     materializeScene3d(none, w.project, { env: w.env })
     assert.equal(none.tracks[0][0].props.inPoint, 0)
@@ -96,5 +98,25 @@ test('render.js refuses a scene item with no stage before doing any work, as JSO
     const err = JSON.parse((r.stderr || '').trim().split('\n').pop())
     assert.equal(err.error, 'scene3d_stage_unavailable')
     assert.match(err.message, /Update the Montaj app/)
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('a scene that cannot be read, or has no model, fails naming the file (never a blank frame)', () => {
+  const w = world({ scenes: ['bad', 'empty'] })
+  try {
+    writeFileSync(join(w.project, 'models', 'scenes', 'bad', 'active.json'), 'not json')
+    writeFileSync(join(w.project, 'models', 'scenes', 'empty', 'active.json'), '{"moves":{}}')
+    for (const name of ['bad', 'empty']) {
+      assert.throws(() => materializeScene3d(projectOf(scene({ scene: name })), w.project, { env: w.env }), (e) => e instanceof Scene3dError && e.code === 'scene3d_invalid' && e.message.includes(`${name}/active.json`))
+    }
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('a scene name takes the same rule as save_model: a-z, 0-9 and -, up to 48', () => {
+  const w = world()
+  try {
+    for (const name of ['a_b', 'A', 'x'.repeat(49), '-a', '../x']) {
+      assert.throws(() => materializeScene3d(projectOf(scene({ scene: name })), w.project, { env: w.env }), (e) => e.code === 'scene3d_invalid', name)
+    }
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })
