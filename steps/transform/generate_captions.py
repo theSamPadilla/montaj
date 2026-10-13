@@ -134,6 +134,14 @@ def main():
         #    translations), persist onto project.
         with open(track_path, encoding="utf-8") as f:
             track = json.load(f)
+        # Re-read the project first: the AI or the editor may have saved it
+        # while whisper ran (a translation, any edit), and writing back the
+        # copy read at the start would undo that.
+        try:
+            with open(project_path, encoding="utf-8") as f:
+                project = json.load(f)
+        except (OSError, ValueError):
+            pass
         track = finish_regenerated_track(project.get("captions"), track)
         project["captions"] = track
         with open(project_path, "w") as f:

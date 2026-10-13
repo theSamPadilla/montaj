@@ -149,6 +149,17 @@ for (const name of STYLE_NAMES) {
   })
 }
 
+test('a translation of a caption that is not on screen draws alone, never under another caption', () => {
+  for (const name of STYLE_NAMES) {
+    // The next caption is on screen; the translation names cap-0, which is not.
+    const next = { ...SRC, id: 'cap-5' }
+    const out = render(name, [next, ES], 45)
+    const bs = blocks(out)
+    assert.equal(bs.length, 2, name)
+    assert.equal(byCaptionId(bs.find(b => b.props['data-caption-id'] === 'cap-5'), 'cap-1').length, 0, name)
+  }
+})
+
 test('accent: a hero caption stacks its translation too', () => {
   const out = render('accent', [{ ...SRC, hero: true }, ES], 45)
   assert.equal(blocks(out).length, 1)

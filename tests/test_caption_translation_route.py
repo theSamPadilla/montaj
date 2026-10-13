@@ -130,3 +130,48 @@ def test_generate_captions_step_keeps_the_translated_row_and_the_whole_theme(tmp
     mod.main()
     _assert_kept(json.loads((d / "project.json").read_text())["captions"])
     _assert_kept(json.loads(capsys.readouterr().out))
+
+
+def test_a_translation_written_while_the_step_ran_is_kept(tmp_path, monkeypatch, capsys):
+    """The step re-reads project.json before writing: a translation saved
+    while whisper ran is not undone by the copy read at the start."""
+    mod = _load_step_module()
+    d = tmp_path / "proj"
+    d.mkdir()
+    plain = {"style": "subtitle", "segments": [seg(WORDS_A), seg(WORDS_B)]}
+    (d / "project.json").write_text(json.dumps(_audible_project(captions=plain)))
+
+    def fake_run(cmd, **kwargs):
+        if cmd[1].endswith("transcribe.py"):
+            # Meanwhile, the AI translates.
+            project = json.loads((d / "project.json").read_text())
+            project["captions"] = _translated_captions()
+            (d / "project.json").write_text(json.dumps(project))
+        if cmd[1].endswith("caption.py"):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as f:
+                json.dump({"style": "subtitle", "segments": [seg(WORDS_A), seg(WORDS_B)]}, f)
+
+    monkeypatch.setattr(mod, "run", fake_run)
+    monkeypatch.setattr(mod, "require_whisper_model", lambda *a: None)
+    monkeypatch.setattr(mod, "build_audio_mix_spec", lambda project: {"inputs": []})
+    monkeypatch.setattr(mod, "get_project_dir", lambda pid: d)
+    monkeypatch.setattr(sys, "argv", ["generate_captions.py", "--project-id", PID])
+    mod.main()
+    _assert_kept(json.loads((d / "project.json").read_text())["captions"])
+
+
+def test_the_sse_pipeline_keeps_a_translation_written_while_it_ran(tmp_path, monkeypatch):
+    _patch_caption_subprocess(monkeypatch)
+    d = tmp_path / "proj"
+    d.mkdir()
+    (d / "_caption_track.json").write_text(json.dumps({"style": "subtitle", "segments": [seg(WORDS_A), seg(WORDS_B)]}))
+    # The project as the pipeline read it at the start had no translation; the
+    # file on disk has one by the time it persists.
+    (d / "project.json").write_text(json.dumps(_audible_project(captions=_translated_captions())))
+    started_with = _audible_project(captions={"style": "subtitle", "segments": [seg(WORDS_A), seg(WORDS_B)]})
+    asyncio.run(_run_caption_pipeline(
+        PID, d, started_with, model="base.en", language="auto", style="subtitle", broadcaster=_FakeBroadcaster(),
+    ))
+    _assert_kept(json.loads((d / "project.json").read_text())["captions"])
+

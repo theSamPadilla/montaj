@@ -70,7 +70,6 @@ function captionGroups(active) {
   for (const tr of active) {
     if (!isTranslation(tr)) continue
     const group = groups.find(g => g.seg.id != null && tr.translationOf.includes(g.seg.id))
-      ?? groups.find(g => !isTranslation(g.seg) && !(g.seg.lane > 0))
     if (group) group.lines.push(tr)
     else groups.push({ seg: tr, lines: [tr] })
   }

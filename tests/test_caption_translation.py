@@ -194,3 +194,68 @@ def test_regeneration_keeps_translations_recut_and_relinked():
         assert (t["start"], t["end"]) == (s["start"], s["end"]) and t["translationOf"] == [s["id"]]
     ids = [s["id"] for s in track["segments"]]
     assert len(ids) == len(set(ids))
+
+
+def _shift(words, dt):
+    return [dict(w, start=round(w["start"] + dt, 3), end=round(w["end"] + dt, 3)) for w in words]
+
+
+def test_regeneration_after_footage_is_added_keeps_new_words_in_normal_captions():
+    prev = apply_translation(captions(), "es", PHRASES)
+    extra = [W(f"more{i}", 5 + i * 0.3, 5.2 + i * 0.3) for i in range(20)]
+    fresh = {"style": "subtitle", "segments": [seg(WORDS_A), seg(WORDS_B), seg(extra[:8]), seg(extra[8:16]), seg(extra[16:])]}
+    track = finish_regenerated_track(prev, fresh)
+    src = row(track, 0)
+    assert [s["text"] for s in src[:2]] == ["So just to give you an example,", "you can't develop wheels."]
+    assert [len(s["words"]) for s in src[2:]] == [8, 8, 4], "the added words keep the fresh grouping"
+    assert len(row(track, 1)) == 2
+
+
+def test_regeneration_relinks_by_words_when_the_audio_moved():
+    prev = apply_translation(captions(), "es", PHRASES)
+    intro = [W("Hey", 0.0, 0.4), W("everyone.", 0.4, 1.0)]
+    fresh = {"style": "subtitle", "segments": [seg(intro), seg(_shift(WORDS_A, 3)), seg(_shift(WORDS_B, 3))]}
+    track = finish_regenerated_track(prev, fresh)
+    src = {s["id"]: s for s in row(track, 0)}
+    es = row(track, 1)
+    assert [src[t["translationOf"][0]]["text"] for t in es] == ["So just to give you an example,", "you can't develop wheels."]
+    assert [(t["start"], t["end"]) for t in es] == [(3.0, 4.5), (4.5, 7.0)]
+    assert row(track, 0)[0]["text"] == "Hey everyone."
+
+
+def test_regeneration_drops_the_translation_of_a_phrase_no_longer_said():
+    prev = apply_translation(captions(), "es", PHRASES)
+    other = [W("Something", 0.0, 0.5), W("else", 0.5, 0.9), W("entirely", 0.9, 1.4)]
+    fresh = {"style": "subtitle", "segments": [seg(other), seg(WORDS_B)]}
+    track = finish_regenerated_track(prev, fresh)
+    assert [t["text"] for t in row(track, 1)] == ["no se pueden desarrollar ruedas."]
+
+
+def test_replacing_a_language_keeps_its_place_in_the_stack():
+    es = apply_translation(captions(), "es", PHRASES)
+    de = apply_translation(es, "de", [{"source": p["source"], "text": "de"} for p in PHRASES])
+    again = apply_translation(de, "es", [{"source": p["source"], "text": "otra vez"} for p in PHRASES])
+    assert {s["lang"] for s in row(again, 1)} == {"es"} and {s["lang"] for s in row(again, 2)} == {"de"}
+
+
+def test_a_translation_id_never_reuses_an_absorbed_source_id():
+    caps = captions()
+    caps["segments"][0]["id"], caps["segments"][1]["id"] = "cap-0", "cap-1"
+    whole = [{"source": "So just to give you an example, you can't develop wheels.", "text": "todo"}]
+    out = apply_translation(caps, "es", whole)
+    assert row(out, 0)[0]["id"] == "cap-0"
+    assert row(out, 1)[0]["id"] not in {"cap-0", "cap-1"}
+
+
+def test_a_trailing_dash_stays_with_its_phrase():
+    words = [W("Wait", 0.0, 0.3), W("\u2014", 0.3, 0.35), W("what?", 0.4, 0.8)]
+    out = apply_translation({"style": "pop", "segments": [seg(words)]}, "es",
+                            [{"source": "Wait", "text": "Espera"}, {"source": "what?", "text": "¿qué?"}])
+    assert [s["text"] for s in row(out, 0)] == ["Wait \u2014", "what?"]
+
+
+def test_matching_normalizes_unicode():
+    words = [W("caf\u00e9", 0.0, 0.5)]
+    out = apply_translation({"style": "pop", "segments": [seg(words)]}, "es", [{"source": "cafe\u0301", "text": "café"}])
+    assert len(row(out, 1)) == 1
+

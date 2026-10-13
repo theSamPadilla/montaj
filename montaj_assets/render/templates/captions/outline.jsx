@@ -82,7 +82,6 @@ function captionGroups(active) {
   for (const tr of active) {
     if (!isTranslation(tr)) continue
     const group = groups.find(g => g.seg.id != null && tr.translationOf.includes(g.seg.id))
-      ?? groups.find(g => !isTranslation(g.seg) && !(g.seg.lane > 0))
     if (group) group.lines.push(tr)
     else groups.push({ seg: tr, lines: [tr] })
   }
@@ -130,7 +129,8 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize, 
           right: 0,
           textAlign,
           padding: '0 6%',
-          opacity,
+          // A translation drawn alone fades by its own line (lineOpacity).
+          opacity: isTranslation(seg) ? 1 : opacity,
         })}>
           {stack(isTranslation(seg) ? null : <span style={{
             fontSize,

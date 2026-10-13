@@ -5349,6 +5349,13 @@ async def _run_caption_pipeline(
 
     # Persist the caption track onto the project and broadcast.
     track = json.loads(track_path.read_text())
+    # Re-read the project first: the AI or the editor may have saved it while
+    # the pipeline ran (a translation, any edit), and writing back the copy
+    # read at the start would undo that (§244).
+    try:
+        project = json.loads(project_path.read_text())
+    except (OSError, ValueError):
+        pass
     prev = seed_prev(project.get("captions") or {}, theme)
     # Theme carried forward, ids minted, translated rows kept and re-cut at
     # their phrase boundaries (lib/caption_translation.py).

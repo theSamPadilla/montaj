@@ -4,8 +4,8 @@ A translation is a row of segments marked as one: each carries `lang` (e.g.
 "es") and `translationOf` (the ids of the source segments it translates) and
 no `words`. Both rows are cut at the same phrase boundaries, so a translated
 line is on screen exactly while its source phrase is, and the caption
-templates draw it as a plain line stacked under its source (see
-`captionGroups` in montaj_assets/overlay-runtime/position.js).
+templates draw it as a plain line stacked under its source (`captionGroups`,
+duplicated in each of montaj_assets/render/templates/captions/*.jsx).
 
 The source row is every segment that is not a translation and sits in row 0
 (`lane` absent or 0). Its words keep their real timings: translating only
@@ -16,9 +16,15 @@ The SSE caption route and the generate_captions step both finish a fresh
 track through `finish_regenerated_track`; the translation route calls
 `apply_translation`.
 """
+import difflib
+import math
 import re
+import unicodedata
 
 PHRASE_MAX_WORDS = 14
+# Regeneration finds a kept phrase again in the new transcript when at least
+# this share of its words is there, in order.
+MATCH_SHARE = 0.6
 TRANSLATION_MAX_CHARS = 90
 _LANG_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
 _TOKEN_STRIP_RE = re.compile(r"[\W_]+", re.UNICODE)
@@ -81,7 +87,8 @@ def _ids(segments: list) -> set:
 
 
 def _token(word: str) -> str:
-    return _TOKEN_STRIP_RE.sub("", word.casefold())
+    # NFKC first, so an AI's decomposed "café" matches the transcript's composed one.
+    return _TOKEN_STRIP_RE.sub("", unicodedata.normalize("NFKC", word).casefold())
 
 
 def _split_rows(segments: list):
@@ -170,6 +177,11 @@ def _match_phrases(words: list, phrases: list) -> list:
                 )
             run.append(tokens[pos][1])
             pos += 1
+        # A punctuation-only word right after the phrase ("—", "…") ends it,
+        # rather than opening the next line.
+        while pos < len(tokens) and not tokens[pos][0]:
+            run.append(tokens[pos][1])
+            pos += 1
         if len([w for w in run if _token(w["word"])]) > PHRASE_MAX_WORDS:
             raise TranslationError(
                 "phrase_too_long",
@@ -205,6 +217,7 @@ def apply_translation(captions, lang, phrases) -> dict:
     segments = [s for s in captions["segments"] if isinstance(s, dict)]
     source, translations, others = _split_rows(segments)
     other_langs = [t for t in translations if t.get("lang") != lang]
+    replaced = [t for t in translations if t.get("lang") == lang]
 
     if not phrases:
         return {**captions, "segments": _compact_lanes(mint_ids(source, _ids(others + other_langs)) + others + other_langs)}
@@ -256,7 +269,12 @@ def apply_translation(captions, lang, phrases) -> dict:
     # no caption had before, so an old id never comes to name different text.
     recut = mint_ids(recut, _ids(kept) | _ids(source))
 
-    lane = max([_lane(s) for s in kept] + [0]) + 1
+    # Replacing a language keeps its row where it was in the stack.
+    old_lane = _lane(replaced[0]) if replaced else 0
+    if old_lane and all(_lane(s) != old_lane for s in kept):
+        lane = old_lane
+    else:
+        lane = max([_lane(s) for s in kept] + [0]) + 1
     row = [
         {
             "text": " ".join(p["text"].split()),
@@ -268,7 +286,7 @@ def apply_translation(captions, lang, phrases) -> dict:
         }
         for seg, p in zip(recut, phrases)
     ]
-    row = mint_ids(row, _ids(recut) | _ids(kept))
+    row = mint_ids(row, _ids(recut) | _ids(kept) | _ids(source) | _ids(replaced))
     return {**captions, "segments": _compact_lanes(recut + kept + row)}
 
 
@@ -276,46 +294,98 @@ def finish_regenerated_track(prev, track: dict) -> dict:
     """Finish a freshly generated caption track before it replaces the old one.
 
     Carries the prior theme forward (`merge_caption_theme`), mints segment ids,
-    and keeps every translated row of the old track: the new source row is
-    re-cut at the translations' phrase boundaries, and each translated segment
-    is re-timed to and re-linked with the source segment it now pairs with.
-    Hand-made rows that are not translations are still dropped (a fresh
-    transcript is one row). Mutates and returns `track`.
+    and keeps the old track's translated rows. Each kept phrase is found again
+    in the new transcript BY ITS WORDS (in order, at least MATCH_SHARE of them),
+    not by its old times, so footage added, removed or moved around it does
+    not shift it. A phrase found again becomes one source segment (its old id
+    kept) and its translations are re-timed to it; words outside every phrase
+    keep the fresh grouping, untranslated; a phrase not found again drops its
+    translations rather than pairing them with the wrong words. Hand-made rows
+    that are not translations are still dropped (a fresh transcript is one
+    row). Mutates and returns `track`.
     """
     prev = prev if isinstance(prev, dict) else {}
     merge_caption_theme(prev, track)
     fresh = [s for s in (track.get("segments") or []) if isinstance(s, dict)]
-    kept = [s for s in (prev.get("segments") or []) if is_translation(s)]
+    old = [s for s in (prev.get("segments") or []) if isinstance(s, dict)]
+    kept = [s for s in old if is_translation(s)]
     if not kept or not fresh or not all(isinstance(s.get("words"), list) and s["words"] for s in fresh):
         track["segments"] = mint_ids(fresh)
         return track
 
-    words = sorted((w for s in fresh for w in s["words"]), key=lambda w: w["start"])
-    # One language's starts are the phrase boundaries (every language shares them).
-    first_lang = sorted(kept, key=lambda s: s.get("start", 0))[0]["lang"]
-    starts = sorted({s["start"] for s in kept if s["lang"] == first_lang})
-    groups = [[] for _ in starts]
-    lead = []
-    for w in words:
-        mid = (w["start"] + w["end"]) / 2
-        i = max((k for k, s in enumerate(starts) if s <= mid), default=None)
-        (lead if i is None else groups[i]).append(w)
-    base = {k: v for k, v in fresh[0].items() if k not in ("id", "text", "start", "end", "words", "lane")}
-    runs = ([lead] if lead else []) + [g for g in groups if g]
-    source = mint_ids([_segment_from_words(g, base, None) for g in runs], _ids(kept))
+    # The kept phrases in order: the old source segments each translation
+    # names (every language names the same ones), as word tokens.
+    old_by_id = {s["id"]: s for s in old if not is_translation(s) and isinstance(s.get("id"), str)}
+    phrases, seen = [], set()
+    for tr in sorted(kept, key=lambda s: s.get("start", 0)):
+        key = tuple(tr["translationOf"])
+        if key in seen:
+            continue
+        seen.add(key)
+        toks = [t for sid in key if sid in old_by_id
+                for t in (_token(w) for w in str(old_by_id[sid].get("text", "")).split()) if t]
+        if toks:
+            phrases.append((key, toks))
 
-    def pair(seg):
-        best, overlap = None, 0.0
-        for src in source:
-            o = min(seg["end"], src["end"]) - max(seg["start"], src["start"])
-            if o > overlap:
-                best, overlap = src, o
-        return best
+    # Align the phrases' words with the new transcript's, in order.
+    words = [{**w, "_seg": i} for i, seg in enumerate(fresh) for w in seg["words"]]
+    real = [k for k, w in enumerate(words) if _token(w["word"])]
+    a, owner = [], []
+    for p, (_, toks) in enumerate(phrases):
+        a += toks
+        owner += [p] * len(toks)
+    b = [_token(words[k]["word"]) for k in real]
+    found = {}
+    for i, j, n in difflib.SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks():
+        for d in range(n):
+            found.setdefault(owner[i + d], []).append(real[j + d])
+    ranges, phrase_of = {}, {}
+    for p, (_, toks) in enumerate(phrases):
+        hits = found.get(p, [])
+        if len(hits) < max(1, math.ceil(MATCH_SHARE * len(toks))):
+            continue
+        lo, hi = min(hits), max(hits)
+        while hi + 1 < len(words) and not _token(words[hi + 1]["word"]):
+            hi += 1
+        ranges[p] = (lo, hi)
+        for k in range(lo, hi + 1):
+            phrase_of[k] = p
+
+    # The new source row: one segment per phrase found again, and the fresh
+    # grouping for every run of words outside them.
+    def fields(k):
+        base = fresh[words[k]["_seg"]]
+        return {f: v for f, v in base.items() if f not in ("id", "text", "start", "end", "words", "lane")}
+
+    source, seg_of_phrase = [], {}
+    k = 0
+    while k < len(words):
+        p = phrase_of.get(k)
+        if p is not None:
+            lo, hi = ranges[p]
+            seg_of_phrase[p] = len(source)
+            source.append(_segment_from_words(words[lo:hi + 1], fields(lo), phrases[p][0][0]))
+            k = hi + 1
+            continue
+        start, i = k, words[k]["_seg"]
+        while k < len(words) and k not in phrase_of and words[k]["_seg"] == i:
+            k += 1
+        run = words[start:k]
+        if source and not any(_token(w["word"]) for w in run):
+            # Punctuation alone: it ends the line before it.
+            prior = source[-1]
+            source[-1] = _segment_from_words(
+                [*prior["words"], *run], {f: v for f, v in prior.items() if f not in ("text", "start", "end", "words")}, prior.get("id"))
+        else:
+            source.append(_segment_from_words(run, fields(start), None))
+    source = mint_ids(source, _ids(old))
 
     rows = []
-    for seg in kept:
-        src = pair(seg)
-        if src is not None:
-            rows.append({**seg, "start": src["start"], "end": src["end"], "translationOf": [src["id"]]})
+    for tr in kept:
+        p = next((q for q, (key, _) in enumerate(phrases) if key == tuple(tr["translationOf"])), None)
+        if p is None or p not in seg_of_phrase:
+            continue
+        src = source[seg_of_phrase[p]]
+        rows.append({**tr, "start": src["start"], "end": src["end"], "translationOf": [src["id"]]})
     track["segments"] = _compact_lanes(source + rows)
     return track
