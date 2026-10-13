@@ -1417,6 +1417,32 @@ describe('CarouselEditor: multi-select (§156)', () => {
     expect(elementsOf(lastSave(adapter)).map(e => [e.x, e.y])).toEqual([[100, 100], [500, 400], [700, 700]])
   })
 
+  it('Distribute spreads three selected elements evenly, or by an exact gap keeping the first, each in one undo step', async () => {
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={threeElements()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-a'))
+    await plainClick('el-a')
+    await shiftClick('el-b')
+    // Two selected: Distribute is there but off.
+    expect(r.getByRole('button', { name: 'Distribute horizontally' })).toBeDisabled()
+    await shiftClick('el-c')
+    expect(r.getByRole('button', { name: 'Distribute horizontally' })).not.toBeDisabled()
+
+    // Blank gap: A 100..300, B 500..600, C 700..800 are 200 + 100 + 100 wide inside 100..800, so two gaps of 150.
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Distribute horizontally' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter)).map(e => [e.x, e.y])).toEqual([[100, 100], [450, 400], [700, 700]])
+    await key('z', { ctrlKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(elementsOf(lastSave(adapter)).map(e => [e.x, e.y])).toEqual([[100, 100], [500, 400], [700, 700]])
+
+    // A gap of 50 from the first, which stays.
+    await act(async () => { fireEvent.change(r.getByRole('spinbutton', { name: 'Gap' }), { target: { value: '50' } }) })
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Distribute horizontally' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(elementsOf(lastSave(adapter)).map(e => [e.x, e.y])).toEqual([[100, 100], [350, 400], [500, 700]])
+  })
+
   it('in crop mode shift-click acts as a plain click', async () => {
     const adapter = makeFakeAdapter()
     const r = render(<CarouselEditor project={threeElements()} adapter={adapter} onProjectChange={vi.fn()} />)
