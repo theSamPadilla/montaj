@@ -236,6 +236,14 @@ async def bundle_overlay(path: str = Query(default=""), project: str = Query(def
     """
     if not path:
         raise bad_request("bad_request", "path must be an absolute file path")
+    scene3d_stage: Path | None = None
+    if path == "engine:scene3d":
+        # The reserved scene item: the stage is the host's file, not the project's.
+        host_stage = os.environ.get("MONTAJ_SCENE3D_STAGE", "")
+        if not host_stage or not Path(host_stage).is_file():
+            raise not_found("scene3d_stage_unavailable", "The host has not supplied a 3D stage (MONTAJ_SCENE3D_STAGE)")
+        scene3d_stage = Path(host_stage)
+        path = str(scene3d_stage)
     entry = Path(path)
     project_base: Path | None = None
     if project:
@@ -256,6 +264,8 @@ async def bundle_overlay(path: str = Query(default=""), project: str = Query(def
         raise not_found("not_found", f"File not found: {path}")
 
     roots = _allowed_file_roots()
+    if scene3d_stage is not None:
+        roots = [*roots, scene3d_stage.resolve().parent]
     if not any(_is_under(entry.resolve(), r) for r in roots):
         raise forbidden("forbidden", f"Path is outside the allowed roots: {path}")
 
