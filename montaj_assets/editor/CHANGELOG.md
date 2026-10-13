@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.2.0
+
+- Added: the carousel editor selects several elements at once. Shift-click adds or removes an element; dragging moves them all, Delete removes them all, and Align aligns them to the box the selection covers. One save and one undo step each.
+- Added: Distribute in the carousel inspector. With three or more selected, spread them evenly across or down, or set an exact gap in px.
+- Changed: with Apply to all off, a Format change (size, font, weight, case, alignment, spacing, line height, colours) lands only on the selected captions, and dragging or resizing one of several selected captions moves or sizes all of them.
+- Fixed: an overlay keeps its props object across a project echo, so a 3D overlay's camera keeps following its keys after a save.
+
 ## 2.1.3
 
 - Fixed: 23 controls had no accessible name or role, so a screen reader or an AI driving the editor could not tell them apart. Fields are named, click targets get a role, and click-away layers are hidden from the tree.
