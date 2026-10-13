@@ -16,6 +16,7 @@ PROVIDERS = {
     "fal": "connectors.fal",
     "elevenlabs": "connectors.elevenlabs",
     "kinovi": "connectors.kinovi",
+    "tripo": "connectors.tripo",
 }
 
 def main():

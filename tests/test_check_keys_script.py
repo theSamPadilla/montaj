@@ -49,9 +49,9 @@ which a real key from this machine's ~/.montaj/credentials.json or shell
 environment could reach the script.
 
 lib/credentials.py's real KNOWN_PROVIDERS (copied verbatim into the mirror)
-is {kling, gemini, openai, serpapi, fal, elevenlabs, kinovi}: seven providers. As of
-PV29 T7 and the Kinovi connector the real check_key.py (also copied verbatim) supports six of those:
-gemini, openai, kling, fal, elevenlabs and kinovi, leaving only serpapi (a search
+is {kling, gemini, openai, serpapi, fal, elevenlabs, kinovi, tripo}: eight providers. As of
+PV29 T7, the Kinovi connector and the Tripo connector the real check_key.py (also copied verbatim) supports seven of those:
+gemini, openai, kling, fal, elevenlabs, kinovi and tripo, leaving only serpapi (a search
 API, not a generation vendor) as "no check yet", which several assertions
 below account for explicitly.
 """
@@ -76,7 +76,7 @@ pytestmark = pytest.mark.skipif(
     reason="scripts/check-keys.sh is local release tooling, not tracked in git",
 )
 
-ALL_KNOWN_PROVIDERS = ("kling", "gemini", "openai", "serpapi", "fal", "elevenlabs", "kinovi")
+ALL_KNOWN_PROVIDERS = ("kling", "gemini", "openai", "serpapi", "fal", "elevenlabs", "kinovi", "tripo")
 UNSUPPORTED_BY_DEFAULT = ("serpapi",)
 
 
@@ -372,7 +372,7 @@ class TestAllVerifiedNoGaps:
         mirror = _mirror_repo(tmp_path)
         # kling/fal/elevenlabs are real support in the copied check_key.py
         # (T7) — only serpapi still needs the runtime patch.
-        extra_providers = ("kling", "serpapi", "fal", "elevenlabs", "kinovi")
+        extra_providers = ("kling", "serpapi", "fal", "elevenlabs", "kinovi", "tripo")
         _add_all_provider_support(mirror, ("serpapi",))
 
         env = {"GEMINI_API_KEY": "test-key", "OPENAI_API_KEY": "test-key"}
@@ -385,7 +385,7 @@ def check_key():
         env.update({
             "KLING_ACCESS_KEY": "test-key", "KLING_SECRET_KEY": "test-key",
             "SERPAPI_API_KEY": "test-key", "FAL_API_KEY": "test-key",
-            "ELEVENLABS_API_KEY": "test-key", "KINOVI_API_KEY": "test-key",
+            "ELEVENLABS_API_KEY": "test-key", "KINOVI_API_KEY": "test-key", "TRIPO_API_KEY": "test-key",
         })
 
         result = _run(mirror, env)
