@@ -69,7 +69,7 @@ async function loadTemplate(name) {
   }
 }
 
-const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent']
+const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent', 'plate']
 
 const templates = {}
 before(async () => {
@@ -103,11 +103,13 @@ const TRACK_PROPS = {
   color: '#ff0000', fontSize: 60, fontFamily: '"Baloo 2", system-ui, sans-serif', fontWeight: 400,
   textTransform: 'lowercase', textAlign: 'left', letterSpacing: '0.1em', lineHeight: 1.5,
   accentColor: '#0000ff', highlightColor: '#111111', activeColor: '#222222', backgroundColor: '#333333',
+  plateOpacity: 0.3, platePadding: 30, plateRadius: 40,
 }
 const OVERRIDES = {
   color: '#abcdef', fontSize: 90, fontFamily: '"Caveat", cursive', fontWeight: 900,
   textTransform: 'uppercase', textAlign: 'right', letterSpacing: '0.3em', lineHeight: 2,
   accentColor: '#fedcba', highlightColor: '#444444', activeColor: '#555555', backgroundColor: '#666666',
+  plateOpacity: 0.9, platePadding: 8, plateRadius: 4,
 }
 // The cases the golden covers: no track styling, and every track field set.
 const GOLDEN_CASES = [['default', {}], ['track', TRACK_PROPS]]
@@ -126,6 +128,20 @@ function blocks(el) {
 
 describe('a project with no per-caption styling renders exactly as before (golden)', () => {
   const golden = JSON.parse(readFileSync(GOLDEN_PATH, 'utf8'))
+  // A NEW style has no golden yet: MONTAJ_WRITE_GOLDEN=<style> captures its two cases into the fixture (for a style
+  // whose look is final, never for one that already has an entry: that would bless a change).
+  const toWrite = process.env.MONTAJ_WRITE_GOLDEN
+  if (toWrite) {
+    test(`writes the golden for ${toWrite}`, () => {
+      assert.ok(!golden[toWrite], `${toWrite} already has a golden; remove it deliberately first`)
+      golden[toWrite] = {}
+      for (const [label, props] of GOLDEN_CASES) {
+        golden[toWrite][label] = {}
+        for (const frame of FRAMES) golden[toWrite][label][frame] = JSON.parse(JSON.stringify(plain(render(toWrite, frame, [SEG_A, SEG_B], props))))
+      }
+      writeFileSync(GOLDEN_PATH, JSON.stringify(golden) + '\n')
+    })
+  }
   for (const name of STYLE_NAMES) {
     test(name, () => {
       for (const [label, props] of GOLDEN_CASES) {

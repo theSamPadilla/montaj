@@ -19,7 +19,7 @@
  * here too, in the same commit. Verified against the actual `function Xxx({
  * ... })` destructuring defaults in:
  *   clean.jsx, karaoke.jsx, subtitle.jsx, pop.jsx, word-by-word.jsx,
- *   highlight-box.jsx, outline.jsx, accent.jsx
+ *   highlight-box.jsx, outline.jsx, accent.jsx, plate.jsx
  * (all under montaj_assets/render/templates/captions/).
  */
 import type { Captions, CaptionTextTransform } from '../schema'
@@ -28,7 +28,7 @@ type Style = Captions['style']
 
 /** The caption templates' own default font size (px), shown by the size control when `fontsize` is absent. */
 export const CAPTION_STYLE_FONT_SIZE: Record<Style, number> = {
-  clean: 54, karaoke: 52, subtitle: 46, pop: 68, 'word-by-word': 72, 'highlight-box': 60, outline: 70, accent: 168,
+  clean: 54, karaoke: 52, subtitle: 46, pop: 68, 'word-by-word': 72, 'highlight-box': 60, outline: 70, accent: 168, plate: 56,
 }
 
 /** `Captions.fontWeight`'s default per style (CSS `font-weight`). */
@@ -41,6 +41,7 @@ export const CAPTION_STYLE_FONT_WEIGHT: Record<Style, number> = {
   'highlight-box': 900,
   outline: 900,
   accent: 700,
+  plate: 800,
 }
 
 /** `Captions.fontFamily`'s default per style. Seven of the eight templates
@@ -55,6 +56,7 @@ export const CAPTION_STYLE_FONT_FAMILY: Record<Style, string> = {
   'highlight-box': 'system-ui, -apple-system, sans-serif',
   outline: 'system-ui, -apple-system, sans-serif',
   accent: '"Inter Tight", system-ui, sans-serif',
+  plate: 'system-ui, -apple-system, sans-serif',
 }
 
 /** `Captions.letterSpacing`'s default per style. A style absent from this
@@ -84,6 +86,7 @@ export const CAPTION_STYLE_LINE_HEIGHT: Partial<Record<Style, number>> = {
   'highlight-box': 1.25,
   outline: 1.15,
   accent: 0.76,
+  plate: 1.25,
 }
 
 /** `Captions.textAlign`'s default per style — every template centers text by
@@ -97,6 +100,7 @@ export const CAPTION_STYLE_TEXT_ALIGN: Record<Style, string> = {
   'highlight-box': 'center',
   outline: 'center',
   accent: 'center',
+  plate: 'center',
 }
 
 /** `Captions.textTransform`'s default per style. Only `outline` has one — its
@@ -131,3 +135,7 @@ export function captionFontsFor(
   const given = Array.isArray(googleFonts) ? googleFonts : googleFonts ? googleFonts.split(',').map(s => s.trim()).filter(Boolean) : []
   return [...new Set([...given, ...ACCENT_CAPTION_FONTS])]
 }
+
+/** The `plate` style's plate defaults, the template's own parameter defaults (plate.jsx): the colour is
+ *  `backgroundColor`, shown by the Plate swatch when unset; opacity 0 to 1; padding and radius in px. */
+export const CAPTION_PLATE_DEFAULTS = { backgroundColor: '#000000', plateOpacity: 0.6, platePadding: 14, plateRadius: 16 } as const

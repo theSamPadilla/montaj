@@ -542,7 +542,7 @@ The `captions` field is a top-level object (not a track). It always renders abov
 
 **Segment end is explicit.** Each segment carries its own `end`; the next segment's `start` does NOT imply the previous segment's `end`. The editor's active-segment test is `currentTime >= start && currentTime < end`.
 
-**Caption styles:** `word-by-word`, `pop`, `karaoke`, `subtitle`, `highlight-box`, `outline`, `clean`, `accent`
+**Caption styles:** `word-by-word`, `pop`, `karaoke`, `subtitle`, `highlight-box`, `outline`, `clean`, `accent`, `plate`
 
 Each style maps to a built-in JSX template served at `GET /api/caption-template/:style`. An unknown style value renders no captions. `words` is optional in the schema but required for animated styles (`word-by-word`, `karaoke`, `accent`).
 
@@ -571,6 +571,9 @@ Each style maps to a built-in JSX template served at `GET /api/caption-template/
 | `letterSpacing` | string | style-specific | CSS length, e.g. `0.02em`. `clean` defaults to `0.01em`; `pop` and `word-by-word` default to `-0.02em`; `accent` to `-0.03em`; `karaoke`, `subtitle`, `highlight-box`, and `outline` have no default — absent renders with normal spacing. |
 | `lineHeight` | number \| string | style-specific | CSS `line-height` value. `clean` defaults to `1.3`, `subtitle` to `1.4`. `highlight-box` defaults to `1.25` and `outline` to `1.15`, but — same caveat as `outline`'s `textTransform` above — only for a segment that has word timestamps; the no-timestamps fallback branch renders with no line-height, default or not. `accent` defaults to `0.76`. `karaoke`, `pop`, and `word-by-word` have no default. |
 | `textAlign` | string | `center` | CSS `text-align` value: `left`, `center`, or `right`. Every style centers by default, with no exceptions — so an existing project with no `textAlign` renders unchanged. |
+| `plateOpacity` | number | `0.6` | The `plate` style's plate opacity, 0 to 1. Applied to a `#rrggbb` `backgroundColor`; a colour that is not hex (such as `rgba(...)`) carries its own alpha and is used as it is. |
+| `platePadding` | number | `14` | The `plate` style's padding in px (the vertical figure; the sides take 1.6 times). |
+| `plateRadius` | number | `16` | The `plate` style's corner radius in px. The plate's colour is `backgroundColor` (default `#000000`), and the spoken word takes `accentColor`. |
 
 **Per-segment text styling.** Each entry in `segments[]` may also carry any of the text-styling fields above, plus the track's colour fields, as its own override: `fontSize` (number; note the camelCase, unlike the track's legacy `fontsize`), `fontFamily`, `googleFonts`, `fontWeight`, `textTransform`, `letterSpacing`, `lineHeight`, `textAlign`, `accentColor`, `highlightColor`, `activeColor`, `backgroundColor` (and `color`, above). Precedence for each field: the segment's value, else the track's, else the style's own default, so a segment without them renders exactly as before. Each template takes only the fields it already reads from the track (e.g. `pop` has no base `color`, `clean` no accent colour). A segment's `googleFonts` travel with its `fontFamily`, as on the track: the preview and the export fetch the track's specs and every segment's. The editor writes them from the Format tab while "Apply to all" is off, onto exactly the selected captions; with "Apply to all" on it writes the track and removes that field from every segment. Consumed only by the JSX browser preview and the Puppeteer render path; the ffmpeg `drawtext` render branch ignores them. Caption regeneration rebuilds the segments, so per-segment styling, like per-segment position, does not survive it.
 

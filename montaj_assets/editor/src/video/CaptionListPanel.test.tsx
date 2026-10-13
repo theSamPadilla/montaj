@@ -362,6 +362,40 @@ describe('CaptionListPanel relocated style controls', () => {
     expect(screen.getByRole('spinbutton', { name: 'Caption font size' })).toHaveValue(168)
   })
 
+  // §230: the `plate` style's plate opacity, a percent in the panel and 0 to 1 on the track.
+  describe('plate opacity (the plate style)', () => {
+    it('is offered for plate only, and starts at the template default (60)', () => {
+      renderPanel({ style: 'plate' })
+      expandFormat()
+      expect(screen.getByRole('spinbutton', { name: 'Caption plate opacity' })).toHaveValue(60)
+    })
+
+    it('is not offered for the other styles', () => {
+      renderPanel({ style: 'subtitle' })
+      expandFormat()
+      expect(screen.queryByRole('spinbutton', { name: 'Caption plate opacity' })).not.toBeInTheDocument()
+      expect(screen.queryByLabelText('Caption plate color')).not.toBeInTheDocument()
+    })
+
+    it('typed 35 commits plateOpacity 0.35 on the track; past 100 clamps to 1', () => {
+      const { onCaptionEdit } = renderPanel({ style: 'plate' })
+      expandFormat()
+      const field = screen.getByRole('spinbutton', { name: 'Caption plate opacity' })
+      fireEvent.change(field, { target: { value: '35' } })
+      fireEvent.blur(field, { target: { value: '35' } })
+      expect(onCaptionEdit.mock.calls.at(-1)![0].captions.plateOpacity).toBe(0.35)
+      fireEvent.change(field, { target: { value: '250' } })
+      fireEvent.blur(field, { target: { value: '250' } })
+      expect(onCaptionEdit.mock.calls.at(-1)![0].captions.plateOpacity).toBe(1)
+    })
+
+    it('reads the track\'s own opacity', () => {
+      renderPanel({ style: 'plate', extra: { plateOpacity: 0.25 } })
+      expandFormat()
+      expect(screen.getByRole('spinbutton', { name: 'Caption plate opacity' })).toHaveValue(25)
+    })
+  })
+
   it('fontsize typed past the ceiling clamps to 400 on commit', () => {
     const { onCaptionEdit } = renderPanel()
     expandFormat()
@@ -447,6 +481,8 @@ describe('CaptionListPanel relocated style controls', () => {
     { style: 'highlight-box' as const, label: 'Caption accent color', field: 'accentColor' },
     { style: 'outline' as const, label: 'Caption accent color', field: 'accentColor' },
     { style: 'accent' as const, label: 'Caption accent color', field: 'accentColor' },
+    { style: 'plate' as const, label: 'Caption accent color', field: 'accentColor' },
+    { style: 'plate' as const, label: 'Caption plate color', field: 'backgroundColor' },
   ])('accent color for style $style', ({ style, label, field }) => {
     it(`writes to captions.${field}, live then commit, exactly once each`, () => {
       const { onProjectChange, onCaptionEdit } = renderPanel({ style })

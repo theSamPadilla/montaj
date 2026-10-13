@@ -20,6 +20,7 @@ export function captionTemplatePath(style) {
     'outline':       'outline.jsx',
     'clean':         'clean.jsx',
     'accent':        'accent.jsx',
+    'plate':         'plate.jsx',
   }
   const file = styleMap[style] ?? 'subtitle.jsx'
   return join(__dirname, 'templates', 'captions', file)
