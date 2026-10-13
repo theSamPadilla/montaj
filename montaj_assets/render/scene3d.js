@@ -8,8 +8,9 @@
  * place and before anything else reads the project: `src` becomes the stage the HOST supplies
  * (`MONTAJ_SCENE3D_STAGE`, an absolute path to a stage .jsx: the app keeps the freshest one in its runtime home),
  * and `props` gain `sceneFile` (the scene's active.json, an absolute path: it travels to the page as a file URL and is
- * what the sample cache's manifest records), `sceneData` (that file, read and checked here, so the stage draws from
- * the page's first render and an unreadable scene fails the render instead of drawing blank) and `inPoint` (seconds
+ * what the sample cache's manifest records), `sceneJson` (that file's text, read and checked here, so the stage draws from
+ * the page's first render and an unreadable scene fails the render instead of drawing blank; one string, so the
+ * props scanners (path rewriting, the read boundary, named URLs) see one value and not every string of the scene) and `inPoint` (seconds
  * into the scene's own timeline). From then on the bundle, the read boundary,
  * the sample cache's input manifest (it records props file paths, so an edited scene misses) and the segment encoder
  * need to know nothing about scenes.
@@ -77,9 +78,10 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
       if (!exists(sceneFile)) {
         throw new Scene3dError('scene3d_scene_missing', `${label}: the scene ${name === undefined ? '(the project\'s own)' : `"${name}"`} has no ${sceneFile}. Save the scene first.`)
       }
-      let sceneData
+      let sceneJson, sceneData
       try {
-        sceneData = JSON.parse(read(sceneFile))
+        sceneJson = read(sceneFile)
+        sceneData = JSON.parse(sceneJson)
       } catch (e) {
         throw new Scene3dError('scene3d_invalid', `${label}: ${sceneFile} cannot be read as a scene (${e && e.message ? e.message : e}).`)
       }
@@ -87,7 +89,7 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
         throw new Scene3dError('scene3d_invalid', `${label}: ${sceneFile} is not a scene (no model in it).`)
       }
       item.src = stage
-      item.props = { ...props, sceneFile, sceneData, inPoint }
+      item.props = { ...props, sceneFile, sceneJson, inPoint }
       n += 1
     }
   }

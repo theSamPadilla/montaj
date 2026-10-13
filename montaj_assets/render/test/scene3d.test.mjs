@@ -36,7 +36,7 @@ test('a scene item becomes the plain overlay of the host stage, with the scene f
     assert.equal(materializeScene3d(p, w.project, { env: w.env }), 1)
     const it = p.tracks[0][0]
     assert.equal(it.src, w.stageFile)
-    assert.deepEqual(it.props, { scene: 'hands', inPoint: 2.5, extra: 'kept', sceneFile: join(w.project, 'models', 'scenes', 'hands', 'active.json'), sceneData: JSON.parse(SCENE_JSON) })
+    assert.deepEqual(it.props, { scene: 'hands', inPoint: 2.5, extra: 'kept', sceneFile: join(w.project, 'models', 'scenes', 'hands', 'active.json'), sceneJson: SCENE_JSON })
     assert.equal(it.offsetX, 5, 'the overlay\'s own fields are untouched')
     assert.equal(isScene3dItem(it), false)
     assert.equal(materializeScene3d(p, w.project, { env: w.env }), 0, 'a second pass finds nothing')
@@ -50,7 +50,7 @@ test('no scene name is the project\'s own scene (models/active.json); inPoint de
     materializeScene3d(p, w.project, { env: w.env })
     assert.equal(p.tracks[0][0].props.sceneFile, join(w.project, 'models', 'active.json'))
     assert.equal(p.tracks[0][0].props.inPoint, 0)
-    assert.deepEqual(p.tracks[0][0].props.sceneData, JSON.parse(SCENE_JSON))
+    assert.equal(p.tracks[0][0].props.sceneJson, SCENE_JSON)
     const none = projectOf({ ...scene({}), props: undefined })
     materializeScene3d(none, w.project, { env: w.env })
     assert.equal(none.tracks[0][0].props.inPoint, 0)
