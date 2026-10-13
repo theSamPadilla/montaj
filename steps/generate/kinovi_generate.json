@@ -1,0 +1,26 @@
+{
+  "name": "kinovi_generate",
+  "description": "Generate video on Kinovi (Seedance and Wan models, one key). Mode follows the inputs: text only, --image (first frame, optional --end-image), or --ref-image/--ref-video/--ref-audio (Seedance reference mode). Local files are uploaded to Kinovi first. Standalone.",
+  "output": {
+    "type": "video",
+    "description": "Path to the generated video (.mp4). With --json: {path, taskId, model, creditsUsed, draft}."
+  },
+  "params": [
+    {"name": "prompt", "type": "string", "required": false, "description": "Scene description. Required unless --task-id or --upgrade."},
+    {"name": "out", "type": "path", "required": true, "description": "Output .mp4 path. Optional with _project: saved in the project's assets folder."},
+    {"name": "model", "type": "enum", "required": false, "default": "seedance2-5", "options": ["seedance-20", "seedance2-5", "seedance2-fast", "seedance2.0-mini", "wan3.0-image-to-video", "wan3.0-text-to-video"], "description": "seedance2-5 is the default. seedance2-fast and seedance2.0-mini are cheaper (480p/720p); wan3.0-text-to-video and wan3.0-image-to-video refuse real people's faces."},
+    {"name": "image", "type": "path", "required": false, "description": "First frame. Mutually exclusive with --ref-image."},
+    {"name": "end-image", "type": "path", "required": false, "description": "Last frame. Requires --image."},
+    {"name": "ref-image", "type": "path", "required": false, "repeatable": true, "description": "Reference image (repeatable; Seedance). Mutually exclusive with --image."},
+    {"name": "ref-video", "type": "path", "required": false, "repeatable": true, "description": "Reference video (repeatable; Seedance; billed at the reference-video rate)."},
+    {"name": "ref-audio", "type": "path", "required": false, "repeatable": true, "description": "Reference audio (repeatable; Seedance; needs an image or video beside it)."},
+    {"name": "duration", "type": "int", "required": false, "default": 5, "description": "Seconds: seedance2-5 4-30, the other Seedance models 4-15, Wan 2-30."},
+    {"name": "aspect-ratio", "type": "string", "required": false, "description": "16:9, 9:16, 1:1, 4:3, 3:4 (Seedance also 21:9). Frames follow the first frame's ratio."},
+    {"name": "resolution", "type": "enum", "required": false, "default": "720p", "options": ["480p", "720p", "1080p", "4k"], "description": "Model-dependent: 4k is seedance-20 only; seedance2-fast and seedance2.0-mini stop at 720p."},
+    {"name": "seed", "type": "int", "required": false, "description": "RNG seed (-1 for random)."},
+    {"name": "sound", "type": "bool", "required": false, "default": false, "description": "Generate audio with the clip. Off by default."},
+    {"name": "draft", "type": "bool", "required": false, "default": false, "description": "seedance2-5 at 480p only: a cheap preview that --upgrade turns into 1080p within 7 days."},
+    {"name": "upgrade", "type": "string", "required": false, "description": "A seedance2-5 draft's task id: generate it again at 1080p (billed as 1080p)."},
+    {"name": "task-id", "type": "string", "required": false, "description": "A task already submitted (a run that timed out): wait for it and download it. No new task, no new charge."}
+  ]
+}

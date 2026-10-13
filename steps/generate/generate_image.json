@@ -1,6 +1,6 @@
 {
   "name": "generate_image",
-  "description": "Generate an image via Gemini or OpenAI. Text-to-image or reference-conditioned.",
+  "description": "Generate an image via Gemini, OpenAI or Kinovi. Text-to-image or reference-conditioned.",
   "output": {
     "type": "image",
     "description": "Path to the generated image file"
@@ -9,15 +9,19 @@
     {"name": "prompt", "type": "string", "required": true, "description": "Text description of the image"},
     {"name": "out", "type": "path", "required": true, "description": "Output image path (.png). Optional with _project: saved in the project's assets folder."},
     {"name": "provider", "type": "enum", "required": false, "default": "gemini",
-     "options": ["gemini", "openai"],
+     "options": ["gemini", "kinovi", "openai"],
      "description": "Which vendor to use"},
     {"name": "ref-image", "type": "path", "required": false, "repeatable": true,
      "description": "Reference image(s) for conditioned generation"},
     {"name": "size", "type": "string", "required": false, "default": "1024x1024",
      "description": "Image dimensions (vendor-dependent)"},
     {"name": "aspect-ratio", "type": "string", "required": false,
-     "description": "Gemini only. E.g. '9:16', '1:1'. Ignored by OpenAI."},
+     "description": "Gemini and Kinovi. E.g. '9:16', '1:1' (Kinovi: per model, e.g. gpt-image-2 and seedream-5.0-pro also auto). Ignored by OpenAI."},
     {"name": "model", "type": "string", "required": false,
-     "description": "Override the connector's default model for the chosen provider"}
+     "description": "Override the connector's default model for the chosen provider. Kinovi: nanobanana-pro (default), nanobanana2, gpt-image-2, seedream-5.0-pro."},
+    {"name": "resolution", "type": "string", "required": false,
+     "description": "Kinovi only: 1k, 2k or 4k (model-dependent; nanobanana2 2k/4k, seedream-5.0-pro 1k/2k)."},
+    {"name": "quality", "type": "string", "required": false,
+     "description": "Kinovi gpt-image-2 only: low, medium or high (price rises with it)."}
   ]
 }
