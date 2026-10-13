@@ -57,6 +57,7 @@ import {
 import { resolveAt, sourceWindow, opaqueReplacesPicture, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 import { captionOverlayFields } from './caption-spec.js'
+import { materializeScene3d } from './scene3d.js'
 
 /**
  * The pre-SP6b Hable chain: the ONLY place this file tonemaps with Hable, used
@@ -796,6 +797,9 @@ export async function sampleFrame({
   } else {
     project = projectJson
   }
+  // §239: a scene item (src `engine:scene3d`) becomes the plain overlay of the host's stage before the cache key reads
+  // the overlay sources, so an edited stage or scene misses. Needs the project's folder, so only a project given by path.
+  materializeScene3d(project, projectPath ? dirname(projectPath) : null)
 
   // Opt-in: a time at or past the end samples the last frame instead of
   // failing. Done before the cache key so the clamped time is what is cached.
