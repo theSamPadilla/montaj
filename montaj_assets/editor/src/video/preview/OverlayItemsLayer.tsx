@@ -234,10 +234,18 @@ function CustomOverlay({
   // Deep-clone/rewrite the props once per props change instead of every frame.
   // Live prop edits (the panel's Content tab → VideoEditor.withItemProps)
   // always produce a new `props` object reference, so this recomputes on every
-  // edit.
+  // edit. Keyed on the props' CONTENT, not the object: a project echo (an
+  // external save, a note, an agent's write) replaces the project with freshly
+  // parsed objects, so `props` is a new object with the same content, and a
+  // host that keys an overlay's module instance on the props object it is
+  // handed (Montaj's preview does) would otherwise re-evaluate the overlay on
+  // every echo and lose what it bound at mount (a 3D stage's camera froze).
+  // The key is computed only when the reference changes, not every frame.
+  const propsKey = useMemo(() => JSON.stringify(props ?? null), [props])
   const resolvedProps = useMemo(
     () => resolveOverlayPropPaths(props, fileUrl) as Record<string, unknown>,
-    [props, fileUrl],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- props by content (propsKey)
+    [propsKey, fileUrl],
   )
 
   if (error) {
