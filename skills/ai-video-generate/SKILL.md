@@ -36,9 +36,9 @@ pending → storyboard_ready → draft → final
 
 ## Vendor
 
-Each scene generates through one of two vendors: **Kling** (`kling_generate`, default) or **Seedance** (`seedance_generate`, on fal.ai). Kling is project-aware (Steps B/C/D below); Seedance is not, so the mechanics differ enough to cover separately.
+Each scene generates through one of three vendors: **Kling** (`kling_generate`, default), **Seedance** (`seedance_generate`, on fal.ai) or **Kinovi** (`kinovi_generate`: Seedance and Wan models on one Kinovi key). Kling is project-aware (Steps B/C/D below); Seedance and Kinovi are not, so the mechanics differ enough to cover separately.
 
-**Picking the vendor.** Kling is the default for every scene. Generate a scene with Seedance instead when the storyboard or that scene sets `vendor: "seedance"`, or the user asks for it by name ("use Seedance for the drone shot"). Never pick a vendor the user didn't ask for.
+**Picking the vendor.** Kling is the default for every scene. Generate a scene with Seedance instead when the storyboard or that scene sets `vendor: "seedance"`, with Kinovi when it sets `vendor: "kinovi"`, or with either when the user asks for it by name ("use Kinovi for the drone shot"). Never pick a vendor the user didn't ask for, and use one video vendor for the whole video unless the storyboard says otherwise.
 
 **Calling Seedance.** `seedance_generate` is standalone only, with no `--project-id`/`--scene-id` mode. Compose the prompt yourself first (same composition as Step C: styleAnchor prefix + scene prose + camera tags), then call:
 
@@ -57,7 +57,22 @@ seedance_generate --prompt <composed> --out <path> \
 - Seedance has no chained or batched mode. A scene routed to Seedance always generates independently, even when the rest of the storyboard is running chained or batched.
 - Append the clip to `tracks[0].items` and save `project.json` yourself, the same shape Step D uses for a Kling clip, but with `generation.provider: "fal"` and `generation.model` set to the Seedance model actually used (e.g. `seedance-2.5`). `seedance_generate` doesn't touch the project.
 
-**On failure:** a `ConnectorError` with reason `invalid_api_key` or `insufficient_credit`, from either vendor, means the integration itself needs fixing, not the prompt. Stop, tell the user which one to fix in Integrations (Kling, or Seedance/fal.ai), and **never fall back to the other vendor silently**. A scene the user asked to generate with Seedance failing over to Kling (or the reverse) changes what they asked for without telling them.
+**Calling Kinovi.** `kinovi_generate` is standalone too. Compose the prompt the same way, then:
+
+```
+kinovi_generate --prompt <composed> --out <path> [--model seedance2-5] \
+  [--image <first_frame> [--end-image <last_frame>]] [--ref-image <path> ...] \
+  [--ref-video <path> ...] [--ref-audio <path> ...] [--duration <n>] [--sound] [--json]
+```
+
+- **Models:** `seedance2-5` (default, 4-30 s, up to 1080p), `seedance-20` (4-15 s, up to 4k), `seedance2-fast` and `seedance2.0-mini` (cheaper, 480p/720p), `wan3.0-text-to-video` and `wan3.0-image-to-video` (2-30 s). Wan refuses anything that looks like a real person's face.
+- **Modes** follow the inputs: text only; `--image` (and `--end-image`) for frames, whose aspect ratio follows the first frame; `--ref-image`/`--ref-video`/`--ref-audio` for Seedance reference mode (the prompt names them @Image1, @Video1, @Audio1… in list order). Local files are uploaded to Kinovi for you.
+- **Sound is off unless you pass `--sound`.**
+- **Cost:** credits are taken when the task starts and refunded if it fails. A cheap look first: `--draft` (`seedance2-5`, `--resolution 480p`), then `--upgrade <draft taskId>` for the 1080p version.
+- **A run that times out** prints the task id. Rerun with `--task-id <id> --out <path>` to collect it: never generate the scene again, which would pay twice.
+- Save the clip like a Seedance one, with `generation.provider: "kinovi"` and `generation.model` the model used.
+
+**On failure:** a `ConnectorError` with reason `invalid_api_key` or `insufficient_credit`, from any vendor, means the integration itself needs fixing, not the prompt. Stop, tell the user which one to fix in Integrations (Kling, Seedance/fal.ai or Kinovi), and **never fall back to another vendor silently**. A scene the user asked to generate with Seedance failing over to Kling (or any other swap) changes what they asked for without telling them. A `content_refused` failure (moderation, a real person's face, a copyrighted reference) is the prompt or the reference, not the key: change it and tell the user what you changed.
 
 ---
 

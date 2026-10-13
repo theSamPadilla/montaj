@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from connectors import (
-    ConnectorError, INVALID_API_KEY, INSUFFICIENT_CREDIT, MODEL_RETIRED, UNREACHABLE,
+    ConnectorError, INVALID_API_KEY, INSUFFICIENT_CREDIT, MODEL_RETIRED, UNREACHABLE, CONTENT_REFUSED,
 )
 
 _MODULE_PATH = REPO_ROOT / "steps" / "generate" / "_fail_reasons.py"
@@ -39,6 +39,7 @@ def _fail_for(fail_reasons, monkeypatch, capsys, error, vendor_label):
     (INSUFFICIENT_CREDIT, "insufficient_credit"),
     (MODEL_RETIRED, "model_retired"),
     (UNREACHABLE, "provider_unreachable"),
+    (CONTENT_REFUSED, "content_refused"),
     (None, "api_error"),
     ("some_future_reason_nobody_mapped_yet", "api_error"),
 ])

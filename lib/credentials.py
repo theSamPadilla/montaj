@@ -26,6 +26,7 @@ KNOWN_PROVIDERS: dict[str, list[str]] = {
     "serpapi":    ["api_key"],
     "fal":        ["api_key"],
     "elevenlabs": ["api_key"],
+    "kinovi":     ["api_key"],
 }
 
 
