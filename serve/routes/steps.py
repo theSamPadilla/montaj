@@ -278,7 +278,7 @@ def resolve_project_param(schema: dict, body: dict) -> None:
         })
     body["project"] = str(found / "project.json")
 
-_OUT_EXT = {"image": ".png", "audio": ".mp3", "video": ".mp4"}
+_OUT_EXT = {"image": ".png", "audio": ".mp3", "video": ".mp4", "model": ".glb"}
 # Only for the generated name: a plain name the caller gives a json step may be a
 # folder (glass_plate's plates), so it keeps no extension.
 _AUTO_OUT_EXT = {**_OUT_EXT, "json": ".json"}

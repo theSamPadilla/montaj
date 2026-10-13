@@ -3,7 +3,8 @@
 One vendor, one API key, direct HTTP via requests. See docs/CONNECTORS.md for
 the layering rule. Facts below were read from Tripo's own docs on 2026-10-13
 (developers.tripo3d.ai/en/docs: introduction, files, task-query, task-lifecycle,
-billing, rate-limits, error-handling, generation-image-to-model); re-read the
+billing, rate-limits, error-handling, generation-text-to-model,
+generation-image-to-model, generation-multiview-to-model); re-read the
 endpoint's page before building a request body for it.
 
 Host: https://openapi.tripo3d.ai/v3 (the international site). The China site is
@@ -34,17 +35,29 @@ Current functions:
     wait(task_id) -> dict                     # the finished task's data
     download(url, out_path) -> str
     resume(task_id, out_path) -> dict         # wait + download model_url: {path, taskId, creditsUsed}
+    build_generation_body(...) -> (endpoint, body)   # pure, validates
+    generate_model(out_path=..., ...) -> dict # text, image or multiview to a .glb
+    resume_model(task_id, out_path) -> dict   # collect a generation already submitted
     check_key() -> dict
+
+A generated model is recorded beside its output before Tripo is polled:
+`<out>.tripo.json` = {task_id, kind: "model", model, endpoint, created} (and
+credits_consumed once it finishes). A run that stopped (a timeout, a closed
+laptop) and is retried with the same out re-attaches to that task instead of
+paying for a new one; a task that ended without a model (failed, banned,
+expired, cancelled) removes the record, so the retry submits again.
 
 Library code: raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
-import os, time
-from urllib.parse import quote
+import json, os, sys, time
+from datetime import datetime, timezone
+from urllib.parse import quote, urlsplit
 
 from connectors import (ConnectorError, _http, CONTENT_REFUSED, INSUFFICIENT_CREDIT,
                         INVALID_API_KEY, MODEL_RETIRED, UNREACHABLE)
 from lib.credentials import get_credential, CredentialError
+from lib.glb_textures import GlbTextureError, ensure_supported_textures
 
 API = "https://openapi.tripo3d.ai/v3"
 
@@ -71,6 +84,27 @@ BUSY_RETRIES = 3
 BUSY_DEFAULT_WAIT_S = 5.0
 BUSY_MAX_WAIT_S = 30.0
 
+# Generation, from generation-{text,image,multiview}-to-model/standard.md (read
+# 2026-10-13). Only what Montaj sends is listed: the body never carries quad (it
+# forces FBX), compress (meshopt), generate_parts (no textures), smart_low_poly
+# or export_orientation (a later rig or convert can come out wrongly oriented
+# while the task still reports success).
+GENERATION_ENDPOINTS = {
+    "text": "/generation/text-to-model",
+    "image": "/generation/image-to-model",
+    "multiview": "/generation/multiview-to-model",
+}
+PROMPT_MAX = 1024            # text-to-model: "up to 1024 characters"
+NEGATIVE_PROMPT_MAX = 255    # text-to-model: "up to 255 characters"
+TEXTURE_QUALITIES = ("standard", "detailed")
+VIEWS = ("front", "left", "back", "right")   # the order the server canonicalizes to
+# Montaj's budget, not Tripo's limit (v3.1 takes up to 1.5M triangles): it keeps a
+# model under the editor's 300k-vertex cap.
+FACE_LIMIT_DEFAULT = 30000
+FACE_LIMIT_RANGE = (1000, 150000)
+
+SIDECAR_SUFFIX = ".tripo.json"
+
 _KEY_CODES = frozenset({1000, 1001})
 _BUSY_CODES = frozenset({1007, 2000})
 _SERVER_STATUSES = frozenset({500, 502, 503, 504})
@@ -79,6 +113,26 @@ _SERVER_STATUSES = frozenset({500, 502, 503, 504})
 class _Busy(ConnectorError):
     """Tripo refused with a rate or concurrency limit and kept refusing. Distinct
     from other errors only so a poll loop can treat it as transient."""
+
+
+class _TaskEnded(ConnectorError):
+    """The task reached a terminal status with no output (failed, banned, expired,
+    cancelled): waiting again can't help, so a resume record for it is dropped."""
+
+
+class UnsupportedModel(ConnectorError):
+    """Tripo delivered a model Montaj can't load and this module can't fix
+    (compressed geometry, a KTX2 texture, a file outside the GLB). `kind` is
+    lib.glb_textures.GlbTextureError's kind; `task_id` is the paid task."""
+
+    def __init__(self, message: str, kind: str, task_id: str):
+        super().__init__(message)
+        self.kind = kind
+        self.task_id = task_id
+
+
+def _warn(message: str) -> None:
+    print(json.dumps({"warn": message}), file=sys.stderr)
 
 
 def _key() -> str:
@@ -264,16 +318,20 @@ def _terminal_error(task_id: str, status: str, task: dict) -> ConnectorError | N
         code, message = task.get("error_code"), task.get("error_message")
         detail = (f" ({code}: {message})" if code is not None and message else
                   f" ({code})" if code is not None else f" ({message})" if message else "")
-        return ConnectorError(f"Tripo task {task_id} failed{detail}. A failed task is not charged.")
+        if _code({"code": code}) == 2008:
+            return _TaskEnded(
+                f"Tripo's content policy refused task {task_id}{detail}. Change the prompt or the "
+                f"image and try again. A failed task is not charged.", reason=CONTENT_REFUSED)
+        return _TaskEnded(f"Tripo task {task_id} failed{detail}. A failed task is not charged.")
     if status == "banned":
-        return ConnectorError(
+        return _TaskEnded(
             f"Tripo's content policy refused task {task_id}. Change the prompt or the image "
             f"and try again.", reason=CONTENT_REFUSED)
     if status == "expired":
-        return ConnectorError(f"Tripo task {task_id} expired: its output files are no longer "
-                              f"available. Generate it again.")
+        return _TaskEnded(f"Tripo task {task_id} expired: its output files are no longer "
+                          f"available. Generate it again.")
     if status == "cancelled":
-        return ConnectorError(f"Tripo task {task_id} was cancelled. A cancelled task is not charged.")
+        return _TaskEnded(f"Tripo task {task_id} was cancelled. A cancelled task is not charged.")
     return None
 
 
@@ -285,8 +343,9 @@ def wait(task_id: str) -> dict:
     if not task_id:
         raise ConnectorError("task_id is required")
     path = f"/tasks/{quote(str(task_id), safe='')}"
-    elapsed, failures, last = 0.0, 0, None
-    while elapsed < MAX_POLL_S:
+    # Wall time, so the time each status check itself takes counts too.
+    start, failures, last = time.monotonic(), 0, None
+    while time.monotonic() - start < MAX_POLL_S:
         task = None
         try:
             # A 429 while polling is just a missed tick: the loop is the retry.
@@ -314,22 +373,40 @@ def wait(task_id: str) -> dict:
             if error:
                 raise error
         time.sleep(POLL_INTERVAL_S)
-        elapsed += POLL_INTERVAL_S
     raise ConnectorError(
         f"Tripo task {task_id} is still running after {MAX_POLL_S:.0f} s. It is submitted and "
         f"may still finish: resume it with --task-id {task_id} instead of generating again.")
 
 
+def _plain_url(url: str) -> str:
+    """A signed URL without its query string: the signature is a credential."""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}{parts.path}"
+
+
 def download(url: str, out_path: str) -> str:
     """Fetch a finished output (a signed CDN URL: no API key is sent) to out_path.
-    Written beside it first and renamed, so a failed download leaves no partial file."""
+    Written beside it first and renamed, so a failed download leaves no partial file.
+    A network failure (or a 5xx after the transport's retries) is UNREACHABLE."""
     if not isinstance(url, str) or not url.startswith(("https://", "http://")):
         raise ConnectorError(f"Tripo returned an unusable download URL: {url!r}")
     if not out_path:
         raise ConnectorError("out_path is required")
     tmp = f"{out_path}.part"
     try:
-        _http.download_file(url, tmp, timeout=300)
+        try:
+            r = _http.request_with_retry("GET", url, stream=True, timeout=300)
+        except ConnectorError as e:
+            raise ConnectorError(f"Tripo download of {_plain_url(url)} failed: {e}",
+                                 reason=UNREACHABLE) from e
+        if r.status_code >= 400:
+            raise ConnectorError(
+                f"Tripo download failed (HTTP {r.status_code}): {_plain_url(url)}",
+                reason=UNREACHABLE if r.status_code >= 500 else None)
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        with open(tmp, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1 << 20):
+                f.write(chunk)
         os.replace(tmp, out_path)
     except Exception as e:
         try:
@@ -338,9 +415,10 @@ def download(url: str, out_path: str) -> str:
             pass
         if isinstance(e, ConnectorError):
             raise
-        if isinstance(e, OSError):
+        # requests' own errors subclass OSError: a dropped stream is the network, not the disk.
+        if isinstance(e, OSError) and not isinstance(e, _http._require_requests().RequestException):
             raise ConnectorError(f"Could not write {out_path}: {e}") from e
-        raise ConnectorError(f"Tripo download failed: {e}", reason=UNREACHABLE) from e
+        raise ConnectorError(f"Tripo download of {_plain_url(url)} failed: {e}", reason=UNREACHABLE) from e
     return out_path
 
 
@@ -358,6 +436,270 @@ def resume(task_id: str, out_path: str) -> dict:
         raise ConnectorError(f"Tripo task {task_id} succeeded but returned no model_url")
     path = download(url, out_path)
     return {"path": path, "taskId": task_id, "creditsUsed": _credits(task.get("credits_consumed"))}
+
+
+# ---------------------------------------------------------------------------
+# Generation: text, image or multiview to a .glb
+# ---------------------------------------------------------------------------
+
+def _face_limit(value) -> int:
+    """The face budget: FACE_LIMIT_DEFAULT when unset, clamped to FACE_LIMIT_RANGE."""
+    if value is None:
+        return FACE_LIMIT_DEFAULT
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConnectorError(f"Tripo face_limit must be a whole number, got {value!r}")
+    lo, hi = FACE_LIMIT_RANGE
+    clamped = min(max(value, lo), hi)
+    if clamped != value:
+        _warn(f"Tripo face_limit {value} is outside {lo:,}-{hi:,}; using {clamped:,}")
+    return clamped
+
+
+def _view_inputs(views) -> list[dict]:
+    """The multiview `inputs`, view-key form: one {view: image} object per view
+    given, in the canonical order. Front is required, and at least 2 views."""
+    if not isinstance(views, dict):
+        raise ConnectorError("Tripo views must map front, left, back or right to an image")
+    unknown = sorted(str(k) for k in views if k not in VIEWS)
+    if unknown:
+        raise ConnectorError(f"Tripo views are front, left, back and right; got {', '.join(unknown)}")
+    given = {k: v for k, v in views.items() if v is not None}
+    for name, value in given.items():
+        if not isinstance(value, str) or not value.strip():
+            raise ConnectorError(f"Tripo's {name} view is empty")
+    if "front" not in given:
+        raise ConnectorError("Tripo multiview needs a front view")
+    if len(given) < 2:
+        raise ConnectorError("Tripo multiview needs at least 2 views: the front and one of left, back or right")
+    return [{name: given[name]} for name in VIEWS if name in given]
+
+
+def build_generation_body(*, prompt=None, image_input=None, views=None, texture="standard",
+                          face_limit=None, negative_prompt=None, model=DEFAULT_MODEL) -> tuple[str, dict]:
+    """Validate and build one generation request: (endpoint, body). No HTTP.
+
+    Exactly one mode: `prompt` (text-to-model), `image_input` (image-to-model:
+    a file_token or URL) or `views` ({front, left?, back?, right?} of file_tokens
+    or URLs: multiview-to-model). A value of None means not given. Every body
+    asks for PBR textures at `texture` quality ("standard" or "detailed") and
+    sets face_limit (FACE_LIMIT_DEFAULT unless given, clamped to FACE_LIMIT_RANGE).
+    `negative_prompt` goes with a text prompt only.
+    """
+    modes = [m for m, v in (("text", prompt), ("image", image_input), ("multiview", views)) if v is not None]
+    if len(modes) != 1:
+        got = f"; got {' and '.join(modes)}" if modes else ""
+        raise ConnectorError("Tripo makes a model from exactly one of a prompt, an image or views "
+                             f"(the front and at least one more){got}")
+    mode = modes[0]
+    if not isinstance(model, str) or not model.strip():
+        raise ConnectorError(f"Tripo model must be a version string, got {model!r}")
+    if texture not in TEXTURE_QUALITIES:
+        raise ConnectorError(f"Tripo texture must be one of {', '.join(TEXTURE_QUALITIES)}, got {texture!r}")
+    faces = _face_limit(face_limit)
+    if negative_prompt is not None and not isinstance(negative_prompt, str):
+        raise ConnectorError(f"Tripo negative prompt must be text, got {negative_prompt!r}")
+    negative = negative_prompt if negative_prompt and negative_prompt.strip() else None
+
+    body = {}
+    if mode == "text":
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ConnectorError("Tripo needs a prompt: it must not be empty")
+        if len(prompt) > PROMPT_MAX:
+            raise ConnectorError(f"Tripo prompts are up to {PROMPT_MAX} characters; this one is {len(prompt)}")
+        body["prompt"] = prompt
+        if negative is not None:
+            if len(negative) > NEGATIVE_PROMPT_MAX:
+                raise ConnectorError(f"Tripo negative prompts are up to {NEGATIVE_PROMPT_MAX} characters; "
+                                     f"this one is {len(negative)}")
+            body["negative_prompt"] = negative
+    elif negative is not None:
+        raise ConnectorError("Tripo takes a negative prompt with a text prompt only, not with an image or views")
+    elif mode == "image":
+        if not isinstance(image_input, str) or not image_input.strip():
+            raise ConnectorError("Tripo needs an image: it must not be empty")
+        body["input"] = image_input
+    else:
+        body["inputs"] = _view_inputs(views)
+    body.update(model=model, texture=True, pbr=True, texture_quality=texture, face_limit=faces)
+    return GENERATION_ENDPOINTS[mode], body
+
+
+def sidecar_path(out_path: str) -> str:
+    """Where a model's task record lives: `<out>.tripo.json`."""
+    return f"{out_path}{SIDECAR_SUFFIX}"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _remove(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _read_sidecar(out_path: str) -> dict | None:
+    """The task record beside out_path, or None when there is none (or it names
+    no task). An unreadable one is refused: it may be the only note of a paid task."""
+    path = sidecar_path(out_path)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            record = json.load(f)
+    except (OSError, ValueError) as e:
+        raise ConnectorError(
+            f"The Tripo task record {path} is unreadable ({e}). If you know its task id, collect "
+            f"it with --task-id; otherwise delete the file and generate again.") from e
+    if not isinstance(record, dict) or not record.get("task_id"):
+        return None
+    kind = record.get("kind", "model")
+    if kind != "model":
+        raise ConnectorError(f"{path} records a Tripo {kind} task, not a model. Choose another output path.")
+    return record
+
+
+def _write_sidecar(out_path: str, record: dict) -> None:
+    """Write the task record atomically. A failure is a warning, not an error:
+    the task is already paid for, and the record is only the way back to it."""
+    path, tmp = sidecar_path(out_path), sidecar_path(out_path) + ".part"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+    except OSError as e:
+        _remove(tmp)
+        task_id = record.get("task_id")
+        _warn(f"Could not record Tripo task {task_id} in {path} ({e}). If this run stops, "
+              f"collect the task with --task-id {task_id}.")
+
+
+def _check_out(out_path: str) -> None:
+    if not out_path:
+        raise ConnectorError("out_path is required")
+    if not str(out_path).lower().endswith(".glb"):
+        raise ConnectorError(f"Tripo models are GLB files: the output path must end in .glb, got {out_path}")
+    if os.path.lexists(out_path):
+        raise ConnectorError(f"{out_path} already exists. Montaj does not overwrite a model: "
+                             f"choose a new output path.")
+
+
+def _unsupported(e: GlbTextureError, task_id: str) -> UnsupportedModel:
+    if e.kind == "compressed":
+        message = f"Tripo returned a compressed model; Montaj needs it uncompressed ({e}, task {task_id})."
+    else:
+        message = f"Tripo returned a model Montaj can't use: {e} (task {task_id})."
+    return UnsupportedModel(message, e.kind, task_id)
+
+
+def _collect(record: dict, out_path: str) -> dict:
+    """Wait for the recorded task, download its model, make its textures ones
+    Montaj reads, and only then put it at out_path. Returns the step's result."""
+    task_id = record["task_id"]
+    try:
+        task = wait(task_id)
+    except _TaskEnded:
+        _remove(sidecar_path(out_path))   # nothing to collect: a retry submits again
+        raise
+    output = task.get("output") if isinstance(task.get("output"), dict) else {}
+    url = output.get("model_url")
+    if not url:
+        raise ConnectorError(f"Tripo task {task_id} succeeded but returned no model_url")
+    staged = f"{out_path}.download"
+    try:
+        try:
+            download(url, staged)
+        except ConnectorError as e:
+            raise ConnectorError(f"{e}. The model is made and paid for: collect it again with "
+                                 f"--task-id {task_id} (no new charge).", reason=e.reason) from e
+        try:
+            report = ensure_supported_textures(staged)
+        except GlbTextureError as e:
+            raise _unsupported(e, task_id) from e
+        except OSError as e:
+            raise ConnectorError(f"Could not read the downloaded model {staged}: {e}") from e
+        try:
+            os.replace(staged, out_path)
+        except OSError as e:
+            raise ConnectorError(f"Could not write {out_path}: {e}") from e
+    finally:
+        _remove(staged)
+    credits = _credits(task.get("credits_consumed"))
+    _write_sidecar(out_path, {**record, "credits_consumed": credits})
+    return {"path": out_path, "taskId": task_id, "model": record.get("model"),
+            "creditsUsed": credits, "textures": report}
+
+
+def _source(value):
+    """A local image uploaded (its file_token); a URL, None or "" as it is."""
+    if not value or str(value).startswith(("http://", "https://")):
+        return value
+    return upload(value)
+
+
+def _placeholder(value):
+    return "u" if value else value
+
+
+def generate_model(*, out_path, prompt=None, image_path=None, view_paths=None, texture="standard",
+                   face_limit=None, negative_prompt=None) -> dict:
+    """Text, image or multiview to a .glb at out_path (which must not exist yet).
+    Local images are uploaded first (URLs pass through); view_paths maps front,
+    left, back and right to an image (None for a view not given).
+
+    The task is recorded in `<out>.tripo.json` before polling. When that record
+    exists and out_path does not, this re-attaches to the recorded task (no new
+    task, no new charge) and the inputs given here are not sent.
+
+    Returns {path, taskId, model, creditsUsed, textures}: textures is
+    lib.glb_textures.ensure_supported_textures's report. Raises UnsupportedModel
+    when the GLB can't be made loadable, ConnectorError for everything else."""
+    _check_out(out_path)
+    record = _read_sidecar(out_path)
+    if record:
+        _warn(f"Re-attaching to Tripo task {record['task_id']} recorded in {sidecar_path(out_path)}: "
+              f"no new task, no new charge. This run's inputs are not sent.")
+        return _collect(record, out_path)
+
+    faces = _face_limit(face_limit)
+    views = dict(view_paths) if isinstance(view_paths, dict) else view_paths
+    kwargs = dict(texture=texture, face_limit=faces, negative_prompt=negative_prompt)
+    # Dry run first: a bad input costs neither an upload nor a submit.
+    build_generation_body(
+        prompt=prompt, image_input=_placeholder(image_path),
+        views={k: _placeholder(v) for k, v in views.items()} if isinstance(views, dict) else views, **kwargs)
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    except OSError as e:
+        raise ConnectorError(f"Could not make the folder for {out_path}: {e}") from e
+    endpoint, body = build_generation_body(
+        prompt=prompt, image_input=_source(image_path),
+        views={k: _source(v) for k, v in views.items()} if isinstance(views, dict) else views, **kwargs)
+    task_id = create(endpoint, body)
+    record = {"task_id": task_id, "kind": "model", "model": body["model"], "endpoint": endpoint,
+              "created": _now()}
+    _write_sidecar(out_path, record)
+    return _collect(record, out_path)
+
+
+def resume_model(task_id: str, out_path: str) -> dict:
+    """Collect a generation already submitted (a run that stopped): wait, download,
+    fix the textures. No new task, no new charge. Records the task beside out_path
+    first, keeping what an existing record for the same task says."""
+    if not task_id:
+        raise ConnectorError("task_id is required")
+    _check_out(out_path)
+    try:
+        record = _read_sidecar(out_path)
+    except ConnectorError:
+        record = None     # the explicit task id wins over an unreadable or other record
+    if not record or record.get("task_id") != task_id:
+        record = {"task_id": task_id, "kind": "model", "model": None, "endpoint": None, "created": _now()}
+    _write_sidecar(out_path, record)
+    return _collect(record, out_path)
 
 
 def _number(value) -> str:

@@ -98,7 +98,7 @@ This makes steps composable at the shell level and predictable for the agent.
 
 **Input types:** `video`, `audio`, `srt`, `json`, `image`, `any`
 
-**Output types:** `video`, `audio`, `srt`, `json`, `image`, `path[]`
+**Output types:** `video`, `audio`, `srt`, `json`, `image`, `model` (a `.glb`), `path[]`
 
 Use `path[]` when a step returns a JSON array of file paths (e.g. `select_takes`).
 

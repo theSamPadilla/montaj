@@ -69,10 +69,23 @@ def fake(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def sleeps(monkeypatch):
-    """Every sleep (the transport's backoff and the connector's own), recorded and skipped."""
+def clock(monkeypatch):
+    """A fake monotonic clock: it moves only when something sleeps (or a test moves it)."""
+    now = [1000.0]
+    monkeypatch.setattr(tripo.time, "monotonic", lambda: now[0])
+    return now
+
+
+@pytest.fixture(autouse=True)
+def sleeps(monkeypatch, clock):
+    """Every sleep (the transport's backoff and the connector's own), recorded and
+    skipped; each one moves the fake clock by its length."""
     slept = []
-    monkeypatch.setattr(tripo.time, "sleep", slept.append)
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock[0] += seconds
+    monkeypatch.setattr(tripo.time, "sleep", sleep)
     return slept
 
 
@@ -155,6 +168,15 @@ ERR_INVALID_KEY = _error_body(1000, "Invalid API Key")
 ERR_UNAUTHORIZED = _error_body(1001, "Unauthorized")
 ERR_CONTENT = _error_body(2008, "Content policy violation")
 ERR_DEPRECATED = _error_body(2015, "Version deprecated")
+
+# Built from the documented envelope (error-handling.md, read 2026-10-13): the docs
+# show no body for 2002, only its table row, so the message and suggestion are that
+# row's "Meaning" and "Recommended Handling", not a captured payload.
+ERR_UNSUPPORTED_PARAM = {
+    "code": 2002,
+    "message": "Unsupported request parameter",
+    "suggestion": "Check whether request body field names and values match the documentation",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -279,14 +301,13 @@ def test_deprecated_version_is_model_retired(fake):
 
 
 def test_any_other_error_carries_tripos_message_and_suggestion(fake):
-    fake.script = [_FakeResponse(400, {"code": 2002, "message": "Unsupported request parameter",
-                                       "suggestion": "Check the request body field names"})]
+    fake.script = [_FakeResponse(400, ERR_UNSUPPORTED_PARAM)]
     with pytest.raises(ConnectorError) as e:
         tripo.create("/generation/text-to-model", {"promt": "x"})
     message = str(e.value)
     assert e.value.reason is None
     assert message.startswith("Tripo") and "code 2002" in message
-    assert "Unsupported request parameter" in message and "Check the request body field names" in message
+    assert "Unsupported request parameter" in message and "field names and values" in message
 
 
 def test_a_5xx_is_unreachable_after_the_transport_retries(fake):
@@ -463,6 +484,15 @@ def test_wait_failed_names_the_error_code_and_message(fake):
     assert e.value.reason is None
 
 
+@pytest.mark.parametrize("code", [2008, "2008"])
+def test_wait_failed_on_content_policy_is_content_refused(fake, code):
+    fake.script = [_task("failed", error_code=code, error_message="Content policy violation")]
+    with pytest.raises(ConnectorError, match="Tripo's content policy refused task task_abc123") as e:
+        tripo.wait("task_abc123")
+    assert e.value.reason == CONTENT_REFUSED
+    assert "2008" in str(e.value) and "not charged" in str(e.value)
+
+
 def test_wait_failed_without_an_error_code(fake):
     fake.script = [_task("failed")]
     with pytest.raises(ConnectorError, match="Tripo task task_abc123 failed. A failed task is not charged"):
@@ -496,6 +526,20 @@ def test_an_unknown_status_is_still_running_until_the_timeout_names_the_task(fak
         tripo.wait("task_abc123")
     assert "Tripo" in str(e.value) and "still running" in str(e.value)
     assert len(fake.calls) == 3
+
+
+def test_the_time_a_status_check_takes_counts_toward_the_limit(fake, monkeypatch, clock, sleeps):
+    # Each status check takes 100 s of wall time here; counting only the sleeps
+    # would allow 168 checks (840 s / 5 s), the wall clock allows 8.
+    def slow_running(method, url, **kwargs):
+        fake.calls.append((method, url, kwargs))
+        clock[0] += 100.0
+        return _task("running")
+    monkeypatch.setattr(fake, "request", slow_running)
+    with pytest.raises(ConnectorError, match="still running after 840 s"):
+        tripo.wait("task_abc123")
+    assert len(fake.calls) == 8
+    assert sleeps == [tripo.POLL_INTERVAL_S] * 8
 
 
 def test_status_checks_that_keep_failing_name_the_task(fake):
@@ -555,9 +599,46 @@ def test_credits_are_a_float_or_none_never_an_int(fake, tmp_path, credits, expec
 def test_a_failed_download_leaves_no_file(fake, tmp_path):
     fake.script = [_FakeResponse(200, TASK_SUCCESS), _FakeResponse(404)]
     out = tmp_path / "robot.glb"
-    with pytest.raises(ConnectorError, match="Download failed"):
+    with pytest.raises(ConnectorError, match=r"Tripo download failed \(HTTP 404\)") as e:
         tripo.resume("task_abc123", str(out))
+    assert e.value.reason is None
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_download_that_cannot_connect_is_unreachable_and_names_tripo(fake, tmp_path):
+    fake.script = [_FakeRequestException("connection reset")] * 3
+    with pytest.raises(ConnectorError) as e:
+        tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb", str(tmp_path / "m.glb"))
+    assert e.value.reason == UNREACHABLE
+    assert str(e.value).startswith("Tripo download") and "connection reset" in str(e.value)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_download_5xx_is_unreachable_after_the_transport_retries(fake, tmp_path):
+    fake.script = [_FakeResponse(503)] * 3
+    with pytest.raises(ConnectorError, match="Tripo download failed") as e:
+        tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb", str(tmp_path / "m.glb"))
+    assert e.value.reason == UNREACHABLE and len(fake.calls) == 3
+
+
+def test_a_download_stream_that_drops_is_unreachable(fake, tmp_path):
+    class _Dropping(_FakeResponse):
+        def iter_content(self, chunk_size=None):
+            yield b"GLB"
+            raise _FakeRequestException("stream dropped")
+    fake.script = [_Dropping(200)]
+    out = tmp_path / "m.glb"
+    with pytest.raises(ConnectorError, match="stream dropped") as e:
+        tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb", str(out))
+    assert e.value.reason == UNREACHABLE and list(tmp_path.iterdir()) == []
+
+
+def test_a_download_error_does_not_repeat_the_url_signature(fake, tmp_path):
+    fake.script = [_FakeResponse(403)]
+    with pytest.raises(ConnectorError) as e:
+        tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb?Signature=secret&Expires=1",
+                       str(tmp_path / "m.glb"))
+    assert "cdn.tripo3d.ai/output/model_pbr.glb" in str(e.value) and "secret" not in str(e.value)
 
 
 def test_a_failed_download_keeps_an_existing_file(fake, tmp_path):

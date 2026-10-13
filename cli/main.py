@@ -71,6 +71,7 @@ _STEP_COMMANDS = {
     "extract-audio":      {},
     "filler":             {"step_name": "rm_fillers"},
     "generate-image":     {"required_out": True},
+    "generate-model":     {"required_out": True, "forward_json": True},
     "generate-music":     {"required_out": True, "forward_json": True},
     "generate-sfx":       {"required_out": True, "forward_json": True},
     "generate-voiceover": {"required_out": True, "forward_json": True, "xor": ("text", "text_file")},
@@ -103,6 +104,7 @@ _REGISTRATION_ORDER = (
     "generate-voiceover", "generate-music", "detect-shots", "shot-sheet",
     "detect-beats", "seedance-generate", "generate-sfx", "kinovi-generate",
     "veo-generate",
+    "generate-model",
 )
 
 # Individual step commands — available but not listed in top-level help.
@@ -118,6 +120,7 @@ _HIDDEN = {
     "generate-music", "detect-shots", "shot-sheet",
     "detect-beats", "seedance-generate", "generate-sfx", "kinovi-generate",
     "veo-generate",
+    "generate-model",
 }
 
 

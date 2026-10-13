@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from common import fail
 
 VALID_INPUT_TYPES  = {"video", "audio", "srt", "json", "image", "any"}
-VALID_OUTPUT_TYPES = {"video", "audio", "srt", "json", "image", "any", "path[]"}
+VALID_OUTPUT_TYPES = {"video", "audio", "srt", "json", "image", "model", "any", "path[]"}
 VALID_PARAM_TYPES  = {"float", "int", "string", "bool", "enum"}
 
 MONTAJ_ROOT    = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
