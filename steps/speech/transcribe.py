@@ -4,7 +4,8 @@ import json, mimetypes, os, sys, tempfile, argparse
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, run_whisper, find_whisper_bin, require_whisper_model, ffmpeg_bin, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from common import fail, require_file, check_output, run, run_whisper, find_whisper_bin, require_whisper_model, ffmpeg_bin, get_duration, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
 from trim_spec import is_trim_spec, load as load_spec, extract_audio_at_keeps, remap_timestamp
 
 def speech_stats(data):
@@ -28,6 +29,15 @@ def _srt_ts(ms):
     return f"{ms//3600000:02d}:{ms//60000%60:02d}:{ms//1000%60:02d},{ms%1000:03d}"
 
 
+def _write_srt(entries, path):
+    """One cue per word, from whisper `transcription` entries (offsets in ms)."""
+    cues = [e for e in entries if (e.get("text") or "").strip()
+            and "from" in e.get("offsets", {}) and "to" in e.get("offsets", {})]
+    Path(path).write_text("".join(
+        f"{n}\n{_srt_ts(e['offsets']['from'])} --> {_srt_ts(e['offsets']['to'])}\n{e['text'].strip()}\n\n"
+        for n, e in enumerate(cues, 1)))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Transcribe audio or video using whisper.cpp")
     parser.add_argument("--input", required=True, help="Audio or video file to transcribe")
@@ -43,6 +53,9 @@ def main():
                              "Set to 0 to disable cross-window context — the reliable fix for the "
                              "repetition-loop hallucination (one phrase repeated to EOF) that whisper "
                              "can fall into on long audio, especially non-English. Unset = whisper default.")
+    parser.add_argument("--fit-pauses", action="store_true",
+                        help="For captions: fit word times to the pauses measured in the audio, so a word "
+                             "after a pause starts on the voice. Leave it off for anything that cuts on word times.")
     args = parser.parse_args()
 
     require_file(args.input)
@@ -79,6 +92,7 @@ def main():
             audio_input = tmp_audio
         output_prefix = args.out or os.path.splitext(args.input)[0]
 
+    pauses = heard_s = None
     try:
         # Single pass: word-level JSON + SRT in one decode
         whisper_cmd = [whisper_bin, "-m", model_path, "-f", audio_input, "-l", args.language,
@@ -87,6 +101,12 @@ def main():
         if args.max_context is not None:
             whisper_cmd += ["-mc", str(args.max_context)]
         run_whisper(whisper_cmd, audio_input, check=True)
+        # Measured on the audio whisper heard, so in its time base (the spec's, for a trim spec).
+        if args.fit_pauses:
+            from lib.caption_timing import caption_pauses
+            from lib.speech_pauses import silences
+            heard_s = get_duration(audio_input)
+            pauses = caption_pauses(silences(audio_input), heard_s)
     finally:
         if tmp_audio and os.path.exists(tmp_audio):
             os.unlink(tmp_audio)
@@ -94,6 +114,10 @@ def main():
     words_path = f"{output_prefix}.json"
     if os.path.exists(words_path):
         data = json.loads(Path(words_path).read_text())
+        if pauses is not None:
+            from lib.caption_timing import fit_transcription
+            data["transcription"] = fit_transcription(data.get("transcription", []), pauses, heard_s)
+            _write_srt(data["transcription"], f"{output_prefix}.srt")  # still in whisper's time base
         if trim_spec_data is not None:
             for word in data.get("transcription", []):
                 offsets = word.get("offsets", {})
@@ -109,6 +133,13 @@ def main():
         else:
             data["montaj"] = {"input": "file", "offsets": "source",
                               "timestamps": "source", "srt": "source"}
+        if pauses is not None:
+            data["montaj"]["fit_pauses"] = True
+            if trim_spec_data is None:
+                for word in data.get("transcription", []):
+                    o = word.get("offsets", {})
+                    if "from" in o and "to" in o:
+                        word["timestamps"] = {"from": _srt_ts(o["from"]), "to": _srt_ts(o["to"])}
         Path(words_path).write_text(json.dumps(data))
 
     srt_path = f"{output_prefix}.srt"

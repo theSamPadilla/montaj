@@ -27,6 +27,12 @@
       "name": "max-context",
       "type": "int",
       "description": "Cap on prior-text tokens carried between windows (whisper.cpp -mc). Set 0 to disable cross-window context — the reliable fix for the repetition-loop hallucination on long audio (especially non-English). Omit for the whisper default."
+    },
+    {
+      "name": "fit-pauses",
+      "type": "bool",
+      "default": false,
+      "description": "For captions: fit word times to the pauses measured in the audio, so a word after a pause starts on the voice. Leave it off for anything that cuts on word times."
     }
   ]
 }

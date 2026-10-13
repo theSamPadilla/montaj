@@ -5296,7 +5296,7 @@ async def _run_caption_pipeline(
             "transcribe",
             [str(transcribe_py), "--input", str(mix_wav_path),
              "--model", model, "--language", language,
-             "--out", str(words_prefix)],
+             "--out", str(words_prefix), "--fit-pauses"],
         ),
         (
             "caption",

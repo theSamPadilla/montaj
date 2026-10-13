@@ -408,3 +408,55 @@ def test_route_missing_theme_defaults_to_empty(tmp_path, monkeypatch):
     _run_generate_captions_sse("proj-theme-route-3", project_dir, {}, monkeypatch, captured)
 
     assert captured["theme"] == {}
+
+
+# ── §231: captions transcribe with --fit-pauses, in both caption paths ──────
+
+def test_route_pipeline_transcribes_with_fit_pauses(tmp_path, monkeypatch):
+    from serve.routes.projects import _run_caption_pipeline
+
+    calls = []
+    proc = _FakeCaptionProc()
+
+    async def _recording_exec(*args, **kwargs):
+        calls.append([str(a) for a in args])
+        return proc
+
+    monkeypatch.setattr(projects_mod.asyncio, "create_subprocess_exec", _recording_exec)
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    (project_dir / "_caption_track.json").write_text(json.dumps({"style": "pop", "segments": []}))
+
+    asyncio.run(_run_caption_pipeline(
+        "proj-fit", project_dir, _audible_project(),
+        model="base.en", language="auto", style="pop", broadcaster=_FakeBroadcaster(),
+    ))
+
+    transcribe = [c for c in calls if any(a.endswith("transcribe.py") for a in c)]
+    assert len(transcribe) == 1 and "--fit-pauses" in transcribe[0]
+    assert all("--fit-pauses" not in c for c in calls if c not in transcribe)
+
+
+def test_step_transcribes_with_fit_pauses(tmp_path, monkeypatch, capsys):
+    mod = _load_step_module()
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    (project_dir / "project.json").write_text(json.dumps(_audible_project()))
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append([str(a) for a in cmd])
+        if any(a.endswith("caption.py") for a in cmd):
+            Path(cmd[cmd.index("--out") + 1]).write_text(json.dumps({"style": "pop", "segments": []}))
+
+    monkeypatch.setattr(mod, "get_project_dir", lambda pid: project_dir)
+    monkeypatch.setattr(mod, "require_whisper_model", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "build_audio_mix_spec", lambda project: {"inputs": []})
+    monkeypatch.setattr(mod, "whisper_runaway_timeout_for", lambda path: 60)
+    monkeypatch.setattr(mod, "run", fake_run)
+    monkeypatch.setattr(mod.sys, "argv", ["generate_captions.py", "--project-id", "proj"])
+    mod.main()
+
+    transcribe = [c for c in calls if any(a.endswith("transcribe.py") for a in c)]
+    assert len(transcribe) == 1 and "--fit-pauses" in transcribe[0]
+    assert all("--fit-pauses" not in c for c in calls if c not in transcribe)

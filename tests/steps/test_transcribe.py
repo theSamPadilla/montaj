@@ -215,3 +215,62 @@ def test_transcribe_runs_whisper_under_the_runaway_guard(transcribe_module, monk
     monkeypatch.setattr(sys, "argv", ["transcribe.py", "--input", str(audio), "--out", str(tmp_path / "out")])
     transcribe_module.main()
     assert seen == {"audio": str(audio), "check": True}
+
+
+# ── --fit-pauses (captions only, lib/caption_timing.py) ─────────────────────
+
+@pytest.fixture
+def tone_pause_tone(tmp_path_factory):
+    """3 s at 16 kHz: a tone 0-0.5 s, digital silence 0.5-1.5 s, a tone 1.5-3.0 s.
+    The fake whisper times "world" 0.6-1.2 s, inside the silence."""
+    import shutil, subprocess
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not available")
+    out = tmp_path_factory.mktemp("audio") / "tone_pause_tone.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "aevalsrc=exprs='if(between(t,0.5,1.5),0,0.5*sin(2*PI*440*t))':s=16000:d=3",
+                    "-c:a", "pcm_s16le", str(out)], check=True)
+    return out
+
+
+def _words(result):
+    data = json.loads(Path(result["words"]).read_text())
+    return data, {e["text"]: e["offsets"] for e in data["transcription"]}
+
+
+def test_fit_pauses_moves_a_word_out_of_the_silence(tone_pause_tone, tmp_path, fake_whisper_env):
+    proc = run_step_env("transcribe.py", fake_whisper_env,
+                        "--input", str(tone_pause_tone), "--out", str(tmp_path / "out"), "--fit-pauses")
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)
+    data, offsets = _words(result)
+    assert data["montaj"]["fit_pauses"] is True
+    assert offsets["Hello"] == {"from": 0, "to": 500}
+    assert abs(offsets["world"]["from"] - 1500) <= 40, offsets["world"]
+    assert offsets["test"]["to"] <= 3000
+    cues = Path(result["srt"]).read_text().strip().split("\n\n")
+    world = next(c.split("\n") for c in cues if c.split("\n")[2] == "world")
+    start = world[1].split(" --> ")[0]  # e.g. 00:00:01,500
+    assert abs(int(start[6:8]) * 1000 + int(start[9:12]) - 1500) <= 40, world
+
+
+def test_without_fit_pauses_the_word_times_are_whisper_s(tone_pause_tone, tmp_path, fake_whisper_env):
+    proc = run_step_env("transcribe.py", fake_whisper_env,
+                        "--input", str(tone_pause_tone), "--out", str(tmp_path / "out"))
+    assert proc.returncode == 0, proc.stderr
+    data, offsets = _words(json.loads(proc.stdout))
+    assert "fit_pauses" not in data["montaj"]
+    assert offsets["world"] == {"from": 600, "to": 1200}
+
+
+def test_fit_pauses_on_a_trim_spec_fits_in_spec_time_then_remaps(tone_pause_tone, tmp_path, fake_whisper_env):
+    # One keep starting at 1.0 s: the spec's audio has the silence at 0-0.5 s (spec time),
+    # so the fitted words sit after it, then remap to source time (+1.0 s).
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({"input": str(tone_pause_tone), "keeps": [[1.0, 3.0]]}))
+    proc = run_step_env("transcribe.py", fake_whisper_env,
+                        "--input", str(spec), "--out", str(tmp_path / "out"), "--fit-pauses")
+    assert proc.returncode == 0, proc.stderr
+    data, offsets = _words(json.loads(proc.stdout))
+    assert data["montaj"]["fit_pauses"] is True and data["montaj"]["input"] == "spec"
+    assert abs(offsets["Hello"]["from"] - 1500) <= 40, offsets["Hello"]

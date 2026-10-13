@@ -126,10 +126,11 @@ def main():
         #    Outlasts transcribe's own whisper runaway guard, so a stuck
         #    whisper surfaces as its structured transcription_timeout rather
         #    than this wrapper's bare TimeoutExpired.
+        #    --fit-pauses: caption word times sit on the audio after a pause.
         run([sys.executable, transcribe_py,
              "--input", mix_wav_path,
              "--model", args.model, "--language", args.language,
-             "--out", words_prefix],
+             "--out", words_prefix, "--fit-pauses"],
             timeout=whisper_runaway_timeout_for(mix_wav_path) + 300)
 
         # 4. Group words into a styled caption track.

@@ -19,7 +19,9 @@ MIN_WORD_DURATION_S = 0.05
 def floor_word_durations(words, floor_s=MIN_WORD_DURATION_S):
     """Forward waterfall that enforces a minimum per-word duration.
 
-    Whisper words arrive contiguous (`end_i == start_{i+1}`). For a word
+    Whisper words arrive contiguous (`end_i == start_{i+1}`), except where
+    the captions' `transcribe --fit-pauses` (lib/caption_timing.py) leaves a
+    real gap at a pause measured in the audio. For a word
     shorter than `floor_s` with a successor, the shared boundary is pushed
     forward to `start_i + floor_s` -- moving BOTH `end_i` and
     `start_{i+1}` together -- but only via a binary donation gate: the move
