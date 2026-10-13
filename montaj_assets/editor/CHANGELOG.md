@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+- Added: translated caption segments (`lang`, `translationOf` on `CaptionSegment`). The editor never fills in words for one, a text edit on one adds none, the preview's selection box and drag address the caption it sits under, and the regenerate warning counts only the rows a regeneration replaces. `isCaptionTranslation` is new.
+
 ## 2.2.0
 
 - Added: the carousel editor selects several elements at once. Shift-click adds or removes an element; dragging moves them all, Delete removes them all, and Align aligns them to the box the selection covers. One save and one undo step each.

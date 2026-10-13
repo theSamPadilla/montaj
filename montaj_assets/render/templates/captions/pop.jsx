@@ -25,7 +25,8 @@ export default function Pop({
   const active = activeSegments(segments, t)
   if (!active.length) return null
 
-  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, segmentTheme(seg, { fps, t, activeColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform })))}</>
+  const theme = { fps, t, color, activeColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }
+  return <>{captionGroups(active).map((g, i) => renderSegment(g.seg, g.seg.id ?? i, segmentTheme(g.seg, theme), g.lines.map(l => renderLine(l, segmentTheme(l, theme), frame, fps))))}</>
 }
 
 /**
@@ -49,6 +50,49 @@ function activeSegments(segments, t) {
 }
 
 /**
+ * §244, caption translations. A translated segment carries `lang` and
+ * `translationOf` (the ids of the source segments it translates) and no
+ * words. It is never drawn as a caption of its own: it stacks under the
+ * source segment it translates, as a plain line inside that segment's
+ * anchored box (renderLine, below), so the browser measures the stack in
+ * every style and the rows never collide. A translation whose source is not
+ * on screen draws alone, as the only line of its own block. Duplicated in all
+ * eight templates (they can import nothing but montaj/render); keep
+ * isTranslation, captionGroups, stack and lineOpacity identical in each.
+ */
+function isTranslation(seg) {
+  return typeof seg.lang === 'string' && Array.isArray(seg.translationOf)
+}
+
+function captionGroups(active) {
+  const groups = active.filter(s => !isTranslation(s)).map(seg => ({ seg, lines: [] }))
+  for (const tr of active) {
+    if (!isTranslation(tr)) continue
+    const group = groups.find(g => g.seg.id != null && tr.translationOf.includes(g.seg.id))
+      ?? groups.find(g => !isTranslation(g.seg) && !(g.seg.lane > 0))
+    if (group) group.lines.push(tr)
+    else groups.push({ seg: tr, lines: [tr] })
+  }
+  return groups
+}
+
+/** The caption, then its translations under it, aligned like the caption.
+ *  With no translations it is the caption itself, so nothing else changes. */
+function stack(content, lines, textAlign) {
+  if (!lines.length) return content
+  const alignItems = textAlign === 'left' ? 'flex-start' : textAlign === 'right' ? 'flex-end' : 'center'
+  return <div style={{ display: 'flex', flexDirection: 'column', alignItems, width: '100%', gap: 10 }}>{content}{lines}</div>
+}
+
+/** A plain line's fade, for templates whose box does not fade by itself. */
+function lineOpacity(seg, frame, fps) {
+  return Math.min(
+    interpolate(frame - Math.round(seg.start * fps), [0, 5], [0, 1]),
+    interpolate(Math.round(seg.end * fps) - frame, [0, 4], [0, 1]),
+  )
+}
+
+/**
  * One segment's block — everything below the old `segments.find(...)`, moved
  * verbatim. A plain function, NOT a `<Component/>`: render/test/*.test.mjs call
  * these templates as plain functions and read style objects straight off the
@@ -63,7 +107,35 @@ function activeSegments(segments, t) {
  * caption's rect instead of the union of everything on screen (see
  * measureCaptionContentRect in editor/src/video/preview/captionDragState.ts).
  */
-function renderSegment(seg, key, { fps, t, activeColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
+function renderSegment(seg, key, theme, lines = []) {
+  const word = isTranslation(seg) ? null : renderWord(seg, theme)
+  if (!word && !lines.length) return null
+  const { textAlign } = theme
+  return (
+    <div key={key} style={captionOuterStyle(seg)} data-caption-id={seg.id}>
+      {/* Segment scale lives on this middle anchor box, not the word <span> below —
+          that span already carries its own spring pop-in `transform: scale(...)`, and
+          merging the two transforms would corrupt the pop animation. */}
+      <div style={captionInnerStyle(seg, {
+        // 24%, one point below the 25% group: this style's large single word
+        // stands taller, so a slightly lower anchor lines its TOP up with every
+        // other style's caption (Sam, 2026-08-25).
+        bottom: '24%',
+        left: 0,
+        right: 0,
+        textAlign,
+        padding: '0 8%',
+      })}>
+        {stack(word, lines, textAlign)}
+      </div>
+    </div>
+  )
+}
+
+/** The word being spoken, or null between words. Moved verbatim out of
+ *  renderSegment (§244), so the block can still draw a translation line
+ *  under a caption while no word is up. */
+function renderWord(seg, { fps, t, activeColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
   const words = seg.words || []
   if (!words.length) return null
 
@@ -108,37 +180,43 @@ function renderSegment(seg, key, { fps, t, activeColor, fontSize, fontFamily, fo
   const opacity = Math.min(entryOpacity, exitOpacity)
 
   return (
-    <div key={key} style={captionOuterStyle(seg)} data-caption-id={seg.id}>
-      {/* Segment scale lives on this middle anchor box, not the word <span> below —
-          that span already carries its own spring pop-in `transform: scale(...)`, and
-          merging the two transforms would corrupt the pop animation. */}
-      <div style={captionInnerStyle(seg, {
-        // 24%, one point below the 25% group: this style's large single word
-        // stands taller, so a slightly lower anchor lines its TOP up with every
-        // other style's caption (Sam, 2026-08-25).
-        bottom: '24%',
-        left: 0,
-        right: 0,
-        textAlign,
-        padding: '0 8%',
-      })}>
-        <span style={{
-          display: 'inline-block',
-          fontSize,
-          fontWeight,
-          fontFamily,
-          color: activeColor,
-          textShadow: '0 0 30px rgba(255,230,0,0.4), 0 2px 12px rgba(0,0,0,0.85)',
-          letterSpacing,
-          lineHeight,
-          textTransform,
-          opacity,
-          transform: `scale(${sc})`,
-          transformOrigin: 'center bottom',
-        }}>
-          {activeWord.word}
-        </span>
-      </div>
+    <span style={{
+      display: 'inline-block',
+      fontSize,
+      fontWeight,
+      fontFamily,
+      color: activeColor,
+      textShadow: '0 0 30px rgba(255,230,0,0.4), 0 2px 12px rgba(0,0,0,0.85)',
+      letterSpacing,
+      lineHeight,
+      textTransform,
+      opacity,
+      transform: `scale(${sc})`,
+      transformOrigin: 'center bottom',
+    }}>
+      {activeWord.word}
+    </span>
+  )
+}
+
+/** §244: a translation under its caption, as pop's plain line: the
+ *  style's font and colour at a line size (its own size is meant for one
+ *  word), no per-word animation. */
+const LINE_SCALE = 0.6
+function renderLine(seg, { color, fontSize, fontFamily, fontWeight, letterSpacing, lineHeight, textTransform }, frame, fps) {
+  return (
+    <div key={seg.id ?? seg.start} data-caption-id={seg.id} style={{
+      fontSize: Math.round(fontSize * LINE_SCALE),
+      fontWeight,
+      fontFamily,
+      color: seg.color ?? color,
+      textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+      letterSpacing,
+      lineHeight: lineHeight ?? 1.2,
+      textTransform,
+      opacity: lineOpacity(seg, frame, fps),
+    }}>
+      {seg.text}
     </div>
   )
 }

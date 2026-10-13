@@ -1,4 +1,4 @@
-import { captionOuterStyle, captionInnerStyle } from 'montaj/render'
+import { interpolate, captionOuterStyle, captionInnerStyle } from 'montaj/render'
 
 /**
  * Accent (PL41): short bold running captions, plus hero blocks with one
@@ -75,7 +75,9 @@ export default function Accent({
   const active = activeSegments(segments, t)
   if (!active.length) return null
   const theme = { t, color, accentColor, fontSize, fontFamily, fontWeight, accentFontFamily, scriptFontFamily, textAlign, letterSpacing, lineHeight, textTransform }
-  const blocks = active.map((seg, i) => (seg.hero ? renderHero : renderRunning)(seg, seg.id ?? i, segmentTheme(seg, theme))).filter(Boolean)
+  const blocks = captionGroups(active)
+    .map((g, i) => (g.seg.hero ? renderHero : renderRunning)(g.seg, g.seg.id ?? i, segmentTheme(g.seg, theme), g.lines.map(l => renderLine(l, segmentTheme(l, theme), frame, fps))))
+    .filter(Boolean)
   return blocks.length ? <>{blocks}</> : null
 }
 
@@ -83,6 +85,49 @@ function activeSegments(segments, t) {
   return segments
     .filter(s => t >= s.start && t < s.end)
     .sort((a, b) => (a.lane ?? 0) - (b.lane ?? 0))
+}
+
+/**
+ * §244, caption translations. A translated segment carries `lang` and
+ * `translationOf` (the ids of the source segments it translates) and no
+ * words. It is never drawn as a caption of its own: it stacks under the
+ * source segment it translates, as a plain line inside that segment's
+ * anchored box (renderLine, below), so the browser measures the stack in
+ * every style and the rows never collide. A translation whose source is not
+ * on screen draws alone, as the only line of its own block. Duplicated in all
+ * eight templates (they can import nothing but montaj/render); keep
+ * isTranslation, captionGroups, stack and lineOpacity identical in each.
+ */
+function isTranslation(seg) {
+  return typeof seg.lang === 'string' && Array.isArray(seg.translationOf)
+}
+
+function captionGroups(active) {
+  const groups = active.filter(s => !isTranslation(s)).map(seg => ({ seg, lines: [] }))
+  for (const tr of active) {
+    if (!isTranslation(tr)) continue
+    const group = groups.find(g => g.seg.id != null && tr.translationOf.includes(g.seg.id))
+      ?? groups.find(g => !isTranslation(g.seg) && !(g.seg.lane > 0))
+    if (group) group.lines.push(tr)
+    else groups.push({ seg: tr, lines: [tr] })
+  }
+  return groups
+}
+
+/** The caption, then its translations under it, aligned like the caption.
+ *  With no translations it is the caption itself, so nothing else changes. */
+function stack(content, lines, textAlign) {
+  if (!lines.length) return content
+  const alignItems = textAlign === 'left' ? 'flex-start' : textAlign === 'right' ? 'flex-end' : 'center'
+  return <div style={{ display: 'flex', flexDirection: 'column', alignItems, width: '100%', gap: 10 }}>{content}{lines}</div>
+}
+
+/** A plain line's fade, for templates whose box does not fade by itself. */
+function lineOpacity(seg, frame, fps) {
+  return Math.min(
+    interpolate(frame - Math.round(seg.start * fps), [0, 5], [0, 1]),
+    interpolate(Math.round(seg.end * fps) - frame, [0, 4], [0, 1]),
+  )
 }
 
 /** Running windows: at most RUN_WINDOW words and a character budget, broken after punctuation or a pause. */
@@ -157,30 +202,35 @@ function anchor(seg, th) {
 /** Centres the block on the anchor line. Never on the anchor itself (see the header). */
 const CENTRE = { transform: 'translateY(-50%)' }
 
-function renderRunning(seg, key, th) {
-  const words = seg.words || []
-  if (!words.length) return null
-  const windows = runWindows(words, th.fontSize * caseWidth(th))
-  const win = [...windows].reverse().find(w => th.t >= w[0].start)
-  if (!win) return null
+/** A segment's block: the anchor, centred on its line, holding the caption
+ *  and (§244) its translations stacked under it. Null when there is neither. */
+function renderBlock(seg, key, th, content, lines) {
+  if (!content && !lines.length) return null
   return (
     <div key={key} style={captionOuterStyle(seg)} data-caption-id={seg.id}>
       <div style={anchor(seg, th)}>
         <div style={CENTRE}>
-          {win.map((w, i) => (
-            <span key={i} style={{ ...wordStyle(w, th.fontSize, th, { running: true }), color: ACCENTS.has(w.accent) ? th.accentColor : (seg.color ?? th.color) }}>
-              {(i ? ' ' : '') + w.word}
-            </span>
-          ))}
+          {lines.length ? stack(Array.isArray(content) ? <div>{content}</div> : content, lines, th.textAlign) : content}
         </div>
       </div>
     </div>
   )
 }
 
-function renderHero(seg, key, th) {
-  const words = seg.words || []
-  if (!words.length || th.t < words[0].start) return null
+function renderRunning(seg, key, th, lines = []) {
+  const words = isTranslation(seg) ? [] : (seg.words || [])
+  const windows = words.length ? runWindows(words, th.fontSize * caseWidth(th)) : []
+  const win = [...windows].reverse().find(w => th.t >= w[0].start)
+  return renderBlock(seg, key, th, win ? win.map((w, i) => (
+    <span key={i} style={{ ...wordStyle(w, th.fontSize, th, { running: true }), color: ACCENTS.has(w.accent) ? th.accentColor : (seg.color ?? th.color) }}>
+      {(i ? ' ' : '') + w.word}
+    </span>
+  )) : null, lines)
+}
+
+function renderHero(seg, key, th, translations = []) {
+  const words = isTranslation(seg) ? [] : (seg.words || [])
+  if (!words.length || th.t < words[0].start) return renderBlock(seg, key, th, null, translations)
   const lines = heroLines(words)
   const indentOf = (line, li) => (line[0].script && line[0].main ? SCRIPT_INDENT : li > 0 ? LINE2_INDENT : 0)
   // A hero line wider than the frame would wrap and clip: shrink the block until its widest line fits.
@@ -215,13 +265,27 @@ function renderHero(seg, key, th) {
       </div>,
     )
   })
+  return renderBlock(seg, key, th, <div style={{ display: 'inline-block', textAlign: 'left' }}>{lineDivs}</div>, translations)
+}
+
+/** §244: a translation under its caption, as accent's plain line: its base
+ *  font and colour at a line size (its own size is meant for three words at
+ *  most), no accents and no word-by-word cut-on. */
+const LINE_SCALE = 0.3
+function renderLine(seg, th, frame, fps) {
   return (
-    <div key={key} style={captionOuterStyle(seg)} data-caption-id={seg.id}>
-      <div style={anchor(seg, th)}>
-        <div style={CENTRE}>
-          <div style={{ display: 'inline-block', textAlign: 'left' }}>{lineDivs}</div>
-        </div>
-      </div>
+    <div key={seg.id ?? seg.start} data-caption-id={seg.id} style={{
+      fontFamily: th.fontFamily,
+      fontWeight: th.fontWeight,
+      fontSize: Math.round(th.fontSize * LINE_SCALE),
+      letterSpacing: th.letterSpacing,
+      lineHeight: 1.15,
+      textTransform: th.textTransform,
+      color: seg.color ?? th.color,
+      textShadow: TEXT_SHADOW,
+      opacity: lineOpacity(seg, frame, fps),
+    }}>
+      {seg.text}
     </div>
   )
 }

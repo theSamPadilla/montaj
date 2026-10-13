@@ -26,7 +26,8 @@ export default function Karaoke({
   const active = activeSegments(segments, t)
   if (!active.length) return null
 
-  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, segmentTheme(seg, { frame, fps, t, color, highlightColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform })))}</>
+  const theme = { frame, fps, t, color, highlightColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }
+  return <>{captionGroups(active).map((g, i) => renderSegment(g.seg, g.seg.id ?? i, segmentTheme(g.seg, theme), g.lines.map(l => renderLine(l, segmentTheme(l, theme), frame, fps))))}</>
 }
 
 /**
@@ -50,6 +51,49 @@ function activeSegments(segments, t) {
 }
 
 /**
+ * §244, caption translations. A translated segment carries `lang` and
+ * `translationOf` (the ids of the source segments it translates) and no
+ * words. It is never drawn as a caption of its own: it stacks under the
+ * source segment it translates, as a plain line inside that segment's
+ * anchored box (renderLine, below), so the browser measures the stack in
+ * every style and the rows never collide. A translation whose source is not
+ * on screen draws alone, as the only line of its own block. Duplicated in all
+ * eight templates (they can import nothing but montaj/render); keep
+ * isTranslation, captionGroups, stack and lineOpacity identical in each.
+ */
+function isTranslation(seg) {
+  return typeof seg.lang === 'string' && Array.isArray(seg.translationOf)
+}
+
+function captionGroups(active) {
+  const groups = active.filter(s => !isTranslation(s)).map(seg => ({ seg, lines: [] }))
+  for (const tr of active) {
+    if (!isTranslation(tr)) continue
+    const group = groups.find(g => g.seg.id != null && tr.translationOf.includes(g.seg.id))
+      ?? groups.find(g => !isTranslation(g.seg) && !(g.seg.lane > 0))
+    if (group) group.lines.push(tr)
+    else groups.push({ seg: tr, lines: [tr] })
+  }
+  return groups
+}
+
+/** The caption, then its translations under it, aligned like the caption.
+ *  With no translations it is the caption itself, so nothing else changes. */
+function stack(content, lines, textAlign) {
+  if (!lines.length) return content
+  const alignItems = textAlign === 'left' ? 'flex-start' : textAlign === 'right' ? 'flex-end' : 'center'
+  return <div style={{ display: 'flex', flexDirection: 'column', alignItems, width: '100%', gap: 10 }}>{content}{lines}</div>
+}
+
+/** A plain line's fade, for templates whose box does not fade by itself. */
+function lineOpacity(seg, frame, fps) {
+  return Math.min(
+    interpolate(frame - Math.round(seg.start * fps), [0, 5], [0, 1]),
+    interpolate(Math.round(seg.end * fps) - frame, [0, 4], [0, 1]),
+  )
+}
+
+/**
  * One segment's block — everything below the old `segments.find(...)`, moved
  * verbatim (both branches: the no-words fallback and the main words branch).
  * A plain function, NOT a `<Component/>`: render/test/*.test.mjs call these
@@ -60,8 +104,8 @@ function activeSegments(segments, t) {
  * caption's rect instead of the union of everything on screen (see
  * measureCaptionContentRect in editor/src/video/preview/captionDragState.ts).
  */
-function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
-  const words = seg.words || []
+function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }, lines = []) {
+  const words = isTranslation(seg) ? [] : (seg.words || [])
   if (!words.length) {
     // No word timestamps — fall back to plain text
     const opacity = interpolate(
@@ -79,7 +123,7 @@ function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSiz
           padding: '0 8%',
           opacity,
         })}>
-          <span style={{
+          {stack(isTranslation(seg) ? null : <span style={{
             fontSize,
             fontWeight,
             fontFamily,
@@ -90,7 +134,7 @@ function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSiz
             textTransform,
           }}>
             {seg.text}
-          </span>
+          </span>, lines, textAlign)}
         </div>
       </div>
     )
@@ -110,7 +154,7 @@ function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSiz
         padding: '0 8%',
         opacity: fadeOpacity,
       })}>
-        <div style={{
+        {stack(<div style={{
           display: 'inline',
           fontSize,
           fontWeight,
@@ -145,8 +189,27 @@ function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSiz
               </span>
             )
           })}
-        </div>
+        </div>, lines, textAlign)}
       </div>
+    </div>
+  )
+}
+
+/** §244: a translation under its caption, as karaoke's plain line: the
+ *  spoken colour, no reveal (the box already fades in). */
+function renderLine(seg, { fontSize, fontFamily, fontWeight, highlightColor, letterSpacing, lineHeight, textTransform }) {
+  return (
+    <div key={seg.id ?? seg.start} data-caption-id={seg.id} style={{
+      fontSize,
+      fontWeight,
+      fontFamily,
+      color: seg.color ?? highlightColor,
+      textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+      letterSpacing,
+      lineHeight,
+      textTransform,
+    }}>
+      {seg.text}
     </div>
   )
 }
