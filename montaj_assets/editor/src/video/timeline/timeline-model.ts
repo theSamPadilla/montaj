@@ -558,10 +558,20 @@ export function computeDerivedTiming(project: Project): DerivedTiming {
 // ── Auto-crossfade ───────────────────────────────────────────────────────
 
 /**
+ * Whether two audio tracks are candidates for a crossfade: the same row (an explicit `lane`, or both without one,
+ * which is how the projects an AI wrote read) and the same kind (`type`, absent meaning plain `audio`). A track on its
+ * own row, or of another kind, is layered with the others, never faded into them.
+ */
+function sameRowAndKind(a: AudioTrack, b: AudioTrack): boolean {
+  return (a.lane ?? null) === (b.lane ?? null) && (a.type ?? 'audio') === (b.type ?? 'audio')
+}
+
+/**
  * Auto-crossfade: when two audio tracks overlap SEQUENTIALLY (the earlier
  * starts first and ends first), apply fade-out on the earlier track and
  * fade-in on the later one, each equal to the overlap duration. Layered
- * tracks (one inside the other, or identical spans) are left untouched. Lifted out of Timeline's render-time effect — previously a
+ * tracks (one inside the other, or identical spans) are left untouched, and so are tracks of
+ * another row or kind (`sameRowAndKind`). Lifted out of Timeline's render-time effect — previously a
  * hidden project mutation with no test coverage — so the canvas timeline
  * (T4) can't silently drop the behavior.
  *
@@ -609,6 +619,10 @@ export function computeAutoCrossfade(project: Project): Project | null {
       const b = updated[j]
       if (b.muted) continue
       if (!(a.start < b.start && a.end < b.end)) continue
+      // A crossfade is between clips of ONE row and ONE kind (§234). A voiceover that a split music bed passes
+      // under was getting a fade-in the length of the overlap, so the user heard their own voice swell in.
+      // `continue`, not `break`: a later track may still be this one's partner.
+      if (!sameRowAndKind(a, b)) continue
       // Round ONCE and compare against the rounded value; comparing the raw
       // overlap was non-idempotent whenever it was not a multiple of 0.1s
       // (stored 0.4 never equalled 0.37), so merely opening such a project

@@ -111,6 +111,86 @@ describe('computeAutoCrossfade', () => {
     expect(tracks.find(t => t.id === 'b')!.fadeIn).toBe(0.5)
   })
 
+  // §234: a crossfade is between clips of one row and one kind. A music bed split at 55 s next to a voiceover that
+  // spans the cut used to pair BOTH halves with the voiceover (fadeIn 10.5, fadeOut 5 on the voice).
+  describe('only within one row and one kind (§234)', () => {
+    const fadesOf = (next: Project | null, id: string) => {
+      const t = (next ?? project()).audio?.tracks?.find(x => x.id === id)
+      return t ? { in: t.fadeIn ?? 0, out: t.fadeOut ?? 0 } : undefined
+    }
+
+    it('a voiceover under a split music bed gets no fade, whichever row it is on', () => {
+      for (const voLane of [1, undefined]) {
+        const p = project({
+          audio: {
+            tracks: [
+              track({ id: 'bedA', type: 'music', lane: 0, start: 0, end: 55 }),
+              track({ id: 'bedB', type: 'music', lane: 0, start: 55, end: 120 }),
+              track({ id: 'vo', type: 'voiceover', lane: voLane, start: 44.5, end: 60 }),
+            ],
+          },
+        })
+        const next = computeAutoCrossfade(p)
+        expect(next).toBeNull() // bed halves only touch at 55; nothing overlaps within a row and kind
+        expect(fadesOf(p, 'vo')).toEqual({ in: 0, out: 0 })
+      }
+    })
+
+    it('the halves of a bed still crossfade where they overlap, and the voiceover stays untouched', () => {
+      const p = project({
+        audio: {
+          tracks: [
+            track({ id: 'bedA', type: 'music', lane: 0, start: 0, end: 56 }),
+            track({ id: 'bedB', type: 'music', lane: 0, start: 55, end: 120 }),
+            track({ id: 'vo', type: 'voiceover', lane: 1, start: 44.5, end: 60 }),
+          ],
+        },
+      })
+      const next = computeAutoCrossfade(p)
+      expect(fadesOf(next, 'bedA')).toEqual({ in: 0, out: 1 })
+      expect(fadesOf(next, 'bedB')).toEqual({ in: 1, out: 0 })
+      expect(fadesOf(next, 'vo')).toEqual({ in: 0, out: 0 })
+    })
+
+    it('the same row but another kind is layered, not crossfaded', () => {
+      const p = project({
+        audio: { tracks: [track({ id: 'm', type: 'music', lane: 0, start: 0, end: 3 }), track({ id: 'v', type: 'voiceover', lane: 0, start: 2, end: 5 })] },
+      })
+      expect(computeAutoCrossfade(p)).toBeNull()
+    })
+
+    it('the same kind on another row is layered, not crossfaded', () => {
+      const p = project({
+        audio: { tracks: [track({ id: 'a', type: 'music', lane: 0, start: 0, end: 3 }), track({ id: 'b', type: 'music', lane: 1, start: 2, end: 5 })] },
+      })
+      expect(computeAutoCrossfade(p)).toBeNull()
+    })
+
+    it('an explicit row and an unset one are not the same row; two unset ones still are', () => {
+      const laned = project({ audio: { tracks: [track({ id: 'a', lane: 0, start: 0, end: 3 }), track({ id: 'b', start: 2, end: 5 })] } })
+      expect(computeAutoCrossfade(laned)).toBeNull()
+      const unset = project({ audio: { tracks: [track({ id: 'a', start: 0, end: 3 }), track({ id: 'b', start: 2, end: 5 })] } })
+      expect(fadesOf(computeAutoCrossfade(unset), 'a')).toEqual({ in: 0, out: 1 })
+    })
+
+    it('a pair behind an ineligible track is still found (continue, not break), and a second pass is a no-op', () => {
+      const p = project({
+        audio: {
+          tracks: [
+            track({ id: 'a', type: 'music', lane: 0, start: 0, end: 10 }),
+            track({ id: 'vo', type: 'voiceover', lane: 1, start: 5, end: 14 }),
+            track({ id: 'b', type: 'music', lane: 0, start: 8, end: 20 }),
+          ],
+        },
+      })
+      const next = computeAutoCrossfade(p)!
+      expect(fadesOf(next, 'a')).toEqual({ in: 0, out: 2 })
+      expect(fadesOf(next, 'b')).toEqual({ in: 2, out: 0 })
+      expect(fadesOf(next, 'vo')).toEqual({ in: 0, out: 0 })
+      expect(computeAutoCrossfade(next)).toBeNull()
+    })
+  })
+
   it('returns null when existing fades already match the overlap (no-change signal, loop-safe)', () => {
     const p = project({
       audio: {

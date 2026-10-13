@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+- Fixed: `computeAutoCrossfade` only pairs audio tracks that share a row (`lane`, or both without one) and a kind (`type`, absent meaning `audio`), so a voiceover under a split music bed is no longer faded into it.
+
 ## 2.1.3
 
 - Fixed: 23 controls had no accessible name or role, so a screen reader or an AI driving the editor could not tell them apart. Fields are named, click targets get a role, and click-away layers are hidden from the tree.
