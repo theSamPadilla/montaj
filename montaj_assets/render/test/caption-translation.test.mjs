@@ -1,5 +1,5 @@
 // §244: a translated caption segment (`lang` + `translationOf`) is drawn in
-// every one of the eight caption styles, as a plain line stacked under the
+// every one of the nine caption styles, as a plain line stacked under the
 // caption it translates, inside that caption's block (so the browser lays the
 // two out and they never collide). The templates are compiled exactly as
 // captions-font.test.mjs does and called as plain functions; these tests read
@@ -51,7 +51,7 @@ async function loadTemplate(name) {
   }
 }
 
-const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent']
+const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent', 'plate']
 const templates = {}
 before(async () => {
   for (const name of STYLE_NAMES) templates[name] = await loadTemplate(name)
@@ -171,4 +171,13 @@ test('a hand-made second row that is not a translation still draws on its own', 
     const other = { id: 'cap-9', text: 'note', start: 1, end: 5, lane: 1, words: [{ word: 'note', start: 1, end: 4 }] }
     assert.equal(blocks(render(name, [SRC, other], 45)).length, 2, name)
   }
+})
+
+test('plate: the translation is a row INSIDE the one plate, which holds both and keeps the caption\'s theme', () => {
+  const out = render('plate', [SRC, ES], 45)
+  const plates = [...walk(out)].filter(el => el.props.style && 'borderRadius' in el.props.style)
+  assert.equal(plates.length, 1, 'one plate around both rows')
+  assert.equal(byCaptionId(plates[0], 'cap-1').length, 1, 'the translation is inside it')
+  const tr = byCaptionId(plates[0], 'cap-1')[0]
+  assert.equal(tr.props.style.fontSize, plates[0].props.style.fontSize, 'same face as the caption')
 })

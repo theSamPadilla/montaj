@@ -37,7 +37,50 @@ export default function Plate({
   const active = activeSegments(segments, t)
   if (!active.length) return null
 
-  return <>{active.map((seg, i) => renderSegment(seg, seg.id ?? i, segmentTheme(seg, { frame, fps, t, color, accentColor, backgroundColor, plateOpacity, platePadding, plateRadius, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform })))}</>
+  const theme = { frame, fps, t, color, accentColor, backgroundColor, plateOpacity, platePadding, plateRadius, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }
+  return <>{captionGroups(active).map((g, i) => renderSegment(g.seg, g.seg.id ?? i, segmentTheme(g.seg, theme), g.lines.map(l => renderLine(l, segmentTheme(l, theme)))))}</>
+}
+
+/**
+ * §244, caption translations. A translated segment carries `lang` and
+ * `translationOf` (the ids of the source segments it translates) and no
+ * words. It is never drawn as a plate of its own: it stacks under the source
+ * segment it translates, as a plain line INSIDE that segment's plate, so the
+ * plate is one box around every row and hugs the widest of them. A translation
+ * whose source is not on screen draws alone, as the only line of its own plate.
+ * Same helpers as the other eight templates (they can import nothing but
+ * montaj/render); keep isTranslation and captionGroups identical in each (stack is plate's own, the plate wraps the column).
+ */
+function isTranslation(seg) {
+  return typeof seg.lang === 'string' && Array.isArray(seg.translationOf)
+}
+
+function captionGroups(active) {
+  const groups = active.filter(s => !isTranslation(s)).map(seg => ({ seg, lines: [] }))
+  for (const tr of active) {
+    if (!isTranslation(tr)) continue
+    const group = groups.find(g => g.seg.id != null && tr.translationOf.includes(g.seg.id))
+    if (group) group.lines.push(tr)
+    else groups.push({ seg: tr, lines: [tr] })
+  }
+  return groups
+}
+
+/** The caption, then its translations under it, aligned like the caption, all inside the plate.
+ *  With no translations it is the caption itself, so nothing else changes. */
+function stack(content, lines, textAlign) {
+  if (!lines.length) return content
+  const alignItems = textAlign === 'left' ? 'flex-start' : textAlign === 'right' ? 'flex-end' : 'center'
+  return <div style={{ display: 'flex', flexDirection: 'column', alignItems, width: '100%', gap: 6 }}>{content}{lines}</div>
+}
+
+/** A translation's line inside the plate: plain text in the plate's own face, the caption's colour rule. */
+function renderLine(seg, { color, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
+  return (
+    <div key={seg.id ?? seg.start} data-caption-id={seg.id} style={{ color: seg.color ?? color, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }}>
+      {seg.text}
+    </div>
+  )
 }
 
 /**
@@ -118,7 +161,7 @@ function hug(el) {
  * caption's rect instead of the union of everything on screen (see
  * measureCaptionContentRect in editor/src/video/preview/captionDragState.ts).
  */
-function renderSegment(seg, key, { frame, fps, t, color, accentColor, backgroundColor, plateOpacity, platePadding, plateRadius, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
+function renderSegment(seg, key, { frame, fps, t, color, accentColor, backgroundColor, plateOpacity, platePadding, plateRadius, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }, lines = []) {
   const segStartFrame = Math.round(seg.start * fps)
   const segEndFrame   = Math.round(seg.end   * fps)
   const opacity = Math.min(
@@ -126,7 +169,8 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, background
     interpolate(segEndFrame - frame, [0, 4], [0, 1]),
   )
 
-  const words = seg.words || []
+  // A translation is only ever a line inside a plate (renderLine), never the caption itself.
+  const words = isTranslation(seg) ? [] : (seg.words || [])
 
   // Active word: the one being spoken right now, or (between words) the last
   // word that has already started — the highlight jumps whole-word.
@@ -139,6 +183,18 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, background
       }
     }
   }
+
+  const captionText = words.length ? words.flatMap((w, i) => [
+    // A real space between words, outside the spans: an inline-block (the lit word, which lifts) swallows a
+    // leading space, and a margin would leave a gap at the end of a wrapped line.
+    i > 0 ? ' ' : null,
+    <span
+      key={i}
+      style={i === activeIndex ? { display: 'inline-block', color: accentColor, transform: 'scale(1.06)' } : undefined}
+    >
+      {w.word}
+    </span>,
+  ]) : seg.text
 
   return (
     <div key={key} style={captionOuterStyle(seg)} data-caption-id={seg.id}>
@@ -167,17 +223,7 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, background
           textTransform,
           color: seg.color ?? color,
         }}>
-          {words.length ? words.flatMap((w, i) => [
-            // A real space between words, outside the spans: an inline-block (the lit word, which lifts) swallows a
-            // leading space, and a margin would leave a gap at the end of a wrapped line.
-            i > 0 ? ' ' : null,
-            <span
-              key={i}
-              style={i === activeIndex ? { display: 'inline-block', color: accentColor, transform: 'scale(1.06)' } : undefined}
-            >
-              {w.word}
-            </span>,
-          ]) : seg.text}
+          {stack(isTranslation(seg) ? null : lines.length ? <div>{captionText}</div> : captionText, lines, textAlign)}
         </div>
       </div>
     </div>
