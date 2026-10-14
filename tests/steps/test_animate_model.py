@@ -48,7 +48,7 @@ def no_sleep(monkeypatch):
 def vendor(monkeypatch):
     """tripo's HTTP functions replaced by recorders. `events` is the order of calls."""
     state = {"events": [], "creates": [], "task": dict(TASK), "wait_error": None, "download_error": None,
-             "guard_error": None, "sidecar_at_wait": None, "sidecar_reader": lambda: None}
+             "guard_error": None, "sidecar_at_wait": None, "sidecar_reader": lambda: None, "hints": []}
 
     def upload(path):
         state["events"].append("upload")
@@ -59,14 +59,15 @@ def vendor(monkeypatch):
         state["creates"].append((endpoint, body))
         return "task_anim"
 
-    def wait(task_id, *, resumable=True):
+    def wait(task_id, *, resumable=True, deadline=None, resume_hint=None):
         state["events"].append(f"wait:{task_id}")
+        state["hints"].append(resume_hint)
         state["sidecar_at_wait"] = state["sidecar_reader"]()
         if state["wait_error"]:
             raise state["wait_error"]
         return dict(state["task"], task_id=task_id)
 
-    def download(url, out_path):
+    def download(url, out_path, *, deadline=None):
         state["events"].append("download")
         if state["download_error"]:
             raise state["download_error"]
@@ -413,9 +414,17 @@ def test_a_run_that_stops_waiting_keeps_its_record(vendor, tmp_path):
 def test_a_failed_download_names_the_task_to_collect(vendor, tmp_path):
     out = tmp_path / "walk.glb"
     vendor["download_error"] = ConnectorError("Tripo download failed (HTTP 404): https://cdn.tripo3d.ai/x.glb")
-    with pytest.raises(ConnectorError, match="--task-id task_anim \\(no new charge\\)"):
+    with pytest.raises(ConnectorError, match="--task-id task_anim \\(no new charge\\)") as e:
         tripo.animate_model(model_path=str(_rigged(tmp_path)), out_path=str(out), animations=["preset:biped:walk"])
+    assert "generat" not in str(e.value) and "--rig-type" not in str(e.value)
     assert not out.exists() and _sidecar(out).exists()
+
+
+def test_the_animation_wait_is_told_how_to_collect_it(vendor, tmp_path):
+    tripo.animate_model(model_path=str(_rigged(tmp_path)), out_path=str(tmp_path / "walk.glb"),
+                        animations=["preset:biped:walk"])
+    tripo.resume_animation("task_given", str(tmp_path / "run.glb"))
+    assert vendor["hints"] == ["--task-id task_anim", "--task-id task_given"]
 
 
 def test_an_animated_model_the_guard_refuses_never_lands_at_out(vendor, tmp_path):
@@ -495,6 +504,20 @@ def test_step_task_id_resumes_without_a_new_task_and_needs_no_animation(step_mod
     _run(step_module, monkeypatch, ["--model", str(tmp_path / "moved.glb"), "--out", out, "--task-id", "task_9"])
     assert calls["resume"] == [("task_9", out)] and calls["animate"] == []
     assert capsys.readouterr().out.strip() == out
+
+
+def test_step_task_id_needs_no_model_at_all(step_module, monkeypatch, capsys, calls, tmp_path):
+    out = str(tmp_path / "walk.glb")
+    _run(step_module, monkeypatch, ["--out", out, "--task-id", "task_9"])
+    assert calls["resume"] == [("task_9", out)]
+
+
+def test_step_without_task_id_needs_a_model(step_module, monkeypatch, capsys, calls, tmp_path):
+    with pytest.raises(SystemExit):
+        _run(step_module, monkeypatch, ["--animation", "preset:biped:walk", "--out", str(tmp_path / "a.glb")])
+    err = json.loads(capsys.readouterr().err)
+    assert err["error"] == "invalid_args" and "--model is required" in err["message"]
+    assert calls["animate"] == [] and calls["resume"] == []
 
 
 @pytest.mark.parametrize("n", [0, 6])
@@ -583,7 +606,10 @@ def test_step_schema():
     assert schema["name"] == "animate_model" and schema["output"]["type"] == "model"
     by_name = {p["name"]: p for p in schema["params"]}
     assert set(by_name) == {"model", "animation", "out", "root-motion", "task-id"}
-    assert by_name["model"]["required"] and by_name["out"]["required"] and not by_name["animation"]["required"]
+    assert by_name["model"]["required"] is False, "task-id collects an animation with no model"
+    assert by_name["out"]["required"] and not by_name["animation"]["required"]
+    assert schema["description"].index("task-id") < schema["description"].index("must come from rig_model")
+    assert "same --out" not in schema["description"]
     assert by_name["animation"]["repeatable"] is True and by_name["animation"]["type"] == "string"
     assert by_name["root-motion"]["type"] == "bool" and by_name["root-motion"]["default"] is False
 

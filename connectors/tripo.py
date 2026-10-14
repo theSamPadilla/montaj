@@ -33,9 +33,8 @@ HTTP 429, which carries a `Retry-After` header and queued nothing.
 Current functions:
     upload(path) -> str                       # file_token
     create(endpoint, body) -> str             # task_id
-    wait(task_id) -> dict                     # the finished task's data
-    download(url, out_path) -> str
-    resume(task_id, out_path) -> dict         # wait + download model_url: {path, taskId, creditsUsed}
+    wait(task_id, deadline=None, resume_hint=None) -> dict   # the finished task's data
+    download(url, out_path, deadline=None) -> str
     build_generation_body(...) -> (endpoint, body)   # pure, validates
     generate_model(out_path=..., ...) -> dict # text, image or multiview to a .glb
     resume_model(task_id, out_path) -> dict   # collect a generation already submitted
@@ -44,23 +43,36 @@ Current functions:
     resume_rig(task_id, out_path, rig_type=None) / resume_animation(task_id, out_path)
     check_key() -> dict
 
+Collecting a task already submitted: `--task-id <id>` (resume_model, resume_rig,
+resume_animation) waits for it and downloads it, with no new task and no new
+charge. It is the only way back in the Montaj app, which gives every step run a
+fresh out path. Every message for a paid task that a run could not finish names
+it: `--task-id <id>`, plus `--rig-type <type>` for a rig.
+
+One deadline per step run: generate_model, rig_model, animate_model and the
+resume_* functions set STEP_BUDGET_S (840 s, under serve's 900 s step timeout) at
+entry, and every wait and the download share it. With less than MIN_LEFT_S left
+before a paid submit, the run stops having spent nothing; before a download, it
+stops naming the task to collect. Either beats serve killing the step with no id.
+
 A task is recorded beside its output before Tripo is polled: `<out>.tripo.json`
 = {task_id, kind, created, ...} (and credits_consumed once it finishes). kind is
 "model" ({model, endpoint}), "rig" ({rig_model, rig_type, spec, source_task_id}) or
-"animation" ({animations, in_place, rig_task_id, rig_model, rig_type}). A run that
-stopped (a timeout, a closed laptop) and is retried with the same out re-attaches
-to that task instead of paying for a new one; a task that ended without a model
-(failed, banned, expired, cancelled) removes the record, so the retry submits
-again. The record also lets one step build on another: rig_model sends the task
-that generated a model instead of uploading it, and animate_model needs the rig
-task (and its rig type, for the preset list) that rig_model recorded.
+"animation" ({animations, in_place, rig_task_id, rig_model, rig_type}). From the
+CLI, a run retried with the same out re-attaches to that task instead of paying
+for a new one (a convenience: the app never reuses an out); a task that ended
+without a model (failed, banned, expired, cancelled) removes the record, so the
+retry submits again. The record also lets one step build on another: rig_model
+sends the task that generated a model instead of uploading it (and uploads the
+.glb when Tripo no longer takes that task), and animate_model needs the rig task
+(and its rig type, for the preset list) that rig_model recorded.
 
 Library code: raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
 import difflib, json, os, sys, time
 from datetime import datetime, timezone
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from connectors import (ConnectorError, _http, CONTENT_REFUSED, INSUFFICIENT_CREDIT,
                         INVALID_API_KEY, MODEL_RETIRED, UNREACHABLE)
@@ -79,12 +91,18 @@ MODEL_TYPES = (".glb", ".gltf", ".fbx", ".obj", ".stl")
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_MODEL_BYTES = 150 * 1024 * 1024
 
-# A 3D task takes from tens of seconds to a few minutes. The poll stops short of
-# serve's default 900 s step timeout, and says the task id so `resume` can pick
-# it up without paying twice.
+# A 3D task takes from tens of seconds to a few minutes. One step run has
+# STEP_BUDGET_S for everything (uploads, every wait, the download), short of
+# serve's default 900 s step timeout, so it ends naming the task id instead of
+# being killed with none. A bare wait() with no deadline polls for MAX_POLL_S.
+STEP_BUDGET_S = 840.0
+MAX_POLL_S = STEP_BUDGET_S
+# Less than this left before a paid submit or a download: stop instead of starting it.
+MIN_LEFT_S = 90.0
 POLL_INTERVAL_S = 5.0
-MAX_POLL_S = 840.0
 MAX_CONSECUTIVE_POLL_FAILURES = 5
+STATUS_TIMEOUT_S = 30.0
+DOWNLOAD_TIMEOUT_S = 300.0
 
 # A 429 queued nothing and charged nothing, so the same request is repeated after
 # the server's own Retry-After (seconds), at most BUSY_RETRIES times.
@@ -200,13 +218,16 @@ class _TaskEnded(ConnectorError):
 
 class UnsupportedModel(ConnectorError):
     """Tripo delivered a model Montaj can't load and this module can't fix
-    (compressed geometry, a KTX2 texture, a file outside the GLB). `kind` is
-    lib.glb_textures.GlbTextureError's kind; `task_id` is the paid task."""
+    (geometry compression the file requires, a file outside the GLB, an image
+    that can't be decoded). `kind` is lib.glb_textures.GlbTextureError's kind;
+    `task_id` is the paid task; `kept` is where its bytes were kept
+    (`<out stem>.unsupported.glb`), or None."""
 
-    def __init__(self, message: str, kind: str, task_id: str):
+    def __init__(self, message: str, kind: str, task_id: str, kept: str | None = None):
         super().__init__(message)
         self.kind = kind
         self.task_id = task_id
+        self.kept = kept
 
 
 class NotRiggable(ConnectorError):
@@ -219,8 +240,19 @@ class NotRiggable(ConnectorError):
 
 
 class InvalidInput(ConnectorError):
-    """An input Montaj refused before any call: an unknown rig type or preset
-    animation, a model that has not been rigged, a missing file. Nothing was sent."""
+    """An input Montaj refused before any paid call: an unknown rig type or preset
+    animation, a model that has not been rigged, a missing file, an out that
+    records another task. Nothing was spent."""
+
+
+class _SourceRefused(ConnectorError):
+    """The free rig check could not use a generation task as its input (the task
+    expired, or another key made it): the .glb is uploaded instead."""
+
+
+# Said of a submit whose answer was lost: the task may exist and be charged.
+_MAY_EXIST = ("The task may exist: check the Tripo console before running again (a task's "
+              "credits stay frozen until it finishes).")
 
 
 def _warn(message: str) -> None:
@@ -280,9 +312,11 @@ def _retry_after(resp) -> float:
     return min(wait, BUSY_MAX_WAIT_S)
 
 
-def _error(status: int, body: dict, text: str, what: str) -> ConnectorError:
+def _error(status: int, body: dict, text: str, what: str, *, repeatable: bool = True) -> ConnectorError:
     """The ConnectorError for a failed response. Tripo's business `code` decides
-    first (an out-of-credits refusal can come as HTTP 403), then the status."""
+    first (an out-of-credits refusal can come as HTTP 403), then the status. A 5xx
+    on a submit (repeatable=False) may still be a task, so it says to check the
+    console rather than to try again, and is not UNREACHABLE."""
     code, msg = _code(body), _message(body, text)
     if status == 401 or code in _KEY_CODES:
         return ConnectorError(
@@ -301,6 +335,8 @@ def _error(status: int, body: dict, text: str, what: str) -> ConnectorError:
             f"Tripo says this API or model version is deprecated ({msg}). Update Montaj "
             f"to a release that uses the current one.", reason=MODEL_RETIRED)
     if status >= 500:
+        if not repeatable:
+            return ConnectorError(f"Tripo {what} failed (HTTP {status}): {msg}. {_MAY_EXIST}")
         return ConnectorError(f"Tripo {what} failed (HTTP {status}): {msg}. Tripo is not "
                               f"responding; try again shortly.", reason=UNREACHABLE)
     if status == 403:
@@ -316,8 +352,10 @@ def _request(method: str, path: str, what: str, *, busy_retries: int = BUSY_RETR
 
     A 429 (or code 1007/2000) is repeated after Retry-After, `busy_retries` times,
     then raised as _Busy. repeatable=False is for a submit: a request that timed
-    out, or came back 5xx, may already be a task, so it is never repeated by the
-    transport (a 429 still is, because it queued nothing).
+    out, came back 5xx or came back unreadable may already be a task, so it is
+    never repeated by the transport (a 429 still is, because it queued nothing),
+    and its error is not UNREACHABLE (whose remedy, running again, could pay
+    twice): it says to check the Tripo console first.
     """
     headers = _headers()
     for attempt in range(busy_retries + 1):
@@ -327,23 +365,24 @@ def _request(method: str, path: str, what: str, *, busy_retries: int = BUSY_RETR
                 retry_statuses=_SERVER_STATUSES if repeatable else frozenset(),
                 retry_exceptions=repeatable, **kwargs)
         except ConnectorError as e:
-            hint = "" if repeatable else (
-                " If it timed out, the task may still have been created (its credits stay "
-                "frozen until it finishes); check the Tripo console before generating again.")
-            raise ConnectorError(f"Tripo {what} failed: {e}.{hint}", reason=UNREACHABLE) from e
+            if repeatable:
+                raise ConnectorError(f"Tripo {what} failed: {e}.", reason=UNREACHABLE) from e
+            raise ConnectorError(f"Tripo {what} failed: {e}. {_MAY_EXIST}") from e
         body, text = _body(r), getattr(r, "text", "") or ""
         if r.status_code == 429 or _code(body) in _BUSY_CODES:
             if attempt < busy_retries:
                 time.sleep(_retry_after(r))
                 continue
-            raise _Busy(f"Tripo is busy: it refused the {what} {attempt + 1} "
-                        f"time{'s' if attempt else ''} in a row ({_message(body, text)}). "
+            times = f" {attempt + 1} times in a row" if attempt else ""
+            raise _Busy(f"Tripo is busy: it refused the {what}{times} ({_message(body, text)}). "
                         f"Wait a minute and try again.")
         if r.status_code >= 400 or _code(body) not in (0, None):
-            raise _error(r.status_code, body, text, what)
+            raise _error(r.status_code, body, text, what, repeatable=repeatable)
         if not body:
-            raise ConnectorError(f"Tripo {what} returned an unreadable response (HTTP {r.status_code})",
-                                 reason=UNREACHABLE)
+            unreadable = f"Tripo {what} returned an unreadable response (HTTP {r.status_code})"
+            if repeatable:
+                raise ConnectorError(unreadable, reason=UNREACHABLE)
+            raise ConnectorError(f"{unreadable}. {_MAY_EXIST}")
         return body.get("data")
 
 
@@ -381,16 +420,17 @@ def upload(path: str) -> str:
     return str(token)
 
 
-def create(endpoint: str, body: dict) -> str:
+def create(endpoint: str, body: dict, *, free: bool = False) -> str:
     """POST a task. `endpoint` is the path under /v3 (e.g. "/generation/image-to-model");
     returns its task_id. Nothing here knows the body's shape: the caller builds it
     from the endpoint's own page. A submit that timed out or came back 5xx is never
-    repeated, since it may already be a task."""
+    repeated, since it may already be a paid task; free=True (the rig check, which
+    costs nothing) lets the transport repeat it like any other request."""
     if not isinstance(endpoint, str) or not endpoint.startswith("/"):
         raise ConnectorError(f"Tripo endpoint must be a path under /v3 starting with '/', got {endpoint!r}")
     if not isinstance(body, dict):
         raise ConnectorError("Tripo request body must be an object")
-    result = _request("POST", endpoint, "submit", json=body, timeout=120, repeatable=False)
+    result = _request("POST", endpoint, "submit", json=body, timeout=120, repeatable=free)
     task_id = result.get("task_id") if isinstance(result, dict) else None
     if not task_id:
         raise ConnectorError("Tripo accepted the task but returned no task_id")
@@ -421,43 +461,61 @@ def _terminal_error(task_id: str, status: str, task: dict) -> ConnectorError | N
             f"and try again.", reason=CONTENT_REFUSED)
     if status == "expired":
         return _TaskEnded(f"Tripo task {task_id} expired: its output files are no longer "
-                          f"available. Generate it again.")
+                          f"available. Run the step again (a new task).")
     if status == "cancelled":
         return _TaskEnded(f"Tripo task {task_id} was cancelled. A cancelled task is not charged.")
     return None
 
 
-def wait(task_id: str, *, resumable: bool = True) -> dict:
+def _collect_by(hint: str) -> str:
+    """How to collect a paid task a run could not finish: no new task, no new charge."""
+    return f"collect it by running the same step with {hint} (no new charge)"
+
+
+def _left(deadline: float) -> float:
+    return deadline - time.monotonic()
+
+
+def wait(task_id: str, *, resumable: bool = True, deadline: float | None = None,
+         resume_hint: str | None = None) -> dict:
     """Poll the task until it succeeds; its data. A task that ended any other way
-    raises. Transient poll failures are tolerated (MAX_CONSECUTIVE_POLL_FAILURES in
-    a row); the task is already submitted, so giving up says how to pick it up
-    again rather than to regenerate (resumable=False is for a free check, which has
-    nothing to collect: it says to run the check again). An unknown status counts
-    as still running."""
+    raises. `deadline` is a time.monotonic() value the step's waits and download
+    share (default: MAX_POLL_S from now). Transient poll failures are tolerated
+    (MAX_CONSECUTIVE_POLL_FAILURES in a row; a 429 is a missed tick and does not
+    count); the task is already submitted, so giving up says how to collect it:
+    run the same step with `resume_hint` (default `--task-id <id>`). resumable=False
+    is for a free check, which has nothing to collect: it says to run the check
+    again. An unknown status counts as still running."""
     if not task_id:
         raise ConnectorError("task_id is required")
     path = f"/tasks/{quote(str(task_id), safe='')}"
     # Wall time, so the time each status check itself takes counts too.
-    start, failures, last = time.monotonic(), 0, None
-    while time.monotonic() - start < MAX_POLL_S:
-        task = None
+    start = time.monotonic()
+    end = start + MAX_POLL_S if deadline is None else deadline
+    hint = resume_hint or f"--task-id {task_id}"
+    again = (f"It is submitted and may still finish: {_collect_by(hint)}." if resumable
+             else "The check is free: run it again.")
+    failures, last = 0, None
+    while time.monotonic() < end:
+        task, busy = None, False
+        # A status check that hangs must not carry the step past its deadline.
+        timeout = min(STATUS_TIMEOUT_S, max(5.0, _left(end) / 3))
         try:
             # A 429 while polling is just a missed tick: the loop is the retry.
-            task = _request("GET", path, f"status check for task {task_id}", timeout=30, busy_retries=0)
+            task = _request("GET", path, f"status check for task {task_id}", timeout=timeout, busy_retries=0)
         except _Busy as e:
-            last = e
+            last, busy = e, True
         except ConnectorError as e:
             if e.reason != UNREACHABLE:
                 raise
             last = e
         if task is None:
-            failures += 1
-            if failures >= MAX_CONSECUTIVE_POLL_FAILURES:
-                again = (f"It may still finish; resume it with --task-id {task_id} instead of "
-                         f"generating again." if resumable else "The check is free: run it again.")
-                raise ConnectorError(
-                    f"Tripo task {task_id}: {failures} status checks failed in a row. {again} "
-                    f"Last error: {last}")
+            if not busy:    # a 429 neither counts toward the stop nor resets it
+                failures += 1
+                if failures >= MAX_CONSECUTIVE_POLL_FAILURES:
+                    raise ConnectorError(
+                        f"Tripo task {task_id}: {failures} status checks failed in a row. {again} "
+                        f"Last error: {last}")
         else:
             failures = 0
             task = task if isinstance(task, dict) else {}
@@ -467,10 +525,9 @@ def wait(task_id: str, *, resumable: bool = True) -> dict:
             error = _terminal_error(task_id, status, task)
             if error:
                 raise error
-        time.sleep(POLL_INTERVAL_S)
-    again = (f"It is submitted and may still finish: resume it with --task-id {task_id} instead "
-             f"of generating again." if resumable else "The check is free: run it again.")
-    raise ConnectorError(f"Tripo task {task_id} is still running after {MAX_POLL_S:.0f} s. {again}")
+        time.sleep(min(POLL_INTERVAL_S, max(0.0, _left(end))))
+    raise ConnectorError(f"Tripo task {task_id} is still running after "
+                         f"{time.monotonic() - start:.0f} s. {again}")
 
 
 def _plain_url(url: str) -> str:
@@ -479,21 +536,50 @@ def _plain_url(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}{parts.path}"
 
 
-def download(url: str, out_path: str) -> str:
+def _scrub(text, url) -> str:
+    """`text` with no trace of the signed URL's query string (its signature is a
+    credential): the full URL becomes _plain_url(url), and the query (with or
+    without its '?', as sent or percent-decoded) and each long parameter value
+    are removed wherever they appear, since requests' own errors quote the
+    path and query without the host."""
+    text = str(text)
+    if not isinstance(url, str) or not url:
+        return text
+    text = text.replace(url, _plain_url(url))
+    query = urlsplit(url).query
+    if not query:
+        return text
+    secrets = {query, unquote(query)}
+    for pair in query.split("&"):
+        value = pair.partition("=")[2]
+        if len(value) >= 8:
+            secrets |= {value, unquote(value)}
+    for secret in sorted(secrets, key=len, reverse=True):
+        text = text.replace(f"?{secret}", "").replace(secret, "")
+    return text
+
+
+def download(url: str, out_path: str, *, deadline: float | None = None) -> str:
     """Fetch a finished output (a signed CDN URL: no API key is sent) to out_path.
     Written beside it first and renamed, so a failed download leaves no partial file.
-    A network failure (or a 5xx after the transport's retries) is UNREACHABLE."""
+    A network failure (or a 5xx after the transport's retries) is UNREACHABLE. No
+    message carries the URL's query string (_scrub). With a `deadline`, each
+    request's timeout fits in what is left and a download still streaming at the
+    deadline stops."""
     if not isinstance(url, str) or not url.startswith(("https://", "http://")):
-        raise ConnectorError(f"Tripo returned an unusable download URL: {url!r}")
+        raise ConnectorError(f"Tripo returned an unusable download URL: {_scrub(repr(url), url)}")
     if not out_path:
         raise ConnectorError("out_path is required")
+    timeout = DOWNLOAD_TIMEOUT_S
+    if deadline is not None:
+        timeout = min(timeout, max(10.0, _left(deadline) / _http.RETRY_ATTEMPTS))
     tmp = f"{out_path}.part"
     try:
         try:
-            r = _http.request_with_retry("GET", url, stream=True, timeout=300)
+            r = _http.request_with_retry("GET", url, stream=True, timeout=timeout)
         except ConnectorError as e:
-            raise ConnectorError(f"Tripo download of {_plain_url(url)} failed: {e}",
-                                 reason=UNREACHABLE) from e
+            raise ConnectorError(f"Tripo download of {_plain_url(url)} failed: {_scrub(e, url)}",
+                                 reason=UNREACHABLE) from None
         if r.status_code >= 400:
             raise ConnectorError(
                 f"Tripo download failed (HTTP {r.status_code}): {_plain_url(url)}",
@@ -502,6 +588,9 @@ def download(url: str, out_path: str) -> str:
         with open(tmp, "wb") as f:
             for chunk in r.iter_content(chunk_size=1 << 20):
                 f.write(chunk)
+                if deadline is not None and _left(deadline) < 0:
+                    raise ConnectorError(f"Tripo download of {_plain_url(url)} stopped: this run is "
+                                         f"out of time")
         os.replace(tmp, out_path)
     except Exception as e:
         try:
@@ -512,25 +601,10 @@ def download(url: str, out_path: str) -> str:
             raise
         # requests' own errors subclass OSError: a dropped stream is the network, not the disk.
         if isinstance(e, OSError) and not isinstance(e, _http._require_requests().RequestException):
-            raise ConnectorError(f"Could not write {out_path}: {e}") from e
-        raise ConnectorError(f"Tripo download of {_plain_url(url)} failed: {e}", reason=UNREACHABLE) from e
+            raise ConnectorError(f"Could not write {out_path}: {_scrub(e, url)}") from None
+        raise ConnectorError(f"Tripo download of {_plain_url(url)} failed: {_scrub(e, url)}",
+                             reason=UNREACHABLE) from None
     return out_path
-
-
-def resume(task_id: str, out_path: str) -> dict:
-    """Wait for an already-submitted task and download its model: no new task, no
-    new charge. Returns {path, taskId, creditsUsed} (creditsUsed a float, or None)."""
-    if not task_id:
-        raise ConnectorError("task_id is required")
-    if not out_path:
-        raise ConnectorError("out_path is required")
-    task = wait(task_id)
-    output = task.get("output") if isinstance(task.get("output"), dict) else {}
-    url = output.get("model_url")
-    if not url:
-        raise ConnectorError(f"Tripo task {task_id} succeeded but returned no model_url")
-    path = download(url, out_path)
-    return {"path": path, "taskId": task_id, "creditsUsed": _credits(task.get("credits_consumed"))}
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +725,7 @@ def _read_sidecar(out_path: str, kind: str | None = "model") -> dict | None:
     except (OSError, ValueError) as e:
         raise ConnectorError(
             f"The Tripo task record {path} is unreadable ({e}). If you know its task id, collect "
-            f"it with --task-id; otherwise delete the file and generate again.") from e
+            f"it with --task-id; otherwise delete the file and run the step again.") from e
     if not isinstance(record, dict) or not record.get("task_id"):
         return None
     found = record.get("kind", "model")
@@ -687,21 +761,61 @@ def _check_out(out_path: str) -> None:
                              f"choose a new output path.")
 
 
-def _unsupported(e: GlbTextureError, task_id: str) -> UnsupportedModel:
+def _keep_unsupported(staged: str, out_path: str) -> str | None:
+    """Move a downloaded model Montaj refused beside out as `<out stem>.unsupported.glb`
+    (-2, -3, ... when taken; never over a file): it is paid for, so its bytes are
+    kept. Its path, or None when it could not be moved."""
+    base = os.path.splitext(out_path)[0] + ".unsupported"
+    for n in range(1, 100):
+        path = f"{base}.glb" if n == 1 else f"{base}-{n}.glb"
+        if os.path.lexists(path):
+            continue
+        try:
+            os.replace(staged, path)
+        except OSError:
+            return None
+        return path
+    return None
+
+
+def _unsupported(e: GlbTextureError, task_id: str, kept: str | None) -> UnsupportedModel:
+    where = f" The file Tripo made is kept at {kept}." if kept else ""
     if e.kind == "compressed":
-        message = f"Tripo returned a compressed model; Montaj needs it uncompressed ({e}, task {task_id})."
+        message = f"Tripo returned a compressed model; Montaj needs it uncompressed ({e}, task {task_id}).{where}"
     else:
-        message = f"Tripo returned a model Montaj can't use: {e} (task {task_id})."
-    return UnsupportedModel(message, e.kind, task_id)
+        message = f"Tripo returned a model Montaj can't use: {e} (task {task_id}).{where}"
+    return UnsupportedModel(message, e.kind, task_id, kept)
 
 
-def _collect_task(record: dict, out_path: str) -> tuple[dict, dict]:
+def _deadline() -> float:
+    """The one deadline a step run's waits and download share."""
+    return time.monotonic() + STEP_BUDGET_S
+
+
+def _time_to_submit(deadline: float, what: str) -> None:
+    """Refuse to start a paid task the run has no time left to wait for and download."""
+    left = _left(deadline)
+    if left < MIN_LEFT_S:
+        raise ConnectorError(f"Only {max(left, 0.0):.0f} s of this run are left, too few to submit {what} "
+                             f"and collect it. Nothing was spent: run the step again.")
+
+
+def _resume_hint(record: dict) -> str:
+    """The flags that collect the recorded task: --task-id, plus --rig-type for a rig."""
+    hint = f"--task-id {record['task_id']}"
+    if record.get("kind") == "rig" and record.get("rig_type"):
+        hint += f" --rig-type {record['rig_type']}"
+    return hint
+
+
+def _collect_task(record: dict, out_path: str, deadline: float) -> tuple[dict, dict]:
     """Wait for the recorded task, download its model, make its textures ones
-    Montaj reads, and only then put it at out_path. Returns the record as it now
-    stands in `<out>.tripo.json` (with credits_consumed) and the texture report."""
-    task_id = record["task_id"]
+    Montaj reads, and only then put it at out_path, all within `deadline`. Returns
+    the record as it now stands in `<out>.tripo.json` (with credits_consumed) and
+    the texture report. A run that can't finish says how to collect the task."""
+    task_id, hint = record["task_id"], _resume_hint(record)
     try:
-        task = wait(task_id)
+        task = wait(task_id, deadline=deadline, resume_hint=hint)
     except _TaskEnded:
         _remove(sidecar_path(out_path))   # nothing to collect: a retry submits again
         raise
@@ -709,17 +823,22 @@ def _collect_task(record: dict, out_path: str) -> tuple[dict, dict]:
     url = output.get("model_url")
     if not url:
         raise ConnectorError(f"Tripo task {task_id} succeeded but returned no model_url")
+    left = _left(deadline)
+    if left < MIN_LEFT_S:
+        raise ConnectorError(f"Tripo task {task_id} is done, but only {max(left, 0.0):.0f} s of this run are "
+                             f"left, too few to download it safely. It is made and paid for: {_collect_by(hint)}.")
     staged = f"{out_path}.download"
     try:
         try:
-            download(url, staged)
+            download(url, staged, deadline=deadline)
         except ConnectorError as e:
-            raise ConnectorError(f"{e}. The model is made and paid for: collect it again with "
-                                 f"--task-id {task_id} (no new charge).", reason=e.reason) from e
+            # Not UNREACHABLE: its remedy, running the step again, would pay twice.
+            raise ConnectorError(f"{str(e).rstrip('.')}. Tripo task {task_id} is made and paid for: "
+                                 f"{_collect_by(hint)}.") from e
         try:
             report = ensure_supported_textures(staged)
         except GlbTextureError as e:
-            raise _unsupported(e, task_id) from e
+            raise _unsupported(e, task_id, _keep_unsupported(staged, out_path)) from e
         except OSError as e:
             raise ConnectorError(f"Could not read the downloaded model {staged}: {e}") from e
         try:
@@ -728,14 +847,17 @@ def _collect_task(record: dict, out_path: str) -> tuple[dict, dict]:
             raise ConnectorError(f"Could not write {out_path}: {e}") from e
     finally:
         _remove(staged)
+    if report.get("ktx2"):
+        _warn(f"Tripo task {task_id}'s model has {report['ktx2']} KTX2 texture"
+              f"{'s' if report['ktx2'] != 1 else ''}: Montaj shows only the base colour for them.")
     final = {**record, "credits_consumed": _credits(task.get("credits_consumed"))}
     _write_sidecar(out_path, final)
     return final, report
 
 
-def _collect(record: dict, out_path: str) -> dict:
+def _collect(record: dict, out_path: str, deadline: float) -> dict:
     """_collect_task, as a generation's result."""
-    final, report = _collect_task(record, out_path)
+    final, report = _collect_task(record, out_path, deadline)
     return {"path": out_path, "taskId": final["task_id"], "model": record.get("model"),
             "creditsUsed": final["credits_consumed"], "textures": report}
 
@@ -758,18 +880,20 @@ def generate_model(*, out_path, prompt=None, image_path=None, view_paths=None, t
     left, back and right to an image (None for a view not given).
 
     The task is recorded in `<out>.tripo.json` before polling. When that record
-    exists and out_path does not, this re-attaches to the recorded task (no new
-    task, no new charge) and the inputs given here are not sent.
+    exists and out_path does not (a CLI retry with the same out), this re-attaches
+    to the recorded task (no new task, no new charge) and the inputs given here are
+    not sent. A run that can't finish names the task: resume_model collects it.
 
     Returns {path, taskId, model, creditsUsed, textures}: textures is
     lib.glb_textures.ensure_supported_textures's report. Raises UnsupportedModel
     when the GLB can't be made loadable, ConnectorError for everything else."""
+    deadline = _deadline()
     _check_out(out_path)
     record = _read_sidecar(out_path)
     if record:
         _warn(f"Re-attaching to Tripo task {record['task_id']} recorded in {sidecar_path(out_path)}: "
               f"no new task, no new charge. This run's inputs are not sent.")
-        return _collect(record, out_path)
+        return _collect(record, out_path, deadline)
 
     faces = _face_limit(face_limit)
     views = dict(view_paths) if isinstance(view_paths, dict) else view_paths
@@ -785,24 +909,30 @@ def generate_model(*, out_path, prompt=None, image_path=None, view_paths=None, t
     endpoint, body = build_generation_body(
         prompt=prompt, image_input=_source(image_path),
         views={k: _source(v) for k, v in views.items()} if isinstance(views, dict) else views, **kwargs)
+    _time_to_submit(deadline, "the generation")
     task_id = create(endpoint, body)
     record = {"task_id": task_id, "kind": "model", "model": body["model"], "endpoint": endpoint,
               "created": _now()}
     _write_sidecar(out_path, record)
-    return _collect(record, out_path)
+    return _collect(record, out_path, deadline)
 
 
 def _resume_record(task_id: str, out_path: str, kind: str, blank: dict) -> dict:
     """Record a task already submitted beside out_path, keeping what an existing
-    record for the same task says; `blank` is what a new record knows about it."""
+    record for the same task says; `blank` is what a new record knows about it.
+    A record there of another task that was never collected (no credits_consumed)
+    is refused: it may be the only note of a paid task."""
     if not task_id:
         raise ConnectorError("task_id is required")
     _check_out(out_path)
     try:
-        record = _read_sidecar(out_path, kind)
+        record = _read_sidecar(out_path, None)
     except ConnectorError:
-        record = None     # the explicit task id wins over an unreadable or other record
-    if not record or record.get("task_id") != task_id:
+        record = None     # the explicit task id wins over an unreadable record
+    if record and record.get("task_id") != task_id and "credits_consumed" not in record:
+        raise InvalidInput(f"{out_path} records Tripo task {record['task_id']}, not collected yet; choose "
+                           f"another out (or collect that task with --task-id {record['task_id']}).")
+    if not record or record.get("task_id") != task_id or record.get("kind", "model") != kind:
         record = {"task_id": task_id, "kind": kind, **blank, "created": _now()}
     _write_sidecar(out_path, record)
     return record
@@ -812,8 +942,9 @@ def resume_model(task_id: str, out_path: str) -> dict:
     """Collect a generation already submitted (a run that stopped): wait, download,
     fix the textures. No new task, no new charge. Records the task beside out_path
     first, keeping what an existing record for the same task says."""
+    deadline = _deadline()
     record = _resume_record(task_id, out_path, "model", {"model": None, "endpoint": None})
-    return _collect(record, out_path)
+    return _collect(record, out_path, deadline)
 
 
 # ---------------------------------------------------------------------------
@@ -859,13 +990,38 @@ def _rig_source(model_path: str) -> tuple[str, str | None]:
     return upload(model_path), None
 
 
-def _rig_check(source: str) -> dict:
+def _rig_check(source: str, deadline: float, *, from_task: bool = False) -> dict:
     """POST /animations/rig-check (free) and wait for it: the task's output,
     {riggable, rig_type} (animations-rig-check.md: the POST answers with a task id;
-    the answer is in the finished task's output)."""
-    task = wait(create("/animations/rig-check", {"input": source}), resumable=False)
+    the answer is in the finished task's output). With from_task (the input is a
+    generation task), Tripo refusing that input (the submit refused, or the check
+    ending without an answer, with no more specific reason: not the network, the
+    key, the credit or the content) raises _SourceRefused."""
+    try:
+        check_id = create("/animations/rig-check", {"input": source}, free=True)
+    except _Busy:
+        raise
+    except ConnectorError as e:
+        if from_task and e.reason is None:
+            raise _SourceRefused(str(e)) from e
+        raise
+    try:
+        task = wait(check_id, resumable=False, deadline=deadline)
+    except _TaskEnded as e:
+        if from_task and e.reason is None:
+            raise _SourceRefused(str(e)) from e
+        raise
     output = task.get("output")
     return output if isinstance(output, dict) else {}
+
+
+def _a(word: str) -> str:
+    return f"{'an' if word[:1] in 'aeiou' else 'a'} {word}"
+
+
+def _has_presets(rig_type: str | None) -> bool:
+    rig = RIG_MODELS.get(rig_type) if rig_type else None
+    return bool(rig and ANIMATION_PRESETS.get(rig["model"], {}).get(rig_type))
 
 
 def _rig_choice(name: str, check: dict, wanted: str | None) -> str:
@@ -899,47 +1055,77 @@ def rig_model(*, model_path, out_path, rig_type=None) -> dict:
     (which must not exist yet).
 
     The model is passed to Tripo as the task that generated it when the record
-    beside it (`<model>.tripo.json`) says so, else uploaded. Tripo's free
-    riggability check runs first: a model it calls not riggable raises NotRiggable
-    and no rig task is made. The rig type is the check's recommendation unless
-    rig_type is given. biped goes to rig model v1.0-20240301 with Mixamo-compatible
-    bones; every other type to v2.5-20260210 (RIG_MODELS).
+    beside it (`<model>.tripo.json`) says so, else uploaded; when Tripo no longer
+    takes that task (it expired, or another key made it) the .glb is uploaded and
+    the check run again. Tripo's free riggability check runs first: a model it
+    calls not riggable raises NotRiggable and no rig task is made. The rig type is
+    the check's recommendation unless rig_type is given; a recommended type with
+    no preset animations (avian) is refused unless asked for by name, since
+    animate_model could never move it. biped goes to rig model v1.0-20240301 with
+    Mixamo-compatible bones; every other type to v2.5-20260210 (RIG_MODELS).
 
     The rig task is recorded in `<out>.tripo.json` ({task_id, kind: "rig",
     rig_model, rig_type, spec, source_task_id, created}) before polling. When that
-    record exists and out_path does not, this re-attaches to it (no check, no new
-    task, no new charge). animate_model reads the record.
+    record exists and out_path does not (a CLI retry with the same out), this
+    re-attaches to it (no check, no new task, no new charge). animate_model reads
+    the record. A run that can't finish names the task and its rig type for
+    resume_rig.
 
-    Returns {path, taskId, rigType, rigModel, spec, creditsUsed, textures}. Raises
-    NotRiggable, InvalidInput (before any call), UnsupportedModel when the GLB
-    can't be made loadable, ConnectorError for everything else."""
+    Returns {path, taskId, rigType, rigModel, spec, creditsUsed, textures}, plus
+    `note` for a rig type with no preset animations. Raises NotRiggable,
+    InvalidInput (before any paid call), UnsupportedModel when the GLB can't be
+    made loadable, ConnectorError for everything else."""
+    deadline = _deadline()
     _check_out(out_path)
     record = _read_sidecar(out_path, "rig")
     if record:
         _warn(f"Re-attaching to Tripo task {record['task_id']} recorded in {sidecar_path(out_path)}: "
               f"no new task, no new charge. This run's inputs are not sent.")
-        return _rig_result(*_collect_task(record, out_path), out_path)
+        return _rig_result(*_collect_task(record, out_path, deadline), out_path)
 
     wanted = _rig_type(rig_type)
     _glb_input(model_path)
     _makedirs_for(out_path)
     name = os.path.basename(model_path)
     source, source_task_id = _rig_source(model_path)
-    chosen = _rig_choice(name, _rig_check(source), wanted)
+    try:
+        check = _rig_check(source, deadline, from_task=source_task_id is not None)
+    except _SourceRefused as e:
+        _warn(f"Tripo's rig check could not use task {source_task_id} ({e}); uploading {name} "
+              f"instead. The check is free.")
+        source, source_task_id = upload(model_path), None
+        check = _rig_check(source, deadline)
+    chosen = _rig_choice(name, check, wanted)
+    if not _has_presets(chosen):
+        if not wanted:
+            others = ", ".join(t for t in RIG_TYPES if _has_presets(t))
+            raise InvalidInput(
+                f"Tripo's check recommends {_a(chosen)} rig for {name}, and Tripo has no preset "
+                f"animations for {_a(chosen)} rig, so animate_model could never move it. Nothing was "
+                f"spent: the check is free. To rig it anyway, pass rig type {chosen}; or pass one "
+                f"that can be animated: {others}.")
+        _warn(f"Rigging {name} as {chosen}, as asked: Tripo has no preset animations for "
+              f"{_a(chosen)} rig, so animate_model can't move it.")
     rig = RIG_MODELS[chosen]
     body = {"input": source, "model": rig["model"], "rig_type": chosen, "spec": rig["spec"],
             "out_format": "glb"}
+    _time_to_submit(deadline, "the rig")
     task_id = create("/animations/rig", body)
     record = {"task_id": task_id, "kind": "rig", "rig_model": rig["model"], "rig_type": chosen,
               "spec": rig["spec"], "source_task_id": source_task_id, "created": _now()}
     _write_sidecar(out_path, record)
-    return _rig_result(*_collect_task(record, out_path), out_path)
+    return _rig_result(*_collect_task(record, out_path, deadline), out_path)
 
 
 def _rig_result(final: dict, report: dict, out_path: str) -> dict:
-    return {"path": out_path, "taskId": final["task_id"], "rigType": final.get("rig_type"),
-            "rigModel": final.get("rig_model"), "spec": final.get("spec"),
-            "creditsUsed": final["credits_consumed"], "textures": report}
+    result = {"path": out_path, "taskId": final["task_id"], "rigType": final.get("rig_type"),
+              "rigModel": final.get("rig_model"), "spec": final.get("spec"),
+              "creditsUsed": final["credits_consumed"], "textures": report}
+    rig_type = final.get("rig_type")
+    if rig_type in RIG_MODELS and not _has_presets(rig_type):
+        result["note"] = (f"Tripo has no preset animations for {_a(rig_type)} rig: "
+                          f"animate_model can't move this model.")
+    return result
 
 
 def resume_rig(task_id: str, out_path: str, rig_type: str | None = None) -> dict:
@@ -947,12 +1133,13 @@ def resume_rig(task_id: str, out_path: str, rig_type: str | None = None) -> dict
     fix the textures. No new task, no new charge. rig_type, when given, is written
     into the record with the rig model and spec Montaj uses for it; without it the
     record doesn't know which rig this is and animate_model will not take the file."""
+    deadline = _deadline()
     chosen = _rig_type(rig_type)
     rig = RIG_MODELS[chosen] if chosen else {}
     blank = {"rig_model": rig.get("model"), "rig_type": chosen, "spec": rig.get("spec"),
              "source_task_id": None}
     record = _resume_record(task_id, out_path, "rig", blank)
-    return _rig_result(*_collect_task(record, out_path), out_path)
+    return _rig_result(*_collect_task(record, out_path, deadline), out_path)
 
 
 def _animation_ids(animations, rig_model: str, rig_type: str) -> list[str]:
@@ -1020,16 +1207,18 @@ def animate_model(*, model_path, out_path, animations, in_place=True) -> dict:
 
     The task is recorded in `<out>.tripo.json` ({task_id, kind: "animation",
     animations, in_place, rig_task_id, rig_model, rig_type, created}) before
-    polling; a retry with the same out re-attaches (no new task, no new charge).
+    polling; a CLI retry with the same out re-attaches (no new task, no new
+    charge). A run that can't finish names the task for resume_animation.
 
     Returns {path, taskId, animations, inPlace, creditsUsed, textures}. Raises
     InvalidInput (before any call), UnsupportedModel, ConnectorError."""
+    deadline = _deadline()
     _check_out(out_path)
     record = _read_sidecar(out_path, "animation")
     if record:
         _warn(f"Re-attaching to Tripo task {record['task_id']} recorded in {sidecar_path(out_path)}: "
               f"no new task, no new charge. This run's inputs are not sent.")
-        return _animation_result(*_collect_task(record, out_path), out_path)
+        return _animation_result(*_collect_task(record, out_path, deadline), out_path)
 
     if not isinstance(in_place, bool):
         raise InvalidInput(f"Tripo in_place must be true or false, got {in_place!r}")
@@ -1043,12 +1232,13 @@ def animate_model(*, model_path, out_path, animations, in_place=True) -> dict:
     else:
         body["animations"] = ids
     body.update(out_format="glb", bake_animation=True, export_with_geometry=True, animate_in_place=in_place)
+    _time_to_submit(deadline, "the animation")
     task_id = create("/animations/retarget", body)
     record = {"task_id": task_id, "kind": "animation", "animations": ids, "in_place": in_place,
               "rig_task_id": rig["task_id"], "rig_model": rig["rig_model"], "rig_type": rig["rig_type"],
               "created": _now()}
     _write_sidecar(out_path, record)
-    return _animation_result(*_collect_task(record, out_path), out_path)
+    return _animation_result(*_collect_task(record, out_path, deadline), out_path)
 
 
 def _animation_result(final: dict, report: dict, out_path: str) -> dict:
@@ -1060,9 +1250,10 @@ def resume_animation(task_id: str, out_path: str) -> dict:
     """Collect an animation task already submitted (a run that stopped): wait,
     download, fix the textures. No new task, no new charge. A new record doesn't
     know the animations or the rig; they come back as None."""
+    deadline = _deadline()
     blank = {"animations": None, "in_place": None, "rig_task_id": None, "rig_model": None, "rig_type": None}
     record = _resume_record(task_id, out_path, "animation", blank)
-    return _animation_result(*_collect_task(record, out_path), out_path)
+    return _animation_result(*_collect_task(record, out_path, deadline), out_path)
 
 
 def _number(value) -> str:
@@ -1074,7 +1265,8 @@ def check_key() -> dict:
     (a read of the live balance). Returns the balance as `credits` (and the frozen
     credits as `frozen`). The default model can't be confirmed without a task, so
     default_model_verified is False."""
-    data = _request("GET", "/account/balance", "key check", timeout=15)
+    # No Retry-After waits: a 429 answers at once, inside the app's 20 s check timeout.
+    data = _request("GET", "/account/balance", "key check", timeout=15, busy_retries=0)
     data = data if isinstance(data, dict) else {}
     balance, frozen = _credits(data.get("balance")), _credits(data.get("frozen"))
     result = {

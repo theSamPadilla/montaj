@@ -90,30 +90,39 @@ def vendor(monkeypatch):
     state = {"events": [], "creates": [], "uploads": [], "waits": [], "ids": ["task_check", "task_rig"],
              "check": dict(CHECK_BIPED), "task": dict(RIG_TASK), "wait_error": None,
              "download_error": None, "guard_error": None, "sidecar_at_wait": None,
-             "sidecar_reader": lambda: None}
+             "sidecar_reader": lambda: None, "hints": [], "deadlines": [], "create_errors": {}}
 
     def upload(path):
         state["events"].append("upload")
         state["uploads"].append(path)
         return f"file_{Path(path).stem}"
 
-    def create(endpoint, body):
+    def create(endpoint, body, *, free=False):
+        assert free == (endpoint == "/animations/rig-check"), "only the free check may be repeated"
         state["events"].append(f"create:{endpoint}")
         state["creates"].append((endpoint, body))
+        error = state["create_errors"].get(body.get("input")) if endpoint == "/animations/rig-check" else None
+        if error:
+            raise error
         return state["ids"].pop(0)
 
-    def wait(task_id, *, resumable=True):
+    def wait(task_id, *, resumable=True, deadline=None, resume_hint=None):
         state["events"].append(f"wait:{task_id}")
         state["waits"].append((task_id, resumable))
-        if task_id == "task_check":
+        state["hints"].append(resume_hint)
+        state["deadlines"].append(deadline)
+        if task_id in state.get("check_errors", {}):
+            raise state["check_errors"].pop(task_id)
+        if task_id.startswith("task_check"):
             return {"task_id": task_id, "status": "success", "output": state["check"], "credits_consumed": 0.0}
         state["sidecar_at_wait"] = state["sidecar_reader"]()
         if state["wait_error"]:
             raise state["wait_error"]
         return dict(state["task"], task_id=task_id)
 
-    def download(url, out_path):
+    def download(url, out_path, *, deadline=None):
         state["events"].append("download")
+        state["deadlines"].append(deadline)
         if state["download_error"]:
             raise state["download_error"]
         Path(out_path).write_bytes(b"glTF-rigged")
@@ -210,12 +219,74 @@ def test_an_unreadable_record_beside_the_source_warns_and_uploads(vendor, tmp_pa
 def test_the_rig_model_and_bone_naming_follow_the_checked_type(vendor, tmp_path, rig_type, model, spec):
     vendor["check"] = {"riggable": True, "rig_type": rig_type}
     out = tmp_path / "rigged.glb"
-    result = tripo.rig_model(model_path=str(_model(tmp_path)), out_path=str(out))
+    asked = "avian" if rig_type == "avian" else None    # avian only when asked for by name
+    result = tripo.rig_model(model_path=str(_model(tmp_path)), out_path=str(out), rig_type=asked)
     _, body = vendor["creates"][1]
     assert body == {"input": "task_gen", "model": model, "rig_type": rig_type, "spec": spec, "out_format": "glb"}
     assert (result["rigType"], result["rigModel"], result["spec"]) == (rig_type, model, spec)
     record = json.loads(_sidecar(out).read_text())
     assert (record["rig_type"], record["rig_model"], record["spec"]) == (rig_type, model, spec)
+
+
+def test_a_recommended_avian_rig_is_refused_before_any_rig_task(vendor, tmp_path):
+    # animations-retarget.md (read 2026-10-13) lists no avian preset: such a rig could never be animated.
+    vendor["check"] = {"riggable": True, "rig_type": "avian"}
+    out = tmp_path / "rigged.glb"
+    with pytest.raises(tripo.InvalidInput) as e:
+        tripo.rig_model(model_path=str(_model(tmp_path, "bird.glb")), out_path=str(out))
+    message = str(e.value)
+    assert "recommends an avian rig for bird.glb" in message and "no preset animations" in message
+    assert "Nothing was spent" in message and "pass rig type avian" in message
+    assert vendor["events"] == ["create:/animations/rig-check", "wait:task_check"]
+    assert not out.exists() and not _sidecar(out).exists()
+
+
+def test_an_avian_rig_asked_for_by_name_is_made_and_says_it_has_no_presets(vendor, tmp_path, capsys):
+    vendor["check"] = {"riggable": True, "rig_type": "avian"}
+    result = tripo.rig_model(model_path=str(_model(tmp_path, "bird.glb")), out_path=str(tmp_path / "r.glb"),
+                             rig_type="avian")
+    assert vendor["creates"][1][1]["rig_type"] == "avian"
+    assert result["rigType"] == "avian" and "no preset animations" in result["note"]
+    assert "no preset animations" in capsys.readouterr().err
+
+
+def test_a_rig_with_presets_has_no_note(vendor, tmp_path):
+    assert "note" not in tripo.rig_model(model_path=str(_model(tmp_path)), out_path=str(tmp_path / "r.glb"))
+
+
+def test_waits_carry_the_rig_hint_and_share_one_deadline(vendor, tmp_path):
+    tripo.rig_model(model_path=str(_model(tmp_path)), out_path=str(tmp_path / "r.glb"))
+    assert vendor["waits"] == [("task_check", False), ("task_rig", True)]
+    assert vendor["hints"] == [None, "--task-id task_rig --rig-type biped"], "the free check has nothing to collect"
+    check_deadline, rig_deadline, download_deadline = vendor["deadlines"]
+    assert check_deadline == rig_deadline == download_deadline is not None
+
+
+def test_a_resumed_rig_hint_names_its_rig_type_when_known(vendor, tmp_path):
+    tripo.resume_rig("task_given", str(tmp_path / "a.glb"), rig_type="hexapod")
+    tripo.resume_rig("task_other", str(tmp_path / "b.glb"))
+    assert vendor["hints"] == ["--task-id task_given --rig-type hexapod", "--task-id task_other"]
+
+
+def test_a_source_task_the_check_refuses_is_uploaded_and_checked_again(vendor, tmp_path, capsys):
+    vendor["create_errors"] = {"task_gen": ConnectorError("Tripo submit failed (HTTP 400, code 2002): expired")}
+    vendor["ids"] = ["task_check2", "task_rig"]
+    src, out = _model(tmp_path), tmp_path / "rigged.glb"
+    tripo.rig_model(model_path=str(src), out_path=str(out))
+    assert vendor["events"] == [
+        "create:/animations/rig-check", "upload", "create:/animations/rig-check", "wait:task_check2",
+        "create:/animations/rig", "wait:task_rig", "download", "guard:rigged.glb.download"]
+    assert vendor["creates"][-1][1]["input"] == "file_robot"
+    assert json.loads(_sidecar(out).read_text())["source_task_id"] is None
+    assert "could not use task task_gen" in capsys.readouterr().err
+
+
+def test_an_uploaded_source_the_check_refuses_is_not_uploaded_twice(vendor, tmp_path):
+    src = _model(tmp_path, "hero.glb", sidecar=False)
+    vendor["create_errors"] = {"file_hero": ConnectorError("Tripo submit failed (HTTP 400, code 2002): bad file")}
+    with pytest.raises(ConnectorError, match="bad file"):
+        tripo.rig_model(model_path=str(src), out_path=str(tmp_path / "r.glb"))
+    assert vendor["events"] == ["upload", "create:/animations/rig-check"]
 
 
 def test_an_explicit_rig_type_overrides_the_checks_recommendation(vendor, tmp_path, capsys):
@@ -381,17 +452,19 @@ def test_a_run_that_stops_waiting_keeps_its_record(vendor, tmp_path):
 def test_a_failed_download_names_the_task_to_collect(vendor, tmp_path):
     out = tmp_path / "rigged.glb"
     vendor["download_error"] = ConnectorError("Tripo download failed (HTTP 404): https://cdn.tripo3d.ai/x.glb")
-    with pytest.raises(ConnectorError, match="--task-id task_rig \\(no new charge\\)"):
+    with pytest.raises(ConnectorError, match="--task-id task_rig --rig-type biped \\(no new charge\\)") as e:
         tripo.rig_model(model_path=str(_model(tmp_path)), out_path=str(out))
+    assert "generat" not in str(e.value)
     assert not out.exists() and _sidecar(out).exists()
 
 
 def test_a_rigged_model_the_guard_refuses_never_lands_at_out(vendor, tmp_path):
     out = tmp_path / "rigged.glb"
-    vendor["guard_error"] = GlbTextureError("image 0 is a KTX2/Basis texture", "ktx2")
-    with pytest.raises(tripo.UnsupportedModel, match="can't use: image 0 is a KTX2") as e:
+    vendor["guard_error"] = GlbTextureError("image 0 is stored outside the file (a.png)", "external")
+    with pytest.raises(tripo.UnsupportedModel, match="can't use: image 0 is stored outside") as e:
         tripo.rig_model(model_path=str(_model(tmp_path)), out_path=str(out))
     assert e.value.task_id == "task_rig" and not out.exists()
+    assert e.value.kept == str(tmp_path / "rigged.unsupported.glb")
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +529,20 @@ def test_step_task_id_resumes_without_a_new_task_and_needs_no_local_model(step_m
                                     "--rig-type", "hexapod"])
     assert calls["resume"] == [("task_9", out, "hexapod")] and calls["rig"] == []
     assert capsys.readouterr().out.strip() == out
+
+
+def test_step_task_id_needs_no_model_at_all(step_module, monkeypatch, capsys, calls, tmp_path):
+    out = str(tmp_path / "rigged.glb")
+    _run(step_module, monkeypatch, ["--out", out, "--task-id", "task_9", "--rig-type", "biped"])
+    assert calls["resume"] == [("task_9", out, "biped")]
+
+
+def test_step_without_task_id_needs_a_model(step_module, monkeypatch, capsys, calls, tmp_path):
+    with pytest.raises(SystemExit):
+        _run(step_module, monkeypatch, ["--out", str(tmp_path / "r.glb")])
+    err = json.loads(capsys.readouterr().err)
+    assert err["error"] == "invalid_args" and "--model is required" in err["message"]
+    assert calls["rig"] == [] and calls["resume"] == []
 
 
 def test_step_missing_or_non_glb_model(step_module, monkeypatch, capsys, calls, tmp_path):
@@ -535,8 +622,11 @@ def test_step_schema():
     assert schema["name"] == "rig_model" and schema["output"]["type"] == "model"
     by_name = {p["name"]: p for p in schema["params"]}
     assert set(by_name) == {"model", "out", "rig-type", "task-id"}
-    assert by_name["model"]["required"] and by_name["out"]["required"]
+    assert by_name["model"]["required"] is False, "task-id collects a rig with no model"
+    assert by_name["out"]["required"]
     assert by_name["rig-type"]["options"] == list(tripo.RIG_TYPES)
+    assert "task-id" in schema["description"] and "no new charge" in schema["description"]
+    assert "same --out" not in schema["description"]
 
 
 def test_project_out_is_a_glb_in_the_assets_folder(tmp_path, monkeypatch):

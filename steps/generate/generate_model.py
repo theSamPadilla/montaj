@@ -11,9 +11,10 @@ Always PBR-textured, at --texture quality, with --face-limit faces (30,000 by
 default). WebP or AVIF textures in Tripo's GLB are re-encoded locally to PNG or
 JPEG (lib/glb_textures.py), so the model loads in Montaj.
 
-The task id is recorded in `<out>.tripo.json` before polling: running the same
-command again re-attaches to it instead of paying twice. --task-id collects a
-task already submitted (no new charge).
+--task-id collects a task already submitted (a run that stopped or ran out of
+time names it): no new task, no new charge. From the CLI, running the same
+command again with the same --out also re-attaches to the task recorded in
+`<out>.tripo.json` instead of paying twice.
 """
 import sys, os, argparse, json
 
@@ -91,6 +92,8 @@ def main():
             )
     except tripo.UnsupportedModel as e:
         fail("unsupported_model", str(e))
+    except tripo.InvalidInput as e:
+        fail("invalid_args", str(e))
     except ConnectorError as e:
         fail_for(e, "Tripo")
 

@@ -8,10 +8,13 @@ riggable fails with `not_riggable` and nothing is spent. The rig type is the
 check's recommendation unless --rig-type is given. biped is rigged with Mixamo
 bone names; every other type with Tripo's own.
 
-The rig task is recorded in `<out>.tripo.json` before polling: running the same
-command again re-attaches to it instead of paying twice. --task-id collects a rig
-task already submitted (no new charge); give --rig-type with it so animate_model
-can tell which rig the file has. Animate the result with animate_model.
+--task-id collects a rig task already submitted (a run that stopped or ran out
+of time names it, with its --rig-type): no new task, no new charge, and no
+--model needed. Give --rig-type with it so animate_model can tell which rig the
+file has. From the CLI, running the same command again with the same --out also
+re-attaches to the task recorded in `<out>.tripo.json`. A model the check calls
+avian is refused unless --rig-type avian is given: Tripo has no preset
+animations for it. Animate the result with animate_model.
 """
 import sys, os, argparse, json
 
@@ -25,7 +28,7 @@ from _fail_reasons import fail_for
 
 def main():
     p = argparse.ArgumentParser(description="Rig a 3D model (.glb) on Tripo")
-    p.add_argument("--model", required=True, help="The .glb to rig.")
+    p.add_argument("--model", help="The .glb to rig. Required unless --task-id.")
     p.add_argument("--out", required=True)
     p.add_argument("--rig-type", dest="rig_type", choices=list(tripo.RIG_TYPES),
                    help="Skeleton type. Default: the one Tripo's free check recommends.")
@@ -40,6 +43,8 @@ def main():
         fail("invalid_out", f"Tripo models are GLB files: --out must end in .glb, got {args.out!r}")
 
     if not args.task_id:
+        if not args.model:
+            fail("invalid_args", "--model is required (unless --task-id collects a rig task already submitted)")
         require_file(args.model)
         if not args.model.lower().endswith(".glb"):
             fail("invalid_args", f"--model must be a .glb file, got {args.model!r}")

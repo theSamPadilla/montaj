@@ -195,6 +195,8 @@ def test_tripo_is_a_registered_provider():
     assert KNOWN_PROVIDERS["tripo"] == ["api_key"]
     assert build_env_overlay({"tripo": {"api_key": "k"}}) == {"TRIPO_API_KEY": "k"}
     assert set(_PROVIDER_INFO["tripo"]["keys"]) == {"api_key"} and _PROVIDER_INFO["tripo"]["display"] == "Tripo"
+    # Tripo's own pricing page links this as "Get API key".
+    assert _PROVIDER_INFO["tripo"]["url"] == "https://developers.tripo3d.ai/en/keys"
 
 
 def test_a_missing_key_fails_before_any_call(fake, monkeypatch, tmp_path):
@@ -240,6 +242,14 @@ def test_check_key_rejected_and_unreachable(fake):
     with pytest.raises(ConnectorError) as e:
         tripo.check_key()
     assert e.value.reason == UNREACHABLE and "Tripo" in str(e.value)
+
+
+def test_check_key_answers_a_429_at_once_without_retry_after_waits(fake, sleeps):
+    # The app gives a key check 20 s: three Retry-After waits (up to 30 s each) would outlast it.
+    fake.script = [_FakeResponse(429, ERR_RATE_LIMIT, headers={"Retry-After": "30"})]
+    with pytest.raises(ConnectorError, match=r"Tripo is busy: it refused the key check \(Rate limit"):
+        tripo.check_key()
+    assert len(fake.calls) == 1 and sleeps == []
 
 
 def test_a_200_that_is_not_json_is_not_a_good_key(fake):
@@ -319,18 +329,30 @@ def test_a_5xx_is_unreachable_after_the_transport_retries(fake):
     assert len(fake.calls) == 3
 
 
-def test_a_5xx_on_submit_is_not_repeated(fake):
+# A submit whose answer was lost may already be a paid task. UNREACHABLE's remedy
+# (run the step again) would pay twice, so none of these carries it.
+
+def test_a_5xx_on_submit_is_not_repeated_and_says_to_check_the_console(fake):
     fake.script = [_FakeResponse(500)]
     with pytest.raises(ConnectorError) as e:
         tripo.create("/generation/text-to-model", {"prompt": "x"})
-    assert e.value.reason == UNREACHABLE and len(fake.calls) == 1
+    assert e.value.reason is None and len(fake.calls) == 1
+    assert "The task may exist: check the Tripo console before running again" in str(e.value)
+    assert "try again shortly" not in str(e.value)
 
 
 def test_a_timed_out_submit_is_not_retried_and_says_it_may_exist(fake):
     fake.script = [_FakeRequestException("read timed out")]
-    with pytest.raises(ConnectorError, match="may still have been created") as e:
+    with pytest.raises(ConnectorError, match="The task may exist: check the Tripo console before running again") as e:
         tripo.create("/generation/text-to-model", {"prompt": "x"})
-    assert e.value.reason == UNREACHABLE and len(fake.calls) == 1
+    assert e.value.reason is None and len(fake.calls) == 1
+
+
+def test_an_unreadable_200_on_submit_says_it_may_exist(fake):
+    fake.script = [_FakeResponse(200, content=b"<html>proxy</html>")]
+    with pytest.raises(ConnectorError, match="unreadable response.*The task may exist: check the Tripo console") as e:
+        tripo.create("/generation/text-to-model", {"prompt": "x"})
+    assert e.value.reason is None and len(fake.calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -545,8 +567,9 @@ def test_the_time_a_status_check_takes_counts_toward_the_limit(fake, monkeypatch
 
 def test_status_checks_that_keep_failing_name_the_task(fake):
     fake.script = [_FakeRequestException("down")] * 15
-    with pytest.raises(ConnectorError, match="resume it with --task-id task_abc123"):
+    with pytest.raises(ConnectorError, match=r"running the same step with --task-id task_abc123 \(no new charge\)") as e:
         tripo.wait("task_abc123")
+    assert "generating again" not in str(e.value)
 
 
 def test_a_429_while_polling_is_a_missed_tick_not_a_failure(fake, sleeps):
@@ -554,6 +577,21 @@ def test_a_429_while_polling_is_a_missed_tick_not_a_failure(fake, sleeps):
                    _FakeResponse(200, TASK_SUCCESS)]
     assert tripo.wait("task_abc123")["status"] == "success"
     assert sleeps == [tripo.POLL_INTERVAL_S], "the poll loop is the retry: no 30 s Retry-After wait inside it"
+
+
+def test_429s_while_polling_never_count_toward_the_failure_stop(fake, sleeps):
+    many = tripo.MAX_CONSECUTIVE_POLL_FAILURES + 3
+    fake.script = [_FakeResponse(429, ERR_CONCURRENCY)] * many + [_FakeResponse(200, TASK_SUCCESS)]
+    assert tripo.wait("task_abc123")["status"] == "success"
+    assert len(fake.calls) == many + 1
+
+
+def test_429s_neither_count_nor_reset_the_failures_between_them(fake):
+    # One failed status check is three transport attempts (a GET is repeated by _http).
+    busy, down = _FakeResponse(429, ERR_CONCURRENCY), [_FakeRequestException("down")] * 3
+    fake.script = [*down, *down, busy, *down, *down, *down]
+    with pytest.raises(ConnectorError, match=r"5 status checks failed in a row"):
+        tripo.wait("task_abc123")
 
 
 def test_a_bad_key_while_polling_stops_at_once(fake):
@@ -570,20 +608,27 @@ def test_the_task_id_is_one_path_segment(fake):
 
 
 # ---------------------------------------------------------------------------
-# download and resume
+# download and resume_model (collect a task already submitted)
 # ---------------------------------------------------------------------------
 
-def test_resume_waits_downloads_model_url_and_returns_credits_as_a_float(fake, tmp_path):
-    fake.script = [_FakeResponse(200, TASK_SUCCESS), _FakeResponse(200, content=b"GLB-BYTES")]
+def test_resume_model_waits_downloads_model_url_and_returns_credits_as_a_float(fake, tmp_path):
+    fake.script = [_FakeResponse(200, TASK_SUCCESS), _FakeResponse(200, content=_glb_bytes())]
     out = tmp_path / "robot.glb"
-    result = tripo.resume("task_abc123", str(out))
-    assert out.read_bytes() == b"GLB-BYTES"
-    assert result == {"path": str(out), "taskId": "task_abc123", "creditsUsed": 100.0}
+    result = tripo.resume_model("task_abc123", str(out))
+    assert out.read_bytes() == _glb_bytes()
+    assert result == {"path": str(out), "taskId": "task_abc123", "model": None, "creditsUsed": 100.0,
+                      "textures": {"reencoded": 0, "ktx2": 0, "formats": {}}}
     assert isinstance(result["creditsUsed"], float)
     assert fake.calls[-1][:2] == ("GET", "https://cdn.tripo3d.ai/output/model_pbr.glb")
     assert "headers" not in fake.calls[-1][2], "the API key never goes to the CDN"
     assert not any(c[0] == "POST" for c in fake.calls), "no new task, no new charge"
-    assert [p.name for p in tmp_path.iterdir()] == ["robot.glb"], "no .part file left behind"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["robot.glb", "robot.glb.tripo.json"], \
+        "no .part or .download file left behind"
+
+
+def test_the_unused_bare_resume_is_gone():
+    # Every collect goes through resume_model/_rig/_animation, which run the texture guard.
+    assert not hasattr(tripo, "resume")
 
 
 @pytest.mark.parametrize("credits,expected", [(48, 48.0), (12.5, 12.5), (None, None)])
@@ -591,19 +636,31 @@ def test_credits_are_a_float_or_none_never_an_int(fake, tmp_path, credits, expec
     data = dict(TASK_SUCCESS["data"], credits_consumed=credits)
     if credits is None:
         del data["credits_consumed"]
-    fake.script = [_FakeResponse(200, {"code": 0, "data": data}), _FakeResponse(200, content=b"G")]
-    result = tripo.resume("task_abc123", str(tmp_path / "m.glb"))
+    fake.script = [_FakeResponse(200, {"code": 0, "data": data}), _FakeResponse(200, content=_glb_bytes())]
+    result = tripo.resume_model("task_abc123", str(tmp_path / "m.glb"))
     assert result["creditsUsed"] == expected
     assert result["creditsUsed"] is None or type(result["creditsUsed"]) is float
 
 
-def test_a_failed_download_leaves_no_file(fake, tmp_path):
+def test_a_failed_download_leaves_no_model_and_names_the_task(fake, tmp_path):
     fake.script = [_FakeResponse(200, TASK_SUCCESS), _FakeResponse(404)]
     out = tmp_path / "robot.glb"
     with pytest.raises(ConnectorError, match=r"Tripo download failed \(HTTP 404\)") as e:
-        tripo.resume("task_abc123", str(out))
+        tripo.resume_model("task_abc123", str(out))
     assert e.value.reason is None
-    assert list(tmp_path.iterdir()) == []
+    assert "--task-id task_abc123 (no new charge)" in str(e.value)
+    assert [p.name for p in tmp_path.iterdir()] == ["robot.glb.tripo.json"], "only the record of the paid task"
+
+
+def test_a_download_that_cannot_connect_after_a_paid_task_is_not_unreachable(fake, tmp_path):
+    # UNREACHABLE's remedy in the app is "run the step again": that would pay twice.
+    fake.script = [_FakeResponse(200, TASK_SUCCESS), *[_FakeRequestException("connection reset")] * 3]
+    with pytest.raises(ConnectorError) as e:
+        tripo.resume_model("task_abc123", str(tmp_path / "robot.glb"))
+    assert e.value.reason is None
+    message = str(e.value)
+    assert "connection reset" in message and "made and paid for" in message
+    assert "running the same step with --task-id task_abc123 (no new charge)" in message
 
 
 def test_a_download_that_cannot_connect_is_unreachable_and_names_tripo(fake, tmp_path):
@@ -642,6 +699,63 @@ def test_a_download_error_does_not_repeat_the_url_signature(fake, tmp_path):
     assert "cdn.tripo3d.ai/output/model_pbr.glb" in str(e.value) and "secret" not in str(e.value)
 
 
+SIGNED = "https://cdn.tripo3d.ai/output/model_pbr.glb?Signature=s3cr3tSIGvalue&Key-Pair-Id=K2ABCDEF&Expires=1760000000"
+QUERY = "Signature=s3cr3tSIGvalue&Key-Pair-Id=K2ABCDEF&Expires=1760000000"
+
+
+def _messages(exc):
+    """The exception's text and that of every exception chained to it."""
+    seen = []
+    while exc is not None and exc not in seen:
+        seen.append(exc)
+        exc = exc.__cause__
+    return " | ".join(str(x) for x in seen)
+
+
+def _assert_no_signature(text):
+    assert "s3cr3tSIGvalue" not in text and "K2ABCDEF" not in text and QUERY not in text and SIGNED not in text
+
+
+def test_a_request_error_quoting_the_signed_url_is_scrubbed(fake, tmp_path):
+    # requests' own text quotes the path and query without the host; _http adds the full URL.
+    quoted = (f"HTTPSConnectionPool(host='cdn.tripo3d.ai', port=443): Max retries exceeded with url: "
+              f"/output/model_pbr.glb?{QUERY} (Caused by ReadTimeoutError)")
+    fake.script = [_FakeRequestException(quoted)] * 3
+    with pytest.raises(ConnectorError) as e:
+        tripo.download(SIGNED, str(tmp_path / "m.glb"))
+    _assert_no_signature(_messages(e.value))
+    assert "https://cdn.tripo3d.ai/output/model_pbr.glb" in str(e.value) and "Max retries exceeded" in str(e.value)
+    assert e.value.reason == UNREACHABLE
+
+
+def test_a_stream_error_quoting_the_signed_url_is_scrubbed(fake, tmp_path):
+    class _Dropping(_FakeResponse):
+        def iter_content(self, chunk_size=None):
+            yield b"GLB"
+            raise _FakeRequestException(f"Connection broken while reading {SIGNED}")
+    fake.script = [_Dropping(200)]
+    with pytest.raises(ConnectorError) as e:
+        tripo.download(SIGNED, str(tmp_path / "m.glb"))
+    _assert_no_signature(_messages(e.value))
+    assert "Connection broken" in str(e.value)
+
+
+def test_a_paid_task_whose_download_fails_names_the_task_but_not_the_signature(fake, tmp_path):
+    data = dict(TASK_SUCCESS["data"], output={"model_url": SIGNED})
+    fake.script = [_FakeResponse(200, {"code": 0, "data": data}),
+                   *[_FakeRequestException(f"timed out: /output/model_pbr.glb?{QUERY}")] * 3]
+    with pytest.raises(ConnectorError) as e:
+        tripo.resume_model("task_abc123", str(tmp_path / "m.glb"))
+    _assert_no_signature(_messages(e.value))
+    assert "--task-id task_abc123" in str(e.value)
+
+
+def test_scrub_removes_a_percent_decoded_query_too():
+    url = "https://cdn.tripo3d.ai/m.glb?Signature=ab%2Fcd%3D%3Defgh&Expires=1"
+    text = tripo._scrub(f"GET {url} failed: /m.glb?Signature=ab/cd==efgh&Expires=1 and ab/cd==efgh", url)
+    assert "ab/cd==efgh" not in text and "ab%2Fcd" not in text and "https://cdn.tripo3d.ai/m.glb" in text
+
+
 def test_a_failed_download_keeps_an_existing_file(fake, tmp_path):
     out = tmp_path / "robot.glb"
     out.write_bytes(b"OLD")
@@ -656,23 +770,24 @@ def test_resume_without_a_model_url(fake, tmp_path):
     data = dict(TASK_SUCCESS["data"], output={"rendered_image_url": "https://cdn.tripo3d.ai/output/preview.png"})
     fake.script = [_FakeResponse(200, {"code": 0, "data": data})]
     with pytest.raises(ConnectorError, match="succeeded but returned no model_url"):
-        tripo.resume("task_abc123", str(tmp_path / "m.glb"))
+        tripo.resume_model("task_abc123", str(tmp_path / "m.glb"))
 
 
 def test_resume_of_a_task_still_running_names_its_id_and_collects_it_later(fake, monkeypatch, tmp_path):
-    monkeypatch.setattr(tripo, "MAX_POLL_S", 10.0)
+    monkeypatch.setattr(tripo, "STEP_BUDGET_S", 10.0)
     fake.script = [_task("running"), _task("running")]
-    with pytest.raises(ConnectorError, match="--task-id task_abc123"):
-        tripo.resume("task_abc123", str(tmp_path / "m.glb"))
-    fake.script = [_FakeResponse(200, TASK_SUCCESS), _FakeResponse(200, content=b"GLB")]
-    assert tripo.resume("task_abc123", str(tmp_path / "m.glb"))["path"] == str(tmp_path / "m.glb")
+    with pytest.raises(ConnectorError, match=r"--task-id task_abc123 \(no new charge\)"):
+        tripo.resume_model("task_abc123", str(tmp_path / "m.glb"))
+    monkeypatch.setattr(tripo, "STEP_BUDGET_S", 840.0)
+    fake.script = [_FakeResponse(200, TASK_SUCCESS), _FakeResponse(200, content=_glb_bytes())]
+    assert tripo.resume_model("task_abc123", str(tmp_path / "m.glb"))["path"] == str(tmp_path / "m.glb")
 
 
 def test_resume_needs_a_task_id_and_a_path(fake, tmp_path):
     with pytest.raises(ConnectorError, match="task_id is required"):
-        tripo.resume("", str(tmp_path / "m.glb"))
+        tripo.resume_model("", str(tmp_path / "m.glb"))
     with pytest.raises(ConnectorError, match="out_path is required"):
-        tripo.resume("task_abc123", "")
+        tripo.resume_model("task_abc123", "")
     assert fake.calls == []
 
 
@@ -773,7 +888,8 @@ def test_rig_from_a_generated_model_sends_its_task_and_follows_the_documented_fl
     assert fake.calls[2][2]["json"] == {"input": "task_gen", "model": "v1.0-20240301", "rig_type": "biped",
                                         "spec": "mixamo", "out_format": "glb"}
     assert result == {"path": str(out), "taskId": "task_rig", "rigType": "biped", "rigModel": "v1.0-20240301",
-                      "spec": "mixamo", "creditsUsed": 30.0, "textures": {"reencoded": 0, "formats": {}}}
+                      "spec": "mixamo", "creditsUsed": 30.0,
+                      "textures": {"reencoded": 0, "ktx2": 0, "formats": {}}}
     assert isinstance(result["creditsUsed"], float)
     assert out.read_bytes() == _glb_bytes()
     record = json.loads(Path(f"{out}.tripo.json").read_text())
@@ -815,25 +931,28 @@ def test_a_model_the_check_calls_not_riggable_makes_no_rig_task(fake, tmp_path):
 
 
 def test_a_check_that_fails_stops_without_a_rig_task_and_a_slow_one_says_to_run_it_again(fake, tmp_path, monkeypatch):
-    src, out = _generated(tmp_path), tmp_path / "rigged.glb"
-    fake.script = [_FakeResponse(200, CHECK_CREATED),
+    src, out = tmp_path / "hero.glb", tmp_path / "rigged.glb"
+    src.write_bytes(b"glTF-from-elsewhere")
+    fake.script = [_FakeResponse(200, UPLOAD_OK), _FakeResponse(200, CHECK_CREATED),
                    _task("failed", error_code=2018, error_message="Model too complex")]
     with pytest.raises(ConnectorError, match="Model too complex"):
         tripo.rig_model(model_path=str(src), out_path=str(out))
-    assert len(fake.calls) == 2 and not Path(f"{out}.tripo.json").exists()
+    assert len(fake.calls) == 3 and not Path(f"{out}.tripo.json").exists()
 
-    monkeypatch.setattr(tripo, "MAX_POLL_S", 10.0)
+    monkeypatch.setattr(tripo, "STEP_BUDGET_S", 10.0)
     fake.calls.clear()
-    fake.script = [_FakeResponse(200, CHECK_CREATED), _task("running"), _task("running")]
+    fake.script = [_FakeResponse(200, UPLOAD_OK), _FakeResponse(200, CHECK_CREATED), _task("running"),
+                   _task("running")]
     with pytest.raises(ConnectorError, match="The check is free: run it again") as e:
         tripo.rig_model(model_path=str(src), out_path=str(out))
     assert "--task-id" not in str(e.value), "a free check has nothing to collect"
+    assert not any(c[1].endswith("/animations/rig") for c in fake.calls)
 
 
 def test_wait_says_task_id_unless_the_task_is_a_free_check(fake, monkeypatch):
     monkeypatch.setattr(tripo, "MAX_POLL_S", 10.0)
     fake.script = [_task("running"), _task("running")]
-    with pytest.raises(ConnectorError, match="resume it with --task-id task_x"):
+    with pytest.raises(ConnectorError, match=r"running the same step with --task-id task_x \(no new charge\)"):
         tripo.wait("task_x")
     fake.script = [_task("running"), _task("running")]
     with pytest.raises(ConnectorError, match="run it again"):
@@ -913,3 +1032,146 @@ def test_animate_of_a_plain_glb_makes_no_call(fake, tmp_path):
     with pytest.raises(tripo.InvalidInput, match="Rig it first with rig_model"):
         tripo.animate_model(model_path=str(plain), out_path=str(tmp_path / "x.glb"), animations=["preset:biped:walk"])
     assert fake.calls == []
+
+
+# ---------------------------------------------------------------------------
+# One deadline per step run (STEP_BUDGET_S), shared by every wait and the download
+# ---------------------------------------------------------------------------
+
+def _timed(monkeypatch, fake, clock, items):
+    """fake.request replaced: each item is (seconds the call takes on the fake clock, response)."""
+    items = list(items)
+
+    def request(method, url, **kwargs):
+        fake.calls.append((method, url, kwargs))
+        if not items:
+            raise AssertionError(f"unscripted HTTP call: {method} {url}")
+        seconds, response = items.pop(0)
+        clock[0] += seconds
+        if isinstance(response, Exception):
+            raise response
+        return response
+    monkeypatch.setattr(fake, "request", request)
+
+
+def test_a_task_done_too_late_to_download_is_named_and_not_downloaded(fake, monkeypatch, clock, tmp_path):
+    # Six status checks of 100 s and one of 130 s (plus 5 s between them): done at 760 s,
+    # with 80 s of the 840 s left, under MIN_LEFT_S. No CDN call is made.
+    out = tmp_path / "robot.glb"
+    _timed(monkeypatch, fake, clock, [(0, _FakeResponse(200, CREATE_OK))]
+           + [(100, _task("running"))] * 6 + [(130, _FakeResponse(200, TASK_SUCCESS))])
+    with pytest.raises(ConnectorError) as e:
+        tripo.generate_model(out_path=str(out), prompt="a robot")
+    message = str(e.value)
+    assert "is done, but only 80 s of this run are left" in message
+    assert "running the same step with --task-id task_abc123 (no new charge)" in message
+    assert e.value.reason is None
+    assert not any("cdn.tripo3d.ai" in c[1] for c in fake.calls)
+    assert not out.exists() and "credits_consumed" not in json.loads(Path(f"{out}.tripo.json").read_text())
+
+
+def test_the_rig_check_and_the_rig_share_one_deadline_so_a_late_rig_is_not_submitted(fake, monkeypatch, clock, tmp_path):
+    src, out = _generated(tmp_path), tmp_path / "rigged.glb"
+    _timed(monkeypatch, fake, clock, [(0, _FakeResponse(200, CHECK_CREATED)), (760, _FakeResponse(200, CHECK_RESULT))])
+    with pytest.raises(ConnectorError, match="Only 80 s of this run are left.*Nothing was spent: run the step again"):
+        tripo.rig_model(model_path=str(src), out_path=str(out))
+    assert [c[1] for c in fake.calls] == [f"{API}/animations/rig-check", f"{API}/tasks/task_check"]
+    assert not Path(f"{out}.tripo.json").exists()
+
+
+def test_the_rig_wait_ends_at_the_steps_deadline_and_names_the_rig_type(fake, monkeypatch, clock, tmp_path):
+    # The check takes 300 s; the rig wait gets what is left of the 840 s, not 840 s of its own.
+    src, out = _generated(tmp_path), tmp_path / "rigged.glb"
+    start = clock[0]
+    _timed(monkeypatch, fake, clock, [(0, _FakeResponse(200, CHECK_CREATED)), (300, _FakeResponse(200, CHECK_RESULT)),
+                                      (0, _FakeResponse(200, RIG_CREATED))] + [(100, _task("running"))] * 6)
+    with pytest.raises(ConnectorError) as e:
+        tripo.rig_model(model_path=str(src), out_path=str(out))
+    message = str(e.value)
+    assert "Tripo task task_rig is still running" in message
+    assert "running the same step with --task-id task_rig --rig-type biped (no new charge)" in message
+    assert "generat" not in message
+    assert clock[0] - start < tripo.STEP_BUDGET_S + 100
+    assert fake.calls[-1][2]["timeout"] == 5.0, "a status check near the deadline gets a short timeout"
+    assert json.loads(Path(f"{out}.tripo.json").read_text())["task_id"] == "task_rig"
+
+
+@pytest.mark.parametrize("collect,hint", [
+    (lambda out: tripo.resume_rig("task_rig", out, rig_type="quadruped"), "--task-id task_rig --rig-type quadruped"),
+    (lambda out: tripo.resume_rig("task_rig", out), "--task-id task_rig ("),
+    (lambda out: tripo.resume_animation("task_anim", out), "--task-id task_anim ("),
+    (lambda out: tripo.resume_model("task_abc123", out), "--task-id task_abc123 ("),
+])
+def test_every_collect_has_its_own_deadline_and_names_how_to_collect_again(fake, monkeypatch, tmp_path, collect, hint):
+    monkeypatch.setattr(tripo, "STEP_BUDGET_S", 10.0)
+    fake.script = [_task("running"), _task("running")]
+    with pytest.raises(ConnectorError) as e:
+        collect(str(tmp_path / "m.glb"))
+    assert hint in str(e.value) and "generating again" not in str(e.value)
+
+
+def test_a_download_fits_its_timeout_in_the_time_left(fake, clock, tmp_path):
+    fake.script = [_FakeResponse(200, content=b"GLB")]
+    tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb", str(tmp_path / "m.glb"), deadline=clock[0] + 120)
+    assert fake.calls[0][2]["timeout"] == 40.0, "120 s left over the transport's 3 attempts"
+    fake.script = [_FakeResponse(200, content=b"GLB")]
+    tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb", str(tmp_path / "n.glb"))
+    assert fake.calls[1][2]["timeout"] == tripo.DOWNLOAD_TIMEOUT_S
+
+
+def test_a_download_still_streaming_at_the_deadline_stops_and_leaves_nothing(fake, clock, tmp_path):
+    class _Slow(_FakeResponse):
+        def iter_content(self, chunk_size=None):
+            for _ in range(3):
+                clock[0] += 40.0
+                yield b"GLB-"
+    fake.script = [_Slow(200)]
+    with pytest.raises(ConnectorError, match="out of time") as e:
+        tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb", str(tmp_path / "m.glb"), deadline=clock[0] + 50)
+    assert e.value.reason is None and list(tmp_path.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# A generation task Tripo no longer takes as a rig input: upload the .glb instead
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("refusal", ["at submit", "check task failed"])
+def test_a_source_task_the_check_cannot_use_falls_back_to_uploading_the_glb(fake, tmp_path, capsys, refusal):
+    # The docs name no code for a task id Tripo no longer takes (expired, or made by another
+    # key); ERR_UNSUPPORTED_PARAM (built from the documented envelope, above) stands in for it.
+    src, out = _generated(tmp_path), tmp_path / "rigged.glb"
+    first = ([_FakeResponse(400, ERR_UNSUPPORTED_PARAM)] if refusal == "at submit" else
+             [_FakeResponse(200, CHECK_CREATED), _task("failed", error_code=2002, error_message="Unsupported request parameter")])
+    fake.script = [*first, _FakeResponse(200, UPLOAD_OK), _FakeResponse(200, CHECK_CREATED),
+                   _FakeResponse(200, CHECK_RESULT), _FakeResponse(200, RIG_CREATED), _FakeResponse(200, RIG_RESULT),
+                   _FakeResponse(200, content=_glb_bytes())]
+
+    result = tripo.rig_model(model_path=str(src), out_path=str(out))
+
+    assert fake.calls[0][2]["json"] == {"input": "task_gen"}
+    posts = [(c[1], c[2].get("json")) for c in fake.calls if c[0] == "POST"]
+    assert posts[-3:] == [(f"{API}/files", None), (f"{API}/animations/rig-check", {"input": "file_abc123"}),
+                          (f"{API}/animations/rig", {"input": "file_abc123", "model": "v1.0-20240301",
+                                                     "rig_type": "biped", "spec": "mixamo", "out_format": "glb"})]
+    assert result["taskId"] == "task_rig"
+    assert json.loads(Path(f"{out}.tripo.json").read_text())["source_task_id"] is None
+    assert "could not use task task_gen" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("body,reason", [(ERR_INSUFFICIENT, INSUFFICIENT_CREDIT), (ERR_CONTENT, CONTENT_REFUSED)])
+def test_a_check_refused_for_another_reason_does_not_upload(fake, tmp_path, body, reason):
+    src = _generated(tmp_path)
+    fake.script = [_FakeResponse(403 if reason == INSUFFICIENT_CREDIT else 400, body)]
+    with pytest.raises(ConnectorError) as e:
+        tripo.rig_model(model_path=str(src), out_path=str(tmp_path / "rigged.glb"))
+    assert e.value.reason == reason and len(fake.calls) == 1
+
+
+def test_the_free_check_is_repeated_on_a_5xx_and_an_unreachable_one_does_not_upload(fake, tmp_path):
+    # The check costs nothing, so the transport repeats it; a paid submit never is.
+    src = _generated(tmp_path)
+    fake.script = [_FakeResponse(503)] * 3
+    with pytest.raises(ConnectorError) as e:
+        tripo.rig_model(model_path=str(src), out_path=str(tmp_path / "rigged.glb"))
+    assert e.value.reason == UNREACHABLE and len(fake.calls) == 3
+    assert all(c[1] == f"{API}/animations/rig-check" for c in fake.calls), "no upload for a network failure"

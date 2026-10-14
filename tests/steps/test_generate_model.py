@@ -149,7 +149,8 @@ def test_face_limit_must_be_a_whole_number(bad):
 def vendor(monkeypatch):
     """tripo's HTTP functions replaced by recorders. `events` is the order of calls."""
     state = {"events": [], "bodies": [], "uploads": [], "task": dict(TASK_SUCCESS), "wait_error": None,
-             "download_error": None, "guard_error": None, "sidecar_at_wait": None}
+             "download_error": None, "guard_error": None, "sidecar_at_wait": None, "wait_kw": [],
+             "download_kw": []}
 
     def upload(path):
         state["events"].append("upload")
@@ -161,15 +162,17 @@ def vendor(monkeypatch):
         state["bodies"].append((endpoint, body))
         return "task_abc123"
 
-    def wait(task_id):
+    def wait(task_id, **kw):
         state["events"].append(f"wait:{task_id}")
+        state["wait_kw"].append(kw)
         state["sidecar_at_wait"] = state.get("sidecar_reader", lambda: None)()
         if state["wait_error"]:
             raise state["wait_error"]
         return dict(state["task"], task_id=task_id)
 
-    def download(url, out_path):
+    def download(url, out_path, **kw):
         state["events"].append("download")
+        state["download_kw"].append(kw)
         if state["download_error"]:
             raise state["download_error"]
         Path(out_path).write_bytes(b"glTF-synthetic")
@@ -273,6 +276,24 @@ def test_task_id_keeps_what_the_record_for_the_same_task_says(vendor, tmp_path):
     assert json.loads(_sidecar(out).read_text())["endpoint"] == "/generation/image-to-model"
 
 
+@pytest.mark.parametrize("kind", ["model", "rig"])
+def test_task_id_refuses_an_out_that_records_another_task_not_yet_collected(vendor, tmp_path, kind):
+    # The record may be the only note of a paid task: it is never overwritten by another id.
+    out = tmp_path / "robot.glb"
+    record = {"task_id": "task_A", "kind": kind, "created": "2026-10-13T10:00:00+00:00"}
+    _sidecar(out).write_text(json.dumps(record))
+    with pytest.raises(tripo.InvalidInput, match=f"{out} records Tripo task task_A, not collected yet; choose another out"):
+        tripo.resume_model("task_B", str(out))
+    assert vendor["events"] == [] and json.loads(_sidecar(out).read_text()) == record
+
+
+def test_task_id_may_replace_the_record_of_a_task_already_collected(vendor, tmp_path):
+    out = tmp_path / "robot.glb"
+    _sidecar(out).write_text(json.dumps({"task_id": "task_A", "kind": "model", "credits_consumed": 30.0}))
+    assert tripo.resume_model("task_B", str(out))["taskId"] == "task_B"
+    assert json.loads(_sidecar(out).read_text())["task_id"] == "task_B"
+
+
 @pytest.mark.parametrize("call", ["generate", "resume"])
 def test_an_existing_out_is_never_overwritten(vendor, tmp_path, call):
     out = tmp_path / "robot.glb"
@@ -337,21 +358,58 @@ def test_a_failed_download_names_the_task_to_collect(vendor, tmp_path):
     assert not out.exists() and _sidecar(out).exists()
 
 
-def test_a_model_the_guard_refuses_never_lands_at_out(vendor, tmp_path):
+def test_a_download_that_cannot_connect_after_the_task_is_never_unreachable(vendor, tmp_path):
+    # The app's hint for provider_unreachable is "run the step again": a paid task would be paid twice.
+    from connectors import UNREACHABLE
+    vendor["download_error"] = ConnectorError("Tripo download of https://cdn.tripo3d.ai/x.glb failed: reset",
+                                              reason=UNREACHABLE)
+    with pytest.raises(ConnectorError) as e:
+        tripo.generate_model(out_path=str(tmp_path / "robot.glb"), prompt="a robot")
+    assert e.value.reason is None
+    assert "running the same step with --task-id task_abc123 (no new charge)" in str(e.value)
+
+
+def test_the_wait_and_the_download_share_one_deadline_and_the_hint(vendor, tmp_path):
+    tripo.generate_model(out_path=str(tmp_path / "robot.glb"), prompt="a robot")
+    (wait_kw,), (download_kw,) = vendor["wait_kw"], vendor["download_kw"]
+    assert wait_kw["resume_hint"] == "--task-id task_abc123"
+    assert wait_kw["deadline"] == download_kw["deadline"] is not None
+
+
+def test_a_model_the_guard_refuses_never_lands_at_out_and_its_bytes_are_kept(vendor, tmp_path):
     out = tmp_path / "robot.glb"
-    vendor["guard_error"] = GlbTextureError("compressed geometry (KHR_draco_mesh_compression)", "compressed")
+    vendor["guard_error"] = GlbTextureError("compressed geometry the file requires (KHR_draco_mesh_compression)",
+                                            "compressed")
     with pytest.raises(tripo.UnsupportedModel) as e:
         tripo.generate_model(out_path=str(out), prompt="a robot")
+    kept = tmp_path / "robot.unsupported.glb"
     assert str(e.value).startswith("Tripo returned a compressed model; Montaj needs it uncompressed")
-    assert e.value.kind == "compressed" and e.value.task_id == "task_abc123"
+    assert f"The file Tripo made is kept at {kept}." in str(e.value)
+    assert e.value.kind == "compressed" and e.value.task_id == "task_abc123" and e.value.kept == str(kept)
     assert isinstance(e.value, ConnectorError)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["robot.glb.tripo.json"], "no staged file left"
+    assert kept.read_bytes() == b"glTF-synthetic", "the paid bytes, as downloaded"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["robot.glb.tripo.json", "robot.unsupported.glb"], \
+        "no staged file left, nothing at out"
 
 
-def test_a_ktx2_model_says_what_montaj_cannot_use(vendor, tmp_path):
-    vendor["guard_error"] = GlbTextureError("image 0 is a KTX2/Basis texture", "ktx2")
-    with pytest.raises(tripo.UnsupportedModel, match="Tripo returned a model Montaj can't use: image 0 is a KTX2"):
-        tripo.generate_model(out_path=str(tmp_path / "m.glb"), prompt="a robot")
+def test_a_kept_unsupported_model_never_replaces_another(vendor, tmp_path):
+    (tmp_path / "robot.unsupported.glb").write_bytes(b"EARLIER")
+    vendor["guard_error"] = GlbTextureError("image 0 is stored outside the file (a.png)", "external")
+    with pytest.raises(tripo.UnsupportedModel, match="Tripo returned a model Montaj can't use: image 0 is stored") as e:
+        tripo.generate_model(out_path=str(tmp_path / "robot.glb"), prompt="a robot")
+    assert e.value.kept == str(tmp_path / "robot.unsupported-2.glb")
+    assert (tmp_path / "robot.unsupported.glb").read_bytes() == b"EARLIER"
+    assert (tmp_path / "robot.unsupported-2.glb").read_bytes() == b"glTF-synthetic"
+
+
+def test_a_model_with_ktx2_textures_lands_with_a_warning(vendor, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(tripo, "ensure_supported_textures",
+                        lambda path: {"reencoded": 0, "ktx2": 2, "formats": {"image/ktx2": 2}})
+    out = tmp_path / "robot.glb"
+    result = tripo.generate_model(out_path=str(out), prompt="a robot")
+    assert out.exists() and result["textures"]["ktx2"] == 2
+    warn = json.loads(capsys.readouterr().err.strip().splitlines()[-1])["warn"]
+    assert "2 KTX2 textures" in warn and "base colour" in warn
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +474,7 @@ def test_end_to_end_an_image_becomes_a_glb_with_jpeg_textures(monkeypatch, tmp_p
         ("GET", f"{tripo.API}/tasks/task_abc123"), ("GET", "https://cdn.tripo3d.ai/output/model_pbr.glb")]
     assert fake.calls[1][2]["json"] == {"input": "file_abc123", "model": "v3.1-20260211", "texture": True,
                                         "pbr": True, "texture_quality": "standard", "face_limit": 30000}
-    assert result["textures"] == {"reencoded": 1, "formats": {"image/webp": 1}}
+    assert result["textures"] == {"reencoded": 1, "ktx2": 0, "formats": {"image/webp": 1}}
     gltf, _ = read_glb(out.read_bytes())
     assert gltf["images"][0]["mimeType"] == "image/jpeg" and "extensionsUsed" not in gltf
     assert sorted(p.name for p in tmp_path.iterdir()) == ["photo.png", "robot.glb", "robot.glb.tripo.json"]
@@ -564,12 +622,30 @@ def test_step_an_unusable_model_is_unsupported_model(step_module, monkeypatch, c
     assert err["message"].startswith("Tripo returned a compressed model; Montaj needs it uncompressed")
 
 
+def test_step_an_out_holding_another_tasks_record_is_invalid_args(step_module, monkeypatch, capsys, tmp_path):
+    def boom(task_id, out):
+        raise tripo.InvalidInput(f"{out} records Tripo task task_A, not collected yet; choose another out.")
+    monkeypatch.setattr(tripo, "resume_model", boom)
+    with pytest.raises(SystemExit):
+        _run(step_module, monkeypatch, ["--out", str(tmp_path / "m.glb"), "--task-id", "task_B"])
+    err = json.loads(capsys.readouterr().err)
+    assert err["error"] == "invalid_args" and "task_A, not collected yet" in err["message"]
+
+
 def test_step_schema_says_model_output():
     schema = json.loads(_SCHEMA_PATH.read_text())
     assert schema["name"] == "generate_model" and schema["output"]["type"] == "model"
     assert {p["name"] for p in schema["params"]} == {
         "prompt", "image", "view-front", "view-left", "view-back", "view-right", "out", "texture",
         "face-limit", "negative-prompt", "task-id"}
+
+
+def test_step_schema_leads_with_task_id_to_collect_a_paid_task():
+    # In the app every run gets a fresh out, so a same-out re-attach never happens there:
+    # task-id is the only way back to a paid task, and the description must say so first.
+    schema = json.loads(_SCHEMA_PATH.read_text())
+    assert "task-id" in schema["description"] and "no new charge" in schema["description"]
+    assert "same --out" not in schema["description"]
 
 
 # ---------------------------------------------------------------------------

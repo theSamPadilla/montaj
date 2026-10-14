@@ -1,14 +1,14 @@
 {
   "name": "rig_model",
-  "description": "Rig a 3D model (.glb) on Tripo: add a skeleton so animate_model can move it. Tripo's free riggability check runs first; a model it calls not riggable fails with not_riggable and nothing is spent. biped gets Mixamo bone names. A model made by generate_model is rigged from its Tripo task; any other .glb is uploaded. Running it again with the same --out re-attaches to the task instead of paying twice. Standalone.",
+  "description": "Rig a 3D model (.glb) on Tripo: add a skeleton so animate_model can move it. A rig task already submitted (a run that stopped or ran out of time names its id and rig type) is collected with task-id and rig-type: no new task, no new charge; never run the step again to get it. Tripo's free riggability check runs first; a model it calls not riggable fails with not_riggable and nothing is spent. biped gets Mixamo bone names. An avian rig has no preset animations, so it is made only when rig-type avian is asked for. A model made by generate_model is rigged from its Tripo task; any other .glb is uploaded. Standalone.",
   "output": {
     "type": "model",
-    "description": "Path to the rigged .glb. With --json: {path, taskId, rigType, rigModel, spec, creditsUsed, textures}."
+    "description": "Path to the rigged .glb. With --json: {path, taskId, rigType, rigModel, spec, creditsUsed, textures}, plus note for a rig with no preset animations (avian)."
   },
   "params": [
-    {"name": "model", "type": "path", "required": true, "description": "The .glb to rig (a character or creature)."},
+    {"name": "model", "type": "path", "required": false, "description": "The .glb to rig (a character or creature). Required unless task-id."},
     {"name": "out", "type": "path", "required": true, "description": "Output .glb path. Optional with _project: saved in the project's assets folder."},
     {"name": "rig-type", "type": "enum", "required": false, "options": ["biped", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic"], "description": "Skeleton type. Default: the one Tripo's free check recommends."},
-    {"name": "task-id", "type": "string", "required": false, "description": "A rig task already submitted (a run that stopped): wait for it and download it. No new task, no new charge. Give --rig-type with it, so the file can be animated."}
+    {"name": "task-id", "type": "string", "required": false, "description": "Collect a rig task already submitted (the id a run that stopped or ran out of time names): wait for it and download it. No new task, no new charge; no model needed. Give rig-type with it, so the file can be animated."}
   ]
 }

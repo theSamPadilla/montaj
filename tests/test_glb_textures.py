@@ -151,7 +151,7 @@ def test_a_webp_texture_becomes_jpeg_and_the_bin_chunk_is_repacked(tmp_path):
 
     report = ensure_supported_textures(str(path))
 
-    assert report == {"reencoded": 1, "formats": {"image/webp": 1}}
+    assert report == {"reencoded": 1, "ktx2": 0, "formats": {"image/webp": 1}}
     out, out_bin = read_glb(path.read_bytes())
     image = out["images"][0]
     assert image["mimeType"] == "image/jpeg"
@@ -183,7 +183,7 @@ def test_two_images_and_several_views_keep_every_offset_right(tmp_path):
 
     report = ensure_supported_textures(str(path))
 
-    assert report == {"reencoded": 2, "formats": {"image/webp": 2, "image/png": 1}}
+    assert report == {"reencoded": 2, "ktx2": 0, "formats": {"image/webp": 2, "image/png": 1}}
     out, out_bin = read_glb(path.read_bytes())
     assert [im["mimeType"] for im in out["images"]] == ["image/jpeg", "image/png", "image/png"]
     # The alpha WebP became a PNG that still has its alpha.
@@ -250,7 +250,7 @@ def test_an_avif_texture_is_reencoded_too(tmp_path):
     gltf, bin_data = scene([(avif, "image/avif", False)])
     path = write(tmp_path, gltf, bin_data)
     report = ensure_supported_textures(str(path))
-    assert report == {"reencoded": 1, "formats": {"image/avif": 1}}
+    assert report == {"reencoded": 1, "ktx2": 0, "formats": {"image/avif": 1}}
     assert read_glb(path.read_bytes())[0]["images"][0]["mimeType"] == "image/jpeg"
 
 
@@ -262,14 +262,14 @@ def test_a_glb_that_needs_nothing_stays_byte_identical(tmp_path):
     gltf, bin_data = scene([(png_bytes(), "image/png", False)])
     path = write(tmp_path, gltf, bin_data)
     before, mtime = path.read_bytes(), path.stat().st_mtime_ns
-    assert ensure_supported_textures(str(path)) == {"reencoded": 0, "formats": {"image/png": 1}}
+    assert ensure_supported_textures(str(path)) == {"reencoded": 0, "ktx2": 0, "formats": {"image/png": 1}}
     assert path.read_bytes() == before and path.stat().st_mtime_ns == mtime
 
 
 def test_a_glb_without_images_or_bin_stays_byte_identical(tmp_path):
     path = write(tmp_path, {"asset": {"version": "2.0"}}, None)
     before = path.read_bytes()
-    assert ensure_supported_textures(str(path)) == {"reencoded": 0, "formats": {}}
+    assert ensure_supported_textures(str(path)) == {"reencoded": 0, "ktx2": 0, "formats": {}}
     assert path.read_bytes() == before
 
 
@@ -277,11 +277,11 @@ def test_a_glb_without_images_or_bin_stays_byte_identical(tmp_path):
 # What it refuses (the file is left as it was)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("ext", ["KHR_draco_mesh_compression", "EXT_meshopt_compression"])
-@pytest.mark.parametrize("where", ["extensionsUsed", "extensionsRequired"])
-def test_compressed_geometry_is_refused(tmp_path, ext, where):
+@pytest.mark.parametrize("ext", ["KHR_draco_mesh_compression", "EXT_meshopt_compression", "KHR_meshopt_compression"])
+def test_compressed_geometry_the_file_requires_is_refused(tmp_path, ext):
     gltf, bin_data = scene([(png_bytes(), "image/png", False)])
-    gltf[where] = [ext]
+    gltf["extensionsUsed"] = [ext]
+    gltf["extensionsRequired"] = [ext]
     path = write(tmp_path, gltf, bin_data)
     before = path.read_bytes()
     with pytest.raises(GlbTextureError, match=ext) as e:
@@ -290,22 +290,58 @@ def test_compressed_geometry_is_refused(tmp_path, ext, where):
     assert path.read_bytes() == before
 
 
-def test_a_ktx2_texture_is_refused(tmp_path):
-    ktx2 = b"\xabKTX 20\xbb\r\n\x1a\n" + b"\x00" * 20
-    gltf, bin_data = scene([(ktx2, "image/ktx2", False)])
-    path = write(tmp_path, gltf, bin_data)
-    with pytest.raises(GlbTextureError, match="KTX2") as e:
-        ensure_supported_textures(str(path))
-    assert e.value.kind == "ktx2"
-
-
-def test_the_basisu_extension_is_refused(tmp_path):
+@pytest.mark.parametrize("ext", ["KHR_draco_mesh_compression", "EXT_meshopt_compression"])
+def test_compression_listed_only_as_used_is_kept(tmp_path, ext):
+    # Not in extensionsRequired: the file carries data a loader without the extension
+    # reads, which is what Montaj's importer does with it.
     gltf, bin_data = scene([(png_bytes(), "image/png", False)])
+    gltf["extensionsUsed"] = [ext]
+    path = write(tmp_path, gltf, bin_data)
+    before = path.read_bytes()
+    assert ensure_supported_textures(str(path)) == {"reencoded": 0, "ktx2": 0, "formats": {"image/png": 1}}
+    assert path.read_bytes() == before
+
+
+KTX2_BYTES = b"\xabKTX 20\xbb\r\n\x1a\n" + b"\x00" * 20   # the KTX2 identifier, then filler: not a real texture
+
+
+def test_a_ktx2_texture_is_kept_and_counted(tmp_path):
+    # Montaj's importer shows a KTX2 texture's base colour; Pillow can't decode it to re-encode.
+    gltf, bin_data = scene([(KTX2_BYTES, "image/ktx2", False)])
+    path = write(tmp_path, gltf, bin_data)
+    before = path.read_bytes()
+    assert ensure_supported_textures(str(path)) == {"reencoded": 0, "ktx2": 1, "formats": {"image/ktx2": 1}}
+    assert path.read_bytes() == before
+
+
+def test_a_basisu_texture_is_kept_and_counted_with_its_fallback(tmp_path):
+    gltf, bin_data = scene([(png_bytes(), "image/png", False)])
+    gltf["images"].append({"uri": "data:image/ktx2;base64," + base64.b64encode(KTX2_BYTES).decode()})
+    gltf["textures"][0]["extensions"] = {"KHR_texture_basisu": {"source": 1}}
     gltf["extensionsUsed"] = ["KHR_texture_basisu"]
     path = write(tmp_path, gltf, bin_data)
-    with pytest.raises(GlbTextureError) as e:
-        ensure_supported_textures(str(path))
-    assert e.value.kind == "ktx2"
+    before = path.read_bytes()
+    report = ensure_supported_textures(str(path))
+    assert report["ktx2"] == 1 and report["reencoded"] == 0
+    assert path.read_bytes() == before
+
+
+@needs_webp
+def test_a_webp_beside_a_ktx2_is_reencoded_and_the_ktx2_left_alone(tmp_path):
+    gltf, bin_data = scene([(webp_opaque(), "image/webp", True), (KTX2_BYTES, "image/ktx2", False)])
+    gltf["textures"][1]["extensions"] = {"KHR_texture_basisu": {"source": 1}}
+    gltf["extensionsUsed"].append("KHR_texture_basisu")
+    path = write(tmp_path, gltf, bin_data)
+    ktx2_view = gltf["images"][1]["bufferView"]
+
+    report = ensure_supported_textures(str(path))
+
+    assert report == {"reencoded": 1, "ktx2": 1, "formats": {"image/webp": 1, "image/ktx2": 1}}
+    out, out_bin = read_glb(path.read_bytes())
+    assert [im["mimeType"] for im in out["images"]] == ["image/jpeg", "image/ktx2"]
+    assert view_bytes(out, out_bin, ktx2_view) == KTX2_BYTES
+    assert out["extensionsUsed"] == ["KHR_texture_basisu"] and "extensionsRequired" not in out
+    assert out["textures"][1]["extensions"] == {"KHR_texture_basisu": {"source": 1}}
 
 
 def test_an_image_outside_the_file_is_refused(tmp_path):

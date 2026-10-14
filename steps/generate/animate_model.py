@@ -12,9 +12,10 @@ The animation is baked into the .glb, geometry included. By default it plays in
 place (the character stays where it is; the scene moves it); --root-motion keeps
 the animation's own travel.
 
-The task is recorded in `<out>.tripo.json` before polling: running the same
-command again re-attaches to it instead of paying twice. --task-id collects a
-task already submitted (no new charge).
+--task-id collects a task already submitted (a run that stopped or ran out of
+time names it): no new task, no new charge, and no --model or --animation
+needed. From the CLI, running the same command again with the same --out also
+re-attaches to the task recorded in `<out>.tripo.json`.
 """
 import sys, os, argparse, json
 
@@ -28,7 +29,7 @@ from _fail_reasons import fail_for
 
 def main():
     p = argparse.ArgumentParser(description="Animate a rigged 3D model (.glb) on Tripo")
-    p.add_argument("--model", required=True, help="The rigged .glb (made by rig_model) to animate.")
+    p.add_argument("--model", help="The rigged .glb (made by rig_model) to animate. Required unless --task-id.")
     p.add_argument("--animation", action="append", default=[],
                    help=f"A preset animation id, e.g. preset:biped:walk (repeat for up to "
                         f"{tripo.MAX_ANIMATIONS}). Valid ids depend on the rig.")
@@ -46,6 +47,8 @@ def main():
         fail("invalid_out", f"Tripo models are GLB files: --out must end in .glb, got {args.out!r}")
 
     if not args.task_id:
+        if not args.model:
+            fail("invalid_args", "--model is required (unless --task-id collects a task already submitted)")
         if not 1 <= len(args.animation) <= tripo.MAX_ANIMATIONS:
             fail("invalid_args", f"Give 1 to {tripo.MAX_ANIMATIONS} --animation ids, such as "
                                  f"preset:biped:walk; got {len(args.animation)}")

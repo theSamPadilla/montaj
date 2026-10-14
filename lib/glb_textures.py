@@ -1,13 +1,15 @@
 """Make a binary glTF (.glb) loadable by Montaj: no WebP or AVIF textures, no
-compressed geometry, nothing outside the file.
+geometry compression the file requires, nothing outside the file.
 
-Montaj's model import reads PNG and JPEG textures only (a WebP, AVIF or KTX2
-texture falls back to the bare base colour) and can't decode Draco or meshopt
-geometry. A GLB from any source goes through `ensure_supported_textures(path)`
-after download:
+Montaj's model import reads PNG and JPEG textures (a WebP, AVIF or KTX2 texture
+falls back to the bare base colour) and refuses a file whose extensionsRequired
+names Draco or meshopt geometry (one that only lists them in extensionsUsed
+carries a fallback it can read). A GLB from any source goes through
+`ensure_supported_textures(path)` after download:
 
   - Draco or meshopt geometry (KHR_draco_mesh_compression, EXT_meshopt_compression,
-    KHR_meshopt_compression) raises GlbTextureError(kind="compressed").
+    KHR_meshopt_compression) named in extensionsRequired raises
+    GlbTextureError(kind="compressed"); named only in extensionsUsed, it is kept.
   - A WebP or AVIF image (by mimeType, by an EXT_texture_webp/EXT_texture_avif
     texture extension, or by its bytes) is decoded with Pillow and re-encoded:
     PNG when it has an alpha channel with any pixel short of opaque, else JPEG
@@ -15,7 +17,9 @@ after download:
     every byteOffset recomputed; accessors are relative to their view, so they
     are untouched), the texture extension is dropped (`texture.source` points at
     the image) and the extension leaves extensionsUsed/extensionsRequired.
-  - A KTX2/Basis texture raises (kind="ktx2"): it can't be re-encoded here.
+  - A KTX2/Basis texture (KHR_texture_basisu, or KTX2 bytes) can't be re-encoded
+    here; it is kept and counted (`ktx2` in the report) so the caller can warn
+    that Montaj shows its base colour only.
   - An image or buffer stored outside the file (an external `uri`) raises
     (kind="external"); a `data:` URI image is handled like an embedded one.
 
@@ -48,9 +52,9 @@ JPEG_QUALITY = 92
 
 class GlbTextureError(ValueError):
     """A GLB Montaj can't use and this module can't fix. `kind` says why:
-    "invalid" (not a glTF 2.0 binary), "compressed" (Draco or meshopt geometry),
-    "ktx2" (a KTX2/Basis texture), "external" (an image or buffer outside the
-    file) or "image" (an image Pillow could not decode)."""
+    "invalid" (not a glTF 2.0 binary), "compressed" (Draco or meshopt geometry
+    the file requires), "external" (an image or buffer outside the file) or
+    "image" (an image Pillow could not decode)."""
 
     def __init__(self, message: str, kind: str):
         super().__init__(message)
@@ -170,12 +174,12 @@ def _data_uri(uri: str) -> tuple[str, bytes]:
 
 
 def _check_extensions(gltf: dict) -> None:
-    named = set(_list(gltf, "extensionsUsed")) | set(_list(gltf, "extensionsRequired"))
-    found = [x for x in COMPRESSION_EXTENSIONS if x in named]
+    """Refuse geometry compression the file requires. Listed only in extensionsUsed,
+    the extension is optional: the file carries data a loader without it can read."""
+    required = set(_list(gltf, "extensionsRequired"))
+    found = [x for x in COMPRESSION_EXTENSIONS if x in required]
     if found:
-        raise GlbTextureError(f"compressed geometry ({', '.join(found)})", "compressed")
-    if _KTX2_EXTENSION in named:
-        raise GlbTextureError(f"KTX2/Basis textures ({_KTX2_EXTENSION}), which can't be re-encoded here", "ktx2")
+        raise GlbTextureError(f"compressed geometry the file requires ({', '.join(found)})", "compressed")
 
 
 def _texture_sources(gltf: dict) -> tuple[set, set]:
@@ -273,10 +277,10 @@ def _write_atomic(path: str, data: bytes) -> None:
 
 def ensure_supported_textures(path: str) -> dict:
     """Check and, where needed, fix the GLB at `path` in place (see the module
-    docstring). Returns {"reencoded": <images re-encoded>, "formats": {<mime
-    type>: <images of it before the fix>}} ("unknown" for bytes no sniffer
-    names). Raises GlbTextureError for what can't be fixed, leaving the file
-    as it was."""
+    docstring). Returns {"reencoded": <images re-encoded>, "ktx2": <KTX2/Basis
+    images kept as they are>, "formats": {<mime type>: <images of it before the
+    fix>}} ("unknown" for bytes no sniffer names). Raises GlbTextureError for
+    what can't be fixed, leaving the file as it was."""
     with open(path, "rb") as f:
         raw = f.read()
     gltf, bin_data, rest = _parse(raw)
@@ -290,6 +294,7 @@ def ensure_supported_textures(path: str) -> dict:
 
     formats: dict[str, int] = {}
     work = []   # (image index, bytes, where)
+    ktx2 = 0
     for i, image in enumerate(_list(gltf, "images")):
         if not isinstance(image, dict):
             continue
@@ -298,13 +303,14 @@ def ensure_supported_textures(path: str) -> dict:
         kind = _sniff(data) or declared or "unknown"
         formats[kind] = formats.get(kind, 0) + 1
         if kind == "image/ktx2" or declared == "image/ktx2" or i in ext_ktx2:
-            raise GlbTextureError(f"image {i} is a KTX2/Basis texture, which can't be re-encoded here", "ktx2")
+            ktx2 += 1     # kept: Montaj shows the base colour, and Pillow can't decode it
+            continue
         if kind in ("image/webp", "image/avif") or declared in ("image/webp", "image/avif") or i in ext_reencode:
             work.append((i, data, where))
 
     required = set(_list(gltf, "extensionsRequired"))
     if not work and not any(x in required for x in _REENCODE_EXTENSIONS):
-        return {"reencoded": 0, "formats": formats}
+        return {"reencoded": 0, "ktx2": ktx2, "formats": formats}
 
     images, replaced = _list(gltf, "images"), {}
     for i, data, where in work:
@@ -321,4 +327,4 @@ def ensure_supported_textures(path: str) -> dict:
         bin_data = _repack(gltf, bin_data, replaced)
     _drop_extensions(gltf, tuple(_REENCODE_EXTENSIONS))
     _write_atomic(path, _pack(gltf, bin_data, rest))
-    return {"reencoded": len(work), "formats": formats}
+    return {"reencoded": len(work), "ktx2": ktx2, "formats": formats}
