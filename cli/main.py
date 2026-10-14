@@ -65,6 +65,7 @@ _COMMANDS = {
 # _HIDDEN below exactly as before (filler keeps its name→rm_fillers step remap).
 _STEP_COMMANDS = {
     "analyze-media":      {},
+    "animate-model":      {"required_out": True, "forward_json": True},
     "caption":            {},
     "detect-beats":       {},
     "detect-shots":       {},
@@ -81,6 +82,7 @@ _STEP_COMMANDS = {
     "lyrics-sync":        {"emit_json": False, "file_prechecks": ["lyrics"]},
     "probe":              {},
     "resize":             {},
+    "rig-model":          {"required_out": True, "forward_json": True},
     "rm-nonspeech":       {},
     "seedance-generate":  {"required_out": True, "forward_json": True},
     "shot-sheet":         {},
@@ -104,7 +106,7 @@ _REGISTRATION_ORDER = (
     "generate-voiceover", "generate-music", "detect-shots", "shot-sheet",
     "detect-beats", "seedance-generate", "generate-sfx", "kinovi-generate",
     "veo-generate",
-    "generate-model",
+    "generate-model", "rig-model", "animate-model",
 )
 
 # Individual step commands — available but not listed in top-level help.
@@ -120,7 +122,7 @@ _HIDDEN = {
     "generate-music", "detect-shots", "shot-sheet",
     "detect-beats", "seedance-generate", "generate-sfx", "kinovi-generate",
     "veo-generate",
-    "generate-model",
+    "generate-model", "rig-model", "animate-model",
 }
 
 

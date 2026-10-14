@@ -4,8 +4,9 @@ One vendor, one API key, direct HTTP via requests. See docs/CONNECTORS.md for
 the layering rule. Facts below were read from Tripo's own docs on 2026-10-13
 (developers.tripo3d.ai/en/docs: introduction, files, task-query, task-lifecycle,
 billing, rate-limits, error-handling, generation-text-to-model,
-generation-image-to-model, generation-multiview-to-model); re-read the
-endpoint's page before building a request body for it.
+generation-image-to-model, generation-multiview-to-model, animations-rig-check,
+animations-rig, animations-retarget); re-read the endpoint's page before building
+a request body for it.
 
 Host: https://openapi.tripo3d.ai/v3 (the international site). The China site is
 a different host (openapi.tripo3d.com) with its own keys and is NOT used here.
@@ -38,19 +39,26 @@ Current functions:
     build_generation_body(...) -> (endpoint, body)   # pure, validates
     generate_model(out_path=..., ...) -> dict # text, image or multiview to a .glb
     resume_model(task_id, out_path) -> dict   # collect a generation already submitted
+    rig_model(model_path=..., out_path=..., rig_type=None) -> dict     # skeleton added
+    animate_model(model_path=..., out_path=..., animations=[...], in_place=True) -> dict
+    resume_rig(task_id, out_path, rig_type=None) / resume_animation(task_id, out_path)
     check_key() -> dict
 
-A generated model is recorded beside its output before Tripo is polled:
-`<out>.tripo.json` = {task_id, kind: "model", model, endpoint, created} (and
-credits_consumed once it finishes). A run that stopped (a timeout, a closed
-laptop) and is retried with the same out re-attaches to that task instead of
-paying for a new one; a task that ended without a model (failed, banned,
-expired, cancelled) removes the record, so the retry submits again.
+A task is recorded beside its output before Tripo is polled: `<out>.tripo.json`
+= {task_id, kind, created, ...} (and credits_consumed once it finishes). kind is
+"model" ({model, endpoint}), "rig" ({rig_model, rig_type, spec, source_task_id}) or
+"animation" ({animations, in_place, rig_task_id, rig_model, rig_type}). A run that
+stopped (a timeout, a closed laptop) and is retried with the same out re-attaches
+to that task instead of paying for a new one; a task that ended without a model
+(failed, banned, expired, cancelled) removes the record, so the retry submits
+again. The record also lets one step build on another: rig_model sends the task
+that generated a model instead of uploading it, and animate_model needs the rig
+task (and its rig type, for the preset list) that rig_model recorded.
 
 Library code: raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
-import json, os, sys, time
+import difflib, json, os, sys, time
 from datetime import datetime, timezone
 from urllib.parse import quote, urlsplit
 
@@ -105,6 +113,76 @@ FACE_LIMIT_RANGE = (1000, 150000)
 
 SIDECAR_SUFFIX = ".tripo.json"
 
+# Rigging, from animations-rig.md and animations-rig-check.md (read 2026-10-13). The
+# rig model follows the rig type: v1.0-20240301 is "biped (humanoid) only" and
+# Montaj asks it for Mixamo-compatible bone naming (spec "mixamo");
+# v2.5-20260210 is the model for every other creature, with Tripo's own bone
+# naming (spec "tripo"). (The rig page's example sends v2.5 with biped and mixamo; its
+# parameter text says v1.0 for biped, which is what Montaj follows.)
+RIG_TYPES = ("biped", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic")
+RIG_MODEL_BIPED = "v1.0-20240301"
+RIG_MODEL_CREATURE = "v2.5-20260210"
+RIG_MODELS = {
+    "biped": {"model": RIG_MODEL_BIPED, "spec": "mixamo"},
+    **{t: {"model": RIG_MODEL_CREATURE, "spec": "tripo"} for t in RIG_TYPES if t != "biped"},
+}
+
+# Preset animations, copied from animations-retarget.md (read 2026-10-13): rig model
+# -> rig type -> the ids that rig accepts. v1.0-20240301 is biped only, with 101
+# ids spelled preset:biped:<name>; v2.5-20260210 has a short list per type. The page
+# lists no preset for an avian rig, so there is none here: animating one is refused
+# before any call. A misspelled id is refused locally and never costs a call.
+MAX_ANIMATIONS = 5
+ANIMATION_PRESETS = {
+    RIG_MODEL_BIPED: {
+        "biped": (
+            "preset:biped:afraid", "preset:biped:agree", "preset:biped:angry_01",
+            "preset:biped:angry_02", "preset:biped:angry_03", "preset:biped:basketball_shot",
+            "preset:biped:bow", "preset:biped:box_01", "preset:biped:box_02", "preset:biped:box_03",
+            "preset:biped:cast_a_spell", "preset:biped:cheer", "preset:biped:chop",
+            "preset:biped:clap", "preset:biped:climb", "preset:biped:complain_01",
+            "preset:biped:complain_02", "preset:biped:cross_body_crunch",
+            "preset:biped:crossover_dribble", "preset:biped:cry", "preset:biped:dance_01",
+            "preset:biped:dance_02", "preset:biped:dance_03", "preset:biped:dance_04",
+            "preset:biped:dance_05", "preset:biped:dance_06", "preset:biped:defeat_02",
+            "preset:biped:defeat_03", "preset:biped:depressed", "preset:biped:dig",
+            "preset:biped:dive", "preset:biped:dribble", "preset:biped:fall", "preset:biped:fire",
+            "preset:biped:flee_01", "preset:biped:flee_02", "preset:biped:flip",
+            "preset:biped:fold_arms", "preset:biped:football_catch", "preset:biped:football_save",
+            "preset:biped:football_pass", "preset:biped:freaky", "preset:biped:frightened",
+            "preset:biped:front_kick_01", "preset:biped:front_kick_02", "preset:biped:frustrated_01",
+            "preset:biped:frustrated_02", "preset:biped:golf", "preset:biped:greet_01",
+            "preset:biped:greet_02", "preset:biped:greet_03", "preset:biped:greet_04",
+            "preset:biped:heart_pose", "preset:biped:hit_to_body_01", "preset:biped:hit_to_body_02",
+            "preset:biped:hit_to_head", "preset:biped:hit_to_side", "preset:biped:hit_to_stomach",
+            "preset:biped:hug", "preset:biped:hurt", "preset:biped:idle", "preset:biped:jump_down",
+            "preset:biped:jump", "preset:biped:jump_rope_01", "preset:biped:jump_rope_02",
+            "preset:biped:laugh_01", "preset:biped:laugh_02", "preset:biped:lift_heavy",
+            "preset:biped:look_around", "preset:biped:make_a_call_01", "preset:biped:make_a_call_02",
+            "preset:biped:pitch_baseball", "preset:biped:play_mobile_game",
+            "preset:biped:play_video_game", "preset:biped:press-up", "preset:biped:run_upstairs",
+            "preset:biped:run", "preset:biped:scared_01", "preset:biped:scared_02",
+            "preset:biped:scratch", "preset:biped:shoot", "preset:biped:shovel",
+            "preset:biped:sing_01", "preset:biped:sing_02", "preset:biped:sing_03",
+            "preset:biped:sing_04", "preset:biped:sit", "preset:biped:slash", "preset:biped:sob",
+            "preset:biped:standing_relax", "preset:biped:surf", "preset:biped:swagger",
+            "preset:biped:swim", "preset:biped:turn", "preset:biped:victory_celebration",
+            "preset:biped:volleyball", "preset:biped:wait", "preset:biped:walk",
+            "preset:biped:warm_up", "preset:biped:wave_goodbye_01", "preset:biped:wave_goodbye_02",
+        ),
+    },
+    RIG_MODEL_CREATURE: {
+        "biped": ("preset:idle", "preset:walk", "preset:run", "preset:dive", "preset:climb",
+                  "preset:jump", "preset:slash", "preset:shoot", "preset:hurt", "preset:fall",
+                  "preset:turn"),
+        "quadruped": ("preset:quadruped:walk",),
+        "hexapod": ("preset:hexapod:walk",),
+        "octopod": ("preset:octopod:walk",),
+        "serpentine": ("preset:serpentine:march",),
+        "aquatic": ("preset:aquatic:march",),
+    },
+}
+
 _KEY_CODES = frozenset({1000, 1001})
 _BUSY_CODES = frozenset({1007, 2000})
 _SERVER_STATUSES = frozenset({500, 502, 503, 504})
@@ -129,6 +207,20 @@ class UnsupportedModel(ConnectorError):
         super().__init__(message)
         self.kind = kind
         self.task_id = task_id
+
+
+class NotRiggable(ConnectorError):
+    """Tripo's free riggability check says the model can't be rigged. Nothing was
+    spent. `rig_type` is the type the check named (or None)."""
+
+    def __init__(self, message: str, rig_type: str | None = None):
+        super().__init__(message)
+        self.rig_type = rig_type
+
+
+class InvalidInput(ConnectorError):
+    """An input Montaj refused before any call: an unknown rig type or preset
+    animation, a model that has not been rigged, a missing file. Nothing was sent."""
 
 
 def _warn(message: str) -> None:
@@ -335,11 +427,13 @@ def _terminal_error(task_id: str, status: str, task: dict) -> ConnectorError | N
     return None
 
 
-def wait(task_id: str) -> dict:
+def wait(task_id: str, *, resumable: bool = True) -> dict:
     """Poll the task until it succeeds; its data. A task that ended any other way
     raises. Transient poll failures are tolerated (MAX_CONSECUTIVE_POLL_FAILURES in
     a row); the task is already submitted, so giving up says how to pick it up
-    again rather than to regenerate. An unknown status counts as still running."""
+    again rather than to regenerate (resumable=False is for a free check, which has
+    nothing to collect: it says to run the check again). An unknown status counts
+    as still running."""
     if not task_id:
         raise ConnectorError("task_id is required")
     path = f"/tasks/{quote(str(task_id), safe='')}"
@@ -359,9 +453,10 @@ def wait(task_id: str) -> dict:
         if task is None:
             failures += 1
             if failures >= MAX_CONSECUTIVE_POLL_FAILURES:
+                again = (f"It may still finish; resume it with --task-id {task_id} instead of "
+                         f"generating again." if resumable else "The check is free: run it again.")
                 raise ConnectorError(
-                    f"Tripo task {task_id}: {failures} status checks failed in a row. It may still "
-                    f"finish; resume it with --task-id {task_id} instead of generating again. "
+                    f"Tripo task {task_id}: {failures} status checks failed in a row. {again} "
                     f"Last error: {last}")
         else:
             failures = 0
@@ -373,9 +468,9 @@ def wait(task_id: str) -> dict:
             if error:
                 raise error
         time.sleep(POLL_INTERVAL_S)
-    raise ConnectorError(
-        f"Tripo task {task_id} is still running after {MAX_POLL_S:.0f} s. It is submitted and "
-        f"may still finish: resume it with --task-id {task_id} instead of generating again.")
+    again = (f"It is submitted and may still finish: resume it with --task-id {task_id} instead "
+             f"of generating again." if resumable else "The check is free: run it again.")
+    raise ConnectorError(f"Tripo task {task_id} is still running after {MAX_POLL_S:.0f} s. {again}")
 
 
 def _plain_url(url: str) -> str:
@@ -540,9 +635,13 @@ def _remove(path: str) -> None:
         pass
 
 
-def _read_sidecar(out_path: str) -> dict | None:
+_KIND_NAMES = {"model": "a model", "rig": "a rig", "animation": "an animation"}
+
+
+def _read_sidecar(out_path: str, kind: str | None = "model") -> dict | None:
     """The task record beside out_path, or None when there is none (or it names
-    no task). An unreadable one is refused: it may be the only note of a paid task."""
+    no task). An unreadable one is refused: it may be the only note of a paid task.
+    A record of another kind than `kind` is refused too; kind=None takes any."""
     path = sidecar_path(out_path)
     if not os.path.exists(path):
         return None
@@ -555,9 +654,10 @@ def _read_sidecar(out_path: str) -> dict | None:
             f"it with --task-id; otherwise delete the file and generate again.") from e
     if not isinstance(record, dict) or not record.get("task_id"):
         return None
-    kind = record.get("kind", "model")
-    if kind != "model":
-        raise ConnectorError(f"{path} records a Tripo {kind} task, not a model. Choose another output path.")
+    found = record.get("kind", "model")
+    if kind is not None and found != kind:
+        raise ConnectorError(f"{path} records a Tripo {found} task, not {_KIND_NAMES.get(kind, kind)}. "
+                             f"Choose another output path.")
     return record
 
 
@@ -595,9 +695,10 @@ def _unsupported(e: GlbTextureError, task_id: str) -> UnsupportedModel:
     return UnsupportedModel(message, e.kind, task_id)
 
 
-def _collect(record: dict, out_path: str) -> dict:
+def _collect_task(record: dict, out_path: str) -> tuple[dict, dict]:
     """Wait for the recorded task, download its model, make its textures ones
-    Montaj reads, and only then put it at out_path. Returns the step's result."""
+    Montaj reads, and only then put it at out_path. Returns the record as it now
+    stands in `<out>.tripo.json` (with credits_consumed) and the texture report."""
     task_id = record["task_id"]
     try:
         task = wait(task_id)
@@ -627,10 +728,16 @@ def _collect(record: dict, out_path: str) -> dict:
             raise ConnectorError(f"Could not write {out_path}: {e}") from e
     finally:
         _remove(staged)
-    credits = _credits(task.get("credits_consumed"))
-    _write_sidecar(out_path, {**record, "credits_consumed": credits})
-    return {"path": out_path, "taskId": task_id, "model": record.get("model"),
-            "creditsUsed": credits, "textures": report}
+    final = {**record, "credits_consumed": _credits(task.get("credits_consumed"))}
+    _write_sidecar(out_path, final)
+    return final, report
+
+
+def _collect(record: dict, out_path: str) -> dict:
+    """_collect_task, as a generation's result."""
+    final, report = _collect_task(record, out_path)
+    return {"path": out_path, "taskId": final["task_id"], "model": record.get("model"),
+            "creditsUsed": final["credits_consumed"], "textures": report}
 
 
 def _source(value):
@@ -685,21 +792,277 @@ def generate_model(*, out_path, prompt=None, image_path=None, view_paths=None, t
     return _collect(record, out_path)
 
 
-def resume_model(task_id: str, out_path: str) -> dict:
-    """Collect a generation already submitted (a run that stopped): wait, download,
-    fix the textures. No new task, no new charge. Records the task beside out_path
-    first, keeping what an existing record for the same task says."""
+def _resume_record(task_id: str, out_path: str, kind: str, blank: dict) -> dict:
+    """Record a task already submitted beside out_path, keeping what an existing
+    record for the same task says; `blank` is what a new record knows about it."""
     if not task_id:
         raise ConnectorError("task_id is required")
     _check_out(out_path)
     try:
-        record = _read_sidecar(out_path)
+        record = _read_sidecar(out_path, kind)
     except ConnectorError:
         record = None     # the explicit task id wins over an unreadable or other record
     if not record or record.get("task_id") != task_id:
-        record = {"task_id": task_id, "kind": "model", "model": None, "endpoint": None, "created": _now()}
+        record = {"task_id": task_id, "kind": kind, **blank, "created": _now()}
     _write_sidecar(out_path, record)
+    return record
+
+
+def resume_model(task_id: str, out_path: str) -> dict:
+    """Collect a generation already submitted (a run that stopped): wait, download,
+    fix the textures. No new task, no new charge. Records the task beside out_path
+    first, keeping what an existing record for the same task says."""
+    record = _resume_record(task_id, out_path, "model", {"model": None, "endpoint": None})
     return _collect(record, out_path)
+
+
+# ---------------------------------------------------------------------------
+# Rigging and animation: a model to a rigged model, a rigged model to a moving one
+# ---------------------------------------------------------------------------
+
+def _rig_type(value) -> str | None:
+    """A rig type as Tripo spells it, or None when not given. Anything but the
+    seven types is refused before any call."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    t = value.strip().lower() if isinstance(value, str) else value
+    if t not in RIG_MODELS:
+        raise InvalidInput(f"Tripo rig types are {', '.join(RIG_TYPES)}; got {value!r}")
+    return t
+
+
+def _glb_input(model_path: str) -> None:
+    if not model_path or not os.path.isfile(model_path):
+        raise InvalidInput(f"Model not found: {model_path}")
+    if not str(model_path).lower().endswith(".glb"):
+        raise InvalidInput(f"Tripo rigs a GLB: the model must be a .glb file, got {model_path}")
+
+
+def _makedirs_for(out_path: str) -> None:
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    except OSError as e:
+        raise ConnectorError(f"Could not make the folder for {out_path}: {e}") from e
+
+
+def _rig_source(model_path: str) -> tuple[str, str | None]:
+    """What Tripo is given to rig: (input, source task id). A model Montaj generated
+    on Tripo (its record beside it names a task that finished) is passed as that
+    task; any other .glb is uploaded and the task id is None."""
+    record = None
+    try:
+        record = _read_sidecar(model_path, None)
+    except ConnectorError:
+        _warn(f"The Tripo record beside {model_path} is unreadable: uploading the model instead.")
+    if record and record.get("kind", "model") == "model" and "credits_consumed" in record:
+        return str(record["task_id"]), str(record["task_id"])
+    return upload(model_path), None
+
+
+def _rig_check(source: str) -> dict:
+    """POST /animations/rig-check (free) and wait for it: the task's output,
+    {riggable, rig_type} (animations-rig-check.md: the POST answers with a task id;
+    the answer is in the finished task's output)."""
+    task = wait(create("/animations/rig-check", {"input": source}), resumable=False)
+    output = task.get("output")
+    return output if isinstance(output, dict) else {}
+
+
+def _rig_choice(name: str, check: dict, wanted: str | None) -> str:
+    """The rig type to ask for, from Tripo's check and the caller's own choice. A
+    model the check calls not riggable stays refused whatever type was asked."""
+    riggable, recommended = check.get("riggable"), check.get("rig_type")
+    recommended = recommended.strip().lower() if isinstance(recommended, str) and recommended.strip() else None
+    if riggable is False:
+        raise NotRiggable(
+            f"Tripo's riggability check says {name} can't be rigged (riggable: false, recommended "
+            f"rig type: {recommended or 'none'}). Nothing was spent: the check is free. Rigging "
+            f"needs a character or creature with a body Tripo can place a skeleton in.", recommended)
+    if riggable is not True:
+        raise ConnectorError(f"Tripo's riggability check for {name} returned no answer "
+                             f"(riggable: {riggable!r}). Nothing was spent: run it again.")
+    if wanted:
+        if recommended and recommended != wanted:
+            _warn(f"Tripo's check recommends a {recommended} rig for {name}; rigging it as {wanted}, as asked.")
+        return wanted
+    if not recommended:
+        raise ConnectorError(f"Tripo's riggability check for {name} named no rig type. Pass the rig "
+                             f"type yourself: {', '.join(RIG_TYPES)}.")
+    if recommended not in RIG_MODELS:
+        raise ConnectorError(f"Tripo's check recommends a {recommended!r} rig, a type Montaj does not "
+                             f"know. Pass the rig type yourself: {', '.join(RIG_TYPES)}.")
+    return recommended
+
+
+def rig_model(*, model_path, out_path, rig_type=None) -> dict:
+    """Add a skeleton to the .glb at model_path; the rigged .glb lands at out_path
+    (which must not exist yet).
+
+    The model is passed to Tripo as the task that generated it when the record
+    beside it (`<model>.tripo.json`) says so, else uploaded. Tripo's free
+    riggability check runs first: a model it calls not riggable raises NotRiggable
+    and no rig task is made. The rig type is the check's recommendation unless
+    rig_type is given. biped goes to rig model v1.0-20240301 with Mixamo-compatible
+    bones; every other type to v2.5-20260210 (RIG_MODELS).
+
+    The rig task is recorded in `<out>.tripo.json` ({task_id, kind: "rig",
+    rig_model, rig_type, spec, source_task_id, created}) before polling. When that
+    record exists and out_path does not, this re-attaches to it (no check, no new
+    task, no new charge). animate_model reads the record.
+
+    Returns {path, taskId, rigType, rigModel, spec, creditsUsed, textures}. Raises
+    NotRiggable, InvalidInput (before any call), UnsupportedModel when the GLB
+    can't be made loadable, ConnectorError for everything else."""
+    _check_out(out_path)
+    record = _read_sidecar(out_path, "rig")
+    if record:
+        _warn(f"Re-attaching to Tripo task {record['task_id']} recorded in {sidecar_path(out_path)}: "
+              f"no new task, no new charge. This run's inputs are not sent.")
+        return _rig_result(*_collect_task(record, out_path), out_path)
+
+    wanted = _rig_type(rig_type)
+    _glb_input(model_path)
+    _makedirs_for(out_path)
+    name = os.path.basename(model_path)
+    source, source_task_id = _rig_source(model_path)
+    chosen = _rig_choice(name, _rig_check(source), wanted)
+    rig = RIG_MODELS[chosen]
+    body = {"input": source, "model": rig["model"], "rig_type": chosen, "spec": rig["spec"],
+            "out_format": "glb"}
+    task_id = create("/animations/rig", body)
+    record = {"task_id": task_id, "kind": "rig", "rig_model": rig["model"], "rig_type": chosen,
+              "spec": rig["spec"], "source_task_id": source_task_id, "created": _now()}
+    _write_sidecar(out_path, record)
+    return _rig_result(*_collect_task(record, out_path), out_path)
+
+
+def _rig_result(final: dict, report: dict, out_path: str) -> dict:
+    return {"path": out_path, "taskId": final["task_id"], "rigType": final.get("rig_type"),
+            "rigModel": final.get("rig_model"), "spec": final.get("spec"),
+            "creditsUsed": final["credits_consumed"], "textures": report}
+
+
+def resume_rig(task_id: str, out_path: str, rig_type: str | None = None) -> dict:
+    """Collect a rig task already submitted (a run that stopped): wait, download,
+    fix the textures. No new task, no new charge. rig_type, when given, is written
+    into the record with the rig model and spec Montaj uses for it; without it the
+    record doesn't know which rig this is and animate_model will not take the file."""
+    chosen = _rig_type(rig_type)
+    rig = RIG_MODELS[chosen] if chosen else {}
+    blank = {"rig_model": rig.get("model"), "rig_type": chosen, "spec": rig.get("spec"),
+             "source_task_id": None}
+    record = _resume_record(task_id, out_path, "rig", blank)
+    return _rig_result(*_collect_task(record, out_path), out_path)
+
+
+def _animation_ids(animations, rig_model: str, rig_type: str) -> list[str]:
+    """The preset ids to apply: 1 to MAX_ANIMATIONS, each one this rig accepts."""
+    if isinstance(animations, str):
+        animations = [animations]
+    if not isinstance(animations, (list, tuple)) or not all(isinstance(a, str) for a in animations):
+        raise InvalidInput("Tripo animations must be a list of preset ids such as preset:walk")
+    ids = [a.strip() for a in animations]
+    if not 1 <= len(ids) <= MAX_ANIMATIONS:
+        raise InvalidInput(f"Tripo applies 1 to {MAX_ANIMATIONS} animations in one go; got {len(ids)}")
+    dupes = sorted({a for a in ids if ids.count(a) > 1})
+    if dupes:
+        raise InvalidInput(f"{', '.join(dupes)} is listed twice: each animation is made (and paid for) once")
+    valid = ANIMATION_PRESETS.get(rig_model, {}).get(rig_type, ())
+    if not valid:
+        raise InvalidInput(f"Tripo lists no preset animations for a {rig_type} rig on rig model "
+                           f"{rig_model}, so there is nothing to apply to this model")
+    for a in ids:
+        if a not in valid:
+            close = difflib.get_close_matches(a, valid, n=3, cutoff=0.5)
+            examples = ", ".join(close or valid[:6])
+            raise InvalidInput(f"{a!r} is not a preset animation for a {rig_type} rig on rig model "
+                               f"{rig_model}. {'Closest' if close else 'Some valid ones'}: {examples}. "
+                               f"{len(valid)} are valid for this rig.")
+    return ids
+
+
+def _rig_record(model_path: str) -> dict:
+    """The record of the rigged model at model_path (a rig_model output), with the
+    rig it describes. Anything else is refused before any call."""
+    try:
+        record = _read_sidecar(model_path, None)
+    except ConnectorError as e:
+        raise InvalidInput(f"The Tripo record beside {model_path} is unreadable ({e}). Rig the model "
+                           f"again with rig_model: animations are applied to a rig Tripo made.") from e
+    if not record:
+        raise InvalidInput(
+            f"{model_path} has no Tripo record beside it, so it is not a model rigged by Montaj. "
+            f"Rig it first with rig_model (a plain .glb can't be animated: Tripo applies animations "
+            f"to the task that rigged the model).")
+    found = record.get("kind", "model")
+    if found != "rig":
+        raise InvalidInput(
+            f"{model_path} is a Tripo {found} model, not a rigged one. Rig it first with rig_model, "
+            f"then animate the rigged file.")
+    if not record.get("rig_model") or not record.get("rig_type"):
+        raise InvalidInput(
+            f"The rig record beside {model_path} does not say which rig it is (it was collected with "
+            f"--task-id and no --rig-type), so its animations can't be checked. Collect the task again "
+            f"to a new path with --task-id {record['task_id']} and --rig-type.")
+    return record
+
+
+def animate_model(*, model_path, out_path, animations, in_place=True) -> dict:
+    """Apply 1 to 5 preset animations (ANIMATION_PRESETS) to the rigged .glb at
+    model_path; the animated .glb (animation baked in, geometry included) lands at
+    out_path, which must not exist yet. in_place plays the animation without
+    travelling, so a scene moves the character.
+
+    model_path must be a rig_model output: Tripo animates the rig *task*, found in
+    the record beside the file. Every id is checked against the rig's own list
+    before any call; a misspelled one costs nothing. One id is sent as `animation`,
+    several as `animations`.
+
+    The task is recorded in `<out>.tripo.json` ({task_id, kind: "animation",
+    animations, in_place, rig_task_id, rig_model, rig_type, created}) before
+    polling; a retry with the same out re-attaches (no new task, no new charge).
+
+    Returns {path, taskId, animations, inPlace, creditsUsed, textures}. Raises
+    InvalidInput (before any call), UnsupportedModel, ConnectorError."""
+    _check_out(out_path)
+    record = _read_sidecar(out_path, "animation")
+    if record:
+        _warn(f"Re-attaching to Tripo task {record['task_id']} recorded in {sidecar_path(out_path)}: "
+              f"no new task, no new charge. This run's inputs are not sent.")
+        return _animation_result(*_collect_task(record, out_path), out_path)
+
+    if not isinstance(in_place, bool):
+        raise InvalidInput(f"Tripo in_place must be true or false, got {in_place!r}")
+    _glb_input(model_path)
+    rig = _rig_record(model_path)
+    ids = _animation_ids(animations, rig["rig_model"], rig["rig_type"])
+    _makedirs_for(out_path)
+    body = {"input": rig["task_id"]}
+    if len(ids) == 1:
+        body["animation"] = ids[0]
+    else:
+        body["animations"] = ids
+    body.update(out_format="glb", bake_animation=True, export_with_geometry=True, animate_in_place=in_place)
+    task_id = create("/animations/retarget", body)
+    record = {"task_id": task_id, "kind": "animation", "animations": ids, "in_place": in_place,
+              "rig_task_id": rig["task_id"], "rig_model": rig["rig_model"], "rig_type": rig["rig_type"],
+              "created": _now()}
+    _write_sidecar(out_path, record)
+    return _animation_result(*_collect_task(record, out_path), out_path)
+
+
+def _animation_result(final: dict, report: dict, out_path: str) -> dict:
+    return {"path": out_path, "taskId": final["task_id"], "animations": final.get("animations"),
+            "inPlace": final.get("in_place"), "creditsUsed": final["credits_consumed"], "textures": report}
+
+
+def resume_animation(task_id: str, out_path: str) -> dict:
+    """Collect an animation task already submitted (a run that stopped): wait,
+    download, fix the textures. No new task, no new charge. A new record doesn't
+    know the animations or the rig; they come back as None."""
+    blank = {"animations": None, "in_place": None, "rig_task_id": None, "rig_model": None, "rig_type": None}
+    record = _resume_record(task_id, out_path, "animation", blank)
+    return _animation_result(*_collect_task(record, out_path), out_path)
 
 
 def _number(value) -> str:

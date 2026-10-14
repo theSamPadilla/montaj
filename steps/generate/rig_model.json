@@ -1,0 +1,14 @@
+{
+  "name": "rig_model",
+  "description": "Rig a 3D model (.glb) on Tripo: add a skeleton so animate_model can move it. Tripo's free riggability check runs first; a model it calls not riggable fails with not_riggable and nothing is spent. biped gets Mixamo bone names. A model made by generate_model is rigged from its Tripo task; any other .glb is uploaded. Running it again with the same --out re-attaches to the task instead of paying twice. Standalone.",
+  "output": {
+    "type": "model",
+    "description": "Path to the rigged .glb. With --json: {path, taskId, rigType, rigModel, spec, creditsUsed, textures}."
+  },
+  "params": [
+    {"name": "model", "type": "path", "required": true, "description": "The .glb to rig (a character or creature)."},
+    {"name": "out", "type": "path", "required": true, "description": "Output .glb path. Optional with _project: saved in the project's assets folder."},
+    {"name": "rig-type", "type": "enum", "required": false, "options": ["biped", "quadruped", "hexapod", "octopod", "avian", "serpentine", "aquatic"], "description": "Skeleton type. Default: the one Tripo's free check recommends."},
+    {"name": "task-id", "type": "string", "required": false, "description": "A rig task already submitted (a run that stopped): wait for it and download it. No new task, no new charge. Give --rig-type with it, so the file can be animated."}
+  ]
+}

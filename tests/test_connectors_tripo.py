@@ -11,6 +11,7 @@ is built from the documented envelope and says so: a fixture is an assumption
 written down, not a capture (CLAUDE.md, "MEASURED may have measured a fixture").
 """
 import json
+from pathlib import Path
 
 import pytest
 
@@ -679,4 +680,236 @@ def test_resume_needs_a_task_id_and_a_path(fake, tmp_path):
 def test_download_refuses_a_url_that_is_not_http(fake, tmp_path, url):
     with pytest.raises(ConnectorError, match="unusable download URL"):
         tripo.download(url, str(tmp_path / "m.glb"))
+    assert fake.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Rigging and animation, at the requests layer (rig_model, animate_model)
+# ---------------------------------------------------------------------------
+
+def _glb_bytes() -> bytes:
+    """A minimal valid GLB (JSON chunk only), built here: the real texture guard
+    leaves it byte-identical. Not a Tripo output."""
+    import struct
+    js = json.dumps({"asset": {"version": "2.0"}}).encode()
+    js += b" " * (-len(js) % 4)
+    body = struct.pack("<II", len(js), 0x4E4F534A) + js
+    return b"glTF" + struct.pack("<II", 2, 12 + len(body)) + body
+
+
+# documented example ("Create task"), developers.tripo3d.ai/en/docs/animations-rig-check.md, read 2026-10-13
+CHECK_CREATED = {"code": 0, "data": {"task_id": "task_check"}}
+
+# documented example ("Task result"), developers.tripo3d.ai/en/docs/animations-rig-check.md, read 2026-10-13
+# (the docs show task_def456 here and task_abc123 above: two examples, not one task)
+CHECK_RESULT = {
+    "code": 0,
+    "data": {"task_id": "task_def456", "status": "success",
+             "output": {"riggable": True, "rig_type": "biped"}, "credits_consumed": 0.00},
+}
+
+# Built from the documented field list (animations-rig-check.md, read 2026-10-13): the docs show
+# only the riggable: true answer, so this one is an assumption of the shape, not a capture.
+CHECK_NOT_RIGGABLE = {
+    "code": 0,
+    "data": {"task_id": "task_def456", "status": "success",
+             "output": {"riggable": False, "rig_type": "quadruped"}, "credits_consumed": 0.00},
+}
+
+# documented example ("Create task"), developers.tripo3d.ai/en/docs/animations-rig.md, read 2026-10-13
+RIG_CREATED = {"code": 0, "data": {"task_id": "task_rig"}}
+
+# documented example ("Task result"), developers.tripo3d.ai/en/docs/animations-rig.md, read 2026-10-13
+RIG_RESULT = {
+    "code": 0,
+    "data": {"task_id": "task_def456", "status": "success",
+             "output": {"model_url": "https://cdn.tripo3d.ai/output/rigged.glb"}, "credits_consumed": 30.00},
+}
+
+# documented example ("Create task"), developers.tripo3d.ai/en/docs/animations-retarget.md, read 2026-10-13
+RETARGET_CREATED = {"code": 0, "data": {"task_id": "task_anim"}}
+
+# documented example ("Task result"), developers.tripo3d.ai/en/docs/animations-retarget.md, read 2026-10-13
+RETARGET_RESULT = {
+    "code": 0,
+    "data": {"task_id": "task_def456", "status": "success",
+             "output": {"model_url": "https://cdn.tripo3d.ai/output/animated.glb"}, "credits_consumed": 20.00},
+}
+
+
+def _generated(tmp_path, name="robot.glb", task="task_gen"):
+    """A model as generate_model leaves it: the .glb and its finished-task record."""
+    glb = tmp_path / name
+    glb.write_bytes(b"glTF-source")
+    Path(f"{glb}.tripo.json").write_text(json.dumps(
+        {"task_id": task, "kind": "model", "model": "v3.1-20260211", "endpoint": "/generation/text-to-model",
+         "created": "2026-10-13T10:00:00+00:00", "credits_consumed": 100.0}))
+    return glb
+
+
+def _rigged_by_rig_model(tmp_path, name="rigged.glb", rig_type="biped", rig_model="v1.0-20240301"):
+    glb = tmp_path / name
+    glb.write_bytes(b"glTF-rigged")
+    Path(f"{glb}.tripo.json").write_text(json.dumps(
+        {"task_id": "task_rig", "kind": "rig", "rig_model": rig_model, "rig_type": rig_type,
+         "spec": "mixamo" if rig_type == "biped" else "tripo", "source_task_id": "task_gen",
+         "created": "2026-10-13T10:00:00+00:00", "credits_consumed": 30.0}))
+    return glb
+
+
+def test_rig_from_a_generated_model_sends_its_task_and_follows_the_documented_flow(fake, tmp_path):
+    src, out = _generated(tmp_path), tmp_path / "rigged.glb"
+    fake.script = [_FakeResponse(200, CHECK_CREATED), _FakeResponse(200, CHECK_RESULT),
+                   _FakeResponse(200, RIG_CREATED), _FakeResponse(200, RIG_RESULT),
+                   _FakeResponse(200, content=_glb_bytes())]
+
+    result = tripo.rig_model(model_path=str(src), out_path=str(out))
+
+    assert [c[:2] for c in fake.calls] == [
+        ("POST", f"{API}/animations/rig-check"), ("GET", f"{API}/tasks/task_check"),
+        ("POST", f"{API}/animations/rig"), ("GET", f"{API}/tasks/task_rig"),
+        ("GET", "https://cdn.tripo3d.ai/output/rigged.glb")]
+    assert fake.calls[0][2]["json"] == {"input": "task_gen"}, "no upload: the generation task is the input"
+    assert fake.calls[2][2]["json"] == {"input": "task_gen", "model": "v1.0-20240301", "rig_type": "biped",
+                                        "spec": "mixamo", "out_format": "glb"}
+    assert result == {"path": str(out), "taskId": "task_rig", "rigType": "biped", "rigModel": "v1.0-20240301",
+                      "spec": "mixamo", "creditsUsed": 30.0, "textures": {"reencoded": 0, "formats": {}}}
+    assert isinstance(result["creditsUsed"], float)
+    assert out.read_bytes() == _glb_bytes()
+    record = json.loads(Path(f"{out}.tripo.json").read_text())
+    assert {k: record[k] for k in ("task_id", "kind", "rig_model", "rig_type", "spec", "source_task_id",
+                                   "credits_consumed")} == {
+        "task_id": "task_rig", "kind": "rig", "rig_model": "v1.0-20240301", "rig_type": "biped",
+        "spec": "mixamo", "source_task_id": "task_gen", "credits_consumed": 30.0}
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "rigged.glb", "rigged.glb.tripo.json", "robot.glb", "robot.glb.tripo.json"]
+
+
+def test_rig_of_a_plain_glb_uploads_it_and_sends_the_file_token(fake, tmp_path):
+    src, out = tmp_path / "hero.glb", tmp_path / "rigged.glb"
+    src.write_bytes(b"glTF-from-elsewhere")
+    fake.script = [_FakeResponse(200, UPLOAD_OK), _FakeResponse(200, CHECK_CREATED), _FakeResponse(200, CHECK_RESULT),
+                   _FakeResponse(200, RIG_CREATED), _FakeResponse(200, RIG_RESULT),
+                   _FakeResponse(200, content=_glb_bytes())]
+
+    tripo.rig_model(model_path=str(src), out_path=str(out))
+
+    assert fake.calls[0][:2] == ("POST", f"{API}/files")
+    assert fake.calls[0][2]["files"]["file"][0] == "hero.glb"
+    assert fake.calls[1][2]["json"] == {"input": "file_abc123"}
+    assert fake.calls[3][2]["json"]["input"] == "file_abc123"
+    assert json.loads(Path(f"{out}.tripo.json").read_text())["source_task_id"] is None
+
+
+def test_a_model_the_check_calls_not_riggable_makes_no_rig_task(fake, tmp_path):
+    src, out = _generated(tmp_path), tmp_path / "rigged.glb"
+    fake.script = [_FakeResponse(200, CHECK_CREATED), _FakeResponse(200, CHECK_NOT_RIGGABLE)]
+
+    with pytest.raises(tripo.NotRiggable, match=r"riggable: false.*recommended rig type: quadruped") as e:
+        tripo.rig_model(model_path=str(src), out_path=str(out), rig_type="biped")
+
+    assert e.value.rig_type == "quadruped" and isinstance(e.value, ConnectorError)
+    assert "Nothing was spent" in str(e.value)
+    assert [c[:2] for c in fake.calls] == [("POST", f"{API}/animations/rig-check"), ("GET", f"{API}/tasks/task_check")]
+    assert not out.exists() and not Path(f"{out}.tripo.json").exists()
+
+
+def test_a_check_that_fails_stops_without_a_rig_task_and_a_slow_one_says_to_run_it_again(fake, tmp_path, monkeypatch):
+    src, out = _generated(tmp_path), tmp_path / "rigged.glb"
+    fake.script = [_FakeResponse(200, CHECK_CREATED),
+                   _task("failed", error_code=2018, error_message="Model too complex")]
+    with pytest.raises(ConnectorError, match="Model too complex"):
+        tripo.rig_model(model_path=str(src), out_path=str(out))
+    assert len(fake.calls) == 2 and not Path(f"{out}.tripo.json").exists()
+
+    monkeypatch.setattr(tripo, "MAX_POLL_S", 10.0)
+    fake.calls.clear()
+    fake.script = [_FakeResponse(200, CHECK_CREATED), _task("running"), _task("running")]
+    with pytest.raises(ConnectorError, match="The check is free: run it again") as e:
+        tripo.rig_model(model_path=str(src), out_path=str(out))
+    assert "--task-id" not in str(e.value), "a free check has nothing to collect"
+
+
+def test_wait_says_task_id_unless_the_task_is_a_free_check(fake, monkeypatch):
+    monkeypatch.setattr(tripo, "MAX_POLL_S", 10.0)
+    fake.script = [_task("running"), _task("running")]
+    with pytest.raises(ConnectorError, match="resume it with --task-id task_x"):
+        tripo.wait("task_x")
+    fake.script = [_task("running"), _task("running")]
+    with pytest.raises(ConnectorError, match="run it again"):
+        tripo.wait("task_x", resumable=False)
+    fake.script = [_FakeRequestException("down")] * 15
+    with pytest.raises(ConnectorError, match="The check is free: run it again"):
+        tripo.wait("task_x", resumable=False)
+
+
+@pytest.mark.parametrize("call", ["rig", "animate"])
+@pytest.mark.parametrize("status,body,reason", [
+    (401, ERR_INVALID_KEY, INVALID_API_KEY),
+    (403, ERR_INSUFFICIENT, INSUFFICIENT_CREDIT),
+    (400, ERR_CONTENT, CONTENT_REFUSED),
+])
+def test_a_refused_submit_maps_to_its_reason_and_records_nothing(fake, tmp_path, call, status, body, reason):
+    out = tmp_path / "out.glb"
+    if call == "rig":
+        src = _generated(tmp_path)
+        fake.script = [_FakeResponse(200, CHECK_CREATED), _FakeResponse(200, CHECK_RESULT), _FakeResponse(status, body)]
+        run = lambda: tripo.rig_model(model_path=str(src), out_path=str(out))   # noqa: E731
+    else:
+        src = _rigged_by_rig_model(tmp_path)
+        fake.script = [_FakeResponse(status, body)]
+        run = lambda: tripo.animate_model(model_path=str(src), out_path=str(out), animations=["preset:biped:walk"])   # noqa: E731
+    with pytest.raises(ConnectorError) as e:
+        run()
+    assert e.value.reason == reason
+    assert not out.exists() and not Path(f"{out}.tripo.json").exists()
+    assert fake.calls[-1][1].endswith("/animations/rig" if call == "rig" else "/animations/retarget")
+
+
+def test_a_rejected_key_at_the_check_costs_nothing_more(fake, tmp_path):
+    src = _generated(tmp_path)
+    fake.script = [_FakeResponse(401, ERR_INVALID_KEY)]
+    with pytest.raises(ConnectorError) as e:
+        tripo.rig_model(model_path=str(src), out_path=str(tmp_path / "rigged.glb"))
+    assert e.value.reason == INVALID_API_KEY and len(fake.calls) == 1
+
+
+def test_animate_single_sends_animation_and_the_documented_options(fake, tmp_path):
+    src, out = _rigged_by_rig_model(tmp_path), tmp_path / "walk.glb"
+    fake.script = [_FakeResponse(200, RETARGET_CREATED), _FakeResponse(200, RETARGET_RESULT),
+                   _FakeResponse(200, content=_glb_bytes())]
+
+    result = tripo.animate_model(model_path=str(src), out_path=str(out), animations=["preset:biped:walk"])
+
+    assert [c[:2] for c in fake.calls] == [
+        ("POST", f"{API}/animations/retarget"), ("GET", f"{API}/tasks/task_anim"),
+        ("GET", "https://cdn.tripo3d.ai/output/animated.glb")]
+    assert fake.calls[0][2]["json"] == {
+        "input": "task_rig", "animation": "preset:biped:walk", "out_format": "glb",
+        "bake_animation": True, "export_with_geometry": True, "animate_in_place": True}
+    assert result["path"] == str(out) and result["taskId"] == "task_anim"
+    assert result["animations"] == ["preset:biped:walk"] and result["inPlace"] is True
+    assert result["creditsUsed"] == 20.0
+    record = json.loads(Path(f"{out}.tripo.json").read_text())
+    assert record["kind"] == "animation" and record["rig_task_id"] == "task_rig"
+    assert (record["rig_model"], record["rig_type"], record["in_place"]) == ("v1.0-20240301", "biped", True)
+
+
+def test_animate_several_sends_animations_and_in_place_false_when_asked(fake, tmp_path):
+    src, out = _rigged_by_rig_model(tmp_path), tmp_path / "moves.glb"
+    fake.script = [_FakeResponse(200, RETARGET_CREATED), _FakeResponse(200, RETARGET_RESULT),
+                   _FakeResponse(200, content=_glb_bytes())]
+    tripo.animate_model(model_path=str(src), out_path=str(out), in_place=False,
+                        animations=["preset:biped:idle", "preset:biped:walk", "preset:biped:run"])
+    assert fake.calls[0][2]["json"] == {
+        "input": "task_rig", "animations": ["preset:biped:idle", "preset:biped:walk", "preset:biped:run"],
+        "out_format": "glb", "bake_animation": True, "export_with_geometry": True, "animate_in_place": False}
+    assert "animation" not in fake.calls[0][2]["json"]
+
+
+def test_animate_of_a_plain_glb_makes_no_call(fake, tmp_path):
+    plain = tmp_path / "plain.glb"
+    plain.write_bytes(b"glTF")
+    with pytest.raises(tripo.InvalidInput, match="Rig it first with rig_model"):
+        tripo.animate_model(model_path=str(plain), out_path=str(tmp_path / "x.glb"), animations=["preset:biped:walk"])
     assert fake.calls == []
