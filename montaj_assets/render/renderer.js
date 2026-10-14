@@ -136,9 +136,7 @@ export async function renderAllSegments(segments, config = {}) {
   log(`launching ${workerCount} browser worker(s) for ${jobs.length} job(s)...`)
 
   // Launch browser pool
-  const workers = await Promise.all(
-    Array.from({ length: workerCount }, () => launchWorkerBrowser({ needsGoogleFonts }))
-  )
+  const workers = await launchPool(workerCount, () => launchWorkerBrowser({ needsGoogleFonts }))
 
   log(`browsers ready`)
 
@@ -264,6 +262,28 @@ function untrackWorker(worker) {
 
 /** The SIGTERM or SIGHUP that stopped this process from outside while a worker was live, or null. */
 export function stopSignal() { return stopSignalSeen }
+
+/**
+ * Launches `count` workers at once. If any launch fails, every worker that did
+ * launch is closed before the first failure is thrown (§240): with a bare
+ * Promise.all the render failed on the first rejection and a sibling's Chrome,
+ * launched or still launching, outlived the process (MEASURED 2026-10-14: a
+ * second worker's 6 processes, reparented to launchd, after render.js exited).
+ * Waits for every launch to settle, so a sibling still starting is closed too
+ * (puppeteer itself kills a launch that times out).
+ *
+ * @template W
+ * @param {number} count
+ * @param {(index: number) => Promise<W & { close: () => Promise<void> }>} launch
+ * @returns {Promise<W[]>}
+ */
+export async function launchPool(count, launch) {
+  const settled = await Promise.allSettled(Array.from({ length: count }, (_, i) => launch(i)))
+  const failed = settled.find(s => s.status === 'rejected')
+  if (!failed) return settled.map(s => s.value)
+  await Promise.allSettled(settled.filter(s => s.status === 'fulfilled').map(s => s.value.close()))
+  throw failed.reason
+}
 
 /**
  * One worker's Chrome, launched with every overlay page's flags (page-guard.js),
