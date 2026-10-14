@@ -345,6 +345,12 @@ def record_source_language(track: dict, requested, words_path=None) -> dict:
     The language the caller asked for when it is a code (not "auto"); with "auto", the language whisper
     detected (`result.language` in its words JSON) when that file has one. Unknown: the key is dropped,
     not carried over from the previous track, which may have been another language. Mutates and returns `track`.
+
+    MEASURED 2026-10-14 with the app's own whisper-cli and ggml-large-v3-turbo-q5_0 model, `-l auto --output-json`:
+    the JSON's top-level keys were ['systeminfo', 'model', 'params', 'result', 'transcription'] and `result` was
+    {'language': 'en'}, the same code whisper logged as "auto-detected language: en (p = 0.603886)". That run was a short
+    synthetic Spanish voice clip, which whisper detected as 'en' while transcribing it as Spanish: detection on a short or
+    synthetic clip can be wrong, so the key is where it is read, not proof the code is right.
     """
     lang = requested.strip() if isinstance(requested, str) else ""
     if not lang or lang.lower() == "auto":
