@@ -1587,6 +1587,13 @@ export interface VideoEditorProps<P extends Project = Project> {
    */
   onRegenerateCaptions?: () => void
   /**
+   * §244: hands the user a prompt that asks their own AI for captions in another language (the host builds and copies it; it
+   * names the project, which only the host knows). Provided only by a host that can, and it makes the caption panel's
+   * Languages row offer "+ Language". Absent: the row has no such chip. Montaj does not translate: the user's AI does,
+   * over MCP.
+   */
+  onAddCaptionLanguage?: () => Promise<void> | void
+  /**
    * Lets the host tell the caption panel that ITS background caption job is
    * in flight, so the generate/regenerate trigger button disables while it
    * runs. Meaningful only alongside `onRegenerateCaptions` — a host that owns

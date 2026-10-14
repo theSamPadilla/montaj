@@ -165,3 +165,25 @@ export function activeCaptionSegments(captions, currentTime, fps) {
   }
   return active.sort((a, b) => (a.lane ?? 0) - (b.lane ?? 0))
 }
+
+/**
+ * Which caption segments to DRAW, by the track's `showLangs`: absent (or not a list) is every segment. A list
+ * names the languages to show: the source row's language (the track's `lang`, or "source" when it has none) and
+ * the `lang` of each translated row. Anything else in the list is ignored, and a list that matches no row
+ * (a language since removed) shows everything rather than nothing. Editing and the caption list always see every
+ * segment; only drawing is filtered. One copy, read by the export, a sampled frame and the editor preview, so
+ * all three draw the same captions.
+ *
+ * @template {CaptionSegment} T
+ * @param {{ segments?: ReadonlyArray<T>, lang?: string, showLangs?: ReadonlyArray<string> } | null | undefined} captions
+ * @returns {ReadonlyArray<T>}
+ */
+export function captionSegmentsToShow(captions) {
+  const segments = captions?.segments ?? []
+  const show = captions?.showLangs
+  if (!Array.isArray(show)) return segments
+  const isTranslation = s => typeof s.lang === 'string' && Array.isArray(s.translationOf)
+  const sourceShown = show.includes('source') || (typeof captions?.lang === 'string' && show.includes(captions.lang))
+  const kept = segments.filter(s => (isTranslation(s) ? show.includes(s.lang) : sourceShown))
+  return kept.length > 0 ? kept : segments
+}

@@ -763,6 +763,14 @@ export declare function activeCaptionSegment(
  * `start`/`end`/`lane` this function reads, and they need `id`, `text`,
  * `words` and the rest back out. `T` carries their own type through.
  */
+/**
+ * Which caption segments to draw, by the track's `showLangs`: absent is every segment; a list names the languages
+ * shown (the source's `lang`, or "source", and each translated row's `lang`); a list matching no row shows all.
+ */
+export declare function captionSegmentsToShow<T extends CaptionSegment>(
+  captions: { segments?: ReadonlyArray<T>; lang?: string; showLangs?: ReadonlyArray<string> } | null | undefined,
+): ReadonlyArray<T>
+
 export declare function activeCaptionSegments<T extends CaptionSegment>(
   captions: { segments?: ReadonlyArray<T> } | null | undefined,
   currentTime: number,

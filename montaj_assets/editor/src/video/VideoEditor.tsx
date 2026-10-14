@@ -280,6 +280,7 @@ export default function VideoEditor<P extends Project = Project>({
   engine,
   sourcePreview,
   onRegenerateCaptions,
+  onAddCaptionLanguage,
   captionsGenerating,
   onImportFilesToTimeline,
   pendingDrops,
@@ -469,6 +470,7 @@ export default function VideoEditor<P extends Project = Project>({
         engine={engine}
         sourcePreview={sourcePreview}
         onRegenerateCaptions={onRegenerateCaptions}
+        onAddCaptionLanguage={onAddCaptionLanguage}
         captionsGenerating={captionsGenerating}
         onImportFilesToTimeline={onImportFilesToTimeline}
         pendingDrops={pendingDrops}
@@ -823,6 +825,7 @@ function ReviewSurface<P extends Project>({
   engine,
   sourcePreview,
   onRegenerateCaptions,
+  onAddCaptionLanguage,
   captionsGenerating,
   onImportFilesToTimeline,
   pendingDrops,
@@ -843,6 +846,7 @@ function ReviewSurface<P extends Project>({
   isClipQueued?: (itemId: string) => boolean
   sourcePreview?: VideoEditorProps<P>['sourcePreview']
   onRegenerateCaptions?: VideoEditorProps<P>['onRegenerateCaptions']
+  onAddCaptionLanguage?: VideoEditorProps<P>['onAddCaptionLanguage']
   captionsGenerating?: VideoEditorProps<P>['captionsGenerating']
   // The filesystem-drop seam. On the REVIEW surface only: PendingSurface's
   // timeline is a read-only preview of a project the agent is still building
@@ -2717,6 +2721,7 @@ function ReviewSurface<P extends Project>({
       onProjectChange={handleProjectChange}
       onCaptionSegmentDelete={handleCaptionSegmentDelete}
       onRegenerateCaptions={handleRegenerateCaptions}
+      onAddLanguage={onAddCaptionLanguage}
       // Disables the panel's generate/regenerate trigger while a job is in
       // flight, from either source: the host's own background job
       // (`captionsGenerating` prop, set when the host owns the trigger via

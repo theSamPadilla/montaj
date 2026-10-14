@@ -7,6 +7,7 @@
  */
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { captionSegmentsToShow } from '@bycrux/timeline-core'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -35,7 +36,9 @@ export function captionOverlayFields(captions) {
   // googleFonts is a spec-level field (consumed by bundleComponent), not a
   // prop on the caption component — pull it out before spreading the rest
   // into captionTheme.
-  let { style: _captStyle, segments: _captSegs, googleFonts: captionFonts, ...captionTheme } = captions
+  // `showLangs` (which languages to draw) is applied to the segments below, and `lang` (the source language) only
+  // names a chip: neither is a template prop.
+  let { style: _captStyle, segments: _captSegs, showLangs: _showLangs, lang: _lang, googleFonts: captionFonts, ...captionTheme } = captions
   // Normalise the legacy lowercase `fontsize` key (used by the old ffmpeg
   // path / editor) to the camelCase `fontSize` prop the JSX templates
   // expect. Never send both.
@@ -73,7 +76,7 @@ export function captionOverlayFields(captions) {
   }
   return {
     componentPath: captionTemplatePath(captions.style),
-    props:         { segments: captions.segments || [], ...captionTheme },
+    props:         { segments: [...captionSegmentsToShow(captions)], ...captionTheme },
     googleFonts:   captionFonts ?? [],
   }
 }

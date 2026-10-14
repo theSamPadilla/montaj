@@ -131,6 +131,14 @@ export type CaptionTextTransform = 'uppercase' | 'lowercase' | 'capitalize' | 'n
 export interface Captions {
   style: 'word-by-word' | 'pop' | 'karaoke' | 'subtitle' | 'highlight-box' | 'outline' | 'clean' | 'accent' | 'plate'
   segments: CaptionSegment[]
+  // §244: the language the SOURCE captions are in (a code such as "en"), recorded when the captions are
+  // generated. Absent when unknown; the language chips then call the source "Original".
+  lang?: string
+  // §244: which languages the captions DRAW: the source's code (`lang`, or "source" when `lang` is absent)
+  // and/or the `lang` of each translated row. Absent: every row (the original with its translations).
+  // Editing and the caption list always see every row; only drawing is filtered
+  // (captionSegmentsToShow in @bycrux/timeline-core). A list that matches no row shows every row.
+  showLangs?: string[]
   // `color` and `fontsize` are read by BOTH paths: the JSX browser preview /
   // Puppeteer render (spread into the caption template props; `fontsize`→`fontSize`)
   // and the ffmpeg-drawtext render branch. `position` and `bgColor` are consumed
