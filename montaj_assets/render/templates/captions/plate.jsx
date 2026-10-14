@@ -44,12 +44,13 @@ export default function Plate({
 /**
  * §244, caption translations. A translated segment carries `lang` and
  * `translationOf` (the ids of the source segments it translates) and no
- * words. It is never drawn as a plate of its own: it stacks under the source
- * segment it translates, as a plain line INSIDE that segment's plate, so the
- * plate is one box around every row and hugs the widest of them. A translation
- * whose source is not on screen draws alone, as the only line of its own plate.
- * Same helpers as the other eight templates (they can import nothing but
- * montaj/render); keep isTranslation and captionGroups identical in each (stack is plate's own, the plate wraps the column).
+ * words. It is drawn as its OWN plate, directly under the plate of the source
+ * segment it translates (never inside it: one box per language), in one column
+ * so the plates never overlap, each hugging its own text. The spoken-word accent
+ * stays on the caption's plate. A translation whose source is not on screen draws
+ * alone, as the only plate of its block. Same helpers as the other eight
+ * templates (they can import nothing but montaj/render); keep isTranslation and
+ * captionGroups identical in each (stack and the plate box are plate's own).
  */
 function isTranslation(seg) {
   return typeof seg.lang === 'string' && Array.isArray(seg.translationOf)
@@ -66,21 +67,17 @@ function captionGroups(active) {
   return groups
 }
 
-/** The caption, then its translations under it, aligned like the caption, all inside the plate.
- *  With no translations it is the caption itself, so nothing else changes. */
+/** The caption's plate, then each translation's plate under it with a small gap, aligned like the caption.
+ *  With no translations it is the caption's plate itself, so nothing else changes. */
 function stack(content, lines, textAlign) {
   if (!lines.length) return content
   const alignItems = textAlign === 'left' ? 'flex-start' : textAlign === 'right' ? 'flex-end' : 'center'
-  return <div style={{ display: 'flex', flexDirection: 'column', alignItems, width: '100%', gap: 6 }}>{content}{lines}</div>
+  return <div style={{ display: 'flex', flexDirection: 'column', alignItems, width: '100%', gap: 10 }}>{content}{lines}</div>
 }
 
-/** A translation's line inside the plate: plain text in the plate's own face, the caption's colour rule. */
-function renderLine(seg, { color, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }) {
-  return (
-    <div key={seg.id ?? seg.start} data-caption-id={seg.id} style={{ color: seg.color ?? color, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }}>
-      {seg.text}
-    </div>
-  )
+/** A translation's own plate: the caption's plate look (its theme, its colour rule), plain text, no accent. */
+function renderLine(seg, th) {
+  return plateBox(seg, th, seg.text, seg.id ?? seg.start)
 }
 
 /**
@@ -152,6 +149,36 @@ function hug(el) {
 }
 
 /**
+ * One plate: the box, its look from the theme, the text inside. `captionId` marks a translation's plate (the
+ * caption's own plate is marked by its block). A plain function, not a component (see renderSegment).
+ */
+function plateBox(seg, { color, backgroundColor, plateOpacity, platePadding, plateRadius, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }, content, captionId) {
+  return (
+    <div
+      key={captionId ?? undefined}
+      ref={hug}
+      data-caption-id={captionId == null ? undefined : seg.id}
+      style={{
+        background: plateBackground(backgroundColor, plateOpacity),
+        borderRadius: plateRadius,
+        padding: `${platePadding}px ${Math.round(platePadding * 1.6)}px`,
+        maxWidth: '90%',
+        textAlign,
+        fontSize,
+        fontWeight,
+        fontFamily,
+        letterSpacing,
+        lineHeight,
+        textTransform,
+        color: seg.color ?? color,
+      }}
+    >
+      {content}
+    </div>
+  )
+}
+
+/**
  * One segment's block. A plain function, NOT a `<Component/>`:
  * render/test/*.test.mjs call these templates as plain functions and read
  * style objects straight off the returned element tree, which only works while
@@ -169,7 +196,7 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, background
     interpolate(segEndFrame - frame, [0, 4], [0, 1]),
   )
 
-  // A translation is only ever a line inside a plate (renderLine), never the caption itself.
+  // A translation is only ever the plate under its caption's (renderLine), never the caption itself.
   const words = isTranslation(seg) ? [] : (seg.words || [])
 
   // Active word: the one being spoken right now, or (between words) the last
@@ -209,22 +236,7 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, background
         padding: '0 6%',
         opacity,
       })}>
-        <div ref={hug} style={{
-          background: plateBackground(backgroundColor, plateOpacity),
-          borderRadius: plateRadius,
-          padding: `${platePadding}px ${Math.round(platePadding * 1.6)}px`,
-          maxWidth: '90%',
-          textAlign,
-          fontSize,
-          fontWeight,
-          fontFamily,
-          letterSpacing,
-          lineHeight,
-          textTransform,
-          color: seg.color ?? color,
-        }}>
-          {stack(isTranslation(seg) ? null : lines.length ? <div>{captionText}</div> : captionText, lines, textAlign)}
-        </div>
+        {stack(isTranslation(seg) ? null : plateBox(seg, { color, backgroundColor, plateOpacity, platePadding, plateRadius, fontSize, fontFamily, fontWeight, textAlign, letterSpacing, lineHeight, textTransform }, captionText, null), lines, textAlign)}
       </div>
     </div>
   )

@@ -173,11 +173,23 @@ test('a hand-made second row that is not a translation still draws on its own', 
   }
 })
 
-test('plate: the translation is a row INSIDE the one plate, which holds both and keeps the caption\'s theme', () => {
+test('plate: the translation gets its OWN plate under the caption\'s, in one column, accent on the caption only', () => {
   const out = render('plate', [SRC, ES], 45)
   const plates = [...walk(out)].filter(el => el.props.style && 'borderRadius' in el.props.style)
-  assert.equal(plates.length, 1, 'one plate around both rows')
-  assert.equal(byCaptionId(plates[0], 'cap-1').length, 1, 'the translation is inside it')
-  const tr = byCaptionId(plates[0], 'cap-1')[0]
-  assert.equal(tr.props.style.fontSize, plates[0].props.style.fontSize, 'same face as the caption')
+  assert.equal(plates.length, 2, 'one plate per language')
+  assert.equal(text(plates[0]), 'hello there world', 'the caption\'s plate first')
+  assert.equal(plates[1].props['data-caption-id'], 'cap-1')
+  assert.equal(text(plates[1]), 'hola a todos', 'the translation\'s plate second')
+  const column = [...walk(out)].find(el => el.props.style?.flexDirection === 'column')
+  assert.ok(column && column.props.style.gap > 0, 'a column with a gap holds both plates, so they never overlap')
+  assert.deepEqual(children(column).filter(isElement), plates, 'the column is exactly the two plates, in order')
+  const lit = [...walk(out)].filter(el => el.props.style?.transform === 'scale(1.06)')
+  assert.equal(lit.length, 1, 'one spoken word lit')
+  assert.equal(byCaptionId(plates[1], 'cap-1').length, 1)
+  assert.equal([...walk(plates[1])].filter(el => el.props.style?.color && el.props.style.color !== plates[1].props.style.color).length, 0, 'no accent on the translation plate')
+})
+
+test('plate: a translation whose caption is not on screen is the only plate of its block', () => {
+  const out = render('plate', [{ ...SRC, start: 6, end: 8 }, ES], 45)
+  assert.equal([...walk(out)].filter(el => el.props.style && 'borderRadius' in el.props.style).length, 1)
 })
