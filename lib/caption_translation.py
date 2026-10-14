@@ -17,6 +17,7 @@ track through `finish_regenerated_track`; the translation route calls
 `apply_translation`.
 """
 import difflib
+import json
 import math
 import re
 import unicodedata
@@ -288,6 +289,83 @@ def apply_translation(captions, lang, phrases) -> dict:
     ]
     row = mint_ids(row, _ids(recut) | _ids(kept) | _ids(source) | _ids(replaced))
     return {**captions, "segments": _compact_lanes(recut + kept + row)}
+
+
+def apply_show(captions, show) -> dict:
+    """Set which languages the captions draw (`captions.showLangs`). Returns new captions; never mutates the input.
+
+    `show` is a list of language codes: the source's own code (`captions.lang`, or "source" when the track has none)
+    and/or the `lang` of a translated row. Every one must be a language the track has, at least one must be named, and
+    naming all of them clears the field (everything draws, the default). The list is stored in drawing order, the
+    source first, with the source under its own code when the track records one.
+    """
+    if not isinstance(captions, dict) or not isinstance(captions.get("segments"), list) or not captions["segments"]:
+        raise TranslationError("no_captions", "The project has no captions yet. Generate them first.")
+    if not isinstance(show, list) or not show or not all(isinstance(x, str) for x in show):
+        raise TranslationError("bad_show", 'show must be a list of language codes, e.g. ["en", "es"], or ["source"].')
+    source_key = captions.get("lang") if isinstance(captions.get("lang"), str) and captions.get("lang") else "source"
+    langs = []
+    for seg in captions["segments"]:
+        if is_translation(seg) and seg["lang"] not in langs:
+            langs.append(seg["lang"])
+    available = [source_key] + langs
+    wanted = {source_key if x == "source" else x for x in show}
+    unknown = sorted(wanted - set(available))
+    if unknown:
+        raise TranslationError("unknown_language", f"The captions have no {', '.join(unknown)} row. They have: {', '.join(available)}.")
+    out = {k: v for k, v in captions.items() if k != "showLangs"}
+    if wanted != set(available):
+        out["showLangs"] = [k for k in available if k in wanted]
+    return out
+
+
+def show_new_language(captions: dict, lang: str) -> dict:
+    """A language just added joins the ones shown, when a choice of languages is active (`showLangs`), so
+    the row an AI writes is not silently hidden. With no choice active nothing changes (everything draws).
+    Entries for languages that no longer exist are dropped. Returns new captions; never mutates the input."""
+    chosen = captions.get("showLangs")
+    if not isinstance(chosen, list):
+        return captions
+    source_key = captions.get("lang") if isinstance(captions.get("lang"), str) and captions.get("lang") else "source"
+    langs = []
+    for seg in captions.get("segments") or []:
+        if is_translation(seg) and seg["lang"] not in langs:
+            langs.append(seg["lang"])
+    available = [source_key] + langs
+    keep = [k for k in available if k in chosen or k == lang or (k == source_key and "source" in chosen)]
+    out = {k: v for k, v in captions.items() if k != "showLangs"}
+    if keep and set(keep) != set(available):
+        out["showLangs"] = keep
+    return out
+
+
+def record_source_language(track: dict, requested, words_path=None) -> dict:
+    """Record the language the source captions are in (`track["lang"]`), so the editor can name it.
+
+    The language the caller asked for when it is a code (not "auto"); with "auto", the language whisper
+    detected (`result.language` in its words JSON) when that file has one. Unknown: the key is dropped,
+    not carried over from the previous track, which may have been another language. Mutates and returns `track`.
+
+    MEASURED 2026-10-14 with the app's own whisper-cli and ggml-large-v3-turbo-q5_0 model, `-l auto --output-json`:
+    the JSON's top-level keys were ['systeminfo', 'model', 'params', 'result', 'transcription'] and `result` was
+    {'language': 'en'}, the same code whisper logged as "auto-detected language: en (p = 0.603886)". That run was a short
+    synthetic Spanish voice clip, which whisper detected as 'en' while transcribing it as Spanish: detection on a short or
+    synthetic clip can be wrong, so the key is where it is read, not proof the code is right.
+    """
+    lang = requested.strip() if isinstance(requested, str) else ""
+    if not lang or lang.lower() == "auto":
+        lang = ""
+        try:
+            with open(words_path, encoding="utf-8") as f:
+                detected = (json.load(f).get("result") or {}).get("language")
+            lang = detected.strip() if isinstance(detected, str) else ""
+        except (OSError, ValueError, TypeError, AttributeError):
+            lang = ""
+    if lang and _LANG_RE.match(lang) and len(lang) <= 35:
+        track["lang"] = lang
+    else:
+        track.pop("lang", None)
+    return track
 
 
 def finish_regenerated_track(prev, track: dict) -> dict:

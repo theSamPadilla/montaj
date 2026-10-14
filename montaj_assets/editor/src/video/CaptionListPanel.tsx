@@ -10,17 +10,19 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { AlignCenter, AlignLeft, AlignRight, Loader2, RefreshCw, Search, Trash2 } from 'lucide-react'
 import type { Project, OverlayFactory } from '../types'
+import type { Captions } from '../schema'
 import type { PlaybackClock } from './playback-clock'
 import type { CaptionEditPatch } from './timeline/makeCaptionEdit'
 import { EditableSegment } from './timeline/EditableSegment'
 import { formatTime } from './timeline/utils'
-import { NumberField, Slider, stepValue, SwatchInput } from '../ui'
+import { Button, NumberField, Slider, stepValue, SwatchInput } from '../ui'
 import { groupCaptionLanes, laneOf } from './captionLanes'
 import { playheadInside } from './captionSeek'
 import { FontFamilyPicker, findFontOption } from '../text/FontPicker'
 import CaptionStyleGallery from './CaptionStyleGallery'
 import TabNav from './panels/TabNav'
 import { CAPTION_PLATE_DEFAULTS, CAPTION_STYLE_FONT_SIZE, CAPTION_STYLE_FONT_WEIGHT, CAPTION_STYLE_LETTER_SPACING, CAPTION_STYLE_LINE_HEIGHT, CAPTION_STYLE_TEXT_TRANSFORM } from './captionStyleDefaults'
+import { isCaptionTranslation } from './captionTranslation'
 import { applyCaptionStyle, captionStyleScope, captionStyleValue, type CaptionStylePatch, type CaptionStyleScope } from './captionSegmentStyle'
 
 /** Which of the panel's three sub-tabs is showing: the caption transcript,
@@ -115,6 +117,88 @@ const rowClass = 'flex items-center gap-1.5'
  *  a span that would then repeat those words as loose text beside it carries
  *  `aria-hidden` so they aren't announced twice. */
 const rowLabelClass = 'w-16 shrink-0 text-xs text-[var(--editor-text)] opacity-60'
+
+/** Display name of a language code ("es" is "Spanish"); the code itself when the runtime cannot name it. */
+function languageName(code: string): string {
+  try { return new Intl.DisplayNames(['en'], { type: 'language' }).of(code) ?? code } catch { return code }
+}
+
+/** The languages a caption track has, in drawing order: the source first (keyed by its recorded `lang`, or
+ *  "source" when unknown, and called "Original" then), then each translated row's language. */
+export function captionLanguages(track: Pick<Captions, 'lang' | 'segments'>): Array<{ key: string; label: string }> {
+  const langs = [...new Set(track.segments.filter(isCaptionTranslation).map(s => s.lang as string))]
+  return [
+    { key: track.lang ?? 'source', label: track.lang ? languageName(track.lang) : 'Original' },
+    ...langs.map(l => ({ key: l, label: languageName(l) })),
+  ]
+}
+
+/** The languages switched on: every one when `showLangs` is absent or matches none (the filter's own rule). */
+function languagesOn(track: Pick<Captions, 'lang' | 'segments' | 'showLangs'>): Set<string> {
+  const all = captionLanguages(track).map(l => l.key)
+  const list = track.showLangs
+  if (!Array.isArray(list)) return new Set(all)
+  const on = all.filter(k => list.includes(k) || (k === track.lang && list.includes('source')))
+  return new Set(on.length > 0 ? on : all)
+}
+
+/** §244: the header's Languages row. One chip per language the track has, each switching its captions on or off in
+ *  the preview and the render (`captions.showLangs`); at least one stays on, so the last one on is locked. Two on draw
+ *  two rows. "+ Language" (when the host can hand the user a prompt for their AI) opens a one-line pointer: Montaj does
+ *  not translate, the user's own AI does, over MCP. Chips like the Format tab's other choices (case, alignment). */
+function LanguagesRow({ track, onChange, onAddLanguage }: { track: Captions; onChange: (showLangs: string[] | undefined) => void; onAddLanguage?: () => Promise<void> | void }) {
+  const [open, setOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => { if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+  }, [open])
+
+  const languages = captionLanguages(track)
+  const on = languagesOn(track)
+  const toggle = (key: string) => {
+    const next = new Set(on)
+    if (next.has(key)) { if (next.size === 1) return; next.delete(key) } else next.add(key)
+    onChange(next.size === languages.length ? undefined : languages.map(l => l.key).filter(k => next.has(k)))
+  }
+  return (
+    <div className={`${rowClass} relative`}>
+      <span className={rowLabelClass} aria-hidden="true">Languages</span>
+      <div role="group" aria-label="Caption languages" className="flex items-center gap-1 flex-wrap">
+        {languages.map(l => {
+          const isOn = on.has(l.key)
+          const locked = isOn && on.size === 1
+          return (
+            <button key={l.key} type="button" aria-pressed={isOn} aria-disabled={locked || undefined} title={locked ? 'One language stays on' : undefined}
+              onClick={() => toggle(l.key)} className={`${chipClass(isOn)} ${locked ? 'cursor-default' : ''}`}>
+              {l.label}
+            </button>
+          )
+        })}
+        {onAddLanguage && (
+          <div ref={boxRef}>
+            <button type="button" aria-haspopup="dialog" aria-expanded={open} onClick={() => { setOpen(o => !o); setCopied(false) }} className={chipClass(false)}>
+              + Language
+            </button>
+            {open && (
+              <div role="dialog" aria-label="Add a language" className="absolute left-0 right-0 top-full mt-1.5 z-50 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] p-3 shadow-lg flex flex-col gap-2">
+                <p className="text-xs text-[var(--editor-text)]">Ask your AI to add captions in another language.</p>
+                <Button size="sm" onClick={async () => { try { await onAddLanguage(); setCopied(true) } catch { /* clipboard refused: the button stays Copy prompt */ } }}>
+                  {copied ? 'Copied' : 'Copy prompt'}
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
 /** Display value for the letter-spacing box: the numeric part of a stored CSS
  *  length, read as em. Tolerates absent, '0.02em', '-0.02em', '.02em',
@@ -221,6 +305,9 @@ export interface CaptionListPanelProps {
   /** Opens the caption-regeneration modal. Provided only when the host
    *  adapter supports `generateCaptions`; absent → the button is hidden. */
   onRegenerateCaptions?: () => void
+  /** Hands the user a prompt that asks their own AI for captions in another language (the host copies it). Provided only
+   *  by a host that can; absent, the Languages row has no "+ Language". */
+  onAddLanguage?: () => Promise<void> | void
   /** Whether a generate/regenerate job is currently streaming (the
    *  `CaptionRegenModal` is open and running). Disables the trigger so it
    *  can't be fired twice from this panel; the modal itself owns the
@@ -273,6 +360,7 @@ export default function CaptionListPanel({
   onProjectChange,
   onCaptionSegmentDelete,
   onRegenerateCaptions,
+  onAddLanguage,
   captionsGenerating,
   generateCaptionsDisabledReason,
   fps,
@@ -302,6 +390,7 @@ export default function CaptionListPanel({
       onProjectChange={onProjectChange}
       onCaptionSegmentDelete={onCaptionSegmentDelete}
       onRegenerateCaptions={onRegenerateCaptions}
+      onAddLanguage={onAddLanguage}
       captionsGenerating={captionsGenerating}
       generateCaptionsDisabledReason={generateCaptionsDisabledReason}
       fps={fps}
@@ -330,6 +419,7 @@ function CaptionListPanelBody({
   onProjectChange,
   onCaptionSegmentDelete,
   onRegenerateCaptions,
+  onAddLanguage,
   captionsGenerating,
   generateCaptionsDisabledReason,
   fps,
@@ -563,6 +653,11 @@ function CaptionListPanelBody({
     if (!project.captions) return
     onCaptionEdit?.({ ...project, captions: applyCaptionStyle(project.captions, patch, scope) })
   }
+  const chooseLanguages = (showLangs: string[] | undefined) => {
+    if (!project.captions) return
+    const { showLangs: _prev, ...rest } = project.captions
+    onCaptionEdit?.({ ...project, captions: showLangs === undefined ? rest : { ...rest, showLangs } })
+  }
   const cancelStyle = () => {
     const before = gestureRef.current?.before
     gestureRef.current = null
@@ -621,6 +716,12 @@ function CaptionListPanelBody({
             </label>
           )}
         </div>
+
+        {segs.length > 0 && captionTrack && onCaptionEdit && (
+          <div className="px-3 pb-1.5">
+            <LanguagesRow track={captionTrack} onChange={chooseLanguages} onAddLanguage={onAddLanguage} />
+          </div>
+        )}
 
         {/* Only mounts once there are captions to split between the gallery,
             the format controls and the transcript; 'Captions' (the list) is

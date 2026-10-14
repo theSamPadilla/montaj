@@ -19,7 +19,7 @@
 // the failure mode that matters.
 import { describe, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { activeCaptionSegment, activeCaptionSegments } from '../index.js'
+import { activeCaptionSegment, activeCaptionSegments, captionSegmentsToShow } from '../index.js'
 
 // ---------------------------------------------------------------------------
 // 1. Frame quantization — the whole reason this function exists
@@ -379,5 +379,40 @@ describe('activeCaptionSegments: purity', () => {
     assert.notEqual(a, b, 'a caller may sort/splice the result without affecting the next call')
     assert.equal(a[0], b[0], 'the segments inside are the originals, not clones')
     assert.equal(a[0], track.segments[0])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 7. captionSegmentsToShow: which languages draw (showLangs)
+// ---------------------------------------------------------------------------
+
+describe('captionSegmentsToShow', () => {
+  const SRC = { id: 'cap-0', text: 'hello', start: 0, end: 2 }
+  const ES = { id: 'cap-1', text: 'hola', start: 0, end: 2, lane: 1, lang: 'es', translationOf: ['cap-0'] }
+  const FR = { id: 'cap-2', text: 'salut', start: 0, end: 2, lane: 2, lang: 'fr', translationOf: ['cap-0'] }
+  const HAND = { id: 'cap-9', text: 'note', start: 0, end: 2, lane: 3 }
+  const all = [SRC, ES, FR, HAND]
+
+  test('absent, or not a list: every segment, the same array', () => {
+    const track = { segments: all }
+    assert.equal(captionSegmentsToShow(track), all)
+    assert.equal(captionSegmentsToShow({ segments: all, showLangs: 'es' }), all)
+    assert.deepEqual(captionSegmentsToShow(null), [])
+  })
+  test('the source language by its code, or "source" when the track has none', () => {
+    assert.deepEqual(captionSegmentsToShow({ lang: 'en', segments: all, showLangs: ['en'] }), [SRC, HAND])
+    assert.deepEqual(captionSegmentsToShow({ segments: all, showLangs: ['source'] }), [SRC, HAND])
+    assert.deepEqual(captionSegmentsToShow({ lang: 'en', segments: all, showLangs: ['source'] }), [SRC, HAND])
+  })
+  test('a translated language alone draws in the normal position: only its row, nothing else', () => {
+    assert.deepEqual(captionSegmentsToShow({ lang: 'en', segments: all, showLangs: ['es'] }), [ES])
+  })
+  test('two on, in segment order', () => {
+    assert.deepEqual(captionSegmentsToShow({ lang: 'en', segments: all, showLangs: ['fr', 'en'] }), [SRC, FR, HAND])
+    assert.deepEqual(captionSegmentsToShow({ lang: 'en', segments: all, showLangs: ['es', 'fr'] }), [ES, FR])
+  })
+  test('a list that matches no row (language removed) shows everything, never nothing', () => {
+    assert.deepEqual(captionSegmentsToShow({ lang: 'en', segments: all, showLangs: ['de'] }), all)
+    assert.deepEqual(captionSegmentsToShow({ lang: 'en', segments: all, showLangs: [] }), all)
   })
 })

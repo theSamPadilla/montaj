@@ -32,7 +32,7 @@
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { activeCaptionSegments } from '@bycrux/timeline-core'
+import { activeCaptionSegments, captionSegmentsToShow } from '@bycrux/timeline-core'
 import type { Captions, CaptionSegment } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
@@ -206,7 +206,9 @@ export default function CaptionPreview({
   // own `>= start && < end` predicate, so the selection box can never address a
   // segment that is not on screen. Captions have lanes, so more than one can be
   // painted at once — the templates draw them all.
-  const activeSegs = activeCaptionSegments(track, currentTime, fps)
+  // `showLang` can hide a language: only the segments the template DRAWS can be addressed.
+  const drawn = captionSegmentsToShow(track)
+  const activeSegs = activeCaptionSegments({ segments: drawn }, currentTime, fps) as CaptionSegment[]
 
   // The ONE segment the selection box addresses. With several captions on
   // screen "the active one" is ambiguous, so: the operator's current selection
@@ -242,7 +244,7 @@ export default function CaptionPreview({
   // must still LOAD it (see the effect below) so preview and render use the same
   // face. Normalize the legacy lowercase `fontsize` key to the camelCase
   // `fontSize` templates actually read.
-  const { style: _style, segments: _segments, googleFonts, fontsize, ...theme } = track
+  const { style: _style, segments: _segments, showLangs: _showLangs, lang: _lang, googleFonts, fontsize, ...theme } = track
   const themeProps: Record<string, unknown> = { ...theme }
   if (fontsize != null) themeProps.fontSize = fontsize
 
@@ -269,8 +271,8 @@ export default function CaptionPreview({
   // off the segment, so this is all it takes for the captions to follow the
   // cursor.
   const segments = live && drag
-    ? liveCaptionSegments(track.segments, drag, live, allMode)
-    : track.segments
+    ? liveCaptionSegments(track.segments, drag, live, allMode).filter(s => drawn.some(d => d.id !== undefined ? d.id === s.id : d === s))
+    : (drawn as CaptionSegment[])
 
   const element  = (factory && scale !== null)
     ? factory(frame, fps, Math.round((lastSeg?.end ?? 0) * fps), { segments, ...themeProps })

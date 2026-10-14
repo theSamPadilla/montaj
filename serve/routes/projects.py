@@ -40,7 +40,7 @@ from lib.project_versions import commit_version
 from lib.fs_remove import rmtree_force
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
-from lib.caption_translation import TranslationError, apply_translation, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme
+from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
 from lib.project_tracks import normalize_tracks, track_items
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from lib.youtube import (
@@ -5360,6 +5360,7 @@ async def _run_caption_pipeline(
     # Theme carried forward, ids minted, translated rows kept and re-cut at
     # their phrase boundaries (lib/caption_translation.py).
     track = finish_regenerated_track(prev, track)
+    record_source_language(track, language, project_dir / "_caption_words.json")
     project["captions"] = track
     text = json.dumps(project, indent=2)
     project_path.write_text(text)
@@ -5614,14 +5615,17 @@ async def put_project_overlay(
 
 @router.post("/projects/{project_id}/captions/translation")
 async def caption_translation(project_id: str, body: dict = Body(...), request: Request = None, project_dir: Path = Depends(get_project_dir)):
-    """Write a translated caption row (§244), replace it, or remove it.
+    """Write a translated caption row (§244), replace it, or remove it, and/or choose which languages draw.
 
     Body: {"lang": "es", "phrases": [{"source": <the source words of the
-    phrase, in order>, "text": <the translated line>}, ...]}. The phrases cover
-    the caption words in order; the source row is re-cut at them and the
-    translated row gets the same start and end per phrase
+    phrase, in order>, "text": <the translated line>}, ...], "show": ["en", "es"]}.
+    `phrases` (with `lang`) covers the caption words in order; the source row is
+    re-cut at them and the translated row gets the same start and end per phrase
     (lib/caption_translation.py). `phrases: []` removes that language's row.
-    Answers {lang, lane, phrases, captions}.
+    `show` is optional, alone or with `phrases` (applied after it): the languages
+    the preview and the render draw, by code ("source" or the source's own code,
+    and each translated `lang`); naming them all draws everything.
+    Answers {lang, lane, phrases, showLangs, captions}.
     """
     if project_id in _active_caption_jobs:
         raise HTTPException(409, detail={
@@ -5629,11 +5633,20 @@ async def caption_translation(project_id: str, body: dict = Body(...), request: 
             "message": "Captions are being generated for this project. Translate once they are done.",
         })
     if not isinstance(body, dict):
-        raise bad_request("bad_body", "Send {lang, phrases}.")
+        raise bad_request("bad_body", "Send {lang, phrases} and/or {show}.")
+    if "phrases" not in body and "show" not in body:
+        raise bad_request("bad_body", "Send {lang, phrases} and/or {show}.")
     project_path = project_dir / "project.json"
     project = json.loads(project_path.read_text())
     try:
-        captions = apply_translation(project.get("captions"), body.get("lang"), body.get("phrases"))
+        captions = project.get("captions")
+        if "phrases" in body:
+            had = {s.get("lang") for s in (captions or {}).get("segments", []) if is_translation(s)} if isinstance(captions, dict) else set()
+            captions = apply_translation(captions, body.get("lang"), body.get("phrases"))
+            if body.get("phrases") and body.get("lang") not in had:
+                captions = show_new_language(captions, body.get("lang"))
+        if "show" in body:
+            captions = apply_show(captions, body.get("show"))
     except TranslationError as e:
         raise bad_request(e.code, e.message)
     project["captions"] = captions
@@ -5645,6 +5658,7 @@ async def caption_translation(project_id: str, body: dict = Body(...), request: 
         "lang": body.get("lang"),
         "lane": row[0].get("lane") if row else None,
         "phrases": len(row),
+        "showLangs": captions.get("showLangs"),
         "captions": captions,
     }
 

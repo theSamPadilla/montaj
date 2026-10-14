@@ -30,7 +30,7 @@ MONTAJ_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", ".."))
 
 sys.path.insert(0, os.path.join(MONTAJ_ROOT, "lib"))
 from common import fail, run, require_whisper_model, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES, whisper_runaway_timeout_for  # noqa: E402
-from caption_translation import finish_regenerated_track, merge_caption_theme as _merge_theme  # noqa: E402
+from caption_translation import finish_regenerated_track, merge_caption_theme as _merge_theme, record_source_language  # noqa: E402
 
 sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
@@ -143,6 +143,7 @@ def main():
         except (OSError, ValueError):
             pass
         track = finish_regenerated_track(project.get("captions"), track)
+        record_source_language(track, args.language, words_json_path)
         project["captions"] = track
         with open(project_path, "w") as f:
             json.dump(project, f, indent=2)
