@@ -162,3 +162,33 @@ describe('CaptionPreview — 9:16 (1080×1920 design canvas) is unchanged', () =
     expect(patch).toEqual({ offsetX: 10, offsetY: 10 })
   })
 })
+
+describe('CaptionPreview — §244 a translation stacked under its caption', () => {
+  beforeEach(() => { player = { width: 960, height: 540 } })
+
+  it('the box and a drag address the source caption, not the translation row on top of it', async () => {
+    const onChange = vi.fn()
+    const bilingual: Captions = {
+      style: 'subtitle',
+      segments: [
+        { id: 'cap-0', text: 'hello', start: 0, end: 2 },
+        { id: 'cap-1', text: 'hola', start: 0, end: 2, lane: 1, lang: 'es', translationOf: ['cap-0'] },
+      ],
+    }
+    const { container } = render(
+      <CaptionPreview
+        track={bilingual}
+        currentTime={1}
+        fps={30}
+        compileOverlay={compileOverlay}
+        resolveCaptionTemplate={(style) => `/tpl/${style}.jsx`}
+        onSelectCaption={vi.fn()}
+        onCaptionSegmentChange={onChange}
+        designCanvas={[1920, 1080]}
+      />,
+    )
+    await layerGeometry(container)
+    drag(container, onChange, 96, 54)
+    expect(onChange.mock.calls[0][0]).toBe('cap-0')
+  })
+})

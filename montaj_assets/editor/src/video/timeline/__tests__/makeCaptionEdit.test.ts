@@ -260,3 +260,15 @@ describe('makeCaptionEditMany', () => {
     expect(onProjectChange).not.toHaveBeenCalled()
   })
 })
+
+describe('makeCaptionEdit — §244 translations', () => {
+  it('editing a translation\'s text adds no words (it draws as a plain line)', () => {
+    const onProjectChange = vi.fn()
+    const p = project([seg(), seg({ id: 'cap-1', text: 'hola mundo', lane: 1, lang: 'es', translationOf: ['cap-0'] })])
+    makeCaptionEdit('cap-1', p, onProjectChange)('hola a todos')
+    const out = (onProjectChange.mock.calls[0][0] as Project).captions!.segments[1]
+    expect(out.text).toBe('hola a todos')
+    expect(out.words).toBeUndefined()
+    expect(out.translationOf).toEqual(['cap-0'])
+  })
+})

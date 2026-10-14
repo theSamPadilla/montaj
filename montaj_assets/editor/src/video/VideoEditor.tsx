@@ -19,7 +19,8 @@ import { collapseGaps, rippleDelete, splitAtTime } from './cuts'
 import { addMarker } from './timeline/markers'
 import { addNote, isNote, removeNotes, setNoteDone, setNoteText } from './timeline/notes'
 import { repairCaptionWords } from './captionRepair'
-import { maxCaptionLane, normalizeCaptionLanes } from './captionLanes'
+import { laneOf, normalizeCaptionLanes } from './captionLanes'
+import { isCaptionTranslation } from './captionTranslation'
 import { mergeCaptionProfileDefaults } from './captionProfileDefaults'
 import Timeline, { type TimelineActions, type TimelineMode } from './timeline/Timeline'
 import { geometryAt, visualDuration } from '@bycrux/timeline-core'
@@ -3346,7 +3347,8 @@ function ReviewSurface<P extends Project>({
           adapter={adapter}
           projectId={project.id}
           profile={project.profile}
-          existingRowCount={maxCaptionLane(project.captions?.segments ?? []) + 1}
+          // §244: translated rows are kept through a regeneration, so they are not counted.
+          existingRowCount={new Set((project.captions?.segments ?? []).filter(s => !isCaptionTranslation(s)).map(laneOf)).size || 1}
           onClose={() => setRegenCaptionsOpen(false)}
           onDone={(captions, profileDefaults) => {
             // The modal resolved the profile once, before the stream; we fold

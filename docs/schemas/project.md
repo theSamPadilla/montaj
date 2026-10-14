@@ -544,7 +544,7 @@ The `captions` field is a top-level object (not a track). It always renders abov
 
 **Caption styles:** `word-by-word`, `pop`, `karaoke`, `subtitle`, `highlight-box`, `outline`, `clean`, `accent`
 
-Each style maps to a built-in JSX template served at `GET /api/caption-template/:style`. An unknown style value renders no captions. `words` is optional in the schema but required for animated styles (`word-by-word`, `karaoke`, `accent`).
+Each style maps to a built-in JSX template served at `GET /api/caption-template/:style`. An unknown style value renders no captions. `words` is optional in the schema but required for the per-word styles: without words, `word-by-word`, `pop` and `accent` draw nothing for that segment, and `karaoke`, `highlight-box` and `outline` fall back to its plain text. A translated segment (see "Translated rows" below) is the exception: it never needs words.
 
 **Per-segment positioning.** Each entry in `segments[]` may carry its own `offsetX`, `offsetY`, and `scale`, letting one segment be moved or resized independently of the rest — e.g. to clear a beat that puts something else (a whiteboard card, a lower-third) at the bottom of the frame. These are consumed only by the JSX browser preview and the Puppeteer render path; the ffmpeg `drawtext` render branch does not read them and continues to honour only the track-level `position` field below.
 
@@ -557,6 +557,8 @@ Each style maps to a built-in JSX template served at `GET /api/caption-template/
 | `scale` | number | 1 | Visual scale of the whole caption block, about its own centre. This is a CSS transform, not a font-size change: it scales the background box (`subtitle`) and text stroke (`outline`) along with the text, and it does **not** re-wrap the text — a scaled-up caption keeps its original line breaks and can overflow the frame. |
 | `color` | string | — | Per-segment override of the base text color, overriding the track-level `color` below for this segment only (the per-style accent colors are overridable too, see "Per-segment text styling" below). Absent = inherit the track-level `color` → the style's own default. Like `offsetX`/`offsetY`/`scale`, this is consumed only by the JSX browser preview and the Puppeteer render path; the ffmpeg `drawtext` render branch has no per-segment concept and continues to honour only the track-level `color` field below. |
 | `hero` | boolean | false | `accent` style only (PL41; other styles ignore it): draw the segment as a hero block, a stacked block on two staggered lines (the second indented) whose words cut on as they are spoken, instead of running captions of up to three words. |
+| `lang` | string | — | Marks a translated segment, with `translationOf`: its language code (`"es"`, `"pt-BR"`). See "Translated rows" below. |
+| `translationOf` | string[] | — | The ids of the source segments this translated segment translates. With `lang`, it makes the segment a translation. |
 
 **Per-word `accent`.** An entry in a segment's `words[]` may carry `accent`: `serif`, `sans` or `script`. The `accent` style draws that word with the matching treatment (`serif`: italic serif in `accentColor`; `sans`: the running font in `accentColor`; `script`: white script, consecutive script words forming one line directly above the word after them in a hero, drawn as `serif` inside a running window). Other styles ignore it.
 
@@ -583,6 +585,10 @@ Each style maps to a built-in JSX template served at `GET /api/caption-template/
 | `fontsize` | number | — | Font size in pixels for drawtext render |
 | `bgColor` | string | — | Background box color for drawtext render |
 
+**Translated rows.** A second (third, ...) row can carry the captions in another language. Each of its segments has `lang`, `translationOf` (the ids of the source segments it translates) and no `words`, in a lane of its own. Every style draws a translated segment the same way: not as a caption of its own, but as a plain line (the style's font, colour and case, no per-word animation, a line size in the per-word styles) stacked under the source caption, inside that caption's own block. The block grows from its anchor, so the browser lays out the stack and the two rows never collide, whatever the style, size or line count. Two languages stack in lane order. While stacked, a translation's own `offsetX`/`offsetY`/`scale` are not used: moving the caption moves both (the editor's selection box and drag address the source caption). A translation whose source is not on screen draws alone, at the style's anchor, never under another caption. The editor never fills in words for a translated segment.
+
+Write a translated row through `POST /api/projects/:id/captions/translation` (below) rather than by hand: it cuts the source row and the translated row at the same phrase boundaries, so each translated line is on screen exactly while its source phrase is.
+
 **Hand-authorable.** `project.captions` is a first-class field: an agent that holds word-level transcripts can write captions directly via `PUT /api/projects/:id` without going through the generation pipeline. The Hub proxy validates the shape on PUT (when captions are written through Hub) and rejects malformed captions before forwarding (style must be a known enum value; each segment must have `text`, `start`, and `end`; `words`, if present, must be well-formed); Montaj itself stores whatever it receives. Agents writing captions by hand should include `words` whenever using an animated style.
 
 ### HTTP endpoints
@@ -591,7 +597,7 @@ Each style maps to a built-in JSX template served at `GET /api/caption-template/
 POST /api/projects/:id/captions
 ```
 
-SSE stream (default). Runs the materialize → transcribe → caption pipeline and streams `log` / `done` / `error` events. Writes `project.captions` on success, REPLACING the field wholesale — the fresh transcript is always a single row (`lane` absent on every segment), so any additional hand-authored rows (see `lane` above) are discarded, not merged.
+SSE stream (default). Runs the materialize → transcribe → caption pipeline and streams `log` / `done` / `error` events. Writes `project.captions` on success, REPLACING the segments — the fresh transcript is a single row (`lane` absent on every segment) with `cap-<n>` ids minted, so any additional hand-authored rows (see `lane` above) are discarded, not merged. **Translated rows are the exception:** each kept phrase is found again in the new transcript by its words (in order, at least 60% of them), not by its old times, so footage added, removed or moved around it does not shift it. A phrase found again becomes one source segment, keeping its id, and its translations are re-timed to it; words outside every phrase keep the fresh grouping, untranslated; a phrase not found again drops its translations rather than pairing them with the wrong words. Translate again after a change to the words. The project is read again just before the write, so a translation (or any edit) saved while the captions were generating is kept. Every other caption-track field (the theme) is carried forward. The `generate_captions` step finishes its track the same way (`lib/caption_translation.py`).
 
 Optional body fields: `model` (Whisper model, default `"large"`), `language` (default `"auto"`), `style` (default: existing `captions.style`, or `"pop"`).
 
@@ -619,6 +625,23 @@ Poll the state of the current or last detached caption job. Returns `idle` when 
 ```
 
 `captions` is present only when `status` is `done`. `error` is present only when `status` is `error`.
+
+```
+POST /api/projects/:id/captions/translation
+```
+
+Writes, replaces or removes one language's translated row. Body:
+
+```json
+{ "lang": "es", "phrases": [
+  { "source": "So just to give you an example,", "text": "Por ejemplo," },
+  { "source": "you can't develop wheels.", "text": "no se pueden desarrollar ruedas." }
+] }
+```
+
+Each phrase's `source` is the source captions' own words for that phrase, in order (case and punctuation are ignored); the phrases must cover every word of the source row (`lane` 0), in order. The source row is re-cut at the phrase boundaries, keeping every word's real timing; the translated row gets the same start and end per phrase, marked with `lang` and `translationOf`, in the next free lane. The same `lang` again replaces its row; `"phrases": []` removes it. When another language already has a row, the phrases must be that row's lines, one per caption line, so both translations stay aligned. Limits: at most 14 source words per phrase, at most 90 characters per translated line.
+
+Answers `{ "lang", "lane", "phrases": <count>, "captions": { ... } }`. Refuses with `400` and an error code: `bad_lang`, `bad_phrases`, `no_captions`, `no_word_timings` (a source caption without words: generate the captions again), `phrase_mismatch` (names the phrase and what the captions say there), `incomplete`, `phrase_too_long`, `text_too_long`, `phrases_differ`. `409` while a caption job started through `POST /api/projects/:id/captions` runs for the project.
 
 ---
 

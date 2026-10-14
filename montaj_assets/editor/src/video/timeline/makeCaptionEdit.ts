@@ -1,6 +1,7 @@
 import type { Project } from '../../types'
 import type { CaptionSegment } from '../../schema'
 import { floorWordDurations } from '../captionWordFloor'
+import { isCaptionTranslation } from '../captionTranslation'
 
 /** Fields `makeCaptionEdit` can patch onto a single caption segment. */
 export type CaptionEditPatch = Partial<CaptionSegment>
@@ -34,7 +35,8 @@ export function makeCaptionEdit(
         segments: segments.map((s, j) => {
           if (j !== idx) return s
           const next: CaptionSegment = { ...s, ...definedPatch }
-          if (definedPatch.text === undefined) return next
+          // §244: a translation keeps no words (it draws as a plain line).
+          if (definedPatch.text === undefined || isCaptionTranslation(next)) return next
           // Respread words evenly across the segment duration. Applied AFTER the
           // patch merge so a combined `{ text, start, end }` edit retimes words
           // against the new duration, not the stale one.

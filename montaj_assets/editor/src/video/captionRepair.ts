@@ -12,6 +12,7 @@
  */
 import type { Captions, CaptionSegment } from '../schema'
 import { floorWordDurations } from './captionWordFloor'
+import { isCaptionTranslation } from './captionTranslation'
 
 // Collapses any run of whitespace to a single space, in addition to trim +
 // case-fold, before the two sides are compared. `newWords` below is always
@@ -26,6 +27,9 @@ import { floorWordDurations } from './captionWordFloor'
 const normalizeForCompare = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ')
 
 function repairSegment(seg: CaptionSegment): CaptionSegment {
+  // §244: a translation is drawn as a plain line and has no words; invented
+  // ones would be saved and animate it at times nobody said those words.
+  if (isCaptionTranslation(seg)) return seg
   const wordsText = (seg.words ?? []).map(w => w.word).join(' ')
   if (normalizeForCompare(wordsText) === normalizeForCompare(seg.text)) return seg
 

@@ -48,6 +48,12 @@ export interface CaptionSegment {
   start: number
   end: number
   words?: Word[]
+  // §244: a translated caption. `lang` is its language code ("es") and
+  // `translationOf` the ids of the source segments it translates. It carries no
+  // `words`: every template draws it as a plain line stacked under its source
+  // (video/captionTranslation.ts).
+  lang?: string
+  translationOf?: string[]
   offsetX?: number   // percent of frame width,  0/absent = default anchor
   offsetY?: number   // percent of frame height, 0/absent = default anchor
   // Visual scale of the whole caption block about its own centre — a CSS

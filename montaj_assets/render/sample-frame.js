@@ -149,6 +149,11 @@ const SHORT_EDGE_TARGET = 1080
  *    frame.
  * 13: §59, a sampled frame draws the captions (caption-spec.js, the export's
  *    own caption overlay). A frame cached before holds none.
+ * 14: §244, a translated caption segment (`lang` + `translationOf`) draws as
+ *    a plain line stacked under its caption, in every style. A frame cached
+ *    before holds it drawn the old way (nothing in word-by-word, pop and
+ *    accent; a row of its own elsewhere), and the frame key does not see the
+ *    caption templates.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -156,7 +161,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 13
+const SAMPLE_CACHE_VERSION = 14
 
 // ---------------------------------------------------------------------------
 // Input manifests

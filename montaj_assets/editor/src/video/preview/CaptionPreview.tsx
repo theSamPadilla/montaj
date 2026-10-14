@@ -33,12 +33,13 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { activeCaptionSegments } from '@bycrux/timeline-core'
-import type { Captions } from '../../schema'
+import type { Captions, CaptionSegment } from '../../schema'
 import type { OverlayFactory } from '../../types'
 import OverlayErrorBoundary from '../../carousel/OverlayErrorBoundary'
 import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
 import { captionFontsFor } from '../captionStyleDefaults'
 import { captionGoogleFonts } from '../captionSegmentStyle'
+import { isCaptionTranslation } from '../captionTranslation'
 import type { CaptionEditAllPatch, CaptionEditPatch } from '../timeline/makeCaptionEdit'
 import {
   captionDragGeometry,
@@ -212,11 +213,16 @@ export default function CaptionPreview({
   // if it is among them (the primary one first, then any other selected
   // caption), otherwise the highest-lane one — the caption painted last, and
   // therefore the one visually on top at that instant.
-  const targetSeg =
+  // §244: a translation draws inside its source caption's block, so the box
+  // (and a drag) addresses that caption, and the box covers both lines.
+  const blockOf = (s: CaptionSegment) =>
+    (isCaptionTranslation(s) && activeSegs.find(a => !!a.id && !isCaptionTranslation(a) && s.translationOf!.includes(a.id))) || s
+  const pickedSeg =
     (selectedCaptionId ? activeSegs.find(s => s.id === selectedCaptionId) : undefined)
     ?? activeSegs.find(s => !!s.id && selectedSet.has(s.id))
     ?? activeSegs[activeSegs.length - 1]
     ?? null
+  const targetSeg = pickedSeg ? blockOf(pickedSeg) : null
 
   // Interactivity requires a stable segment id (backfilled by VideoEditor) and a
   // host that wired at least one caption callback. Without both, the layer stays

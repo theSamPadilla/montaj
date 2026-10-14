@@ -195,3 +195,22 @@ describe('repairCaptionWords', () => {
     })
   })
 })
+
+describe('repairCaptionWords — §244 translations', () => {
+  it('never invents words for a translation (it draws as a plain line)', () => {
+    const captions = makeCaptions([
+      { id: 'cap-1', text: 'hola a todos', start: 0, end: 2, lane: 1, lang: 'es', translationOf: ['cap-0'] },
+    ])
+    expect(repairCaptionWords(captions)).toBeNull()
+  })
+
+  it('still repairs the caption a translation sits under', () => {
+    const captions = makeCaptions([
+      { id: 'cap-0', text: 'hello world', start: 0, end: 2 },
+      { id: 'cap-1', text: 'hola mundo', start: 0, end: 2, lane: 1, lang: 'es', translationOf: ['cap-0'] },
+    ])
+    const out = repairCaptionWords(captions)!
+    expect(out.segments[0].words).toHaveLength(2)
+    expect(out.segments[1]).toBe(captions.segments[1])
+  })
+})
