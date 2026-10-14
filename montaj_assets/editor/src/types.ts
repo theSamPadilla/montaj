@@ -788,6 +788,11 @@ export interface EditorAdapter<P extends Project = Project> {
    * `projectId` is passed for a video overlay item: its `src` may be relative
    * to that project's directory (`overlays/x.jsx`), which is how render
    * resolves it. An absolute `template` ignores it.
+   *
+   * The reserved `template` `engine:scene3d` is a 3D scene item (props
+   * `scene`, `inPoint`): the host returns a factory for its own 3D stage and
+   * turns `scene` into the `sceneFile` prop that stage reads. The editor treats
+   * it as any overlay; its `scene` and `inPoint` props are the generic fields.
    */
   compileOverlay(template: string, projectId?: string): Promise<OverlayFactory>
 

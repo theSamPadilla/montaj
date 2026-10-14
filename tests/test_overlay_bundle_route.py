@@ -415,3 +415,19 @@ def test_refused_import_on_a_drive_letter_path():
 def test_esbuild_loc_matches_drive_letter_and_posix(msg, path):
     m = overlays_route._ESBUILD_LOC.match(msg)
     assert m is not None and m.groups() == (path, "3", "4")
+
+
+def test_scene3d_alias_bundles_the_host_stage(env, tmp_path, monkeypatch):
+    stage_dir = tmp_path.resolve() / "engine"
+    stage_dir.mkdir()
+    (stage_dir / "stage.jsx").write_text("export default function S() { return <div>stage</div> }\n")
+    monkeypatch.setenv("MONTAJ_SCENE3D_STAGE", str(stage_dir / "stage.jsx"))
+    r = _get("engine:scene3d")
+    assert r.status_code == 200, r.text
+    assert r.json()["inputs"] == [str(stage_dir / "stage.jsx")]
+
+
+def test_scene3d_alias_without_a_host_stage_is_404(env, monkeypatch):
+    monkeypatch.delenv("MONTAJ_SCENE3D_STAGE", raising=False)
+    r = _get("engine:scene3d")
+    assert r.status_code == 404, r.text

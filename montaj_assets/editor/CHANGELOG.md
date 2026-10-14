@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added: translated caption segments (`lang`, `translationOf` on `CaptionSegment`). The editor never fills in words for one, a text edit on one adds none, the preview's selection box and drag address the caption it sits under, and the regenerate warning counts only the rows a regeneration replaces. `isCaptionTranslation` is new.
 - Added: a ninth caption style, `plate` (the phrase on one rounded plate, the spoken word in the accent colour). `Captions.style` gains `'plate'`; `Captions` and `CaptionSegment` gain `plateOpacity`, `platePadding` and `plateRadius`, and `backgroundColor` is the plate's colour. The caption panel offers a plate colour and opacity for it.
 - Fixed: `computeAutoCrossfade` only pairs audio tracks that share a row (`lane`, or both without one) and a kind (`type`, absent meaning `audio`), so a voiceover under a split music bed is no longer faded into it.
+- Documented: an overlay item whose `src` is `engine:scene3d` is a 3D scene item. The host's `compileOverlay` returns its own 3D stage for it; `scene` and `inPoint` show as the ordinary property fields. No editor code change.
 
 ## 2.2.0
 

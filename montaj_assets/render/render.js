@@ -47,6 +47,7 @@ import { resolveMotionBlur }              from './motion-blur.js'
 import { loudnessFilter }                 from './mix-audio.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 import { captionOverlayFields }           from './caption-spec.js'
+import { materializeScene3d, Scene3dError } from './scene3d.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 // §128: where this render writes and what it is estimated to need, set by
@@ -460,6 +461,14 @@ function loadRenderProject(projectPath, { out = null, requireFinal = true, overr
   }
 
   const projectDir = dirname(absProjectPath)
+  // §239: a scene item (an overlay whose src is `engine:scene3d`) becomes the plain overlay of the host's stage, before
+  // anything resolves or checks paths.
+  try {
+    materializeScene3d(projectJson, projectDir)
+  } catch (err) {
+    if (err instanceof Scene3dError) fail(err.code, err.message)
+    throw err
+  }
   resolveProjectPaths(projectJson, projectDir)
   validateProjectFiles(projectJson)
   // The project as the user wrote it (paths resolved), for the per-layer SDR
