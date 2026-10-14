@@ -110,6 +110,9 @@ export interface CaptionSegment {
   highlightColor?: string
   activeColor?: string
   backgroundColor?: string
+  plateOpacity?: number
+  platePadding?: number
+  plateRadius?: number
 }
 
 /**
@@ -126,7 +129,7 @@ export interface CaptionSegment {
 export type CaptionTextTransform = 'uppercase' | 'lowercase' | 'capitalize' | 'none'
 
 export interface Captions {
-  style: 'word-by-word' | 'pop' | 'karaoke' | 'subtitle' | 'highlight-box' | 'outline' | 'clean' | 'accent'
+  style: 'word-by-word' | 'pop' | 'karaoke' | 'subtitle' | 'highlight-box' | 'outline' | 'clean' | 'accent' | 'plate'
   segments: CaptionSegment[]
   // `color` and `fontsize` are read by BOTH paths: the JSX browser preview /
   // Puppeteer render (spread into the caption template props; `fontsize`→`fontSize`)
@@ -141,7 +144,12 @@ export interface Captions {
   accentColor?: string    // active-word/box accent — highlight-box, outline, accent
   highlightColor?: string // active word — karaoke
   activeColor?: string    // active word — pop
-  backgroundColor?: string// text box background — subtitle
+  backgroundColor?: string// text box background — subtitle; the plate's colour — plate
+  // The `plate` style's plate (the rest of its look is the fields above): opacity 0 to 1 (hex colours only), padding in px
+  // (vertical; the sides take 1.6x) and corner radius in px. Each can also sit on one caption (CaptionSegment).
+  plateOpacity?: number
+  platePadding?: number
+  plateRadius?: number
   googleFonts?: string[]  // Google Fonts family specs for the caption template (e.g. ["Figtree:wght@700"])
   // Text-styling fields, honoured by the JSX caption templates only (NOT the ffmpeg
   // drawtext render branch). `fontFamily` and `googleFonts` travel together: a family

@@ -73,10 +73,10 @@ async function loadTemplate(name) {
 // A literal list of all eight templates — deliberately not derived from a
 // directory listing, so a template that goes missing (renamed, deleted)
 // fails this test instead of silently shrinking the coverage.
-const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent']
+const STYLE_NAMES = ['clean', 'subtitle', 'karaoke', 'outline', 'highlight-box', 'word-by-word', 'pop', 'accent', 'plate']
 
-test('STYLE_NAMES names exactly the eight caption templates that exist on disk', () => {
-  assert.equal(STYLE_NAMES.length, 8)
+test('STYLE_NAMES names exactly the nine caption templates that exist on disk', () => {
+  assert.equal(STYLE_NAMES.length, 9)
   for (const name of STYLE_NAMES) {
     assert.ok(existsSync(join(TEMPLATES_DIR, `${name}.jsx`)), `${name}.jsx must exist in ${TEMPLATES_DIR}`)
   }
@@ -166,6 +166,7 @@ const DEFAULT_FONT_FAMILY = {
   'word-by-word':   'system-ui, -apple-system, sans-serif',
   pop:              'system-ui, -apple-system, sans-serif',
   accent:           '"Inter Tight", system-ui, sans-serif',
+  plate:            'system-ui, -apple-system, sans-serif',
 }
 
 describe('fontFamily — no prop keeps each template\'s current default literal', () => {
@@ -309,6 +310,7 @@ const DEFAULT_FONT_WEIGHT = {
   'word-by-word':   800,
   pop:              800,
   accent:           700,
+  plate:            800,
 }
 
 describe('fontWeight — no prop keeps each template\'s current default literal', () => {

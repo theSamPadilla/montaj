@@ -20,7 +20,7 @@ import { playheadInside } from './captionSeek'
 import { FontFamilyPicker, findFontOption } from '../text/FontPicker'
 import CaptionStyleGallery from './CaptionStyleGallery'
 import TabNav from './panels/TabNav'
-import { CAPTION_STYLE_FONT_SIZE, CAPTION_STYLE_FONT_WEIGHT, CAPTION_STYLE_LETTER_SPACING, CAPTION_STYLE_LINE_HEIGHT, CAPTION_STYLE_TEXT_TRANSFORM } from './captionStyleDefaults'
+import { CAPTION_PLATE_DEFAULTS, CAPTION_STYLE_FONT_SIZE, CAPTION_STYLE_FONT_WEIGHT, CAPTION_STYLE_LETTER_SPACING, CAPTION_STYLE_LINE_HEIGHT, CAPTION_STYLE_TEXT_TRANSFORM } from './captionStyleDefaults'
 import { applyCaptionStyle, captionStyleScope, captionStyleValue, type CaptionStylePatch, type CaptionStyleScope } from './captionSegmentStyle'
 
 /** Which of the panel's three sub-tabs is showing: the caption transcript,
@@ -53,6 +53,7 @@ const ACCENT: Partial<Record<CaptionStyle, { field: AccentField; label: string; 
   outline:         { field: 'accentColor',     label: 'Accent',    def: '#fbbf24' },
   accent:          { field: 'accentColor',     label: 'Accent',    def: '#F00000' },
   subtitle:        { field: 'backgroundColor', label: 'Box',       def: '#000000' },
+  plate:           { field: 'accentColor',     label: 'Accent',    def: '#fbbf24' },
 }
 
 // The native <input type="color"> only accepts #rrggbb. Stored values are always
@@ -384,6 +385,12 @@ function CaptionListPanelBody({
   useEffect(() => {
     setFontsize(fontsizeInForce)
   }, [fontsizeInForce])
+  // The `plate` style's plate opacity, shown as a percent (the field is 0 to 1).
+  const plateOpacityInForce = Math.round((styleValue('plateOpacity') ?? CAPTION_PLATE_DEFAULTS.plateOpacity) * 100)
+  const [plateOpacityPct, setPlateOpacityPct] = useState(plateOpacityInForce)
+  useEffect(() => {
+    setPlateOpacityPct(plateOpacityInForce)
+  }, [plateOpacityInForce])
 
   // One group per lane (0..maxLane, holes included) via the same module the
   // canvas timeline reads lanes through — see captionLanes.ts. `multiLane`
@@ -778,7 +785,58 @@ function CaptionListPanelBody({
                       onCancel={cancelStyle}
                     />
                   )}
+                  {captionTrack?.style === 'plate' && (
+                    <SwatchInput
+                      size="sm"
+                      showValue={false}
+                      title="Caption plate color"
+                      ariaLabel="Caption plate color"
+                      value={toHex(styleValue('backgroundColor'), CAPTION_PLATE_DEFAULTS.backgroundColor)}
+                      onChange={v => liveStyle({ backgroundColor: v })}
+                      onCommit={v => commitStyle({ backgroundColor: v })}
+                      onCancel={cancelStyle}
+                    />
+                  )}
                 </div>
+                {captionTrack?.style === 'plate' && (
+                  <div className={rowClass}>
+                    <span className={rowLabelClass} aria-hidden="true">Plate</span>
+                    <Slider
+                      aria-label="Caption plate opacity slider"
+                      className="min-w-0 flex-1"
+                      step={1}
+                      min={0}
+                      max={100}
+                      value={plateOpacityPct}
+                      onChange={v => {
+                        const next = clampToRange(v, 0, 100)
+                        setPlateOpacityPct(next)
+                        liveStyle({ plateOpacity: next / 100 })
+                      }}
+                      onCommit={v => commitStyle({ plateOpacity: clampToRange(v, 0, 100) / 100 })}
+                    />
+                    <NumberField
+                      name="Caption plate opacity"
+                      className="w-20"
+                      unit="%"
+                      step={1}
+                      min={0}
+                      max={100}
+                      value={plateOpacityPct}
+                      onPreview={v => {
+                        const next = clampToRange(v, 0, 100)
+                        setPlateOpacityPct(next)
+                        liveStyle({ plateOpacity: next / 100 })
+                      }}
+                      onCommit={v => commitStyle({ plateOpacity: clampToRange(v, 0, 100) / 100 })}
+                      onStep={d => {
+                        const next = stepValue(plateOpacityPct, d, { step: 1, min: 0, max: 100 })
+                        setPlateOpacityPct(next)
+                        commitStyle({ plateOpacity: next / 100 })
+                      }}
+                    />
+                  </div>
+                )}
 
                 {/* ── Text styling ──
                     Every control here writes a styling field the JSX caption

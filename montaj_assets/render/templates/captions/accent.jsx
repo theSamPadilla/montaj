@@ -299,11 +299,11 @@ function renderLine(seg, th, frame, fps) {
  * track's (the props above), which wins over this template's default. Only
  * fields this template's theme already carries are taken, and a segment with
  * none of them gets the theme object itself, so a project without per-caption
- * styling renders exactly as before. Duplicated in all eight templates (they
+ * styling renders exactly as before. Duplicated in all nine templates (they
  * can import nothing but montaj/render); keep the list identical in each and
  * in step with the editor's video/captionSegmentStyle.ts.
  */
-const SEGMENT_STYLE_FIELDS = ['color', 'fontSize', 'fontFamily', 'fontWeight', 'textTransform', 'textAlign', 'letterSpacing', 'lineHeight', 'accentColor', 'highlightColor', 'activeColor', 'backgroundColor']
+const SEGMENT_STYLE_FIELDS = ['color', 'fontSize', 'fontFamily', 'fontWeight', 'textTransform', 'textAlign', 'letterSpacing', 'lineHeight', 'accentColor', 'highlightColor', 'activeColor', 'backgroundColor', 'plateOpacity', 'platePadding', 'plateRadius']
 function segmentTheme(seg, theme) {
   let out = theme
   for (const k of SEGMENT_STYLE_FIELDS) {

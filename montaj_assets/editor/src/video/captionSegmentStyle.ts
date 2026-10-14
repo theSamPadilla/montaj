@@ -23,6 +23,7 @@ import type { CaptionSegment, Captions } from '../schema'
 export const CAPTION_STYLE_FIELDS = [
   'color', 'fontsize', 'fontFamily', 'googleFonts', 'fontWeight', 'textTransform', 'textAlign',
   'letterSpacing', 'lineHeight', 'accentColor', 'highlightColor', 'activeColor', 'backgroundColor',
+  'plateOpacity', 'platePadding', 'plateRadius',
 ] as const
 export type CaptionStyleField = typeof CAPTION_STYLE_FIELDS[number]
 export type CaptionStylePatch = Partial<Pick<Captions, CaptionStyleField>>

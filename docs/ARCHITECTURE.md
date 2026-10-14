@@ -970,7 +970,7 @@ Then:
 { "type": "overlay", "src": "./overlays/hook.jsx", "props": { "text": "Hook line" }, "start": 0.0, "end": 3.0 }
 ```
 
-**Caption templates** are pre-built and referenced by style name: `word-by-word`, `karaoke`, `pop`, `subtitle`, `highlight-box`, `outline`, `clean`, `accent`.
+**Caption templates** are pre-built and referenced by style name: `word-by-word`, `karaoke`, `pop`, `subtitle`, `highlight-box`, `outline`, `clean`, `accent`, `plate`.
 
 All components produce the same output: rendered frame-by-frame by Puppeteer, composited into the video by ffmpeg.
 
@@ -1086,6 +1086,7 @@ Built-in caption styles:
 | `outline` | All-caps, heavy black stroke; only the spoken word fills with the accent color |
 | `clean` | Plain sentence-case line, no background box, Figtree 700 |
 | `accent` | Short bold running captions (up to three words, one line, hard cuts) and `hero` segments as a stacked block on staggered lines with one accent word (`serif`, `sans` or `script`) |
+| `plate` | Whole phrase visible on one rounded plate (`backgroundColor` at `plateOpacity`, `platePadding`, `plateRadius`); the spoken word takes the accent colour on top |
 
 Caption data (segments + word timestamps) is always inlined in the track — never a `src` pointer. Theme keys carried on the caption track/props include `fontsize`/`fontSize`, `color`, and `accentColor` (used by `highlight-box`/`outline` for the active-word fill, and by `accent` for its accent words); `fontsize` now applies to both the ffmpeg and the Puppeteer/JSX render paths, not just ffmpeg.
 
