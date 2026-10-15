@@ -735,6 +735,10 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
 
   for (let i = 0; i < segmentSpecs.length; i++) {
     const spec = segmentSpecs[i]
+    // §284: an opaque capture for an SDR master is a JPEG (captureOptionsFor,
+    // renderer.js). An HDR project's captures also make its HDR master, so
+    // they stay PNG, and so does its SDR rendition, which composites them.
+    spec.sdrMaster = !isHdr(projectColorSpace)
     log(`bundling segment ${i + 1}/${segmentSpecs.length} (${spec.id})...`)
     // The geometry below is read by generateShim (bundle.js) ONLY when the item
     // carries `keyframes` — the one case where the ffmpeg composite cannot do

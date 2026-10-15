@@ -468,10 +468,38 @@ async function unlessChromeDies(worker, work, phaseOf, what) {
  * Only the incoming side needs this. The OUTGOING side of an opaque pair holds
  * at full opacity by design (`timeline-core`'s `fadeShape` — fading it out would
  * reveal black), so it never needs an alpha plane and keeps the cheaper capture.
+ *
+ * `format` (§284): how each screenshot is encoded. The screenshot is most of a
+ * frame's cost (MEASURED 2026-10-15, a 1080x1920 opaque film at 60 fps: 192 of
+ * 219 ms per capture, a 3.4 MB PNG each), so an opaque capture for an SDR
+ * master (`job.sdrMaster`: an 8-bit 4:2:0 H.264 MP4) is a JPEG at
+ * JPEG_CAPTURE_QUALITY: 75 ms per capture instead of 224. Chrome's JPEG is
+ * 4:2:0 like the master itself, so nothing finer survives the export anyway
+ * (fine red and blue text, through yuv420p and crf 18: PSNR 34.8 dB against the
+ * PNG path, no visible difference at 3x). Everything else stays PNG: an alpha
+ * capture (JPEG has none), and any master that is not that MP4 (HDR, and any
+ * later lossless or ProRes export), where the capture keeps every pixel. Never
+ * a setting: it follows from the overlay and the export.
  */
 export function captureOptionsFor(job) {
   const needsAlpha = !job.opaque || job.transitionTo === true
-  return { omitBackground: needsAlpha, pixFmt: needsAlpha ? 'yuva420p' : 'yuv420p' }
+  const format = !needsAlpha && job.sdrMaster === true ? 'jpeg' : 'png'
+  return { omitBackground: needsAlpha, pixFmt: needsAlpha ? 'yuva420p' : 'yuv420p', format }
+}
+
+/** §284: the JPEG quality of an opaque capture for an SDR master (captureOptionsFor). */
+export const JPEG_CAPTURE_QUALITY = 95
+
+/**
+ * The `page.screenshot` options of a capture (§284). A PNG is written with
+ * `optimizeForSpeed`: its compression is lighter, the file bigger, the pixels
+ * the same (MEASURED: identical decoded RGBA; 1.27x faster per capture).
+ */
+export function screenshotOptionsFor(job) {
+  const { omitBackground, format } = captureOptionsFor(job)
+  return format === 'jpeg'
+    ? { type: 'jpeg', quality: JPEG_CAPTURE_QUALITY }
+    : { type: 'png', omitBackground, optimizeForSpeed: true }
 }
 
 /**
@@ -595,7 +623,7 @@ export function frameSink(encode, what) {
  */
 export function chunkEncodeArgs(job, chunkMkv) {
   const { fps, subframes = 1 } = job
-  const { pixFmt, omitBackground } = captureOptionsFor(job)
+  const { pixFmt, omitBackground, format } = captureOptionsFor(job)
   // Motion blur off: args are exactly as before (render goldens depend on it).
   const blurVf = motionBlurFilter(subframes, { alpha: omitBackground })
   const inputRate = blurVf ? String(fps * subframes) : String(fps)
@@ -611,10 +639,12 @@ export function chunkEncodeArgs(job, chunkMkv) {
   return [
     '-y',
     ...keepGraph,
-    // Each screenshot is a whole PNG; the png parser splits the stream into
-    // frames, decoded one by one as the files were, RGB or RGBA per frame.
+    // Each screenshot is a whole PNG (or JPEG, §284: captureOptionsFor); the
+    // parser splits the stream into frames, decoded one by one as the files
+    // were, RGB or RGBA per frame. A JPEG decodes to full-range YCbCr, which
+    // the scale to the chunk's pix_fmt brings to video range.
     '-f',                   'image2pipe',
-    '-c:v',                 'png',
+    '-c:v',                 format === 'jpeg' ? 'mjpeg' : 'png',
     '-framerate',           inputRate,
     '-i',                   'pipe:0',
     ...(blurVf ? ['-vf', blurVf, '-r', String(fps)] : []),
@@ -758,10 +788,10 @@ async function captureChunkFrames(worker, job, sink, at, onFrame) {
         // 3. Double rAF: first fires after layout+paint, second fires after the result
         //    has been composited — guarantees the screenshot sees the current frame.
         await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
-        // 4. Into the chunk's ffmpeg (§131): the same PNG bytes a `path`
-        //    screenshot wrote to disk. png is Puppeteer's default; named here
-        //    because omitBackground applies to png only.
-        return page.screenshot({ type: 'png', omitBackground: captureOptionsFor(job).omitBackground })
+        // 4. Into the chunk's ffmpeg (§131): the same bytes a `path`
+        //    screenshot wrote to disk. A PNG, or a JPEG for an opaque capture
+        //    of an SDR master (§284: screenshotOptionsFor).
+        return page.screenshot(screenshotOptionsFor(job))
       }, { overlay: overlayName(job), log, pageErrors })
       await sink.write(png)
     }
