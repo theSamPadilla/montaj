@@ -112,6 +112,30 @@ export function planChunks(segments, config = {}) {
   return { jobs, workerCount, chunkSize, subframes }
 }
 
+/**
+ * The bake's one overall counter: every output frame any worker writes, across
+ * every chunk in flight. The per-frame lines (`progressBar`) name only the
+ * segment, and a segment's chunks run on several workers at once, so a reader
+ * cannot add them up; this line it can. Logged as `baked <n>/<total> frames`
+ * at most once per whole percent, so a long render adds about a hundred lines.
+ * A chunk that runs again never pushes it past the total.
+ *
+ * @param {{ total: number, log: (msg: string) => void }} opts
+ * @returns {() => void} call once per output frame written
+ */
+export function createBakeProgress({ total, log: write }) {
+  let done = 0
+  let lastPct = -1
+  return () => {
+    if (!(total > 0)) return
+    done = Math.min(total, done + 1)
+    const pct = Math.floor((done / total) * 100)
+    if (pct === lastPct) return
+    lastPct = pct
+    write(`baked ${done}/${total} frames`)
+  }
+}
+
 let lastPlan = null
 /** The worker count and chunk size the running render planned; null until it has. */
 export function currentRenderPlan() { return lastPlan }
@@ -127,6 +151,7 @@ export async function renderAllSegments(segments, config = {}) {
 
   const { jobs, workerCount, chunkSize } = planChunks(segments, config)
   lastPlan = { workers: workerCount, chunkFrames: chunkSize }
+  const noteFrame = createBakeProgress({ total: jobs.reduce((n, j) => n + (j.frameEnd - j.frameStart), 0), log })
   log(`workers=${workerCount} chunk=${chunkSize}`)
   // The resolver rule is per browser, and one pool renders every segment, so
   // the font hosts resolve when ANY page links Google Fonts. Each page's guard
@@ -168,7 +193,7 @@ export async function renderAllSegments(segments, config = {}) {
           ? `${job.id} chunk ${job.chunkIndex + 1}/${job.totalChunks}`
           : job.id
         log(`rendering ${label} (${job.frameEnd - job.frameStart} frames)...`)
-        const { webmPath } = await renderChunk(current, job)
+        const { webmPath } = await renderChunk(current, job, { onFrame: noteFrame })
         jobsDone++
         jobsOnThisBrowser++
         log(`encoded ${label} (${jobsDone}/${jobs.length} done)`)
@@ -461,7 +486,7 @@ export function captureOptionsFor(job) {
  * Any failure (the capture, Chrome, ffmpeg, a props image not served) stops
  * the chunk's ffmpeg and removes its partial MKV before the chunk fails.
  */
-export async function renderChunk(worker, job) {
+export async function renderChunk(worker, job, { onFrame } = {}) {
   const { id, chunkIndex, outputPath } = job
   const chunkMkv = outputPath.replace(/\.\w+$/, '') + `-chunk-${chunkIndex}.mkv`
   mkdirSync(dirname(chunkMkv), { recursive: true })
@@ -472,7 +497,7 @@ export async function renderChunk(worker, job) {
     // PL83: a Chrome the system kills mid-capture, or a page whose renderer
     // dies, fails the chunk at once as child_killed, naming the phase.
     const at = { phase: 'overlay-load' }
-    const guard = await unlessChromeDies(worker, captureChunkFrames(worker, job, sink, at),
+    const guard = await unlessChromeDies(worker, captureChunkFrames(worker, job, sink, at, onFrame),
       () => at.phase, `segment ${id} chunk ${chunkIndex}`)
     // A props image the page asked for and could not get fails the render,
     // naming it, rather than exporting without it (page-guard.js).
@@ -604,7 +629,7 @@ export function chunkEncodeArgs(job, chunkMkv) {
 }
 
 /** Loads the chunk's page and streams its frames into `sink` (frameSink); returns its page guard. */
-async function captureChunkFrames(worker, job, sink, at) {
+async function captureChunkFrames(worker, job, sink, at, onFrame) {
   const { id, htmlPath, width, height, frameStart, frameEnd, captureScale, subframes = 1 } = job
 
   const page = worker.watchPage(await worker.browser.newPage())
@@ -740,6 +765,7 @@ async function captureChunkFrames(worker, job, sink, at) {
       }, { overlay: overlayName(job), log, pageErrors })
       await sink.write(png)
     }
+    onFrame?.()
     if ((localIdx + 1) % reportEvery === 0 || localIdx + 1 === totalFrames) {
       log(progressBar(id, localIdx + 1, totalFrames, renderStartMs))
     }
