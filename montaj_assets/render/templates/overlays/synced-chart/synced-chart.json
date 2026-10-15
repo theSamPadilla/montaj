@@ -1,0 +1,25 @@
+{
+  "description": "Line chart that draws itself in time with the video: up to 3 lines, each point timed in seconds from the item's start. Hand-drawn SVG, so the preview, the export and sample_frame match.",
+  "props": [
+    { "name": "values",      "type": "string", "default": "0, 0.12, 0.3, 0.42, 0.61, 0.7, 0.82, 0.88", "description": "Comma list (or JSON array) of y values, spread evenly over the item's length" },
+    { "name": "points",      "type": "string", "format": "json", "default": "", "description": "JSON array of [t, y] pairs, t in seconds from the item's start; replaces values" },
+    { "name": "series",      "type": "string", "format": "json", "default": "", "description": "JSON array of up to 3 lines: { name, color, points or values }; replaces points, values and lineColor" },
+    { "name": "xFrom",       "type": "string", "default": "", "description": "x axis label at the start, in the data's own units (with xTo); empty labels seconds" },
+    { "name": "xTo",         "type": "string", "default": "", "description": "x axis label at the end, in the data's own units (with xFrom)" },
+    { "name": "yMin",        "type": "string", "default": "", "description": "Bottom of the y range; empty fits the data" },
+    { "name": "yMax",        "type": "string", "default": "", "description": "Top of the y range; empty fits the data" },
+    { "name": "title",       "type": "string", "default": "" },
+    { "name": "xLabel",      "type": "string", "default": "" },
+    { "name": "yLabel",      "type": "string", "default": "" },
+    { "name": "lineColor",   "type": "string", "default": "#3b82f6", "format": "color" },
+    { "name": "axisColor",   "type": "string", "default": "#ffffff", "format": "color" },
+    { "name": "bgColor",     "type": "string", "default": "transparent", "format": "color", "description": "Any colour draws a rounded card behind the chart" },
+    { "name": "fontFamily",  "type": "string", "default": "system-ui, -apple-system, \"Helvetica Neue\", sans-serif" },
+    { "name": "fontSize",    "type": "string", "default": "24" },
+    { "name": "strokeWidth", "type": "string", "default": "4" },
+    { "name": "fill",        "type": "string", "default": "true",  "enum": ["true", "false"], "description": "A soft area under a single line" },
+    { "name": "showValue",   "type": "string", "default": "true",  "enum": ["true", "false"], "description": "The value at the tip, single line only" },
+    { "name": "boxWidth",    "type": "string", "default": "720", "description": "Chart width in design px" },
+    { "name": "boxHeight",   "type": "string", "default": "405", "description": "Chart height in design px" }
+  ]
+}

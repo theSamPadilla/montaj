@@ -467,9 +467,19 @@ export default function CanvasExample() {
 
 Overlay JSX can use SVG-based charts via [Recharts](https://recharts.org). Available globals: `BarChart`, `Bar`, `LineChart`, `Line`, `PieChart`, `Pie`, `Cell`, `XAxis`, `YAxis`, `CartesianGrid`, `Tooltip`, `Legend`, `ResponsiveContainer`.
 
-### Carousel-only (for now)
+### Carousel slides use Recharts; video uses `synced-chart`
 
-Charts work in carousel slides today. Video overlays don't have a chart story yet — see follow-up plans. The carousel renderer screenshots SVG directly, so no special contract is required.
+The Recharts globals are for carousel slides: the carousel renderer screenshots SVG directly, so no special contract is required. For a chart over video, use the `synced-chart` system overlay (next section), not Recharts.
+
+### A chart that draws itself with the video: `synced-chart`
+
+`render/templates/overlays/synced-chart/synced-chart.jsx` is a line chart, hand-drawn in SVG, that draws in time with the video: a reward curve under a robot run, a metric climbing through an explainer. It is a pure function of the frame, so the preview, the export and `sample_frame` draw the same picture.
+
+- **Time.** Each point is `[t, y]`, `t` in seconds from the item's start. At each frame the line runs through every point up to that moment and on to it, with a dot at the tip; before the first point only the axes show, after the last the whole line holds. Make the item as long as the data (or longer) and start it where the curve should start.
+- **Data.** `points` (`[[t, y], ...]`) for timed data; `values` (`[y, ...]`) to spread a curve evenly over the item's length; `series` for up to 3 lines (`[{ name, color, points | values }]`, a legend names them), for a run against a baseline. Each takes an array or a JSON string. Points are sorted by `t`; at most 2000 per line.
+- **Axes.** `xFrom`/`xTo` label the x axis in the data's own units (e.g. `0` and `1000000` steps) while the timing stays in seconds; without them the x labels are seconds. `yMin`/`yMax` fix the y range; by default it fits all of the data, so the axes hold still while the line draws. `title`, `xLabel`, `yLabel` are the copy.
+- **Look.** `lineColor`, `axisColor` (white by default, for footage), `bgColor` (`transparent` by default; any colour draws a rounded card, which keeps a chart legible over a busy or light shot), `fontFamily`, `fontSize`, `strokeWidth`, `fill` (a soft area under a single line), `showValue` (the value at the tip, single line only), `boxWidth`/`boxHeight` (design px, default 720 by 405). Take the colours from the brand: the line in the accent, a second and third line in the palette, so the chart matches the rest of the video. Place and size it with the item's `offsetX`, `offsetY` and `scale` like any overlay; an inset in a corner is a smaller `scale` and an offset.
+- **Check it** with `sample_frame` near the start, the middle and the end of the item: the tip should be further along each time.
 
 ### Non-negotiable rule: disable animations
 
@@ -481,7 +491,7 @@ Set `isAnimationActive={false}` on every chart primitive (`<Bar>`, `<Line>`, `<P
 
 ### Stick to bar / line / pie for v1
 
-Three system overlay templates ship today: `bar-chart`, `line-chart`, `pie-chart`. For one-off data viz, write a custom overlay using the same globals. For variants likely to be reused (area, scatter, donut-vs-pie variants beyond `innerRadius`), promote them to system overlays so they show up in the property panel for everyone.
+Three Recharts system overlay templates ship for carousels: `bar-chart`, `line-chart`, `pie-chart` (plus `synced-chart` for video, above). For one-off data viz, write a custom overlay using the same globals. For variants likely to be reused (area, scatter, donut-vs-pie variants beyond `innerRadius`), promote them to system overlays so they show up in the property panel for everyone.
 
 ---
 

@@ -561,7 +561,9 @@ The render manifest gains two top-level fields (`outputResolution`, `scale`) and
 
 ### Chart system overlays
 
-Three chart system overlays ship: `bar-chart`, `line-chart`, `pie-chart`. SVG-rendered (Recharts); operators add them via the system-overlay catalog like `static-text`. See the canonical render docs for details.
+Three chart system overlays ship for carousel slides: `bar-chart`, `line-chart`, `pie-chart`. SVG-rendered (Recharts); operators add them via the system-overlay catalog like `static-text`. See the canonical render docs for details.
+
+For video, `synced-chart` is a line chart (up to 3 lines) that draws itself in time with the item: each point is `[t, y]` with `t` in seconds from the item's start. It is hand-drawn SVG and a pure function of the frame, with no Recharts, so the preview, the export and `sample_frame` draw it identically. Its props are in `templates/overlays/synced-chart/synced-chart.json` and `skills/write-overlay/SKILL.md`.
 
 ---
 
