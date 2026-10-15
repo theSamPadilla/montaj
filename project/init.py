@@ -703,7 +703,7 @@ def _main():
     duration_cache: dict[str, float] = {}
 
     # Single probe pass — populates probe_cache (consumed by _normalize_one below),
-    # collects (w, h, r_frame_rate) tuples for resolution + fps detection. This loop
+    # collects (w, h, frame_rate) tuples for resolution + fps detection. This loop
     # runs unconditionally when clips are present; the override path (--resolution)
     # ignores the (w, h) data but still benefits from the cache + fps detection.
     #
@@ -714,7 +714,7 @@ def _main():
     # a landscape canvas and every clip ends up pillarboxed despite the content
     # being portrait. settings.resolution must reflect the OUTPUT MP4's display
     # orientation, not the on-disk pixel orientation.
-    detected_pairs = []  # [(display_w, display_h, r_frame_rate)] in clip order
+    detected_pairs = []  # [(display_w, display_h, frame_rate)] in clip order
     if clips:
         for clip in clips:
             _duration = _probe_duration(clip["src"])
@@ -727,7 +727,8 @@ def _main():
             w = info.get("display_width") or info.get("width")
             h = info.get("display_height") or info.get("height")
             if w and h:
-                detected_pairs.append((w, h, info.get("r_frame_rate", "")))
+                # The real rate (probe_video's frame_rate), never r_frame_rate: an iPhone clip at 29.7 fps reports 120/1.
+                detected_pairs.append((w, h, info.get("frame_rate") or info.get("r_frame_rate", "")))
 
     if args.resolution:
         # Explicit override (creator intent: "I want 4K output regardless of source")

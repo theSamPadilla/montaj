@@ -243,6 +243,34 @@ def test_probe_video_reports_rotation_zero_when_unrotated(tmp_path):
     assert info["display_height"] == 1080
 
 
+def make_iphone_like_vfr_clip(path: Path) -> str:
+    """A real clip with an iPhone's two traps, no fixture file needed: frames on a 120 time base at about 30 fps
+    (every 4th frame of a 120 fps source, plus two early ones off the grid), so ffprobe reports r_frame_rate 120/1
+    while avg_frame_rate is ~30.3 (one off-grid frame was not enough: ffprobe then guessed 30/1), and a display matrix rotating 320x180 to 180x320 (a remux, since
+    -display_rotation is an input option). Measured on an iPhone 17 Pro clip, 2026-10-14: r_frame_rate 120/1,
+    avg_frame_rate 10020/337 (29.7 fps), rotation -90."""
+    from tests.conftest import FFMPEG_BIN
+    raw = path.with_name(path.stem + "_raw.mp4")
+    subprocess.run([FFMPEG_BIN, "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=120", "-t", "8",
+                    "-vf", "select='not(mod(n\\,4))+eq(n\\,1)+eq(n\\,5)'", "-fps_mode", "passthrough",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-video_track_timescale", "600",
+                    str(raw)], check=True)
+    subprocess.run([FFMPEG_BIN, "-y", "-v", "error", "-display_rotation", "90", "-i", str(raw), "-c", "copy", str(path)],
+                   check=True)
+    return str(path)
+
+
+def test_probe_video_reads_the_real_rate_and_the_rotation_of_an_iphone_like_clip(tmp_path):
+    """r_frame_rate is a timestamp base (120/1 here); the clip's rate is avg_frame_rate (~30). The rotation is real
+    side data, not a monkeypatch."""
+    info = probe_video(make_iphone_like_vfr_clip(tmp_path / "iphone.mp4"))
+    assert info["r_frame_rate"] == "120/1", "the fixture must reproduce the trap"
+    assert info["frame_rate"] == info["avg_frame_rate"]
+    assert info["fps"] == 30
+    assert info["rotation"] == 90
+    assert (info["display_width"], info["display_height"]) == (180, 320)
+
+
 def test_probe_video_swaps_dims_for_rotation_minus_90(tmp_path, monkeypatch):
     """Stored 1920×1080 + rotation=-90 → display 1080×1920 (iPhone vertical case).
 

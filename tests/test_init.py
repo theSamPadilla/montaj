@@ -2288,5 +2288,15 @@ def test_init_with_clips_marks_fps_source_footage(tmp_path):
     assert settings["fps"] == 24 and settings["fpsSource"] == "footage"
 
 
+def test_init_fps_is_the_real_rate_of_an_iphone_like_clip_and_the_canvas_its_display_size(tmp_path):
+    """An iPhone clip reports r_frame_rate 120/1 at 29.7 fps: the project takes the real rate, and the rotated
+    (display) size."""
+    from tests.test_normalize import make_iphone_like_vfr_clip
+    clip = make_iphone_like_vfr_clip(tmp_path / "iphone.mp4")
+    settings = _init_settings(tmp_path, "--clips", clip)
+    assert settings["fps"] == 30 and settings["fpsSource"] == "footage"
+    assert settings["resolution"] == [180, 320] and settings["resolutionSource"] == "footage"
+
+
 def test_init_carousel_has_no_fps_source(tmp_path):
     assert "fpsSource" not in _init_settings(tmp_path, "--workflow", "carousel", "--carousel-aspect", "square")

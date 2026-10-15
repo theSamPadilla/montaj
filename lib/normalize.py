@@ -117,6 +117,12 @@ def probe_video(path):
     with rotation=±90 or ±270, display_width=1080, display_height=1920. Use these
     when reasoning about output orientation (e.g., picking project canvas size).
 
+    Frame rate: `frame_rate` is the clip's real rate, `avg_frame_rate` when it is a
+    positive fraction, else `r_frame_rate`; `fps` is it rounded. `r_frame_rate` is
+    ffprobe's timestamp base, not the rate: an iPhone 17 Pro clip of 501 frames over
+    16.85 s (29.7 fps) reports r_frame_rate 120/1 and avg_frame_rate 10020/337.
+    `r_frame_rate` stays in the result for the fingerprints that compare it.
+
     Creation time: the container's `format.tags.creation_time` (ISO 8601, e.g.
     `2023-05-14T18:32:10.000000Z`) — the recording timestamp for camera/phone
     footage. None when absent or a zeroed placeholder (some encoders write
@@ -125,7 +131,7 @@ def probe_video(path):
     cmd = [
         ffprobe_bin(), "-v", "quiet",
         "-show_entries",
-        "stream=codec_type,codec_name,width,height,pix_fmt,color_transfer,r_frame_rate,sample_rate:format_tags=creation_time",
+        "stream=codec_type,codec_name,width,height,pix_fmt,color_transfer,r_frame_rate,avg_frame_rate,sample_rate:format_tags=creation_time",
         "-of", "json", path,
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
@@ -142,7 +148,9 @@ def probe_video(path):
     has_audio = audio is not None
     audio_sample_rate = int(audio["sample_rate"]) if audio and audio.get("sample_rate") else None
     fps_str = video.get("r_frame_rate", "0/1")
-    num, den = fps_str.split("/")
+    avg_str = video.get("avg_frame_rate") or ""
+    frame_rate = avg_str if _positive_rate(avg_str) else fps_str
+    num, den = frame_rate.split("/") if "/" in frame_rate else ("0", "1")
     fps = round(int(num) / max(int(den), 1))
 
     # Max keyframe interval, which bounds how far back a seek decodes (see
@@ -173,6 +181,8 @@ def probe_video(path):
         "color_transfer": video.get("color_transfer", "unknown"),
         "fps": fps,
         "r_frame_rate": fps_str,
+        "avg_frame_rate": avg_str or None,
+        "frame_rate": frame_rate,
         "has_audio": has_audio,
         "audio_sample_rate": audio_sample_rate,
         "max_keyframe_interval": max_kf_interval,
@@ -181,6 +191,17 @@ def probe_video(path):
         "display_height": display_height,
         "creation_time": creation_time,
     }
+
+
+def _positive_rate(rate) -> bool:
+    """Whether an ffprobe rate string ('10020/337') is a positive fraction; '0/0' is not."""
+    if not isinstance(rate, str) or "/" not in rate:
+        return False
+    num, den = rate.split("/", 1)
+    try:
+        return int(num) > 0 and int(den) > 0
+    except ValueError:
+        return False
 
 
 def _probe_rotation(path):

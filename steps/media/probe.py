@@ -4,7 +4,7 @@ import json, os, sys, argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, require_cmd, run, ffprobe_bin
-from normalize import probe_video
+from normalize import probe_video, _positive_rate
 
 def main():
     parser = argparse.ArgumentParser(description="Extract metadata from a video file")
@@ -41,7 +41,10 @@ def main():
             "channels": s.get("channels"),
             "sample_rate": s.get("sample_rate"),
         }
-        fps_str = s.get("r_frame_rate", "")
+        # The real rate: avg_frame_rate when it is a positive fraction, else r_frame_rate, which is only a
+        # timestamp base (120/1 on a 29.7 fps iPhone clip).
+        avg_str = s.get("avg_frame_rate", "")
+        fps_str = avg_str if _positive_rate(avg_str) else s.get("r_frame_rate", "")
         if "/" in fps_str:
             num, den = fps_str.split("/")
             if int(den) > 0:

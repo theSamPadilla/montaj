@@ -71,8 +71,9 @@ def canvas_for_footage(canvas, footage) -> list[int]:
 
 
 def fps_from_rate(rate) -> int | None:
-    """Whole fps from an ffprobe `r_frame_rate` such as "30000/1001" (30), or
-    None when it is not a positive fraction."""
+    """Whole fps from an ffprobe rate such as "30000/1001" (30), or None when it is
+    not a positive fraction. Pass probe_video's `frame_rate` (the real rate), not
+    `r_frame_rate`, which is a timestamp base: 120/1 on a 29.7 fps iPhone clip."""
     if not isinstance(rate, str) or "/" not in rate:
         return None
     try:

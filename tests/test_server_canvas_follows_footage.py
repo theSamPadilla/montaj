@@ -186,6 +186,18 @@ def test_fps_empty_project_adopts_first_footage_fps(client, tmp_path):
     assert s["resolution"] == [3840, 2160] and s["resolutionSource"] == "footage"
 
 
+def test_fps_footage_follow_takes_the_real_rate_of_an_iphone_like_clip(client, tmp_path):
+    """r_frame_rate 120/1 at ~30 real fps (an iPhone's time base): the project takes 30, not 120."""
+    from tests.test_normalize import make_iphone_like_vfr_clip
+    c, holder = client
+    src = make_iphone_like_vfr_clip(tmp_path / "iphone.mp4")
+    holder["dir"] = _setup(tmp_path)
+    _put_items(c, _item(src))
+    _wait_for(holder["dir"], lambda s: s.get("fpsSource") == "footage")
+    s = _disk(holder["dir"])["settings"]
+    assert s["fps"] == 30 and s["fpsSource"] == "footage"
+
+
 def test_fps_first_clip_in_track_order_wins_and_later_clips_change_nothing(client, tmp_path):
     c, holder = client
     a = _clip_fps(tmp_path / "a.mp4", 24, size="640x360")

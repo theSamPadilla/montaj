@@ -2392,7 +2392,8 @@ async def _ensure_canvas_follows_footage(
                 info = await asyncio.to_thread(probe_video, src)
             except Exception:
                 continue
-            fps = fps_from_rate((info or {}).get("r_frame_rate"))
+            # The real rate (frame_rate), never r_frame_rate: an iPhone clip at 29.7 fps reports 120/1.
+            fps = fps_from_rate((info or {}).get("frame_rate") or (info or {}).get("r_frame_rate"))
             if fps:
                 break
         current = _read()
