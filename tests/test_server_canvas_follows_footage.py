@@ -256,3 +256,61 @@ def test_fps_probe_failure_keeps_marker_for_a_later_open(client, tmp_path, monke
     c.get(f"/api/projects/{PID}")
     s = _disk(holder["dir"])["settings"]
     assert s["fps"] == 30 and s["fpsSource"] == "footage"
+
+
+# settings.aspectSource: a default canvas whose aspect nobody chose turns to the footage's
+# orientation; a chosen aspect, or a project without the marker (test_g above), keeps its own.
+
+def test_aspect_default_landscape_canvas_turns_portrait_for_portrait_footage(client, tmp_path):
+    c, holder = client
+    src = _clip_file(tmp_path / "portrait.mp4", size="1080x1920")
+    holder["dir"] = _setup(tmp_path, items=[_item(src)], extra_settings={"aspectSource": "default"})
+    got = c.get(f"/api/projects/{PID}").json()["settings"]
+    assert got["resolution"] == [1080, 1920] and got["resolutionSource"] == "footage"
+    assert got["aspectSource"] == "default"
+
+
+def test_aspect_default_turns_for_a_rotated_iphone_like_clip(client, tmp_path):
+    """The reported case: a phone clip stored landscape with a rotation, played portrait, into a default 16:9."""
+    from tests.test_normalize import make_iphone_like_vfr_clip
+    c, holder = client
+    src = make_iphone_like_vfr_clip(tmp_path / "iphone.mp4")
+    holder["dir"] = _setup(tmp_path, extra_settings={"aspectSource": "default"})
+    _put_items(c, _item(src))
+    _wait_for(holder["dir"], lambda s: s.get("resolutionSource") == "footage")
+    s = _disk(holder["dir"])["settings"]
+    assert s["resolution"] == [180, 320] and s["resolutionSource"] == "footage"
+
+
+def test_aspect_default_portrait_canvas_turns_landscape_for_landscape_footage(client, tmp_path):
+    c, holder = client
+    src = _clip_file(tmp_path / "uhd.mp4")
+    holder["dir"] = _setup(tmp_path, resolution=(1080, 1920), items=[_item(src)],
+                           extra_settings={"aspectSource": "default"})
+    got = c.get(f"/api/projects/{PID}").json()["settings"]
+    assert got["resolution"] == [3840, 2160] and got["resolutionSource"] == "footage"
+
+
+def test_aspect_explicit_keeps_a_chosen_landscape_under_portrait_footage(client, tmp_path):
+    c, holder = client
+    src = _clip_file(tmp_path / "portrait.mp4", size="1080x1920")
+    holder["dir"] = _setup(tmp_path, items=[_item(src)], extra_settings={"aspectSource": "explicit"})
+    got = c.get(f"/api/projects/{PID}").json()["settings"]
+    assert got["resolution"] == [1920, 1080] and got["resolutionSource"] == "footage"
+
+
+def test_aspect_default_square_footage_does_not_turn_the_canvas(client, tmp_path):
+    c, holder = client
+    src = _clip_file(tmp_path / "square.mp4", size="1080x1080")
+    holder["dir"] = _setup(tmp_path, items=[_item(src)], extra_settings={"aspectSource": "default"})
+    got = c.get(f"/api/projects/{PID}").json()["settings"]
+    assert got["resolution"] == [1920, 1080] and got["resolutionSource"] == "footage"
+
+
+def test_aspect_source_survives_a_put_whose_settings_leave_it_out(client, tmp_path):
+    c, holder = client
+    holder["dir"] = _setup(tmp_path, extra_settings={"aspectSource": "default"})
+    body = {"id": PID, "settings": {"resolution": [1920, 1080], "fps": 60}}
+    assert c.put(f"/api/projects/{PID}", json=body).status_code == 200
+    s = _disk(holder["dir"])["settings"]
+    assert s["aspectSource"] == "default" and s["resolutionSource"] == "default"

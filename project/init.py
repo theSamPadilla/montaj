@@ -675,6 +675,9 @@ def _main():
     # Where the canvas came from: serve lets the first footage added to a "default"
     # project set it once; "explicit" and "footage" are never changed.
     resolution_source = SOURCE_DEFAULT
+    # Whether the aspect was chosen. Serve turns a default canvas to the footage's
+    # orientation only when it was not, so a chosen 16:9 stays 16:9 under portrait clips.
+    aspect_source = SOURCE_EXPLICIT if (args.aspect_ratio or args.resolution) else SOURCE_DEFAULT
     # A project with no footage of any kind has nothing to probe, so this default is
     # the FINAL answer for it — every frame is authored JSX rather than sampled
     # footage, and motion graphics at 30 read visibly cheap (stepped easing, strobing
@@ -1175,6 +1178,7 @@ def _main():
         "settings": {
             "resolution": detected_resolution,
             "resolutionSource": resolution_source,
+            "aspectSource": aspect_source,
             "fps": detected_fps,
             "fpsSource": fps_source,
             "colorSpace": project_color_space,

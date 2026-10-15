@@ -12,7 +12,9 @@ from collections import Counter
 SOURCE_EXPLICIT = "explicit"
 SOURCE_FOOTAGE = "footage"
 SOURCE_DEFAULT = "default"
-# settings.fpsSource takes the same three values.
+# settings.fpsSource takes the same three values. settings.aspectSource takes
+# two: "explicit" when the aspect was chosen at create (--aspect-ratio or
+# --resolution), "default" when it was not.
 
 # The overlay design canvas: 1080 on the short edge (render.js SHORT_EDGE_TARGET),
 # portrait 1080x1920 when the project has no settings.resolution.
@@ -54,15 +56,22 @@ def modal_dims(pairs) -> tuple[int, int] | None:
     return next(p for p in pairs if counts[p] == top)
 
 
-def canvas_for_footage(canvas, footage) -> list[int]:
+def canvas_for_footage(canvas, footage, follow_orientation=False) -> list[int]:
     """The canvas a project on `canvas` takes for footage of `footage` dims.
 
     Footage of the canvas's own aspect (w/h within 1%) gives the footage dims
     verbatim. Any other aspect keeps the canvas's aspect, scaled so its short
     side equals the footage's short side, the long side rounded to an even
-    integer: 9:16 canvas + 3840x2160 footage is 2160x3840."""
+    integer: 9:16 canvas + 3840x2160 footage is 2160x3840.
+
+    With `follow_orientation` (a canvas whose aspect nobody chose), a portrait
+    canvas turns landscape for landscape footage and the other way round,
+    before the rule above: 16:9 canvas + 2160x3840 footage is 2160x3840. A
+    square canvas or square footage has no orientation to follow."""
     cw, ch = canvas
     fw, fh = footage
+    if follow_orientation and cw != ch and fw != fh and (cw > ch) != (fw > fh):
+        cw, ch = ch, cw
     if abs((fw / fh) / (cw / ch) - 1) <= 0.01:
         return [fw, fh]
     short = min(fw, fh)

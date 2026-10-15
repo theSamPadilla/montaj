@@ -2355,7 +2355,9 @@ async def _ensure_canvas_follows_footage(
     `settings.fpsSource` of `"default"`. Once a video item (tracks first, then
     sources) carries source dims, the canvas becomes the modal footage size
     (first appearance wins a tie, as at init); a canvas of another aspect keeps
-    its aspect and takes the footage's short side (`canvas_for_footage`). The
+    its aspect and takes the footage's short side (`canvas_for_footage`), first
+    turning to the footage's orientation when `settings.aspectSource` is
+    `"default"` (nobody chose the aspect). The
     fps becomes the first probeable clip's, in track order. Each marker turns
     `"footage"` in the same write and the setting never changes again. The two
     are independent, and any other marker, or none, is left alone. A failed
@@ -2409,7 +2411,10 @@ async def _ensure_canvas_follows_footage(
             if _positive_dim(item.get("sourceWidth")) and _positive_dim(item.get("sourceHeight"))
         )
         if footage is not None and isinstance(canvas, list) and len(canvas) == 2 and all(_positive_dim(v) for v in canvas):
-            edits["resolution"] = canvas_for_footage(canvas, footage)
+            # An aspect nobody chose follows the footage's orientation; a chosen one, or a
+            # project made before aspectSource existed, keeps its aspect.
+            follow = settings.get("aspectSource") == SOURCE_DEFAULT
+            edits["resolution"] = canvas_for_footage(canvas, footage, follow_orientation=follow)
             edits["resolutionSource"] = SOURCE_FOOTAGE
     if fps and settings.get("fpsSource") == SOURCE_DEFAULT:
         edits["fps"] = fps
@@ -3799,7 +3804,7 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
             new_settings["resolutionSource"] = SOURCE_EXPLICIT
         if "fps" in new_settings and new_settings["fps"] != old_settings.get("fps"):
             new_settings["fpsSource"] = SOURCE_EXPLICIT
-        for marker in ("resolutionSource", "fpsSource"):
+        for marker in ("resolutionSource", "fpsSource", "aspectSource"):
             if marker not in new_settings and marker in old_settings:
                 new_settings[marker] = old_settings[marker]
         merged["settings"] = new_settings

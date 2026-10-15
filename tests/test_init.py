@@ -2300,3 +2300,26 @@ def test_init_fps_is_the_real_rate_of_an_iphone_like_clip_and_the_canvas_its_dis
 
 def test_init_carousel_has_no_fps_source(tmp_path):
     assert "fpsSource" not in _init_settings(tmp_path, "--workflow", "carousel", "--carousel-aspect", "square")
+
+
+# settings.aspectSource: whether the aspect was chosen, so serve turns only a default one
+# to the footage's orientation.
+
+def test_init_without_an_aspect_marks_aspect_source_default(tmp_path):
+    settings = _init_settings(tmp_path)
+    assert settings["resolution"] == [1920, 1080] and settings["aspectSource"] == "default"
+
+
+def test_init_with_aspect_ratio_marks_aspect_source_explicit(tmp_path):
+    settings = _init_settings(tmp_path, "--aspect-ratio", "9:16")
+    assert settings["resolution"] == [1080, 1920]
+    assert settings["aspectSource"] == "explicit" and settings["resolutionSource"] == "default"
+
+
+def test_init_with_resolution_marks_aspect_source_explicit(tmp_path):
+    settings = _init_settings(tmp_path, "--resolution", "1080x1920")
+    assert settings["aspectSource"] == "explicit" and settings["resolutionSource"] == "explicit"
+
+
+def test_init_carousel_has_no_aspect_source(tmp_path):
+    assert "aspectSource" not in _init_settings(tmp_path, "--workflow", "carousel", "--carousel-aspect", "square")
