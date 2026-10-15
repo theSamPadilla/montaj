@@ -86,6 +86,7 @@ _STEP_COMMANDS = {
     "snapshot":           {},
     "stem-separation":    {"emit_json": False},
     "transcribe":         {"emit_json": False},
+    "veo-generate":       {"required_out": True, "forward_json": True},
 }
 
 # Order commands were registered in before this change — preserved so that a
@@ -101,6 +102,7 @@ _REGISTRATION_ORDER = (
     "remove-bg", "kling-generate", "analyze-media", "generate-image",
     "generate-voiceover", "generate-music", "detect-shots", "shot-sheet",
     "detect-beats", "seedance-generate", "generate-sfx", "kinovi-generate",
+    "veo-generate",
 )
 
 # Individual step commands — available but not listed in top-level help.
@@ -115,6 +117,7 @@ _HIDDEN = {
     "kling-generate", "analyze-media", "generate-image", "generate-voiceover",
     "generate-music", "detect-shots", "shot-sheet",
     "detect-beats", "seedance-generate", "generate-sfx", "kinovi-generate",
+    "veo-generate",
 }
 
 

@@ -1076,13 +1076,14 @@ class TestCheckKeyOk:
             _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
             _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
             _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_VIDEO_MODEL}"),
             _make_model("models/gemini-2.5-flash"),
         ]
         monkeypatch.setattr(mod, "_client", lambda: client)
 
         result = mod.check_key()
         assert result["ok"] is True
-        assert "5 models" in result["detail"]
+        assert "6 models" in result["detail"]
 
 
 class TestCheckKeyErrors:
@@ -1152,6 +1153,9 @@ class TestBestModelDefaults:
         assert mod.DEFAULT_IMAGE_MODEL == "gemini-3-pro-image"
         assert mod.DEFAULT_TTS_MODEL == "gemini-3.8-flash-tts"
         assert mod.DEFAULT_MUSIC_MODEL == "lyria-3.5"
+        # Hand-copied from ai.google.dev/gemini-api/docs/veo (2026-10-14): there
+        # is no GA Veo 3.1, so the default is a -preview id.
+        assert mod.DEFAULT_VIDEO_MODEL == "veo-3.1-generate-preview"
 
     def test_default_image_model_reaches_request_without_refs(self, monkeypatch, tmp_path):
         """The new default must actually flow through to generate_content,
@@ -1193,20 +1197,20 @@ class TestBestModelDefaults:
 
 
 class TestCheckKeyCapabilityDefaults:
-    """One Gemini key backs four generation capabilities (text, image, TTS,
-    music), each with its own default model that can retire independently.
+    """One Gemini key backs five generation capabilities (text, image, TTS,
+    music, video), each with its own default model that can retire independently.
 
     check_key() is new and unreleased (PV29 T4b, controller decision
     2026-09-28) with no backward compatibility to keep, and the app's
     Connectors tile and the release guard read only
     {default_model, default_model_ok, detail} — so default_model_ok means
-    ALL FOUR defaults are present, not just the text one, and when any are
+    ALL FIVE defaults are present, not just the text one, and when any are
     missing, default_model/detail name the missing one(s) instead of always
     describing the text default. image_model_ok / tts_model_ok /
-    music_model_ok stay as the per-capability breakdown for a caller that
-    wants to know which capability, specifically, is affected."""
+    music_model_ok / video_model_ok stay as the per-capability breakdown for a
+    caller that wants to know which capability, specifically, is affected."""
 
-    def test_all_four_present(self, monkeypatch):
+    def test_all_five_present(self, monkeypatch):
         import connectors.gemini as mod
         client = MagicMock()
         client.models.list.return_value = [
@@ -1214,12 +1218,38 @@ class TestCheckKeyCapabilityDefaults:
             _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
             _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
             _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_VIDEO_MODEL}"),
         ]
         monkeypatch.setattr(mod, "_client", lambda: client)
 
         result = mod.check_key()
         assert result["default_model_ok"] is True
         assert result["default_model"] == mod.DEFAULT_MODEL
+        assert result["image_model_ok"] is True
+        assert result["tts_model_ok"] is True
+        assert result["music_model_ok"] is True
+        assert result["video_model_ok"] is True
+
+    def test_video_default_missing_alone_fails_default_model_ok_and_is_named(self, monkeypatch):
+        """A key whose models.list lacks the Veo default: default_model_ok goes
+        False (it covers all five), default_model names the Veo id, and only
+        video_model_ok is False."""
+        import connectors.gemini as mod
+        client = MagicMock()
+        client.models.list.return_value = [
+            _make_model(f"models/{mod.DEFAULT_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
+            _make_model("models/veo-3.1-fast-generate-preview"),
+        ]
+        monkeypatch.setattr(mod, "_client", lambda: client)
+
+        result = mod.check_key()
+        assert result["default_model_ok"] is False
+        assert result["default_model"] == mod.DEFAULT_VIDEO_MODEL
+        assert mod.DEFAULT_VIDEO_MODEL in result["detail"]
+        assert result["video_model_ok"] is False
         assert result["image_model_ok"] is True
         assert result["tts_model_ok"] is True
         assert result["music_model_ok"] is True
@@ -1234,6 +1264,7 @@ class TestCheckKeyCapabilityDefaults:
             _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
             _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
             _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_VIDEO_MODEL}"),
         ]
         monkeypatch.setattr(mod, "_client", lambda: client)
 
@@ -1244,6 +1275,7 @@ class TestCheckKeyCapabilityDefaults:
         assert result["image_model_ok"] is True
         assert result["tts_model_ok"] is True
         assert result["music_model_ok"] is True
+        assert result["video_model_ok"] is True
 
     def test_image_model_missing_fails_default_model_ok_and_is_named(self, monkeypatch):
         """A retired image default now fails default_model_ok too — no more
@@ -1256,6 +1288,7 @@ class TestCheckKeyCapabilityDefaults:
             _make_model(f"models/{mod.DEFAULT_MODEL}"),
             _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
             _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_VIDEO_MODEL}"),
         ]
         monkeypatch.setattr(mod, "_client", lambda: client)
 
@@ -1276,6 +1309,7 @@ class TestCheckKeyCapabilityDefaults:
         client.models.list.return_value = [
             _make_model(f"models/{mod.DEFAULT_MODEL}"),
             _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_VIDEO_MODEL}"),
         ]
         monkeypatch.setattr(mod, "_client", lambda: client)
 
@@ -1286,6 +1320,7 @@ class TestCheckKeyCapabilityDefaults:
         assert mod.DEFAULT_MUSIC_MODEL in result["detail"]
         assert result["tts_model_ok"] is False
         assert result["music_model_ok"] is False
+        assert result["video_model_ok"] is True
 
     def test_all_missing(self, monkeypatch):
         import connectors.gemini as mod
@@ -1299,3 +1334,4 @@ class TestCheckKeyCapabilityDefaults:
         assert result["image_model_ok"] is False
         assert result["tts_model_ok"] is False
         assert result["music_model_ok"] is False
+        assert result["video_model_ok"] is False

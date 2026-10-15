@@ -16,10 +16,20 @@ Current functions:
     generate_image(prompt, out_path, ref_images, size, model, aspect_ratio) -> str
     generate_speech(text, voice, out_path, model) -> str
     generate_music(prompt, out_path, instrumental, model, seed) -> str
+    generate_video(prompt, out_path, image_path, last_frame_path,
+                   reference_image_paths, duration, aspect_ratio, resolution,
+                   negative_prompt, model) -> str
+        Veo video (with sound) on the Gemini API: submit, poll, download.
+        Billed per second once submitted, so every input is checked by
+        video_request_problem() before any network call, and a failure after
+        submission never invites a blind re-run.
+    video_request_problem(...) -> str | None
+        Pure check of a Veo request; a short message for the first invalid
+        combination, None when the request is valid.
     check_key() -> dict
         One free call (models.list) to validate a key and confirm each of the
-        four default models (text, image, TTS, music) is still available,
-        with no billed call.
+        five default models (text, image, TTS, music, video) is still
+        available, with no billed call.
 
 Private helpers:
     _generate_audio(model, contents, config, out_path, ...) -> str
@@ -31,7 +41,10 @@ Step scripts catch ConnectorError and translate to fail().
 """
 import json as _json
 import os, re, sys, time, wave
-from connectors import ConnectorError, UNREACHABLE, retarget_extension as _retarget_extension
+from connectors import (
+    ConnectorError, UNREACHABLE, INSUFFICIENT_CREDIT, MODEL_RETIRED, CONTENT_REFUSED,
+    retarget_extension as _retarget_extension,
+)
 from lib.credentials import get_credential
 
 # gemini-2.5-flash started 404ing for new API keys ("no longer available to
@@ -63,6 +76,39 @@ INLINE_BYTE_LIMIT = 18 * 1024 * 1024  # 18 MB
 DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts"
 DEFAULT_TTS_VOICE = "Kore"  # default for generate_speech when caller omits voice
 DEFAULT_MUSIC_MODEL = "lyria-3.5"
+
+# Veo on the Gemini API (facts read from ai.google.dev/gemini-api/docs/veo and
+# /pricing on 2026-10-14). There is no GA Veo 3.1: the GA veo-3.0-*-001 models
+# are deprecated and so are not offered. PV29 allows a -preview default when
+# no GA model exists; replace this one when a GA Veo 3.1 appears.
+# There is no free tier: a key without billing cannot generate video.
+DEFAULT_VIDEO_MODEL = "veo-3.1-generate-preview"
+# What each model takes. "reference_images" is whether it accepts up to
+# VIDEO_MAX_REFERENCE_IMAGES asset images; 1080p and 4k need an 8 s clip on all.
+VIDEO_MODELS = {
+    "veo-3.1-generate-preview":      {"resolutions": ("720p", "1080p", "4k"), "reference_images": True},
+    "veo-3.1-fast-generate-preview": {"resolutions": ("720p", "1080p", "4k"), "reference_images": True},
+    "veo-3.1-lite-generate-preview": {"resolutions": ("720p", "1080p"),      "reference_images": False},
+}
+VIDEO_DURATIONS = (4, 6, 8)
+VIDEO_ASPECT_RATIOS = ("16:9", "9:16")
+VIDEO_RESOLUTIONS = ("720p", "1080p", "4k")
+VIDEO_MAX_REFERENCE_IMAGES = 3
+# Veo takes 11 s to 6 min; serve kills a step at 900 s, so give up before that.
+VIDEO_POLL_INTERVAL_S = 10
+VIDEO_MAX_WAIT_S = 600
+VIDEO_PROGRESS_EVERY_S = 30
+# A job is billed once submitted, so a flaky status check must not abandon it.
+VIDEO_MAX_POLL_FAILURES = 3
+VIDEO_DOWNLOAD_ATTEMPTS = 3
+VIDEO_DOWNLOAD_RETRY_S = 3
+
+_VIDEO_IMAGE_MIME_BY_EXT = {
+    ".png":  "image/png",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
 
 # Shared fail() message for ConnectorError(reason="invalid_api_key"). One
 # constant so every Gemini-calling step (analyze_media, generate_image,
@@ -273,25 +319,26 @@ def check_key() -> dict:
 
     No billed call — listing the models a key can see costs nothing.
 
-    One Gemini key backs four generation capabilities under this connector
-    (text, image, TTS, music), each with its own default model that can be
-    retired independently of the others. check_key() is new and unreleased
+    One Gemini key backs five generation capabilities under this connector
+    (text, image, TTS, music, video), each with its own default model that can
+    be retired independently of the others. check_key() is new and unreleased
     (PV29) with no backward compatibility to keep, and the app's
     Connectors tile and the release guard read only default_model_ok — so
-    that field means ALL FOUR defaults are present in models.list, not just
+    that field means ALL FIVE defaults are present in models.list, not just
     the text one:
       - default_model_ok is True only when DEFAULT_MODEL, DEFAULT_IMAGE_MODEL,
-        DEFAULT_TTS_MODEL, and DEFAULT_MUSIC_MODEL are all present.
+        DEFAULT_TTS_MODEL, DEFAULT_MUSIC_MODEL and DEFAULT_VIDEO_MODEL are all
+        present.
       - When any are missing, default_model is set to the first missing
-        one's id (checked in text, image, TTS, music order) instead of
+        one's id (checked in text, image, TTS, music, video order) instead of
         DEFAULT_MODEL, and detail names every missing one — a caller reading
         only {default_model, default_model_ok, detail} still sees which
         model retired, not just that something did.
-      - image_model_ok / tts_model_ok / music_model_ok are kept as the
-        individual per-capability flags (same membership check, off the same
-        models.list response — no extra call), for a caller that wants to
-        know which capability specifically is affected rather than parse
-        detail's text.
+      - image_model_ok / tts_model_ok / music_model_ok / video_model_ok are
+        kept as the individual per-capability flags (same membership check,
+        off the same models.list response — no extra call), for a caller that
+        wants to know which capability specifically is affected rather than
+        parse detail's text.
 
     A rejected key raises ConnectorError(reason="invalid_api_key") through the
     same detection every other Gemini call path uses (_wrap_sdk_error /
@@ -315,13 +362,15 @@ def check_key() -> dict:
     except Exception as e:
         raise _wrap_sdk_error(e, "Gemini key check failed") from e
 
-    # Checked in this order — text, image, TTS, music — so that when more
-    # than one default is missing, the one surfaced through `default_model`
-    # (a single-value field) is deterministic rather than set-iteration order.
+    # Checked in this order — text, image, TTS, music, video — so that when
+    # more than one default is missing, the one surfaced through
+    # `default_model` (a single-value field) is deterministic rather than
+    # set-iteration order.
     capability_defaults = (
         ("image_model_ok", DEFAULT_IMAGE_MODEL),
         ("tts_model_ok", DEFAULT_TTS_MODEL),
         ("music_model_ok", DEFAULT_MUSIC_MODEL),
+        ("video_model_ok", DEFAULT_VIDEO_MODEL),
     )
     text_ok = DEFAULT_MODEL in model_names
     missing = [] if text_ok else [DEFAULT_MODEL]
@@ -344,6 +393,7 @@ def check_key() -> dict:
         "image_model_ok": availability["image_model_ok"],
         "tts_model_ok": availability["tts_model_ok"],
         "music_model_ok": availability["music_model_ok"],
+        "video_model_ok": availability["video_model_ok"],
         "detail": detail,
     }
 
@@ -691,3 +741,304 @@ def generate_music(
         out_path=out_path, channels=2, sample_rate=44100,
         error_prefix="Lyria music",
     )
+
+
+# ---------------------------------------------------------------------------
+# Veo video
+# ---------------------------------------------------------------------------
+
+def _video_duration(duration) -> int | None:
+    """`duration` as an int when it is a whole number of seconds, else None."""
+    if isinstance(duration, bool):
+        return None
+    if isinstance(duration, int):
+        return duration
+    if isinstance(duration, float) and duration.is_integer():
+        return int(duration)
+    if isinstance(duration, str) and duration.strip().isdigit():
+        return int(duration.strip())
+    return None
+
+
+def video_request_problem(
+    prompt: str,
+    image_path: str | None = None,
+    last_frame_path: str | None = None,
+    reference_image_paths: list[str] | None = None,
+    duration=8,
+    aspect_ratio: str = "9:16",
+    resolution: str = "720p",
+    model: str = DEFAULT_VIDEO_MODEL,
+) -> str | None:
+    """A short message for the first invalid Veo request, None when it is valid.
+
+    Pure: looks at the values and the file extensions, never at the disk or the
+    network. Veo is billed per second once a job is submitted, so
+    generate_video() and the step call this first and send nothing on a problem.
+    """
+    refs = list(reference_image_paths or [])
+    if not prompt or not prompt.strip():
+        return "Prompt must not be empty."
+    spec = VIDEO_MODELS.get(model)
+    if spec is None:
+        return f"Unknown Veo model {model}. Use one of: {', '.join(VIDEO_MODELS)}."
+    seconds = _video_duration(duration)
+    if seconds not in VIDEO_DURATIONS:
+        return "Veo clips are 4, 6 or 8 seconds."
+    if aspect_ratio not in VIDEO_ASPECT_RATIOS:
+        return "Veo makes 16:9 or 9:16 video."
+    if resolution not in VIDEO_RESOLUTIONS:
+        return "Resolution must be 720p, 1080p or 4k."
+    if resolution not in spec["resolutions"]:
+        return f"{model} does not make {resolution}. Use {' or '.join(spec['resolutions'])}."
+    if resolution != "720p" and seconds != 8:
+        return f"{resolution} needs an 8 second clip."
+    for label, path in (("first frame", image_path), ("last frame", last_frame_path),
+                        *(("reference image", r) for r in refs)):
+        if path and os.path.splitext(path)[1].lower() not in _VIDEO_IMAGE_MIME_BY_EXT:
+            return f"Veo takes PNG, JPEG or WebP images; the {label} is {os.path.basename(path)}."
+    if last_frame_path and not image_path:
+        return "A last frame needs a first frame."
+    if refs and image_path:
+        return "Use either a first frame or reference images, not both."
+    if len(refs) > VIDEO_MAX_REFERENCE_IMAGES:
+        return f"Veo takes up to {VIDEO_MAX_REFERENCE_IMAGES} reference images."
+    if refs and not spec["reference_images"]:
+        return (f"{model} takes no reference images. Use veo-3.1-generate-preview "
+                f"or veo-3.1-fast-generate-preview.")
+    if refs and seconds != 8:
+        return "Reference images need an 8 second clip."
+    return None
+
+
+def _video_progress(message: str) -> None:
+    print(_json.dumps({"progress": message}), file=sys.stderr, flush=True)
+
+
+def _video_image(types, path: str):
+    """A Veo image input read from `path` (extension already validated)."""
+    mime = _VIDEO_IMAGE_MIME_BY_EXT[os.path.splitext(path)[1].lower()]
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        raise ConnectorError(f"Could not read image {path}: {e}") from e
+    return types.Image(image_bytes=data, mime_type=mime)
+
+
+def _veo_safety_text(text: str) -> bool:
+    lowered = text.lower()
+    return any(w in lowered for w in (
+        "safety", "policy", "guideline", "responsible ai", "prohibited", "sensitive",
+    ))
+
+
+def _veo_refusal(detail: str, reasons=None) -> ConnectorError:
+    message = "Veo blocked this video on safety grounds. Change the prompt or the images and try again."
+    if reasons:
+        message += f" Reasons: {_sanitize_sdk_detail('; '.join(str(r) for r in reasons))}."
+    message += " Blocked videos are not charged."
+    if detail:
+        message += f" Google said: {detail}"
+    return ConnectorError(message, reason=CONTENT_REFUSED)
+
+
+def _veo_error(e: Exception, model: str) -> ConnectorError:
+    """The ConnectorError for an SDK failure on the submit call.
+
+    Matched against the shape google-genai raises (errors.APIError: .code the
+    HTTP status, .status Google's string status, .message its text). Inferred
+    from Google's wording, not measured against a live Veo call: the billing
+    split below is the part most likely to need adjusting.
+    """
+    if _is_invalid_api_key_error(e):
+        return _wrap_sdk_error(e, "Veo request failed")
+    try:
+        from google.genai import errors
+    except ImportError:
+        errors = None
+    if errors is None or not isinstance(e, errors.APIError):
+        return ConnectorError(f"Veo request failed: {_sanitize_sdk_detail(str(e))}")
+
+    code = getattr(e, "code", None)
+    status = (getattr(e, "status", None) or "").upper()
+    raw = getattr(e, "message", None) or str(e)
+    lowered = raw.lower()
+    detail = _sanitize_sdk_detail(raw)
+    google = f" Google said: {detail}" if detail else ""
+
+    if code == 429 or status == "RESOURCE_EXHAUSTED":
+        # Google's ordinary quota 429 says "check your plan and billing
+        # details" even on a paid key, so the word billing proves nothing
+        # here. A zero limit, or a free-tier metric, means the key has no
+        # billing at all.
+        if re.search(r"limit:\s*0\b", lowered) or "free_tier" in lowered or "free tier" in lowered:
+            return ConnectorError(
+                "Veo needs billing on your Gemini key. Turn it on in Google AI Studio, "
+                "then try again." + google, reason=INSUFFICIENT_CREDIT)
+        return ConnectorError(
+            "Your Gemini video quota was reached. Wait a few minutes and try again, "
+            "or raise the limit in Google AI Studio." + google)
+    if any(w in lowered for w in ("billing", "paid", "free tier", "free_tier")):
+        return ConnectorError(
+            "Veo needs billing on your Gemini key. Turn it on in Google AI Studio, "
+            "then try again." + google, reason=INSUFFICIENT_CREDIT)
+    if (code == 404 or status == "NOT_FOUND") and ("model" in lowered or model in lowered):
+        return ConnectorError(
+            f"Veo model {model} is not available to your Gemini key." + google,
+            reason=MODEL_RETIRED)
+    if code == 400 and _veo_safety_text(lowered):
+        return _veo_refusal(detail)
+    return ConnectorError(f"Veo request failed: {detail}")
+
+
+def generate_video(
+    prompt: str,
+    out_path: str,
+    image_path: str | None = None,
+    last_frame_path: str | None = None,
+    reference_image_paths: list[str] | None = None,
+    duration: int = 8,
+    aspect_ratio: str = "9:16",
+    resolution: str = "720p",
+    negative_prompt: str | None = None,
+    model: str = DEFAULT_VIDEO_MODEL,
+) -> str:
+    """Generate a video with sound via Veo. Writes an .mp4 and returns out_path.
+
+    Mode follows the inputs: text only, image_path (first frame, with an
+    optional last_frame_path), or reference_image_paths (up to 3 asset images,
+    veo-3.1 and -fast only). Every input is checked by video_request_problem()
+    before any network call.
+
+    Billed per second of video once the job is submitted (a video blocked by
+    safety is not charged). From then on a failure that does not prove the job
+    failed (a status check that keeps failing, a timeout, a download error)
+    says the job may still finish and not to regenerate. Google keeps a
+    finished video 2 days.
+
+    Only the config fields the Gemini API accepts are set: it raises for seed,
+    generate_audio, fps and output_gcs_uri, and person_generation is left out so
+    the API picks the value its mode and region allow.
+    """
+    if not out_path:
+        raise ConnectorError("out_path is required")
+    problem = video_request_problem(
+        prompt, image_path=image_path, last_frame_path=last_frame_path,
+        reference_image_paths=reference_image_paths, duration=duration,
+        aspect_ratio=aspect_ratio, resolution=resolution, model=model,
+    )
+    if problem:
+        raise ConnectorError(problem)
+
+    client = _client()
+    try:
+        import httpx
+        from google.genai import types
+    except ImportError:
+        raise ConnectorError("Missing connector dependencies. Run: montaj install connectors")
+
+    config_kwargs = {
+        "duration_seconds": _video_duration(duration),
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+    }
+    if negative_prompt:
+        config_kwargs["negative_prompt"] = negative_prompt
+    if last_frame_path:
+        config_kwargs["last_frame"] = _video_image(types, last_frame_path)
+    if reference_image_paths:
+        config_kwargs["reference_images"] = [
+            types.VideoGenerationReferenceImage(
+                image=_video_image(types, r),
+                reference_type=types.VideoGenerationReferenceType.ASSET,
+            )
+            for r in reference_image_paths
+        ]
+    call = {"model": model, "prompt": prompt, "config": types.GenerateVideosConfig(**config_kwargs)}
+    if image_path:
+        call["image"] = _video_image(types, image_path)
+
+    try:
+        op = client.models.generate_videos(**call)
+    except httpx.TransportError as e:
+        detail = _sanitize_sdk_detail(str(e))
+        if isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout,
+                          httpx.ProxyError, httpx.UnsupportedProtocol)):
+            raise ConnectorError(
+                f"Veo request failed: could not reach the Gemini API: {detail}",
+                reason=UNREACHABLE) from e
+        # The request may have gone out before the connection failed, so the
+        # job may exist and be billed. UNREACHABLE would read as "nothing
+        # happened" and invite a second paid run.
+        raise ConnectorError(
+            f"Veo request failed: {detail}. The job may have started on Google's "
+            f"side, so don't regenerate right away.") from e
+    except Exception as e:
+        raise _veo_error(e, model) from e
+
+    name = getattr(op, "name", None) or "(unnamed)"
+    _video_progress(f"Veo job {name} submitted; it usually takes 1 to 6 minutes")
+
+    elapsed, failures, last_report = 0.0, 0, 0.0
+    while not op.done:
+        if elapsed >= VIDEO_MAX_WAIT_S:
+            raise ConnectorError(
+                f"Veo job {name} did not finish within {VIDEO_MAX_WAIT_S}s. It may still "
+                f"finish on Google's side, so don't regenerate yet.")
+        time.sleep(VIDEO_POLL_INTERVAL_S)
+        elapsed += VIDEO_POLL_INTERVAL_S
+        try:
+            op = client.operations.get(op)
+            failures = 0
+        except Exception as e:
+            if _is_invalid_api_key_error(e):
+                raise _wrap_sdk_error(e, "Veo status check failed") from e
+            failures += 1
+            if failures >= VIDEO_MAX_POLL_FAILURES:
+                raise ConnectorError(
+                    f"Veo job {name}: {failures} status checks failed in a row, giving up. "
+                    f"It may still finish on Google's side, so don't regenerate yet. "
+                    f"Last error: {_sanitize_sdk_detail(str(e))}") from e
+            continue
+        if elapsed - last_report >= VIDEO_PROGRESS_EVERY_S and not op.done:
+            last_report = elapsed
+            _video_progress(f"Veo job {name} still working ({int(elapsed)}s)")
+
+    error = getattr(op, "error", None)
+    if error:
+        raw = error.get("message") if isinstance(error, dict) else str(error)
+        detail = _sanitize_sdk_detail(raw or str(error))
+        if _veo_safety_text(detail):
+            raise _veo_refusal(detail)
+        raise ConnectorError(f"Veo job {name} failed on Google's side: {detail}")
+
+    response = getattr(op, "response", None)
+    videos = getattr(response, "generated_videos", None) or []
+    if not videos:
+        reasons = getattr(response, "rai_media_filtered_reasons", None)
+        if getattr(response, "rai_media_filtered_count", None) or reasons:
+            raise _veo_refusal("", reasons)
+        raise ConnectorError(f"Veo job {name} finished with no video.")
+
+    video = videos[0].video
+    data, last_error = None, None
+    for attempt in range(VIDEO_DOWNLOAD_ATTEMPTS):
+        try:
+            data = client.files.download(file=video) or getattr(video, "video_bytes", None)
+        except Exception as e:
+            last_error = e
+        if data:
+            break
+        if attempt < VIDEO_DOWNLOAD_ATTEMPTS - 1:
+            time.sleep(VIDEO_DOWNLOAD_RETRY_S)
+    if not data:
+        why = _sanitize_sdk_detail(str(last_error)) if last_error else "no data came back"
+        raise ConnectorError(
+            f"Veo job {name} finished but the download failed: {why}. Google keeps the "
+            f"video for 2 days, so don't regenerate yet.")
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "wb") as f:
+        f.write(data)
+    return out_path

@@ -53,6 +53,7 @@ MIGRATED_STEPS = (
     "generate_image", "generate_music", "generate_voiceover",
     "kling_generate", "analyze_media", "snapshot", "rm_fillers",
     "normalize", "detect_beats", "seedance_generate", "generate_sfx", "kinovi_generate",
+    "veo_generate",
 )
 
 # Global flags the CLI layer owns; never required to appear as schema params.

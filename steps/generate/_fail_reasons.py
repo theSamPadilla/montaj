@@ -1,7 +1,7 @@
 """Shared ConnectorError.reason -> fail() mapping for every generate step.
 
 kling_generate, generate_image, generate_voiceover, generate_music,
-seedance_generate, kinovi_generate and generate_sfx all wrap a connector call in
+seedance_generate, kinovi_generate, veo_generate and generate_sfx all wrap a connector call in
 ``except ConnectorError as e:`` and used to hand-roll their own
 reason -> fail() code table (or, worse, silently collapse every reason but
 invalid_api_key into "api_error" — generate_image's old OpenAI path did

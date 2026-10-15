@@ -278,3 +278,56 @@ def test_clip_conversion_in_an_sdr_project_still_swaps_src(tmp_path, monkeypatch
     assert clip["src"] == out
     assert "normalizedSrc" not in clip
     assert "normalizedInPoint" not in clip
+
+
+# ── ref_tokens=False (Veo: references are plain images, no inline tokens) ─────
+
+def test_compose_without_ref_tokens_leaves_labels_untouched():
+    project = _make_project(image_refs=[
+        {"id": "ref1", "label": "Max", "refImages": ["/fake.png"]},
+    ])
+    scene = _make_scene(prompt="Max runs fast", ref_images=["ref1"])
+    result = compose_prompt(project, scene, ref_tokens=False)
+    assert "<<<image_" not in result
+    assert "Max runs fast" in result
+    assert "test style" in result
+
+
+def test_compose_without_ref_tokens_structured_prompt():
+    project = _make_project(style_anchor="", image_refs=[
+        {"id": "ref1", "label": "Rennie", "refImages": ["/fake.png"]},
+    ])
+    scene = _make_scene(
+        prompt="## Subject\nRennie sits at the top\n\n## Action\nShe looks down",
+        ref_images=["ref1"],
+    )
+    result = compose_prompt(project, scene, ref_tokens=False)
+    assert "<<<image_" not in result
+    assert "Rennie sits at the top" in result
+    # default is unchanged: tokens still placed
+    assert "Rennie <<<image_1>>> sits at the top" in compose_prompt(project, scene)
+
+
+# ── save_clip_to_project(provider=...) ────────────────────────────────────────
+
+def _save_clip_provider(tmp_path, monkeypatch, **kw):
+    import lib.ai_video as av
+
+    monkeypatch.setattr(av, "probe_video", lambda p: None)
+    monkeypatch.setattr(av, "get_duration", lambda p: 5.0)
+    saved = {}
+    monkeypatch.setattr(av, "save_project", lambda p, proj: saved.update(project=proj))
+    project = _storyboard_project([])
+    av.save_clip_to_project(tmp_path / "project.json", project, project["storyboard"]["scenes"][0],
+                            str(tmp_path / "out.mp4"), "a prompt", **kw)
+    return saved["project"]["tracks"][0]["items"][0]["generation"]
+
+
+def test_save_clip_provider_defaults_to_kling(tmp_path, monkeypatch):
+    assert _save_clip_provider(tmp_path, monkeypatch)["provider"] == "kling"
+
+
+def test_save_clip_records_the_given_provider_and_model(tmp_path, monkeypatch):
+    gen = _save_clip_provider(tmp_path, monkeypatch, provider="gemini", model="veo-3.1-generate-preview")
+    assert gen["provider"] == "gemini"
+    assert gen["model"] == "veo-3.1-generate-preview"

@@ -1,7 +1,7 @@
 """Shared helpers for ai_video project-aware steps.
 
-Used by kling_generate.py and eval_scene.py. Lives in lib/ so it's on
-the sys.path that all step scripts set up.
+Used by kling_generate.py, veo_generate.py and eval_scene.py. Lives in lib/ so
+it's on the sys.path that all step scripts set up.
 """
 import json, re, time
 from pathlib import Path
@@ -126,8 +126,12 @@ def save_project(path: Path, project: dict):
     path.write_text(json.dumps(project, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def compose_prompt(project: dict, scene: dict) -> str:
-    """Compose the full Kling prompt from project context + scene prose.
+def compose_prompt(project: dict, scene: dict, ref_tokens: bool = True) -> str:
+    """Compose the full prompt from project context + scene prose.
+
+    `ref_tokens` places Kling's inline <<<image_N>>> tokens at the reference
+    labels; veo_generate passes False, since Veo takes its references as plain
+    asset images with nothing to address them by in the prompt.
 
     The scene prompt may be either:
     - **Structured** (## headers): parsed into sections, reordered to optimal
@@ -137,7 +141,7 @@ def compose_prompt(project: dict, scene: dict) -> str:
 
     In both cases, the step then applies:
     - styleAnchor prefix
-    - Ref clause + inline <<<image_N>>> tokens at label positions
+    - Inline <<<image_N>>> tokens at label positions (when ref_tokens)
     - [SHOT SCALE] / [CAMERA MOVE] tags from structured scene fields
     - CHARACTER/OBJECT SPECS section from imageRefs[i].anchor
     """
@@ -148,7 +152,7 @@ def compose_prompt(project: dict, scene: dict) -> str:
     sections = parse_prompt_sections(scene["prompt"])
     prompt = flatten_prompt_sections(sections)
 
-    ref_ids = scene.get("refImages", [])
+    ref_ids = scene.get("refImages", []) if ref_tokens else []
 
     # Build tokens and place inline at label matches.
     # Match on the first word of the label (e.g. "Rosie" from "Rosie the Dog")
@@ -211,8 +215,10 @@ def resolve_ref_paths(project: dict, scene: dict) -> list[str]:
 
 def save_clip_to_project(project_path: Path, project: dict, scene: dict,
                          out_path: str, composed_prompt: str, model: str = "kling-v3-omni",
-                         seed: int = None):
-    """Append the generated clip to tracks[0] and save the project."""
+                         seed: int = None, provider: str = "kling"):
+    """Append the generated clip to tracks[0] and save the project.
+
+    `provider` is recorded as generation.provider ("gemini" for Veo clips)."""
     items = track_items(project)
     tracks0 = items[0] if items else []
     scenes = project.get("storyboard", {}).get("scenes", [])
@@ -242,7 +248,7 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
         "outPoint": scene["duration"],
         "generation": {
             "sceneId": scene["id"],
-            "provider": "kling",
+            "provider": provider,
             "model": model,
             "prompt": composed_prompt,
             "refImages": scene.get("refImages", []),
