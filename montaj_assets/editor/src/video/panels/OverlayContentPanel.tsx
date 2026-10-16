@@ -1,6 +1,7 @@
 import { useRef, useState, type ChangeEvent } from 'react'
 import type { VisualItem } from '../../schema'
 import { inferOverlayPropFields, type PropField } from '../preview/overlay-prop-fields'
+import { isScene3dItem, SCENE3D_PROPS } from '../scene3d'
 import { cn, inspectorInputClass, NumberField, SwatchInput } from '../../ui'
 
 /**
@@ -22,6 +23,9 @@ import { cn, inspectorInputClass, NumberField, SwatchInput } from '../../ui'
  * one-off overlay is as editable as a shipped template. Non-primitive props
  * (arrays, objects, null) are not shown and are never touched: every write
  * spreads the item's whole `props` record, so they ride through untouched.
+ * A 3D item's own props (`SCENE3D_PROPS`, scene3d.ts) are not shown either,
+ * and ride through the same way: the user never meets them. A 3D item with
+ * nothing else shows nothing, not an empty-state line.
  *
  * ── Commit model ─────────────────────────────────────────────────────────
  * Continuous edits (typing, dragging the OS color picker) PREVIEW per change
@@ -309,7 +313,8 @@ export default function OverlayContentPanel({
   // overlay's fields. Same reasoning as OverlayInspector deriving `uniform`
   // from the item rather than storing it.
   const props = item?.props ?? {}
-  const fields = inferOverlayPropFields(props)
+  const scene3d = isScene3dItem(item)
+  const fields = inferOverlayPropFields(props).filter(field => !(scene3d && SCENE3D_PROPS.has(field.name)))
 
   // Deliberately NO collapsible section header, unlike its siblings. The tab
   // strip immediately above this already reads "Content", and a "CONTENT"
@@ -323,13 +328,13 @@ export default function OverlayContentPanel({
   return (
     <div className={SECTION_CLASS}>
       <div className="flex flex-col gap-3 p-2">
-        {fields.length === 0 ? (
+        {fields.length === 0 ? (scene3d ? null : (
           <p className="px-1 py-4 text-center text-[11px] text-[color-mix(in_srgb,var(--editor-text)_45%,transparent)]">
             {item
               ? 'This overlay has no editable content.'
               : 'Select an overlay to edit its content.'}
           </p>
-        ) : (
+        )) : (
           fields.map(field => (
             <PropFieldRow
               key={field.name}

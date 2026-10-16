@@ -76,6 +76,39 @@ describe('OverlayContentPanel — fields inferred from item.props', () => {
   })
 })
 
+// ── 3D items: the user never meets which 3D an item draws, or where in it ───
+
+describe('OverlayContentPanel — a 3D item', () => {
+  const scene3d = (props: Record<string, unknown>): VisualItem =>
+    ({ id: 'ov-3d', type: 'overlay', src: 'engine:scene3d', start: 0, end: 4, props })
+
+  it('shows no scene or inPoint field, and keeps them through every write', () => {
+    const onPreview = vi.fn()
+    render(
+      <OverlayContentPanel
+        item={scene3d({ scene: 'lab', inPoint: 2, sceneFile: '/p/models/scenes/lab/active.json', sceneJson: '{}', title: 'Lab' })}
+        onPreview={onPreview}
+        onCommit={vi.fn()}
+      />,
+    )
+    for (const name of ['scene', 'inPoint', 'sceneFile', 'sceneJson']) expect(screen.queryByLabelText(name)).toBeNull()
+    fireEvent.change(screen.getByLabelText('title'), { target: { value: 'Yard' } })
+    expect(onPreview).toHaveBeenLastCalledWith({ scene: 'lab', inPoint: 2, sceneFile: '/p/models/scenes/lab/active.json', sceneJson: '{}', title: 'Yard' })
+  })
+
+  it('shows nothing at all when it has nothing else, not an empty form or an empty-state line', () => {
+    const { container } = render(<OverlayContentPanel item={scene3d({ scene: 'lab', inPoint: 2 })} onPreview={vi.fn()} onCommit={vi.fn()} />)
+    expect(container.querySelectorAll('input, textarea, label').length).toBe(0)
+    expect(container.textContent).toBe('')
+  })
+
+  it('leaves a normal overlay\'s scene and inPoint props editable, as before', () => {
+    renderPanel({ scene: 'beach', inPoint: 1 })
+    expect(screen.getByLabelText('scene')).toBeTruthy()
+    expect(screen.getByLabelText('inPoint')).toBeTruthy()
+  })
+})
+
 // ── The commit model: preview per change, commit on blur ────────────────────
 // The dialog this panel replaces had a Save button; a panel has no such moment,
 // so a typing gesture is closed by the field's blur and that is what becomes

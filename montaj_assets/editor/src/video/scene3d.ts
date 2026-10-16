@@ -13,6 +13,14 @@
 /** The reserved overlay `src` of a 3D item. */
 export const SCENE3D_SRC = 'engine:scene3d'
 
+/**
+ * A 3D item's own props, which the editor never shows as fields: which 3D it
+ * draws (`scene`), where in it it starts (`inPoint`), and the two a stage
+ * derives from them (`sceneFile`, `sceneJson`). The AI sets them; edits keep
+ * `inPoint` consistent on their own.
+ */
+export const SCENE3D_PROPS: ReadonlySet<string> = new Set(['scene', 'inPoint', 'sceneFile', 'sceneJson'])
+
 interface Scene3dFields {
   type?: string
   src?: string
