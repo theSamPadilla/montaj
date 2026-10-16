@@ -22,6 +22,7 @@ conversion changes the file format only, never a weight.
 """
 import hashlib
 import os
+import tempfile
 import urllib.parse
 import zipfile
 from collections import namedtuple
@@ -37,6 +38,11 @@ Model = namedtuple("Model", "name filename size sha256 url")
 
 class MirrorError(ValueError):
     pass
+
+
+class ConversionMismatch(ConversionError):
+    """The converter ran but its output is not the pinned file: a converter or
+    platform difference, which deleting the models and retrying cannot fix."""
 
 
 _LOCAL_HOSTS = ("localhost", "127.0.0.1")
@@ -115,12 +121,15 @@ def converted(bundle_path: str, item: Converted, convert) -> str:
         raise ConversionError(f"{os.path.basename(bundle_path)} has no readable {item.member} ({e})") from e
     data = convert(raw) if item.outputs is None else convert(raw, item.outputs)
     if _sha256(data) != item.sha256:
-        raise ConversionError(f"converting {item.member} gave a file that is not the pinned {item.filename}")
+        raise ConversionMismatch(f"converting {item.member} gave a file that is not the pinned {item.filename}")
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    part = dest + ".part"
+    # A temporary file of its own, so two first runs at once never write into
+    # one another's.
+    fd, part = tempfile.mkstemp(dir=os.path.dirname(dest), prefix=item.filename + ".", suffix=".part")
     try:
-        with open(part, "wb") as f:
+        with os.fdopen(fd, "wb") as f:
             f.write(data)
+        os.chmod(part, 0o644)   # mkstemp makes it owner-only; a model is not a secret
         os.replace(part, dest)
     except BaseException:
         try:

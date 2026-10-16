@@ -1,6 +1,6 @@
 {
   "name": "track_pose",
-  "description": "Hand or body landmarks through a video, on the device: per frame, 21 per hand (wrist, then each finger from its base joint to its tip) or 33 for one body (face, arms, hands, legs and feet), in source pixels and in metres. A hand or body is tracked from frame to frame; the detector looks again only while fewer are tracked than asked for. Frame i is at i / fps s. The first run downloads the models: about 8 MB for hand, 9 MB for body.",
+  "description": "Hand or body landmarks through a video, on the device: per frame, 21 per hand (wrist, then each finger from its base joint to its tip) or 33 for one body (face, arms, hands, legs and feet), in source pixels and in metres. A hand or body is tracked from frame to frame; the detector looks again only while fewer are tracked than asked for. Frame i is the frame on screen at i / fps s; HDR clips are tone-mapped to SDR first. The JSON is large (every landmark of every frame): for clips longer than a few seconds pass out, or _project to save it in the project's assets, and read the file. The first run downloads the models: about 8 MB for hand, 9 MB for body.",
   "input": {
     "type": "video",
     "description": "Absolute path of the video"
@@ -21,7 +21,15 @@
       "name": "fps",
       "type": "float",
       "required": false,
-      "description": "Frames per second to sample. Default: the video's, at most 30."
+      "description": "Frames per second to sample, at most the video's own. Default: the video's, at most 30."
+    },
+    {
+      "name": "max-frames",
+      "type": "int",
+      "required": false,
+      "default": 300,
+      "min": 1,
+      "description": "Refuse, before reading it, a clip that samples to more frames than this. Pass a lower fps for a long clip."
     },
     {
       "name": "hands",

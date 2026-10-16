@@ -24,6 +24,7 @@ model's visibility, which is not smoothed.
 """
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -47,6 +48,9 @@ DEFAULT_PAD = {"hand": 0.3333, "body": 0.0}
 # beta 10 trails it by 13-15 px and leaves 23 and 12 px of jitter.
 DEFAULT_MIN_CUTOFF = 1.0
 DEFAULT_BETA = 5.0
+# Frames are held in memory and every landmark goes into one JSON: 300 frames
+# is 10 s at 30 fps, 30 s at 10.
+DEFAULT_MAX_FRAMES = 300
 
 HAND_NOTES = [
     "landmarks: 0 wrist; thumb 1-4 (CMC, MCP, IP, tip); index 5-8, middle 9-12, ring 13-16, "
@@ -54,7 +58,7 @@ HAND_NOTES = [
     "landmarks are source pixels, x right and y down, and may fall outside the frame for a hand "
     "cut by its edge; z is depth relative to the wrist on the same scale as x, negative toward "
     "the camera.",
-    "world is metres around the hand's centre, x and y along the frame's axes, z depth.",
+    "world is metres around the hand's centre: x right, y down, z away from the camera.",
     "handedness is as the hand appears in the video; a mirrored video swaps it.",
 ]
 
@@ -66,7 +70,7 @@ BODY_NOTES = [
     "landmarks are [x, y, z, visibility]: source pixels, x right and y down, and may fall outside the "
     "frame; z is depth relative to the hips' centre on the same scale as x, negative toward the camera; "
     "visibility, 0 to 1, is how likely the point is in frame and not hidden.",
-    "world is metres around the hips' centre, x and y along the frame's axes, z depth.",
+    "world is metres around the hips' centre: x right, y down, z away from the camera.",
 ]
 
 
@@ -75,7 +79,9 @@ def _parse(argv=None):
     p.add_argument("--input", required=True, help="Absolute path of the video")
     p.add_argument("--kind", required=True, choices=KINDS, help="hand or body")
     p.add_argument("--fps", type=float, default=None,
-                   help="Frames per second to sample (default: the video's, at most 30)")
+                   help="Frames per second to sample, at most the video's own (default: the video's, at most 30)")
+    p.add_argument("--max-frames", type=int, default=DEFAULT_MAX_FRAMES,
+                   help=f"Refuse a clip that samples to more frames (default {DEFAULT_MAX_FRAMES})")
     p.add_argument("--hands", type=int, default=1, help="hand: most hands per frame, 1 or 2 (default 1)")
     p.add_argument("--people", type=int, default=1, help="body: most people per frame, 1 for now (default 1)")
     p.add_argument("--pad", type=float, default=None,
@@ -94,19 +100,58 @@ def _parse(argv=None):
 
 def _check(args):
     if args.hands not in (1, 2):
-        fail("invalid_args", f"--hands is 1 or 2, got {args.hands}")
+        fail("invalid_param", f"--hands is 1 or 2, got {args.hands}")
     if args.people != 1:
-        fail("invalid_args", f"--people is 1 for now (the body model follows one person), got {args.people}")
+        fail("invalid_param", f"--people is 1 for now (the body model follows one person), got {args.people}")
     if args.fps is not None and not args.fps > 0:
-        fail("invalid_args", f"--fps must be above 0, got {args.fps}")
+        fail("invalid_param", f"--fps must be above 0, got {args.fps}")
+    if args.max_frames < 1:
+        fail("invalid_param", f"--max-frames must be at least 1, got {args.max_frames}")
     if args.pad is None:
         args.pad = DEFAULT_PAD[args.kind]
     if not 0 <= args.pad <= 1:
-        fail("invalid_args", f"--pad is a fraction of the long side from 0 to 1, got {args.pad}")
+        fail("invalid_param", f"--pad is a fraction of the long side from 0 to 1, got {args.pad}")
     if not 0 < args.min_presence < 1:
-        fail("invalid_args", f"--min-presence must be between 0 and 1, got {args.min_presence}")
+        fail("invalid_param", f"--min-presence must be between 0 and 1, got {args.min_presence}")
     if not args.min_cutoff > 0 or args.beta < 0:
-        fail("invalid_args", "--min-cutoff must be above 0 and --beta 0 or more")
+        fail("invalid_param", "--min-cutoff must be above 0 and --beta 0 or more")
+
+
+def sampling(args, info):
+    """(fps, notes) for a clip's VideoInfo: the fps asked for, or the clip's
+    own at most 30, never above the clip's own; refused before any decoding
+    when the clip samples to more than --max-frames."""
+    from lib.frame_sampling import tone_maps
+    from lib.pose.video import MAX_DEFAULT_FPS
+    notes = []
+    fps = args.fps if args.fps is not None else min(info.rate, MAX_DEFAULT_FPS)
+    if fps > info.rate + 1e-6:
+        fps = info.rate
+        notes.append(f"Sampled at the clip's own {fps:g} fps, not {args.fps:g}.")
+    if info.duration is not None:
+        expected = max(1, math.ceil(info.duration * fps - 1e-6))
+        if expected > args.max_frames:
+            fail("too_many_frames",
+                 f"{info.duration:.1f} s at {fps:g} fps is {expected} frames, over --max-frames "
+                 f"{args.max_frames}. Pass a lower --fps, a shorter clip, or a higher --max-frames.")
+    if tone_maps(info.color_transfer):
+        notes.append("The clip is HDR; its frames were tone-mapped to SDR for the models.")
+    return fps, notes
+
+
+def emit(text, out=None):
+    """Print the JSON, or write it to out and print the path."""
+    if not out:
+        print(text)
+        return
+    path = os.path.abspath(os.path.expanduser(out))
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+    except OSError as e:
+        fail("write_error", f"Could not write to {out}: {e}")
+    print(path)
 
 
 def track(frames, fps, tracker):
@@ -180,9 +225,11 @@ def _person(p):
     return {"id": p.id, "score": round(p.score, 3), "landmarks": landmarks, "world": _round(p.world, 4)}
 
 
-def result(per_frame, labels, fps, size, model, dropped=(), kind="hand"):
-    """The step's JSON. labels is {id: handedness} for hands, unused for bodies."""
+def result(per_frame, labels, fps, size, model, dropped=(), kind="hand", notes_before=()):
+    """The step's JSON. labels is {id: handedness} for hands, unused for bodies.
+    notes_before go ahead of the kind's own notes."""
     key, notes, what = ("hands", HAND_NOTES, "hands") if kind == "hand" else ("people", BODY_NOTES, "people")
+    notes = list(notes_before) + notes
     frames = [{
         "t": round(t, 4),
         key: [_hand(h, labels) if kind == "hand" else _person(h) for h in found],
@@ -217,15 +264,20 @@ def main(argv=None):
              f"Install it with: pip install 'montaj[rvm]' (or: montaj install rvm)")
 
     from lib.pose import body as body_lib, hands as hands_lib, weights
-    from lib.pose.video import MAX_DEFAULT_FPS, frames, video_info
+    from lib.pose.video import frames, video_info
 
-    width, height, rate = video_info(args.input)
-    fps = args.fps if args.fps is not None else min(rate, MAX_DEFAULT_FPS)
+    info = video_info(args.input)
+    width, height = info.width, info.height
+    fps, notes = sampling(args, info)
     hand = args.kind == "hand"
     try:
         detector_path, landmark_path = weights.hand_models() if hand else weights.body_models()
     except weights.MirrorError as e:
         fail("invalid_model_mirror", str(e))
+    except weights.ConversionMismatch as e:
+        fail("model_conversion_mismatch",
+             f"The {args.kind} models converted on this machine are not the pinned ones ({e}). Please report "
+             f"this, with your OS and processor; deleting the models will not help.")
     except ValueError as e:
         from lib import models
         fail("model_conversion_failed",
@@ -243,7 +295,7 @@ def main(argv=None):
         detector, landmark_model = body_lib.onnx_models(detector_path, landmark_path, threads=threads)
         tracker = body_lib.PoseTracker(detector, landmark_model, min_presence=args.min_presence, pad=pad)
 
-    per_frame, dropped = drop_nonfinite(track(frames(args.input, fps, width, height), fps, tracker))
+    per_frame, dropped = drop_nonfinite(track(frames(args.input, fps, info, limit=args.max_frames), fps, tracker))
     labels = label_hands(per_frame) if hand else {}
     if args.smooth == "one-euro":
         per_frame = smooth(per_frame, args.min_cutoff, args.beta)
@@ -255,16 +307,8 @@ def main(argv=None):
         model = {"detector": weights.POSE_DETECTOR.filename, "landmarks": weights.POSE_LANDMARKS.filename}
     model["source"] = f"MediaPipe {bundle.name} (Apache-2.0), converted to ONNX"
     model["runtime"] = f"onnxruntime {onnxruntime.__version__}"
-    out = result(per_frame, labels, fps, (width, height), model, dropped, args.kind)
-    text = json.dumps(out, separators=(",", ":"), allow_nan=False)
-    if args.out:
-        path = os.path.abspath(os.path.expanduser(args.out))
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w") as f:
-            f.write(text)
-        print(path)
-    else:
-        print(text)
+    out = result(per_frame, labels, fps, (width, height), model, dropped, args.kind, notes)
+    emit(json.dumps(out, separators=(",", ":"), allow_nan=False), args.out)
 
 
 if __name__ == "__main__":

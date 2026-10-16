@@ -8,6 +8,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 import urllib.request
 
 
@@ -89,8 +90,12 @@ def _download_and_verify(family: str, filename: str, url: str, checksum: str | N
 
 
 def _download(url: str, dest: str):
-    """Download url to dest using a .part temp file; show progress to stderr."""
-    part = dest + ".part"
+    """Download url to dest through a temporary .part file of its own (two
+    downloads at once never share one); show progress to stderr."""
+    fd, part = tempfile.mkstemp(dir=os.path.dirname(dest) or ".", prefix=os.path.basename(dest) + ".",
+                                suffix=".part")
+    os.close(fd)
+    os.chmod(part, 0o644)   # mkstemp makes it owner-only; a model is not a secret
     try:
         def _reporthook(block_num, block_size, total_size):
             downloaded = block_num * block_size
@@ -116,7 +121,7 @@ def _download(url: str, dest: str):
         urllib.request.urlretrieve(url, part, reporthook=_reporthook)
         print(file=sys.stderr)  # newline after progress
         os.replace(part, dest)
-    except Exception:
+    except BaseException:
         if os.path.exists(part):
             try:
                 os.remove(part)

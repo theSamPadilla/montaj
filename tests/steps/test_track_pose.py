@@ -14,17 +14,20 @@ home.
 Parity (skips unless MONTAJ_TEST_HAND_REF also names a reference JSON): the
 reference is MediaPipe 1.1.1's HandLandmarker in VIDEO mode, num_hands 1, the
 three confidences at the same threshold, on the exact RGB frames this step
-decodes (ffmpeg, fps=10, rgb24), each padded with a black border of 320 px.
+decodes (lib/frame_sampling's filter at 10 fps, rgb24), each padded with a
+black border of 320 px.
 Its JSON: {"threshold": t, "frames": [{"hands": [{"handedness": "Left" |
 "Right", "landmarks": [[x, y, z] x 21] in source px, "world": [...]}]}]}.
 Never commit one: it is derived from the kit.
 
-Measured 2026-10-16 (Apple silicon, onnxruntime 1.31.0), threshold 0.2:
-  - the same 62 of 75 frames found;
-  - the first detection's landmarks 0.0 px from the reference's;
-  - one step of the loop from the reference's own previous landmarks: 0.014 px
+Measured 2026-10-17 (Apple silicon, onnxruntime 1.31.0), threshold 0.2, with
+lib/frame_sampling's filter:
+  - the same 63 of 75 frames found;
+  - both detections (frame 0, then 1.3 s on after the hand is lost) 0.0 px
+    from the reference's;
+  - one step of the loop from the reference's own previous landmarks: 0.008 px
     mean, 0.23 max;
-  - the whole run: 6.8 px mean, p95 21. The loop is chaotic on this clip: the
+  - the whole run: 6.8 px mean, p95 19. The loop is chaotic on this clip: the
     same run with the first region moved by 0.001 px ends 5.3 px mean from
     itself, so whole-run agreement within 2 px would need bit-identical
     arithmetic. The test asserts the first three and prints the fourth.
@@ -98,7 +101,7 @@ def test_schema_matches_the_step_argparse():
 def test_more_than_one_person_is_refused(tmp_path):
     video = tmp_path / "v.mp4"
     video.write_bytes(b"x")
-    assert_error(_run("--input", str(video), "--kind", "body", "--people", "2"), "invalid_args")
+    assert_error(_run("--input", str(video), "--kind", "body", "--people", "2"), "invalid_param")
 
 
 def test_the_border_defaults_by_kind():
@@ -112,12 +115,12 @@ def test_the_border_defaults_by_kind():
     assert args.pad == 0.2
 
 
-@pytest.mark.parametrize("args", [["--hands", "3"], ["--fps", "0"], ["--pad", "1.5"], ["--min-presence", "1"],
+@pytest.mark.parametrize("args", [["--hands", "3"], ["--max-frames", "0"], ["--fps", "0"], ["--pad", "1.5"], ["--min-presence", "1"],
                                   ["--min-cutoff", "0"], ["--beta", "-1"]])
 def test_bad_numbers_are_refused(tmp_path, args):
     video = tmp_path / "v.mp4"
     video.write_bytes(b"x")
-    assert_error(_run("--input", str(video), "--kind", "hand", *args), "invalid_args")
+    assert_error(_run("--input", str(video), "--kind", "hand", *args), "invalid_param")
 
 
 def test_a_missing_video_is_refused(tmp_path):
@@ -177,10 +180,11 @@ def test_frames_come_upright_at_the_asked_rate(tmp_path):
     # The same stream with a 90 degree rotation tag, as a phone writes one.
     subprocess.run([FFMPEG_BIN, "-v", "error", "-y", "-display_rotation", "90", "-i", str(flat), "-c", "copy",
                     str(turned)], check=True)
-    assert video_info(str(flat)) == (64, 48, 30.0)
-    assert video_info(str(turned)) == (48, 64, 30.0)
-    a = list(frames(str(flat), 10.0, 64, 48))
-    b = list(frames(str(turned), 10.0, 48, 64))
+    flat_info, turned_info = video_info(str(flat)), video_info(str(turned))
+    assert flat_info[:3] == (64, 48, 30.0) and turned_info[:3] == (48, 64, 30.0)
+    assert flat_info.duration == pytest.approx(1.0, abs=0.05)
+    a = list(frames(str(flat), 10.0, flat_info))
+    b = list(frames(str(turned), 10.0, turned_info))
     assert len(a) == len(b) == 10
     assert a[0].shape == (48, 64, 3) and b[0].shape == (64, 48, 3)
     assert all(np.array_equal(np.rot90(x), y) for x, y in zip(a, b))
@@ -280,7 +284,7 @@ def step_main(tmp_path, monkeypatch):
     from lib.pose import video, weights
     video_path = tmp_path / "v.mp4"
     video_path.write_bytes(b"x")
-    monkeypatch.setattr(video, "video_info", lambda path: (64, 48, 30.0))
+    monkeypatch.setattr(video, "video_info", lambda path: video.VideoInfo(64, 48, 30.0, 1.0, "bt709"))
     step = _load_step()
 
     def run(error):
@@ -305,6 +309,145 @@ def test_a_bad_mirror_fails_cleanly(step_main, capsys):
     step_main(weights.MirrorError("MONTAJ_MODEL_MIRROR must be an https:// URL"))
     err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
     assert err["error"] == "invalid_model_mirror"
+
+
+def test_a_converter_mismatch_asks_for_a_report_not_a_retry(step_main, capsys):
+    from lib.pose import weights
+    step_main(weights.ConversionMismatch("converting x gave a file that is not the pinned x.onnx"))
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "model_conversion_mismatch"
+    assert "report" in err["message"] and "Delete" not in err["message"]
+
+
+def test_a_mismatched_conversion_raises_the_mismatch(tmp_path, monkeypatch):
+    from lib import models
+    from lib.pose import weights
+    monkeypatch.setattr(models, "MONTAJ_MODELS_DIR", str(tmp_path))
+    bundle = tmp_path / "bundle.task"
+    with zipfile.ZipFile(bundle, "w") as z:
+        z.writestr("m.tflite", b"x")
+    with pytest.raises(weights.ConversionMismatch):
+        weights.converted(str(bundle), weights.Converted("m.tflite", "m.onnx", "0" * 64), lambda data: b"y")
+
+
+def test_a_converted_file_goes_through_a_temporary_file_of_its_own(tmp_path, monkeypatch):
+    import hashlib
+    from lib import models
+    from lib.pose import weights
+    monkeypatch.setattr(models, "MONTAJ_MODELS_DIR", str(tmp_path))
+    bundle = tmp_path / "bundle.task"
+    with zipfile.ZipFile(bundle, "w") as z:
+        z.writestr("m.tflite", b"x")
+    item = weights.Converted("m.tflite", "m.v1.onnx", hashlib.sha256(b"y").hexdigest())
+    seen = []
+    real_replace = os.replace
+
+    def replace(src, dst):
+        seen.append(src)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(weights.os, "replace", replace)
+    dest = weights.converted(str(bundle), item, lambda data: b"y")
+    os.remove(dest)
+    weights.converted(str(bundle), item, lambda data: b"y")
+    assert len(seen) == 2 and seen[0] != seen[1]
+    assert all(Path(p).parent == Path(dest).parent and p != dest + ".part" for p in seen)
+    assert oct(os.stat(dest).st_mode & 0o777) == oct(0o644)
+
+
+# --- sampling, the frame cap and writing --------------------------------------
+
+def _args(**kw):
+    step = _load_step()
+    args = step._parse(["--input", "x", "--kind", "hand", *sum(([f"--{k.replace('_', '-')}", str(v)]
+                                                               for k, v in kw.items()), [])])
+    step._check(args)
+    return step, args
+
+
+def test_the_fps_defaults_to_the_clip_capped_at_30_and_never_above_the_clip():
+    from lib.pose.video import VideoInfo
+    step, args = _args()
+    assert step.sampling(args, VideoInfo(64, 48, 60.0, 2.0, "bt709")) == (30.0, [])
+    assert step.sampling(args, VideoInfo(64, 48, 24.0, 2.0, "bt709")) == (24.0, [])
+    step, args = _args(fps=60)
+    fps, notes = step.sampling(args, VideoInfo(64, 48, 24.0, 2.0, None))
+    assert fps == 24.0 and notes == ["Sampled at the clip's own 24 fps, not 60."]
+
+
+def test_a_clip_over_max_frames_is_refused_before_decoding(capsys):
+    from lib.pose.video import VideoInfo
+    step, args = _args(fps=10)
+    assert step.sampling(args, VideoInfo(64, 48, 30.0, 30.0, None))[0] == 10     # 300 frames: the cap
+    with pytest.raises(SystemExit):
+        step.sampling(args, VideoInfo(64, 48, 30.0, 30.05, None))               # 301
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "too_many_frames" and "301 frames" in err["message"]
+    step, args = _args(fps=10, max_frames=1000)
+    assert step.sampling(args, VideoInfo(64, 48, 30.0, 30.05, None))[0] == 10
+
+
+def test_an_hdr_clip_says_it_was_tone_mapped():
+    from lib.pose.video import VideoInfo
+    step, args = _args()
+    assert step.sampling(args, VideoInfo(64, 48, 30.0, 1.0, "arib-std-b67"))[1] == [
+        "The clip is HDR; its frames were tone-mapped to SDR for the models."]
+
+
+def test_an_unwritable_out_fails_as_write_error(tmp_path, capsys):
+    step = _load_step()
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    with pytest.raises(SystemExit):
+        step.emit("{}", str(blocker / "sub" / "out.json"))
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "write_error"
+    step.emit("{}", str(tmp_path / "ok" / "out.json"))
+    assert (tmp_path / "ok" / "out.json").read_text() == "{}"
+
+
+def test_the_world_notes_name_the_axes():
+    step = _load_step()
+    for notes in (step.HAND_NOTES, step.BODY_NOTES):
+        assert any("x right, y down, z away from the camera" in n for n in notes)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in ffmpeg is a script with a #! line")
+@pytest.mark.timeout(60)
+def test_a_flood_of_ffmpeg_errors_cannot_stall_decoding(tmp_path, monkeypatch, capsys):
+    """An ffmpeg that writes 1 MB of errors before its first frame: with stderr
+    on an unread pipe it would block, and so would the reader."""
+    from lib.pose import video
+    fake = tmp_path / "ffmpeg"
+    fake.write_text(f"#!{sys.executable}\n"
+                    "import sys\n"
+                    "sys.stderr.write('e' * (1 << 20) + '\\nlast line\\n'); sys.stderr.flush()\n"
+                    "sys.stdout.buffer.write(bytes(4 * 2 * 3)); sys.stdout.flush()\n"
+                    "sys.exit(1)\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(video, "ffmpeg_bin", lambda: str(fake))
+    info = video.VideoInfo(4, 2, 30.0, 1.0, None)
+    got = []
+    with pytest.raises(SystemExit):
+        for f in video.frames("clip.mp4", 10.0, info):
+            got.append(f)
+    assert len(got) == 1
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "decode_failed" and "last line" in err["message"]
+
+
+def test_more_frames_than_the_limit_stop_the_decoder(tmp_path, monkeypatch, capsys):
+    if not HAS_FFMPEG:
+        skip_or_fail("ffmpeg is required to make the clip")
+    from lib.pose import video
+    clip = tmp_path / "c.mp4"
+    subprocess.run([FFMPEG_BIN, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=32x32:rate=30", "-t", "1",
+                    "-pix_fmt", "yuv420p", str(clip)], check=True)
+    info = video.video_info(str(clip))
+    assert len(list(video.frames(str(clip), 10.0, info, limit=10))) == 10
+    with pytest.raises(SystemExit):
+        list(video.frames(str(clip), 10.0, info, limit=9))
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == "too_many_frames"
 
 
 def test_non_finite_hands_are_dropped_and_listed():
@@ -375,7 +518,7 @@ def test_a_body_model_that_will_not_convert_fails_cleanly(tmp_path, monkeypatch,
     from lib.pose.tflite import ConversionError
     video_path = tmp_path / "v.mp4"
     video_path.write_bytes(b"x")
-    monkeypatch.setattr(video, "video_info", lambda path: (64, 48, 30.0))
+    monkeypatch.setattr(video, "video_info", lambda path: video.VideoInfo(64, 48, 30.0, 1.0, "bt709"))
 
     def body_models():
         raise ConversionError("not a TFLite model this converter reads")
@@ -409,16 +552,21 @@ def test_the_hand_is_found_in_60_of_75_frames(clip, tmp_path):
     assert (data["frameCount"], data["size"], data["fps"]) == (75, [540, 960], 10.0)
     print(f"\nfound {data['found']} of 75")
     assert data["found"] >= 60
-    ids = {h["id"] for f in data["frames"] for h in f["hands"]}
-    labels = {h["handedness"] for f in data["frames"] for h in f["hands"]}
-    assert len(ids) == 1 and labels == {"left"}
+    # The hand shows in frame 0, is lost for 1.2 s and found again (as the
+    # reference also does): the long track is the one that counts.
+    tracks = {}
+    for f in data["frames"]:
+        for h in f["hands"]:
+            tracks.setdefault(h["id"], []).append(h["handedness"])
+    longest = max(tracks.values(), key=len)
+    assert len(longest) >= 60 and set(longest) == {"left"}
 
 
 @needs_kit
 @pytest.mark.skipif(not REF, reason="MONTAJ_TEST_HAND_REF is not set")
 def test_parity_with_the_reference(clip, tmp_path):
     from lib.pose import hands as H, weights
-    from lib.pose.video import frames
+    from lib.pose.video import frames, video_info
     ref = json.loads(Path(REF).read_text())
     thr = ref["threshold"]
     out = tmp_path / "raw.json"
@@ -447,7 +595,7 @@ def test_parity_with_the_reference(clip, tmp_path):
     # One step of the loop from the reference's own previous landmarks.
     palm_path, hand_path = weights.hand_models()
     _, hand_model = H.onnx_models(palm_path, hand_path, threads=1)
-    images = list(frames(clip, 10.0, 540, 960))
+    images = list(frames(clip, 10.0, video_info(clip)))
     steps = []
     for i in range(1, len(theirs)):
         if theirs[i]["hands"] and theirs[i - 1]["hands"]:
@@ -518,8 +666,7 @@ def test_body_parity_with_the_reference(tmp_path):
     # Fresh detections, and one step of the loop from each.
     detector_path, landmark_path = weights.body_models()
     detector, landmark_model = B.onnx_models(detector_path, landmark_path, threads=1)
-    width, height, _ = video_info(BODY_CLIP)
-    images = list(frames(BODY_CLIP, fps, width, height))
+    images = list(frames(BODY_CLIP, fps, video_info(BODY_CLIP)))
     firsts, steps = [], []
     for pair in ref["pairs"]:
         if not (pair["first"] and pair["next"]):

@@ -161,3 +161,35 @@ def test_fail_writes_json_to_stderr(capsys):
     err = json.loads(captured.err)
     assert err["error"] == "model_download_failed"
     assert err["message"] == "something broke"
+
+
+# ── _download(): a temporary file of its own ─────────────────────────────────
+
+def test_download_writes_through_its_own_temporary_file(tmp_path, monkeypatch):
+    dest = tmp_path / "model.bin"
+    seen = []
+
+    def fake_retrieve(url, filename, reporthook=None):
+        seen.append(filename)
+        Path(filename).write_bytes(b"weights")
+
+    monkeypatch.setattr(models.urllib.request, "urlretrieve", fake_retrieve)
+    models._download("http://example.com/model.bin", str(dest))
+    models._download("http://example.com/model.bin", str(dest))
+    assert dest.read_bytes() == b"weights"
+    # Two downloads never share a .part, and none is left behind.
+    assert len(set(seen)) == 2 and str(dest) + ".part" not in seen
+    assert all(Path(p).parent == tmp_path for p in seen)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["model.bin"]
+    assert oct(dest.stat().st_mode & 0o777) == oct(0o644)
+
+
+def test_a_failed_download_leaves_no_temporary_file(tmp_path, monkeypatch):
+    def fake_retrieve(url, filename, reporthook=None):
+        Path(filename).write_bytes(b"half")
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(models.urllib.request, "urlretrieve", fake_retrieve)
+    with pytest.raises(OSError):
+        models._download("http://example.com/model.bin", str(tmp_path / "model.bin"))
+    assert list(tmp_path.iterdir()) == []
