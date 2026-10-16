@@ -183,7 +183,8 @@ def warp(image, matrix, n):
     h, w = image.shape[:2]
     u = np.arange(n, dtype=np.float64)
     uu, vv = np.meshgrid(u, u)
-    # Fixed point, as the reference's warp: positions in 1/32 px, weights out of 2^15.
+    # Fixed point, reproducing the reference's warp: positions rounded to 1/32 px,
+    # bilinear weights as integers out of 2^15, the sum rounded half up to 8 bits.
     x = np.rint((matrix[0, 0] * uu + matrix[0, 1] * vv + matrix[0, 2]) * 32).astype(np.int64)
     y = np.rint((matrix[1, 0] * uu + matrix[1, 1] * vv + matrix[1, 2]) * 32).astype(np.int64)
     x0, y0 = x >> 5, y >> 5

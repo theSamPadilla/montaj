@@ -12,8 +12,10 @@ MONTAJ_MODEL_MIRROR, when set, is a base URL serving the same files as
 <base>/pose/<filename>. The sha256 pins hold either way, so a mirror can only
 serve these exact bytes.
 
-Licence: MediaPipe's hand models, Copyright Google LLC, Apache License 2.0
-(per their model card); converted to ONNX by Montaj.
+Licence: Google's MediaPipe hand landmarker models, Copyright Google LLC,
+Apache License 2.0 (per their model card). Downloaded from Google and converted
+to ONNX on the user's machine; the conversion changes the file format only,
+never a weight.
 """
 import hashlib
 import os

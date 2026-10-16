@@ -291,3 +291,36 @@ def test_a_read_model_runs():
     x = _f32(1, 2, 2, 1)
     [got] = _run(T.read_model(_tiny_tflite()), x)
     assert got == pytest.approx(x * 2.5, abs=1e-6)
+
+
+# --- determinism -------------------------------------------------------------
+
+def test_conversion_is_byte_identical_run_to_run():
+    m = _Model([1, 4, 4, 3])
+    w = m.tensor([2, 3, 3, 3], _f32(2, 3, 3, 3))
+    y = m.op(T.CONV_2D, [m.input, w, -1], [1, 4, 4, 2], padding=T.SAME, stride_w=1, stride_h=1,
+             activation=T.ACT_RELU, dilation_w=1, dilation_h=1)
+    assert T.to_onnx(m.model(y)) == T.to_onnx(m.model(y))
+    tiny = _tiny_tflite()
+    assert T.to_onnx(T.read_model(tiny)) == T.to_onnx(T.read_model(tiny))
+
+
+def test_the_hand_bundle_converts_to_the_pinned_files():
+    """Runs where the hand bundle has been downloaded (any run of the step, e.g.
+    the real-file test, puts it in the models dir), or MONTAJ_TEST_HAND_TASK
+    names a copy. Each model converts to the same bytes twice, matching its pin."""
+    import hashlib
+    import os
+    import zipfile
+    from lib import models
+    from lib.pose import weights
+    path = os.environ.get("MONTAJ_TEST_HAND_TASK") or models.model_path(weights.FAMILY, weights.HAND_BUNDLE.filename)
+    if not os.path.isfile(path):
+        pytest.skip("the hand bundle is not downloaded")
+    data = open(path, "rb").read()
+    assert hashlib.sha256(data).hexdigest() == weights.HAND_BUNDLE.sha256
+    with zipfile.ZipFile(path) as z:
+        for item in (weights.PALM, weights.HAND_LANDMARKS):
+            first = T.to_onnx(T.read_model(z.read(item.member)))
+            assert T.to_onnx(T.read_model(z.read(item.member))) == first
+            assert hashlib.sha256(first).hexdigest() == item.sha256, item.filename
