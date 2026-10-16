@@ -13,6 +13,8 @@
  * test-covered only. Nothing here touches the DOM or React any more.
  */
 
+import { isScene3dItem, scene3dInPoint, shiftScene3dInPoint } from '../scene3d'
+
 export interface Draggable {
   id: string
   start: number
@@ -21,6 +23,9 @@ export interface Draggable {
   outPoint?: number
   normalizedInPoint?: number
   type?: string
+  /** A 3D item's reserved `src` and its `props.inPoint` (`../scene3d.ts`). */
+  src?: string
+  props?: Record<string, unknown>
   sourceDuration?: number
   /** Per-clip playback speed S (video only). A clip at S consumes S source
    *  seconds per timeline second, so every timeline↔source conversion here
@@ -169,9 +174,17 @@ export function resizeWindowedItem<T extends Draggable>(item: T, edge: 'start' |
  * (images, overlays) carry no source window and only move their timeline edge;
  * video clips go through `resizeWindowedItem`, which holds the span/window
  * invariant documented there.
+ *
+ * A 3D item's in edge is the one non-video exception: its picture stays where
+ * it was on the timeline, so its in point travels with the edge, and the edge
+ * stops where its 3D begins (in point 0), as a clip's stops at its media.
  */
 export function computeResizedItem(item: Draggable, edge: 'start' | 'end', t: number): Draggable {
   if (item.type !== 'video') {
+    if (edge === 'start' && isScene3dItem(item)) {
+      const start = clamp(t, item.start - scene3dInPoint(item), item.end - MIN_DURATION)
+      return shiftScene3dInPoint({ ...item, start }, start - item.start)
+    }
     return edge === 'start'
       ? { ...item, start: Math.min(t, item.end - MIN_DURATION) }
       : { ...item, end: Math.max(t, item.start + MIN_DURATION) }

@@ -3,6 +3,7 @@ import type { VisualItem, AudioTrack, CaptionSegment, Word, VisualTrack, Keyfram
 import { mapTrackItems, trackItems, normalizeTracks } from './timeline/timeline-model'
 import { normalizeTrack } from '@bycrux/timeline-core'
 import { canKeyframe } from './keyframeOps'
+import { isScene3dItem, scene3dInPoint, shiftScene3dInPoint } from './scene3d'
 
 /** A time range to excise from the timeline. */
 export interface Cut {
@@ -43,11 +44,12 @@ function trimClipStart(item: VisualItem, at: number): VisualItem {
   // timeline distance converted to SOURCE seconds (`·S`, montaj/speed).
   // The resulting gap before the clip's new start position is intentional.
   const sourceOffset = (at - item.start) * (item.speed ?? 1)
-  return {
+  // A 3D item's in point advances the same way (scene3d.ts).
+  return shiftScene3dInPoint({
     ...item,
     start: at,
     ...(item.inPoint !== undefined ? { inPoint: (item.inPoint ?? 0) + sourceOffset } : {}),
-  }
+  }, at - item.start)
 }
 
 /**
@@ -116,12 +118,14 @@ function splitClip(item: VisualItem, cut: Cut): [VisualItem, VisualItem] {
     end: cut.start,
     ...(item.outPoint !== undefined ? { outPoint: (item.inPoint ?? 0) + leftDur * s } : {}),
   }
-  const right: VisualItem = {
+  // A 3D item's right fragment continues its 3D where the cut leaves it
+  // (scene3d.ts): its in point advances by the fragment's offset into the item.
+  const right: VisualItem = shiftScene3dInPoint({
     ...item,
     id: uniqueId(item.id),
     start: cut.end,  // lift: right fragment stays at its original timeline position
     ...(item.inPoint !== undefined ? { inPoint: (item.inPoint ?? 0) + rightSourceOffset } : {}),
-  }
+  }, cut.end - item.start)
 
   // Overlay-only (schema.ts). Every OTHER item type either never carries
   // `keyframes` or has it ignored (docs/schemas/project.md), so this never
@@ -246,13 +250,15 @@ function cutSingleItem(item: VisualItem, cut: Cut): VisualItem[] {
     result.push(left)
   }
   if (outPoint - physEnd > 0.001) {
-    const right: VisualItem = {
+    // A 3D item's right fragment picks its 3D up where the removed range
+    // ended (scene3d.ts), wherever the collapse puts it.
+    const right: VisualItem = shiftScene3dInPoint({
       ...item,
       id: uniqueId(item.id),
       start: cut.start,
       end: cut.start + (outPoint - physEnd) / s,
       ...(item.inPoint !== undefined ? { inPoint: physEnd } : {}),
-    }
+    }, cut.end - item.start)
     if (keyed) {
       if (rightKf) right.keyframes = rightKf
       else delete right.keyframes
@@ -687,7 +693,9 @@ export function rippleDelete<P extends Project>(project: P, itemId: string): P {
  *   - neither clip may drop below MIN_DURATION;
  *   - the left clip may not run past the end of its source media;
  *   - the right clip may not start before the start of its source media.
- * Source clamps apply to video items only; images/overlays roll geometrically.
+ * Source clamps apply to video items only; images/overlays roll geometrically,
+ * except that a 3D item's head carries its in point and stops where its 3D
+ * begins (scene3d.ts).
  *
  * Captions and audio are untouched — a roll swaps which source frames play at
  * the boundary without moving anything on the timeline.
@@ -724,6 +732,8 @@ export function rollEdit<P extends Project>(
   let maxDelta = right.end - MIN_DURATION - right.start
   if (left.type === 'video')  maxDelta = Math.min(maxDelta, ((left.sourceDuration ?? Infinity) - leftOut) / sLeft)
   if (right.type === 'video') minDelta = Math.max(minDelta, -rightIn / sRight)
+  // A 3D item's head may not roll before its 3D begins (scene3d.ts).
+  if (isScene3dItem(right)) minDelta = Math.max(minDelta, -scene3dInPoint(right))
   if (minDelta > maxDelta) return project        // already past both limits — nothing safe to do
 
   const d = Math.max(minDelta, Math.min(delta, maxDelta))
@@ -734,11 +744,11 @@ export function rollEdit<P extends Project>(
     end: left.end + d,
     ...(left.outPoint !== undefined ? { outPoint: left.outPoint + d * sLeft } : {}),
   }
-  const newRight: VisualItem = {
+  const newRight: VisualItem = shiftScene3dInPoint({
     ...right,
     start: right.start + d,
     ...(right.inPoint !== undefined ? { inPoint: right.inPoint + d * sRight } : {}),
-  }
+  }, d)
   const newTrack = tracks[l.ti].map(item =>
     item.id === left.id ? newLeft : item.id === right.id ? newRight : item,
   )
@@ -844,6 +854,7 @@ export function slideItem<P extends Project>(project: P, itemId: string, delta: 
   if (next) {
     maxDelta = Math.min(maxDelta, (next.end - next.start) - MIN_DURATION)
     if (next.type === 'video') minDelta = Math.max(minDelta, -sourceWindow(next).inPoint / sNext)
+    if (isScene3dItem(next)) minDelta = Math.max(minDelta, -scene3dInPoint(next))
   }
   if (minDelta > maxDelta) return project
 
@@ -860,11 +871,11 @@ export function slideItem<P extends Project>(project: P, itemId: string, delta: 
     })
   }
   if (next) {
-    moved.set(next.id, {
+    moved.set(next.id, shiftScene3dInPoint({
       ...next,
       start: next.start + d,
       ...(next.inPoint !== undefined ? { inPoint: next.inPoint + d * sNext } : {}),
-    })
+    }, d))
   }
   const newTrack = track.map(other => moved.get(other.id) ?? other)
 

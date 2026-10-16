@@ -1010,6 +1010,17 @@ describe('edge trim', () => {
     expect(trimmed.end).toBe(10)
   })
 
+  it("moves a 3D item's in point with its in edge, so its picture stays in place", () => {
+    const p = baseProject()
+    Object.assign(trackItems(p)[1][0], { src: 'engine:scene3d', props: { scene: 'lab', inPoint: 1 } })
+    const d = new Driver(makeContext({ project: p, snapConfig: ZERO_SNAP }))
+    d.down(205, OVERLAY_Y)
+    const trimmed = visual(lastProjectChange(d.move(255, OVERLAY_Y)), 'o0')
+    expect(trimmed.start).toBeCloseTo(2.5)
+    expect(trimmed.end).toBe(4)
+    expect(trimmed.props).toEqual({ scene: 'lab', inPoint: 1.5 })
+  })
+
   it('recomputes from the pressed-at project rather than compounding', () => {
     const d = new Driver(makeContext())
     d.down(C0_OUT_EDGE.x, C0_OUT_EDGE.y)

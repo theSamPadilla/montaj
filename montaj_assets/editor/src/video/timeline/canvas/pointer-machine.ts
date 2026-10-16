@@ -1075,6 +1075,8 @@ function applyTrim(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
     end: resized.end,
     inPoint: resized.inPoint,
     outPoint: resized.outPoint,
+    // A 3D item's in point moves with its in edge (`computeResizedItem`).
+    ...(resized.props !== item.props ? { props: resized.props } : {}),
   })
   if (ctx.selectedIds.length > 1 && ctx.selectedIds.includes(item.id)) {
     next = applyResizeDeltaToSelection(next, item.id, ctx.selectedIds, edge, {
