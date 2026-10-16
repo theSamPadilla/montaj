@@ -10,6 +10,7 @@ import type { OverlayChanges, OverlayCommitOptions } from './useDragOverlay'
 import { hasKeyframes, localTimeOf } from '../keyframeOps'
 import type { CaptionEditAllPatch, CaptionEditPatch } from '../timeline/makeCaptionEdit'
 import OverlayItemsLayer from './OverlayItemsLayer'
+import LoadingCover from './LoadingCover'
 import { useVideoPlayback } from './useVideoPlayback'
 import { useEnginePlayback, type EnginePlayback } from './useEnginePlayback'
 import EngineSurface from './EngineSurface'
@@ -871,6 +872,11 @@ function PreviewSurface({
           internal ordering). No-ops on an absent/unrecognized platform, so
           this is unconditional. */}
       <SocialSafeZoneOverlay platform={socialPreview} />
+
+      {/* A heavy overlay at the playhead that has not drawn yet (a 3D scene loading) covers the picture with
+          "Loading 3D scene…" until its first frame, so captions never show alone on a black frame. See
+          LoadingCover for the attributes an overlay sets. */}
+      <LoadingCover containerRef={containerRef} />
 
       {/* Task 10b — legacy has no compositing stage (one <video> element per
           clip), so it cannot blend a clip crossfade the way render does. v4's
