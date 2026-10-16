@@ -424,22 +424,55 @@ def upload_media(path: str):
     )
 
 
-def analyze_media(
+_MEDIA_RESOLUTIONS = ("low", "medium", "high")
+
+
+def _usage_dict(response) -> dict | None:
+    """Token counts from response.usage_metadata; any count may be None."""
+    um = getattr(response, "usage_metadata", None)
+    if um is None:
+        return None
+
+    def _n(name):
+        v = getattr(um, name, None)
+        return v if isinstance(v, int) else None
+
+    return {
+        "prompt": _n("prompt_token_count"),
+        "output": _n("candidates_token_count"),
+        "thinking": _n("thoughts_token_count"),
+        "total": _n("total_token_count"),
+    }
+
+
+def analyze_media_meta(
     path: str,
     prompt: str,
     model: str = DEFAULT_MODEL,
     json_output: bool = False,
-) -> str:
+    *,
+    max_output_tokens: int | None = None,
+    thinking_budget: int | None = None,
+    video_fps: float | None = None,
+    media_resolution: str | None = None,
+) -> dict:
     """Analyze a media file (video, audio, or image) with Gemini.
+
+    Returns {"text": str, "usage": {"prompt", "output", "thinking", "total"} | None,
+    "model": str}. `usage` comes from response.usage_metadata; any count may be None.
 
     Branching:
     - Images under INLINE_BYTE_LIMIT: inline bytes in generate_content, no
       Files API upload. Faster and no server-side file cleanup needed.
     - Everything else: Files API (upload_media) + generate_content +
-      best-effort delete.
+      best-effort delete. `video_fps` rides on the uploaded file's part.
     """
     if not prompt or not prompt.strip():
         raise ConnectorError("Prompt must not be empty")
+    if media_resolution is not None and media_resolution not in _MEDIA_RESOLUTIONS:
+        raise ConnectorError(
+            f"media_resolution must be one of {', '.join(_MEDIA_RESOLUTIONS)}, got {media_resolution!r}"
+        )
 
     try:
         size = os.path.getsize(path)
@@ -460,6 +493,14 @@ def analyze_media(
     config = {}
     if json_output:
         config["response_mime_type"] = "application/json"
+    if max_output_tokens is not None:
+        config["max_output_tokens"] = max_output_tokens
+    if thinking_budget is not None:
+        config["thinking_config"] = types.ThinkingConfig(thinking_budget=thinking_budget)
+    if media_resolution is not None:
+        config["media_resolution"] = getattr(
+            types.MediaResolution, f"MEDIA_RESOLUTION_{media_resolution.upper()}"
+        )
     config_obj = types.GenerateContentConfig(**config) if config else None
 
     if use_inline:
@@ -478,14 +519,21 @@ def analyze_media(
         except Exception as e:
             raise _wrap_sdk_error(e, "Gemini generate_content failed") from e
         text = response.text
-        return _strip_markdown_fences(text) if json_output else text
+        text = _strip_markdown_fences(text) if json_output else text
+        return {"text": text, "usage": _usage_dict(response), "model": model}
 
     # Files API path for video, audio, and oversized images.
     media_file = upload_media(path)
+    media_part = media_file
+    if video_fps is not None:
+        media_part = types.Part(
+            file_data=types.FileData(file_uri=media_file.uri, mime_type=media_file.mime_type),
+            video_metadata=types.VideoMetadata(fps=video_fps),
+        )
     try:
         response = client.models.generate_content(
             model=model,
-            contents=[media_file, prompt],
+            contents=[media_part, prompt],
             config=config_obj,
         )
     except ConnectorError:
@@ -502,7 +550,29 @@ def analyze_media(
                   file=sys.stderr, flush=True)
 
     text = response.text
-    return _strip_markdown_fences(text) if json_output else text
+    text = _strip_markdown_fences(text) if json_output else text
+    return {"text": text, "usage": _usage_dict(response), "model": model}
+
+
+def analyze_media(
+    path: str,
+    prompt: str,
+    model: str = DEFAULT_MODEL,
+    json_output: bool = False,
+    *,
+    max_output_tokens: int | None = None,
+    thinking_budget: int | None = None,
+    video_fps: float | None = None,
+    media_resolution: str | None = None,
+) -> str:
+    """analyze_media_meta(...)["text"]: the model's reply as a str."""
+    return analyze_media_meta(
+        path, prompt, model, json_output,
+        max_output_tokens=max_output_tokens,
+        thinking_budget=thinking_budget,
+        video_fps=video_fps,
+        media_resolution=media_resolution,
+    )["text"]
 
 
 def generate_image(

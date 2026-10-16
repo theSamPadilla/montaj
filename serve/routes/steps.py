@@ -355,10 +355,17 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
 
 
 def wrap_output(stdout: str, schema: dict) -> dict:
-    """Wrap bare file paths as JSON. Steps that already return JSON pass through."""
+    """Wrap bare file paths as JSON. Steps that already return JSON pass through.
+
+    Output that looks like JSON but does not parse is never dropped: it comes
+    back as {text, type, parseError}, so a paid reply with one syntax error survives."""
     text = stdout.strip()
     if text.startswith(("{", "[")):
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            return {"text": text, "type": schema.get("output", {}).get("type", "text"),
+                    "parseError": str(e)}
     return {"path": text, "type": schema.get("output", {}).get("type", "file")}
 
 
