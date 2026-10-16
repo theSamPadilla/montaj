@@ -244,6 +244,8 @@ class _Script:
         # An upright hand centred in the region, so its next region stays put,
         # or centred where `places` says.
         place = self.places.pop(0) if self.places else None
+        if place == "nan":
+            return np.full((21, 3), np.nan), self.presence.pop(0), 0.2, np.zeros((21, 3))
         cx, cy = place or (rect.cx, rect.cy)
         lm = _upright_hand(cx, cy, rect.w / 204)
         lm[:, :2] -= np.array(H.landmarks_rect(lm)[:2]) - (cx, cy)
@@ -307,6 +309,18 @@ def test_two_tracked_hands_that_slide_onto_one_keep_the_first(script):
     t = H.HandTracker(None, None, max_hands=2)
     assert [h.id for h in t(FRAME)] == [0, 1]
     assert [h.id for h in t(FRAME)] == [0]
+
+
+def test_a_hand_with_nan_landmarks_is_returned_but_not_tracked(script):
+    s = script(palms=[[(270, 480)]] * 3, presence=[0.9, float("nan"), 0.9], places=["nan", None, None])
+    t = H.HandTracker(None, None, max_hands=1)
+    first = t(FRAME)
+    # Returned for the step to report, but its region would be NaN: not tracked.
+    assert [h.id for h in first] == [0] and np.isnan(first[0].landmarks).all()
+    assert t.tracked == []
+    # A NaN presence is lost too.
+    assert t(FRAME) == [] and s.detector_calls == 2
+    assert [h.id for h in t(FRAME)] == [1] and s.detector_calls == 3
 
 
 # --- One Euro --------------------------------------------------------------

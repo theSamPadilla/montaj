@@ -20,6 +20,7 @@ kind "body" is a later task and is refused for now.
 """
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -92,6 +93,24 @@ def track_hands(frames, fps, tracker):
     return [(i / fps, tracker(img)) for i, img in enumerate(frames)]
 
 
+def drop_nonfinite(per_frame):
+    """The frames without any hand holding a NaN or infinite value, and
+    [{t, id}] for each hand dropped. Runs before smoothing, so a bad value
+    never reaches a filter, and the JSON stays strict."""
+    import numpy as np
+    out, dropped = [], []
+    for t, hands in per_frame:
+        kept = []
+        for h in hands:
+            if (np.isfinite(h.landmarks).all() and np.isfinite(h.world).all()
+                    and math.isfinite(h.score) and math.isfinite(h.right)):
+                kept.append(h)
+            else:
+                dropped.append({"t": round(t, 4), "id": h.id})
+        out.append((t, kept))
+    return out, dropped
+
+
 def label_hands(per_frame):
     """{id: "left" | "right"} from the mean right-hand score of each id's frames."""
     sums = {}
@@ -124,7 +143,7 @@ def _round(rows, places):
     return [[round(float(v), places) for v in row] for row in rows]
 
 
-def result(per_frame, labels, fps, size, model):
+def result(per_frame, labels, fps, size, model, dropped=()):
     frames = [{
         "t": round(t, 4),
         "hands": [{
@@ -135,7 +154,7 @@ def result(per_frame, labels, fps, size, model):
             "world": _round(h.world, 4),
         } for h in hands],
     } for t, hands in per_frame]
-    return {
+    out = {
         "kind": "hand",
         "fps": round(fps, 4),
         "frameCount": len(frames),
@@ -145,6 +164,11 @@ def result(per_frame, labels, fps, size, model):
         "model": model,
         "notes": NOTES,
     }
+    if dropped:
+        out["dropped"] = list(dropped)
+        out["notes"] = NOTES + [f"{len(dropped)} hands had non-finite values and were left out of their "
+                                f"frames; dropped lists them by t and id."]
+    return out
 
 
 def main(argv=None):
@@ -166,8 +190,13 @@ def main(argv=None):
     fps = args.fps if args.fps is not None else min(rate, MAX_DEFAULT_FPS)
     try:
         palm_path, hand_path = weights.hand_models()
+    except weights.MirrorError as e:
+        fail("invalid_model_mirror", str(e))
     except ValueError as e:
-        fail("model_conversion_failed", f"The hand models could not be prepared: {e}")
+        from lib import models
+        fail("model_conversion_failed",
+             f"The hand models could not be prepared: {e}. Delete {models.models_dir(weights.FAMILY)} "
+             f"and run track_pose again to download them afresh.")
     # OMP_NUM_THREADS, when set, caps onnxruntime's threads as it does numpy's.
     threads = os.environ.get("OMP_NUM_THREADS", "")
     palm_model, hand_model = hands_lib.onnx_models(palm_path, hand_path,
@@ -176,7 +205,7 @@ def main(argv=None):
                                     min_presence=args.min_presence,
                                     pad=round(args.pad * max(width, height)))
 
-    per_frame = track_hands(frames(args.input, fps, width, height), fps, tracker)
+    per_frame, dropped = drop_nonfinite(track_hands(frames(args.input, fps, width, height), fps, tracker))
     labels = label_hands(per_frame)
     if args.smooth == "one-euro":
         per_frame = smooth_hands(per_frame, args.min_cutoff, args.beta)
@@ -186,8 +215,8 @@ def main(argv=None):
         "source": f"MediaPipe {weights.HAND_BUNDLE.name} (Apache-2.0), converted to ONNX",
         "runtime": f"onnxruntime {onnxruntime.__version__}",
     }
-    out = result(per_frame, labels, fps, (width, height), model)
-    text = json.dumps(out, separators=(",", ":"))
+    out = result(per_frame, labels, fps, (width, height), model, dropped)
+    text = json.dumps(out, separators=(",", ":"), allow_nan=False)
     if args.out:
         path = os.path.abspath(os.path.expanduser(args.out))
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)

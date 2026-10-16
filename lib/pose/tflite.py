@@ -162,6 +162,17 @@ def read_model(data):
     return {"tensors": tensors, "ops": ops, "inputs": graph.ints(1), "outputs": graph.ints(2)}
 
 
+def convert(data):
+    """ONNX bytes for TFLite bytes. Bytes this reader cannot parse (a truncated
+    or foreign file) raise ConversionError, never a bare struct or index error."""
+    try:
+        return to_onnx(read_model(data))
+    except ConversionError:
+        raise
+    except (struct.error, IndexError, KeyError, ValueError) as e:
+        raise ConversionError(f"not a TFLite model this converter reads ({type(e).__name__}: {e})") from e
+
+
 # ---------------------------------------------------------------------------
 # ONNX protobuf writing
 # ---------------------------------------------------------------------------

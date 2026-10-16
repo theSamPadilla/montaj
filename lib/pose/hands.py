@@ -317,17 +317,21 @@ class HandTracker:
         hands, tracked = [], []
         for rect, hand_id in regions[:self.max_hands]:
             landmarks, presence, right, world = hand_landmarks(self.hand_model, image, rect)
-            if presence < self.min_presence:
+            if not presence >= self.min_presence:        # a NaN presence is lost too
                 continue
-            next_rect = landmarks_rect(landmarks)
+            # Non-finite landmarks are returned for the caller to report, but never
+            # tracked: their region would be NaN, so the detector looks again.
+            finite = bool(np.isfinite(landmarks).all())
+            next_rect = landmarks_rect(landmarks) if finite else None
             # Two regions that have slid onto one hand: keep the first.
-            if any(rect_iou(next_rect, r) > ASSOCIATION_IOU for r, _ in tracked):
+            if finite and any(rect_iou(next_rect, r) > ASSOCIATION_IOU for r, _ in tracked):
                 continue
             if hand_id is None:
                 hand_id = self.next_id
                 self.next_id += 1
             hands.append(Hand(hand_id, presence, right, landmarks, world))
-            tracked.append((next_rect, hand_id))
+            if finite:
+                tracked.append((next_rect, hand_id))
         self.tracked = tracked
         return hands
 

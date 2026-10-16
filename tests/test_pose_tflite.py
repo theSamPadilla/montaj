@@ -293,6 +293,14 @@ def test_a_read_model_runs():
     assert got == pytest.approx(x * 2.5, abs=1e-6)
 
 
+@pytest.mark.parametrize("cut", [0, 3, 40, -60])
+def test_a_truncated_model_raises_a_conversion_error(cut):
+    data = _tiny_tflite()
+    with pytest.raises(T.ConversionError, match="not a TFLite model"):
+        T.convert(data[:cut])
+    assert T.convert(data) == T.to_onnx(T.read_model(data))
+
+
 # --- determinism -------------------------------------------------------------
 
 def test_conversion_is_byte_identical_run_to_run():

@@ -154,8 +154,20 @@ def test_the_mirror_serves_the_same_file_names(monkeypatch):
     from lib.pose import weights
     monkeypatch.delenv(weights.MIRROR_ENV, raising=False)
     assert weights.url(weights.HAND_BUNDLE).startswith("https://storage.googleapis.com/mediapipe-models/")
-    monkeypatch.setenv(weights.MIRROR_ENV, "https://assets.example/models/")
-    assert weights.url(weights.HAND_BUNDLE) == "https://assets.example/models/pose/hand_landmarker.task"
+    for base, want in [("https://assets.example/models/", "https://assets.example/models"),
+                       ("http://localhost:8765", "http://localhost:8765"),
+                       ("http://127.0.0.1:9/m", "http://127.0.0.1:9/m")]:
+        monkeypatch.setenv(weights.MIRROR_ENV, base)
+        assert weights.url(weights.HAND_BUNDLE) == f"{want}/pose/hand_landmarker.task"
+
+
+@pytest.mark.parametrize("base", ["file:///tmp/models", "/tmp/models", "http://assets.example/models",
+                                  "ftp://localhost/m", "https://", "localhost:8000"])
+def test_any_other_mirror_is_refused(monkeypatch, base):
+    from lib.pose import weights
+    monkeypatch.setenv(weights.MIRROR_ENV, base)
+    with pytest.raises(weights.MirrorError, match="https://"):
+        weights.url(weights.HAND_BUNDLE)
 
 
 def test_a_converted_model_is_written_once_and_checked_against_its_pin(tmp_path, monkeypatch):
@@ -183,6 +195,94 @@ def test_a_converted_model_is_written_once_and_checked_against_its_pin(tmp_path,
     with pytest.raises(ValueError, match="pinned"):
         weights.converted(str(bundle), item._replace(filename="n.onnx", sha256="0" * 64), convert)
     assert not (tmp_path / "pose" / "n.onnx").exists()
+
+
+def test_a_bad_bundle_raises_a_conversion_error(tmp_path, monkeypatch):
+    from lib import models
+    from lib.pose import weights
+    from lib.pose.tflite import ConversionError
+    monkeypatch.setattr(models, "MONTAJ_MODELS_DIR", str(tmp_path))
+    truncated = tmp_path / "truncated.task"
+    with zipfile.ZipFile(truncated, "w") as z:
+        z.writestr(weights.PALM.member, b"TFL3" + bytes(20))
+    with pytest.raises(ConversionError, match="not a TFLite model"):
+        weights.converted(str(truncated), weights.PALM, weights.convert)
+    with pytest.raises(ConversionError, match="no readable"):
+        weights.converted(str(truncated), weights.HAND_LANDMARKS, weights.convert)   # member missing
+    not_zip = tmp_path / "not.task"
+    not_zip.write_bytes(b"garbage")
+    with pytest.raises(ConversionError, match="no readable"):
+        weights.converted(str(not_zip), weights.PALM, weights.convert)
+    assert not (tmp_path / "pose").exists() or not any((tmp_path / "pose").iterdir())
+
+
+def test_a_failed_write_leaves_no_part_file(tmp_path, monkeypatch):
+    import hashlib
+    from lib import models
+    from lib.pose import weights
+    monkeypatch.setattr(models, "MONTAJ_MODELS_DIR", str(tmp_path))
+    bundle = tmp_path / "bundle.task"
+    with zipfile.ZipFile(bundle, "w") as z:
+        z.writestr("m.tflite", b"x")
+    item = weights.Converted("m.tflite", "m.v1.onnx", hashlib.sha256(b"y").hexdigest())
+
+    def no_room(src, dst):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(weights.os, "replace", no_room)
+    with pytest.raises(OSError):
+        weights.converted(str(bundle), item, lambda data: b"y")
+    assert list((tmp_path / "pose").iterdir()) == []
+
+
+@pytest.fixture
+def step_main(tmp_path, monkeypatch):
+    """The step's main() in this process, its video probe and models replaced."""
+    pytest.importorskip("onnxruntime")
+    from lib.pose import video, weights
+    video_path = tmp_path / "v.mp4"
+    video_path.write_bytes(b"x")
+    monkeypatch.setattr(video, "video_info", lambda path: (64, 48, 30.0))
+    step = _load_step()
+
+    def run(error):
+        def hand_models():
+            raise error
+        monkeypatch.setattr(weights, "hand_models", hand_models)
+        with pytest.raises(SystemExit):
+            step.main(["--input", str(video_path), "--kind", "hand"])
+    return run
+
+
+def test_a_model_that_will_not_convert_fails_cleanly(step_main, capsys):
+    from lib.pose.tflite import ConversionError
+    step_main(ConversionError("not a TFLite model this converter reads"))
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "model_conversion_failed"
+    assert "Delete" in err["message"] and "pose" in err["message"]
+
+
+def test_a_bad_mirror_fails_cleanly(step_main, capsys):
+    from lib.pose import weights
+    step_main(weights.MirrorError("MONTAJ_MODEL_MIRROR must be an https:// URL"))
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err["error"] == "invalid_model_mirror"
+
+
+def test_non_finite_hands_are_dropped_and_listed():
+    step = _load_step()
+    bad = _hand(1, 0.5, 0)
+    bad.landmarks[3, 0] = np.nan
+    worse = _hand(2, 0.5, 0)._replace(score=float("inf"))
+    frames = [(0.0, [_hand(0, 0.5, 0), bad]), (0.1, [worse])]
+    kept, dropped = step.drop_nonfinite(frames)
+    assert [[h.id for h in hs] for _, hs in kept] == [[0], []]
+    assert dropped == [{"t": 0.0, "id": 1}, {"t": 0.1, "id": 2}]
+    out = step.result(kept, {0: "left"}, 10.0, (540, 960), {}, dropped)
+    assert out["dropped"] == dropped and out["found"] == 1
+    assert "dropped" in out["notes"][-1]
+    json.dumps(out, allow_nan=False)
+    assert "dropped" not in step.result(kept, {0: "left"}, 10.0, (540, 960), {})
 
 
 # --- the real clip ----------------------------------------------------------

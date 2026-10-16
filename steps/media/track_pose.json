@@ -7,7 +7,7 @@
   },
   "output": {
     "type": "json",
-    "description": "{ kind, fps, frameCount, size: [w, h], found: frames with a hand, frames: [{ t, hands: [{ id (kept while tracked), handedness: left | right, score, landmarks: [[x, y, z] x 21] in source px (z relative to the wrist, the scale of x), world: [[x, y, z] x 21] in metres }] }], model, notes }, or with out the path of that JSON"
+    "description": "{ kind, fps, frameCount, size: [w, h], found: frames with a hand, frames: [{ t, hands: [{ id (kept while tracked), handedness: left | right, score, landmarks: [[x, y, z] x 21] in source px (z relative to the wrist, the scale of x), world: [[x, y, z] x 21] in metres }] }], model, notes, dropped (only if a hand had non-finite values: [{ t, id }], left out of its frame) }, or with out the path of that JSON"
   },
   "params": [
     {
