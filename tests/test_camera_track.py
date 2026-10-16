@@ -261,32 +261,62 @@ def test_known_plane_pixels_pick_the_plane_under_them():
         assert f["location"][2] == pytest.approx(0.6 - C[1], abs=1e-9)
 
 
-def test_known_plane_pixels_on_no_found_plane_fit_one():
-    rng = np.random.default_rng(3)
-    n = np.array([0.0, -0.5, 1.0]) / math.hypot(0.5, 1.0)
-    a, b = np.cross(n, [1, 0, 0]), [1.0, 0, 0]
-    ramp = np.array([0.0, 0.1, 0.08]) + np.outer(rng.uniform(-0.08, 0.08, 12), a) + np.outer(rng.uniform(-0.1, 0.1, 12), b)
-    points = np.vstack([POINTS, ramp])
-    planes = ct.find_planes(POINTS, 0.005, max_planes=2)              # the table and the wall only
-    pose = TRUTH[0]
-    px = _pixels(pose, ramp[[0, 4, 8, 11]]).tolist()
-    drawn = _pixels(pose, points)
-    empty = next([float(u), float(v)] for u in range(0, W, 20) for v in range(0, H, 20)
-                 if np.hypot(*(drawn - [u, v]).T).min() > ct.PICK_RADIUS * H)
-    i, plane, rms, left_out = ct.plane_from_pixels(planes, points, pose, px + [empty], (W, H), FOCAL,
-                                                   np.array([W / 2, H / 2]), 0.0, 0.005)
-    assert i is None and rms < 1e-12
-    assert left_out == [empty]                # nothing tracked near it: left out
-    assert abs(float(plane["normal"] @ n)) == pytest.approx(1)
-    assert set(range(len(POINTS), len(points))) <= set(plane["inliers"].tolist())
-    # two tracked points and a pixel with none near it cannot fix a plane
-    with pytest.raises(ValueError, match="land on 2 tracked points"):
-        ct.plane_from_pixels(planes, ramp, pose, [px[0], px[1], [5.0, 5.0]], (W, H), FOCAL,
-                             np.array([W / 2, H / 2]), 0.0, 0.005)
-    # nor can three pixels on one tracked point
-    with pytest.raises(ValueError, match="land on 1 tracked point "):
-        ct.plane_from_pixels(planes, ramp, pose, [px[0], [px[0][0] + 1, px[0][1]], [px[0][0], px[0][1] + 1]],
-                             (W, H), FOCAL, np.array([W / 2, H / 2]), 0.0, 0.005)
+def _plain_table_points():
+    """A plain table: points only along its edges (60, under a quarter of the wall's
+    300, so the rule does not even consider it), the wall and the off points."""
+    rng = np.random.default_rng(11)
+    t = rng.uniform(0, 1, 60)
+    side = np.arange(60) % 4
+    x = np.where(side == 0, -0.3, np.where(side == 1, 0.3, -0.3 + 0.6 * t)) + rng.uniform(-0.015, 0.015, 60)
+    y = np.where(side == 2, -0.1, np.where(side == 3, 0.45, -0.1 + 0.55 * t)) + rng.uniform(-0.015, 0.015, 60)
+    return np.vstack([np.c_[x, y, np.zeros(60)], POINTS[225:]])
+
+
+INSIDE_TABLE = np.array([[0.1, 0.05, 0], [0.15, 0.3, 0], [0.05, 0.3, 0], [0.08, -0.03, 0], [0.2, 0.15, 0]])
+
+
+def test_known_plane_clicks_inside_a_plain_table_find_it_over_a_bigger_wall():
+    points = _plain_table_points()
+    auto = _solve(known={"height": TRUTH_HEIGHT}, points=points)
+    assert (auto["plane"]["rule"], auto["plane"]["inliers"]) == ("facing", 300)     # the wall, wrongly
+    px = _pixels(TRUTH[3], INSIDE_TABLE).tolist()                                   # no tracked point near any
+    track = _solve(known={"plane": {"t": 0.3, "pixels": px}, "height": TRUTH_HEIGHT}, points=points)
+    assert (track["plane"]["rule"], track["plane"]["inliers"]) == ("pixels", 60)
+    for i, (R, C) in enumerate(TRUTH):
+        assert track["frames"][i]["location"] == pytest.approx(C, abs=1e-9)
+    assert _max_miss(track, points=points) < 0.01
+
+
+def test_known_plane_clicks_where_two_planes_take_them_go_to_the_nearer_points():
+    # near the table's back edge the rays meet the wall just under its points, inside
+    # its footprint's margin: both planes take them, and the table's points are nearer
+    back = np.array([[-0.1, 0.43, 0], [0.05, 0.42, 0], [0.15, 0.44, 0]])
+    px = _pixels(TRUTH[0], back).tolist()
+    poses, seen = _reconstruction()
+    planes = ct.find_planes(seen, 0.01 * 3.7 * 0.7)
+    wall = [i for i, p in enumerate(planes) if len(p["inliers"]) == 300]
+    table = [i for i, p in enumerate(planes) if len(p["inliers"]) == 225]
+    centre = np.array([W / 2, H / 2])
+    ct.plane_from_pixels([planes[i] for i in wall], seen, poses[0], px, FOCAL, centre, 0.0, 3.7 * 0.7)
+    i, _ = ct.plane_from_pixels(planes, seen, poses[0], px, FOCAL, centre, 0.0, 3.7 * 0.7)
+    assert [i] == table and wall[0] < table[0]
+
+
+def test_known_plane_pixels_no_plane_takes_are_refused():
+    points = _plain_table_points()
+    table = [p for p in ct.find_planes(points, 0.005) if len(p["inliers"]) == 60]
+    centre = np.array([W / 2, H / 2])
+    # the top of the frame meets the table far beyond its points
+    with pytest.raises(ValueError, match="no plane in the tracked points lies under those pixels"):
+        ct.plane_from_pixels(table, points, TRUTH[0], [[100, 15], [270, 10], [440, 15]], FOCAL, centre, 0.0, 0.7)
+    # a camera looking up meets it behind itself
+    up = (_look([0, 0, 0.4], [0, 0.3, 0.8]), np.array([0, 0, 0.4]))
+    with pytest.raises(ValueError, match="away from its edges"):
+        ct.plane_from_pixels(table, points, up, [[200, 400], [300, 500], [250, 600]], FOCAL, centre, 0.0, 0.7)
+    # and through solve, as the step reports it
+    with pytest.raises(ValueError, match="no plane"):
+        _solve(known={"plane": {"t": 0, "pixels": [[100, 15], [270, 10], [440, 15]]}},
+               points=_plain_table_points()[:60])
 
 
 # ---- the camera ----

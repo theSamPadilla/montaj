@@ -21,7 +21,7 @@ clockwise). With roll r the camera's up is cos(r) up0 - sin(r) right0.
 
 The world is fixed by the clip: z = 0 is the plane the clip looks at (a table or a
 floor: choose_plane's pick of the planes in the points, or the one under
-known.plane's pixels),
+known.plane's pixels, plane_from_pixels),
 +z its normal on the cameras' side; the origin is where frame 0's optical
 axis meets it; +x is frame 0's right projected onto it; +y = z x x. The scale is
 metric from one known size, else frame 0's camera is assumed DEFAULT_HEIGHT_M up.
@@ -51,11 +51,10 @@ PLANE_SEED = 0
 # camera looks down at the table (image-up then lies in it), and the one facing the
 # camera most wins instead.
 UP_ENOUGH = 0.3
-# known.plane: each pixel takes the tracked point drawn nearest it, within
-# PICK_RADIUS x the frame's long side; a found plane takes those points when their
-# RMS distance to it is within PICK_TOLERANCE x the plane threshold.
-PICK_RADIUS = 0.02
-PICK_TOLERANCE = 2.0
+# known.plane: a found plane takes the pixels when every pixel's ray meets it in
+# front of the camera, within FOOTPRINT_MARGIN x the diagonal of its points'
+# footprint (their box along the plane's own axes) of that box.
+FOOTPRINT_MARGIN = 0.25
 
 # Output rounding. Positions to 0.1 mm: at a tabletop's 0.3 m, a 0.5 mm error in
 # the location or target moves the picture by up to about 3 px at f = 850 px.
@@ -334,52 +333,39 @@ def choose_plane(planes, eye, up, forward):
     return max(candidates, key=lambda i: float(planes[i]["normal"] @ -forward)), "facing"
 
 
-def _project(pose, points, focal, centre, k1):
-    """Pixels of points seen from a COLMAP pose; NaN for a point at or behind the eye."""
-    R, C = pose
-    xc = (np.asarray(points, float) - C) @ R.T
-    out = np.full((len(xc), 2), np.nan)
-    ahead = xc[:, 2] > 1e-9
-    out[ahead] = distort(xc[ahead, :2] / xc[ahead, 2:3], focal, centre, k1)
-    return out
-
-
-def plane_from_pixels(planes, points, pose, pixels, size, focal, centre, k1, threshold):
-    """The plane under pixels on the ground seen from a COLMAP pose. Each pixel takes
-    the tracked point drawn nearest it (within PICK_RADIUS of the long side; a pixel
-    with none is left out); of the found planes, the one those points sit on with the
-    smallest RMS distance, when within PICK_TOLERANCE x threshold; else the plane
-    fitted through them, with every point within threshold of it as its inliers.
-    Returns (index or None, plane, rms in reconstruction units, the pixels left out).
-    Raises ValueError when the points cannot fix a plane."""
+def plane_from_pixels(planes, points, pose, pixels, focal, centre, k1, depth):
+    """The found plane under pixels on the ground seen from a COLMAP pose, scored by
+    where the pixels' rays meet it: the median distance from each hit to the plane's
+    nearest point, over `depth` (the median depth of the points). A plane is out when
+    a ray meets it behind the camera or a hit lands far outside its points'
+    footprint, so a click on a plain table, whose points are only at its edges and
+    under the objects on it, still finds it, and the wall behind the table, which
+    those rays meet below its points, does not. Planes under MIN_PLANE_POINTS are not
+    considered. Returns (index, score). Raises ValueError when no plane takes them."""
     pts = np.asarray(points, float)
-    drawn = _project(pose, pts, focal, centre, k1)
-    radius = PICK_RADIUS * max(size)
-    picked, left_out = [], []
-    for u, v in pixels:
-        d = np.hypot(drawn[:, 0] - u, drawn[:, 1] - v)
-        d[np.isnan(d)] = np.inf
-        i = int(np.argmin(d)) if len(d) else -1
-        if i < 0 or not d[i] <= radius:
-            left_out.append([u, v])
-        else:
-            picked.append(i)
-    P = pts[sorted(set(picked))]
-    sv = np.linalg.svd(P - P.mean(axis=0))[1] if len(P) >= 3 else None
-    if sv is None or not sv[1] > 1e-3 * sv[0]:
-        raise ValueError(f"known.plane: its {len(pixels)} pixels land on {len(P)} tracked "
-                         f"point{'' if len(P) == 1 else 's'} (within {radius:.0f} px); a plane needs three, not "
-                         "on one line. Pick spots with some texture on the table or floor (an edge, a mark, "
-                         "where an object stands), spread out")
-    centroid = P.mean(axis=0)
-    rms = [float(np.sqrt(np.mean(((P - p["point"]) @ p["normal"]) ** 2))) for p in planes]
-    if rms and min(rms) <= PICK_TOLERANCE * threshold:
-        i = int(np.argmin(rms))
-        return i, planes[i], rms[i], left_out
-    normal = np.linalg.svd(P - centroid)[2][-1]
-    inliers = np.nonzero(np.abs((pts - centroid) @ normal) < threshold)[0]
-    fitted = {"normal": normal, "point": centroid, "inliers": inliers}
-    return None, fitted, float(np.sqrt(np.mean(((P - centroid) @ normal) ** 2))), left_out
+    best = None
+    for i, p in enumerate(planes):
+        if len(p["inliers"]) < MIN_PLANE_POINTS:
+            continue
+        hits = plane_points(pose, pixels, p, focal, centre, k1)
+        if any(x is None for x in hits):
+            continue
+        inl = pts[p["inliers"]]
+        c = inl.mean(axis=0)
+        axes = np.linalg.svd(inl - c)[2][:2]              # the plane's own two axes
+        uv = (inl - c) @ axes.T
+        lo, hi = uv.min(axis=0), uv.max(axis=0)
+        hit_uv = (np.array(hits) - c) @ axes.T
+        outside = np.linalg.norm(np.maximum(np.maximum(lo - hit_uv, hit_uv - hi), 0), axis=1)
+        if (outside > FOOTPRINT_MARGIN * float(np.linalg.norm(hi - lo))).any():
+            continue
+        score = float(np.median([np.linalg.norm(inl - x, axis=1).min() for x in hits])) / depth
+        if best is None or score < best[1]:
+            best = (i, score)
+    if best is None:
+        raise ValueError("known.plane: no plane in the tracked points lies under those pixels. "
+                         "Pick pixels well inside the table or floor, away from its edges")
+    return best
 
 
 def align_world(plane, pose0):
@@ -514,15 +500,9 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
     face(planes, C0)
     if "plane" in known:
         kp = known["plane"]
-        chosen, plane, _, left_out = plane_from_pixels(
-            planes, pts, seen_at(kp["t"], kp["pixels"], "known.plane"), kp["pixels"], (w, h), focal, centre, k1,
-            threshold)
-        face([plane], C0)
-        if left_out:
-            notes.append(f"known.plane: {len(left_out)} of {len(kp['pixels'])} pixels had no tracked point within "
-                         f"{PICK_RADIUS * max(w, h):.0f} px and were left out: "
-                         + ", ".join(f"[{u:g}, {v:g}]" for u, v in left_out) + ".")
-        rule = "pixels" if chosen is not None else "fitted"
+        chosen, _ = plane_from_pixels(planes, pts, seen_at(kp["t"], kp["pixels"], "known.plane"), kp["pixels"],
+                                      focal, centre, k1, abs(depth))
+        plane, rule = planes[chosen], "pixels"
     elif planes:
         chosen, rule = choose_plane(planes, C0, -R0[1], R0[2])
         plane = planes[chosen]
@@ -571,9 +551,7 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
         "up": f"z = 0 is the plane facing most up the picture ({through}; up {up0:.2f}).",
         "facing": f"z = 0 is the plane facing the camera most ({through}): none faces up the picture "
                   f"by {UP_ENOUGH:g} or more, as when the camera looks down.",
-        "pixels": f"z = 0 is the found plane under known.plane's pixels ({through}).",
-        "fitted": f"z = 0 is a plane fitted through the tracked points under known.plane's pixels ({through}): "
-                  f"no found plane held them within {PICK_TOLERANCE * threshold * scale * 1000:.0f} mm.",
+        "pixels": f"z = 0 is the plane under known.plane's pixels ({through}).",
     }[rule] + (" If it is not the table or floor, point at that with known.plane." if rule in ("up", "facing") else ""))
     if not world["on_axis"]:
         notes.append("Frame 0 does not look at the plane: the origin is under frame 0's camera instead.")

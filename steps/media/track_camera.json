@@ -7,7 +7,7 @@
   },
   "output": {
     "type": "json",
-    "description": "{ fps, frameCount, registered: frames tracked, size: [w, h] px, lens: mm on a 36 mm sensor, vertical field of view (lens = 36 * focalPx / h), focalPx, distortion: {k1} (Montaj's camera has none), frames: [{t, location, target, roll: degrees, counter-clockwise from level as seen from behind the camera, registered}], plane: {rule: up | facing | pixels | fitted, inliers, rmsM, candidates: [{inliers, rmsM, upInPicture, towardCamera, chosen}]}, scale: {metresPerUnit, source}, reprojectionPx, scene: {camera: {lens, location: [[t, [x, y, z]]], target: [[t, [x, y, z]]]}}, notes }; with out, the path of the file holding it"
+    "description": "{ fps, frameCount, registered: frames tracked, size: [w, h] px, lens: mm on a 36 mm sensor, vertical field of view (lens = 36 * focalPx / h), focalPx, distortion: {k1} (Montaj's camera has none), frames: [{t, location, target, roll: degrees, counter-clockwise from level as seen from behind the camera, registered}], plane: {rule: up | facing | pixels, inliers, rmsM, candidates: [{inliers, rmsM, upInPicture, towardCamera, chosen}]}, scale: {metresPerUnit, source}, reprojectionPx, scene: {camera: {lens, location: [[t, [x, y, z]]], target: [[t, [x, y, z]]]}}, notes }; with out, the path of the file holding it"
   },
   "params": [
     {
@@ -31,7 +31,7 @@
       "name": "known",
       "type": "string",
       "required": false,
-      "description": "What is known about the scene, as JSON text. A size makes the world metric: {\"height\": h} is frame 0's camera h metres above the plane; {\"t\": s, \"pixels\": [[u1, v1], [u2, v2]], \"metres\": d} is two points on the plane, seen at those pixels at s seconds, d metres apart. Either can carry \"plane\": {\"t\": s, \"pixels\": [[u, v], ...]}, three or more pixels on the table or floor at s seconds: point at the ground when z = 0 is the wrong plane, or pass it alone."
+      "description": "What is known about the scene, as JSON text. A size makes the world metric: {\"height\": h} is frame 0's camera h metres above the plane; {\"t\": s, \"pixels\": [[u1, v1], [u2, v2]], \"metres\": d} is two points on the plane, seen at those pixels at s seconds, d metres apart. Either can carry \"plane\": {\"t\": s, \"pixels\": [[u, v], ...]}, three or more pixels well inside the table or floor at s seconds: point at the table when z = 0 is the wrong plane, or pass it alone."
     },
     {
       "name": "max-frames",
