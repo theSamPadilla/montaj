@@ -44,7 +44,7 @@ export function scene3dStage({ env = process.env, exists = existsSync } = {}) {
   if (typeof stage !== 'string' || stage.length === 0 || !exists(stage)) {
     throw new Scene3dError(
       'scene3d_stage_unavailable',
-      `A 3D scene item needs the 3D stage, and this Montaj has none (${SCENE3D_STAGE_ENV} ${stage ? `points at a missing file: ${stage}` : 'is not set'}). Update the Montaj app.`,
+      `A 3D item needs the 3D stage, and this Montaj has none${stage ? ` (missing file: ${stage})` : ''}. Update the Montaj app.`,
     )
   }
   return stage
@@ -54,21 +54,25 @@ export function scene3dStage({ env = process.env, exists = existsSync } = {}) {
  * Rewrites every scene item of `project` into a plain overlay item. `projectDir` is the folder holding project.json.
  * Throws Scene3dError (`scene3d_stage_unavailable`, `scene3d_scene_missing`, `scene3d_invalid`) naming the item.
  * Returns how many items it rewrote.
+ *
+ * The messages reach whoever exports, so they say "3D" and never "scene": the user never meets that concept (§308).
+ * The codes keep their names; they are for the host and the AI.
  */
 export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = (f) => readFileSync(f, 'utf8') } = {}) {
   let n = 0
   for (const track of trackItems(project)) {
     for (const item of track ?? []) {
       if (!isScene3dItem(item)) continue
-      const label = item.id ? `scene item "${item.id}"` : 'a scene item'
+      const label = item.id ? `3D item "${item.id}"` : 'A 3D item'
       if (typeof projectDir !== 'string' || projectDir.length === 0) {
-        throw new Scene3dError('scene3d_invalid', `${label} needs the project's folder to find its scene.`)
+        throw new Scene3dError('scene3d_invalid', `${label} needs the project's folder to find its 3D.`)
       }
       const props = item.props && typeof item.props === 'object' && !Array.isArray(item.props) ? item.props : {}
       const name = props.scene
       if (name !== undefined && (typeof name !== 'string' || !SCENE_NAME.test(name))) {
-        throw new Scene3dError('scene3d_invalid', `${label}: scene must be a name of lowercase letters, digits, - and _ (got ${JSON.stringify(name)}).`)
+        throw new Scene3dError('scene3d_invalid', `${label}: its 3D must be named with lowercase letters, digits and - (got ${JSON.stringify(name)}).`)
       }
+      const which = name === undefined ? 'the project\'s own 3D' : `its 3D "${name}"`
       const inPoint = props.inPoint === undefined ? 0 : props.inPoint
       if (typeof inPoint !== 'number' || !Number.isFinite(inPoint) || inPoint < 0) {
         throw new Scene3dError('scene3d_invalid', `${label}: inPoint must be 0 or more seconds (got ${JSON.stringify(props.inPoint)}).`)
@@ -76,17 +80,19 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
       const stage = scene3dStage({ env, exists })
       const sceneFile = name === undefined ? join(projectDir, 'models', 'active.json') : join(projectDir, 'models', 'scenes', name, 'active.json')
       if (!exists(sceneFile)) {
-        throw new Scene3dError('scene3d_scene_missing', `${label}: the scene ${name === undefined ? '(the project\'s own)' : `"${name}"`} has no ${sceneFile}. Save the scene first.`)
+        throw new Scene3dError('scene3d_scene_missing', `${label}: ${which} is not saved yet.`)
       }
       let sceneJson, sceneData
       try {
         sceneJson = read(sceneFile)
         sceneData = JSON.parse(sceneJson)
       } catch (e) {
-        throw new Scene3dError('scene3d_invalid', `${label}: ${sceneFile} cannot be read as a scene (${e && e.message ? e.message : e}).`)
+        // A read error's code, not its message: the message carries the file's path, which names the scenes folder.
+        const why = e && typeof e.code === 'string' ? e.code : (e && e.message ? e.message : e)
+        throw new Scene3dError('scene3d_invalid', `${label}: ${which} cannot be read (${why}).`)
       }
       if (!sceneData || typeof sceneData !== 'object' || Array.isArray(sceneData) || !sceneData.model || typeof sceneData.model !== 'object') {
-        throw new Scene3dError('scene3d_invalid', `${label}: ${sceneFile} is not a scene (no model in it).`)
+        throw new Scene3dError('scene3d_invalid', `${label}: ${which} has no model in it.`)
       }
       item.src = stage
       item.props = { ...props, sceneFile, sceneJson, inPoint }

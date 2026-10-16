@@ -13,11 +13,12 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FFMPEG, FFPROBE } from '../ffmpeg-bin.js'
-import { sampleScene } from '../sample-frame.js'
+import { sampleScene, sampleFrame } from '../sample-frame.js'
 import { SCENE3D_SRC, SCENE3D_STAGE_ENV } from '../scene3d.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SAMPLE_JS = join(__dirname, '..', 'sample-frame.js')
+const RENDER_JS = join(__dirname, '..', 'render.js')
 const FPS = 10
 const [W, H] = [360, 640]
 const TIME_SCALE = 20 // blue per second of 3D time
@@ -123,5 +124,55 @@ test('sample-frame.js --scene: the CLI samples one 3D alone', { timeout: 120_000
       { encoding: 'utf8', timeout: 110_000, env: { ...process.env, [SCENE3D_STAGE_ENV]: w.stage } })
     assert.equal(r2.status, 0, r2.stderr?.slice(-500))
     shows(centre(own), 140, 0.5, "--scene '' is the project's own")
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+// Two 3D items on two different 3Ds, each with its own in point, cut end to
+// end; then, over the second, the project's own 3D crossfading out (an opaque
+// item with an opacity key on top of another, §309).
+function twoScenes(w) {
+  const item = (id, start, end, props, extra = {}) => ({ id, type: 'overlay', src: SCENE3D_SRC, start, end, opaque: true, props, ...extra })
+  return writeProject(w, [
+    [item('a', 0, 2, { scene: 'lab', inPoint: 3 }), item('b', 2, 4, { scene: 'yard', inPoint: 0.5 })],
+    [item('c', 3, 4, { inPoint: 0 }, { keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 1 }, { t: 1, value: 0 }] }] })],
+  ])
+}
+// What each time shows: [3D red, 3D time] for one 3D alone, or the crossfade.
+const LAB = 250, YARD = 60, OWN = 140
+const EXPECT = [
+  [0.5, LAB, 3.5, 'a shows lab, 0.5 s past its in point 3'],
+  [1.5, LAB, 4.5, 'a, a second later'],
+  [2.5, YARD, 1, 'b shows yard, 0.5 s past its in point 0.5'],
+  [2.9, YARD, 1.4, 'b, later'],
+]
+// At 3.5 s: c (own, 0.5 s in, at opacity 0.5) over b (yard at 2 s).
+const FADE = { t: 3.5, rgb: [(OWN + YARD) / 2, 0, (0.5 * TIME_SCALE + 2 * TIME_SCALE) / 2] }
+
+test('render: two 3D items on two different 3Ds each show their own 3D at their own time', { timeout: 300_000 }, () => {
+  const w = world()
+  try {
+    const projectPath = twoScenes(w)
+    const out = join(w.dir, 'out.mp4')
+    const r = spawnSync('node', [RENDER_JS, projectPath, '--out', out],
+      { encoding: 'utf8', timeout: 280_000, env: { ...process.env, [SCENE3D_STAGE_ENV]: w.stage } })
+    assert.equal(r.status, 0, `render failed: ${r.stderr?.slice(-600)}`)
+    for (const [t, red, sceneT, why] of EXPECT) shows(centre(out, Math.round(t * FPS)), red, sceneT, why, { tolRed: 12, tolT: 0.3 })
+    const fade = centre(out, Math.round(FADE.t * FPS))
+    assert.ok(fade[1] < 30 && fade.every((v, i) => Math.abs(v - FADE.rgb[i]) <= 15),
+      `mid-crossfade the 3D beneath shows through: got ${fade}, want about ${FADE.rgb}`)
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('sample_frame: two 3D items on two different 3Ds each show their own 3D at their own time', { timeout: 180_000 }, async () => {
+  const w = world()
+  try {
+    const projectPath = twoScenes(w)
+    await withStage(w, async () => {
+      const at = async (t) => centre((await sampleFrame({ projectJson: projectPath, atSeconds: t, outPath: join(w.dir, `at-${t}.png`) })).pngPath)
+      for (const [t, red, sceneT, why] of EXPECT) shows(await at(t), red, sceneT, why)
+      const fade = await at(FADE.t)
+      assert.ok(fade[1] < 30 && fade.every((v, i) => Math.abs(v - FADE.rgb[i]) <= 10),
+        `mid-crossfade the 3D beneath shows through: got ${fade}, want about ${FADE.rgb}`)
+    })
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })

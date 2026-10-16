@@ -80,7 +80,7 @@ test('every refusal names its cause and carries a stable code: no stage, a missi
     refuses(projectOf(scene({ scene: 'nope' })), w.project, w.env, 'scene3d_scene_missing', /"nope"/)
     const bare = world({ main: false })
     try { refuses(projectOf(scene({})), bare.project, bare.env, 'scene3d_scene_missing', /project's own/) } finally { rmSync(bare.dir, { recursive: true, force: true }) }
-    for (const name of ['Hands', '../x', '', 7, 'a/b']) refuses(projectOf(scene({ scene: name })), w.project, w.env, 'scene3d_invalid', /scene must be a name/)
+    for (const name of ['Hands', '../x', '', 7, 'a/b']) refuses(projectOf(scene({ scene: name })), w.project, w.env, 'scene3d_invalid', /its 3D must be named with lowercase letters, digits and - \(got/)
     for (const inPoint of [-1, 'soon', NaN, null]) refuses(projectOf(scene({ scene: 'hands', inPoint })), w.project, w.env, 'scene3d_invalid', /inPoint/)
     refuses(projectOf(scene({ scene: 'hands' })), null, w.env, 'scene3d_invalid', /project's folder/)
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
@@ -101,13 +101,13 @@ test('render.js refuses a scene item with no stage before doing any work, as JSO
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })
 
-test('a scene that cannot be read, or has no model, fails naming the file (never a blank frame)', () => {
+test('a scene that cannot be read, or has no model, fails naming it (never a blank frame)', () => {
   const w = world({ scenes: ['bad', 'empty'] })
   try {
     writeFileSync(join(w.project, 'models', 'scenes', 'bad', 'active.json'), 'not json')
     writeFileSync(join(w.project, 'models', 'scenes', 'empty', 'active.json'), '{"moves":{}}')
     for (const name of ['bad', 'empty']) {
-      assert.throws(() => materializeScene3d(projectOf(scene({ scene: name })), w.project, { env: w.env }), (e) => e instanceof Scene3dError && e.code === 'scene3d_invalid' && e.message.includes(`${name}/active.json`))
+      assert.throws(() => materializeScene3d(projectOf(scene({ scene: name })), w.project, { env: w.env }), (e) => e instanceof Scene3dError && e.code === 'scene3d_invalid' && e.message.includes(`its 3D "${name}"`))
     }
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })
@@ -118,5 +118,33 @@ test('a scene name takes the same rule as save_model: a-z, 0-9 and -, up to 48',
     for (const name of ['a_b', 'A', 'x'.repeat(49), '-a', '../x']) {
       assert.throws(() => materializeScene3d(projectOf(scene({ scene: name })), w.project, { env: w.env }), (e) => e.code === 'scene3d_invalid', name)
     }
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('every message a user can read on export says 3D, never scene (§308); the codes stay', () => {
+  const w = world({ main: false, scenes: ['bad', 'empty'] })
+  try {
+    writeFileSync(join(w.project, 'models', 'scenes', 'bad', 'active.json'), 'not json')
+    writeFileSync(join(w.project, 'models', 'scenes', 'empty', 'active.json'), '{"moves":{}}')
+    mkdirSync(join(w.project, 'models', 'scenes', 'dir', 'active.json'), { recursive: true })
+    const cases = [
+      [projectOf(scene({ scene: 'lab' })), w.project, {}, 'scene3d_stage_unavailable', 'A 3D item needs the 3D stage, and this Montaj has none. Update the Montaj app.'],
+      [projectOf(scene({ scene: 'lab' })), w.project, { [SCENE3D_STAGE_ENV]: '/gone/stage.jsx' }, 'scene3d_stage_unavailable', 'A 3D item needs the 3D stage, and this Montaj has none (missing file: /gone/stage.jsx). Update the Montaj app.'],
+      [projectOf(scene({ scene: 'lab' }, { id: 'ov-1' })), w.project, w.env, 'scene3d_scene_missing', '3D item "ov-1": its 3D "lab" is not saved yet.'],
+      [projectOf(scene({}, { id: 'ov-1' })), w.project, w.env, 'scene3d_scene_missing', '3D item "ov-1": the project\'s own 3D is not saved yet.'],
+      [projectOf(scene({ scene: 'a_b' }, { id: 'ov-1' })), w.project, w.env, 'scene3d_invalid', '3D item "ov-1": its 3D must be named with lowercase letters, digits and - (got "a_b").'],
+      [projectOf(scene({ scene: 'lab' }, { id: undefined })), null, w.env, 'scene3d_invalid', 'A 3D item needs the project\'s folder to find its 3D.'],
+      [projectOf(scene({ scene: 'empty' }, { id: 'ov-1' })), w.project, w.env, 'scene3d_invalid', '3D item "ov-1": its 3D "empty" has no model in it.'],
+      [projectOf(scene({ scene: 'dir' }, { id: 'ov-1' })), w.project, w.env, 'scene3d_invalid', '3D item "ov-1": its 3D "dir" cannot be read (EISDIR).'],
+    ]
+    for (const [project, dir, env, code, message] of cases) {
+      assert.throws(() => materializeScene3d(project, dir, { env }), (e) => {
+        assert.equal(e.code, code)
+        assert.equal(e.message, message)
+        return true
+      })
+    }
+    assert.throws(() => materializeScene3d(projectOf(scene({ scene: 'bad' })), w.project, { env: w.env }),
+      (e) => e.code === 'scene3d_invalid' && /^3D item "s1": its 3D "bad" cannot be read \(/.test(e.message) && !/scene/i.test(e.message))
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })
