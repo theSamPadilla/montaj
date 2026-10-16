@@ -16,7 +16,7 @@ const SRC: CaptionSegment = { id: 'cap-0', text: 'hello world', start: 0, end: 2
 const ES: CaptionSegment = { id: 'cap-1', text: 'hola mundo', start: 0, end: 2, lane: 1, lang: 'es', translationOf: ['cap-0'] }
 const FR: CaptionSegment = { id: 'cap-2', text: 'salut monde', start: 0, end: 2, lane: 2, lang: 'fr', translationOf: ['cap-0'] }
 
-function mountPanel(captions: Partial<Captions>, extra: { onAddLanguage?: () => Promise<void> | void } = {}) {
+function mountPanel(captions: Partial<Captions>, extra: { onAddLanguage?: (have: string[]) => Promise<void> | void } = {}) {
   const track = { style: 'plate', segments: [SRC], ...captions } as Captions
   const project = { id: 'p1', captions: track } as unknown as Project
   const clock: PlaybackClock = { get: () => 0, set: vi.fn(), subscribe: () => () => {} }
@@ -92,25 +92,20 @@ describe('Languages row', () => {
     expect(screen.queryByRole('button', { name: '+ Language' })).toBeNull()
   })
 
-  it('"+ Language" opens one line and Copy prompt, which calls the host and says Copied; Escape closes it', async () => {
-    const onAddLanguage = vi.fn(async () => {})
-    mountPanel({ lang: 'en' }, { onAddLanguage })
+  it('"+ Language" hands the host the languages the track has, with no popover of its own', () => {
+    const onAddLanguage = vi.fn()
+    mountPanel({ lang: 'en', segments: [SRC, ES] }, { onAddLanguage })
     fireEvent.click(chip('+ Language'))
-    expect(screen.getByText('Ask your AI to add captions in another language.')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Copy prompt' }))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument())
-    expect(onAddLanguage).toHaveBeenCalledTimes(1)
-    fireEvent.keyDown(document, { key: 'Escape' })
-    expect(screen.queryByText('Ask your AI to add captions in another language.')).toBeNull()
+    expect(onAddLanguage).toHaveBeenCalledWith(['en', 'es'])
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Copy prompt' })).toBeNull()
   })
 
-  it('a refused copy leaves the button on Copy prompt', async () => {
-    const onAddLanguage = vi.fn(async () => { throw new Error('denied') })
-    mountPanel({ lang: 'en' }, { onAddLanguage })
+  it('an unknown source language goes as "source"', () => {
+    const onAddLanguage = vi.fn()
+    mountPanel({}, { onAddLanguage })
     fireEvent.click(chip('+ Language'))
-    fireEvent.click(screen.getByRole('button', { name: 'Copy prompt' }))
-    await waitFor(() => expect(onAddLanguage).toHaveBeenCalled())
-    expect(screen.getByRole('button', { name: 'Copy prompt' })).toBeInTheDocument()
+    expect(onAddLanguage).toHaveBeenCalledWith(['source'])
   })
 
   it('"+ Language" stays at the end of the row with several languages', () => {

@@ -15,7 +15,7 @@ import type { PlaybackClock } from './playback-clock'
 import type { CaptionEditPatch } from './timeline/makeCaptionEdit'
 import { EditableSegment } from './timeline/EditableSegment'
 import { formatTime } from './timeline/utils'
-import { Button, NumberField, Slider, stepValue, SwatchInput } from '../ui'
+import { NumberField, Slider, stepValue, SwatchInput } from '../ui'
 import { groupCaptionLanes, laneOf } from './captionLanes'
 import { playheadInside } from './captionSeek'
 import { FontFamilyPicker, findFontOption } from '../text/FontPicker'
@@ -144,21 +144,10 @@ function languagesOn(track: Pick<Captions, 'lang' | 'segments' | 'showLangs'>): 
 
 /** §244: the header's Languages row. One chip per language the track has, each switching its captions on or off in
  *  the preview and the render (`captions.showLangs`); at least one stays on, so the last one on is locked. Two on draw
- *  two rows. "+ Language" (when the host can hand the user a prompt for their AI) opens a one-line pointer: Montaj does
- *  not translate, the user's own AI does, over MCP. Chips like the Format tab's other choices (case, alignment). */
-function LanguagesRow({ track, onChange, onAddLanguage }: { track: Captions; onChange: (showLangs: string[] | undefined) => void; onAddLanguage?: () => Promise<void> | void }) {
-  const [open, setOpen] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const boxRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e: MouseEvent) => { if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false) }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
-  }, [open])
-
+ *  two rows. "+ Language" (when the host can hand the user a prompt for their AI) hands the host the languages the
+ *  track already has; the host asks which one to add and gives the prompt. Montaj does not translate: the user's own
+ *  AI does, over MCP. Chips like the Format tab's other choices (case, alignment). */
+function LanguagesRow({ track, onChange, onAddLanguage }: { track: Captions; onChange: (showLangs: string[] | undefined) => void; onAddLanguage?: (have: string[]) => Promise<void> | void }) {
   const languages = captionLanguages(track)
   const on = languagesOn(track)
   const toggle = (key: string) => {
@@ -167,7 +156,7 @@ function LanguagesRow({ track, onChange, onAddLanguage }: { track: Captions; onC
     onChange(next.size === languages.length ? undefined : languages.map(l => l.key).filter(k => next.has(k)))
   }
   return (
-    <div className={`${rowClass} relative`}>
+    <div className={rowClass}>
       <span className={rowLabelClass} aria-hidden="true">Languages</span>
       <div role="group" aria-label="Caption languages" className="flex items-center gap-1 flex-wrap">
         {languages.map(l => {
@@ -181,19 +170,9 @@ function LanguagesRow({ track, onChange, onAddLanguage }: { track: Captions; onC
           )
         })}
         {onAddLanguage && (
-          <div ref={boxRef}>
-            <button type="button" aria-haspopup="dialog" aria-expanded={open} onClick={() => { setOpen(o => !o); setCopied(false) }} className={chipClass(false)}>
-              + Language
-            </button>
-            {open && (
-              <div role="dialog" aria-label="Add a language" className="absolute left-0 right-0 top-full mt-1.5 z-50 rounded-md border border-[var(--editor-border)] bg-[var(--editor-surface)] p-3 shadow-lg flex flex-col gap-2">
-                <p className="text-xs text-[var(--editor-text)]">Ask your AI to add captions in another language.</p>
-                <Button size="sm" onClick={async () => { try { await onAddLanguage(); setCopied(true) } catch { /* clipboard refused: the button stays Copy prompt */ } }}>
-                  {copied ? 'Copied' : 'Copy prompt'}
-                </Button>
-              </div>
-            )}
-          </div>
+          <button type="button" aria-haspopup="dialog" onClick={() => { void onAddLanguage(languages.map(l => l.key)) }} className={chipClass(false)}>
+            + Language
+          </button>
         )}
       </div>
     </div>
@@ -305,9 +284,10 @@ export interface CaptionListPanelProps {
   /** Opens the caption-regeneration modal. Provided only when the host
    *  adapter supports `generateCaptions`; absent → the button is hidden. */
   onRegenerateCaptions?: () => void
-  /** Hands the user a prompt that asks their own AI for captions in another language (the host copies it). Provided only
-   *  by a host that can; absent, the Languages row has no "+ Language". */
-  onAddLanguage?: () => Promise<void> | void
+  /** "+ Language": the host asks which language to add and hands the user a prompt for their own AI. Gets the track's
+   *  language keys (its own `lang`, or 'source' when unknown, then each translation). Provided only by a host that can;
+   *  absent, the Languages row has no "+ Language". */
+  onAddLanguage?: (have: string[]) => Promise<void> | void
   /** Whether a generate/regenerate job is currently streaming (the
    *  `CaptionRegenModal` is open and running). Disables the trigger so it
    *  can't be fired twice from this panel; the modal itself owns the
