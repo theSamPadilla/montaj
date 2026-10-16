@@ -725,7 +725,7 @@ test('divergence (§308 P3): an image-only track listed below a video track stac
   // Until 5.33.3 this was the `multi-track-stack` case: the image-only track
   // first in the JSON, the picture-in-picture video track second. The editor
   // reads every project in its canonical track order (every track holding video
-  // first, timeline-core \`trackLayerPositions\`), so its preview drew the image
+  // first, timeline-core `trackLayerPositions`), so its preview drew the image
   // OVER the video while the export drew it under. Render now stacks by the
   // editor's order: the plan's items come video first, and nothing else moves
   // (same boundaries, overlays and flags). The frozen legacy order is the old

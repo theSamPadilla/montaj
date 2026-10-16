@@ -486,3 +486,26 @@ def test_enrich_treats_notes_null_as_none():
     project["notes"] = None
     state = context.report("p1", {"playheadSec": 0.0, "selectedIds": []})
     assert "notes" not in context.enrich("p1", project, state)
+
+
+def test_enrich_names_what_the_export_draws_on_top_by_the_editors_track_order():
+    """§308 P3: a video track stacks below image and overlay tracks wherever it
+    sits in the JSON, and a track's overlays draw over its clips."""
+    project = {
+        "id": "p1", "settings": {"fps": 30},
+        "tracks": [
+            {"id": "t0", "items": [{"id": "plate", "type": "image", "src": "p.png", "start": 0.0, "end": 10.0}]},
+            {"id": "t1", "items": [{"id": "footage", "type": "video", "src": "A.MOV", "start": 0.0, "end": 10.0, "inPoint": 0.0}]},
+            {"id": "t2", "items": [
+                {"id": "title", "type": "overlay", "src": "t.jsx", "start": 6.0, "end": 8.0},
+                {"id": "card", "type": "image", "src": "c.png", "start": 5.0, "end": 9.0},
+            ]},
+        ],
+    }
+    at = lambda t: context.enrich("p1", project, context.report("p1", {"playheadSec": t, "selectedIds": []}))["clipAtPlayhead"]
+    # The image-only track listed below the footage draws over it.
+    assert at(1.0)["id"] == "plate"
+    assert at(1.0)["trackIdx"] == 0
+    # On one track the overlay draws over the clip, though the clip comes later.
+    assert at(5.5)["id"] == "card"
+    assert at(7.0)["id"] == "title"

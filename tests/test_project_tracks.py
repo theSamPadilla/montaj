@@ -12,7 +12,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from lib.project_tracks import enabled_track_items, normalize_tracks, replace_track_items, track_items
+from lib.project_tracks import enabled_track_items, normalize_tracks, replace_track_items, track_items, track_layer_positions
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -361,3 +361,21 @@ def test_enabled_track_items_shares_items_by_reference():
 def test_enabled_track_items_tolerates_malformed_input():
     for bad in ({}, {"tracks": None}, {"tracks": "nope"}, {"tracks": 42}):
         assert enabled_track_items(bad) == []
+
+
+# ── track_layer_positions (§308 P3) ─────────────────────────────────────────
+
+
+def test_track_layer_positions_matches_the_shared_layering_fixture():
+    """The Python mirror of timeline-core trackLayerPositions agrees with the
+    fixture the editor and render parity tests share."""
+    fixture = json.loads((REPO_ROOT / "montaj_assets" / "timeline-core" / "test" / "layering-parity.project.json").read_text())
+    assert track_layer_positions({"tracks": fixture["tracks"]}) == fixture["layerPositions"]
+
+
+def test_track_layer_positions_video_tracks_first_each_group_stable():
+    v, i, o = {"type": "video"}, {"type": "image"}, {"type": "overlay"}
+    assert track_layer_positions({"tracks": [[v], [o], [i]]}) == [0, 1, 2]
+    assert track_layer_positions({"tracks": [[i], [v], [o]]}) == [1, 0, 2]
+    assert track_layer_positions({"tracks": [{"id": "a", "items": [o]}, {"id": "b", "items": [i, v], "enabled": False}]}) == [1, 0]
+    assert track_layer_positions({}) == []

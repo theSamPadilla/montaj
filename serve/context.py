@@ -13,7 +13,7 @@ single asyncio loop, dict mutations between awaits are race-free.
 import time
 from dataclasses import dataclass, field
 
-from lib.project_tracks import track_items
+from lib.project_tracks import track_items, track_layer_positions
 
 # Past this, a reported context is treated as gone. Sized against the browser,
 # not against taste: Chrome throttles a hidden tab's timers to once a minute,
@@ -148,27 +148,32 @@ def _items_with_track_idx(project: dict) -> list[tuple[int, dict]]:
 
 
 def _clip_at(project: dict, t: float) -> dict | None:
-    """The item under the playhead, topmost track winning.
+    """The item under the playhead that the export draws on top.
 
-    Ties go to the HIGHER track index because that is what the viewer is
-    actually looking at — an overlay sitting on top of a clip is the thing on
-    screen. Within one track, later items win, matching the render's own
-    z-order-by-position convention for same-track overlaps.
+    The stack is the one the editor preview, sample_frame and the export share
+    (§308 P3, ``track_layer_positions``): by track in the editor's order, every
+    track holding video first, so a video track stacks below an image or overlay
+    track even when it comes later in the JSON. Within one track a track's
+    overlays draw over its clips, and later items over earlier ones of the same
+    kind. ``trackIdx`` stays the item's JSON index.
     """
-    best: tuple[int, dict] | None = None
-    for track_idx, item in _items_with_track_idx(project):
+    layer_of = track_layer_positions(project)
+    best: tuple[tuple, int, dict] | None = None
+    for order, (track_idx, item) in enumerate(_items_with_track_idx(project)):
         start = item.get("start")
         end = item.get("end")
         if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
             continue
         if not (start <= t < end):
             continue
-        if best is None or track_idx >= best[0]:
-            best = (track_idx, item)
+        layer = layer_of[track_idx] if track_idx < len(layer_of) else track_idx
+        key = (layer, 1 if item.get("type") == "overlay" else 0, order)
+        if best is None or key >= best[0]:
+            best = (key, track_idx, item)
     if best is None:
         return None
 
-    track_idx, item = best
+    _, track_idx, item = best
     start = float(item["start"])
     in_point = item.get("inPoint")
     source_time = None

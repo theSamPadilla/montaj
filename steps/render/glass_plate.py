@@ -3,9 +3,11 @@
 
 An overlay is captured in its own transparent page and composited afterwards,
 so CSS backdrop-filter inside it has nothing to blur. A glass shape shows a
-plate frame instead: the project's video and image tracks for the item's range,
-drawn by the export's own render path (montaj_assets/render/glass-plate.js),
-scaled to a short edge, gaussian-blurred and written one JPEG per frame.
+plate frame instead: the clips stacked under the item for its range (its own
+track's and every track's below it, in the export's stacking order), drawn by
+the export's own render path (montaj_assets/render/glass-plate.js), scaled to a
+short edge, gaussian-blurred and written one JPEG per frame. A clip on a track
+above the item draws over the glass, so it is not in the plate.
 
 Plate frame n is screen frame round(start * fps) + n, the frame the overlay's
 frame n is composited over, and there are round(end * fps) - round(start * fps)

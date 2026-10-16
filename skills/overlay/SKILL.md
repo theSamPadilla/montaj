@@ -54,7 +54,7 @@ See skill `write-overlay` for the full authoring reference.
 
 ### 5. Save overlays to the project
 
-Overlays live in `tracks[1+]` — overlay tracks in the unified tracks array. Each track is an object (`{id, items, ...}`); its `items` array holds the track's clips/overlays. Items in the same track cannot overlap in time; items in different tracks are z-ordered (higher indexes render on top). `tracks[0]` is always the primary footage track.
+Overlays live in `tracks[1+]` — overlay tracks in the unified tracks array. Each track is an object (`{id, items, ...}`); its `items` array holds the track's clips/overlays. Items in the same track cannot overlap in time; items in different tracks stack by track: tracks holding video draw below all others, then higher indexes on top, and within a track its clips draw before its overlays (the editor, `sample_frame` and the export agree). So an image on a track above a 3D or full-screen overlay hides it. `tracks[0]` is always the primary footage track.
 
 ```json
 {

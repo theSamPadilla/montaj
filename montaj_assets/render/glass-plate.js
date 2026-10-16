@@ -5,17 +5,21 @@
  * An overlay is captured in its own transparent page and composited onto the
  * footage afterwards (renderer.js, encode-segment.js), so CSS backdrop-filter
  * inside it has nothing behind it to blur. Frosted glass gets its footage from
- * a plate instead: the project's video and image tracks for the item's range,
- * scaled down and blurred, one image per frame. The overlay draws plate frame
- * n inside each glass shape, at screen coordinates.
+ * a plate instead: the clips stacked under the item for its range (its own
+ * track's clips and every track below it, in the export's stacking order,
+ * §308 P3), scaled down and blurred, one image per frame. The overlay draws
+ * plate frame n inside each glass shape, at screen coordinates. A clip on a
+ * track above the item draws over the glass in the export, so it is not in
+ * the plate: blurred into it, it would show as a frosted halo of itself.
  *
  * The plate is the export's own base composite, not a copy of it. Items are
  * prepared by render.js (normalize, audio strip, remove_bg; an HDR project's
  * per-layer SDR pass), split by planSegments and drawn by encodeSegment, the
  * same calls the export makes before it adds overlays. So every scale, crop,
  * offset, speed and crossfade, and the HDR-to-SDR look of the SDR export, are
- * already in it. Overlays and captions are never drawn. Only the clips that can
- * show in the item's range are prepared (plateItemFilter); the working colour
+ * already in it. Overlays and captions are never drawn, and clips above the
+ * item are left out (underItemFilter). Only the clips that can show in the
+ * item's range are prepared (plateItemFilter); the working colour
  * space is still detected from every clip, as the export detects it.
  *
  * Colour: the parts are untagged yuv420p holding BT.709 limited-range values.
@@ -30,7 +34,8 @@
  * frame n is screen frame round(start * fps) + n, over the same count.
  *
  * Exports:
- *   plateRange(project, itemId)               → { item, fps, startFrame, endFrame }
+ *   plateRange(project, itemId)               → { item, trackIdx, fps, startFrame, endFrame }
+ *   underItemFilter(project, trackIdx)        → (clip) => boolean, stacked under the item
  *   plateSize(width, height, shortEdge)       → [w, h]
  *   rangeParts(segments, startFrame, endFrame, fps, vw, vh) → segment parts
  *   plateItemFilter(settings, videoItems, startFrame, endFrame, fps) → (item) => boolean
@@ -67,6 +72,7 @@ import { curveIds } from './look.js'
 import { planSegments } from './segment-plan.js'
 import { encodeSegment, runFfmpeg } from './encode-segment.js'
 import { trackItems } from './project-tracks.js'
+import { trackLayerPositions } from '@bycrux/timeline-core'
 import {
   collectAllItems, stampSourceProbes, resolveProjectPaths, validateProjectFiles,
   repointStaleUntaggedMasters, prepareVideoItems, prepareSdrPass, outputSize,
@@ -85,14 +91,15 @@ const DESIGN_FALLBACK = [1080, 1920]
 
 /**
  * The item `itemId` names, anywhere in the project (every track, skipped ones
- * included), and the screen frames its overlay would cover.
- * Throws an error whose `plateCode` is 'unknown_item' or 'invalid_item'.
+ * included), its track's JSON index, and the screen frames its overlay would
+ * cover. Throws an error whose `plateCode` is 'unknown_item' or 'invalid_item'.
  */
 export function plateRange(project, itemId) {
   let item = null
-  for (const track of trackItems(project)) {
+  let trackIdx = -1
+  for (const [i, track] of trackItems(project).entries()) {
     item = (track ?? []).find(it => it?.id === itemId) ?? null
-    if (item) break
+    if (item) { trackIdx = i; break }
   }
   if (!item) throw codedError('unknown_item', `No item with the id ${JSON.stringify(itemId)} in this project.`)
   if (!Number.isFinite(item.start) || !Number.isFinite(item.end)) {
@@ -105,7 +112,19 @@ export function plateRange(project, itemId) {
   if (endFrame <= startFrame) {
     throw codedError('invalid_item', `Item ${JSON.stringify(itemId)} covers no frame (start ${item.start}, end ${item.end} at ${fps} fps).`)
   }
-  return { item, fps, startFrame, endFrame }
+  return { item, trackIdx, fps, startFrame, endFrame }
+}
+
+/**
+ * Which clips a plate holds (§308 P3): those stacked UNDER the item at
+ * `trackIdx`, in the export's order (timeline-core `trackLayerPositions`, the
+ * `layerTrack` collectAllItems stamps). Its own track's clips are under it too,
+ * since a track's clips draw before its overlays. A clip above it draws over
+ * the glass, so it is not behind it.
+ */
+export function underItemFilter(project, trackIdx) {
+  const itemLayer = trackLayerPositions(trackItems(project))[trackIdx] ?? trackIdx
+  return (clip) => (clip.layerTrack ?? clip.trackIdx ?? 0) <= itemLayer
 }
 
 /**
@@ -238,7 +257,7 @@ async function prepareBaseItems(projectPath, { startFrame, endFrame, fps }) {
 export async function renderBaseParts({ projectPath, itemId, shortEdge = 270, sdrCurve = null, workDir }) {
   const absProject = resolve(projectPath)
   const raw = JSON.parse(readFileSync(absProject, 'utf8'))
-  const { fps, startFrame, endFrame } = plateRange(raw, itemId)
+  const { trackIdx, fps, startFrame, endFrame } = plateRange(raw, itemId)
 
   const { imageItems, videoItems, settings } = await prepareBaseItems(absProject, { startFrame, endFrame, fps })
   const [outW, outH] = outputSize(settings, videoItems,
@@ -247,7 +266,8 @@ export async function renderBaseParts({ projectPath, itemId, shortEdge = 270, sd
 
   // The plan over the whole timeline, then cut to the range, so the range's
   // first part starts mid-segment exactly as an overlay boundary would split it.
-  const segments = planSegments([...imageItems, ...videoItems], [], vw, vh, fps)
+  // Only the clips under the item: one above it is drawn over the glass.
+  const segments = planSegments([...imageItems, ...videoItems].filter(underItemFilter(raw, trackIdx)), [], vw, vh, fps)
   const parts = rangeParts(segments, startFrame, endFrame, fps, vw, vh)
 
   mkdirSync(workDir, { recursive: true })

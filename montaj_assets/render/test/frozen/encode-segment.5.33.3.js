@@ -2,6 +2,13 @@
 // relative imports re-pointed at ../../. §308 P3's byte-identity gate (test/layering-identity.test.mjs)
 // compares today's planner and encoder against it on projects whose tracks are already in the editor's
 // order and have no image above an overlay. Never edit it to match new behaviour: that removes the gate.
+//
+// RETIREMENT RULE. This copy is the 5.34.0 release proof that the one-loop composite changed no byte for an
+// unaffected project. encode-segment.js moves often, so the first later change that LEGITIMATELY moves the dry-run
+// args (a builder fix, a new filter step) retires it: in that same commit delete this file and the args half of
+// layering-identity.test.mjs (its encodeSegment533 comparison), and keep the frozen planner and the
+// builder-independent asserts there (no `layers` key; inputs = canvas, items minus culled images, then overlays).
+// Never "update" this copy to the new args: a frozen copy that follows the code proves nothing.
 // render/encode-segment.js
 /**
  * Encode a single timeline segment to MP4 in the project's working color space.

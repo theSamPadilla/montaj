@@ -12,11 +12,21 @@
 // overlay), with §309 opacity-keyed opaque covers among them, and checks the
 // rules hold instead: the layer list is by track, the cull reaches only below
 // the topmost cover, and that cover is at full opacity on every frame of the
-// segment and every motion-blur sub-frame (x2 to x8) the capture samples.
+// segment and every motion-blur sub-frame (x1 to x8) the capture samples.
+//
+// RETIREMENT RULE for the args half. The frozen encoder is the 5.34.0 release
+// proof, and encode-segment.js moves often. When a later change LEGITIMATELY
+// moves the dry-run args, delete test/frozen/encode-segment.5.33.3.js and the
+// `encodeSegment533` comparison below in that same commit. Keep the frozen
+// planner comparison and the builder-independent asserts beside it (no
+// `layers` key on a covered project's segments; its inputs are the canvas,
+// then the items minus culled images, then the overlays in order), which say
+// the same thing about the stack without depending on any builder's strings.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { trackLayerPositions, opacityAt } from '@bycrux/timeline-core'
-import { planSegments } from '../segment-plan.js'
+import { trackLayerPositions, opacityAt, isOpaqueCover } from '@bycrux/timeline-core'
+import { planSegments, replacesPicture } from '../segment-plan.js'
+import { trackItems, enabledTrackItems } from '../project-tracks.js'
 import { encodeSegment, culledClips } from '../encode-segment.js'
 import { planSegments as planSegments533 } from './frozen/segment-plan.5.33.3.js'
 import { encodeSegment as encodeSegment533 } from './frozen/encode-segment.5.33.3.js'
@@ -74,20 +84,25 @@ function randomProject(r, { fps, colorSpace }) {
   })
   // Shuffle a third of them, so non-canonical orders reach the interleaved half.
   if (r.next() < 0.33) tracks.sort(() => r.next() - 0.5)
+  // Some projects in the object form, with a track skipped now and then: a
+  // skipped track draws nothing but still counts in the editor's order.
+  const shaped = r.next() < 0.4
+    ? tracks.map((items, k) => ({ id: `trk-${k}`, items, ...(r.next() < 0.2 ? { enabled: false } : {}) }))
+    : tracks
   return {
     settings: { resolution: r.pick([[1080, 1920], [1920, 1080]]), fps, colorSpace },
-    tracks,
+    tracks: shaped,
     ...(r.next() < 0.3 ? { captions: { style: 'pop', segments: [{ start: 0, end: 3, text: 'hi' }] } } : {}),
   }
 }
 
 /** Whether the project is one the gate covers: canonical order, and no clip on a higher layer than an overlay. */
 function coveredByGate(project) {
-  const positions = trackLayerPositions(project.tracks)
+  const positions = trackLayerPositions(trackItems(project))
   if (positions.some((p, i) => p !== i)) return false
   let topClip = -1
   let lowOverlay = Infinity
-  project.tracks.forEach((items, i) => {
+  enabledTrackItems(project).forEach((items, i) => {
     if (items.some(it => it.type !== 'overlay')) topClip = Math.max(topClip, i)
     if (items.some(it => it.type === 'overlay')) lowOverlay = Math.min(lowOverlay, i)
   })
@@ -109,12 +124,14 @@ const CASES = 400
 
 test('byte-identity: canonical projects with no clip above an overlay plan and encode exactly as 5.33.3', async () => {
   const r = rng(308)
-  let covered = 0, segments = 0, withOverlay = 0, withCover = 0, withPair = 0
+  let covered = 0, segments = 0, withOverlay = 0, withCover = 0, withPair = 0, objectForm = 0, skipped = 0
   for (let c = 0; c < CASES * 3 && covered < CASES; c++) {
     const fps = r.pick([24, 25, 30, 60, 29.97])
     const project = randomProject(r, { fps, colorSpace: r.pick(['sdr_bt709', 'sdr_bt709', 'hdr_hlg']) })
     if (!coveredByGate(project)) continue
     covered++
+    if (!Array.isArray(project.tracks[0])) objectForm++
+    if (project.tracks.some(t => t.enabled === false)) skipped++
     const now = inputs(project, fps)
     const then = inputs(project, fps)
     const planNow = planSegments(now.allItems, now.segs, now.vw, now.vh, fps)
@@ -126,6 +143,19 @@ test('byte-identity: canonical projects with no clip above an overlay plan and e
       const a = await encodeSegment(segNow, `/fz/out-${k}.mp4`, { _dryRun: true })
       const b = await encodeSegment533(segThen, `/fz/out-${k}.mp4`, { _dryRun: true })
       assert.deepStrictEqual(a.args, b.args, `case ${c} segment ${k}: ffmpeg args`)
+      // Builder-independent (outlives the frozen encoder, see the retirement
+      // rule): no layer list, and the inputs are the canvas, then every item
+      // the picture or the audio needs (an image culled under a cover adds
+      // none; its order inside one track may follow the crossfade pairing),
+      // then every overlay, in order.
+      assert.equal('layers' in planNow[k], false, `case ${c} segment ${k}: no layers on a covered project`)
+      const files = a.inputs.filter((_, q) => a.inputs[q - 1] === '-i')
+      assert.match(files[0], /^color=black/, `case ${c} segment ${k}: the canvas first`)
+      const culled = culledClips(segNow)
+      const items = segNow.items.filter(x => !(culled.has(x) && x.type === 'image')).map(x => x.src)
+      const overlays = segNow.overlays.map(o => o.webmPath)
+      assert.deepEqual([...files.slice(1, 1 + items.length)].sort(), [...items].sort(), `case ${c} segment ${k}: the items next`)
+      assert.deepEqual(files.slice(1 + items.length, 1 + items.length + overlays.length), overlays, `case ${c} segment ${k}: then the overlays, in order`)
       segments++
       if (segNow.overlays.some(o => !o.isCaption)) withOverlay++
       if (segNow.opaqueVideo) withCover++
@@ -134,17 +164,19 @@ test('byte-identity: canonical projects with no clip above an overlay plan and e
   }
   // Not vacuous: the corpus reached every path the gate is about.
   assert.equal(covered, CASES, 'enough covered projects')
-  assert.ok(segments > 1500 && withOverlay > 300 && withCover > 50 && withPair > 50, JSON.stringify({ segments, withOverlay, withCover, withPair }))
+  assert.ok(segments > 1500 && withOverlay > 300 && withCover > 50 && withPair > 50 && objectForm > 50 && skipped > 10,
+    JSON.stringify({ segments, withOverlay, withCover, withPair, objectForm, skipped }))
 })
 
 test('interleaved projects: by track, the cull only below the topmost cover, and that cover at 1 on every frame and blur sub-frame', async () => {
   const r = rng(309)
-  let interleaved = 0, culledAny = 0, drawnAbove = 0
+  let interleaved = 0, culledAny = 0, drawnAbove = 0, objectForm = 0
   for (let c = 0; c < 1500; c++) {
     const fps = r.pick([24, 30, 60, 29.97])
     const project = randomProject(r, { fps, colorSpace: 'sdr_bt709' })
     if (coveredByGate(project)) continue
     const { allItems, segs, vw, vh } = inputs(project, fps)
+    if (!Array.isArray(project.tracks[0])) objectForm++
     for (const seg of planSegments(allItems, segs, vw, vh, fps)) {
       if (!seg.layers) continue
       interleaved++
@@ -156,6 +188,16 @@ test('interleaved projects: by track, the cull only below the topmost cover, and
       }
       const culled = culledClips(seg)
       const coverAt = seg.cullBelow ? seg.layers.indexOf(seg.cullBelow) : -1
+      if (seg.cullBelow) {
+        // The cover is an opaque overlay over the whole canvas, and the topmost
+        // overlay that replaces the picture: none above it does.
+        assert.equal(isOpaqueCover(seg.cullBelow), true, `case ${c}: the cover is opaque over the whole canvas`)
+        for (const x of seg.layers.slice(coverAt + 1)) {
+          if (seg.overlays.includes(x)) assert.equal(replacesPicture(x, seg.start, seg.end, fps), false, `case ${c}: no replacing overlay above the cover`)
+        }
+      } else {
+        for (const x of seg.overlays) assert.equal(replacesPicture(x, seg.start, seg.end, fps), false, `case ${c}: no cover, so none replaces`)
+      }
       seg.layers.forEach((x, k) => {
         if (!seg.items.includes(x)) return
         assert.equal(culled.has(x), k < coverAt, `case ${c}: cull exactly below the cover`)
@@ -169,7 +211,7 @@ test('interleaved projects: by track, the cull only below the topmost cover, and
         const S = Math.round(cover.startSeconds * fps)
         for (let f = Math.round(seg.start * fps); f < Math.round(seg.end * fps); f++) {
           const i = Math.max(0, f - S)
-          for (const N of [1, 2, 3, 4, 8]) {
+          for (let N = 1; N <= 8; N++) {
             for (let q = 0; q < N; q++) assert.equal(opacityAt(cover, (i + q / N) / fps), 1, `case ${c}: frame ${f} sub-frame ${q}/${N} under a cull`)
           }
         }
@@ -182,5 +224,5 @@ test('interleaved projects: by track, the cull only below the topmost cover, and
       if (!pairs) assert.deepEqual(files, expected, `case ${c}: inputs in layer order`)
     }
   }
-  assert.ok(interleaved > 200 && culledAny > 20 && drawnAbove > 20, JSON.stringify({ interleaved, culledAny, drawnAbove }))
+  assert.ok(interleaved > 200 && culledAny > 20 && drawnAbove > 20 && objectForm > 50, JSON.stringify({ interleaved, culledAny, drawnAbove, objectForm }))
 })

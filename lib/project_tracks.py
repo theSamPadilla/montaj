@@ -170,6 +170,29 @@ def track_items(project: dict) -> list:
     return [track["items"] for track in tracks]
 
 
+def track_layer_positions(project: dict) -> list:
+    """Where each visual track stacks, by its JSON index: 0 is the bottom (§308 P3).
+
+    The editor's canonical track order, which the preview, sample_frame and the
+    export all stack by: every track holding a video item first, then every other
+    track, each group in JSON order (timeline-core ``trackLayerPositions``,
+    ``montaj_assets/timeline-core/src/layering.js``, mirroring the editor's
+    ``orderedTrackArray``). Read over all tracks, skipped ones included, as the
+    editor's partition is. Within one track the export draws its clips before
+    its overlays.
+    """
+    tracks = track_items(project)
+    holds_video = [any(isinstance(it, dict) and it.get("type") == "video" for it in (items or [])) for items in tracks]
+    positions = [0] * len(tracks)
+    nxt = 0
+    for want in (True, False):
+        for i, video in enumerate(holds_video):
+            if video == want:
+                positions[i] = nxt
+                nxt += 1
+    return positions
+
+
 def enabled_track_items(project: dict) -> list:
     """The items of ENABLED tracks only, in track order — for anything that
     PRODUCES picture and sound, as opposed to anything that EDITS.

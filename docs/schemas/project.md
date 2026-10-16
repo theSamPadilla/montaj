@@ -103,7 +103,7 @@ Each entry in `tracks` is a track object:
 ]
 ```
 
-`tracks[0]` is the primary track (source footage). `tracks[1+]` are overlay tracks. Track order is meaningful: index is z-order, and items on a higher-index track's `items` array render on top of items on a lower one.
+`tracks[0]` is the primary track (source footage). `tracks[1+]` are overlay tracks. Track order is meaningful, and it sets the stack: every track holding a video item draws below every other track, the tracks in each group stack in index order (a higher index on top), and within one track its clips (videos, images) draw before its overlays. The editor preview, `sample_frame` and the export all use this one rule (timeline-core `trackLayerPositions`), so an image-only track listed below a video track draws over that video, and an image track above an overlay track draws over the overlay.
 
 ### Track object fields
 
@@ -136,7 +136,7 @@ The three are kept in lock-step by convention: the same input produces the same 
 | Property | Rule |
 |----------|------|
 | **Primary track** | `tracks[0]` — always. Its `items` contain the main footage clips (`type: "video"`). |
-| **Z-order** | Track index = z-order. `tracks[0]` renders furthest back; higher indices on top. |
+| **Z-order** | Tracks holding a video item draw below all others; within each group, index order (higher on top); within a track, clips before overlays. One rule for the preview, `sample_frame` and the export (timeline-core `trackLayerPositions`). |
 | **Primary audio** | Non-muted items in `tracks[0]`'s `items` provide the primary audio mix. |
 | **Transcript source** | Whisper runs against `tracks[0]` audio. |
 | **Canvas projects** | `tracks[0].items` is `[]` for animation-only projects. Duration is inferred from max `end` across all overlay tracks. |

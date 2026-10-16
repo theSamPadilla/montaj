@@ -1561,9 +1561,9 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   // `trackIdx` shifts by one for overlays that were already on tracks[1+], but
   // it only ever reaches a spec's id and its segment filename — both per-run,
   // and the segment dir is wiped at the start of every render. It is NOT the
-  // overlay z-order: overlays composite last and in emission order (see
-  // sample-frame.js's ordering note and encode-segment.js), which track order
-  // still gives us, so a lower track's overlay stays beneath a higher one's.
+  // overlay z-order: since §308 P3 overlays stack among the clips by their
+  // `layerTrack` (the track's position in the editor's order, stamped below),
+  // which segment-plan.js and sample-frame.js read.
   const overlayTracks = enabledTrackItems(projectJson)
   // §308 P3: where each track stacks, the editor's order (timeline-core
   // `trackLayerPositions`): segment-plan.js layers overlays and clips by it.

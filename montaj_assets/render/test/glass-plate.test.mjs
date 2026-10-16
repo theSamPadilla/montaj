@@ -7,7 +7,8 @@
 // clip outside the range is never normalized or audio-stripped).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { plateItemFilter, plateFrameFilter } from '../glass-plate.js'
+import { plateItemFilter, plateFrameFilter, plateRange, underItemFilter } from '../glass-plate.js'
+import { collectAllItems } from '../render.js'
 
 const FPS = 24
 const clip = (id, start, end, trackIdx = 0) => ({ id, type: 'video', start, end, trackIdx })
@@ -42,4 +43,24 @@ test('plateFrameFilter: JPEG frames are BT.601 full range, PNG frames RGB, both 
   assert.equal(plateFrameFilter('jpg', 2.2),
     'gblur=sigma=2.2,scale=in_color_matrix=bt709:in_range=tv:out_color_matrix=bt601:out_range=pc,format=yuvj420p')
   assert.equal(plateFrameFilter('png', 0), 'scale=in_color_matrix=bt709:in_range=tv,format=rgb24')
+})
+
+test('underItemFilter: a plate holds only the clips stacked under its item, in the export\'s order (§308 P3)', () => {
+  // JSON order is not the stacking order: the footage track stacks first. The
+  // glass overlay's own track holds an image too (a track's clips draw before
+  // its overlays, so it is under the glass); the top image draws over it.
+  const project = {
+    settings: { fps: FPS },
+    tracks: [
+      [{ id: 'plate-image', type: 'image', src: '/p.png', start: 0, end: 4 }],
+      [{ id: 'footage', type: 'video', src: '/f.mp4', start: 0, end: 4 }],
+      [{ id: 'glass', type: 'overlay', src: '/abs/g.jsx', start: 1, end: 3 }, { id: 'same-track', type: 'image', src: '/s.png', start: 0, end: 4 }],
+      [{ id: 'above', type: 'image', src: '/a.png', start: 0, end: 4 }],
+    ],
+  }
+  const { trackIdx } = plateRange(project, 'glass')
+  assert.equal(trackIdx, 2)
+  const { imageItems, videoItems } = collectAllItems(project)
+  const under = [...imageItems, ...videoItems].filter(underItemFilter(project, trackIdx)).map(it => it.id).sort()
+  assert.deepEqual(under, ['footage', 'plate-image', 'same-track'])
 })

@@ -160,6 +160,16 @@ function replacesPictureThrough(ranges, start, end, fps) {
 }
 
 /**
+ * Whether overlay `o` replaces the picture over the whole of `[start, end)`:
+ * the predicate planSegments culls by (an opaque cover at full opacity on every
+ * frame, within a stretch at 1 of at least MIN_FULL_OPACITY_S). Exported for the
+ * layering fuzz, which checks the planner picked the topmost such overlay.
+ */
+export function replacesPicture(o, start, end, fps) {
+  return replacesPictureThrough(fullOpacityFrames(o, fps), start, end, fps)
+}
+
+/**
  * §308 P3: where a layer stacks. A clip's `layerTrack` (render.js stamps it, the
  * editor's track order) else its `trackIdx`; for a project already in the
  * editor's order the two are equal. An overlay with no `layerTrack` (a caption,
@@ -189,7 +199,8 @@ function stackLayers(items, overlays) {
  * @param {number} vw — output width
  * @param {number} vh — output height
  * @param {number} fps
- * @returns {Array<{ start, end, items: object[], opaqueVideo: boolean, overlays: object[], vw, vh, fps }>}
+ * @returns {Array<{ start, end, items: object[], opaqueVideo: boolean, overlays: object[], layers?: object[], cullBelow?: object|null, vw, vh, fps }>}
+ *   `layers` and `cullBelow` only where an item stacks above an overlay (see the module header).
  */
 export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
   // Collect every clip and overlay edge and snap it to the frame grid.

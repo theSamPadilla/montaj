@@ -33,7 +33,7 @@ file; they are called out here only so a reader doesn't go looking for them.
 | `nobg-precedence` | Which src an item with `remove_bg` + `nobg_src` but no `nobg_preview_src` plays | Falls through to `normalizedSrc` (rebased) | Uses `nobg_src` (un-rebased, full source) | SP4 | `fixtures/nobg-matrix.json` (row `nobg-110`) |
 | `loop-not-rendered-transition-dead-field` | A video item's `loop` and `transition` fields | `loop` is honored (`useVideoPlayback.ts:633/700/779`); `transition` is read NOWHERE in the editor either. SP4's engine reimplements `loop` (`engine/scheduler.ts`'s `placeInSource`/`endsOnLoopBoundary`); dropping loop support entirely was considered and rejected — it stays flagged as an operator option, not defaulted | Neither field is read anywhere under `montaj_assets/render/*.js` (grepped — zero hits) | SP4 / schema-cleanup backlog | `fixtures/loop-item.json` |
 | `sourcecrop-missing-dims-silent-drop` | A `sourceCrop` with no `sourceWidth`/`sourceHeight` | `sourceCropVideoStyle` (`sourceCropStyle.ts:32`) returns `null` early (`!sourceWidth \|\| !sourceHeight`) — falls back to full-frame, same as render. SP4's engine (`engine/scheduler.ts`'s `sourceCropDrawPlan`) keeps the same parity-safe no-dims→no-crop guard rather than the `PreviewPlayer.tsx` call-site fallback that would have made the divergence worse | `buildVideoItemFilterParts`'s gate (`encode-segment.js:243`, `if (sc && item.sourceWidth && item.sourceHeight)`) silently skips the crop filter step entirely | SP3 / SP4 | `fixtures/source-crop-missing-dims.json` + `expected/encode-args.source-crop-missing-dims.json` (no `crop=` filter step present — verified empirically) |
-| `same-track-image-overlay-order` | Two overlapping items on ONE track, an image and an overlay that are not a pair (D19) | Document order, later on top | The track's clips before its overlays | accepted (§308 P3) | none (render/test/layering.test.mjs pins render's half) |
+| `same-track-image-overlay-order` | Two overlapping items on ONE track, a clip and an overlay that are not a pair (D19; the base track's video under its images, D7) | Document order, later on top | The track's clips before its overlays | accepted (§308 P3) | none (render/test/layering.test.mjs pins render's half) |
 
 ## 1. `rotation` — ✅ RESOLVED IN SP9a-2 (2026-08-23)
 
@@ -1323,7 +1323,7 @@ the D2 timing fix, which deliberately changed no curve and did not touch
 (`ducking-not-simulated-in-preview`) and from D2: D2 was WHEN the fade fires,
 this is WHAT SHAPE it has once it does.
 
-## D19. `same-track-image-overlay-order` — introduced deliberately by §308 P3 (2026-10-16)
+## D19. `same-track-image-overlay-order` — introduced deliberately by §308 P3 (2026-10-15)
 
 **Decided, not a bug.** Since §308 P3 the export and sample_frame stack every
 visual layer by the editor's track order (`src/layering.js`,
@@ -1338,11 +1338,18 @@ track in all three. WITHIN one track the two still differ:
   had (Step 2 before Step 3). That keeps a crossfade pair's two halves next to
   each other in the layer list, which the encoder's split/blend needs.
 
-They disagree only when an image and an overlay on the SAME track overlap in
-time without being a pair (`transitionPairs` pairs clips with clips and
-overlays with overlays) and the overlay comes first in the track's items: the
-preview draws the image on top, the export the overlay. The validator allows
-the partial overlap, so it can happen, but no shipped template does it.
+They disagree only when a clip (an image or a video) and an overlay on the
+SAME track overlap in time without being a pair (`transitionPairs` pairs clips
+with clips and overlays with overlays) and the overlay comes first in the
+track's items: the preview draws the clip on top, the export the overlay. The
+validator allows the partial overlap, so it can happen, but no shipped
+template does it.
+
+One more within-track case, on the BASE track in non-canvas mode: the preview
+paints that track's video on the engine canvas, below everything, and its
+images above it (z 2), whatever their document order; the export orders the
+base track's clips images-then-videos by the merge (D7). Again only when two
+of them overlap without being a pair.
 
 Pinned so neither side is "fixed" alone: `render/test/layering.test.mjs`
 asserts the clips-first order inside a track. A change to either rule must

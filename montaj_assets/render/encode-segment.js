@@ -1889,17 +1889,21 @@ function crossfadeIn(item, segStart, segEnd) {
  *
  * ── REORDERING IS SAFE FOR Z-ORDER ─────────────────────────────────────────
  *
- * `planSegments` hands this an array already sorted ascending by `trackIdx`,
- * and a pair shares a track, so every item BETWEEN the two halves shares that
- * track too. The permutation is contained inside a single track's group —
- * where the order was already the arbitrary images-then-videos artifact of the
- * merge and never a meaningful z-order. Nothing moves across tracks, so the
- * layering the segment renders is untouched. Reordering here (rather than
+ * `encodeSegment` hands this the segment's LAYER list (§308 P3: planSegments'
+ * `layers`, or `[...items, ...overlays]`), sorted by track in the editor's
+ * order with a track's clips before its overlays. A pair shares a track, so it
+ * shares a layer, and its clips sort before that track's overlays: every item
+ * BETWEEN the two halves is a clip on that same track. Overlays carry no
+ * crossfade stamp, so they are never matched and never move. The permutation
+ * is contained inside a single track's clips — where the order was already the
+ * arbitrary images-then-videos artifact of the merge and never a meaningful
+ * z-order. Nothing moves across tracks, so the layering the segment renders is
+ * untouched. Reordering here (rather than
  * matching at the branch) is also what keeps the compositing correct when a
  * third item on the same track sits between the two halves: it would otherwise
  * composite onto ONE branch of the split and vanish from the other.
  *
- * @param {object[]} items — one segment's visual items, trackIdx-ascending
+ * @param {object[]} items — one segment's layers, bottom to top (items and overlays)
  * @param {number} segStart
  * @param {number} segEnd
  * @returns {{ items: object[], partnerOf: Map<object, object>, paired: Set<object> }}

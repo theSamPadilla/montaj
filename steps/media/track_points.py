@@ -4,7 +4,9 @@
 A glass overlay pins its shapes to the footage with `track`: one centre per
 overlay frame. This step makes those tracks from the footage exactly as placed
 on screen: the non-overlay composite glass_plate draws for the item's range
-(montaj_assets/render/glass-plate.js, unblurred), at half the design canvas.
+(montaj_assets/render/glass-plate.js, unblurred), at half the design canvas. It
+holds only the clips stacked under the item, so a clip on a track above it
+(which draws over the glass) is never what is tracked.
 The renderer's lossless parts are decoded straight into the tracker (§175):
 no frame is written to disk, and the parts' room is checked before rendering.
 
