@@ -4,10 +4,16 @@
 Frames are sampled at --fps (ffmpeg's fps filter rounding up, so frame k is the
 frame on screen at k / fps; rotation applied, the long side at most
 WORK_LONG_EDGE) into a temp dir, and pycolmap reconstructs them: SIFT features on
-the CPU, one SIMPLE_RADIAL camera for every frame, sequential matching, then the
-global mapper. The incremental mapper is not used: on a near-still handheld clip
-(§328 P0, 75 frames) it registered 13 to 36 frames with the focal anywhere from
-566 to 3,506 px, where the global mapper registered all 75 every time.
+the CPU (at most SIFT_THREADS threads and SIFT_FEATURES features a frame), one
+SIMPLE_RADIAL camera for every frame, sequential matching, then the global mapper,
+seeded. The incremental mapper is not used: on a near-still handheld clip (§328 P0,
+75 frames) it registered 13 to 36 frames with the focal anywhere from 566 to 3,506
+px, where the global mapper registered all 75 every time.
+
+Not yet measured: peak memory and time on a long phone clip (30 s of 1080x1920,
+the 300 frames --max-frames allows at 10 fps). WORK_LONG_EDGE, SIFT_FEATURES and the
+max-frames default are set for it ahead of that measurement; the 540x960 test clip
+(75 frames) took 8 to 20 s and about 2 GB on all cores before they were.
 
 lib/camera_track.py does the rest without pycolmap: the frames that did not
 register are interpolated, the world is set on the plane the clip looks at, the
@@ -24,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
@@ -32,11 +39,17 @@ from lib.normalize import probe_video
 
 MIN_FPS, MAX_FPS = 1, 30
 MIN_LENS, MAX_LENS = 8, 300          # mm, as the engine's fitCamera allows
-WORK_LONG_EDGE = 1920                # frames are tracked at most this long
+WORK_LONG_EDGE = 1280                # frames are tracked at most this long
 PRIOR_FACTOR = 0.85                  # the focal guess, x the long side, when nothing says better
 FOCAL_35MM_TAG = "com.apple.quicktime.camera.focal_length.35mm_equivalent"
 MATCH_OVERLAP = 15                   # each frame is matched with the next 15
 JPEG_QUALITY = "2"
+SIFT_THREADS = 4                     # at most, and never more than the machine's cores
+SIFT_FEATURES = 4096                 # a frame, half pycolmap's default
+MAPPER_SEED = 0
+MAX_FRAMES = 300
+STALE_S = 3600                       # a work folder this old was left by a run that was killed
+WORK_PREFIX = "montaj-track-camera-"
 
 
 def _intel_mac():
@@ -89,6 +102,25 @@ def _extract(path, fps, size, out_dir):
     return ww, hh
 
 
+def _sweep_stale(tmp_dir, now=None):
+    """Remove WORK_PREFIX folders in tmp_dir that nothing has touched for STALE_S: a
+    run killed by serve's timeout never reaches its own cleanup."""
+    now = time.time() if now is None else now
+    try:
+        names = [n for n in os.listdir(tmp_dir) if n.startswith(WORK_PREFIX)]
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(tmp_dir, name)
+        try:
+            touched = max([os.path.getmtime(path)]
+                          + [os.path.getmtime(os.path.join(path, c)) for c in os.listdir(path)])
+        except OSError:
+            continue
+        if now - touched > STALE_S:
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def _reconstruct(pycolmap, frames_dir, work_dir, focal_factor):
     pycolmap.logging.minloglevel = 2
     db = os.path.join(work_dir, "frames.db")
@@ -97,16 +129,47 @@ def _reconstruct(pycolmap, frames_dir, work_dir, focal_factor):
     reader = pycolmap.ImageReaderOptions()
     reader.camera_model = "SIMPLE_RADIAL"
     reader.default_focal_length_factor = focal_factor
+    extraction = pycolmap.FeatureExtractionOptions()
+    extraction.num_threads = min(SIFT_THREADS, os.cpu_count() or 1)
+    extraction.sift.max_num_features = SIFT_FEATURES
     progress("Finding features")
     pycolmap.extract_features(db, frames_dir, camera_mode=pycolmap.CameraMode.SINGLE,
-                              reader_options=reader, device=pycolmap.Device.cpu)
+                              reader_options=reader, extraction_options=extraction, device=pycolmap.Device.cpu)
     pairing = pycolmap.SequentialPairingOptions()
     pairing.overlap = MATCH_OVERLAP
     progress("Matching frames")
     pycolmap.match_sequential(db, pairing_options=pairing, device=pycolmap.Device.cpu)
     progress("Solving the camera")
-    recs = pycolmap.global_mapping(db, frames_dir, sparse)
+    mapping = pycolmap.GlobalPipelineOptions()
+    mapping.random_seed = MAPPER_SEED
+    mapping.mapper.random_seed = MAPPER_SEED
+    recs = pycolmap.global_mapping(db, frames_dir, sparse, mapping)
     return max(recs.values(), key=lambda r: r.num_reg_images()) if recs else None
+
+
+def _too_few(got, count):
+    return (f"Only {got} of {count} frames could be tracked. The camera needs a still, textured "
+            "scene that stays in view: little blur, not a plain wall or table filling the frame. "
+            "The camera must move; for a locked-off shot use fit_camera.")
+
+
+def _emit(out, path):
+    """Print the track, or write it to path and print the path. A track with a
+    non-finite number (a degenerate pose) fails as tracking_failed."""
+    try:
+        text = json.dumps(out, allow_nan=False)
+    except ValueError:
+        fail("tracking_failed", "The track came out degenerate (a number that is not finite). "
+                                "Try again, or a different stretch of the clip.")
+    if path:
+        try:
+            with open(path, "w") as f:
+                f.write(text)
+        except OSError as e:
+            fail("write_error", f"Could not write to {path}: {e}")
+        print(path)
+    else:
+        print(text)
 
 
 def _solve_error_code(ct, error, known):
@@ -141,8 +204,8 @@ def main():
     parser.add_argument("--fps", type=float, default=10.0, help="Frames tracked per second (1 to 30, default 10)")
     parser.add_argument("--lens", type=float, default=None, help="A lens guess in Montaj mm")
     parser.add_argument("--known", default=None, help="A known size as JSON, for a metric scale")
-    parser.add_argument("--max-frames", dest="max_frames", type=int, default=600,
-                        help="Refuse a clip that samples to more frames (default 600)")
+    parser.add_argument("--max-frames", dest="max_frames", type=int, default=MAX_FRAMES,
+                        help=f"Refuse a clip that samples to more frames (default {MAX_FRAMES})")
     parser.add_argument("--out", default=None, help="Write the JSON here and print the path")
     args = parser.parse_args()
 
@@ -194,7 +257,8 @@ def main():
         prior = PRIOR_FACTOR * max(w, h)
         prior_source = f"{PRIOR_FACTOR:g} x the long side"
 
-    work_dir = tempfile.mkdtemp(prefix="montaj-track-camera-")
+    _sweep_stale(tempfile.gettempdir())
+    work_dir = tempfile.mkdtemp(prefix=WORK_PREFIX)
     try:
         frames_dir = os.path.join(work_dir, "frames")
         os.makedirs(frames_dir)
@@ -209,19 +273,18 @@ def main():
         poses = _poses(np, rec, count) if rec is not None else [None] * count
         got = sum(p is not None for p in poses)
         if got * 2 < count:
-            fail("tracking_failed",
-                 f"Only {got} of {count} frames could be tracked. The camera needs a still, textured "
-                 "scene that stays in view: little blur, not a plain wall or table filling the frame.")
+            fail("tracking_failed", _too_few(got, count))
         cam = next(iter(rec.cameras.values()))
         if cam.model_name != "SIMPLE_RADIAL":
             fail("tracking_failed", f"Unexpected camera model {cam.model_name}")
         f_work, cx, cy, k1 = (float(v) for v in cam.params)
         px = h / hh                                  # display px per tracked px
         points = np.array([p.xyz for p in rec.points3D.values()], float)
+        reprojection = rec.compute_mean_reprojection_error() * px
+        del rec, cam                                 # the arrays above are all solve needs
         try:
             track = ct.solve(poses, points, fps=fps, size=[w, h], focal=f_work * px, k1=k1,
-                             principal=[cx * w / ww, cy * px], known=known,
-                             reprojection=rec.compute_mean_reprojection_error() * px)
+                             principal=[cx * w / ww, cy * px], known=known, reprojection=reprojection)
         except ValueError as e:
             fail(_solve_error_code(ct, e, known), str(e))
     finally:
@@ -229,16 +292,7 @@ def main():
 
     out = ct.rounded(track)
     out["notes"] = notes + [f"The focal guess was {prior_source}."] + out["notes"]
-    text = json.dumps(out)
-    if args.out:
-        try:
-            with open(args.out, "w") as f:
-                f.write(text)
-        except OSError as e:
-            fail("write_error", f"Could not write to {args.out}: {e}")
-        print(args.out)
-    else:
-        print(text)
+    _emit(out, args.out)
 
 
 if __name__ == "__main__":

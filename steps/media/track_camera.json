@@ -7,7 +7,7 @@
   },
   "output": {
     "type": "json",
-    "description": "{ fps, frameCount, registered: frames tracked, size: [w, h] px, lens: mm on a 36 mm sensor, vertical field of view (lens = 36 * focalPx / h), focalPx, distortion: {k1} (Montaj's camera has none), frames: [{t, location, target, roll: degrees, counter-clockwise from level as seen from behind the camera, registered}], plane: {rule: up | facing | pixels, inliers, rmsM, candidates: [{inliers, rmsM, upInPicture, towardCamera, chosen}]}, scale: {metresPerUnit, source}, reprojectionPx, scene: {camera: {lens, location: [[t, [x, y, z]]], target: [[t, [x, y, z]]]}}, notes }; with out, the path of the file holding it"
+    "description": "{ fps, frameCount, registered: frames tracked, size: [w, h] px, lens: mm on a 36 mm sensor, vertical field of view (lens = 36 * focalPx / h), focalPx, distortion: {k1} (Montaj's camera has none), frames: [{t, location, target: on its axis, as far ahead as frame 0's axis runs to the plane, up: the camera's up vector, roll: degrees, counter-clockwise from level as seen from behind the camera, registered}], plane: {rule: up | facing | pixels, inliers, rmsM, candidates: [{inliers, rmsM, upInPicture, towardCamera, chosen}]}, scale: {metresPerUnit, source}, reprojectionPx, scene: {camera: {lens, location: [[t, [x, y, z]]], target: [[t, [x, y, z]]]}}, notes }; with out, the path of the file holding it"
   },
   "params": [
     {
@@ -37,7 +37,7 @@
       "name": "max-frames",
       "type": "int",
       "required": false,
-      "default": 600,
+      "default": 300,
       "min": 1,
       "description": "Refuse a clip that samples to more frames than this."
     },

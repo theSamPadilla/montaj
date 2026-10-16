@@ -17,7 +17,10 @@ VERTICAL, 2 atan(18 / lens) over the frame's height, so lens = 36 f / H. With no
 the camera's right is forward x z and its up is right x forward. `roll` turns the
 camera about its forward axis from that, in degrees, positive counter-clockwise as
 seen from behind the camera: its right edge rises (the picture's horizon turns
-clockwise). With roll r the camera's up is cos(r) up0 - sin(r) right0.
+clockwise). With roll r the camera's up is cos(r) up0 - sin(r) right0; `up` carries
+that vector too, as camera-project.js takes it. Every target sits on its camera's
+axis as far ahead as frame 0's axis runs to the plane, so a camera that looks level
+or above the horizon keeps a near, steady target.
 
 The world is fixed by the clip: z = 0 is the plane the clip looks at (a table or a
 floor: choose_plane's pick of the planes in the points, or the one under
@@ -34,7 +37,7 @@ import numpy as np
 SENSOR_HALF_MM = 18.0           # half the 36 mm sensor, over the frame's height
 FULL_FRAME_DIAG_MM = math.hypot(36.0, 24.0)
 DEFAULT_HEIGHT_M = 0.3          # frame 0's camera above the plane when no size is known
-TARGET_AHEAD_M = 1.0            # the target when the optical axis never meets the plane
+MIN_TARGET_M = 0.001            # the nearest a target sits ahead of its camera
 
 # Plane search: RANSAC planes are taken off the points one at a time, up to
 # MAX_PLANES, each fitting points within PLANE_THRESHOLD x the median depth (along
@@ -46,6 +49,9 @@ PLANE_ITERATIONS = 2000
 MIN_PLANE_POINTS = 20
 MIN_PLANE_SHARE = 0.25
 PLANE_SEED = 0
+# Candidate planes are scored on at most SCORE_SAMPLE points, a seeded subset, so the
+# scoring stays a few MB however many points there are; inliers count on all of them.
+SCORE_SAMPLE = 20000
 # Of the candidates, the one facing most up the picture (frame 0's image-up) wins
 # when it faces it at least UP_ENOUGH; below that no plane faces up, as when the
 # camera looks down at the table (image-up then lies in it), and the one facing the
@@ -60,6 +66,7 @@ FOOTPRINT_MARGIN = 0.25
 # the location or target moves the picture by up to about 3 px at f = 850 px.
 POS_DECIMALS = 4
 ROLL_DECIMALS = 2
+UP_DECIMALS = 6
 LENS_DECIMALS = 3
 TIME_DECIMALS = 4
 
@@ -240,15 +247,6 @@ def pixel_rays(camera, pixels, size):
     return out
 
 
-def axis_target(location, forward):
-    """Where the optical axis meets z = 0, or TARGET_AHEAD_M ahead when it doesn't."""
-    if abs(forward[2]) > 1e-9:
-        s = -location[2] / forward[2]
-        if s > 0:
-            return location + s * forward
-    return location + TARGET_AHEAD_M * forward
-
-
 def roll_degrees(forward, right):
     """The camera's roll from level: positive when its right edge rises."""
     _, r0, u0 = level_basis(forward)
@@ -256,13 +254,14 @@ def roll_degrees(forward, right):
 
 
 def montaj_camera(pose, world):
-    """{location, target, roll} of a COLMAP pose in Montaj's world (see align_world)."""
+    """{location, target, up, roll} of a COLMAP pose in Montaj's world (align_world,
+    with its scale and the target distance in metres set)."""
     R, C = pose
     A, origin, scale = world["axes"], world["origin"], world["scale"]
     loc = scale * (A @ (np.asarray(C, float) - origin))
     f = A @ R[2]
     r = A @ R[0]
-    return {"location": loc, "target": axis_target(loc, f), "roll": roll_degrees(f, r)}
+    return {"location": loc, "target": loc + world["target"] * f, "up": A @ -R[1], "roll": roll_degrees(f, r)}
 
 
 # ---- the plane ----
@@ -277,6 +276,7 @@ def find_planes(points, threshold, max_planes=MAX_PLANES, iterations=PLANE_ITERA
     planes = []
     while len(planes) < max_planes and len(left) >= 3:
         P = pts[left]
+        S = P if len(P) <= SCORE_SAMPLE else P[rng.choice(len(P), SCORE_SAMPLE, replace=False)]
         idx = rng.integers(0, len(P), size=(iterations, 3))
         a, b, c = P[idx[:, 0]], P[idx[:, 1]], P[idx[:, 2]]
         n = np.cross(b - a, c - a)
@@ -287,7 +287,7 @@ def find_planes(points, threshold, max_planes=MAX_PLANES, iterations=PLANE_ITERA
         n, a = n[ok] / norm[ok, None], a[ok]
         best, best_count = None, 0
         for s in range(0, len(n), 128):
-            counts = (np.abs(P @ n[s:s + 128].T - (a[s:s + 128] * n[s:s + 128]).sum(axis=1)) < threshold).sum(axis=0)
+            counts = (np.abs(S @ n[s:s + 128].T - (a[s:s + 128] * n[s:s + 128]).sum(axis=1)) < threshold).sum(axis=0)
             j = int(np.argmax(counts))
             if counts[j] > best_count:
                 best, best_count = (n[s + j], a[s + j]), int(counts[j])
@@ -381,24 +381,25 @@ def plane_from_pixels(planes, points, pose, pixels, focal, centre, k1, depth):
 def align_world(plane, pose0):
     """The world frame from the plane and frame 0's pose: {axes (rows x, y, z in
     reconstruction coordinates), origin, height (frame 0's camera above the plane, in
-    reconstruction units), on_axis (False when frame 0's axis misses the plane and
-    the origin is the foot of its camera instead)}. The scale is set later."""
+    reconstruction units), reach (how far frame 0's camera is from the origin, the
+    targets' distance), on_axis (False when frame 0's axis misses the plane and the
+    origin is the foot of its camera instead)}. The scale is set later."""
     R0, C0 = pose0
     n, p = plane["normal"], plane["point"]
     f0, r0 = R0[2], R0[0]
     height = float((C0 - p) @ n)
     if height < 0:
         n, height = -n, -height
-    origin, on_axis = C0 - height * n, False
+    origin, on_axis, reach = C0 - height * n, False, height
     if float(f0 @ n) < -1e-9:
-        s = height / -float(f0 @ n)
-        origin, on_axis = C0 + s * f0, True
+        reach = height / -float(f0 @ n)
+        origin, on_axis = C0 + reach * f0, True
     x = _unit(r0 - (r0 @ n) * n)
     if x is None:
         # frame 0's right is along the normal (the camera on its side): take its down
         x = _unit(R0[1] - (R0[1] @ n) * n)
     y = np.cross(n, x)
-    return {"axes": np.array([x, y, n]), "origin": origin, "height": height, "on_axis": on_axis}
+    return {"axes": np.array([x, y, n]), "origin": origin, "height": height, "reach": reach, "on_axis": on_axis}
 
 
 # ---- known sizes and planes ----
@@ -533,6 +534,7 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
         source = (f"assumed: frame 0's camera {DEFAULT_HEIGHT_M:g} m above the plane. "
                   "Replace it: pass known, a measured height or a distance on the plane")
     world["scale"] = scale
+    world["target"] = max(world["reach"] * scale, MIN_TARGET_M)
 
     lens = lens_from_focal(focal, h)
     frames = []
@@ -591,10 +593,11 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
 
 
 def rounded(track):
-    """The track as printed: positions to 0.1 mm, roll to 0.01 degrees, and scene.camera
-    keyed at the sampled frames."""
+    """The track as printed: positions to 0.1 mm, up to 1e-6, roll to 0.01 degrees, and
+    scene.camera keyed at the sampled frames."""
     pos = lambda v: [round(float(c), POS_DECIMALS) + 0.0 for c in v]   # + 0.0: no -0.0
     frames = [{"t": round(f["t"], TIME_DECIMALS), "location": pos(f["location"]), "target": pos(f["target"]),
+               "up": [round(float(c), UP_DECIMALS) + 0.0 for c in f["up"]],
                "roll": round(float(f["roll"]), ROLL_DECIMALS) + 0.0, "registered": bool(f["registered"])}
               for f in track["frames"]]
     lens = round(float(track["lens"]), LENS_DECIMALS)

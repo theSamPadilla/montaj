@@ -162,6 +162,14 @@ def test_axes_follow_frame_0_and_the_plane_whatever_the_reconstruction_frame():
     assert np.linalg.det(A) == pytest.approx(1)
 
 
+def test_planes_are_scored_on_a_subset_and_counted_on_every_point(monkeypatch):
+    monkeypatch.setattr(ct, "SCORE_SAMPLE", 120)
+    planes = ct.find_planes(POINTS, 0.005)
+    assert sorted(len(p["inliers"]) for p in planes[:2]) == [225, 300]
+    again = ct.find_planes(POINTS, 0.005)
+    assert [p["inliers"].tolist() for p in again] == [p["inliers"].tolist() for p in planes]
+
+
 def test_x_is_frame_0s_own_right_laid_on_the_plane_when_it_rolls():
     C0 = np.array([0, -0.56, 0.42])
     R0 = _look(C0, [0, 0, 0], roll=15.0)
@@ -349,13 +357,41 @@ def test_roll_is_counter_clockwise_from_behind_the_camera():
     assert u > W / 2 and v > H / 2
 
 
-def test_target_is_where_the_axis_meets_the_table_or_one_metre_ahead():
+def test_every_target_sits_on_its_axis_as_far_as_frame_0s_axis_runs_to_the_plane():
     track = _solve(known={"height": TRUTH_HEIGHT})
-    for f in track["frames"]:
-        assert f["target"][2] == pytest.approx(0, abs=1e-12)
-    loc = np.array([0.0, 0.0, 0.3])
-    assert ct.axis_target(loc, np.array([0.0, 1.0, 0.0])) == pytest.approx([0, 1, 0.3])
-    assert ct.axis_target(loc, np.array([0.0, 0.6, 0.8])) == pytest.approx(loc + [0, 0.6, 0.8])
+    reach = math.hypot(0.56, TRUTH_HEIGHT)                  # frame 0's camera to the origin
+    assert track["frames"][0]["target"] == pytest.approx([0, 0, 0], abs=1e-9)
+    for f, (R, C) in zip(track["frames"], TRUTH):
+        assert np.subtract(f["target"], f["location"]) == pytest.approx(reach * R[2], abs=1e-9)
+
+
+@pytest.mark.parametrize("pitch", [-1e-9, 0.0, 10.0])
+def test_a_level_camera_or_one_above_the_horizon_keeps_a_near_target(pitch):
+    """A level axis never meets the plane, and one that tilts up meets it behind the
+    camera: either way the target stays the same distance ahead, on the axis."""
+    C = np.array([0.0, -0.3, 0.3])
+    look = C + [0, math.cos(math.radians(pitch)), math.sin(math.radians(pitch))]
+    world = {"axes": np.eye(3), "origin": np.zeros(3), "scale": 1.0, "target": 0.7}
+    cam = ct.montaj_camera((_look(C, look), C), world)
+    assert np.subtract(cam["target"], cam["location"]) == pytest.approx(0.7 * (look - C), abs=1e-12)
+
+
+def test_up_is_the_rolled_cameras_up_as_the_engine_takes_it():
+    """camera-project.js builds right = forward x up, up' = right x forward from a
+    camera's `up`; through that, each emitted camera puts every point on its pixel."""
+    track = _solve(known={"height": TRUTH_HEIGHT})
+    for i, f in enumerate(track["frames"]):
+        fw = np.subtract(f["target"], f["location"])
+        fw /= np.linalg.norm(fw)
+        r = np.cross(fw, f["up"])
+        r /= np.linalg.norm(r)
+        u = np.cross(r, fw)
+        assert np.linalg.norm(f["up"]) == pytest.approx(1) and float(np.dot(f["up"], fw)) == pytest.approx(0, abs=1e-12)
+        tan_v = 18 / track["lens"]
+        d = POINTS - f["location"]
+        z = d @ fw
+        px = np.c_[((d @ r) / (z * tan_v * W / H) * 0.5 + 0.5) * W, (0.5 - (d @ u) / (z * tan_v) * 0.5) * H]
+        assert np.abs(px - _pixels(TRUTH[i], POINTS)).max() < 0.01
 
 
 # ---- scale ----
@@ -449,7 +485,10 @@ def test_rounded_output_and_scene_camera_keys():
     assert cam["target"] == [[f["t"], f["target"]] for f in track["frames"]]
     assert set(cam) == {"lens", "location", "target"}
     for f in track["frames"]:
+        assert list(f) == ["t", "location", "target", "up", "roll", "registered"]
         assert all(round(c, 4) == c for c in f["location"] + f["target"])
-        assert not any(c == 0 and math.copysign(1, c) < 0 for c in f["location"] + f["target"] + [f["roll"]])
+        assert all(round(c, 6) == c for c in f["up"])
+        assert not any(c == 0 and math.copysign(1, c) < 0
+                       for c in f["location"] + f["target"] + f["up"] + [f["roll"]])
     # 0.1 mm positions cost well under a pixel at this 0.4 m tabletop
     assert _max_miss(track) < 0.5

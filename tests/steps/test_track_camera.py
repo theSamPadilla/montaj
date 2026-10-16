@@ -8,7 +8,9 @@ The real clip is §328's kit (a handheld phone over a table, 540x960, 30 fps,
 MONTAJ_TEST_S255_DIR names its folder. Every frame at 10 fps must track, and the
 static landmarks, triangulated through the cameras the step emits and projected
 back through them (the engine's projection, no distortion), must land within
-6 px mean of the marks. §328 P0 measured 4.95 px with pycolmap's own camera.
+5 px mean of the marks. §328 P0 measured 4.95 px with pycolmap's own camera, and
+this step 3.92 to 3.98 px over six runs (all cores, before SIFT was capped at 4096
+features a frame; not yet re-run since).
 """
 import argparse
 import importlib.util
@@ -25,7 +27,7 @@ STEP = REPO_ROOT / "steps" / "media" / "track_camera.py"
 SCHEMA = json.loads((REPO_ROOT / "steps" / "media" / "track_camera.json").read_text())
 KIT = os.environ.get("MONTAJ_TEST_S255_DIR")
 STATIC = ("tubeTop", "tubeBase", "blockTL")
-MAX_MEAN_PX = 6.0
+MAX_MEAN_PX = 5.0
 
 
 def _run(args, prelude=""):
@@ -89,6 +91,62 @@ def test_schema_matches_the_argparse(monkeypatch):
         assert flags[name].required is bool(p.get("required")), name
     assert (params["fps"]["min"], params["fps"]["max"]) == (mod.MIN_FPS, mod.MAX_FPS)
     assert (params["lens"]["min"], params["lens"]["max"]) == (mod.MIN_LENS, mod.MAX_LENS)
+
+
+def test_reconstruct_caps_sift_and_seeds_the_mapper(tmp_path):
+    """pycolmap stood in for, so the options the step sets are checked without a
+    reconstruction."""
+    from types import SimpleNamespace as NS
+    seen = {}
+    fake = NS(
+        logging=NS(minloglevel=0),
+        ImageReaderOptions=lambda: NS(camera_model="SIMPLE_PINHOLE", default_focal_length_factor=1.2),
+        FeatureExtractionOptions=lambda: NS(num_threads=-1, sift=NS(max_num_features=8192)),
+        SequentialPairingOptions=lambda: NS(overlap=10),
+        GlobalPipelineOptions=lambda: NS(random_seed=-1, mapper=NS(random_seed=-1)),
+        CameraMode=NS(SINGLE="single"), Device=NS(cpu="cpu"),
+        extract_features=lambda db, frames, **k: seen.update(extract=k),
+        match_sequential=lambda db, **k: seen.update(match=k),
+        global_mapping=lambda db, frames, out, options: seen.update(mapping=options) or {},
+    )
+    mod = _load_step()
+    assert mod._reconstruct(fake, str(tmp_path), str(tmp_path / "work"), 0.85) is None
+    ext = seen["extract"]
+    assert (ext["camera_mode"], ext["device"], ext["reader_options"].camera_model) == ("single", "cpu", "SIMPLE_RADIAL")
+    assert ext["reader_options"].default_focal_length_factor == 0.85
+    assert ext["extraction_options"].num_threads == min(4, os.cpu_count() or 1)
+    assert ext["extraction_options"].sift.max_num_features == 4096
+    assert seen["match"]["pairing_options"].overlap == 15
+    assert (seen["mapping"].random_seed, seen["mapping"].mapper.random_seed) == (0, 0)
+
+
+def test_work_folders_left_by_killed_runs_are_swept(tmp_path):
+    mod = _load_step()
+    now = 1_000_000.0
+    old, fresh, other = tmp_path / "montaj-track-camera-old", tmp_path / "montaj-track-camera-new", tmp_path / "other-old"
+    for d in (old, fresh, other):
+        (d / "frames").mkdir(parents=True)
+    for d in (old, other):
+        for p in (d, d / "frames"):
+            os.utime(p, (now - 7200, now - 7200))
+    for p in (fresh, fresh / "frames"):
+        os.utime(p, (now - 7200, now - 7200))
+    os.utime(fresh / "frames", (now - 60, now - 60))         # a run still writing into it
+    mod._sweep_stale(str(tmp_path), now=now)
+    assert (not old.exists(), fresh.exists(), other.exists()) == (True, True, True)
+
+
+def test_a_track_that_is_not_finite_fails_as_tracking_failed(capsys):
+    mod = _load_step()
+    with pytest.raises(SystemExit) as e:
+        mod._emit({"frames": [{"location": [0.0, float("nan"), 0.3]}]}, None)
+    assert e.value.code == 1
+    out = capsys.readouterr()
+    assert out.out == "" and json.loads(out.err)["error"] == "tracking_failed"
+
+
+def test_too_few_tracked_frames_point_a_locked_off_shot_at_fit_camera():
+    assert "The camera must move; for a locked-off shot use fit_camera." in _load_step()._too_few(10, 75)
 
 
 def test_solve_errors_map_to_their_fail_codes():
