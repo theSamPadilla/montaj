@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.6.0
+
+- Changed: the carousel's Render reports a failed or stalled save to the host through the new `onError({ title, detail })` prop instead of a system alert, and Render is enabled again. The save gives up after `renderSaveTimeoutMs` (default 30 s). A guard keeps `alert`, `confirm` and `prompt` out of the editor's source. See the root CHANGELOG (v5.35.0).
+
 ## 2.5.0
 
 - Fixed: the preview shows the footage under an opaque overlay wherever the overlay is below full opacity (mid-fade or at 0), the rule the export uses. `planTick` asks `@bycrux/timeline-core`'s `opaqueReplacesPicture(item, seek)` for the tick's instant. See the root CHANGELOG (Unreleased).
