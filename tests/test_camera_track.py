@@ -208,6 +208,16 @@ def test_the_plane_facing_up_the_picture_wins_else_the_one_facing_the_camera(up,
     assert (len(planes[i]["inliers"]), why) == (inliers, rule)
 
 
+def test_scattered_points_with_no_flat_surface_are_refused_by_name():
+    scattered = np.random.default_rng(5).uniform([-0.3, 0.0, 0.0], [0.3, 0.5, 0.3], (60, 3))
+    for known in (None, {"height": TRUTH_HEIGHT}):
+        with pytest.raises(ct.NoPlane, match="^No flat surface with enough tracked points: point at the table "
+                                             "or floor with known.plane.$"):
+            _solve(known=known, points=scattered)
+    with pytest.raises(ct.NoPlane):
+        ct.choose_plane([], np.zeros(3), np.array([0, 0, 1.0]), np.array([0, 1.0, 0]))
+
+
 # A top-down shot: the camera 0.5 m over a table, looking almost straight down, so
 # image-up lies nearly in the table (0.1 up). The bigger plane is a vertical board at
 # the left, turned 12 degrees, which faces up the picture more (0.2) but under 0.3.

@@ -109,6 +109,13 @@ def _reconstruct(pycolmap, frames_dir, work_dir, focal_factor):
     return max(recs.values(), key=lambda r: r.num_reg_images()) if recs else None
 
 
+def _solve_error_code(ct, error, known):
+    """The fail code for a ValueError from camera_track.solve."""
+    if isinstance(error, ct.NoPlane):
+        return "no_plane"
+    return "invalid_known" if known else "tracking_failed"
+
+
 def _poses(np, rec, count):
     """(R, C) per frame index, None where the frame did not register."""
     poses = [None] * count
@@ -199,7 +206,7 @@ def main():
         if count > args.max_frames:
             fail("too_many_frames", f"The clip gives {count} frames at {fps:g} fps, over --max-frames {args.max_frames}.")
         rec = _reconstruct(pycolmap, frames_dir, work_dir, prior / max(w, h))
-        poses = _poses(np, rec, count) if rec else [None] * count
+        poses = _poses(np, rec, count) if rec is not None else [None] * count
         got = sum(p is not None for p in poses)
         if got * 2 < count:
             fail("tracking_failed",
@@ -216,7 +223,7 @@ def main():
                              principal=[cx * w / ww, cy * px], known=known,
                              reprojection=rec.compute_mean_reprojection_error() * px)
         except ValueError as e:
-            fail("invalid_known" if known else "tracking_failed", str(e))
+            fail(_solve_error_code(ct, e, known), str(e))
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 

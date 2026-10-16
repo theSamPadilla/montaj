@@ -308,6 +308,13 @@ def find_planes(points, threshold, max_planes=MAX_PLANES, iterations=PLANE_ITERA
     return planes
 
 
+class NoPlane(ValueError):
+    """No found plane holds enough tracked points to stand the world on."""
+
+    def __init__(self):
+        super().__init__("No flat surface with enough tracked points: point at the table or floor with known.plane.")
+
+
 def face(planes, eye):
     """Turn each plane's normal to the eye's side."""
     for p in planes:
@@ -322,11 +329,14 @@ def choose_plane(planes, eye, up, forward):
     (frame 0's image-up) when that is at least UP_ENOUGH, else the one facing the
     camera most (along -forward). A wall of texture behind a plain table holds more
     points than the table, but it faces the camera, not up the picture; looking
-    straight down, the table is what faces the camera. Returns (index, "up" | "facing")."""
+    straight down, the table is what faces the camera. Returns (index, "up" | "facing").
+    Raises NoPlane when no plane has MIN_PLANE_POINTS."""
     face(planes, eye)
-    largest = max(len(p["inliers"]) for p in planes)
+    largest = max((len(p["inliers"]) for p in planes), default=0)
     floor = max(MIN_PLANE_POINTS, MIN_PLANE_SHARE * largest)
     candidates = [i for i, p in enumerate(planes) if len(p["inliers"]) >= floor]
+    if not candidates:
+        raise NoPlane()
     best = max(candidates, key=lambda i: float(planes[i]["normal"] @ up))
     if float(planes[best]["normal"] @ up) >= UP_ENOUGH:
         return best, "up"
@@ -503,11 +513,9 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
         chosen, _ = plane_from_pixels(planes, pts, seen_at(kp["t"], kp["pixels"], "known.plane"), kp["pixels"],
                                       focal, centre, k1, abs(depth))
         plane, rule = planes[chosen], "pixels"
-    elif planes:
+    else:
         chosen, rule = choose_plane(planes, C0, -R0[1], R0[2])
         plane = planes[chosen]
-    else:
-        raise ValueError("no plane in the tracked points: point at the table or floor with known.plane")
     world = align_world(plane, filled[0])
 
     if "height" in known:

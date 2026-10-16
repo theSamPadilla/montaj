@@ -91,6 +91,16 @@ def test_schema_matches_the_argparse(monkeypatch):
     assert (params["lens"]["min"], params["lens"]["max"]) == (mod.MIN_LENS, mod.MAX_LENS)
 
 
+def test_solve_errors_map_to_their_fail_codes():
+    pytest.importorskip("numpy")
+    from lib import camera_track as ct
+    mod = _load_step()
+    assert mod._solve_error_code(ct, ct.NoPlane(), None) == "no_plane"
+    assert mod._solve_error_code(ct, ct.NoPlane(), {"height": 0.3}) == "no_plane"
+    assert mod._solve_error_code(ct, ValueError("x"), {"height": 0.3}) == "invalid_known"
+    assert mod._solve_error_code(ct, ValueError("x"), None) == "tracking_failed"
+
+
 def test_frame_k_is_the_frame_on_screen_at_k_over_fps(tmp_path, monkeypatch):
     """A 30 fps clip whose frame i has luma 16 + 6 i, sampled at 10 fps: frame k is
     source frame 3k (ffmpeg's fps filter rounding to the nearest keeps 3k + 1, a frame
