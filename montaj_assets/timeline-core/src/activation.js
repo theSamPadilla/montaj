@@ -221,10 +221,12 @@ import { transitionPairs, transitionProgress } from './transitions.js'
  *   (segment-plan.js:106). The sort is STABLE, so items sharing a trackIdx keep
  *   their document order. Captions are conceptually the topmost layer but are
  *   NOT Scene items: `project.captions` is a top-level object, not a track
- *   entry, and its per-instant content is T4's `activeCaptionSegment`. Note
- *   also that the render encoder composites ALL video under ALL overlays
- *   regardless of track — that is a consumer-side compositing rule in
- *   encode-segment.js, not the resolver's ordering.
+ *   entry, and its per-instant content is T4's `activeCaptionSegment`. Since
+ *   §308 P3 every engine stacks by track in the EDITOR'S order
+ *   (src/layering.js `trackLayerPositions`: every track holding video first),
+ *   which for a project already in that order is exactly this `trackIdx`
+ *   order; a project not in it (an image-only track listed below a video
+ *   track) is the one place this array's order and the stack differ.
  * @property {number} t
  *   The instant this Scene answers for. `resolveSegment` sets it to `segStart`,
  *   which is the reference point every `seek` was measured from.

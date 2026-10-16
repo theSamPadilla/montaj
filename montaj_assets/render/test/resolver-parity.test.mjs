@@ -414,12 +414,14 @@ const SYNTHETIC_PROJECTS = {
   },
 
   // Three stacked tracks: the byTrackIdx ordering has something to actually
-  // order, over segments where the stack changes depth.
+  // order, over segments where the stack changes depth. Listed in the editor's
+  // track order (the video track first): the same three tracks with the image
+  // track first are the §308 P3 divergence pinned at the bottom of this file.
   'multi-track-stack': {
     settings,
     tracks: [
-      [img('bg', 0, 10)],
       [vid('pip', 2, 8, { scale: 0.3, offsetX: 30, offsetY: 30 })],
+      [img('bg', 0, 10)],
       [ovl('badge', 4, 6)],
     ],
   },
@@ -717,4 +719,33 @@ test('harness is not vacuous', () => {
     `too few cases produced a segment with >1 item (byTrackIdx never ordered anything): ${EXERCISED.casesWithMultiItemSegment}`)
   assert.ok(EXERCISED.emptyPlans >= 6,
     `the empty-plan path was never exercised: ${EXERCISED.emptyPlans}`)
+})
+
+test('divergence (§308 P3): an image-only track listed below a video track stacks over it, as the editor draws it', () => {
+  // Until 5.33.3 this was the `multi-track-stack` case: the image-only track
+  // first in the JSON, the picture-in-picture video track second. The editor
+  // reads every project in its canonical track order (every track holding video
+  // first, timeline-core \`trackLayerPositions\`), so its preview drew the image
+  // OVER the video while the export drew it under. Render now stacks by the
+  // editor's order: the plan's items come video first, and nothing else moves
+  // (same boundaries, overlays and flags). The frozen legacy order is the old
+  // export, kept here as the record of what changed.
+  const project = {
+    settings,
+    tracks: [
+      [img('bg', 0, 10)],
+      [vid('pip', 2, 8, { scale: 0.3, offsetX: 30, offsetY: 30 })],
+      [ovl('badge', 4, 6)],
+    ],
+  }
+  for (const fps of RATES) {
+    const { allItems, puppeteerSegs } = composeInputs(project, fps, 1080, 1920)
+    const legacy = legacyPlanSegments(allItems, puppeteerSegs, 1080, 1920, fps)
+    const shipped = planSegments(allItems, puppeteerSegs, 1080, 1920, fps)
+    const ids = plan => plan.map(seg => seg.items.map(it => it.id))
+    assert.deepStrictEqual(ids(legacy), [['bg'], ['bg', 'pip'], ['bg', 'pip'], ['bg', 'pip'], ['bg']], `legacy @${fps}`)
+    assert.deepStrictEqual(ids(shipped), [['bg'], ['pip', 'bg'], ['pip', 'bg'], ['pip', 'bg'], ['bg']], `shipped @${fps}`)
+    const rest = plan => plan.map(({ items, ...seg }) => seg)
+    assert.deepStrictEqual(rest(shipped), rest(legacy), `everything but the item order is unchanged @${fps}`)
+  }
 })

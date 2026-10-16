@@ -41,7 +41,7 @@ import { pMap }                           from './p-map.js'
 import { fileHasAudio, probeVideoGeometry } from './encode-segment.js'
 import { probeColorTransfer }             from './derive-sdr.js'
 import { sdrLayerFor, gradeKeyFor, probeMedia, defaultDeps } from './sdr-layer.js'
-import { sourceWindow, transitionPairs, isOpaqueCover, opaqueReplacesPicture } from '@bycrux/timeline-core'
+import { sourceWindow, transitionPairs, isOpaqueCover, opaqueReplacesPicture, trackLayerPositions } from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
 import { resolveMotionBlur, MOTION_BLUR_MAX } from './motion-blur.js'
 import { loudnessFilter }                 from './mix-audio.js'
@@ -834,6 +834,9 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
       rSeg.opacity   = spec.opacity   ?? 1
       rSeg.opaque    = spec.opaque    ?? false
       rSeg.isCaption = spec.isCaption ?? false
+      // §308 P3: where it stacks among the clips (segment-plan.js). Captions
+      // carry none: they are always last.
+      if (spec.layerTrack !== undefined) rSeg.layerTrack = spec.layerTrack
       // Same reference-flow argument as rotation directly above, and the same
       // worst-case partial failure: buildOverlayFilterParts reads `keyframes`
       // off THIS object to decide that the capture is already positioned. Miss
@@ -1562,6 +1565,9 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
   // sample-frame.js's ordering note and encode-segment.js), which track order
   // still gives us, so a lower track's overlay stays beneath a higher one's.
   const overlayTracks = enabledTrackItems(projectJson)
+  // §308 P3: where each track stacks, the editor's order (timeline-core
+  // `trackLayerPositions`): segment-plan.js layers overlays and clips by it.
+  const layerOf = trackLayerPositions(trackItems(projectJson))
   for (let trackIdx = 0; trackIdx < overlayTracks.length; trackIdx++) {
     const track = overlayTracks[trackIdx]
     // Specs this track just produced, keyed by the item's OWN id (not the
@@ -1602,6 +1608,8 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
           // (`captureOptionsFor`). The segment planner culls the footage only
           // where it is at 1. Absent otherwise, so nothing else changes.
           ...(isOpaqueCover(item) && !opaqueReplacesPicture(item) ? { fades: true } : {}),
+          // §308 P3: the overlay's track in the editor's stacking order.
+          layerTrack:    layerOf[trackIdx],
           googleFonts:   item.googleFonts ?? [],
           // Keyframes drive BOTH ends of the render: bundleComponent bakes the
           // animated transform into the capture, and buildOverlayFilterParts
@@ -1691,6 +1699,10 @@ function collectAllItems(projectJson) {
   const videoItems = []
 
   const tracks = enabledTracks(projectJson)
+  // §308 P3: each clip's track in the editor's stacking order (timeline-core
+  // `trackLayerPositions`), beside its JSON `trackIdx`. The planner stacks by
+  // it; `trackIdx` stays what pairs crossfades and names the track.
+  const layerOf = trackLayerPositions(trackItems(projectJson))
   for (let trackIdx = 0; trackIdx < tracks.length; trackIdx++) {
     const track = tracks[trackIdx]
     // The object this collector emitted for each SOURCE item on this track, so
@@ -1717,7 +1729,7 @@ function collectAllItems(projectJson) {
         opacity: item.opacity ?? 1,
       }
       if (item.type === 'image') {
-        const emit = { ...passthrough, ...geometryDefaults, fit: item.fit ?? 'cover', trackIdx }
+        const emit = { ...passthrough, ...geometryDefaults, fit: item.fit ?? 'cover', trackIdx, layerTrack: layerOf[trackIdx] }
         imageItems.push(emit)
         emitted.set(item, emit)
       } else if (item.type === 'video') {
@@ -1784,6 +1796,7 @@ function collectAllItems(projectJson) {
           ...passthrough,
           ...geometryDefaults,
           trackIdx,
+          layerTrack: layerOf[trackIdx],
           // This object used to be built field-by-field from a hand-written
           // whitelist — and a field left off it was dropped silently, with no
           // type error, before it ever reached encode-segment.js. That

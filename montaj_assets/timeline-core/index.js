@@ -66,6 +66,11 @@ export * from './src/curves.js'
 // why translating the beziers into ffmpeg's expression language was rejected.
 export * from './src/expr.js'
 
+// §308 P3 — layering: trackLayerPositions, the editor's canonical track order
+// (every video-holding track first, then the rest), which the export and
+// sample_frame now stack by too. See the src/layering.js header.
+export * from './src/layering.js'
+
 // SP9d-T3 — crossfade math: transitionPairs, transitionProgress, fadeShape,
 // and TRANSITION_EPSILON_S (the overlap at or below which two items only touch).
 // THE single definition of "what a crossfade is", shared by the editor's

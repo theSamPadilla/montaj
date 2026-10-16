@@ -271,10 +271,10 @@
 // geometryFor does not compute a z-index. Ordering is entirely
 // activation.js's concern: `Scene.items` is already sorted `trackIdx`
 // ascending (`byTrackIdx`), captions are always the topmost conceptual layer
-// (`captionsLast` at the boundary/overlay level), and the render encoder
-// composites ALL video/image items before ALL overlays regardless of
-// trackIdx — a consumer-side compositing rule documented on activation.js's
-// `Scene` typedef, not something this module re-derives.
+// (`captionsLast` at the boundary/overlay level), and every engine stacks
+// clips and overlays together by track in the editor's order (§308 P3,
+// src/layering.js) — documented on activation.js's `Scene` typedef, not
+// something this module re-derives.
 //
 // ── designCanvas — the 1080-short-edge rule ─────────────────────────────────
 //

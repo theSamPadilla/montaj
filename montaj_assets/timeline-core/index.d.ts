@@ -697,6 +697,16 @@ export interface PlacementFields {
  */
 export declare function isFullCanvasPlacement(item: PlacementFields | null | undefined): boolean
 
+/**
+ * The layer position of each visual track by its JSON index (0 = bottom): the
+ * editor's canonical order (`timeline-model.ts` `orderedTrackArray`), every
+ * track holding a video item first, then the rest, each group in JSON order.
+ * The export and sample_frame stack by it, as the preview does.
+ */
+export declare function trackLayerPositions(
+  trackItems: ReadonlyArray<ReadonlyArray<{ type?: string } | null | undefined> | null | undefined>,
+): number[]
+
 /** The fields {@link opacityAt} and {@link fullOpacitySpans} read. */
 export interface OpacityFields {
   opacity?: number | null

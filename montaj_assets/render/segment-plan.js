@@ -4,8 +4,9 @@
  * at every clip and overlay boundary.
  *
  * Each segment carries:
- *   - items: ALL active visual items sorted ascending by trackIdx (lower = further back).
- *     The encoder composites them in order. Empty array = black canvas.
+ *   - items: ALL active visual items sorted ascending by layer (lower = further back):
+ *     their track in the editor's order (`layerTrack`, §308 P3), which is
+ *     `trackIdx` for a project already in that order. Empty array = black canvas.
  *   - opaqueVideo: true when an opaque overlay covers this segment's frame (an
  *     opaque overlay placed over the whole canvas, a scaled one covers nothing,
  *     and at full opacity on every frame of the segment, §309). The
@@ -14,6 +15,16 @@
  *     never "drop the voiceover". Items are kept precisely so their audio survives.
  *   - overlays: Puppeteer-rendered overlay + caption segments, with captions
  *     always sorted AFTER overlays (captions are the topmost z-layer).
+ *   - layers, cullBelow (§308 P3): present ONLY when the segment's stack is not
+ *     "every item, then every overlay". `layers` is then the one bottom-to-top
+ *     list of items and overlays by track (the editor's order, timeline-core
+ *     `trackLayerPositions`, stamped as `layerTrack`; a track's clips before its
+ *     overlays; captions last), which the encoder composites as it stands.
+ *     `cullBelow` is the topmost overlay in it that replaces the picture through
+ *     the segment, or null: only the items BELOW it lose their picture, and
+ *     `opaqueVideo` says whether any does. Absent, the encoder reads
+ *     `[...items, ...overlays]` and `opaqueVideo` exactly as before, which is
+ *     what keeps every project with no image above an overlay byte-identical.
  *
  * Accepts BOTH video and image items (merged). Image items are treated
  * like video items for segmentation but flagged as type:'image' so the
@@ -55,7 +66,7 @@
  *      because `collectAllItems` (render.js:597) stamps `trackIdx` on every
  *      item it emits.
  */
-import { boundariesFrom, activeIn, captionsLast, byTrackIdx, isOpaqueCover, fullOpacitySpans } from '@bycrux/timeline-core'
+import { boundariesFrom, activeIn, captionsLast, isOpaqueCover, fullOpacitySpans } from '@bycrux/timeline-core'
 
 /**
  * Puppeteer overlay segments name their endpoints `startSeconds`/`endSeconds`
@@ -149,6 +160,30 @@ function replacesPictureThrough(ranges, start, end, fps) {
 }
 
 /**
+ * §308 P3: where a layer stacks. A clip's `layerTrack` (render.js stamps it, the
+ * editor's track order) else its `trackIdx`; for a project already in the
+ * editor's order the two are equal. An overlay with no `layerTrack` (a caption,
+ * or a hand-built descriptor) sits above every clip, where overlays always sat.
+ */
+const clipLayer = c => c.layerTrack ?? c.trackIdx ?? 0
+const overlayLayer = o => o.layerTrack ?? Infinity
+const byClipLayer = (a, b) => clipLayer(a) - clipLayer(b)
+
+/**
+ * §308 P3: one segment's items and overlays as one bottom-to-top list: by layer
+ * track, a track's clips before its overlays (KNOWN-DIVERGENCES.md D19), each
+ * kind in the order it arrived, captions last. Stable throughout.
+ */
+function stackLayers(items, overlays) {
+  const graphics = overlays.filter(o => !o.isCaption)
+  const keyed = [
+    ...items.map((x, i) => ({ x, layer: clipLayer(x), kind: 0, i })),
+    ...graphics.map((x, i) => ({ x, layer: overlayLayer(x), kind: 1, i })),
+  ].sort((a, b) => a.layer - b.layer || a.kind - b.kind || a.i - b.i)
+  return [...keyed.map(k => k.x), ...overlays.filter(o => o.isCaption)]
+}
+
+/**
  * @param {Array} allItems — merged videoItems + imageItems from collectAllItems()
  * @param {Array} puppeteerSegs — rendered overlay/caption segments
  * @param {number} vw — output width
@@ -221,15 +256,16 @@ export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
     const start = snapped[i]
     const end = snapped[i + 1]
 
-    // ALL visual items active during [start, end), sorted by trackIdx ascending.
-    // Lower trackIdx = further back (composited first = background).
+    // ALL visual items active during [start, end), sorted by layer ascending
+    // (§308 P3: the editor's track order, `layerTrack`; it IS trackIdx for a
+    // project already in that order). Lower = further back (composited first).
     // `activeIn` is the containment predicate `v.start <= start + 1/fps &&
     // v.end >= end - 1/fps`; it preserves input order and object identity, so
     // the stable sort below sees exactly the array `compose.js` built. That
     // matters: `compose.js:64` merges as `[...imageItems, ...videoItems]`, so
     // two items sharing a trackIdx put all images before all videos
     // (KNOWN-DIVERGENCES.md D7), and the encoder mutates these very objects.
-    const items = activeIn(allItems, start, end, fps).sort(byTrackIdx)
+    const items = activeIn(allItems, start, end, fps).sort(byClipLayer)
 
     // Overlays active during [start, end), with captions sorted AFTER overlays.
     // Captions are always the topmost z-layer. `captionsLast` is a stable
@@ -247,14 +283,38 @@ export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
     // moved one cannot cover it, so the footage around it stays. And only where
     // it is at full opacity (§309): mid-fade, or at 0, what is beneath shows
     // through, so it is drawn.
-    const hasOpaque = overlays.some(o => replacesPictureThrough(opacityFrames.get(o), start, end, fps))
+    //
+    // §308 P3: and only the items BELOW it. When an item sits above an overlay
+    // (the stack is not every item, then every overlay), the segment carries the
+    // one interleaved list, and the topmost overlay that replaces the picture
+    // culls what is under it, never what is over it.
+    const replaces = o => replacesPictureThrough(opacityFrames.get(o), start, end, fps)
+    const layers = stackLayers(items, overlays)
+    const interleaved = layers.some((x, k) => x !== (k < items.length ? items[k] : overlays[k - items.length]))
 
+    if (!interleaved) {
+      segments.push({
+        start,
+        end,
+        items,
+        opaqueVideo: overlays.some(replaces),
+        overlays,
+        vw,
+        vh,
+        fps,
+      })
+      continue
+    }
+    let cover = -1
+    for (let k = layers.length - 1; k >= 0 && cover < 0; k--) if (overlays.includes(layers[k]) && replaces(layers[k])) cover = k
     segments.push({
       start,
       end,
       items,
-      opaqueVideo: hasOpaque,
+      opaqueVideo: cover > 0 && layers.slice(0, cover).some(x => items.includes(x)),
       overlays,
+      layers,
+      cullBelow: cover < 0 ? null : layers[cover],
       vw,
       vh,
       fps,

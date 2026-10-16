@@ -2,9 +2,11 @@
 /**
  * Encode a single timeline segment to MP4 in the project's working color space.
  *
- * Each call composites:
- *   - N visual items: layered by trackIdx (lower = background). Each item has
- *     scale, offsetX, offsetY, opacity, rotation. Images loop, videos seek+trim.
+ * Each call composites, in ONE bottom-to-top pass by track in the editor's
+ * order (§308 P3, planSegments' `layers`; without it every item below every
+ * overlay, as before):
+ *   - N visual items. Each item has scale, offsetX, offsetY, opacity,
+ *     rotation. Images loop, videos seek+trim.
  *   - 0-N overlays: Puppeteer-rendered MKV/WebM with alpha, scaled from the
  *     1080-design canvas to the output resolution and positioned via offsetX,
  *     offsetY, scale. Captions are always last (topmost z-layer) — ensured by
@@ -316,6 +318,25 @@ function isImageItem(item) {
 }
 
 /**
+ * The items of a segment whose PICTURE an opaque overlay above them replaces
+ * (their audio is still mixed). Without `layers` (segment-plan.js: every item
+ * below every overlay) that is every item when `opaqueVideo` is set, as it
+ * always was. With `layers` (§308 P3, an item above an overlay) it is only the
+ * items below `cullBelow`, the topmost overlay replacing the picture: an item
+ * stacked over it is drawn. By identity, so the crossfade pre-pass may reorder
+ * the list freely.
+ *
+ * @param {{ items?: object[], opaqueVideo?: boolean, layers?: object[], cullBelow?: object|null }} segment
+ * @returns {Set<object>}
+ */
+export function culledClips(segment) {
+  const items = segment.items ?? []
+  if (!segment.layers) return segment.opaqueVideo ? new Set(items) : new Set()
+  const cover = segment.cullBelow == null ? -1 : segment.layers.indexOf(segment.cullBelow)
+  return new Set(segment.layers.slice(0, Math.max(0, cover)).filter((x) => items.includes(x)))
+}
+
+/**
  * Where graphics white lands in one HDR compose segment (POSTLAUNCH §47):
  * GRAPHICS_WHITE_NITS (800) when a video clip is visible in the segment, so
  * captions and overlays over footage stay bright against camera HDR, and
@@ -323,9 +344,10 @@ function isImageItem(item) {
  * title card, a full-screen overlay, or a timeline image or screenshot with no
  * clip at that time, which then match SDR and the editor preview.
  *
- * A clip is visible when the segment has a non-image item and no opaque overlay
- * hides the items' video (segment.opaqueVideo). An image over a clip is
- * graphics over footage. planSegments splits at every clip boundary, so the set
+ * A clip is visible when the segment has a non-image item whose picture no
+ * opaque overlay above it replaces (culledClips: segment.opaqueVideo, or since
+ * §308 P3 only the items below `cullBelow`). An image over a clip is graphics
+ * over footage. planSegments splits at every clip boundary, so the set
  * of items is constant within a segment, and an overlay that runs from a clip
  * into a footage-less stretch changes level at exactly that frame.
  *
@@ -333,18 +355,24 @@ function isImageItem(item) {
  * @returns {number} nits
  */
 export function graphicsWhiteNitsFor(segment) {
-  const footage = !(segment.opaqueVideo ?? false) && (segment.items ?? []).some((item) => !isImageItem(item))
+  const culled = culledClips(segment)
+  const footage = (segment.items ?? []).some((item) => !isImageItem(item) && !culled.has(item))
   return footage ? GRAPHICS_WHITE_NITS : GRAPHICS_WHITE_NITS_NO_FOOTAGE
 }
 
 /**
- * Where the overlay at `index` maps white: a full-screen card (cover-probe.js
- * markCards set `coversFrame`) and every overlay or caption stacked above it
- * take GRAPHICS_WHITE_NITS_NO_FOOTAGE, since they sit on the card and not on
- * footage, for the card's whole span. Overlays below the card, and every
- * overlay in a segment without one, take the segment's level.
+ * Where the graphic at `index` maps white: a full-screen card (cover-probe.js
+ * markCards set `coversFrame`) and every graphic stacked above it take
+ * GRAPHICS_WHITE_NITS_NO_FOOTAGE, since they sit on the card and not on
+ * footage, for the card's whole span. Graphics below the card, and every
+ * graphic in a segment without one, take the segment's level.
  *
- * @param {object[]} overlays       the segment's overlays, in compositing order
+ * Read over the segment's whole bottom-to-top layer list (§308 P3), so an
+ * IMAGE stacked above a card takes the card's white too, as an overlay above
+ * it does; one below takes the segment's. A list with every item below every
+ * overlay (no image above a card) answers exactly as the overlays alone did.
+ *
+ * @param {object[]} overlays       the segment's layers (or overlays), in compositing order
  * @param {number}   index
  * @param {number}   segmentWhiteNits  graphicsWhiteNitsFor(segment)
  * @returns {number}
@@ -1983,16 +2011,26 @@ function intermediateVideoArgs(spec, duration) {
  */
 export async function encodeSegment(segment, outputPath, opts = {}) {
   const { start, end, overlays, vw, vh, fps } = segment
-  // Pair up the crossfading items BEFORE anything is emitted. `items` is the
+  // §308 P3: ONE bottom-to-top list of the segment's items and overlays, by
+  // track in the editor's order (segment-plan.js `layers`). A segment without
+  // it has every item below every overlay, so the list is `[...items,
+  // ...overlays]` and the graph below is the one this function always built.
+  //
+  // Pair up the crossfading items BEFORE anything is emitted. `layers` is the
   // reordered array from here down, so every "the incoming item follows the
   // outgoing one" assumption below is true by construction rather than by
   // luck — see matchCrossfadePairs for why the raw order cannot be trusted.
-  const { items, partnerOf, paired } = matchCrossfadePairs(segment.items, start, end)
+  // Overlays carry no crossfade stamp, so they are never paired and never move;
+  // a track's overlays follow all of its clips, so none sits between two halves.
+  const { items: layers, partnerOf, paired } = matchCrossfadePairs(segment.layers ?? [...segment.items, ...overlays], start, end)
+  const overlayLayers = new Set(overlays)
   // When an opaque overlay covers this segment, the overlay replaces the frame
-  // but the underlying items still contribute their AUDIO. opaqueVideo gates the
-  // VIDEO compositing of items only — never their audio. Defaults to false so
-  // pre-existing callers/tests (which don't set it) keep their behaviour.
-  const opaqueVideo = segment.opaqueVideo ?? false
+  // but the underlying items still contribute their AUDIO. The cull gates the
+  // VIDEO compositing of items only — never their audio — and only for the
+  // items below the overlay that replaces the picture (culledClips): an item
+  // stacked over it is drawn. A segment that sets neither culls nothing, so
+  // pre-existing callers/tests keep their behaviour.
+  const culled = culledClips(segment)
   const duration = end - start
   const projectColorSpace = segment.colorSpace ?? DEFAULT_COLOR_SPACE
   const spec = specFor(projectColorSpace)
@@ -2046,14 +2084,38 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   videoLabel = '[canvas]'
   inputIdx++
 
-  // --- Step 2: Visual items layered in trackIdx order (lower = background) ---
+  // --- Steps 2 and 3: every layer, bottom to top (§308 P3) ---
+  // Items and overlays in one loop, in `layers` order: an overlay goes through
+  // buildOverlayFilterParts, an item through the image or video builder, onto
+  // the one running label. Inputs are added in the same order. With every item
+  // below every overlay this is Step 2 (items) then Step 3 (overlays, captions
+  // last), byte for byte.
+  //
   // The half-built crossfade, live only between the outgoing item and its
   // matched partner — which the pre-pass has already placed immediately after
   // it. Carries that partner so the blend closes on the item it opened for and
   // not merely on the next `to` to come along. Null everywhere else.
   let pendingBlend = null
-  for (let ii = 0; ii < items.length; ii++) {
-    const item = items[ii]
+  for (const [layerPos, layer] of layers.entries()) {
+    // --- Overlay + caption layers ---
+    if (overlayLayers.has(layer)) {
+      const ov = layer
+      const ovIdx = inputIdx
+      const { inputArgs, filterParts: fp, newVideoLabel } =
+        buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration,
+          { fps, captureToBt709: !isHdr(projectColorSpace),
+            captureToHdr: isHdr(projectColorSpace) ? projectColorSpace : null,
+            captureWhiteNits: overlayWhiteNits(layers, layerPos, graphicsWhiteNits),
+            dryRun: opts._dryRun })
+      inputs.push(...inputArgs)
+      filterParts.push(...fp)
+      videoLabel = newVideoLabel
+      inputIdx++
+      continue
+    }
+
+    // --- Visual items (lower = background) ---
+    const item = layer
     const idx  = inputIdx
 
     // ── Clip crossfade ──────────────────────────────────────────────────
@@ -2087,13 +2149,13 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
     // conversion would mix two different transfer curves.
     //
     // The partner is the one `matchCrossfadePairs` matched by SPAN + TRACK, not
-    // whatever sits at `items[ii + 1]`. The two halves reach this loop in an
+    // whatever sits next to it in the list. The two halves reach this loop in an
     // order that is neither document order nor adjacency (compose merges
     // `[...imageItems, ...videoItems]`, sorted by trackIdx only), so a
     // positional read blends the wrong pair or no pair at all — the full
     // argument is on that function.
     const xf = crossfadeIn(item, start, end)
-    const opensCrossfade = !opaqueVideo && partnerOf.has(item)
+    const opensCrossfade = !culled.has(item) && partnerOf.has(item)
     if (opensCrossfade) {
       filterParts.push(`${videoLabel}split=2[xfa${idx}][xfb${idx}]`)
       pendingBlend = { idx, p0: xf.p0, p1: xf.p1, fromOut: null, to: partnerOf.get(item) }
@@ -2104,10 +2166,12 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // Under an opaque overlay the frame is fully covered and images carry no
       // audio, so an image item contributes nothing here — skip it entirely
       // (no input, no inputIdx bump).
-      if (opaqueVideo) continue
+      if (culled.has(item)) continue
+      // White by position (§308 P3): an image above a full-screen card sits on
+      // the card, as an overlay above it does.
       const { inputArgs, filterParts: fp, newVideoLabel } =
         buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duration, start,
-          { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, whiteNits: graphicsWhiteNits, dryRun: opts._dryRun })
+          { toHdr: isHdr(projectColorSpace) ? projectColorSpace : null, whiteNits: overlayWhiteNits(layers, layerPos, graphicsWhiteNits), dryRun: opts._dryRun })
       inputs.push(...inputArgs)
       filterParts.push(...fp)
       videoLabel = newVideoLabel
@@ -2145,13 +2209,13 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // frame is NOT covered by an opaque overlay — opaque replaces the picture,
       // it must not silence the voiceover underneath.
       inputs.push(...inputArgs)
-      if (!opaqueVideo) {
+      if (!culled.has(item)) {
         filterParts.push(...fp)
         videoLabel = newVideoLabel
       }
 
       // Audio from ALL unmuted video items — collected here, mixed in Step 5.
-      // Runs regardless of opaqueVideo so audio survives full-screen animations.
+      // Runs regardless of the cull so audio survives full-screen animations.
       // item.hasAudio, when stamped (render.js pre-probes once per unique
       // source — see the audioCache loop), wins over the per-segment check.
       // Otherwise: in dry-run mode, skip the ffprobe check (file may not
@@ -2266,21 +2330,6 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       videoLabel = `[xf${xfIdx}]`
       pendingBlend = null
     }
-    inputIdx++
-  }
-
-  // --- Step 3: Overlay + caption inputs (captions already sorted last by planSegments) ---
-  for (const [ovPos, ov] of overlays.entries()) {
-    const ovIdx = inputIdx
-    const { inputArgs, filterParts: fp, newVideoLabel } =
-      buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, start, duration,
-        { fps, captureToBt709: !isHdr(projectColorSpace),
-          captureToHdr: isHdr(projectColorSpace) ? projectColorSpace : null,
-          captureWhiteNits: overlayWhiteNits(overlays, ovPos, graphicsWhiteNits),
-          dryRun: opts._dryRun })
-    inputs.push(...inputArgs)
-    filterParts.push(...fp)
-    videoLabel = newVideoLabel
     inputIdx++
   }
 
