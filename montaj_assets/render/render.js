@@ -43,7 +43,7 @@ import { probeColorTransfer }             from './derive-sdr.js'
 import { sdrLayerFor, gradeKeyFor, probeMedia, defaultDeps } from './sdr-layer.js'
 import { sourceWindow, transitionPairs, opaqueReplacesPicture } from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
-import { resolveMotionBlur }              from './motion-blur.js'
+import { resolveMotionBlur, MOTION_BLUR_MAX } from './motion-blur.js'
 import { loudnessFilter }                 from './mix-audio.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 import { captionOverlayFields }           from './caption-spec.js'
@@ -226,7 +226,8 @@ if (isMain) {
 
   if (!argv.length || argv[0] === '--help') {
     process.stderr.write('Usage: render.js <project.json> [--out <path>] [--workers <n>] [--clean] '
-      + '[--export <auto|sdr|both>] [--sdr-curve <id>] [--estimate [--resolution <W>x<H>] [--fps <n>]]\n')
+      + '[--export <auto|sdr|both>] [--sdr-curve <id>] [--fps <n>] [--motion-blur <n>] '
+      + '[--estimate [--resolution <W>x<H>]]\n')
     process.exit(1)
   }
 
@@ -239,6 +240,7 @@ if (isMain) {
   let estimateArg  = false
   let resolutionArg = null
   let fpsArg       = null
+  let motionBlurArg = null
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out')        { outArg       = argv[++i]; continue }
@@ -249,6 +251,7 @@ if (isMain) {
     if (argv[i] === '--estimate')   { estimateArg  = true; continue }
     if (argv[i] === '--resolution') { resolutionArg = argv[++i]; continue }
     if (argv[i] === '--fps')        { fpsArg       = argv[++i]; continue }
+    if (argv[i] === '--motion-blur') { motionBlurArg = argv[++i]; continue }
     if (!projectArg) projectArg = argv[i]
   }
 
@@ -264,11 +267,14 @@ if (isMain) {
   try {
     exportMode = resolveExportMode(exportArg)
     sdrCurve   = resolveSdrCurve(sdrCurveArg)
-    overrides  = resolveEstimateOverrides({ resolution: resolutionArg, fps: fpsArg })
+    overrides  = resolveEstimateOverrides({ resolution: resolutionArg, fps: fpsArg, motionBlur: motionBlurArg })
   } catch (err) {
     fail('invalid_argument', err.message)
   }
-  if (overrides && !estimateArg) fail('invalid_argument', '--resolution and --fps apply to --estimate only')
+  // §284: --fps and --motion-blur apply to this render only (the export
+  // window's Fast); --resolution stands in for an unsaved choice in an
+  // estimate only.
+  if (overrides?.resolution && !estimateArg) fail('invalid_argument', '--resolution applies to --estimate only')
 
   if (estimateArg) {
     // §213: one JSON line on stdout, exit 0. A project the estimate cannot plan
@@ -279,7 +285,7 @@ if (isMain) {
       .catch((err) => fail(err.code === 'missing_files' ? 'missing_files' : 'estimate_error', err.message))
   } else main(projectArg, {
     out: outArg, workers: workersArg, clean: cleanArg,
-    exportMode, sdrCurve,
+    exportMode, sdrCurve, overrides,
   }).catch(err => {
     // §128: a disk that ran out mid-render is said plainly, with the space the
     // render is expected to need (disk-space.js), never as a generic failure.
@@ -345,8 +351,8 @@ function resolveSdrCurve(value) {
  * null when neither is given, else `{ resolution?: [w, h], fps?: n }`; throws
  * on a malformed value. serve passes them only when well formed.
  */
-function resolveEstimateOverrides({ resolution = null, fps = null } = {}) {
-  if (resolution == null && fps == null) return null
+function resolveEstimateOverrides({ resolution = null, fps = null, motionBlur = null } = {}) {
+  if (resolution == null && fps == null && motionBlur == null) return null
   const overrides = {}
   if (resolution != null) {
     const m = /^(\d+)x(\d+)$/.exec(String(resolution))
@@ -358,6 +364,15 @@ function resolveEstimateOverrides({ resolution = null, fps = null } = {}) {
     const n = Number(fps)
     if (!(Number.isFinite(n) && n > 0)) throw new Error(`--fps must be a positive number, got ${JSON.stringify(fps)}`)
     overrides.fps = n
+  }
+  if (motionBlur != null) {
+    // The setting's own rule (an integer from 1 to MOTION_BLUR_MAX), named as the flag.
+    const n = Number(motionBlur)
+    try {
+      overrides.motionBlur = resolveMotionBlur(String(motionBlur).trim() === '' ? NaN : n)
+    } catch {
+      throw new Error(`--motion-blur must be an integer from 1 to ${MOTION_BLUR_MAX}, got ${JSON.stringify(motionBlur)}`)
+    }
   }
   return overrides
 }
@@ -439,8 +454,9 @@ function planExport({ exportMode, projectColorSpace, outputPath }) {
  * project, resolve its paths and settings, and name where the render writes.
  * Reads only: no file is written or created. `requireFinal` is the render's
  * status check (an estimate is asked before the project is final);
- * `overrides` (--estimate's `{ resolution, fps }`) stand in for the project's
- * settings, in memory only.
+ * `overrides` (`{ resolution, fps, motionBlur }`: --estimate's, or a render's
+ * --fps and --motion-blur, §284) stand in for the project's settings, in
+ * memory only.
  */
 function loadRenderProject(projectPath, { out = null, requireFinal = true, overrides = null } = {}) {
   // 1. Validate + resolve paths
@@ -457,6 +473,7 @@ function loadRenderProject(projectPath, { out = null, requireFinal = true, overr
       ...(projectJson.settings ?? {}),
       ...(overrides.resolution ? { resolution: overrides.resolution } : {}),
       ...(overrides.fps ? { fps: overrides.fps } : {}),
+      ...(overrides.motionBlur ? { motionBlur: overrides.motionBlur } : {}),
     }
   }
 
@@ -513,11 +530,14 @@ function loadRenderProject(projectPath, { out = null, requireFinal = true, overr
   }
 }
 
-async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdrCurve = null }) {
+async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdrCurve = null, overrides = null }) {
+  // §284: `overrides` (--fps, --motion-blur) stand in for the project's own
+  // settings for this render only, in memory; project.json is never written
+  // with them (its colorSpace write-back below re-reads the file).
   const {
     absProjectPath, projectJson, pristineProject, settings, fps, motionBlur,
     renderWidth, renderHeight, projectDir, workspaceDir, renderDir, segDir, outputPath,
-  } = loadRenderProject(projectPath, { out })
+  } = loadRenderProject(projectPath, { out, overrides })
 
   // Concurrent-render guard. The segment wipe below is destructive — if a second
   // render starts while the first is still encoding, the wipe deletes the first

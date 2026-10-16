@@ -125,7 +125,7 @@ test('--estimate counts the master the render would build for the clip', { skip:
   assert.ok(Math.abs(diff - master) < 0.05 * master, `the 3 s master: ${diff} vs ${master}`)
 })
 
-test('--resolution and --fps change the estimate and never the project; without --estimate they are refused', { skip: SKIP, timeout: 180_000 }, () => {
+test('--resolution and --fps change the estimate and never the project; --resolution without --estimate is refused', { skip: SKIP, timeout: 180_000 }, () => {
   const p = project()
   const saved = JSON.parse(estimate(p).stdout)
   const uhd = JSON.parse(estimate(p, ['--resolution', '2160x3840', '--fps', '60']).stdout)
@@ -136,7 +136,9 @@ test('--resolution and --fps change the estimate and never the project; without 
   assert.equal(bad.status, 1)
   assert.equal(JSON.parse(bad.stderr.trim().split('\n').at(-1)).error, 'invalid_argument')
 
-  const noEstimate = spawnSync(process.execPath, [RENDER_JS, join(p.dir, 'project.json'), '--fps', '24'],
+  // §284: --fps and --motion-blur are a render's own now (render-overrides.integration.test.mjs);
+  // --resolution still stands in for an unsaved choice in an estimate only.
+  const noEstimate = spawnSync(process.execPath, [RENDER_JS, join(p.dir, 'project.json'), '--resolution', '2160x3840'],
     { encoding: 'utf8', timeout: 60_000, env: { ...process.env, TMPDIR: p.tmp } })
   assert.equal(noEstimate.status, 1)
   const line = JSON.parse(noEstimate.stderr.trim().split('\n').at(-1))

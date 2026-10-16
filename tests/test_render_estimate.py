@@ -332,3 +332,25 @@ def test_unreadable_project_json_is_no_estimate(tmp_path, monkeypatch):
     out = _estimate(project_dir, {})
     assert out["estimate"] is None and out["error"]
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# §284: motion blur as a stand-in; each stand-in passed once
+# ---------------------------------------------------------------------------
+
+def test_motion_blur_is_passed_as_an_override_and_fps_only_once(tmp_path, monkeypatch):
+    project_dir = _project(tmp_path, monkeypatch)
+    calls = _spawn(monkeypatch, _ok())
+    _estimate(project_dir, {"fps": 30, "motionBlur": 1})
+    argv = calls[0]["argv"]
+    assert argv.count("--fps") == 1
+    assert argv[argv.index("--motion-blur") + 1] == "1"
+    assert argv.index("--motion-blur") > argv.index("--estimate")
+
+
+@pytest.mark.parametrize("bad", [0, 9, 1.5, "1", True])
+def test_malformed_motion_blur_is_ignored(tmp_path, monkeypatch, bad):
+    project_dir = _project(tmp_path, monkeypatch)
+    calls = _spawn(monkeypatch, _ok())
+    assert _estimate(project_dir, {"motionBlur": bad}) == ESTIMATE
+    assert "--motion-blur" not in calls[0]["argv"]

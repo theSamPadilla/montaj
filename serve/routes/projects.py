@@ -4810,7 +4810,9 @@ async def delete_files(
 async def _render_body(request: Request) -> dict:
     """The optional JSON body of POST /render and /render/estimate:
     { "export": "auto"|"sdr"|"both", "sdrCurve": <curve id>, "name": <output
-    basename>, "cover": <seconds> }. Absent/empty body → today's behavior
+    basename>, "cover": <seconds>, "fps": <number>, "motionBlur": <1-8> }.
+    `fps` and `motionBlur` apply to this render only (§284) and are never
+    written to project.json. Absent/empty body → today's behavior
     (render.js's own defaults). Mirrors the rerun route's tolerant-parse
     pattern; a GET-style POST with no body is not an error, and neither is a
     body that is not an object."""
@@ -4821,8 +4823,39 @@ async def _render_body(request: Request) -> dict:
     return body if isinstance(body, dict) else {}
 
 
-def _validate_render_body(body: dict) -> None:
-    """422 on an `export` or `sdrCurve` render.js would refuse."""
+# §284: a render's `motionBlur` override, the setting's own range (motion-blur.js MOTION_BLUR_MAX).
+_MOTION_BLUR_MAX = 8
+
+
+def _render_fps(body: dict):
+    """The body's `fps` for this render only (§284), or None when absent. A positive finite number."""
+    fps = body.get("fps")
+    if fps is None:
+        return None
+    if isinstance(fps, bool) or not isinstance(fps, (int, float)) or not math.isfinite(fps) or fps <= 0:
+        raise HTTPException(422, detail={
+            "error": "invalid_argument",
+            "message": f"fps must be a positive number (got {fps!r})",
+        })
+    return fps
+
+
+def _render_motion_blur(body: dict):
+    """The body's `motionBlur` for this render only (§284), or None when absent. An integer from 1 to 8."""
+    blur = body.get("motionBlur")
+    if blur is None:
+        return None
+    if isinstance(blur, bool) or not isinstance(blur, int) or not 1 <= blur <= _MOTION_BLUR_MAX:
+        raise HTTPException(422, detail={
+            "error": "invalid_argument",
+            "message": f"motionBlur must be an integer from 1 to {_MOTION_BLUR_MAX} (got {blur!r})",
+        })
+    return blur
+
+
+def _validate_render_body(body: dict, *, overrides: bool = True) -> None:
+    """422 on an `export` or `sdrCurve` render.js would refuse, and with
+    `overrides` (a render, not an estimate) on a bad `fps` or `motionBlur`."""
     export = body.get("export")
     if export is not None and export not in ("auto", "sdr", "both"):
         raise HTTPException(422, detail={
@@ -4835,9 +4868,12 @@ def _validate_render_body(body: dict) -> None:
             "error": "invalid_argument",
             "message": f"sdrCurve must be one of {curve_ids()} (got {sdr_curve!r})",
         })
+    if overrides:
+        _render_fps(body)
+        _render_motion_blur(body)
 
 
-def _render_js_args(project_dir: Path, project_path: Path, body: dict) -> tuple[list[str], Path]:
+def _render_js_args(project_dir: Path, project_path: Path, body: dict, *, overrides: bool = True) -> tuple[list[str], Path]:
     """render.js's arguments for a video render from a validated render body,
     and the MP4 it writes: the project, ``--out output/<name>.mp4`` (the
     video-workflow staging dir that /outputs lists, instead of render.js's
@@ -4861,14 +4897,25 @@ def _render_js_args(project_dir: Path, project_path: Path, body: dict) -> tuple[
         script_args += ["--export", body["export"]]
     if body.get("sdrCurve"):
         script_args += ["--sdr-curve", body["sdrCurve"]]
+    # §284: this render only (the export window's Fast); project.json keeps its
+    # own. The estimate passes its own, leniently (_estimate_overrides).
+    if not overrides:
+        return script_args, output_path
+    fps = _render_fps(body)
+    if fps is not None:
+        script_args += ["--fps", repr(float(fps)) if isinstance(fps, float) else str(fps)]
+    blur = _render_motion_blur(body)
+    if blur is not None:
+        script_args += ["--motion-blur", str(blur)]
     return script_args, output_path
 
 
 def _estimate_overrides(body: dict) -> list[str]:
     """render.js --estimate's stand-ins for settings the export window has not
     saved yet: ``--resolution WxH`` from a body `resolution` of two positive
-    integers, ``--fps N`` from a positive finite number. Anything absent or
-    malformed is left out, and the project's own setting applies."""
+    integers, ``--fps N`` from a positive finite number, ``--motion-blur N``
+    from an integer from 1 to 8 (§284). Anything absent or malformed is left
+    out, and the project's own setting applies."""
     args: list[str] = []
     resolution = body.get("resolution")
     if (
@@ -4882,6 +4929,10 @@ def _estimate_overrides(body: dict) -> list[str]:
         and math.isfinite(fps) and fps > 0
     ):
         args += ["--fps", repr(float(fps)) if isinstance(fps, float) else str(fps)]
+    # §284: the export window's Fast, a render's own motion blur.
+    blur = body.get("motionBlur")
+    if isinstance(blur, int) and not isinstance(blur, bool) and 1 <= blur <= _MOTION_BLUR_MAX:
+        args += ["--motion-blur", str(blur)]
     return args
 
 
@@ -4934,7 +4985,7 @@ async def render_estimate(project_id: str, request: Request, project_dir: Path =
     """
     project_path = project_dir / "project.json"
     body = await _render_body(request)
-    _validate_render_body(body)
+    _validate_render_body(body, overrides=False)
 
     try:
         project = json.loads(project_path.read_text())
@@ -4943,7 +4994,7 @@ async def render_estimate(project_id: str, request: Request, project_dir: Path =
     if isinstance(project, dict) and project.get("projectType") == "carousel":
         return _no_estimate()
 
-    script_args, _ = _render_js_args(project_dir, project_path, body)
+    script_args, _ = _render_js_args(project_dir, project_path, body, overrides=False)
     render_script = Path(render_runtime_dir()) / "render.js"
     if not render_script.is_file():
         return _no_estimate(f"{render_script.name} not found")

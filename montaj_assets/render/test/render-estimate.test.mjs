@@ -90,6 +90,12 @@ test('--resolution and --fps: absent is null, well formed is parsed, anything el
   assert.deepEqual(resolveEstimateOverrides({ resolution: '2160x3840' }), { resolution: [2160, 3840] })
   assert.deepEqual(resolveEstimateOverrides({ fps: '23.976' }), { fps: 23.976 })
   assert.deepEqual(resolveEstimateOverrides({ resolution: '1920x1080', fps: '60' }), { resolution: [1920, 1080], fps: 60 })
+  // §284: --motion-blur, the setting's own range; 1 (off) is a real override.
+  assert.deepEqual(resolveEstimateOverrides({ motionBlur: '1' }), { motionBlur: 1 })
+  assert.deepEqual(resolveEstimateOverrides({ fps: '30', motionBlur: '3' }), { fps: 30, motionBlur: 3 })
+  for (const motionBlur of ['0', '9', '1.5', 'x', '']) {
+    assert.throws(() => resolveEstimateOverrides({ motionBlur }), /--motion-blur must be an integer from 1 to 8/, motionBlur)
+  }
   for (const resolution of ['big', '0x1920', '1080', '1080x', '-1x5', '1080 x 1920']) {
     assert.throws(() => resolveEstimateOverrides({ resolution }), /--resolution/, resolution)
   }
