@@ -691,9 +691,10 @@ export const previewResolver: SceneResolver = (project, t) =>
  *    across a window where the export showed the incoming one.
  *  - **`opaque`** is read off any active OVERLAY item on any track through
  *    timeline-core's `opaqueReplacesPicture`, the rule render's
- *    `segment-plan.js` reads: `opaque: true` AND placed over the whole canvas.
- *    A scaled, moved or rotated opaque overlay leaves the footage drawn.
- *    Track-0 videos and images never carry it.
+ *    `segment-plan.js` reads: `opaque: true` AND placed over the whole canvas
+ *    AND at full opacity at `t`. A scaled, moved or rotated opaque overlay
+ *    leaves the footage drawn, and so does one mid-fade. Track-0 videos and
+ *    images never carry it.
  */
 export function planTick(
   project: Project,
@@ -710,7 +711,9 @@ export function planTick(
   const incoming: Array<{ clipId: string; p: number }> = []
   let opaque = false
   for (const resolved of scene.items) {
-    if (resolved.kind === 'overlay' && opaqueReplacesPicture(resolved.item)) opaque = true
+    // `seek` is the overlay's item-relative time, the clock its opacity keys
+    // ride: mid-fade the footage beneath shows through (§309).
+    if (resolved.kind === 'overlay' && opaqueReplacesPicture(resolved.item, resolved.seek)) opaque = true
     if (resolved.trackIdx !== 0 || resolved.kind !== 'video' || !resolved.window) continue
     // `ResolvedItem.item` is the project's own object by reference (documented
     // in timeline-core's `ResolvedItem`), so this recovers the editor-side

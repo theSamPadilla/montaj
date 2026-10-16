@@ -7,7 +7,8 @@
  *   - items: ALL active visual items sorted ascending by trackIdx (lower = further back).
  *     The encoder composites them in order. Empty array = black canvas.
  *   - opaqueVideo: true when an opaque overlay covers this segment's frame (an
- *     opaque overlay placed over the whole canvas; a scaled one covers nothing). The
+ *     opaque overlay placed over the whole canvas, a scaled one covers nothing,
+ *     and at full opacity on every frame of the segment, §309). The
  *     encoder then skips compositing the items' VIDEO (the overlay replaces the
  *     frame) but still sources their AUDIO — opaque means "replace the picture",
  *     never "drop the voiceover". Items are kept precisely so their audio survives.
@@ -54,7 +55,7 @@
  *      because `collectAllItems` (render.js:597) stamps `trackIdx` on every
  *      item it emits.
  */
-import { boundariesFrom, activeIn, captionsLast, byTrackIdx, opaqueReplacesPicture } from '@bycrux/timeline-core'
+import { boundariesFrom, activeIn, captionsLast, byTrackIdx, isOpaqueCover, fullOpacitySpans } from '@bycrux/timeline-core'
 
 /**
  * Puppeteer overlay segments name their endpoints `startSeconds`/`endSeconds`
@@ -65,6 +66,55 @@ import { boundariesFrom, activeIn, captionsLast, byTrackIdx, opaqueReplacesPictu
  * idempotent, so that asymmetry is preserved exactly as it was.
  */
 const readPuppeteer = s => ({ start: s.startSeconds, end: s.endSeconds })
+
+/**
+ * §309: the frames on which an opaque overlay is at full opacity, as half-open
+ * ranges of timeline frame indices (`±Infinity` when unbounded), or `null` for
+ * an overlay that is not opaque over the whole canvas and so never replaces the
+ * picture.
+ *
+ * Capture frame `i` of an overlay is drawn at timeline frame `S + i` (`S` its
+ * frame-quantized start) and bakes the overlay's keys at `i / fps`
+ * (bundle.js `__bakeStyle`), so a frame is at full opacity when `i / fps` lies
+ * in one of timeline-core's `fullOpacitySpans`: `ceil(from * fps) <= i <
+ * ceil(to * fps)`. The `1e-6` keeps a key that lands on a frame, read back as
+ * 29.999999 or 30.000001 frames, on that frame.
+ */
+function fullOpacityFrames(o, fps) {
+  if (!isOpaqueCover(o)) return null
+  const S = Math.round(o.startSeconds * fps)
+  const frame = t => (Number.isFinite(t) ? S + Math.ceil(t * fps - 1e-6) : t)
+  return fullOpacitySpans(o).map(([from, to]) => [frame(from), frame(to)])
+}
+
+/**
+ * The segment edges an opaque overlay's opacity adds (§309): every frame where
+ * it reaches or leaves full opacity inside its own span. An overlay at a steady
+ * 1, or never at 1, adds none, so a project without opacity keys plans exactly
+ * the segments it always did.
+ */
+function fullOpacityEdges(o, ranges, fps) {
+  const S = Math.round(o.startSeconds * fps)
+  const E = Math.round(o.endSeconds * fps)
+  const edges = []
+  for (const range of ranges) {
+    for (const f of range) if (f > S && f < E) edges.push({ start: f / fps, end: f / fps })
+  }
+  return edges
+}
+
+/**
+ * Whether the overlay replaces the picture over the whole of `[start, end)`:
+ * opaque over the whole canvas and at full opacity on every frame of it. The
+ * edges above cut a segment wherever that changes, so it holds for a whole
+ * segment or for none of it.
+ */
+function replacesPictureThrough(ranges, start, end, fps) {
+  if (!ranges) return false
+  const first = Math.round(start * fps)
+  const last = Math.round(end * fps) - 1
+  return ranges.some(([from, to]) => from <= first && last < to)
+}
 
 /**
  * @param {Array} allItems — merged videoItems + imageItems from collectAllItems()
@@ -120,10 +170,15 @@ export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
   // black-canvas segment between two clips that the editor renders
   // continuously. Integer frame comparison is cancellation-proof: two
   // boundaries are the same frame iff `round(t * fps)` matches.
+  //
+  // §309: an opaque overlay's opacity keys add an edge wherever it reaches or
+  // leaves full opacity, so the cull below applies only in the stretches at 1.
+  const opacityFrames = new Map(puppeteerSegs.map(o => [o, fullOpacityFrames(o, fps)]))
   const snapped = boundariesFrom(
     [
       ...allItems.map(i => ({ start: i.start, end: i.end })),
       ...puppeteerSegs.map(readPuppeteer),
+      ...puppeteerSegs.flatMap(o => (opacityFrames.get(o) ? fullOpacityEdges(o, opacityFrames.get(o), fps) : [])),
     ],
     fps,
   )
@@ -156,9 +211,11 @@ export function planSegments(allItems, puppeteerSegs, vw, vh, fps) {
     // items' video compositing only. See encode-segment.js Step 2.
     //
     // Only an opaque overlay over the WHOLE canvas replaces the frame
-    // (`opaqueReplacesPicture`, the rule the editor's scheduler reads too). A
-    // scaled or moved one cannot cover it, so the footage around it stays.
-    const hasOpaque = overlays.some(o => opaqueReplacesPicture(o))
+    // (`isOpaqueCover`, the rule the editor's scheduler reads too). A scaled or
+    // moved one cannot cover it, so the footage around it stays. And only where
+    // it is at full opacity (§309): mid-fade, or at 0, what is beneath shows
+    // through, so it is drawn.
+    const hasOpaque = overlays.some(o => replacesPictureThrough(opacityFrames.get(o), start, end, fps))
 
     segments.push({
       start,

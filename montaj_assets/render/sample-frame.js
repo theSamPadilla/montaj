@@ -155,6 +155,8 @@ const SHORT_EDGE_TARGET = 1080
  *    before holds it drawn the old way (nothing in word-by-word, pop and
  *    accent; a row of its own elsewhere), and the frame key does not see the
  *    caption templates.
+ * 15: §309, an opaque overlay hides the footage only where it is at full
+ *    opacity. A frame cached before holds black under one mid-fade.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -162,7 +164,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 14
+const SAMPLE_CACHE_VERSION = 15
 
 // ---------------------------------------------------------------------------
 // Input manifests
@@ -888,8 +890,9 @@ export async function sampleFrame({
   // analogue here is simpler: don't composite ANY video/image item while an
   // opaque overlay is active. See KNOWN-DIVERGENCES.md "opaque-in-preview".
   // Only one over the whole canvas counts (`opaqueReplacesPicture`, the rule
-  // export and the editor read): a scaled one leaves the footage drawn.
-  const hasOpaque = overlayItems.some(ri => opaqueReplacesPicture(ri.item))
+  // export and the editor read): a scaled one leaves the footage drawn. And
+  // only at full opacity at this instant (§309): mid-fade the footage shows.
+  const hasOpaque = overlayItems.some(ri => opaqueReplacesPicture(ri.item, ri.seek))
 
   log(`active items: ${videoCount} video, ${imageCount} image` +
       `${hasOpaque ? ' (hidden by opaque overlay)' : ''}, ${overlayItems.length} overlay`)

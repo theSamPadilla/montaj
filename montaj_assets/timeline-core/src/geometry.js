@@ -361,7 +361,7 @@
 // or of any `sourceCrop`/`resolution` array/object handed in. Same inputs
 // always produce the same outputs.
 
-import { sampleTrack } from './curves.js'
+import { sampleTrack, normalizeTrack } from './curves.js'
 
 /**
  * The subset of a timeline item that geometry math reads. Deliberately
@@ -804,18 +804,105 @@ export function isFullCanvasPlacement(item) {
 }
 
 /**
- * Whether an overlay's `opaque: true` replaces the picture beneath it. Only over
- * the whole canvas ({@link isFullCanvasPlacement}): a scaled, moved or rotated
- * overlay cannot cover the frame, so the footage around it stays drawn and the
- * overlay composites like any other. The editor's scheduler, render's segment
- * planner and spec collector, and sample-frame.js all read this, so preview and
- * export agree about when the footage goes black.
+ * Whether an item is `opaque: true` and placed over the whole canvas
+ * ({@link isFullCanvasPlacement}): it replaces the picture beneath it wherever
+ * it is at full opacity ({@link opaqueReplacesPicture}). A scaled, moved or
+ * rotated overlay cannot cover the frame, so the footage around it stays drawn
+ * and the overlay composites like any other.
+ *
+ * Read on its own for what lasts the item's whole span: render's spec collector
+ * picks the capture and marks an HDR card from it.
  *
  * @param {{opaque?: unknown} & Parameters<typeof isFullCanvasPlacement>[0]} item
  * @returns {boolean}
  */
-export function opaqueReplacesPicture(item) {
+export function isOpaqueCover(item) {
   return item?.opaque === true && isFullCanvasPlacement(item)
+}
+
+/**
+ * An item's effective opacity at item-relative time `localT`: its `opacity`
+ * keyframe track sampled, else its static `opacity`, else 1. The same value
+ * {@link geometryAt} puts on `Geometry.opacity` for that instant.
+ *
+ * @param {{opacity?: number|null, keyframes?: import('./curves.js').KeyframeTrack[]|null} | null | undefined} item
+ * @param {number} localT Seconds from the item's own `start`.
+ * @returns {number}
+ */
+export function opacityAt(item, localT) {
+  const tracks = item?.keyframes
+  const sampled = Array.isArray(tracks) ? sampleTrack(trackFor(tracks, 'opacity'), localT) : undefined
+  return sampled ?? item?.opacity ?? 1
+}
+
+/**
+ * Where an item is at full opacity: the item-relative spans `[from, to)` in
+ * which {@link opacityAt} is exactly 1, ascending and disjoint. `-Infinity` and
+ * `Infinity` stand for a span that runs on before the first key or after the
+ * last. An item with no opacity track is one span or none, by its static
+ * opacity.
+ *
+ * Read off the curve's own rules (src/curves.js), not by sampling it: a
+ * segment between two keys is at 1 only when both keys are 1, or when it is
+ * `hold` and leaves a 1 (it keeps that value up to the next key). Every other
+ * segment leaving or reaching 1 is below it inside. The track is read as
+ * `normalizeTrack` writes it, which is how the editor stores it.
+ *
+ * Half-open, so the one instant a fade leaves 1 (or a curve touches 1 and
+ * falls again) is not in a span: a consumer reading these to hide what is
+ * beneath treats that instant as a fade, the safe side.
+ *
+ * @param {{opacity?: number|null, keyframes?: import('./curves.js').KeyframeTrack[]|null} | null | undefined} item
+ * @returns {Array<[number, number]>}
+ */
+export function fullOpacitySpans(item) {
+  const tracks = item?.keyframes
+  const track = Array.isArray(tracks) ? trackFor(tracks, 'opacity') : undefined
+  const points = track ? (normalizeTrack(track)?.points ?? []) : []
+  if (points.length === 0) return (item?.opacity ?? 1) === 1 ? [[-Infinity, Infinity]] : []
+
+  /** @type {Array<[number, number]>} */
+  const spans = []
+  // The start of the span being built, or null when the curve is below 1.
+  /** @type {number | null} */
+  let from = points[0].value === 1 ? -Infinity : null
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i]
+    const flat = a.value === 1 && (points[i + 1].value === 1 || a.easing === 'hold')
+    if (flat) {
+      if (from === null) from = a.t
+    } else if (from !== null) {
+      spans.push([from, a.t])
+      from = null
+    }
+  }
+  const last = points[points.length - 1]
+  if (last.value === 1) spans.push([from ?? last.t, Infinity])
+  else if (from !== null) spans.push([from, last.t])
+  return spans
+}
+
+/**
+ * Whether an overlay's `opaque: true` replaces the picture beneath it: placed
+ * over the whole canvas ({@link isOpaqueCover}) AND at full opacity. At an
+ * instant (`localT`, item-relative seconds) that is {@link opacityAt} exactly 1;
+ * with no `localT` it is full opacity for the item's whole life (static opacity
+ * 1, and every key of an opacity track 1). Anywhere below 1, mid-fade or at 0,
+ * what is beneath shows through, so it stays drawn.
+ *
+ * The editor's scheduler and sample-frame.js ask per instant; render's segment
+ * planner asks per segment, through {@link fullOpacitySpans}, so preview and
+ * export agree about when the footage goes black.
+ *
+ * @param {{opaque?: unknown} & Parameters<typeof isFullCanvasPlacement>[0] & Parameters<typeof opacityAt>[0]} item
+ * @param {number} [localT] Seconds from the item's own `start`.
+ * @returns {boolean}
+ */
+export function opaqueReplacesPicture(item, localT) {
+  if (!isOpaqueCover(item)) return false
+  if (localT !== undefined) return opacityAt(item, localT) === 1
+  const spans = fullOpacitySpans(item)
+  return spans.length === 1 && spans[0][0] === -Infinity && spans[0][1] === Infinity
 }
 
 /**

@@ -89,16 +89,18 @@ test('planSegments: an opaque overlay that does not cover the canvas keeps the f
   }
 })
 
-test('planSegments: a full-canvas opaque overlay still replaces the picture, opacity keyframes included', () => {
+test('planSegments: a full-canvas opaque overlay still replaces the picture, once its fade reaches 1', () => {
   const items = [
     { id: 'c1', type: 'video', start: 0, end: 10, src: '/a.mp4', inPoint: 0, outPoint: 10, trackIdx: 0 },
   ]
   const ov = { id: 'ov1', startSeconds: 0, endSeconds: 3, webmPath: '/ov.mkv', opaque: true, isCaption: false, scale: 1, offsetX: 0, offsetY: 0, rotation: 0, opacity: 1 }
   assert.equal(planSegments(items, [ov], 1920, 1080, 30)[0].opaqueVideo, true)
   // The editor derives an opacity track for the incoming side of a crossfade;
-  // a fade does not move the overlay off the canvas.
+  // a fade does not move the overlay off the canvas, so it replaces the
+  // picture from the frame it reaches 1 (§309: not while it fades in).
   const fading = { ...ov, keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 0.5, value: 1 }] }] }
-  assert.equal(planSegments(items, [fading], 1920, 1080, 30)[0].opaqueVideo, true)
+  const segs = planSegments(items, [fading], 1920, 1080, 30)
+  assert.deepEqual(segs.slice(0, 2).map(s => [s.start, s.end, s.opaqueVideo]), [[0, 0.5, false], [0.5, 3, true]])
 })
 
 test('planSegments: multi-track items all included, sorted by trackIdx', () => {

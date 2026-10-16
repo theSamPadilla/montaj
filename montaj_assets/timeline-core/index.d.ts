@@ -697,13 +697,45 @@ export interface PlacementFields {
  */
 export declare function isFullCanvasPlacement(item: PlacementFields | null | undefined): boolean
 
+/** The fields {@link opacityAt} and {@link fullOpacitySpans} read. */
+export interface OpacityFields {
+  opacity?: number | null
+  keyframes?: ReadonlyArray<KeyframeTrack> | null
+}
+
 /**
- * Whether an overlay's `opaque: true` replaces the picture beneath it: only
- * when it is also placed over the whole canvas. A scaled, moved or rotated
- * opaque overlay leaves the footage drawn, in preview and export alike.
+ * Whether an item is `opaque: true` and placed over the whole canvas. It
+ * replaces the picture beneath it wherever it is at full opacity
+ * ({@link opaqueReplacesPicture}). Render's spec collector reads it alone to
+ * pick the capture and mark an HDR card, which last the item's whole span.
+ */
+export declare function isOpaqueCover(
+  item: (PlacementFields & { opaque?: unknown }) | null | undefined,
+): boolean
+
+/**
+ * An item's effective opacity at item-relative time `localT`: its `opacity`
+ * track sampled, else its static `opacity`, else 1 (what `geometryAt` puts on
+ * `Geometry.opacity`).
+ */
+export declare function opacityAt(item: OpacityFields | null | undefined, localT: number): number
+
+/**
+ * The item-relative spans `[from, to)` in which the item's opacity is exactly
+ * 1, ascending and disjoint; `-Infinity`/`Infinity` for a span running past the
+ * first or last key. Half-open: the instant a fade leaves 1 is not in a span.
+ */
+export declare function fullOpacitySpans(item: OpacityFields | null | undefined): Array<[number, number]>
+
+/**
+ * Whether an overlay's `opaque: true` replaces the picture beneath it: placed
+ * over the whole canvas AND at full opacity, at `localT` (item-relative
+ * seconds) when given, else for the item's whole life. Mid-fade or at 0 what is
+ * beneath shows through, in preview and export alike.
  */
 export declare function opaqueReplacesPicture(
-  item: (PlacementFields & { opaque?: unknown }) | null | undefined,
+  item: (PlacementFields & OpacityFields & { opaque?: unknown }) | null | undefined,
+  localT?: number,
 ): boolean
 
 /**

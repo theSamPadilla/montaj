@@ -711,6 +711,23 @@ describe('planTick', () => {
     expect(planTick(p, 1.5, track0VideoItems(p)).opaque).toBe(true)
   })
 
+  it('shows the footage under a full-canvas opaque overlay wherever it is below full opacity (§309)', () => {
+    // A 3D crossfade's top item fading 1 -> 0: the picture beneath shows
+    // through the fade, frame by frame, the rule render's planner applies.
+    const fadingOut: VisualItem = {
+      ...overlay('o', 1, 4, true),
+      keyframes: [{ prop: 'opacity', points: [{ t: 1, value: 1 }, { t: 2, value: 0 }] }],
+    }
+    const p = project([clip('a', 0, 5)], [fadingOut])
+    const opaqueAt = (t: number) => planTick(p, t, track0VideoItems(p)).opaque
+    expect(opaqueAt(1.5)).toBe(true)
+    expect(opaqueAt(2)).toBe(true)
+    expect(opaqueAt(2.5)).toBe(false)
+    expect(opaqueAt(3.5)).toBe(false)
+    const dim = project([clip('a', 0, 5)], [{ ...overlay('o', 1, 4, true), opacity: 0.5 }])
+    expect(planTick(dim, 2, track0VideoItems(dim)).opaque).toBe(false)
+  })
+
   it('returns no active clip inside a gap (resolveAt has no last-clip fallback)', () => {
     const p = project([clip('a', 0, 2), clip('b', 3, 5)])
     const plan = planTick(p, 2.5, track0VideoItems(p))

@@ -34,7 +34,9 @@ export * from './src/durations.js'
 // and the ONE function both engines call to place a keyframed item),
 // toCssBoxPct / toPixelBox (its two engine-specific adapters), isFullFrameCrop
 // (the (0,0,1,1) preview short-circuit predicate), isFullCanvasPlacement /
-// opaqueReplacesPicture (when an opaque overlay hides the footage), designCanvas
+// isOpaqueCover / opaqueReplacesPicture (when an opaque overlay hides the
+// footage: over the whole canvas and only where it is at full opacity, which
+// opacityAt / fullOpacitySpans answer), designCanvas
 // (the 1080-short-edge overlay design canvas rule) (absorbs:
 // transformStyle.ts, encode-segment.js:245/305/457, sourceCropStyle.ts:35,
 // design-canvas.ts:5-11).

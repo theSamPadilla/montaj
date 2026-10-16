@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+- Fixed: the preview shows the footage under an opaque overlay wherever the overlay is below full opacity (mid-fade or at 0), the rule the export uses. `planTick` asks `@bycrux/timeline-core`'s `opaqueReplacesPicture(item, seek)` for the tick's instant. See the root CHANGELOG (Unreleased).
+
 ## 2.4.0
 
 - Changed: scrubbing the timeline is silent by default; the ear button turns sound on. `settings.audibleScrub` absent now means muted (it meant sound since 2.1.0); an explicit `true` or `false` is kept either way.

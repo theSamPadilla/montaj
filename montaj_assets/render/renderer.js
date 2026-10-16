@@ -469,6 +469,11 @@ async function unlessChromeDies(worker, work, phaseOf, what) {
  * at full opacity by design (`timeline-core`'s `fadeShape` — fading it out would
  * reveal black), so it never needs an alpha plane and keeps the cheaper capture.
  *
+ * `fades` (§309) breaks it the same way, for any opaque overlay that is not at
+ * full opacity for its whole life: a static opacity under 1, or an opacity key
+ * below it (an opaque 3D item crossfading out over another). Without alpha its
+ * fade showed the page background, never what is beneath it.
+ *
  * `format` (§284): how each screenshot is encoded. The screenshot is most of a
  * frame's cost (MEASURED 2026-10-15, a 1080x1920 opaque film at 60 fps: 192 of
  * 219 ms per capture, a 3.4 MB PNG each), so an opaque capture for an SDR
@@ -482,7 +487,7 @@ async function unlessChromeDies(worker, work, phaseOf, what) {
  * a setting: it follows from the overlay and the export.
  */
 export function captureOptionsFor(job) {
-  const needsAlpha = !job.opaque || job.transitionTo === true
+  const needsAlpha = !job.opaque || job.transitionTo === true || job.fades === true
   const format = !needsAlpha && job.sdrMaster === true ? 'jpeg' : 'png'
   return { omitBackground: needsAlpha, pixFmt: needsAlpha ? 'yuva420p' : 'yuv420p', format }
 }
