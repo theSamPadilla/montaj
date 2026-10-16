@@ -73,6 +73,15 @@ def validate(path):
         if "required" in param and not isinstance(param["required"], bool):
             fail("invalid_field", f"Param '{param['name']}': 'required' must be boolean")
 
+    prov = schema.get("provenance")
+    if prov is not None:
+        ok = isinstance(prov, dict) and len(prov) == 1 and (
+            (isinstance(prov.get("provider"), str) and prov["provider"].strip())
+            or (isinstance(prov.get("providerParam"), str) and any(p.get("name") == prov["providerParam"] for p in params))
+        )
+        if not ok:
+            fail("invalid_field", 'Field \'provenance\' must be {"provider": "<connector id>"} or {"providerParam": "<one of this step\'s params>"}')
+
     return schema
 
 

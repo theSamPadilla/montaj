@@ -1,5 +1,6 @@
 {
   "name": "veo_generate",
+  "provenance": {"provider": "gemini"},
   "description": "Generate video with sound via Veo (Google) on the user's own Gemini key. Clips always have sound and are 4, 6 or 8 s. Mode follows the inputs: text only (t2v), --image for image-to-video (i2v), --image with --last-frame for first and last frame, --ref-image for up to 3 reference images (r2v). Project-aware mode: pass --project-id and --scene-id and the step reads the project, composes the prompt, generates, and saves the clip to tracks[0].",
   "output": {
     "type": "video",

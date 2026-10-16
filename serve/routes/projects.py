@@ -32,6 +32,7 @@ from serve.common import (
 from serve import context as context_store
 from serve.caption_job import build_audio_mix_spec
 from serve.caption_theme import sanitize_theme, seed_prev
+from serve import provenance
 from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import save_upload
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, canvas_for_footage, fps_from_rate, modal_dims
@@ -3893,6 +3894,15 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
     response.headers["Server-Timing"] = f"save;dur={int(round((time.perf_counter() - save_started) * 1000.0))}"
     # The report rides on the answer only, never in project.json.
     return {**current, **media_report} if media_report else current
+
+
+@router.get("/projects/{project_id}/generated")
+async def list_generated(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """The project's files an AI provider made (serve/provenance.py):
+    `{"dir": the project folder, "generated": {path relative to it: {provider,
+    model, prompt, step, at}}}`, so a host can join the record to the items'
+    absolute `src`. `generated` is empty when nothing was recorded."""
+    return {"dir": str(project_dir), "generated": provenance.read(project_dir)}
 
 
 @router.get("/projects/{project_id}/versions")
