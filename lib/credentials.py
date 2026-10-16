@@ -7,7 +7,22 @@ base class) and translate to fail().
 import json, os, stat
 from connectors import ConnectorError
 
-CREDENTIALS_PATH = os.path.expanduser("~/.montaj/credentials.json")
+_DEFAULT_CREDENTIALS_PATH = os.path.expanduser("~/.montaj/credentials.json")
+# Kept for importers. Code reads credentials_path(), never this name directly.
+CREDENTIALS_PATH = _DEFAULT_CREDENTIALS_PATH
+CREDENTIALS_PATH_ENV = "MONTAJ_CREDENTIALS_PATH"
+
+
+def credentials_path() -> str:
+    """Where credentials.json lives, resolved on every call.
+
+    A module-level CREDENTIALS_PATH that was reassigned wins (existing tests patch
+    it), then the MONTAJ_CREDENTIALS_PATH env var (a subprocess inherits it), then
+    ~/.montaj/credentials.json. With neither set, behaviour is unchanged.
+    """
+    if CREDENTIALS_PATH != _DEFAULT_CREDENTIALS_PATH:
+        return CREDENTIALS_PATH
+    return os.environ.get(CREDENTIALS_PATH_ENV) or _DEFAULT_CREDENTIALS_PATH
 
 # Single source of truth for which providers Montaj knows about and
 # which keys each one needs. `montaj credentials` imports this.
@@ -110,19 +125,19 @@ def build_env_overlay(credentials: dict) -> dict[str, str]:
 
 def _read_file() -> dict:
     """Return parsed credentials.json, {} if absent. Raises CredentialError on bad file."""
-    if not os.path.isfile(CREDENTIALS_PATH):
+    if not os.path.isfile(credentials_path()):
         return {}
     try:
-        with open(CREDENTIALS_PATH) as f:
+        with open(credentials_path()) as f:
             return json.load(f)
     except json.JSONDecodeError as e:
         raise CredentialError(
-            f"{CREDENTIALS_PATH} is not valid JSON ({e.msg} at line {e.lineno}). "
+            f"{credentials_path()} is not valid JSON ({e.msg} at line {e.lineno}). "
             f"Fix the file or delete it, then run: "
             f"montaj credentials --provider <name> --key <key> --value <value>"
         ) from e
     except OSError as e:
-        raise CredentialError(f"Could not read {CREDENTIALS_PATH}: {e}") from e
+        raise CredentialError(f"Could not read {credentials_path()}: {e}") from e
 
 
 def get_credential(provider: str, key: str) -> str:
@@ -149,14 +164,15 @@ def get_credential(provider: str, key: str) -> str:
 
 def set_credential(provider: str, key: str, value: str) -> None:
     """Write credential to ~/.montaj/credentials.json with 0600 perms."""
-    os.makedirs(os.path.dirname(CREDENTIALS_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(credentials_path()), exist_ok=True)
     data = _read_file()
     data.setdefault(provider, {})[key] = value
-    tmp = CREDENTIALS_PATH + ".tmp"
+    path = credentials_path()
+    tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
     os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)  # 0600
-    os.replace(tmp, CREDENTIALS_PATH)
+    os.replace(tmp, path)
 
 
 def list_providers() -> dict:
