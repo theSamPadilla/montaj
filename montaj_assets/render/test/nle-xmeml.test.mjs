@@ -175,6 +175,25 @@ describe('goldens', () => {
 
 // ── sequence ───────────────────────────────────────────────────────────────
 
+describe('media beside the timeline', () => {
+  test('mediaPaths: the file element links the copy, the probe still comes from the original', () => {
+    const tl = build(load('hard-cut'))
+    const probes = stubProbes(tl)
+    const copies = Object.fromEntries(Object.keys(tl.sources).map((p) => [p, `/pkg/media/${cleanFileName(p.split('/').pop())}`]))
+    const { xml } = writeXmeml(tl, probes, { name: 'N', xmlDir: '/pkg', mediaPaths: copies })
+    for (const [orig, copy] of Object.entries(copies)) {
+      assert.ok(xml.includes(pathUrl(copy)), `links ${copy}`)
+      assert.ok(!xml.includes(pathUrl(orig)), `does not link ${orig}`)
+    }
+  })
+
+  test('without mediaPaths the original is linked, as before', () => {
+    const tl = build(load('hard-cut'))
+    const { xml } = writeXmeml(tl, stubProbes(tl), { name: 'N', xmlDir: '/pkg' })
+    for (const orig of Object.keys(tl.sources)) assert.ok(xml.includes(pathUrl(orig)), orig)
+  })
+})
+
 describe('sequence', () => {
   test('one sequence: name, duration, the integer rate, 00:00:00:00, the frame format', () => {
     const { xml } = write('cut-list', load('cut-list'), {}, { name: 'My edit' })

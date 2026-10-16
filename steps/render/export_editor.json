@@ -1,6 +1,6 @@
 {
   "name": "export_editor",
-  "description": "Export a project for a video editor: writes <project>/export/<name> (editor)/ with <name>.xml (FCP7 XML for Premiere Pro and DaVinci Resolve), one ProRes 4444 alpha movie per overlay (graphics/<clip id>.mov), captions.mov and captions.srt. Cuts, crossfades, speed, placement and sound become real editor clips; overlays and captions are rendered once to transparent movies so they look exactly as in the Montaj render. What an editor cannot hold (moving zoom, loop, background removal, ducking) stays in Montaj and is marked on its clip; the result lists these in leftOut. Run async (montaj_step async:true) when the project has many overlays, and poll montaj_step_status. Re-exporting a name replaces its package. Takes a project, not a file input.",
+  "description": "Export a project for a video editor: writes a package folder <out>/<name> (<Editor>)/ holding <name>.xml (FCP7 XML), a copy of every footage and audio file the timeline uses (media/), one ProRes 4444 alpha movie per overlay (graphics/<clip id>.mov), captions.mov and captions.srt. Cuts, crossfades, speed, placement and sound become real editor clips; overlays and captions are rendered once to transparent movies so they look exactly as in the Montaj render. What an editor cannot hold (moving zoom, loop, background removal, ducking) stays in Montaj and is marked on its clip; the result lists these in leftOut. Nothing already in the out folder is touched: when the package's name is taken the new one is named ... 2, ... 3. Run async (montaj_step async:true) when the project has many overlays, and poll montaj_step_status. Takes a project, not a file input.",
   "timeout_s": 10800,
   "input": {
     "type": "none",
@@ -8,7 +8,7 @@
   },
   "output": {
     "type": "json",
-    "description": "{dir, xml, files: [paths relative to dir], leftOut: [{clip, label}], warnings: [...], seconds}"
+    "description": "{dir (the package folder), open (the file to hand the editor: the .xml), xml, files: [paths relative to dir], leftOut: [{clip, label}], warnings: [...], seconds}"
   },
   "params": [
     {
@@ -16,6 +16,17 @@
       "type": "path",
       "required": true,
       "description": "The project id, its folder, or the absolute path of its project.json"
+    },
+    {
+      "name": "editor",
+      "type": "enum",
+      "options": [
+        "premiere",
+        "resolve"
+      ],
+      "default": "premiere",
+      "required": false,
+      "description": "Which editor the package is for: premiere (Premiere Pro) or resolve (DaVinci Resolve). Both read the same XML; the package folder carries the editor's name. Only the editors this version of Montaj can write are listed."
     },
     {
       "name": "name",
@@ -27,7 +38,7 @@
       "name": "out",
       "type": "path",
       "required": false,
-      "description": "The folder to write the package to. Defaults to <project_dir>/export/<name> (editor)/. It is replaced whole on a re-export, but only when it is empty, new or a previous export package; any other folder or file is refused (out_exists)."
+      "description": "The folder to put the package in. Defaults to <project_dir>/export/. The package is a new folder inside it; nothing already there is changed or replaced."
     }
   ]
 }

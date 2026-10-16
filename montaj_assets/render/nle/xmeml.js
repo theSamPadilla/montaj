@@ -165,7 +165,7 @@ export function markerLabel(key) {
  *
  * @param {import('./timeline.js').NleTimeline} timeline
  * @param {Object<string, import('./probe.js').NleProbe>} probes  Keyed by absolute path.
- * @param {{ name?: string, graphics?: Object<string, string>, captions?: string | null, xmlDir?: string | null }} [options]
+ * @param {{ name?: string, graphics?: Object<string, string>, captions?: string | null, xmlDir?: string | null, mediaPaths?: Object<string, string> }} [options]
  *   `name`: the sequence name. `graphics`: clip id → rendered movie (absolute).
  *   `captions`: the rendered captions movie (absolute). `xmlDir`: the folder the
  *   XML is written to; the captions without a movie are linked at
@@ -176,7 +176,7 @@ export function markerLabel(key) {
  *   the timeline clip's id (the media file name is not unique: two clips can share a file).
  */
 export function writeXmeml(timeline, probes, options = {}) {
-  const { name = 'Montaj', graphics = {}, captions = null, xmlDir = null } = options
+  const { name = 'Montaj', graphics = {}, captions = null, xmlDir = null, mediaPaths = {} } = options
   const ctx = {
     fps: timeline.fps,
     width: timeline.width,
@@ -185,6 +185,7 @@ export function writeXmeml(timeline, probes, options = {}) {
     graphics: graphics ?? {},
     captions,
     xmlDir,
+    mediaPaths,
     warnings: [],
     media: new Map(),
   }
@@ -238,6 +239,8 @@ function mediaFor(path, role, ctx, hint = {}) {
   const seqRate = { timebase: fps, ntsc: false }
   const m = {
     path,
+    // Where the file the editor links lives: a copy beside the timeline (`options.mediaPaths`, original to copy), else the original.
+    linkPath: ctx.mediaPaths[path] ?? path,
     role,
     name: baseName(path),
     rate: seqRate,
@@ -874,7 +877,7 @@ function fileNode(m, files) {
   }
   return el('file', { id: m.id }, [
     el('name', m.name),
-    el('pathurl', pathUrl(m.path)),
+    el('pathurl', pathUrl(m.linkPath ?? m.path)),
     rateNode(m.rate.timebase, m.rate.ntsc),
     el('duration', String(m.fileFrames)),
     ...(m.timecode ? [timecodeNode(m.timecode, m.rate)] : []),

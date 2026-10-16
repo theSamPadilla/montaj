@@ -70,25 +70,26 @@ before(() => {
 
 after(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
 
-test('the package: XML, graphic, captions movie and srt, one JSON result, progress per movie', { timeout: 300_000 }, (t) => {
+test('the package: XML, media copy, graphic, captions movie and srt, one JSON result, progress per step', { timeout: 300_000 }, (t) => {
   if (skip) { t.skip('ffmpeg/ffprobe not available'); return }
   const r = runCli(['--project', projectPath, '--name', 'My Cut'])
   assert.equal(r.status, 0, r.stderr)
 
-  const pkg = join(projDir, 'export', 'My Cut (editor)')
+  const pkg = join(projDir, 'export', 'My Cut (Premiere Pro)')
   const result = JSON.parse(r.stdout)
-  assert.deepEqual(Object.keys(result).sort(), ['dir', 'files', 'leftOut', 'seconds', 'warnings', 'xml'])
+  assert.deepEqual(Object.keys(result).sort(), ['dir', 'files', 'leftOut', 'open', 'seconds', 'warnings', 'xml'])
   assert.equal(result.dir, pkg)
   assert.equal(result.xml, join(pkg, 'My Cut.xml'))
-  assert.deepEqual(result.files, ['My Cut.xml', 'captions.mov', 'captions.srt', 'graphics/ramp.mov'])
+  assert.equal(result.open, result.xml, 'open is the file to hand the editor')
+  assert.deepEqual(result.files, ['My Cut.xml', 'captions.mov', 'captions.srt', 'graphics/ramp.mov', 'media/clip.mp4'])
   assert.ok(Array.isArray(result.leftOut) && Array.isArray(result.warnings))
   assert.equal(typeof result.seconds, 'number')
   for (const f of result.files) assert.ok(existsSync(join(pkg, f)), f)
 
-  // Progress: one line per movie, on stderr, ending at done == total.
+  // Progress: one line for the media copy, then one per movie, on stderr, each ending at done == total.
   const progress = progressLines(r.stderr)
-  assert.deepEqual(progress.map((p) => [p.done, p.total]), [[1, 2], [2, 2]])
-  assert.deepEqual(progress.map((p) => p.label).sort(), ['captions', 'ramp'])
+  assert.deepEqual(progress.map((p) => [p.done, p.total]), [[1, 1], [1, 2], [2, 2]])
+  assert.deepEqual(progress.map((p) => p.label).sort(), ['Copying clip.mp4', 'captions', 'ramp'])
 
   // The XML parses and links the package's own movies, by their final paths.
   const xml = readFileSync(result.xml, 'utf8')
@@ -96,6 +97,8 @@ test('the package: XML, graphic, captions movie and srt, one JSON result, progre
   if (lint.error?.code !== 'ENOENT') assert.equal(lint.status, 0, lint.stderr)
   assert.ok(xml.includes('xmeml'))
   assert.ok(xml.includes('graphics/ramp.mov') && xml.includes('captions.mov'))
+  assert.ok(xml.includes('media/clip.mp4'), 'the XML links the copy beside it')
+  assert.ok(!xml.includes('/proj/clip.mp4'), 'and not the original')
   assert.ok(!xml.includes('.tmp-'), 'no temp path leaked into the XML')
   assert.ok(!/not rendered yet/.test(result.warnings.join('|')), result.warnings.join(' | '))
 
@@ -105,28 +108,48 @@ test('the package: XML, graphic, captions movie and srt, one JSON result, progre
   assert.match(probe.stdout, /^prores,yuva444p/)
 
   // No scratch siblings left behind.
-  assert.deepEqual(readdirSync(join(projDir, 'export')), ['My Cut (editor)'])
+  assert.deepEqual(readdirSync(join(projDir, 'export')), ['My Cut (Premiere Pro)'])
+  assert.equal(readFileSync(join(pkg, 'media', 'clip.mp4')).length, readFileSync(join(projDir, 'clip.mp4')).length, 'the copy is the whole file')
 })
 
-test('a re-export of the same name replaces the package whole', { timeout: 300_000 }, (t) => {
+test('a second export of the same name goes beside the first, never over it', { timeout: 300_000 }, (t) => {
   if (skip) { t.skip('ffmpeg/ffprobe not available'); return }
-  const pkg = join(projDir, 'export', 'My Cut (editor)')
-  writeFileSync(join(pkg, 'stale.txt'), 'old')
+  const pkg = join(projDir, 'export', 'My Cut (Premiere Pro)')
+  writeFileSync(join(pkg, 'mine.txt'), 'kept')
   const r = runCli(['--project', projectPath, '--name', 'My Cut'])
   assert.equal(r.status, 0, r.stderr)
-  assert.ok(!existsSync(join(pkg, 'stale.txt')), 'the old package is gone')
-  assert.deepEqual(JSON.parse(r.stdout).files, ['My Cut.xml', 'captions.mov', 'captions.srt', 'graphics/ramp.mov'])
-  assert.deepEqual(readdirSync(join(projDir, 'export')), ['My Cut (editor)'])
+  assert.equal(readFileSync(join(pkg, 'mine.txt'), 'utf8'), 'kept', 'the first package is untouched')
+  const second = JSON.parse(r.stdout)
+  assert.equal(second.dir, join(projDir, 'export', 'My Cut (Premiere Pro) 2'))
+  assert.deepEqual(second.files, ['My Cut.xml', 'captions.mov', 'captions.srt', 'graphics/ramp.mov', 'media/clip.mp4'])
+  const again = JSON.parse(runCli(['--project', projectPath, '--name', 'My Cut']).stdout)
+  assert.equal(again.dir, join(projDir, 'export', 'My Cut (Premiere Pro) 3'))
+  assert.ok(!readdirSync(join(projDir, 'export')).some((e) => e.includes('.tmp-')), 'no scratch left')
 })
 
-test('--out: the package goes where asked', { timeout: 300_000 }, (t) => {
+test('--editor names the folder; premiere and resolve write the same XML; one that is not written yet or unknown is refused', { timeout: 300_000 }, (t) => {
   if (skip) { t.skip('ffmpeg/ffprobe not available'); return }
-  const out = join(dir, 'elsewhere', 'pkg')
+  const proj = plainProject('editors')
+  const out = join(dir, 'editors-out')
+  const r = runCli(['--project', proj.path, '--name', 'e', '--editor', 'resolve', '--out', out])
+  assert.equal(r.status, 0, r.stderr)
+  assert.equal(JSON.parse(r.stdout).dir, join(out, 'e (DaVinci Resolve)'))
+  for (const [editor, code] of [['ae', 'not_supported'], ['fcp', 'not_supported'], ['bogus', 'invalid_args']]) {
+    const bad = runCli(['--project', proj.path, '--name', 'e', '--editor', editor, '--out', out])
+    assert.notEqual(bad.status, 0, editor)
+    assert.equal(JSON.parse(bad.stderr.trim().split('\n').pop()).error, code, editor)
+  }
+  assert.deepEqual(readdirSync(out), ['e (DaVinci Resolve)'], 'a refused export leaves nothing')
+})
+
+test('--out: the package goes in the folder asked for, which is created if it is new', { timeout: 300_000 }, (t) => {
+  if (skip) { t.skip('ffmpeg/ffprobe not available'); return }
+  const out = join(dir, 'elsewhere', 'pkgs')
   const r = runCli(['--project', projectPath, '--name', 'x', '--out', out])
   assert.equal(r.status, 0, r.stderr)
-  assert.equal(JSON.parse(r.stdout).dir, out)
-  assert.ok(existsSync(join(out, 'x.xml')))
-  assert.deepEqual(readdirSync(join(dir, 'elsewhere')), ['pkg'])
+  assert.equal(JSON.parse(r.stdout).dir, join(out, 'x (Premiere Pro)'))
+  assert.ok(existsSync(join(out, 'x (Premiere Pro)', 'x.xml')))
+  assert.deepEqual(readdirSync(out), ['x (Premiere Pro)'])
 })
 
 test('a failing export leaves no package, and an earlier one is untouched', { timeout: 300_000 }, (t) => {
@@ -147,13 +170,14 @@ test('a failing export leaves no package, and an earlier one is untouched', { ti
   assert.deepEqual(existsSync(exportDir) ? readdirSync(exportDir) : [], [], 'no package and no scratch')
 
   // A failed re-export keeps the previous package.
-  const pkg = join(projDir, 'export', 'My Cut (editor)')
+  const pkg = join(projDir, 'export', 'My Cut (Premiere Pro)')
+  const before = readdirSync(join(projDir, 'export')).sort()
   writeFileSync(projectPath, JSON.stringify(project('bad.jsx')))
   const r2 = runCli(['--project', projectPath, '--name', 'My Cut'])
   writeFileSync(projectPath, JSON.stringify(project(), null, 2))
   assert.notEqual(r2.status, 0)
   assert.ok(existsSync(join(pkg, 'My Cut.xml')), 'the earlier package is still there')
-  assert.deepEqual(readdirSync(join(projDir, 'export')), ['My Cut (editor)'])
+  assert.deepEqual(readdirSync(join(projDir, 'export')).sort(), before, 'nothing added, nothing left over')
 })
 
 test('bad arguments: JSON error, non-zero exit', (t) => {
@@ -179,12 +203,12 @@ test('renderMode ffmpeg-drawtext: no graphics and no captions movie, the srt sti
   const r = runCli(['--project', join(dt, 'project.json'), '--name', 'D'])
   assert.equal(r.status, 0, r.stderr)
   const result = JSON.parse(r.stdout)
-  assert.deepEqual(result.files, ['D.xml', 'captions.srt'])
+  assert.deepEqual(result.files, ['D.xml', 'captions.srt', 'media/clip.mp4'])
   assert.ok(result.warnings.some((w) => /ffmpeg-drawtext draws no overlays/.test(w)), result.warnings.join(' | '))
   assert.ok(result.warnings.some((w) => /ffmpeg-drawtext draws captions/.test(w)), result.warnings.join(' | '))
   assert.ok(!/not rendered yet/.test(result.warnings.join('|')))
   assert.ok(!readFileSync(result.xml, 'utf8').includes('.mov'), 'the XML links no movie')
-  assert.deepEqual(progressLines(r.stderr), [])
+  assert.deepEqual(progressLines(r.stderr).map((p) => p.label), ['Copying clip.mp4'], 'only the media copy reports: no movie is rendered')
 })
 
 /** A project with one video clip and nothing to render, in its own folder; `edit` may change it. */
@@ -199,7 +223,7 @@ function plainProject(name, edit = (p) => p) {
   return { dir: d, path: join(d, 'project.json') }
 }
 
-test('--out that is not a previous package is refused and left untouched; an empty folder, a file-less new path and a previous package are fine', { timeout: 300_000 }, (t) => {
+test('--out is a folder the package goes in: a file there is refused; a folder with other things in it is fine and left as it is', { timeout: 300_000 }, (t) => {
   if (skip) { t.skip('ffmpeg/ffprobe not available'); return }
   const proj = plainProject('guard')
   const unrelated = join(dir, 'guard-unrelated')
@@ -208,25 +232,18 @@ test('--out that is not a previous package is refused and left untouched; an emp
   const asFile = join(dir, 'guard-file')
   writeFileSync(asFile, 'a file')
 
-  for (const bad of [unrelated, asFile]) {
-    const r = runCli(['--project', proj.path, '--name', 'g', '--out', bad])
-    assert.notEqual(r.status, 0)
-    assert.equal(JSON.parse(r.stderr.trim().split('\n').pop()).error, 'out_exists')
-  }
-  assert.equal(readFileSync(join(unrelated, 'sub', 'keep.txt'), 'utf8'), 'mine')
+  const bad = runCli(['--project', proj.path, '--name', 'g', '--out', asFile])
+  assert.notEqual(bad.status, 0)
+  assert.equal(JSON.parse(bad.stderr.trim().split('\n').pop()).error, 'out_exists')
   assert.equal(readFileSync(asFile, 'utf8'), 'a file')
 
-  const empty = join(dir, 'guard-empty')
-  mkdirSync(empty)
-  const ok = runCli(['--project', proj.path, '--name', 'g', '--out', empty])
+  const ok = runCli(['--project', proj.path, '--name', 'g', '--out', unrelated])
   assert.equal(ok.status, 0, ok.stderr)
-  assert.ok(existsSync(join(empty, '.montaj-editor-export')), 'every package carries the marker')
+  assert.equal(readFileSync(join(unrelated, 'sub', 'keep.txt'), 'utf8'), 'mine', 'what was in the folder is untouched')
+  const pkg = JSON.parse(ok.stdout).dir
+  assert.equal(pkg, join(unrelated, 'g (Premiere Pro)'))
+  assert.ok(existsSync(join(pkg, '.montaj-editor-export')), 'every package carries the marker')
   assert.ok(!JSON.parse(ok.stdout).files.includes('.montaj-editor-export'), 'the marker is not listed')
-
-  writeFileSync(join(empty, 'stale.txt'), 'old')
-  const again = runCli(['--project', proj.path, '--name', 'g', '--out', empty])
-  assert.equal(again.status, 0, again.stderr)
-  assert.ok(!existsSync(join(empty, 'stale.txt')), 'a previous package is replaced')
 })
 
 test('the package folder has the usual folder mode, not the owner-only temp mode', (t) => {
@@ -259,41 +276,16 @@ test('a file the render finds under a narrow no-break space name is linked, not 
   const r = runCli(['--project', proj.path, '--name', 'n'])
   assert.equal(r.status, 0, r.stderr)
   const result = JSON.parse(r.stdout)
-  const xml = readFileSync(result.xml, 'utf8')
-  assert.ok(xml.includes(encodeURIComponent('my\u202fclip.mp4')) || xml.includes('my\u202fclip.mp4'), 'the real file is linked')
-  assert.ok(!xml.includes('my%20clip.mp4') && !xml.includes('my clip.mp4'), 'not the name that is not on disk')
-  assert.ok(!/not found|offline|missing/i.test(result.warnings.join('|')), result.warnings.join(' | '))
-})
-
-test('a previous package that cannot be fully removed: the new one is in place, with a warning', { timeout: 300_000 }, (t) => {
-  if (skip || process.platform === 'win32' || process.getuid?.() === 0) { t.skip('needs a non-root POSIX user'); return }
-  const proj = plainProject('stuck')
-  const out = join(dir, 'stuck-out')
-  assert.equal(runCli(['--project', proj.path, '--name', 's', '--out', out]).status, 0)
-  const locked = join(out, 'locked')
-  mkdirSync(locked)
-  writeFileSync(join(locked, 'f'), 'x')
-  chmodSync(locked, 0o500)
-  try {
-    const r = runCli(['--project', proj.path, '--name', 's', '--out', out])
-    assert.equal(r.status, 0, r.stderr)
-    const result = JSON.parse(r.stdout)
-    assert.ok(existsSync(join(out, 's.xml')) && !existsSync(join(out, 'locked')), 'the new package is in place')
-    assert.ok(result.warnings.some((w) => /previous one could not be removed/.test(w)), result.warnings.join(' | '))
-  } finally {
-    for (const e of readdirSync(dir)) if (e.startsWith('.stuck-out.old-')) {
-      chmodSync(join(dir, e, 'locked'), 0o700)
-      rmSync(join(dir, e), { recursive: true, force: true })
-    }
-  }
+  assert.equal(result.files.filter((f) => f.startsWith('media/')).length, 1, 'the real file was found and copied')
+  assert.equal(statSync(join(result.dir, result.files.find((f) => f.startsWith('media/')))).size, statSync(join(proj.dir, 'clip.mp4')).size)
+  assert.ok(!/not on this computer|not found|offline|missing/i.test(result.warnings.join('|')), result.warnings.join(' | '))
 })
 
 test('SIGTERM mid-run leaves no hidden temp folder', { timeout: 120_000 }, async (t) => {
   if (skip || process.platform === 'win32') { t.skip('needs ffmpeg and POSIX signals'); return }
   const d = join(dir, 'sigterm')
   mkdirSync(d)
-  const out = join(d, 'pkg')
-  const child = spawn(process.execPath, [CLI, '--project', projectPath, '--name', 'k', '--out', out], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [CLI, '--project', projectPath, '--name', 'k', '--out', d], { stdio: ['ignore', 'pipe', 'pipe'] })
   const exited = new Promise((res) => child.on('exit', (code, signal) => res({ code, signal })))
   const tmpSeen = () => readdirSync(d).some((e) => e.includes('.tmp-'))
   const deadline = Date.now() + 30_000

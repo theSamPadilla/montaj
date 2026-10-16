@@ -3,30 +3,32 @@
 /**
  * Export for editor: write a project's edit as a package an editor opens.
  *
- *   export-editor.js --project <project.json> --name <name> [--out <dir>]
+ *   export-editor.js --project <project.json> [--editor premiere|resolve] [--name <name>] [--out <folder>]
  *
- * The package, at `--out` (default `<projectDir>/export/<name> (editor)/`):
+ * `--out` is the folder the package goes IN (default `<projectDir>/export/`); the package is
+ * `<out>/<name> (<Editor label>)/`, and when that name is taken it becomes `... 2`, `... 3`. Nothing already in the
+ * folder is ever touched or replaced. The package:
  *
- *   <name>.xml          FCP7 XML for Premiere Pro and DaVinci Resolve
+ *   <name>.xml          FCP7 XML (Premiere Pro and DaVinci Resolve read it)
+ *   media/<file>        a copy of every footage and audio file the timeline uses, so the package opens anywhere
  *   graphics/<id>.mov   one ProRes 4444 alpha movie per overlay
  *   captions.mov        the caption layer, ProRes 4444 alpha
  *   captions.srt        the captions as text
  *
- * Progress goes to stderr, one JSON line per finished movie:
- * `{"progress":{"done":3,"total":8,"label":"..."}}`. The ONE result goes to
- * stdout: `{ dir, xml, files, leftOut, warnings, seconds }`; `leftOut` is what
- * the XML marks as staying in Montaj, `[{ clip, label }]`. A failure is
+ * The XML links the copies in the package by their absolute path (an editor's `pathurl`); move the folder and the
+ * editor asks to locate the media, as for any package.
+ *
+ * Progress goes to stderr, one JSON line per finished step: `{"progress":{"done":3,"total":8,"label":"..."}}`.
+ * The ONE result goes to stdout: `{ dir, open, xml, files, leftOut, warnings, seconds }`; `open` is the file to hand the
+ * editor (the XML), `leftOut` is what the XML marks as staying in Montaj, `[{ clip, label }]`. A failure is
  * `{"error","message"}` on stderr and a non-zero exit.
  *
- * Every package holds a `.montaj-editor-export` marker file. A re-export
- * replaces `--out` only when it is absent, empty, or a package with that marker;
- * any other file or folder there is refused (`out_exists`) and left alone.
+ * Every package holds a `.montaj-editor-export` marker file (the app launches only a file whose folder has it).
  *
- * The package is built in a hidden sibling folder and renamed into place at the
- * end, so a failed export leaves no half package and a re-export of the same
- * name replaces the old one whole.
+ * The package is built in a hidden sibling folder and renamed into place at the end, so a failed export leaves no
+ * half package.
  */
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, existsSync, readdirSync, statSync, chmodSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, existsSync, readdirSync, statSync, chmodSync, copyFileSync, constants as fsConstants } from 'node:fs'
 import { dirname, join, resolve, relative, basename, sep, isAbsolute } from 'node:path'
 import { isMain as isMainModule } from './is-main.js'
 import { buildNleTimeline } from './nle/timeline.js'
@@ -38,10 +40,20 @@ import { cleanFileName } from './nle/file-name.js'
 import { resolveProjectSrc, resolveFilePath } from './project-paths.js'
 import { trackItems } from './project-tracks.js'
 
-/** Written into every package: only a folder with it is ever replaced by a re-export. */
+/** Written into every package: the app launches only a file whose folder has it. */
 export const PACKAGE_MARKER = '.montaj-editor-export'
 
 const isMain = isMainModule(import.meta.url, process.argv[1])
+
+/** The editors a package can be written for, each with the label its folder carries. `file` is what `open` names. */
+export const EDITORS = {
+  premiere: { label: 'Premiere Pro', writer: 'xmeml' },
+  resolve: { label: 'DaVinci Resolve', writer: 'xmeml' },
+  fcp: { label: 'Final Cut Pro', writer: 'fcpxml' },
+  ae: { label: 'After Effects', writer: 'jsx' },
+}
+/** What this build writes. `fcp` (FCPXML) and `ae` (a script) join as their writers land. */
+export const AVAILABLE_EDITORS = ['premiere', 'resolve']
 
 class ExportError extends Error {
   constructor(code, message) {
@@ -54,14 +66,17 @@ class ExportError extends Error {
  * @param {{
  *   projectPath: string,
  *   name?: string,
- *   out?: string,
+ *   out?: string,       the folder the package goes in
+ *   editor?: 'premiere' | 'resolve',
  *   onProgress?: (p: { done: number, total: number, label: string }) => void,
  * }} options
- * @returns {Promise<{ dir: string, xml: string, files: string[], leftOut: { clip: string, label: string }[], warnings: string[], seconds: number }>}
+ * @returns {Promise<{ dir: string, open: string, xml: string, files: string[], leftOut: { clip: string, label: string }[], warnings: string[], seconds: number }>}
  */
-export async function exportForEditor({ projectPath, name, out, onProgress }) {
+export async function exportForEditor({ projectPath, name, out, editor = 'premiere', onProgress }) {
   const startedAt = Date.now()
   if (!projectPath) throw new ExportError('invalid_args', '--project is required')
+  if (!EDITORS[editor]) throw new ExportError('invalid_args', `--editor must be one of ${Object.keys(EDITORS).join(', ')} (got ${JSON.stringify(editor)})`)
+  if (!AVAILABLE_EDITORS.includes(editor)) throw new ExportError('not_supported', `${EDITORS[editor].label} is not available in this version of Montaj`)
   const absProject = resolve(projectPath)
   const projectDir = dirname(absProject)
 
@@ -73,61 +88,85 @@ export async function exportForEditor({ projectPath, name, out, onProgress }) {
   }
 
   const packageName = cleanFileName(String(name ?? '').trim() || project.name || project.id || basename(projectDir))
-  const finalDir = resolve(out || join(projectDir, 'export', `${packageName} (editor)`))
-  const inside = relative(finalDir, projectDir)
+  const base = resolve(out || join(projectDir, 'export'))
+  const inside = relative(base, projectDir)
   if (inside === '' || (!inside.startsWith('..') && !isAbsolute(inside))) {
-    throw new ExportError('invalid_args', `--out ${finalDir} is the project folder or holds it; pick a folder of its own`)
+    throw new ExportError('invalid_args', `--out ${base} is the project folder or holds it; pick a folder of its own`)
   }
-
-  if (existsSync(finalDir)) {
-    const st = statSync(finalDir)
-    if (!st.isDirectory()) {
-      throw new ExportError('out_exists', `--out ${finalDir} is a file; pick a folder of its own`)
-    }
-    if (readdirSync(finalDir).length > 0 && !existsSync(join(finalDir, PACKAGE_MARKER))) {
-      throw new ExportError('out_exists', `--out ${finalDir} is a folder that is not a previous editor export; pick an empty or new folder`)
-    }
+  if (existsSync(base) && !statSync(base).isDirectory()) {
+    throw new ExportError('out_exists', `--out ${base} is a file; pick a folder`)
   }
+  const label = EDITORS[editor].label
 
-  mkdirSync(dirname(finalDir), { recursive: true })
-  const tmpDir = mkdtempSync(join(dirname(finalDir), `.${basename(finalDir)}.tmp-`))
+  mkdirSync(base, { recursive: true })
+  const tmpDir = mkdtempSync(join(base, `.${packageName}.tmp-`))
   // mkdtemp makes it owner-only; the package should have the folder's usual mode.
   chmodSync(tmpDir, 0o777 & ~process.umask())
   // Killed mid-run, the hidden folder must not stay behind.
   const cleanup = () => rmSync(tmpDir, { recursive: true, force: true })
   process.on('exit', cleanup)
   try {
+    // The package's own folder: `<name> (<label>)`, then `... 2`, `... 3`; one that exists is never touched.
+    const pickDir = () => {
+      for (let n = 1; ; n++) {
+        const dir = join(base, `${packageName} (${label})${n === 1 ? '' : ` ${n}`}`)
+        if (!existsSync(dir)) return dir
+      }
+    }
+    let finalDir = pickDir()
+    // The movies and the media are in the temp folder until the rename; the XML must name their FINAL paths, so map
+    // every path across. If another export takes the folder name meanwhile, the rename below re-picks and this is
+    // redone; the paths are only strings until then.
+    const toFinal = (p) => join(finalDir, relative(tmpDir, p))
+
     const timeline = buildNleTimeline(renderResolved(project, projectDir), { projectDir })
-    const sourceProbes = await probeSources(Object.keys(timeline.sources))
+    const sourcePaths = Object.keys(timeline.sources)
+    const sourceProbes = await probeSources(sourcePaths)
+
+    // Footage and audio, copied beside the timeline so the package opens anywhere (App Store Resolve cannot read
+    // ~/Montaj, only the folders it was handed).
+    const mediaCopies = copyMedia(sourcePaths, tmpDir, onProgress)
 
     const rendered = await renderNleGraphics(project, timeline, { projectDir, outDir: tmpDir, onProgress })
 
-    // The movies are in the temp folder until the rename; the XML must name
-    // their FINAL paths, so map every path across.
-    const toFinal = (p) => join(finalDir, relative(tmpDir, p))
     const movies = [...Object.values(rendered.graphics), ...(rendered.captions ? [rendered.captions] : [])]
     const movieProbes = await probeSources(movies)
-    const probes = { ...sourceProbes }
-    for (const m of movies) probes[toFinal(m)] = movieProbes[m]
-    const graphics = Object.fromEntries(Object.entries(rendered.graphics).map(([id, p]) => [id, toFinal(p)]))
-    const captions = rendered.captions ? toFinal(rendered.captions) : null
 
     const srt = captionsToSrt(project)
     if (srt !== null) writeFileSync(join(tmpDir, 'captions.srt'), srt, 'utf8')
 
     const xmlName = `${packageName}.xml`
-    const { xml, warnings: xmlWarnings, leftOut } = writeXmeml(timeline, probes, { name: packageName, graphics, captions, xmlDir: finalDir })
-    writeFileSync(join(tmpDir, xmlName), xml, 'utf8')
-    writeFileSync(join(tmpDir, PACKAGE_MARKER), 'Montaj Export for editor. A re-export replaces this folder.\n', 'utf8')
+    const build = () => {
+      const probes = { ...sourceProbes }
+      for (const m of movies) probes[toFinal(m)] = movieProbes[m]
+      const graphics = Object.fromEntries(Object.entries(rendered.graphics).map(([id, p]) => [id, toFinal(p)]))
+      const captions = rendered.captions ? toFinal(rendered.captions) : null
+      const mediaPaths = Object.fromEntries(Object.entries(mediaCopies.paths).map(([orig, copy]) => [orig, toFinal(copy)]))
+      return writeXmeml(timeline, probes, { name: packageName, graphics, captions, xmlDir: finalDir, mediaPaths })
+    }
+    let built = build()
+    writeFileSync(join(tmpDir, xmlName), built.xml, 'utf8')
+    writeFileSync(join(tmpDir, PACKAGE_MARKER), `Montaj Export for editor (${label}).\n`, 'utf8')
 
-    const replaceWarning = replaceDir(tmpDir, finalDir)
+    for (;;) {
+      try {
+        renameSync(tmpDir, finalDir)
+        break
+      } catch (e) {
+        if (e?.code !== 'ENOTEMPTY' && e?.code !== 'EEXIST') throw e
+        finalDir = pickDir()
+        built = build()
+        writeFileSync(join(tmpDir, xmlName), built.xml, 'utf8')
+      }
+    }
 
     return {
       dir: finalDir,
+      open: join(finalDir, xmlName),
       xml: join(finalDir, xmlName),
       files: listFiles(finalDir),
-      leftOut,
-      warnings: [...new Set([...timeline.warnings, ...rendered.warnings, ...xmlWarnings, ...(replaceWarning ? [replaceWarning] : [])])],
+      leftOut: built.leftOut,
+      warnings: [...new Set([...timeline.warnings, ...rendered.warnings, ...built.warnings, ...mediaCopies.warnings])],
       seconds: (Date.now() - startedAt) / 1000,
     }
   } catch (e) {
@@ -136,6 +175,40 @@ export async function exportForEditor({ projectPath, name, out, onProgress }) {
   } finally {
     process.off('exit', cleanup)
   }
+}
+
+/**
+ * Copy every media file the timeline names into `<tmpDir>/media/`, each under its own name (a second file of the same
+ * name gets ` 2`, ...). A clone where the volume has them (APFS), a plain copy elsewhere. A file that is not there is
+ * left linked where it was, with a warning. Returns `{ paths: {original: copy}, warnings }`.
+ */
+export function copyMedia(sourcePaths, tmpDir, onProgress) {
+  const paths = {}
+  const warnings = []
+  const used = new Set()
+  const dir = join(tmpDir, 'media')
+  let done = 0
+  for (const src of sourcePaths) {
+    let ok = false
+    try { ok = statSync(src).isFile() } catch { ok = false }
+    if (!ok) {
+      warnings.push(`${basename(src)} is not on this computer, so the timeline links where it was`)
+      continue
+    }
+    mkdirSync(dir, { recursive: true })
+    const clean = cleanFileName(basename(src))
+    const dot = clean.lastIndexOf('.')
+    const stem = dot > 0 ? clean.slice(0, dot) : clean
+    const ext = dot > 0 ? clean.slice(dot) : ''
+    let name = clean
+    for (let n = 2; used.has(name.toLowerCase()); n++) name = `${stem} ${n}${ext}`
+    used.add(name.toLowerCase())
+    copyFileSync(src, join(dir, name), fsConstants.COPYFILE_FICLONE)
+    paths[src] = join(dir, name)
+    done += 1
+    if (onProgress) onProgress({ done, total: sourcePaths.length, label: `Copying ${name}` })
+  }
+  return { paths, warnings }
 }
 
 /**
@@ -162,34 +235,6 @@ function renderResolved(project, projectDir) {
   return copy
 }
 
-/**
- * Rename `from` to `to`, replacing an existing `to`; the old one is put back if
- * the rename fails. Returns a warning when the new package is in place but the
- * old one could not be removed.
- */
-function replaceDir(from, to) {
-  let parked = null
-  if (existsSync(to)) {
-    parked = mkdtempSync(join(dirname(to), `.${basename(to)}.old-`))
-    rmSync(parked, { recursive: true, force: true })
-    renameSync(to, parked)
-  }
-  try {
-    renameSync(from, to)
-  } catch (e) {
-    if (parked) renameSync(parked, to)
-    throw e
-  }
-  if (parked) {
-    try {
-      rmSync(parked, { recursive: true, force: true })
-    } catch (e) {
-      return `the new package is in place, but the previous one could not be removed (${parked}): ${e.message}`
-    }
-  }
-  return null
-}
-
 /** Every file under `dir`, relative, `/`-separated, sorted. */
 function listFiles(dir) {
   const files = []
@@ -208,7 +253,7 @@ function parseArgs(argv) {
   const args = {}
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]
-    if (flag === '--project' || flag === '--name' || flag === '--out') {
+    if (flag === '--project' || flag === '--name' || flag === '--out' || flag === '--editor') {
       if (i + 1 >= argv.length) throw new ExportError('invalid_args', `${flag} needs a value`)
       args[flag.slice(2)] = argv[++i]
     } else {
@@ -230,7 +275,7 @@ if (isMain) {
   try {
     const argv = process.argv.slice(2)
     if (!argv.length || argv.includes('--help')) {
-      process.stderr.write('Usage: export-editor.js --project <project.json> --name <name> [--out <dir>]\n')
+      process.stderr.write('Usage: export-editor.js --project <project.json> [--editor premiere|resolve] [--name <name>] [--out <folder>]\n')
       process.exit(1)
     }
     const args = parseArgs(argv)
@@ -238,6 +283,7 @@ if (isMain) {
       projectPath: args.project,
       name: args.name,
       out: args.out,
+      editor: args.editor,
       onProgress: (p) => process.stderr.write(`${JSON.stringify({ progress: p })}\n`),
     })
     process.stdout.write(`${JSON.stringify(result)}\n`, () => process.exit(0))
