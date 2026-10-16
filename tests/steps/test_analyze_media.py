@@ -3,7 +3,7 @@
 Rejection paths that never reach the connector (missing --input) run as a
 real subprocess. The connector-error mapping (invalid_api_key vs the
 generic api_error) is exercised in-process: the step module is imported
-directly and `connectors.gemini.analyze_media` is monkeypatched to raise a
+directly and `connectors.gemini.analyze_media_meta` is monkeypatched to raise a
 ConnectorError of the shape the connector actually produces, so we assert
 what the step DOES with a reason, not the SDK-detection logic itself
 (that's covered in tests/test_connectors_gemini.py).
@@ -74,7 +74,7 @@ class TestAnalyzeMediaConnectorErrorMapping:
                 reason="invalid_api_key",
             )
 
-        monkeypatch.setattr(step_module.gemini, "analyze_media", boom)
+        monkeypatch.setattr(step_module.gemini, "analyze_media_meta", boom)
         monkeypatch.setattr(sys, "argv", [
             "analyze_media.py", "--input", media_path, "--prompt", "describe this",
         ])
@@ -99,7 +99,7 @@ class TestAnalyzeMediaConnectorErrorMapping:
             err.google_detail = "API key not valid. Please pass a valid API key."
             raise err
 
-        monkeypatch.setattr(step_module.gemini, "analyze_media", boom)
+        monkeypatch.setattr(step_module.gemini, "analyze_media_meta", boom)
         monkeypatch.setattr(sys, "argv", [
             "analyze_media.py", "--input", media_path, "--prompt", "describe this",
         ])
@@ -116,7 +116,7 @@ class TestAnalyzeMediaConnectorErrorMapping:
         def boom(**kwargs):
             raise ConnectorError("Gemini generate_content failed: quota exceeded")
 
-        monkeypatch.setattr(step_module.gemini, "analyze_media", boom)
+        monkeypatch.setattr(step_module.gemini, "analyze_media_meta", boom)
         monkeypatch.setattr(sys, "argv", [
             "analyze_media.py", "--input", media_path, "--prompt", "describe this",
         ])
