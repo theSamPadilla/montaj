@@ -1171,9 +1171,9 @@ function ReviewSurface<P extends Project>({
   // Declared ahead of the scrub effect below (rather than alongside
   // currentSocialPreview further down) because that effect
   // reads it to seed the scrubber's initial enabled state.
-  // On by default (Sam, 2026-10-09); a project that turned it off saved an
-  // explicit `false`, which keeps it off.
-  const currentAudibleScrub = project.settings?.audibleScrub ?? true
+  // Muted by default (Sam, 2026-10-15, reversing 10-09's audible default); the
+  // ear button saves an explicit choice, which a project keeps either way.
+  const currentAudibleScrub = project.settings?.audibleScrub ?? false
 
   // Audible drag-scrub: one grain-per-move scrubber for the life of the
   // surface, attached to the same hover store the preview reads. `resolve`
