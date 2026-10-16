@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Fixed: the preview shows the footage under an opaque overlay wherever the overlay is below full opacity (mid-fade or at 0), the rule the export uses. `planTick` asks `@bycrux/timeline-core`'s `opaqueReplacesPicture(item, seek)` for the tick's instant. See the root CHANGELOG (Unreleased).
 - Fixed: a 3D item (`src: 'engine:scene3d'`) keeps its picture in place through a head trim, a split, a lift or collapse cut, a roll and a slide: `props.inPoint` moves with its head, and a head extended earlier stops at `inPoint` 0.
+- Changed: `visualItemLabel` labels a 3D item `3D`, never its `src` or the id of its 3D.
 
 ## 2.4.0
 

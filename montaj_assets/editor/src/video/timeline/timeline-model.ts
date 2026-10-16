@@ -6,6 +6,7 @@
 import { fadeShape, transitionPairs } from '@bycrux/timeline-core'
 import type { AudioTrack, KeyframeTrack, VisualItem, VisualTrack } from '../../schema'
 import type { Project } from '../../types'
+import { isScene3dItem } from '../scene3d'
 
 // ── Row geometry ─────────────────────────────────────────────────────────
 // Named constants for the row-height magic numbers used in cross-row drag
@@ -247,10 +248,14 @@ function overlayText(props: Record<string, unknown> | undefined): string | null 
  * would make the label redundant. Do NOT delete the video branch below as
  * "always blank" — that reintroduces the blank-block bug for the whole
  * proxy-encoding window.
+ *
+ * A 3D item (`../scene3d.ts`) is a neutral `3D`: never its reserved `src` and
+ * never the id of the 3D it shows, which the user never meets.
  */
 export function visualItemLabel(item: VisualItem): string {
   if (item.type === 'video') return item.proxySrc ? '' : (item.src ? stem(item.src) : 'video')
   if (item.type === 'image') return item.src ? stem(item.src) : 'image'
+  if (isScene3dItem(item)) return '3D'
 
   const kind = item.src ? stem(item.src) : 'overlay'
   const text = overlayText(item.props)

@@ -13,6 +13,12 @@ function overlay(over: Partial<VisualItem> = {}): VisualItem {
 }
 
 describe('visualItemLabel', () => {
+  it('calls a 3D item a neutral 3D: never its reserved src or the id of its 3D', () => {
+    expect(visualItemLabel(overlay({ src: 'engine:scene3d', props: { scene: 'lab', inPoint: 2 } }))).toBe('3D')
+    expect(visualItemLabel(overlay({ src: 'engine:scene3d' }))).toBe('3D')
+    expect(visualItemLabel(overlay({ src: 'engine:scene3d', props: { scene: 'lab', title: 'Lab' } }))).toBe('3D')
+  })
+
   it('names an overlay by its component, so two kinds are told apart at a glance', () => {
     expect(visualItemLabel(overlay({ src: '/p/overlays/photo_hero.jsx' }))).toBe('photo_hero')
   })
