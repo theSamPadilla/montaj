@@ -1,15 +1,29 @@
 usage: montaj analyze-media [-h] --prompt PROMPT [--model MODEL]
-                            [--json-output] [--json] [--out PATH] [--quiet]
+                            [--json-output]
+                            [--max-output-tokens MAX_OUTPUT_TOKENS]
+                            [--thinking-budget THINKING_BUDGET] [--fps FPS]
+                            [--media-resolution {low,medium,high}] [--meta]
+                            [--json] [--out PATH] [--quiet]
                             input
 
 positional arguments:
-  input            Video, audio, or image file to analyze
+  input                 Video, audio, or image file to analyze
 
 options:
-  -h, --help       show this help message and exit
-  --prompt PROMPT  Question or instruction
-  --model MODEL    Gemini model ID
-  --json-output    Request structured JSON output from the model
-  --json           Output result as JSON
-  --out PATH       Output file path
-  --quiet          Suppress progress output
+  -h, --help            show this help message and exit
+  --prompt PROMPT       Question or instruction
+  --model MODEL         Gemini model ID
+  --json-output         Request structured JSON output from the model
+  --max-output-tokens MAX_OUTPUT_TOKENS
+                        Cap on reply tokens
+  --thinking-budget THINKING_BUDGET
+                        Cap on thinking tokens (0 turns thinking off where the
+                        model allows it)
+  --fps FPS             Video sampling rate in frames per second
+  --media-resolution {low,medium,high}
+                        Tokens spent per frame or image
+  --meta                Print one JSON object: text (or path with out), usage,
+                        model, parseError
+  --json                Output result as JSON
+  --out PATH            Output file path
+  --quiet               Suppress progress output
