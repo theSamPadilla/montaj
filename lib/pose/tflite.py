@@ -1,11 +1,12 @@
 """A TFLite model rewritten as an ONNX model that onnxruntime runs, in plain
 Python and numpy: no TFLite runtime, no onnx package.
 
-It covers what MediaPipe's hand models use, and refuses anything else by name:
-ADD, CONCATENATION, CONV_2D, DEPTHWISE_CONV_2D, DEQUANTIZE (of constants),
-FULLY_CONNECTED, LOGISTIC, MAX_POOL_2D, MEAN, PAD, PRELU, RESHAPE and
-RESIZE_BILINEAR. Weights stay as the model has them: float16 weights become
-the float32 values they stand for.
+It covers what MediaPipe's hand and pose models use, and refuses anything else
+by name: ADD, CONCATENATION, CONV_2D, DENSIFY and DEQUANTIZE (of constants),
+DEPTH_TO_SPACE, DEPTHWISE_CONV_2D, FULLY_CONNECTED, LOGISTIC, MAX_POOL_2D,
+MEAN, PAD, PRELU, RESHAPE and RESIZE_BILINEAR. Weights stay as the model has
+them: float16 weights become the float32 values they stand for, and sparse
+ones (TFLite's sparsity format) the dense tensor they encode.
 
 TFLite is NHWC and ONNX's convolutions are NCHW, so the graph transposes its
 input once and keeps 4D activations NCHW, going back to NHWC only where a
@@ -24,14 +25,14 @@ OPSET = 13
 IR_VERSION = 8
 
 # BuiltinOperator codes.
-ADD, CONCATENATION, CONV_2D, DEPTHWISE_CONV_2D, DEQUANTIZE = 0, 2, 3, 4, 6
+ADD, CONCATENATION, CONV_2D, DEPTHWISE_CONV_2D, DEPTH_TO_SPACE, DEQUANTIZE = 0, 2, 3, 4, 5, 6
 FULLY_CONNECTED, LOGISTIC, MAX_POOL_2D, RESHAPE, RESIZE_BILINEAR = 9, 14, 17, 22, 23
-PAD, MEAN, PRELU = 34, 40, 54
+PAD, MEAN, PRELU, DENSIFY = 34, 40, 54, 124
 OP_NAMES = {ADD: "ADD", CONCATENATION: "CONCATENATION", CONV_2D: "CONV_2D",
-            DEPTHWISE_CONV_2D: "DEPTHWISE_CONV_2D", DEQUANTIZE: "DEQUANTIZE",
-            FULLY_CONNECTED: "FULLY_CONNECTED", LOGISTIC: "LOGISTIC", MAX_POOL_2D: "MAX_POOL_2D",
-            RESHAPE: "RESHAPE", RESIZE_BILINEAR: "RESIZE_BILINEAR", PAD: "PAD", MEAN: "MEAN",
-            PRELU: "PRELU"}
+            DEPTHWISE_CONV_2D: "DEPTHWISE_CONV_2D", DEPTH_TO_SPACE: "DEPTH_TO_SPACE",
+            DEQUANTIZE: "DEQUANTIZE", FULLY_CONNECTED: "FULLY_CONNECTED", LOGISTIC: "LOGISTIC",
+            MAX_POOL_2D: "MAX_POOL_2D", RESHAPE: "RESHAPE", RESIZE_BILINEAR: "RESIZE_BILINEAR",
+            PAD: "PAD", MEAN: "MEAN", PRELU: "PRELU", DENSIFY: "DENSIFY"}
 
 # TensorType -> numpy.
 _DTYPES = {0: np.float32, 1: np.float16, 2: np.int32, 4: np.int64}
@@ -41,6 +42,11 @@ ACT_NONE, ACT_RELU, ACT_RELU6 = 0, 1, 3
 
 # Padding: SAME, VALID.
 SAME, VALID = 0, 1
+
+# DimensionType: a sparse tensor's dimension is DENSE or SPARSE_CSR.
+DIM_DENSE, DIM_CSR = 0, 1
+# SparseIndexVector union types -> numpy.
+_INDEX_DTYPES = {1: np.int32, 2: np.uint16, 3: np.uint8}
 
 
 class ConversionError(ValueError):
@@ -96,6 +102,10 @@ class _Table:
         start, n = self._vector(slot)
         return list(struct.unpack_from(f"<{n}i", self.buf, start)) if n else []
 
+    def array(self, slot, dtype):
+        start, n = self._vector(slot)
+        return np.frombuffer(self.buf, np.dtype(dtype).newbyteorder("<"), n, start).astype(np.int64)
+
     def bytes(self, slot):
         start, n = self._vector(slot)
         return bytes(self.buf[start:start + n])
@@ -129,7 +139,66 @@ def _options(code, t):
     if code == FULLY_CONNECTED:
         return {"activation": t.scalar(0, "b"), "weights_format": t.scalar(1, "b"),
                 "keep_num_dims": bool(t.scalar(2, "B"))}
+    if code == DEPTH_TO_SPACE:
+        return {"block_size": t.scalar(0, "i")}
     return {}
+
+
+def _sparsity(t):
+    """A tensor's SparsityParameters as (traversal order, block map, levels);
+    each level is (format, dense size, segments, indices)."""
+    levels = []
+    for d in t.tables(2):
+        fmt = d.scalar(0, "b")
+        if fmt == DIM_DENSE:
+            levels.append((fmt, d.scalar(1, "i"), None, None))
+            continue
+        vectors = []
+        for type_slot, value_slot in ((2, 3), (4, 5)):
+            kind, table = d.scalar(type_slot, "B"), d.table(value_slot)
+            if kind not in _INDEX_DTYPES or table is None:
+                raise ConversionError(f"sparse index vector type {kind} is not supported")
+            vectors.append(table.array(0, _INDEX_DTYPES[kind]))
+        levels.append((fmt, 0, vectors[0], vectors[1]))
+    return t.ints(0), t.ints(1), levels
+
+
+def densify(values, shape, traversal, block_map, levels):
+    """The dense tensor a TFLite sparse tensor encodes. `values` are its stored
+    values in traversal order; each level of `levels` walks one dimension of
+    `traversal` (the tensor's dimensions, then any block dimensions), dense or
+    compressed (CSR: the entries of segment [prev, prev + 1) of `indices`), as
+    TFLite's own format converter walks them."""
+    rank = len(shape)
+    prev = np.zeros(1, np.int64)                    # position at the previous level
+    idx = np.zeros((1, 0), np.int64)                # traversal-order index so far
+    for fmt, size, segments, indices in levels:
+        if fmt == DIM_DENSE:
+            prev = (prev[:, None] * size + np.arange(size)).ravel()
+            idx = np.concatenate([np.repeat(idx, size, axis=0),
+                                  np.tile(np.arange(size), len(idx))[:, None]], axis=1)
+        else:
+            starts, counts = segments[prev], segments[prev + 1] - segments[prev]
+            k = np.repeat(starts - np.cumsum(counts) + counts, counts) + np.arange(counts.sum())
+            idx = np.concatenate([np.repeat(idx, counts, axis=0), indices[k][:, None]], axis=1)
+            prev = k
+    if len(idx) != len(values):
+        raise ConversionError(f"a sparse tensor holds {len(values)} values for {len(idx)} positions")
+    block_size = {}
+    for level, dim in enumerate(traversal):
+        if dim >= rank:
+            block_size[dim - rank] = levels[level][1]
+    orig = [None] * rank
+    for level, dim in enumerate(traversal):
+        if dim < rank:
+            orig[dim] = idx[:, level]
+    for level, dim in enumerate(traversal):
+        if dim >= rank:
+            b = dim - rank
+            orig[block_map[b]] = orig[block_map[b]] * block_size[b] + idx[:, level]
+    dense = np.zeros(shape, values.dtype)
+    dense[tuple(orig)] = values
+    return dense
 
 
 def read_model(data):
@@ -152,7 +221,12 @@ def read_model(data):
         if raw:
             if ttype not in _DTYPES:
                 raise ConversionError(f"tensor type {ttype} is not supported")
-            arr = np.frombuffer(raw, _DTYPES[ttype]).reshape(t.ints(0))
+            arr = np.frombuffer(raw, _DTYPES[ttype])
+            sparsity = t.table(6)
+            if sparsity is not None:
+                arr = densify(arr, t.ints(0), *_sparsity(sparsity))
+            else:
+                arr = arr.reshape(t.ints(0))
         tensors.append({"name": t.string(3), "shape": t.ints(0), "data": arr})
     ops = []
     for o in graph.tables(3):
@@ -162,11 +236,12 @@ def read_model(data):
     return {"tensors": tensors, "ops": ops, "inputs": graph.ints(1), "outputs": graph.ints(2)}
 
 
-def convert(data):
-    """ONNX bytes for TFLite bytes. Bytes this reader cannot parse (a truncated
-    or foreign file) raise ConversionError, never a bare struct or index error."""
+def convert(data, outputs=None):
+    """ONNX bytes for TFLite bytes (`outputs` as to_onnx takes it). Bytes this
+    reader cannot parse (a truncated or foreign file) raise ConversionError,
+    never a bare struct or index error."""
     try:
-        return to_onnx(read_model(data))
+        return to_onnx(read_model(data), outputs)
     except ConversionError:
         raise
     except (struct.error, IndexError, KeyError, ValueError) as e:
@@ -269,11 +344,34 @@ def _spatial_pads(opts, shape, kh, kw, sh, sw, dh=1, dw=1):
 _TO_NCHW = [0, 2, 3, 1]
 
 
-def to_onnx(model):
-    """ONNX ModelProto bytes for a model read by read_model."""
+def _needed_ops(model, outputs):
+    """The ops the given output tensors depend on, in model order."""
+    producer = {o: k for k, op in enumerate(model["ops"]) for o in op["outputs"]}
+    keep, todo = set(), list(outputs)
+    while todo:
+        k = producer.get(todo.pop())
+        if k is not None and k not in keep:
+            keep.add(k)
+            todo.extend(i for i in model["ops"][k]["inputs"] if i >= 0)
+    return [op for k, op in enumerate(model["ops"]) if k in keep]
+
+
+def to_onnx(model, outputs=None):
+    """ONNX ModelProto bytes for a model read by read_model. `outputs`, when
+    given, names the output tensors to keep, in order; ops that only feed the
+    others are left out."""
     tensors, g = model["tensors"], _Graph()
     if len(model["inputs"]) != 1:
         raise ConversionError("only single-input models are supported")
+    out_indices = list(model["outputs"])
+    ops = model["ops"]
+    if outputs is not None:
+        by_name = {tensors[i]["name"]: i for i in out_indices}
+        missing = [n for n in outputs if n not in by_name]
+        if missing:
+            raise ConversionError(f"the model has no output {missing[0]!r}")
+        out_indices = [by_name[n] for n in outputs]
+        ops = _needed_ops(model, out_indices)
     consts = {i: t["data"] for i, t in enumerate(tensors) if t["data"] is not None}
     names, nchw = {}, set()
 
@@ -302,10 +400,12 @@ def to_onnx(model):
     names[in_index] = g.node("Transpose", [in_name], perm=[0, 3, 1, 2])
     nchw.add(in_index)
 
-    for op in model["ops"]:
+    for op in ops:
         code, ins, outs, opts = op["code"], op["inputs"], op["outputs"], op["options"]
         out = outs[0]
-        if code == DEQUANTIZE:
+        if code in (DEQUANTIZE, DENSIFY):
+            # Constants only: float16 becomes float32, and a sparse tensor was
+            # made dense when it was read.
             consts[out] = const(ins[0])
             continue
         if code in (CONV_2D, DEPTHWISE_CONV_2D):
@@ -389,17 +489,24 @@ def to_onnx(model):
             names[out] = g.node("Sigmoid", [names[ins[0]]])
             if ins[0] in nchw:
                 nchw.add(out)
+        elif code == DEPTH_TO_SPACE:
+            # TFLite's order is ONNX's DCR: output (h * b + i, w * b + j, c) reads
+            # input channel (i * b + j) * C + c.
+            if ins[0] not in nchw:
+                raise ConversionError("DEPTH_TO_SPACE is supported on 4D activations only")
+            names[out] = g.node("DepthToSpace", [names[ins[0]]], blocksize=opts["block_size"], mode="DCR")
+            nchw.add(out)
         else:
             raise ConversionError(f"TFLite op {OP_NAMES.get(code, code)} is not supported")
 
-    outputs = []
-    for i in model["outputs"]:
+    infos = []
+    for i in out_indices:
         name = tensors[i]["name"]
         g.named("Identity", [nhwc(i)], name)
-        outputs.append(_value_info(name, tensors[i]["shape"]))
+        infos.append(_value_info(name, tensors[i]["shape"]))
     graph = (b"".join(_len(1, n) for n in g.nodes) + _str(2, "graph")
              + b"".join(_len(5, t) for t in g.inits)
              + _len(11, _value_info(in_name, tensors[in_index]["shape"]))
-             + b"".join(_len(12, o) for o in outputs))
+             + b"".join(_len(12, o) for o in infos))
     opset = _str(1, "") + _int(2, OPSET)
     return _int(1, IR_VERSION) + _str(2, "montaj") + _len(7, graph) + _len(8, opset)

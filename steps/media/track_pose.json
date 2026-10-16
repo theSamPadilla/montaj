@@ -1,13 +1,13 @@
 {
   "name": "track_pose",
-  "description": "Hand landmarks through a video, on the device: 21 per hand per frame (wrist, then each finger from its base joint to its tip), in source pixels and in metres. A hand is tracked from frame to frame; the palm detector looks for hands again only while fewer than hands are tracked. Frame i is at i / fps s. The first run downloads about 8 MB of models. kind body is not available yet.",
+  "description": "Hand or body landmarks through a video, on the device: per frame, 21 per hand (wrist, then each finger from its base joint to its tip) or 33 for one body (face, arms, hands, legs and feet), in source pixels and in metres. A hand or body is tracked from frame to frame; the detector looks again only while fewer are tracked than asked for. Frame i is at i / fps s. The first run downloads the models: about 8 MB for hand, 9 MB for body.",
   "input": {
     "type": "video",
     "description": "Absolute path of the video"
   },
   "output": {
     "type": "json",
-    "description": "{ kind, fps, frameCount, size: [w, h], found: frames with a hand, frames: [{ t, hands: [{ id (kept while tracked), handedness: left | right, score, landmarks: [[x, y, z] x 21] in source px (z relative to the wrist, the scale of x), world: [[x, y, z] x 21] in metres }] }], model, notes, dropped (only if a hand had non-finite values: [{ t, id }], left out of its frame) }, or with out the path of that JSON"
+    "description": "{ kind, fps, frameCount, size: [w, h], found: frames with a hand or person, frames: [{ t, hands: [{ id (kept while tracked), handedness: left | right, score, landmarks: [[x, y, z] x 21] in source px (z relative to the wrist, the scale of x), world: [[x, y, z] x 21] in metres }] } for hand, or { t, people: [{ id, score, landmarks: [[x, y, z, visibility] x 33] in source px (z relative to the hips' centre), world: [[x, y, z] x 33] in metres }] } for body], model, notes, dropped (only if one had non-finite values: [{ t, id }], left out of its frame) }, or with out the path of that JSON"
   },
   "params": [
     {
@@ -15,7 +15,7 @@
       "type": "enum",
       "required": true,
       "options": ["hand", "body"],
-      "description": "hand. body is not available yet."
+      "description": "hand or body."
     },
     {
       "name": "fps",
@@ -30,23 +30,31 @@
       "default": 1,
       "min": 1,
       "max": 2,
-      "description": "Most hands per frame."
+      "description": "hand: most hands per frame."
+    },
+    {
+      "name": "people",
+      "type": "int",
+      "required": false,
+      "default": 1,
+      "min": 1,
+      "max": 1,
+      "description": "body: most people per frame. 1 for now: the body model follows one person."
     },
     {
       "name": "pad",
       "type": "float",
       "required": false,
-      "default": 0.3333,
       "min": 0,
       "max": 1,
-      "description": "Black border around the frame for the palm detector, as a fraction of the long side. It finds hands that fill the frame or leave it."
+      "description": "Black border around the frame for the detector, as a fraction of the long side. Default: 0.3333 for hand, which finds hands that fill the frame or leave it; 0 for body."
     },
     {
       "name": "min-presence",
       "type": "float",
       "required": false,
       "default": 0.5,
-      "description": "Lowest score, 0 to 1, at which a palm or a hand counts as found. Lower finds more, and more wrong ones."
+      "description": "Lowest score, 0 to 1, at which a detection, a hand or a body counts as found. Lower finds more, and more wrong ones."
     },
     {
       "name": "smooth",
@@ -54,21 +62,21 @@
       "required": false,
       "default": "one-euro",
       "options": ["one-euro", "none"],
-      "description": "one-euro: a One Euro filter per hand on landmarks and world. none: raw."
+      "description": "one-euro: a One Euro filter per hand or body on landmarks and world. none: raw."
     },
     {
       "name": "min-cutoff",
       "type": "float",
       "required": false,
       "default": 1.0,
-      "description": "One Euro cutoff in Hz for a still hand. Lower is smoother."
+      "description": "One Euro cutoff in Hz for a still hand or body. Lower is smoother."
     },
     {
       "name": "beta",
       "type": "float",
       "required": false,
       "default": 5.0,
-      "description": "One Euro: how much the cutoff rises with the hand's speed. Higher lags less."
+      "description": "One Euro: how much the cutoff rises with the speed. Higher lags less."
     },
     {
       "name": "out",

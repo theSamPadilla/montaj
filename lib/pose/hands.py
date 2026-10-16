@@ -31,10 +31,7 @@ reads black outside the frame, which is what a bordered frame holds there, so
 the border only shrinks the frame in the palm detector's view (a close hand
 that fills the frame is found far more often with it).
 
-Crops sample exactly as the reference's warp does: the region's corners
-map to the output's pixel 0 and pixel n, positions are rounded to 1/32 px, the
-bilinear weights are fixed point out of 2^15, and the result is rounded to 8
-bits before scaling to 0..1. Measured on a close phone clip of a hand gripping
+Crops sample exactly as the reference's warp does (regions.warp). Measured on a close phone clip of a hand gripping
 an object, at 10 fps: from the reference's own previous-frame landmarks, the
 next frame's landmarks land 0.014 px mean from the reference's (0.23 max, 61
 frames); with float sampling, 0.125 (1.2 max).
@@ -43,6 +40,10 @@ import math
 from collections import namedtuple
 
 import numpy as np
+
+from lib.pose.regions import (Rect, crop_matrix, crop_to_source, decode_detections, detection_to_source,
+                              letterbox_rect, normalize_radians, rect_iou, rotate_world, ssd_anchors,
+                              transform_rect, upright_rotation, warp)
 
 PALM_SIZE = 192
 HAND_SIZE = 224
@@ -75,9 +76,6 @@ ASSOCIATION_IOU = 0.5
 # ring finger bases (landmarks 5, 9, 13).
 _ROI_LANDMARKS = [0, 1, 2, 3, 5, 6, 9, 10, 13, 14, 17, 18]
 
-# A region in source px: centre, size, and rotation in radians (clockwise on
-# screen, y down) that turns the hand upright.
-Rect = namedtuple("Rect", "cx cy w h rotation")
 Palm = namedtuple("Palm", "box keypoints score")              # box (x0, y0, x1, y1), keypoints (7, 2)
 Hand = namedtuple("Hand", "id score right landmarks world")   # right: the model's right-hand score
 
@@ -86,32 +84,7 @@ def palm_anchors():
     """The palm detector's 2016 anchor centres, in output order: a 24x24 grid
     (stride 8) with 2 anchors a cell, then a 12x12 grid (stride 16, three layers
     merged) with 6. Every anchor is 1x1, so only the centres matter."""
-    out = []
-    for stride, per_cell in ((8, 2), (16, 6)):
-        n = math.ceil(PALM_SIZE / stride)
-        ys, xs = np.mgrid[0:n, 0:n]
-        centres = np.stack([(xs + 0.5) / n, (ys + 0.5) / n], axis=-1).reshape(-1, 1, 2)
-        out.append(np.repeat(centres, per_cell, axis=1).reshape(-1, 2))
-    return np.concatenate(out).astype(np.float32)
-
-
-def normalize_radians(a):
-    return a - 2 * math.pi * math.floor((a + math.pi) / (2 * math.pi))
-
-
-def upright_rotation(x0, y0, x1, y1, target=math.pi / 2):
-    """The rotation that turns the direction (x0, y0) -> (x1, y1) to `target`
-    (radians, counterclockwise from the x axis): to point up by default."""
-    return normalize_radians(target - math.atan2(-(y1 - y0), x1 - x0))
-
-
-def transform_rect(rect, shift_y, scale):
-    """Move the region by shift_y of its height along its own up axis, square
-    it on its long side, then scale it."""
-    cx = rect.cx - rect.h * shift_y * math.sin(rect.rotation)
-    cy = rect.cy + rect.h * shift_y * math.cos(rect.rotation)
-    side = max(rect.w, rect.h) * scale
-    return Rect(cx, cy, side, side, rect.rotation)
+    return ssd_anchors(PALM_SIZE, ((8, 2), (16, 6)))
 
 
 def palm_rect(palm):
@@ -147,97 +120,14 @@ def landmarks_rect(landmarks):
     return transform_rect(Rect(cx, cy, w, h, rotation), HAND_SHIFT_Y, HAND_SCALE)
 
 
-def rect_iou(a, b):
-    """IoU of two regions as axis-aligned boxes (rotation ignored)."""
-    ix = min(a.cx + a.w / 2, b.cx + b.w / 2) - max(a.cx - a.w / 2, b.cx - b.w / 2)
-    iy = min(a.cy + a.h / 2, b.cy + b.h / 2) - max(a.cy - a.h / 2, b.cy - b.h / 2)
-    if ix <= 0 or iy <= 0:
-        return 0.0
-    inter = ix * iy
-    union = a.w * a.h + b.w * b.h - inter
-    return inter / union if union > 0 else 0.0
-
-
-def crop_matrix(rect, n):
-    """2x3 map from output pixel (u, v, 1) of an n x n crop to source px. The
-    region's corners land on output pixels 0 and n."""
-    c, s = math.cos(rect.rotation), math.sin(rect.rotation)
-    kx, ky = rect.w / n, rect.h / n
-    return np.array([
-        [c * kx, -s * ky, rect.cx - c * rect.w / 2 + s * rect.h / 2],
-        [s * kx, c * ky, rect.cy - s * rect.w / 2 - c * rect.h / 2],
-    ])
-
-
-def letterbox_rect(width, height, pad):
-    """The palm detector's view: the frame with `pad` px of black on every side,
-    centred in a square of its long side."""
-    side = max(width, height) + 2 * pad
-    return Rect(width / 2, height / 2, side, side, 0.0)
-
-
-def warp(image, matrix, n):
-    """Bilinear sample of `image` (H x W x 3 uint8) into an n x n x 3 float32
-    tensor in 0..1; output pixel (u, v) reads `matrix` @ (u, v, 1). Black outside
-    the image."""
-    h, w = image.shape[:2]
-    u = np.arange(n, dtype=np.float64)
-    uu, vv = np.meshgrid(u, u)
-    # Fixed point, reproducing the reference's warp: positions rounded to 1/32 px,
-    # bilinear weights as integers out of 2^15, the sum rounded half up to 8 bits.
-    x = np.rint((matrix[0, 0] * uu + matrix[0, 1] * vv + matrix[0, 2]) * 32).astype(np.int64)
-    y = np.rint((matrix[1, 0] * uu + matrix[1, 1] * vv + matrix[1, 2]) * 32).astype(np.int64)
-    x0, y0 = x >> 5, y >> 5
-    tx, ty = (x & 31)[..., None], (y & 31)[..., None]
-
-    def tap(yi, xi):
-        inside = ((xi >= 0) & (xi < w) & (yi >= 0) & (yi < h))[..., None]
-        return image[np.clip(yi, 0, h - 1), np.clip(xi, 0, w - 1)].astype(np.int64) * inside
-
-    acc = ((32 - tx) * (32 - ty) * tap(y0, x0) + tx * (32 - ty) * tap(y0, x0 + 1)
-           + (32 - tx) * ty * tap(y0 + 1, x0) + tx * ty * tap(y0 + 1, x0 + 1)) * 32
-    return (((acc + (1 << 14)) >> 15) / 255.0).astype(np.float32)
-
-
-def _box_iou(box, boxes):
-    ix = np.minimum(box[2], boxes[:, 2]) - np.maximum(box[0], boxes[:, 0])
-    iy = np.minimum(box[3], boxes[:, 3]) - np.maximum(box[1], boxes[:, 1])
-    inter = np.where((ix > 0) & (iy > 0), ix * iy, 0.0)
-    area = (box[2] - box[0]) * (box[3] - box[1])
-    areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
-    union = area + areas - inter
-    return np.where(union > 0, inter / np.where(union > 0, union, 1), 0.0)
-
-
 def decode_palms(raw_boxes, raw_scores, anchors, threshold, max_count):
     """The palm detector's outputs ((2016, 18) and (2016, 1)) as palms in the
     192 px input, normalized 0..1: sigmoid scores at or over `threshold`, boxes
     and 7 keypoints offset from their anchors, merged by weighted non-maximum
     suppression (each kept palm is the score-weighted mean of the boxes it
     overlaps, with the top score), at most `max_count`, best first."""
-    scores = 1.0 / (1.0 + np.exp(-np.clip(np.asarray(raw_scores, np.float64).reshape(-1), -100, 100)))
-    keep = np.nonzero(scores >= threshold)[0]
-    if keep.size == 0:
-        return []
-    raw = np.asarray(raw_boxes, np.float64).reshape(-1, 18)[keep] / PALM_SIZE
-    a = np.asarray(anchors, np.float64)[keep]
-    centre = raw[:, 0:2] + a
-    half = raw[:, 2:4] / 2
-    boxes = np.concatenate([centre - half, centre + half], axis=1)
-    keypoints = raw[:, 4:18].reshape(-1, 7, 2) + a[:, None, :]
-    scores = scores[keep]
-
-    order = np.argsort(-scores, kind="stable")
-    palms = []
-    while order.size and len(palms) < max_count:
-        overlap = _box_iou(boxes[order[0]], boxes[order]) > PALM_NMS_IOU
-        group = order[overlap]
-        wts = scores[group][:, None]
-        box = (boxes[group] * wts).sum(axis=0) / wts.sum()
-        kps = (keypoints[group] * wts[:, :, None]).sum(axis=0) / wts.sum()
-        palms.append(Palm(box, kps, float(scores[order[0]])))
-        order = order[~overlap]
-    return palms
+    return [Palm(*d) for d in decode_detections(raw_boxes, raw_scores, anchors, PALM_SIZE, threshold,
+                                                max_count, PALM_NMS_IOU)]
 
 
 def detect_palms(palm_model, image, pad, threshold, max_count, anchors):
@@ -253,12 +143,7 @@ def detect_palms(palm_model, image, pad, threshold, max_count, anchors):
 def palm_to_source(palm, view):
     """A palm normalized to the detector's input, in source px. `view` is the
     letterboxed, bordered frame the detector saw (letterbox_rect)."""
-    x0 = view.cx - view.w / 2
-    y0 = view.cy - view.h / 2
-    box = np.array([x0 + palm.box[0] * view.w, y0 + palm.box[1] * view.h,
-                    x0 + palm.box[2] * view.w, y0 + palm.box[3] * view.h])
-    kps = np.stack([x0 + palm.keypoints[:, 0] * view.w, y0 + palm.keypoints[:, 1] * view.h], axis=1)
-    return Palm(box, kps, palm.score)
+    return detection_to_source(palm, view)
 
 
 def project_landmarks(raw, rect):
@@ -266,17 +151,8 @@ def project_landmarks(raw, rect):
     relative to the wrist) to source px: x, y through the crop's rotation, z on
     the same scale as x."""
     lm = np.asarray(raw, np.float64).reshape(21, 3) / HAND_SIZE
-    lx, ly = (lm[:, 0] - 0.5) * rect.w, (lm[:, 1] - 0.5) * rect.h
-    c, s = math.cos(rect.rotation), math.sin(rect.rotation)
-    return np.stack([rect.cx + c * lx - s * ly, rect.cy + s * lx + c * ly, lm[:, 2] / Z_SCALE * rect.w], axis=1)
-
-
-def rotate_world(raw, rect):
-    """World landmarks ((63,) in metres, the crop's axes) turned back by the
-    crop's rotation, so x and y follow the source frame's axes."""
-    wl = np.asarray(raw, np.float64).reshape(21, 3)
-    c, s = math.cos(rect.rotation), math.sin(rect.rotation)
-    return np.stack([c * wl[:, 0] - s * wl[:, 1], s * wl[:, 0] + c * wl[:, 1], wl[:, 2]], axis=1)
+    lm[:, 2] /= Z_SCALE
+    return crop_to_source(lm, rect)
 
 
 def hand_landmarks(hand_model, image, rect):

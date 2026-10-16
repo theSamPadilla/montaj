@@ -332,3 +332,233 @@ def test_the_hand_bundle_converts_to_the_pinned_files():
             first = T.to_onnx(T.read_model(z.read(item.member)))
             assert T.to_onnx(T.read_model(z.read(item.member))) == first
             assert hashlib.sha256(first).hexdigest() == item.sha256, item.filename
+
+
+# --- the pose models' ops ------------------------------------------------------
+
+def np_depth_to_space(x, b):
+    """TFLite's DEPTH_TO_SPACE, NHWC: output (h * b + i, w * b + j, c) reads
+    input channel (i * b + j) * C + c."""
+    n, h, w, cin = x.shape
+    c = cin // (b * b)
+    out = np.zeros((n, h * b, w * b, c), x.dtype)
+    for i in range(b):
+        for j in range(b):
+            out[:, i::b, j::b, :] = x[:, :, :, (i * b + j) * c:(i * b + j + 1) * c]
+    return out
+
+
+def test_depth_to_space_keeps_tflite_order():
+    m = _Model([1, 3, 2, 12])
+    y = m.op(T.DEPTH_TO_SPACE, [m.input], [1, 6, 4, 3], block_size=2)
+    x = _f32(1, 3, 2, 12)
+    [got] = _run(m.model(y), x)
+    assert got == pytest.approx(np_depth_to_space(x, 2), abs=1e-6)
+
+
+def _csr(dense):
+    """A [O, ..., I] array as TFLite stores it with every dimension dense but
+    the last, compressed (CSR): (segments, indices, values in order)."""
+    rows = dense.reshape(-1, dense.shape[-1])
+    segments, indices, values = [0], [], []
+    for row in rows:
+        nz = np.nonzero(row)[0]
+        indices += nz.tolist()
+        values += row[nz].tolist()
+        segments.append(len(indices))
+    return segments, indices, np.array(values, dense.dtype)
+
+
+def test_densify_rebuilds_a_compressed_last_dimension():
+    dense = _f32(4, 1, 2, 6) * (RNG.random((4, 1, 2, 6)) > 0.6)
+    segments, indices, values = _csr(dense)
+    levels = [(T.DIM_DENSE, 4, None, None), (T.DIM_DENSE, 1, None, None), (T.DIM_DENSE, 2, None, None),
+              (T.DIM_CSR, 0, np.array(segments), np.array(indices))]
+    assert np.array_equal(T.densify(values, [4, 1, 2, 6], [0, 1, 2, 3], [], levels), dense)
+
+
+def test_densify_rebuilds_blocks():
+    # A 4x6 matrix in 2x3 blocks: block row 0 holds block column 1, block row 1
+    # holds block columns 0 and 1. Traversal: the block grid (row dense, column
+    # compressed), then within each block, rows then columns.
+    dense = np.zeros((4, 6), np.float32)
+    blocks = {(0, 1): _f32(2, 3), (1, 0): _f32(2, 3), (1, 1): _f32(2, 3)}
+    for (r, c), v in blocks.items():
+        dense[r * 2:r * 2 + 2, c * 3:c * 3 + 3] = v
+    values = np.concatenate([blocks[k].ravel() for k in sorted(blocks)])
+    levels = [(T.DIM_DENSE, 2, None, None), (T.DIM_CSR, 0, np.array([0, 1, 3]), np.array([1, 0, 1])),
+              (T.DIM_DENSE, 2, None, None), (T.DIM_DENSE, 3, None, None)]
+    assert np.array_equal(T.densify(values, [4, 6], [0, 1, 2, 3], [0, 1], levels), dense)
+
+
+def test_densify_refuses_a_count_that_does_not_fit():
+    levels = [(T.DIM_DENSE, 2, None, None), (T.DIM_CSR, 0, np.array([0, 1, 2]), np.array([0, 2]))]
+    with pytest.raises(T.ConversionError, match="3 values for 2 positions"):
+        T.densify(np.ones(3, np.float32), [2, 3], [0, 1], [], levels)
+
+
+def _sparse_tflite(dense):
+    """input [1, 2, 2, I] -> CONV_2D (1x1, no bias) whose float16 weight
+    `dense` ([O, 1, 1, I]) is stored sparse (CSR on I, uint8 indices) and goes
+    through DENSIFY and DEQUANTIZE."""
+    flatbuffers = pytest.importorskip("flatbuffers")
+    b = flatbuffers.Builder(0)
+    o_, i_ = dense.shape[0], dense.shape[3]
+
+    def ints(xs):
+        b.StartVector(4, len(xs), 4)
+        for v in reversed(xs):
+            b.PrependInt32(v)
+        return b.EndVector()
+
+    def tables(offs):
+        b.StartVector(4, len(offs), 4)
+        for o in reversed(offs):
+            b.PrependUOffsetTRelative(o)
+        return b.EndVector()
+
+    def index_vector(xs, uint8):
+        if uint8:
+            b.StartVector(1, len(xs), 1)
+            for v in reversed(xs):
+                b.PrependUint8(v)
+            vec = b.EndVector()
+        else:
+            vec = ints(xs)
+        b.StartObject(1)
+        b.PrependUOffsetTRelativeSlot(0, vec, 0)
+        return b.EndObject()
+
+    segments, indices, values = _csr(dense)
+    data = b.CreateByteVector(values.astype(np.float16).tobytes())
+    buffers = []
+    for d in (None, data):
+        b.StartObject(1)
+        if d is not None:
+            b.PrependUOffsetTRelativeSlot(0, d, 0)
+        buffers.append(b.EndObject())
+
+    seg_t, ind_t = index_vector(segments, False), index_vector(indices, True)
+    dims = []
+    for size in dense.shape[:3]:
+        b.StartObject(6)
+        b.PrependInt32Slot(1, size, 0)                     # format DENSE is the default
+        dims.append(b.EndObject())
+    b.StartObject(6)
+    b.PrependInt8Slot(0, T.DIM_CSR, 0)
+    b.PrependUint8Slot(2, 1, 0)                            # Int32Vector
+    b.PrependUOffsetTRelativeSlot(3, seg_t, 0)
+    b.PrependUint8Slot(4, 3, 0)                            # Uint8Vector
+    b.PrependUOffsetTRelativeSlot(5, ind_t, 0)
+    dims.append(b.EndObject())
+    trav, dim_vec = ints([0, 1, 2, 3]), tables(dims)
+    b.StartObject(3)
+    b.PrependUOffsetTRelativeSlot(0, trav, 0)
+    b.PrependUOffsetTRelativeSlot(2, dim_vec, 0)
+    sparsity = b.EndObject()
+
+    def tensor(name, shape, ttype, buf, sparse=None):
+        n, s = b.CreateString(name), ints(shape)
+        b.StartObject(7)
+        b.PrependUOffsetTRelativeSlot(0, s, 0)
+        b.PrependInt8Slot(1, ttype, 0)
+        b.PrependUint32Slot(2, buf, 0)
+        b.PrependUOffsetTRelativeSlot(3, n, 0)
+        if sparse is not None:
+            b.PrependUOffsetTRelativeSlot(6, sparse, 0)
+        return b.EndObject()
+
+    w_shape = list(dense.shape)
+    ts = [tensor("input_1", [1, 2, 2, i_], 0, 0), tensor("w_sparse", w_shape, 1, 1, sparsity),
+          tensor("w16", w_shape, 1, 0), tensor("w", w_shape, 0, 0), tensor("Identity", [1, 2, 2, o_], 0, 0)]
+    b.StartObject(6)
+    b.PrependInt8Slot(0, T.VALID, 0)
+    b.PrependInt32Slot(1, 1, 0)
+    b.PrependInt32Slot(2, 1, 0)
+    conv_opts = b.EndObject()
+
+    def operator(index, ins, outs, opts=None):
+        i, o = ints(ins), ints(outs)
+        b.StartObject(5)
+        b.PrependUint32Slot(0, index, 0)
+        b.PrependUOffsetTRelativeSlot(1, i, 0)
+        b.PrependUOffsetTRelativeSlot(2, o, 0)
+        if opts is not None:
+            b.PrependUint8Slot(3, 1, 0)
+            b.PrependUOffsetTRelativeSlot(4, opts, 0)
+        return b.EndObject()
+
+    ops = [operator(0, [1], [2]), operator(1, [2], [3]), operator(2, [0, 3, -1], [4], conv_opts)]
+    codes = []
+    for code in (T.DENSIFY, T.DEQUANTIZE, T.CONV_2D):
+        b.StartObject(4)
+        b.PrependInt8Slot(0, code, 0)
+        b.PrependInt32Slot(3, code, 0)
+        codes.append(b.EndObject())
+    t_vec, o_vec, i_vec, out_vec = tables(ts), tables(ops), ints([0]), ints([4])
+    b.StartObject(5)
+    b.PrependUOffsetTRelativeSlot(0, t_vec, 0)
+    b.PrependUOffsetTRelativeSlot(1, i_vec, 0)
+    b.PrependUOffsetTRelativeSlot(2, out_vec, 0)
+    b.PrependUOffsetTRelativeSlot(3, o_vec, 0)
+    sub = b.EndObject()
+    code_vec, sub_vec, buf_vec = tables(codes), tables([sub]), tables(buffers)
+    b.StartObject(5)
+    b.PrependUint32Slot(0, 3, 0)
+    b.PrependUOffsetTRelativeSlot(1, code_vec, 0)
+    b.PrependUOffsetTRelativeSlot(2, sub_vec, 0)
+    b.PrependUOffsetTRelativeSlot(4, buf_vec, 0)
+    b.Finish(b.EndObject())
+    return bytes(b.Output())
+
+
+def test_a_sparse_float16_weight_is_read_dense_and_runs():
+    dense = (_f32(3, 1, 1, 5) * (RNG.random((3, 1, 1, 5)) > 0.4)).astype(np.float16)
+    model = T.read_model(_sparse_tflite(dense))
+    assert np.array_equal(model["tensors"][1]["data"], dense)
+    assert [o["code"] for o in model["ops"]] == [T.DENSIFY, T.DEQUANTIZE, T.CONV_2D]
+    x = _f32(1, 2, 2, 5)
+    [got] = _run(model, x)
+    assert got == pytest.approx(x @ dense.astype(np.float32)[:, 0, 0, :].T, abs=1e-5)
+
+
+def test_only_the_named_outputs_are_kept():
+    m = _Model([1, 2, 2, 3])
+    a = m.op(T.LOGISTIC, [m.input], [1, 2, 2, 3])
+    w = m.tensor([2, 1, 1, 3], _f32(2, 1, 1, 3))
+    c = m.op(T.CONV_2D, [m.input, w, -1], [1, 2, 2, 2], padding=T.VALID, stride_w=1, stride_h=1,
+             activation=T.ACT_NONE, dilation_w=1, dilation_h=1)
+    model = m.model(a, c)
+    keep = m.tensors[c]["name"]
+    onnx = T.to_onnx(model, [keep])
+    assert b"Sigmoid" not in onnx and b"Sigmoid" in T.to_onnx(model)
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads = opts.inter_op_num_threads = 1
+    sess = ort.InferenceSession(onnx, opts, providers=["CPUExecutionProvider"])
+    assert [o.name for o in sess.get_outputs()] == [keep]
+    x = _f32(1, 2, 2, 3)
+    [got] = sess.run(None, {"input": x})
+    assert got == pytest.approx(x @ m.tensors[w]["data"][:, 0, 0, :].T, abs=1e-5)
+    with pytest.raises(T.ConversionError, match="no output 'missing'"):
+        T.to_onnx(model, ["missing"])
+
+
+def test_the_pose_bundle_converts_to_the_pinned_files():
+    """Runs where the pose bundle has been downloaded (any body run of the
+    step puts it in the models dir), or MONTAJ_TEST_POSE_TASK names a copy.
+    Each model converts to the same bytes twice, matching its pin."""
+    import hashlib
+    import os
+    import zipfile
+    from lib import models
+    from lib.pose import weights
+    path = os.environ.get("MONTAJ_TEST_POSE_TASK") or models.model_path(weights.FAMILY, weights.POSE_BUNDLE.filename)
+    if not os.path.isfile(path):
+        pytest.skip("the pose bundle is not downloaded")
+    data = open(path, "rb").read()
+    assert hashlib.sha256(data).hexdigest() == weights.POSE_BUNDLE.sha256
+    with zipfile.ZipFile(path) as z:
+        for item in (weights.POSE_DETECTOR, weights.POSE_LANDMARKS):
+            first = T.convert(z.read(item.member), item.outputs)
+            assert T.convert(z.read(item.member), item.outputs) == first
+            assert hashlib.sha256(first).hexdigest() == item.sha256, item.filename

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Hand landmarks through a video, on onnxruntime: 21 per hand per frame, in
-source pixels and in metres.
+"""Hand or body landmarks through a video, on onnxruntime: 21 per hand or 33
+per body per frame, in source pixels and in metres.
 
 The models are MediaPipe's palm detector and hand landmark model, from its
 pinned hand landmarker bundle, fetched on first use and converted to ONNX
@@ -16,11 +16,14 @@ model's left/right score over the id's frames, so it does not flip from frame
 to frame. The One Euro filter smooths each id's landmarks and world landmarks
 on their own.
 
-kind "body" is a later task and is refused for now.
+kind "body" uses MediaPipe's pose detector and pose landmark model (the full
+model) from its pinned pose landmarker bundle the same way, with their loop
+(lib/pose/body.py): one person, found by the detector and then tracked with
+the region its own landmarks give, until it is lost. Each landmark carries the
+model's visibility, which is not smoothed.
 """
 import argparse
 import json
-import math
 import os
 import sys
 
@@ -30,7 +33,10 @@ from lib.common import fail, require_file
 
 KINDS = ("hand", "body")
 SMOOTH_MODES = ("one-euro", "none")
-DEFAULT_PAD = 0.3333
+# The detector's black border, as a fraction of the long side. Hands are often
+# close and cut by the frame's edge; the body detector is the reference's
+# own, with none.
+DEFAULT_PAD = {"hand": 0.3333, "body": 0.0}
 # One Euro defaults. Measured 2026-10-16 on a close phone clip of a hand
 # gripping an object: they cut the frame-to-frame jitter (mean second
 # difference over all landmarks) from 31 to 21 px at 10 fps and from 23 to 10 px
@@ -42,7 +48,7 @@ DEFAULT_PAD = 0.3333
 DEFAULT_MIN_CUTOFF = 1.0
 DEFAULT_BETA = 5.0
 
-NOTES = [
+HAND_NOTES = [
     "landmarks: 0 wrist; thumb 1-4 (CMC, MCP, IP, tip); index 5-8, middle 9-12, ring 13-16, "
     "pinky 17-20 (MCP, PIP, DIP, tip).",
     "landmarks are source pixels, x right and y down, and may fall outside the frame for a hand "
@@ -52,34 +58,49 @@ NOTES = [
     "handedness is as the hand appears in the video; a mirrored video swaps it.",
 ]
 
+BODY_NOTES = [
+    "landmarks: 0 nose; eyes 1-3 left (inner, centre, outer), 4-6 right; 7, 8 ears; 9, 10 mouth corners; "
+    "11, 12 shoulders; 13, 14 elbows; 15, 16 wrists; 17, 18 pinky knuckles; 19, 20 index knuckles; "
+    "21, 22 thumb knuckles; 23, 24 hips; 25, 26 knees; 27, 28 ankles; 29, 30 heels; 31, 32 foot tips. "
+    "From 7 on, odd is the person's own left and even their right.",
+    "landmarks are [x, y, z, visibility]: source pixels, x right and y down, and may fall outside the "
+    "frame; z is depth relative to the hips' centre on the same scale as x, negative toward the camera; "
+    "visibility, 0 to 1, is how likely the point is in frame and not hidden.",
+    "world is metres around the hips' centre, x and y along the frame's axes, z depth.",
+]
+
 
 def _parse(argv=None):
-    p = argparse.ArgumentParser(description="Hand landmarks through a video, on onnxruntime")
+    p = argparse.ArgumentParser(description="Hand or body landmarks through a video, on onnxruntime")
     p.add_argument("--input", required=True, help="Absolute path of the video")
-    p.add_argument("--kind", required=True, choices=KINDS, help="hand (body is not available yet)")
+    p.add_argument("--kind", required=True, choices=KINDS, help="hand or body")
     p.add_argument("--fps", type=float, default=None,
                    help="Frames per second to sample (default: the video's, at most 30)")
-    p.add_argument("--hands", type=int, default=1, help="Most hands per frame, 1 or 2 (default 1)")
-    p.add_argument("--pad", type=float, default=DEFAULT_PAD,
-                   help="Black border for the palm detector, as a fraction of the long side (default 0.3333)")
+    p.add_argument("--hands", type=int, default=1, help="hand: most hands per frame, 1 or 2 (default 1)")
+    p.add_argument("--people", type=int, default=1, help="body: most people per frame, 1 for now (default 1)")
+    p.add_argument("--pad", type=float, default=None,
+                   help="Black border for the detector, as a fraction of the long side "
+                        "(default 0.3333 for hand, 0 for body)")
     p.add_argument("--min-presence", type=float, default=0.5,
-                   help="Lowest score at which a hand or palm counts as found (default 0.5)")
+                   help="Lowest score at which a detection, hand or body counts as found (default 0.5)")
     p.add_argument("--smooth", default="one-euro", choices=SMOOTH_MODES, help="one-euro (default) or none")
     p.add_argument("--min-cutoff", type=float, default=DEFAULT_MIN_CUTOFF,
-                   help="One Euro cutoff in Hz for a still hand (default 1.0)")
+                   help="One Euro cutoff in Hz for a still hand or body (default 1.0)")
     p.add_argument("--beta", type=float, default=DEFAULT_BETA,
-                   help="One Euro: how fast the cutoff rises with the hand's speed (default 5.0)")
+                   help="One Euro: how fast the cutoff rises with the speed (default 5.0)")
     p.add_argument("--out", default=None, help="Write the JSON here and print the path")
     return p.parse_args(argv)
 
 
 def _check(args):
-    if args.kind == "body":
-        fail("unsupported_kind", "track_pose kind 'body' is not available yet; use kind 'hand'.")
     if args.hands not in (1, 2):
         fail("invalid_args", f"--hands is 1 or 2, got {args.hands}")
+    if args.people != 1:
+        fail("invalid_args", f"--people is 1 for now (the body model follows one person), got {args.people}")
     if args.fps is not None and not args.fps > 0:
         fail("invalid_args", f"--fps must be above 0, got {args.fps}")
+    if args.pad is None:
+        args.pad = DEFAULT_PAD[args.kind]
     if not 0 <= args.pad <= 1:
         fail("invalid_args", f"--pad is a fraction of the long side from 0 to 1, got {args.pad}")
     if not 0 < args.min_presence < 1:
@@ -88,22 +109,22 @@ def _check(args):
         fail("invalid_args", "--min-cutoff must be above 0 and --beta 0 or more")
 
 
-def track_hands(frames, fps, tracker):
-    """[(t, [Hand])] for every frame, landmarks raw."""
+def track(frames, fps, tracker):
+    """[(t, [Hand] or [Person])] for every frame, landmarks raw."""
     return [(i / fps, tracker(img)) for i, img in enumerate(frames)]
 
 
 def drop_nonfinite(per_frame):
-    """The frames without any hand holding a NaN or infinite value, and
-    [{t, id}] for each hand dropped. Runs before smoothing, so a bad value
+    """The frames without any hand or person holding a NaN or infinite value,
+    and [{t, id}] for each one dropped. Runs before smoothing, so a bad value
     never reaches a filter, and the JSON stays strict."""
     import numpy as np
     out, dropped = [], []
-    for t, hands in per_frame:
+    for t, found in per_frame:
         kept = []
-        for h in hands:
-            if (np.isfinite(h.landmarks).all() and np.isfinite(h.world).all()
-                    and math.isfinite(h.score) and math.isfinite(h.right)):
+        for h in found:
+            values = [v for k, v in h._asdict().items() if k != "id"]
+            if all(np.isfinite(np.asarray(v, dtype=np.float64)).all() for v in values):
                 kept.append(h)
             else:
                 dropped.append({"t": round(t, 4), "id": h.id})
@@ -121,15 +142,15 @@ def label_hands(per_frame):
     return {i: ("right" if s / n > 0.5 else "left") for i, (s, n) in sums.items()}
 
 
-def smooth_hands(per_frame, min_cutoff, beta):
+def smooth(per_frame, min_cutoff, beta):
     """The same frames with each id's landmarks and world landmarks through a
     One Euro filter of their own."""
     from lib.pose.one_euro import OneEuro, extent
     filters = {}
     out = []
-    for t, hands in per_frame:
+    for t, found in per_frame:
         kept = []
-        for h in hands:
+        for h in found:
             if h.id not in filters:
                 filters[h.id] = (OneEuro(min_cutoff, beta), OneEuro(min_cutoff, beta))
             f_lm, f_world = filters[h.id]
@@ -143,30 +164,42 @@ def _round(rows, places):
     return [[round(float(v), places) for v in row] for row in rows]
 
 
-def result(per_frame, labels, fps, size, model, dropped=()):
+def _hand(h, labels):
+    return {
+        "id": h.id,
+        "handedness": labels[h.id],
+        "score": round(h.score, 3),
+        "landmarks": _round(h.landmarks, 2),
+        "world": _round(h.world, 4),
+    }
+
+
+def _person(p):
+    landmarks = [[round(float(v), 2) for v in xyz] + [round(float(vis), 3)]
+                 for xyz, vis in zip(p.landmarks, p.visibility)]
+    return {"id": p.id, "score": round(p.score, 3), "landmarks": landmarks, "world": _round(p.world, 4)}
+
+
+def result(per_frame, labels, fps, size, model, dropped=(), kind="hand"):
+    """The step's JSON. labels is {id: handedness} for hands, unused for bodies."""
+    key, notes, what = ("hands", HAND_NOTES, "hands") if kind == "hand" else ("people", BODY_NOTES, "people")
     frames = [{
         "t": round(t, 4),
-        "hands": [{
-            "id": h.id,
-            "handedness": labels[h.id],
-            "score": round(h.score, 3),
-            "landmarks": _round(h.landmarks, 2),
-            "world": _round(h.world, 4),
-        } for h in hands],
-    } for t, hands in per_frame]
+        key: [_hand(h, labels) if kind == "hand" else _person(h) for h in found],
+    } for t, found in per_frame]
     out = {
-        "kind": "hand",
+        "kind": kind,
         "fps": round(fps, 4),
         "frameCount": len(frames),
         "size": list(size),
-        "found": sum(1 for f in frames if f["hands"]),
+        "found": sum(1 for f in frames if f[key]),
         "frames": frames,
         "model": model,
-        "notes": NOTES,
+        "notes": notes,
     }
     if dropped:
         out["dropped"] = list(dropped)
-        out["notes"] = NOTES + [f"{len(dropped)} hands had non-finite values and were left out of their "
+        out["notes"] = notes + [f"{len(dropped)} {what} had non-finite values and were left out of their "
                                 f"frames; dropped lists them by t and id."]
     return out
 
@@ -183,39 +216,46 @@ def main(argv=None):
              f"track_pose needs onnxruntime and numpy ({e.name} is missing), which the rvm extra provides. "
              f"Install it with: pip install 'montaj[rvm]' (or: montaj install rvm)")
 
-    from lib.pose import hands as hands_lib, weights
+    from lib.pose import body as body_lib, hands as hands_lib, weights
     from lib.pose.video import MAX_DEFAULT_FPS, frames, video_info
 
     width, height, rate = video_info(args.input)
     fps = args.fps if args.fps is not None else min(rate, MAX_DEFAULT_FPS)
+    hand = args.kind == "hand"
     try:
-        palm_path, hand_path = weights.hand_models()
+        detector_path, landmark_path = weights.hand_models() if hand else weights.body_models()
     except weights.MirrorError as e:
         fail("invalid_model_mirror", str(e))
     except ValueError as e:
         from lib import models
         fail("model_conversion_failed",
-             f"The hand models could not be prepared: {e}. Delete {models.models_dir(weights.FAMILY)} "
+             f"The {args.kind} models could not be prepared: {e}. Delete {models.models_dir(weights.FAMILY)} "
              f"and run track_pose again to download them afresh.")
     # OMP_NUM_THREADS, when set, caps onnxruntime's threads as it does numpy's.
     threads = os.environ.get("OMP_NUM_THREADS", "")
-    palm_model, hand_model = hands_lib.onnx_models(palm_path, hand_path,
-                                                   threads=int(threads) if threads.isdigit() else 0)
-    tracker = hands_lib.HandTracker(palm_model, hand_model, max_hands=args.hands,
-                                    min_presence=args.min_presence,
-                                    pad=round(args.pad * max(width, height)))
+    threads = int(threads) if threads.isdigit() else 0
+    pad = round(args.pad * max(width, height))
+    if hand:
+        palm_model, hand_model = hands_lib.onnx_models(detector_path, landmark_path, threads=threads)
+        tracker = hands_lib.HandTracker(palm_model, hand_model, max_hands=args.hands,
+                                        min_presence=args.min_presence, pad=pad)
+    else:
+        detector, landmark_model = body_lib.onnx_models(detector_path, landmark_path, threads=threads)
+        tracker = body_lib.PoseTracker(detector, landmark_model, min_presence=args.min_presence, pad=pad)
 
-    per_frame, dropped = drop_nonfinite(track_hands(frames(args.input, fps, width, height), fps, tracker))
-    labels = label_hands(per_frame)
+    per_frame, dropped = drop_nonfinite(track(frames(args.input, fps, width, height), fps, tracker))
+    labels = label_hands(per_frame) if hand else {}
     if args.smooth == "one-euro":
-        per_frame = smooth_hands(per_frame, args.min_cutoff, args.beta)
-    model = {
-        "palm": weights.PALM.filename,
-        "landmarks": weights.HAND_LANDMARKS.filename,
-        "source": f"MediaPipe {weights.HAND_BUNDLE.name} (Apache-2.0), converted to ONNX",
-        "runtime": f"onnxruntime {onnxruntime.__version__}",
-    }
-    out = result(per_frame, labels, fps, (width, height), model, dropped)
+        per_frame = smooth(per_frame, args.min_cutoff, args.beta)
+    if hand:
+        bundle = weights.HAND_BUNDLE
+        model = {"palm": weights.PALM.filename, "landmarks": weights.HAND_LANDMARKS.filename}
+    else:
+        bundle = weights.POSE_BUNDLE
+        model = {"detector": weights.POSE_DETECTOR.filename, "landmarks": weights.POSE_LANDMARKS.filename}
+    model["source"] = f"MediaPipe {bundle.name} (Apache-2.0), converted to ONNX"
+    model["runtime"] = f"onnxruntime {onnxruntime.__version__}"
+    out = result(per_frame, labels, fps, (width, height), model, dropped, args.kind)
     text = json.dumps(out, separators=(",", ":"), allow_nan=False)
     if args.out:
         path = os.path.abspath(os.path.expanduser(args.out))
