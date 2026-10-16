@@ -54,7 +54,7 @@ def test_schema_has_the_fields_serve_and_the_tool_layer_read():
     assert all({"name", "type", "description"} <= set(p) for p in schema["params"])
     params = {p["name"]: p for p in schema["params"]}
     assert set(params) == {"project", "editor", "name", "out"}
-    assert params["editor"]["type"] == "enum" and params["editor"]["options"] == ["premiere", "resolve", "ae"]
+    assert params["editor"]["type"] == "enum" and params["editor"]["options"] == ["premiere", "resolve", "fcp", "ae"]
     assert params["project"]["type"] == "path" and params["project"]["required"] is True
     assert params["name"]["required"] is False and params["out"]["required"] is False
     assert schema["output"]["type"] == "json"

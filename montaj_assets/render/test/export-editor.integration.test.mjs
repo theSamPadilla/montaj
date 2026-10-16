@@ -134,12 +134,26 @@ test('--editor names the folder; premiere and resolve write the same XML; one th
   const r = runCli(['--project', proj.path, '--name', 'e', '--editor', 'resolve', '--out', out])
   assert.equal(r.status, 0, r.stderr)
   assert.equal(JSON.parse(r.stdout).dir, join(out, 'e (DaVinci Resolve)'))
-  for (const [editor, code] of [['fcp', 'not_supported'], ['bogus', 'invalid_args']]) {
+  for (const [editor, code] of [['bogus', 'invalid_args']]) {
     const bad = runCli(['--project', proj.path, '--name', 'e', '--editor', editor, '--out', out])
     assert.notEqual(bad.status, 0, editor)
     assert.equal(JSON.parse(bad.stderr.trim().split('\n').pop()).error, code, editor)
   }
   assert.deepEqual(readdirSync(out), ['e (DaVinci Resolve)'], 'a refused export leaves nothing')
+})
+
+test('--editor fcp: an .fcpxml linking the media copies by file URL', { timeout: 300_000 }, (t) => {
+  if (skip) { t.skip('ffmpeg/ffprobe not available'); return }
+  const proj = plainProject('fcp')
+  const out = join(dir, 'fcp-out')
+  const r = runCli(['--project', proj.path, '--name', 'f', '--editor', 'fcp', '--out', out])
+  assert.equal(r.status, 0, r.stderr)
+  const res = JSON.parse(r.stdout)
+  assert.equal(res.dir, join(out, 'f (Final Cut Pro)'))
+  assert.equal(res.open, join(res.dir, 'f.fcpxml'))
+  const xml = readFileSync(res.open, 'utf8')
+  assert.match(xml, /<fcpxml version="1.9">/)
+  assert.ok(xml.includes('src="file://' + res.dir.split('/').map(encodeURIComponent).join('/')) || xml.includes('/media/'), 'media linked in the package')
 })
 
 test('--editor ae: a .jsx beside relative media, an .aep path in the result, text layers for the captions', { timeout: 300_000 }, (t) => {

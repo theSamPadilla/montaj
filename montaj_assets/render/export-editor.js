@@ -37,6 +37,7 @@ import { renderNleGraphics } from './nle/graphics.js'
 import { captionsToSrt } from './nle/srt.js'
 import { writeXmeml } from './nle/xmeml.js'
 import { writeAeScript } from './nle/aejsx.js'
+import { writeFcpxml } from './nle/fcpxml.js'
 import { cleanFileName } from './nle/file-name.js'
 import { resolveProjectSrc, resolveFilePath } from './project-paths.js'
 import { trackItems } from './project-tracks.js'
@@ -53,8 +54,8 @@ export const EDITORS = {
   fcp: { label: 'Final Cut Pro', writer: 'fcpxml' },
   ae: { label: 'After Effects', writer: 'jsx' },
 }
-/** What this build writes. `fcp` (FCPXML) joins when its writer lands. */
-export const AVAILABLE_EDITORS = ['premiere', 'resolve', 'ae']
+/** What this build writes. All four write. */
+export const AVAILABLE_EDITORS = ['premiere', 'resolve', 'fcp', 'ae']
 
 class ExportError extends Error {
   constructor(code, message) {
@@ -137,7 +138,8 @@ export async function exportForEditor({ projectPath, name, out, editor = 'premie
     if (srt !== null) writeFileSync(join(tmpDir, 'captions.srt'), srt, 'utf8')
 
     const isJsx = EDITORS[editor].writer === 'jsx'
-    const xmlName = `${packageName}.${isJsx ? 'jsx' : 'xml'}`
+    const isFcp = EDITORS[editor].writer === 'fcpxml'
+    const xmlName = `${packageName}.${isJsx ? 'jsx' : isFcp ? 'fcpxml' : 'xml'}`
     const build = () => {
       const probes = { ...sourceProbes }
       for (const m of movies) probes[toFinal(m)] = movieProbes[m]
@@ -151,6 +153,7 @@ export async function exportForEditor({ projectPath, name, out, editor = 'premie
         })
         return { xml: r.jsx, aep: r.aep, warnings: r.warnings, leftOut: r.leftOut }
       }
+      if (isFcp) return writeFcpxml(timeline, probes, { name: packageName, graphics, captions, mediaPaths })
       return writeXmeml(timeline, probes, { name: packageName, graphics, captions, xmlDir: finalDir, mediaPaths })
     }
     let built = build()
