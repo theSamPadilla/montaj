@@ -1,5 +1,6 @@
 include LICENSE
 include NOTICE
+include LICENSE-APACHE-2.0
 include README.md
 include Montaj.jpeg
 

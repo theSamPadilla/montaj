@@ -33,8 +33,8 @@ First-run flow is identical for brew and pip: `montaj doctor` first to see what'
 | `whisper` | whisper-cli (via `brew install whisper-cpp` on macOS) + large-v3-turbo-q5_0 model weights | `transcribe`, `rm_fillers`, `rm_nonspeech`, `waveform_trim`, render pipeline |
 | `ui` | npm deps for `render/` and `ui/`; production UI build | `montaj serve`, render engine |
 | `ffmpeg` | pinned static ffmpeg + ffprobe (8.1.2, with libzimg/zscale) into the managed models dir | HDR normalization (`zscale`), all ffmpeg-backed steps, render engine |
-| `rvm` | onnxruntime, av, numpy (pip) + rvm_mobilenetv3_fp32.onnx (~15 MB, SHA-256 verified); runs on the CPU | `remove_bg` |
-| `vision` | pycolmap (pip; not on Intel Macs yet) | `track_camera` |
+| `rvm` | onnxruntime, av, numpy (pip) + rvm_mobilenetv3_fp32.onnx (~15 MB, SHA-256 verified); runs on the CPU | `remove_bg`, `track_pose` |
+| `vision` | pycolmap (`pip install 'montaj[vision]'`; macOS arm64, Windows x64 and Linux x86_64 only) | `track_camera` |
 | `connectors` | pyjwt, requests, google-genai, openai | `kling_generate`, `analyze_media`, `generate_image` |
 
 Credentials are stored in `~/.montaj/credentials.json` (0600 permissions). Three modes:

@@ -1024,7 +1024,7 @@ test = [
     { name = "pytest-timeout" },
 ]
 vision = [
-    { name = "pycolmap", marker = "platform_machine == 'arm64' or sys_platform != 'darwin'" },
+    { name = "pycolmap", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
 ]
 
 [package.metadata]
@@ -1041,7 +1041,7 @@ requires-dist = [
     { name = "onnxruntime", marker = "extra == 'rvm'", specifier = ">=1.23" },
     { name = "openai", marker = "extra == 'connectors'", specifier = ">=1.75.0" },
     { name = "pillow", specifier = ">=10.0" },
-    { name = "pycolmap", marker = "(platform_machine == 'arm64' and extra == 'vision') or (sys_platform != 'darwin' and extra == 'vision')", specifier = "==4.2.1" },
+    { name = "pycolmap", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'vision') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'vision') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'vision')", specifier = "==4.2.1" },
     { name = "pyjwt", marker = "extra == 'connectors'", specifier = ">=2.8.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
     { name = "pytest-timeout", marker = "extra == 'test'" },
