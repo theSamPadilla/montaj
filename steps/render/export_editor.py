@@ -59,7 +59,7 @@ def main():
     parser = argparse.ArgumentParser(description="Export a project for a video editor")
     parser.add_argument("--project", required=True, help="Absolute path to project.json")
     parser.add_argument("--name", default=None, help="Package name (default: the project's name)")
-    parser.add_argument("--editor", default=None, help="premiere (default) or resolve")
+    parser.add_argument("--editor", default=None, help="premiere (default), resolve or ae")
     parser.add_argument("--out", default=None,
                         help="The folder the package goes in (default: <project_dir>/export/)")
     args = parser.parse_args()

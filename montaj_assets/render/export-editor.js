@@ -36,6 +36,7 @@ import { probeSources } from './nle/probe.js'
 import { renderNleGraphics } from './nle/graphics.js'
 import { captionsToSrt } from './nle/srt.js'
 import { writeXmeml } from './nle/xmeml.js'
+import { writeAeScript } from './nle/aejsx.js'
 import { cleanFileName } from './nle/file-name.js'
 import { resolveProjectSrc, resolveFilePath } from './project-paths.js'
 import { trackItems } from './project-tracks.js'
@@ -52,8 +53,8 @@ export const EDITORS = {
   fcp: { label: 'Final Cut Pro', writer: 'fcpxml' },
   ae: { label: 'After Effects', writer: 'jsx' },
 }
-/** What this build writes. `fcp` (FCPXML) and `ae` (a script) join as their writers land. */
-export const AVAILABLE_EDITORS = ['premiere', 'resolve']
+/** What this build writes. `fcp` (FCPXML) joins when its writer lands. */
+export const AVAILABLE_EDITORS = ['premiere', 'resolve', 'ae']
 
 class ExportError extends Error {
   constructor(code, message) {
@@ -135,13 +136,21 @@ export async function exportForEditor({ projectPath, name, out, editor = 'premie
     const srt = captionsToSrt(project)
     if (srt !== null) writeFileSync(join(tmpDir, 'captions.srt'), srt, 'utf8')
 
-    const xmlName = `${packageName}.xml`
+    const isJsx = EDITORS[editor].writer === 'jsx'
+    const xmlName = `${packageName}.${isJsx ? 'jsx' : 'xml'}`
     const build = () => {
       const probes = { ...sourceProbes }
       for (const m of movies) probes[toFinal(m)] = movieProbes[m]
       const graphics = Object.fromEntries(Object.entries(rendered.graphics).map(([id, p]) => [id, toFinal(p)]))
       const captions = rendered.captions ? toFinal(rendered.captions) : null
       const mediaPaths = Object.fromEntries(Object.entries(mediaCopies.paths).map(([orig, copy]) => [orig, toFinal(copy)]))
+      if (isJsx) {
+        const r = writeAeScript(timeline, probes, {
+          name: packageName, pkgDir: finalDir, mediaPaths, graphics, captions,
+          captionSegments: project?.captions?.segments ?? [],
+        })
+        return { xml: r.jsx, aep: r.aep, warnings: r.warnings, leftOut: r.leftOut }
+      }
       return writeXmeml(timeline, probes, { name: packageName, graphics, captions, xmlDir: finalDir, mediaPaths })
     }
     let built = build()
@@ -164,6 +173,7 @@ export async function exportForEditor({ projectPath, name, out, editor = 'premie
       dir: finalDir,
       open: join(finalDir, xmlName),
       xml: join(finalDir, xmlName),
+      ...(isJsx ? { aep: built.aep } : {}),
       files: listFiles(finalDir),
       leftOut: built.leftOut,
       warnings: [...new Set([...timeline.warnings, ...rendered.warnings, ...built.warnings, ...mediaCopies.warnings])],

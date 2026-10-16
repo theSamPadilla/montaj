@@ -134,12 +134,28 @@ test('--editor names the folder; premiere and resolve write the same XML; one th
   const r = runCli(['--project', proj.path, '--name', 'e', '--editor', 'resolve', '--out', out])
   assert.equal(r.status, 0, r.stderr)
   assert.equal(JSON.parse(r.stdout).dir, join(out, 'e (DaVinci Resolve)'))
-  for (const [editor, code] of [['ae', 'not_supported'], ['fcp', 'not_supported'], ['bogus', 'invalid_args']]) {
+  for (const [editor, code] of [['fcp', 'not_supported'], ['bogus', 'invalid_args']]) {
     const bad = runCli(['--project', proj.path, '--name', 'e', '--editor', editor, '--out', out])
     assert.notEqual(bad.status, 0, editor)
     assert.equal(JSON.parse(bad.stderr.trim().split('\n').pop()).error, code, editor)
   }
   assert.deepEqual(readdirSync(out), ['e (DaVinci Resolve)'], 'a refused export leaves nothing')
+})
+
+test('--editor ae: a .jsx beside relative media, an .aep path in the result, text layers for the captions', { timeout: 300_000 }, (t) => {
+  if (skip) { t.skip('ffmpeg/ffprobe not available'); return }
+  const proj = plainProject('ae')
+  const out = join(dir, 'ae-out')
+  const r = runCli(['--project', proj.path, '--name', 'a', '--editor', 'ae', '--out', out])
+  assert.equal(r.status, 0, r.stderr)
+  const res = JSON.parse(r.stdout)
+  assert.equal(res.dir, join(out, 'a (After Effects)'))
+  assert.equal(res.open, join(res.dir, 'a.jsx'))
+  assert.equal(res.aep, join(res.dir, 'a.aep'))
+  const jsx = readFileSync(res.open, 'utf8')
+  assert.ok(jsx.includes('"path": "media/'), 'media is relative to the script')
+  assert.ok(!jsx.includes(res.dir), 'the package folder path is not baked in')
+  assert.ok(readdirSync(res.dir).includes('.montaj-editor-export'))
 })
 
 test('--out: the package goes in the folder asked for, which is created if it is new', { timeout: 300_000 }, (t) => {

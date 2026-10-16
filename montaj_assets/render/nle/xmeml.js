@@ -524,7 +524,7 @@ function basePlan(t, ctx) {
 // Geometry (see PICTURE)
 // ---------------------------------------------------------------------------
 
-function motionOf(clip, media, ctx) {
+export function motionOf(clip, media, ctx) {
   const W = ctx.width
   const H = ctx.height
   const nw = media.width

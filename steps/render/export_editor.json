@@ -22,11 +22,12 @@
       "type": "enum",
       "options": [
         "premiere",
-        "resolve"
+        "resolve",
+        "ae"
       ],
       "default": "premiere",
       "required": false,
-      "description": "Which editor the package is for: premiere (Premiere Pro) or resolve (DaVinci Resolve). Both read the same XML; the package folder carries the editor's name. Only the editors this version of Montaj can write are listed."
+      "description": "Which editor the package is for: premiere (Premiere Pro) and resolve (DaVinci Resolve) read one XML; ae (After Effects) gets a script that builds the composition and saves an .aep (result carries aep). The package folder carries the editor's name. Only the editors this version of Montaj can write are listed."
     },
     {
       "name": "name",
