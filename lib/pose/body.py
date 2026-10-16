@@ -146,6 +146,8 @@ def decode_landmarks(raw, heatmap):
 def pose_landmarks(landmark_model, image, rect):
     """(landmarks (39, 3) source px, visibility (39,), pose presence, world (39, 3) m)."""
     tensor = warp(image, crop_matrix(rect, LANDMARK_SIZE), LANDMARK_SIZE, LANDMARK_RANGE, LANDMARK_BORDER)
+    # The pose presence is already a probability: the model's own last op on
+    # that output is a sigmoid, and the reference thresholds it as it comes.
     raw, presence, heatmap, raw_world = landmark_model(tensor[None])
     xyz, visibility, _ = decode_landmarks(raw, heatmap)
     return crop_to_source(xyz, rect), visibility, float(np.ravel(presence)[0]), rotate_world(raw_world, rect)

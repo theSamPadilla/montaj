@@ -47,6 +47,9 @@ SAME, VALID = 0, 1
 DIM_DENSE, DIM_CSR = 0, 1
 # SparseIndexVector union types -> numpy.
 _INDEX_DTYPES = {1: np.int32, 2: np.uint16, 3: np.uint8}
+# The most elements a sparse tensor may hold once dense: far above any pose
+# model's weights, and low enough that bad metadata cannot exhaust memory.
+MAX_ELEMENTS = 1 << 28
 
 
 class ConversionError(ValueError):
@@ -163,23 +166,69 @@ def _sparsity(t):
     return t.ints(0), t.ints(1), levels
 
 
+def _check_sparsity(values, shape, traversal, block_map, levels):
+    """Refuse sparsity metadata that cannot describe a tensor of this shape
+    holding these values, before anything is allocated from it."""
+    rank = len(shape)
+    total = 1
+    for d in shape:
+        if not 0 < d <= MAX_ELEMENTS:
+            raise ConversionError(f"a sparse tensor has a dimension of {d}")
+        total *= d
+    if total > MAX_ELEMENTS:
+        raise ConversionError(f"a sparse tensor of shape {list(shape)} is over {MAX_ELEMENTS} elements")
+    if len(values) > total:
+        raise ConversionError(f"a sparse tensor holds {len(values)} values for {total} elements")
+    if sorted(traversal) != list(range(rank + len(block_map))) or len(levels) != len(traversal):
+        raise ConversionError("a sparse tensor's traversal order does not cover its dimensions")
+    if any(not 0 <= b < rank for b in block_map):
+        raise ConversionError("a sparse tensor's block map names a dimension it does not have")
+    for level, dim in enumerate(traversal):
+        fmt, size = levels[level][:2]
+        if fmt not in (DIM_DENSE, DIM_CSR):
+            raise ConversionError(f"sparse dimension type {fmt} is not supported")
+        if dim >= rank and (fmt != DIM_DENSE or not 0 < size <= MAX_ELEMENTS):
+            raise ConversionError(f"a sparse tensor's block dimension is {size}")
+
+
 def densify(values, shape, traversal, block_map, levels):
     """The dense tensor a TFLite sparse tensor encodes. `values` are its stored
     values in traversal order; each level of `levels` walks one dimension of
     `traversal` (the tensor's dimensions, then any block dimensions), dense or
     compressed (CSR: the entries of segment [prev, prev + 1) of `indices`), as
-    TFLite's own format converter walks them."""
+    TFLite's own format converter walks them. Every level's position count is
+    checked, before it allocates anything, against what the file stores (the
+    values, segments and indices), so metadata claiming a huge tensor raises
+    ConversionError instead of exhausting memory. (Not against the values
+    alone: a level above a compressed one has a position for every segment,
+    and a segment may be empty.)"""
+    _check_sparsity(values, shape, traversal, block_map, levels)
     rank = len(shape)
+    stored = len(values) + sum(len(seg) + len(ind) for fmt, _, seg, ind in levels if fmt == DIM_CSR)
+    sizes = [shape[d] if d < rank else levels[level][1] for level, d in enumerate(traversal)]
     prev = np.zeros(1, np.int64)                    # position at the previous level
     idx = np.zeros((1, 0), np.int64)                # traversal-order index so far
-    for fmt, size, segments, indices in levels:
+    for level, (fmt, size, segments, indices) in enumerate(levels):
         if fmt == DIM_DENSE:
+            if size < 0 or len(prev) * size > stored:
+                raise ConversionError(f"a sparse tensor's level {level} walks {len(prev) * max(size, 0)} "
+                                      f"positions for {stored} stored entries")
             prev = (prev[:, None] * size + np.arange(size)).ravel()
             idx = np.concatenate([np.repeat(idx, size, axis=0),
                                   np.tile(np.arange(size), len(idx))[:, None]], axis=1)
         else:
-            starts, counts = segments[prev], segments[prev + 1] - segments[prev]
+            if len(prev) and int(prev.max()) + 1 >= len(segments):
+                raise ConversionError(f"a sparse tensor's level {level} has too few segments")
+            starts, ends = segments[prev], segments[prev + 1]
+            counts = ends - starts
+            if len(prev) and ((counts < 0).any() or (starts < 0).any() or (ends > len(indices)).any()):
+                raise ConversionError(f"a sparse tensor's level {level} has segments out of order")
+            if int(counts.sum()) > stored:
+                raise ConversionError(f"a sparse tensor's level {level} walks {int(counts.sum())} positions "
+                                      f"for {stored} stored entries")
             k = np.repeat(starts - np.cumsum(counts) + counts, counts) + np.arange(counts.sum())
+            if len(k) and not (0 <= int(indices[k].min()) and int(indices[k].max()) < sizes[level]):
+                raise ConversionError(f"a sparse tensor's level {level} has an index outside 0..{sizes[level] - 1}")
             idx = np.concatenate([np.repeat(idx, counts, axis=0), indices[k][:, None]], axis=1)
             prev = k
     if len(idx) != len(values):
@@ -196,6 +245,9 @@ def densify(values, shape, traversal, block_map, levels):
         if dim >= rank:
             b = dim - rank
             orig[block_map[b]] = orig[block_map[b]] * block_size[b] + idx[:, level]
+    for d in range(rank):
+        if len(orig[d]) and int(orig[d].max()) >= shape[d]:
+            raise ConversionError(f"a sparse tensor's values fall outside its dimension {d} of {shape[d]}")
     dense = np.zeros(shape, values.dtype)
     dense[tuple(orig)] = values
     return dense
@@ -244,7 +296,7 @@ def convert(data, outputs=None):
         return to_onnx(read_model(data), outputs)
     except ConversionError:
         raise
-    except (struct.error, IndexError, KeyError, ValueError) as e:
+    except (struct.error, IndexError, KeyError, ValueError, MemoryError, OverflowError) as e:
         raise ConversionError(f"not a TFLite model this converter reads ({type(e).__name__}: {e})") from e
 
 

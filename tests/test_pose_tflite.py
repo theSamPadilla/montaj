@@ -397,10 +397,11 @@ def test_densify_refuses_a_count_that_does_not_fit():
         T.densify(np.ones(3, np.float32), [2, 3], [0, 1], [], levels)
 
 
-def _sparse_tflite(dense):
+def _sparse_tflite(dense, dense_sizes=None):
     """input [1, 2, 2, I] -> CONV_2D (1x1, no bias) whose float16 weight
     `dense` ([O, 1, 1, I]) is stored sparse (CSR on I, uint8 indices) and goes
-    through DENSIFY and DEQUANTIZE."""
+    through DENSIFY and DEQUANTIZE. `dense_sizes` overrides the metadata's
+    sizes of the three dense levels."""
     flatbuffers = pytest.importorskip("flatbuffers")
     b = flatbuffers.Builder(0)
     o_, i_ = dense.shape[0], dense.shape[3]
@@ -440,7 +441,7 @@ def _sparse_tflite(dense):
 
     seg_t, ind_t = index_vector(segments, False), index_vector(indices, True)
     dims = []
-    for size in dense.shape[:3]:
+    for size in dense_sizes or dense.shape[:3]:
         b.StartObject(6)
         b.PrependInt32Slot(1, size, 0)                     # format DENSE is the default
         dims.append(b.EndObject())
@@ -522,6 +523,108 @@ def test_a_sparse_float16_weight_is_read_dense_and_runs():
     assert got == pytest.approx(x @ dense.astype(np.float32)[:, 0, 0, :].T, abs=1e-5)
 
 
+class _SmallNumpy:
+    """numpy, except that asking it for an array of over a million elements
+    fails the test instead of allocating one. The sizes below are chosen so
+    that code without the checks reaches one of these calls before it could
+    build anything over a few million elements another way."""
+
+    LIMIT = 1 << 20
+
+    def __getattr__(self, name):
+        return getattr(np, name)
+
+    def _check(self, n):
+        if int(n) > self.LIMIT:
+            pytest.fail(f"allocated {int(n)} elements from unchecked metadata")
+
+    def zeros(self, shape, *args, **kwargs):
+        self._check(np.prod(np.asarray(shape, dtype=object)) if np.ndim(shape) else shape)
+        return np.zeros(shape, *args, **kwargs)
+
+    def arange(self, n, *args, **kwargs):
+        self._check(n)
+        return np.arange(n, *args, **kwargs)
+
+    def repeat(self, a, repeats, axis=None):
+        self._check(np.sum(repeats) if np.ndim(repeats) else len(a) * int(repeats))
+        return np.repeat(a, repeats, axis=axis)
+
+    def tile(self, a, reps):
+        self._check(np.size(a) * int(reps))
+        return np.tile(a, reps)
+
+
+@pytest.fixture
+def small_numpy(monkeypatch):
+    monkeypatch.setattr(T, "np", _SmallNumpy())
+
+
+def _levels(*sizes, segments=(0, 1), indices=(0,)):
+    """Dense levels of the given sizes, then one compressed level."""
+    return ([(T.DIM_DENSE, s, None, None) for s in sizes]
+            + [(T.DIM_CSR, 0, np.array(segments), np.array(indices))])
+
+
+def test_empty_rows_densify(small_numpy):
+    # 5 rows above a compressed level, only one of them holding values: more
+    # positions on the row level than values stored, and still a valid tensor.
+    dense = np.zeros((5, 6), np.float32)
+    dense[3, [1, 4]] = (2.0, -1.0)
+    segments, indices, values = _csr(dense)
+    out = T.densify(values, [5, 6], [0, 1], [], _levels(5, segments=segments, indices=indices))
+    assert np.array_equal(out, dense)
+
+
+def test_a_huge_dense_level_is_refused_before_it_allocates(small_numpy):
+    # 2^30 positions for one stored value.
+    with pytest.raises(T.ConversionError, match="walks"):
+        T.densify(np.ones(1, np.float32), [4, 4], [0, 1], [], _levels(1 << 30))
+    # 2^11 x 2^11 positions: each level alone is small, together they are not.
+    with pytest.raises(T.ConversionError, match="walks"):
+        T.densify(np.ones(1, np.float32), [1 << 11, 1 << 11, 4], [0, 1, 2], [], _levels(1 << 11, 1 << 11))
+    with pytest.raises(T.ConversionError, match="walks"):
+        T.densify(np.ones(1, np.float32), [4, 4], [0, 1], [], _levels(-3))
+
+
+def test_a_shape_over_the_cap_is_refused_before_it_allocates(small_numpy):
+    with pytest.raises(T.ConversionError, match="over"):
+        T.densify(np.ones(1, np.float32), [1 << 15, 1 << 15, 2], [0, 1, 2], [], _levels(1, 1))
+    with pytest.raises(T.ConversionError, match="dimension of"):
+        T.densify(np.ones(1, np.float32), [0, 4], [0, 1], [], _levels(1))
+    # A block dimension over the cap.
+    levels = [(T.DIM_DENSE, 1, None, None), (T.DIM_DENSE, 1 << 30, None, None)]
+    with pytest.raises(T.ConversionError, match="block dimension"):
+        T.densify(np.ones(1, np.float32), [4], [0, 1], [0], levels)
+
+
+def test_a_negative_or_outside_index_is_refused(small_numpy):
+    with pytest.raises(T.ConversionError, match="index outside"):
+        T.densify(np.ones(1, np.float32), [2, 3], [0, 1], [], _levels(2, segments=(0, 1, 1), indices=(-1,)))
+    with pytest.raises(T.ConversionError, match="index outside"):
+        T.densify(np.ones(1, np.float32), [2, 3], [0, 1], [], _levels(2, segments=(0, 1, 1), indices=(3,)))
+    with pytest.raises(T.ConversionError, match="segments"):
+        T.densify(np.ones(1, np.float32), [2, 3], [0, 1], [], _levels(2, segments=(0, 2, 1), indices=(0, 1)))
+    with pytest.raises(T.ConversionError, match="too few segments"):
+        T.densify(np.ones(1, np.float32), [2, 3], [0, 1], [], _levels(2, segments=(0, 1), indices=(0,)))
+
+
+def test_a_file_claiming_a_huge_sparse_tensor_fails_as_a_conversion_error(small_numpy):
+    dense = np.ones((3, 1, 1, 5), np.float16)
+    data = _sparse_tflite(dense, dense_sizes=(1 << 30, 1, 1))
+    with pytest.raises(T.ConversionError):
+        T.convert(data)
+
+
+def test_memory_and_overflow_errors_are_conversion_errors(monkeypatch):
+    for error in (MemoryError, OverflowError):
+        def read(data, error=error):
+            raise error("too big")
+        monkeypatch.setattr(T, "read_model", read)
+        with pytest.raises(T.ConversionError, match="too big"):
+            T.convert(b"x")
+
+
 def test_only_the_named_outputs_are_kept():
     m = _Model([1, 2, 2, 3])
     a = m.op(T.LOGISTIC, [m.input], [1, 2, 2, 3])
@@ -541,6 +644,28 @@ def test_only_the_named_outputs_are_kept():
     assert got == pytest.approx(x @ m.tensors[w]["data"][:, 0, 0, :].T, abs=1e-5)
     with pytest.raises(T.ConversionError, match="no output 'missing'"):
         T.to_onnx(model, ["missing"])
+
+
+def test_the_pose_presence_output_is_already_a_probability():
+    """Runs where the pose bundle has been downloaded, as below. The landmark
+    model's pose presence (Identity_1) is a reshape of a sigmoid, so body.py
+    thresholds it as it comes."""
+    import os
+    import zipfile
+    from lib import models
+    from lib.pose import weights
+    path = os.environ.get("MONTAJ_TEST_POSE_TASK") or models.model_path(weights.FAMILY, weights.POSE_BUNDLE.filename)
+    if not os.path.isfile(path):
+        pytest.skip("the pose bundle is not downloaded")
+    with zipfile.ZipFile(path) as z:
+        model = T.read_model(z.read(weights.POSE_LANDMARKS.member))
+    producer = {o: op for op in model["ops"] for o in op["outputs"]}
+    i = next(k for k, t in enumerate(model["tensors"]) if t["name"] == "Identity_1")
+    codes = []
+    while i in producer and (not codes or codes[-1] == T.RESHAPE):
+        codes.append(producer[i]["code"])
+        i = producer[i]["inputs"][0]
+    assert codes == [T.RESHAPE, T.LOGISTIC]
 
 
 def test_the_pose_bundle_converts_to_the_pinned_files():
