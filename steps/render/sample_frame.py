@@ -4,8 +4,11 @@
 Extracts the video frame, active image items, active overlay JSXs and the
 captions (as the export draws them) at the requested timestamp, composites
 them at project resolution, and writes a PNG.
+
+With --scene, it renders one 3D alone instead, over the project's whole frame,
+--at seconds into that 3D: a 3D no timeline item shows can be checked too.
 """
-import os, sys, argparse, subprocess, json
+import os, re, sys, argparse, subprocess, json
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
@@ -20,6 +23,9 @@ from lib.types.colorspace import is_hdr, DEFAULT_COLOR_SPACE
 # so pointing node at it crashes with "Cannot find package 'puppeteer'".
 SAMPLE_FRAME_JS = os.path.join(render_runtime_dir(), "sample-frame.js")
 
+# A 3D's id, the rule save_model and render/scene3d.js use.
+SCENE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -28,7 +34,12 @@ def main():
     parser.add_argument("--project", required=True,
                         help="Absolute path to project.json")
     parser.add_argument("--at", type=float, required=True,
-                        help="Timestamp in seconds to sample")
+                        help="Timestamp in seconds to sample: timeline seconds, or with --scene, "
+                             "seconds into that 3D")
+    parser.add_argument("--scene", default=None,
+                        help="Sample one 3D alone over the project's whole frame instead of the "
+                             "timeline: the id of a 3D saved under models/scenes/<id>/, or '' for the "
+                             "project's own (models/active.json). --at is then seconds into it.")
     parser.add_argument("--sdr-curve", default=None,
                         help="Look curve id for the HDR-to-SDR grade (see lib/look.py::curve_ids()). "
                              "Meaningless on SDR projects: ignored with a stderr warning, not an "
@@ -43,6 +54,14 @@ def main():
                         help="Output PNG path (default: <project_dir>/render/samples/frame-<at>s.png)")
     args = parser.parse_args()
 
+    if args.scene is not None:
+        if args.scene != "" and not SCENE_ID.match(args.scene):
+            fail("invalid_scene",
+                 f"--scene must be a 3D id of lowercase letters, digits and -, or '' for the "
+                 f"project's own (got {args.scene!r}).")
+        if args.at < 0:
+            fail("invalid_at", f"--at must be 0 or more seconds into the 3D (got {args.at}).")
+
     # Build default output path if not specified.
     if args.out:
         out = args.out
@@ -50,7 +69,11 @@ def main():
         project_dir = os.path.dirname(os.path.abspath(args.project))
         samples_dir = os.path.join(project_dir, "render", "samples")
         os.makedirs(samples_dir, exist_ok=True)
-        out = os.path.join(samples_dir, f"frame-{args.at}s.png")
+        if args.scene is None:
+            name = f"frame-{args.at}s.png"
+        else:
+            name = f"3d-{args.scene}-{args.at}s.png" if args.scene else f"3d-{args.at}s.png"
+        out = os.path.join(samples_dir, name)
 
     cmd = [
         "node", SAMPLE_FRAME_JS,
@@ -62,6 +85,9 @@ def main():
 
     if args.prefer_proxy:
         cmd.append("--prefer-proxy")
+
+    if args.scene is not None:
+        cmd += ["--scene", args.scene]
 
     if args.sdr_curve is not None:
         # Fail loudly here rather than let sample-frame.js's own manifest check

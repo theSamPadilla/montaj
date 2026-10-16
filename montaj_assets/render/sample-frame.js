@@ -7,6 +7,8 @@
  *     → { pngPath, measurements? }
  *   sampleFrame({ projectJson, atSeconds, outPath })
  *     → { pngPath }
+ *   sampleScene({ projectJson, scene, atSeconds, outPath })
+ *     → { pngPath }   one 3D alone, atSeconds into it
  *
  * CLI:
  *   node sample-frame.js --mode overlay --component <path> [--frame N] [--fps N]
@@ -17,6 +19,7 @@
  *
  *   node sample-frame.js --mode frame --project <path> --at <seconds> --out <path>
  *     [--clamp-to-end]  past the end: sample the last frame, write <out>.clamped.json
+ *     [--scene <id>]    one 3D alone, --at seconds into it ('' is the project's own)
  *
  * stdout: absolute PNG path (or JSON with measurements if --mode overlay --measure)
  * stderr: progress lines prefixed [montaj sample]
@@ -57,7 +60,7 @@ import {
 import { resolveAt, sourceWindow, opaqueReplacesPicture, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 import { captionOverlayFields } from './caption-spec.js'
-import { materializeScene3d } from './scene3d.js'
+import { materializeScene3d, SCENE3D_SRC } from './scene3d.js'
 
 /**
  * The pre-SP6b Hable chain: the ONLY place this file tonemaps with Hable, used
@@ -283,7 +286,9 @@ if (isMain) {
       '    [--width W] [--height H] [--props \'...\'] [--google-fonts f1,f2]\n' +
       '    [--duration N] [--measure] --out <path>\n' +
       '  sample-frame.js --mode frame --project <path> --at <seconds> [--sdr-curve <id>]\n' +
-      '    --out <path> [--clamp-to-end]\n'
+      '    --out <path> [--clamp-to-end]\n' +
+      '  sample-frame.js --mode frame --project <path> --scene <id> --at <seconds into it>\n' +
+      '    --out <path>   one 3D alone; --scene \'\' is the project\'s own\n'
     )
     process.exit(1)
   }
@@ -305,6 +310,7 @@ if (isMain) {
   let sdrCurveArg   = null
   let preferProxyArg = false
   let clampToEndArg = false
+  let sceneArg      = null
   // shared
   let outArg        = null
 
@@ -325,6 +331,7 @@ if (isMain) {
     if (a === '--sdr-curve')    { sdrCurveArg   = argv[++i]; continue }
     if (a === '--clamp-to-end') { clampToEndArg = true; continue }
     if (a === '--prefer-proxy') { preferProxyArg = true; continue }
+    if (a === '--scene')        { sceneArg      = argv[++i] ?? null; if (sceneArg === null) fail('missing_argument', '--scene needs a 3D id, or \'\' for the project\'s own'); continue }
     if (a === '--out')          { outArg        = argv[++i]; continue }
   }
 
@@ -370,14 +377,23 @@ if (isMain) {
   } else if (mode === 'frame') {
     if (!projectArg) fail('missing_argument', '--project <path> is required for --mode frame')
     if (atArg == null) fail('missing_argument', '--at <seconds> is required for --mode frame')
-    sampleFrame({
-      projectJson: resolve(projectArg),
-      atSeconds: atArg,
-      outPath: resolve(outArg),
-      sdrCurve: sdrCurveArg,
-      preferProxy: preferProxyArg,
-      clampToEnd: clampToEndArg,
-    }).then(result => {
+    const sampled = sceneArg !== null
+      ? sampleScene({
+        projectJson: resolve(projectArg),
+        scene: sceneArg,
+        atSeconds: atArg,
+        outPath: resolve(outArg),
+        sdrCurve: sdrCurveArg,
+      })
+      : sampleFrame({
+        projectJson: resolve(projectArg),
+        atSeconds: atArg,
+        outPath: resolve(outArg),
+        sdrCurve: sdrCurveArg,
+        preferProxy: preferProxyArg,
+        clampToEnd: clampToEndArg,
+      })
+    sampled.then(result => {
       process.stdout.write(result.pngPath + '\n')
     }).catch(err => {
       const error = isThreeFrameBlank(err) ? 'three_frame_blank' : 'sample_failed'
@@ -774,6 +790,9 @@ export async function sampleOverlay({
  * @param {string}        opts.outPath      Where to write the output PNG
  * @param {string|null}   [opts.sdrCurve]   Look curve id for the HDR→SDR grade;
  *   null uses the master look. Ignored on SDR projects (nothing is converted).
+ * @param {string|null}   [opts.projectDir] The project's folder, for a parsed
+ *   `projectJson`: relative paths and 3D items resolve against it. A path
+ *   `projectJson` brings its own.
  * @returns {Promise<{ pngPath: string }>}
  */
 export async function sampleFrame({
@@ -783,6 +802,7 @@ export async function sampleFrame({
   sdrCurve = null,
   preferProxy = false,
   clampToEnd = false,
+  projectDir: projectDirOpt = null,
 }) {
   if (!outPath) throw new Error('outPath is required')
   if (atSeconds == null) throw new Error('atSeconds is required')
@@ -806,7 +826,7 @@ export async function sampleFrame({
   }
   // §239: a scene item (src `engine:scene3d`) becomes the plain overlay of the host's stage before the cache key reads
   // the overlay sources, so an edited stage or scene misses. Needs the project's folder, so only a project given by path.
-  materializeScene3d(project, projectPath ? dirname(projectPath) : null)
+  materializeScene3d(project, projectPath ? dirname(projectPath) : projectDirOpt)
 
   // Opt-in: a time at or past the end samples the last frame instead of
   // failing. Done before the cache key so the clamped time is what is cached.
@@ -833,7 +853,7 @@ export async function sampleFrame({
   }
 
   // Resolve relative paths in project
-  const projectDir = projectPath ? dirname(projectPath) : null
+  const projectDir = projectPath ? dirname(projectPath) : projectDirOpt
   const resolvedProject = deepClone(project)
   if (projectDir) {
     resolveProjectPaths(resolvedProject, projectDir)
@@ -1394,6 +1414,47 @@ export async function sampleFrame({
   }
 
   return { pngPath: outPath }
+}
+
+/**
+ * §308: one 3D alone, over the project's whole frame, `atSeconds` into the 3D,
+ * so the AI can check a 3D that no timeline item shows (yet). `scene` is the id
+ * of a 3D saved under `models/scenes/<id>/`, and the empty string is the
+ * project's own (`models/active.json`): ids are free, so no id can mean that.
+ *
+ * Drawn as the export draws a 3D item: a one-frame project at the project's
+ * settings (resolution, fps, colour space) holding one full-canvas 3D item
+ * whose in point is `atSeconds`, sampled at its first frame, so the 3D time is
+ * exact and not rounded to a frame. A 3D that is not saved fails naming it,
+ * as on the timeline (render/scene3d.js).
+ *
+ * @param {object} opts
+ * @param {string} opts.projectJson  Absolute path to project.json (its 3D lives beside it)
+ * @param {string} opts.scene        The 3D's id, or '' for the project's own
+ * @param {number} opts.atSeconds    Seconds into the 3D
+ * @param {string} opts.outPath
+ * @param {string|null} [opts.sdrCurve]
+ * @returns {Promise<{ pngPath: string }>}
+ */
+export async function sampleScene({ projectJson, scene, atSeconds, outPath, sdrCurve = null }) {
+  if (typeof projectJson !== 'string') throw new Error('a 3D is sampled from its project.json path')
+  if (typeof scene !== 'string') throw new Error('scene must be a 3D id, or an empty string for the project\'s own')
+  if (typeof atSeconds !== 'number' || !Number.isFinite(atSeconds) || atSeconds < 0) {
+    throw new Error(`--at must be 0 or more seconds into the 3D (got ${atSeconds})`)
+  }
+  const projectPath = resolve(projectJson)
+  if (!existsSync(projectPath)) throw new Error(`project.json not found: ${projectPath}`)
+  const { settings = {} } = JSON.parse(readFileSync(projectPath, 'utf8'))
+  const fps = settings.fps ?? 30
+  const alone = {
+    settings,
+    tracks: [[{
+      type: 'overlay', src: SCENE3D_SRC, start: 0, end: 1 / fps,
+      props: { ...(scene === '' ? {} : { scene }), inPoint: atSeconds },
+    }]],
+    audio: { tracks: [] },
+  }
+  return sampleFrame({ projectJson: alone, projectDir: dirname(projectPath), atSeconds: 0, outPath, sdrCurve })
 }
 
 // ---------------------------------------------------------------------------

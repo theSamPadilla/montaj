@@ -172,3 +172,68 @@ def test_sample_frame_help_lists_sdr_curve():
     r = sp.run([sys.executable, str(script), "--help"], capture_output=True, text=True)
     assert r.returncode == 0
     assert "--sdr-curve" in r.stdout
+
+
+# ── --scene: one 3D alone (§308) ─────────────────────────────────────────────
+
+def test_scene_threaded_to_node_argv(fake_node_env, tmp_path):
+    """--scene <id> reaches sample-frame.js as --scene <id>, with --at as given."""
+    project = _write_project(tmp_path, "sdr_bt709")
+    proc = run_step_env(
+        STEP, fake_node_env,
+        "--project", str(project), "--scene", "lab", "--at", "2.5", "--out", str(tmp_path / "s.png"),
+    )
+    assert proc.returncode == 0, proc.stderr
+    argv = json.loads(proc.stdout)
+    assert argv[argv.index("--scene") + 1] == "lab"
+    assert argv[argv.index("--at") + 1] == "2.5"
+
+
+def test_empty_scene_is_the_projects_own_and_is_forwarded(fake_node_env, tmp_path):
+    """An empty --scene is the project's own 3D: forwarded as an empty argument, not dropped."""
+    project = _write_project(tmp_path, "sdr_bt709")
+    proc = run_step_env(
+        STEP, fake_node_env,
+        "--project", str(project), "--scene", "", "--at", "0", "--out", str(tmp_path / "s.png"),
+    )
+    assert proc.returncode == 0, proc.stderr
+    argv = json.loads(proc.stdout)
+    assert argv[argv.index("--scene") + 1] == ""
+
+
+def test_no_scene_samples_the_timeline(fake_node_env, tmp_path):
+    project = _write_project(tmp_path, "sdr_bt709")
+    proc = run_step_env(STEP, fake_node_env, "--project", str(project), "--at", "1.0", "--out", str(tmp_path / "f.png"))
+    assert proc.returncode == 0, proc.stderr
+    assert "--scene" not in json.loads(proc.stdout)
+
+
+def test_scene_default_out_names_the_3d(fake_node_env, tmp_path):
+    project = _write_project(tmp_path, "sdr_bt709")
+    for scene, name in (("lab", "3d-lab-2.5s.png"), ("", "3d-2.5s.png")):
+        proc = run_step_env(STEP, fake_node_env, "--project", str(project), "--scene", scene, "--at", "2.5")
+        assert proc.returncode == 0, proc.stderr
+        argv = json.loads(proc.stdout)
+        assert argv[argv.index("--out") + 1] == str(tmp_path / "render" / "samples" / name)
+
+
+@pytest.mark.parametrize("scene", ["Lab", "../x", "a/b", "a_b", "x" * 49])
+def test_scene_id_is_checked_before_node(scene, tmp_path):
+    """An id render would refuse fails here with a clean code (no node on PATH needed)."""
+    project = _write_project(tmp_path, "sdr_bt709")
+    proc = run_step_env(STEP, {}, "--project", str(project), "--scene", scene, "--at", "1", "--out", str(tmp_path / "s.png"))
+    assert_error(proc, "invalid_scene")
+
+
+def test_scene_time_cannot_be_negative(tmp_path):
+    project = _write_project(tmp_path, "sdr_bt709")
+    proc = run_step_env(STEP, {}, "--project", str(project), "--scene", "lab", "--at", "-1", "--out", str(tmp_path / "s.png"))
+    assert_error(proc, "invalid_at")
+
+
+def test_schema_declares_scene():
+    """serve's /api/steps drops a param the step does not declare, so the schema must carry it."""
+    from tests.conftest import REPO_ROOT
+    schema = json.loads((REPO_ROOT / "steps" / "render" / "sample_frame.json").read_text())
+    scene = next(p for p in schema["params"] if p["name"] == "scene")
+    assert scene["type"] == "string" and scene.get("required") is False

@@ -53,7 +53,10 @@ def register(subparsers):
                           help="Render a fully composited project frame at a timestamp to PNG (~10-30s)")
     p_fr.add_argument("project", help="Path to project.json")
     p_fr.add_argument("--at", type=float, required=True,
-                      help="Timestamp in seconds to sample")
+                      help="Timestamp in seconds to sample (with --scene, seconds into that 3D)")
+    p_fr.add_argument("--scene", default=None,
+                      help="Sample one 3D alone over the project's whole frame: the id of a 3D "
+                           "saved under models/scenes/<id>/, or '' for the project's own")
     add_global_flags(p_fr)
     p_fr.set_defaults(func=_handle_frame)
 
@@ -116,6 +119,8 @@ def _handle_frame(args):
         "--project", project_path,
         "--at", str(args.at),
     ]
+    if args.scene is not None:
+        cmd += ["--scene", args.scene]
     if args.out:
         cmd += ["--out", args.out]
 

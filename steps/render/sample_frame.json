@@ -1,6 +1,6 @@
 {
   "name": "sample_frame",
-  "description": "Render a fully composited project frame at a given timestamp to PNG (video + image items + active overlay JSXs + the captions, drawn as the export draws them; no audio).",
+  "description": "Render a fully composited project frame at a given timestamp to PNG (video + image items + active overlay JSXs + the captions, drawn as the export draws them; no audio). With scene, render one 3D alone over the project's whole frame, at seconds into it.",
   "input": {
     "type": "project",
     "description": "The project id, its folder, or the absolute path of its project.json"
@@ -20,7 +20,13 @@
       "name": "at",
       "type": "float",
       "required": true,
-      "description": "Timestamp in seconds to sample"
+      "description": "Timestamp in seconds to sample: timeline seconds, or with scene, seconds into that 3D"
+    },
+    {
+      "name": "scene",
+      "type": "string",
+      "required": false,
+      "description": "Sample one 3D alone over the project's whole frame instead of the timeline, so a 3D no timeline item shows can be checked: the id of a 3D saved under models/scenes/<id>/, or an empty string for the project's own (models/active.json). at is then seconds into that 3D. Omit to sample the timeline."
     },
     {
       "name": "sdr-curve",
