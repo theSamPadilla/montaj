@@ -1,0 +1,20 @@
+{
+  "id": "nle-audio",
+  "status": "final",
+  "settings": { "resolution": [1080, 1920], "fps": 30 },
+  "tracks": [
+    { "id": "trk-0", "items": [
+      { "id": "a", "type": "video", "src": "/abs/a.mp4", "start": 0, "end": 10, "inPoint": 0, "outPoint": 10 }
+    ] }
+  ],
+  "audio": {
+    "tracks": [
+      { "id": "music", "src": "audio/music.mp3", "start": 0, "end": 10, "volume": 0.3,
+        "fadeIn": 1, "fadeOut": 2, "fadeOutCurve": "linear",
+        "ducking": { "enabled": true, "depth": -12, "attack": 0.3, "release": 0.5 } },
+      { "id": "vo", "src": "/abs/vo.wav", "start": 1.5, "inPoint": 3, "outPoint": 6 },
+      { "id": "sfx", "src": "sfx/boom.wav", "start": 2 },
+      { "id": "quiet", "src": "/abs/quiet.wav", "start": 0, "end": 5, "muted": true }
+    ]
+  }
+}

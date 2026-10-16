@@ -1,0 +1,15 @@
+{
+  "id": "nle-hard-cut",
+  "status": "final",
+  "settings": { "resolution": [1080, 1920], "fps": 30 },
+  "tracks": [
+    { "id": "trk-0", "items": [
+      { "id": "a", "type": "video", "src": "/abs/a.mp4", "start": 0, "end": 5.0005, "inPoint": 0, "outPoint": 5.0005 },
+      { "id": "b", "type": "video", "src": "/abs/b.mp4", "start": 5, "end": 8, "inPoint": 0, "outPoint": 3 }
+    ] },
+    { "id": "trk-1", "items": [
+      { "id": "c", "type": "video", "src": "/abs/c.mp4", "start": 0, "end": 3.002, "inPoint": 0, "outPoint": 3.002, "scale": 0.5 },
+      { "id": "d", "type": "video", "src": "/abs/d.mp4", "start": 3, "end": 6, "inPoint": 0, "outPoint": 3, "scale": 0.5 }
+    ] }
+  ]
+}

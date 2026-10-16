@@ -1,0 +1,14 @@
+{
+  "id": "nle-disabled",
+  "status": "final",
+  "settings": { "resolution": [1080, 1920], "fps": 30 },
+  "tracks": [
+    { "id": "trk-0", "items": [
+      { "id": "a", "type": "video", "src": "/abs/a.mp4", "start": 0, "end": 5, "inPoint": 0, "outPoint": 5 }
+    ] },
+    { "id": "trk-1", "enabled": false, "items": [
+      { "id": "hidden", "type": "image", "src": "/abs/hidden.png", "start": 0, "end": 8 },
+      { "id": "hidden-ov", "type": "overlay", "src": "/abs/hidden.jsx", "start": 1, "end": 2 }
+    ] }
+  ]
+}

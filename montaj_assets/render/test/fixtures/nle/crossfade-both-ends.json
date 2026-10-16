@@ -1,0 +1,12 @@
+{
+  "id": "nle-crossfade-both-ends",
+  "status": "final",
+  "settings": { "resolution": [1080, 1920], "fps": 30 },
+  "tracks": [
+    { "id": "trk-0", "items": [
+      { "id": "a", "type": "video", "src": "/abs/a.mp4", "start": 0, "end": 5, "inPoint": 0, "outPoint": 5 },
+      { "id": "b", "type": "video", "src": "/abs/b.mp4", "start": 4, "end": 10, "inPoint": 20, "outPoint": 26 },
+      { "id": "c", "type": "video", "src": "/abs/c.mp4", "start": 9.5, "end": 14, "inPoint": 30, "outPoint": 34.5 }
+    ] }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "nle-speed",
+  "status": "final",
+  "settings": { "resolution": [1920, 1080], "fps": 30 },
+  "tracks": [
+    { "id": "trk-0", "items": [
+      { "id": "fast", "type": "video", "src": "/abs/f.mp4", "start": 0, "end": 2, "inPoint": 4, "outPoint": 8, "speed": 2 },
+      { "id": "slow", "type": "video", "src": "/abs/s.mp4", "start": 2, "end": 6, "inPoint": 0, "outPoint": 2, "speed": 0.5 }
+    ] }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "id": "nle-nested",
+  "status": "final",
+  "settings": { "resolution": [1080, 1920], "fps": 30 },
+  "tracks": [
+    { "id": "trk-0", "items": [
+      { "id": "outer", "type": "video", "src": "/abs/outer.mp4", "start": 0, "end": 10, "inPoint": 0, "outPoint": 10 },
+      { "id": "inner", "type": "video", "src": "/abs/inner.mp4", "start": 3, "end": 5, "inPoint": 0, "outPoint": 2 }
+    ] }
+  ]
+}

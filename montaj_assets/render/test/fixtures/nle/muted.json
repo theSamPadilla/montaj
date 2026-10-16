@@ -1,0 +1,15 @@
+{
+  "id": "nle-muted",
+  "status": "final",
+  "settings": { "resolution": [1080, 1920], "fps": 30 },
+  "tracks": [
+    { "id": "trk-0", "items": [
+      { "id": "a", "type": "video", "src": "/abs/a.mp4", "start": 0, "end": 3, "inPoint": 0, "outPoint": 3, "muted": true },
+      { "id": "b", "type": "video", "src": "/abs/b.mp4", "start": 3, "end": 6, "inPoint": 0, "outPoint": 3 },
+      { "id": "c", "type": "video", "src": "/abs/c.mp4", "start": 5.5, "end": 9, "inPoint": 0, "outPoint": 3.5, "muted": true }
+    ] },
+    { "id": "trk-1", "muted": true, "items": [
+      { "id": "pip", "type": "video", "src": "/abs/pip.mp4", "start": 0, "end": 2, "inPoint": 0, "outPoint": 2, "scale": 0.3 }
+    ] }
+  ]
+}

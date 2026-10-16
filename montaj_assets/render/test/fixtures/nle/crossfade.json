@@ -1,0 +1,11 @@
+{
+  "id": "nle-crossfade",
+  "status": "final",
+  "settings": { "resolution": [1080, 1920], "fps": 30 },
+  "tracks": [
+    { "id": "trk-0", "items": [
+      { "id": "a", "type": "video", "src": "/abs/a.mp4", "start": 0, "end": 5, "inPoint": 0, "outPoint": 5 },
+      { "id": "b", "type": "video", "src": "/abs/b.mp4", "start": 4, "end": 9, "inPoint": 10, "outPoint": 15 }
+    ] }
+  ]
+}

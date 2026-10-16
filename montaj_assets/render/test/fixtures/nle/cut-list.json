@@ -1,0 +1,13 @@
+{
+  "id": "nle-cut-list",
+  "status": "final",
+  "settings": { "resolution": [1080, 1920], "fps": 30 },
+  "tracks": [
+    { "id": "trk-0", "items": [
+      { "id": "a", "type": "video", "src": "footage/a.mp4", "start": 0, "end": 2, "inPoint": 1, "outPoint": 3 },
+      { "id": "b", "type": "video", "src": "./footage/b.mp4", "start": 2, "end": 5, "inPoint": 10, "outPoint": 13 },
+      { "id": "c", "type": "video", "src": "/abs/footage/c.mp4", "start": 5, "end": 6.5, "inPoint": 2, "outPoint": 3.5,
+        "normalizedSrc": "/abs/cache/c_norm.mp4", "normalizedInPoint": 1.5 }
+    ] }
+  ]
+}

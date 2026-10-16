@@ -1,0 +1,18 @@
+{
+  "id": "nle-captions",
+  "status": "final",
+  "settings": { "resolution": [1080, 1920], "fps": 30 },
+  "tracks": [
+    { "id": "trk-0", "items": [
+      { "id": "a", "type": "video", "src": "/abs/a.mp4", "start": 0, "end": 10, "inPoint": 0, "outPoint": 10 }
+    ] }
+  ],
+  "captions": {
+    "style": "pop",
+    "segments": [
+      { "id": "cap-1", "text": "Hello there", "start": 0.5, "end": 2 },
+      { "id": "cap-2", "text": "General", "start": 2, "end": 3.8 },
+      { "id": "cap-3", "text": "Past the picture", "start": 9, "end": 12 }
+    ]
+  }
+}

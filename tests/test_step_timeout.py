@@ -70,3 +70,12 @@ def test_montaj_step_timeout_still_raises_every_step(monkeypatch, duration):
     duration["value"] = 10
     assert steps._step_timeout(PLAIN, {}) == 99999
     assert steps._step_timeout(WHISPER, {"input": "/a.mp4"}) == 99999
+
+
+@pytest.mark.parametrize("declared", [float("inf"), float("-inf"), float("nan"), 0, -5])
+def test_a_non_finite_or_non_positive_declared_timeout_is_ignored(declared):
+    assert steps._step_timeout({**PLAIN, "timeout_s": declared}, {}) == steps.STEP_TIMEOUT_S
+
+
+def test_a_declared_timeout_raises_the_ceiling():
+    assert steps._step_timeout({**PLAIN, "timeout_s": steps.STEP_TIMEOUT_S + 600}, {}) == steps.STEP_TIMEOUT_S + 600

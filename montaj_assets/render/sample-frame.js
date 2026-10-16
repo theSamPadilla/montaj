@@ -62,6 +62,7 @@ import { resolveAt, sourceWindow, opaqueReplacesPicture, trackLayerPositions, RE
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 import { captionOverlayFields } from './caption-spec.js'
 import { materializeScene3d, Scene3dError, SCENE3D_SRC } from './scene3d.js'
+import { resolveProjectSrc } from './project-paths.js'
 
 /**
  * The pre-SP6b Hable chain: the ONLY place this file tonemaps with Hable, used
@@ -1541,20 +1542,14 @@ function resolveVideoSource(src, { sdrOrigin = false } = {}) {
 function resolveProjectPaths(projectJson, projectDir) {
   for (const track of trackItems(projectJson)) {
     for (const item of track ?? []) {
-      if (item.src && !item.src.startsWith('/')) {
-        item.src = resolve(projectDir, item.src)
-      }
+      if (item.src) item.src = resolveProjectSrc(item.src, projectDir)
       // proxySrc is resolved too so the fast-preview path (preferProxy) can
       // reach it; it is full-source (no window/rebase), same as `src`.
-      if (item.proxySrc && !item.proxySrc.startsWith('/')) {
-        item.proxySrc = resolve(projectDir, item.proxySrc)
-      }
+      if (item.proxySrc) item.proxySrc = resolveProjectSrc(item.proxySrc, projectDir)
     }
   }
   for (const track of projectJson.audio?.tracks ?? []) {
-    if (track.src && !track.src.startsWith('/')) {
-      track.src = resolve(projectDir, track.src)
-    }
+    if (track.src) track.src = resolveProjectSrc(track.src, projectDir)
   }
 }
 

@@ -64,6 +64,7 @@ import { loudnessFilter }                 from './mix-audio.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 import { captionOverlayFields }           from './caption-spec.js'
 import { materializeScene3d, Scene3dError, isThreeStageOverlay } from './scene3d.js'
+import { resolveProjectSrc, resolveFilePath } from './project-paths.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 // §128: where this render writes and what it is estimated to need, set by
@@ -234,6 +235,21 @@ function captureScaleFor(resolution) {
   // quietly contradict this function's own contract.
   if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return 2
   return Math.min(2, Math.max(1, Math.min(w, h) / SHORT_EDGE_TARGET))
+}
+
+/**
+ * The overlay design canvas `[width, height]` for `settings.resolution`: 1080
+ * on the short edge with the resolution's aspect (9:16 portrait without one),
+ * rounded to even pixels. See SHORT_EDGE_TARGET for why it is not the output
+ * size. main() and the editor export's graphics step (nle/graphics.js) both
+ * capture overlays on it.
+ */
+function designCanvasFor(resolution) {
+  const aspectW = resolution?.[0] ?? 1080
+  const aspectH = resolution?.[1] ?? 1920
+  const aspectRatio = SHORT_EDGE_TARGET / Math.min(aspectW, aspectH)
+  // Round to even pixels — odd dimensions break some yuv420 encoders.
+  return [Math.round(aspectW * aspectRatio / 2) * 2, Math.round(aspectH * aspectRatio / 2) * 2]
 }
 
 // ---------------------------------------------------------------------------
@@ -529,12 +545,7 @@ function loadRenderProject(projectPath, { out = null, requireFinal = true, overr
 
   // See SHORT_EDGE_TARGET's module-level comment for why the overlay design
   // canvas is always 1080 on the short edge, independent of settings.resolution.
-  const aspectW = settings.resolution?.[0] ?? 1080
-  const aspectH = settings.resolution?.[1] ?? 1920
-  const aspectRatio = SHORT_EDGE_TARGET / Math.min(aspectW, aspectH)
-  // Round to even pixels — odd dimensions break some yuv420 encoders.
-  const renderWidth  = Math.round(aspectW * aspectRatio / 2) * 2
-  const renderHeight = Math.round(aspectH * aspectRatio / 2) * 2
+  const [renderWidth, renderHeight] = designCanvasFor(settings.resolution)
 
   // project.json always lives at the workspace root (written there by project/init.py),
   // so projectDir === workspaceDir. Render outputs go to workspace/<name>/render/.
@@ -790,38 +801,7 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
     // they stay PNG, and so does its SDR rendition, which composites them.
     spec.sdrMaster = !isHdr(projectColorSpace)
     log(`bundling segment ${i + 1}/${segmentSpecs.length} (${spec.id})...`)
-    // The geometry below is read by generateShim (bundle.js) ONLY when the item
-    // carries `keyframes` — the one case where the ffmpeg composite cannot do
-    // the positioning, because the filter graph places an overlay once for a
-    // whole segment and an animated one has to move within it. That item's
-    // transform is baked into the Puppeteer capture per frame instead, and
-    // buildOverlayFilterParts (encode-segment.js) then composites it full-canvas.
-    //
-    // For every other overlay — the overwhelmingly common case — these five are
-    // still DEAD PARAMETERS, exactly as they were before SP9b: generateShim
-    // accepts them, emits nothing, and positioning happens entirely at ffmpeg
-    // composite time. The un-baked shim is byte-identical to the pre-keyframes
-    // one, deliberately, which is what keeps the render goldens valid. Don't
-    // "fix" that apparent omission for a static overlay: it isn't one.
-    const { htmlPath, workDir, boundary, needsGoogleFonts } = await bundleComponent({
-      componentPath:  spec.componentPath,
-      props:          spec.props,
-      fps,
-      durationFrames: spec.frameCount,
-      width:          renderWidth,
-      height:         renderHeight,
-      ...overlayBakeInputs(spec),
-      googleFonts:    spec.googleFonts ?? [],
-      fontsBaseDir:   MONTAJ_FONTS_DIR,
-      projectDir,
-    })
-    spec.htmlPath = htmlPath
-    // The page guard's inputs (page-guard.js), carried on the spec. The cache
-    // is this page's own props URLs, all fetched above.
-    spec.boundary = boundary
-    spec.needsGoogleFonts = needsGoogleFonts
-    spec.propsCache = await prefetchPropsUrls(boundary.urls)
-    workDirs.push(workDir)
+    workDirs.push(await bundleSegmentSpec(spec, { fps, width: renderWidth, height: renderHeight, projectDir }))
   }
 
   // §434: a render whose captures would not fit the slice budget captures and
@@ -1475,6 +1455,50 @@ export function overlayBakeInputs(spec) {
     opacity:   spec.opacity   ?? 1,
     keyframes: spec.keyframes ?? null,
   }
+}
+
+/**
+ * Bundle one Puppeteer segment spec (collectPuppeteerSegments) into its page,
+ * on the `width` x `height` design canvas, and carry the page and its guard's
+ * inputs on the spec (`htmlPath`, `boundary`, `needsGoogleFonts`, `propsCache`),
+ * which is what renderAllSegments reads. Returns the bundle's temp dir, for
+ * cleanupBundle. main() bundles every segment through this, and so does the
+ * editor export's graphics step (nle/graphics.js), so both capture the same page.
+ */
+async function bundleSegmentSpec(spec, { fps, width, height, projectDir }) {
+  // The geometry below is read by generateShim (bundle.js) ONLY when the item
+  // carries `keyframes` — the one case where the ffmpeg composite cannot do
+  // the positioning, because the filter graph places an overlay once for a
+  // whole segment and an animated one has to move within it. That item's
+  // transform is baked into the Puppeteer capture per frame instead, and
+  // buildOverlayFilterParts (encode-segment.js) then composites it full-canvas.
+  //
+  // For every other overlay — the overwhelmingly common case — these five are
+  // still DEAD PARAMETERS, exactly as they were before SP9b: generateShim
+  // accepts them, emits nothing, and positioning happens entirely at ffmpeg
+  // composite time. The un-baked shim is byte-identical to the pre-keyframes
+  // one, deliberately, which is what keeps the render goldens valid. Don't
+  // "fix" that apparent omission for a static overlay: it isn't one.
+  const { htmlPath, workDir, boundary, needsGoogleFonts } = await bundleComponent({
+    componentPath:  spec.componentPath,
+    props:          spec.props,
+    fps,
+    durationFrames: spec.frameCount,
+    width,
+    height,
+    ...overlayBakeInputs(spec),
+    googleFonts:    spec.googleFonts ?? [],
+    fontsBaseDir:   MONTAJ_FONTS_DIR,
+    projectDir,
+  })
+  spec.htmlPath = htmlPath
+  // The page guard's inputs (page-guard.js), carried on the spec. The cache
+  // is this page's own props URLs, which the caller has already prefetched
+  // (each URL is fetched once per process).
+  spec.boundary = boundary
+  spec.needsGoogleFonts = needsGoogleFonts
+  spec.propsCache = await prefetchPropsUrls(boundary.urls)
+  return workDir
 }
 
 // ---------------------------------------------------------------------------
@@ -2235,9 +2259,7 @@ function resolveProjectPaths(projectJson, projectDir) {
   // reads them later.
   for (const track of trackItems(projectJson)) {
     for (const item of track ?? []) {
-      if (item.src && !item.src.startsWith('/')) {
-        item.src = resolve(projectDir, item.src)
-      }
+      if (item.src) item.src = resolveProjectSrc(item.src, projectDir)
       // Normalise macOS narrow no-break space (\u202f) in filenames
       if (item.src) {
         const actual = resolveFilePath(item.src)
@@ -2248,29 +2270,10 @@ function resolveProjectPaths(projectJson, projectDir) {
   }
 
   for (const track of projectJson.audio?.tracks ?? []) {
-    if (track.src && !track.src.startsWith('/')) {
-      track.src = resolve(projectDir, track.src)
-    }
+    if (track.src) track.src = resolveProjectSrc(track.src, projectDir)
     const actual = resolveFilePath(track.src)
     if (actual) track.src = actual
   }
-}
-
-/** Resolve a path that may contain a macOS narrow no-break space (\u202f) instead
- *  of a regular space — e.g. screenshot filenames like "Screenshot … 12.44.47 PM.png".
- *  Returns the actual path on disk, or null if not found. */
-function resolveFilePath(p) {
-  if (existsSync(p)) return p
-  // Normalise both sides: replace \u202f with regular space and compare
-  const dn = dirname(p)
-  const bn = basename(p)
-  const target = bn.replace(/\u202f/g, ' ')
-  try {
-    for (const name of readdirSync(dn)) {
-      if (name.replace(/\u202f/g, ' ') === target) return join(dn, name)
-    }
-  } catch { /* parent dir missing */ }
-  return null
 }
 
 function validateProjectFiles(projectJson) {
@@ -2729,4 +2732,6 @@ export { normalizeIfNeeded, killNormalizeTree, failLine, stampSourceProbes, getT
          UNTAGGED_MASTER_MARKER, originalOfSdrMaster,
          // glass-plate.js renders the base composite through the export's own item preparation.
          resolveProjectPaths, validateProjectFiles, repointStaleUntaggedMasters, prepareVideoItems, prepareSdrPass, outputSize,
-         stripExtraAudioStreams }
+         stripExtraAudioStreams,
+         // The editor export (nle/graphics.js) builds its segments the render's way.
+         designCanvasFor, bundleSegmentSpec }

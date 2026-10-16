@@ -1,0 +1,26 @@
+{
+  "id": "nle-keyframes",
+  "status": "final",
+  "settings": { "resolution": [1080, 1920], "fps": 30, "motionBlur": 4, "colorSpace": "hdr_hlg", "loudness": -14 },
+  "tracks": [
+    { "id": "trk-0", "items": [
+      { "id": "a", "type": "video", "src": "/abs/a.mp4", "start": 0, "end": 4, "inPoint": 0, "outPoint": 4, "loop": true,
+        "sourceWidth": 1920, "sourceHeight": 1080,
+        "keyframes": [
+          { "prop": "offsetX", "points": [{ "t": 0, "value": 0 }, { "t": 2, "value": 10 }] },
+          { "prop": "opacity", "points": [{ "t": 0, "value": 0 }, { "t": 1, "value": 1 }] },
+          { "prop": "cropX", "points": [{ "t": 0, "value": 0 }, { "t": 2, "value": 0.2 }] }
+        ] },
+      { "id": "b", "type": "video", "src": "footage/b.mp4", "start": 4, "end": 8, "inPoint": 0, "outPoint": 4,
+        "remove_bg": true, "nobg_src": "/abs/b_nobg.mov", "nobg_preview_src": "/abs/b_nobg.webm" },
+      { "id": "c", "type": "video", "src": "/abs/c.mp4", "start": 8, "end": 10, "inPoint": 0, "outPoint": 2, "remove_bg": true }
+    ] },
+    { "id": "trk-1", "items": [
+      { "id": "o", "type": "overlay", "src": "/abs/o.jsx", "start": 0, "end": 3,
+        "keyframes": [
+          { "prop": "scale", "points": [{ "t": 0, "value": 0.5 }, { "t": 1, "value": 1 }] },
+          { "prop": "opacity", "points": [{ "t": 0, "value": 0 }, { "t": 0.5, "value": 1 }] }
+        ] }
+    ] }
+  ]
+}

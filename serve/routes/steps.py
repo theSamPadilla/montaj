@@ -1,6 +1,7 @@
 """Step discovery, /steps/{name} runner, and /normalize endpoint."""
 import asyncio
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -55,6 +56,12 @@ def _step_timeout(schema: dict, body: dict) -> int:
     this 504. A trim-spec input is sized by its source (an upper bound). Never
     below STEP_TIMEOUT_S, so MONTAJ_STEP_TIMEOUT still raises every step."""
     if not _runs_whisper(schema):
+        # A step may declare a longer ceiling of its own (export_editor renders
+        # one movie per overlay); never below the flat one.
+        declared = schema.get("timeout_s")
+        if isinstance(declared, (int, float)) and not isinstance(declared, bool) \
+                and math.isfinite(declared) and declared > 0:
+            return max(STEP_TIMEOUT_S, int(declared))
         return STEP_TIMEOUT_S
     from lib.common import get_duration, whisper_runaway_timeout
     from lib.trim_spec import is_trim_spec, load as load_spec

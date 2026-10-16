@@ -1,0 +1,12 @@
+{
+  "id": "nle-canvas",
+  "status": "final",
+  "settings": { "resolution": [1080, 1080], "fps": 60 },
+  "tracks": [
+    [],
+    [
+      { "id": "bg", "type": "overlay", "src": "overlays/bg.jsx", "start": 0, "end": 5 },
+      { "id": "photo", "type": "image", "src": "img/photo.jpg", "start": 1, "end": 4 }
+    ]
+  ]
+}

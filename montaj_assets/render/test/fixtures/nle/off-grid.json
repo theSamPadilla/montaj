@@ -1,0 +1,16 @@
+{
+  "id": "nle-off-grid",
+  "status": "final",
+  "settings": { "resolution": [1080, 1920], "fps": 30 },
+  "tracks": [
+    { "id": "trk-0", "items": [
+      { "id": "v1", "type": "video", "src": "/abs/v1.mp4", "start": 0.02, "end": 1.049, "inPoint": 3.1, "outPoint": 4.129 },
+      { "id": "v2", "type": "video", "src": "/abs/v2.mp4", "start": 1.049, "end": 2.51, "inPoint": 0.4, "outPoint": 3.322, "speed": 2 },
+      { "id": "v3", "type": "video", "src": "/abs/v3.mp4", "start": 2.3, "end": 4.013, "inPoint": 7, "outPoint": 8.713 }
+    ] },
+    { "id": "trk-1", "items": [
+      { "id": "ov", "type": "overlay", "src": "/abs/ov.jsx", "start": 0.51, "end": 1.27 },
+      { "id": "img", "type": "image", "src": "/abs/img.png", "start": 1.61, "end": 3.37, "scale": 0.5 }
+    ] }
+  ]
+}

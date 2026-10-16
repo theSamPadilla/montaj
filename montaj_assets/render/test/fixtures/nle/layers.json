@@ -1,0 +1,25 @@
+{
+  "id": "nle-layers",
+  "status": "final",
+  "settings": { "resolution": [1080, 1920], "fps": 30 },
+  "tracks": [
+    { "id": "trk-0", "items": [
+      { "id": "base", "type": "video", "src": "/abs/base.mp4", "start": 0, "end": 6, "inPoint": 0, "outPoint": 6 }
+    ] },
+    { "id": "trk-1", "items": [
+      { "id": "title", "type": "overlay", "src": "overlays/title.jsx", "start": 0.5, "end": 3,
+        "props": { "text": "Hello" }, "offsetX": 5, "offsetY": -12, "scale": 0.9, "rotation": 4, "opacity": 0.75 },
+      { "id": "card", "type": "overlay", "src": "overlays/card.jsx", "start": 4, "end": 5, "opaque": true }
+    ] },
+    { "id": "trk-2", "volume": 0.5, "items": [
+      { "id": "pip", "type": "video", "src": "/abs/pip.mp4", "start": 1, "end": 4, "inPoint": 2, "outPoint": 5,
+        "scale": 0.4, "offsetX": 20, "offsetY": -10, "rotation": 15, "opacity": 0.8, "volume": 0.5,
+        "sourceCrop": { "x": 0.1, "y": 0, "w": 0.8, "h": 1 }, "sourceWidth": 1920, "sourceHeight": 1080 }
+    ] },
+    { "id": "trk-3", "items": [
+      { "id": "logo", "type": "image", "src": "assets/logo.png", "start": 0, "end": 6,
+        "scale": 0.2, "offsetX": 40, "offsetY": 2, "fit": "contain",
+        "sourceCrop": { "x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5 } }
+    ] }
+  ]
+}
