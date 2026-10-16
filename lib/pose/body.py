@@ -6,11 +6,18 @@ Licence notice. The detector decoding and the crop are ported from OpenCV
 Zoo's mediapipe demos (https://github.com/opencv/opencv_zoo, Apache License
 2.0), through regions.py. The anchors, the alignment-points region, the
 heatmap refinement, the landmark decoding and the tracking loop follow
-MediaPipe's pose landmarker graph and calculators
-(https://github.com/google-ai-edge/mediapipe, Copyright The MediaPipe Authors,
-Apache License 2.0). Changed for Montaj: rewritten for numpy and onnxruntime
-with no OpenCV; the segmentation mask is left out. A copy of the licence is at
-http://www.apache.org/licenses/LICENSE-2.0.
+MediaPipe's PoseDetectorGraph, PoseLandmarksDetectorGraph and
+PoseLandmarkerGraph and their calculators (SsdAnchorsCalculator,
+TensorsToDetectionsCalculator, NonMaxSuppressionCalculator,
+AlignmentPointsRectsCalculator, RectTransformationCalculator,
+TensorsToLandmarksCalculator, RefineLandmarksFromHeatmapCalculator,
+LandmarkProjectionCalculator, WorldLandmarkProjectionCalculator), as of tag
+v1.1.1 (50505c8312c7eacb1bd411cecdc4cc9fd08d53cb) of
+https://github.com/google-ai-edge/mediapipe, Copyright The MediaPipe Authors,
+Apache License 2.0. Changed for Montaj: rewritten for numpy and onnxruntime
+with no OpenCV; the segmentation mask and the reference's own landmark
+smoothing are left out (track_pose smooths with its own One Euro filter). A
+copy of the licence is at http://www.apache.org/licenses/LICENSE-2.0.
 
 The loop, per frame (one person, as the model is made for):
   - With no person tracked, the pose detector runs on the frame letterboxed to
@@ -46,13 +53,16 @@ DETECTOR_LAYERS = ((8, 2), (16, 2), (32, 6))
 DETECTOR_RANGE = (-1.0, 1.0)
 LANDMARK_RANGE = (0.0, 1.0)
 # Outside the frame the detector's letterbox reads black, but the landmark
-# crop repeats the frame's edge pixels, as the reference's crops do. Matched
-# on purpose: measured on a 540x960 clip of a golfer filmed whole, with the
+# crop repeats the frame's edge pixels, as the reference's crops do (its pose
+# detector sets BORDER_ZERO; the landmark crop keeps ImageToTensorCalculator's
+# default, which replicates). Matched on purpose: measured on a 540x960 clip of a golfer filmed whole, with the
 # detector on every frame (45 frames), a black landmark crop lands 0.6 px
 # (median) from the reference and z 4 to 50 px off wherever the region leaves
 # the frame; edge pixels land 0.003 px from it.
 LANDMARK_BORDER = "replicate"
-# Detector boxes overlapping more than this are merged, weighted by score.
+# Detector boxes overlapping more than this are merged, weighted by score:
+# PoseDetectorGraphOptions' default, which the pose landmarker keeps (the hand
+# detector sets 0.3).
 DETECTOR_NMS_IOU = 0.5
 # The alignment-points region is grown this much on each side.
 ROI_SCALE = 1.25
@@ -99,24 +109,21 @@ def refine_from_heatmap(xy, heatmap):
     """Landmarks ((n, 2), normalized to the crop) moved to the confidence-
     weighted centre of a HEATMAP_KERNEL window of their heatmap channel
     ((rows, cols, n) logits), where the window's peak confidence is at least
-    HEATMAP_MIN_CONFIDENCE. Three quirks of the reference are kept on purpose:
-    the cell is the landmark's position truncated toward zero, so a landmark
-    up to one cell left of or above the crop still refines; the bottom edge is
-    never checked (it tests the column twice), so a landmark below the crop
-    refines on the rows still in the window; and the weighted centre is a cell
-    index with no half-cell added."""
+    HEATMAP_MIN_CONFIDENCE, as RefineLandmarksFromHeatmapCalculator does. Two
+    quirks of the reference are kept on purpose: the cell is the landmark's
+    position truncated toward zero, so a landmark up to one cell left of or
+    above the crop still refines, and the weighted centre is a cell index with
+    no half-cell added."""
     hm = np.asarray(heatmap, np.float64)
     rows, cols, n = hm.shape
     out = np.array(xy, np.float64)
     half = (HEATMAP_KERNEL - 1) // 2
     for k in range(n):
         col, row = int(out[k, 0] * cols), int(out[k, 1] * rows)
-        if col < 0 or col >= cols or row < 0 or col >= rows:
+        if col < 0 or col >= cols or row < 0 or row >= rows:
             continue
         r0, r1 = max(0, row - half), min(rows, row + half + 1)
         c0, c1 = max(0, col - half), min(cols, col + half + 1)
-        if r0 >= r1:
-            continue
         conf = 1.0 / (1.0 + np.exp(-hm[r0:r1, c0:c1, k]))
         total = conf.sum()
         if conf.max() >= HEATMAP_MIN_CONFIDENCE and total > 0:

@@ -174,12 +174,8 @@ def test_refinement_keeps_the_references_edge_quirks():
     # A cell left of that does not.
     xy = np.array([[-1.5 / 64, 10.5 / 64]] * 39)
     assert np.array_equal(B.refine_from_heatmap(xy, _heatmap({0: (10, 1)})), xy)
-    # Below the crop, the rows still in the window refine it: row 65 reads rows
-    # 62 and 63, where the blob centred on row 63 has three cells each.
-    below = B.refine_from_heatmap(np.array([[10.5 / 64, 65.5 / 64]] * 39), _heatmap({0: (63, 10)}))
-    assert below[0] == pytest.approx([10 / 64, 62.5 / 64], abs=1e-4)
-    # Four rows below, nothing is left in the window.
-    xy = np.array([[10.5 / 64, 67.5 / 64]] * 39)
+    # Below the crop does not either, though the heatmap's last rows are confident.
+    xy = np.array([[10.5 / 64, 64.5 / 64]] * 39)
     assert np.array_equal(B.refine_from_heatmap(xy, _heatmap({0: (63, 10)})), xy)
 
 
