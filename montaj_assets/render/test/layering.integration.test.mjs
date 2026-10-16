@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FFMPEG } from '../ffmpeg-bin.js'
+import { sampleFrame } from '../sample-frame.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const RENDER_JS = join(__dirname, '..', 'render.js')
@@ -37,43 +38,65 @@ export function near(rgb, want, why, tol = 40) {
   assert.ok(rgb.every((v, i) => Math.abs(v - want[i]) <= tol), `${why}: got ${rgb}, want about ${want}`)
 }
 
-test('render: an image on a track above an overlay draws over it, and over an opaque one too', { timeout: 300_000 }, () => {
+/** Footage, a red overlay on track 1 (plain, then opaque), a half-size blue image on track 2. */
+function world() {
   const dir = mkdtempSync(join(tmpdir(), 'montaj-layering-'))
+  const jsx = join(dir, 'fill.jsx')
+  writeFileSync(jsx, FILL_JSX)
+  const green = join(dir, 'green.mp4')
+  const blue = join(dir, 'blue.png')
+  for (const args of [
+    ['-f', 'lavfi', '-i', `color=c=0x00ff00:size=${W}x${H}:rate=${FPS}:duration=2`, '-pix_fmt', 'yuv420p', green],
+    ['-f', 'lavfi', '-i', `color=c=0x0000ff:size=${W}x${H}:rate=1`, '-frames:v', '1', '-update', '1', blue],
+  ]) {
+    const r = spawnSync(FFMPEG, ['-y', '-v', 'error', ...args], { encoding: 'utf8' })
+    assert.equal(r.status, 0, r.stderr)
+  }
+  // Footage on track 0; a red full-screen overlay on track 1 (plain for the
+  // first second, opaque for the second); a half-size blue image on track 2.
+  const overlay = (id, start, end, opaque) => ({ id, type: 'overlay', src: jsx, props: { color: '#ff0000' }, start, end, ...(opaque ? { opaque: true } : {}) })
+  const project = {
+    version: '0.2', id: 'layering', status: 'final', projectType: 'editing',
+    settings: { resolution: [W, H], fps: FPS, colorSpace: 'sdr_bt709' },
+    tracks: [
+      [{ id: 'footage', type: 'video', src: green, start: 0, end: 2, inPoint: 0, outPoint: 2 }],
+      [overlay('plain', 0, 1, false), overlay('cover', 1, 2, true)],
+      [{ id: 'img', type: 'image', src: blue, start: 0, end: 2, scale: 0.5 }],
+    ],
+    audio: {},
+  }
+  const projectPath = join(dir, 'project.json')
+  writeFileSync(projectPath, JSON.stringify(project))
+  return { dir, projectPath }
+}
+
+// What each instant shows: [frame at 10 fps, x, y, colour, why].
+const EXPECT = [
+  [5, 0.5, 0.5, [0, 0, 255], 'the image on the higher track is on top of the overlay'],
+  [5, 0.05, 0.05, [255, 0, 0], 'around it, the overlay'],
+  [15, 0.5, 0.5, [0, 0, 255], 'the image above an opaque overlay is drawn'],
+  [15, 0.05, 0.05, [255, 0, 0], 'the opaque overlay still replaces the footage under it'],
+]
+
+test('render: an image on a track above an overlay draws over it, and over an opaque one too', { timeout: 300_000 }, () => {
+  const { dir, projectPath } = world()
   try {
-    const jsx = join(dir, 'fill.jsx')
-    writeFileSync(jsx, FILL_JSX)
-    const green = join(dir, 'green.mp4')
-    const blue = join(dir, 'blue.png')
-    for (const args of [
-      ['-f', 'lavfi', '-i', `color=c=0x00ff00:size=${W}x${H}:rate=${FPS}:duration=2`, '-pix_fmt', 'yuv420p', green],
-      ['-f', 'lavfi', '-i', `color=c=0x0000ff:size=${W}x${H}:rate=1`, '-frames:v', '1', '-update', '1', blue],
-    ]) {
-      const r = spawnSync(FFMPEG, ['-y', '-v', 'error', ...args], { encoding: 'utf8' })
-      assert.equal(r.status, 0, r.stderr)
-    }
-    // Footage on track 0; a red full-screen overlay on track 1 (plain for the
-    // first second, opaque for the second); a half-size blue image on track 2.
-    const overlay = (id, start, end, opaque) => ({ id, type: 'overlay', src: jsx, props: { color: '#ff0000' }, start, end, ...(opaque ? { opaque: true } : {}) })
-    const project = {
-      version: '0.2', id: 'layering', status: 'final', projectType: 'editing',
-      settings: { resolution: [W, H], fps: FPS, colorSpace: 'sdr_bt709' },
-      tracks: [
-        [{ id: 'footage', type: 'video', src: green, start: 0, end: 2, inPoint: 0, outPoint: 2 }],
-        [overlay('plain', 0, 1, false), overlay('cover', 1, 2, true)],
-        [{ id: 'img', type: 'image', src: blue, start: 0, end: 2, scale: 0.5 }],
-      ],
-      audio: {},
-    }
-    const projectPath = join(dir, 'project.json')
-    writeFileSync(projectPath, JSON.stringify(project))
     const out = join(dir, 'out.mp4')
     const r = spawnSync('node', [RENDER_JS, projectPath, '--out', out], { encoding: 'utf8', timeout: 280_000 })
     assert.equal(r.status, 0, `render failed: ${r.stderr?.slice(-600)}`)
     assert.ok(existsSync(out))
 
-    near(pixel(out, 5), [0, 0, 255], 'the image on the higher track is on top of the overlay')
-    near(pixel(out, 5, 0.05, 0.05), [255, 0, 0], 'around it, the overlay')
-    near(pixel(out, 15), [0, 0, 255], 'the image above an opaque overlay is drawn')
-    near(pixel(out, 15, 0.05, 0.05), [255, 0, 0], 'the opaque overlay still replaces the footage under it')
+    for (const [n, fx, fy, want, why] of EXPECT) near(pixel(out, n, fx, fy), want, why)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('sample_frame: the same stack as the export (task 15)', { timeout: 180_000 }, async () => {
+  const { dir, projectPath } = world()
+  try {
+    for (const [n, fx, fy, want, why] of EXPECT) {
+      const png = join(dir, `at-${n}.png`)
+      await sampleFrame({ projectJson: projectPath, atSeconds: n / FPS, outPath: png })
+      near(pixel(png, 0, fx, fy), want, `sample: ${why}`)
+    }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

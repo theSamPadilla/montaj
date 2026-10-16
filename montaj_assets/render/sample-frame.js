@@ -57,7 +57,7 @@ import {
   hasLut3d,
   SEEK_PREROLL_S,
 } from './encode-segment.js'
-import { resolveAt, sourceWindow, opaqueReplacesPicture, RESOLVER_VERSION } from '@bycrux/timeline-core'
+import { resolveAt, sourceWindow, opaqueReplacesPicture, trackLayerPositions, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 import { captionOverlayFields } from './caption-spec.js'
 import { materializeScene3d, Scene3dError, SCENE3D_SRC } from './scene3d.js'
@@ -160,6 +160,9 @@ const SHORT_EDGE_TARGET = 1080
  *    caption templates.
  * 15: §309, an opaque overlay hides the footage only where it is at full
  *    opacity. A frame cached before holds black under one mid-fade.
+ * 16: §308 P3, clips and overlays stack by track in the editor's order, and an
+ *    opaque overlay hides only what is below it. A frame cached before holds
+ *    every overlay over every image, and black under an image above a cover.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -167,7 +170,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 15
+const SAMPLE_CACHE_VERSION = 16
 
 // ---------------------------------------------------------------------------
 // Input manifests
@@ -892,28 +895,40 @@ export async function sampleFrame({
   // used — the LATER clip wins an exact boundary tie.
   const scene = resolveAt(withEnabledItemTracks(resolvedProject), atSeconds, { variant: 'render' })
 
-  // Video and image items composite together, back-to-front by trackIdx (ties
-  // keep document order) — this replaces the old video-group-then-image-group
-  // order, which drew every video before every image regardless of their
-  // relative trackIdx. Overlays are collected separately and always composited
-  // LAST, on top regardless of trackIdx — that matches encode-segment.js's own
-  // split (Step 2 items, then Step 3 overlays, unconditionally), a
-  // consumer-side compositing rule the resolver itself does not encode (see
-  // @bycrux/timeline-core/src/geometry.js's z-order note).
+  // §308 P3: video, image and overlay items composite as ONE bottom-to-top
+  // stack, by track in the editor's order (timeline-core `trackLayerPositions`:
+  // every track holding video first), a track's clips before its overlays,
+  // each kind in document order, the captions last: the export's own order
+  // (segment-plan.js `layers`). Until 5.33.3 every overlay went on top of every
+  // clip, whatever their tracks, so an image on a track above an overlay showed
+  // in the editor and in no sample.
   const visualItems  = scene.items.filter(ri => ri.kind === 'video' || ri.kind === 'image')
   const overlayItems = scene.items.filter(ri => ri.kind === 'overlay')
   const videoCount = visualItems.filter(ri => ri.kind === 'video').length
   const imageCount = visualItems.length - videoCount
+  const layerOf = trackLayerPositions(trackItems(resolvedProject))
+  const layerTrackOf = ri => layerOf[ri.trackIdx] ?? ri.trackIdx
+  const stack = [
+    ...visualItems.map((ri, i) => ({ ri, kind: 0, i })),
+    ...overlayItems.map((ri, i) => ({ ri, kind: 1, i })),
+  ].sort((a, b) => layerTrackOf(a.ri) - layerTrackOf(b.ri) || a.kind - b.kind || a.i - b.i)
 
   // An opaque overlay replaces the picture underneath it. Production
   // (segment-plan.js/encode-segment.js) keeps the covered items around anyway so
   // their AUDIO still reaches the mix — irrelevant for a still frame, so the
-  // analogue here is simpler: don't composite ANY video/image item while an
-  // opaque overlay is active. See KNOWN-DIVERGENCES.md "opaque-in-preview".
+  // analogue here is simpler: don't composite a video/image item the overlay
+  // covers. See KNOWN-DIVERGENCES.md "opaque-in-preview".
   // Only one over the whole canvas counts (`opaqueReplacesPicture`, the rule
   // export and the editor read): a scaled one leaves the footage drawn. And
   // only at full opacity at this instant (§309): mid-fade the footage shows.
-  const hasOpaque = overlayItems.some(ri => opaqueReplacesPicture(ri.item, ri.seek))
+  // And only what is BELOW the topmost such overlay (§308 P3): an image stacked
+  // over it is drawn.
+  let coverAt = -1
+  for (let k = stack.length - 1; k >= 0 && coverAt < 0; k--) {
+    if (stack[k].kind === 1 && opaqueReplacesPicture(stack[k].ri.item, stack[k].ri.seek)) coverAt = k
+  }
+  const culled = new Set(stack.slice(0, Math.max(0, coverAt)).filter(e => e.kind === 0).map(e => e.ri))
+  const hasOpaque = culled.size > 0
 
   log(`active items: ${videoCount} video, ${imageCount} image` +
       `${hasOpaque ? ' (hidden by opaque overlay)' : ''}, ${overlayItems.length} overlay`)
@@ -1034,157 +1049,155 @@ export async function sampleFrame({
   mkdirSync(workDir, { recursive: true })
 
   // ResolvedItem -> extracted-frame PNG path, so Step 3 can look up each video
-  // item's frame while walking visualItems in trackIdx order. Skipped entirely
-  // under an opaque overlay — nothing composites these frames anyway (see
-  // hasOpaque above), so there's no point paying for the ffmpeg extraction.
+  // item's frame while walking the stack. Skipped for an item an opaque
+  // overlay covers — nothing composites that frame anyway (see `culled`
+  // above), so there's no point paying for the ffmpeg extraction.
   const videoFramePaths = new Map()
 
-  if (!hasOpaque) {
-    let vi = 0
-    for (const ri of visualItems) {
-      if (ri.kind !== 'video') continue
-      // window = sourceWindow(item, 'render') — src is already the resolver's
-      // choice (normalizedSrc/nobg_src/original) with in/outPoint rebased for a
-      // normalizedSrc cache. Use normalized/audioclean cached file if present and
-      // fresh on top of that (read-only — never triggers normalization).
-      let window = ri.window
-      // Fast-preview path: decode the clip's SDR proxy instead of the master
-      // when `preferProxy` is set and one exists. The proxy is full-source (the
-      // item's own coords, no normalizedSrc rebase) and already SDR, so it needs
-      // the ORIGINAL-coords seek and NO tone-map (both handled below). Decided
-      // per clip: a clip with no proxy quietly falls back to the master.
-      const item = ri.item
-      // A remove_bg item with a nobg_src is the exception: the proxy is the raw
-      // clip (background still in), so it decodes the cutout, as the render does.
-      const useProxy = shouldUseProxy(item, preferProxy, existsSync)
+  let vi = 0
+  for (const ri of visualItems) {
+    if (ri.kind !== 'video' || culled.has(ri)) continue
+    // window = sourceWindow(item, 'render') — src is already the resolver's
+    // choice (normalizedSrc/nobg_src/original) with in/outPoint rebased for a
+    // normalizedSrc cache. Use normalized/audioclean cached file if present and
+    // fresh on top of that (read-only — never triggers normalization).
+    let window = ri.window
+    // Fast-preview path: decode the clip's SDR proxy instead of the master
+    // when `preferProxy` is set and one exists. The proxy is full-source (the
+    // item's own coords, no normalizedSrc rebase) and already SDR, so it needs
+    // the ORIGINAL-coords seek and NO tone-map (both handled below). Decided
+    // per clip: a clip with no proxy quietly falls back to the master.
+    const item = ri.item
+    // A remove_bg item with a nobg_src is the exception: the proxy is the raw
+    // clip (background still in), so it decodes the cutout, as the render does.
+    const useProxy = shouldUseProxy(item, preferProxy, existsSync)
 
-      // PV42: in an HDR project each layer is graded by its ORIGIN, decided by
-      // sdr-layer.js and nothing else here. An SDR-origin layer (screen
-      // recording, download, or a marked conversion of one) is decoded as
-      // authored from its original; its `src` may differ from the resolver's
-      // pick, so the window is re-resolved for the layer's item. The proxy is
-      // SDR and ungraded, so a proxy decode skips all of it. SDR projects never
-      // reach this: no provenance probe, no change in output.
-      let layer = null
-      let seekOffsetFromRi = 0
-      if (hdrProject && !useProxy) {
-        layer = sdrLayerFor(item)
-        window = sourceWindow(layer.item, 'render')
-        // ri.seek is inPoint + speed * elapsed (== seekTime), so this offset is
-        // already speed-scaled SOURCE seconds; do not multiply by speed again.
-        seekOffsetFromRi = ri.seek - ri.window.inPoint
-      }
-      const src = useProxy
-        ? item.proxySrc
-        : resolveVideoSource(window.src, { sdrOrigin: layer !== null && !layer.grade && !layer.cutoutKey })
-      // ri.seek is the resolver's seekTime (speed-aware), but rebased for a
-      // normalizedSrc cache. The proxy is un-rebased, so recompute in the item's
-      // own source coords (still speed-aware) when using it.
-      const seekTime = useProxy
-        ? (item.inPoint ?? 0) + (item.speed ?? 1) * Math.max(0, atSeconds - item.start)
-        : (layer ? window.inPoint + seekOffsetFromRi : ri.seek)
-      const framePng = join(workDir, `video-${vi}.png`)
-
-      log(`extracting video frame at t=${seekTime.toFixed(3)}s from ${src ? basename(src) : '(no src)'}${useProxy ? ' (proxy)' : ''}`)
-
-      // Two-stage seek: fast + still frame-accurate. A coarse `-ss` BEFORE `-i`
-      // jumps to the nearest keyframe at/before the target without decoding
-      // anything, then a short `-ss` AFTER `-i` accurately decodes only the
-      // remainder from that keyframe to the exact frame. The old form (`-ss`
-      // after `-i` alone) decoded the clip from t=0 to the target — ~5–10s on a
-      // long HEVC clip, paid on every preview sample (the render modal fires
-      // three: a cover plus one per SDR curve). This bounds the decode to
-      // ~SEEK_PREROLL_S (+ one GOP) no matter how deep the sample sits, with no
-      // loss of accuracy: the fine seek always decodes forward from a real
-      // keyframe to the requested frame.
-      const seek = Math.max(0, seekTime)
-      const fastSeek = Math.max(0, seek - SEEK_PREROLL_S)
-      const fineSeek = seek - fastSeek
-      const ffmpegExtractArgs = [
-        '-y', '-v', 'error',
-        ...(fastSeek > 0 ? ['-ss', String(fastSeek)] : []),
-        '-i', src,
-        '-ss', String(fineSeek),
-      ]
-
-      // Filter chain: the optional source crop (clips workflow vertical reframe)
-      // THEN the HDR→SDR conversion — the geometry-first order
-      // encode-segment.js's buildVideoItemFilterParts uses, and for its reason
-      // (see the step-order note there): cropping first means the conversion
-      // only pays for pixels that survive. The crop is a no-op without both
-      // sourceWidth/sourceHeight, matching that function's own gate — see
-      // KNOWN-DIVERGENCES.md "sourcecrop-missing-dims-silent-drop".
-      //
-      // There is no scale/pad step here: this extract produces one full-size
-      // source frame, and buildImageItemFilterParts does the canvas fit when the
-      // frame is composited (Step 3). So nothing is ever padded before the
-      // conversion, which is the property encode-segment's ordering protects.
-      const vfParts = []
-      const sc = ri.geometry.sourceCrop
-      if (sc && ri.geometry.sourceWidth && ri.geometry.sourceHeight) {
-        if (useProxy) {
-          // The proxy is smaller than the master, so a crop in master pixels
-          // falls outside it. Same rounding as below, from the decoded size.
-          const cw = `2*round(iw*${sc.w}/2)`   // even: x264 needs even dims
-          const ch = `2*round(ih*${sc.h}/2)`
-          vfParts.push(`crop=w=${cw}:h=${ch}:x=round(iw*${sc.x}):y=round(ih*${sc.y})`)
-        } else {
-          const cw = Math.round(ri.geometry.sourceWidth  * sc.w / 2) * 2  // even: x264 needs even dims
-          const ch = Math.round(ri.geometry.sourceHeight * sc.h / 2) * 2  // even: x264 needs even dims
-          const cx = Math.round(ri.geometry.sourceWidth  * sc.x)          // origin NOT even-rounded
-          const cy = Math.round(ri.geometry.sourceHeight * sc.y)          // origin NOT even-rounded
-          vfParts.push(`crop=${cw}:${ch}:${cx}:${cy}`)
-        }
-      }
-      // The proxy is ungraded SDR. One built from an untagged source by an older
-      // montaj is untagged too, and ffmpeg would decode it as BT.601 where the
-      // export reads its source as BT.709. Read it as the export does, in HDR and
-      // SDR projects alike; a tagged proxy (every new one) is left alone.
-      if (useProxy && decodedTransferOf(src) === 'unknown') vfParts.unshift(UNTAGGED_AS_BT709_VF)
-      if (layer) {
-        // Grade HLG/PQ -> SDR BT.709 inline, through the same Montaj Vivid LUT
-        // the render and the proxies use, ONLY when sdr-layer.js says so for
-        // the transfer of the file actually decoded (probed once per path).
-        // Mirrors encode-segment.js's buildVividLutChain, the builder the
-        // segment encoder calls.
-        //
-        // The chain ends in rgb24, NOT yuv420p: this frame is encoded straight
-        // to PNG and ffmpeg's png encoder only accepts rgb24/rgba/gray/pal8
-        // family formats; yuv420p made the encoder fail outright.
-        //
-        // A cutout (remove_bg + nobg_src) is an untagged alpha file: zscale
-        // takes no alpha format, so its colour is graded on a split and the
-        // alpha is merged back, ending in rgba.
-        //
-        // lut3d can be missing from an older ffmpeg build, so a graded layer
-        // falls back to the pre-SP6b Hable chain and says so once per extract.
-        const isCutout = !!(item.remove_bg && item.nobg_src)
-        const key = gradeKeyFor(layer, isCutout ? null : decodedTransferOf(src))
-        if (key) {
-          if (!(hasZscale() && hasLut3d())) {
-            log('WARNING: ffmpeg lacks zscale and/or lut3d — sampling with the legacy '
-              + 'Hable tonemap; this frame will NOT match the render. Run `montaj doctor`.')
-          }
-          vfParts.push(isCutout ? buildCutoutSampleVf(key, sdrCurve) : buildSampleGradeVf(key, sdrCurve))
-        }
-        // An untagged SDR clip is read as BT.709 by the HDR export (its stretch),
-        // where ffmpeg's own default would decode it as BT.601. Only this block
-        // is HDR-only, so SDR projects stay byte-identical.
-        else if (!isCutout && decodedTransferOf(src) === 'unknown') vfParts.unshift(UNTAGGED_AS_BT709_VF)
-      }
-      if (vfParts.length) ffmpegExtractArgs.push('-vf', vfParts.join(','))
-
-      ffmpegExtractArgs.push('-frames:v', '1', '-update', '1', framePng)
-
-      const result = spawnSync(FFMPEG, ffmpegExtractArgs, { encoding: 'utf8', timeout: 60_000 })
-
-      if (result.status !== 0) {
-        throw new Error(`ffmpeg video frame extract failed: ${ffmpegErrorTail(result.stderr)}`)
-      }
-
-      videoFramePaths.set(ri, framePng)
-      vi++
+    // PV42: in an HDR project each layer is graded by its ORIGIN, decided by
+    // sdr-layer.js and nothing else here. An SDR-origin layer (screen
+    // recording, download, or a marked conversion of one) is decoded as
+    // authored from its original; its `src` may differ from the resolver's
+    // pick, so the window is re-resolved for the layer's item. The proxy is
+    // SDR and ungraded, so a proxy decode skips all of it. SDR projects never
+    // reach this: no provenance probe, no change in output.
+    let layer = null
+    let seekOffsetFromRi = 0
+    if (hdrProject && !useProxy) {
+      layer = sdrLayerFor(item)
+      window = sourceWindow(layer.item, 'render')
+      // ri.seek is inPoint + speed * elapsed (== seekTime), so this offset is
+      // already speed-scaled SOURCE seconds; do not multiply by speed again.
+      seekOffsetFromRi = ri.seek - ri.window.inPoint
     }
+    const src = useProxy
+      ? item.proxySrc
+      : resolveVideoSource(window.src, { sdrOrigin: layer !== null && !layer.grade && !layer.cutoutKey })
+    // ri.seek is the resolver's seekTime (speed-aware), but rebased for a
+    // normalizedSrc cache. The proxy is un-rebased, so recompute in the item's
+    // own source coords (still speed-aware) when using it.
+    const seekTime = useProxy
+      ? (item.inPoint ?? 0) + (item.speed ?? 1) * Math.max(0, atSeconds - item.start)
+      : (layer ? window.inPoint + seekOffsetFromRi : ri.seek)
+    const framePng = join(workDir, `video-${vi}.png`)
+
+    log(`extracting video frame at t=${seekTime.toFixed(3)}s from ${src ? basename(src) : '(no src)'}${useProxy ? ' (proxy)' : ''}`)
+
+    // Two-stage seek: fast + still frame-accurate. A coarse `-ss` BEFORE `-i`
+    // jumps to the nearest keyframe at/before the target without decoding
+    // anything, then a short `-ss` AFTER `-i` accurately decodes only the
+    // remainder from that keyframe to the exact frame. The old form (`-ss`
+    // after `-i` alone) decoded the clip from t=0 to the target — ~5–10s on a
+    // long HEVC clip, paid on every preview sample (the render modal fires
+    // three: a cover plus one per SDR curve). This bounds the decode to
+    // ~SEEK_PREROLL_S (+ one GOP) no matter how deep the sample sits, with no
+    // loss of accuracy: the fine seek always decodes forward from a real
+    // keyframe to the requested frame.
+    const seek = Math.max(0, seekTime)
+    const fastSeek = Math.max(0, seek - SEEK_PREROLL_S)
+    const fineSeek = seek - fastSeek
+    const ffmpegExtractArgs = [
+      '-y', '-v', 'error',
+      ...(fastSeek > 0 ? ['-ss', String(fastSeek)] : []),
+      '-i', src,
+      '-ss', String(fineSeek),
+    ]
+
+    // Filter chain: the optional source crop (clips workflow vertical reframe)
+    // THEN the HDR→SDR conversion — the geometry-first order
+    // encode-segment.js's buildVideoItemFilterParts uses, and for its reason
+    // (see the step-order note there): cropping first means the conversion
+    // only pays for pixels that survive. The crop is a no-op without both
+    // sourceWidth/sourceHeight, matching that function's own gate — see
+    // KNOWN-DIVERGENCES.md "sourcecrop-missing-dims-silent-drop".
+    //
+    // There is no scale/pad step here: this extract produces one full-size
+    // source frame, and buildImageItemFilterParts does the canvas fit when the
+    // frame is composited (Step 3). So nothing is ever padded before the
+    // conversion, which is the property encode-segment's ordering protects.
+    const vfParts = []
+    const sc = ri.geometry.sourceCrop
+    if (sc && ri.geometry.sourceWidth && ri.geometry.sourceHeight) {
+      if (useProxy) {
+        // The proxy is smaller than the master, so a crop in master pixels
+        // falls outside it. Same rounding as below, from the decoded size.
+        const cw = `2*round(iw*${sc.w}/2)`   // even: x264 needs even dims
+        const ch = `2*round(ih*${sc.h}/2)`
+        vfParts.push(`crop=w=${cw}:h=${ch}:x=round(iw*${sc.x}):y=round(ih*${sc.y})`)
+      } else {
+        const cw = Math.round(ri.geometry.sourceWidth  * sc.w / 2) * 2  // even: x264 needs even dims
+        const ch = Math.round(ri.geometry.sourceHeight * sc.h / 2) * 2  // even: x264 needs even dims
+        const cx = Math.round(ri.geometry.sourceWidth  * sc.x)          // origin NOT even-rounded
+        const cy = Math.round(ri.geometry.sourceHeight * sc.y)          // origin NOT even-rounded
+        vfParts.push(`crop=${cw}:${ch}:${cx}:${cy}`)
+      }
+    }
+    // The proxy is ungraded SDR. One built from an untagged source by an older
+    // montaj is untagged too, and ffmpeg would decode it as BT.601 where the
+    // export reads its source as BT.709. Read it as the export does, in HDR and
+    // SDR projects alike; a tagged proxy (every new one) is left alone.
+    if (useProxy && decodedTransferOf(src) === 'unknown') vfParts.unshift(UNTAGGED_AS_BT709_VF)
+    if (layer) {
+      // Grade HLG/PQ -> SDR BT.709 inline, through the same Montaj Vivid LUT
+      // the render and the proxies use, ONLY when sdr-layer.js says so for
+      // the transfer of the file actually decoded (probed once per path).
+      // Mirrors encode-segment.js's buildVividLutChain, the builder the
+      // segment encoder calls.
+      //
+      // The chain ends in rgb24, NOT yuv420p: this frame is encoded straight
+      // to PNG and ffmpeg's png encoder only accepts rgb24/rgba/gray/pal8
+      // family formats; yuv420p made the encoder fail outright.
+      //
+      // A cutout (remove_bg + nobg_src) is an untagged alpha file: zscale
+      // takes no alpha format, so its colour is graded on a split and the
+      // alpha is merged back, ending in rgba.
+      //
+      // lut3d can be missing from an older ffmpeg build, so a graded layer
+      // falls back to the pre-SP6b Hable chain and says so once per extract.
+      const isCutout = !!(item.remove_bg && item.nobg_src)
+      const key = gradeKeyFor(layer, isCutout ? null : decodedTransferOf(src))
+      if (key) {
+        if (!(hasZscale() && hasLut3d())) {
+          log('WARNING: ffmpeg lacks zscale and/or lut3d — sampling with the legacy '
+            + 'Hable tonemap; this frame will NOT match the render. Run `montaj doctor`.')
+        }
+        vfParts.push(isCutout ? buildCutoutSampleVf(key, sdrCurve) : buildSampleGradeVf(key, sdrCurve))
+      }
+      // An untagged SDR clip is read as BT.709 by the HDR export (its stretch),
+      // where ffmpeg's own default would decode it as BT.601. Only this block
+      // is HDR-only, so SDR projects stay byte-identical.
+      else if (!isCutout && decodedTransferOf(src) === 'unknown') vfParts.unshift(UNTAGGED_AS_BT709_VF)
+    }
+    if (vfParts.length) ffmpegExtractArgs.push('-vf', vfParts.join(','))
+
+    ffmpegExtractArgs.push('-frames:v', '1', '-update', '1', framePng)
+
+    const result = spawnSync(FFMPEG, ffmpegExtractArgs, { encoding: 'utf8', timeout: 60_000 })
+
+    if (result.status !== 0) {
+      throw new Error(`ffmpeg video frame extract failed: ${ffmpegErrorTail(result.stderr)}`)
+    }
+
+    videoFramePaths.set(ri, framePng)
+    vi++
   }
 
   // --- Step 3: Build composite ffmpeg command ---
@@ -1205,151 +1218,12 @@ export async function sampleFrame({
   videoLabel = '[canvas]'
   inputIdx++
 
-  // Video + image items, back-to-front in trackIdx order (see the ordering note
-  // above collectScene/`scene`). Both composite through buildImageItemFilterParts
-  // — a video's extracted frame is a PNG by this point, same as an image item's
-  // own file. Skipped entirely under an opaque overlay (hasOpaque).
-  if (!hasOpaque) {
-    for (const ri of visualItems) {
-      // ── The opacity rule, for EVERY clip kind ────────────────────────────
-      //
-      // Computed once, above the branch, because it is ONE decision that both
-      // the video and the image descriptor must make identically. It used to
-      // live inside the video branch with the image branch deferring to it by
-      // comment — and the image branch then quietly failed to apply the
-      // transition half of the rule at all.
-      //
-      // STATIC opacity, deliberately, and that half is a PARITY fix (SP9d T6).
-      // `ri.geometry` is `geometryAt(...)`, so `.opacity` is the SAMPLED curve
-      // value — but the export cannot fade a clip at all (ffmpeg's
-      // `colorchannelmixer aa` is a <double> and takes no expression), so
-      // honouring the curve here would make the Export dialog's still and
-      // version-compare show a fade the rendered file never has. The still
-      // frame's whole job is to show what the export will look like, so it
-      // reads the same static scalar the export does. Geometry — position,
-      // scale, rotation — stays SAMPLED in the descriptors below, because the
-      // export animates those now and the two agree.
-      //
-      // A TRANSITION is not an exception to that rule but another application
-      // of it (T12): the export genuinely blends a transitioning pair now
-      // (encode-segment.js's `blend` branch, T8), so a still caught
-      // mid-transition must show the blend too, or it would be lying about the
-      // one thing this whole file exists to get right. This applies to IMAGE
-      // clips as much as video ones: `crossfadesAt` pushes both kinds into its
-      // `clips` array, and `encode-segment.js` evaluates `opensCrossfade` and
-      // emits the split BEFORE its `isImageItem` branch, so the export really
-      // does dissolve an image pair.
-      //
-      // ONLY THE INCOMING SIDE RAMPS. The OUTGOING side keeps its own full
-      // opacity — factor 1, not `1-p`. That looks wrong and is not, and the
-      // reason is the compositing model:
-      //
-      //   - The EXPORT is a SPLIT-AND-LERP compositor. encode-segment.js
-      //     splits the running canvas, composites the outgoing item down one
-      //     branch and the incoming one down the other — each at its OWN full
-      //     opacity — and then lerps the two finished frames with
-      //     `blend=all_expr='A+(B-A)*p'`, i.e. `(1-p)*from + p*to`.
-      //   - THIS file is a SEQUENTIAL source-over compositor: each item is
-      //     layered onto the one running canvas in turn (the
-      //     buildImageItemFilterParts loop below). Painting `from` at 1 and
-      //     then `to` at alpha p gives exactly `p*to + (1-p)*from` — the same
-      //     lerp, reached by a different route.
-      //
-      // Feeding the symmetric `1-p` / `p` pair into a SEQUENTIAL stack does NOT
-      // reproduce the lerp; it yields `p*to + (1-p)^2*from + p(1-p)*bg`, which
-      // at p=0.5 lands the outgoing clip at QUARTER weight and leaks the
-      // background through the middle of the transition.
-      //
-      // The shared reference for the sequential form is
-      // `createCanvasPainter.paintBlend` (editor/src/engine/index.ts):
-      // `globalAlpha = 1` for `from`, then `globalAlpha = p` for `to`. The DOM
-      // preview (editor's video/preview/OverlayItemsLayer.tsx) is the same kind
-      // of compositor and reads the same factor. All three land on one picture.
-      // Do not "restore" the symmetric form here — it is the obvious-looking
-      // wrong answer for this compositor.
-      //
-      // `ri.crossfade` is CLIPS-ONLY and already `null` outside an overlap
-      // (@bycrux/timeline-core/src/activation.js's `ItemCrossfade`), so the
-      // factor is 1 — a no-op — everywhere this pin used to apply
-      // unconditionally.
-      const opacity = (ri.item.opacity ?? 1) * (ri.crossfade?.role === 'to' ? ri.crossfade.p : 1)
-
-      let pseudoItem
-      if (ri.kind === 'video') {
-        const framePng = videoFramePaths.get(ri)
-        if (!framePng) continue // defensive — every video RI got a frame extracted above
-        // Treat the extracted video frame as an image item — it's a PNG at this point.
-        //
-        // NEVER add `keyframes` here, and never spread `ri.geometry` or the
-        // source item in wholesale. Same discipline as the overlay descriptor
-        // above (see its "NEVER add `keyframes`" note), but now load-bearing for
-        // a second reason: since SP9d, buildImageItemFilterParts branches on
-        // `Array.isArray(item.keyframes) && item.keyframes.length > 0` and, when
-        // true, compiles the curves into piecewise-linear ffmpeg expressions.
-        // This descriptor is a flat list of ALREADY-SAMPLED scalars — a still
-        // frame has exactly one instant — so leaving `keyframes` off is what
-        // keeps the sampler on the exact, non-approximated literal path. A
-        // future edit that "helpfully" forwards them would silently swap those
-        // exact values for the render approximation, in the one surface whose
-        // whole job is to show precisely what a given instant looks like.
-        pseudoItem = {
-          src:      framePng,
-          scale:    ri.geometry.scale,
-          // Beside `scale`, for the same reason the overlay descriptor above
-          // carries them: buildImageItemFilterParts re-resolves this pseudo-item
-          // through `geometryFor`, which reads the per-axis pair first. Drop
-          // them and a stretched video reverts to a uniform box in the Export
-          // dialog's still while the preview shows it stretched.
-          scaleX:   ri.geometry.scaleX,
-          scaleY:   ri.geometry.scaleY,
-          offsetX:  ri.geometry.offsetX,
-          offsetY:  ri.geometry.offsetY,
-          rotation: ri.geometry.rotation,
-          opacity, // the shared rule — see the note above the branch
-          // TRAP: buildImageItemFilterParts defaults to 'cover' when fit is
-          // omitted, which CROPS the frame to fill its box. Production video is
-          // ALWAYS contain-fit — buildVideoItemFilterParts' own scale step uses
-          // force_original_aspect_ratio=decrease unconditionally, never reading
-          // item.fit at all (see @bycrux/timeline-core/src/geometry.js's fit
-          // note). Forwarding sourceCrop above without ALSO forcing 'contain'
-          // here would silently drag the wrong (image) fit rule onto a video
-          // frame and crop content the crop step didn't already remove.
-          fit: 'contain',
-        }
-      } else {
-        pseudoItem = {
-          src:      ri.item.src,
-          scale:    ri.geometry.scale,
-          scaleX:   ri.geometry.scaleX, // see the video branch above
-          scaleY:   ri.geometry.scaleY,
-          offsetX:  ri.geometry.offsetX,
-          offsetY:  ri.geometry.offsetY,
-          rotation: ri.geometry.rotation,
-          opacity, // the shared rule — see the note above the branch
-          fit:      ri.geometry.fit, // image's own tri-state, default 'cover'
-          // PV55: the crop at THIS instant (geometryAt samples a keyframed one and
-          // resolves its fit to 'cover', carried by `fit` above). Applied before
-          // the fit exactly as the export applies it. Never `keyframes`: see the
-          // video branch's note above.
-          sourceCrop: ri.geometry.sourceCrop,
-        }
-      }
-      const { inputArgs, filterParts: fp, newVideoLabel } =
-        buildImageItemFilterParts(pseudoItem, actualWidth, actualHeight, inputIdx, videoLabel, duration)
-      inputs.push(...inputArgs)
-      filterParts.push(...fp)
-      videoLabel = newVideoLabel
-      inputIdx++
-    }
-  }
-
   // Overlay PNGs — call the shared buildOverlayFilterParts helper with PNG-tuned opts.
   // Same positioning/scale math as the production renderer; we override the
   // VP9-specific format flags (rgba input, auto composite output) and switch the
   // input args to looped-still mode since PNGs are single frames, not seekable
   // video. This keeps sample and production paths from drifting on overlay math.
-  for (let i = 0; i < overlayPngs.length; i++) {
-    const ov = overlayPngs[i]
+  const compositeOverlay = (ov) => {
     const { inputArgs, filterParts: fp, newVideoLabel } = buildOverlayFilterParts(
       ov, actualWidth, actualHeight, inputIdx, videoLabel,
       0,         // segStart: PNG overlays are not seeked (loopedInput=true), so ignored
@@ -1361,6 +1235,150 @@ export async function sampleFrame({
     videoLabel = newVideoLabel
     inputIdx++
   }
+
+  // Video + image items both composite through buildImageItemFilterParts — a
+  // video's extracted frame is a PNG by this point, same as an image item's own
+  // file.
+  const compositeClip = (ri) => {
+    // ── The opacity rule, for EVERY clip kind ────────────────────────────
+    //
+    // Computed once, above the branch, because it is ONE decision that both
+    // the video and the image descriptor must make identically. It used to
+    // live inside the video branch with the image branch deferring to it by
+    // comment — and the image branch then quietly failed to apply the
+    // transition half of the rule at all.
+    //
+    // STATIC opacity, deliberately, and that half is a PARITY fix (SP9d T6).
+    // `ri.geometry` is `geometryAt(...)`, so `.opacity` is the SAMPLED curve
+    // value — but the export cannot fade a clip at all (ffmpeg's
+    // `colorchannelmixer aa` is a <double> and takes no expression), so
+    // honouring the curve here would make the Export dialog's still and
+    // version-compare show a fade the rendered file never has. The still
+    // frame's whole job is to show what the export will look like, so it
+    // reads the same static scalar the export does. Geometry — position,
+    // scale, rotation — stays SAMPLED in the descriptors below, because the
+    // export animates those now and the two agree.
+    //
+    // A TRANSITION is not an exception to that rule but another application
+    // of it (T12): the export genuinely blends a transitioning pair now
+    // (encode-segment.js's `blend` branch, T8), so a still caught
+    // mid-transition must show the blend too, or it would be lying about the
+    // one thing this whole file exists to get right. This applies to IMAGE
+    // clips as much as video ones: `crossfadesAt` pushes both kinds into its
+    // `clips` array, and `encode-segment.js` evaluates `opensCrossfade` and
+    // emits the split BEFORE its `isImageItem` branch, so the export really
+    // does dissolve an image pair.
+    //
+    // ONLY THE INCOMING SIDE RAMPS. The OUTGOING side keeps its own full
+    // opacity — factor 1, not `1-p`. That looks wrong and is not, and the
+    // reason is the compositing model:
+    //
+    //   - The EXPORT is a SPLIT-AND-LERP compositor. encode-segment.js
+    //     splits the running canvas, composites the outgoing item down one
+    //     branch and the incoming one down the other — each at its OWN full
+    //     opacity — and then lerps the two finished frames with
+    //     `blend=all_expr='A+(B-A)*p'`, i.e. `(1-p)*from + p*to`.
+    //   - THIS file is a SEQUENTIAL source-over compositor: each item is
+    //     layered onto the one running canvas in turn (the
+    //     buildImageItemFilterParts loop below). Painting `from` at 1 and
+    //     then `to` at alpha p gives exactly `p*to + (1-p)*from` — the same
+    //     lerp, reached by a different route.
+    //
+    // Feeding the symmetric `1-p` / `p` pair into a SEQUENTIAL stack does NOT
+    // reproduce the lerp; it yields `p*to + (1-p)^2*from + p(1-p)*bg`, which
+    // at p=0.5 lands the outgoing clip at QUARTER weight and leaks the
+    // background through the middle of the transition.
+    //
+    // The shared reference for the sequential form is
+    // `createCanvasPainter.paintBlend` (editor/src/engine/index.ts):
+    // `globalAlpha = 1` for `from`, then `globalAlpha = p` for `to`. The DOM
+    // preview (editor's video/preview/OverlayItemsLayer.tsx) is the same kind
+    // of compositor and reads the same factor. All three land on one picture.
+    // Do not "restore" the symmetric form here — it is the obvious-looking
+    // wrong answer for this compositor.
+    //
+    // `ri.crossfade` is CLIPS-ONLY and already `null` outside an overlap
+    // (@bycrux/timeline-core/src/activation.js's `ItemCrossfade`), so the
+    // factor is 1 — a no-op — everywhere this pin used to apply
+    // unconditionally.
+    const opacity = (ri.item.opacity ?? 1) * (ri.crossfade?.role === 'to' ? ri.crossfade.p : 1)
+
+    let pseudoItem
+    if (ri.kind === 'video') {
+      const framePng = videoFramePaths.get(ri)
+      if (!framePng) return // defensive — every video RI drawn got a frame extracted above
+      // Treat the extracted video frame as an image item — it's a PNG at this point.
+      //
+      // NEVER add `keyframes` here, and never spread `ri.geometry` or the
+      // source item in wholesale. Same discipline as the overlay descriptor
+      // above (see its "NEVER add `keyframes`" note), but now load-bearing for
+      // a second reason: since SP9d, buildImageItemFilterParts branches on
+      // `Array.isArray(item.keyframes) && item.keyframes.length > 0` and, when
+      // true, compiles the curves into piecewise-linear ffmpeg expressions.
+      // This descriptor is a flat list of ALREADY-SAMPLED scalars — a still
+      // frame has exactly one instant — so leaving `keyframes` off is what
+      // keeps the sampler on the exact, non-approximated literal path. A
+      // future edit that "helpfully" forwards them would silently swap those
+      // exact values for the render approximation, in the one surface whose
+      // whole job is to show precisely what a given instant looks like.
+      pseudoItem = {
+        src:      framePng,
+        scale:    ri.geometry.scale,
+        // Beside `scale`, for the same reason the overlay descriptor above
+        // carries them: buildImageItemFilterParts re-resolves this pseudo-item
+        // through `geometryFor`, which reads the per-axis pair first. Drop
+        // them and a stretched video reverts to a uniform box in the Export
+        // dialog's still while the preview shows it stretched.
+        scaleX:   ri.geometry.scaleX,
+        scaleY:   ri.geometry.scaleY,
+        offsetX:  ri.geometry.offsetX,
+        offsetY:  ri.geometry.offsetY,
+        rotation: ri.geometry.rotation,
+        opacity, // the shared rule — see the note above the branch
+        // TRAP: buildImageItemFilterParts defaults to 'cover' when fit is
+        // omitted, which CROPS the frame to fill its box. Production video is
+        // ALWAYS contain-fit — buildVideoItemFilterParts' own scale step uses
+        // force_original_aspect_ratio=decrease unconditionally, never reading
+        // item.fit at all (see @bycrux/timeline-core/src/geometry.js's fit
+        // note). Forwarding sourceCrop above without ALSO forcing 'contain'
+        // here would silently drag the wrong (image) fit rule onto a video
+        // frame and crop content the crop step didn't already remove.
+        fit: 'contain',
+      }
+    } else {
+      pseudoItem = {
+        src:      ri.item.src,
+        scale:    ri.geometry.scale,
+        scaleX:   ri.geometry.scaleX, // see the video branch above
+        scaleY:   ri.geometry.scaleY,
+        offsetX:  ri.geometry.offsetX,
+        offsetY:  ri.geometry.offsetY,
+        rotation: ri.geometry.rotation,
+        opacity, // the shared rule — see the note above the branch
+        fit:      ri.geometry.fit, // image's own tri-state, default 'cover'
+        // PV55: the crop at THIS instant (geometryAt samples a keyframed one and
+        // resolves its fit to 'cover', carried by `fit` above). Applied before
+        // the fit exactly as the export applies it. Never `keyframes`: see the
+        // video branch's note above.
+        sourceCrop: ri.geometry.sourceCrop,
+      }
+    }
+    const { inputArgs, filterParts: fp, newVideoLabel } =
+      buildImageItemFilterParts(pseudoItem, actualWidth, actualHeight, inputIdx, videoLabel, duration)
+    inputs.push(...inputArgs)
+    filterParts.push(...fp)
+    videoLabel = newVideoLabel
+    inputIdx++
+  }
+
+  // The stack, bottom to top (§308 P3, see `stack` above); a clip an opaque
+  // overlay covers is skipped. Then the captions (the last of overlayPngs),
+  // always on top.
+  for (const layer of stack) {
+    if (layer.kind === 1) compositeOverlay(overlayPngs[layer.i])
+    else if (!culled.has(layer.ri)) compositeClip(layer.ri)
+  }
+  for (const ov of overlayPngs.slice(overlayItems.length)) compositeOverlay(ov)
 
   // Note: HDR tonemap is applied during video frame extraction (Step 2 above),
   // not here. Applying zscale to the composite output causes "no path between
