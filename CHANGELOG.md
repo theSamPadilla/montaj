@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Changed (editor): the carousel's Render reports a failure to the host instead of a system alert.** Render saves the project as `final`, then opens the render window. A failed save opened a native `alert`, which blocks the whole window (a headless browser froze on it), and a save that never answered left the button disabled on "Starting…". Now both go to the host's new `onError({ title, detail })` and Render is enabled again. The save gives up after `renderSaveTimeoutMs` (default 30 s); a save that lands later still lands. Without `onError` the failure is logged to the console. A guard keeps `alert`, `confirm` and `prompt` out of the editor's source. (`editor/src/carousel/CarouselEditor.tsx`, `editor/src/types.ts`, `CarouselEditor.test.tsx`, `editor/src/__tests__/no-system-dialogs.test.ts`)
 - **Added (credentials): `MONTAJ_CREDENTIALS_PATH` names the credentials file.** When it is set, `lib/credentials.py` reads and writes that file instead of `~/.montaj/credentials.json`, resolved on every call, and a step subprocess inherits it. Unset, nothing changes. The test suite sets it to an empty temporary path and clears every provider key variable for each test, so no test, and no step a test runs, reads real keys. (`lib/credentials.py` `credentials_path`, `tests/conftest.py`, `tests/test_credentials_guard.py`)
 
 ## v5.34.0
