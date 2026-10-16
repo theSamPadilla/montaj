@@ -1,0 +1,80 @@
+{
+  "name": "track_pose",
+  "description": "Hand landmarks through a video, on the device: 21 per hand per frame (wrist, then each finger from its base joint to its tip), in source pixels and in metres. A hand is tracked from frame to frame; the palm detector looks for hands again only while fewer than hands are tracked. Frame i is at i / fps s. The first run downloads about 8 MB of models. kind body is not available yet.",
+  "input": {
+    "type": "video",
+    "description": "Absolute path of the video"
+  },
+  "output": {
+    "type": "json",
+    "description": "{ kind, fps, frameCount, size: [w, h], found: frames with a hand, frames: [{ t, hands: [{ id (kept while tracked), handedness: left | right, score, landmarks: [[x, y, z] x 21] in source px (z relative to the wrist, the scale of x), world: [[x, y, z] x 21] in metres }] }], model, notes }, or with out the path of that JSON"
+  },
+  "params": [
+    {
+      "name": "kind",
+      "type": "enum",
+      "required": true,
+      "options": ["hand", "body"],
+      "description": "hand. body is not available yet."
+    },
+    {
+      "name": "fps",
+      "type": "float",
+      "required": false,
+      "description": "Frames per second to sample. Default: the video's, at most 30."
+    },
+    {
+      "name": "hands",
+      "type": "int",
+      "required": false,
+      "default": 1,
+      "min": 1,
+      "max": 2,
+      "description": "Most hands per frame."
+    },
+    {
+      "name": "pad",
+      "type": "float",
+      "required": false,
+      "default": 0.3333,
+      "min": 0,
+      "max": 1,
+      "description": "Black border around the frame for the palm detector, as a fraction of the long side. It finds hands that fill the frame or leave it."
+    },
+    {
+      "name": "min-presence",
+      "type": "float",
+      "required": false,
+      "default": 0.5,
+      "description": "Lowest score, 0 to 1, at which a palm or a hand counts as found. Lower finds more, and more wrong ones."
+    },
+    {
+      "name": "smooth",
+      "type": "enum",
+      "required": false,
+      "default": "one-euro",
+      "options": ["one-euro", "none"],
+      "description": "one-euro: a One Euro filter per hand on landmarks and world. none: raw."
+    },
+    {
+      "name": "min-cutoff",
+      "type": "float",
+      "required": false,
+      "default": 1.0,
+      "description": "One Euro cutoff in Hz for a still hand. Lower is smoother."
+    },
+    {
+      "name": "beta",
+      "type": "float",
+      "required": false,
+      "default": 5.0,
+      "description": "One Euro: how much the cutoff rises with the hand's speed. Higher lags less."
+    },
+    {
+      "name": "out",
+      "type": "path",
+      "required": false,
+      "description": "Write the JSON here and print its path"
+    }
+  ]
+}
