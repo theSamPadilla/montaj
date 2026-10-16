@@ -1,0 +1,511 @@
+"""Camera-track maths for steps/media/track_camera: a structure-from-motion
+reconstruction (camera poses and sparse points, in its own frame and scale) turned
+into Montaj's camera in a metric world. Plain numpy; the step runs pycolmap and
+hands the poses and points here, so everything below is testable without it.
+
+Poses are COLMAP's: `R` is the cam_from_world rotation, whose rows are the camera's
+right, down and forward axes in world coordinates, and `C` is the camera centre.
+Intrinsics are COLMAP's SIMPLE_RADIAL: one focal length f in px, the principal point
+at the frame's centre, and k1 (a normalized point x is drawn at x * (1 + k1 |x|^2)).
+Pixels are (u, v) from the frame's top left corner, u right, v down, as COLMAP and
+the engine both count them.
+
+Montaj's world (the app's engine, library/model3d/camera-project.js): Blender axes
+(x right, y forward, z up) in metres. A camera is {location, target, lens}: it looks
+from location to target, and `lens` is mm on a 36 mm sensor whose field of view is
+VERTICAL, 2 atan(18 / lens) over the frame's height, so lens = 36 f / H. With no roll
+the camera's right is forward x z and its up is right x forward. `roll` turns the
+camera about its forward axis from that, in degrees, positive counter-clockwise as
+seen from behind the camera: its right edge rises (the picture's horizon turns
+clockwise). With roll r the camera's up is cos(r) up0 - sin(r) right0.
+
+The world is fixed by the clip: z = 0 is the plane the clip looks at (a table or a
+floor: of the planes in the points, the one facing up the picture, choose_plane),
++z its normal on the cameras' side; the origin is where frame 0's optical
+axis meets it; +x is frame 0's right projected onto it; +y = z x x. The scale is
+metric from one known size, else frame 0's camera is assumed DEFAULT_HEIGHT_M up.
+"""
+import json
+import math
+
+import numpy as np
+
+SENSOR_HALF_MM = 18.0           # half the 36 mm sensor, over the frame's height
+FULL_FRAME_DIAG_MM = math.hypot(36.0, 24.0)
+DEFAULT_HEIGHT_M = 0.3          # frame 0's camera above the plane when no size is known
+TARGET_AHEAD_M = 1.0            # the target when the optical axis never meets the plane
+
+# Plane search: RANSAC planes are taken off the points one at a time, up to
+# MAX_PLANES, each fitting points within PLANE_THRESHOLD x the median depth (along
+# frame 0's axis) of the points. A plane is a candidate with at least
+# MIN_PLANE_POINTS and MIN_PLANE_SHARE of the largest plane's points.
+MAX_PLANES = 5
+PLANE_THRESHOLD = 0.01
+PLANE_ITERATIONS = 2000
+MIN_PLANE_POINTS = 20
+MIN_PLANE_SHARE = 0.25
+PLANE_SEED = 0
+
+# Output rounding. Positions to 0.1 mm: at a tabletop's 0.3 m, a 0.5 mm error in
+# the location or target moves the picture by up to about 3 px at f = 850 px.
+POS_DECIMALS = 4
+ROLL_DECIMALS = 2
+LENS_DECIMALS = 3
+TIME_DECIMALS = 4
+
+
+# ---- lens ----
+
+def lens_from_focal(focal_px, height_px):
+    """Montaj's lens (mm on a 36 mm sensor, vertical field of view) for a focal length in px."""
+    return 2 * SENSOR_HALF_MM * focal_px / height_px
+
+
+def focal_from_lens(lens, height_px):
+    return lens * height_px / (2 * SENSOR_HALF_MM)
+
+
+def focal_from_35mm(f35, width_px, height_px):
+    """A 35 mm-equivalent focal length (matched on the diagonal) as px."""
+    return f35 * math.hypot(width_px, height_px) / FULL_FRAME_DIAG_MM
+
+
+# ---- vectors and rotations ----
+
+def _unit(v):
+    n = float(np.linalg.norm(v))
+    return None if n < 1e-12 else np.asarray(v, float) / n
+
+
+def quat_from_matrix(R):
+    """Unit quaternion (w, x, y, z) of a rotation matrix."""
+    R = np.asarray(R, float)
+    tr = R[0, 0] + R[1, 1] + R[2, 2]
+    if tr > 0:
+        s = 2 * math.sqrt(tr + 1)
+        q = [s / 4, (R[2, 1] - R[1, 2]) / s, (R[0, 2] - R[2, 0]) / s, (R[1, 0] - R[0, 1]) / s]
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        s = 2 * math.sqrt(1 + R[0, 0] - R[1, 1] - R[2, 2])
+        q = [(R[2, 1] - R[1, 2]) / s, s / 4, (R[0, 1] + R[1, 0]) / s, (R[0, 2] + R[2, 0]) / s]
+    elif R[1, 1] > R[2, 2]:
+        s = 2 * math.sqrt(1 + R[1, 1] - R[0, 0] - R[2, 2])
+        q = [(R[0, 2] - R[2, 0]) / s, (R[0, 1] + R[1, 0]) / s, s / 4, (R[1, 2] + R[2, 1]) / s]
+    else:
+        s = 2 * math.sqrt(1 + R[2, 2] - R[0, 0] - R[1, 1])
+        q = [(R[1, 0] - R[0, 1]) / s, (R[0, 2] + R[2, 0]) / s, (R[1, 2] + R[2, 1]) / s, s / 4]
+    q = np.asarray(q)
+    return q / np.linalg.norm(q)
+
+
+def matrix_from_quat(q):
+    w, x, y, z = q / np.linalg.norm(q)
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def slerp(q0, q1, a):
+    """Spherical interpolation from q0 (a = 0) to q1 (a = 1), the short way round."""
+    d = float(np.dot(q0, q1))
+    if d < 0:
+        q1, d = -q1, -d
+    if d > 0.9995:
+        q = q0 + a * (q1 - q0)
+        return q / np.linalg.norm(q)
+    th = math.acos(d)
+    return (math.sin((1 - a) * th) * q0 + math.sin(a * th) * q1) / math.sin(th)
+
+
+def interpolate_pose(p0, p1, a):
+    """The pose a of the way from p0 to p1: the centre lerped, the rotation slerped."""
+    (R0, C0), (R1, C1) = p0, p1
+    q = slerp(quat_from_matrix(R0), quat_from_matrix(R1), a)
+    return matrix_from_quat(q), (1 - a) * np.asarray(C0, float) + a * np.asarray(C1, float)
+
+
+def fill_poses(poses):
+    """Every frame's pose, from a list with None for the frames that did not register.
+    A gap is interpolated between its registered neighbours; frames before the first
+    or after the last registered one hold it. Returns (poses, registered flags)."""
+    known = [i for i, p in enumerate(poses) if p is not None]
+    if not known:
+        raise ValueError("no registered frames")
+    out = []
+    for i, p in enumerate(poses):
+        if p is not None:
+            out.append((np.asarray(p[0], float), np.asarray(p[1], float)))
+            continue
+        before = [k for k in known if k < i]
+        after = [k for k in known if k > i]
+        if not before or not after:
+            k = after[0] if not before else before[-1]
+            out.append((np.asarray(poses[k][0], float), np.asarray(poses[k][1], float)))
+            continue
+        a, b = before[-1], after[0]
+        out.append(interpolate_pose(poses[a], poses[b], (i - a) / (b - a)))
+    return out, [p is not None for p in poses]
+
+
+def pose_at(poses, fps, t):
+    """The pose at t seconds, between the sampled frames (frame i is at i / fps)."""
+    x = t * fps
+    i = min(max(int(math.floor(x)), 0), len(poses) - 1)
+    if i >= len(poses) - 1 or x <= i:
+        return poses[i]
+    return interpolate_pose(poses[i], poses[i + 1], x - i)
+
+
+# ---- intrinsics ----
+
+def undistort(pixels, focal, centre, k1):
+    """Pixels of a SIMPLE_RADIAL camera as normalized pinhole coordinates (x, y)."""
+    d = (np.asarray(pixels, float) - centre) / focal
+    x = d.copy()
+    for _ in range(50):
+        r2 = (x * x).sum(axis=-1, keepdims=True)
+        x = d / (1 + k1 * r2)
+    return x
+
+
+def distort(normalized, focal, centre, k1):
+    """Normalized pinhole coordinates as pixels of a SIMPLE_RADIAL camera."""
+    x = np.asarray(normalized, float)
+    r2 = (x * x).sum(axis=-1, keepdims=True)
+    return x * (1 + k1 * r2) * focal + centre
+
+
+# ---- Montaj's camera ----
+
+def level_basis(forward):
+    """The engine's camera basis with no roll: forward, right = forward x z, up = right
+    x forward. Looking straight up or down, right is +x (camera-project.js `basis`)."""
+    f = _unit(forward)
+    r = _unit(np.cross(f, [0.0, 0.0, 1.0]))
+    if r is None:
+        r = np.array([1.0, 0.0, 0.0])
+    return f, r, np.cross(r, f)
+
+
+def camera_basis(camera):
+    """forward, right, up of a {location, target, roll?} camera."""
+    f, r0, u0 = level_basis(np.subtract(camera["target"], camera["location"]))
+    a = math.radians(camera.get("roll") or 0.0)
+    r = math.cos(a) * r0 + math.sin(a) * u0
+    u = math.cos(a) * u0 - math.sin(a) * r0
+    return f, r, u
+
+
+def project_points(camera, points, size):
+    """World points to pixels through a {location, target, lens, roll?} camera, as the
+    engine's projectPoints draws them (roll as its `up`). None for a point at or
+    behind the eye."""
+    w, h = size
+    f, r, u = camera_basis(camera)
+    tan_v = SENSOR_HALF_MM / camera["lens"]
+    tan_h = tan_v * w / h
+    out = []
+    for p in np.asarray(points, float):
+        d = p - np.asarray(camera["location"], float)
+        z = float(d @ f)
+        if not z > 1e-9:
+            out.append(None)
+            continue
+        nx, ny = float(d @ r) / (z * tan_h), float(d @ u) / (z * tan_v)
+        out.append([(nx * 0.5 + 0.5) * w, (0.5 - ny * 0.5) * h])
+    return out
+
+
+def pixel_rays(camera, pixels, size):
+    """Unit world directions through pixels of a {location, target, lens, roll?} camera."""
+    w, h = size
+    f, r, u = camera_basis(camera)
+    tan_v = SENSOR_HALF_MM / camera["lens"]
+    tan_h = tan_v * w / h
+    out = []
+    for px in np.asarray(pixels, float):
+        nx, ny = (px[0] / w - 0.5) * 2, (0.5 - px[1] / h) * 2
+        out.append(_unit(f + nx * tan_h * r + ny * tan_v * u))
+    return out
+
+
+def axis_target(location, forward):
+    """Where the optical axis meets z = 0, or TARGET_AHEAD_M ahead when it doesn't."""
+    if abs(forward[2]) > 1e-9:
+        s = -location[2] / forward[2]
+        if s > 0:
+            return location + s * forward
+    return location + TARGET_AHEAD_M * forward
+
+
+def roll_degrees(forward, right):
+    """The camera's roll from level: positive when its right edge rises."""
+    _, r0, u0 = level_basis(forward)
+    return math.degrees(math.atan2(float(right @ u0), float(right @ r0)))
+
+
+def montaj_camera(pose, world):
+    """{location, target, roll} of a COLMAP pose in Montaj's world (see align_world)."""
+    R, C = pose
+    A, origin, scale = world["axes"], world["origin"], world["scale"]
+    loc = scale * (A @ (np.asarray(C, float) - origin))
+    f = A @ R[2]
+    r = A @ R[0]
+    return {"location": loc, "target": axis_target(loc, f), "roll": roll_degrees(f, r)}
+
+
+# ---- the plane ----
+
+def find_planes(points, threshold, max_planes=MAX_PLANES, iterations=PLANE_ITERATIONS, seed=PLANE_SEED):
+    """RANSAC planes taken off the points one at a time, largest first. Each is
+    {normal, point (the inliers' centroid), inliers (indices into points)}, refitted to
+    its inliers by least squares. Deterministic for a given seed."""
+    pts = np.asarray(points, float)
+    rng = np.random.default_rng(seed)
+    left = np.arange(len(pts))
+    planes = []
+    while len(planes) < max_planes and len(left) >= 3:
+        P = pts[left]
+        idx = rng.integers(0, len(P), size=(iterations, 3))
+        a, b, c = P[idx[:, 0]], P[idx[:, 1]], P[idx[:, 2]]
+        n = np.cross(b - a, c - a)
+        norm = np.linalg.norm(n, axis=1)
+        ok = norm > 1e-12
+        if not ok.any():
+            break
+        n, a = n[ok] / norm[ok, None], a[ok]
+        best, best_count = None, 0
+        for s in range(0, len(n), 128):
+            counts = (np.abs(P @ n[s:s + 128].T - (a[s:s + 128] * n[s:s + 128]).sum(axis=1)) < threshold).sum(axis=0)
+            j = int(np.argmax(counts))
+            if counts[j] > best_count:
+                best, best_count = (n[s + j], a[s + j]), int(counts[j])
+        if best is None or best_count < 3:
+            break
+        inl = np.abs((P - best[1]) @ best[0]) < threshold
+        for _ in range(2):
+            centroid = P[inl].mean(axis=0)
+            normal = np.linalg.svd(P[inl] - centroid)[2][-1]
+            refit = np.abs((P - centroid) @ normal) < threshold
+            if refit.sum() < 3:
+                break
+            inl = refit
+        centroid = P[inl].mean(axis=0)
+        normal = np.linalg.svd(P[inl] - centroid)[2][-1]
+        planes.append({"normal": normal, "point": centroid, "inliers": left[inl]})
+        left = left[~inl]
+    return planes
+
+
+def choose_plane(planes, eye, up):
+    """The plane the clip stands on, among find_planes' planes, each normal turned to
+    the eye's side. A candidate has at least MIN_PLANE_POINTS and MIN_PLANE_SHARE of
+    the largest plane's points; of those, the one whose normal points most along `up`
+    (frame 0's image-up) when any points up at all, else the largest. A wall of
+    texture behind a plain table holds more points than the table, but it faces the
+    camera, not up the picture. Returns the index."""
+    for p in planes:
+        if float((eye - p["point"]) @ p["normal"]) < 0:
+            p["normal"] = -p["normal"]
+    largest = max(len(p["inliers"]) for p in planes)
+    floor = max(MIN_PLANE_POINTS, MIN_PLANE_SHARE * largest)
+    candidates = [i for i, p in enumerate(planes) if len(p["inliers"]) >= floor]
+    upward = [i for i in candidates if float(planes[i]["normal"] @ up) > 0]
+    if upward:
+        return max(upward, key=lambda i: float(planes[i]["normal"] @ up))
+    return max(range(len(planes)), key=lambda i: len(planes[i]["inliers"]))
+
+
+def align_world(plane, pose0):
+    """The world frame from the plane and frame 0's pose: {axes (rows x, y, z in
+    reconstruction coordinates), origin, height (frame 0's camera above the plane, in
+    reconstruction units), on_axis (False when frame 0's axis misses the plane and
+    the origin is the foot of its camera instead)}. The scale is set later."""
+    R0, C0 = pose0
+    n, p = plane["normal"], plane["point"]
+    f0, r0 = R0[2], R0[0]
+    height = float((C0 - p) @ n)
+    if height < 0:
+        n, height = -n, -height
+    origin, on_axis = C0 - height * n, False
+    if float(f0 @ n) < -1e-9:
+        s = height / -float(f0 @ n)
+        origin, on_axis = C0 + s * f0, True
+    x = _unit(r0 - (r0 @ n) * n)
+    if x is None:
+        # frame 0's right is along the normal (the camera on its side): take its down
+        x = _unit(R0[1] - (R0[1] @ n) * n)
+    y = np.cross(n, x)
+    return {"axes": np.array([x, y, n]), "origin": origin, "height": height, "on_axis": on_axis}
+
+
+# ---- scale ----
+
+def parse_known(text):
+    """`known` as given (JSON text, or a dict): {"height": m} or {"t": s, "pixels":
+    [[u1, v1], [u2, v2]], "metres": d}. Raises ValueError with the reason."""
+    if isinstance(text, str):
+        try:
+            known = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"known is not valid JSON: {e}")
+    else:
+        known = text
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    if isinstance(known, dict) and set(known) == {"height"}:
+        if not (num(known["height"]) and known["height"] > 0):
+            raise ValueError("known.height is frame 0's camera height above the plane in metres, above 0")
+        return {"height": float(known["height"])}
+    if isinstance(known, dict) and set(known) == {"t", "pixels", "metres"}:
+        px = known["pixels"]
+        if not (isinstance(px, list) and len(px) == 2 and all(
+                isinstance(p, list) and len(p) == 2 and all(num(v) for v in p) for p in px)):
+            raise ValueError("known.pixels is two pixels [[u1, v1], [u2, v2]]")
+        if px[0] == px[1]:
+            raise ValueError("known.pixels are the same pixel")
+        if not (num(known["t"]) and known["t"] >= 0):
+            raise ValueError("known.t is the time in seconds the pixels are seen at, 0 or more")
+        if not (num(known["metres"]) and known["metres"] > 0):
+            raise ValueError("known.metres is the distance between the two points in metres, above 0")
+        return {"t": float(known["t"]), "pixels": [[float(v) for v in p] for p in px],
+                "metres": float(known["metres"])}
+    raise ValueError('known is {"height": m} or {"t": s, "pixels": [[u1, v1], [u2, v2]], "metres": d}')
+
+
+def plane_points(pose, pixels, plane, focal, centre, k1):
+    """Where pixels seen from a COLMAP pose meet the plane, in reconstruction
+    coordinates; None for a pixel whose ray misses it."""
+    R, C = pose
+    n, p = plane["normal"], plane["point"]
+    out = []
+    for x in undistort(pixels, focal, centre, k1):
+        ray = R.T @ np.array([x[0], x[1], 1.0])
+        den = float(ray @ n)
+        s = float((p - C) @ n) / den if abs(den) > 1e-12 else -1.0
+        out.append(C + s * ray if s > 0 else None)
+    return out
+
+
+# ---- the whole track ----
+
+def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None, principal=None):
+    """The track as track_camera reports it, unrounded.
+
+    poses: one per sampled frame, (R, C) or None for a frame that did not register.
+    points: the sparse points (N x 3). size: [w, h] of the frames in px; focal, k1 and
+    principal (default the frame's centre) are the SIMPLE_RADIAL camera in those px.
+    known: parse_known's dict or None. Raises ValueError for a known size that cannot
+    be used."""
+    w, h = size
+    centre = np.array([w / 2, h / 2]) if principal is None else np.asarray(principal, float)
+    filled, registered = fill_poses(poses)
+    pts = np.asarray(points, float)
+    R0, C0 = filled[0]
+    notes = []
+
+    depth = float(np.median((pts - C0) @ R0[2]))
+    planes = find_planes(pts, PLANE_THRESHOLD * abs(depth))
+    if not planes:
+        raise ValueError("no plane in the tracked points")
+    chosen = choose_plane(planes, C0, -R0[1])
+    plane = planes[chosen]
+    world = align_world(plane, filled[0])
+
+    if known and "height" in known:
+        scale = known["height"] / world["height"]
+        source = f"known height: frame 0's camera {known['height']:g} m above the plane"
+    elif known:
+        end = (len(filled) - 1) / fps
+        if known["t"] > end + 1e-9:
+            raise ValueError(f"known.t {known['t']:g} s is after the last tracked frame ({end:g} s)")
+        for u, v in known["pixels"]:
+            if not (0 <= u <= w and 0 <= v <= h):
+                raise ValueError(f"known.pixels [{u:g}, {v:g}] is outside the {w}x{h} frame")
+        a, b = plane_points(pose_at(filled, fps, known["t"]), known["pixels"], plane, focal, centre, k1)
+        if a is None or b is None:
+            raise ValueError("a known pixel's ray never meets the plane; pick two points on the table or floor")
+        scale = known["metres"] / float(np.linalg.norm(a - b))
+        source = f"known distance: {known['metres']:g} m between two points on the plane at {known['t']:g} s"
+    else:
+        scale = DEFAULT_HEIGHT_M / world["height"]
+        source = (f"assumed: frame 0's camera {DEFAULT_HEIGHT_M:g} m above the plane. "
+                  "Replace it: pass known, a measured height or a distance on the plane")
+    world["scale"] = scale
+
+    lens = lens_from_focal(focal, h)
+    frames = []
+    for i, pose in enumerate(filled):
+        cam = montaj_camera(pose, world)
+        frames.append({"t": i / fps, **cam, "registered": registered[i]})
+
+    inl = pts[plane["inliers"]]
+    rms = float(np.sqrt(np.mean(((inl - plane["point"]) @ plane["normal"]) ** 2))) * scale
+    candidates = [{"inliers": int(len(p["inliers"])), "upInPicture": float(p["normal"] @ -R0[1]),
+                   "towardCamera": float(p["normal"] @ -R0[2]), "chosen": i == chosen}
+                  for i, p in enumerate(planes)]
+
+    missing = [i for i, r in enumerate(registered) if not r]
+    if missing:
+        notes.append(f"{len(missing)} of {len(filled)} frames did not track and were interpolated "
+                     f"(registered: false), at t = {', '.join(f'{i / fps:g}' for i in missing[:20])}"
+                     f"{' ...' if len(missing) > 20 else ''} s.")
+    notes.append(f"z = 0 is a plane through {len(plane['inliers'])} of {len(pts)} tracked points "
+                 f"({len(planes)} planes found). Check it is the table or floor: project a point "
+                 "on it and compare with the clip.")
+    if not world["on_axis"]:
+        notes.append("Frame 0 does not look at the plane: the origin is under frame 0's camera instead.")
+    corner = math.hypot(w / 2, h / 2) / focal
+    shift = abs(k1) * corner ** 3 * focal
+    if shift >= 1:
+        notes.append(f"The lens bends the picture (k1 {k1:.3f}) by up to {shift:.0f} px at the corners; "
+                     "Montaj's camera has no distortion.")
+    if float(np.max(np.abs(centre - [w / 2, h / 2]))) > 0.5:
+        notes.append(f"The principal point is off centre by {centre[0] - w / 2:.1f}, {centre[1] - h / 2:.1f} px; "
+                     "Montaj's camera keeps it centred.")
+    notes.append("roll is in frames[] only: scene cameras take no roll yet.")
+
+    return {
+        "fps": fps,
+        "frameCount": len(filled),
+        "registered": int(sum(registered)),
+        "size": [w, h],
+        "lens": lens,
+        "focalPx": float(focal),
+        "distortion": {"k1": float(k1)},
+        "frames": frames,
+        "plane": {"inliers": int(len(plane["inliers"])), "rmsM": rms, "candidates": candidates},
+        "scale": {"metresPerUnit": scale, "source": source},
+        "reprojectionPx": reprojection,
+        "notes": notes,
+    }
+
+
+def rounded(track):
+    """The track as printed: positions to 0.1 mm, roll to 0.01 degrees, and scene.camera
+    keyed at the sampled frames."""
+    pos = lambda v: [round(float(c), POS_DECIMALS) + 0.0 for c in v]   # + 0.0: no -0.0
+    frames = [{"t": round(f["t"], TIME_DECIMALS), "location": pos(f["location"]), "target": pos(f["target"]),
+               "roll": round(float(f["roll"]), ROLL_DECIMALS) + 0.0, "registered": bool(f["registered"])}
+              for f in track["frames"]]
+    lens = round(float(track["lens"]), LENS_DECIMALS)
+    plane = dict(track["plane"])
+    plane["rmsM"] = round(plane["rmsM"], 5)
+    plane["candidates"] = [{**c, "upInPicture": round(c["upInPicture"], 2), "towardCamera": round(c["towardCamera"], 2)}
+                           for c in plane["candidates"]]
+    reproj = track["reprojectionPx"]
+    return {
+        **track,
+        "lens": lens,
+        "focalPx": round(track["focalPx"], 2),
+        "distortion": {"k1": round(track["distortion"]["k1"], 5)},
+        "frames": frames,
+        "plane": plane,
+        "scale": {**track["scale"], "metresPerUnit": float(f"{track['scale']['metresPerUnit']:.6g}")},
+        "reprojectionPx": None if reproj is None else round(float(reproj), 3),
+        "scene": {"camera": {
+            "lens": lens,
+            "location": [[f["t"], f["location"]] for f in frames],
+            "target": [[f["t"], f["target"]] for f in frames],
+        }},
+    }

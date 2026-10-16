@@ -1,0 +1,51 @@
+{
+  "name": "track_camera",
+  "description": "The camera that filmed a clip, for a 3D scene that matches it: lens, location, target and roll at each sampled frame, from structure from motion on the clip itself. The world is Blender's axes in metres: z = 0 is the table or floor the clip looks at (+z up, toward the camera), the origin is where frame 0's centre ray meets it, +x is frame 0's right along it. A known size makes it metric; without one, frame 0's camera is assumed 0.3 m above the plane. scene.camera is ready to paste into a scene; roll is in frames only, as scene cameras take none yet. Frames that did not track are interpolated and marked registered: false. Needs Montaj's vision extra; not on Intel Macs yet.",
+  "input": {
+    "type": "video",
+    "description": "Absolute path of the video"
+  },
+  "output": {
+    "type": "json",
+    "description": "{ fps, frameCount, registered: frames tracked, size: [w, h] px, lens: mm on a 36 mm sensor, vertical field of view (lens = 36 * focalPx / h), focalPx, distortion: {k1} (Montaj's camera has none), frames: [{t, location, target, roll: degrees, counter-clockwise from level as seen from behind the camera, registered}], plane: {inliers, rmsM, candidates}, scale: {metresPerUnit, source}, reprojectionPx, scene: {camera: {lens, location: [[t, [x, y, z]]], target: [[t, [x, y, z]]]}}, notes }; with out, the path of the file holding it"
+  },
+  "params": [
+    {
+      "name": "fps",
+      "type": "float",
+      "required": false,
+      "default": 10.0,
+      "min": 1,
+      "max": 30,
+      "description": "Frames tracked per second of video. Frame k is the frame on screen at k / fps."
+    },
+    {
+      "name": "lens",
+      "type": "float",
+      "required": false,
+      "min": 8,
+      "max": 300,
+      "description": "A first guess at the lens in mm, as above; the track refines it. Default: the video's 35 mm-equivalent focal length tag, else a focal length of 0.85 x the long side in px."
+    },
+    {
+      "name": "known",
+      "type": "string",
+      "required": false,
+      "description": "A known size that makes the world metric, as JSON text: {\"height\": h} is frame 0's camera h metres above the plane; {\"t\": s, \"pixels\": [[u1, v1], [u2, v2]], \"metres\": d} is two points on the plane, seen at those pixels at s seconds, d metres apart."
+    },
+    {
+      "name": "max-frames",
+      "type": "int",
+      "required": false,
+      "default": 600,
+      "min": 1,
+      "description": "Refuse a clip that samples to more frames than this."
+    },
+    {
+      "name": "out",
+      "type": "path",
+      "required": false,
+      "description": "Write the JSON to this file and print its path."
+    }
+  ]
+}
