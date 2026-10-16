@@ -57,6 +57,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
  *   page links that one stylesheet over `file://` instead of reaching
  *   fonts.googleapis.com. Unset (the default, and every OSS caller) ⇒ the page is
  *   byte-identical to before. See `vendoredFontsHref` for the shape and the why.
+ * @param {boolean} [opts.stubIcons]  Leave the icon packages out of the bundle (an exported page whose overlay uses none).
  * @param {string} [opts.projectDir]
  *   The project's directory, a root of the read boundary (overlay-build.js).
  * @returns {Promise<{ htmlPath: string, workDir: string, inputs: string[],
@@ -72,7 +73,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 // keyframes only `scale` at its static size. Left undefined, they drop out of
 // the bake's JSON and geometryAt falls back to the animated `scale`, exactly as
 // the preview does.
-export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, scaleX, scaleY, rotation = 0, opacity = 1, keyframes = null, opaque = false, googleFonts = [], fontsBaseDir = '', projectDir = null }) {
+export async function bundleComponent({ componentPath, props, fps, durationFrames, width, height, offsetX = 0, offsetY = 0, scale = 1, scaleX, scaleY, rotation = 0, opacity = 1, keyframes = null, opaque = false, googleFonts = [], fontsBaseDir = '', projectDir = null, stubIcons = false }) {
   const id      = randomBytes(8).toString('hex')
   const workDir = join(tmpdir(), `montaj-bundle-${id}`)
   mkdirSync(workDir, { recursive: true })
@@ -111,6 +112,14 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
   // engine, no generated shim); the sample cache records them so it can notice
   // an edited import.
   const options = overlayEsbuildOptions({ boundary })
+  // Opt-in, off for every render and sample: an exported page whose overlay uses no icon leaves the icon packages out.
+  if (stubIcons) {
+    // `overlay-runtime/icons.js` re-exports whole packages (5 MB of Phosphor, 1.5 MB of Font Awesome); a stub in the
+    // bundle's own work dir (inside the read boundary) stands in for them.
+    const stub = join(workDir, 'icon-stub.js')
+    writeFileSync(stub, 'export const FontAwesomeIcon = () => null\nexport default {}\n')
+    options.alias = { ...options.alias, '@phosphor-icons/react': stub, '@fortawesome/free-solid-svg-icons': stub, '@fortawesome/free-brands-svg-icons': stub, '@fortawesome/react-fontawesome': stub }
+  }
   let result
   try {
     result = await esbuild.build({

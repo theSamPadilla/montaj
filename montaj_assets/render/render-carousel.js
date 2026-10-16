@@ -31,6 +31,7 @@ import { overlayEsbuildOptions, overlayReadBoundary }     from './overlay-build.
 import { overlayPageLaunchOptions, installPageGuard, prefetchPropsUrls, overlayPageCspMeta, pageNeedsGoogleFonts } from './page-guard.js'
 import { parseGoogleFonts } from './google-fonts.js'
 import { pngsToPdf } from './carousel-pdf.js'
+import { serializeSlideInPage, writeSlidePage, swipePage } from './carousel-pages.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -88,12 +89,18 @@ let outArg         = null
 let cleanArg       = false
 let scaleArg       = DEFAULT_SCALE
 let pdfArg         = false
+let htmlDirArg     = null   // also write each slide as a web page here (carousel-pages.js)
+let htmlOnlyArg    = false  // with --html-dir: no PNGs, no PDF
+let onlyArg        = null   // with --html-dir: only these slide numbers (1-based)
 
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--project-json') { projectJsonArg = argv[++i]; continue }
   if (argv[i] === '--out')          { outArg         = argv[++i]; continue }
   if (argv[i] === '--clean')        { cleanArg       = true;      continue }
   if (argv[i] === '--pdf')          { pdfArg         = true;      continue }
+  if (argv[i] === '--html-dir')     { htmlDirArg     = argv[++i]; continue }
+  if (argv[i] === '--html-only')    { htmlOnlyArg    = true;      continue }
+  if (argv[i] === '--only')         { onlyArg        = String(argv[++i]).split(',').map(Number).filter(n => Number.isInteger(n) && n > 0); continue }
   if (argv[i] === '--scale') {
     const raw = argv[++i]
     const n = Number(raw)
@@ -112,7 +119,7 @@ if (!projectJsonArg) {
   fail('missing_argument', '--project-json is required')
 }
 
-main(projectJsonArg, { out: outArg, clean: cleanArg, scale: scaleArg, pdf: pdfArg }).catch(err => {
+main(projectJsonArg, { out: outArg, clean: cleanArg, scale: scaleArg, pdf: pdfArg && !htmlOnlyArg, htmlDir: htmlDirArg, htmlOnly: htmlOnlyArg, only: onlyArg }).catch(err => {
   fail('render_error', err.message ?? String(err))
 })
 
@@ -120,7 +127,7 @@ main(projectJsonArg, { out: outArg, clean: cleanArg, scale: scaleArg, pdf: pdfAr
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE, pdf = false }) {
+async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE, pdf = false, htmlDir = null, htmlOnly = false, only = null }) {
   const absProjectPath = resolve(projectJsonPath)
   const projectDir     = dirname(absProjectPath)
 
@@ -176,6 +183,11 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE, pdf = 
   }
 
   const manifestSlides = []
+  // --html-dir: the slides as web pages (carousel-pages.js); the files they name are copied once each.
+  const htmlFiles = []
+  const htmlCopied = new Map()
+  const htmlWarnings = []
+  const htmlCounter = { n: 0 }
   // Per-slide failures are recorded here and the loop CONTINUES — one bad slide
   // (e.g. an undecodable asset or a missing overlay template) must never abort the
   // whole batch and silently hand back a truncated carousel. The run still exits
@@ -185,6 +197,7 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE, pdf = 
   try {
     for (let i = 0; i < slides.length; i++) {
       const slide    = slides[i]
+      if (htmlDir && only && only.length && !only.includes(i + 1)) continue
       const padded   = String(i + 1).padStart(2, '0')
       const fileName = `slide_${padded}.png`
       const outFile  = join(outDir, fileName)
@@ -246,12 +259,17 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE, pdf = 
             // slide, naming it, rather than rendering without it.
             guard.assertPropsServed()
 
-            await page.screenshot({
-              path:            outFile,
-              type:            'png',
-              fullPage:        false,
-              omitBackground:  false,
-            })
+            if (htmlDir) {
+              htmlFiles.push(writeSlidePage(await page.evaluate(serializeSlideInPage), resolve(htmlDir), `slide-${padded}`, htmlCopied, htmlWarnings, htmlCounter))
+            }
+            if (!htmlOnly) {
+              await page.screenshot({
+                path:            outFile,
+                type:            'png',
+                fullPage:        false,
+                omitBackground:  false,
+              })
+            }
           } finally {
             await page.close()
           }
@@ -292,6 +310,13 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE, pdf = 
       log(`pdf failed: ${err?.message ?? String(err)}`)
       try { rmSync(join(outDir, PDF_TMP), { recursive: true, force: true }) } catch { /* nothing to clean */ }
     }
+  }
+
+  // 4b. The swipeable page over the slides just written (--html-dir)
+  if (htmlDir && htmlFiles.length > 0) {
+    writeFileSync(join(resolve(htmlDir), 'index.html'), swipePage({ files: htmlFiles, width, height, title: projectJson.name ?? 'Carousel' }))
+    log(`pages: ${htmlFiles.length} slide page(s) and index.html in ${resolve(htmlDir)}`)
+    for (const w of htmlWarnings) log(`warning: ${w}`)
   }
 
   // 5. Write manifest
