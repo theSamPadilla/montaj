@@ -179,3 +179,12 @@ def test_a_step_with_its_own_stable_folder_keeps_it(env, monkeypatch):
     assert r.status_code == 200, r.text
     assert calls[-1][calls[-1].index("--out") + 1] == str(pdir / "assets" / "plate-a")
 
+
+
+def test_json_output_step_without_out_gets_a_json_extension(env, monkeypatch):
+    pid, pdir, calls = env
+    schema = {**SCHEMA, "output": {"type": "json", "description": "tracks"}}
+    monkeypatch.setattr(steps_mod, "scan_steps", lambda: {"generate_image": (schema, Path("x.py"))})
+    assert _post(_project=pid).status_code == 200
+    out = calls[0][calls[0].index("--out") + 1]
+    assert re.fullmatch(re.escape(str(pdir / "assets")) + r"/generate_image-\d{8}-\d{6}\.json", out)

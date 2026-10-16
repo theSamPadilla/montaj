@@ -272,6 +272,9 @@ def resolve_project_param(schema: dict, body: dict) -> None:
     body["project"] = str(found / "project.json")
 
 _OUT_EXT = {"image": ".png", "audio": ".mp3", "video": ".mp4"}
+# Only for the generated name: a plain name the caller gives a json step may be a
+# folder (glass_plate's plates), so it keeps no extension.
+_AUTO_OUT_EXT = {**_OUT_EXT, "json": ".json"}
 _RESERVED_OUTS: set[str] = set()
 
 
@@ -332,7 +335,8 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
         return None
     ext = _OUT_EXT.get((schema.get("output") or {}).get("type"), "")
     if out is None:
-        stem, suffix = f"{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}", ext
+        auto_ext = _AUTO_OUT_EXT.get((schema.get("output") or {}).get("type"), "")
+        stem, suffix = f"{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}", auto_ext
     else:
         stem, suffix = os.path.splitext(out)
         if not suffix:

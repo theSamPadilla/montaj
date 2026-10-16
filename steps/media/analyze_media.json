@@ -13,11 +13,11 @@
     {"name": "prompt", "type": "string", "required": true, "description": "Question or instruction"},
     {"name": "model", "type": "string", "required": false, "default": "gemini-3.8-flash", "description": "Gemini model ID"},
     {"name": "json-output", "type": "bool", "required": false, "description": "Request structured JSON output from the model"},
-    {"name": "out", "type": "path", "required": false, "description": "Write the raw response to a file instead of stdout"},
-    {"name": "max-output-tokens", "type": "int", "required": false, "description": "Cap on reply tokens"},
+    {"name": "out", "type": "path", "required": false, "description": "Write the raw reply (code fences kept) to a file instead of stdout"},
+    {"name": "max-output-tokens", "type": "int", "required": false, "description": "Cap on reply tokens, thinking tokens included"},
     {"name": "thinking-budget", "type": "int", "required": false, "description": "Cap on thinking tokens (0 turns thinking off where the model allows it)"},
-    {"name": "fps", "type": "float", "required": false, "description": "Video sampling rate in frames per second"},
+    {"name": "fps", "type": "float", "required": false, "min": 0.01, "description": "Video sampling rate in frames per second"},
     {"name": "media-resolution", "type": "enum", "required": false, "options": ["low", "medium", "high"], "description": "Tokens spent per frame or image"},
-    {"name": "meta", "type": "bool", "required": false, "description": "Print one JSON object: text (or path with out), usage, model, parseError"}
+    {"name": "meta", "type": "bool", "required": false, "description": "Print one JSON object: text (or path with out), usage, model, finishReason, parseError"}
   ]
 }

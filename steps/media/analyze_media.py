@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail, require_file
 from connectors import gemini, ConnectorError
-from connectors.gemini import invalid_api_key_message
+from connectors.gemini import invalid_api_key_message, empty_reply_message
 
 
 def main():
@@ -43,12 +43,14 @@ def main():
         fail("api_error", str(e))
 
     text = result["text"]
+    if not text:
+        fail("empty_reply", empty_reply_message(result.get("finish_reason")))
 
-    # The raw reply is written before any JSON check: a paid reply is never lost.
+    # The raw reply (code fences and all) is written before any JSON check: a paid reply is never lost.
     if args.out:
         try:
             with open(args.out, "w") as f:
-                f.write(text)
+                f.write(result.get("raw", text))
         except OSError as e:
             fail("write_error", f"Could not write to {args.out}: {e}")
 
@@ -59,6 +61,7 @@ def main():
     payload = {"path": args.out} if args.out else {"text": text}
     payload["usage"] = result["usage"]
     payload["model"] = result["model"]
+    payload["finishReason"] = result.get("finish_reason")
     if args.json_output:
         try:
             json.loads(text)

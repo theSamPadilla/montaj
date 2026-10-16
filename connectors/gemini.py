@@ -445,6 +445,35 @@ def _usage_dict(response) -> dict | None:
     }
 
 
+def _finish_reason(response) -> str | None:
+    """Name of the first candidate's finish reason (e.g. "MAX_TOKENS"), None if unknown."""
+    try:
+        fr = response.candidates[0].finish_reason
+    except (AttributeError, IndexError, TypeError):
+        return None
+    name = getattr(fr, "name", fr)
+    return name if isinstance(name, str) else None
+
+
+def empty_reply_message(finish_reason: str | None) -> str:
+    """Why a reply with no text is empty, with the fix when the cause is the token cap."""
+    if finish_reason == "MAX_TOKENS":
+        return ("Gemini stopped (MAX_TOKENS) before writing anything: "
+                "raise max-output-tokens or lower thinking-budget")
+    return f"Gemini returned no text (finish reason: {finish_reason or 'unknown'})"
+
+
+def _result(response, model: str, json_output: bool) -> dict:
+    raw = response.text or ""
+    return {
+        "text": _strip_markdown_fences(raw) if json_output and raw else raw,
+        "raw": raw,
+        "usage": _usage_dict(response),
+        "model": model,
+        "finish_reason": _finish_reason(response),
+    }
+
+
 def analyze_media_meta(
     path: str,
     prompt: str,
@@ -458,8 +487,10 @@ def analyze_media_meta(
 ) -> dict:
     """Analyze a media file (video, audio, or image) with Gemini.
 
-    Returns {"text": str, "usage": {"prompt", "output", "thinking", "total"} | None,
-    "model": str}. `usage` comes from response.usage_metadata; any count may be None.
+    Returns {"text": str, "raw": str, "usage": {"prompt", "output", "thinking", "total"} | None,
+    "model": str, "finish_reason": str | None}. `text` is "" when the reply has no text
+    (see empty_reply_message); `raw` is the reply before code fences are stripped.
+    `usage` comes from response.usage_metadata; any count may be None.
 
     Branching:
     - Images under INLINE_BYTE_LIMIT: inline bytes in generate_content, no
@@ -518,9 +549,7 @@ def analyze_media_meta(
             )
         except Exception as e:
             raise _wrap_sdk_error(e, "Gemini generate_content failed") from e
-        text = response.text
-        text = _strip_markdown_fences(text) if json_output else text
-        return {"text": text, "usage": _usage_dict(response), "model": model}
+        return _result(response, model, json_output)
 
     # Files API path for video, audio, and oversized images.
     media_file = upload_media(path)
@@ -549,9 +578,7 @@ def analyze_media_meta(
             print(_json.dumps({"progress": f"gemini: failed to delete uploaded file {media_file.name}: {e}"}),
                   file=sys.stderr, flush=True)
 
-    text = response.text
-    text = _strip_markdown_fences(text) if json_output else text
-    return {"text": text, "usage": _usage_dict(response), "model": model}
+    return _result(response, model, json_output)
 
 
 def analyze_media(
@@ -565,14 +592,17 @@ def analyze_media(
     video_fps: float | None = None,
     media_resolution: str | None = None,
 ) -> str:
-    """analyze_media_meta(...)["text"]: the model's reply as a str."""
-    return analyze_media_meta(
+    """The model's reply as a str. Raises ConnectorError when the reply has no text."""
+    r = analyze_media_meta(
         path, prompt, model, json_output,
         max_output_tokens=max_output_tokens,
         thinking_budget=thinking_budget,
         video_fps=video_fps,
         media_resolution=media_resolution,
-    )["text"]
+    )
+    if not r["text"]:
+        raise ConnectorError(empty_reply_message(r["finish_reason"]))
+    return r["text"]
 
 
 def generate_image(

@@ -21,13 +21,15 @@ def _file():
     return f
 
 
-def _client(text="hello", usage=None):
+def _client(text="hello", usage=None, finish=None):
     client = MagicMock()
     client.files.upload.return_value = _file()
     client.files.get.return_value = _file()
     resp = MagicMock()
     resp.text = text
     resp.usage_metadata = usage
+    if finish is not None:
+        resp.candidates = [stdlib_types.SimpleNamespace(finish_reason=stdlib_types.SimpleNamespace(name=finish))]
     client.models.generate_content.return_value = resp
     return client
 
@@ -95,8 +97,8 @@ def test_bad_media_resolution_is_a_connector_error(monkeypatch, video):
 def test_meta_reads_usage_with_missing_fields(monkeypatch, video):
     _use(monkeypatch, _client(usage=_usage(prompt=100, output=20, total=150)))
     r = mod.analyze_media_meta(video, "p", model="m-x")
-    assert r == {"text": "hello", "model": "m-x",
-                 "usage": {"prompt": 100, "output": 20, "thinking": None, "total": 150}}
+    assert r["text"] == "hello" and r["model"] == "m-x"
+    assert r["usage"] == {"prompt": 100, "output": 20, "thinking": None, "total": 150}
 
 
 def test_meta_usage_none_when_response_has_none(monkeypatch, video):
@@ -111,13 +113,19 @@ def test_analyze_media_still_returns_str(monkeypatch, video):
 
 # ── the step script, run in-process with the connector faked ────────────────
 
+def fences(t):
+    """What the connector does to a json-output reply (the tests only need it to differ)."""
+    return t.removeprefix("```json\n").removesuffix("\n```")
+
+
 def _run_step(monkeypatch, capsys, tmp_path, reply, argv_extra, usage=None):
     import importlib.util
     spec = importlib.util.spec_from_file_location("analyze_media_step", STEP)
     step = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(step)
     monkeypatch.setattr(step.gemini, "analyze_media_meta",
-                        lambda **kw: {"text": reply, "usage": usage, "model": kw["model"]})
+                        lambda **kw: {"text": fences(reply), "raw": reply, "usage": usage, "model": kw["model"],
+                                      "finish_reason": "STOP"})
     src = tmp_path / "in.mp4"
     src.write_bytes(b"\x00")
     monkeypatch.setattr(sys, "argv", ["analyze_media.py", "--input", str(src), "--prompt", "p", *argv_extra])
@@ -136,7 +144,7 @@ def test_out_is_written_before_a_bad_json_check(monkeypatch, capsys, tmp_path):
 def test_meta_without_out(monkeypatch, capsys, tmp_path):
     u = {"prompt": 1, "output": 2, "thinking": 3, "total": 6}
     stdout = _run_step(monkeypatch, capsys, tmp_path, "hi", ["--meta", "--model", "m"], usage=u)
-    assert json.loads(stdout) == {"text": "hi", "usage": u, "model": "m"}
+    assert json.loads(stdout) == {"text": "hi", "usage": u, "model": "m", "finishReason": "STOP"}
 
 
 def test_meta_with_out_reports_path_and_parse_error(monkeypatch, capsys, tmp_path):
@@ -161,7 +169,7 @@ def test_options_reach_the_connector(monkeypatch, capsys, tmp_path):
     spec.loader.exec_module(step)
     seen = {}
     monkeypatch.setattr(step.gemini, "analyze_media_meta",
-                        lambda **kw: seen.update(kw) or {"text": "t", "usage": None, "model": "m"})
+                        lambda **kw: seen.update(kw) or {"text": "t", "raw": "t", "usage": None, "model": "m", "finish_reason": None})
     src = tmp_path / "in.mp4"
     src.write_bytes(b"\x00")
     monkeypatch.setattr(sys, "argv", ["x", "--input", str(src), "--prompt", "p", "--max-output-tokens", "99",
@@ -186,3 +194,75 @@ def test_wrap_output_fallback_type_defaults_to_text():
 def test_wrap_output_valid_json_and_paths_unchanged():
     assert wrap_output('{"a": 1}', {}) == {"a": 1}
     assert wrap_output("/x/y.mp4", {"output": {"type": "video"}}) == {"path": "/x/y.mp4", "type": "video"}
+
+
+# ── empty replies, raw out, finish reason, _OUT_EXT ─────────────────────────
+
+def test_no_text_returns_empty_text_and_finish_reason(monkeypatch, video):
+    _use(monkeypatch, _client(text=None, finish="MAX_TOKENS"))
+    r = mod.analyze_media_meta(video, "p", json_output=True)
+    assert r["text"] == "" and r["finish_reason"] == "MAX_TOKENS"
+
+
+def test_analyze_media_raises_on_no_text(monkeypatch, video):
+    _use(monkeypatch, _client(text=None, finish="MAX_TOKENS"))
+    with pytest.raises(ConnectorError, match="MAX_TOKENS.*max-output-tokens"):
+        mod.analyze_media(video, "p")
+
+
+def test_fences_are_stripped_from_text_but_kept_in_raw(monkeypatch, video):
+    _use(monkeypatch, _client(text='```json\n{"a": 1}\n```'))
+    r = mod.analyze_media_meta(video, "p", json_output=True)
+    assert r["text"] == '{"a": 1}' and r["raw"].startswith("```json")
+
+
+def _step_no_text(monkeypatch, tmp_path, argv_extra, finish):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("analyze_media_step3", STEP)
+    step = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(step)
+    monkeypatch.setattr(step.gemini, "analyze_media_meta",
+                        lambda **kw: {"text": "", "raw": "", "usage": None, "model": "m", "finish_reason": finish})
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"\x00")
+    monkeypatch.setattr(sys, "argv", ["x", "--input", str(src), "--prompt", "p", *argv_extra])
+    return step
+
+
+@pytest.mark.parametrize("extra", [[], ["--json-output"], ["--out", "OUT"], ["--meta"]])
+def test_step_fails_with_empty_reply_on_every_path(monkeypatch, capsys, tmp_path, extra):
+    extra = [str(tmp_path / "o.txt") if a == "OUT" else a for a in extra]
+    step = _step_no_text(monkeypatch, tmp_path, extra, "MAX_TOKENS")
+    with pytest.raises(SystemExit):
+        step.main()
+    err = json.loads(capsys.readouterr().err)
+    assert err["error"] == "empty_reply"
+    assert "MAX_TOKENS" in err["message"] and "max-output-tokens" in err["message"]
+    assert not (tmp_path / "o.txt").exists()
+
+
+def test_empty_reply_names_an_unknown_reason(monkeypatch, capsys, tmp_path):
+    step = _step_no_text(monkeypatch, tmp_path, [], "SAFETY")
+    with pytest.raises(SystemExit):
+        step.main()
+    assert "SAFETY" in json.loads(capsys.readouterr().err)["message"]
+
+
+def test_out_keeps_the_fences_the_text_loses(monkeypatch, capsys, tmp_path):
+    out = tmp_path / "raw.txt"
+    reply = '```json\n{"a": 1}\n```'
+    stdout = _run_step(monkeypatch, capsys, tmp_path, reply, ["--json-output", "--out", str(out)])
+    assert out.read_text() == reply and stdout.strip() == str(out)
+
+
+def test_meta_reports_finish_reason_and_stripped_text(monkeypatch, capsys, tmp_path):
+    stdout = _run_step(monkeypatch, capsys, tmp_path, '```json\n{"a": 1}\n```', ["--meta", "--json-output"])
+    p = json.loads(stdout)
+    assert p["finishReason"] == "STOP" and p["text"] == '{"a": 1}' and "parseError" not in p
+
+
+def test_fps_schema_has_a_positive_minimum():
+    schema = json.loads(STEP.with_suffix(".json").read_text())
+    fps = next(p for p in schema["params"] if p["name"] == "fps")
+    assert fps["min"] > 0
+
