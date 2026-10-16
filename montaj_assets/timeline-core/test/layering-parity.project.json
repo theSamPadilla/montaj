@@ -1,0 +1,14 @@
+{
+  "about": "§308 P3 layering parity: one project, stacked by the editor preview (editor/src/video/preview/__tests__/layering-parity.test.tsx) and by sample_frame and the export (render/test/layering-parity.integration.test.mjs). Every layer but pip is full-canvas, so the centre pixel names the top layer. JSON order is deliberately NOT the editor's: an image-only track (plate) is listed below the footage track, and a video track (pip) above two image tracks; the editor stacks every video track first. expectTop is what is on top at the centre at each time, between every layer boundary.",
+  "settings": { "resolution": [360, 640], "fps": 10, "colorSpace": "sdr_bt709" },
+  "tracks": [
+    [{ "id": "plate", "type": "image", "src": "plate.png", "start": 0, "end": 6 }],
+    [{ "id": "footage", "type": "video", "src": "footage.mp4", "start": 0, "end": 8, "inPoint": 0, "outPoint": 8 }],
+    [{ "id": "stage", "type": "overlay", "src": "fill.jsx", "start": 2, "end": 6, "props": { "color": "#ff0000" } }],
+    [{ "id": "backing", "type": "image", "src": "backing.png", "start": 4, "end": 8 }],
+    [{ "id": "pip", "type": "video", "src": "pip.mp4", "start": 6, "end": 8, "inPoint": 0, "outPoint": 2, "scale": 0.5 }]
+  ],
+  "colors": { "footage": "#00ff00", "plate": "#ffff00", "stage": "#ff0000", "backing": "#0000ff", "pip": "#ff00ff" },
+  "layerPositions": [2, 0, 3, 4, 1],
+  "expectTop": [[1, "plate"], [3, "stage"], [5, "backing"], [7, "backing"]]
+}

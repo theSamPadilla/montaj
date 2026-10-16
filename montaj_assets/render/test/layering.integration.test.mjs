@@ -13,6 +13,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FFMPEG } from '../ffmpeg-bin.js'
 import { sampleFrame } from '../sample-frame.js'
+import { pixel, near } from './fixtures/pixels.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const RENDER_JS = join(__dirname, '..', 'render.js')
@@ -23,20 +24,6 @@ const FILL_JSX = `export default function Fill({ color }) {
   return <div style={{ position: 'absolute', inset: 0, background: color }} />
 }
 `
-
-/** RGB of the pixel at fractional (fx, fy) of frame `n` of a video. */
-export function pixel(path, n, fx = 0.5, fy = 0.5) {
-  // RGB before the crop: a 1x1 crop of 4:2:0 has no chroma plane left.
-  const r = spawnSync(FFMPEG, ['-v', 'error', '-i', path, '-map', '0:v:0',
-    '-vf', `select=eq(n\\,${n}),format=rgb24,crop=1:1:iw*${fx}:ih*${fy}`,
-    '-frames:v', '1', '-f', 'rawvideo', 'pipe:1'], { encoding: 'buffer' })
-  if (r.status !== 0 || r.stdout.length < 3) throw new Error(`pixel read failed: ${r.stderr}`)
-  return [r.stdout[0], r.stdout[1], r.stdout[2]]
-}
-
-export function near(rgb, want, why, tol = 40) {
-  assert.ok(rgb.every((v, i) => Math.abs(v - want[i]) <= tol), `${why}: got ${rgb}, want about ${want}`)
-}
 
 /** Footage, a red overlay on track 1 (plain, then opaque), a half-size blue image on track 2. */
 function world() {
