@@ -1,5 +1,6 @@
 {
   "name": "kling_generate",
+  "provenance": {"provider": "kling"},
   "description": "Generate video via Kling v3 Omni. Standalone mode: pass --prompt and --ref-image directly. Project-aware mode: pass --project-id and --scene-id and the step reads the project, composes the prompt (styleAnchor + ref clause + inline tokens), generates, and saves the clip to tracks[0]. Also supports multi-shot (up to 6 scenes in one API call).",
   "output": {
     "type": "video",

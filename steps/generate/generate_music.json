@@ -1,5 +1,6 @@
 {
   "name": "generate_music",
+  "provenance": {"providerParam": "vendor"},
   "description": "Generate a music clip from a text prompt via Gemini Lyria or ElevenLabs. Generation step — produces a file on disk; composition happens at render time.",
   "output": {
     "type": "audio",
