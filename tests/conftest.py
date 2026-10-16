@@ -93,13 +93,15 @@ def assert_error(proc: subprocess.CompletedProcess, code: str | None = None):
 
 @pytest.fixture(autouse=True)
 def _no_real_credentials(tmp_path, monkeypatch):
-    """No test sees the operator's real keys: a test that forgot to mock a connector
-    must fail on a missing credential, never reach a paid API with ~/.montaj/credentials.json
-    (a stale monkeypatch once uploaded a test clip to Google's Files API this way).
-    CREDENTIALS_PATH points at a file that does not exist, and every env var that
-    lib/credentials.py maps is removed. A test that needs a credential sets its own."""
+    """No test sees the operator's real keys, in this process or in a step subprocess.
+
+    A test that forgot to mock a connector must fail on a missing credential, never
+    reach a paid API with ~/.montaj/credentials.json. MONTAJ_CREDENTIALS_PATH goes in
+    the environment, so a child re-importing lib.credentials inherits it; a path patch
+    would not reach it. Every provider env var lib/credentials.py maps is removed too.
+    A test that needs a credential sets its own."""
     import lib.credentials as creds
-    monkeypatch.setattr(creds, "CREDENTIALS_PATH", str(tmp_path / "no-real-creds" / "credentials.json"))
+    monkeypatch.setenv(creds.CREDENTIALS_PATH_ENV, str(tmp_path / "no-credentials.json"))
     for provider, keys in creds.KNOWN_PROVIDERS.items():
         for key in keys:
             monkeypatch.delenv(creds._env_var_name(provider, key), raising=False)
