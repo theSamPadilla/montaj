@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Added (steps, render): `export_overlay_pages` writes a project's overlays and captions as web pages.** One self-contained HTML page per overlay in a folder: the overlay's own code inlined, a small player that plays it by itself at its fps and loops, a transparent background, and the files its props name copied beside it (`assets/`) with relative paths, so the folder opens anywhere. A page for an overlay that uses no icons is about 1.5 MB (the icon packages are left out; with icons it is about 8 MB). Fonts load from Google Fonts the first time a page opens. `list` shows what could be exported; `items` picks some. Re-exporting replaces a folder the step wrote; any other non-empty folder is refused (`out_exists`). `bundleComponent` takes an opt-in `stubIcons` for this; renders and samples are unchanged.
+- **Added (steps, render): `export_carousel_pages` writes a carousel as web pages.** One still HTML and CSS page per slide (`slide-01.html` ...), no scripts, plus `index.html`, one page that swipes through them, with the slides' images copied beside them. `render-carousel.js` takes `--html-dir` (with `--html-only` and `--only`) for it; without them it renders exactly as before.
 - **Added (credentials): `MONTAJ_CREDENTIALS_PATH` names the credentials file.** When it is set, `lib/credentials.py` reads and writes that file instead of `~/.montaj/credentials.json`, resolved on every call, and a step subprocess inherits it. Unset, nothing changes. The test suite sets it to an empty temporary path and clears every provider key variable for each test, so no test, and no step a test runs, reads real keys. (`lib/credentials.py` `credentials_path`, `tests/conftest.py`, `tests/test_credentials_guard.py`)
 
 ## v5.34.0
