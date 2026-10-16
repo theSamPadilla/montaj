@@ -390,6 +390,66 @@ describe('CarouselEditor — editor-core integration', () => {
     await waitFor(() => expect(queryByTestId('host-render-window')).toBeNull())
   })
 
+  // §337: Render never uses a system alert. A save that fails, or never
+  // answers, goes to the host's onError and Render comes back.
+  it('a failed save on Render calls onError, never alert, and re-enables Render', async () => {
+    const alertSpy = vi.fn()
+    vi.stubGlobal('alert', alertSpy)
+    const adapter = makeFakeAdapter()
+    ;(adapter.saveProject as ReturnType<typeof vi.fn>).mockImplementation(async () => { throw new Error('HTTP 500: disk full') })
+    const onError = vi.fn()
+    const seen: CarouselRenderModalContext<Project>[] = []
+    const { findByTitle } = render(
+      <CarouselEditor
+        project={makeProject()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        onError={onError}
+        renderModal={(ctx) => { seen.push(ctx); return null }}
+      />,
+    )
+    const renderBtn = await findByTitle('Render all slides as PNGs')
+    await act(async () => { fireEvent.click(renderBtn) })
+
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1))
+    expect(onError).toHaveBeenCalledWith({ title: "Couldn't start the render", detail: 'HTTP 500: disk full' })
+    expect(alertSpy).not.toHaveBeenCalled()
+    expect(seen[seen.length - 1].open).toBe(false)
+    await waitFor(() => expect((renderBtn as HTMLButtonElement).disabled).toBe(false))
+    expect(renderBtn.textContent).toContain('Render')
+    vi.unstubAllGlobals()
+  })
+
+  it('a save that never answers times out into onError and re-enables Render', async () => {
+    const alertSpy = vi.fn()
+    vi.stubGlobal('alert', alertSpy)
+    const adapter = makeFakeAdapter()
+    ;(adapter.saveProject as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise<void>(() => {}))
+    const onError = vi.fn()
+    const seen: CarouselRenderModalContext<Project>[] = []
+    const { findByTitle } = render(
+      <CarouselEditor
+        project={makeProject()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        onError={onError}
+        renderSaveTimeoutMs={50}
+        renderModal={(ctx) => { seen.push(ctx); return null }}
+      />,
+    )
+    const renderBtn = await findByTitle('Render all slides as PNGs')
+    await act(async () => { fireEvent.click(renderBtn) })
+    expect(renderBtn.textContent).toContain('Starting…')
+
+    await waitFor(() => expect(onError).toHaveBeenCalledTimes(1))
+    expect(onError).toHaveBeenCalledWith({ title: "Couldn't start the render", detail: 'The project did not save in time.' })
+    expect(alertSpy).not.toHaveBeenCalled()
+    expect(seen[seen.length - 1].open).toBe(false)
+    await waitFor(() => expect((renderBtn as HTMLButtonElement).disabled).toBe(false))
+    expect(renderBtn.textContent).toContain('Render')
+    vi.unstubAllGlobals()
+  })
+
   // PL14: a host can draw the carousel's Controls window too, with the
   // modal's exact content already resolved for the platform.
   it('renderControls replaces ControlsInfoModal and gets the platform-resolved sections', async () => {

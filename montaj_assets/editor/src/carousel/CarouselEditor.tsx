@@ -254,9 +254,22 @@ function isTypingTarget(t: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable
 }
 
+/** How long Render waits for the save as final (`renderSaveTimeoutMs`). */
+const RENDER_SAVE_TIMEOUT_MS = 30_000
+
+/** `promise`, or a rejection once `ms` pass without it settling. The promise
+ *  itself runs on: a save that lands late still lands. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('The project did not save in time.')), ms)
+  })
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer))
+}
+
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default' }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -510,13 +523,17 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // project shows the slides as they arrive. Render and note arming stay off.
   const showPendingSurface = project.status === 'pending' && pendingSurface !== 'host'
 
+  // Render saves the project as final, then opens. A save that fails or never
+  // answers ends here: the host is told (`onError`) and Render is back.
   async function handleRender() {
     setRendering(true)
     try {
-      await state.setStatus('final')
+      await withTimeout(state.setStatus('final'), renderSaveTimeoutMs)
       setRenderOpen(true)
     } catch (e) {
-      alert(`Failed to start render: ${e instanceof Error ? e.message : String(e)}`)
+      const notice = { title: "Couldn't start the render", detail: e instanceof Error ? e.message : String(e) }
+      if (onError) onError(notice)
+      else console.error(`[CarouselEditor] ${notice.title}: ${notice.detail}`)
     } finally {
       setRendering(false)
     }
