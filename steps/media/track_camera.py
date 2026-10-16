@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The camera of a clip, for a 3D scene: per-frame lens, location, target and roll.
 
-Frames are sampled at --fps (ffmpeg's fps filter rounding up, so frame k is the
-frame on screen at k / fps; rotation applied, the long side at most
-WORK_LONG_EDGE) into a temp dir, and pycolmap reconstructs them: SIFT features on
+Frames are sampled at --fps by lib/frame_sampling (frame k is the source frame on
+screen at k / fps; HLG and PQ tone-mapped to SDR; rotation applied, the long side
+at most WORK_LONG_EDGE) into a temp dir, and pycolmap reconstructs them: SIFT features on
 the CPU (at most SIFT_THREADS threads and SIFT_FEATURES features a frame), one
 SIMPLE_RADIAL camera for every frame, sequential matching, then the global mapper,
 seeded. The incremental mapper is not used: on a near-still handheld clip (§328 P0,
@@ -34,6 +34,7 @@ import time
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
+from lib import frame_sampling
 from lib.common import ffmpeg_bin, ffmpeg_error_tail, ffprobe_bin, fail, progress, require_file
 from lib.normalize import probe_video
 
@@ -57,7 +58,7 @@ def _intel_mac():
 
 
 def _probe(path):
-    """Duration, display size, frame rate and the 35 mm-equivalent focal tag."""
+    """Duration, display size, frame rate, colour transfer and the 35 mm-equivalent focal tag."""
     info = probe_video(path)
     if not info or not info.get("display_width"):
         fail("probe_error", f"Could not read a video stream from {path}")
@@ -81,25 +82,28 @@ def _probe(path):
         pass
     num, den = (info.get("frame_rate") or "0/1").split("/") if "/" in (info.get("frame_rate") or "") else ("0", "1")
     rate = int(num) / int(den) if int(den) else 0
+    if not rate > 0:
+        fail("probe_error", f"Could not read the frame rate of {path}")
     return {"duration": duration, "size": (info["display_width"], info["display_height"]),
-            "rate": rate, "f35": f35}
+            "rate": rate, "transfer": info.get("color_transfer"), "f35": f35}
 
 
-def _extract(path, fps, size, out_dir):
-    """Frames f00000.jpg ... at fps, k at k / fps, at most WORK_LONG_EDGE long.
-    Returns their [w, h]."""
+def _extract(path, fps, size, out_dir, rate, transfer=None):
+    """Frames f00000.jpg ... at fps through lib/frame_sampling (k is the frame on
+    screen at k / fps, HDR tone-mapped), at most WORK_LONG_EDGE long. rate is the
+    source's frame rate, transfer its ffprobe color_transfer. Returns (w, h,
+    tone_mapped)."""
     w, h = size
     k = min(1.0, WORK_LONG_EDGE / max(w, h))
     ww, hh = max(1, round(w * k)), max(1, round(h * k))
-    vf = f"fps={fps:g}:round=up"
-    if (ww, hh) != (w, h):
-        vf += f",scale={ww}:{hh}:flags=area"
-    cmd = [ffmpeg_bin(), "-v", "error", "-nostdin", "-i", path, "-vf", vf,
+    scale = f"scale={ww}:{hh}:flags=area" if (ww, hh) != (w, h) else None
+    args, tone_mapped = frame_sampling.input_args(path, fps, rate, transfer, after=scale)
+    cmd = [ffmpeg_bin(), "-v", "error", "-nostdin", *args,
            "-q:v", JPEG_QUALITY, "-start_number", "0", os.path.join(out_dir, "f%05d.jpg")]
     r = subprocess.run(cmd, capture_output=True)
     if r.returncode != 0:
         fail("decode_failed", f"Could not read frames from {path}.{ffmpeg_error_tail(r.stderr)}")
-    return ww, hh
+    return ww, hh, tone_mapped
 
 
 def _sweep_stale(tmp_dir, now=None):
@@ -238,7 +242,7 @@ def main():
     w, h = info["size"]
     fps = args.fps
     notes = []
-    if info["rate"] and fps > info["rate"] + 1e-6:
+    if fps > info["rate"] + 1e-6:
         fps = round(info["rate"], 3)
         notes.append(f"Sampled at the clip's own {fps:g} fps, not {args.fps:g}.")
     expected = max(1, math.ceil(info["duration"] * fps - 1e-6))
@@ -263,7 +267,9 @@ def main():
         frames_dir = os.path.join(work_dir, "frames")
         os.makedirs(frames_dir)
         progress(f"Reading frames at {fps:g} fps")
-        ww, hh = _extract(input_path, fps, (w, h), frames_dir)
+        ww, hh, tone_mapped = _extract(input_path, fps, (w, h), frames_dir, info["rate"], info["transfer"])
+        if tone_mapped:
+            notes.append("The clip is HDR: it was tracked through an SDR tone map.")
         count = len([n for n in os.listdir(frames_dir) if n.endswith(".jpg")])
         if count < 2:
             fail("too_short", f"{input_path} gives {count} frame at {fps:g} fps; tracking needs at least 2.")

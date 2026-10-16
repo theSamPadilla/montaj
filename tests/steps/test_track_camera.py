@@ -160,9 +160,10 @@ def test_solve_errors_map_to_their_fail_codes():
 
 
 def test_frame_k_is_the_frame_on_screen_at_k_over_fps(tmp_path, monkeypatch):
-    """A 30 fps clip whose frame i has luma 16 + 6 i, sampled at 10 fps: frame k is
-    source frame 3k (ffmpeg's fps filter rounding to the nearest keeps 3k + 1, a frame
-    late), and a frame over WORK_LONG_EDGE is scaled down whole."""
+    """A 30 fps clip whose frame i has luma 16 + 6 i, sampled at 10 fps through
+    lib/frame_sampling: frame k is source frame 3k (ffmpeg's fps filter rounding to
+    the nearest keeps 3k + 1, a frame late), the source's transfer reaches the
+    sampler, and a frame over WORK_LONG_EDGE is scaled down whole, after it."""
     np = pytest.importorskip("numpy")
     Image = pytest.importorskip("PIL.Image")
     if not HAS_FFMPEG:
@@ -173,9 +174,13 @@ def test_frame_k_is_the_frame_on_screen_at_k_over_fps(tmp_path, monkeypatch):
                    check=True)
     mod = _load_step()
     monkeypatch.setattr(mod, "WORK_LONG_EDGE", 32)
+    asked = []
+    real = mod.frame_sampling.input_args
+    monkeypatch.setattr(mod.frame_sampling, "input_args", lambda *a, **k: asked.append((a, k)) or real(*a, **k))
     out = tmp_path / "frames"
     out.mkdir()
-    assert mod._extract(str(clip), 10, (64, 48), str(out)) == (32, 24)
+    assert mod._extract(str(clip), 10, (64, 48), str(out), 30.0, "bt709") == (32, 24, False)
+    assert asked == [((str(clip), 10, 30.0, "bt709"), {"after": "scale=32:24:flags=area"})]
     names = sorted(os.listdir(out))
     assert names == [f"f{k:05d}.jpg" for k in range(10)]
     for k, name in enumerate(names):
