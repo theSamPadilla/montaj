@@ -1,0 +1,17 @@
+Montaj is MIT licensed (see LICENSE). It also ships code ported from
+Apache-2.0 sources, and downloads Apache-2.0 models on first use.
+
+lib/pose/hands.py ports logic from OpenCV Zoo's palm_detection_mediapipe and
+handpose_estimation_mediapipe demos (Apache License 2.0) and follows
+MediaPipe's hand tracking graph (Copyright The MediaPipe Authors, Apache
+License 2.0).
+
+track_pose downloads Google's MediaPipe hand landmarker models (Copyright
+Google LLC, Apache License 2.0 per the MediaPipe Hands model card) on first
+use and converts them to ONNX on the user's machine; no weights are changed or
+redistributed by Montaj.
+
+
+[Body pose notices go here.]
+
+Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0

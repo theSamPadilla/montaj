@@ -1,4 +1,5 @@
 include LICENSE
+include NOTICE
 include README.md
 include Montaj.jpeg
 

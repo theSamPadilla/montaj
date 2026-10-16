@@ -34,6 +34,7 @@ First-run flow is identical for brew and pip: `montaj doctor` first to see what'
 | `ui` | npm deps for `render/` and `ui/`; production UI build | `montaj serve`, render engine |
 | `ffmpeg` | pinned static ffmpeg + ffprobe (8.1.2, with libzimg/zscale) into the managed models dir | HDR normalization (`zscale`), all ffmpeg-backed steps, render engine |
 | `rvm` | onnxruntime, av, numpy (pip) + rvm_mobilenetv3_fp32.onnx (~15 MB, SHA-256 verified); runs on the CPU | `remove_bg` |
+| `vision` | pycolmap (pip; not on Intel Macs yet) | `track_camera` |
 | `connectors` | pyjwt, requests, google-genai, openai | `kling_generate`, `analyze_media`, `generate_image` |
 
 Credentials are stored in `~/.montaj/credentials.json` (0600 permissions). Three modes:
@@ -453,7 +454,8 @@ montaj analyze-media clip.mp4  --prompt "Describe the scene in 2 sentences."
 montaj analyze-media song.mp3  --prompt "Transcribe with timestamps."
 montaj analyze-media photo.jpg --prompt "Return JSON: {subject, mood, dominant_colors}" --json-output
 montaj analyze-media clip.mp4  --prompt "..." --model gemini-2.5-pro    # override model
-montaj analyze-media clip.mp4  --prompt "..." --out analysis.txt        # write to file
+montaj analyze-media clip.mp4  --prompt "..." --out analysis.txt        # write to file (keeps the raw reply)
+montaj analyze-media clip.mp4  --prompt "..." --max-output-tokens 2000 --thinking-budget 0 --fps 2 --media-resolution low   # limits; token usage in meta
 
 montaj generate-image --prompt "portrait, studio lighting" --out /tmp/portrait.png
 montaj generate-image --prompt "same character, profile view" --ref-image /tmp/portrait.png --out /tmp/profile.png
@@ -563,7 +565,7 @@ exact flags. Full per-step parameter docs: https://docs.montaj.ag/steps
 | `steps/edit/` | `cross_cut`, `jump_cut`, `montage` |
 | `steps/generate/` | `generate_image`, `generate_music`, `generate_voiceover`, `kling_generate` |
 | `steps/lyrics/` | `caption`, `lyrics_render`, `lyrics_sync` |
-| `steps/media/` | `analyze_media`, `detect_shots`, `fetch`, `fetch_image`, `filmstrip`, `normalize`, `paper_cutout`, `probe`, `search_images`, `search_news`, `shot_sheet`, `snapshot`, `track_points` |
+| `steps/media/` | `analyze_media`, `detect_shots`, `fetch`, `fetch_image`, `filmstrip`, `normalize`, `paper_cutout`, `probe`, `search_images`, `search_news`, `shot_sheet`, `snapshot`, `track_camera`, `track_points`, `track_pose` |
 | `steps/render/` | `glass_plate`, `sample_frame`, `sample_overlay` |
 | `steps/speech/` | `rm_fillers`, `rm_nonspeech`, `speech_edit`, `speech_text`, `transcribe` |
 | `steps/transform/` | `crop_spec`, `generate_captions`, `materialize_cut`, `normalize_window`, `proxy`, `reframe`, `remove_bg`, `resize`, `virtual_to_original` |
