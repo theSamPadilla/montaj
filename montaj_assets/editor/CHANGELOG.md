@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 2.4.0
+
 - Changed: scrubbing the timeline is silent by default; the ear button turns sound on. `settings.audibleScrub` absent now means muted (it meant sound since 2.1.0); an explicit `true` or `false` is kept either way.
 - Changed: "+ Language" calls the host's `onAddCaptionLanguage(have)` (`CaptionListPanel`'s `onAddLanguage`) with the languages the track already has (its `lang`, or `source` when unknown, then each translation), so the host can ask which one to add. The inline Copy-prompt popover is gone.
 

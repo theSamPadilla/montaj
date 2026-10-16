@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v5.33.2
+
 - **Added (render, serve): a render's own frame rate and motion blur.** `POST /render` takes `fps` (a positive number) and `motionBlur` (an integer from 1 to 8) for that render only, and `render.js` takes `--fps` and `--motion-blur`: the export is made at them and project.json keeps its own settings, so a host can offer a faster export (30 fps, motion blur off) without changing the project. Absent, a render is exactly as before. A bad value is a 422 from serve and `invalid_argument` from render.js, before any work starts. The estimate takes `motionBlur` as a stand-in too, leniently like its `fps` and `resolution`, and `--resolution` is still for `--estimate` only. (`serve/routes/projects.py` `_render_js_args`, `_validate_render_body`, `_estimate_overrides`; `render.js` `resolveEstimateOverrides`, `loadRenderProject`)
 - **Changed (editor): scrubbing the timeline is silent by default; the ear button turns sound on.** A project that never touched the ear button now scrubs muted (it scrubbed with sound since 2026-10-09). The ear button saves an explicit choice, and a project keeps it either way. (`editor/src/video/VideoEditor.tsx`, `editor/src/schema.ts`)
 - **Changed (editor): "+ Language" hands the host the languages the captions already have.** The caption panel's "+ Language" chip calls the host's `onAddCaptionLanguage(have)` at once with the track's languages (its `lang`, or `source` when unknown, then each translation), so the host can ask which language to add and hand the user a prompt for their own AI. The inline Copy-prompt popover is gone. (`editor/src/video/CaptionListPanel.tsx`, `editor/src/types.ts`)
