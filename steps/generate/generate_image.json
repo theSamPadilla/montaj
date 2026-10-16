@@ -1,5 +1,6 @@
 {
   "name": "generate_image",
+  "provenance": {"providerParam": "provider"},
   "description": "Generate an image via Gemini, OpenAI or Kinovi. Text-to-image or reference-conditioned.",
   "output": {
     "type": "image",

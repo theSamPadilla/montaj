@@ -1,0 +1,12 @@
+{
+  "name": "export_overlay_pages",
+  "description": "Export a project's overlays and captions as web pages. Writes one self-contained HTML page per overlay into a folder: the overlay's own code inlined, a small player that plays it by itself at its fps and loops, a transparent background, and the files its props name copied beside it (assets/) with relative paths, so the folder opens anywhere. Fonts load from Google Fonts the first time the page opens. With list true, writes nothing and lists the overlays that could be exported. Re-exporting into a folder this step wrote replaces it; any other non-empty folder is refused (out_exists).",
+  "input": { "type": "none", "description": "No file input: operates on a project (see the project param)." },
+  "output": { "type": "json", "description": "{dir, pages: [{id, name, file, start, end}], files: [paths relative to dir], warnings: [...]}; with list: {items: [{id, name, caption, start, end}]}" },
+  "params": [
+    { "name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json" },
+    { "name": "out", "type": "path", "required": false, "description": "The folder to write the pages to (required unless list is true)" },
+    { "name": "items", "type": "string", "required": false, "description": "Only these overlays, as a comma-separated list of ids or names from list. Default: all of them, and the captions" },
+    { "name": "list", "type": "bool", "required": false, "description": "List the overlays that could be exported and write nothing" }
+  ]
+}

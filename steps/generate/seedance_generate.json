@@ -1,5 +1,6 @@
 {
   "name": "seedance_generate",
+  "provenance": {"provider": "fal"},
   "description": "Generate video via Seedance (ByteDance) on fal.ai. Mode follows the inputs: text only (t2v), --image for image-to-video (i2v), --ref-image for reference-to-video (r2v). Standalone only.",
   "output": {
     "type": "video",

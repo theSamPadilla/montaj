@@ -1,5 +1,6 @@
 {
   "name": "kinovi_generate",
+  "provenance": {"provider": "kinovi"},
   "description": "Generate video on Kinovi (Seedance and Wan models, one key). Mode follows the inputs: text only, --image (first frame, optional --end-image), or --ref-image/--ref-video/--ref-audio (Seedance reference mode). Local files are uploaded to Kinovi first. Standalone.",
   "output": {
     "type": "video",

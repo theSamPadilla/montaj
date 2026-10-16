@@ -86,6 +86,7 @@ This makes steps composable at the shell level and predictable for the agent.
 | `input` | object | yes | What the step accepts |
 | `output` | object | yes | What the step returns |
 | `params` | array | no | Configurable parameters. Empty array if none. |
+| `provenance` | object | no | A step that makes media with an AI provider: `{"provider": "<connector id>"}` (`kling_generate`: `"kling"`), or `{"providerParam": "<param>"}`, the param that picks it (`generate_image`: `"provider"`). When serve runs the step and its output lands in a project's folder, it records the file in that project's `assets/.generated.json` (`{provider, model, prompt, step, at}`, keyed by the path relative to the project folder); `GET /api/projects/{id}/generated` reads it. project.json is not touched. |
 
 ### `input` / `output`
 

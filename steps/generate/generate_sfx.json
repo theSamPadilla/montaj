@@ -1,5 +1,6 @@
 {
   "name": "generate_sfx",
+  "provenance": {"provider": "elevenlabs"},
   "description": "Generate a sound effect from a text description via ElevenLabs. Generation step — produces a file on disk; composition happens at render time.",
   "output": {
     "type": "audio",

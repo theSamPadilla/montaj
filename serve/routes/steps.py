@@ -18,6 +18,7 @@ from serve.common import (
     not_found, bad_request, server_error,
 )
 from serve.jobs import create_job, set_done, set_error, get_job
+from serve import provenance
 
 router = APIRouter(prefix="/api")
 
@@ -411,6 +412,7 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
             env = {**os.environ, **overlay}
             secret_values = list(overlay.values())
 
+    project_ref = body.get("_project")
     resolved_out = resolve_project_out(name, schema, body)
     resolve_project_param(schema, body)
     validate_params(schema, body)
@@ -468,7 +470,34 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
     result = wrap_output(stdout_text, schema)
     if resolved_out and isinstance(result, dict):
         result.setdefault("out", resolved_out)
+    _note_provenance(name, schema, body, result, project_ref)
     return result
+
+
+def _note_provenance(name: str, schema: dict, body: dict, result, project_ref) -> None:
+    """A generate step's output that landed in a project goes in its
+    `assets/.generated.json` (serve/provenance.py). The project is the one
+    `_project` named, else the folder above the output with a project.json.
+    Best effort: a record that cannot be written never fails the step."""
+    if not isinstance(schema.get("provenance"), dict):
+        return
+    try:
+        entry = provenance.entry_for(name, schema, body, result)
+        out = provenance.output_path(result, body)
+        if entry is None or out is None:
+            return
+        pdir = None
+        if project_ref is not None:
+            try:
+                pdir = _project_dir_for(project_ref)
+            except HTTPException:
+                pdir = None
+        if pdir is None:
+            pdir = provenance.project_dir_containing(out, str(resolve_workspace()))
+        if pdir is not None:
+            provenance.record(pdir, out, entry)
+    except Exception as e:  # never fail a finished step over its record
+        print(f"[provenance] not recorded for {name}: {e}", file=sys.stderr)
 
 
 async def _run_to_job(job_id: str, name: str, schema: dict, py_path: Path, body: dict) -> None:

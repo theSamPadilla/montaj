@@ -1354,6 +1354,22 @@ export interface CarouselEditorProps<P extends Project = Project> {
    * Absent: nothing reported.
    */
   onSelectedSlideChange?: (slideId: string | null) => void
+
+  /**
+   * A failure the user should see, which the editor does not show itself. Today
+   * one: Render could not start, because saving the project as `final` failed
+   * or did not answer within `renderSaveTimeoutMs`. Render is enabled again
+   * when this is called. The host shows `title` and `detail` its own way.
+   * Absent: logged to the console. The editor never uses a system alert.
+   */
+  onError?: (notice: { title: string; detail: string }) => void
+
+  /**
+   * How long Render waits for the project to save as `final` before it gives
+   * up and calls `onError`. A save that lands later still lands. Default
+   * 30 000 (`RENDER_SAVE_TIMEOUT_MS`).
+   */
+  renderSaveTimeoutMs?: number
 }
 
 /**
