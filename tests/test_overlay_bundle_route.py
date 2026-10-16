@@ -431,3 +431,15 @@ def test_scene3d_alias_without_a_host_stage_is_404(env, monkeypatch):
     monkeypatch.delenv("MONTAJ_SCENE3D_STAGE", raising=False)
     r = _get("engine:scene3d")
     assert r.status_code == 404, r.text
+    # The message reaches the user: it says 3D, names neither the variable nor a path (§308).
+    assert r.json()["detail"] == {
+        "error": "scene3d_stage_unavailable",
+        "message": "A 3D item needs the 3D stage, and this Montaj has none. Update the Montaj app.",
+    }
+
+
+def test_scene3d_alias_with_a_missing_stage_file_names_no_path(env, tmp_path, monkeypatch):
+    monkeypatch.setenv("MONTAJ_SCENE3D_STAGE", str(tmp_path / "model3d_scene_stage.jsx"))
+    r = _get("engine:scene3d")
+    assert r.status_code == 404, r.text
+    assert "scene" not in r.json()["detail"]["message"].lower()

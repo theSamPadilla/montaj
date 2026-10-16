@@ -217,7 +217,7 @@ def test_scene_default_out_names_the_3d(fake_node_env, tmp_path):
         assert argv[argv.index("--out") + 1] == str(tmp_path / "render" / "samples" / name)
 
 
-@pytest.mark.parametrize("scene", ["Lab", "../x", "a/b", "a_b", "x" * 49])
+@pytest.mark.parametrize("scene", ["Lab", "../x", "a/b", "a_b", "x" * 49, "lab\n"])
 def test_scene_id_is_checked_before_node(scene, tmp_path):
     """An id render would refuse fails here with a clean code (no node on PATH needed)."""
     project = _write_project(tmp_path, "sdr_bt709")

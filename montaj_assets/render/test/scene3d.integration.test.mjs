@@ -127,6 +127,19 @@ test('sample-frame.js --scene: the CLI samples one 3D alone', { timeout: 120_000
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })
 
+test('sample-frame.js --scene: a 3D that is not saved answers with its own code', { timeout: 60_000 }, () => {
+  const w = world()
+  try {
+    const projectPath = writeProject(w, [[]])
+    const r = spawnSync('node', [SAMPLE_JS, '--mode', 'frame', '--project', projectPath, '--scene', 'nope', '--at', '1', '--out', join(w.dir, 'x.png')],
+      { encoding: 'utf8', timeout: 50_000, env: { ...process.env, [SCENE3D_STAGE_ENV]: w.stage } })
+    assert.equal(r.status, 1)
+    const err = JSON.parse(r.stderr.trim().split('\n').pop())
+    assert.equal(err.error, 'scene3d_scene_missing')
+    assert.equal(err.message, 'A 3D item: its 3D "nope" is not saved yet.')
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
 // Two 3D items on two different 3Ds, each with its own in point, cut end to
 // end; then, over the second, the project's own 3D crossfading out (an opaque
 // item with an opacity key on top of another, §309).

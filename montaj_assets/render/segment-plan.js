@@ -68,6 +68,15 @@ import { boundariesFrom, activeIn, captionsLast, byTrackIdx, isOpaqueCover, full
 const readPuppeteer = s => ({ start: s.startSeconds, end: s.endSeconds })
 
 /**
+ * The shortest stretch at full opacity worth a segment of its own (§309), in
+ * seconds. A shorter one is read as not full: such an overlay is captured with
+ * alpha anyway (render.js `fades`), so drawing the footage under it is only
+ * wasted work, while a track flickering at 1 every tenth of a second would
+ * otherwise plan a segment per flicker.
+ */
+const MIN_FULL_OPACITY_S = 1
+
+/**
  * §309: the frames on which an opaque overlay is at full opacity, as half-open
  * ranges of timeline frame indices (`±Infinity` when unbounded), or `null` for
  * an overlay that is not opaque over the whole canvas and so never replaces the
@@ -75,16 +84,39 @@ const readPuppeteer = s => ({ start: s.startSeconds, end: s.endSeconds })
  *
  * Capture frame `i` of an overlay is drawn at timeline frame `S + i` (`S` its
  * frame-quantized start) and bakes the overlay's keys at `i / fps`
- * (bundle.js `__bakeStyle`), so a frame is at full opacity when `i / fps` lies
- * in one of timeline-core's `fullOpacitySpans`: `ceil(from * fps) <= i <
- * ceil(to * fps)`. The `1e-6` keeps a key that lands on a frame, read back as
- * 29.999999 or 30.000001 frames, on that frame.
+ * (bundle.js `__bakeStyle`); with motion blur its sub-frames sample forward,
+ * at `(i + k/N) / fps`. So against one of timeline-core's half-open
+ * `fullOpacitySpans` `[from, to)`, frame `i` is full when every sample it takes
+ * lies inside: `from <= i / fps` (found with the bake's own float division, so a
+ * key that lands a hair after a frame does not claim it) and `(i + 1) / fps <=
+ * to` (the `1e-6` only keeps a key read back as 29.999999 frames on frame 30,
+ * which the last sub-frame still never reaches).
+ *
+ * A range bounded by a key and shorter than MIN_FULL_OPACITY_S within the
+ * overlay's own span is dropped. One with no bound at all (a steady 1) is kept
+ * whatever its length, so it culls exactly as it always did.
  */
 function fullOpacityFrames(o, fps) {
   if (!isOpaqueCover(o)) return null
   const S = Math.round(o.startSeconds * fps)
-  const frame = t => (Number.isFinite(t) ? S + Math.ceil(t * fps - 1e-6) : t)
-  return fullOpacitySpans(o).map(([from, to]) => [frame(from), frame(to)])
+  const length = Math.round(o.endSeconds * fps) - S
+  const firstAtOrAfter = t => {
+    if (!Number.isFinite(t)) return t
+    let i = Math.ceil(t * fps)
+    while (i / fps < t) i++
+    while ((i - 1) / fps >= t) i--
+    return i
+  }
+  const endBefore = t => (Number.isFinite(t) ? Math.floor(t * fps + 1e-6) : t)
+  const ranges = []
+  for (const [from, to] of fullOpacitySpans(o)) {
+    const a = firstAtOrAfter(from)
+    const b = endBefore(to)
+    const bounded = Number.isFinite(a) || Number.isFinite(b)
+    if (bounded && Math.min(b, length) - Math.max(a, 0) < MIN_FULL_OPACITY_S * fps) continue
+    ranges.push([S + a, S + b])
+  }
+  return ranges
 }
 
 /**

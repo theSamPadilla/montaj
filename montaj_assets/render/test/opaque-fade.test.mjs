@@ -10,7 +10,7 @@
 // The rendered pixels are opaque-fade.integration.test.mjs.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { boundariesFrom, activeIn, captionsLast, byTrackIdx, isFullCanvasPlacement } from '@bycrux/timeline-core'
+import { boundariesFrom, activeIn, captionsLast, byTrackIdx, isFullCanvasPlacement, opacityAt } from '@bycrux/timeline-core'
 import { planSegments } from '../segment-plan.js'
 import { collectPuppeteerSegments } from '../render.js'
 import { captureOptionsFor } from '../renderer.js'
@@ -43,9 +43,57 @@ test('planSegments: an edge between frames lands on the first frame drawn at 1',
   // 1.01 s is frame 30.3: frame 30 is still fading in (0.99), frame 31 is at 1.
   const segs = planSegments([clip], [cover({ keyframes: opacity([0, 0], [1.01, 1]) })], 1080, 1920, FPS)
   assert.deepEqual(spans(segs).slice(0, 2), [[0, 31 / FPS, false], [31 / FPS, 4, true]])
-  // A fade out leaving 1 at frame 45.6: frame 46 is the first below 1.
+  // A fade out leaving 1 at frame 45.6: frame 45 is drawn at 1, but its
+  // stretch to frame 46 is not (a motion-blur sub-frame reaches past 1.52), so
+  // it is the first not culled.
   const out = planSegments([clip], [cover({ keyframes: opacity([1.52, 1], [2, 0]) })], 1080, 1920, FPS)
-  assert.deepEqual(spans(out).slice(0, 2), [[0, 46 / FPS, true], [46 / FPS, 4, false]])
+  assert.deepEqual(spans(out).slice(0, 2), [[0, 45 / FPS, true], [45 / FPS, 4, false]])
+})
+
+test('planSegments: a key a hair after a frame does not claim that frame (the bake\'s own float division)', () => {
+  // 3/30 - 1/30 is 0.06666666666666668, just past frame 2 (2/30 is
+  // 0.06666666666666667). The bake samples frame 2 before the key, at 0: culling
+  // the footage there drew a black frame.
+  const key = 3 / 30 - 1 / 30
+  const o = cover({ endSeconds: 3, keyframes: opacity([0, 0, 'hold'], [key, 1]) })
+  assert.equal(opacityAt(o, 2 / FPS), 0, 'frame 2 is drawn at 0')
+  const segs = planSegments([clip], [o], 1080, 1920, FPS)
+  assert.deepEqual(spans(segs).slice(0, 2), [[0, 3 / FPS, false], [3 / FPS, 3, true]])
+})
+
+test('planSegments: the end of a stretch at 1 is the last frame whose motion-blur sub-frames all stay at 1', () => {
+  // A hold 1 -> 0 at 2.25 s is frame 67.5: frame 67 is drawn at 1, but with
+  // motion blur x4 its sub-frames at 67.5 and 67.75 are at 0, over the footage.
+  const o = cover({ keyframes: opacity([0, 1, 'hold'], [2.25, 0]) })
+  assert.deepEqual([0, 1, 2, 3].map(k => opacityAt(o, (67 + k / 4) / FPS)), [1, 1, 0, 0])
+  const segs = planSegments([clip], [o], 1080, 1920, FPS)
+  assert.deepEqual(spans(segs).slice(0, 2), [[0, 67 / FPS, true], [67 / FPS, 4, false]])
+})
+
+test('planSegments: stretches at 1 shorter than a second are read as not full, so a flicker plans no segments', () => {
+  // 60 s flickering between 1 and 0.85 every 0.1 s: 600 segments before.
+  const points = []
+  for (let k = 0; k < 600; k++) points.push([k * 0.1, k % 2 ? 0.85 : 1, 'hold'])
+  const long = { ...clip, end: 60, outPoint: 60 }
+  const flicker = cover({ endSeconds: 60, keyframes: opacity(...points) })
+  const segs = planSegments([long], [flicker], 1080, 1920, FPS)
+  assert.ok(segs.length <= 3, `${segs.length} segments`)
+  assert.ok(segs.every(s => !s.opaqueVideo), 'never culls: it is never at 1 for a second')
+  // A steady 1 is unchanged, however short.
+  const steady = planSegments([long], [cover({ endSeconds: 0.5 })], 1080, 1920, FPS)
+  assert.deepEqual(spans(steady), [[0, 0.5, true], [0.5, 60, false]])
+  // A key-bounded stretch of exactly a second still counts.
+  const second = planSegments([clip], [cover({ keyframes: opacity([0, 0], [1, 1], [2, 1], [2.5, 0]) })], 1080, 1920, FPS)
+  assert.deepEqual(spans(second), [[0, 1, false], [1, 2, true], [2, 4, false], [4, 6, false]])
+  const short = planSegments([clip], [cover({ keyframes: opacity([0, 0], [1, 1], [1.9, 1], [2.5, 0]) })], 1080, 1920, FPS)
+  assert.deepEqual(spans(short), [[0, 4, false], [4, 6, false]])
+})
+
+test('planSegments: an opacity track whose times do not increase never culls', () => {
+  // A fade in written newest-first: the bake reads it in stored order, at 0
+  // throughout, so nothing beneath may be culled.
+  const segs = planSegments([clip], [cover({ keyframes: opacity([1, 1], [0, 0]) })], 1080, 1920, FPS)
+  assert.deepEqual(spans(segs), [[0, 4, false], [4, 6, false]])
 })
 
 test('planSegments: keys are item-relative, from the overlay\'s own start', () => {

@@ -60,7 +60,7 @@ import {
 import { resolveAt, sourceWindow, opaqueReplacesPicture, RESOLVER_VERSION } from '@bycrux/timeline-core'
 import { enabledTrackItems, trackItems, withEnabledItemTracks } from './project-tracks.js'
 import { captionOverlayFields } from './caption-spec.js'
-import { materializeScene3d, SCENE3D_SRC } from './scene3d.js'
+import { materializeScene3d, Scene3dError, SCENE3D_SRC } from './scene3d.js'
 
 /**
  * The pre-SP6b Hable chain: the ONLY place this file tonemaps with Hable, used
@@ -396,7 +396,8 @@ if (isMain) {
     sampled.then(result => {
       process.stdout.write(result.pngPath + '\n')
     }).catch(err => {
-      const error = isThreeFrameBlank(err) ? 'three_frame_blank' : 'sample_failed'
+      // A 3D item's refusal keeps its own code (render/scene3d.js), so `--scene nope` answers scene3d_scene_missing.
+      const error = isThreeFrameBlank(err) ? 'three_frame_blank' : err instanceof Scene3dError ? err.code : 'sample_failed'
       process.stderr.write(JSON.stringify({ error, message: err.message }) + '\n')
       process.exit(1)
     })

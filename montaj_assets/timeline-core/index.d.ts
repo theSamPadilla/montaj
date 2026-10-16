@@ -724,6 +724,8 @@ export declare function opacityAt(item: OpacityFields | null | undefined, localT
  * The item-relative spans `[from, to)` in which the item's opacity is exactly
  * 1, ascending and disjoint; `-Infinity`/`Infinity` for a span running past the
  * first or last key. Half-open: the instant a fade leaves 1 is not in a span.
+ * Keys are read in stored order, as `sampleTrack` reads them; a track whose
+ * times do not strictly increase claims no span (`[]`).
  */
 export declare function fullOpacitySpans(item: OpacityFields | null | undefined): Array<[number, number]>
 

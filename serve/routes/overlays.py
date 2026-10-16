@@ -241,7 +241,11 @@ async def bundle_overlay(path: str = Query(default=""), project: str = Query(def
         # The reserved scene item: the stage is the host's file, not the project's.
         host_stage = os.environ.get("MONTAJ_SCENE3D_STAGE", "")
         if not host_stage or not Path(host_stage).is_file():
-            raise not_found("scene3d_stage_unavailable", "The host has not supplied a 3D stage (MONTAJ_SCENE3D_STAGE)")
+            # The message reaches the user, so it says 3D and names no path (render/scene3d.js says the same); the
+            # variable and the path go to the log.
+            _log.warning("the 3D stage is unavailable: MONTAJ_SCENE3D_STAGE %s",
+                         f"names a missing file: {host_stage}" if host_stage else "is not set")
+            raise not_found("scene3d_stage_unavailable", "A 3D item needs the 3D stage, and this Montaj has none. Update the Montaj app.")
         scene3d_stage = Path(host_stage)
         path = str(scene3d_stage)
     entry = Path(path)

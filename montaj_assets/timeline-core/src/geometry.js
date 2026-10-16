@@ -361,7 +361,7 @@
 // or of any `sourceCrop`/`resolution` array/object handed in. Same inputs
 // always produce the same outputs.
 
-import { sampleTrack, normalizeTrack } from './curves.js'
+import { sampleTrack } from './curves.js'
 
 /**
  * The subset of a timeline item that geometry math reads. Deliberately
@@ -845,8 +845,13 @@ export function opacityAt(item, localT) {
  * Read off the curve's own rules (src/curves.js), not by sampling it: a
  * segment between two keys is at 1 only when both keys are 1, or when it is
  * `hold` and leaves a 1 (it keeps that value up to the next key). Every other
- * segment leaving or reaching 1 is below it inside. The track is read as
- * `normalizeTrack` writes it, which is how the editor stores it.
+ * segment leaving or reaching 1 is below it inside.
+ *
+ * The usable keys are read in STORED order, the order `sampleTrack` (and so
+ * the bake, the editor and {@link opacityAt}) reads them. A track whose times
+ * do not strictly increase (out of order, or two keys at one time) is sampled
+ * as whatever that forward scan finds, so no span is claimed for it: `[]`,
+ * never full, the safe answer for a consumer hiding what is beneath.
  *
  * Half-open, so the one instant a fade leaves 1 (or a curve touches 1 and
  * falls again) is not in a span: a consumer reading these to hide what is
@@ -858,8 +863,10 @@ export function opacityAt(item, localT) {
 export function fullOpacitySpans(item) {
   const tracks = item?.keyframes
   const track = Array.isArray(tracks) ? trackFor(tracks, 'opacity') : undefined
-  const points = track ? (normalizeTrack(track)?.points ?? []) : []
+  const raw = Array.isArray(track?.points) ? track.points : []
+  const points = raw.filter((p) => !!p && Number.isFinite(p.t) && Number.isFinite(p.value))
   if (points.length === 0) return (item?.opacity ?? 1) === 1 ? [[-Infinity, Infinity]] : []
+  for (let i = 1; i < points.length; i++) if (!(points[i].t > points[i - 1].t)) return []
 
   /** @type {Array<[number, number]>} */
   const spans = []

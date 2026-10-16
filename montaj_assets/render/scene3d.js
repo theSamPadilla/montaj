@@ -38,14 +38,18 @@ export class Scene3dError extends Error {
 
 export const isScene3dItem = (item) => !!item && item.type === 'overlay' && item.src === SCENE3D_SRC
 
-/** The stage the host supplies, or a Scene3dError saying how to get one. */
-export function scene3dStage({ env = process.env, exists = existsSync } = {}) {
+/** Where a missing stage is named: the log, never the message (its path can say "scene"). */
+const logToStderr = (line) => process.stderr.write(`${line}\n`)
+
+/**
+ * The stage the host supplies, or a Scene3dError saying how to get one. The message is the same whether the variable is
+ * unset or names a missing file; which of the two, and the path, go to `log` (stderr) for whoever debugs the host.
+ */
+export function scene3dStage({ env = process.env, exists = existsSync, log = logToStderr } = {}) {
   const stage = env[SCENE3D_STAGE_ENV]
   if (typeof stage !== 'string' || stage.length === 0 || !exists(stage)) {
-    throw new Scene3dError(
-      'scene3d_stage_unavailable',
-      `A 3D item needs the 3D stage, and this Montaj has none${stage ? ` (missing file: ${stage})` : ''}. Update the Montaj app.`,
-    )
+    log(`[montaj] the 3D stage is unavailable: ${SCENE3D_STAGE_ENV} ${stage ? `names a missing file: ${stage}` : 'is not set'}`)
+    throw new Scene3dError('scene3d_stage_unavailable', 'A 3D item needs the 3D stage, and this Montaj has none. Update the Montaj app.')
   }
   return stage
 }
@@ -58,7 +62,7 @@ export function scene3dStage({ env = process.env, exists = existsSync } = {}) {
  * The messages reach whoever exports, so they say "3D" and never "scene": the user never meets that concept (§308).
  * The codes keep their names; they are for the host and the AI.
  */
-export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = (f) => readFileSync(f, 'utf8') } = {}) {
+export function materializeScene3d(project, projectDir, { env = process.env, exists = existsSync, read = (f) => readFileSync(f, 'utf8'), log = logToStderr } = {}) {
   let n = 0
   for (const track of trackItems(project)) {
     for (const item of track ?? []) {
@@ -77,7 +81,7 @@ export function materializeScene3d(project, projectDir, { env = process.env, exi
       if (typeof inPoint !== 'number' || !Number.isFinite(inPoint) || inPoint < 0) {
         throw new Scene3dError('scene3d_invalid', `${label}: inPoint must be 0 or more seconds (got ${JSON.stringify(props.inPoint)}).`)
       }
-      const stage = scene3dStage({ env, exists })
+      const stage = scene3dStage({ env, exists, log })
       const sceneFile = name === undefined ? join(projectDir, 'models', 'active.json') : join(projectDir, 'models', 'scenes', name, 'active.json')
       if (!exists(sceneFile)) {
         throw new Scene3dError('scene3d_scene_missing', `${label}: ${which} is not saved yet.`)

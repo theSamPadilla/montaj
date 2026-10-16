@@ -72,11 +72,11 @@ test('items that are not scene items are left exactly as they are', () => {
 test('every refusal names its cause and carries a stable code: no stage, a missing scene, a bad name or in point, no project folder', () => {
   const w = world({ scenes: ['hands'] })
   const refuses = (project, dir, env, code, re) => {
-    assert.throws(() => materializeScene3d(project, dir, { env }), (e) => e instanceof Scene3dError && e.code === code && re.test(e.message), code)
+    assert.throws(() => materializeScene3d(project, dir, { env, log: () => {} }), (e) => e instanceof Scene3dError && e.code === code && re.test(e.message), code)
   }
   try {
     refuses(projectOf(scene({ scene: 'hands' })), w.project, {}, 'scene3d_stage_unavailable', /Update the Montaj app/)
-    refuses(projectOf(scene({ scene: 'hands' })), w.project, { [SCENE3D_STAGE_ENV]: join(w.dir, 'gone.jsx') }, 'scene3d_stage_unavailable', /missing file/)
+    refuses(projectOf(scene({ scene: 'hands' })), w.project, { [SCENE3D_STAGE_ENV]: join(w.dir, 'gone.jsx') }, 'scene3d_stage_unavailable', /Update the Montaj app/)
     refuses(projectOf(scene({ scene: 'nope' })), w.project, w.env, 'scene3d_scene_missing', /"nope"/)
     const bare = world({ main: false })
     try { refuses(projectOf(scene({})), bare.project, bare.env, 'scene3d_scene_missing', /project's own/) } finally { rmSync(bare.dir, { recursive: true, force: true }) }
@@ -129,7 +129,7 @@ test('every message a user can read on export says 3D, never scene (§308); the 
     mkdirSync(join(w.project, 'models', 'scenes', 'dir', 'active.json'), { recursive: true })
     const cases = [
       [projectOf(scene({ scene: 'lab' })), w.project, {}, 'scene3d_stage_unavailable', 'A 3D item needs the 3D stage, and this Montaj has none. Update the Montaj app.'],
-      [projectOf(scene({ scene: 'lab' })), w.project, { [SCENE3D_STAGE_ENV]: '/gone/stage.jsx' }, 'scene3d_stage_unavailable', 'A 3D item needs the 3D stage, and this Montaj has none (missing file: /gone/stage.jsx). Update the Montaj app.'],
+      [projectOf(scene({ scene: 'lab' })), w.project, { [SCENE3D_STAGE_ENV]: '/x/model3d_scene_stage.jsx' }, 'scene3d_stage_unavailable', 'A 3D item needs the 3D stage, and this Montaj has none. Update the Montaj app.'],
       [projectOf(scene({ scene: 'lab' }, { id: 'ov-1' })), w.project, w.env, 'scene3d_scene_missing', '3D item "ov-1": its 3D "lab" is not saved yet.'],
       [projectOf(scene({}, { id: 'ov-1' })), w.project, w.env, 'scene3d_scene_missing', '3D item "ov-1": the project\'s own 3D is not saved yet.'],
       [projectOf(scene({ scene: 'a_b' }, { id: 'ov-1' })), w.project, w.env, 'scene3d_invalid', '3D item "ov-1": its 3D must be named with lowercase letters, digits and - (got "a_b").'],
@@ -138,7 +138,7 @@ test('every message a user can read on export says 3D, never scene (§308); the 
       [projectOf(scene({ scene: 'dir' }, { id: 'ov-1' })), w.project, w.env, 'scene3d_invalid', '3D item "ov-1": its 3D "dir" cannot be read (EISDIR).'],
     ]
     for (const [project, dir, env, code, message] of cases) {
-      assert.throws(() => materializeScene3d(project, dir, { env }), (e) => {
+      assert.throws(() => materializeScene3d(project, dir, { env, log: () => {} }), (e) => {
         assert.equal(e.code, code)
         assert.equal(e.message, message)
         return true
@@ -146,5 +146,20 @@ test('every message a user can read on export says 3D, never scene (§308); the 
     }
     assert.throws(() => materializeScene3d(projectOf(scene({ scene: 'bad' })), w.project, { env: w.env }),
       (e) => e.code === 'scene3d_invalid' && /^3D item "s1": its 3D "bad" cannot be read \(/.test(e.message) && !/scene/i.test(e.message))
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('a missing stage is named in the log, never in the message', () => {
+  const w = world({ scenes: ['lab'] })
+  try {
+    const lines = []
+    const missing = '/x/model3d_scene_stage.jsx'
+    assert.throws(() => materializeScene3d(projectOf(scene({ scene: 'lab' })), w.project, { env: { [SCENE3D_STAGE_ENV]: missing }, log: (l) => lines.push(l) }),
+      (e) => e.code === 'scene3d_stage_unavailable' && !e.message.includes(missing) && !/scene/i.test(e.message))
+    assert.equal(lines.length, 1)
+    assert.ok(lines[0].includes(missing) && lines[0].includes(SCENE3D_STAGE_ENV), lines[0])
+    lines.length = 0
+    assert.throws(() => materializeScene3d(projectOf(scene({ scene: 'lab' })), w.project, { env: {}, log: (l) => lines.push(l) }), (e) => e.code === 'scene3d_stage_unavailable')
+    assert.match(lines[0], /is not set/)
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
 })

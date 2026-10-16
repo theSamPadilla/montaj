@@ -24,7 +24,7 @@ from lib.types.colorspace import is_hdr, DEFAULT_COLOR_SPACE
 SAMPLE_FRAME_JS = os.path.join(render_runtime_dir(), "sample-frame.js")
 
 # A 3D's id, the rule save_model and render/scene3d.js use.
-SCENE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
+SCENE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 
 
 def main():
@@ -55,7 +55,7 @@ def main():
     args = parser.parse_args()
 
     if args.scene is not None:
-        if args.scene != "" and not SCENE_ID.match(args.scene):
+        if args.scene != "" and not SCENE_ID.fullmatch(args.scene):
             fail("invalid_scene",
                  f"--scene must be a 3D id of lowercase letters, digits and -, or '' for the "
                  f"project's own (got {args.scene!r}).")

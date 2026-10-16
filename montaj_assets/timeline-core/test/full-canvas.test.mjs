@@ -110,9 +110,15 @@ test('fullOpacitySpans: where the curve is exactly 1, half-open, read off its ke
     [], 'touching 1 for one instant is not a span')
   assert.deepEqual(spans([{ prop: 'opacity', points: [{ t: 3, value: 1 }] }]), [[-Infinity, Infinity]], 'one key is a constant')
   assert.deepEqual(spans([{ prop: 'opacity', points: [{ t: 3, value: 0.7 }] }]), [])
+  // The bake reads keys in stored order (sampleTrack); a track whose times do
+  // not strictly increase claims no span, so it never culls.
+  assert.deepEqual(spans([{ prop: 'opacity', points: [{ t: 2, value: 0 }, { t: 1, value: 1 }] }]), [], 'out of order never culls')
+  assert.deepEqual(spans([{ prop: 'opacity', points: [{ t: 1, value: 1 }, { t: 0, value: 0 }] }]), [], 'a fade written newest-first never culls')
   assert.deepEqual(
-    spans([{ prop: 'opacity', points: [{ t: 2, value: 0 }, { t: 1, value: 1 }] }]),
-    [[-Infinity, 1]], 'an out-of-order track is read in time order')
+    spans([{ prop: 'opacity', points: [{ t: 0, value: 1 }, { t: 1, value: 0 }, { t: 1, value: 1 }] }]), [], 'two keys at one time never cull')
+  assert.deepEqual(
+    spans([{ prop: 'opacity', points: [{ t: 0, value: 1 }, { t: NaN, value: 0 }, { t: 2, value: 1 }] }]),
+    [[-Infinity, Infinity]], 'an unusable key is skipped, as sampleTrack skips it')
   assert.deepEqual(spans([{ prop: 'opacity', points: [{ t: NaN, value: 0 }] }], { opacity: 0.5 }), [],
     'a track with no usable key falls back to the static value')
   assert.deepEqual(spans([{ prop: 'scale', points: [{ t: 0, value: 2 }] }]), [[-Infinity, Infinity]], 'another prop\'s track is not opacity')

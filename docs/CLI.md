@@ -320,6 +320,9 @@ montaj sample frame <project.json> --at <seconds>
 
 montaj sample frame <project.json> --at 5.5 --out /tmp/frame5.5.png
 # Explicit output path
+
+montaj sample frame <project.json> --scene lab --at 2.5
+# One 3D alone, 2.5 s into it: <project_dir>/render/samples/3d-lab-2.5s.png
 ```
 
 **Args:**
@@ -327,8 +330,9 @@ montaj sample frame <project.json> --at 5.5 --out /tmp/frame5.5.png
 | Arg | Default | Description |
 |-----|---------|-------------|
 | `<project.json>` | — | Path to project.json |
-| `--at <seconds>` | required | Timestamp in seconds to sample |
-| `--out <path.png>` | `<project_dir>/render/samples/frame-<at>s.png` | Output PNG path |
+| `--at <seconds>` | required | Timestamp in seconds to sample; with `--scene`, seconds into that 3D |
+| `--scene <id>` | — | Sample one 3D alone over the project's whole frame instead of the timeline, so a 3D no timeline item shows can be checked: the id of a 3D saved under `models/scenes/<id>/`, or `''` for the project's own (`models/active.json`). An id is lowercase letters, digits and `-`; a 3D that is not saved fails with `scene3d_scene_missing` |
+| `--out <path.png>` | `<project_dir>/render/samples/frame-<at>s.png` (`3d-<id>-<at>s.png` with `--scene`) | Output PNG path |
 
 **Output:** the absolute PNG path on stdout.
 
