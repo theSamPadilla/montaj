@@ -89,29 +89,29 @@ def _pixels(pose, points, k1=0.0):
     return ct.distort(xc[:, :2] / xc[:, 2:3], FOCAL, np.array([W / 2, H / 2]), k1)
 
 
-def _reconstruction(drop=()):
+def _reconstruction(drop=(), truth=TRUTH, points=POINTS):
     """The truth seen by a tracker: X_r = s Q X + T, poses in that frame."""
     Q = _rot([0.3, -0.8, 0.5], 73.0)
     s, T = 3.7, np.array([1.5, -2.0, 0.7])
-    points = (s * (Q @ POINTS.T)).T + T
-    poses = [None if i in drop else (R @ Q.T, s * (Q @ C) + T) for i, (R, C) in enumerate(TRUTH)]
-    return poses, points
+    seen = (s * (Q @ np.asarray(points).T)).T + T
+    poses = [None if i in drop else (R @ Q.T, s * (Q @ C) + T) for i, (R, C) in enumerate(truth)]
+    return poses, seen
 
 
-def _solve(drop=(), known=None, k1=0.0):
-    poses, points = _reconstruction(drop)
-    return ct.solve(poses, points, fps=FPS, size=[W, H], focal=FOCAL, k1=k1, known=known)
+def _solve(drop=(), known=None, k1=0.0, truth=TRUTH, points=POINTS):
+    poses, seen = _reconstruction(drop, truth, points)
+    return ct.solve(poses, seen, fps=FPS, size=[W, H], focal=FOCAL, k1=k1, known=known)
 
 
 def _camera(frame, lens):
     return {"location": frame["location"], "target": frame["target"], "roll": frame["roll"], "lens": lens}
 
 
-def _max_miss(track, frames=range(len(TRUTH))):
+def _max_miss(track, frames=None, truth=TRUTH, points=POINTS):
     worst = 0.0
-    for i in frames:
-        want = _pixels(TRUTH[i], POINTS)
-        got = ct.project_points(_camera(track["frames"][i], track["lens"]), POINTS, (W, H))
+    for i in range(len(truth)) if frames is None else frames:
+        want = _pixels(truth[i], points)
+        got = ct.project_points(_camera(track["frames"][i], track["lens"]), points, (W, H))
         for g, p in zip(got, want):
             worst = max(worst, float(np.hypot(*(np.asarray(g) - p))))
     return worst
@@ -139,7 +139,7 @@ def test_the_world_is_the_table_under_frame_0_not_the_bigger_wall():
     f0 = track["frames"][0]
     assert f0["location"] == pytest.approx([0, -0.56, TRUTH_HEIGHT], abs=1e-9)
     assert f0["target"] == pytest.approx([0, 0, 0], abs=1e-9)
-    assert track["plane"]["inliers"] == 225
+    assert (track["plane"]["rule"], track["plane"]["inliers"]) == ("up", 225)
     chosen = [c for c in track["plane"]["candidates"] if c["chosen"]]
     assert len(chosen) == 1 and max(c["inliers"] for c in track["plane"]["candidates"]) == 300
     for i, (R, C) in enumerate(TRUTH):
@@ -149,7 +149,7 @@ def test_the_world_is_the_table_under_frame_0_not_the_bigger_wall():
 def test_axes_follow_frame_0_and_the_plane_whatever_the_reconstruction_frame():
     poses, points = _reconstruction()
     planes = ct.find_planes(points, 0.01 * 3.7 * 0.7)
-    i = ct.choose_plane(planes, poses[0][1], -poses[0][0][1])
+    i, _ = ct.choose_plane(planes, poses[0][1], -poses[0][0][1], poses[0][0][2])
     world = ct.align_world(planes[i], poses[0])
     world["scale"] = 1 / 3.7
     # the reconstruction's own frame mapped back to the truth: every point of the
@@ -190,16 +190,103 @@ def _walls():
     return ct.find_planes(np.vstack([POINTS[225:525], b, c]), 0.005)
 
 
-@pytest.mark.parametrize("up, inliers", [
-    ([-1, 0, 0], 100),            # faces the smaller wall: it wins over the largest
-    ([1, 0, 0], 300),             # only the 50-point wall faces it, under a quarter of 300: the largest
-    ([0.3, 0.3, 0.9], 300),       # no wall faces it: the largest
+@pytest.mark.parametrize("up, forward, inliers, rule", [
+    # the smaller wall faces up the picture: it wins over the largest
+    ([-1, 0, 0], [0, 1, 0], 100, "up"),
+    # only the 50-point wall faces up, and it holds under a quarter of 300; nothing
+    # else faces up, so the one facing the camera wins
+    ([1, 0, 0], [0, 1, 0], 300, "facing"),
+    # under 0.3 up for every wall (0.2 for the smaller): the one facing the camera,
+    # the smaller, not the largest
+    ([0.2, 0, 0.98], [1, 0, 0], 100, "facing"),
 ])
-def test_the_plane_facing_up_the_picture_wins_when_it_holds_enough_points(up, inliers):
+def test_the_plane_facing_up_the_picture_wins_else_the_one_facing_the_camera(up, forward, inliers, rule):
     planes = _walls()
     assert sorted(len(p["inliers"]) for p in planes) == [50, 100, 300]
-    i = ct.choose_plane(planes, np.array([0, -0.56, 0.42]), np.asarray(up, float) / np.linalg.norm(up))
-    assert len(planes[i]["inliers"]) == inliers
+    unit = lambda v: np.asarray(v, float) / np.linalg.norm(v)
+    i, why = ct.choose_plane(planes, np.array([0, -0.56, 0.42]), unit(up), unit(forward))
+    assert (len(planes[i]["inliers"]), why) == (inliers, rule)
+
+
+# A top-down shot: the camera 0.5 m over a table, looking almost straight down, so
+# image-up lies nearly in the table (0.1 up). The bigger plane is a vertical board at
+# the left, turned 12 degrees, which faces up the picture more (0.2) but under 0.3.
+TOP_TRUTH = [
+    (_look([0, -0.05, 0.5], [0, 0, 0]), np.array([0, -0.05, 0.5])),
+    (_look([0.02, -0.06, 0.48], [0.01, 0, 0]), np.array([0.02, -0.06, 0.48])),
+    (_look([-0.02, -0.04, 0.52], [0, 0.01, 0], roll=5.0), np.array([-0.02, -0.04, 0.52])),
+]
+
+
+def _top_points():
+    gx, gy = np.meshgrid(np.linspace(-0.1, 0.12, 12), np.linspace(-0.18, 0.18, 12))
+    table = np.c_[gx.ravel(), gy.ravel(), np.zeros(144)]
+    th = math.radians(12)
+    ga, gz = np.meshgrid(np.linspace(-0.2, 0.2, 20), np.linspace(0.03, 0.3, 15))
+    board = np.c_[-0.17 - math.sin(th) * ga.ravel(), math.cos(th) * ga.ravel(), gz.ravel()]
+    return np.vstack([table, board])
+
+
+def test_top_down_the_table_facing_the_camera_wins_over_a_bigger_plane():
+    points = _top_points()
+    track = _solve(known={"height": 0.5}, truth=TOP_TRUTH, points=points)
+    cands = sorted(track["plane"]["candidates"], key=lambda c: -c["inliers"])
+    assert [c["inliers"] for c in cands[:2]] == [300, 144]
+    assert 0 < cands[1]["upInPicture"] < cands[0]["upInPicture"] < ct.UP_ENOUGH
+    assert (track["plane"]["rule"], track["plane"]["inliers"]) == ("facing", 144)
+    assert any("facing the camera most" in n for n in track["notes"])
+    for i, (R, C) in enumerate(TOP_TRUTH):
+        assert track["frames"][i]["location"] == pytest.approx(C, abs=1e-9)
+    assert _max_miss(track, truth=TOP_TRUTH, points=points) < 0.01
+
+
+# ---- known.plane: pointing at the ground ----
+
+def _in_frame(pose, points):
+    px = _pixels(pose, points)
+    return [i for i, (u, v) in enumerate(px) if 10 < u < W - 10 and 10 < v < H - 10]
+
+
+def test_known_plane_pixels_pick_the_plane_under_them():
+    # the wall's pixels at 0.3 s: the wall becomes z = 0 though the rule picks the table
+    wall = np.arange(225, 525)
+    seen = [i for i in _in_frame(TRUTH[3], POINTS) if i in set(wall)]
+    pick = [seen[0], seen[len(seen) // 3], seen[2 * len(seen) // 3], seen[-1]]
+    px = _pixels(TRUTH[3], POINTS[pick]).tolist()
+    to_wall = 0.6 + 0.56                          # frame 0's camera from the wall
+    track = _solve(known={"plane": {"t": 0.3, "pixels": px}, "height": to_wall})
+    assert (track["plane"]["rule"], track["plane"]["inliers"]) == ("pixels", 300)
+    # every camera's height is now its distance from the wall
+    for f, (R, C) in zip(track["frames"], TRUTH):
+        assert f["location"][2] == pytest.approx(0.6 - C[1], abs=1e-9)
+
+
+def test_known_plane_pixels_on_no_found_plane_fit_one():
+    rng = np.random.default_rng(3)
+    n = np.array([0.0, -0.5, 1.0]) / math.hypot(0.5, 1.0)
+    a, b = np.cross(n, [1, 0, 0]), [1.0, 0, 0]
+    ramp = np.array([0.0, 0.1, 0.08]) + np.outer(rng.uniform(-0.08, 0.08, 12), a) + np.outer(rng.uniform(-0.1, 0.1, 12), b)
+    points = np.vstack([POINTS, ramp])
+    planes = ct.find_planes(POINTS, 0.005, max_planes=2)              # the table and the wall only
+    pose = TRUTH[0]
+    px = _pixels(pose, ramp[[0, 4, 8, 11]]).tolist()
+    drawn = _pixels(pose, points)
+    empty = next([float(u), float(v)] for u in range(0, W, 20) for v in range(0, H, 20)
+                 if np.hypot(*(drawn - [u, v]).T).min() > ct.PICK_RADIUS * H)
+    i, plane, rms, left_out = ct.plane_from_pixels(planes, points, pose, px + [empty], (W, H), FOCAL,
+                                                   np.array([W / 2, H / 2]), 0.0, 0.005)
+    assert i is None and rms < 1e-12
+    assert left_out == [empty]                # nothing tracked near it: left out
+    assert abs(float(plane["normal"] @ n)) == pytest.approx(1)
+    assert set(range(len(POINTS), len(points))) <= set(plane["inliers"].tolist())
+    # two tracked points and a pixel with none near it cannot fix a plane
+    with pytest.raises(ValueError, match="land on 2 tracked points"):
+        ct.plane_from_pixels(planes, ramp, pose, [px[0], px[1], [5.0, 5.0]], (W, H), FOCAL,
+                             np.array([W / 2, H / 2]), 0.0, 0.005)
+    # nor can three pixels on one tracked point
+    with pytest.raises(ValueError, match="land on 1 tracked point "):
+        ct.plane_from_pixels(planes, ramp, pose, [px[0], [px[0][0] + 1, px[0][1]], [px[0][0], px[0][1] + 1]],
+                             (W, H), FOCAL, np.array([W / 2, H / 2]), 0.0, 0.005)
 
 
 # ---- the camera ----
@@ -274,7 +361,14 @@ def test_parse_known():
     assert ct.parse_known('{"height": 0.3}') == {"height": 0.3}
     assert ct.parse_known({"t": 1, "pixels": [[1, 2], [3, 4]], "metres": 0.06}) == \
         {"t": 1.0, "pixels": [[1.0, 2.0], [3.0, 4.0]], "metres": 0.06}
-    for bad in ['{"height": 0}', '{"height": "1"}', "{nope", '{"width": 1}', '{"height": 1, "t": 0}',
+    plane = {"t": 0.5, "pixels": [[1, 2], [30, 4], [5, 60]]}
+    assert ct.parse_known({"plane": plane}) == {"plane": {"t": 0.5, "pixels": [[1.0, 2.0], [30.0, 4.0], [5.0, 60.0]]}}
+    assert set(ct.parse_known({"height": 0.3, "plane": plane})) == {"height", "plane"}
+    for bad in ['{}', '{"plane": {"t": 0, "pixels": [[1, 2], [3, 4]]}}',
+                '{"plane": {"t": 0, "pixels": [[1, 1], [2, 2], [3, 3]]}}',
+                '{"plane": {"t": 0, "pixels": [[1, 2], [30, 4], [5, 60]], "metres": 1}}',
+                '{"plane": [[1, 2], [30, 4], [5, 60]]}',
+                '{"height": 0}', '{"height": "1"}', "{nope", '{"width": 1}', '{"height": 1, "t": 0}',
                 '{"t": 0, "pixels": [[1, 2]], "metres": 1}', '{"t": 0, "pixels": [[1, 2], [1, 2]], "metres": 1}',
                 '{"t": -1, "pixels": [[1, 2], [3, 4]], "metres": 1}', '{"t": 0, "pixels": [[1, 2], [3, 4]], "metres": 0}']:
         with pytest.raises(ValueError):

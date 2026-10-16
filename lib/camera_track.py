@@ -20,7 +20,8 @@ seen from behind the camera: its right edge rises (the picture's horizon turns
 clockwise). With roll r the camera's up is cos(r) up0 - sin(r) right0.
 
 The world is fixed by the clip: z = 0 is the plane the clip looks at (a table or a
-floor: of the planes in the points, the one facing up the picture, choose_plane),
+floor: choose_plane's pick of the planes in the points, or the one under
+known.plane's pixels),
 +z its normal on the cameras' side; the origin is where frame 0's optical
 axis meets it; +x is frame 0's right projected onto it; +y = z x x. The scale is
 metric from one known size, else frame 0's camera is assumed DEFAULT_HEIGHT_M up.
@@ -45,6 +46,16 @@ PLANE_ITERATIONS = 2000
 MIN_PLANE_POINTS = 20
 MIN_PLANE_SHARE = 0.25
 PLANE_SEED = 0
+# Of the candidates, the one facing most up the picture (frame 0's image-up) wins
+# when it faces it at least UP_ENOUGH; below that no plane faces up, as when the
+# camera looks down at the table (image-up then lies in it), and the one facing the
+# camera most wins instead.
+UP_ENOUGH = 0.3
+# known.plane: each pixel takes the tracked point drawn nearest it, within
+# PICK_RADIUS x the frame's long side; a found plane takes those points when their
+# RMS distance to it is within PICK_TOLERANCE x the plane threshold.
+PICK_RADIUS = 0.02
+PICK_TOLERANCE = 2.0
 
 # Output rounding. Positions to 0.1 mm: at a tabletop's 0.3 m, a 0.5 mm error in
 # the location or target moves the picture by up to about 3 px at f = 850 px.
@@ -298,23 +309,77 @@ def find_planes(points, threshold, max_planes=MAX_PLANES, iterations=PLANE_ITERA
     return planes
 
 
-def choose_plane(planes, eye, up):
-    """The plane the clip stands on, among find_planes' planes, each normal turned to
-    the eye's side. A candidate has at least MIN_PLANE_POINTS and MIN_PLANE_SHARE of
-    the largest plane's points; of those, the one whose normal points most along `up`
-    (frame 0's image-up) when any points up at all, else the largest. A wall of
-    texture behind a plain table holds more points than the table, but it faces the
-    camera, not up the picture. Returns the index."""
+def face(planes, eye):
+    """Turn each plane's normal to the eye's side."""
     for p in planes:
         if float((eye - p["point"]) @ p["normal"]) < 0:
             p["normal"] = -p["normal"]
+
+
+def choose_plane(planes, eye, up, forward):
+    """The plane the clip stands on, among find_planes' planes, each normal turned to
+    the eye's side. A candidate has at least MIN_PLANE_POINTS and MIN_PLANE_SHARE of
+    the largest plane's points. Of those, the one whose normal points most along `up`
+    (frame 0's image-up) when that is at least UP_ENOUGH, else the one facing the
+    camera most (along -forward). A wall of texture behind a plain table holds more
+    points than the table, but it faces the camera, not up the picture; looking
+    straight down, the table is what faces the camera. Returns (index, "up" | "facing")."""
+    face(planes, eye)
     largest = max(len(p["inliers"]) for p in planes)
     floor = max(MIN_PLANE_POINTS, MIN_PLANE_SHARE * largest)
     candidates = [i for i, p in enumerate(planes) if len(p["inliers"]) >= floor]
-    upward = [i for i in candidates if float(planes[i]["normal"] @ up) > 0]
-    if upward:
-        return max(upward, key=lambda i: float(planes[i]["normal"] @ up))
-    return max(range(len(planes)), key=lambda i: len(planes[i]["inliers"]))
+    best = max(candidates, key=lambda i: float(planes[i]["normal"] @ up))
+    if float(planes[best]["normal"] @ up) >= UP_ENOUGH:
+        return best, "up"
+    return max(candidates, key=lambda i: float(planes[i]["normal"] @ -forward)), "facing"
+
+
+def _project(pose, points, focal, centre, k1):
+    """Pixels of points seen from a COLMAP pose; NaN for a point at or behind the eye."""
+    R, C = pose
+    xc = (np.asarray(points, float) - C) @ R.T
+    out = np.full((len(xc), 2), np.nan)
+    ahead = xc[:, 2] > 1e-9
+    out[ahead] = distort(xc[ahead, :2] / xc[ahead, 2:3], focal, centre, k1)
+    return out
+
+
+def plane_from_pixels(planes, points, pose, pixels, size, focal, centre, k1, threshold):
+    """The plane under pixels on the ground seen from a COLMAP pose. Each pixel takes
+    the tracked point drawn nearest it (within PICK_RADIUS of the long side; a pixel
+    with none is left out); of the found planes, the one those points sit on with the
+    smallest RMS distance, when within PICK_TOLERANCE x threshold; else the plane
+    fitted through them, with every point within threshold of it as its inliers.
+    Returns (index or None, plane, rms in reconstruction units, the pixels left out).
+    Raises ValueError when the points cannot fix a plane."""
+    pts = np.asarray(points, float)
+    drawn = _project(pose, pts, focal, centre, k1)
+    radius = PICK_RADIUS * max(size)
+    picked, left_out = [], []
+    for u, v in pixels:
+        d = np.hypot(drawn[:, 0] - u, drawn[:, 1] - v)
+        d[np.isnan(d)] = np.inf
+        i = int(np.argmin(d)) if len(d) else -1
+        if i < 0 or not d[i] <= radius:
+            left_out.append([u, v])
+        else:
+            picked.append(i)
+    P = pts[sorted(set(picked))]
+    sv = np.linalg.svd(P - P.mean(axis=0))[1] if len(P) >= 3 else None
+    if sv is None or not sv[1] > 1e-3 * sv[0]:
+        raise ValueError(f"known.plane: its {len(pixels)} pixels land on {len(P)} tracked "
+                         f"point{'' if len(P) == 1 else 's'} (within {radius:.0f} px); a plane needs three, not "
+                         "on one line. Pick spots with some texture on the table or floor (an edge, a mark, "
+                         "where an object stands), spread out")
+    centroid = P.mean(axis=0)
+    rms = [float(np.sqrt(np.mean(((P - p["point"]) @ p["normal"]) ** 2))) for p in planes]
+    if rms and min(rms) <= PICK_TOLERANCE * threshold:
+        i = int(np.argmin(rms))
+        return i, planes[i], rms[i], left_out
+    normal = np.linalg.svd(P - centroid)[2][-1]
+    inliers = np.nonzero(np.abs((pts - centroid) @ normal) < threshold)[0]
+    fitted = {"normal": normal, "point": centroid, "inliers": inliers}
+    return None, fitted, float(np.sqrt(np.mean(((P - centroid) @ normal) ** 2))), left_out
 
 
 def align_world(plane, pose0):
@@ -340,11 +405,17 @@ def align_world(plane, pose0):
     return {"axes": np.array([x, y, n]), "origin": origin, "height": height, "on_axis": on_axis}
 
 
-# ---- scale ----
+# ---- known sizes and planes ----
+
+KNOWN_FORMS = ('known is {"height": m} or {"t": s, "pixels": [[u1, v1], [u2, v2]], "metres": d}, '
+               'either with or without "plane": {"t": s, "pixels": [[u, v], ...]}')
+
 
 def parse_known(text):
-    """`known` as given (JSON text, or a dict): {"height": m} or {"t": s, "pixels":
-    [[u1, v1], [u2, v2]], "metres": d}. Raises ValueError with the reason."""
+    """`known` as given (JSON text, or a dict): a scale, {"height": m} or {"t": s,
+    "pixels": [[u1, v1], [u2, v2]], "metres": d}, and or a ground plane, "plane": {"t": s,
+    "pixels": [[u, v], ...]} (three or more pixels on the table or floor at s). Raises
+    ValueError with the reason."""
     if isinstance(text, str):
         try:
             known = json.loads(text)
@@ -352,15 +423,20 @@ def parse_known(text):
             raise ValueError(f"known is not valid JSON: {e}")
     else:
         known = text
+    if not isinstance(known, dict) or not known:
+        raise ValueError(KNOWN_FORMS)
     num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
-    if isinstance(known, dict) and set(known) == {"height"}:
+    pixel_list = lambda px: isinstance(px, list) and all(
+        isinstance(p, list) and len(p) == 2 and all(num(v) for v in p) for p in px)
+    out = {}
+    scale = set(known) - {"plane"}
+    if scale == {"height"}:
         if not (num(known["height"]) and known["height"] > 0):
             raise ValueError("known.height is frame 0's camera height above the plane in metres, above 0")
-        return {"height": float(known["height"])}
-    if isinstance(known, dict) and set(known) == {"t", "pixels", "metres"}:
+        out["height"] = float(known["height"])
+    elif scale == {"t", "pixels", "metres"}:
         px = known["pixels"]
-        if not (isinstance(px, list) and len(px) == 2 and all(
-                isinstance(p, list) and len(p) == 2 and all(num(v) for v in p) for p in px)):
+        if not (pixel_list(px) and len(px) == 2):
             raise ValueError("known.pixels is two pixels [[u1, v1], [u2, v2]]")
         if px[0] == px[1]:
             raise ValueError("known.pixels are the same pixel")
@@ -368,9 +444,26 @@ def parse_known(text):
             raise ValueError("known.t is the time in seconds the pixels are seen at, 0 or more")
         if not (num(known["metres"]) and known["metres"] > 0):
             raise ValueError("known.metres is the distance between the two points in metres, above 0")
-        return {"t": float(known["t"]), "pixels": [[float(v) for v in p] for p in px],
-                "metres": float(known["metres"])}
-    raise ValueError('known is {"height": m} or {"t": s, "pixels": [[u1, v1], [u2, v2]], "metres": d}')
+        out.update({"t": float(known["t"]), "pixels": [[float(v) for v in p] for p in px],
+                    "metres": float(known["metres"])})
+    elif scale:
+        raise ValueError(KNOWN_FORMS)
+    if "plane" in known:
+        plane = known["plane"]
+        if not (isinstance(plane, dict) and set(plane) == {"t", "pixels"}):
+            raise ValueError('known.plane is {"t": s, "pixels": [[u, v], ...]}: three or more pixels on the '
+                             "table or floor, seen at s seconds")
+        if not (num(plane["t"]) and plane["t"] >= 0):
+            raise ValueError("known.plane.t is the time in seconds the pixels are seen at, 0 or more")
+        px = plane["pixels"]
+        if not (pixel_list(px) and len(px) >= 3):
+            raise ValueError("known.plane.pixels is three or more pixels [[u, v], ...] on the table or floor")
+        arr = np.asarray(px, float)
+        sv = np.linalg.svd(arr - arr.mean(axis=0))[1]
+        if not sv[1] > 1e-3 * max(sv[0], 1e-9):
+            raise ValueError("known.plane.pixels lie on one line: spread them over the table or floor")
+        out["plane"] = {"t": float(plane["t"]), "pixels": arr.tolist()}
+    return out
 
 
 def plane_points(pose, pixels, plane, focal, centre, k1):
@@ -404,25 +497,45 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
     R0, C0 = filled[0]
     notes = []
 
+    known = known or {}
+    end = (len(filled) - 1) / fps
+
+    def seen_at(t, pixels, name):
+        if t > end + 1e-9:
+            raise ValueError(f"{name}.t {t:g} s is after the last tracked frame ({end:g} s)")
+        for u, v in pixels:
+            if not (0 <= u <= w and 0 <= v <= h):
+                raise ValueError(f"{name}.pixels [{u:g}, {v:g}] is outside the {w}x{h} frame")
+        return pose_at(filled, fps, t)
+
     depth = float(np.median((pts - C0) @ R0[2]))
-    planes = find_planes(pts, PLANE_THRESHOLD * abs(depth))
-    if not planes:
-        raise ValueError("no plane in the tracked points")
-    chosen = choose_plane(planes, C0, -R0[1])
-    plane = planes[chosen]
+    threshold = PLANE_THRESHOLD * abs(depth)
+    planes = find_planes(pts, threshold)
+    face(planes, C0)
+    if "plane" in known:
+        kp = known["plane"]
+        chosen, plane, _, left_out = plane_from_pixels(
+            planes, pts, seen_at(kp["t"], kp["pixels"], "known.plane"), kp["pixels"], (w, h), focal, centre, k1,
+            threshold)
+        face([plane], C0)
+        if left_out:
+            notes.append(f"known.plane: {len(left_out)} of {len(kp['pixels'])} pixels had no tracked point within "
+                         f"{PICK_RADIUS * max(w, h):.0f} px and were left out: "
+                         + ", ".join(f"[{u:g}, {v:g}]" for u, v in left_out) + ".")
+        rule = "pixels" if chosen is not None else "fitted"
+    elif planes:
+        chosen, rule = choose_plane(planes, C0, -R0[1], R0[2])
+        plane = planes[chosen]
+    else:
+        raise ValueError("no plane in the tracked points: point at the table or floor with known.plane")
     world = align_world(plane, filled[0])
 
-    if known and "height" in known:
+    if "height" in known:
         scale = known["height"] / world["height"]
         source = f"known height: frame 0's camera {known['height']:g} m above the plane"
-    elif known:
-        end = (len(filled) - 1) / fps
-        if known["t"] > end + 1e-9:
-            raise ValueError(f"known.t {known['t']:g} s is after the last tracked frame ({end:g} s)")
-        for u, v in known["pixels"]:
-            if not (0 <= u <= w and 0 <= v <= h):
-                raise ValueError(f"known.pixels [{u:g}, {v:g}] is outside the {w}x{h} frame")
-        a, b = plane_points(pose_at(filled, fps, known["t"]), known["pixels"], plane, focal, centre, k1)
+    elif "metres" in known:
+        pose = seen_at(known["t"], known["pixels"], "known")
+        a, b = plane_points(pose, known["pixels"], plane, focal, centre, k1)
         if a is None or b is None:
             raise ValueError("a known pixel's ray never meets the plane; pick two points on the table or floor")
         scale = known["metres"] / float(np.linalg.norm(a - b))
@@ -439,9 +552,11 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
         cam = montaj_camera(pose, world)
         frames.append({"t": i / fps, **cam, "registered": registered[i]})
 
-    inl = pts[plane["inliers"]]
-    rms = float(np.sqrt(np.mean(((inl - plane["point"]) @ plane["normal"]) ** 2))) * scale
-    candidates = [{"inliers": int(len(p["inliers"])), "upInPicture": float(p["normal"] @ -R0[1]),
+    def rms_m(p):
+        inl = pts[p["inliers"]]
+        return float(np.sqrt(np.mean(((inl - p["point"]) @ p["normal"]) ** 2))) * scale if len(inl) else 0.0
+
+    candidates = [{"inliers": int(len(p["inliers"])), "rmsM": rms_m(p), "upInPicture": float(p["normal"] @ -R0[1]),
                    "towardCamera": float(p["normal"] @ -R0[2]), "chosen": i == chosen}
                   for i, p in enumerate(planes)]
 
@@ -450,9 +565,16 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
         notes.append(f"{len(missing)} of {len(filled)} frames did not track and were interpolated "
                      f"(registered: false), at t = {', '.join(f'{i / fps:g}' for i in missing[:20])}"
                      f"{' ...' if len(missing) > 20 else ''} s.")
-    notes.append(f"z = 0 is a plane through {len(plane['inliers'])} of {len(pts)} tracked points "
-                 f"({len(planes)} planes found). Check it is the table or floor: project a point "
-                 "on it and compare with the clip.")
+    through = f"{len(plane['inliers'])} of {len(pts)} tracked points"
+    up0 = float(plane["normal"] @ -R0[1])
+    notes.append({
+        "up": f"z = 0 is the plane facing most up the picture ({through}; up {up0:.2f}).",
+        "facing": f"z = 0 is the plane facing the camera most ({through}): none faces up the picture "
+                  f"by {UP_ENOUGH:g} or more, as when the camera looks down.",
+        "pixels": f"z = 0 is the found plane under known.plane's pixels ({through}).",
+        "fitted": f"z = 0 is a plane fitted through the tracked points under known.plane's pixels ({through}): "
+                  f"no found plane held them within {PICK_TOLERANCE * threshold * scale * 1000:.0f} mm.",
+    }[rule] + (" If it is not the table or floor, point at that with known.plane." if rule in ("up", "facing") else ""))
     if not world["on_axis"]:
         notes.append("Frame 0 does not look at the plane: the origin is under frame 0's camera instead.")
     corner = math.hypot(w / 2, h / 2) / focal
@@ -474,7 +596,8 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
         "focalPx": float(focal),
         "distortion": {"k1": float(k1)},
         "frames": frames,
-        "plane": {"inliers": int(len(plane["inliers"])), "rmsM": rms, "candidates": candidates},
+        "plane": {"rule": rule, "inliers": int(len(plane["inliers"])), "rmsM": rms_m(plane),
+                  "candidates": candidates},
         "scale": {"metresPerUnit": scale, "source": source},
         "reprojectionPx": reprojection,
         "notes": notes,
@@ -491,8 +614,8 @@ def rounded(track):
     lens = round(float(track["lens"]), LENS_DECIMALS)
     plane = dict(track["plane"])
     plane["rmsM"] = round(plane["rmsM"], 5)
-    plane["candidates"] = [{**c, "upInPicture": round(c["upInPicture"], 2), "towardCamera": round(c["towardCamera"], 2)}
-                           for c in plane["candidates"]]
+    plane["candidates"] = [{**c, "rmsM": round(c["rmsM"], 5), "upInPicture": round(c["upInPicture"], 2),
+                            "towardCamera": round(c["towardCamera"], 2)} for c in plane["candidates"]]
     reproj = track["reprojectionPx"]
     return {
         **track,

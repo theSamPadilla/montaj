@@ -1,13 +1,13 @@
 {
   "name": "track_camera",
-  "description": "The camera that filmed a clip, for a 3D scene that matches it: lens, location, target and roll at each sampled frame, from structure from motion on the clip itself. The world is Blender's axes in metres: z = 0 is the table or floor the clip looks at (+z up, toward the camera), the origin is where frame 0's centre ray meets it, +x is frame 0's right along it. A known size makes it metric; without one, frame 0's camera is assumed 0.3 m above the plane. scene.camera is ready to paste into a scene; roll is in frames only, as scene cameras take none yet. Frames that did not track are interpolated and marked registered: false. Needs Montaj's vision extra; not on Intel Macs yet.",
+  "description": "The camera that filmed a clip, for a 3D scene that matches it: lens, location, target and roll at each sampled frame, from structure from motion on the clip itself. The world is Blender's axes in metres: z = 0 is the table or floor the clip looks at (+z up, toward the camera; of the planes in the tracked points, the one facing most up the picture, or facing the camera when none does, as in a top-down shot), the origin is where frame 0's centre ray meets it, +x is frame 0's right along it. A known size makes it metric; without one, frame 0's camera is assumed 0.3 m above the plane. scene.camera is ready to paste into a scene; roll is in frames only, as scene cameras take none yet. Frames that did not track are interpolated and marked registered: false. Needs Montaj's vision extra; not on Intel Macs yet.",
   "input": {
     "type": "video",
     "description": "Absolute path of the video"
   },
   "output": {
     "type": "json",
-    "description": "{ fps, frameCount, registered: frames tracked, size: [w, h] px, lens: mm on a 36 mm sensor, vertical field of view (lens = 36 * focalPx / h), focalPx, distortion: {k1} (Montaj's camera has none), frames: [{t, location, target, roll: degrees, counter-clockwise from level as seen from behind the camera, registered}], plane: {inliers, rmsM, candidates}, scale: {metresPerUnit, source}, reprojectionPx, scene: {camera: {lens, location: [[t, [x, y, z]]], target: [[t, [x, y, z]]]}}, notes }; with out, the path of the file holding it"
+    "description": "{ fps, frameCount, registered: frames tracked, size: [w, h] px, lens: mm on a 36 mm sensor, vertical field of view (lens = 36 * focalPx / h), focalPx, distortion: {k1} (Montaj's camera has none), frames: [{t, location, target, roll: degrees, counter-clockwise from level as seen from behind the camera, registered}], plane: {rule: up | facing | pixels | fitted, inliers, rmsM, candidates: [{inliers, rmsM, upInPicture, towardCamera, chosen}]}, scale: {metresPerUnit, source}, reprojectionPx, scene: {camera: {lens, location: [[t, [x, y, z]]], target: [[t, [x, y, z]]]}}, notes }; with out, the path of the file holding it"
   },
   "params": [
     {
@@ -31,7 +31,7 @@
       "name": "known",
       "type": "string",
       "required": false,
-      "description": "A known size that makes the world metric, as JSON text: {\"height\": h} is frame 0's camera h metres above the plane; {\"t\": s, \"pixels\": [[u1, v1], [u2, v2]], \"metres\": d} is two points on the plane, seen at those pixels at s seconds, d metres apart."
+      "description": "What is known about the scene, as JSON text. A size makes the world metric: {\"height\": h} is frame 0's camera h metres above the plane; {\"t\": s, \"pixels\": [[u1, v1], [u2, v2]], \"metres\": d} is two points on the plane, seen at those pixels at s seconds, d metres apart. Either can carry \"plane\": {\"t\": s, \"pixels\": [[u, v], ...]}, three or more pixels on the table or floor at s seconds: point at the ground when z = 0 is the wrong plane, or pass it alone."
     },
     {
       "name": "max-frames",
