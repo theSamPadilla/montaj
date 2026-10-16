@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+- Changed: scrubbing the timeline is silent by default; the ear button turns sound on. `settings.audibleScrub` absent now means muted (it meant sound since 2.1.0); an explicit `true` or `false` is kept either way.
+
 ## 2.3.0
 
 - Added: which languages the captions draw. `Captions.showLangs` (the source's code and each translated row's `lang`; absent draws every row) is applied to what the preview draws, through `captionSegmentsToShow` from `@bycrux/timeline-core`; `Captions.lang` is the source language. The caption panel's header gets a Languages row (one chip per language, at least one on) and, when the host passes `onAddCaptionLanguage` (a new `VideoEditorProps` and `CaptionListPanel` prop, `onAddLanguage`), a "+ Language" chip that opens a one-line pointer and a Copy prompt button which calls it. `captionLanguages` is new.
