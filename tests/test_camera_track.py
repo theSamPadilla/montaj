@@ -98,9 +98,9 @@ def _reconstruction(drop=(), truth=TRUTH, points=POINTS):
     return poses, seen
 
 
-def _solve(drop=(), known=None, k1=0.0, truth=TRUTH, points=POINTS):
+def _solve(drop=(), known=None, k1=0.0, truth=TRUTH, points=POINTS, tol=ct.DEFAULT_TOLERANCE_PX):
     poses, seen = _reconstruction(drop, truth, points)
-    return ct.solve(poses, seen, fps=FPS, size=[W, H], focal=FOCAL, k1=k1, known=known)
+    return ct.solve(poses, seen, fps=FPS, size=[W, H], focal=FOCAL, k1=k1, known=known, tolerance=tol)
 
 
 def _camera(frame, lens):
@@ -546,6 +546,59 @@ def test_roll_keys_only_when_a_frame_rolls_a_twentieth_of_a_degree(roll, keyed):
     assert not any("take no roll" in n for n in track["notes"])
 
 
+def _round_trip(roll, n=40, jitter=0.0002):
+    """Truth cameras orbiting the origin at 0.7 m out and 0.42 m up, frame 0 looking
+    at it level, so the world solve() sets up is this one; `roll(i)` in degrees."""
+    rng = np.random.default_rng(4)
+    truth = []
+    for i in range(n):
+        a = math.radians(30.0 * i / (n - 1))
+        loc = np.array([0.7 * math.sin(a), -0.7 * math.cos(a), TRUTH_HEIGHT]) + (rng.uniform(-jitter, jitter, 3) if i else 0)
+        truth.append((_look(loc, [0, 0, 0], roll=roll(i)), loc))
+    return truth
+
+
+def _printed_miss(track, points):
+    """The furthest scene.camera, interpolated between its printed keys at each
+    printed frame's t (np.interp), draws a point inside the picture from where that
+    printed frame's camera, with its own roll, draws it."""
+    cam = track["scene"]["camera"]
+    kt = [k[0] for k in cam["location"]]
+    lerp = lambda keys, t: [float(np.interp(t, kt, [k[1][c] for k in keys])) for c in range(3)]
+    worst = 0.0
+    for f in track["frames"]:
+        full = {"location": f["location"], "target": f["target"], "roll": f["roll"], "lens": track["lens"]}
+        roll = float(np.interp(f["t"], kt, [k[1] for k in cam["roll"]])) if "roll" in cam else 0.0
+        mid = {"location": lerp(cam["location"], f["t"]), "target": lerp(cam["target"], f["t"]), "roll": roll,
+               "lens": cam["lens"]}
+        for want, got in zip(ct.project_points(full, points, (W, H)), ct.project_points(mid, points, (W, H))):
+            if want is not None and 0 <= want[0] <= W and 0 <= want[1] <= H:
+                worst = max(worst, float(np.hypot(*np.subtract(got, want))))
+    return worst
+
+
+@pytest.mark.parametrize("tol", [0.3, 0.4])
+def test_the_tolerance_holds_on_the_printed_frames_and_keys(tol):
+    truth = _round_trip(lambda i: 3.0 * math.sin(i / 6))
+    track = ct.rounded(_solve(known={"height": TRUTH_HEIGHT}, truth=truth, points=CHECKED, tol=tol))
+    assert "roll" in track["scene"]["camera"]
+    assert len(track["scene"]["camera"]["location"]) < len(truth)
+    assert _printed_miss(track, CHECKED) <= tol + 1e-9
+
+
+def test_leaving_a_small_roll_out_is_charged_to_the_tolerance():
+    """0.045 degrees of roll draws a 5 x 5 probe at the picture's corner 0.35 px off
+    when the keys are level: within 1 px it may go, within 0.3 px it may not."""
+    truth = _round_trip(lambda i: 0.045)
+    loose = _solve(known={"height": TRUTH_HEIGHT}, truth=truth, points=CHECKED, tol=1.0)
+    assert "roll" not in ct.rounded(loose)["scene"]["camera"]
+    assert _printed_miss(ct.rounded(loose), CHECKED) <= 1.0 + 1e-9
+    tight = _solve(known={"height": TRUTH_HEIGHT}, truth=truth, points=CHECKED, tol=0.3)
+    assert "roll" in ct.rounded(tight)["scene"]["camera"]
+    assert any("keeps roll keys although no frame rolls" in n for n in tight["notes"])
+    assert _printed_miss(ct.rounded(tight), CHECKED) <= 0.3 + 1e-9
+
+
 def test_the_tolerance_sets_the_keys_and_the_count_is_in_the_notes():
     poses, seen = _reconstruction(truth=[(R, C) for R, C in TRUTH])
     solve = lambda tol: ct.solve(poses, seen, fps=FPS, size=[W, H], focal=FOCAL, k1=0.0,
@@ -592,6 +645,7 @@ def test_rounded_output_and_scene_camera_keys():
     assert cam["target"] == [[t, at[t]["target"]] for t in times]
     # frame 4 rolls 12 degrees: roll keys, at the same times, the frames' own sign
     assert cam["roll"] == [[t, at[t]["roll"]] for t in times]
+    assert dict(cam["roll"])[0.4] == 12.0
     assert set(cam) == {"lens", "location", "target", "roll"}
     for f in track["frames"]:
         assert list(f) == ["t", "location", "target", "up", "roll", "registered"]

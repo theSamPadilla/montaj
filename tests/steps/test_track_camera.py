@@ -283,7 +283,10 @@ def test_real_clip_tracks_every_frame_and_holds_the_static_landmarks(tmp_path):
           f"{mean:.2f} px mean, {max(every):.2f} max over {len(every)}: "
           + ", ".join(f"{k} {sum(v) / len(v):.2f}" for k, v in misses.items()))
     assert mean < MAX_MEAN_PX, misses
-    # the thinned scene.camera plays within 2 px of the full track at every frame
+    # the thinned scene.camera plays within the tolerance (and so 2 px) of the printed
+    # frames at every frame
+    tolerance = next(p["default"] for p in SCHEMA["params"] if p["name"] == "tolerance")
     keys, miss = len(track["scene"]["camera"]["location"]), _scene_camera_miss(np, ct, track)
-    print(f"scene.camera: {keys} of {track['frameCount']} keys, {miss:.2f} px from the track at worst")
-    assert miss < 2.0
+    print(f"scene.camera: {keys} of {track['frameCount']} keys, {miss:.3f} px from the track at worst "
+          f"(tolerance {tolerance:g})")
+    assert miss <= tolerance + 1e-6 and miss < 2.0

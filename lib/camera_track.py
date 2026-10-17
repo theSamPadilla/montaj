@@ -67,18 +67,21 @@ FOOTPRINT_MARGIN = 0.25
 # engine plays them) draws THIN_POINTS of the sparse points, and points on a
 # PROBE_GRID x PROBE_GRID grid of the frame's pixel rays, within the tolerance (px)
 # of where that frame's own camera draws them. On each ray the points are where it
-# meets the plane, as far ahead as the frame's target, and PROBE_FAR times that:
-# a small move shifts the near table most, and a small turn the far background, and
-# between the two they can cancel. Roll keys are left out when
-# every frame's roll is under ROLL_KEYS_FROM degrees. The default tolerance stays
-# under the track's own error (about 1.4 px of reprojection on a phone clip), and a
-# hand-held clip at 10 fps still thins at it: 67 of 75 keys on the §328 kit, where
-# 0.5 px kept all 75.
+# meets the plane, as far ahead as the frame's target, and PROBE_FAR times that,
+# which stands for infinity: a small move shifts the near table most, a small turn
+# the far background, and between the two they can cancel. Along one ray the miss
+# is the length of a straight line in 1 / depth, so it is largest at the nearest or
+# the farthest point checked, and every depth between is covered. The check runs on
+# the values as printed (rounded()), so the tolerance holds on what is written.
+# Roll keys are left out when every frame's roll is under ROLL_KEYS_FROM degrees.
+# The default tolerance stays under the track's own error (about 1.4 px of
+# reprojection on a phone clip), and a hand-held clip at 10 fps still thins at it:
+# on a 7.5 s hand-held phone clip it kept 69 of 75 keys, where 0.5 px kept all 75.
 DEFAULT_TOLERANCE_PX = 1.0
 THIN_POINTS = 400
 THIN_SEED = 0
 PROBE_GRID = 5
-PROBE_FAR = 20
+PROBE_FAR = 1e4
 ROLL_KEYS_FROM = 0.05
 
 # Output rounding. Positions to 0.1 mm: at a tabletop's 0.3 m, a 0.5 mm error in
@@ -268,20 +271,22 @@ def _draw(location, target, roll, lens, size, points):
 def thin_keys(frames, lens, size, points, tolerance, roll=True):
     """Indices of the frames kept as camera keys, first and last always. From each
     kept key the next is the furthest frame such that, at every frame between them,
-    the camera interpolated between the two keys (location, target and, when `roll`,
-    roll, all linear) draws the checked points within `tolerance` px of where that
-    frame's own camera draws them. The checked points are THIN_POINTS of `points`
-    (a seeded subset) inside that frame's picture, and points on a PROBE_GRID grid of
-    the frame's pixel rays: where each meets z = 0 (up to PROBE_FAR times the
-    target's distance), as far ahead as the target, and PROBE_FAR times that.
-    Without `roll` both cameras are level."""
+    the camera interpolated between the two keys at that frame's t (location, target
+    and, when `roll`, roll, all linear) draws the checked points within `tolerance`
+    px of where that frame's own camera draws them. The checked points are
+    THIN_POINTS of `points` (a seeded subset) inside that frame's picture, and points
+    on a PROBE_GRID grid of the frame's pixel rays: where each meets z = 0, as far
+    ahead as the target, and PROBE_FAR times that. Without `roll` the camera between
+    the keys, and at them, is level, and each frame is still drawn with its own roll:
+    leaving roll out spends tolerance, and None is returned when a frame's roll alone
+    would miss by more than `tolerance`."""
     n = len(frames)
-    if n <= 2:
-        return list(range(n))
     w, h = size
+    t = np.array([f["t"] for f in frames], float)
     loc = np.array([f["location"] for f in frames], float)
     tgt = np.array([f["target"] for f in frames], float)
-    rl = np.degrees(np.unwrap(np.radians([f["roll"] for f in frames]))) if roll else np.zeros(n)
+    own = np.degrees(np.unwrap(np.radians([f["roll"] for f in frames])))   # each frame drawn with this
+    rl = own if roll else np.zeros(n)                                       # the keys interpolate this
     pts = np.asarray(points, float).reshape(-1, 3)
     if len(pts) > THIN_POINTS:
         pts = pts[np.random.default_rng(THIN_SEED).choice(len(pts), THIN_POINTS, replace=False)]
@@ -289,28 +294,36 @@ def thin_keys(frames, lens, size, points, tolerance, roll=True):
                      for a in range(PROBE_GRID) for b in range(PROBE_GRID)])
     checks = []
     for i in range(n):
-        cam = {"location": loc[i], "target": tgt[i], "roll": rl[i], "lens": lens}
-        px, z = _draw(loc[i], tgt[i], rl[i], lens, size, pts)
+        cam = {"location": loc[i], "target": tgt[i], "roll": own[i], "lens": lens}
+        px, z = _draw(loc[i], tgt[i], own[i], lens, size, pts)
         seen = (z > 1e-9) & (px[:, 0] >= 0) & (px[:, 0] <= w) & (px[:, 1] >= 0) & (px[:, 1] <= h)
         reach = float(np.linalg.norm(tgt[i] - loc[i]))
         rays = np.array(pixel_rays(cam, grid, size))
         down = rays[:, 2] < -1e-9
         hit = -loc[i][2] / np.where(down, rays[:, 2], -1.0)
         on_plane = down & (hit > 0)
-        probes = [loc[i] + np.minimum(hit[on_plane], PROBE_FAR * reach)[:, None] * rays[on_plane],
+        probes = [loc[i] + hit[on_plane][:, None] * rays[on_plane],
                   loc[i] + reach * rays, loc[i] + PROBE_FAR * reach * rays]
         drawn = [grid[on_plane], grid, grid]
         checks.append((np.vstack([pts[seen], *probes]), np.vstack([px[seen], *drawn])))
 
+    def miss(i, location, target, r):
+        P, want = checks[i]
+        px, z = _draw(location, target, r, lens, size, P)
+        return np.inf if not (z > 1e-9).all() else float(np.hypot(*(px - want).T).max())
+
     def holds(a, b):
         for i in range(a + 1, b):
-            k = (i - a) / (b - a)
-            P, want = checks[i]
-            px, z = _draw((1 - k) * loc[a] + k * loc[b], (1 - k) * tgt[a] + k * tgt[b],
-                          (1 - k) * rl[a] + k * rl[b], lens, size, P)
-            if not (z > 1e-9).all() or np.hypot(*(px - want).T).max() > tolerance:
+            k = (t[i] - t[a]) / (t[b] - t[a])
+            if miss(i, (1 - k) * loc[a] + k * loc[b], (1 - k) * tgt[a] + k * tgt[b],
+                    (1 - k) * rl[a] + k * rl[b]) > tolerance:
                 return False
         return True
+
+    if not roll and any(miss(i, loc[i], tgt[i], 0.0) > tolerance for i in range(n)):
+        return None
+    if n <= 2:
+        return list(range(n))
 
     keys, a, b = [0], 0, 1
     while b < n - 1:
@@ -632,9 +645,20 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
     for i, pose in enumerate(filled):
         cam = montaj_camera(pose, world)
         frames.append({"t": i / fps, **cam, "registered": registered[i]})
+    # Thinned on the values as printed, so the tolerance holds on what is written.
+    unwrapped = np.degrees(np.unwrap(np.radians([f["roll"] for f in frames])))
+    printed = [{"t": round(f["t"], TIME_DECIMALS), "location": _printed_pos(f["location"]),
+                "target": _printed_pos(f["target"]), "roll": round(float(r), ROLL_DECIMALS) + 0.0}
+               for f, r in zip(frames, unwrapped)]
+    printed_lens = round(float(lens), LENS_DECIMALS)
+    seen = scale * ((pts - world["origin"]) @ world["axes"].T)
     rolls = any(abs(f["roll"]) >= ROLL_KEYS_FROM for f in frames)
-    keys = thin_keys(frames, lens, (w, h), scale * ((pts - world["origin"]) @ world["axes"].T), tolerance, rolls)
-    key_roll = (np.degrees(np.unwrap(np.radians([f["roll"] for f in frames])))[keys].tolist() if rolls else None)
+    keys = None if rolls else thin_keys(printed, printed_lens, (w, h), seen, tolerance, roll=False)
+    rolled_anyway = not rolls and keys is None
+    if keys is None:
+        rolls = True
+        keys = thin_keys(printed, printed_lens, (w, h), seen, tolerance, roll=True)
+    key_roll = [printed[k]["roll"] for k in keys] if rolls else None
 
     def rms_m(p):
         inl = pts[p["inliers"]]
@@ -669,7 +693,9 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
                      "Montaj's camera keeps it centred.")
     notes.append(f"scene.camera keeps {len(keys)} of {len(frames)} keys: between them the camera stays within "
                  f"{tolerance:g} px of the track at every frame."
-                 + ("" if rolls else f" It has no roll keys: no frame rolls {ROLL_KEYS_FROM:g} degrees."))
+                 + ("" if rolls else f" It has no roll keys: no frame rolls {ROLL_KEYS_FROM:g} degrees.")
+                 + (f" It keeps roll keys although no frame rolls {ROLL_KEYS_FROM:g} degrees: leaving them out "
+                    f"would miss by more than {tolerance:g} px." if rolled_anyway else ""))
 
     return {
         "fps": fps,
@@ -690,11 +716,15 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
     }
 
 
+def _printed_pos(v):
+    return [round(float(c), POS_DECIMALS) + 0.0 for c in v]   # + 0.0: no -0.0
+
+
 def rounded(track):
     """The track as printed: positions to 0.1 mm, up to 1e-6, roll to 0.01 degrees, and
     scene.camera keyed at the frames thin_keys kept, with roll keys when the camera
     rolls."""
-    pos = lambda v: [round(float(c), POS_DECIMALS) + 0.0 for c in v]   # + 0.0: no -0.0
+    pos = _printed_pos
     frames = [{"t": round(f["t"], TIME_DECIMALS), "location": pos(f["location"]), "target": pos(f["target"]),
                "up": [round(float(c), UP_DECIMALS) + 0.0 for c in f["up"]],
                "roll": round(float(f["roll"]), ROLL_DECIMALS) + 0.0, "registered": bool(f["registered"])}
