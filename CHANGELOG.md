@@ -2,7 +2,10 @@
 
 ## Unreleased
 
+## v5.35.1
+
 - **Fixed (render): an export that uses one long clip several times no longer stalls at the start.** Each use of the clip started the same conform, none finished inside a fixed 10 minutes, and each timeout left its ffmpeg running. Now the uses share one conform, a conform is stopped only when its output stops growing for 2 minutes (or after 4 hours), and stopping it ends its ffmpeg and removes its temporary file. (`render/render.js` `normalizeIfNeeded`, `render/test/normalize-stall.test.mjs`)
+- Also in this release: a stopped or stalled conform's ffmpeg is ended by pid, so cancelling an export still ends it. Release notes: check-keys not run (credential rules); render suite 1777/1777 (a render-only change).
 
 ## v5.35.0
 
