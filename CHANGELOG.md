@@ -7,6 +7,11 @@
 - **Added (steps): `track_pose` (`kind: hand`).** 21 hand landmarks per frame in source pixels and metres, tracked frame to frame and smoothed, on onnxruntime. Google's MediaPipe hand models download on first use (about 8 MB) and are converted to ONNX on the device. (`steps/media/track_pose.{py,json}`, `lib/pose/hands.py`, `NOTICE`)
 - **Added (steps): `track_pose` `kind: body`.** 33 body landmarks of one person per frame, in source pixels with each landmark's visibility, and in metres, tracked frame to frame and smoothed, on onnxruntime. Google's MediaPipe pose landmarker (full) model downloads on first use (about 9 MB) and is converted to ONNX on the device. (`steps/media/track_pose.{py,json}`, `lib/pose/body.py`, `lib/pose/regions.py`, `lib/pose/tflite.py`, `NOTICE`)
 
+## v5.35.2
+
+- **Fixed (editor): clicking a marker on the timeline ruler no longer blanks the window.** A click on a marker selects it, and the editor then looked for an audio track with that id; in a project whose `audio` has no `tracks` list (`"audio": {}`) that lookup threw while rendering. The lookup, and the audio shift in the leading-silence polish, now read a missing list as empty. (`editor/src/video/{selection,VideoEditor,audioPolish}.ts*`, `editor/src/video/__tests__/selection.test.ts`)
+- Release notes: check-keys not run (credential rules); editor suite 4392/4392 (an editor-only change).
+
 ## v5.35.1
 
 - **Fixed (render): an export that uses one long clip several times no longer stalls at the start.** Each use of the clip started the same conform, none finished inside a fixed 10 minutes, and each timeout left its ffmpeg running. Now the uses share one conform, a conform is stopped only when its output stops growing for 2 minutes (or after 4 hours), and stopping it ends its ffmpeg and removes its temporary file. (`render/render.js` `normalizeIfNeeded`, `render/test/normalize-stall.test.mjs`)
