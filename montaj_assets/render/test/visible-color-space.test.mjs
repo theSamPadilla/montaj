@@ -40,6 +40,15 @@ test('a clip an opaque 3D overlay covers for its whole span is not visible; part
   assert.deepEqual(ids(visibleVideoItems([[video('a', 0, 5)], [overlay('s', 0, 5, { scale: 0.5 })]])), ['a'])
 })
 
+test('a keyed stretch at full opacity shorter than the planner\'s one second is not a cover; a steady cover of any length is', () => {
+  const keyed = (to) => overlay('s', 0, 5, { keyframes: [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 1 }, { t: to, value: 1 }, { t: to + 1, value: 0 }] }] })
+  // 0.5 s at full opacity inside a fade in and out: not a cover (segment-plan MIN_FULL_OPACITY_S)
+  assert.deepEqual(ids(visibleVideoItems([[video('a', 1, 1.5)], [keyed(1.5)]])), ['a'])
+  // 2 s at full opacity covers a clip lying inside it
+  assert.deepEqual(ids(visibleVideoItems([[video('a', 1, 3)], [keyed(3)]])), [])
+  assert.deepEqual(ids(visibleVideoItems([[video('a', 1, 1.5)], [overlay('s', 0, 5)]])), [])
+})
+
 test('a clip that starts after the export ends is not visible; one that straddles it is', () => {
   const tracks = [[video('a', 0, 4), video('b', 4, 8)], [overlay('s', 0, 4)]]
   assert.deepEqual(ids(visibleVideoItems(tracks, { end: 4 })), [])
@@ -105,4 +114,18 @@ test('render decision: an HDR file covered by a full-frame black card exports SD
   assert.equal(shown.hdrVisible, true)
   const explicit = decide([{ id: 't0', items: [clip] }, { id: 't1', items: [card] }], settings({ colorSpaceSource: 'explicit' }))
   assert.equal(explicit.colorSpace, 'hdr_hlg')
+})
+
+test('HDR is judged by the source file\'s origin: an SDR clip decoded from an HDR cache is SDR', () => {
+  const sdr = join(WORK, 'plain.mp4')
+  const cache = join(WORK, 'plain_hdr_cache.mp4')
+  ff(['-f', 'lavfi', '-i', 'testsrc2=size=1080x1920:rate=30', '-t', '2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', sdr])
+  ff(['-f', 'lavfi', '-i', 'testsrc2=size=1080x1920:rate=30', '-t', '2', '-c:v', 'libx265', '-pix_fmt', 'yuv420p10le', ...HLG, '-tag:v', 'hvc1', cache])
+  const st = { resolution: [1080, 1920], fps: 30, colorSpace: 'hdr_hlg' }
+  const pj = { id: 'p', settings: st, tracks: [{ id: 't0', items: [{ id: 'c1', type: 'video', src: sdr, normalizedSrc: cache, start: 0, end: 2, inPoint: 0, outPoint: 2 }] }] }
+  const { videoItems } = collectAllItems(pj)
+  stampSourceProbes(videoItems, new Map())
+  const r = resolvePictureColorSpace(pj, st, videoItems)
+  assert.equal(r.colorSpace, 'sdr_bt709')
+  assert.equal(r.hdrVisible, false)
 })

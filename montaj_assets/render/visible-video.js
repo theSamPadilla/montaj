@@ -20,12 +20,17 @@ import { isOpaqueCover, isFullCanvasPlacement, fullOpacitySpans } from '@bycrux/
 
 const finite = (v, d) => (Number.isFinite(v) ? v : d)
 
+/** segment-plan.js MIN_FULL_OPACITY_S: a stretch at full opacity bounded by a key and shorter than this is not treated as a cover. */
+const MIN_FULL_OPACITY_S = 1
+
 /** `[from, to)` pieces of the item's own span in which `cover` is at full opacity (item-relative spans moved to project time). */
 function coverSpans(cover) {
   const start = finite(cover.start, 0)
   const end = finite(cover.end, Infinity)
   const out = []
   for (const [a, b] of fullOpacitySpans(cover)) {
+    const bounded = Number.isFinite(a) || Number.isFinite(b)
+    if (bounded && Math.min(b, end - start) - Math.max(a, 0) < MIN_FULL_OPACITY_S) continue
     const from = Math.max(start, a === -Infinity ? start : start + a)
     const to = Math.min(end, b === Infinity ? end : start + b)
     if (to > from) out.push([from, to])

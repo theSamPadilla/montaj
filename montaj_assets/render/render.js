@@ -41,7 +41,7 @@ import { pMap }                           from './p-map.js'
 import { visibleVideoItems, effectiveColorSpace } from './visible-video.js'
 import { fileHasAudio, probeVideoGeometry } from './encode-segment.js'
 import { probeColorTransfer }             from './derive-sdr.js'
-import { sdrLayerFor, gradeKeyFor, probeMedia, defaultDeps } from './sdr-layer.js'
+import { sdrLayerFor, gradeKeyFor, probeMedia, defaultDeps, originOf } from './sdr-layer.js'
 import { sourceWindow, transitionPairs, isOpaqueCover, opaqueReplacesPicture, trackLayerPositions } from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
 import { resolveMotionBlur, MOTION_BLUR_MAX } from './motion-blur.js'
@@ -974,24 +974,39 @@ function fillsFrameOpaquely(item, resolution) {
  * Returns what resolveProjectColorSpace does, plus { hdrVisible, downgraded }.
  */
 function resolvePictureColorSpace(projectJson, settings, videoItems) {
-  const keyOf = (it) => `${it.id ?? ''}|${it.src}|${it.start ?? ''}`
-  const stamped = new Map(videoItems.map((it) => [keyOf(it), it]))
   const visibleRaw = visibleVideoItems(enabledTrackItems(projectJson).map((items) => items ?? []), {
     end: getTotalDurationSeconds(projectJson),
     coversPicture: (item) => fillsFrameOpaquely(item, settings.resolution),
   })
-  const visible = visibleRaw.map((it) => stamped.get(keyOf(it))).filter(Boolean)
-  // An item the stamped list cannot match is unknown, not SDR: never downgrade on a guess.
-  const unmatched = visible.length !== visibleRaw.length
-  const base = resolveProjectColorSpace(settings, settings.colorSpace != null ? videoItems : visible)
+  // HDR by ORIGIN, from the item's own source file: a clip decoded from an HDR cache of an SDR
+  // original is SDR, an SDR-looking conversion of an HDR original is not (sdr-layer.js originOf).
+  // A file that cannot be read is unknown, never SDR: nothing is downgraded on a guess.
+  const originHdr = new Map()
+  const isHdrItem = (raw) => {
+    if (!originHdr.has(raw.src)) {
+      let hdr = true
+      try { hdr = isHdr(originOf(raw.src).colorSpace) } catch { hdr = true }
+      originHdr.set(raw.src, hdr)
+    }
+    return originHdr.get(raw.src)
+  }
+  // A legacy project with no stored colour space is read from what is on screen alone.
+  let base
+  if (settings.colorSpace != null) {
+    base = resolveProjectColorSpace(settings, videoItems)
+  } else {
+    const keyOf = (it) => `${it.id ?? ''}|${it.src}|${it.start ?? ''}`
+    const stamped = new Map(videoItems.map((it) => [keyOf(it), it]))
+    const shown = visibleRaw.map((it) => stamped.get(keyOf(it))).filter(Boolean)
+    base = resolveProjectColorSpace(settings, shown.length === visibleRaw.length ? shown : videoItems)
+  }
   const eff = effectiveColorSpace({
     stored: base.colorSpace,
     source: settings.colorSpaceSource ?? null,
-    visible,
-    isHdrItem: (it) => isHdr(detectFromTransfer(it.colorTransfer)),
+    visible: visibleRaw,
+    isHdrItem,
     isHdrKey: isHdr,
   })
-  if (unmatched) return { ...base, hdrVisible: true, downgraded: false }
   return { ...base, colorSpace: eff.colorSpace, hdrVisible: eff.hdrVisible, downgraded: eff.downgraded }
 }
 
