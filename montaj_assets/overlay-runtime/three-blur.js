@@ -120,7 +120,13 @@ export function makeAccumulator(gl, renderer) {
   // The copy's format must match the drawing buffer's: an opaque canvas's has no alpha to copy.
   const copyFormat = gl.getContextAttributes().alpha ? gl.RGBA8 : gl.RGB8
   const add = program(gl, ADD)
-  const present = program(gl, PRESENT)
+  let present
+  try {
+    present = program(gl, PRESENT)
+  } catch (err) {
+    gl.deleteProgram(add)
+    throw err
+  }
   const vao = gl.createVertexArray()
   const uDrawn = gl.getUniformLocation(add, 'drawn')
   const uSums = gl.getUniformLocation(present, 'sums')
@@ -167,7 +173,9 @@ export function makeAccumulator(gl, renderer) {
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sums, 0)
     if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
       gl.deleteFramebuffer(fbo)
-      fbo = null
+      gl.deleteTexture(drawn)
+      gl.deleteTexture(sums)
+      fbo = drawn = sums = null
       throw unsupported('no_float_target')
     }
     width = w

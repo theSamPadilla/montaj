@@ -14,7 +14,10 @@
 //   - a frame with no motion exactly the unblurred frame;
 //   - the page handed exactly subframeTimes, once per frame;
 //   - a page that cannot average (no float render target) falling back to the
-//     sub-frame captures, the same bytes as the 2D path.
+//     sub-frame captures, the same bytes as the 2D path;
+//   - a keyframed slide, drawn outside the canvas, captured per sub-frame, the same bytes as the 2D path;
+//   - a canvas remounted between sub-frames still rendering every frame;
+//   - a page that cannot average a later frame (its 3D tree gone) restarting the chunk per sub-frame.
 // The stand-in stage is a box sliding right, then holding still from STOP.
 // Tiny on purpose: 160x90, 8 frames.
 import { test, before, after } from 'node:test'
@@ -53,9 +56,48 @@ const stage = ({ alpha, preserve, antialias }) => `export default function Stage
 }
 function FrameBridge() { useThreeFrame(); return null }
 `
+const HOLD_STAGE = `export default function Stage({ frame }) {
+  return (
+    <Canvas KEY frameloop="never" flat style={{ position: 'absolute', inset: 0 }} camera={{ position: [0, 0, 5], fov: 50 }}
+      gl={{ preserveDrawingBuffer: true, antialias: true, alpha: false }}>
+      <FrameBridge />
+      <color attach="background" args={['#203040']} />
+      <mesh position={[-2.5 + 0.5 * frame, 0, 0]} rotation={[0.4, 0.6, 0]}>
+        <boxGeometry args={[0.9, 0.9, 0.9]} /><meshBasicMaterial color="#ffcc33" toneMapped={false} />
+      </mesh>
+    </Canvas>
+  )
+}
+function FrameBridge() { useThreeFrame(); return null }
+`
+// Fields of a job's keyframes, as the render hands them: a slide of 20% across the chunk.
+const SLIDE = [{ prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: FRAMES / FPS, value: 20 }] }]
 const CASES = {
   opaque: { jsx: stage({ alpha: false, preserve: true, antialias: true }), opaque: true },
   alpha: { jsx: stage({ alpha: true, preserve: false, antialias: false }), opaque: false },
+  // The app's own transparent stage: a preserved buffer, antialiased, with alpha.
+  // MEASURED 4 on ~600 antialiased edge pixels, one over the others: the captures are straight-alpha 8-bit PNGs, and a
+  // partly covered edge pixel quantises each of the 5 captures before tmix averages them.
+  alphaAA: { jsx: stage({ alpha: true, preserve: true, antialias: true }), opaque: false, tol: 4 },
+  // Not in the parity loop: each has its own test below.
+  slide: { jsx: stage({ alpha: false, preserve: true, antialias: true }), opaque: true, keyframes: SLIDE, own: true },
+  remount: { jsx: HOLD_STAGE.replace('KEY', "key={frame >= 2.5 ? 'b' : 'a'}"), opaque: true, own: true },
+  // The 3D tree leaves at frame 3: the page then has nothing to average (no_canvas), after it averaged frames 0 to 2.
+  gone: {
+    own: true, opaque: true,
+    jsx: `export default function Stage({ frame }) {
+  return frame >= 3 ? <div style={{ position: 'absolute', inset: 0, background: '#203040' }} /> : (
+    <Canvas frameloop="never" flat style={{ position: 'absolute', inset: 0 }} camera={{ position: [0, 0, 5], fov: 50 }}
+      gl={{ preserveDrawingBuffer: true, antialias: true, alpha: false }}>
+      <FrameBridge />
+      <color attach="background" args={['#203040']} />
+      <mesh position={[-2.5 + 0.5 * frame, 0, 0]}><boxGeometry args={[0.9, 0.9, 0.9]} /><meshBasicMaterial color="#ffcc33" toneMapped={false} /></mesh>
+    </Canvas>
+  )
+}
+function FrameBridge() { useThreeFrame(); return null }
+`,
+  },
 }
 
 let base
@@ -72,6 +114,7 @@ before(async () => {
     writeFileSync(componentPath, c.jsx)
     bundles[name] = await bundleComponent({
       componentPath, props: {}, fps: FPS, durationFrames: FRAMES, width: W, height: H, opaque: c.opaque, projectDir: projDir,
+      ...(c.keyframes ? { keyframes: c.keyframes } : {}),
     })
     bundles[name].componentPath = componentPath
   }
@@ -91,6 +134,7 @@ function job(name, { subframes, scene3d }) {
     frameCount: FRAMES, startSeconds: 0, endSeconds: FRAMES / FPS,
     outputPath: join(base, 'segs', `${id}.mkv`), boundary: b.boundary, needsGoogleFonts: b.needsGoogleFonts,
     opaque: CASES[name].opaque, subframes, ...(scene3d ? { scene3d: true } : {}),
+    ...(CASES[name].keyframes ? { keyframes: CASES[name].keyframes } : {}),
     frameStart: 0, frameEnd: FRAMES, chunkIndex: 0, totalChunks: 1,
   }
 }
@@ -153,7 +197,7 @@ function diff(a, b) {
   return { max, pixels }
 }
 
-for (const name of Object.keys(CASES)) {
+for (const name of Object.keys(CASES).filter(n => !CASES[n].own)) {
   test(`${name}: the page's average matches the sub-frame captures, frame for frame`, { timeout: 240_000 }, async () => {
     const calls = []
     const worker = await R.launchWorkerBrowser({})
@@ -176,7 +220,7 @@ for (const name of Object.keys(CASES)) {
     for (let f = 0; f < FRAMES; f++) {
       const d = diff(inPage[f], encoded[f])
       report.push(`${f}:${d.max}/${d.pixels}px`)
-      assert.ok(d.max <= TOL, `frame ${f}: the page's average is ${d.max} from the sub-frame captures' (tolerance ${TOL}); ${report.join(' ')}`)
+      assert.ok(d.max <= (CASES[name].tol ?? TOL), `frame ${f}: the page's average is ${d.max} from the sub-frame captures' (tolerance ${CASES[name].tol ?? TOL}); ${report.join(' ')}`)
     }
     console.log(`[${name}] in-page vs sub-frame captures, frame:max/pixels differing: ${report.join(' ')}`)
 
@@ -204,4 +248,51 @@ test('a page that cannot average falls back to the sub-frame captures, the same 
   assert.deepEqual(calls.map(c => c.n), [0], 'asked once, at the chunk\'s first frame, and not again')
   assert.equal(fallback.length, FRAMES)
   for (let f = 0; f < FRAMES; f++) assert.ok(Buffer.compare(fallback[f], encoded[f]) === 0, `frame ${f}`)
+})
+
+test('a keyframed slide is drawn outside the canvas, so its chunk is captured per sub-frame, the same bytes as the 2D path', { timeout: 240_000 }, async () => {
+  const calls = []
+  const worker = await R.launchWorkerBrowser({})
+  recording(worker, calls)
+  let kept, encoded
+  try {
+    kept = await render(worker, job('slide', { subframes: N, scene3d: true }))
+    encoded = await render(worker, job('slide', { subframes: N, scene3d: false }))
+  } finally {
+    await worker.close().catch(() => {})
+  }
+  assert.equal(calls.length, 0, 'the page averaged nothing')
+  assert.equal(kept.length, FRAMES)
+  for (let f = 0; f < FRAMES; f++) assert.ok(Buffer.compare(kept[f], encoded[f]) === 0, `frame ${f}`)
+})
+
+test('a canvas remounted between sub-frames still renders every frame', { timeout: 240_000 }, async () => {
+  const calls = []
+  const worker = await R.launchWorkerBrowser({})
+  recording(worker, calls)
+  let frames
+  try {
+    frames = await render(worker, job('remount', { subframes: N, scene3d: true }))
+  } finally {
+    await worker.close().catch(() => {})
+  }
+  assert.equal(frames.length, FRAMES, `${FRAMES}/${FRAMES} frames`)
+  assert.deepEqual(calls.map(c => c.n), Array.from({ length: FRAMES }, (_, f) => f), 'no frame needed a retry')
+})
+
+test('a page that cannot average a later frame restarts the chunk per sub-frame', { timeout: 240_000 }, async () => {
+  const calls = []
+  const worker = await R.launchWorkerBrowser({})
+  recording(worker, calls)
+  const progress = []
+  let frames
+  try {
+    const { webmPath } = await R.renderChunk(worker, job('gone', { subframes: N, scene3d: true }), { onFrame: () => progress.push(1) })
+    frames = framesOf(webmPath)
+  } finally {
+    await worker.close().catch(() => {})
+  }
+  assert.equal(frames.length, FRAMES, `${FRAMES}/${FRAMES} frames`)
+  assert.deepEqual(calls.map(c => c.n), [0, 1, 2, 3], 'averaged until the frame it could not, then every sub-frame')
+  assert.equal(progress.length, FRAMES, 'progress is not counted twice')
 })

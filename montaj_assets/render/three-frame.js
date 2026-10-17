@@ -53,7 +53,8 @@ export function isThreeFrameBlank(err) {
  * The page cannot average a frame's sub-frames itself (three-bridge.js
  * averageThreeFrames names why: no 3D canvas, a canvas that also draws itself,
  * no float render target). renderer.js then captures each sub-frame, as for a
- * 2D overlay, when this comes at its chunk's first frame.
+ * 2D overlay: from the chunk's first frame when it comes there, and from a
+ * restart of the chunk when it comes at a later frame (renderChunk).
  *
  * @param {{ overlay: string, frame: number, reason: string }} p
  */

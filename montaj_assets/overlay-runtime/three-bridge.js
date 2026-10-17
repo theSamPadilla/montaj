@@ -225,7 +225,7 @@ export function threeCaptureCheck() {
 // not to each sub-frame). A page that cannot be averaged says so up front
 // ({ unsupported }), and the renderer captures every sub-frame as before.
 
-let pass = null // the averageThreeFrames in progress: { id, count, canvases, unsupported, broken }
+let pass = null // the averageThreeFrames in progress: { id, canvases, unsupported, broken }
 let passes = 0
 
 // Adds what `canvas` just drew to its accumulator, made on its first use and
@@ -254,14 +254,14 @@ function addToPass(canvas, entry) {
     pass.canvases.set(canvas, entry)
   } catch (err) {
     entry.blur = null
-    pass.unsupported ??= err?.reason ?? 'no_float_target'
+    pass.unsupported ??= err?.reason ?? `error: ${err?.message ?? err}`
   }
 }
 
-// Draws each canvas's average onto it. Null once all are drawn, else why the
-// pass cannot stand (the frame is then set again): a canvas that lost its
-// context or was resized since its first sub-frame, or one drawn for fewer
-// than every sub-frame (a Canvas remounted mid-frame).
+// Draws each canvas's average onto it. Null once all are drawn, else why the pass cannot stand (the frame is then
+// set again): a canvas that lost its context or was resized since its first sub-frame. A canvas drawn for only some
+// sub-frames (mounted mid-frame: a cut, a font remount) shows the average of those; a retry would mount it at the
+// same sub-frame and fail the render.
 function presentPass() {
   if (pass.broken) return pass.broken
   const shown = []
@@ -270,7 +270,6 @@ function presentPass() {
     const acc = entry.blur
     if (!acc || acc.pass !== pass.id || acc.losses !== entry.losses || entry.gl.isContextLost()) return 'context_lost'
     if (acc.gpu.width !== entry.gl.drawingBufferWidth || acc.gpu.height !== entry.gl.drawingBufferHeight) return 'resized'
-    if (acc.count !== pass.count) return 'subframes_missed'
     shown.push(acc)
   }
   for (const acc of shown) acc.gpu.present(acc.count)
@@ -293,12 +292,11 @@ function presentPass() {
  * @param {(t: number) => Promise<{ canvases: number, blank: string|null } | null>} setFrame
  */
 export async function averageThreeFrames(times, setFrame) {
-  pass = { id: ++passes, count: 0, canvases: new Map(), unsupported: null, broken: null }
+  pass = { id: ++passes, canvases: new Map(), unsupported: null, broken: null }
   try {
     let three = null
     for (const t of times) {
       three = await setFrame(t)
-      pass.count++
       if (!three) return { unsupported: 'no_canvas' }
       if (pass.unsupported) return { unsupported: pass.unsupported }
       if (three.blank) return { ...three, frame: t }

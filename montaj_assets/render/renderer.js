@@ -19,6 +19,7 @@ import { childKilledError, isChildKilled, syncResultError, CHILD_KILLED_PHASES }
 import { adaptiveChunkSize, workerCap } from './chunk-plan.js'
 import { toFileHref } from './file-url.js'
 import { subframeTimes, motionBlurFilter } from './motion-blur.js'
+import { geometryAt } from '@bycrux/timeline-core'
 import { overlayPageLaunchOptions, installPageGuard } from './page-guard.js'
 import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
 import { captureWithThree, isThreeBlurUnsupported } from './three-frame.js'
@@ -520,6 +521,21 @@ export function screenshotOptionsFor(job) {
  * the chunk's ffmpeg and removes its partial MKV before the chunk fails.
  */
 export async function renderChunk(worker, job, { onFrame } = {}) {
+  // §377: a 3D page that averaged its chunk's first frame but cannot average a later one has the chunk
+  // captured again from the start, every sub-frame: its encode then reads n captures per frame.
+  let reported = 0
+  try {
+    return await renderChunkOnce(worker, job, { onFrame: () => { reported++; onFrame?.() } })
+  } catch (err) {
+    if (!isThreeBlurUnsupported(err) || !blursInPage(job)) throw err
+    noteBlurFallback(job, err.reason)
+    // The frames already reported are not reported twice.
+    let skip = reported
+    return renderChunkOnce(worker, { ...job, scene3d: false }, { onFrame: () => { if (skip > 0) skip--; else onFrame?.() } })
+  }
+}
+
+async function renderChunkOnce(worker, job, { onFrame } = {}) {
   const { id, chunkIndex, outputPath } = job
   const chunkMkv = outputPath.replace(/\.\w+$/, '') + `-chunk-${chunkIndex}.mkv`
   mkdirSync(dirname(chunkMkv), { recursive: true })
@@ -540,7 +556,10 @@ export async function renderChunk(worker, job, { onFrame } = {}) {
     sink = frameSink(spawnAsync(FFMPEG, chunkEncodeArgs(job, chunkMkv, { blurInPage: inPage }), what, 'overlay-encode'), what)
     return sink
   }
-  if (!blursInPage(job)) sinkFor(false)
+  if (!blursInPage(job)) {
+    sinkFor(false)
+    if (job.scene3d === true && (job.subframes ?? 1) > 1) noteBlurFallback(job, KEYFRAMES_MOVE)
+  }
   try {
     // PL83: a Chrome the system kills mid-capture, or a page whose renderer
     // dies, fails the chunk at once as child_killed, naming the phase.
@@ -566,9 +585,53 @@ export async function renderChunk(worker, job, { onFrame } = {}) {
  * averageThreeFrames), where N screenshots per frame made a long 3D overlay
  * the slowest thing in a render. Everything else captures every sub-frame and
  * the encode averages them (motionBlurFilter).
+ *
+ * A 3D item's keyframed move or fade is drawn outside the canvas (bundle.js
+ * __bakeStyle, a wrapper div), which the GPU average does not see, so a chunk
+ * where a keyframed prop changes within a frame is captured per sub-frame, as
+ * before (keyframesSteady). An item with no keyframes, or one whose keyframes
+ * hold still through every frame of the chunk (a 0/1 visibility window), is
+ * averaged in the page.
  */
 export function blursInPage(job) {
-  return job.scene3d === true && (job.subframes ?? 1) > 1
+  return job.scene3d === true && (job.subframes ?? 1) > 1 && keyframesSteady(job)
+}
+
+const KEYFRAMES_MOVE = 'keyframes change within a frame'
+const STEADY_EPS = 1e-9
+const steadyCache = new WeakMap()
+
+/**
+ * Whether, for every output frame of the chunk (frameStart to frameEnd), the
+ * item's keyframed geometry has the same value at all of that frame's sub-frame
+ * times (subframeTimes). Evaluated with `geometryAt` from @bycrux/timeline-core
+ * at `t / fps`, exactly what the page's __bakeStyle calls (bundle.js) with the
+ * time __setFrame gets, so the check and the page cannot disagree. Equal means
+ * exactly, or within 1e-9.
+ */
+export function keyframesSteady(job) {
+  if (!job.keyframes?.length) return true
+  if (steadyCache.has(job)) return steadyCache.get(job)
+  const { fps, subframes = 1, frameStart = 0 } = job
+  const frameEnd = job.frameEnd ?? job.frameCount ?? frameStart
+  // The item as overlayBakeInputs (render.js) hands the page's bake.
+  const item = {
+    offsetX: job.offsetX ?? 0, offsetY: job.offsetY ?? 0, scale: job.scale ?? 1,
+    scaleX: job.scaleX, scaleY: job.scaleY, rotation: job.rotation ?? 0, opacity: job.opacity ?? 1,
+    keyframes: job.keyframes,
+  }
+  const PROPS = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 'opacity']
+  let steady = true
+  outer: for (let frame = frameStart; frame < frameEnd; frame++) {
+    const times = subframeTimes(frame, subframes)
+    const first = geometryAt(item, 'overlay', times[0] / fps)
+    for (let i = 1; i < times.length; i++) {
+      const g = geometryAt(item, 'overlay', times[i] / fps)
+      if (PROPS.some(k => !(g[k] === first[k] || Math.abs(g[k] - first[k]) <= STEADY_EPS))) { steady = false; break outer }
+    }
+  }
+  steadyCache.set(job, steady)
+  return steady
 }
 
 /**
@@ -703,173 +766,179 @@ async function captureChunkFrames(worker, job, sinkFor, at, onFrame) {
   const { id, htmlPath, width, height, frameStart, frameEnd, captureScale, subframes = 1 } = job
 
   const page = worker.watchPage(await worker.browser.newPage())
-  // deviceScaleFactor supersamples the capture: the viewport reported to CSS
-  // stays width × height, so overlay JSX authored in design pixels lays out
-  // identically, while the screenshot comes back at `captureScale`× device
-  // pixels. The factor is derived from the output resolution (captureScaleFor,
-  // render.js) rather than fixed at 2, so the capture lands on the OUTPUT's own
-  // pixel grid — an identity at 4K, native (1×) at 1080p — instead of always
-  // capturing at 4K's scale and forcing compose to downscale it for every
-  // smaller output. Two cases still capture off the output grid, both
-  // deliberately: a sub-1080 output (clamped to 1, so compose scales down from
-  // the design canvas) and a project with no `settings.resolution` at all,
-  // where the true output size isn't known this early and captureScaleFor
-  // returns 2 to preserve today's behaviour rather than guess.
-  // This is deliberately NOT done by raising the design canvas
-  // — that changes the CSS coordinate space and shrinks every overlay (see
-  // SHORT_EDGE_TARGET's comment in render.js). `?? 2` is the pre-existing
-  // fixed behavior, kept as a fallback for any caller that doesn't stamp
-  // `captureScale` onto its job.
-  await page.setViewport({ width, height, deviceScaleFactor: captureScale ?? 2 })
+  // A failed page is closed too, so a restarted 3D chunk does not hold two scenes' GPU memory in one browser.
+  try {
+    // deviceScaleFactor supersamples the capture: the viewport reported to CSS
+    // stays width × height, so overlay JSX authored in design pixels lays out
+    // identically, while the screenshot comes back at `captureScale`× device
+    // pixels. The factor is derived from the output resolution (captureScaleFor,
+    // render.js) rather than fixed at 2, so the capture lands on the OUTPUT's own
+    // pixel grid — an identity at 4K, native (1×) at 1080p — instead of always
+    // capturing at 4K's scale and forcing compose to downscale it for every
+    // smaller output. Two cases still capture off the output grid, both
+    // deliberately: a sub-1080 output (clamped to 1, so compose scales down from
+    // the design canvas) and a project with no `settings.resolution` at all,
+    // where the true output size isn't known this early and captureScaleFor
+    // returns 2 to preserve today's behaviour rather than guess.
+    // This is deliberately NOT done by raising the design canvas
+    // — that changes the CSS coordinate space and shrinks every overlay (see
+    // SHORT_EDGE_TARGET's comment in render.js). `?? 2` is the pre-existing
+    // fixed behavior, kept as a fallback for any caller that doesn't stamp
+    // `captureScale` onto its job.
+    await page.setViewport({ width, height, deviceScaleFactor: captureScale ?? 2 })
 
-  // Capture page-level JS errors so we can surface them in the render log
-  const pageErrors = []
-  page.on('pageerror', err => pageErrors.push(err.message))
-  // A request the page guard aborted is logged by the guard; Chromium's own
-  // console line for it is not a page error.
-  let isBlockNoise = () => false
-  // §140: a family Google refuses, or a font the network cannot fetch, is
-  // named in the render log. The render never failed on it (MEASURED: page
-  // errors here only explain a page that did not start), it drew the overlay
-  // in its fallback font without a word; now it says which family.
-  const fontFailures = new Set()
-  page.on('console', msg => {
-    if (msg.type() !== 'error' || isBlockNoise(msg)) return
-    const font = fontLoadFailure({ type: msg.type(), text: msg.text(), url: msg.location()?.url })
-    if (!font) { pageErrors.push(msg.text()); return }
-    if (!fontFailures.has(font)) { fontFailures.add(font); console.error(fontFailureWarning([font])) }
-  })
-
-  // The page guard (page-guard.js) decides every request: a read outside the
-  // boundary or a request off the machine is aborted, a props URL is served
-  // from the cache. Images are drawn as authored. In an HDR project the whole
-  // capture is mapped into the project's colour space at composite time
-  // (encode-segment.js, hdr-graphics.js), so an <img> is converted with the CSS
-  // around it, once.
-  const guard = await installPageGuard(page, {
-    boundary:         job.boundary,
-    propsCache:       job.propsCache,
-    needsGoogleFonts: job.needsGoogleFonts,
-  })
-  isBlockNoise = guard.isBlockNoise
-
-  // Load the bundled component page (file:// URL).
-  //
-  // Use 'networkidle0' (not 'load'). The shim's __waitForFonts() inside
-  // __setFrame relies on document.fonts.ready, which only reflects woff2
-  // fetches that are *in flight at the time of access*. Google Fonts woff2
-  // fetches are deferred by Chromium until something in the rendered tree
-  // actually uses the font — i.e. until React has committed its initial
-  // mount. With 'load', the screenshot loop can start (and call __setFrame)
-  // before that commit has flushed, so document.fonts.ready resolves
-  // immediately and the first frames paint with the CSS fallback font
-  // (which has wider metrics — text overflows the viewport).
-  //
-  // 'networkidle0' gives Chromium 500ms of network silence to complete the
-  // CSS link load → font-face registration → react commit → woff2 fetch
-  // → fonts.ready cascade before we touch the page. The interceptor's
-  // request.respond() calls do interact with the network-idle heuristic
-  // but only on file:// image fetches we replace — remote font fetches
-  // (the load-bearing case for networkidle0) go through request.continue()
-  // and are unaffected.
-  await page.goto(toFileHref(htmlPath), { waitUntil: 'networkidle0' })
-
-  // For transparent overlays, force-clear any background the OS/browser might add.
-  // For opaque overlays, skip this — the JSX root's CSS controls the background.
-  if (captureOptionsFor(job).omitBackground) {
-    await page.evaluate(() => {
-      document.documentElement.style.background = 'transparent'
-      document.body.style.background = 'transparent'
+    // Capture page-level JS errors so we can surface them in the render log
+    const pageErrors = []
+    page.on('pageerror', err => pageErrors.push(err.message))
+    // A request the page guard aborted is logged by the guard; Chromium's own
+    // console line for it is not a page error.
+    let isBlockNoise = () => false
+    // §140: a family Google refuses, or a font the network cannot fetch, is
+    // named in the render log. The render never failed on it (MEASURED: page
+    // errors here only explain a page that did not start), it drew the overlay
+    // in its fallback font without a word; now it says which family.
+    const fontFailures = new Set()
+    page.on('console', msg => {
+      if (msg.type() !== 'error' || isBlockNoise(msg)) return
+      const font = fontLoadFailure({ type: msg.type(), text: msg.text(), url: msg.location()?.url })
+      if (!font) { pageErrors.push(msg.text()); return }
+      if (!fontFailures.has(font)) { fontFailures.add(font); console.error(fontFailureWarning([font])) }
     })
-  }
 
-  // Verify the component mounted successfully
-  const ready = await page.evaluate(() => typeof window.__setFrame === 'function')
-  if (!ready) {
-    const errDetail = pageErrors.length ? pageErrors.join(' | ') : 'no JS errors captured'
-    throw new Error(`window.__setFrame not initialized for segment ${id}: ${errDetail}`)
-  }
+    // The page guard (page-guard.js) decides every request: a read outside the
+    // boundary or a request off the machine is aborted, a props URL is served
+    // from the cache. Images are drawn as authored. In an HDR project the whole
+    // capture is mapped into the project's colour space at composite time
+    // (encode-segment.js, hdr-graphics.js), so an <img> is converted with the CSS
+    // around it, once.
+    const guard = await installPageGuard(page, {
+      boundary:         job.boundary,
+      propsCache:       job.propsCache,
+      needsGoogleFonts: job.needsGoogleFonts,
+    })
+    isBlockNoise = guard.isBlockNoise
 
-  // Screenshot each frame
-  at.phase = 'overlay-capture'
-  const totalFrames = frameEnd - frameStart
-  const reportEvery = Math.max(1, Math.floor(totalFrames / 20))
-  const renderStartMs = Date.now()
-  // Everything after the commit of frame (or sub-frame) `f`, up to and
-  // including its screenshot.
-  const captureAt = (f) => async () => {
-    // 2. Wait until the DOM attribute confirms this exact frame has been committed.
-    //    This is more reliable than rAF alone — rAF in headless Chrome can fire
-    //    before the compositor has flushed, producing stale screenshots.
-    await page.waitForFunction(
-      (f) => document.documentElement.dataset.renderedFrame === String(f),
-      { timeout: 10000 },
-      f,
-    )
-    // 2b. An image the props name with no extension is fetched when the page
-    //     asks for it, so wait for it to arrive before capturing this frame
-    //     (page-guard.js settleOnDemand; at once when the props name none).
-    await guard.settleOnDemand()
-    // 2c. And for every image on the page: an overlay that mounts one only
-    //     from a later frame inserts it in the commit just made, on a fresh
-    //     page at the first frame of every chunk (page-guard.js settleImages).
-    //     Capped; past the cap the frame is captured anyway and the image named.
-    await guard.settleImages()
-    // 3. Double rAF: first fires after layout+paint, second fires after the result
-    //    has been composited — guarantees the screenshot sees the current frame.
-    await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
-    // 4. Into the chunk's ffmpeg (§131): the same bytes a `path`
-    //    screenshot wrote to disk. A PNG, or a JPEG for an opaque capture
-    //    of an SDR master (§284: screenshotOptionsFor).
-    return page.screenshot(screenshotOptionsFor(job))
-  }
-  const threeOpts = { overlay: overlayName(job), log, pageErrors }
-  // §377: a 3D overlay under motion blur averages each frame's sub-frames in
-  // its page and is captured once per frame. A page that cannot says so at the
-  // chunk's first frame, before its encode starts, and the chunk captures every
-  // sub-frame instead. Later, with the encode reading one capture per frame,
-  // that is an error, never a frame averaged some other way.
-  let inPage = blursInPage(job)
-  for (let frame = frameStart; frame < frameEnd; frame++) {
-    const localIdx = frame - frameStart
-    // With motion blur on, each output frame is `subframes` sub-frames at
-    // f + i/subframes (subframeTimes).
-    const times = subframeTimes(frame, subframes)
-    if (inPage) {
-      try {
-        // 1. The page sets and draws every sub-frame, draws their average onto
-        //    its 3D canvases and stamps the frame on <html>; one capture. A
-        //    sub-frame that did not draw retries the frame (three-frame.js).
-        const png = await captureWithThree(page, frame, captureAt(frame), { ...threeOpts, subframes: times })
-        await sinkFor(true).write(png)
-      } catch (err) {
-        if (!isThreeBlurUnsupported(err) || frame !== frameStart) throw err
-        inPage = false
-        noteBlurFallback(job, err.reason)
+    // Load the bundled component page (file:// URL).
+    //
+    // Use 'networkidle0' (not 'load'). The shim's __waitForFonts() inside
+    // __setFrame relies on document.fonts.ready, which only reflects woff2
+    // fetches that are *in flight at the time of access*. Google Fonts woff2
+    // fetches are deferred by Chromium until something in the rendered tree
+    // actually uses the font — i.e. until React has committed its initial
+    // mount. With 'load', the screenshot loop can start (and call __setFrame)
+    // before that commit has flushed, so document.fonts.ready resolves
+    // immediately and the first frames paint with the CSS fallback font
+    // (which has wider metrics — text overflows the viewport).
+    //
+    // 'networkidle0' gives Chromium 500ms of network silence to complete the
+    // CSS link load → font-face registration → react commit → woff2 fetch
+    // → fonts.ready cascade before we touch the page. The interceptor's
+    // request.respond() calls do interact with the network-idle heuristic
+    // but only on file:// image fetches we replace — remote font fetches
+    // (the load-bearing case for networkidle0) go through request.continue()
+    // and are unaffected.
+    await page.goto(toFileHref(htmlPath), { waitUntil: 'networkidle0' })
+
+    // For transparent overlays, force-clear any background the OS/browser might add.
+    // For opaque overlays, skip this — the JSX root's CSS controls the background.
+    if (captureOptionsFor(job).omitBackground) {
+      await page.evaluate(() => {
+        document.documentElement.style.background = 'transparent'
+        document.body.style.background = 'transparent'
+      })
+    }
+
+    // Verify the component mounted successfully
+    const ready = await page.evaluate(() => typeof window.__setFrame === 'function')
+    if (!ready) {
+      const errDetail = pageErrors.length ? pageErrors.join(' | ') : 'no JS errors captured'
+      throw new Error(`window.__setFrame not initialized for segment ${id}: ${errDetail}`)
+    }
+
+    // Screenshot each frame
+    at.phase = 'overlay-capture'
+    const totalFrames = frameEnd - frameStart
+    const reportEvery = Math.max(1, Math.floor(totalFrames / 20))
+    const renderStartMs = Date.now()
+    // Everything after the commit of frame (or sub-frame) `f`, up to and
+    // including its screenshot.
+    const captureAt = (f) => async () => {
+      // 2. Wait until the DOM attribute confirms this exact frame has been committed.
+      //    This is more reliable than rAF alone — rAF in headless Chrome can fire
+      //    before the compositor has flushed, producing stale screenshots.
+      await page.waitForFunction(
+        (f) => document.documentElement.dataset.renderedFrame === String(f),
+        { timeout: 10000 },
+        f,
+      )
+      // 2b. An image the props name with no extension is fetched when the page
+      //     asks for it, so wait for it to arrive before capturing this frame
+      //     (page-guard.js settleOnDemand; at once when the props name none).
+      await guard.settleOnDemand()
+      // 2c. And for every image on the page: an overlay that mounts one only
+      //     from a later frame inserts it in the commit just made, on a fresh
+      //     page at the first frame of every chunk (page-guard.js settleImages).
+      //     Capped; past the cap the frame is captured anyway and the image named.
+      await guard.settleImages()
+      // 3. Double rAF: first fires after layout+paint, second fires after the result
+      //    has been composited — guarantees the screenshot sees the current frame.
+      await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
+      // 4. Into the chunk's ffmpeg (§131): the same bytes a `path`
+      //    screenshot wrote to disk. A PNG, or a JPEG for an opaque capture
+      //    of an SDR master (§284: screenshotOptionsFor).
+      return page.screenshot(screenshotOptionsFor(job))
+    }
+    const threeOpts = { overlay: overlayName(job), log, pageErrors }
+    // §377: a 3D overlay under motion blur averages each frame's sub-frames in
+    // its page and is captured once per frame. A page that cannot says so at the
+    // chunk's first frame, before its encode starts, and the chunk captures every
+    // sub-frame instead. A later frame that cannot be averaged (a canvas that
+    // draws itself mounting after the first frame, a context lost) throws
+    // three_blur_unsupported, and renderChunk captures the whole chunk again, every
+    // sub-frame: the encode already reads one capture per frame, so a frame
+    // averaged some other way would not do.
+    let inPage = blursInPage(job)
+    for (let frame = frameStart; frame < frameEnd; frame++) {
+      const localIdx = frame - frameStart
+      // With motion blur on, each output frame is `subframes` sub-frames at
+      // f + i/subframes (subframeTimes).
+      const times = subframeTimes(frame, subframes)
+      if (inPage) {
+        try {
+          // 1. The page sets and draws every sub-frame, draws their average onto
+          //    its 3D canvases and stamps the frame on <html>; one capture. A
+          //    sub-frame that did not draw retries the frame (three-frame.js).
+          const png = await captureWithThree(page, frame, captureAt(frame), { ...threeOpts, subframes: times })
+          await sinkFor(true).write(png)
+        } catch (err) {
+          if (!isThreeBlurUnsupported(err) || frame !== frameStart) throw err
+          inPage = false
+          noteBlurFallback(job, err.reason)
+        }
+      }
+      if (!inPage) {
+        // Each sub-frame is its own screenshot, written in order; the encode
+        // averages each group.
+        for (let s = 0; s < times.length; s++) {
+          const t = times[s]
+          // 1. Tell React to update to this frame (flushSync commits DOM synchronously,
+          //    draws any 3D canvas and stamps data-rendered-frame on <html> so we can
+          //    verify below). A 3D canvas that did not draw the frame, before the
+          //    capture or by the end of it, has the frame set and captured again,
+          //    then fails the chunk as three_frame_blank (three-frame.js).
+          const png = await captureWithThree(page, t, captureAt(t), threeOpts)
+          await sinkFor(false).write(png)
+        }
+      }
+      onFrame?.()
+      if ((localIdx + 1) % reportEvery === 0 || localIdx + 1 === totalFrames) {
+        log(progressBar(id, localIdx + 1, totalFrames, renderStartMs))
       }
     }
-    if (!inPage) {
-      // Each sub-frame is its own screenshot, written in order; the encode
-      // averages each group.
-      for (let s = 0; s < times.length; s++) {
-        const t = times[s]
-        // 1. Tell React to update to this frame (flushSync commits DOM synchronously,
-        //    draws any 3D canvas and stamps data-rendered-frame on <html> so we can
-        //    verify below). A 3D canvas that did not draw the frame, before the
-        //    capture or by the end of it, has the frame set and captured again,
-        //    then fails the chunk as three_frame_blank (three-frame.js).
-        const png = await captureWithThree(page, t, captureAt(t), threeOpts)
-        await sinkFor(false).write(png)
-      }
-    }
-    onFrame?.()
-    if ((localIdx + 1) % reportEvery === 0 || localIdx + 1 === totalFrames) {
-      log(progressBar(id, localIdx + 1, totalFrames, renderStartMs))
-    }
+    return guard
+  } finally {
+    await page.close().catch(() => {})
   }
-
-  await page.close()
-  return guard
 }
 
 /** How a three_frame_blank error names the chunk's overlay: its file and its segment. */
