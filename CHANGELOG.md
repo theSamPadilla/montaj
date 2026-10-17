@@ -8,6 +8,7 @@
 - **Added (steps): `track_camera`.** The camera that filmed a clip as Montaj camera keys (lens, location, target and roll per sampled frame), by structure from motion. Blender axes on the table or floor the clip looks at, chosen automatically or by pointing at it (`known.plane`). Metric from a known height or distance. Needs the `vision` extra; not on Intel Macs yet. (`steps/media/track_camera.{py,json}`, `pyproject.toml`, `docs/CLI.md`)
 - **Added (steps): `track_pose` (`kind: hand`).** 21 hand landmarks per frame in source pixels and metres, tracked frame to frame and smoothed, on onnxruntime. Google's MediaPipe hand models download on first use (about 8 MB) and are converted to ONNX on the device. (`steps/media/track_pose.{py,json}`, `lib/pose/hands.py`, `NOTICE`)
 - **Added (steps): `track_pose` `kind: body`.** 33 body landmarks of one person per frame, in source pixels with each landmark's visibility, and in metres, tracked frame to frame and smoothed, on onnxruntime. Google's MediaPipe pose landmarker (full) model downloads on first use (about 9 MB) and is converted to ONNX on the device. (`steps/media/track_pose.{py,json}`, `lib/pose/body.py`, `lib/pose/regions.py`, `lib/pose/tflite.py`, `NOTICE`)
+- **Fixed (render, Windows): stopping a stalled conform also stops its ffmpeg.** On Windows only python was killed, which left its ffmpeg encoding; it now uses `taskkill /T /F`. (`render/render.js` `killNormalizeTree`, `render/test/normalize-stall.test.mjs`)
 
 ## v5.35.2
 

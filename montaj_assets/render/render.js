@@ -2221,9 +2221,13 @@ function descendantPids(root) {
  * file it leaves. By pid, not by process group: the conform stays in render.js's own
  * group so serve's cancel (which kills that group) still reaches it.
  */
-function killNormalizeTree(proc, out) {
-  if (process.platform === 'win32') {
-    try { proc.kill('SIGKILL') } catch { /* already gone */ }
+function killNormalizeTree(proc, out, { platform = process.platform, run = spawnSync } = {}) {
+  if (platform === 'win32') {
+    // taskkill /T walks the process tree, so python's ffmpeg goes with it.
+    const r = run('taskkill', ['/T', '/F', '/PID', String(proc.pid)], { timeout: 10_000 })
+    if (r?.error || (r?.status ?? 0) !== 0) {
+      try { proc.kill('SIGKILL') } catch { /* already gone */ }
+    }
   } else {
     const pids = descendantPids(proc.pid)
     for (const pid of [...pids, proc.pid]) {
@@ -2443,7 +2447,7 @@ function fail(code, message, extra = {}) {
   process.exit(1)
 }
 
-export { normalizeIfNeeded, failLine, stampSourceProbes, getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
+export { normalizeIfNeeded, killNormalizeTree, failLine, stampSourceProbes, getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
          EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport, captureScaleFor,
          // §213: the disk estimate's planning, for its tests.
          resolveEstimateOverrides, planVideoItemWrites, isConformant, normalizedMasterCache, estimateMain,

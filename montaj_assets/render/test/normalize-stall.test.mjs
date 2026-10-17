@@ -43,7 +43,7 @@ if (mode === 'grow') {
 
 process.env.MONTAJ_PYTHON = STUB
 process.env.MONTAJ_NORMALIZE_STALL_MS = '400'
-const { normalizeIfNeeded, buildNormalizedOutputPath } = await import('../render.js')
+const { normalizeIfNeeded, killNormalizeTree, buildNormalizedOutputPath } = await import('../render.js')
 
 let n = 0
 function setup(mode) {
@@ -106,4 +106,16 @@ await normalizeIfNeeded(${JSON.stringify(src)}, 'sdr_bt709', false)`)
   process.kill(-host.pid, 'SIGTERM')
   await new Promise((r) => setTimeout(r, 500))
   assert.equal(alive(child), false, 'the conform\'s child did not survive the cancel')
+})
+
+test('on win32 the kill is taskkill /T /F /PID, falling back to proc.kill if taskkill fails', () => {
+  const calls = []
+  const killed = []
+  const proc = { pid: 4242, kill: (sig) => killed.push(sig) }
+  killNormalizeTree(proc, join(WORK, 'out.mp4'), { platform: 'win32', run: (cmd, args) => { calls.push([cmd, args]); return { status: 0 } } })
+  assert.deepEqual(calls, [['taskkill', ['/T', '/F', '/PID', '4242']]])
+  assert.deepEqual(killed, [], 'taskkill reached the tree, so no second kill')
+
+  killNormalizeTree(proc, join(WORK, 'out.mp4'), { platform: 'win32', run: () => ({ status: 128 }) })
+  assert.deepEqual(killed, ['SIGKILL'])
 })
