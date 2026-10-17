@@ -7,6 +7,11 @@
 - **Added (steps): `track_pose` (`kind: hand`).** 21 hand landmarks per frame in source pixels and metres, tracked frame to frame and smoothed, on onnxruntime. Google's MediaPipe hand models download on first use (about 8 MB) and are converted to ONNX on the device. (`steps/media/track_pose.{py,json}`, `lib/pose/hands.py`, `NOTICE`)
 - **Added (steps): `track_pose` `kind: body`.** 33 body landmarks of one person per frame, in source pixels with each landmark's visibility, and in metres, tracked frame to frame and smoothed, on onnxruntime. Google's MediaPipe pose landmarker (full) model downloads on first use (about 9 MB) and is converted to ONNX on the device. (`steps/media/track_pose.{py,json}`, `lib/pose/body.py`, `lib/pose/regions.py`, `lib/pose/tflite.py`, `NOTICE`)
 
+## v5.35.1
+
+- **Fixed (render): an export that uses one long clip several times no longer stalls at the start.** Each use of the clip started the same conform, none finished inside a fixed 10 minutes, and each timeout left its ffmpeg running. Now the uses share one conform, a conform is stopped only when its output stops growing for 2 minutes (or after 4 hours), and stopping it ends its ffmpeg and removes its temporary file. (`render/render.js` `normalizeIfNeeded`, `render/test/normalize-stall.test.mjs`)
+- Also in this release: a stopped or stalled conform's ffmpeg is ended by pid, so cancelling an export still ends it. Release notes: check-keys not run (credential rules); render suite 1777/1777 (a render-only change).
+
 ## v5.35.0
 
 - **Added (steps, render): `export_overlay_pages` writes a project's overlays and captions as web pages.** One self-contained HTML page per overlay in a folder: the overlay's own code inlined, a small player that plays it by itself at its fps and loops, a transparent background, and the files its props name copied beside it (`assets/`) with relative paths, so the folder opens anywhere. A page for an overlay that uses no icons is about 1.5 MB (the icon packages are left out; with icons it is about 8 MB). Fonts load from Google Fonts the first time a page opens. `list` shows what could be exported; `items` picks some. Re-exporting replaces a folder the step wrote; any other non-empty folder is refused (`out_exists`). `bundleComponent` takes an opt-in `stubIcons` for this; renders and samples are unchanged.

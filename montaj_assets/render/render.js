@@ -1301,7 +1301,7 @@ async function prepareVideoItems(videoItems, targetFor,
     const normalizedPath = await normalizeIfNeeded(item.src, target, tonemapped,
       { untaggedSource: item.colorTransfer === 'unknown', sdrStretch })
     // Every call, changed path or not: a normalize killed at normalizeIfNeeded's
-    // 600 s limit falls back to the unconformed source (normalizeIfNeeded logs the
+    // stall falls back to the unconformed source (normalizeIfNeeded logs the
     // failure), and this line is the one place its duration shows.
     if (timingLabel) {
       log(`${timingLabel}: normalized ${basename(item.src)} in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`)
@@ -2177,13 +2177,80 @@ function normalizedMasterCache(out, src, projectColorSpace, tonemapped, { untagg
   }
 }
 
-async function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedSource = false, sdrStretch = false } = {}) {
+// One conform per output path per render. prepareVideoItems runs items two at a
+// time, and items cut from one clip share a src and so an `out`: without this
+// each of them spawned the same encode, to the same file.
+const normalizeInflight = new Map()
+
+/** How long the conform's temporary output may stay the same size before it is called stalled. */
+const normalizeStallMs = () => Number(process.env.MONTAJ_NORMALIZE_STALL_MS) || 120_000
+/** The longest a conform may run at all, however steadily it grows. */
+const normalizeCapMs = () => Number(process.env.MONTAJ_NORMALIZE_CAP_MS) || 4 * 3600_000
+
+/** Combined size of the `${out}.tmp.*` files a conform of `out` is writing. */
+function normalizeTmpBytes(out) {
+  let total = 0
+  try {
+    const prefix = `${basename(out)}.tmp.`
+    for (const name of readdirSync(dirname(out))) {
+      if (!name.startsWith(prefix)) continue
+      try { total += statSync(join(dirname(out), name)).size } catch { /* gone: renamed or removed */ }
+    }
+  } catch { /* folder unreadable: reads as no growth */ }
+  return total
+}
+
+/** Every descendant pid of `root`, from one `ps` snapshot (POSIX). */
+function descendantPids(root) {
+  const r = spawnSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 10_000 })
+  const kids = new Map()
+  for (const line of (r.stdout || '').split('\n')) {
+    const [pid, ppid] = line.trim().split(/\s+/).map(Number)
+    if (!pid || !ppid) continue
+    if (!kids.has(ppid)) kids.set(ppid, [])
+    kids.get(ppid).push(pid)
+  }
+  const found = []
+  const queue = [root]
+  while (queue.length) for (const k of kids.get(queue.shift()) || []) { found.push(k); queue.push(k) }
+  return found
+}
+
+/**
+ * Kill the conform and everything it spawned (its ffmpeg), then remove the temporary
+ * file it leaves. By pid, not by process group: the conform stays in render.js's own
+ * group so serve's cancel (which kills that group) still reaches it.
+ */
+function killNormalizeTree(proc, out) {
+  if (process.platform === 'win32') {
+    try { proc.kill('SIGKILL') } catch { /* already gone */ }
+  } else {
+    const pids = descendantPids(proc.pid)
+    for (const pid of [...pids, proc.pid]) {
+      try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
+    }
+  }
+  try { rmSync(`${out}.tmp.${proc.pid}.mp4`, { force: true }) } catch { /* best effort */ }
+}
+
+function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedSource = false, sdrStretch = false } = {}) {
   const out = buildNormalizedOutputPath(src, projectColorSpace, tonemapped, sdrStretch)
 
   const cache = normalizedMasterCache(out, src, projectColorSpace, tonemapped, { untaggedSource })
-  if (cache === 'fresh') return out
+  if (cache === 'fresh') return Promise.resolve(out)
   if (cache === 'stale') log(`rebuilding ${basename(out)}: it was built before untagged sources were read as BT.709`)
 
+  const running = normalizeInflight.get(out)
+  if (running) return running
+  // A conform that failed stays remembered for this render: the next item on the
+  // same src falls back at once instead of paying for the same failure again.
+  const p = runNormalize(src, projectColorSpace, out)
+  normalizeInflight.set(out, p)
+  p.then((result) => { if (result !== src) normalizeInflight.delete(out) })
+  return p
+}
+
+function runNormalize(src, projectColorSpace, out) {
   return new Promise((resolve) => {
     const proc = spawn(PYTHON, [
       '-m', 'lib.normalize',
@@ -2197,20 +2264,33 @@ async function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedS
     proc.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8') })
     proc.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8') })
 
-    // Match the original 600s timeout — kill the process if it overruns
-    const timer = setTimeout(() => proc.kill('SIGKILL'), 600_000)
+    // A long clip legitimately takes far longer than any fixed limit: kill only
+    // when the temporary output has stopped growing, or past the overall cap.
+    const stallMs = normalizeStallMs()
+    const startedAt = Date.now()
+    let lastBytes = -1
+    let lastGrowthAt = startedAt
+    let killedFor = ''
+    const timer = setInterval(() => {
+      const bytes = normalizeTmpBytes(out)
+      const now = Date.now()
+      if (bytes !== lastBytes) { lastBytes = bytes; lastGrowthAt = now }
+      if (now - lastGrowthAt >= stallMs) killedFor = 'stalled'
+      else if (now - startedAt >= normalizeCapMs()) killedFor = 'ran past its limit'
+      if (killedFor) { clearInterval(timer); killNormalizeTree(proc, out) }
+    }, Math.max(20, Math.min(10_000, Math.floor(stallMs / 4))))
 
     proc.on('close', (code, signal) => {
-      clearTimeout(timer)
+      clearInterval(timer)
       // `code` is null when the process was killed by signal (e.g. our SIGKILL on
-      // the 600s timeout). The `code !== 0` check correctly treats null as failure
+      // a stall). The `code !== 0` check correctly treats null as failure
       // and falls back to src — do NOT "fix" this to `code != null && code !== 0`,
-      // which would treat a timeout-killed proc as success and resolve with stdout
+      // which would treat a killed proc as success and resolve with stdout
       // (likely empty or partial → bogus path).
       if (code !== 0) {
         // Preserve original behaviour: on failure, fall back to the source path.
         // Surface stderr to render's log so the user sees what went wrong.
-        log(`normalize of ${basename(src)} failed (${signal ? `killed by ${signal}` : `exit ${code}`}); rendering the unconformed source`)
+        log(`normalize of ${basename(src)} failed (${killedFor ? killedFor : signal ? `killed by ${signal}` : `exit ${code}`}); rendering the unconformed source`)
         if (stderr.trim()) log(`normalize stderr: ${ffmpegErrorTail(stderr)}`)
         resolve(src)
         return
@@ -2220,7 +2300,7 @@ async function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedS
     })
 
     proc.on('error', (err) => {
-      clearTimeout(timer)
+      clearInterval(timer)
       log(`normalize spawn error: ${err.message}`)
       resolve(src)
     })
@@ -2363,7 +2443,7 @@ function fail(code, message, extra = {}) {
   process.exit(1)
 }
 
-export { failLine, stampSourceProbes, getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
+export { normalizeIfNeeded, failLine, stampSourceProbes, getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
          EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport, captureScaleFor,
          // §213: the disk estimate's planning, for its tests.
          resolveEstimateOverrides, planVideoItemWrites, isConformant, normalizedMasterCache, estimateMain,
