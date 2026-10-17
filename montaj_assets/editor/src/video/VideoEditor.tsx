@@ -53,6 +53,7 @@ import CommandPalette, { type PaletteCommand } from './CommandPalette'
 import { createShuttleController } from './shuttle'
 import { useKeymap, matchesKey, matchesModAltKey, matchesModKey, matchesPlainKey, matchesRedo, matchesShiftDelete, matchesUndo } from './keymap'
 import { useReportContext } from './use-report-context'
+import PanelBoundary from './PanelBoundary'
 import { copySelection, duplicateSelection, pasteAt, pasteAttributes, type ClipboardPayload } from './clipboard-ops'
 
 // ── Layout preferences ───────────────────────────────────────────────────
@@ -3176,12 +3177,12 @@ function ReviewSurface<P extends Project>({
            one right rail. */
         <div ref={splitRef} className="flex flex-col flex-1 overflow-hidden min-h-0">
           <div ref={workAreaRef} className="flex flex-1 overflow-hidden min-h-0">
-            {leftPanel}
-            {previewRegion}
-            {propertiesPanel}
+            <PanelBoundary name="Side panel" className="shrink-0 border-r border-[var(--editor-border)] bg-[var(--editor-surface)]" style={{ width: mediaPanelWidth }}>{leftPanel}</PanelBoundary>
+            <PanelBoundary name="Preview" className="flex-1 min-h-0 bg-black !text-white">{previewRegion}</PanelBoundary>
+            <PanelBoundary name="Inspector" className="shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)]" style={{ width: railWidth }}>{propertiesPanel}</PanelBoundary>
           </div>
           {rowDivider}
-          {timelinePane}
+          <PanelBoundary name="Timeline" className="shrink-0 bg-[var(--editor-surface)]" style={{ height: timelinePaneHeight }}>{timelinePane}</PanelBoundary>
         </div>
       ) : (
       /* Classic layout — byte-for-byte the pre-media-panel editor (Hub / LP). */
@@ -3192,24 +3193,24 @@ function ReviewSurface<P extends Project>({
           takes whatever the timeline pane does not — so dragging the divider up
           trades preview area for timeline area and vice versa. */}
       <div ref={splitRef} className="flex flex-col flex-1 overflow-hidden">
-        {previewRegion}
+        <PanelBoundary name="Preview" className="flex-1 min-h-0 bg-black !text-white">{previewRegion}</PanelBoundary>
 
         {rowDivider}
 
-        {timelinePane}
+        <PanelBoundary name="Timeline" className="shrink-0 bg-[var(--editor-surface)]" style={{ height: timelinePaneHeight }}>{timelinePane}</PanelBoundary>
       </div>
 
       {/* Assets — dedicated separate column to the LEFT of the version rail
           (assetsPlacement: 'right', two distinct columns). The Montaj-local OS
           layout uses 'sidebar' instead (stacked into the version rail below).
           The host's panel manages its own scroll. */}
-      {assetsColumn}
+      <PanelBoundary name="Side panel" className="w-72 shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)]">{assetsColumn}</PanelBoundary>
 
       {/* Right rail — version history + run history slot, and (in 'sidebar'
           placement) the assets panel stacked beneath them in the SAME column.
           This is the historical Montaj-local OS layout: versions on top, assets
           right below, one column — not a separate assets column. */}
-      {rightRail}
+      <PanelBoundary name="Side panel" className="shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)]" style={{ width: railWidth }}>{rightRail}</PanelBoundary>
       </div>
 
       {/* Project media / assets — full-width region stacked BELOW the editor
