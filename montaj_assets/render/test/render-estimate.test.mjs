@@ -230,7 +230,13 @@ test('estimateMain: the estimate and the disk it would use, from a draft project
   const p = project({ settings: { resolution: [1080, 1920], fps: 30 } })
   const before = listing(p.dir)
   const r = await estimateMain(p.projectPath, { workers: 2 })
-  assert.deepEqual(Object.keys(r).sort(), ['estimate', 'volumes'])
+  assert.deepEqual(Object.keys(r).sort(), ['estimate', 'memory', 'volumes'])
+  // The worker plan: what this machine has available now, so only its shape is fixed here (renderer-memory.test.mjs has the numbers).
+  assert.deepEqual(Object.keys(r.memory).sort(), ['asked', 'availableBytes', 'limitedBy', 'perWorkerBytes', 'perWorkerKind', 'reserveBytes', 'workers'])
+  assert.equal(r.memory.asked, 2, 'the --workers asked for: 2, over an overlay and the captions')
+  assert.ok(r.memory.workers >= 1 && r.memory.workers <= 2)
+  assert.equal(r.memory.perWorkerKind, '2d')
+  assert.ok(r.memory.reserveBytes >= 4e9 && r.memory.availableBytes >= 0)
   for (const bound of ['lower', 'expected']) {
     assert.deepEqual(Object.keys(r.estimate[bound]).sort(), ['projectBytes', 'tmpBytes'])
     assert.ok(Number.isInteger(r.estimate[bound].projectBytes) && r.estimate[bound].projectBytes > 0)
