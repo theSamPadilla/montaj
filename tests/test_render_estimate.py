@@ -157,6 +157,18 @@ def test_argv_is_the_renders_argv_plus_estimate(tmp_path, monkeypatch):
     assert calls[0]["argv"] == captured["cmd"] + ["--estimate"]
 
 
+def test_the_pictures_colour_space_rides_on_the_answer(tmp_path, monkeypatch):
+    """§378: render.js says which colour the picture needs; serve passes it on for the export window."""
+    project_dir = _project(tmp_path, monkeypatch)
+    payload = {**ESTIMATE, "colorSpace": "sdr_bt709", "hdrVisible": False}
+    _spawn(monkeypatch, _EstimateProc(stdout=json.dumps(payload).encode() + b"\n"))
+    out = _estimate(project_dir)
+    assert out == {**ESTIMATE, "colorSpace": "sdr_bt709", "hdrVisible": False}
+    # An older render.js says nothing: the answer is as before.
+    _spawn(monkeypatch, _ok())
+    assert _estimate(project_dir) == ESTIMATE
+
+
 def test_writes_nothing(tmp_path, monkeypatch):
     """No output/ dir, no git snapshot, no colour-provenance heal, project.json as it was."""
     project_dir = _project(tmp_path, monkeypatch)

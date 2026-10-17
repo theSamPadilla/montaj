@@ -314,3 +314,20 @@ def test_aspect_source_survives_a_put_whose_settings_leave_it_out(client, tmp_pa
     assert c.put(f"/api/projects/{PID}", json=body).status_code == 200
     s = _disk(holder["dir"])["settings"]
     assert s["aspectSource"] == "default" and s["resolutionSource"] == "default"
+
+
+# §378: the colour space marker follows the same rule as the canvas one.
+def test_colour_space_marker_flips_to_explicit_only_when_a_save_changes_it(client, tmp_path):
+    c, holder = client
+    holder["dir"] = _setup(tmp_path, extra_settings={"colorSpace": "hdr_hlg", "colorSpaceSource": "auto"})
+    echo = {"id": PID, "settings": {"resolution": [1920, 1080], "fps": 60, "colorSpace": "hdr_hlg"}}
+    assert c.put(f"/api/projects/{PID}", json=echo).status_code == 200
+    assert _disk(holder["dir"])["settings"]["colorSpaceSource"] == "auto"
+    # a save whose settings leave the marker out keeps the stored one
+    other = {"id": PID, "settings": {"resolution": [1920, 1080], "fps": 60}}
+    assert c.put(f"/api/projects/{PID}", json=other).status_code == 200
+    assert _disk(holder["dir"])["settings"]["colorSpaceSource"] == "auto"
+    chosen = {"id": PID, "settings": {"resolution": [1920, 1080], "fps": 60, "colorSpace": "sdr_bt709"}}
+    assert c.put(f"/api/projects/{PID}", json=chosen).status_code == 200
+    s = _disk(holder["dir"])["settings"]
+    assert (s["colorSpace"], s["colorSpaceSource"]) == ("sdr_bt709", "explicit")

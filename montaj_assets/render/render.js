@@ -38,6 +38,7 @@ import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { requireValidKey, detectFromTransfer, smartDetect, isHdr, specFor, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { pMap }                           from './p-map.js'
+import { visibleVideoItems, effectiveColorSpace } from './visible-video.js'
 import { fileHasAudio, probeVideoGeometry } from './encode-segment.js'
 import { probeColorTransfer }             from './derive-sdr.js'
 import { sdrLayerFor, gradeKeyFor, probeMedia, defaultDeps } from './sdr-layer.js'
@@ -696,7 +697,8 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   // codec/pix_fmt, and per-item conversion filter. See resolveProjectColorSpace.
   // A smart-detected key is persisted back to project.json so subsequent
   // renders skip the detection step.
-  const { colorSpace: projectColorSpace, detectedFrom } = resolveProjectColorSpace(settings, videoItems)
+  const { colorSpace: projectColorSpace, detectedFrom, downgraded } = resolvePictureColorSpace(projectJson, settings, videoItems)
+  if (downgraded) log(`rendering in SDR: ${settings.colorSpace} is only the project default and no video on screen is HDR`)
   if (detectedFrom != null) {
     log(`colorSpace not set — smart-detected ${projectColorSpace} from ${detectedFrom} clip(s); writing back to project.json`)
     // Re-read the raw JSON to patch settings.colorSpace — projectJson in memory
@@ -947,6 +949,53 @@ function resolveProjectColorSpace(settings, videoItems) {
 }
 
 /**
+ * Whether an image or a video fills the whole frame with no transparency (a
+ * black card, a full-frame still): it hides the video below it. Read from the
+ * file, never the extension. Any probe failure is false (not a cover).
+ */
+function fillsFrameOpaquely(item, resolution) {
+  const src = item.src
+  if (typeof src !== 'string' || !existsSync(src)) return false
+  const geo = probeVideoGeometry(src)
+  if (!geo || geo.alpha) return false
+  const [w, h] = Array.isArray(resolution) && resolution.length === 2 ? resolution : [1080, 1920]
+  // Fit "contain" leaves bars unless the aspect ratio matches (within 1%).
+  return Math.abs(geo.width / geo.height - w / h) / (w / h) < 0.01
+}
+
+/**
+ * The colour space this render's picture needs (§378): the stored one, unless it
+ * was picked automatically and no video that is actually on screen is HDR (an
+ * HDR clip used only for its voice, covered by a 3D scene, outside the export).
+ * The stored value is only the starting point. `videoItems` are collectAllItems'
+ * stamped items; visibility is read from the enabled tracks.
+ *
+ * Absent colorSpace (legacy): smart-detected from the visible items alone.
+ * Returns what resolveProjectColorSpace does, plus { hdrVisible, downgraded }.
+ */
+function resolvePictureColorSpace(projectJson, settings, videoItems) {
+  const keyOf = (it) => `${it.id ?? ''}|${it.src}|${it.start ?? ''}`
+  const stamped = new Map(videoItems.map((it) => [keyOf(it), it]))
+  const visibleRaw = visibleVideoItems(enabledTrackItems(projectJson).map((items) => items ?? []), {
+    end: getTotalDurationSeconds(projectJson),
+    coversPicture: (item) => fillsFrameOpaquely(item, settings.resolution),
+  })
+  const visible = visibleRaw.map((it) => stamped.get(keyOf(it))).filter(Boolean)
+  // An item the stamped list cannot match is unknown, not SDR: never downgrade on a guess.
+  const unmatched = visible.length !== visibleRaw.length
+  const base = resolveProjectColorSpace(settings, settings.colorSpace != null ? videoItems : visible)
+  const eff = effectiveColorSpace({
+    stored: base.colorSpace,
+    source: settings.colorSpaceSource ?? null,
+    visible,
+    isHdrItem: (it) => isHdr(detectFromTransfer(it.colorTransfer)),
+    isHdrKey: isHdr,
+  })
+  if (unmatched) return { ...base, hdrVisible: true, downgraded: false }
+  return { ...base, colorSpace: eff.colorSpace, hdrVisible: eff.hdrVisible, downgraded: eff.downgraded }
+}
+
+/**
  * render.js --estimate (§213): main() as far as its disk check (2c), writing
  * nothing. No lock, no wipe of render/segments, no URL prefetch, no
  * project.json write-back, no normalize, bundle, browser or compose: the
@@ -965,6 +1014,8 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
   } = loadRenderProject(projectPath, { out, requireFinal: false, overrides })
 
   let estimate, reclaimBytes
+  // §378: what the picture needs, for the export window's Format row. null: not worked out.
+  let pictureColor = null
   if (projectJson.renderMode === 'ffmpeg-drawtext') {
     // lyrics_render.py writes the export and its poster copy, nothing else: no
     // overlay capture, no masters. Counted as one SDR compose at the design
@@ -980,7 +1031,9 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
     const { videoItems } = collectAllItems(projectJson)
     const captureScale = captureScaleFor(settings.resolution)
     stampSourceProbes(videoItems, new Map())
-    const { colorSpace: projectColorSpace } = resolveProjectColorSpace(settings, videoItems)
+    const picture = resolvePictureColorSpace(projectJson, settings, videoItems)
+    const { colorSpace: projectColorSpace } = picture
+    pictureColor = { colorSpace: picture.colorSpace, hdrVisible: picture.hdrVisible }
     const exportPlan = planExport({ exportMode, projectColorSpace, outputPath })
     const disk = planDisk({
       projectJson, pristineProject, settings, workers, motionBlur, segmentSpecs, videoItems, captureScale,
@@ -990,7 +1043,7 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
     reclaimBytes = disk.reclaimBytes
   }
   const check = checkDiskSpace({ tmpDir: tmpdir(), projectDir: renderDir, estimate: estimate.expected, reclaimBytes })
-  return { estimate, volumes: check?.volumes ?? [] }
+  return { estimate, volumes: check?.volumes ?? [], ...(pictureColor ?? {}) }
 }
 
 /**
@@ -2448,7 +2501,7 @@ function fail(code, message, extra = {}) {
 }
 
 export { normalizeIfNeeded, killNormalizeTree, failLine, stampSourceProbes, getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
-         EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport, captureScaleFor,
+         EXPORT_MODES, resolveExportMode, resolvePictureColorSpace, fillsFrameOpaquely, resolveSdrCurve, planExport, captureScaleFor,
          // §213: the disk estimate's planning, for its tests.
          resolveEstimateOverrides, planVideoItemWrites, isConformant, normalizedMasterCache, estimateMain,
          UNTAGGED_MASTER_MARKER, originalOfSdrMaster,
