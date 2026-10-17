@@ -2,7 +2,10 @@
 
 ## Unreleased
 
+## v5.35.2
+
 - **Fixed (editor): clicking a marker on the timeline ruler no longer blanks the window.** A click on a marker selects it, and the editor then looked for an audio track with that id; in a project whose `audio` has no `tracks` list (`"audio": {}`) that lookup threw while rendering. The lookup, and the audio shift in the leading-silence polish, now read a missing list as empty. (`editor/src/video/{selection,VideoEditor,audioPolish}.ts*`, `editor/src/video/__tests__/selection.test.ts`)
+- Release notes: check-keys not run (credential rules); editor suite 4392/4392 (an editor-only change).
 
 ## v5.35.1
 
