@@ -9,6 +9,8 @@
 // render.js reads MONTAJ_PYTHON at import, so the env is set first.
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -85,4 +87,23 @@ test('a conform that keeps growing outlives the stall window', async () => {
   assert.equal(r, out)
   assert.equal(existsSync(out), true)
   assert.equal(lines().filter((l) => !l.startsWith('child')).length, 1)
+})
+
+test('a cancel that kills render.js\'s group takes the conform and its child too', async () => {
+  const { src, lines } = setup('stall')
+  const runner = join(WORK, 'runner.mjs')
+  writeFileSync(runner, `const { normalizeIfNeeded } = await import(${JSON.stringify(fileURLToPath(new URL('../render.js', import.meta.url)))})
+await normalizeIfNeeded(${JSON.stringify(src)}, 'sdr_bt709', false)`)
+  // Its own group, as serve starts render.js; the stall window is long, so only the cancel can end it.
+  const host = spawn(process.execPath, [runner], {
+    detached: true, stdio: 'ignore',
+    env: { ...process.env, MONTAJ_NORMALIZE_STALL_MS: '600000' },
+  })
+  const until = Date.now() + 10_000
+  while (!lines().some((l) => l.startsWith('child')) && Date.now() < until) await new Promise((r) => setTimeout(r, 50))
+  const child = Number(lines().find((l) => l.startsWith('child')).split(' ')[1])
+  assert.equal(alive(child), true)
+  process.kill(-host.pid, 'SIGTERM')
+  await new Promise((r) => setTimeout(r, 500))
+  assert.equal(alive(child), false, 'the conform\'s child did not survive the cancel')
 })

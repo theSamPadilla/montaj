@@ -2200,13 +2200,35 @@ function normalizeTmpBytes(out) {
   return total
 }
 
-/** Kill the conform and everything it spawned (its ffmpeg), then remove the temporary file it leaves. */
+/** Every descendant pid of `root`, from one `ps` snapshot (POSIX). */
+function descendantPids(root) {
+  const r = spawnSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 10_000 })
+  const kids = new Map()
+  for (const line of (r.stdout || '').split('\n')) {
+    const [pid, ppid] = line.trim().split(/\s+/).map(Number)
+    if (!pid || !ppid) continue
+    if (!kids.has(ppid)) kids.set(ppid, [])
+    kids.get(ppid).push(pid)
+  }
+  const found = []
+  const queue = [root]
+  while (queue.length) for (const k of kids.get(queue.shift()) || []) { found.push(k); queue.push(k) }
+  return found
+}
+
+/**
+ * Kill the conform and everything it spawned (its ffmpeg), then remove the temporary
+ * file it leaves. By pid, not by process group: the conform stays in render.js's own
+ * group so serve's cancel (which kills that group) still reaches it.
+ */
 function killNormalizeTree(proc, out) {
-  try {
-    if (process.platform === 'win32') proc.kill('SIGKILL')
-    else process.kill(-proc.pid, 'SIGKILL')
-  } catch {
+  if (process.platform === 'win32') {
     try { proc.kill('SIGKILL') } catch { /* already gone */ }
+  } else {
+    const pids = descendantPids(proc.pid)
+    for (const pid of [...pids, proc.pid]) {
+      try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
+    }
   }
   try { rmSync(`${out}.tmp.${proc.pid}.mp4`, { force: true }) } catch { /* best effort */ }
 }
@@ -2230,13 +2252,12 @@ function normalizeIfNeeded(src, projectColorSpace, tonemapped, { untaggedSource 
 
 function runNormalize(src, projectColorSpace, out) {
   return new Promise((resolve) => {
-    // Its own process group (POSIX), so a kill reaches the ffmpeg python spawns.
     const proc = spawn(PYTHON, [
       '-m', 'lib.normalize',
       '--input', src,
       '--color-space', projectColorSpace,
       '--out', out,
-    ], { cwd: MONTAJ_ROOT, detached: process.platform !== 'win32' })
+    ], { cwd: MONTAJ_ROOT })
 
     let stdout = ''
     let stderr = ''
