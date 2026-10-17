@@ -57,7 +57,8 @@ def test_an_intel_mac_is_refused(clip):
     assert json.loads(proc.stderr)["message"] == "Camera tracking isn't available on Intel Macs yet."
 
 
-@pytest.mark.parametrize("args", [["--fps", "0.5"], ["--fps", "31"], ["--lens", "4"], ["--max-frames", "0"]])
+@pytest.mark.parametrize("args", [["--fps", "0.5"], ["--fps", "31"], ["--lens", "4"], ["--max-frames", "0"],
+                                  ["--tolerance", "-1"], ["--tolerance", "51"]])
 def test_params_out_of_range_are_refused(clip, args):
     assert_error(_run(["--input", clip, *args]), "invalid_param")
 
@@ -91,6 +92,9 @@ def test_schema_matches_the_argparse(monkeypatch):
         assert flags[name].required is bool(p.get("required")), name
     assert (params["fps"]["min"], params["fps"]["max"]) == (mod.MIN_FPS, mod.MAX_FPS)
     assert (params["lens"]["min"], params["lens"]["max"]) == (mod.MIN_LENS, mod.MAX_LENS)
+    assert (params["tolerance"]["min"], params["tolerance"]["max"]) == (mod.MIN_TOLERANCE, mod.MAX_TOLERANCE)
+    from lib import camera_track as ct
+    assert params["tolerance"]["default"] == mod.DEFAULT_TOLERANCE == ct.DEFAULT_TOLERANCE_PX == 1.0
 
 
 def test_reconstruct_caps_sift_and_seeds_the_mapper(tmp_path):
@@ -220,6 +224,35 @@ def _triangulate(np, ct, cams, pixels, size):
     return np.linalg.solve(M, b)
 
 
+def _scene_camera_miss(np, ct, track, grid=5):
+    """The furthest scene.camera, interpolated between its keys as the engine plays
+    them, draws a 5 x 5 grid of points from where each frame's camera draws them.
+    Every key is marked "linear" (asserted here), so the engine plays location,
+    target and roll linearly between keys, as np.interp does. The points are where
+    that frame's pixel rays meet the table, or as far ahead as its target when a ray
+    misses it."""
+    size = tuple(track["size"])
+    cam = track["scene"]["camera"]
+    assert all(k[2:] == ["linear"] for name in ("location", "target", "roll") for k in cam.get(name, []))
+    kt = [k[0] for k in cam["location"]]
+    at = lambda keys, t: [float(np.interp(t, kt, [k[1][c] for k in keys])) for c in range(3)]
+    pixels = [[(a + 0.5) / grid * size[0], (b + 0.5) / grid * size[1]] for a in range(grid) for b in range(grid)]
+    worst = 0.0
+    for f in track["frames"]:
+        full = {"location": f["location"], "target": f["target"], "roll": f["roll"], "lens": track["lens"]}
+        reach = float(np.linalg.norm(np.subtract(f["target"], f["location"])))
+        points = []
+        for ray in ct.pixel_rays(full, pixels, size):
+            s = -f["location"][2] / ray[2] if ray[2] < -1e-9 else -1
+            points.append(np.add(f["location"], (s if 0 < s < 20 else reach) * ray))
+        roll = float(np.interp(f["t"], kt, [k[1] for k in cam["roll"]])) if "roll" in cam else 0.0
+        mid = {"location": at(cam["location"], f["t"]), "target": at(cam["target"], f["t"]), "roll": roll,
+               "lens": cam["lens"]}
+        for want, got in zip(ct.project_points(full, points, size), ct.project_points(mid, points, size)):
+            worst = max(worst, float(np.hypot(*np.subtract(got, want))))
+    return worst
+
+
 @pytest.mark.skipif(not KIT, reason="MONTAJ_TEST_S255_DIR is not set (the §328 test kit, outside git)")
 def test_real_clip_tracks_every_frame_and_holds_the_static_landmarks(tmp_path):
     np = pytest.importorskip("numpy")
@@ -253,3 +286,10 @@ def test_real_clip_tracks_every_frame_and_holds_the_static_landmarks(tmp_path):
           f"{mean:.2f} px mean, {max(every):.2f} max over {len(every)}: "
           + ", ".join(f"{k} {sum(v) / len(v):.2f}" for k, v in misses.items()))
     assert mean < MAX_MEAN_PX, misses
+    # the thinned scene.camera plays within the tolerance (and so 2 px) of the printed
+    # frames at every frame
+    tolerance = next(p["default"] for p in SCHEMA["params"] if p["name"] == "tolerance")
+    keys, miss = len(track["scene"]["camera"]["location"]), _scene_camera_miss(np, ct, track)
+    print(f"scene.camera: {keys} of {track['frameCount']} keys, {miss:.3f} px from the track at worst "
+          f"(tolerance {tolerance:g})")
+    assert miss <= tolerance + 1e-6 and miss < 2.0
