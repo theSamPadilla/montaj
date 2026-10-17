@@ -1,13 +1,13 @@
 {
   "name": "track_camera",
-  "description": "The camera that filmed a clip, for a 3D scene that matches it: lens, location, target and roll at each sampled frame, from structure from motion on the clip itself. The world is Blender's axes in metres: z = 0 is the table or floor the clip looks at (+z up, toward the camera; of the planes in the tracked points, the one facing most up the picture, or facing the camera when none does, as in a top-down shot), the origin is where frame 0's centre ray meets it, +x is frame 0's right along it. A known size makes it metric; without one, frame 0's camera is assumed 0.3 m above the plane. scene.camera is ready to paste into a scene; roll is in frames only, as scene cameras take none yet. Frames that did not track are interpolated and marked registered: false. Needs Montaj's vision extra; not on Intel Macs yet.",
+  "description": "The camera that filmed a clip, for a 3D scene that matches it: lens, location, target and roll at each sampled frame, from structure from motion on the clip itself. The world is Blender's axes in metres: z = 0 is the table or floor the clip looks at (+z up, toward the camera; of the planes in the tracked points, the one facing most up the picture, or facing the camera when none does, as in a top-down shot), the origin is where frame 0's centre ray meets it, +x is frame 0's right along it. A known size makes it metric; without one, frame 0's camera is assumed 0.3 m above the plane. scene.camera is ready to paste into a scene: its keys thinned to hold the camera within tolerance px of the track at every frame, with roll keys when the camera rolls. A 30 s 1080x1920 clip at the defaults took about 3 minutes and 1.2 GB. Frames that did not track are interpolated and marked registered: false. Needs Montaj's vision extra; not on Intel Macs yet.",
   "input": {
     "type": "video",
     "description": "Absolute path of the video"
   },
   "output": {
     "type": "json",
-    "description": "{ fps, frameCount, registered: frames tracked, size: [w, h] px, lens: mm on a 36 mm sensor, vertical field of view (lens = 36 * focalPx / h), focalPx, distortion: {k1} (Montaj's camera has none), frames: [{t, location, target: on its axis, as far ahead as frame 0's axis runs to the plane, up: the camera's up vector, roll: degrees, counter-clockwise from level as seen from behind the camera, registered}], plane: {rule: up | facing | pixels, inliers, rmsM, candidates: [{inliers, rmsM, upInPicture, towardCamera, chosen}]}, scale: {metresPerUnit, source}, reprojectionPx, scene: {camera: {lens, location: [[t, [x, y, z]]], target: [[t, [x, y, z]]]}}, notes }; with out, the path of the file holding it"
+    "description": "{ fps, frameCount, registered: frames tracked, size: [w, h] px, lens: mm on a 36 mm sensor, vertical field of view (lens = 36 * focalPx / h), focalPx, distortion: {k1} (Montaj's camera has none), frames: [{t, location, target: on its axis, as far ahead as frame 0's axis runs to the plane, up: the camera's up vector, roll: degrees, counter-clockwise from level as seen from behind the camera, registered}], plane: {rule: up | facing | pixels, inliers, rmsM, candidates: [{inliers, rmsM, upInPicture, towardCamera, chosen}]}, scale: {metresPerUnit, source}, reprojectionPx, scene: {camera: {lens, location: [[t, [x, y, z]]], target: [[t, [x, y, z]]], roll?: [[t, degrees]]}}, keyed at the kept frames, notes }; with out, the path of the file holding it"
   },
   "params": [
     {
@@ -40,6 +40,15 @@
       "default": 300,
       "min": 1,
       "description": "Refuse a clip that samples to more frames than this."
+    },
+    {
+      "name": "tolerance",
+      "type": "float",
+      "required": false,
+      "default": 0.5,
+      "min": 0,
+      "max": 50,
+      "description": "How far, in px, the camera between scene.camera's keys may draw the scene from the full track at any frame. Lower keeps more keys."
     },
     {
       "name": "out",

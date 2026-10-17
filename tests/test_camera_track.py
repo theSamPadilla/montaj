@@ -451,6 +451,110 @@ def test_parse_known():
             ct.parse_known(bad)
 
 
+# ---- scene.camera: thinned keys ----
+
+TOL = 0.5
+CHECKED = POINTS[::2]           # under THIN_POINTS, so thin_keys checks every one of them
+
+
+def _orbit(n=60, degrees=40.0, jitter=0.0, roll=None, seed=1):
+    """A camera orbiting the table's middle at 0.6 m out and 0.4 m up, looking at it."""
+    rng = np.random.default_rng(seed)
+    out = []
+    for i in range(n):
+        a = math.radians(-degrees / 2 + degrees * i / (n - 1))
+        loc = np.array([0.6 * math.sin(a), 0.175 - 0.6 * math.cos(a), 0.4]) + rng.uniform(-jitter, jitter, 3)
+        tgt = np.array([0.0, 0.175, 0.0]) + rng.uniform(-jitter, jitter, 3)
+        out.append({"t": i / FPS, "location": loc, "target": tgt, "roll": 0.0 if roll is None else roll(i)})
+    return out
+
+
+def _thinned_miss(frames, keys, lens, points, key_roll=True):
+    """The furthest any point inside a frame's picture lands, drawn by the camera
+    interpolated between the keys (np.interp per coordinate; level without
+    key_roll), from where that frame's own camera draws it: an independent check of
+    thin_keys."""
+    t = [f["t"] for f in frames]
+    kt = [t[k] for k in keys]
+    lerp = lambda name, i: np.array([np.interp(t[i], kt, [frames[k][name][c] for k in keys]) for c in range(3)])
+    worst = 0.0
+    for i, f in enumerate(frames):
+        roll = float(np.interp(t[i], kt, [frames[k]["roll"] for k in keys])) if key_roll else 0.0
+        mid = {"location": lerp("location", i), "target": lerp("target", i), "roll": roll, "lens": lens}
+        full = {**f, "lens": lens}
+        for want, got in zip(ct.project_points(full, points, (W, H)), ct.project_points(mid, points, (W, H))):
+            if want is not None and 0 <= want[0] <= W and 0 <= want[1] <= H:
+                worst = max(worst, float(np.hypot(*np.subtract(got, want))))
+    return worst
+
+
+def test_a_straight_dolly_keeps_only_its_ends():
+    frames = [{"t": i / FPS, "location": np.array([0.2 * i / 49, -0.6 + 0.2 * i / 49, 0.4]),
+               "target": np.array([0.1 * i / 49, 0.1 * i / 49, 0.0]), "roll": 0.0} for i in range(50)]
+    assert ct.thin_keys(frames, 32.0, (W, H), CHECKED, TOL) == [0, 49]
+
+
+def test_a_smooth_orbit_collapses_to_few_keys_and_holds_the_tolerance():
+    frames = _orbit()
+    keys = ct.thin_keys(frames, 32.0, (W, H), CHECKED, TOL)
+    assert keys[0] == 0 and keys[-1] == len(frames) - 1 and len(keys) <= 12
+    assert _thinned_miss(frames, keys, 32.0, CHECKED) <= TOL
+
+
+@pytest.mark.parametrize("jitter", [0.0, 0.0003])
+def test_with_no_tracked_points_the_probes_alone_hold_the_tolerance_near_and_far(jitter):
+    """The probes stand in for the table and the far background: the table under the
+    frame's bottom, and far behind it, where a small turn and a small move no longer
+    cancel. Things standing on the table are checked through the tracked points."""
+    frames = _orbit(jitter=jitter)
+    keys = ct.thin_keys(frames, 32.0, (W, H), np.zeros((0, 3)), TOL)
+    table = CHECKED[CHECKED[:, 2] == 0]
+    assert _thinned_miss(frames, keys, 32.0, np.vstack([table, table + [0, 6.0, 0]])) <= TOL
+
+
+def test_a_jerky_path_keeps_more_keys_and_holds_the_tolerance():
+    smooth = len(ct.thin_keys(_orbit(), 32.0, (W, H), CHECKED, TOL))
+    frames = _orbit(jitter=0.0003)                      # 0.3 mm of shake on every frame
+    keys = ct.thin_keys(frames, 32.0, (W, H), CHECKED, TOL)
+    assert len(keys) > 2 * smooth
+    assert _thinned_miss(frames, keys, 32.0, CHECKED) <= TOL
+
+
+def test_a_looser_tolerance_keeps_fewer_keys():
+    frames = _orbit(jitter=0.0003)
+    counts = [len(ct.thin_keys(frames, 32.0, (W, H), CHECKED, tol)) for tol in (0.5, 2.0, 8.0)]
+    assert counts[0] > counts[1] > counts[2]
+
+
+def test_a_rolling_camera_is_thinned_with_its_roll():
+    frames = _orbit(roll=lambda i: 6.0 * math.sin(i / 8))
+    keys = ct.thin_keys(frames, 32.0, (W, H), CHECKED, TOL)
+    assert _thinned_miss(frames, keys, 32.0, CHECKED) <= TOL
+    # the same keys without their roll miss by far more
+    assert _thinned_miss(frames, keys, 32.0, CHECKED, key_roll=False) > 20 * TOL
+    assert len(keys) > len(ct.thin_keys(_orbit(), 32.0, (W, H), CHECKED, TOL))
+
+
+@pytest.mark.parametrize("roll, keyed", [(0.04, False), (0.06, True), (-0.06, True)])
+def test_roll_keys_only_when_a_frame_rolls_a_twentieth_of_a_degree(roll, keyed):
+    truth = TRUTH[:4] + [(_look([-0.08, -0.45, 0.38], [0.02, 0.05, 0.0], roll=roll), TRUTH[4][1])]
+    track = _solve(known={"height": TRUTH_HEIGHT}, truth=truth)
+    cam = ct.rounded(track)["scene"]["camera"]
+    assert ("roll" in cam) is keyed
+    note = [n for n in track["notes"] if n.startswith("scene.camera keeps")]
+    assert len(note) == 1 and ("no roll keys" in note[0]) is not keyed
+    assert not any("take no roll" in n for n in track["notes"])
+
+
+def test_the_tolerance_sets_the_keys_and_the_count_is_in_the_notes():
+    poses, seen = _reconstruction(truth=[(R, C) for R, C in TRUTH])
+    solve = lambda tol: ct.solve(poses, seen, fps=FPS, size=[W, H], focal=FOCAL, k1=0.0,
+                                 known={"height": TRUTH_HEIGHT}, tolerance=tol)
+    assert [solve(tol)["keys"] for tol in (0.5, 500)] == [[0, 1, 2, 3, 4], [0, 4]]
+    track = solve(500)
+    assert "scene.camera keeps 2 of 5 keys: between them the camera stays within 500 px" in " ".join(track["notes"])
+
+
 # ---- frames that did not register ----
 
 def test_a_missing_frame_is_interpolated_and_flagged():
@@ -478,12 +582,17 @@ def test_fill_poses_holds_the_ends_and_slerps_between():
 def test_rounded_output_and_scene_camera_keys():
     track = ct.rounded(_solve(known={"height": TRUTH_HEIGHT}, drop=(2,)))
     json.dumps(track)
+    assert "keys" not in track and "keyRoll" not in track
     cam = track["scene"]["camera"]
     assert cam["lens"] == track["lens"] == round(36 * FOCAL / H, 3)
-    assert [k[0] for k in cam["location"]] == [0.0, 0.1, 0.2, 0.3, 0.4]
-    assert cam["location"] == [[f["t"], f["location"]] for f in track["frames"]]
-    assert cam["target"] == [[f["t"], f["target"]] for f in track["frames"]]
-    assert set(cam) == {"lens", "location", "target"}
+    at = {f["t"]: f for f in track["frames"]}
+    times = [k[0] for k in cam["location"]]
+    assert times[0] == 0.0 and times[-1] == 0.4 and times == sorted(times)
+    assert cam["location"] == [[t, at[t]["location"]] for t in times]
+    assert cam["target"] == [[t, at[t]["target"]] for t in times]
+    # frame 4 rolls 12 degrees: roll keys, at the same times, the frames' own sign
+    assert cam["roll"] == [[t, at[t]["roll"]] for t in times]
+    assert set(cam) == {"lens", "location", "target", "roll"}
     for f in track["frames"]:
         assert list(f) == ["t", "location", "target", "up", "roll", "registered"]
         assert all(round(c, 4) == c for c in f["location"] + f["target"])

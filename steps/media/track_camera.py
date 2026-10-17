@@ -10,10 +10,14 @@ seeded. The incremental mapper is not used: on a near-still handheld clip (§328
 75 frames) it registered 13 to 36 frames with the focal anywhere from 566 to 3,506
 px, where the global mapper registered all 75 every time.
 
-Not yet measured: peak memory and time on a long phone clip (30 s of 1080x1920,
-the 300 frames --max-frames allows at 10 fps). WORK_LONG_EDGE, SIFT_FEATURES and the
-max-frames default are set for it ahead of that measurement; the 540x960 test clip
-(75 frames) took 8 to 20 s and about 2 GB on all cores before they were.
+Measured 2026-10-16: the defaults on a 30 s 1080x1920 phone clip (300 frames,
+tracked at 1280 px) took 170 s wall and 342 s CPU (about 2 cores on average, SIFT
+capped at 4 threads) with 1.2 GB peak memory; all 300 frames registered, lens
+32.4 mm, reprojection 1.4 px.
+
+scene.camera is thinned to the keys that hold the camera within --tolerance px of
+the track at every sampled frame (lib/camera_track.thin_keys), with roll keys when
+the camera rolls.
 
 lib/camera_track.py does the rest without pycolmap: the frames that did not
 register are interpolated, the world is set on the plane the clip looks at, the
@@ -40,6 +44,7 @@ from lib.normalize import probe_video
 
 MIN_FPS, MAX_FPS = 1, 30
 MIN_LENS, MAX_LENS = 8, 300          # mm, as the engine's fitCamera allows
+MIN_TOLERANCE, MAX_TOLERANCE = 0, 50 # px
 WORK_LONG_EDGE = 1280                # frames are tracked at most this long
 PRIOR_FACTOR = 0.85                  # the focal guess, x the long side, when nothing says better
 FOCAL_35MM_TAG = "com.apple.quicktime.camera.focal_length.35mm_equivalent"
@@ -210,6 +215,8 @@ def main():
     parser.add_argument("--known", default=None, help="A known size as JSON, for a metric scale")
     parser.add_argument("--max-frames", dest="max_frames", type=int, default=MAX_FRAMES,
                         help=f"Refuse a clip that samples to more frames (default {MAX_FRAMES})")
+    parser.add_argument("--tolerance", type=float, default=0.5,
+                        help="scene.camera keys hold the camera within this many px of the track (default 0.5)")
     parser.add_argument("--out", default=None, help="Write the JSON here and print the path")
     args = parser.parse_args()
 
@@ -217,6 +224,8 @@ def main():
         fail("invalid_param", f"--fps must be from {MIN_FPS} to {MAX_FPS}, got {args.fps:g}")
     if args.lens is not None and not (MIN_LENS <= args.lens <= MAX_LENS):
         fail("invalid_param", f"--lens must be from {MIN_LENS} to {MAX_LENS} mm, got {args.lens:g}")
+    if not (MIN_TOLERANCE <= args.tolerance <= MAX_TOLERANCE):
+        fail("invalid_param", f"--tolerance must be from {MIN_TOLERANCE} to {MAX_TOLERANCE} px, got {args.tolerance:g}")
     if args.max_frames < 1:
         fail("invalid_param", f"--max-frames must be at least 1, got {args.max_frames}")
     input_path = os.path.abspath(args.input)
@@ -290,7 +299,8 @@ def main():
         del rec, cam                                 # the arrays above are all solve needs
         try:
             track = ct.solve(poses, points, fps=fps, size=[w, h], focal=f_work * px, k1=k1,
-                             principal=[cx * w / ww, cy * px], known=known, reprojection=reprojection)
+                             principal=[cx * w / ww, cy * px], known=known, reprojection=reprojection,
+                             tolerance=args.tolerance)
         except ValueError as e:
             fail(_solve_error_code(ct, e, known), str(e))
     finally:

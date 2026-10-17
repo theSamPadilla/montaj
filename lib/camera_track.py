@@ -62,6 +62,22 @@ UP_ENOUGH = 0.3
 # footprint (their box along the plane's own axes) of that box.
 FOOTPRINT_MARGIN = 0.25
 
+# scene.camera's keys: frames are dropped while the camera interpolated between the
+# kept keys (location, target and roll linear, no ease, the lens constant, as the
+# engine plays them) draws THIN_POINTS of the sparse points, and points on a
+# PROBE_GRID x PROBE_GRID grid of the frame's pixel rays, within the tolerance (px)
+# of where that frame's own camera draws them. On each ray the points are where it
+# meets the plane, as far ahead as the frame's target, and PROBE_FAR times that:
+# a small move shifts the near table most, and a small turn the far background, and
+# between the two they can cancel. Roll keys are left out when
+# every frame's roll is under ROLL_KEYS_FROM degrees.
+DEFAULT_TOLERANCE_PX = 0.5
+THIN_POINTS = 400
+THIN_SEED = 0
+PROBE_GRID = 5
+PROBE_FAR = 20
+ROLL_KEYS_FROM = 0.05
+
 # Output rounding. Positions to 0.1 mm: at a tabletop's 0.3 m, a 0.5 mm error in
 # the location or target moves the picture by up to about 3 px at f = 850 px.
 POS_DECIMALS = 4
@@ -232,6 +248,76 @@ def project_points(camera, points, size):
         nx, ny = float(d @ r) / (z * tan_h), float(d @ u) / (z * tan_v)
         out.append([(nx * 0.5 + 0.5) * w, (0.5 - ny * 0.5) * h])
     return out
+
+
+def _draw(location, target, roll, lens, size, points):
+    """project_points for many points at once: (pixels N x 2, depth N)."""
+    w, h = size
+    f, r, u = camera_basis({"location": location, "target": target, "roll": roll})
+    tan_v = SENSOR_HALF_MM / lens
+    d = np.asarray(points, float) - location
+    z = d @ f
+    safe = np.where(z > 1e-9, z, 1.0)
+    px = np.c_[((d @ r) / (safe * tan_v * w / h) * 0.5 + 0.5) * w, (0.5 - (d @ u) / (safe * tan_v) * 0.5) * h]
+    return px, z
+
+
+def thin_keys(frames, lens, size, points, tolerance, roll=True):
+    """Indices of the frames kept as camera keys, first and last always. From each
+    kept key the next is the furthest frame such that, at every frame between them,
+    the camera interpolated between the two keys (location, target and, when `roll`,
+    roll, all linear) draws the checked points within `tolerance` px of where that
+    frame's own camera draws them. The checked points are THIN_POINTS of `points`
+    (a seeded subset) inside that frame's picture, and points on a PROBE_GRID grid of
+    the frame's pixel rays: where each meets z = 0 (up to PROBE_FAR times the
+    target's distance), as far ahead as the target, and PROBE_FAR times that.
+    Without `roll` both cameras are level."""
+    n = len(frames)
+    if n <= 2:
+        return list(range(n))
+    w, h = size
+    loc = np.array([f["location"] for f in frames], float)
+    tgt = np.array([f["target"] for f in frames], float)
+    rl = np.degrees(np.unwrap(np.radians([f["roll"] for f in frames]))) if roll else np.zeros(n)
+    pts = np.asarray(points, float).reshape(-1, 3)
+    if len(pts) > THIN_POINTS:
+        pts = pts[np.random.default_rng(THIN_SEED).choice(len(pts), THIN_POINTS, replace=False)]
+    grid = np.array([[(a + 0.5) / PROBE_GRID * w, (b + 0.5) / PROBE_GRID * h]
+                     for a in range(PROBE_GRID) for b in range(PROBE_GRID)])
+    checks = []
+    for i in range(n):
+        cam = {"location": loc[i], "target": tgt[i], "roll": rl[i], "lens": lens}
+        px, z = _draw(loc[i], tgt[i], rl[i], lens, size, pts)
+        seen = (z > 1e-9) & (px[:, 0] >= 0) & (px[:, 0] <= w) & (px[:, 1] >= 0) & (px[:, 1] <= h)
+        reach = float(np.linalg.norm(tgt[i] - loc[i]))
+        rays = np.array(pixel_rays(cam, grid, size))
+        down = rays[:, 2] < -1e-9
+        hit = -loc[i][2] / np.where(down, rays[:, 2], -1.0)
+        on_plane = down & (hit > 0)
+        probes = [loc[i] + np.minimum(hit[on_plane], PROBE_FAR * reach)[:, None] * rays[on_plane],
+                  loc[i] + reach * rays, loc[i] + PROBE_FAR * reach * rays]
+        drawn = [grid[on_plane], grid, grid]
+        checks.append((np.vstack([pts[seen], *probes]), np.vstack([px[seen], *drawn])))
+
+    def holds(a, b):
+        for i in range(a + 1, b):
+            k = (i - a) / (b - a)
+            P, want = checks[i]
+            px, z = _draw((1 - k) * loc[a] + k * loc[b], (1 - k) * tgt[a] + k * tgt[b],
+                          (1 - k) * rl[a] + k * rl[b], lens, size, P)
+            if not (z > 1e-9).all() or np.hypot(*(px - want).T).max() > tolerance:
+                return False
+        return True
+
+    keys, a, b = [0], 0, 1
+    while b < n - 1:
+        if holds(a, b + 1):
+            b += 1
+        else:
+            keys.append(b)
+            a, b = b, b + 1
+    keys.append(n - 1)
+    return keys
 
 
 def pixel_rays(camera, pixels, size):
@@ -479,14 +565,16 @@ def plane_points(pose, pixels, plane, focal, centre, k1):
 
 # ---- the whole track ----
 
-def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None, principal=None):
+def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None, principal=None,
+          tolerance=DEFAULT_TOLERANCE_PX):
     """The track as track_camera reports it, unrounded.
 
     poses: one per sampled frame, (R, C) or None for a frame that did not register.
     points: the sparse points (N x 3). size: [w, h] of the frames in px; focal, k1 and
     principal (default the frame's centre) are the SIMPLE_RADIAL camera in those px.
-    known: parse_known's dict or None. Raises ValueError for a known size that cannot
-    be used."""
+    known: parse_known's dict or None. tolerance: px, how far scene.camera's thinned keys
+    may draw the scene from the full track (thin_keys). Raises ValueError for a known
+    size that cannot be used."""
     w, h = size
     centre = np.array([w / 2, h / 2]) if principal is None else np.asarray(principal, float)
     filled, registered = fill_poses(poses)
@@ -541,6 +629,9 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
     for i, pose in enumerate(filled):
         cam = montaj_camera(pose, world)
         frames.append({"t": i / fps, **cam, "registered": registered[i]})
+    rolls = any(abs(f["roll"]) >= ROLL_KEYS_FROM for f in frames)
+    keys = thin_keys(frames, lens, (w, h), scale * ((pts - world["origin"]) @ world["axes"].T), tolerance, rolls)
+    key_roll = (np.degrees(np.unwrap(np.radians([f["roll"] for f in frames])))[keys].tolist() if rolls else None)
 
     def rms_m(p):
         inl = pts[p["inliers"]]
@@ -573,7 +664,9 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
     if float(np.max(np.abs(centre - [w / 2, h / 2]))) > 0.5:
         notes.append(f"The principal point is off centre by {centre[0] - w / 2:.1f}, {centre[1] - h / 2:.1f} px; "
                      "Montaj's camera keeps it centred.")
-    notes.append("roll is in frames[] only: scene cameras take no roll yet.")
+    notes.append(f"scene.camera keeps {len(keys)} of {len(frames)} keys: between them the camera stays within "
+                 f"{tolerance:g} px of the track at every frame."
+                 + ("" if rolls else f" It has no roll keys: no frame rolls {ROLL_KEYS_FROM:g} degrees."))
 
     return {
         "fps": fps,
@@ -589,12 +682,15 @@ def solve(poses, points, *, fps, size, focal, k1, known=None, reprojection=None,
         "scale": {"metresPerUnit": scale, "source": source},
         "reprojectionPx": reprojection,
         "notes": notes,
+        "keys": keys,
+        "keyRoll": key_roll,
     }
 
 
 def rounded(track):
     """The track as printed: positions to 0.1 mm, up to 1e-6, roll to 0.01 degrees, and
-    scene.camera keyed at the sampled frames."""
+    scene.camera keyed at the frames thin_keys kept, with roll keys when the camera
+    rolls."""
     pos = lambda v: [round(float(c), POS_DECIMALS) + 0.0 for c in v]   # + 0.0: no -0.0
     frames = [{"t": round(f["t"], TIME_DECIMALS), "location": pos(f["location"]), "target": pos(f["target"]),
                "up": [round(float(c), UP_DECIMALS) + 0.0 for c in f["up"]],
@@ -606,8 +702,17 @@ def rounded(track):
     plane["candidates"] = [{**c, "rmsM": round(c["rmsM"], 5), "upInPicture": round(c["upInPicture"], 2),
                             "towardCamera": round(c["towardCamera"], 2)} for c in plane["candidates"]]
     reproj = track["reprojectionPx"]
+    keys, key_roll = track["keys"], track["keyRoll"]
+    camera = {
+        "lens": lens,
+        "location": [[frames[i]["t"], frames[i]["location"]] for i in keys],
+        "target": [[frames[i]["t"], frames[i]["target"]] for i in keys],
+    }
+    if key_roll is not None:
+        camera["roll"] = [[frames[i]["t"], round(float(r), ROLL_DECIMALS) + 0.0] for i, r in zip(keys, key_roll)]
+    printed = {k: v for k, v in track.items() if k not in ("keys", "keyRoll")}
     return {
-        **track,
+        **printed,
         "lens": lens,
         "focalPx": round(track["focalPx"], 2),
         "distortion": {"k1": round(track["distortion"]["k1"], 5)},
@@ -615,9 +720,5 @@ def rounded(track):
         "plane": plane,
         "scale": {**track["scale"], "metresPerUnit": float(f"{track['scale']['metresPerUnit']:.6g}")},
         "reprojectionPx": None if reproj is None else round(float(reproj), 3),
-        "scene": {"camera": {
-            "lens": lens,
-            "location": [[f["t"], f["location"]] for f in frames],
-            "target": [[f["t"], f["target"]] for f in frames],
-        }},
+        "scene": {"camera": camera},
     }
