@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (editor): a timeline track that holds only 3D shows a 3D mark.** Every overlay track showed the stacked-layers icon, 3D tracks included. A track whose items are all 3D scenes now shows the box mark and reads "3D" on hover; a track that mixes 3D with other items keeps the overlay mark. (`editor/src/video/timeline/TrackGutter.tsx` `trackIconKind`, `TrackGutter.test.tsx`)
+
 - **Added (editor): one broken panel no longer takes the editor down.** The preview, the timeline, the side panels and the inspector each sit in their own error boundary. A panel that throws shows a short error with Retry in its own area, the rest of the editor keeps working, and Retry mounts the panel again. The crash is logged with `console.error` and the prefix `[editor panel crash]`. (`editor/src/video/{PanelBoundary.tsx,VideoEditor.tsx}`, `editor/src/video/__tests__/VideoEditor.panelBoundaries.test.tsx`)
 
 - **Fixed (render): an HDR export or conform no longer runs at the lowest priority.** libx265's worker pool set the whole ffmpeg to nice 19, so on a busy Mac the export lost to everything else and crawled. Every libx265 encode now adds `pools=none:frame-threads=N` (N is the core count, at most 8), which keeps normal priority for about 40% less peak parallelism. (`render/color-space.js` `encoderArgsFor`, `render/{encode-segment,derive-sdr}.js`, `lib/normalize.py` `_encoder_args`, `render/test/x265-priority.test.mjs`, `tests/test_x265_priority.py`)

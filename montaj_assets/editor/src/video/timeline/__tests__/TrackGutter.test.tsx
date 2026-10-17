@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
-import TrackGutter, { visualTrackKind } from '../TrackGutter'
+import TrackGutter, { visualTrackKind, trackIconKind } from '../TrackGutter'
 import { computeTimelineLayout } from '../canvas/draw'
 import type { Project } from '../../../types'
 import type { Captions, VisualItem } from '../../../schema'
@@ -41,6 +41,34 @@ describe('visualTrackKind', () => {
 
   it('falls back to the first item on a mixed track', () => {
     expect(visualTrackKind([overlay('a'), video('b')])).toBe('overlay')
+  })
+})
+
+const scene3d = (id: string): VisualItem =>
+  ({ id, type: 'overlay', src: 'engine:scene3d', start: 0, end: 2, props: { scene: 'main' } }) as VisualItem
+
+describe('trackIconKind (3D tracks)', () => {
+  it('a track of only 3D scenes is the 3D kind', () => {
+    expect(trackIconKind([scene3d('a')])).toBe('scene3d')
+    expect(trackIconKind([scene3d('a'), scene3d('b')])).toBe('scene3d')
+  })
+  it('a mixed track, or any other track, keeps its usual kind', () => {
+    expect(trackIconKind([scene3d('a'), overlay('b')])).toBe('overlay')
+    expect(trackIconKind([overlay('a'), scene3d('b')])).toBe('overlay')
+    expect(trackIconKind([video('a')])).toBe('video')
+    expect(trackIconKind([overlay('a')])).toBe('overlay')
+    expect(trackIconKind([])).toBeNull()
+  })
+})
+
+describe('TrackGutter 3D icon', () => {
+  it('shows the Box mark on a 3D track and the layers mark on an overlay track', () => {
+    const p = project({ tracks: [[video('c0')], [overlay('o0')], [scene3d('s0')]] as never })
+    const layout = computeTimelineLayout(p)
+    const { container } = render(<TrackGutter project={p} layout={layout} />)
+    expect(container.querySelectorAll('svg.lucide-box')).toHaveLength(1)
+    expect(container.querySelectorAll('svg.lucide-layers')).toHaveLength(1)
+    expect(screen.getByLabelText('3D')).toBeTruthy()
   })
 })
 

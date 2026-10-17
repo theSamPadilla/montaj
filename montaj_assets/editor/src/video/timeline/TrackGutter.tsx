@@ -1,11 +1,12 @@
 import { useRef, useState, type RefObject } from 'react'
-import { AudioLines, Captions, Eye, EyeOff, Film, Layers, Magnet, Settings2, Volume2, VolumeX } from 'lucide-react'
+import { AudioLines, Box, Captions, Eye, EyeOff, Film, Layers, Magnet, Settings2, Volume2, VolumeX } from 'lucide-react'
 import { Tooltip } from '../../ui/Tooltip'
 import type { Project } from '../../types'
 import type { VisualItem } from '../../schema'
 import { computeTimelineLayout, timelinePalette, type TimelineLayout, type TimelineMode, type TrackPalette, type VisualRowLayout, type AudioLaneLayout } from './canvas/draw'
 import { AUDIO_LANE_HEIGHT_PX, normalizeTracks, trackItems } from './timeline-model'
 import TrackSettingsPopover from './TrackSettingsPopover'
+import { isScene3dItem } from '../scene3d'
 
 /**
  * The left rail naming each track, aligned row-for-row with the canvas beside
@@ -50,7 +51,18 @@ export function visualTrackKind(items: VisualItem[]): 'video' | 'overlay' | 'ima
   return items[0].type
 }
 
+/**
+ * What the rail shows for a track: `visualTrackKind`, except a track whose every
+ * item is a 3D scene reads as 'scene3d' (the 3D mark). A track that mixes 3D with
+ * other items keeps its first item's kind, so it is still the overlay icon.
+ */
+export function trackIconKind(items: VisualItem[]): 'scene3d' | 'video' | 'overlay' | 'image' | null {
+  if (items.length > 0 && items.every(i => isScene3dItem(i))) return 'scene3d'
+  return visualTrackKind(items)
+}
+
 const KIND_LABEL: Record<string, string> = {
+  scene3d: '3D',
   video: 'Video',
   overlay: 'Overlay',
   image: 'Image',
@@ -71,6 +83,7 @@ function commonTrackSpeed(items: VisualItem[]): number {
 }
 
 function KindIcon({ kind, className }: { kind: string | null; className?: string }) {
+  if (kind === 'scene3d') return <Box size={15} className={className} />
   if (kind === 'overlay' || kind === 'image') return <Layers size={15} className={className} />
   return <Film size={15} className={className} />
 }
@@ -500,7 +513,7 @@ export default function TrackGutter({
           extra height. */}
       <div className="relative" style={{ height: resolved.height }}>
         {resolved.rows.map(row => {
-          const kind = visualTrackKind(tracks[row.trackIdx] ?? [])
+          const kind = trackIconKind(tracks[row.trackIdx] ?? [])
           const trackPalette = palette.tracks[row.trackIdx % palette.tracks.length]
           const label = kind ? KIND_LABEL[kind] ?? kind : 'Track'
           const settings = trackSettings[row.trackIdx]
