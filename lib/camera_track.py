@@ -70,8 +70,11 @@ FOOTPRINT_MARGIN = 0.25
 # meets the plane, as far ahead as the frame's target, and PROBE_FAR times that:
 # a small move shifts the near table most, and a small turn the far background, and
 # between the two they can cancel. Roll keys are left out when
-# every frame's roll is under ROLL_KEYS_FROM degrees.
-DEFAULT_TOLERANCE_PX = 0.5
+# every frame's roll is under ROLL_KEYS_FROM degrees. The default tolerance stays
+# under the track's own error (about 1.4 px of reprojection on a phone clip), and a
+# hand-held clip at 10 fps still thins at it: 67 of 75 keys on the §328 kit, where
+# 0.5 px kept all 75.
+DEFAULT_TOLERANCE_PX = 1.0
 THIN_POINTS = 400
 THIN_SEED = 0
 PROBE_GRID = 5

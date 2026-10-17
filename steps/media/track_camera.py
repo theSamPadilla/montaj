@@ -15,9 +15,9 @@ tracked at 1280 px) took 170 s wall and 342 s CPU (about 2 cores on average, SIF
 capped at 4 threads) with 1.2 GB peak memory; all 300 frames registered, lens
 32.4 mm, reprojection 1.4 px.
 
-scene.camera is thinned to the keys that hold the camera within --tolerance px of
-the track at every sampled frame (lib/camera_track.thin_keys), with roll keys when
-the camera rolls.
+scene.camera is thinned to the keys that hold the camera within --tolerance px
+(default 1, under the track's own reprojection error) of the track at every
+sampled frame (lib/camera_track.thin_keys), with roll keys when the camera rolls.
 
 lib/camera_track.py does the rest without pycolmap: the frames that did not
 register are interpolated, the world is set on the plane the clip looks at, the
@@ -45,6 +45,7 @@ from lib.normalize import probe_video
 MIN_FPS, MAX_FPS = 1, 30
 MIN_LENS, MAX_LENS = 8, 300          # mm, as the engine's fitCamera allows
 MIN_TOLERANCE, MAX_TOLERANCE = 0, 50 # px
+DEFAULT_TOLERANCE = 1.0              # px, camera_track.DEFAULT_TOLERANCE_PX
 WORK_LONG_EDGE = 1280                # frames are tracked at most this long
 PRIOR_FACTOR = 0.85                  # the focal guess, x the long side, when nothing says better
 FOCAL_35MM_TAG = "com.apple.quicktime.camera.focal_length.35mm_equivalent"
@@ -215,8 +216,9 @@ def main():
     parser.add_argument("--known", default=None, help="A known size as JSON, for a metric scale")
     parser.add_argument("--max-frames", dest="max_frames", type=int, default=MAX_FRAMES,
                         help=f"Refuse a clip that samples to more frames (default {MAX_FRAMES})")
-    parser.add_argument("--tolerance", type=float, default=0.5,
-                        help="scene.camera keys hold the camera within this many px of the track (default 0.5)")
+    parser.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE,
+                        help=f"scene.camera keys hold the camera within this many px of the track "
+                             f"(default {DEFAULT_TOLERANCE:g})")
     parser.add_argument("--out", default=None, help="Write the JSON here and print the path")
     args = parser.parse_args()
 

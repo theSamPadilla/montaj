@@ -93,6 +93,8 @@ def test_schema_matches_the_argparse(monkeypatch):
     assert (params["fps"]["min"], params["fps"]["max"]) == (mod.MIN_FPS, mod.MAX_FPS)
     assert (params["lens"]["min"], params["lens"]["max"]) == (mod.MIN_LENS, mod.MAX_LENS)
     assert (params["tolerance"]["min"], params["tolerance"]["max"]) == (mod.MIN_TOLERANCE, mod.MAX_TOLERANCE)
+    from lib import camera_track as ct
+    assert params["tolerance"]["default"] == mod.DEFAULT_TOLERANCE == ct.DEFAULT_TOLERANCE_PX == 1.0
 
 
 def test_reconstruct_caps_sift_and_seeds_the_mapper(tmp_path):

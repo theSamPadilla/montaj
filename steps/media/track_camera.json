@@ -45,7 +45,7 @@
       "name": "tolerance",
       "type": "float",
       "required": false,
-      "default": 0.5,
+      "default": 1.0,
       "min": 0,
       "max": 50,
       "description": "How far, in px, the camera between scene.camera's keys may draw the scene from the full track at any frame. Lower keeps more keys."
