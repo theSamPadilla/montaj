@@ -641,7 +641,7 @@ function closeLeadGap<P extends Project>(draft: P, baseline: P, cuts: readonly C
     ),
   )
 
-  const audio = draft.audio
+  const audio = draft.audio?.tracks
     ? { ...draft.audio, tracks: draft.audio.tracks.map(t => shiftAudioTrack(t, delta)) }
     : draft.audio
 

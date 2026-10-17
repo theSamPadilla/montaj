@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (editor): clicking a marker on the timeline ruler no longer blanks the window.** A click on a marker selects it, and the editor then looked for an audio track with that id; in a project whose `audio` has no `tracks` list (`"audio": {}`) that lookup threw while rendering. The lookup, and the audio shift in the leading-silence polish, now read a missing list as empty. (`editor/src/video/{selection,VideoEditor,audioPolish}.ts*`, `editor/src/video/__tests__/selection.test.ts`)
+
 ## v5.35.1
 
 - **Fixed (render): an export that uses one long clip several times no longer stalls at the start.** Each use of the clip started the same conform, none finished inside a fixed 10 minutes, and each timeout left its ffmpeg running. Now the uses share one conform, a conform is stopped only when its output stops growing for 2 minutes (or after 4 hours), and stopping it ends its ffmpeg and removes its temporary file. (`render/render.js` `normalizeIfNeeded`, `render/test/normalize-stall.test.mjs`)

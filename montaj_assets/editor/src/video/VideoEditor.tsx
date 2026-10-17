@@ -17,6 +17,7 @@ import { availableResolutionTiers, availableFpsTiers, currentResolutionTier, max
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { collapseGaps, rippleDelete, splitAtTime } from './cuts'
 import { addMarker } from './timeline/markers'
+import { selectedAudioTrack } from './selection'
 import { addNote, isNote, removeNotes, setNoteDone, setNoteText } from './timeline/notes'
 import { repairCaptionWords } from './captionRepair'
 import { laneOf, normalizeCaptionLanes } from './captionLanes'
@@ -1543,14 +1544,14 @@ function ReviewSurface<P extends Project>({
   const selectedVisualItem = primarySelectedId
     ? allVisualItems.find(i => i.id === primarySelectedId) ?? null
     : null
-  const selectedAudioTrack = primarySelectedId && !selectedVisualItem
-    ? project.audio?.tracks.find(t => t.id === primarySelectedId) ?? null
+  const selectedAudioTrackItem = primarySelectedId && !selectedVisualItem
+    ? selectedAudioTrack(project, primarySelectedId)
     : null
   const clipSelection: ClipSelection =
     selectedVisualItem && selectedVisualItem.type !== 'overlay'
       ? { kind: 'clip', item: selectedVisualItem }
-      : selectedAudioTrack
-        ? { kind: 'audio', track: selectedAudioTrack }
+      : selectedAudioTrackItem
+        ? { kind: 'audio', track: selectedAudioTrackItem }
         : null
 
   // Edits coming from the timeline (drag/move/track changes): route through the
