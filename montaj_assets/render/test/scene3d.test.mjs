@@ -10,7 +10,8 @@ import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { SCENE3D_SRC, SCENE3D_STAGE_ENV, Scene3dError, isScene3dItem, materializeScene3d } from '../scene3d.js'
+import { SCENE3D_SRC, SCENE3D_STAGE_ENV, Scene3dError, isScene3dItem, materializeScene3d, isThreeStageOverlay, STAGE_BUNDLE_HEAD } from '../scene3d.js'
+import { collectPuppeteerSegments } from '../render.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const RENDER_JS = join(__dirname, '..', 'render.js')
@@ -162,4 +163,81 @@ test('a missing stage is named in the log, never in the message', () => {
     assert.throws(() => materializeScene3d(projectOf(scene({ scene: 'lab' })), w.project, { env: {}, log: (l) => lines.push(l) }), (e) => e.code === 'scene3d_stage_unavailable')
     assert.match(lines[0], /is not set/)
   } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+// §377: an overlay that draws a 3D stage averages its motion blur in its page. Two kinds: a scene item, and the
+// per-project stage an older project placed as a plain overlay, a generated bundle that starts with this header.
+const STAGE_HEAD = `${STAGE_BUNDLE_HEAD} from library/model3d/stage-overlay.jsx and the modules it imports. Do not edit;\n`
+  + '// run `npm --prefix library run build:model3d`. The 3D stage overlay; reads ../models/active.json.\n'
+
+function stageFiles() {
+  const w = world({ scenes: ['lab'] })
+  const overlays = join(w.project, 'overlays')
+  mkdirSync(overlays, { recursive: true })
+  const legacy = join(overlays, 'model3d_land_stage.jsx')
+  writeFileSync(legacy, STAGE_HEAD + 'export default function S(){return null}\n' + 'x'.repeat(4096))
+  const plain = join(overlays, 'title.jsx')
+  writeFileSync(plain, '// a title card\nexport default function T(){return null}\n')
+  // The header further down than the first line is not a stage.
+  const quoted = join(overlays, 'quoted.jsx')
+  writeFileSync(quoted, '// see below\n' + STAGE_HEAD)
+  return { ...w, legacy, plain, quoted, missing: join(overlays, 'gone.jsx') }
+}
+
+test('isThreeStageOverlay: a scene item, before and after it is materialized, and a generated stage overlay', () => {
+  const w = stageFiles()
+  try {
+    const item = scene({ scene: 'lab', inPoint: 0 })
+    assert.equal(isThreeStageOverlay(item, undefined, { env: w.env }), true, 'engine:scene3d itself')
+    const p = projectOf(item)
+    materializeScene3d(p, w.project, { env: w.env })
+    assert.equal(isThreeStageOverlay(p.tracks[0][0], p.tracks[0][0].src, { env: w.env }), true, 'materialized: its source is the host stage')
+    assert.equal(isThreeStageOverlay({ ...p.tracks[0][0] }, w.stageFile, { env: w.env }), true, 'a copy of it too (no identity needed)')
+    const legacy = { id: 'land', type: 'overlay', src: w.legacy, start: 0, end: 2 }
+    assert.equal(isThreeStageOverlay(legacy, w.legacy, { env: {} }), true, 'an older project\'s own stage overlay')
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('isThreeStageOverlay: a plain overlay, a missing or unreadable file, and a header off the first line are not 3D', () => {
+  const w = stageFiles()
+  try {
+    const at = (path) => isThreeStageOverlay({ id: 'x', type: 'overlay', src: path, start: 0, end: 1 }, path, { env: w.env })
+    assert.equal(at(w.plain), false)
+    assert.equal(at(w.missing), false, 'missing')
+    assert.equal(at(w.project), false, 'a folder cannot be read as a file')
+    assert.equal(at(w.quoted), false)
+    assert.equal(isThreeStageOverlay({ type: 'overlay', src: 'x' }, '', { env: w.env }), false)
+    // Only the head is read.
+    let asked = 0
+    isThreeStageOverlay({ type: 'overlay' }, w.legacy, { env: {}, head: (_, n) => { asked = n; return STAGE_HEAD } })
+    assert.ok(asked > 0 && asked <= 512, `reads ${asked} bytes`)
+  } finally { rmSync(w.dir, { recursive: true, force: true }) }
+})
+
+test('collectPuppeteerSegments: a 3D stage spec carries scene3d: true, any other has no such key', () => {
+  const w = stageFiles()
+  const before = process.env[SCENE3D_STAGE_ENV]
+  process.env[SCENE3D_STAGE_ENV] = w.stageFile
+  try {
+    const p = {
+      settings: { resolution: [1080, 1920], fps: 30 },
+      tracks: [[
+        scene({ scene: 'lab', inPoint: 0 }, { id: 'scene', start: 0, end: 1 }),
+        { id: 'land', type: 'overlay', src: w.legacy, start: 1, end: 2 },
+        { id: 'title', type: 'overlay', src: w.plain, start: 2, end: 3 },
+        { id: 'gone', type: 'overlay', src: w.missing, start: 3, end: 4 },
+      ]],
+    }
+    materializeScene3d(p, w.project)
+    const specs = collectPuppeteerSegments(p, 30, 1080, 1920, join(w.dir, 'seg'))
+    const byId = Object.fromEntries(specs.map(s => [s.id.split('--')[1], s]))
+    assert.equal(byId.scene.scene3d, true)
+    assert.equal(byId.land.scene3d, true)
+    assert.equal('scene3d' in byId.title, false, 'a plain overlay\'s spec is as it was')
+    assert.equal('scene3d' in byId.gone, false)
+  } finally {
+    if (before === undefined) delete process.env[SCENE3D_STAGE_ENV]
+    else process.env[SCENE3D_STAGE_ENV] = before
+    rmSync(w.dir, { recursive: true, force: true })
+  }
 })

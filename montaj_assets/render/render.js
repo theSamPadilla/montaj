@@ -47,7 +47,7 @@ import { resolveMotionBlur, MOTION_BLUR_MAX } from './motion-blur.js'
 import { loudnessFilter }                 from './mix-audio.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 import { captionOverlayFields }           from './caption-spec.js'
-import { materializeScene3d, Scene3dError } from './scene3d.js'
+import { materializeScene3d, Scene3dError, isThreeStageOverlay } from './scene3d.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 // §128: where this render writes and what it is estimated to need, set by
@@ -1610,6 +1610,9 @@ function collectPuppeteerSegments(projectJson, fps, width, height, segDir) {
           ...(isOpaqueCover(item) && !opaqueReplacesPicture(item) ? { fades: true } : {}),
           // §308 P3: the overlay's track in the editor's stacking order.
           layerTrack:    layerOf[trackIdx],
+          // §377: a 3D stage (a scene item, or an older project's own stage
+          // overlay) averages its motion blur in its page. Absent otherwise.
+          ...(isThreeStageOverlay(item, overlayTemplatePath(item)) ? { scene3d: true } : {}),
           googleFonts:   item.googleFonts ?? [],
           // Keyframes drive BOTH ends of the render: bundleComponent bakes the
           // animated transform into the capture, and buildOverlayFilterParts

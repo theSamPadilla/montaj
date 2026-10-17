@@ -21,7 +21,7 @@ import { toFileHref } from './file-url.js'
 import { subframeTimes, motionBlurFilter } from './motion-blur.js'
 import { overlayPageLaunchOptions, installPageGuard } from './page-guard.js'
 import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
-import { captureWithThree } from './three-frame.js'
+import { captureWithThree, isThreeBlurUnsupported } from './three-frame.js'
 
 const FFMPEG_TIMEOUT_MS  = 600_000
 
@@ -525,23 +525,50 @@ export async function renderChunk(worker, job, { onFrame } = {}) {
   mkdirSync(dirname(chunkMkv), { recursive: true })
 
   const what = `ffmpeg PNG→ffv1 failed (segment ${id} chunk ${chunkIndex})`
-  const sink = frameSink(spawnAsync(FFMPEG, chunkEncodeArgs(job, chunkMkv), what, 'overlay-encode'), what)
+  // §377: the chunk's ffmpeg reads one capture per frame when the page averages
+  // a 3D overlay's sub-frames, and every sub-frame when it cannot, which its
+  // first frame tells (captureChunkFrames). So such a chunk starts its ffmpeg
+  // at its first frame; every other chunk starts it first, as before.
+  let sink = null
+  let sinkBlursInPage = null
+  const sinkFor = (inPage) => {
+    if (sink) {
+      if (inPage !== sinkBlursInPage) throw new Error(`segment ${id} chunk ${chunkIndex}: its encode reads ${sinkBlursInPage ? 'one capture' : 'every sub-frame'} per frame`)
+      return sink
+    }
+    sinkBlursInPage = inPage
+    sink = frameSink(spawnAsync(FFMPEG, chunkEncodeArgs(job, chunkMkv, { blurInPage: inPage }), what, 'overlay-encode'), what)
+    return sink
+  }
+  if (!blursInPage(job)) sinkFor(false)
   try {
     // PL83: a Chrome the system kills mid-capture, or a page whose renderer
     // dies, fails the chunk at once as child_killed, naming the phase.
     const at = { phase: 'overlay-load' }
-    const guard = await unlessChromeDies(worker, captureChunkFrames(worker, job, sink, at, onFrame),
+    const guard = await unlessChromeDies(worker, captureChunkFrames(worker, job, sinkFor, at, onFrame),
       () => at.phase, `segment ${id} chunk ${chunkIndex}`)
     // A props image the page asked for and could not get fails the render,
     // naming it, rather than exporting without it (page-guard.js).
     guard.assertPropsServed()
-    await sink.end()
+    await sinkFor(sinkBlursInPage ?? blursInPage(job)).end()
   } catch (err) {
-    await sink.abort()
+    await sink?.abort()
     rmSync(chunkMkv, { force: true })
     throw err
   }
   return { webmPath: chunkMkv }
+}
+
+/**
+ * §377: whether `job`'s motion blur is averaged in its page, one capture per
+ * frame: a 3D overlay (`scene3d`, render.js) under motion blur. Its page draws
+ * each sub-frame and averages them on the GPU (three-bridge.js
+ * averageThreeFrames), where N screenshots per frame made a long 3D overlay
+ * the slowest thing in a render. Everything else captures every sub-frame and
+ * the encode averages them (motionBlurFilter).
+ */
+export function blursInPage(job) {
+  return job.scene3d === true && (job.subframes ?? 1) > 1
 }
 
 /**
@@ -624,13 +651,18 @@ export function frameSink(encode, what) {
  *     cluster boundary (and thus a cue point) before every frame, enabling accurate
  *     per-frame seeking used by the compose filter graph.
  *
+ * `blurInPage` (§377, blursInPage by default): the page averaged each
+ * frame's sub-frames itself, so the chunk is one capture per frame, read at
+ * fps with no blur graph: exactly the args of the same chunk unblurred. False
+ * for a 3D overlay whose page could not, which captures every sub-frame.
+ *
  * Exported for tests.
  */
-export function chunkEncodeArgs(job, chunkMkv) {
+export function chunkEncodeArgs(job, chunkMkv, { blurInPage = blursInPage(job) } = {}) {
   const { fps, subframes = 1 } = job
   const { pixFmt, omitBackground, format } = captureOptionsFor(job)
   // Motion blur off: args are exactly as before (render goldens depend on it).
-  const blurVf = motionBlurFilter(subframes, { alpha: omitBackground })
+  const blurVf = blurInPage ? null : motionBlurFilter(subframes, { alpha: omitBackground })
   const inputRate = blurVf ? String(fps * subframes) : String(fps)
   // Chrome writes a transparent capture's fully opaque frames as RGB PNG, the
   // rest as RGBA. ffmpeg rebuilds the filter graph at each flip by default,
@@ -663,8 +695,11 @@ export function chunkEncodeArgs(job, chunkMkv) {
   ]
 }
 
-/** Loads the chunk's page and streams its frames into `sink` (frameSink); returns its page guard. */
-async function captureChunkFrames(worker, job, sink, at, onFrame) {
+/**
+ * Loads the chunk's page and streams its frames into the chunk's ffmpeg
+ * (`sinkFor(blurInPage)`, frameSink: renderChunk); returns its page guard.
+ */
+async function captureChunkFrames(worker, job, sinkFor, at, onFrame) {
   const { id, htmlPath, width, height, frameStart, frameEnd, captureScale, subframes = 1 } = job
 
   const page = worker.watchPage(await worker.browser.newPage())
@@ -760,45 +795,72 @@ async function captureChunkFrames(worker, job, sink, at, onFrame) {
   const totalFrames = frameEnd - frameStart
   const reportEvery = Math.max(1, Math.floor(totalFrames / 20))
   const renderStartMs = Date.now()
+  // Everything after the commit of frame (or sub-frame) `f`, up to and
+  // including its screenshot.
+  const captureAt = (f) => async () => {
+    // 2. Wait until the DOM attribute confirms this exact frame has been committed.
+    //    This is more reliable than rAF alone — rAF in headless Chrome can fire
+    //    before the compositor has flushed, producing stale screenshots.
+    await page.waitForFunction(
+      (f) => document.documentElement.dataset.renderedFrame === String(f),
+      { timeout: 10000 },
+      f,
+    )
+    // 2b. An image the props name with no extension is fetched when the page
+    //     asks for it, so wait for it to arrive before capturing this frame
+    //     (page-guard.js settleOnDemand; at once when the props name none).
+    await guard.settleOnDemand()
+    // 2c. And for every image on the page: an overlay that mounts one only
+    //     from a later frame inserts it in the commit just made, on a fresh
+    //     page at the first frame of every chunk (page-guard.js settleImages).
+    //     Capped; past the cap the frame is captured anyway and the image named.
+    await guard.settleImages()
+    // 3. Double rAF: first fires after layout+paint, second fires after the result
+    //    has been composited — guarantees the screenshot sees the current frame.
+    await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
+    // 4. Into the chunk's ffmpeg (§131): the same bytes a `path`
+    //    screenshot wrote to disk. A PNG, or a JPEG for an opaque capture
+    //    of an SDR master (§284: screenshotOptionsFor).
+    return page.screenshot(screenshotOptionsFor(job))
+  }
+  const threeOpts = { overlay: overlayName(job), log, pageErrors }
+  // §377: a 3D overlay under motion blur averages each frame's sub-frames in
+  // its page and is captured once per frame. A page that cannot says so at the
+  // chunk's first frame, before its encode starts, and the chunk captures every
+  // sub-frame instead. Later, with the encode reading one capture per frame,
+  // that is an error, never a frame averaged some other way.
+  let inPage = blursInPage(job)
   for (let frame = frameStart; frame < frameEnd; frame++) {
     const localIdx = frame - frameStart
-    // With motion blur on, each output frame captures `subframes` screenshots at
-    // f + i/subframes, written in order; the encode averages each group.
+    // With motion blur on, each output frame is `subframes` sub-frames at
+    // f + i/subframes (subframeTimes).
     const times = subframeTimes(frame, subframes)
-    for (let s = 0; s < times.length; s++) {
-      const t = times[s]
-      // 1. Tell React to update to this frame (flushSync commits DOM synchronously,
-      //    draws any 3D canvas and stamps data-rendered-frame on <html> so we can
-      //    verify below). A 3D canvas that did not draw the frame, before the
-      //    capture or by the end of it, has the frame set and captured again,
-      //    then fails the chunk as three_frame_blank (three-frame.js).
-      const png = await captureWithThree(page, t, async () => {
-        // 2. Wait until the DOM attribute confirms this exact frame has been committed.
-        //    This is more reliable than rAF alone — rAF in headless Chrome can fire
-        //    before the compositor has flushed, producing stale screenshots.
-        await page.waitForFunction(
-          (f) => document.documentElement.dataset.renderedFrame === String(f),
-          { timeout: 10000 },
-          t,
-        )
-        // 2b. An image the props name with no extension is fetched when the page
-        //     asks for it, so wait for it to arrive before capturing this frame
-        //     (page-guard.js settleOnDemand; at once when the props name none).
-        await guard.settleOnDemand()
-        // 2c. And for every image on the page: an overlay that mounts one only
-        //     from a later frame inserts it in the commit just made, on a fresh
-        //     page at the first frame of every chunk (page-guard.js settleImages).
-        //     Capped; past the cap the frame is captured anyway and the image named.
-        await guard.settleImages()
-        // 3. Double rAF: first fires after layout+paint, second fires after the result
-        //    has been composited — guarantees the screenshot sees the current frame.
-        await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
-        // 4. Into the chunk's ffmpeg (§131): the same bytes a `path`
-        //    screenshot wrote to disk. A PNG, or a JPEG for an opaque capture
-        //    of an SDR master (§284: screenshotOptionsFor).
-        return page.screenshot(screenshotOptionsFor(job))
-      }, { overlay: overlayName(job), log, pageErrors })
-      await sink.write(png)
+    if (inPage) {
+      try {
+        // 1. The page sets and draws every sub-frame, draws their average onto
+        //    its 3D canvases and stamps the frame on <html>; one capture. A
+        //    sub-frame that did not draw retries the frame (three-frame.js).
+        const png = await captureWithThree(page, frame, captureAt(frame), { ...threeOpts, subframes: times })
+        await sinkFor(true).write(png)
+      } catch (err) {
+        if (!isThreeBlurUnsupported(err) || frame !== frameStart) throw err
+        inPage = false
+        noteBlurFallback(job, err.reason)
+      }
+    }
+    if (!inPage) {
+      // Each sub-frame is its own screenshot, written in order; the encode
+      // averages each group.
+      for (let s = 0; s < times.length; s++) {
+        const t = times[s]
+        // 1. Tell React to update to this frame (flushSync commits DOM synchronously,
+        //    draws any 3D canvas and stamps data-rendered-frame on <html> so we can
+        //    verify below). A 3D canvas that did not draw the frame, before the
+        //    capture or by the end of it, has the frame set and captured again,
+        //    then fails the chunk as three_frame_blank (three-frame.js).
+        const png = await captureWithThree(page, t, captureAt(t), threeOpts)
+        await sinkFor(false).write(png)
+      }
     }
     onFrame?.()
     if ((localIdx + 1) % reportEvery === 0 || localIdx + 1 === totalFrames) {
@@ -813,6 +875,15 @@ async function captureChunkFrames(worker, job, sink, at, onFrame) {
 /** How a three_frame_blank error names the chunk's overlay: its file and its segment. */
 function overlayName(job) {
   return job.componentPath ? `${basename(job.componentPath)} (${job.id})` : job.id
+}
+
+// A 3D overlay whose page cannot average its motion blur is named once per
+// segment, not once per chunk.
+const blurFallbackNamed = new Set()
+function noteBlurFallback(job, reason) {
+  if (blurFallbackNamed.has(job.id)) return
+  blurFallbackNamed.add(job.id)
+  log(`${overlayName(job)}: its page cannot average motion blur (${reason}); capturing each sub-frame instead`)
 }
 
 const TTY = process.stderr.isTTY

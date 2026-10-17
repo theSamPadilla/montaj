@@ -269,7 +269,7 @@ function __bakeStyle(f) {
 import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
-import { makeOverlayGlobals, drawThreeFrame, threeCaptureCheck } from 'montaj-overlay-runtime'
+import { makeOverlayGlobals, drawThreeFrame, threeCaptureCheck, averageThreeFrames } from 'montaj-overlay-runtime'
 import Component from ${JSON.stringify(componentPath)}
 ${bakeImport}
 // Overlay components use frame, fps, duration, props, interpolate, spring, Ph, FaIcon,
@@ -420,6 +420,17 @@ window.__setFrame = async (n) => {
 }
 // After the capture: whether a canvas lost its drawing since (three-frame.js).
 window.__montajThreeCheck = threeCaptureCheck
+// A motion-blurred frame of a 3D overlay (§377): each sub-frame time in \`times\`
+// (motion-blur.js subframeTimes, passed by renderer.js) is set and drawn by
+// __setFrame, and the average of the 3D canvases' sub-frames is drawn onto them
+// (three-bridge.js averageThreeFrames), so the frame is captured once. Returns
+// what __setFrame does, or { unsupported } when the page cannot average: the
+// renderer then captures each sub-frame, as before.
+window.__setFrameBlurred = async (n, times) => {
+  const three = await averageThreeFrames(times, (t) => window.__setFrame(t))
+  document.documentElement.dataset.renderedFrame = String(n)
+  return three
+}
 `
 }
 
