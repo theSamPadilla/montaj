@@ -63,8 +63,8 @@ UP_ENOUGH = 0.3
 FOOTPRINT_MARGIN = 0.25
 
 # scene.camera's keys: frames are dropped while the camera interpolated between the
-# kept keys (location, target and roll linear, no ease, the lens constant, as the
-# engine plays them) draws THIN_POINTS of the sparse points, and points on a
+# kept keys (location, target and roll linear, the lens constant) draws THIN_POINTS
+# of the sparse points, and points on a
 # PROBE_GRID x PROBE_GRID grid of the frame's pixel rays, within the tolerance (px)
 # of where that frame's own camera draws them. On each ray the points are where it
 # meets the plane, as far ahead as the frame's target, and PROBE_FAR times that,
@@ -73,6 +73,9 @@ FOOTPRINT_MARGIN = 0.25
 # is the length of a straight line in 1 / depth, so it is largest at the nearest or
 # the farthest point checked, and every depth between is covered. The check runs on
 # the values as printed (rounded()), so the tolerance holds on what is written.
+# The engine plays a camera key with no ease as a monotone cubic (cameraKeyAt), which
+# eases out of and into a key beside a rest, so rounded() marks every key "linear":
+# played as a cubic, a still, a dolly and a still kept as four keys miss by over 20 px.
 # Roll keys are left out when every frame's roll is under ROLL_KEYS_FROM degrees.
 # The default tolerance stays under the track's own error (about 1.4 px of
 # reprojection on a phone clip), and a hand-held clip at 10 fps still thins at it:
@@ -723,7 +726,7 @@ def _printed_pos(v):
 def rounded(track):
     """The track as printed: positions to 0.1 mm, up to 1e-6, roll to 0.01 degrees, and
     scene.camera keyed at the frames thin_keys kept, with roll keys when the camera
-    rolls."""
+    rolls, every key [t, value, "linear"] as thin_keys checked it."""
     pos = _printed_pos
     frames = [{"t": round(f["t"], TIME_DECIMALS), "location": pos(f["location"]), "target": pos(f["target"]),
                "up": [round(float(c), UP_DECIMALS) + 0.0 for c in f["up"]],
@@ -738,11 +741,12 @@ def rounded(track):
     keys, key_roll = track["keys"], track["keyRoll"]
     camera = {
         "lens": lens,
-        "location": [[frames[i]["t"], frames[i]["location"]] for i in keys],
-        "target": [[frames[i]["t"], frames[i]["target"]] for i in keys],
+        "location": [[frames[i]["t"], frames[i]["location"], "linear"] for i in keys],
+        "target": [[frames[i]["t"], frames[i]["target"], "linear"] for i in keys],
     }
     if key_roll is not None:
-        camera["roll"] = [[frames[i]["t"], round(float(r), ROLL_DECIMALS) + 0.0] for i, r in zip(keys, key_roll)]
+        camera["roll"] = [[frames[i]["t"], round(float(r), ROLL_DECIMALS) + 0.0, "linear"]
+                          for i, r in zip(keys, key_roll)]
     printed = {k: v for k, v in track.items() if k not in ("keys", "keyRoll")}
     return {
         **printed,

@@ -599,6 +599,79 @@ def test_leaving_a_small_roll_out_is_charged_to_the_tolerance():
     assert _printed_miss(ct.rounded(tight), CHECKED) <= 0.3 + 1e-9
 
 
+# The app's engine plays scene camera keys through cameraKeyAt (library/model3d/
+# motion.js, with its monotoneTangents), ported here for this test only, its "linear"
+# ease and its default: a key with ease "linear" lerps its segment; one with no ease
+# is a monotone cubic Hermite per component, Fritsch-Carlson tangents, clamped into
+# the segment's two values. (Its other eases, hold, in, out and back, are not used.)
+def _monotone_tangents(ts, ys):
+    n = len(ys)
+    d = [(ys[k + 1] - ys[k]) / (ts[k + 1] - ts[k]) if ts[k + 1] > ts[k] else 0.0 for k in range(n - 1)]
+    m = [d[0] if k == 0 else d[n - 2] if k == n - 1
+         else (d[k - 1] + d[k]) / 2 if np.sign(d[k - 1]) * np.sign(d[k]) > 0 else 0.0 for k in range(n)]
+    s = [1.0] * n
+    for k in range(n - 1):
+        if not d[k]:
+            continue
+        r = math.hypot(m[k] / d[k], m[k + 1] / d[k])
+        if r > 3:
+            s[k], s[k + 1] = min(s[k], 3 / r), min(s[k + 1], 3 / r)
+    return [x * f for x, f in zip(m, s)]
+
+
+def _camera_key_at(keys, t):
+    ks = [(k[0], np.atleast_1d(np.asarray(k[1], float)), k[2] if len(k) > 2 else None) for k in keys]
+    if t <= ks[0][0]:
+        return ks[0][1]
+    if t >= ks[-1][0]:
+        return ks[-1][1]
+    i = max(j for j in range(len(ks) - 1) if ks[j][0] <= t)
+    (t1, p1, ease), (t2, p2, _) = ks[i], ks[i + 1]
+    h = t2 - t1
+    u = (t - t1) / h
+    if ease == "linear":
+        return p1 + (p2 - p1) * u
+    h00, h10, h01, h11 = 2 * u**3 - 3 * u**2 + 1, u**3 - 2 * u**2 + u, -2 * u**3 + 3 * u**2, u**3 - u**2
+    out = []
+    for q in range(len(p1)):
+        m = _monotone_tangents([k[0] for k in ks], [k[1][q] for k in ks])
+        v = h00 * p1[q] + h10 * m[i] * h + h01 * p2[q] + h11 * m[i + 1] * h
+        out.append(min(max(v, min(p1[q], p2[q])), max(p1[q], p2[q])))
+    return np.array(out)
+
+
+def _engine_miss(track, points, eases=True):
+    """_printed_miss with scene.camera played as the engine plays it (_camera_key_at);
+    eases=False drops the keys' eases, as keys written without them would be."""
+    cam = track["scene"]["camera"]
+    keys = lambda name: [k if eases else k[:2] for k in cam[name]]
+    worst = 0.0
+    for f in track["frames"]:
+        full = {"location": f["location"], "target": f["target"], "roll": f["roll"], "lens": track["lens"]}
+        mid = {"location": _camera_key_at(keys("location"), f["t"]), "target": _camera_key_at(keys("target"), f["t"]),
+               "roll": float(_camera_key_at(keys("roll"), f["t"])[0]) if "roll" in cam else 0.0, "lens": cam["lens"]}
+        for want, got in zip(ct.project_points(full, points, (W, H)), ct.project_points(mid, points, (W, H))):
+            if want is not None and 0 <= want[0] <= W and 0 <= want[1] <= H:
+                worst = max(worst, float(np.hypot(*np.subtract(got, want))))
+    return worst
+
+
+def test_keys_are_written_linear_as_they_were_checked():
+    """Still, a 0.2 m dolly with 6 degrees of roll, still: four keys hold it exactly
+    when the engine plays them linearly. Played as its default monotone cubic, each
+    key beside a rest takes a zero tangent and the move eases in and out, far off."""
+    move = lambda i: min(max((i - 24) / 25, 0.0), 1.0)
+    truth = [(_look(np.array([0.2 * move(i), -0.56, TRUTH_HEIGHT]), [0.2 * move(i), 0, 0], roll=6.0 * move(i)),
+              np.array([0.2 * move(i), -0.56, TRUTH_HEIGHT])) for i in range(75)]
+    track = ct.rounded(_solve(known={"height": TRUTH_HEIGHT}, truth=truth, points=CHECKED))
+    cam = track["scene"]["camera"]
+    assert [k[0] for k in cam["location"]] == [0.0, 2.4, 4.9, 7.4]
+    assert all(k[2:] == ["linear"] for name in ("location", "target", "roll") for k in cam[name])
+    assert _engine_miss(track, CHECKED) <= ct.DEFAULT_TOLERANCE_PX + 1e-9
+    assert _engine_miss(track, CHECKED) == pytest.approx(_printed_miss(track, CHECKED), abs=1e-9)
+    assert _engine_miss(track, CHECKED, eases=False) > 10
+
+
 def test_the_tolerance_sets_the_keys_and_the_count_is_in_the_notes():
     poses, seen = _reconstruction(truth=[(R, C) for R, C in TRUTH])
     solve = lambda tol: ct.solve(poses, seen, fps=FPS, size=[W, H], focal=FOCAL, k1=0.0,
@@ -641,11 +714,11 @@ def test_rounded_output_and_scene_camera_keys():
     at = {f["t"]: f for f in track["frames"]}
     times = [k[0] for k in cam["location"]]
     assert times[0] == 0.0 and times[-1] == 0.4 and times == sorted(times)
-    assert cam["location"] == [[t, at[t]["location"]] for t in times]
-    assert cam["target"] == [[t, at[t]["target"]] for t in times]
+    assert cam["location"] == [[t, at[t]["location"], "linear"] for t in times]
+    assert cam["target"] == [[t, at[t]["target"], "linear"] for t in times]
     # frame 4 rolls 12 degrees: roll keys, at the same times, the frames' own sign
-    assert cam["roll"] == [[t, at[t]["roll"]] for t in times]
-    assert dict(cam["roll"])[0.4] == 12.0
+    assert cam["roll"] == [[t, at[t]["roll"], "linear"] for t in times]
+    assert {k[0]: k[1] for k in cam["roll"]}[0.4] == 12.0
     assert set(cam) == {"lens", "location", "target", "roll"}
     for f in track["frames"]:
         assert list(f) == ["t", "location", "target", "up", "roll", "registered"]

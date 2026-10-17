@@ -226,11 +226,14 @@ def _triangulate(np, ct, cams, pixels, size):
 
 def _scene_camera_miss(np, ct, track, grid=5):
     """The furthest scene.camera, interpolated between its keys as the engine plays
-    them (location, target and roll linear), draws a 5 x 5 grid of points from where
-    each frame's camera draws them. The points are where that frame's pixel rays
-    meet the table, or as far ahead as its target when a ray misses it."""
+    them, draws a 5 x 5 grid of points from where each frame's camera draws them.
+    Every key is marked "linear" (asserted here), so the engine plays location,
+    target and roll linearly between keys, as np.interp does. The points are where
+    that frame's pixel rays meet the table, or as far ahead as its target when a ray
+    misses it."""
     size = tuple(track["size"])
     cam = track["scene"]["camera"]
+    assert all(k[2:] == ["linear"] for name in ("location", "target", "roll") for k in cam.get(name, []))
     kt = [k[0] for k in cam["location"]]
     at = lambda keys, t: [float(np.interp(t, kt, [k[1][c] for k in keys])) for c in range(3)]
     pixels = [[(a + 0.5) / grid * size[0], (b + 0.5) / grid * size[1]] for a in range(grid) for b in range(grid)]
