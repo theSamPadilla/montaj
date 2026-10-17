@@ -19,6 +19,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { availableParallelism, cpus } from 'node:os'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // Schema lives at montaj_assets/schemas/, sibling to this file's parent
@@ -55,6 +56,26 @@ function buildSpecs(rawSpecs) {
 }
 
 export const COLOR_SPACE_SPECS = buildSpecs(_DATA.specs)
+
+/**
+ * libx265's worker pool lowers the whole ffmpeg process to nice 19 (measured:
+ * a default-pool encode sits at nice 19 for its whole run, so on a busy Mac the
+ * export loses to everything at normal priority). `pools=none` with frame
+ * threads keeps the encode at normal priority for about 40% less peak
+ * parallelism. Twin of lib/normalize.py's `_encoder_args`.
+ */
+export const X265_THREADS = Math.max(1, Math.min(8, (typeof availableParallelism === 'function' ? availableParallelism() : cpus().length) || 1))
+
+/** `spec.encoderArgs`, with the x265 thread settings added for an HEVC encoder. */
+export function encoderArgsFor(spec, threads = X265_THREADS) {
+  if (!/265|hevc/i.test(spec.encoder)) return spec.encoderArgs
+  const out = [...spec.encoderArgs]
+  const i = out.indexOf('-x265-params')
+  const extra = `pools=none:frame-threads=${threads}`
+  if (i >= 0) out[i + 1] = `${out[i + 1]}:${extra}`
+  else out.push('-x265-params', extra)
+  return out
+}
 
 export function specFor(key) {
   return COLOR_SPACE_SPECS[key] ?? COLOR_SPACE_SPECS[DEFAULT_COLOR_SPACE]

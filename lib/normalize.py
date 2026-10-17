@@ -586,9 +586,7 @@ def _build_ffmpeg_cmd(
     source_fps = info.get("fps") or 30
 
     # Build encoder args from the spec.
-    enc_args = ["-c:v", spec["encoder"]]
-    for k, v in spec["encoder_params"].items():
-        enc_args.extend([f"-{k}", v])
+    enc_args = ["-c:v", spec["encoder"], *_encoder_args(spec)]
 
     cmd = [
         ffmpeg_bin(), "-y",
@@ -711,6 +709,25 @@ def _run_atomic_encode(cmd, tmp_path: str, out_path: str, *, label: str, timeout
             os.unlink(tmp_path)
         except FileNotFoundError:
             pass
+
+
+# libx265's worker pool lowers the whole ffmpeg process to nice 19 (measured), so
+# on a busy Mac the conform loses to everything at normal priority. pools=none
+# with frame threads keeps it at normal priority, for about 40% less peak
+# parallelism. Twin of color-space.js's encoderArgsFor.
+X265_THREADS = max(1, min(8, os.cpu_count() or 1))
+
+
+def _encoder_args(spec: dict, threads: int = X265_THREADS) -> list[str]:
+    """The spec's encoder params as argv, with the x265 thread settings added for an HEVC encoder."""
+    params = dict(spec["encoder_params"])
+    if re.search(r"265|hevc", spec["encoder"], re.I):
+        extra = f"pools=none:frame-threads={threads}"
+        params["x265-params"] = f"{params['x265-params']}:{extra}" if params.get("x265-params") else extra
+    out: list[str] = []
+    for k, v in params.items():
+        out.extend([f"-{k}", v])
+    return out
 
 
 def normalize(input_path, out_path, project_color_space: ColorSpaceKey, info=None):

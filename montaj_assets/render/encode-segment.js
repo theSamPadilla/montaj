@@ -39,7 +39,7 @@ import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { ffmpegErrorTail, assertInputsExist, fileInputsOf } from './ffmpeg-error.js'
 import { childKilledError } from './child-killed.js'
-import { specFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
+import { specFor, encoderArgsFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
 import { ffmpegFilterPath } from './ffmpeg-filter-path.js'
 import { graphicsToHdrChain, GRAPHICS_WHITE_NITS, GRAPHICS_WHITE_NITS_NO_FOOTAGE } from './hdr-graphics.js'
@@ -1957,7 +1957,7 @@ function matchCrossfadePairs(items, segStart, segEnd) {
  */
 export function segmentVideoArgs(spec, projectColorSpace, fps, duration) {
   return [
-    '-c:v', spec.encoder, ...spec.encoderArgs, '-pix_fmt', spec.outputPixFmt,
+    '-c:v', spec.encoder, ...encoderArgsFor(spec), '-pix_fmt', spec.outputPixFmt,
     ...spec.outputColorArgs,
     // HDR segments are pinned LIMITED range here, at the encoder. compose.js
     // joins segments with `-c:v copy` and the joined mp4 keeps only the FIRST

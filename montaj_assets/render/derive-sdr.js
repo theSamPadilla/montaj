@@ -26,7 +26,7 @@ import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { childKilledError } from './child-killed.js'
 import { buildColorConversionFilter, hasZscale, hasLut3d } from './encode-segment.js'
-import { specFor, detectFromTransfer, isHdr } from './color-space.js'
+import { specFor, encoderArgsFor, detectFromTransfer, isHdr } from './color-space.js'
 
 // A full re-encode of the whole master, not a per-segment slice: the 600s
 // budget the segment encoder and compose use is too tight for a long 4K master
@@ -118,7 +118,7 @@ export function buildDeriveSdrArgs(masterPath, outputPath, opts = {}) {
     // failing the whole derive.
     '-map', '0:v:0', '-map', '0:a?',
     '-vf', `${chain},format=yuv420p`,
-    '-c:v', spec.encoder, ...spec.encoderArgs, '-pix_fmt', spec.outputPixFmt,
+    '-c:v', spec.encoder, ...encoderArgsFor(spec), '-pix_fmt', spec.outputPixFmt,
     ...spec.outputColorArgs,
     // Audio is copied, never re-encoded — the master's AAC came out of the
     // single end-of-pipeline encode in compose.js, and a second pass through
