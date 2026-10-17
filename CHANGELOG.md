@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed (render): an export that uses one long clip several times no longer stalls at the start.** Each use of the clip started the same conform, none finished inside a fixed 10 minutes, and each timeout left its ffmpeg running. Now the uses share one conform, a conform is stopped only when its output stops growing for 2 minutes (or after 4 hours), and stopping it ends its ffmpeg and removes its temporary file. (`render/render.js` `normalizeIfNeeded`, `render/test/normalize-stall.test.mjs`)
+
 ## v5.35.0
 
 - **Added (steps, render): `export_overlay_pages` writes a project's overlays and captions as web pages.** One self-contained HTML page per overlay in a folder: the overlay's own code inlined, a small player that plays it by itself at its fps and loops, a transparent background, and the files its props name copied beside it (`assets/`) with relative paths, so the folder opens anywhere. A page for an overlay that uses no icons is about 1.5 MB (the icon packages are left out; with icons it is about 8 MB). Fonts load from Google Fonts the first time a page opens. `list` shows what could be exported; `items` picks some. Re-exporting replaces a folder the step wrote; any other non-empty folder is refused (`out_exists`). `bundleComponent` takes an opt-in `stubIcons` for this; renders and samples are unchanged.
