@@ -1175,3 +1175,87 @@ def test_the_free_check_is_repeated_on_a_5xx_and_an_unreachable_one_does_not_upl
         tripo.rig_model(model_path=str(src), out_path=str(tmp_path / "rigged.glb"))
     assert e.value.reason == UNREACHABLE and len(fake.calls) == 3
     assert all(c[1] == f"{API}/animations/rig-check" for c in fake.calls), "no upload for a network failure"
+
+
+# ---------------------------------------------------------------------------
+# MONTAJ_TRIPO_CAPTURE: a real run's calls, written for fixtures. Inert when unset;
+# never the key, a URL's query or a key- or token-named field's value.
+# ---------------------------------------------------------------------------
+
+SIGNED_TASK = {
+    "code": 0,
+    "data": {
+        "task_id": "task_abc123", "type": "image_to_model", "status": "success", "progress": 100,
+        "output": {"model_url": "https://cdn.tripo3d.ai/output/model_pbr.glb?Expires=1&Signature=sig-secret-1"},
+        "credits_consumed": 30,
+    },
+}
+
+
+def _captures(folder):
+    return sorted(Path(folder).glob("*.json"))
+
+
+def test_capture_does_nothing_when_unset(fake, tmp_path, monkeypatch):
+    monkeypatch.delenv(tripo.CAPTURE_ENV, raising=False)
+    monkeypatch.chdir(tmp_path)
+    before = tripo._capture_count
+    fake.script = [_FakeResponse(200, BALANCE)]
+    assert tripo.check_key()["ok"] is True
+    assert tripo._capture_count == before
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_capture_writes_each_call_with_no_key_no_url_query_and_no_token(fake, tmp_path, monkeypatch):
+    cap = tmp_path / "cap"
+    monkeypatch.setenv(tripo.CAPTURE_ENV, str(cap))
+    fake.script = [_FakeResponse(200, CREATE_OK), _FakeResponse(200, SIGNED_TASK), _FakeResponse(200, BALANCE)]
+    body = {"type": "image_to_model", "file": {"type": "png", "file_token": "tok-secret-2"},
+            "image_url": "https://img.example/a.png?X-Amz-Signature=sig-secret-3", "apiKey": "key-secret-4"}
+    assert tripo.create("/generation/image-to-model", body) == "task_abc123"
+    tripo.wait("task_abc123")
+    tripo.check_key()
+
+    files = _captures(cap)
+    assert len(files) == 3
+    assert all(f.resolve().parent == cap.resolve() for f in files)
+    text = "".join(f.read_text() for f in files)
+    for secret in ("test-key", "Bearer", "Authorization", "sig-secret-1", "tok-secret-2", "sig-secret-3", "key-secret-4"):
+        assert secret not in text, secret
+    submit, task, balance = (json.loads(f.read_text()) for f in files)
+    assert (submit["method"], submit["path"], submit["status"]) == ("POST", "/generation/image-to-model", 200)
+    assert submit["request"]["file"] == {"type": "png", "file_token": "<redacted>"}
+    assert submit["request"]["image_url"] == "https://img.example/a.png?<query removed>"
+    assert submit["response"] == CREATE_OK
+    assert task["path"] == "/tasks/task_abc123" and "request" not in task
+    assert task["response"]["data"]["output"]["model_url"] == "https://cdn.tripo3d.ai/output/model_pbr.glb?<query removed>"
+    assert balance["response"] == BALANCE
+
+
+def test_capture_redacts_a_url_inside_text_and_a_token_in_an_error(fake, tmp_path, monkeypatch):
+    cap = tmp_path / "cap"
+    monkeypatch.setenv(tripo.CAPTURE_ENV, str(cap))
+    err = {"code": 2010, "message": "see https://x.example/p?token=sig-secret-5", "session_token": "s-secret-6"}
+    fake.script = [_FakeResponse(403, err)]
+    with pytest.raises(ConnectorError):
+        tripo.check_key()
+    (f,) = _captures(cap)
+    record = json.loads(f.read_text())
+    assert record["status"] == 403
+    assert record["response"] == {"code": 2010, "message": "see https://x.example/p?<query removed>",
+                                  "session_token": "<redacted>"}
+
+
+def test_capture_stays_in_its_folder_and_never_fails_a_call(fake, tmp_path, monkeypatch):
+    cap = tmp_path / "cap"
+    monkeypatch.setenv(tripo.CAPTURE_ENV, str(cap))
+    fake.script = [_FakeResponse(200, BALANCE)]
+    tripo._request("GET", "/../../escape", "probe")
+    assert [f.resolve().parent for f in _captures(cap)] == [cap.resolve()]
+    assert not list(tmp_path.glob("*.json")) and not (tmp_path.parent / "escape").exists()
+
+    blocker = tmp_path / "a-file"
+    blocker.write_text("not a folder")
+    monkeypatch.setenv(tripo.CAPTURE_ENV, str(blocker))
+    fake.script = [_FakeResponse(200, BALANCE)]
+    assert tripo.check_key()["ok"] is True

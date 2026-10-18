@@ -70,7 +70,7 @@ sends the task that generated a model instead of uploading it (and uploads the
 Library code: raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
-import difflib, json, os, sys, time
+import difflib, json, os, re, sys, time
 from datetime import datetime, timezone
 from urllib.parse import quote, unquote, urlsplit
 
@@ -345,6 +345,71 @@ def _error(status: int, body: dict, text: str, what: str, *, repeatable: bool = 
     return ConnectorError(f"Tripo {what} failed ({where}): {msg}")
 
 
+# ---------------------------------------------------------------------------
+# Capture, for test fixtures only. MONTAJ_TRIPO_CAPTURE names a folder; when it is
+# set, every API call's method, path, status and JSON bodies are written there,
+# one file per call, so a real run can replace the documented examples in the
+# tests. Unset (always, in normal use), nothing happens. Never written: headers
+# (the Bearer key), the query string of any URL (a signed download's signature)
+# and the value of any field named like a key or token, in either direction.
+# A capture that cannot be written never fails the call.
+# ---------------------------------------------------------------------------
+
+CAPTURE_ENV = "MONTAJ_TRIPO_CAPTURE"
+_REDACTED = "<redacted>"
+_SECRET_WORDS = {"key", "token", "secret", "password", "passwd", "auth", "authorization", "signature",
+                 "credential", "credentials", "cookie", "session", "sig"}
+_SECRET_ENDS = ("key", "token", "secret", "password", "signature")
+_URL_QUERY = re.compile(r"(\b[a-z][a-z0-9+.-]*://[^\s?#\"'<>]*)\?[^\s#\"'<>]*", re.I)
+_capture_count = 0
+
+
+def _secret_name(name) -> bool:
+    """A field named like a key or token: file_token, apiKey, X-Amz-Security-Token,
+    accesskeyid; not keyframes or monkey."""
+    words = re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(name)).lower())
+    return any(w in _SECRET_WORDS or w.endswith(_SECRET_ENDS) or "apikey" in w or "accesskey" in w
+               for w in words)
+
+
+def _redact(value):
+    """A copy safe to keep: secret-named fields' values replaced, URL queries cut."""
+    if isinstance(value, dict):
+        return {k: (_REDACTED if _secret_name(k) else _redact(v)) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact(v) for v in value]
+    if isinstance(value, str):
+        return _URL_QUERY.sub(r"\1?<query removed>", value)
+    return value
+
+
+def _capture(method: str, path: str, status: int, request, body: dict, text: str) -> None:
+    folder = os.environ.get(CAPTURE_ENV)
+    if not folder:
+        return
+    global _capture_count
+    try:
+        root = os.path.realpath(folder)
+        os.makedirs(root, exist_ok=True)
+        _capture_count += 1
+        slug = "".join(c if c.isalnum() else "-" for c in path).strip("-")[:60] or "root"
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        name = f"{stamp}-{os.getpid()}-{_capture_count:03d}-{method.lower()}-{slug}.json"
+        dest = os.path.join(root, name)
+        if os.path.dirname(dest) != root:
+            return
+        record = {"method": method, "path": _redact(path), "status": status,
+                  "captured": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        if request is not None:
+            record["request"] = _redact(request)
+        record["response"] = _redact(body) if body else _redact((text or "")[:2000])
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(record, f, indent=2)
+    except Exception:
+        pass
+
+
 def _request(method: str, path: str, what: str, *, busy_retries: int = BUSY_RETRIES,
              repeatable: bool = True, **kwargs):
     """One Tripo call; the envelope's `data`. Raises ConnectorError for everything
@@ -369,6 +434,7 @@ def _request(method: str, path: str, what: str, *, busy_retries: int = BUSY_RETR
                 raise ConnectorError(f"Tripo {what} failed: {e}.", reason=UNREACHABLE) from e
             raise ConnectorError(f"Tripo {what} failed: {e}. {_MAY_EXIST}") from e
         body, text = _body(r), getattr(r, "text", "") or ""
+        _capture(method, path, r.status_code, kwargs.get("json"), body, text)
         if r.status_code == 429 or _code(body) in _BUSY_CODES:
             if attempt < busy_retries:
                 time.sleep(_retry_after(r))
