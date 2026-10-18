@@ -17,22 +17,41 @@ const TOTAL_36GB = 36 * GB
 /** `n` segments of 600 frames: with chunkSize 120, 5 jobs each. */
 const segments = (n, props = {}) => Array.from({ length: n }, (_, i) => ({ id: `s${i}`, frameCount: 600, props }))
 const memory = (availableBytes) => ({ readAvailable: () => availableBytes, totalBytes: TOTAL_36GB })
+/** `n` 3D stages of 600 frames whose scene cannot be read: SCENE3D_UNKNOWN_BYTES a worker. Only a render with 3D is sized by memory. */
+const stages = (n) => segments(n).map((s) => ({ ...s, scene3d: true }))
 
-test('planChunks: a 36 GB Mac with 6 GB available runs fewer workers than with 30 GB available', () => {
-  const tight = planChunks(segments(4), { workers: 12, chunkSize: 120, memory: memory(6 * GB) })
-  const roomy = planChunks(segments(4), { workers: 12, chunkSize: 120, memory: memory(30 * GB) })
-  assert.equal(roomy.workerCount, 12)
+test('planChunks: with 3D, a 36 GB Mac with 6 GB available runs fewer workers than with 30 GB available', () => {
+  const tight = planChunks(stages(4), { workers: 12, chunkSize: 120, memory: memory(6 * GB) })
+  const roomy = planChunks(stages(4), { workers: 12, chunkSize: 120, memory: memory(30 * GB) })
+  assert.equal(roomy.workerCount, SCENE3D_MAX_WORKERS, '(30 - 9) / 4.7 = 4, then the 3D cap')
   assert.equal(tight.workerCount, 1, 'under the 9 GB reserve: one worker')
   assert.equal(tight.memory.limitedBy, 'memory')
   assert.equal(tight.memory.availableBytes, 6 * GB)
   assert.equal(tight.memory.reserveBytes, 9 * GB)
-  assert.equal(tight.memory.perWorkerBytes, PER_WORKER_BYTES)
+  assert.equal(tight.memory.perWorkerBytes, SCENE3D_UNKNOWN_BYTES)
 })
 
-test('planChunks: an explicit worker count is a ceiling memory lowers and never raises', () => {
-  assert.equal(planChunks(segments(4), { workers: 3, chunkSize: 120, memory: memory(120 * GB) }).workerCount, 3)
-  const lowered = planChunks(segments(4), { workers: 8, chunkSize: 120, memory: memory(13.5 * GB) })
-  assert.equal(lowered.workerCount, 3, '(13.5 - 9) / 1.5')
+test('planChunks: a 2D-only render keeps 1.3.10\'s worker count whatever memory is available', () => {
+  let reads = 0
+  const at = (availableBytes) => ({ readAvailable: () => { reads++; return availableBytes }, totalBytes: TOTAL_36GB })
+  for (const available of [6 * GB, 30 * GB]) {
+    const plan = planChunks(segments(4), { workers: 12, chunkSize: 120, memory: at(available) })
+    assert.equal(plan.workerCount, 12, `${available}`)
+    assert.equal(plan.memory.limitedBy, null)
+    assert.equal(plan.memory.availableBytes, null)
+  }
+  assert.equal(reads, 0, 'no memory read')
+  // Only the machine's total lowers it, as 1.3.10's workerCap: one per 1.5 GB.
+  const small = planChunks(segments(4), { workers: 12, chunkSize: 120, memory: { readAvailable: () => 0, totalBytes: 6 * GB } })
+  assert.deepEqual([small.workerCount, small.memory.limitedBy], [4, 'memory'])
+  assert.deepEqual(memoryPlanLines(small.memory), ['workers lowered by memory: total=6.0GB perWorker=1.5GB workers=4 (asked 12)'])
+})
+
+test('planChunks: with 3D, an explicit worker count is a ceiling memory lowers and never raises', () => {
+  assert.equal(planChunks(stages(4), { workers: 1, chunkSize: 120, memory: memory(120 * GB) }).workerCount, 1)
+  const lowered = planChunks(stages(4), { workers: 8, chunkSize: 120, memory: memory(13.5 * GB) })
+  assert.equal(lowered.workerCount, 1, '(13.5 - 9) / 4.7')
+  assert.equal(lowered.memory.limitedBy, 'memory')
   assert.equal(lowered.memory.asked, 8)
 })
 
@@ -85,13 +104,11 @@ test('planChunks: under motion blur a 3D segment still gets SCENE3D_MAX_CHUNK_FR
   assert.deepEqual(plan.jobs.filter((j) => j.id === 'stage').map((j) => j.frameEnd - j.frameStart), [120, 120, 120, 120, 120])
 })
 
-test('planChunks: a 1080x1920 capture budgets a 2D worker at the floor, so the same memory runs more workers than at 4K', () => {
-  const at = (captureScale) => segments(4).map((s) => ({ ...s, width: 1080, height: 1920, captureScale }))
-  const fourK = planChunks(at(2), { workers: 12, chunkSize: 120, memory: memory(15 * GB) })
-  const hd = planChunks(at(1), { workers: 12, chunkSize: 120, memory: memory(15 * GB) })
-  assert.equal(fourK.workerCount, 4, '(15 - 9) / 1.5')
-  assert.equal(hd.memory.perWorkerBytes, 0.75 * GB)
-  assert.equal(hd.workerCount, 8, '(15 - 9) / 0.75')
+test('planChunks: with 3D, a capture larger than the scene sets the per-worker estimate', () => {
+  const cube = { id: 'cube', frameCount: 600, props: { sceneJson: JSON.stringify({ model: { name: 'cube' } }) } }
+  const at = (captureScale) => [...segments(2).map((s) => ({ ...s, width: 2160, height: 3840, captureScale })), cube]
+  assert.equal(planChunks(at(2), { workers: 2, chunkSize: 120, memory: memory(60 * GB) }).memory.perWorkerBytes, 4 * PER_WORKER_BYTES, 'an 8K capture')
+  assert.ok(planChunks(at(1), { workers: 2, chunkSize: 120, memory: memory(60 * GB) }).memory.perWorkerBytes < 2 * GB, 'the cube')
 })
 
 test('planChunks: a motion blur of 0, NaN or garbage is 1 sub-frame and a finite chunk size; 2 to 8 pass through', () => {
@@ -104,10 +121,12 @@ test('planChunks: a motion blur of 0, NaN or garbage is 1 sub-frame and a finite
   for (const motionBlur of [2, 5, 8]) assert.equal(planChunks(segments(1), { workers: 4, motionBlur, memory: memory(60 * GB) }).subframes, motionBlur)
 })
 
-test('memoryPlanLines: a render memory lowers names available, reserve, perWorker and the result', () => {
-  const plan = planChunks(segments(4), { workers: 12, chunkSize: 120, memory: memory(15 * GB) })
-  assert.deepEqual(memoryPlanLines(plan.memory), ['workers lowered by memory: available=15.0GB reserve=9.0GB perWorker=1.5GB workers=4 (asked 12)'])
-  assert.deepEqual(memoryPlanLines(planChunks(segments(4), { workers: 12, chunkSize: 120, memory: memory(60 * GB) }).memory), [])
+test('memoryPlanLines: a 3D render memory lowers names available, reserve, perWorker and the result', () => {
+  const plan = planChunks(stages(4), { workers: 12, chunkSize: 120, memory: memory(15 * GB) })
+  assert.deepEqual(memoryPlanLines(plan.memory).slice(1), ['workers lowered by memory: available=15.0GB reserve=9.0GB perWorker=4.7GB workers=1 (asked 12)'])
+  assert.deepEqual(memoryPlanLines(planChunks(stages(4), { workers: 12, chunkSize: 120, memory: memory(60 * GB) }).memory).slice(1),
+    ['workers capped for 3d: one GPU draws every worker, workers=2 (asked 12, cap 2)'])
+  assert.deepEqual(memoryPlanLines(planChunks(segments(4), { workers: 12, chunkSize: 120, memory: memory(1 * GB) }).memory), [], '2D-only')
 })
 
 // --- the worker loop -------------------------------------------------------
@@ -117,6 +136,7 @@ const renderable = (n) => Array.from({ length: n }, (_, i) => ({
   id: `seg${i}`, frameCount: 10, fps: 30, width: 108, height: 192, startSeconds: 0, endSeconds: 1,
   outputPath: `/nonexistent/seg${i}.mkv`, boundary: { allows: () => true },
 }))
+const renderable3d = (n) => renderable(n).map((seg) => ({ ...seg, scene3d: true }))
 
 /** Fake browsers and a fake chunk render that records how many chunks run at once. */
 function fakes({ ms = 15, onDone = () => {} } = {}) {
@@ -136,12 +156,12 @@ function fakes({ ms = 15, onDone = () => {} } = {}) {
   }
 }
 
-test('renderAllSegments: memory short after the plan, one chunk runs at a time and every chunk still renders', async () => {
+test('renderAllSegments: with 3D, memory short after the plan, one chunk runs at a time and every chunk still renders', async () => {
   let reads = 0
   const f = fakes()
   // Room for two workers when the render plans; short from then on.
   const readAvailable = () => (reads++ === 0 ? 30 * GB : 5 * GB)
-  const out = await renderAllSegments(renderable(6), {
+  const out = await renderAllSegments(renderable3d(6), {
     workers: 2, chunkSize: 1000, launchWorker: f.launchWorker, renderJob: f.renderJob,
     memory: { readAvailable, totalBytes: TOTAL_36GB, pollMs: 1 },
   })
@@ -150,11 +170,11 @@ test('renderAllSegments: memory short after the plan, one chunk runs at a time a
   assert.equal(f.seen.most, 1, 'the second worker waited for memory the whole render')
 })
 
-test('renderAllSegments: when memory recovers, the waiting worker renders beside the first', async () => {
+test('renderAllSegments: with 3D, when memory recovers, the waiting worker renders beside the first', async () => {
   let available = 5 * GB
   let reads = 0
   const f = fakes({ ms: 25, onDone: (seen) => { if (seen.rendered.length === 1) available = 30 * GB } })
-  const out = await renderAllSegments(renderable(6), {
+  const out = await renderAllSegments(renderable3d(6), {
     workers: 2, chunkSize: 1000, launchWorker: f.launchWorker, renderJob: f.renderJob,
     memory: { readAvailable: () => (reads++ === 0 ? 30 * GB : available), totalBytes: TOTAL_36GB, pollMs: 1 },
   })
@@ -162,13 +182,25 @@ test('renderAllSegments: when memory recovers, the waiting worker renders beside
   assert.equal(f.seen.most, 2)
 })
 
-test('renderAllSegments: with room, both workers render at once from the start', async () => {
+test('renderAllSegments: with 3D and room, both workers render at once from the start', async () => {
   const f = fakes()
-  await renderAllSegments(renderable(4), {
+  await renderAllSegments(renderable3d(4), {
     workers: 2, chunkSize: 1000, launchWorker: f.launchWorker, renderJob: f.renderJob,
     memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1 },
   })
   assert.equal(f.seen.most, 2)
+})
+
+test('renderAllSegments: a 2D-only render never reads memory and never waits', async () => {
+  let reads = 0
+  const f = fakes()
+  const out = await renderAllSegments(renderable(6), {
+    workers: 2, chunkSize: 1000, launchWorker: f.launchWorker, renderJob: f.renderJob,
+    memory: { readAvailable: () => { reads++; return 1 * GB }, totalBytes: TOTAL_36GB, pollMs: 1 },
+  })
+  assert.equal(out.length, 6)
+  assert.equal(f.seen.most, 2, 'both workers render at once on 1 GB available')
+  assert.equal(reads, 0)
 })
 
 test('renderAllSegments: a worker gets a fresh browser after every 3D chunk, and after RECYCLE_AFTER 2D chunks', async () => {

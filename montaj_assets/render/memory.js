@@ -356,6 +356,25 @@ export function planWorkers({ target, jobs, availableBytes, totalBytes, perWorke
   return { workers, asked, byMemory, availableBytes, totalBytes, reserveBytes: reserve, perWorkerBytes, has3d, limitedBy }
 }
 
+/**
+ * The worker count of a render with no 3D: 1.3.10's, unchanged (chunk-plan.js
+ * workerCap before this file): the configured count or the cores, at most one
+ * per PER_WORKER_BYTES of the machine's TOTAL memory, and never more than the
+ * jobs. The memory available is not read: a 2D worker's budget is not
+ * measured, and sizing by it would take a 4K 2D render on a busy Mac from 12
+ * workers to 1. Same shape as planWorkers, with `availableBytes` null.
+ */
+export function planWorkers2d({ target, jobs, totalBytes }) {
+  const asked = Math.max(1, Math.min(Math.max(1, target | 0), jobs))
+  const byMemory = Math.max(1, Math.floor((Number(totalBytes) || 0) / PER_WORKER_BYTES))
+  const workers = jobs > 0 ? Math.min(asked, byMemory) : 0
+  const limitedBy = jobs > 0 && workers < asked ? 'memory' : null
+  return {
+    workers, asked, byMemory, availableBytes: null, totalBytes, reserveBytes: reserveBytes(totalBytes),
+    perWorkerBytes: PER_WORKER_BYTES, has3d: false, limitedBy,
+  }
+}
+
 /** Bytes as the log writes them: `17.0GB`. */
 export const gb = (bytes) => `${(bytes / GB).toFixed(1)}GB`
 

@@ -17,7 +17,7 @@ import { FFMPEG } from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { childKilledError, isChildKilled, syncResultError, CHILD_KILLED_PHASES } from './child-killed.js'
 import { adaptiveChunkSize } from './chunk-plan.js'
-import { availableMemoryBytes, workerFootprint, planWorkers, createMemoryGovernor, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
+import { availableMemoryBytes, workerFootprint, planWorkers, planWorkers2d, createMemoryGovernor, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
 import { toFileHref } from './file-url.js'
 import { subframeTimes, motionBlurFilter } from './motion-blur.js'
 import { geometryAt } from '@bycrux/timeline-core'
@@ -81,10 +81,12 @@ export function resolveChunkSize(longest, targetWorkers, subframes, configChunkS
  * `chunkSize` frames, and how many browser workers capture them at once. Also
  * what render.js's disk check (disk-space.js, §128) sizes its estimate from.
  *
- * The worker count is memory.js's planWorkers: the configured count or the
- * cores, lowered to what the memory available now holds at what one worker
- * of these segments holds (workerFootprint), and to SCENE3D_MAX_WORKERS when
- * any segment is 3D. `memory` is that plan, with `footprint`.
+ * With any 3D segment the worker count is memory.js's planWorkers: the
+ * configured count or the cores, lowered to what the memory available now
+ * holds at what one worker of these segments holds (workerFootprint), and to
+ * SCENE3D_MAX_WORKERS. A 2D-only render keeps 1.3.10's count
+ * (planWorkers2d), with no memory read. `memory` is that plan, with
+ * `footprint`.
  * A 3D segment (isScene3dSegment) is cut at most SCENE3D_MAX_CHUNK_FRAMES
  * output frames a chunk, whatever `chunkSize` says; `chunkSize` is the
  * 2D segments' size.
@@ -128,15 +130,20 @@ export function planChunks(segments, config = {}) {
   }
 
   const footprint = workerFootprint(segments)
+  const totalBytes = config.memory?.totalBytes ?? os.totalmem()
+  // A render with 3D is sized by the memory available now; a 2D-only one
+  // keeps 1.3.10's count, which reads none (memory.js planWorkers2d).
   const memory = {
-    ...planWorkers({
-      target:         targetWorkers,
-      jobs:           jobs.length,
-      availableBytes: jobs.length > 0 ? (config.memory?.readAvailable ?? availableMemoryBytes)() : 0,
-      totalBytes:     config.memory?.totalBytes ?? os.totalmem(),
-      perWorkerBytes: footprint.bytes,
-      has3d:          footprint.has3d,
-    }),
+    ...(footprint.has3d
+      ? planWorkers({
+        target:         targetWorkers,
+        jobs:           jobs.length,
+        availableBytes: jobs.length > 0 ? (config.memory?.readAvailable ?? availableMemoryBytes)() : 0,
+        totalBytes,
+        perWorkerBytes: footprint.bytes,
+        has3d:          true,
+      })
+      : planWorkers2d({ target: targetWorkers, jobs: jobs.length, totalBytes })),
     footprint,
   }
   return { jobs, workerCount: memory.workers, chunkSize, subframes, memory }
@@ -151,7 +158,9 @@ export function memoryPlanLines(memory) {
     const mb = (bytes) => `${Math.round(bytes / 1e6)}MB`
     lines.push(`3d worker estimate=${gb(f.bytes)} from=${s.from} text=${mb(s.textBytes)} textures=${s.textures} (${mb(s.textureBytes)} decoded)`)
   }
-  if (memory.limitedBy === 'memory') {
+  if (memory.limitedBy === 'memory' && memory.availableBytes == null) {
+    lines.push(`workers lowered by memory: total=${gb(memory.totalBytes)} perWorker=${gb(memory.perWorkerBytes)} workers=${memory.workers} (asked ${memory.asked})`)
+  } else if (memory.limitedBy === 'memory') {
     lines.push(`workers lowered by memory: available=${gb(memory.availableBytes)} reserve=${gb(memory.reserveBytes)} perWorker=${gb(memory.perWorkerBytes)} workers=${memory.workers} (asked ${memory.asked})`)
   } else if (memory.limitedBy === '3d') {
     lines.push(`workers capped for 3d: one GPU draws every worker, workers=${memory.workers} (asked ${memory.asked}, cap ${SCENE3D_MAX_WORKERS})`)
@@ -225,16 +234,19 @@ export async function renderAllSegments(segments, config = {}) {
   // and after every 3D chunk: a fresh browser per 3D chunk bounds a leaking
   // GPU process's growth to one short chunk (SCENE3D_MAX_CHUNK_FRAMES, memory.js).
 
-  // Before each chunk a worker reads the memory again, and waits while its
-  // chunk would take the machine below the reserve (memory.js). A worker
-  // alone never waits; a chunk in flight is never stopped.
-  const governor = createMemoryGovernor({
-    perWorkerBytes: memory.perWorkerBytes,
-    reserveBytes:   memory.reserveBytes,
-    readAvailable:  config.memory?.readAvailable ?? availableMemoryBytes,
-    ...(config.memory?.pollMs != null ? { pollMs: config.memory.pollMs } : {}),
-    log,
-  })
+  // In a render with 3D, before each chunk a worker reads the memory again,
+  // and waits while its chunk would take the machine below the reserve
+  // (memory.js). A worker alone never waits; a chunk in flight is never
+  // stopped. A 2D-only render never waits, as in 1.3.10 (planWorkers2d).
+  const governor = memory.has3d
+    ? createMemoryGovernor({
+      perWorkerBytes: memory.perWorkerBytes,
+      reserveBytes:   memory.reserveBytes,
+      readAvailable:  config.memory?.readAvailable ?? availableMemoryBytes,
+      ...(config.memory?.pollMs != null ? { pollMs: config.memory.pollMs } : {}),
+      log,
+    })
+    : { acquire: async (_name, more = () => true) => more(), release() {} }
 
   // §128: the first failed chunk fails the render, but only once every worker
   // has stopped: the other browsers are closed at once (their chunk in
