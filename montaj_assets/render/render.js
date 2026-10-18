@@ -1047,6 +1047,8 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
     const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
     const { videoItems } = collectAllItems(projectJson)
     const captureScale = captureScaleFor(settings.resolution)
+    // As main() does: planChunks' memory plan prices a 2D worker by its capture (memory.js captureWorkerBytes).
+    for (const spec of segmentSpecs) spec.captureScale = captureScale
     stampSourceProbes(videoItems, new Map())
     const picture = resolvePictureColorSpace(projectJson, settings, videoItems)
     const { colorSpace: projectColorSpace } = picture

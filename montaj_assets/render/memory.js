@@ -50,23 +50,28 @@ export const SCENE3D_MAX_WORKERS = 2
 /**
  * A 3D segment is cut into chunks of at most this many OUTPUT frames, and
  * each chunk runs on a fresh browser (renderer.js). Chrome's GPU process can
- * leak about 41 MB per frame within one page, intermittently, when a CSS
- * filter sits over the WebGL canvas (R-leak, 2026-10-17; older generated
- * stage bundles may have one), so growth within a chunk is unbounded but by
- * its length: 120 frames bounds it to about 5 GB. Short chunks do not change
- * the output: the stage is deterministic in the frame's time (verified
- * 2026-10-17 by probing a fresh page at each chunk start against a
- * continuous run, bit for bit, physics included).
+ * grow with every SCREENSHOT within one page when any CSS effect sits over
+ * the WebGL canvas (R-leak, 2026-10-17): montaj's baked opacity wrapper
+ * (bundle.js __bakeStyle) at opacity < 1, about 8 MB a screenshot at opacity
+ * 0 on Sam's bundles, or the studio grade, about 41 to 48 MB. Growth within
+ * one page is unbounded but by its screenshots: a chunk captures one per
+ * output frame when its page blurs in-page, and up to 120 x subframes when it
+ * captures every sub-frame (keyframes moving within a frame, or a page that
+ * cannot blur in-page). MEASURED with this bound: about 2.6 GB per worker on
+ * Sam's main bundle (4 workers, opacity 0). Short chunks do not change the
+ * output: the stage is deterministic in the frame's time (R-jitter probe,
+ * 2026-10-17).
  */
 export const SCENE3D_MAX_CHUNK_FRAMES = 120
 
 /**
  * A 3D segment whose scene this file cannot read (a stage bundle it cannot
  * stat, or no file at all): priced at the heaviest 3D worker measured, the
- * park-notes stage's 3.6 GB (cf P0, 2026-10-17, below), so an unknown scene
- * is budgeted as the worst one known rather than as 2D.
+ * park-notes stage under the studio grade's 4.7 GB (cf P0, 2026-10-17,
+ * below), so an unknown scene is budgeted as the worst one known rather than
+ * as 2D.
  */
-export const SCENE3D_UNKNOWN_BYTES = 3.6 * GB
+export const SCENE3D_UNKNOWN_BYTES = 4.7 * GB
 
 /**
  * A 3D worker is SCENE3D_BASE_BYTES, plus SCENE3D_TEXT_FACTOR per byte of
@@ -79,18 +84,21 @@ export const SCENE3D_UNKNOWN_BYTES = 3.6 * GB
  * and 1.8 GB in its GPU process (the youngest worker; older ones grew to
  * 9.8 GB, a capture-side growth being measured, not part of this estimate):
  * 3.4 GB. MEASURED again on its own 2026-10-17 (cf P0,
- * /Users/Shared/montaj-377-p0/results.txt): the same stage, 85,270,896 bytes
- * of scene, 1080x1920, 60 fps, motion blur 5, phys_footprint summed over
- * every Chrome process: one worker peaks at 3.6 GB (GPU 1.8 + renderer 1.7),
- * two at 7.3 GB. A base of 1 GB plus 30 bytes per byte of text gives 3.6 GB
- * for it, plus its textures: the scene's cost is mostly its text, held as text
+ * /Users/Shared/montaj-377-p0/results.txt), on the in-page blur path that
+ * ships: the same stage, 85,270,896 bytes of scene, 108.8 MB of decoded
+ * textures (48, by scene3dFootprint), 1080x1920, 60 fps, motion blur 5,
+ * phys_footprint summed over every Chrome process, one worker: 4.1 GB peak
+ * over 4 s (row s2a-w1-4s), 4.2 GB over 20 s (s2a-w1-20s), 4.7 GB under the
+ * studio grade (s2a-w1-20s-studio). A base of 1.9 GB plus 30 bytes per byte
+ * of text plus its textures gives 4.7 GB for it: the scene's cost is mostly
+ * its text, held as text
  * (the bundle's source, the `sceneJson` prop, the parsed scene) and as the
  * geometry decoded from it (typed arrays in the page, buffers on the GPU and
  * the GPU process's own copies). One scene: the split between base and
  * factor is a fit, not two measurements. The base is a 1080p capture's; a
  * 4K one's framebuffers add a few hundred MB, inside the fit's margin.
  */
-export const SCENE3D_BASE_BYTES = 1 * GB
+export const SCENE3D_BASE_BYTES = 1.9 * GB
 export const SCENE3D_TEXT_FACTOR = 30
 /**
  * Each texture decoded: RGBA in the page (stage-textures.js keeps an

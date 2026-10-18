@@ -127,11 +127,11 @@ test('scene3dFootprint: the base, the factor per byte of text, and each distinct
 })
 
 test('the 3D constants still cover the scene they were fitted to', () => {
-  // 2026-10-17: an 85,270,896-byte active.json, captured at 1080x1920, held about 1.6 GB (renderer) + 1.8 GB (GPU)
-  // per worker before any growth; cf P0 (2026-10-17) measured one worker's peak on it alone at 3.6 GB.
-  // Its textures decode to at least the main model's 25 MB. Within a fifth above.
-  const estimate = SCENE3D_BASE_BYTES + SCENE3D_TEXT_FACTOR * 85_270_896 + SCENE3D_TEXTURE_COPIES * 25e6
-  assert.ok(estimate >= 3.4 * GB && estimate <= 1.2 * 3.4 * GB, `${estimate}`)
+  // cf P0, 2026-10-17 (results.txt): an 85,270,896-byte active.json whose 48 textures decode to 108.8 MB
+  // (scene3dFootprint), 1080x1920, one worker on the in-page blur path: 4.1, 4.2 and 4.7 GB peak (the last under
+  // the studio grade). The estimate covers the heaviest, within a fifth above it.
+  const estimate = SCENE3D_BASE_BYTES + SCENE3D_TEXT_FACTOR * 85_270_896 + SCENE3D_TEXTURE_COPIES * 108.8e6
+  assert.ok(estimate >= 4.7 * GB && estimate <= 1.2 * 4.7 * GB, `${estimate}`)
 })
 
 test('scene3dFootprint: a texture whose header gives no size is counted from its length', () => {
@@ -158,9 +158,10 @@ test('workerFootprint: a 3D scene with large textures needs more per worker than
 })
 
 test('workerFootprint: a small 3D scene is budgeted no lower than a 2D worker, and still reads as 3D', () => {
-  const f = workerFootprint([{ id: 'captions' }, { id: 'cube', props: { sceneJson: JSON.stringify({ model: { name: 'cube' } }) } }])
-  assert.ok(f.scene.bytes < PER_WORKER_BYTES)
-  assert.equal(f.bytes, PER_WORKER_BYTES)
+  // An 8K capture's 2D budget (4 x the 4K one) is over any small scene's.
+  const f = workerFootprint([{ id: 'captions', width: 2160, height: 3840, captureScale: 2 }, { id: 'cube', props: { sceneJson: JSON.stringify({ model: { name: 'cube' } }) } }])
+  assert.ok(f.scene.bytes < 4 * PER_WORKER_BYTES)
+  assert.equal(f.bytes, 4 * PER_WORKER_BYTES)
   assert.deepEqual({ kind: f.kind, id: f.id, has3d: f.has3d }, { kind: '3d', id: 'cube', has3d: true })
 })
 
@@ -194,7 +195,7 @@ test('workerFootprint: a 3D segment whose bundle cannot be read, or that names n
     const f = workerFootprint([{ id: 'captions' }, seg])
     assert.deepEqual({ bytes: f.bytes, kind: f.kind, has3d: f.has3d, from: f.scene.from }, { bytes: SCENE3D_UNKNOWN_BYTES, kind: '3d', has3d: true, from: 'unknown' })
   }
-  assert.equal(SCENE3D_UNKNOWN_BYTES, 3.6 * GB)
+  assert.equal(SCENE3D_UNKNOWN_BYTES, 4.7 * GB)
 })
 
 test('captureWorkerBytes: the 4K budget scaled by capture pixels, captureScale 2 when unset, never below the floor', () => {
@@ -214,7 +215,8 @@ test('workerFootprint: a 2D render is budgeted at its largest capture; a 3D one 
   assert.equal(workerFootprint([small, big]).bytes, PER_WORKER_BYTES)
   const cube = { ...small, id: 'cube', props: { sceneJson: JSON.stringify({ model: { name: 'cube' } }) } }
   assert.equal(workerFootprint([small, cube]).bytes, SCENE3D_BASE_BYTES + Math.ceil(SCENE3D_TEXT_FACTOR * cube.props.sceneJson.length))
-  assert.equal(workerFootprint([big, cube]).bytes, PER_WORKER_BYTES)
+  const huge = { id: 'captions', width: 2160, height: 3840, captureScale: 2 }
+  assert.equal(workerFootprint([huge, cube]).bytes, 4 * PER_WORKER_BYTES)
 })
 
 test('reserve: 4 GB, or a quarter of the total when that is more', () => {

@@ -54,7 +54,7 @@ test('planChunks: a segment marked scene3d with no sceneJson gets the 3D estimat
   assert.equal(plan.workerCount, SCENE3D_MAX_WORKERS)
   assert.equal(plan.memory.limitedBy, '3d')
   assert.equal(plan.memory.perWorkerBytes, SCENE3D_UNKNOWN_BYTES)
-  assert.match(memoryPlanLines(plan.memory)[0], /^3d worker estimate=3\.6GB from=unknown /)
+  assert.match(memoryPlanLines(plan.memory)[0], /^3d worker estimate=4\.7GB from=unknown /)
 })
 
 test('planChunks: a 3D segment is cut at most SCENE3D_MAX_CHUNK_FRAMES a chunk; a 2D segment keeps the plan\'s chunk size', () => {
