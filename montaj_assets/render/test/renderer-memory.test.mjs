@@ -85,6 +85,16 @@ test('planChunks: a 1080x1920 capture budgets a 2D worker at the floor, so the s
   assert.equal(hd.workerCount, 8, '(15 - 9) / 0.75')
 })
 
+test('planChunks: a motion blur of 0, NaN or garbage is 1 sub-frame and a finite chunk size; 2 to 8 pass through', () => {
+  for (const motionBlur of [0, undefined, NaN, 'blur', null]) {
+    const plan = planChunks(segments(2), { workers: 4, motionBlur, memory: memory(60 * GB) })
+    assert.equal(plan.subframes, 1, String(motionBlur))
+    assert.ok(Number.isFinite(plan.chunkSize) && plan.chunkSize >= 1, `${motionBlur}: ${plan.chunkSize}`)
+    assert.ok(plan.jobs.every((j) => j.subframes === 1))
+  }
+  for (const motionBlur of [2, 5, 8]) assert.equal(planChunks(segments(1), { workers: 4, motionBlur, memory: memory(60 * GB) }).subframes, motionBlur)
+})
+
 test('memoryPlanLines: a render memory lowers names available, reserve, perWorker and the result', () => {
   const plan = planChunks(segments(4), { workers: 12, chunkSize: 120, memory: memory(15 * GB) })
   assert.deepEqual(memoryPlanLines(plan.memory), ['workers lowered by memory: available=15.0GB reserve=9.0GB perWorker=1.5GB workers=4 (asked 12)'])

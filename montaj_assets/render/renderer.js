@@ -100,7 +100,7 @@ export function planChunks(segments, config = {}) {
   const targetWorkers = config.workers ?? userConfig.render?.workers ?? os.cpus().length
   // Computed before chunkSize so the default can size on sub-frames — see
   // resolveChunkSize's doc comment.
-  const subframes     = config.motionBlur ?? 1
+  const subframes     = Math.max(1, Math.trunc(Number(config.motionBlur) || 1))
   const chunkSize     = resolveChunkSize(longest, targetWorkers, subframes, config.chunkSize, userConfig.render?.chunkSize)
 
   // Expand segments into per-chunk jobs
