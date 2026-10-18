@@ -21,9 +21,14 @@ const GB = 1e9
 /**
  * A 2D overlay or caption worker: a 4K (2160x3840) headless-Chrome capture.
  * The budget the render has always used (chunk-plan.js, before this file).
- * Kept for every output size: a smaller capture's worker is not measured.
+ * A segment's own 2D budget scales it by its capture's pixels over 4K's
+ * (captureWorkerBytes), never below PER_WORKER_MIN_BYTES. PROVISIONAL: the
+ * scaling and the floor are not measured; the floor stands for Chrome's own
+ * cost, which a smaller capture does not shrink.
  */
 export const PER_WORKER_BYTES = 1.5 * GB
+export const PER_WORKER_MIN_BYTES = 0.75 * GB
+const CAPTURE_4K_PIXELS = 3840 * 2160
 
 /**
  * What a render leaves to everything else on the machine: 4 GB, or a quarter
@@ -250,6 +255,18 @@ export function scene3dFootprint(sceneJson) {
 }
 
 /**
+ * A 2D worker's budget for one segment: PER_WORKER_BYTES scaled by its
+ * capture's pixels (width x height x captureScale squared; captureScale is 2
+ * when unset, as renderer.js captures) over a 4K capture's, never below
+ * PER_WORKER_MIN_BYTES. A segment without a size is PER_WORKER_BYTES.
+ */
+export function captureWorkerBytes(seg) {
+  const w = Number(seg?.width), h = Number(seg?.height), scale = Number(seg?.captureScale ?? 2)
+  if (!(w > 0 && h > 0 && scale > 0)) return PER_WORKER_BYTES
+  return Math.max(PER_WORKER_MIN_BYTES, Math.ceil(PER_WORKER_BYTES * (w * h * scale * scale) / CAPTURE_4K_PIXELS))
+}
+
+/**
  * Whether a render segment draws a 3D stage: render.js marks every one
  * `scene3d: true` (scene3d.js isThreeStageOverlay: a scene item, the host's
  * stage, or a generated stage bundle), and a segment whose props carry
@@ -280,19 +297,21 @@ export function bundleFootprint(componentPath, { stat = statSync } = {}) {
  * What one worker holds for this render's segments: the most any one of them
  * needs, since any worker may take any chunk. A 3D segment (isScene3dSegment)
  * is priced from its `sceneJson` (scene3dFootprint) or else from its
- * component file (bundleFootprint); every other is 2D (PER_WORKER_BYTES).
- * A 3D render is budgeted at its largest scene, never below a 2D worker
- * (its captions and titles run on the same workers, and a 3D page is a 2D
- * page with WebGL besides); `kind` is then '3d', `id` that scene's segment
- * and `scene` its footprint.
+ * component file (bundleFootprint); a 2D one is its captureWorkerBytes.
+ * A 3D render is budgeted at its largest scene, never below its largest 2D
+ * budget (its captions and titles run on the same workers, and a 3D page is
+ * a 2D page with WebGL besides); `kind` is then '3d', `id` that scene's
+ * segment and `scene` its footprint.
  *
  * @param {Array<{ id?: string, scene3d?: boolean, componentPath?: string, props?: object }>} segments
  * @returns {{ bytes: number, kind: '2d'|'3d', id: string|null, has3d: boolean, scene?: object }}
  */
 export function workerFootprint(segments) {
   let largest = null
+  let twoD = segments.length > 0 ? 0 : PER_WORKER_BYTES
   const scenes = new Map() // one scan per scene text or bundle, however many items show it
   for (const seg of segments) {
+    twoD = Math.max(twoD, captureWorkerBytes(seg))
     if (!isScene3dSegment(seg)) continue
     const json = seg.props?.sceneJson
     const key = typeof json === 'string' ? json : `bundle:${seg.componentPath ?? ''}`
@@ -300,8 +319,8 @@ export function workerFootprint(segments) {
     const scene = scenes.get(key)
     if (!largest || scene.bytes > largest.scene.bytes) largest = { id: seg.id ?? null, scene }
   }
-  if (!largest) return { bytes: PER_WORKER_BYTES, kind: '2d', id: null, has3d: false }
-  return { bytes: Math.max(PER_WORKER_BYTES, largest.scene.bytes), kind: '3d', id: largest.id, has3d: true, scene: largest.scene }
+  if (!largest) return { bytes: twoD, kind: '2d', id: null, has3d: false }
+  return { bytes: Math.max(twoD, largest.scene.bytes), kind: '3d', id: largest.id, has3d: true, scene: largest.scene }
 }
 
 // ---------------------------------------------------------------------------

@@ -76,6 +76,15 @@ test('planChunks: a 3D segment is cut at most SCENE3D_MAX_CHUNK_FRAMES a chunk; 
   assert.ok(small.jobs.length === 4 && small.jobs.every((j) => j.frameEnd - j.frameStart === 50))
 })
 
+test('planChunks: a 1080x1920 capture budgets a 2D worker at the floor, so the same memory runs more workers than at 4K', () => {
+  const at = (captureScale) => segments(4).map((s) => ({ ...s, width: 1080, height: 1920, captureScale }))
+  const fourK = planChunks(at(2), { workers: 12, chunkSize: 120, memory: memory(15 * GB) })
+  const hd = planChunks(at(1), { workers: 12, chunkSize: 120, memory: memory(15 * GB) })
+  assert.equal(fourK.workerCount, 4, '(15 - 9) / 1.5')
+  assert.equal(hd.memory.perWorkerBytes, 0.75 * GB)
+  assert.equal(hd.workerCount, 8, '(15 - 9) / 0.75')
+})
+
 test('memoryPlanLines: a render memory lowers names available, reserve, perWorker and the result', () => {
   const plan = planChunks(segments(4), { workers: 12, chunkSize: 120, memory: memory(15 * GB) })
   assert.deepEqual(memoryPlanLines(plan.memory), ['workers lowered by memory: available=15.0GB reserve=9.0GB perWorker=1.5GB workers=4 (asked 12)'])

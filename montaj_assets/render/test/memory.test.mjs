@@ -12,7 +12,7 @@ import { join } from 'path'
 import os from 'os'
 import {
   parseVmStat, parseMeminfo, availableMemoryBytes, imageSize, scene3dFootprint, workerFootprint, planWorkers,
-  createMemoryGovernor, reserveBytes, isScene3dSegment, PER_WORKER_BYTES, SCENE3D_BASE_BYTES, SCENE3D_MAX_WORKERS,
+  createMemoryGovernor, reserveBytes, isScene3dSegment, captureWorkerBytes, PER_WORKER_BYTES, PER_WORKER_MIN_BYTES, SCENE3D_BASE_BYTES, SCENE3D_MAX_WORKERS,
   SCENE3D_TEXT_FACTOR, SCENE3D_TEXTURE_COPIES, SCENE3D_UNKNOWN_BYTES, TEXTURE_UNKNOWN_EXPANSION,
 } from '../memory.js'
 
@@ -195,6 +195,26 @@ test('workerFootprint: a 3D segment whose bundle cannot be read, or that names n
     assert.deepEqual({ bytes: f.bytes, kind: f.kind, has3d: f.has3d, from: f.scene.from }, { bytes: SCENE3D_UNKNOWN_BYTES, kind: '3d', has3d: true, from: 'unknown' })
   }
   assert.equal(SCENE3D_UNKNOWN_BYTES, 3.6 * GB)
+})
+
+test('captureWorkerBytes: the 4K budget scaled by capture pixels, captureScale 2 when unset, never below the floor', () => {
+  assert.equal(PER_WORKER_MIN_BYTES, 0.75 * GB)
+  assert.equal(captureWorkerBytes({ width: 1080, height: 1920, captureScale: 2 }), PER_WORKER_BYTES, 'a 4K capture')
+  assert.equal(captureWorkerBytes({ width: 1080, height: 1920 }), PER_WORKER_BYTES, 'unset scale is 2')
+  assert.equal(captureWorkerBytes({ width: 1920, height: 1080, captureScale: 1.5 }), Math.ceil(PER_WORKER_BYTES * 2.25 / 4))
+  assert.equal(captureWorkerBytes({ width: 1080, height: 1920, captureScale: 1 }), PER_WORKER_MIN_BYTES, 'a quarter of 4K, floored')
+  assert.equal(captureWorkerBytes({ width: 2160, height: 3840, captureScale: 2 }), 4 * PER_WORKER_BYTES, 'an 8K capture')
+  assert.equal(captureWorkerBytes({ id: 'no size' }), PER_WORKER_BYTES)
+})
+
+test('workerFootprint: a 2D render is budgeted at its largest capture; a 3D one never below it', () => {
+  const small = { id: 'title', width: 1080, height: 1920, captureScale: 1 }
+  const big = { id: 'captions', width: 1080, height: 1920, captureScale: 2 }
+  assert.equal(workerFootprint([small]).bytes, PER_WORKER_MIN_BYTES)
+  assert.equal(workerFootprint([small, big]).bytes, PER_WORKER_BYTES)
+  const cube = { ...small, id: 'cube', props: { sceneJson: JSON.stringify({ model: { name: 'cube' } }) } }
+  assert.equal(workerFootprint([small, cube]).bytes, SCENE3D_BASE_BYTES + Math.ceil(SCENE3D_TEXT_FACTOR * cube.props.sceneJson.length))
+  assert.equal(workerFootprint([big, cube]).bytes, PER_WORKER_BYTES)
 })
 
 test('reserve: 4 GB, or a quarter of the total when that is more', () => {
