@@ -38,9 +38,10 @@ import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { requireValidKey, detectFromTransfer, smartDetect, isHdr, specFor, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { pMap }                           from './p-map.js'
+import { visibleVideoItems, effectiveColorSpace } from './visible-video.js'
 import { fileHasAudio, probeVideoGeometry } from './encode-segment.js'
 import { probeColorTransfer }             from './derive-sdr.js'
-import { sdrLayerFor, gradeKeyFor, probeMedia, defaultDeps } from './sdr-layer.js'
+import { sdrLayerFor, gradeKeyFor, probeMedia, defaultDeps, originOf } from './sdr-layer.js'
 import { sourceWindow, transitionPairs, isOpaqueCover, opaqueReplacesPicture, trackLayerPositions } from '@bycrux/timeline-core'
 import { MASTER_LOOK, curveIds }          from './look.js'
 import { resolveMotionBlur, MOTION_BLUR_MAX } from './motion-blur.js'
@@ -696,7 +697,8 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   // codec/pix_fmt, and per-item conversion filter. See resolveProjectColorSpace.
   // A smart-detected key is persisted back to project.json so subsequent
   // renders skip the detection step.
-  const { colorSpace: projectColorSpace, detectedFrom } = resolveProjectColorSpace(settings, videoItems)
+  const { colorSpace: projectColorSpace, detectedFrom, downgraded } = resolvePictureColorSpace(projectJson, settings, videoItems)
+  if (downgraded) log(`rendering in SDR: ${settings.colorSpace} is only the project default and no video on screen is HDR`)
   if (detectedFrom != null) {
     log(`colorSpace not set — smart-detected ${projectColorSpace} from ${detectedFrom} clip(s); writing back to project.json`)
     // Re-read the raw JSON to patch settings.colorSpace — projectJson in memory
@@ -947,6 +949,68 @@ function resolveProjectColorSpace(settings, videoItems) {
 }
 
 /**
+ * Whether an image or a video fills the whole frame with no transparency (a
+ * black card, a full-frame still): it hides the video below it. Read from the
+ * file, never the extension. Any probe failure is false (not a cover).
+ */
+function fillsFrameOpaquely(item, resolution) {
+  const src = item.src
+  if (typeof src !== 'string' || !existsSync(src)) return false
+  const geo = probeVideoGeometry(src)
+  if (!geo || geo.alpha) return false
+  const [w, h] = Array.isArray(resolution) && resolution.length === 2 ? resolution : [1080, 1920]
+  // Fit "contain" leaves bars unless the aspect ratio matches (within 1%).
+  return Math.abs(geo.width / geo.height - w / h) / (w / h) < 0.01
+}
+
+/**
+ * The colour space this render's picture needs (§378): the stored one, unless it
+ * was picked automatically and no video that is actually on screen is HDR (an
+ * HDR clip used only for its voice, covered by a 3D scene, outside the export).
+ * The stored value is only the starting point. `videoItems` are collectAllItems'
+ * stamped items; visibility is read from the enabled tracks.
+ *
+ * Absent colorSpace (legacy): smart-detected from the visible items alone.
+ * Returns what resolveProjectColorSpace does, plus { hdrVisible, downgraded }.
+ */
+function resolvePictureColorSpace(projectJson, settings, videoItems) {
+  const visibleRaw = visibleVideoItems(enabledTrackItems(projectJson).map((items) => items ?? []), {
+    end: getTotalDurationSeconds(projectJson),
+    coversPicture: (item) => fillsFrameOpaquely(item, settings.resolution),
+  })
+  // HDR by ORIGIN, from the item's own source file: a clip decoded from an HDR cache of an SDR
+  // original is SDR, an SDR-looking conversion of an HDR original is not (sdr-layer.js originOf).
+  // A file that cannot be read is unknown, never SDR: nothing is downgraded on a guess.
+  const originHdr = new Map()
+  const isHdrItem = (raw) => {
+    if (!originHdr.has(raw.src)) {
+      let hdr = true
+      try { hdr = isHdr(originOf(raw.src).colorSpace) } catch { hdr = true }
+      originHdr.set(raw.src, hdr)
+    }
+    return originHdr.get(raw.src)
+  }
+  // A legacy project with no stored colour space is read from what is on screen alone.
+  let base
+  if (settings.colorSpace != null) {
+    base = resolveProjectColorSpace(settings, videoItems)
+  } else {
+    const keyOf = (it) => `${it.id ?? ''}|${it.src}|${it.start ?? ''}`
+    const stamped = new Map(videoItems.map((it) => [keyOf(it), it]))
+    const shown = visibleRaw.map((it) => stamped.get(keyOf(it))).filter(Boolean)
+    base = resolveProjectColorSpace(settings, shown.length === visibleRaw.length ? shown : videoItems)
+  }
+  const eff = effectiveColorSpace({
+    stored: base.colorSpace,
+    source: settings.colorSpaceSource ?? null,
+    visible: visibleRaw,
+    isHdrItem,
+    isHdrKey: isHdr,
+  })
+  return { ...base, colorSpace: eff.colorSpace, hdrVisible: eff.hdrVisible, downgraded: eff.downgraded }
+}
+
+/**
  * render.js --estimate (§213): main() as far as its disk check (2c), writing
  * nothing. No lock, no wipe of render/segments, no URL prefetch, no
  * project.json write-back, no normalize, bundle, browser or compose: the
@@ -965,6 +1029,8 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
   } = loadRenderProject(projectPath, { out, requireFinal: false, overrides })
 
   let estimate, reclaimBytes
+  // §378: what the picture needs, for the export window's Format row. null: not worked out.
+  let pictureColor = null
   if (projectJson.renderMode === 'ffmpeg-drawtext') {
     // lyrics_render.py writes the export and its poster copy, nothing else: no
     // overlay capture, no masters. Counted as one SDR compose at the design
@@ -980,7 +1046,9 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
     const { videoItems } = collectAllItems(projectJson)
     const captureScale = captureScaleFor(settings.resolution)
     stampSourceProbes(videoItems, new Map())
-    const { colorSpace: projectColorSpace } = resolveProjectColorSpace(settings, videoItems)
+    const picture = resolvePictureColorSpace(projectJson, settings, videoItems)
+    const { colorSpace: projectColorSpace } = picture
+    pictureColor = { colorSpace: picture.colorSpace, hdrVisible: picture.hdrVisible }
     const exportPlan = planExport({ exportMode, projectColorSpace, outputPath })
     const disk = planDisk({
       projectJson, pristineProject, settings, workers, motionBlur, segmentSpecs, videoItems, captureScale,
@@ -990,7 +1058,7 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
     reclaimBytes = disk.reclaimBytes
   }
   const check = checkDiskSpace({ tmpDir: tmpdir(), projectDir: renderDir, estimate: estimate.expected, reclaimBytes })
-  return { estimate, volumes: check?.volumes ?? [] }
+  return { estimate, volumes: check?.volumes ?? [], ...(pictureColor ?? {}) }
 }
 
 /**
@@ -2451,7 +2519,7 @@ function fail(code, message, extra = {}) {
 }
 
 export { normalizeIfNeeded, killNormalizeTree, failLine, stampSourceProbes, getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
-         EXPORT_MODES, resolveExportMode, resolveSdrCurve, planExport, captureScaleFor,
+         EXPORT_MODES, resolveExportMode, resolvePictureColorSpace, fillsFrameOpaquely, resolveSdrCurve, planExport, captureScaleFor,
          // §213: the disk estimate's planning, for its tests.
          resolveEstimateOverrides, planVideoItemWrites, isConformant, normalizedMasterCache, estimateMain,
          UNTAGGED_MASTER_MARKER, originalOfSdrMaster,

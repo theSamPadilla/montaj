@@ -94,7 +94,7 @@ test('--estimate prints one JSON line and exits 0, having written nothing', { sk
   const lines = r.stdout.trim().split('\n')
   assert.equal(lines.length, 1, `one line on stdout: ${r.stdout}`)
   const out = JSON.parse(lines[0])
-  assert.deepEqual(Object.keys(out).sort(), ['estimate', 'volumes'])
+  assert.deepEqual(Object.keys(out).sort(), ['colorSpace', 'estimate', 'hdrVisible', 'volumes'])
   assert.deepEqual(Object.keys(out.estimate).sort(), ['expected', 'lower'])
   for (const bound of ['lower', 'expected']) {
     assert.deepEqual(Object.keys(out.estimate[bound]).sort(), ['projectBytes', 'tmpBytes'])

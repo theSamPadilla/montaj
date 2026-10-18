@@ -230,7 +230,7 @@ test('estimateMain: the estimate and the disk it would use, from a draft project
   const p = project({ settings: { resolution: [1080, 1920], fps: 30 } })
   const before = listing(p.dir)
   const r = await estimateMain(p.projectPath, { workers: 2 })
-  assert.deepEqual(Object.keys(r).sort(), ['estimate', 'volumes'])
+  assert.deepEqual(Object.keys(r).sort(), ['colorSpace', 'estimate', 'hdrVisible', 'volumes'])
   for (const bound of ['lower', 'expected']) {
     assert.deepEqual(Object.keys(r.estimate[bound]).sort(), ['projectBytes', 'tmpBytes'])
     assert.ok(Number.isInteger(r.estimate[bound].projectBytes) && r.estimate[bound].projectBytes > 0)

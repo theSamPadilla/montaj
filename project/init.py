@@ -761,9 +761,13 @@ def _main():
     # Smart-detect project color space from probed clips. Each clip's
     # `color_transfer` maps to a color space key; smart_detect picks the
     # MODAL (most common) color space — outliers get converted on the fly.
+    # §378: a clip that is also a voiceover asset is the voice, not the picture; its
+    # colour must not decide the project's.
+    _voice_real = {os.path.realpath(v) for v in (args.voiceover_asset or [])}
     detected_per_clip: list[ColorSpaceKey] = [
         detect_from_transfer(probe_cache[c["src"]].get("color_transfer"))
-        for c in clips if c["src"] in probe_cache
+        for c, original in zip(clips, args.clips)
+        if c["src"] in probe_cache and os.path.realpath(original) not in _voice_real
     ]
     if args.color_space == "auto":
         project_color_space = smart_detect(detected_per_clip)
@@ -1182,6 +1186,9 @@ def _main():
             "fps": detected_fps,
             "fpsSource": fps_source,
             "colorSpace": project_color_space,
+            # §378: 'auto' = init picked it from the footage, so the export may fall back
+            # to SDR when no HDR video is on screen; 'explicit' = the creator chose it.
+            "colorSpaceSource": "auto" if args.color_space == "auto" else "explicit",
             "language": args.language,
         },
         "tracks": [{"id": "trk-0", "items": [] if args.canvas else clips}],

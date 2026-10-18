@@ -3805,7 +3805,10 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
             new_settings["resolutionSource"] = SOURCE_EXPLICIT
         if "fps" in new_settings and new_settings["fps"] != old_settings.get("fps"):
             new_settings["fpsSource"] = SOURCE_EXPLICIT
-        for marker in ("resolutionSource", "fpsSource", "aspectSource"):
+        # §378: choosing a colour space is the creator's; footage never overrides it.
+        if "colorSpace" in new_settings and new_settings["colorSpace"] != old_settings.get("colorSpace"):
+            new_settings["colorSpaceSource"] = "explicit"
+        for marker in ("resolutionSource", "fpsSource", "aspectSource", "colorSpaceSource"):
             if marker not in new_settings and marker in old_settings:
                 new_settings[marker] = old_settings[marker]
         merged["settings"] = new_settings
@@ -5051,7 +5054,13 @@ async def render_estimate(project_id: str, request: Request, project_dir: Path =
             raise ValueError("unexpected shape")
     except Exception:
         return _no_estimate("render.js --estimate printed no estimate")
-    return {"estimate": estimate, "volumes": volumes}
+    out = {"estimate": estimate, "volumes": volumes}
+    # §378: the colour space the picture needs (the stored one unless only a hidden
+    # video is HDR), so the export window shows the same Format row the render uses.
+    if isinstance(result.get("colorSpace"), str):
+        out["colorSpace"] = result["colorSpace"]
+        out["hdrVisible"] = bool(result.get("hdrVisible"))
+    return out
 
 
 @router.post("/projects/{project_id}/render")

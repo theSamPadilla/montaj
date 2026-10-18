@@ -2032,6 +2032,45 @@ def test_init_symlink_clips_keeps_staged_upload(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_a_clip_that_is_also_the_voiceover_does_not_make_the_project_hdr(tmp_path):
+    """§378: an HDR file passed as a clip AND as the voiceover is the voice. Its colour must not
+    decide the project's; the picture clip (SDR) does."""
+    talk = tmp_path / "talk_hlg.mp4"; _make_hlg_clip(talk)
+    pic = tmp_path / "pic_sdr.mp4"; _make_clip(pic, duration=3)
+    result = run_init("--workflow", "broll", "--clips", str(talk), str(pic), "--prompt", "test",
+                      "--voiceover-asset", str(talk),
+                      env_override=_user_workflow_env(tmp_path, "broll", "broll"))
+    assert result.returncode == 0, result.stderr
+    settings = json.loads(_project_path_from_stdout(result.stdout).read_text())["settings"]
+    assert settings["colorSpace"] == "sdr_bt709"
+    assert settings["colorSpaceSource"] == "auto"
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_the_voiceover_file_is_not_counted_even_when_it_is_the_only_clip(tmp_path):
+    talk = tmp_path / "talk_hlg.mp4"; _make_hlg_clip(talk)
+    result = run_init("--workflow", "broll", "--clips", str(talk), "--prompt", "test",
+                      "--voiceover-asset", str(talk),
+                      env_override=_user_workflow_env(tmp_path, "broll", "broll"))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(_project_path_from_stdout(result.stdout).read_text())["settings"]["colorSpace"] == "sdr_bt709"
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_init_marks_whether_the_colour_space_was_picked_or_chosen(tmp_path):
+    a = tmp_path / "hlg.mp4"; _make_hlg_clip(a)
+    ws = tmp_path / "ws"; ws.mkdir()
+    auto = run_init("--clips", str(a), "--prompt", "test", env_override={"MONTAJ_WORKSPACE_DIR": str(ws)})
+    assert auto.returncode == 0, auto.stderr
+    assert json.loads(_project_path_from_stdout(auto.stdout).read_text())["settings"]["colorSpaceSource"] == "auto"
+    ws2 = tmp_path / "ws2"; ws2.mkdir()
+    chosen = run_init("--clips", str(a), "--color-space", "hdr_hlg", "--prompt", "test", env_override={"MONTAJ_WORKSPACE_DIR": str(ws2)})
+    assert chosen.returncode == 0, chosen.stderr
+    settings = json.loads(_project_path_from_stdout(chosen.stdout).read_text())["settings"]
+    assert (settings["colorSpace"], settings["colorSpaceSource"]) == ("hdr_hlg", "explicit")
+
+
 # --voiceover-asset intake (broll projects)
 # ---------------------------------------------------------------------------
 
