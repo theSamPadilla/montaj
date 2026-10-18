@@ -7,7 +7,7 @@ a step and its output lands in a project's folder, it records the file here,
 keyed by its path relative to the project folder (so a moved project keeps
 it), in the shape project items already use for `generation`:
 `{provider, model, prompt, step, at}`. `provider` is the connector id
-(kling, fal, kinovi, gemini, openai, elevenlabs).
+(kling, fal, kinovi, gemini, openai, elevenlabs, tripo).
 
 project.json is never touched: a generated file becomes a project item only
 later, when the agent adds it, and this record is how the app tells it from an

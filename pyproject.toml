@@ -31,7 +31,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "Pillow>=10.0",
+    "Pillow>=11.3",
     "yt-dlp>=2026.3",
     "curl_cffi>=0.7",
     "fastapi>=0.110",

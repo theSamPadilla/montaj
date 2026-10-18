@@ -239,6 +239,14 @@ _PROVIDER_INFO = {
             "api_key": "API key from ElevenLabs settings",
         },
     },
+    "tripo": {
+        "display": "Tripo",
+        "desc": "3D models: text, image and multiview to 3D, rigging and animation",
+        "url": "https://developers.tripo3d.ai/en/keys",
+        "keys": {
+            "api_key": "API key from the Tripo console (API Keys)",
+        },
+    },
 }
 
 

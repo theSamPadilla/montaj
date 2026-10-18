@@ -42,6 +42,7 @@ KNOWN_PROVIDERS: dict[str, list[str]] = {
     "fal":        ["api_key"],
     "elevenlabs": ["api_key"],
     "kinovi":     ["api_key"],
+    "tripo":      ["api_key"],
 }
 
 

@@ -150,4 +150,4 @@ def test_every_generate_step_declares_its_provider():
         if "providerParam" in prov:
             assert any(p["name"] == prov["providerParam"] for p in schema["params"]), path.name
         else:
-            assert prov["provider"] in {"kling", "fal", "kinovi", "gemini", "openai", "elevenlabs"}, path.name
+            assert prov["provider"] in {"kling", "fal", "kinovi", "gemini", "openai", "elevenlabs", "tripo"}, path.name

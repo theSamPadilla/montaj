@@ -1,0 +1,22 @@
+{
+  "name": "generate_model",
+  "provenance": {"provider": "tripo"},
+  "description": "Generate a 3D model (.glb, PBR textured) on Tripo from a prompt, an image or views (front plus at least one of left, back, right). A task already submitted (a run that stopped or ran out of time names its id) is collected with task-id: no new task, no new charge; never run the step again to get it. Local images are uploaded to Tripo first. WebP or AVIF textures are re-encoded locally so the model loads in Montaj. Standalone.",
+  "output": {
+    "type": "model",
+    "description": "Path to the generated .glb. With --json: {path, taskId, model, creditsUsed, textures}."
+  },
+  "params": [
+    {"name": "prompt", "type": "string", "required": false, "description": "What to model. Exactly one of --prompt, --image or the views. Required unless --task-id."},
+    {"name": "image", "type": "path", "required": false, "description": "One image of the subject (path or URL; JPEG or PNG)."},
+    {"name": "view-front", "type": "path", "required": false, "description": "The front view (path or URL). Multiview needs the front and at least one more."},
+    {"name": "view-left", "type": "path", "required": false, "description": "The left view (path or URL)."},
+    {"name": "view-back", "type": "path", "required": false, "description": "The back view (path or URL)."},
+    {"name": "view-right", "type": "path", "required": false, "description": "The right view (path or URL)."},
+    {"name": "out", "type": "path", "required": true, "description": "Output .glb path. Optional with _project: saved in the project's assets folder."},
+    {"name": "texture", "type": "enum", "required": false, "default": "standard", "options": ["standard", "detailed"], "description": "Texture quality. detailed is slower."},
+    {"name": "face-limit", "type": "int", "required": false, "default": 30000, "description": "Most faces in the mesh: 1,000 to 150,000 (outside that, the nearest end is used)."},
+    {"name": "negative-prompt", "type": "string", "required": false, "description": "What to avoid, up to 255 characters. With --prompt only."},
+    {"name": "task-id", "type": "string", "required": false, "description": "Collect a task already submitted (the id a run that stopped or ran out of time names): wait for it and download it. No new task, no new charge; no other input is needed."}
+  ]
+}
