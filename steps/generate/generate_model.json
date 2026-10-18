@@ -1,5 +1,6 @@
 {
   "name": "generate_model",
+  "provenance": {"provider": "tripo"},
   "description": "Generate a 3D model (.glb, PBR textured) on Tripo from a prompt, an image or views (front plus at least one of left, back, right). A task already submitted (a run that stopped or ran out of time names its id) is collected with task-id: no new task, no new charge; never run the step again to get it. Local images are uploaded to Tripo first. WebP or AVIF textures are re-encoded locally so the model loads in Montaj. Standalone.",
   "output": {
     "type": "model",

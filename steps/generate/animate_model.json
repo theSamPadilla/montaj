@@ -1,5 +1,6 @@
 {
   "name": "animate_model",
+  "provenance": {"provider": "tripo"},
   "description": "Animate a rigged 3D model with 1 to 5 of Tripo's preset animations, baked into the .glb. A task already submitted (a run that stopped or ran out of time names its id) is collected with task-id: no new task, no new charge; never run the step again to get it. The model must come from rig_model; a plain .glb is refused. Each id is checked against the rig's list before any call. Biped rigs take preset:biped:<name> (walk, run, idle, dance_01, ...); creature rigs take preset:quadruped:walk, preset:hexapod:walk, preset:octopod:walk, preset:serpentine:march or preset:aquatic:march. Plays in place by default. Standalone.",
   "output": {
     "type": "model",

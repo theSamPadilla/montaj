@@ -1,5 +1,6 @@
 {
   "name": "rig_model",
+  "provenance": {"provider": "tripo"},
   "description": "Rig a 3D model (.glb) on Tripo: add a skeleton so animate_model can move it. A rig task already submitted (a run that stopped or ran out of time names its id and rig type) is collected with task-id and rig-type: no new task, no new charge; never run the step again to get it. Tripo's free riggability check runs first; a model it calls not riggable fails with not_riggable and nothing is spent. biped gets Mixamo bone names. An avian rig has no preset animations, so it is made only when rig-type avian is asked for. A model made by generate_model is rigged from its Tripo task; any other .glb is uploaded. Standalone.",
   "output": {
     "type": "model",
