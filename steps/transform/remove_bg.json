@@ -26,6 +26,7 @@
       "name": "out",
       "type": "string",
       "required": false,
+      "ext": ".mov",
       "description": "Output path (only valid with --input, default: {stem}_nobg.mov)"
     },
     {

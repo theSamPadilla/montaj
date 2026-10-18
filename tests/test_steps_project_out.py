@@ -188,3 +188,20 @@ def test_json_output_step_without_out_gets_a_json_extension(env, monkeypatch):
     assert _post(_project=pid).status_code == 200
     out = calls[0][calls[0].index("--out") + 1]
     assert re.fullmatch(re.escape(str(pdir / "assets")) + r"/generate_image-\d{8}-\d{6}\.json", out)
+
+
+@pytest.mark.parametrize("step, ext", [("audio/synth_audio", ".wav"), ("render/contact_sheet", ".png"), ("transform/remove_bg", ".mov")])
+def test_a_step_that_prints_json_but_writes_a_file_names_it_by_its_out_ext(env, monkeypatch, step, ext):
+    # synth_audio prints {path, ...} (output type json) but writes a WAV: the auto
+    # name takes the out param's own "ext", never ".json" (§373: a WAV named .json).
+    pid, pdir, calls = env
+    schema = {**SCHEMA, "output": json.loads((Path(STEPS_DIR) / f"{step}.json").read_text())["output"],
+              "params": [p for p in SCHEMA["params"] if p["name"] != "out"]
+              + [next(p for p in json.loads((Path(STEPS_DIR) / f"{step}.json").read_text())["params"] if p["name"] == "out")]}
+    assert schema["output"]["type"] == "json"
+    monkeypatch.setattr(steps_mod, "scan_steps", lambda: {"generate_image": (schema, Path("x.py"))})
+    assert _post(_project=pid).status_code == 200
+    out = calls[-1][calls[-1].index("--out") + 1]
+    assert re.fullmatch(re.escape(str(pdir / "assets")) + r"/generate_image-\d{8}-\d{6}" + re.escape(ext), out)
+    assert _post(_project=pid, out="beat").status_code == 200
+    assert calls[-1][calls[-1].index("--out") + 1] == str(pdir / "assets" / f"beat{ext}")

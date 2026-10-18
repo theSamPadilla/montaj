@@ -199,21 +199,28 @@ def validate_params(schema: dict, body: dict) -> None:
                 errors.append(f"'{name}' is required")
             continue
 
+        # A repeatable param (argparse action="append", e.g. contact_sheet's --at)
+        # takes a list: each item is checked as one value, and build_cli_args
+        # repeats the flag per item. A list on any other scalar param is refused.
+        values = val if isinstance(val, list) and param.get("repeatable") else [val]
+
         if ptype in ("float", "int"):
-            try:
-                num = float(val) if ptype == "float" else int(val)
-            except (TypeError, ValueError):
-                errors.append(f"'{name}' must be a {ptype}, got {val!r}")
-                continue
-            if "min" in param and num < param["min"]:
-                errors.append(f"'{name}' must be >= {param['min']}, got {num}")
-            if "max" in param and num > param["max"]:
-                errors.append(f"'{name}' must be <= {param['max']}, got {num}")
+            for item in values:
+                try:
+                    num = float(item) if ptype == "float" else int(item)
+                except (TypeError, ValueError):
+                    errors.append(f"'{name}' must be a {ptype}, got {item!r}")
+                    continue
+                if "min" in param and num < param["min"]:
+                    errors.append(f"'{name}' must be >= {param['min']}, got {num}")
+                if "max" in param and num > param["max"]:
+                    errors.append(f"'{name}' must be <= {param['max']}, got {num}")
 
         elif ptype == "enum":
             options = param.get("options", [])
-            if val not in options:
-                errors.append(f"'{name}' must be one of {options}, got {val!r}")
+            for item in values:
+                if item not in options:
+                    errors.append(f"'{name}' must be one of {options}, got {item!r}")
 
     if errors:
         raise HTTPException(422, detail={"error": "invalid_params", "message": "; ".join(errors)})
@@ -312,7 +319,10 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
     """`_project` (reserved, popped here): a step that declares `out` saves into
     the project's assets folder when `out` is left off or is a plain file name
     (no separator, not . or ..): `<step>-<YYYYMMDD-HHMMSS><ext>`, or the name
-    with the extension of the step's output type when it has none. Any other
+    with that extension when it has none. The extension is the `out` param's
+    own `"ext"` when it declares one (the file a step writes is not always what
+    it prints: synth_audio prints JSON and writes a WAV), else the step's
+    output type's. Any other
     `out` passes through unchanged. A name already taken gets -2, -3, ... The
     result never leaves `<project>/assets/` (a symlinked assets is a 422).
     An `out` param marked `"projectDefault": "step"` is left off when it is
@@ -333,9 +343,10 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
         return None
     if out is not None and not _is_plain_name(out):
         return None
-    ext = _OUT_EXT.get((schema.get("output") or {}).get("type"), "")
+    file_ext = out_param.get("ext")
+    ext = file_ext or _OUT_EXT.get((schema.get("output") or {}).get("type"), "")
     if out is None:
-        auto_ext = _AUTO_OUT_EXT.get((schema.get("output") or {}).get("type"), "")
+        auto_ext = file_ext or _AUTO_OUT_EXT.get((schema.get("output") or {}).get("type"), "")
         stem, suffix = f"{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}", auto_ext
     else:
         stem, suffix = os.path.splitext(out)

@@ -4,7 +4,7 @@
   "output": { "type": "json", "description": "{path, duration, peak_db}" },
   "params": [
     { "name": "cues", "type": "path", "required": true, "description": "Cues JSON: {duration?, seed?, cues: [...]}" },
-    { "name": "out", "type": "path", "required": true, "description": "Output WAV path" },
+    { "name": "out", "type": "path", "required": true, "ext": ".wav", "description": "Output WAV path" },
     { "name": "peak-db", "type": "float", "default": -1.0, "description": "Peak ceiling in dBFS" }
   ]
 }
