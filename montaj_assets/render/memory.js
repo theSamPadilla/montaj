@@ -43,18 +43,29 @@ export const RESERVE_SHARE = 0.25
 export const SCENE3D_MAX_WORKERS = 2
 
 /**
- * A 3D worker before its scene: Chrome, its GPU process and the stage's WebGL
- * canvas (antialiased, preserveDrawingBuffer: library/model3d/stage-core.jsx)
- * at a 4K capture. Calibrated against the render measured above, whose
- * workers held about 1.6 GB (renderer) + 1.8 GB (GPU, the lowest of them) at
- * the start: 3.4 GB with its scene, of which this is the part a scene does
- * not explain. PROVISIONAL: to be re-fitted to per-frame measurements.
+ * A 3D worker is SCENE3D_BASE_BYTES, plus SCENE3D_TEXT_FACTOR per byte of
+ * its scene's text, plus each texture decoded (SCENE3D_TEXTURE_COPIES).
+ *
+ * Fitted to the render measured above (2026-10-17): its scene's active.json
+ * is 85 MB (60 MB of it two props' inline geometry, 17 MB an 11-entry cast,
+ * 6 MB the model, about 40 textures, nearly all small), captured at
+ * 1080x1920 (captureScale 1). Each worker held about 1.6 GB in its renderer
+ * and 1.8 GB in its GPU process (the youngest worker; older ones grew to
+ * 9.8 GB, a capture-side growth being measured, not part of this estimate):
+ * 3.4 GB. MEASURED again on its own 2026-10-17 (cf P0,
+ * /Users/Shared/montaj-377-p0/results.txt): the same stage, 85,270,896 bytes
+ * of scene, 1080x1920, 60 fps, motion blur 5, phys_footprint summed over
+ * every Chrome process: one worker peaks at 3.6 GB (GPU 1.8 + renderer 1.7),
+ * two at 7.3 GB. A base of 1 GB plus 30 bytes per byte of text gives 3.6 GB
+ * for it, plus its textures: the scene's cost is mostly its text, held as text
+ * (the bundle's source, the `sceneJson` prop, the parsed scene) and as the
+ * geometry decoded from it (typed arrays in the page, buffers on the GPU and
+ * the GPU process's own copies). One scene: the split between base and
+ * factor is a fit, not two measurements. The base is a 1080p capture's; a
+ * 4K one's framebuffers add a few hundred MB, inside the fit's margin.
  */
-export const SCENE3D_BASE_BYTES = 2.5 * GB
-/** The scene's text in the page: the bundle's source, the `sceneJson` prop string and the parsed scene. */
-export const SCENE3D_TEXT_COPIES = 3
-/** Its vertex data decoded: typed arrays in the page and buffers on the GPU. */
-export const SCENE3D_GEOMETRY_COPIES = 2
+export const SCENE3D_BASE_BYTES = 1 * GB
+export const SCENE3D_TEXT_FACTOR = 30
 /**
  * Each texture decoded: RGBA in the page (stage-textures.js keeps an
  * ImageBitmap of each) and RGBA with a mip chain on the GPU (4/3 of it;
@@ -180,19 +191,20 @@ const TEXTURE_URI = /"data:(image\/(?:png|jpeg));base64,/g
 
 /**
  * What a 3D worker holds for one scene, from its text (`sceneJson`, which
- * scene3d.js puts on the overlay's props): the base, the text itself in the
- * page, its vertex data decoded, and each distinct texture decoded at the
- * size its header gives. Textures are every PNG or JPEG data URI in the text;
- * one met twice is the same image (its id is a hash of its text), which the
- * stage decodes once (stage-textures.js). The rest of the text is counted as
- * base64 vertex data (mesh.js), which errs high by its names and numbers.
+ * scene3d.js puts on the overlay's props): the base, SCENE3D_TEXT_FACTOR per
+ * byte of the text, and each distinct texture decoded at the size its header
+ * gives. A texture decodes to far more than its text (a flat 2048x2048 PNG
+ * of a few KB is 16 MB of RGBA), so it is counted by its pixels as well as
+ * by its text. Textures are every PNG or JPEG data URI in the text; one met
+ * twice is the same image (its id is a hash of its text), which the stage
+ * decodes once (stage-textures.js).
  *
- * @returns {{ bytes: number, textBytes: number, geometryBytes: number, textures: number, textureBytes: number }}
+ * @returns {{ bytes: number, textBytes: number, textures: number, textureBytes: number }}
  *   `textureBytes` is the decoded RGBA of the distinct textures, once.
  */
 export function scene3dFootprint(sceneJson) {
   const text = String(sceneJson)
-  let textureText = 0, textureBytes = 0, textures = 0
+  let textureBytes = 0, textures = 0
   const seen = new Set()
   const re = new RegExp(TEXTURE_URI.source, 'g')
   for (let m = re.exec(text); m; m = re.exec(text)) {
@@ -200,7 +212,6 @@ export function scene3dFootprint(sceneJson) {
     const end = text.indexOf('"', start)
     if (end < 0) break
     re.lastIndex = end
-    textureText += end - start
     // Its length and three samples: two different images matching on all four does not happen in practice.
     const mid = start + ((end - start) >> 1)
     const key = `${m[1]}:${end - start}:${text.slice(start, start + 64)}:${text.slice(mid, mid + 64)}:${text.slice(end - 64, end)}`
@@ -213,36 +224,34 @@ export function scene3dFootprint(sceneJson) {
       : Math.floor(((end - start) * 3) / 4) * TEXTURE_UNKNOWN_EXPANSION
   }
   const textBytes = text.length
-  const geometryBytes = Math.floor(((textBytes - textureText) * 3) / 4)
-  const bytes = Math.ceil(SCENE3D_BASE_BYTES
-    + textBytes * SCENE3D_TEXT_COPIES
-    + geometryBytes * SCENE3D_GEOMETRY_COPIES
-    + textureBytes * SCENE3D_TEXTURE_COPIES)
-  return { bytes, textBytes, geometryBytes, textures, textureBytes }
+  const bytes = Math.ceil(SCENE3D_BASE_BYTES + textBytes * SCENE3D_TEXT_FACTOR + textureBytes * SCENE3D_TEXTURE_COPIES)
+  return { bytes, textBytes, textures, textureBytes }
 }
 
 /**
  * What one worker holds for this render's segments: the most any one of them
  * needs, since any worker may take any chunk. A segment whose props carry
  * `sceneJson` is 3D (scene3dFootprint); every other is 2D (PER_WORKER_BYTES).
- * `has3d` says whether any segment is 3D.
+ * A 3D render is budgeted at its largest scene, never below a 2D worker
+ * (its captions and titles run on the same workers, and a 3D page is a 2D
+ * page with WebGL besides); `kind` is then '3d', `id` that scene's segment
+ * and `scene` its footprint.
  *
  * @param {Array<{ id?: string, props?: object }>} segments
  * @returns {{ bytes: number, kind: '2d'|'3d', id: string|null, has3d: boolean, scene?: object }}
  */
 export function workerFootprint(segments) {
-  let worst = { bytes: PER_WORKER_BYTES, kind: '2d', id: null }
-  let has3d = false
+  let largest = null
   const scenes = new Map() // one scan per scene text, however many items show it
   for (const seg of segments) {
     const json = seg?.props?.sceneJson
     if (typeof json !== 'string') continue
-    has3d = true
     if (!scenes.has(json)) scenes.set(json, scene3dFootprint(json))
     const scene = scenes.get(json)
-    if (scene.bytes > worst.bytes) worst = { bytes: scene.bytes, kind: '3d', id: seg.id ?? null, scene }
+    if (!largest || scene.bytes > largest.scene.bytes) largest = { id: seg.id ?? null, scene }
   }
-  return { ...worst, has3d }
+  if (!largest) return { bytes: PER_WORKER_BYTES, kind: '2d', id: null, has3d: false }
+  return { bytes: Math.max(PER_WORKER_BYTES, largest.scene.bytes), kind: '3d', id: largest.id, has3d: true, scene: largest.scene }
 }
 
 // ---------------------------------------------------------------------------

@@ -37,7 +37,8 @@ test('planChunks: an explicit worker count is a ceiling memory lowers and never 
 })
 
 test('planChunks: a 3D scene sets the per-worker estimate, and a render with 3D is capped however much memory is free', () => {
-  const sceneJson = JSON.stringify({ model: { meshes: { m: { position: 'A'.repeat(200000) } } } })
+  // 20 MB of inline vertex data: 1 GB + 30 x 20 MB = 1.6 GB, over a 2D worker's 1.5.
+  const sceneJson = JSON.stringify({ model: { meshes: { m: { position: 'A'.repeat(20e6) } } } })
   const plan = planChunks([...segments(2), ...segments(1, { sceneJson })], { workers: 12, chunkSize: 120, memory: memory(120 * GB) })
   assert.equal(plan.workerCount, SCENE3D_MAX_WORKERS)
   assert.equal(plan.memory.limitedBy, '3d')

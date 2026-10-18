@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import {
   parseVmStat, parseMeminfo, availableMemoryBytes, imageSize, scene3dFootprint, workerFootprint, planWorkers,
   createMemoryGovernor, reserveBytes, PER_WORKER_BYTES, SCENE3D_BASE_BYTES, SCENE3D_MAX_WORKERS,
-  SCENE3D_TEXTURE_COPIES, TEXTURE_UNKNOWN_EXPANSION,
+  SCENE3D_TEXT_FACTOR, SCENE3D_TEXTURE_COPIES, TEXTURE_UNKNOWN_EXPANSION,
 } from '../memory.js'
 
 const GB = 1e9
@@ -109,7 +109,7 @@ test('imageSize reads a PNG IHDR and a JPEG SOF past its EXIF block', () => {
   assert.equal(imageSize(Buffer.from('not an image'), 'image/png'), null)
 })
 
-test('scene3dFootprint: each distinct texture at its decoded size, page and GPU; the rest of the text as vertex data', () => {
+test('scene3dFootprint: the base, the factor per byte of text, and each distinct texture at its decoded size', () => {
   const big = png(2048, 2048, 5000)
   const scene = JSON.stringify({
     model: { textures: { aaaaaaaaaaaaaaaa: big, bbbbbbbbbbbbbbbb: jpeg(4096, 2048, [60000, 30000]) }, meshes: { m: { position: 'A'.repeat(40000) } } },
@@ -120,8 +120,15 @@ test('scene3dFootprint: each distinct texture at its decoded size, page and GPU;
   assert.equal(f.textures, 2)
   assert.equal(f.textureBytes, (2048 * 2048 + 4096 * 2048) * 4)
   assert.equal(f.textBytes, scene.length)
-  assert.ok(f.geometryBytes >= 30000 && f.geometryBytes < 0.75 * 45000, `${f.geometryBytes}`)
-  assert.ok(Math.abs(f.bytes - (SCENE3D_BASE_BYTES + 3 * f.textBytes + 2 * f.geometryBytes + SCENE3D_TEXTURE_COPIES * f.textureBytes)) <= 1)
+  assert.ok(Math.abs(f.bytes - (SCENE3D_BASE_BYTES + SCENE3D_TEXT_FACTOR * f.textBytes + SCENE3D_TEXTURE_COPIES * f.textureBytes)) <= 1)
+})
+
+test('the 3D constants still cover the scene they were fitted to', () => {
+  // 2026-10-17: an 85,270,896-byte active.json, captured at 1080x1920, held about 1.6 GB (renderer) + 1.8 GB (GPU)
+  // per worker before any growth; cf P0 (2026-10-17) measured one worker's peak on it alone at 3.6 GB.
+  // Its textures decode to at least the main model's 25 MB. Within a fifth above.
+  const estimate = SCENE3D_BASE_BYTES + SCENE3D_TEXT_FACTOR * 85_270_896 + SCENE3D_TEXTURE_COPIES * 25e6
+  assert.ok(estimate >= 3.4 * GB && estimate <= 1.2 * 3.4 * GB, `${estimate}`)
 })
 
 test('scene3dFootprint: a texture whose header gives no size is counted from its length', () => {
@@ -133,8 +140,9 @@ test('scene3dFootprint: a texture whose header gives no size is counted from its
 })
 
 test('workerFootprint: a 3D scene with large textures needs more per worker than any 2D overlay', () => {
+  // 24 textures of 2048x2048 (an environment model may hold 48): 400 MB of RGBA, decoded in the page and on the GPU.
   const scene = JSON.stringify({ model: { textures: Object.fromEntries(
-    Array.from({ length: 8 }, (_, i) => [`${i}`.repeat(16), png(2048, 2048, 100 + i)])) } })
+    Array.from({ length: 24 }, (_, i) => [i.toString(16).padStart(16, '0'), png(2048, 2048, 100 + i)])) } })
   const twoD = workerFootprint([{ id: 'title', props: { text: 'hi' } }, { id: 'captions' }])
   const threeD = workerFootprint([{ id: 'title', props: { text: 'hi' } }, { id: 'film', props: { sceneJson: scene, sceneFile: '/p/models/active.json' } }])
   assert.deepEqual({ bytes: twoD.bytes, kind: twoD.kind, has3d: twoD.has3d }, { bytes: PER_WORKER_BYTES, kind: '2d', has3d: false })
@@ -142,7 +150,15 @@ test('workerFootprint: a 3D scene with large textures needs more per worker than
   assert.equal(threeD.id, 'film')
   assert.equal(threeD.has3d, true)
   assert.ok(threeD.bytes > PER_WORKER_BYTES, `${threeD.bytes}`)
-  assert.ok(threeD.bytes > SCENE3D_BASE_BYTES + 8 * 2048 * 2048 * 4 * 2, `${threeD.bytes}`)
+  assert.ok(threeD.bytes > SCENE3D_BASE_BYTES + 24 * 2048 * 2048 * 4 * 2, `${threeD.bytes}`)
+  assert.equal(threeD.scene.textures, 24)
+})
+
+test('workerFootprint: a small 3D scene is budgeted no lower than a 2D worker, and still reads as 3D', () => {
+  const f = workerFootprint([{ id: 'captions' }, { id: 'cube', props: { sceneJson: JSON.stringify({ model: { name: 'cube' } }) } }])
+  assert.ok(f.scene.bytes < PER_WORKER_BYTES)
+  assert.equal(f.bytes, PER_WORKER_BYTES)
+  assert.deepEqual({ kind: f.kind, id: f.id, has3d: f.has3d }, { kind: '3d', id: 'cube', has3d: true })
 })
 
 // --- the worker count ------------------------------------------------------
