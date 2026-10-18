@@ -982,7 +982,7 @@ All components produce the same output: rendered frame-by-frame by Puppeteer, co
 
 Puppeteer frame rendering is CPU-bound. Two levels of parallelism are applied:
 
-- **Segment-level** — all overlay and caption segments are independent. A worker pool of N Puppeteer instances renders all segments simultaneously. Default workers = CPU core count.
+- **Segment-level** — all overlay and caption segments are independent. A worker pool of N Puppeteer instances renders all segments simultaneously. Default workers = CPU core count, lowered to what the memory available at the start holds above a reserve (4 GB or a quarter of the total) at what one worker is estimated to hold (a 3D scene by its size and textures), and to 2 when the render has 3D. Before each chunk a worker reads the memory again and waits while it is short, unless it is the only one rendering (`render/memory.js`).
 - **Frame chunking** — segments above a threshold (default: 1,000 frames / ~33s at 30fps) are split into chunks, each rendered by a separate worker, then reassembled by ffmpeg. This keeps a 10-minute caption track from blocking a single worker.
 
 ```

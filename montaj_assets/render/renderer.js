@@ -16,7 +16,8 @@ import os from 'os'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { childKilledError, isChildKilled, syncResultError, CHILD_KILLED_PHASES } from './child-killed.js'
-import { adaptiveChunkSize, workerCap } from './chunk-plan.js'
+import { adaptiveChunkSize } from './chunk-plan.js'
+import { availableMemoryBytes, workerFootprint, planWorkers, createMemoryGovernor, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
 import { toFileHref } from './file-url.js'
 import { subframeTimes, motionBlurFilter } from './motion-blur.js'
 import { geometryAt } from '@bycrux/timeline-core'
@@ -80,9 +81,19 @@ export function resolveChunkSize(longest, targetWorkers, subframes, configChunkS
  * `chunkSize` frames, and how many browser workers capture them at once. Also
  * what render.js's disk check (disk-space.js, §128) sizes its estimate from.
  *
- * @param {Array<{ frameCount: number, opaque?: boolean }>} segments
- * @param {{ workers?: number, chunkSize?: number, motionBlur?: number }} [config]
- * @returns {{ jobs: object[], workerCount: number, chunkSize: number, subframes: number }}
+ * The worker count is memory.js's planWorkers: the configured count or the
+ * cores, lowered to what the memory available now holds at what one worker
+ * of these segments holds (workerFootprint), and to SCENE3D_MAX_WORKERS when
+ * any segment is 3D. `memory` is that plan, with `footprint`.
+ * A 3D segment (isScene3dSegment) is cut at most SCENE3D_MAX_CHUNK_FRAMES
+ * output frames a chunk, whatever `chunkSize` says; `chunkSize` is the
+ * 2D segments' size.
+ * `config.memory` replaces the machine's readings, for tests:
+ * `{ readAvailable?: () => bytes, totalBytes?: number }`.
+ *
+ * @param {Array<{ frameCount: number, opaque?: boolean, props?: object }>} segments
+ * @param {{ workers?: number, chunkSize?: number, motionBlur?: number, memory?: object }} [config]
+ * @returns {{ jobs: object[], workerCount: number, chunkSize: number, subframes: number, memory: object }}
  */
 export function planChunks(segments, config = {}) {
   const userConfig    = readMontajConfig()
@@ -90,18 +101,19 @@ export function planChunks(segments, config = {}) {
   const targetWorkers = config.workers ?? userConfig.render?.workers ?? os.cpus().length
   // Computed before chunkSize so the default can size on sub-frames — see
   // resolveChunkSize's doc comment.
-  const subframes     = config.motionBlur ?? 1
+  const subframes     = Math.max(1, Math.trunc(Number(config.motionBlur) || 1))
   const chunkSize     = resolveChunkSize(longest, targetWorkers, subframes, config.chunkSize, userConfig.render?.chunkSize)
 
   // Expand segments into per-chunk jobs
   const jobs = []
   for (const seg of segments) {
     const opaque = seg.opaque ?? false
-    if (seg.frameCount > chunkSize) {
-      const numChunks = Math.ceil(seg.frameCount / chunkSize)
+    const segChunk = isScene3dSegment(seg) ? Math.min(chunkSize, SCENE3D_MAX_CHUNK_FRAMES) : chunkSize
+    if (seg.frameCount > segChunk) {
+      const numChunks = Math.ceil(seg.frameCount / segChunk)
       for (let i = 0; i < numChunks; i++) {
-        const frameStart = i * chunkSize
-        const frameEnd   = Math.min(frameStart + chunkSize, seg.frameCount)
+        const frameStart = i * segChunk
+        const frameEnd   = Math.min(frameStart + segChunk, seg.frameCount)
         jobs.push({ ...seg, opaque, subframes, frameStart, frameEnd, chunkIndex: i, totalChunks: numChunks })
       }
     } else {
@@ -109,8 +121,36 @@ export function planChunks(segments, config = {}) {
     }
   }
 
-  const workerCount = Math.min(workerCap(targetWorkers, os.totalmem()), jobs.length)
-  return { jobs, workerCount, chunkSize, subframes }
+  const footprint = workerFootprint(segments)
+  const memory = {
+    ...planWorkers({
+      target:         targetWorkers,
+      jobs:           jobs.length,
+      availableBytes: jobs.length > 0 ? (config.memory?.readAvailable ?? availableMemoryBytes)() : 0,
+      totalBytes:     config.memory?.totalBytes ?? os.totalmem(),
+      perWorkerBytes: footprint.bytes,
+      has3d:          footprint.has3d,
+    }),
+    footprint,
+  }
+  return { jobs, workerCount: memory.workers, chunkSize, subframes, memory }
+}
+
+/** The lines that say why the render runs fewer workers than it asked for, and what a 3D worker is estimated to hold. */
+export function memoryPlanLines(memory) {
+  const lines = []
+  const { footprint: f } = memory
+  if (f?.kind === '3d') {
+    const s = f.scene
+    const mb = (bytes) => `${Math.round(bytes / 1e6)}MB`
+    lines.push(`3d worker estimate=${gb(f.bytes)} from=${s.from} text=${mb(s.textBytes)} textures=${s.textures} (${mb(s.textureBytes)} decoded)`)
+  }
+  if (memory.limitedBy === 'memory') {
+    lines.push(`workers lowered by memory: available=${gb(memory.availableBytes)} reserve=${gb(memory.reserveBytes)} perWorker=${gb(memory.perWorkerBytes)} workers=${memory.workers} (asked ${memory.asked})`)
+  } else if (memory.limitedBy === '3d') {
+    lines.push(`workers capped for 3d: one GPU draws every worker, workers=${memory.workers} (asked ${memory.asked}, cap ${SCENE3D_MAX_WORKERS})`)
+  }
+  return lines
 }
 
 /**
@@ -150,10 +190,14 @@ export async function renderAllSegments(segments, config = {}) {
     }
   }
 
-  const { jobs, workerCount, chunkSize } = planChunks(segments, config)
+  const { jobs, workerCount, chunkSize, memory } = planChunks(segments, config)
   lastPlan = { workers: workerCount, chunkFrames: chunkSize }
   const noteFrame = createBakeProgress({ total: jobs.reduce((n, j) => n + (j.frameEnd - j.frameStart), 0), log })
   log(`workers=${workerCount} chunk=${chunkSize}`)
+  for (const line of memoryPlanLines(memory)) log(line)
+  // Test seams: the browser a worker runs and how it renders a chunk.
+  const launchWorker = config.launchWorker ?? launchWorkerBrowser
+  const renderJob = config.renderJob ?? renderChunk
   // The resolver rule is per browser, and one pool renders every segment, so
   // the font hosts resolve when ANY page links Google Fonts. Each page's guard
   // still lets them through only for a page that links them.
@@ -162,7 +206,7 @@ export async function renderAllSegments(segments, config = {}) {
   log(`launching ${workerCount} browser worker(s) for ${jobs.length} job(s)...`)
 
   // Launch browser pool
-  const workers = await launchPool(workerCount, () => launchWorkerBrowser({ needsGoogleFonts }))
+  const workers = await launchPool(workerCount, () => launchWorker({ needsGoogleFonts }))
 
   log(`browsers ready`)
 
@@ -172,6 +216,19 @@ export async function renderAllSegments(segments, config = {}) {
   let jobsDone = 0
 
   const RECYCLE_AFTER = 5  // restart browser every N jobs to prevent memory bloat
+  // and after every 3D chunk: a fresh browser per 3D chunk bounds a leaking
+  // GPU process's growth to one short chunk (SCENE3D_MAX_CHUNK_FRAMES, memory.js).
+
+  // Before each chunk a worker reads the memory again, and waits while its
+  // chunk would take the machine below the reserve (memory.js). A worker
+  // alone never waits; a chunk in flight is never stopped.
+  const governor = createMemoryGovernor({
+    perWorkerBytes: memory.perWorkerBytes,
+    reserveBytes:   memory.reserveBytes,
+    readAvailable:  config.memory?.readAvailable ?? availableMemoryBytes,
+    ...(config.memory?.pollMs != null ? { pollMs: config.memory.pollMs } : {}),
+    log,
+  })
 
   // §128: the first failed chunk fails the render, but only once every worker
   // has stopped: the other browsers are closed at once (their chunk in
@@ -187,28 +244,35 @@ export async function renderAllSegments(segments, config = {}) {
       let current = worker
       let jobsOnThisBrowser = 0
       try {
-      while (true) {
+      while (await governor.acquire(`worker ${workerIdx}`, () => queue.length > 0)) {
         const job = queue.shift()
-        if (!job) break
+        // Another worker can take the last job between the acquire and here.
+        if (!job) { governor.release(); break }
         const label = job.totalChunks > 1
           ? `${job.id} chunk ${job.chunkIndex + 1}/${job.totalChunks}`
           : job.id
         log(`rendering ${label} (${job.frameEnd - job.frameStart} frames)...`)
-        const { webmPath } = await renderChunk(current, job, { onFrame: noteFrame })
+        let webmPath
+        try {
+          ({ webmPath } = await renderJob(current, job, { onFrame: noteFrame }))
+        } finally {
+          governor.release()
+        }
         jobsDone++
         jobsOnThisBrowser++
         log(`encoded ${label} (${jobsDone}/${jobs.length} done)`)
         if (!chunkResults.has(job.id)) chunkResults.set(job.id, [])
         chunkResults.get(job.id)[job.chunkIndex] = webmPath
 
-        // Recycle browser to flush memory after RECYCLE_AFTER jobs
-        if (jobsOnThisBrowser >= RECYCLE_AFTER && queue.length > 0) {
+        // Recycle browser to flush memory after RECYCLE_AFTER jobs, or after any 3D job
+        const after3d = isScene3dSegment(job)
+        if ((after3d || jobsOnThisBrowser >= RECYCLE_AFTER) && queue.length > 0) {
           live.delete(current)
           await current.close()
-          current = await launchWorkerBrowser({ needsGoogleFonts })
+          current = await launchWorker({ needsGoogleFonts })
           live.add(current)
           jobsOnThisBrowser = 0
-          log(`worker ${workerIdx}: browser recycled`)
+          log(`worker ${workerIdx}: browser recycled${after3d ? ' after a 3d chunk' : ''}`)
         }
       }
       } catch (err) {

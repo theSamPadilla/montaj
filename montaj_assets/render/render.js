@@ -13,10 +13,11 @@
  *
  * --estimate (§213): plan the render exactly as far as its disk check, print
  * one JSON line, `{"estimate":{"lower":{"tmpBytes","projectBytes"},"expected":
- * {...}},"volumes":[{"path","needBytes","freeBytes"}]}` (volumes against the
- * expected need), and exit 0. It writes nothing, fetches nothing, normalizes
- * nothing and launches no browser; it only reads the project and probes its
- * sources. --resolution and --fps stand in for the project's settings, for an
+ * {...}},"volumes":[{"path","needBytes","freeBytes"}],"memory":{...}}` (volumes
+ * against the expected need; memory the worker plan, estimateMemory), and
+ * exit 0. It writes nothing, fetches nothing, normalizes nothing and launches
+ * no browser; it only reads the project, probes its sources and reads the
+ * memory available. --resolution and --fps stand in for the project's settings, for an
  * estimate asked before a settings change is saved; they apply to --estimate only.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync, openSync, writeSync, closeSync, renameSync } from 'fs'
@@ -1014,10 +1015,11 @@ function resolvePictureColorSpace(projectJson, settings, videoItems) {
  * render.js --estimate (§213): main() as far as its disk check (2c), writing
  * nothing. No lock, no wipe of render/segments, no URL prefetch, no
  * project.json write-back, no normalize, bundle, browser or compose: the
- * project is read and its sources probed. Returns `{ estimate, volumes }`,
+ * project is read and its sources probed. Returns `{ estimate, volumes, memory }`,
  * volumes being checkDiskSpace against the EXPECTED need (one entry when TMPDIR
  * and the project share a disk), or [] when a disk cannot be read. Paths are
- * absolute, as in the insufficient_disk line.
+ * absolute, as in the insufficient_disk line. `memory` is the worker plan
+ * (estimateMemory), null for a render that captures no overlays.
  *
  * Mirrors main() step for step; a change to what main() writes before or at
  * its peak belongs in planDisk, which both run.
@@ -1028,7 +1030,7 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
     renderWidth, renderHeight, workspaceDir, renderDir, segDir, outputPath,
   } = loadRenderProject(projectPath, { out, requireFinal: false, overrides })
 
-  let estimate, reclaimBytes
+  let estimate, reclaimBytes, memory = null
   // §378: what the picture needs, for the export window's Format row. null: not worked out.
   let pictureColor = null
   if (projectJson.renderMode === 'ffmpeg-drawtext') {
@@ -1056,9 +1058,25 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
     })
     estimate = disk.estimate
     reclaimBytes = disk.reclaimBytes
+    memory = estimateMemory(disk.plan.memory)
   }
   const check = checkDiskSpace({ tmpDir: tmpdir(), projectDir: renderDir, estimate: estimate.expected, reclaimBytes })
-  return { estimate, volumes: check?.volumes ?? [], ...(pictureColor ?? {}) }
+  return { estimate, volumes: check?.volumes ?? [], memory, ...(pictureColor ?? {}) }
+}
+
+/**
+ * --estimate's memory plan, from planChunks' (memory.js planWorkers): the
+ * bytes available now, the reserve, what one worker is estimated to hold
+ * (`perWorkerKind` '3d' when a 3D scene sets it), the workers the render
+ * would run and the count it asked for, and what lowered it ('memory', '3d'
+ * or null). Null when there is nothing to capture.
+ */
+function estimateMemory(m) {
+  if (!m || m.workers === 0) return null
+  return {
+    availableBytes: m.availableBytes, reserveBytes: m.reserveBytes, perWorkerBytes: m.perWorkerBytes,
+    perWorkerKind: m.footprint.kind, workers: m.workers, asked: m.asked, limitedBy: m.limitedBy,
+  }
 }
 
 /**
