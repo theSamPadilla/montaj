@@ -7,10 +7,13 @@
 // here runs vm_stat or reads the machine's memory.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, writeFileSync, truncateSync, rmSync } from 'fs'
+import { join } from 'path'
+import os from 'os'
 import {
   parseVmStat, parseMeminfo, availableMemoryBytes, imageSize, scene3dFootprint, workerFootprint, planWorkers,
-  createMemoryGovernor, reserveBytes, PER_WORKER_BYTES, SCENE3D_BASE_BYTES, SCENE3D_MAX_WORKERS,
-  SCENE3D_TEXT_FACTOR, SCENE3D_TEXTURE_COPIES, TEXTURE_UNKNOWN_EXPANSION,
+  createMemoryGovernor, reserveBytes, isScene3dSegment, PER_WORKER_BYTES, SCENE3D_BASE_BYTES, SCENE3D_MAX_WORKERS,
+  SCENE3D_TEXT_FACTOR, SCENE3D_TEXTURE_COPIES, SCENE3D_UNKNOWN_BYTES, TEXTURE_UNKNOWN_EXPANSION,
 } from '../memory.js'
 
 const GB = 1e9
@@ -162,6 +165,37 @@ test('workerFootprint: a small 3D scene is budgeted no lower than a 2D worker, a
 })
 
 // --- the worker count ------------------------------------------------------
+
+test('isScene3dSegment: a segment marked scene3d, or one carrying sceneJson; nothing else', () => {
+  assert.equal(isScene3dSegment({ scene3d: true }), true)
+  assert.equal(isScene3dSegment({ props: { sceneJson: '{}' } }), true)
+  assert.equal(isScene3dSegment({ scene3d: 'yes', props: { sceneJson: {} } }), false)
+  assert.equal(isScene3dSegment({ props: { text: 'hi' } }), false)
+  assert.equal(isScene3dSegment(undefined), false)
+})
+
+test('workerFootprint: a stage bundle marked scene3d, with no sceneJson, is 3D and priced from its file size', () => {
+  const dir = mkdtempSync(join(os.tmpdir(), 'montaj-memory-'))
+  try {
+    const bundle = join(dir, 'stage.jsx')
+    writeFileSync(bundle, '')
+    truncateSync(bundle, 40e6) // a generated stage inlining a 40 MB scene
+    const f = workerFootprint([{ id: 'title', props: { text: 'hi' } }, { id: 'stage', scene3d: true, componentPath: bundle, props: {} }])
+    assert.deepEqual({ kind: f.kind, id: f.id, has3d: f.has3d, from: f.scene.from }, { kind: '3d', id: 'stage', has3d: true, from: 'bundle' })
+    assert.equal(f.scene.textBytes, 40e6)
+    assert.equal(f.bytes, SCENE3D_BASE_BYTES + SCENE3D_TEXT_FACTOR * 40e6)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('workerFootprint: a 3D segment whose bundle cannot be read, or that names none, is the heaviest measured worker', () => {
+  for (const seg of [{ id: 'gone', scene3d: true, componentPath: '/nonexistent/stage.jsx' }, { id: 'bare', scene3d: true }]) {
+    const f = workerFootprint([{ id: 'captions' }, seg])
+    assert.deepEqual({ bytes: f.bytes, kind: f.kind, has3d: f.has3d, from: f.scene.from }, { bytes: SCENE3D_UNKNOWN_BYTES, kind: '3d', has3d: true, from: 'unknown' })
+  }
+  assert.equal(SCENE3D_UNKNOWN_BYTES, 3.6 * GB)
+})
 
 test('reserve: 4 GB, or a quarter of the total when that is more', () => {
   assert.equal(reserveBytes(8 * GB), 4 * GB)

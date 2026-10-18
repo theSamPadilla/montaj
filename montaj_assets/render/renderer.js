@@ -17,7 +17,7 @@ import { FFMPEG } from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { childKilledError, isChildKilled, syncResultError, CHILD_KILLED_PHASES } from './child-killed.js'
 import { adaptiveChunkSize } from './chunk-plan.js'
-import { availableMemoryBytes, workerFootprint, planWorkers, createMemoryGovernor, gb, SCENE3D_MAX_WORKERS } from './memory.js'
+import { availableMemoryBytes, workerFootprint, planWorkers, createMemoryGovernor, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
 import { toFileHref } from './file-url.js'
 import { subframeTimes, motionBlurFilter } from './motion-blur.js'
 import { overlayPageLaunchOptions, installPageGuard } from './page-guard.js'
@@ -84,6 +84,9 @@ export function resolveChunkSize(longest, targetWorkers, subframes, configChunkS
  * cores, lowered to what the memory available now holds at what one worker
  * of these segments holds (workerFootprint), and to SCENE3D_MAX_WORKERS when
  * any segment is 3D. `memory` is that plan, with `footprint`.
+ * A 3D segment (isScene3dSegment) is cut at most SCENE3D_MAX_CHUNK_FRAMES
+ * output frames a chunk, whatever `chunkSize` says; `chunkSize` is the
+ * 2D segments' size.
  * `config.memory` replaces the machine's readings, for tests:
  * `{ readAvailable?: () => bytes, totalBytes?: number }`.
  *
@@ -104,11 +107,12 @@ export function planChunks(segments, config = {}) {
   const jobs = []
   for (const seg of segments) {
     const opaque = seg.opaque ?? false
-    if (seg.frameCount > chunkSize) {
-      const numChunks = Math.ceil(seg.frameCount / chunkSize)
+    const segChunk = isScene3dSegment(seg) ? Math.min(chunkSize, SCENE3D_MAX_CHUNK_FRAMES) : chunkSize
+    if (seg.frameCount > segChunk) {
+      const numChunks = Math.ceil(seg.frameCount / segChunk)
       for (let i = 0; i < numChunks; i++) {
-        const frameStart = i * chunkSize
-        const frameEnd   = Math.min(frameStart + chunkSize, seg.frameCount)
+        const frameStart = i * segChunk
+        const frameEnd   = Math.min(frameStart + segChunk, seg.frameCount)
         jobs.push({ ...seg, opaque, subframes, frameStart, frameEnd, chunkIndex: i, totalChunks: numChunks })
       }
     } else {
@@ -138,7 +142,7 @@ export function memoryPlanLines(memory) {
   if (f?.kind === '3d') {
     const s = f.scene
     const mb = (bytes) => `${Math.round(bytes / 1e6)}MB`
-    lines.push(`3d worker estimate=${gb(f.bytes)} text=${mb(s.textBytes)} textures=${s.textures} (${mb(s.textureBytes)} decoded)`)
+    lines.push(`3d worker estimate=${gb(f.bytes)} from=${s.from} text=${mb(s.textBytes)} textures=${s.textures} (${mb(s.textureBytes)} decoded)`)
   }
   if (memory.limitedBy === 'memory') {
     lines.push(`workers lowered by memory: available=${gb(memory.availableBytes)} reserve=${gb(memory.reserveBytes)} perWorker=${gb(memory.perWorkerBytes)} workers=${memory.workers} (asked ${memory.asked})`)
@@ -211,6 +215,8 @@ export async function renderAllSegments(segments, config = {}) {
   let jobsDone = 0
 
   const RECYCLE_AFTER = 5  // restart browser every N jobs to prevent memory bloat
+  // and after every 3D chunk: a fresh browser per 3D chunk bounds a leaking
+  // GPU process's growth to one short chunk (SCENE3D_MAX_CHUNK_FRAMES, memory.js).
 
   // Before each chunk a worker reads the memory again, and waits while its
   // chunk would take the machine below the reserve (memory.js). A worker
@@ -257,14 +263,15 @@ export async function renderAllSegments(segments, config = {}) {
         if (!chunkResults.has(job.id)) chunkResults.set(job.id, [])
         chunkResults.get(job.id)[job.chunkIndex] = webmPath
 
-        // Recycle browser to flush memory after RECYCLE_AFTER jobs
-        if (jobsOnThisBrowser >= RECYCLE_AFTER && queue.length > 0) {
+        // Recycle browser to flush memory after RECYCLE_AFTER jobs, or after any 3D job
+        const after3d = isScene3dSegment(job)
+        if ((after3d || jobsOnThisBrowser >= RECYCLE_AFTER) && queue.length > 0) {
           live.delete(current)
           await current.close()
           current = await launchWorker({ needsGoogleFonts })
           live.add(current)
           jobsOnThisBrowser = 0
-          log(`worker ${workerIdx}: browser recycled`)
+          log(`worker ${workerIdx}: browser recycled${after3d ? ' after a 3d chunk' : ''}`)
         }
       }
       } catch (err) {

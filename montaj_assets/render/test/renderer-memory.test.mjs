@@ -9,7 +9,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { planChunks, renderAllSegments, memoryPlanLines } from '../renderer.js'
-import { SCENE3D_MAX_WORKERS, PER_WORKER_BYTES } from '../memory.js'
+import { SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES, SCENE3D_UNKNOWN_BYTES, PER_WORKER_BYTES } from '../memory.js'
 
 const GB = 1e9
 const TOTAL_36GB = 36 * GB
@@ -47,6 +47,33 @@ test('planChunks: a 3D scene sets the per-worker estimate, and a render with 3D 
   const lines = memoryPlanLines(plan.memory)
   assert.match(lines[0], /^3d worker estimate=\d+\.\dGB /)
   assert.match(lines[1], /^workers capped for 3d: .*workers=2 \(asked 12, cap 2\)$/)
+})
+
+test('planChunks: a segment marked scene3d with no sceneJson gets the 3D estimate and the 3D cap', () => {
+  const plan = planChunks([...segments(2), { id: 'stage', frameCount: 600, scene3d: true, props: {} }], { workers: 12, chunkSize: 120, memory: memory(120 * GB) })
+  assert.equal(plan.workerCount, SCENE3D_MAX_WORKERS)
+  assert.equal(plan.memory.limitedBy, '3d')
+  assert.equal(plan.memory.perWorkerBytes, SCENE3D_UNKNOWN_BYTES)
+  assert.match(memoryPlanLines(plan.memory)[0], /^3d worker estimate=3\.6GB from=unknown /)
+})
+
+test('planChunks: a 3D segment is cut at most SCENE3D_MAX_CHUNK_FRAMES a chunk; a 2D segment keeps the plan\'s chunk size', () => {
+  assert.equal(SCENE3D_MAX_CHUNK_FRAMES, 120)
+  const sceneJson = JSON.stringify({ model: { name: 'cube' } })
+  const segs = [
+    { id: 'title', frameCount: 600 },
+    { id: 'stage', frameCount: 600, scene3d: true, props: {} },
+    { id: 'scene', frameCount: 250, props: { sceneJson } },
+  ]
+  const plan = planChunks(segs, { workers: 2, chunkSize: 1000, memory: memory(60 * GB) })
+  const of = (id) => plan.jobs.filter((j) => j.id === id)
+  assert.equal(plan.chunkSize, 1000)
+  assert.deepEqual(of('title').map((j) => [j.frameStart, j.frameEnd]), [[0, 600]], '2D: unchanged')
+  assert.deepEqual(of('stage').map((j) => [j.frameStart, j.frameEnd]), [[0, 120], [120, 240], [240, 360], [360, 480], [480, 600]])
+  assert.deepEqual(of('scene').map((j) => [j.frameStart, j.frameEnd, j.totalChunks]), [[0, 120, 3], [120, 240, 3], [240, 250, 3]])
+  // A chunk size under the cap is kept for 3D too.
+  const small = planChunks([{ id: 'stage', frameCount: 200, scene3d: true }], { workers: 2, chunkSize: 50, memory: memory(60 * GB) })
+  assert.ok(small.jobs.length === 4 && small.jobs.every((j) => j.frameEnd - j.frameStart === 50))
 })
 
 test('memoryPlanLines: a render memory lowers names available, reserve, perWorker and the result', () => {
@@ -114,4 +141,19 @@ test('renderAllSegments: with room, both workers render at once from the start',
     memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1 },
   })
   assert.equal(f.seen.most, 2)
+})
+
+test('renderAllSegments: a worker gets a fresh browser after every 3D chunk, and after RECYCLE_AFTER 2D chunks', async () => {
+  const events = []
+  const segs = renderable(8).map((seg, i) => (i < 2 ? { ...seg, scene3d: true } : seg))
+  await renderAllSegments(segs, {
+    workers: 1, chunkSize: 1000,
+    launchWorker: async () => { events.push('launch'); return { close: async () => { events.push('close') } } },
+    renderJob: async (_worker, job) => { events.push(job.id); return { webmPath: job.outputPath } },
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1 },
+  })
+  assert.deepEqual(events, [
+    'launch', 'seg0', 'close', 'launch', 'seg1', 'close', 'launch',
+    'seg2', 'seg3', 'seg4', 'seg5', 'seg6', 'close', 'launch', 'seg7', 'close',
+  ])
 })

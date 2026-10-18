@@ -13,7 +13,7 @@
  * Every budget is here, with what it is calibrated against.
  */
 import os from 'os'
-import { readFileSync } from 'fs'
+import { readFileSync, statSync } from 'fs'
 import { spawnSync } from 'child_process'
 
 const GB = 1e9
@@ -41,6 +41,27 @@ export const RESERVE_SHARE = 0.25
  * scene on the GPU (the 12 workers measured above).
  */
 export const SCENE3D_MAX_WORKERS = 2
+
+/**
+ * A 3D segment is cut into chunks of at most this many OUTPUT frames, and
+ * each chunk runs on a fresh browser (renderer.js). Chrome's GPU process can
+ * leak about 41 MB per frame within one page, intermittently, when a CSS
+ * filter sits over the WebGL canvas (R-leak, 2026-10-17; older generated
+ * stage bundles may have one), so growth within a chunk is unbounded but by
+ * its length: 120 frames bounds it to about 5 GB. Short chunks do not change
+ * the output: the stage is deterministic in the frame's time (verified
+ * 2026-10-17 by probing a fresh page at each chunk start against a
+ * continuous run, bit for bit, physics included).
+ */
+export const SCENE3D_MAX_CHUNK_FRAMES = 120
+
+/**
+ * A 3D segment whose scene this file cannot read (a stage bundle it cannot
+ * stat, or no file at all): priced at the heaviest 3D worker measured, the
+ * park-notes stage's 3.6 GB (cf P0, 2026-10-17, below), so an unknown scene
+ * is budgeted as the worst one known rather than as 2D.
+ */
+export const SCENE3D_UNKNOWN_BYTES = 3.6 * GB
 
 /**
  * A 3D worker is SCENE3D_BASE_BYTES, plus SCENE3D_TEXT_FACTOR per byte of
@@ -229,25 +250,54 @@ export function scene3dFootprint(sceneJson) {
 }
 
 /**
+ * Whether a render segment draws a 3D stage: render.js marks every one
+ * `scene3d: true` (scene3d.js isThreeStageOverlay: a scene item, the host's
+ * stage, or a generated stage bundle), and a segment whose props carry
+ * `sceneJson` is one whatever its marks.
+ */
+export function isScene3dSegment(seg) {
+  return seg?.scene3d === true || typeof seg?.props?.sceneJson === 'string'
+}
+
+/**
+ * What a 3D worker holds for a stage bundle with no `sceneJson` prop (a
+ * generated stage: its .jsx inlines the scene): scene3dFootprint's model over
+ * the file's size, from a stat, so its textures count only as text. A path
+ * that cannot be read is SCENE3D_UNKNOWN_BYTES.
+ */
+export function bundleFootprint(componentPath, { stat = statSync } = {}) {
+  let size = null
+  try {
+    if (typeof componentPath === 'string' && componentPath) size = stat(componentPath).size
+  } catch {
+    size = null
+  }
+  if (!Number.isFinite(size)) return { bytes: SCENE3D_UNKNOWN_BYTES, textBytes: 0, textures: 0, textureBytes: 0, from: 'unknown' }
+  return { bytes: Math.ceil(SCENE3D_BASE_BYTES + size * SCENE3D_TEXT_FACTOR), textBytes: size, textures: 0, textureBytes: 0, from: 'bundle' }
+}
+
+/**
  * What one worker holds for this render's segments: the most any one of them
- * needs, since any worker may take any chunk. A segment whose props carry
- * `sceneJson` is 3D (scene3dFootprint); every other is 2D (PER_WORKER_BYTES).
+ * needs, since any worker may take any chunk. A 3D segment (isScene3dSegment)
+ * is priced from its `sceneJson` (scene3dFootprint) or else from its
+ * component file (bundleFootprint); every other is 2D (PER_WORKER_BYTES).
  * A 3D render is budgeted at its largest scene, never below a 2D worker
  * (its captions and titles run on the same workers, and a 3D page is a 2D
  * page with WebGL besides); `kind` is then '3d', `id` that scene's segment
  * and `scene` its footprint.
  *
- * @param {Array<{ id?: string, props?: object }>} segments
+ * @param {Array<{ id?: string, scene3d?: boolean, componentPath?: string, props?: object }>} segments
  * @returns {{ bytes: number, kind: '2d'|'3d', id: string|null, has3d: boolean, scene?: object }}
  */
 export function workerFootprint(segments) {
   let largest = null
-  const scenes = new Map() // one scan per scene text, however many items show it
+  const scenes = new Map() // one scan per scene text or bundle, however many items show it
   for (const seg of segments) {
-    const json = seg?.props?.sceneJson
-    if (typeof json !== 'string') continue
-    if (!scenes.has(json)) scenes.set(json, scene3dFootprint(json))
-    const scene = scenes.get(json)
+    if (!isScene3dSegment(seg)) continue
+    const json = seg.props?.sceneJson
+    const key = typeof json === 'string' ? json : `bundle:${seg.componentPath ?? ''}`
+    if (!scenes.has(key)) scenes.set(key, typeof json === 'string' ? { ...scene3dFootprint(json), from: 'sceneJson' } : bundleFootprint(seg.componentPath))
+    const scene = scenes.get(key)
     if (!largest || scene.bytes > largest.scene.bytes) largest = { id: seg.id ?? null, scene }
   }
   if (!largest) return { bytes: PER_WORKER_BYTES, kind: '2d', id: null, has3d: false }
