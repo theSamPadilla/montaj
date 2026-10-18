@@ -104,11 +104,17 @@ export function planChunks(segments, config = {}) {
   const subframes     = Math.max(1, Math.trunc(Number(config.motionBlur) || 1))
   const chunkSize     = resolveChunkSize(longest, targetWorkers, subframes, config.chunkSize, userConfig.render?.chunkSize)
 
+  // A 3D segment's chunk is the cap, or an explicit chunk size under it, never the adaptive default: that one is
+  // divided by the sub-frames for a capture per sub-frame, and a 3D page averages its sub-frames and captures once
+  // per frame, so it would only pay more fresh browsers and more physics replayed from t=0.
+  const explicitChunk = config.chunkSize ?? userConfig.render?.chunkSize
+  const chunk3d       = Math.max(1, Math.min(explicitChunk ?? SCENE3D_MAX_CHUNK_FRAMES, SCENE3D_MAX_CHUNK_FRAMES))
+
   // Expand segments into per-chunk jobs
   const jobs = []
   for (const seg of segments) {
     const opaque = seg.opaque ?? false
-    const segChunk = isScene3dSegment(seg) ? Math.min(chunkSize, SCENE3D_MAX_CHUNK_FRAMES) : chunkSize
+    const segChunk = isScene3dSegment(seg) ? chunk3d : chunkSize
     if (seg.frameCount > segChunk) {
       const numChunks = Math.ceil(seg.frameCount / segChunk)
       for (let i = 0; i < numChunks; i++) {

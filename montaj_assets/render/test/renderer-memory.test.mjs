@@ -76,6 +76,15 @@ test('planChunks: a 3D segment is cut at most SCENE3D_MAX_CHUNK_FRAMES a chunk; 
   assert.ok(small.jobs.length === 4 && small.jobs.every((j) => j.frameEnd - j.frameStart === 50))
 })
 
+test('planChunks: under motion blur a 3D segment still gets SCENE3D_MAX_CHUNK_FRAMES chunks, not the default divided by its sub-frames', () => {
+  // 600 frames at motion blur 5 on 12 workers: the default is max(120, 600 * 5 / 12) / 5 = 50 frames, sized for a
+  // capture per sub-frame. A 3D page captures once per frame, so its chunks stay at the cap.
+  const plan = planChunks([{ id: 'title', frameCount: 600 }, { id: 'stage', frameCount: 600, scene3d: true }], { workers: 12, motionBlur: 5, memory: memory(60 * GB) })
+  assert.equal(plan.chunkSize, 50)
+  assert.ok(plan.jobs.filter((j) => j.id === 'title').every((j) => j.frameEnd - j.frameStart === 50), '2D: the default')
+  assert.deepEqual(plan.jobs.filter((j) => j.id === 'stage').map((j) => j.frameEnd - j.frameStart), [120, 120, 120, 120, 120])
+})
+
 test('planChunks: a 1080x1920 capture budgets a 2D worker at the floor, so the same memory runs more workers than at 4K', () => {
   const at = (captureScale) => segments(4).map((s) => ({ ...s, width: 1080, height: 1920, captureScale }))
   const fourK = planChunks(at(2), { workers: 12, chunkSize: 120, memory: memory(15 * GB) })
