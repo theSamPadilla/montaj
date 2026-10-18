@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, run, get_duration, ffmpeg_bin
+from parallelism import batch_workers
 
 
 def process_one(input_path: str, threshold: str, min_silence: str) -> dict:
@@ -63,7 +64,7 @@ def main():
     group.add_argument("--inputs",       nargs="+", metavar="FILE", help="Multiple source files (processed in parallel)")
     parser.add_argument("--threshold",   default="-30", help="Silence threshold in dB (default: -30)")
     parser.add_argument("--min-silence", default="0.3", help="Minimum silence duration to remove in seconds (default: 0.3)")
-    parser.add_argument("-P", "--parallel", type=int, default=0, help="Max parallel workers (default: number of inputs)")
+    parser.add_argument("-P", "--parallel", type=int, default=0, help="Max parallel workers (default and ceiling: what the machine can hold, at most 4)")
     parser.add_argument("--out",
                         help="Write the trim spec JSON to this file (single --input only) instead of "
                              "printing it, and print {\"path\": \"<abs path>\"} instead. Pass that path "
@@ -86,7 +87,8 @@ def main():
     else:
         if args.out:
             fail("invalid_args", "--out is not supported with --inputs (batch mode produces multiple specs)")
-        workers = args.parallel or len(args.inputs)
+        # One ffmpeg per worker, about 600 MB each: capped by cores and free memory (§338).
+        workers = batch_workers(len(args.inputs), args.parallel)
         results: dict[int, dict] = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fixed (waveform_trim): a batch no longer runs one ffmpeg per input at once.** A 20-clip import started 20 silencedetect ffmpegs together (about 600 MB each) and pushed the machine into swap. `--inputs` now runs at most 4 at a time, no more than half the cores, and one per GB of memory free at the start; an explicit `-P` is capped the same way (`lib/parallelism.py` `batch_workers`).
 - **Fixed (render): `settings.motionBlur` 0 is off, like absent or 1.** A project saved with 0 failed the whole render ("must be an integer from 1 to 8"); 0 now renders unblurred, and `--motion-blur 0` likewise. Negatives, fractions and anything over 8 are still refused.
 - **Fixed (serve): a step that prints JSON but writes a file names it by the file's kind.** With `_project` and no `out`, `synth_audio` saved its WAV as `synth_audio-<stamp>.json`, and `contact_sheet` its PNG the same way, because the auto-name took the extension from `output.type`. An `out` param may now declare `"ext"`; `synth_audio` (`.wav`), `contact_sheet` (`.png`) and `remove_bg` (`.mov`) do.
 - **Fixed (serve): a repeatable param takes a list over the API.** `contact_sheet`'s `at: [0.5, 1, 2]` was refused as "must be a float"; serve now checks each item and passes the flag once per item. A list on a param that is not repeatable is still refused.
