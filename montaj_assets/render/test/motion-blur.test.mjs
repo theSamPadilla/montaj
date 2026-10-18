@@ -2,8 +2,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { resolveMotionBlur, subframeTimes, motionBlurFilter } from '../motion-blur.js'
 
-test('absent or 1 means off', () => {
+test('absent, 0 or 1 means off (a project saved with 0 renders, unblurred)', () => {
   assert.equal(resolveMotionBlur(undefined), 1)
+  assert.equal(resolveMotionBlur(null), 1)
+  assert.equal(resolveMotionBlur(0), 1)
   assert.equal(resolveMotionBlur(1), 1)
 })
 test('accepts integers 2..8', () => {
@@ -11,7 +13,7 @@ test('accepts integers 2..8', () => {
   assert.equal(resolveMotionBlur(8), 8)
 })
 test('rejects out-of-range or non-integer values', () => {
-  for (const bad of [0, 9, 2.5, '3', -1]) assert.throws(() => resolveMotionBlur(bad), /motionBlur/)
+  for (const bad of [9, 2.5, '3', -1, '0', NaN]) assert.throws(() => resolveMotionBlur(bad), /motionBlur must be an integer from 0 to 8 \(0 or 1 is off\)/)
 })
 test('sub-frame times split one frame evenly, starting on the frame', () => {
   assert.deepEqual(subframeTimes(10, 1), [10])

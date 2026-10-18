@@ -88,6 +88,6 @@ test('a bad --motion-blur is refused before any work, as JSON', { skip: SKIP, ti
   assert.equal(r.status, 1)
   const line = JSON.parse(r.stderr.trim().split('\n').at(-1))
   assert.equal(line.error, 'invalid_argument')
-  assert.match(line.message, /--motion-blur must be an integer from 1 to 8/)
+  assert.match(line.message, /--motion-blur must be an integer from 0 to 8 \(0 or 1 is off\)/)
   assert.equal(readFileSync(join(p.dir, 'project.json'), 'utf8'), p.json)
 })

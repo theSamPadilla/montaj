@@ -1,11 +1,13 @@
 // Sub-frame motion blur: capture N evenly spaced sub-frames per output frame
-// and average them. settings.motionBlur absent or 1 = off.
+// and average them. settings.motionBlur absent, 0 or 1 = off: 0 reads as "no
+// blur" to anyone writing a project (some recipes said so, and saved projects
+// carry it), so it renders as 1 rather than failing the render.
 export const MOTION_BLUR_MAX = 8
 
 export function resolveMotionBlur(value) {
-  if (value === undefined || value === null) return 1
+  if (value === undefined || value === null || value === 0) return 1
   if (!Number.isInteger(value) || value < 1 || value > MOTION_BLUR_MAX) {
-    throw new Error(`settings.motionBlur must be an integer from 1 to ${MOTION_BLUR_MAX}, got ${JSON.stringify(value)}`)
+    throw new Error(`settings.motionBlur must be an integer from 0 to ${MOTION_BLUR_MAX} (0 or 1 is off), got ${JSON.stringify(value)}`)
   }
   return value
 }

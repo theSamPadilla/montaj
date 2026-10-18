@@ -367,12 +367,12 @@ function resolveEstimateOverrides({ resolution = null, fps = null, motionBlur = 
     overrides.fps = n
   }
   if (motionBlur != null) {
-    // The setting's own rule (an integer from 1 to MOTION_BLUR_MAX), named as the flag.
+    // The setting's own rule (an integer from 0 to MOTION_BLUR_MAX, 0 or 1 off), named as the flag.
     const n = Number(motionBlur)
     try {
       overrides.motionBlur = resolveMotionBlur(String(motionBlur).trim() === '' ? NaN : n)
     } catch {
-      throw new Error(`--motion-blur must be an integer from 1 to ${MOTION_BLUR_MAX}, got ${JSON.stringify(motionBlur)}`)
+      throw new Error(`--motion-blur must be an integer from 0 to ${MOTION_BLUR_MAX} (0 or 1 is off), got ${JSON.stringify(motionBlur)}`)
     }
   }
   return overrides
