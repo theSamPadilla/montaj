@@ -14,6 +14,8 @@
 //   - a frame with no motion in its shutter exactly the unblurred frame;
 //   - the page handed exactly frameTimes (the centred 3D shutter, §390), once per frame;
 //   - a stage's camera cuts keeping every sub-frame inside its shot;
+//   - frames at opacity 0 written from the chunk's first such capture, never set or captured (§392);
+//   - a chunk with a keyframe changing within one frame averaging its other frames in the page (§392);
 //   - a page that cannot average (no float render target) falling back to the
 //     sub-frame captures, the same bytes as the 2D path;
 //   - a keyframed slide, drawn outside the canvas, captured per sub-frame, the same bytes as the 2D path;
@@ -73,6 +75,10 @@ function FrameBridge() { useThreeFrame(); return null }
 `
 // Fields of a job's keyframes, as the render hands them: a slide of 20% across the chunk.
 const SLIDE = [{ prop: 'offsetX', points: [{ t: 0, value: 0 }, { t: FRAMES / FPS, value: 20 }] }]
+// §392: hidden until between frames 2 and 3 (no frame's shutter sees the switch), then shown.
+const WINDOW = [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 2.5 / FPS, value: 0 }, { t: 2.6 / FPS, value: 1 }] }]
+// §392: a fade inside frame 4's shutter only (3.75 to 4.25): every other frame holds still.
+const STEP = [{ prop: 'opacity', points: [{ t: 0, value: 1 }, { t: 4.05 / FPS, value: 1 }, { t: 4.15 / FPS, value: 0.4 }] }]
 const CASES = {
   opaque: { jsx: stage({ alpha: false, preserve: true, antialias: true }), opaque: true },
   alpha: { jsx: stage({ alpha: true, preserve: false, antialias: false }), opaque: false },
@@ -83,6 +89,8 @@ const CASES = {
   // Not in the parity loop: each has its own test below.
   slide: { jsx: stage({ alpha: false, preserve: true, antialias: true }), opaque: true, keyframes: SLIDE, own: true },
   remount: { jsx: HOLD_STAGE.replace('KEY', "key={frame >= 2.5 ? 'b' : 'a'}"), opaque: true, own: true },
+  window: { jsx: stage({ alpha: true, preserve: true, antialias: true }), opaque: false, keyframes: WINDOW, own: true },
+  step: { jsx: stage({ alpha: true, preserve: true, antialias: true }), opaque: false, keyframes: STEP, own: true },
   // The 3D tree leaves at frame 3: the page then has nothing to average (no_canvas), after it averaged frames 0 to 2.
   gone: {
     own: true, opaque: true,
@@ -316,4 +324,80 @@ test('a stage that reports a camera cut keeps every sub-frame inside its shot (�
   assert.ok(at[3].every(t => t > 2.75 && t < 3.5), `frame 3 stays before the cut: ${at[3]}`)
   assert.ok(at[4].every(t => t >= 3.5 && t < 4.25), `frame 4 stays after it: ${at[4]}`)
   assert.deepEqual(at[2], frameTimes({ subframes: N, scene3d: true }, 2), 'a frame away from the cut keeps its whole shutter')
+})
+
+/** Every page `worker` opens records the frame of each __setFrame call into `sets` (sub-frames included). */
+function countingSets(worker, sets) {
+  const newPage = worker.browser.newPage.bind(worker.browser)
+  worker.browser.newPage = async (...a) => {
+    const page = await newPage(...a)
+    await page.exposeFunction('__testSet', (n) => { sets.push(n) })
+    await page.evaluateOnNewDocument(() => {
+      let inner
+      Object.defineProperty(window, '__setFrame', {
+        configurable: true,
+        get() { return inner },
+        set(fn) { inner = (n) => { window.__testSet(n); return fn(n) } },
+      })
+    })
+    return page
+  }
+}
+
+test('§392: a 3D frame at opacity 0 is written from the chunk\'s first such capture, never set or captured', { timeout: 240_000 }, async () => {
+  const sets = []
+  const worker = await R.launchWorkerBrowser({})
+  countingSets(worker, sets)
+  let skipped, captured
+  try {
+    skipped = await render(worker, job('window', { subframes: 1, scene3d: true }))
+    const first = sets.splice(0)
+    assert.ok(!first.includes(1) && !first.includes(2), `frames 1 and 2 were never set: ${first}`)
+    assert.ok(first.includes(0) && first.includes(3), `frame 0 (the first hidden one) and the shown frames were: ${first}`)
+    captured = await render(worker, job('window', { subframes: 1, scene3d: false }))
+    assert.ok(sets.includes(1) && sets.includes(2), 'a 2D overlay still captures every frame')
+  } finally {
+    await worker.close().catch(() => {})
+  }
+  assert.equal(skipped.length, FRAMES)
+  for (let f = 0; f < FRAMES; f++) assert.ok(Buffer.compare(skipped[f], captured[f]) === 0, `frame ${f}: the same bytes as a capture`)
+  assert.ok(skipped[1].every((b) => b === 0), 'a hidden frame is fully transparent')
+})
+
+test('§392: under motion blur, hidden frames are skipped in a chunk averaged in the page too', { timeout: 240_000 }, async () => {
+  const calls = []
+  const worker = await R.launchWorkerBrowser({})
+  recording(worker, calls)
+  let frames
+  try {
+    frames = await render(worker, job('window', { subframes: N, scene3d: true }))
+  } finally {
+    await worker.close().catch(() => {})
+  }
+  assert.equal(frames.length, FRAMES)
+  assert.deepEqual(calls.map(c => c.n), [0, 3, 4, 5, 6, 7], 'frame 0 averaged as usual, 1 and 2 written from it')
+  assert.ok(frames[2].every((b) => b === 0))
+})
+
+test('§392: a chunk with a keyframe changing within one frame averages its other frames in the page', { timeout: 240_000 }, async () => {
+  const calls = []
+  const worker = await R.launchWorkerBrowser({})
+  recording(worker, calls)
+  let mixed, encoded
+  try {
+    mixed = await render(worker, job('step', { subframes: N, scene3d: true }))
+    encoded = await render(worker, job('step', { subframes: N, scene3d: false, shutter: 'centred' }))
+  } finally {
+    await worker.close().catch(() => {})
+  }
+  assert.deepEqual(calls.map(c => c.n), [0, 1, 2, 3, 5, 6, 7], 'every frame but 4 averaged in the page')
+  assert.equal(mixed.length, FRAMES)
+  const report = []
+  for (let f = 0; f < FRAMES; f++) {
+    const d = diff(mixed[f], encoded[f])
+    report.push(`${f}:${d.max}/${d.pixels}px`)
+    assert.ok(d.max <= 4, `frame ${f}: ${d.max} from the sub-frame captures; ${report.join(' ')}`)
+  }
+  assert.ok(Buffer.compare(mixed[4], encoded[4]) === 0, 'frame 4, captured per sub-frame, is the 2D path\'s bytes')
+  console.log(`[step] per-frame in-page vs sub-frame captures, frame:max/pixels differing: ${report.join(' ')}`)
 })

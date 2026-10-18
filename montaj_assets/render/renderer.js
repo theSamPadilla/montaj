@@ -95,7 +95,7 @@ export function resolveChunkSize(longest, targetWorkers, subframes, configChunkS
  *
  * @param {Array<{ frameCount: number, opaque?: boolean, props?: object }>} segments
  * @param {{ workers?: number, chunkSize?: number, motionBlur?: number, memory?: object }} [config]
- * @returns {{ jobs: object[], workerCount: number, chunkSize: number, subframes: number, memory: object }}
+ * @returns {{ jobs: object[], workerCount: number, chunkSize: number, subframes: number, memory: object, targetWorkers: number }}
  */
 export function planChunks(segments, config = {}) {
   const userConfig    = readMontajConfig()
@@ -146,7 +146,7 @@ export function planChunks(segments, config = {}) {
       : planWorkers2d({ target: targetWorkers, jobs: jobs.length, totalBytes })),
     footprint,
   }
-  return { jobs, workerCount: memory.workers, chunkSize, subframes, memory }
+  return { jobs, workerCount: memory.workers, chunkSize, subframes, memory, targetWorkers }
 }
 
 /** The lines that say why the render runs fewer workers than it asked for, and what a 3D worker is estimated to hold. */
@@ -229,7 +229,7 @@ export async function renderAllSegments(segments, config = {}) {
     }
   }
 
-  const { jobs, workerCount, chunkSize, memory } = planChunks(segments, config)
+  const { jobs, workerCount, chunkSize, memory, targetWorkers } = planChunks(segments, config)
   lastPlan = { workers: workerCount, chunkFrames: chunkSize }
   const noteFrame = createBakeProgress({ total: jobs.reduce((n, j) => n + (j.frameEnd - j.frameStart), 0), log })
   log(`workers=${workerCount} chunk=${chunkSize}`)
@@ -281,15 +281,50 @@ export async function renderAllSegments(segments, config = {}) {
   // taken for a Chrome the system killed.
   const live = new Set(workers)
   let firstFailure = null
-  const settled = await Promise.allSettled(
-    workers.map(async (worker, workerIdx) => {
+  // §392: once a render's last 3D chunk is done, its 2D jobs left (captions,
+  // most often, which come last) no longer run at the 3D worker count: more
+  // browsers are launched, up to what a 2D-only render of them would run
+  // (planWorkers2d), and the governor stops holding workers back.
+  let running3d = 0
+  let widened = !memory.has3d
+  const gate = {
+    acquire: (name, more) => (widened ? Promise.resolve(more()) : governor.acquire(name, more)),
+    release: (name) => { if (!widened) governor.release(name) },
+  }
+  const runs = []
+  const widen = async () => {
+    if (widened || running3d > 0 || queue.length === 0 || queue.some(isScene3dSegment) || firstFailure) return
+    widened = true
+    const target = planWorkers2d({ target: targetWorkers, jobs: queue.length, totalBytes: memory.totalBytes }).workers
+    // Every worker the render started is still in its loop while jobs are left.
+    const extra = target - workerCount
+    if (extra <= 0) return
+    log(`3d done: ${extra} more worker(s) for the ${queue.length} 2d job(s) left (${target} in all)`)
+    for (let i = 0; i < extra; i++) {
+      const idx = workerCount + i
+      runs.push((async () => {
+        let browser
+        try {
+          browser = await launchWorker({ needsGoogleFonts })
+        } catch (err) {
+          log(`worker ${idx}: could not launch (${err?.message ?? err}); the others carry on`)
+          return
+        }
+        live.add(browser)
+        return runWorker(browser, idx)
+      })())
+    }
+  }
+  const runWorker = async (worker, workerIdx) => {
       let current = worker
       let jobsOnThisBrowser = 0
       try {
-      while (await governor.acquire(`worker ${workerIdx}`, () => queue.length > 0)) {
+      while (await gate.acquire(`worker ${workerIdx}`, () => queue.length > 0)) {
         const job = queue.shift()
         // Another worker can take the last job between the acquire and here.
-        if (!job) { governor.release(`worker ${workerIdx}`); break }
+        if (!job) { gate.release(`worker ${workerIdx}`); break }
+        const is3d = isScene3dSegment(job)
+        if (is3d) running3d++
         const label = job.totalChunks > 1
           ? `${job.id} chunk ${job.chunkIndex + 1}/${job.totalChunks}`
           : job.id
@@ -298,7 +333,8 @@ export async function renderAllSegments(segments, config = {}) {
         try {
           ({ webmPath } = await renderJob(current, job, { onFrame: noteFrame }))
         } finally {
-          governor.release(`worker ${workerIdx}`)
+          gate.release(`worker ${workerIdx}`)
+          if (is3d) running3d--
         }
         jobsDone++
         jobsOnThisBrowser++
@@ -307,7 +343,7 @@ export async function renderAllSegments(segments, config = {}) {
         chunkResults.get(job.id)[job.chunkIndex] = webmPath
 
         // Recycle browser to flush memory after RECYCLE_AFTER jobs, or after any 3D job
-        const after3d = isScene3dSegment(job)
+        const after3d = is3d
         if ((after3d || jobsOnThisBrowser >= RECYCLE_AFTER) && queue.length > 0) {
           live.delete(current)
           await current.close()
@@ -316,6 +352,7 @@ export async function renderAllSegments(segments, config = {}) {
           jobsOnThisBrowser = 0
           log(`worker ${workerIdx}: browser recycled${after3d ? ' after a 3d chunk' : ''}`)
         }
+        await widen()
       }
       } catch (err) {
         // A failed chunk fails the render (§128): the other workers start no
@@ -331,8 +368,15 @@ export async function renderAllSegments(segments, config = {}) {
         live.delete(current)
         await current.close().catch(() => {})
       }
-    })
-  )
+  }
+  runs.push(...workers.map((worker, workerIdx) => runWorker(worker, workerIdx)))
+  // A worker widen() adds joins `runs` while the first ones run: settle every one.
+  const settled = []
+  for (let k = 0; k < runs.length;) {
+    const batch = runs.slice(k)
+    k = runs.length
+    settled.push(...await Promise.allSettled(batch))
+  }
   if (firstFailure) throw firstFailure
   const failed = settled.find(r => r.status === 'rejected')
   if (failed) throw failed.reason
@@ -664,7 +708,7 @@ async function renderChunkOnce(worker, job, { onFrame } = {}) {
   }
   if (!blursInPage(job)) {
     sinkFor(false)
-    if (job.scene3d === true && (job.subframes ?? 1) > 1) noteBlurFallback(job, KEYFRAMES_MOVE)
+    if (job.scene3d === true && (job.subframes ?? 1) > 1) noteKeyframesMove(job)
   }
   try {
     // PL83: a Chrome the system kills mid-capture, or a page whose renderer
@@ -719,27 +763,65 @@ const steadyCache = new WeakMap()
 export function keyframesSteady(job) {
   if (!job.keyframes?.length) return true
   if (steadyCache.has(job)) return steadyCache.get(job)
-  const { fps, frameStart = 0 } = job
+  const { frameStart = 0 } = job
   const frameEnd = job.frameEnd ?? job.frameCount ?? frameStart
-  // The item as overlayBakeInputs (render.js) hands the page's bake.
-  const item = {
+  const steadyAt = frameSteady(job)
+  let steady = true
+  for (let frame = frameStart; frame < frameEnd && steady; frame++) steady = steadyAt(frame)
+  steadyCache.set(job, steady)
+  return steady
+}
+
+/** The item as overlayBakeInputs (render.js) hands the page's bake. */
+function bakeItem(job) {
+  return {
     offsetX: job.offsetX ?? 0, offsetY: job.offsetY ?? 0, scale: job.scale ?? 1,
     scaleX: job.scaleX, scaleY: job.scaleY, rotation: job.rotation ?? 0, opacity: job.opacity ?? 1,
     keyframes: job.keyframes,
   }
-  const PROPS = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 'opacity']
-  let steady = true
-  outer: for (let frame = frameStart; frame < frameEnd; frame++) {
+}
+
+const BAKED_PROPS = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 'opacity']
+
+/**
+ * keyframesSteady's check for one frame: `(frame) => whether the item's
+ * keyframed geometry holds still at every sub-frame time of `frame`
+ * (frameTimes, without cuts, and a centred shutter's two ends).
+ */
+export function frameSteady(job) {
+  if (!job.keyframes?.length) return () => true
+  const item = bakeItem(job), { fps } = job
+  return (frame) => {
     const times = frameTimes(job, frame)
     if (shutterOf(job) === 'centred' && times.length > 1) times.push(Math.max(0, frame - SHUTTER_3D / 2), frame + SHUTTER_3D / 2)
     const first = geometryAt(item, 'overlay', times[0] / fps)
     for (let i = 1; i < times.length; i++) {
       const g = geometryAt(item, 'overlay', times[i] / fps)
-      if (PROPS.some(k => !(g[k] === first[k] || Math.abs(g[k] - first[k]) <= STEADY_EPS))) { steady = false; break outer }
+      if (BAKED_PROPS.some(k => !(g[k] === first[k] || Math.abs(g[k] - first[k]) <= STEADY_EPS))) return false
     }
+    return true
   }
-  steadyCache.set(job, steady)
-  return steady
+}
+
+/**
+ * §392: `(times) => whether a 3D overlay's baked opacity is 0 at every one of
+ * a frame's sub-frame times`, so the frame captures fully transparent: the
+ * keyframed opacity is drawn on the wrapper around the whole overlay
+ * (bundle.js __bakeStyle). null when no frame of the job can be: not a 3D
+ * overlay, a capture with no alpha, or an opacity that is neither keyframed
+ * nor 0.
+ *
+ * A 3D overlay waits at opacity 0 for most of a video that cuts between
+ * several of them, and every such frame cost a draw and a screenshot, each
+ * screenshot leaking GPU memory in Chrome under the wrapper's CSS. The chunk
+ * captures its first such frame as usual and writes those bytes for the rest
+ * (captureChunkFrames), never setting, drawing or capturing them.
+ */
+export function hiddenFrames(job) {
+  if (!isScene3dSegment(job) || !captureOptionsFor(job).omitBackground) return null
+  if (!job.keyframes?.length && (job.opacity ?? 1) !== 0) return null
+  const item = bakeItem(job), { fps } = job
+  return (times) => times.every(t => geometryAt(item, 'overlay', t / fps).opacity <= 0)
 }
 
 /**
@@ -1014,26 +1096,57 @@ async function captureChunkFrames(worker, job, sinkFor, at, onFrame) {
     // sub-frame: the encode already reads one capture per frame, so a frame
     // averaged some other way would not do.
     let inPage = blursInPage(job)
+    // §392: in a chunk captured per sub-frame because a keyframed prop changes
+    // within some frame, a 3D frame whose props hold still within it is still
+    // averaged in its page, and its one capture written once per sub-frame:
+    // the encode's average of equal frames is that frame. Off for good once
+    // the page says it cannot average.
+    let averages = !inPage && job.scene3d === true && subframes > 1
+    const steadyAt = averages ? frameSteady(job) : null
+    // §392: a 3D frame at opacity 0 throughout is written as the bytes of the
+    // chunk's first such frame, captured as usual (hiddenFrames).
+    const hiddenAt = hiddenFrames(job)
+    let blank = null
     for (let frame = frameStart; frame < frameEnd; frame++) {
       const localIdx = frame - frameStart
       // With motion blur on, each output frame is `subframes` sub-frames:
       // f + i/subframes (subframeTimes), or for a 3D overlay a centred
       // half-frame shutter kept inside its camera shot (shutterTimes, §390).
       const times = frameTimes(job, frame, cuts)
+      const hidden = hiddenAt?.(times) ?? false
+      if (hidden && blank) {
+        for (let k = 0; k < (inPage ? 1 : times.length); k++) await sinkFor(inPage).write(blank)
+        onFrame?.()
+        if ((localIdx + 1) % reportEvery === 0 || localIdx + 1 === totalFrames) log(progressBar(id, localIdx + 1, totalFrames, renderStartMs))
+        continue
+      }
+      // A capture of this frame, written once per sub-frame (or once, in page).
+      let png = null
       if (inPage) {
         try {
           // 1. The page sets and draws every sub-frame, draws their average onto
           //    its 3D canvases and stamps the frame on <html>; one capture. A
           //    sub-frame that did not draw retries the frame (three-frame.js).
-          const png = await captureWithThree(page, frame, captureAt(frame), { ...threeOpts, subframes: times })
+          png = await captureWithThree(page, frame, captureAt(frame), { ...threeOpts, subframes: times })
           await sinkFor(true).write(png)
         } catch (err) {
           if (!isThreeBlurUnsupported(err) || frame !== frameStart) throw err
           inPage = false
+          averages = false
           noteBlurFallback(job, err.reason)
         }
       }
-      if (!inPage) {
+      if (!inPage && averages && steadyAt(frame)) {
+        try {
+          png = await captureWithThree(page, frame, captureAt(frame), { ...threeOpts, subframes: times })
+          for (let k = 0; k < times.length; k++) await sinkFor(false).write(png)
+        } catch (err) {
+          if (!isThreeBlurUnsupported(err)) throw err
+          averages = false
+          noteBlurFallback(job, err.reason)
+        }
+      }
+      if (!inPage && png === null) {
         // Each sub-frame is its own screenshot, written in order; the encode
         // averages each group.
         for (let s = 0; s < times.length; s++) {
@@ -1043,10 +1156,12 @@ async function captureChunkFrames(worker, job, sinkFor, at, onFrame) {
           //    verify below). A 3D canvas that did not draw the frame, before the
           //    capture or by the end of it, has the frame set and captured again,
           //    then fails the chunk as three_frame_blank (three-frame.js).
-          const png = await captureWithThree(page, t, captureAt(t), threeOpts)
-          await sinkFor(false).write(png)
+          const shot = await captureWithThree(page, t, captureAt(t), threeOpts)
+          await sinkFor(false).write(shot)
+          png ??= shot
         }
       }
+      if (hidden) blank = png
       onFrame?.()
       if ((localIdx + 1) % reportEvery === 0 || localIdx + 1 === totalFrames) {
         log(progressBar(id, localIdx + 1, totalFrames, renderStartMs))
@@ -1061,6 +1176,16 @@ async function captureChunkFrames(worker, job, sinkFor, at, onFrame) {
 /** How a three_frame_blank error names the chunk's overlay: its file and its segment. */
 function overlayName(job) {
   return job.componentPath ? `${basename(job.componentPath)} (${job.id})` : job.id
+}
+
+// §392: a 3D chunk where a keyframed prop changes within some frame encodes
+// every sub-frame; its other frames are still averaged in the page
+// (captureChunkFrames). Named once per segment.
+const keyframesMoveNamed = new Set()
+function noteKeyframesMove(job) {
+  if (keyframesMoveNamed.has(job.id)) return
+  keyframesMoveNamed.add(job.id)
+  log(`${overlayName(job)}: ${KEYFRAMES_MOVE}; those frames are captured per sub-frame, the rest averaged in its page`)
 }
 
 // A 3D overlay whose page cannot average its motion blur is named once per

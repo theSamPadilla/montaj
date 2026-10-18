@@ -162,3 +162,23 @@ test('keyframesSteady: the node check evaluates keyframes with the page\'s own f
     assert.equal(got.transform, `translate(${g.offsetX}%, ${g.offsetY}%) rotate(${g.rotation}deg) scale(${g.scaleX}, ${g.scaleY})`, `transform at ${t}`)
   }
 })
+
+// §392
+test('hiddenFrames: a 3D overlay with alpha whose baked opacity is 0 at every sub-frame time', () => {
+  const W = [{ prop: 'opacity', points: [{ t: 0, value: 0 }, { t: 1, value: 0 }, { t: 1.1, value: 1 }] }]
+  const at = R.hiddenFrames({ fps: 30, scene3d: true, opaque: false, keyframes: W })
+  assert.equal(at([0, 10, 29.9]), true)
+  assert.equal(at([29.9, 33]), false, 'one sample shown')
+  assert.equal(at([34]), false)
+  assert.equal(R.hiddenFrames({ fps: 30, scene3d: false, opaque: false, keyframes: W }), null, 'a 2D overlay')
+  assert.equal(R.hiddenFrames({ fps: 30, scene3d: true, opaque: true, keyframes: W }), null, 'a capture with no alpha')
+  assert.equal(R.hiddenFrames({ fps: 30, scene3d: true, opaque: false }), null, 'nothing keyframed, shown')
+  assert.equal(R.hiddenFrames({ fps: 30, scene3d: true, opaque: false, opacity: 0 })([5]), true, 'an item at opacity 0')
+})
+
+test('frameSteady: per frame, whether the keyframed props hold still within its shutter', () => {
+  const STEP = [{ prop: 'opacity', points: [{ t: 0, value: 1 }, { t: 4.05 / 30, value: 1 }, { t: 4.15 / 30, value: 0.4 }] }]
+  const steady = R.frameSteady({ fps: 30, scene3d: true, subframes: 5, keyframes: STEP })
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 7].map(steady), [true, true, true, true, false, true, true, true])
+  assert.equal(R.frameSteady({ fps: 30, subframes: 5 })(3), true, 'no keyframes')
+})

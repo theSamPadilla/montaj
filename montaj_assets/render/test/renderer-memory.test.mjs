@@ -244,3 +244,38 @@ test('renderAllSegments (§395): a browser relaunch after a 3D chunk that fails 
   assert.equal(out.length, 3)
   assert.equal(launches, 4, 'the pool, a failed relaunch, its retry, and the next relaunch')
 })
+
+test('renderAllSegments (§392): once the last 3D chunk is done, the 2D jobs left run at the 2D worker count', async () => {
+  const lines = []
+  let launches = 0
+  let running = 0, most2d = 0, mostWhile3d = 0
+  const segs = [...renderable3d(2), ...renderable(8).map((s, i) => ({ ...s, id: `cap${i}` }))]
+  const out = await renderAllSegments(segs, {
+    workers: 6, chunkSize: 1000, relaunchDelayMs: 0,
+    launchWorker: async () => { launches++; return { close: async () => {} } },
+    renderJob: async (_w, job) => {
+      running++
+      if (job.id.startsWith('cap')) most2d = Math.max(most2d, running); else mostWhile3d = Math.max(mostWhile3d, running)
+      await new Promise((r) => setTimeout(r, 20))
+      running--
+      return { webmPath: job.outputPath }
+    },
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1 },
+  })
+  assert.equal(out.length, 10)
+  assert.ok(mostWhile3d <= 2, `3D ran at the 3D cap (${mostWhile3d})`)
+  assert.ok(most2d > 2, `the captions ran on more workers once 3D was done (${most2d})`)
+})
+
+test('renderAllSegments (§392): a 3D job still queued keeps the render at the 3D count', async () => {
+  let running = 0, most = 0
+  // 2D first, then 3D: nothing widens while a 3D job is left.
+  const segs = [...renderable(4).map((s, i) => ({ ...s, id: `cap${i}` })), ...renderable3d(2)]
+  await renderAllSegments(segs, {
+    workers: 6, chunkSize: 1000, relaunchDelayMs: 0,
+    launchWorker: async () => ({ close: async () => {} }),
+    renderJob: async (_w, job) => { running++; most = Math.max(most, running); await new Promise((r) => setTimeout(r, 10)); running--; return { webmPath: job.outputPath } },
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1 },
+  })
+  assert.ok(most <= 2, `never past the 3D cap (${most})`)
+})
