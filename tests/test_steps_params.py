@@ -167,6 +167,47 @@ class TestBuildCliArgsLists:
         assert build_cli_args(schema, {"at": [1, 2]}) == ["--at", "1", "--at", "2"]
 
 
+class TestValidateParamsRepeatable:
+    """A repeatable numeric param takes a list (contact_sheet's `at` over run_step, §373)."""
+
+    SCHEMA = _schema([{"name": "at", "type": "float", "repeatable": True, "min": 0}])
+
+    def test_list_passes_and_each_item_becomes_a_flag(self):
+        validate_params(self.SCHEMA, {"at": [0.5, "1.25", 3]})
+        assert build_cli_args(self.SCHEMA, {"at": [0.5, "1.25", 3]}) == [
+            "--at", "0.5", "--at", "1.25", "--at", "3"]
+
+    def test_single_value_still_passes(self):
+        validate_params(self.SCHEMA, {"at": 2.0})
+
+    def test_each_item_is_checked(self):
+        with pytest.raises(HTTPException) as e:
+            validate_params(self.SCHEMA, {"at": [1, "x", -2]})
+        msg = e.value.detail["message"]
+        assert "'at' must be a float, got 'x'" in msg and "'at' must be >= 0, got -2.0" in msg
+
+    def test_a_list_on_a_param_that_is_not_repeatable_is_refused(self):
+        with pytest.raises(HTTPException):
+            validate_params(_schema([{"name": "fps", "type": "float"}]), {"fps": [24, 30]})
+
+    def test_repeatable_enum_checks_each_item(self):
+        schema = _schema([{"name": "mode", "type": "enum", "options": ["a", "b"], "repeatable": True}])
+        validate_params(schema, {"mode": ["a", "b"]})
+        with pytest.raises(HTTPException):
+            validate_params(schema, {"mode": ["a", "c"]})
+
+
+def test_contact_sheet_real_schema_takes_a_list_of_times():
+    import json
+    from pathlib import Path
+    path = Path(__file__).resolve().parent.parent / "steps" / "render" / "contact_sheet.json"
+    schema = json.loads(path.read_text())
+    body = {"project": "/p/project.json", "at": [0.5, 1.0, 2.5], "out": "/p/sheet.png"}
+    validate_params(schema, body)
+    args = build_cli_args(schema, body)
+    assert args.count("--at") == 3 and args[args.index("--at") + 1] == "0.5"
+
+
 def test_remove_bg_real_schema_batch_and_flags():
     import json
     from pathlib import Path

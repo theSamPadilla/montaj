@@ -9,6 +9,6 @@
     { "name": "cols", "type": "int", "default": 6, "description": "Tiles per row" },
     { "name": "tile-width", "type": "int", "default": 320, "description": "Tile width in px" },
     { "name": "frames-dir", "type": "path", "required": false, "description": "Keep the sampled frame PNGs here (f_0000.png...) instead of discarding them, and report their paths" },
-    { "name": "out", "type": "path", "required": true, "description": "Output PNG path" }
+    { "name": "out", "type": "path", "required": true, "ext": ".png", "description": "Output PNG path" }
   ]
 }

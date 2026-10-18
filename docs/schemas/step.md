@@ -116,6 +116,8 @@ Each param:
 | `min` | number | no | `float` and `int` types only |
 | `max` | number | no | `float` and `int` types only |
 | `options` | array | no | `enum` type only — list of valid string values |
+| `repeatable` | boolean | no | The flag may be given more than once (argparse `action="append"`). Over the API the param takes a list; serve checks each item and repeats the flag per item. |
+| `ext` | string | no | `out` only: the extension of the file the step writes (`".wav"`), when it differs from what `output.type` implies (a step that prints JSON but writes a WAV). serve's `_project` auto-name uses it. |
 
 **Param types:**
 
