@@ -1,0 +1,15 @@
+{
+  "source": "20261018T081155-85503-001-get-account-balance.json",
+  "method": "GET",
+  "path": "/account/balance",
+  "status": 200,
+  "captured": "2026-10-18T08:11:55+00:00",
+  "response": {
+    "code": 0,
+    "status": "success",
+    "data": {
+      "balance": 0.0,
+      "frozen": 0.0
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "source": "20261018T081220-85957-001-post-files.json",
+  "method": "POST",
+  "path": "/files",
+  "status": 200,
+  "captured": "2026-10-18T08:12:20+00:00",
+  "response": {
+    "code": 0,
+    "status": "success",
+    "data": {
+      "file_token": "<redacted>"
+    }
+  }
+}

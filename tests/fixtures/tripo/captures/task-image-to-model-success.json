@@ -1,0 +1,41 @@
+{
+  "source": "20261018T081605-86837-037-get-tasks-1d231007-42be-4ad7-b787-babaa39adf4e.json",
+  "method": "GET",
+  "path": "/tasks/1d231007-42be-4ad7-b787-babaa39adf4e",
+  "status": 200,
+  "captured": "2026-10-18T08:16:05+00:00",
+  "response": {
+    "code": 0,
+    "status": "success",
+    "data": {
+      "type": "image_to_model",
+      "status": "success",
+      "progress": 100,
+      "input": {
+        "pbr": true,
+        "file": {
+          "type": "jpeg",
+          "object": {
+            "key": "<redacted>",
+            "bucket": "tripo-data"
+          }
+        },
+        "texture": true,
+        "export_uv": true,
+        "face_limit": 5000,
+        "model_version": "v3.1-20260211",
+        "texture_quality": "standard",
+        "geometry_quality": "standard",
+        "enable_image_autofix": false
+      },
+      "output": {
+        "model_url": "https://tripo-data.rg1.data.tripo3d.com/tcli_<redacted>/20261018/1d231007-42be-4ad7-b787-babaa39adf4e/tripo_pbr_model_1d231007-42be-4ad7-b787-babaa39adf4e.glb?<query removed>",
+        "rendered_image_url": "https://tripo-data.rg1.data.tripo3d.com/tcli_<redacted>/20261018/1d231007-42be-4ad7-b787-babaa39adf4e/legacy_mesh.webp?<query removed>"
+      },
+      "task_id": "1d231007-42be-4ad7-b787-babaa39adf4e",
+      "created_at": "2026-10-18T08:13:09.531665Z",
+      "completed_at": "2026-10-18T08:16:04.204340Z",
+      "credits_consumed": 30.0
+    }
+  }
+}

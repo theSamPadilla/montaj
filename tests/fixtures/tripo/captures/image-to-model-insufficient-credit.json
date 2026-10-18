@@ -1,0 +1,22 @@
+{
+  "source": "20261018T081221-85957-002-post-generation-image-to-model.json",
+  "method": "POST",
+  "path": "/generation/image-to-model",
+  "status": 403,
+  "captured": "2026-10-18T08:12:21+00:00",
+  "request": {
+    "input": "file_<redacted>",
+    "model": "v3.1-20260211",
+    "texture": true,
+    "pbr": true,
+    "texture_quality": "standard",
+    "face_limit": 5000
+  },
+  "response": {
+    "code": 2010,
+    "status": "error",
+    "message": "You don't have enough credit to create this task",
+    "suggestion": "Please purchase more credit",
+    "request_id": "<redacted>"
+  }
+}

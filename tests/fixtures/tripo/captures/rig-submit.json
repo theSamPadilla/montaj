@@ -1,0 +1,23 @@
+{
+  "source": "20261018T081821-90482-004-post-animations-rig.json",
+  "method": "POST",
+  "path": "/animations/rig",
+  "status": 200,
+  "captured": "2026-10-18T08:18:21+00:00",
+  "request": {
+    "input": "0684f41b-e999-4312-9c54-41e74796b32f",
+    "model": "v1.0-20240301",
+    "rig_type": "biped",
+    "spec": "mixamo",
+    "out_format": "glb"
+  },
+  "response": {
+    "code": 0,
+    "status": "success",
+    "data": {
+      "type": "animate_rig",
+      "status": "queued",
+      "task_id": "f501fdba-8dd5-4698-aa47-de226d86e5ae"
+    }
+  }
+}

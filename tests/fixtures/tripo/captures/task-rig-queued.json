@@ -1,0 +1,25 @@
+{
+  "source": "20261018T081821-90482-005-get-tasks-f501fdba-8dd5-4698-aa47-de226d86e5ae.json",
+  "method": "GET",
+  "path": "/tasks/f501fdba-8dd5-4698-aa47-de226d86e5ae",
+  "status": 200,
+  "captured": "2026-10-18T08:18:21+00:00",
+  "response": {
+    "code": 0,
+    "status": "success",
+    "data": {
+      "type": "animate_rig",
+      "status": "queued",
+      "progress": 0,
+      "input": {
+        "spec": "mixamo",
+        "topology": "biped",
+        "out_format": "glb",
+        "original_model_id": "0684f41b-e999-4312-9c54-41e74796b32f"
+      },
+      "task_id": "f501fdba-8dd5-4698-aa47-de226d86e5ae",
+      "created_at": "2026-10-18T08:18:21.627339Z",
+      "credits_consumed": 25.0
+    }
+  }
+}

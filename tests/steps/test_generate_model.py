@@ -3,9 +3,12 @@ record, the texture guard hook-up, the step's argument checks and fail codes,
 and `_project` saving a .glb. No network: the connector's HTTP functions are
 monkeypatched, and the one end-to-end test scripts the `requests` layer.
 
-Tripo payloads are copied from Tripo's docs and say which page; anything built
-by hand says so. A GLB built here is a synthetic GLB built by the test, not a
-Tripo output.
+Tripo payloads are Tripo's own, captured in one paid run on 2026-10-18 and loaded
+from tests/fixtures/tripo/captures (README there): the text-to-model task the stubs
+return, and the upload, image-to-model submit and task of the end-to-end test. The
+task ids and credits in the stubs below are the captured ones; the placeholder ids
+that are only arguments (task_earlier, task_given, ...) are not responses. A GLB
+built here is a synthetic GLB built by the test, not a Tripo output.
 """
 import importlib.util
 import json
@@ -22,6 +25,7 @@ from connectors import (ConnectorError, _http, CONTENT_REFUSED, INSUFFICIENT_CRE
                         INVALID_API_KEY)
 import connectors.tripo as tripo  # noqa: E402
 from lib.glb_textures import GlbTextureError  # noqa: E402
+from tests.tripo_captures import captured  # noqa: E402
 
 _STEP_PATH = REPO_ROOT / "steps" / "generate" / "generate_model.py"
 _SCHEMA_PATH = REPO_ROOT / "steps" / "generate" / "generate_model.json"
@@ -29,20 +33,10 @@ _SCHEMA_PATH = REPO_ROOT / "steps" / "generate" / "generate_model.json"
 FORBIDDEN = {"quad", "compress", "generate_parts", "smart_low_poly", "export_orientation"}
 COMMON_KEYS = {"model", "texture", "pbr", "texture_quality", "face_limit"}
 
-# documented example ("Task result"), developers.tripo3d.ai/en/docs/generation-text-to-model/standard.md, read 2026-10-13
-TASK_SUCCESS = {
-    "task_id": "task_abc123",
-    "type": "text_to_model",
-    "status": "success",
-    "progress": 100,
-    "output": {
-        "model_url": "https://cdn.tripo3d.ai/output/model_pbr.glb",
-        "rendered_image_url": "https://cdn.tripo3d.ai/output/preview.png",
-    },
-    "credits_consumed": 100.00,
-    "created_at": "2026-04-28T12:00:00Z",
-    "completed_at": "2026-04-28T12:01:30Z",
-}
+# captured 2026-10-18: POST /generation/text-to-model and its finished task (20.0 credits)
+TASK_ID = captured("text-to-model-submit")["data"]["task_id"]
+TASK_SUCCESS = captured("task-text-to-model-success")["data"]
+CREDITS = TASK_SUCCESS["credits_consumed"]
 
 REPORT = {"reencoded": 1, "formats": {"image/webp": 1}}
 
@@ -160,7 +154,7 @@ def vendor(monkeypatch):
     def create(endpoint, body):
         state["events"].append("create")
         state["bodies"].append((endpoint, body))
-        return "task_abc123"
+        return TASK_ID
 
     def wait(task_id, **kw):
         state["events"].append(f"wait:{task_id}")
@@ -202,19 +196,19 @@ def test_generate_records_the_task_before_polling_then_downloads_and_guards(vend
 
     result = tripo.generate_model(out_path=str(out), prompt="a robot")
 
-    assert vendor["events"] == ["create", "wait:task_abc123", "download", "guard:robot.glb.download"]
+    assert vendor["events"] == ["create", f"wait:{TASK_ID}", "download", "guard:robot.glb.download"]
     at_wait = vendor["sidecar_at_wait"]
     assert at_wait is not None, "the task must be recorded before polling"
     assert {k: at_wait[k] for k in ("task_id", "kind", "model", "endpoint")} == {
-        "task_id": "task_abc123", "kind": "model", "model": "v3.1-20260211",
+        "task_id": TASK_ID, "kind": "model", "model": "v3.1-20260211",
         "endpoint": "/generation/text-to-model"}
     datetime.fromisoformat(at_wait["created"])
     assert "credits_consumed" not in at_wait
-    assert result == {"path": str(out), "taskId": "task_abc123", "model": "v3.1-20260211",
-                      "creditsUsed": 100.0, "textures": REPORT}
+    assert result == {"path": str(out), "taskId": TASK_ID, "model": "v3.1-20260211",
+                      "creditsUsed": 20.0, "textures": REPORT}
     assert out.read_bytes() == b"glTF-synthetic"
     after = json.loads(_sidecar(out).read_text())
-    assert after["credits_consumed"] == 100.0 and after["task_id"] == "task_abc123"
+    assert after["credits_consumed"] == 20.0 and after["task_id"] == TASK_ID
     assert sorted(p.name for p in tmp_path.iterdir()) == ["robot.glb", "robot.glb.tripo.json"]
 
 
@@ -254,7 +248,7 @@ def test_a_retry_with_the_same_out_reattaches_to_the_recorded_task(vendor, tmp_p
 
     assert vendor["events"] == ["wait:task_earlier", "download", "guard:robot.glb.download"]
     assert result["taskId"] == "task_earlier" and result["model"] == "v3.1-20260211"
-    assert json.loads(_sidecar(out).read_text()) == {**record, "credits_consumed": 100.0}
+    assert json.loads(_sidecar(out).read_text()) == {**record, "credits_consumed": 20.0}
     assert "Re-attaching to Tripo task task_earlier" in capsys.readouterr().err
 
 
@@ -331,7 +325,7 @@ def test_a_record_of_another_kind_is_refused(vendor, tmp_path):
 
 def test_a_task_that_ended_drops_its_record_so_a_retry_submits_again(vendor, tmp_path):
     out = tmp_path / "robot.glb"
-    vendor["wait_error"] = tripo._TaskEnded("Tripo task task_abc123 failed (2018: Model too complex).")
+    vendor["wait_error"] = tripo._TaskEnded(f"Tripo task {TASK_ID} failed (2018: Model too complex).")
     with pytest.raises(ConnectorError, match="Model too complex"):
         tripo.generate_model(out_path=str(out), prompt="a robot")
     assert not _sidecar(out).exists() and not out.exists()
@@ -343,17 +337,17 @@ def test_a_task_that_ended_drops_its_record_so_a_retry_submits_again(vendor, tmp
 
 def test_a_run_that_stops_waiting_keeps_its_record(vendor, tmp_path):
     out = tmp_path / "robot.glb"
-    vendor["wait_error"] = ConnectorError("Tripo task task_abc123 is still running after 840 s.")
+    vendor["wait_error"] = ConnectorError(f"Tripo task {TASK_ID} is still running after 840 s.")
     with pytest.raises(ConnectorError, match="still running"):
         tripo.generate_model(out_path=str(out), prompt="a robot")
-    assert json.loads(_sidecar(out).read_text())["task_id"] == "task_abc123"
+    assert json.loads(_sidecar(out).read_text())["task_id"] == TASK_ID
     assert not out.exists()
 
 
 def test_a_failed_download_names_the_task_to_collect(vendor, tmp_path):
     out = tmp_path / "robot.glb"
     vendor["download_error"] = ConnectorError("Tripo download failed (HTTP 404): https://cdn.tripo3d.ai/x.glb")
-    with pytest.raises(ConnectorError, match="--task-id task_abc123 \\(no new charge\\)"):
+    with pytest.raises(ConnectorError, match=f"--task-id {TASK_ID} \\(no new charge\\)"):
         tripo.generate_model(out_path=str(out), prompt="a robot")
     assert not out.exists() and _sidecar(out).exists()
 
@@ -366,13 +360,13 @@ def test_a_download_that_cannot_connect_after_the_task_is_never_unreachable(vend
     with pytest.raises(ConnectorError) as e:
         tripo.generate_model(out_path=str(tmp_path / "robot.glb"), prompt="a robot")
     assert e.value.reason is None
-    assert "running the same step with --task-id task_abc123 (no new charge)" in str(e.value)
+    assert f"running the same step with --task-id {TASK_ID} (no new charge)" in str(e.value)
 
 
 def test_the_wait_and_the_download_share_one_deadline_and_the_hint(vendor, tmp_path):
     tripo.generate_model(out_path=str(tmp_path / "robot.glb"), prompt="a robot")
     (wait_kw,), (download_kw,) = vendor["wait_kw"], vendor["download_kw"]
-    assert wait_kw["resume_hint"] == "--task-id task_abc123"
+    assert wait_kw["resume_hint"] == f"--task-id {TASK_ID}"
     assert wait_kw["deadline"] == download_kw["deadline"] is not None
 
 
@@ -385,7 +379,7 @@ def test_a_model_the_guard_refuses_never_lands_at_out_and_its_bytes_are_kept(ven
     kept = tmp_path / "robot.unsupported.glb"
     assert str(e.value).startswith("Tripo returned a compressed model; Montaj needs it uncompressed")
     assert f"The file Tripo made is kept at {kept}." in str(e.value)
-    assert e.value.kind == "compressed" and e.value.task_id == "task_abc123" and e.value.kept == str(kept)
+    assert e.value.kind == "compressed" and e.value.task_id == TASK_ID and e.value.kept == str(kept)
     assert isinstance(e.value, ConnectorError)
     assert kept.read_bytes() == b"glTF-synthetic", "the paid bytes, as downloaded"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["robot.glb.tripo.json", "robot.unsupported.glb"], \
@@ -451,18 +445,17 @@ def test_end_to_end_an_image_becomes_a_glb_with_jpeg_textures(monkeypatch, tmp_p
         pytest.skip("this Pillow can't encode WebP")
     from tests.test_glb_textures import build_glb, read_glb, scene, webp_opaque
 
-    # Synthetic GLB built by the test, not a Tripo output: Tripo's texture format is undocumented.
+    # Synthetic GLB built by the test, not a Tripo output: Tripo's real files hold JPEG and PNG
+    # (tests/fixtures/tripo), so a WebP texture is the case the guard is there for.
     glb = build_glb(*scene([(webp_opaque(), "image/webp", True)]))
     photo = tmp_path / "photo.png"
     photo.write_bytes(b"\x89PNG\r\n\x1a\n-bytes")
-    fake = _Requests([
-        # documented example, developers.tripo3d.ai/en/docs/files.md, read 2026-10-13
-        _Resp(200, {"code": 0, "data": {"file_token": "file_abc123"}}),
-        # documented example ("Create task"), developers.tripo3d.ai/en/docs/generation-image-to-model/standard.md, read 2026-10-13
-        _Resp(200, {"code": 0, "data": {"task_id": "task_abc123"}}),
-        _Resp(200, {"code": 0, "data": TASK_SUCCESS}),
-        _Resp(200, content=glb),
-    ])
+    # captured 2026-10-18: the upload, the image-to-model submit and its finished task
+    upload, created, done = (captured(n) for n in ("files-upload", "image-to-model-submit",
+                                                   "task-image-to-model-success"))
+    file_token, task_id, model_url = (upload["data"]["file_token"], created["data"]["task_id"],
+                                      done["data"]["output"]["model_url"])
+    fake = _Requests([_Resp(200, upload), _Resp(200, created), _Resp(200, done), _Resp(200, content=glb)])
     monkeypatch.setenv("TRIPO_API_KEY", "test-key")
     monkeypatch.setattr(_http, "_require_requests", lambda: fake)
     out = tmp_path / "robot.glb"
@@ -471,10 +464,11 @@ def test_end_to_end_an_image_becomes_a_glb_with_jpeg_textures(monkeypatch, tmp_p
 
     assert [c[:2] for c in fake.calls] == [
         ("POST", f"{tripo.API}/files"), ("POST", f"{tripo.API}/generation/image-to-model"),
-        ("GET", f"{tripo.API}/tasks/task_abc123"), ("GET", "https://cdn.tripo3d.ai/output/model_pbr.glb")]
-    assert fake.calls[1][2]["json"] == {"input": "file_abc123", "model": "v3.1-20260211", "texture": True,
+        ("GET", f"{tripo.API}/tasks/{task_id}"), ("GET", model_url)]
+    assert fake.calls[1][2]["json"] == {"input": file_token, "model": "v3.1-20260211", "texture": True,
                                         "pbr": True, "texture_quality": "standard", "face_limit": 30000}
     assert result["textures"] == {"reencoded": 1, "ktx2": 0, "formats": {"image/webp": 1}}
+    assert result["taskId"] == task_id and result["creditsUsed"] == 30.0
     gltf, _ = read_glb(out.read_bytes())
     assert gltf["images"][0]["mimeType"] == "image/jpeg" and "extensionsUsed" not in gltf
     assert sorted(p.name for p in tmp_path.iterdir()) == ["photo.png", "robot.glb", "robot.glb.tripo.json"]
@@ -492,8 +486,8 @@ def step_module():
     return mod
 
 
-def _result(path, task="task_abc123"):
-    return {"path": path, "taskId": task, "model": "v3.1-20260211", "creditsUsed": 100.0, "textures": REPORT}
+def _result(path, task=TASK_ID):
+    return {"path": path, "taskId": task, "model": "v3.1-20260211", "creditsUsed": CREDITS, "textures": REPORT}
 
 
 def _run(step_module, monkeypatch, argv):
@@ -612,8 +606,8 @@ def test_step_failures_map_to_their_codes(step_module, monkeypatch, capsys, tmp_
 def test_step_an_unusable_model_is_unsupported_model(step_module, monkeypatch, capsys, tmp_path):
     def boom(**kw):
         raise tripo.UnsupportedModel("Tripo returned a compressed model; Montaj needs it uncompressed "
-                                     "(compressed geometry (EXT_meshopt_compression), task task_abc123).",
-                                     "compressed", "task_abc123")
+                                     f"(compressed geometry (EXT_meshopt_compression), task {TASK_ID}).",
+                                     "compressed", TASK_ID)
     monkeypatch.setattr(tripo, "generate_model", boom)
     with pytest.raises(SystemExit):
         _run(step_module, monkeypatch, ["--prompt", "a robot", "--out", str(tmp_path / "m.glb")])

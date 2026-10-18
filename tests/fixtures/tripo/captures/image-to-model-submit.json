@@ -1,0 +1,24 @@
+{
+  "source": "20261018T081309-86837-002-post-generation-image-to-model.json",
+  "method": "POST",
+  "path": "/generation/image-to-model",
+  "status": 200,
+  "captured": "2026-10-18T08:13:09+00:00",
+  "request": {
+    "input": "file_<redacted>",
+    "model": "v3.1-20260211",
+    "texture": true,
+    "pbr": true,
+    "texture_quality": "standard",
+    "face_limit": 5000
+  },
+  "response": {
+    "code": 0,
+    "status": "success",
+    "data": {
+      "type": "image_to_model",
+      "status": "queued",
+      "task_id": "1d231007-42be-4ad7-b787-babaa39adf4e"
+    }
+  }
+}

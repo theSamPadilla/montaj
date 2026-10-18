@@ -5,13 +5,23 @@ test_connectors_kinovi.py, so the real retry helper and download run against a
 scripted fake. An autouse fixture wires an empty script by default: any call a
 test did not script fails the test instead of reaching Tripo.
 
-Fixtures are copied from Tripo's own docs (developers.tripo3d.ai/en/docs/<page>,
-read 2026-10-13) and say which page. Where the docs show no payload, the fixture
-is built from the documented envelope and says so: a fixture is an assumption
-written down, not a capture (CLAUDE.md, "MEASURED may have measured a fixture").
+Where there is a capture, the response is Tripo's own, loaded from
+tests/fixtures/tripo/captures (one paid run, 2026-10-18; see the README there):
+the balance, the upload, the submit and the task (running and finished) of an
+image-to-model, the text-to-model submit and its finished task, the rig check,
+the rig and the retarget, and the HTTP 403 for insufficient credit (code 2010).
+Every other body is built, and says "built from the documented shape, not
+captured": the other error codes, a task that is queued, failed, banned, expired
+or cancelled, a check that says not riggable, and a captured body with one field
+changed. They take the captured envelope and Tripo's docs (developers.tripo3d.ai/
+en/docs, read 2026-10-13) as their shape and invent no field. A signed URL's
+signature and the scrubbing tests' planted secrets are stand-ins too: the captures
+have the real ones removed. A fixture is an assumption written down, not a
+measurement (CLAUDE.md, "MEASURED may have measured a fixture").
 """
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -19,6 +29,7 @@ from connectors import (ConnectorError, _http, INVALID_API_KEY, INSUFFICIENT_CRE
                         CONTENT_REFUSED, MODEL_RETIRED, UNREACHABLE)
 from connectors import tripo
 from lib.credentials import CredentialError
+from tests.tripo_captures import captured, captured_request, captured_status
 
 API = tripo.API
 
@@ -91,93 +102,77 @@ def sleeps(monkeypatch, clock):
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixtures: Tripo's real responses (captured 2026-10-18), then the ones built
 # ---------------------------------------------------------------------------
 
-# documented example, developers.tripo3d.ai/en/docs/files.md, read 2026-10-13
-UPLOAD_OK = {"code": 0, "data": {"file_token": "file_abc123"}}
+# captured: POST /files
+UPLOAD_OK = captured("files-upload")
+FILE_TOKEN = UPLOAD_OK["data"]["file_token"]     # "<redacted>": the capture removed the real token
 
-# documented example, developers.tripo3d.ai/en/docs/generation-image-to-model.md, read 2026-10-13
-CREATE_OK = {"code": 0, "data": {"task_id": "task_abc123"}}
+# captured: POST /generation/image-to-model, then GET /tasks/{id} running and finished
+CREATE_OK = captured("image-to-model-submit")
+TASK_ID = CREATE_OK["data"]["task_id"]
+TASK_RUNNING = captured("task-image-to-model-running")
+TASK_SUCCESS = captured("task-image-to-model-success")
+MODEL_URL = TASK_SUCCESS["data"]["output"]["model_url"]     # its signature is "?<query removed>"
+MODEL_BASE = MODEL_URL.split("?")[0]
+CDN_HOST = urlsplit(MODEL_URL).netloc
 
-# documented example, developers.tripo3d.ai/en/docs/task-query.md, read 2026-10-13
-TASK_SUCCESS = {
-    "code": 0,
-    "data": {
-        "task_id": "task_abc123",
-        "type": "text_to_model",
-        "status": "success",
-        "progress": 100,
-        "output": {
-            "model_url": "https://cdn.tripo3d.ai/output/model_pbr.glb",
-            "rendered_image_url": "https://cdn.tripo3d.ai/output/preview.png",
-        },
-        "credits_consumed": 100.00,
-        "created_at": "2026-04-28T12:00:00Z",
-        "completed_at": "2026-04-28T12:01:30Z",
-    },
-}
+# captured: POST /generation/text-to-model and its finished task
+TEXT_CREATED = captured("text-to-model-submit")
+TEXT_ID = TEXT_CREATED["data"]["task_id"]
+TEXT_SUCCESS = captured("task-text-to-model-success")
+
+# captured: GET /account/balance, funded and (the same key, before it was topped up) empty
+BALANCE = captured("balance")
+BALANCE_EMPTY = captured("balance-empty")
+
+# captured: HTTP 403, code 2010, from POST /generation/image-to-model
+ERR_INSUFFICIENT = captured("image-to-model-insufficient-credit")
+ERR_INSUFFICIENT_STATUS = captured_status("image-to-model-insufficient-credit")
+
+
+def _with_data(name, data):
+    """Built from the documented shape, not captured: the captured envelope of `name`
+    with another `data` (a field missing, another number)."""
+    return {**captured(name), "data": data}
 
 
 def _task(status, **fields):
-    """The documented task shape (task-query.md, above) with another status and
-    fields. The docs show no payload for queued, running, failed, banned, expired
-    or cancelled: only the status table (task-lifecycle.md) and the field list
-    (task-query.md: error_code and error_message are present when failed), so
-    these are built from the documented shape, not captured."""
-    data = {"task_id": "task_abc123", "type": "image_to_model", "status": status,
-            "progress": 0, "created_at": "2026-04-28T12:00:00Z"}
-    data.update(fields)
-    return _FakeResponse(200, {"code": 0, "data": data})
+    """Built from the documented shape, not captured: the captured running image-to-model
+    task with another status and fields. Tripo's queued (for an image), failed, banned,
+    expired and cancelled bodies were not captured: the docs give only the status table
+    (task-lifecycle.md) and the field list (task-query.md: error_code and error_message
+    are present when failed)."""
+    body = captured("task-image-to-model-running")
+    body["data"].update({"status": status, "progress": 0, **fields})
+    if status in ("failed", "banned", "expired", "cancelled"):
+        del body["data"]["credits_consumed"]    # the docs show no charge for a task that made no output
+    return _FakeResponse(200, body)
 
 
-# documented example, developers.tripo3d.ai/en/docs/billing.md, read 2026-10-13
-BALANCE = {"code": 0, "data": {"balance": 10000.00, "frozen": 200.00}}
-
-# documented example, developers.tripo3d.ai/en/docs/error-handling.md, read 2026-10-13
-ERR_INSUFFICIENT = {
-    "code": 2010,
-    "message": "Insufficient credits",
-    "suggestion": "Please top up your account at https://platform.tripo3d.ai",
-    "request_id": "req_abc123",
-}
-
-# documented example, developers.tripo3d.ai/en/docs/rate-limits.md, read 2026-10-13
-ERR_RATE_LIMIT = {
-    "code": 1007,
-    "message": "Rate limit exceeded, you've generated too many requests in a short amount of time",
-    "suggestion": "Please wait for a while and try again",
-}
-
-# documented example, developers.tripo3d.ai/en/docs/rate-limits.md, read 2026-10-13
-ERR_CONCURRENCY = {
-    "code": 2000,
-    "message": "You have exceeded the limit of generation",
-    "suggestion": "Try again later. You can also check `Retry-After` header.",
-}
+def _error_body(code, message, suggestion="see the Tripo error code reference"):
+    """Built from the documented shape, not captured: the captured 2010 error with another
+    code, message and suggestion. The wording is the docs' (error-handling.md,
+    rate-limits.md) where they show a body, else the error-code table's meaning."""
+    return {**captured("image-to-model-insufficient-credit"), "code": code, "message": message,
+            "suggestion": suggestion}
 
 
-def _error_body(code, message):
-    """The documented unified error envelope {code, message, suggestion}
-    (error-handling.md) with the message the error-code table gives for `code`.
-    The docs show no response body for these codes, only the table, so the
-    wording is the table's meaning, not a captured payload."""
-    return {"code": code, "message": message, "suggestion": "see the Tripo error code reference"}
-
-
+ERR_RATE_LIMIT = _error_body(
+    1007, "Rate limit exceeded, you've generated too many requests in a short amount of time",
+    "Please wait for a while and try again")
+ERR_CONCURRENCY = _error_body(
+    2000, "You have exceeded the limit of generation",
+    "Try again later. You can also check `Retry-After` header.")
 ERR_INVALID_KEY = _error_body(1000, "Invalid API Key")
 ERR_UNAUTHORIZED = _error_body(1001, "Unauthorized")
 ERR_CONTENT = _error_body(2008, "Content policy violation")
 ERR_DEPRECATED = _error_body(2015, "Version deprecated")
-
-# Built from the documented envelope (error-handling.md, read 2026-10-13): the docs
-# show no body for 2002, only its table row, so the message and suggestion are that
-# row's "Meaning" and "Recommended Handling", not a captured payload.
-ERR_UNSUPPORTED_PARAM = {
-    "code": 2002,
-    "message": "Unsupported request parameter",
-    "suggestion": "Check whether request body field names and values match the documentation",
-}
+# error-handling.md's table row for 2002: its "Meaning" and "Recommended Handling".
+ERR_UNSUPPORTED_PARAM = _error_body(
+    2002, "Unsupported request parameter",
+    "Check whether request body field names and values match the documentation")
 
 
 # ---------------------------------------------------------------------------
@@ -220,14 +215,22 @@ def test_check_key_reads_the_balance_with_the_bearer_key(fake):
     assert kw["headers"] == {"Authorization": "Bearer test-key"}
     assert result == {
         "ok": True, "default_model": "v3.1-20260211", "default_model_ok": True,
-        "default_model_verified": False, "credits": 10000.0, "frozen": 200.0,
-        "detail": "balance 10000 credits",
+        "default_model_verified": False, "credits": 1000.0, "frozen": 0.0,
+        "detail": "balance 1000 credits",
     }
     assert isinstance(result["credits"], float)
 
 
+def test_check_key_on_an_empty_account_is_still_a_good_key(fake):
+    # The captured answer of the same key before it was topped up: a key with no credit works.
+    fake.script = [_FakeResponse(200, BALANCE_EMPTY)]
+    result = tripo.check_key()
+    assert result["ok"] is True and result["credits"] == 0.0 and result["frozen"] == 0.0
+    assert result["detail"] == "balance 0 credits"
+
+
 def test_check_key_keeps_the_decimals_of_a_balance(fake):
-    fake.script = [_FakeResponse(200, {"code": 0, "data": {"balance": 48.25}})]
+    fake.script = [_FakeResponse(200, _with_data("balance", {"balance": 48.25}))]   # built, no frozen
     result = tripo.check_key()
     assert result["credits"] == 48.25 and result["detail"] == "balance 48.25 credits"
     assert "frozen" not in result
@@ -279,12 +282,13 @@ def test_a_rejected_key_says_where_keys_come_from(fake, status, body):
     assert "Tripo rejected the API key" in message and "tripo3d.ai" in message and "China" in message
 
 
-@pytest.mark.parametrize("status", [403, 400, 200])
+@pytest.mark.parametrize("status", [ERR_INSUFFICIENT_STATUS, 400, 200])
 def test_insufficient_credit_by_code_whatever_the_status(fake, status):
-    # error-handling.md: HTTP 403 means "no permission, or your credits are insufficient".
+    # Tripo sent 403 (the first case, captured); the code decides, so 400 and 200 give the same.
+    assert ERR_INSUFFICIENT_STATUS == 403
     fake.script = [_FakeResponse(status, ERR_INSUFFICIENT)]
     with pytest.raises(ConnectorError) as e:
-        tripo.create("/generation/image-to-model", {"input": "file_abc123"})
+        tripo.create("/generation/image-to-model", {"input": FILE_TOKEN})
     assert e.value.reason == INSUFFICIENT_CREDIT
     assert "Tripo" in str(e.value) and "credit" in str(e.value)
 
@@ -292,7 +296,7 @@ def test_insufficient_credit_by_code_whatever_the_status(fake, status):
 def test_another_403_keeps_tripos_message(fake):
     fake.script = [_FakeResponse(403, _error_body(2004, "Unsupported file type"))]
     with pytest.raises(ConnectorError) as e:
-        tripo.create("/generation/image-to-model", {"input": "file_abc123"})
+        tripo.create("/generation/image-to-model", {"input": FILE_TOKEN})
     assert e.value.reason is None
     assert "Tripo" in str(e.value) and "Unsupported file type" in str(e.value)
 
@@ -362,7 +366,7 @@ def test_an_unreadable_200_on_submit_says_it_may_exist(fake):
 @pytest.mark.parametrize("body", [ERR_RATE_LIMIT, ERR_CONCURRENCY])
 def test_a_429_is_repeated_after_retry_after_then_succeeds(fake, sleeps, body):
     fake.script = [_FakeResponse(429, body, headers={"Retry-After": "7"}), _FakeResponse(200, CREATE_OK)]
-    assert tripo.create("/generation/image-to-model", {"input": "file_abc123"}) == "task_abc123"
+    assert tripo.create("/generation/image-to-model", {"input": FILE_TOKEN}) == TASK_ID
     assert sleeps == [7.0]
     assert len(fake.calls) == 2 and fake.calls[0][2]["json"] == fake.calls[1][2]["json"]
 
@@ -372,14 +376,14 @@ def test_retry_after_defaults_to_five_seconds_and_is_capped(fake, sleeps):
                    _FakeResponse(429, ERR_RATE_LIMIT, headers={"Retry-After": "600"}),
                    _FakeResponse(429, ERR_RATE_LIMIT, headers={"Retry-After": "soon"}),
                    _FakeResponse(200, CREATE_OK)]
-    tripo.create("/generation/image-to-model", {"input": "file_abc123"})
+    tripo.create("/generation/image-to-model", {"input": FILE_TOKEN})
     assert sleeps == [5.0, 30.0, 5.0]
 
 
 def test_the_codes_alone_count_as_busy(fake, sleeps):
     # rate-limits.md pairs 1007 and 2000 with HTTP 429; the codes are enough here.
     fake.script = [_FakeResponse(400, ERR_CONCURRENCY), _FakeResponse(200, CREATE_OK)]
-    assert tripo.create("/generation/image-to-model", {"input": "file_abc123"}) == "task_abc123"
+    assert tripo.create("/generation/image-to-model", {"input": FILE_TOKEN}) == TASK_ID
     assert sleeps == [5.0]
 
 
@@ -387,7 +391,7 @@ def test_a_429_that_keeps_coming_says_tripo_is_busy(fake, sleeps):
     refusals = tripo.BUSY_RETRIES + 1
     fake.script = [_FakeResponse(429, ERR_CONCURRENCY, headers={"Retry-After": "2"})] * refusals
     with pytest.raises(ConnectorError, match="Tripo is busy") as e:
-        tripo.create("/generation/image-to-model", {"input": "file_abc123"})
+        tripo.create("/generation/image-to-model", {"input": FILE_TOKEN})
     assert e.value.reason is None
     assert len(fake.calls) == refusals and sleeps == [2.0] * tripo.BUSY_RETRIES
 
@@ -400,7 +404,7 @@ def test_upload_sends_the_file_as_multipart_field_file(fake, tmp_path):
     img = tmp_path / "photo.PNG"
     img.write_bytes(b"\x89PNG-bytes")
     fake.script = [_FakeResponse(200, UPLOAD_OK)]
-    assert tripo.upload(str(img)) == "file_abc123"
+    assert tripo.upload(str(img)) == FILE_TOKEN
     method, url, kw = fake.calls[0]
     assert (method, url) == ("POST", f"{API}/files")
     assert kw["headers"] == {"Authorization": "Bearer test-key"}, "no Content-Type: requests sets the boundary"
@@ -411,7 +415,7 @@ def test_upload_takes_models_too(fake, tmp_path):
     glb = tmp_path / "robot.glb"
     glb.write_bytes(b"glTF")
     fake.script = [_FakeResponse(200, UPLOAD_OK)]
-    assert tripo.upload(str(glb)) == "file_abc123"
+    assert tripo.upload(str(glb)) == FILE_TOKEN
     assert fake.calls[0][2]["files"]["file"][0] == "robot.glb"
 
 
@@ -440,7 +444,7 @@ def test_upload_at_the_limit_is_allowed(fake, tmp_path, monkeypatch):
     p = tmp_path / "ok.jpg"
     p.write_bytes(b"1234")
     fake.script = [_FakeResponse(200, UPLOAD_OK)]
-    assert tripo.upload(str(p)) == "file_abc123"
+    assert tripo.upload(str(p)) == FILE_TOKEN
 
 
 def test_upload_refuses_an_empty_or_missing_file(fake, tmp_path):
@@ -456,7 +460,7 @@ def test_upload_refuses_an_empty_or_missing_file(fake, tmp_path):
 def test_upload_without_a_token_in_the_answer(fake, tmp_path):
     p = tmp_path / "a.png"
     p.write_bytes(b"x")
-    fake.script = [_FakeResponse(200, {"code": 0, "data": {}})]
+    fake.script = [_FakeResponse(200, _with_data("files-upload", {}))]    # built: data without file_token
     with pytest.raises(ConnectorError, match="no file_token"):
         tripo.upload(str(p))
 
@@ -466,9 +470,9 @@ def test_upload_without_a_token_in_the_answer(fake, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_create_posts_the_body_to_the_endpoint_and_returns_the_task_id(fake):
-    body = {"input": "file_abc123", "model": tripo.DEFAULT_MODEL}
+    body = {"input": FILE_TOKEN, "model": tripo.DEFAULT_MODEL}
     fake.script = [_FakeResponse(200, CREATE_OK)]
-    assert tripo.create("/generation/image-to-model", body) == "task_abc123"
+    assert tripo.create("/generation/image-to-model", body) == TASK_ID
     method, url, kw = fake.calls[0]
     assert (method, url) == ("POST", f"{API}/generation/image-to-model")
     assert kw["json"] == body
@@ -476,7 +480,7 @@ def test_create_posts_the_body_to_the_endpoint_and_returns_the_task_id(fake):
 
 
 def test_create_without_a_task_id_in_the_answer(fake):
-    fake.script = [_FakeResponse(200, {"code": 0, "data": {}})]
+    fake.script = [_FakeResponse(200, _with_data("image-to-model-submit", {}))]    # built: data without task_id
     with pytest.raises(ConnectorError, match="no task_id"):
         tripo.create("/generation/text-to-model", {"prompt": "x"})
 
@@ -492,61 +496,62 @@ def test_create_refuses_a_bad_endpoint_before_any_call(fake):
 # ---------------------------------------------------------------------------
 
 def test_wait_polls_queued_running_success(fake, sleeps):
-    fake.script = [_task("queued"), _task("running", progress=50), _FakeResponse(200, TASK_SUCCESS)]
-    task = tripo.wait("task_abc123")
-    assert task["status"] == "success" and task["output"]["model_url"].endswith("model_pbr.glb")
-    assert [c[:2] for c in fake.calls] == [("GET", f"{API}/tasks/task_abc123")] * 3
+    fake.script = [_task("queued"), _FakeResponse(200, TASK_RUNNING), _FakeResponse(200, TASK_SUCCESS)]
+    task = tripo.wait(TASK_ID)
+    assert task["status"] == "success" and task["output"]["model_url"] == MODEL_URL
+    assert task["credits_consumed"] == 30.0 and task["task_id"] == TASK_ID
+    assert [c[:2] for c in fake.calls] == [("GET", f"{API}/tasks/{TASK_ID}")] * 3
     assert fake.calls[0][2]["headers"] == {"Authorization": "Bearer test-key"}
     assert sleeps == [tripo.POLL_INTERVAL_S] * 2
 
 
 def test_wait_failed_names_the_error_code_and_message(fake):
     fake.script = [_task("failed", error_code=2018, error_message="Model too complex")]
-    with pytest.raises(ConnectorError, match=r"Tripo task task_abc123 failed \(2018: Model too complex\)") as e:
-        tripo.wait("task_abc123")
+    with pytest.raises(ConnectorError, match=rf"Tripo task {TASK_ID} failed \(2018: Model too complex\)") as e:
+        tripo.wait(TASK_ID)
     assert e.value.reason is None
 
 
 @pytest.mark.parametrize("code", [2008, "2008"])
 def test_wait_failed_on_content_policy_is_content_refused(fake, code):
     fake.script = [_task("failed", error_code=code, error_message="Content policy violation")]
-    with pytest.raises(ConnectorError, match="Tripo's content policy refused task task_abc123") as e:
-        tripo.wait("task_abc123")
+    with pytest.raises(ConnectorError, match=f"Tripo's content policy refused task {TASK_ID}") as e:
+        tripo.wait(TASK_ID)
     assert e.value.reason == CONTENT_REFUSED
     assert "2008" in str(e.value) and "not charged" in str(e.value)
 
 
 def test_wait_failed_without_an_error_code(fake):
     fake.script = [_task("failed")]
-    with pytest.raises(ConnectorError, match="Tripo task task_abc123 failed. A failed task is not charged"):
-        tripo.wait("task_abc123")
+    with pytest.raises(ConnectorError, match=f"Tripo task {TASK_ID} failed. A failed task is not charged"):
+        tripo.wait(TASK_ID)
 
 
 def test_wait_banned_is_content_refused(fake):
     fake.script = [_task("banned")]
     with pytest.raises(ConnectorError, match="content policy") as e:
-        tripo.wait("task_abc123")
+        tripo.wait(TASK_ID)
     assert e.value.reason == CONTENT_REFUSED and "Tripo" in str(e.value)
 
 
 def test_wait_expired_says_the_output_is_gone(fake):
     fake.script = [_task("expired")]
     with pytest.raises(ConnectorError, match="expired.*no longer available") as e:
-        tripo.wait("task_abc123")
+        tripo.wait(TASK_ID)
     assert e.value.reason is None
 
 
 def test_wait_cancelled(fake):
     fake.script = [_task("cancelled")]
-    with pytest.raises(ConnectorError, match="Tripo task task_abc123 was cancelled"):
-        tripo.wait("task_abc123")
+    with pytest.raises(ConnectorError, match=f"Tripo task {TASK_ID} was cancelled"):
+        tripo.wait(TASK_ID)
 
 
 def test_an_unknown_status_is_still_running_until_the_timeout_names_the_task(fake, monkeypatch):
     monkeypatch.setattr(tripo, "MAX_POLL_S", 15.0)
     fake.script = [_task("warming_up"), _task("warming_up"), _task("warming_up")]
-    with pytest.raises(ConnectorError, match="--task-id task_abc123") as e:
-        tripo.wait("task_abc123")
+    with pytest.raises(ConnectorError, match=f"--task-id {TASK_ID}") as e:
+        tripo.wait(TASK_ID)
     assert "Tripo" in str(e.value) and "still running" in str(e.value)
     assert len(fake.calls) == 3
 
@@ -560,29 +565,29 @@ def test_the_time_a_status_check_takes_counts_toward_the_limit(fake, monkeypatch
         return _task("running")
     monkeypatch.setattr(fake, "request", slow_running)
     with pytest.raises(ConnectorError, match="still running after 840 s"):
-        tripo.wait("task_abc123")
+        tripo.wait(TASK_ID)
     assert len(fake.calls) == 8
     assert sleeps == [tripo.POLL_INTERVAL_S] * 8
 
 
 def test_status_checks_that_keep_failing_name_the_task(fake):
     fake.script = [_FakeRequestException("down")] * 15
-    with pytest.raises(ConnectorError, match=r"running the same step with --task-id task_abc123 \(no new charge\)") as e:
-        tripo.wait("task_abc123")
+    with pytest.raises(ConnectorError, match=rf"running the same step with --task-id {TASK_ID} \(no new charge\)") as e:
+        tripo.wait(TASK_ID)
     assert "generating again" not in str(e.value)
 
 
 def test_a_429_while_polling_is_a_missed_tick_not_a_failure(fake, sleeps):
     fake.script = [_FakeResponse(429, ERR_RATE_LIMIT, headers={"Retry-After": "30"}),
                    _FakeResponse(200, TASK_SUCCESS)]
-    assert tripo.wait("task_abc123")["status"] == "success"
+    assert tripo.wait(TASK_ID)["status"] == "success"
     assert sleeps == [tripo.POLL_INTERVAL_S], "the poll loop is the retry: no 30 s Retry-After wait inside it"
 
 
 def test_429s_while_polling_never_count_toward_the_failure_stop(fake, sleeps):
     many = tripo.MAX_CONSECUTIVE_POLL_FAILURES + 3
     fake.script = [_FakeResponse(429, ERR_CONCURRENCY)] * many + [_FakeResponse(200, TASK_SUCCESS)]
-    assert tripo.wait("task_abc123")["status"] == "success"
+    assert tripo.wait(TASK_ID)["status"] == "success"
     assert len(fake.calls) == many + 1
 
 
@@ -591,13 +596,13 @@ def test_429s_neither_count_nor_reset_the_failures_between_them(fake):
     busy, down = _FakeResponse(429, ERR_CONCURRENCY), [_FakeRequestException("down")] * 3
     fake.script = [*down, *down, busy, *down, *down, *down]
     with pytest.raises(ConnectorError, match=r"5 status checks failed in a row"):
-        tripo.wait("task_abc123")
+        tripo.wait(TASK_ID)
 
 
 def test_a_bad_key_while_polling_stops_at_once(fake):
     fake.script = [_FakeResponse(401, ERR_INVALID_KEY)]
     with pytest.raises(ConnectorError) as e:
-        tripo.wait("task_abc123")
+        tripo.wait(TASK_ID)
     assert e.value.reason == INVALID_API_KEY and len(fake.calls) == 1
 
 
@@ -614,12 +619,12 @@ def test_the_task_id_is_one_path_segment(fake):
 def test_resume_model_waits_downloads_model_url_and_returns_credits_as_a_float(fake, tmp_path):
     fake.script = [_FakeResponse(200, TASK_SUCCESS), _FakeResponse(200, content=_glb_bytes())]
     out = tmp_path / "robot.glb"
-    result = tripo.resume_model("task_abc123", str(out))
+    result = tripo.resume_model(TASK_ID, str(out))
     assert out.read_bytes() == _glb_bytes()
-    assert result == {"path": str(out), "taskId": "task_abc123", "model": None, "creditsUsed": 100.0,
+    assert result == {"path": str(out), "taskId": TASK_ID, "model": None, "creditsUsed": 30.0,
                       "textures": {"reencoded": 0, "ktx2": 0, "formats": {}}}
     assert isinstance(result["creditsUsed"], float)
-    assert fake.calls[-1][:2] == ("GET", "https://cdn.tripo3d.ai/output/model_pbr.glb")
+    assert fake.calls[-1][:2] == ("GET", MODEL_URL)
     assert "headers" not in fake.calls[-1][2], "the API key never goes to the CDN"
     assert not any(c[0] == "POST" for c in fake.calls), "no new task, no new charge"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["robot.glb", "robot.glb.tripo.json"], \
@@ -631,13 +636,14 @@ def test_the_unused_bare_resume_is_gone():
     assert not hasattr(tripo, "resume")
 
 
-@pytest.mark.parametrize("credits,expected", [(48, 48.0), (12.5, 12.5), (None, None)])
+@pytest.mark.parametrize("credits,expected", [(30.0, 30.0), (48, 48.0), (12.5, 12.5), (None, None)])
 def test_credits_are_a_float_or_none_never_an_int(fake, tmp_path, credits, expected):
+    # Tripo sent 30.0 (captured); the others are built from that body with another credits_consumed.
     data = dict(TASK_SUCCESS["data"], credits_consumed=credits)
     if credits is None:
         del data["credits_consumed"]
-    fake.script = [_FakeResponse(200, {"code": 0, "data": data}), _FakeResponse(200, content=_glb_bytes())]
-    result = tripo.resume_model("task_abc123", str(tmp_path / "m.glb"))
+    fake.script = [_FakeResponse(200, {**TASK_SUCCESS, "data": data}), _FakeResponse(200, content=_glb_bytes())]
+    result = tripo.resume_model(TASK_ID, str(tmp_path / "m.glb"))
     assert result["creditsUsed"] == expected
     assert result["creditsUsed"] is None or type(result["creditsUsed"]) is float
 
@@ -646,9 +652,9 @@ def test_a_failed_download_leaves_no_model_and_names_the_task(fake, tmp_path):
     fake.script = [_FakeResponse(200, TASK_SUCCESS), _FakeResponse(404)]
     out = tmp_path / "robot.glb"
     with pytest.raises(ConnectorError, match=r"Tripo download failed \(HTTP 404\)") as e:
-        tripo.resume_model("task_abc123", str(out))
+        tripo.resume_model(TASK_ID, str(out))
     assert e.value.reason is None
-    assert "--task-id task_abc123 (no new charge)" in str(e.value)
+    assert f"--task-id {TASK_ID} (no new charge)" in str(e.value)
     assert [p.name for p in tmp_path.iterdir()] == ["robot.glb.tripo.json"], "only the record of the paid task"
 
 
@@ -656,17 +662,17 @@ def test_a_download_that_cannot_connect_after_a_paid_task_is_not_unreachable(fak
     # UNREACHABLE's remedy in the app is "run the step again": that would pay twice.
     fake.script = [_FakeResponse(200, TASK_SUCCESS), *[_FakeRequestException("connection reset")] * 3]
     with pytest.raises(ConnectorError) as e:
-        tripo.resume_model("task_abc123", str(tmp_path / "robot.glb"))
+        tripo.resume_model(TASK_ID, str(tmp_path / "robot.glb"))
     assert e.value.reason is None
     message = str(e.value)
     assert "connection reset" in message and "made and paid for" in message
-    assert "running the same step with --task-id task_abc123 (no new charge)" in message
+    assert f"running the same step with --task-id {TASK_ID} (no new charge)" in message
 
 
 def test_a_download_that_cannot_connect_is_unreachable_and_names_tripo(fake, tmp_path):
     fake.script = [_FakeRequestException("connection reset")] * 3
     with pytest.raises(ConnectorError) as e:
-        tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb", str(tmp_path / "m.glb"))
+        tripo.download(MODEL_BASE, str(tmp_path / "m.glb"))
     assert e.value.reason == UNREACHABLE
     assert str(e.value).startswith("Tripo download") and "connection reset" in str(e.value)
     assert list(tmp_path.iterdir()) == []
@@ -675,7 +681,7 @@ def test_a_download_that_cannot_connect_is_unreachable_and_names_tripo(fake, tmp
 def test_a_download_5xx_is_unreachable_after_the_transport_retries(fake, tmp_path):
     fake.script = [_FakeResponse(503)] * 3
     with pytest.raises(ConnectorError, match="Tripo download failed") as e:
-        tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb", str(tmp_path / "m.glb"))
+        tripo.download(MODEL_BASE, str(tmp_path / "m.glb"))
     assert e.value.reason == UNREACHABLE and len(fake.calls) == 3
 
 
@@ -687,20 +693,22 @@ def test_a_download_stream_that_drops_is_unreachable(fake, tmp_path):
     fake.script = [_Dropping(200)]
     out = tmp_path / "m.glb"
     with pytest.raises(ConnectorError, match="stream dropped") as e:
-        tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb", str(out))
+        tripo.download(MODEL_BASE, str(out))
     assert e.value.reason == UNREACHABLE and list(tmp_path.iterdir()) == []
 
 
 def test_a_download_error_does_not_repeat_the_url_signature(fake, tmp_path):
     fake.script = [_FakeResponse(403)]
     with pytest.raises(ConnectorError) as e:
-        tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb?Signature=secret&Expires=1",
+        tripo.download(f"{MODEL_BASE}?Signature=secret&Expires=1",
                        str(tmp_path / "m.glb"))
-    assert "cdn.tripo3d.ai/output/model_pbr.glb" in str(e.value) and "secret" not in str(e.value)
+    assert MODEL_BASE in str(e.value) and "secret" not in str(e.value)
 
 
-SIGNED = "https://cdn.tripo3d.ai/output/model_pbr.glb?Signature=s3cr3tSIGvalue&Key-Pair-Id=K2ABCDEF&Expires=1760000000"
+# Stand-ins, not captured: the capture removed every real signature ("?<query removed>"), and
+# these tests need one to prove it is scrubbed. The URL's host and path are the captured ones.
 QUERY = "Signature=s3cr3tSIGvalue&Key-Pair-Id=K2ABCDEF&Expires=1760000000"
+SIGNED = f"{MODEL_BASE}?{QUERY}"
 
 
 def _messages(exc):
@@ -718,13 +726,13 @@ def _assert_no_signature(text):
 
 def test_a_request_error_quoting_the_signed_url_is_scrubbed(fake, tmp_path):
     # requests' own text quotes the path and query without the host; _http adds the full URL.
-    quoted = (f"HTTPSConnectionPool(host='cdn.tripo3d.ai', port=443): Max retries exceeded with url: "
-              f"/output/model_pbr.glb?{QUERY} (Caused by ReadTimeoutError)")
+    quoted = (f"HTTPSConnectionPool(host='{CDN_HOST}', port=443): Max retries exceeded with url: "
+              f"{urlsplit(MODEL_BASE).path}?{QUERY} (Caused by ReadTimeoutError)")
     fake.script = [_FakeRequestException(quoted)] * 3
     with pytest.raises(ConnectorError) as e:
         tripo.download(SIGNED, str(tmp_path / "m.glb"))
     _assert_no_signature(_messages(e.value))
-    assert "https://cdn.tripo3d.ai/output/model_pbr.glb" in str(e.value) and "Max retries exceeded" in str(e.value)
+    assert MODEL_BASE in str(e.value) and "Max retries exceeded" in str(e.value)
     assert e.value.reason == UNREACHABLE
 
 
@@ -741,16 +749,17 @@ def test_a_stream_error_quoting_the_signed_url_is_scrubbed(fake, tmp_path):
 
 
 def test_a_paid_task_whose_download_fails_names_the_task_but_not_the_signature(fake, tmp_path):
-    data = dict(TASK_SUCCESS["data"], output={"model_url": SIGNED})
-    fake.script = [_FakeResponse(200, {"code": 0, "data": data}),
+    data = dict(TASK_SUCCESS["data"], output={"model_url": SIGNED})    # built: a model_url with a signature
+    fake.script = [_FakeResponse(200, {**TASK_SUCCESS, "data": data}),
                    *[_FakeRequestException(f"timed out: /output/model_pbr.glb?{QUERY}")] * 3]
     with pytest.raises(ConnectorError) as e:
-        tripo.resume_model("task_abc123", str(tmp_path / "m.glb"))
+        tripo.resume_model(TASK_ID, str(tmp_path / "m.glb"))
     _assert_no_signature(_messages(e.value))
-    assert "--task-id task_abc123" in str(e.value)
+    assert f"--task-id {TASK_ID}" in str(e.value)
 
 
 def test_scrub_removes_a_percent_decoded_query_too():
+    # A stand-in URL, not captured: the captures have no signature left to scrub.
     url = "https://cdn.tripo3d.ai/m.glb?Signature=ab%2Fcd%3D%3Defgh&Expires=1"
     text = tripo._scrub(f"GET {url} failed: /m.glb?Signature=ab/cd==efgh&Expires=1 and ab/cd==efgh", url)
     assert "ab/cd==efgh" not in text and "ab%2Fcd" not in text and "https://cdn.tripo3d.ai/m.glb" in text
@@ -761,33 +770,35 @@ def test_a_failed_download_keeps_an_existing_file(fake, tmp_path):
     out.write_bytes(b"OLD")
     fake.script = [_FakeResponse(404)]
     with pytest.raises(ConnectorError):
-        tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb", str(out))
+        tripo.download(MODEL_BASE, str(out))
     assert out.read_bytes() == b"OLD"
     assert [p.name for p in tmp_path.iterdir()] == ["robot.glb"]
 
 
 def test_resume_without_a_model_url(fake, tmp_path):
-    data = dict(TASK_SUCCESS["data"], output={"rendered_image_url": "https://cdn.tripo3d.ai/output/preview.png"})
-    fake.script = [_FakeResponse(200, {"code": 0, "data": data})]
+    # Built from the captured success with only the preview in `output`.
+    preview = TASK_SUCCESS["data"]["output"]["rendered_image_url"]
+    fake.script = [_FakeResponse(200, _with_data("task-image-to-model-success",
+                                                 dict(TASK_SUCCESS["data"], output={"rendered_image_url": preview})))]
     with pytest.raises(ConnectorError, match="succeeded but returned no model_url"):
-        tripo.resume_model("task_abc123", str(tmp_path / "m.glb"))
+        tripo.resume_model(TASK_ID, str(tmp_path / "m.glb"))
 
 
 def test_resume_of_a_task_still_running_names_its_id_and_collects_it_later(fake, monkeypatch, tmp_path):
     monkeypatch.setattr(tripo, "STEP_BUDGET_S", 10.0)
     fake.script = [_task("running"), _task("running")]
-    with pytest.raises(ConnectorError, match=r"--task-id task_abc123 \(no new charge\)"):
-        tripo.resume_model("task_abc123", str(tmp_path / "m.glb"))
+    with pytest.raises(ConnectorError, match=rf"--task-id {TASK_ID} \(no new charge\)"):
+        tripo.resume_model(TASK_ID, str(tmp_path / "m.glb"))
     monkeypatch.setattr(tripo, "STEP_BUDGET_S", 840.0)
     fake.script = [_FakeResponse(200, TASK_SUCCESS), _FakeResponse(200, content=_glb_bytes())]
-    assert tripo.resume_model("task_abc123", str(tmp_path / "m.glb"))["path"] == str(tmp_path / "m.glb")
+    assert tripo.resume_model(TASK_ID, str(tmp_path / "m.glb"))["path"] == str(tmp_path / "m.glb")
 
 
 def test_resume_needs_a_task_id_and_a_path(fake, tmp_path):
     with pytest.raises(ConnectorError, match="task_id is required"):
         tripo.resume_model("", str(tmp_path / "m.glb"))
     with pytest.raises(ConnectorError, match="out_path is required"):
-        tripo.resume_model("task_abc123", "")
+        tripo.resume_model(TASK_ID, "")
     assert fake.calls == []
 
 
@@ -812,53 +823,38 @@ def _glb_bytes() -> bytes:
     return b"glTF" + struct.pack("<II", 2, 12 + len(body)) + body
 
 
-# documented example ("Create task"), developers.tripo3d.ai/en/docs/animations-rig-check.md, read 2026-10-13
-CHECK_CREATED = {"code": 0, "data": {"task_id": "task_check"}}
+# captured: POST /animations/rig-check and its finished task (free: credits_consumed 0.0)
+CHECK_CREATED = captured("rig-check-submit")
+CHECK_ID = CHECK_CREATED["data"]["task_id"]
+CHECK_RESULT = captured("task-rig-check-success")
 
-# documented example ("Task result"), developers.tripo3d.ai/en/docs/animations-rig-check.md, read 2026-10-13
-# (the docs show task_def456 here and task_abc123 above: two examples, not one task)
-CHECK_RESULT = {
-    "code": 0,
-    "data": {"task_id": "task_def456", "status": "success",
-             "output": {"riggable": True, "rig_type": "biped"}, "credits_consumed": 0.00},
-}
-
-# Built from the documented field list (animations-rig-check.md, read 2026-10-13): the docs show
-# only the riggable: true answer, so this one is an assumption of the shape, not a capture.
+# Built from the documented shape, not captured: the captured check with riggable false and another
+# recommended type. The docs show, and the run got, only the riggable: true answer.
 CHECK_NOT_RIGGABLE = {
-    "code": 0,
-    "data": {"task_id": "task_def456", "status": "success",
-             "output": {"riggable": False, "rig_type": "quadruped"}, "credits_consumed": 0.00},
+    **CHECK_RESULT,
+    "data": {**CHECK_RESULT["data"], "output": {"riggable": False, "rig_type": "quadruped"}},
 }
 
-# documented example ("Create task"), developers.tripo3d.ai/en/docs/animations-rig.md, read 2026-10-13
-RIG_CREATED = {"code": 0, "data": {"task_id": "task_rig"}}
+# captured: POST /animations/rig (biped, Mixamo names) and its finished task (25.0 credits)
+RIG_CREATED = captured("rig-submit")
+RIG_ID = RIG_CREATED["data"]["task_id"]
+RIG_RESULT = captured("task-rig-success")
+RIGGED_URL = RIG_RESULT["data"]["output"]["model_url"]
 
-# documented example ("Task result"), developers.tripo3d.ai/en/docs/animations-rig.md, read 2026-10-13
-RIG_RESULT = {
-    "code": 0,
-    "data": {"task_id": "task_def456", "status": "success",
-             "output": {"model_url": "https://cdn.tripo3d.ai/output/rigged.glb"}, "credits_consumed": 30.00},
-}
-
-# documented example ("Create task"), developers.tripo3d.ai/en/docs/animations-retarget.md, read 2026-10-13
-RETARGET_CREATED = {"code": 0, "data": {"task_id": "task_anim"}}
-
-# documented example ("Task result"), developers.tripo3d.ai/en/docs/animations-retarget.md, read 2026-10-13
-RETARGET_RESULT = {
-    "code": 0,
-    "data": {"task_id": "task_def456", "status": "success",
-             "output": {"model_url": "https://cdn.tripo3d.ai/output/animated.glb"}, "credits_consumed": 20.00},
-}
+# captured: POST /animations/retarget (two presets, in place) and its finished task (20.0 credits)
+RETARGET_CREATED = captured("retarget-submit")
+ANIM_ID = RETARGET_CREATED["data"]["task_id"]
+RETARGET_RESULT = captured("task-retarget-success")
+ANIMATED_URL = RETARGET_RESULT["data"]["output"]["model_url"]
 
 
-def _generated(tmp_path, name="robot.glb", task="task_gen"):
+def _generated(tmp_path, name="robot.glb", task=TEXT_ID):
     """A model as generate_model leaves it: the .glb and its finished-task record."""
     glb = tmp_path / name
     glb.write_bytes(b"glTF-source")
     Path(f"{glb}.tripo.json").write_text(json.dumps(
         {"task_id": task, "kind": "model", "model": "v3.1-20260211", "endpoint": "/generation/text-to-model",
-         "created": "2026-10-13T10:00:00+00:00", "credits_consumed": 100.0}))
+         "created": "2026-10-13T10:00:00+00:00", "credits_consumed": 20.0}))
     return glb
 
 
@@ -866,9 +862,9 @@ def _rigged_by_rig_model(tmp_path, name="rigged.glb", rig_type="biped", rig_mode
     glb = tmp_path / name
     glb.write_bytes(b"glTF-rigged")
     Path(f"{glb}.tripo.json").write_text(json.dumps(
-        {"task_id": "task_rig", "kind": "rig", "rig_model": rig_model, "rig_type": rig_type,
-         "spec": "mixamo" if rig_type == "biped" else "tripo", "source_task_id": "task_gen",
-         "created": "2026-10-13T10:00:00+00:00", "credits_consumed": 30.0}))
+        {"task_id": RIG_ID, "kind": "rig", "rig_model": rig_model, "rig_type": rig_type,
+         "spec": "mixamo" if rig_type == "biped" else "tripo", "source_task_id": TEXT_ID,
+         "created": "2026-10-13T10:00:00+00:00", "credits_consumed": 25.0}))
     return glb
 
 
@@ -881,22 +877,22 @@ def test_rig_from_a_generated_model_sends_its_task_and_follows_the_documented_fl
     result = tripo.rig_model(model_path=str(src), out_path=str(out))
 
     assert [c[:2] for c in fake.calls] == [
-        ("POST", f"{API}/animations/rig-check"), ("GET", f"{API}/tasks/task_check"),
-        ("POST", f"{API}/animations/rig"), ("GET", f"{API}/tasks/task_rig"),
-        ("GET", "https://cdn.tripo3d.ai/output/rigged.glb")]
-    assert fake.calls[0][2]["json"] == {"input": "task_gen"}, "no upload: the generation task is the input"
-    assert fake.calls[2][2]["json"] == {"input": "task_gen", "model": "v1.0-20240301", "rig_type": "biped",
+        ("POST", f"{API}/animations/rig-check"), ("GET", f"{API}/tasks/{CHECK_ID}"),
+        ("POST", f"{API}/animations/rig"), ("GET", f"{API}/tasks/{RIG_ID}"),
+        ("GET", RIGGED_URL)]
+    assert fake.calls[0][2]["json"] == {"input": TEXT_ID}, "no upload: the generation task is the input"
+    assert fake.calls[2][2]["json"] == {"input": TEXT_ID, "model": "v1.0-20240301", "rig_type": "biped",
                                         "spec": "mixamo", "out_format": "glb"}
-    assert result == {"path": str(out), "taskId": "task_rig", "rigType": "biped", "rigModel": "v1.0-20240301",
-                      "spec": "mixamo", "creditsUsed": 30.0,
+    assert result == {"path": str(out), "taskId": RIG_ID, "rigType": "biped", "rigModel": "v1.0-20240301",
+                      "spec": "mixamo", "creditsUsed": 25.0,
                       "textures": {"reencoded": 0, "ktx2": 0, "formats": {}}}
     assert isinstance(result["creditsUsed"], float)
     assert out.read_bytes() == _glb_bytes()
     record = json.loads(Path(f"{out}.tripo.json").read_text())
     assert {k: record[k] for k in ("task_id", "kind", "rig_model", "rig_type", "spec", "source_task_id",
                                    "credits_consumed")} == {
-        "task_id": "task_rig", "kind": "rig", "rig_model": "v1.0-20240301", "rig_type": "biped",
-        "spec": "mixamo", "source_task_id": "task_gen", "credits_consumed": 30.0}
+        "task_id": RIG_ID, "kind": "rig", "rig_model": "v1.0-20240301", "rig_type": "biped",
+        "spec": "mixamo", "source_task_id": TEXT_ID, "credits_consumed": 25.0}
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "rigged.glb", "rigged.glb.tripo.json", "robot.glb", "robot.glb.tripo.json"]
 
@@ -912,8 +908,8 @@ def test_rig_of_a_plain_glb_uploads_it_and_sends_the_file_token(fake, tmp_path):
 
     assert fake.calls[0][:2] == ("POST", f"{API}/files")
     assert fake.calls[0][2]["files"]["file"][0] == "hero.glb"
-    assert fake.calls[1][2]["json"] == {"input": "file_abc123"}
-    assert fake.calls[3][2]["json"]["input"] == "file_abc123"
+    assert fake.calls[1][2]["json"] == {"input": FILE_TOKEN}
+    assert fake.calls[3][2]["json"]["input"] == FILE_TOKEN
     assert json.loads(Path(f"{out}.tripo.json").read_text())["source_task_id"] is None
 
 
@@ -926,7 +922,7 @@ def test_a_model_the_check_calls_not_riggable_makes_no_rig_task(fake, tmp_path):
 
     assert e.value.rig_type == "quadruped" and isinstance(e.value, ConnectorError)
     assert "Nothing was spent" in str(e.value)
-    assert [c[:2] for c in fake.calls] == [("POST", f"{API}/animations/rig-check"), ("GET", f"{API}/tasks/task_check")]
+    assert [c[:2] for c in fake.calls] == [("POST", f"{API}/animations/rig-check"), ("GET", f"{API}/tasks/{CHECK_ID}")]
     assert not out.exists() and not Path(f"{out}.tripo.json").exists()
 
 
@@ -952,14 +948,14 @@ def test_a_check_that_fails_stops_without_a_rig_task_and_a_slow_one_says_to_run_
 def test_wait_says_task_id_unless_the_task_is_a_free_check(fake, monkeypatch):
     monkeypatch.setattr(tripo, "MAX_POLL_S", 10.0)
     fake.script = [_task("running"), _task("running")]
-    with pytest.raises(ConnectorError, match=r"running the same step with --task-id task_x \(no new charge\)"):
-        tripo.wait("task_x")
+    with pytest.raises(ConnectorError, match=rf"running the same step with --task-id {TASK_ID} \(no new charge\)"):
+        tripo.wait(TASK_ID)
     fake.script = [_task("running"), _task("running")]
     with pytest.raises(ConnectorError, match="run it again"):
-        tripo.wait("task_x", resumable=False)
+        tripo.wait(TASK_ID, resumable=False)
     fake.script = [_FakeRequestException("down")] * 15
     with pytest.raises(ConnectorError, match="The check is free: run it again"):
-        tripo.wait("task_x", resumable=False)
+        tripo.wait(TASK_ID, resumable=False)
 
 
 @pytest.mark.parametrize("call", ["rig", "animate"])
@@ -1001,16 +997,16 @@ def test_animate_single_sends_animation_and_the_documented_options(fake, tmp_pat
     result = tripo.animate_model(model_path=str(src), out_path=str(out), animations=["preset:biped:walk"])
 
     assert [c[:2] for c in fake.calls] == [
-        ("POST", f"{API}/animations/retarget"), ("GET", f"{API}/tasks/task_anim"),
-        ("GET", "https://cdn.tripo3d.ai/output/animated.glb")]
+        ("POST", f"{API}/animations/retarget"), ("GET", f"{API}/tasks/{ANIM_ID}"),
+        ("GET", ANIMATED_URL)]
     assert fake.calls[0][2]["json"] == {
-        "input": "task_rig", "animation": "preset:biped:walk", "out_format": "glb",
+        "input": RIG_ID, "animation": "preset:biped:walk", "out_format": "glb",
         "bake_animation": True, "export_with_geometry": True, "animate_in_place": True}
-    assert result["path"] == str(out) and result["taskId"] == "task_anim"
+    assert result["path"] == str(out) and result["taskId"] == ANIM_ID
     assert result["animations"] == ["preset:biped:walk"] and result["inPlace"] is True
     assert result["creditsUsed"] == 20.0
     record = json.loads(Path(f"{out}.tripo.json").read_text())
-    assert record["kind"] == "animation" and record["rig_task_id"] == "task_rig"
+    assert record["kind"] == "animation" and record["rig_task_id"] == RIG_ID
     assert (record["rig_model"], record["rig_type"], record["in_place"]) == ("v1.0-20240301", "biped", True)
 
 
@@ -1021,7 +1017,7 @@ def test_animate_several_sends_animations_and_in_place_false_when_asked(fake, tm
     tripo.animate_model(model_path=str(src), out_path=str(out), in_place=False,
                         animations=["preset:biped:idle", "preset:biped:walk", "preset:biped:run"])
     assert fake.calls[0][2]["json"] == {
-        "input": "task_rig", "animations": ["preset:biped:idle", "preset:biped:walk", "preset:biped:run"],
+        "input": RIG_ID, "animations": ["preset:biped:idle", "preset:biped:walk", "preset:biped:run"],
         "out_format": "glb", "bake_animation": True, "export_with_geometry": True, "animate_in_place": False}
     assert "animation" not in fake.calls[0][2]["json"]
 
@@ -1032,6 +1028,48 @@ def test_animate_of_a_plain_glb_makes_no_call(fake, tmp_path):
     with pytest.raises(tripo.InvalidInput, match="Rig it first with rig_model"):
         tripo.animate_model(model_path=str(plain), out_path=str(tmp_path / "x.glb"), animations=["preset:biped:walk"])
     assert fake.calls == []
+
+
+# ---------------------------------------------------------------------------
+# The bodies sent equal the ones the real run sent (captured requests)
+# ---------------------------------------------------------------------------
+
+def test_the_generation_bodies_equal_the_requests_the_real_run_sent(fake, tmp_path):
+    text_request = captured_request("text-to-model-submit")
+    fake.script = [_FakeResponse(200, TEXT_CREATED), _FakeResponse(200, TEXT_SUCCESS),
+                   _FakeResponse(200, content=_glb_bytes())]
+    tripo.generate_model(out_path=str(tmp_path / "text.glb"), prompt=text_request["prompt"],
+                         face_limit=text_request["face_limit"])
+    assert fake.calls[0][2]["json"] == text_request
+
+    # The capture holds the upload's id as "file_<redacted>"; here it is what the fake upload answered.
+    image_request = captured_request("image-to-model-submit")
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"jpeg-bytes")
+    fake.script = [_FakeResponse(200, UPLOAD_OK), _FakeResponse(200, CREATE_OK), _FakeResponse(200, TASK_SUCCESS),
+                   _FakeResponse(200, content=_glb_bytes())]
+    tripo.generate_model(out_path=str(tmp_path / "image.glb"), image_path=str(photo),
+                         face_limit=image_request["face_limit"])
+    submit = [c for c in fake.calls if c[1] == f"{API}/generation/image-to-model"][0]
+    assert submit[2]["json"] == {**image_request, "input": FILE_TOKEN}
+
+
+def test_the_rig_check_rig_and_retarget_bodies_equal_the_requests_the_real_run_sent(fake, tmp_path):
+    src, rigged = _generated(tmp_path), tmp_path / "rigged.glb"
+    fake.script = [_FakeResponse(200, CHECK_CREATED), _FakeResponse(200, CHECK_RESULT),
+                   _FakeResponse(200, RIG_CREATED), _FakeResponse(200, RIG_RESULT),
+                   _FakeResponse(200, content=_glb_bytes())]
+    tripo.rig_model(model_path=str(src), out_path=str(rigged))
+    assert fake.calls[0][2]["json"] == captured_request("rig-check-submit")
+    assert fake.calls[2][2]["json"] == captured_request("rig-submit")
+
+    retarget_request = captured_request("retarget-submit")
+    fake.calls.clear()
+    fake.script = [_FakeResponse(200, RETARGET_CREATED), _FakeResponse(200, RETARGET_RESULT),
+                   _FakeResponse(200, content=_glb_bytes())]
+    tripo.animate_model(model_path=str(rigged), out_path=str(tmp_path / "moves.glb"),
+                        animations=retarget_request["animations"])
+    assert fake.calls[0][2]["json"] == retarget_request
 
 
 # ---------------------------------------------------------------------------
@@ -1058,15 +1096,16 @@ def test_a_task_done_too_late_to_download_is_named_and_not_downloaded(fake, monk
     # Six status checks of 100 s and one of 130 s (plus 5 s between them): done at 760 s,
     # with 80 s of the 840 s left, under MIN_LEFT_S. No CDN call is made.
     out = tmp_path / "robot.glb"
-    _timed(monkeypatch, fake, clock, [(0, _FakeResponse(200, CREATE_OK))]
-           + [(100, _task("running"))] * 6 + [(130, _FakeResponse(200, TASK_SUCCESS))])
+    text_running = [(100, _task("running", task_id=TEXT_ID, type="text_to_model"))] * 6
+    _timed(monkeypatch, fake, clock, [(0, _FakeResponse(200, TEXT_CREATED))] + text_running
+           + [(130, _FakeResponse(200, TEXT_SUCCESS))])
     with pytest.raises(ConnectorError) as e:
         tripo.generate_model(out_path=str(out), prompt="a robot")
     message = str(e.value)
     assert "is done, but only 80 s of this run are left" in message
-    assert "running the same step with --task-id task_abc123 (no new charge)" in message
+    assert f"running the same step with --task-id {TEXT_ID} (no new charge)" in message
     assert e.value.reason is None
-    assert not any("cdn.tripo3d.ai" in c[1] for c in fake.calls)
+    assert not any(CDN_HOST in c[1] for c in fake.calls)
     assert not out.exists() and "credits_consumed" not in json.loads(Path(f"{out}.tripo.json").read_text())
 
 
@@ -1075,7 +1114,7 @@ def test_the_rig_check_and_the_rig_share_one_deadline_so_a_late_rig_is_not_submi
     _timed(monkeypatch, fake, clock, [(0, _FakeResponse(200, CHECK_CREATED)), (760, _FakeResponse(200, CHECK_RESULT))])
     with pytest.raises(ConnectorError, match="Only 80 s of this run are left.*Nothing was spent: run the step again"):
         tripo.rig_model(model_path=str(src), out_path=str(out))
-    assert [c[1] for c in fake.calls] == [f"{API}/animations/rig-check", f"{API}/tasks/task_check"]
+    assert [c[1] for c in fake.calls] == [f"{API}/animations/rig-check", f"{API}/tasks/{CHECK_ID}"]
     assert not Path(f"{out}.tripo.json").exists()
 
 
@@ -1088,19 +1127,19 @@ def test_the_rig_wait_ends_at_the_steps_deadline_and_names_the_rig_type(fake, mo
     with pytest.raises(ConnectorError) as e:
         tripo.rig_model(model_path=str(src), out_path=str(out))
     message = str(e.value)
-    assert "Tripo task task_rig is still running" in message
-    assert "running the same step with --task-id task_rig --rig-type biped (no new charge)" in message
+    assert f"Tripo task {RIG_ID} is still running" in message
+    assert f"running the same step with --task-id {RIG_ID} --rig-type biped (no new charge)" in message
     assert "generat" not in message
     assert clock[0] - start < tripo.STEP_BUDGET_S + 100
     assert fake.calls[-1][2]["timeout"] == 5.0, "a status check near the deadline gets a short timeout"
-    assert json.loads(Path(f"{out}.tripo.json").read_text())["task_id"] == "task_rig"
+    assert json.loads(Path(f"{out}.tripo.json").read_text())["task_id"] == RIG_ID
 
 
 @pytest.mark.parametrize("collect,hint", [
-    (lambda out: tripo.resume_rig("task_rig", out, rig_type="quadruped"), "--task-id task_rig --rig-type quadruped"),
-    (lambda out: tripo.resume_rig("task_rig", out), "--task-id task_rig ("),
-    (lambda out: tripo.resume_animation("task_anim", out), "--task-id task_anim ("),
-    (lambda out: tripo.resume_model("task_abc123", out), "--task-id task_abc123 ("),
+    (lambda out: tripo.resume_rig(RIG_ID, out, rig_type="quadruped"), f"--task-id {RIG_ID} --rig-type quadruped"),
+    (lambda out: tripo.resume_rig(RIG_ID, out), f"--task-id {RIG_ID} ("),
+    (lambda out: tripo.resume_animation(ANIM_ID, out), f"--task-id {ANIM_ID} ("),
+    (lambda out: tripo.resume_model(TASK_ID, out), f"--task-id {TASK_ID} ("),
 ])
 def test_every_collect_has_its_own_deadline_and_names_how_to_collect_again(fake, monkeypatch, tmp_path, collect, hint):
     monkeypatch.setattr(tripo, "STEP_BUDGET_S", 10.0)
@@ -1112,10 +1151,10 @@ def test_every_collect_has_its_own_deadline_and_names_how_to_collect_again(fake,
 
 def test_a_download_fits_its_timeout_in_the_time_left(fake, clock, tmp_path):
     fake.script = [_FakeResponse(200, content=b"GLB")]
-    tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb", str(tmp_path / "m.glb"), deadline=clock[0] + 120)
+    tripo.download(MODEL_BASE, str(tmp_path / "m.glb"), deadline=clock[0] + 120)
     assert fake.calls[0][2]["timeout"] == 40.0, "120 s left over the transport's 3 attempts"
     fake.script = [_FakeResponse(200, content=b"GLB")]
-    tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb", str(tmp_path / "n.glb"))
+    tripo.download(MODEL_BASE, str(tmp_path / "n.glb"))
     assert fake.calls[1][2]["timeout"] == tripo.DOWNLOAD_TIMEOUT_S
 
 
@@ -1127,7 +1166,7 @@ def test_a_download_still_streaming_at_the_deadline_stops_and_leaves_nothing(fak
                 yield b"GLB-"
     fake.script = [_Slow(200)]
     with pytest.raises(ConnectorError, match="out of time") as e:
-        tripo.download("https://cdn.tripo3d.ai/output/model_pbr.glb", str(tmp_path / "m.glb"), deadline=clock[0] + 50)
+        tripo.download(MODEL_BASE, str(tmp_path / "m.glb"), deadline=clock[0] + 50)
     assert e.value.reason is None and list(tmp_path.iterdir()) == []
 
 
@@ -1138,7 +1177,7 @@ def test_a_download_still_streaming_at_the_deadline_stops_and_leaves_nothing(fak
 @pytest.mark.parametrize("refusal", ["at submit", "check task failed"])
 def test_a_source_task_the_check_cannot_use_falls_back_to_uploading_the_glb(fake, tmp_path, capsys, refusal):
     # The docs name no code for a task id Tripo no longer takes (expired, or made by another
-    # key); ERR_UNSUPPORTED_PARAM (built from the documented envelope, above) stands in for it.
+    # key); ERR_UNSUPPORTED_PARAM (built from the documented shape, above) stands in for it.
     src, out = _generated(tmp_path), tmp_path / "rigged.glb"
     first = ([_FakeResponse(400, ERR_UNSUPPORTED_PARAM)] if refusal == "at submit" else
              [_FakeResponse(200, CHECK_CREATED), _task("failed", error_code=2002, error_message="Unsupported request parameter")])
@@ -1148,14 +1187,14 @@ def test_a_source_task_the_check_cannot_use_falls_back_to_uploading_the_glb(fake
 
     result = tripo.rig_model(model_path=str(src), out_path=str(out))
 
-    assert fake.calls[0][2]["json"] == {"input": "task_gen"}
+    assert fake.calls[0][2]["json"] == {"input": TEXT_ID}
     posts = [(c[1], c[2].get("json")) for c in fake.calls if c[0] == "POST"]
-    assert posts[-3:] == [(f"{API}/files", None), (f"{API}/animations/rig-check", {"input": "file_abc123"}),
-                          (f"{API}/animations/rig", {"input": "file_abc123", "model": "v1.0-20240301",
+    assert posts[-3:] == [(f"{API}/files", None), (f"{API}/animations/rig-check", {"input": FILE_TOKEN}),
+                          (f"{API}/animations/rig", {"input": FILE_TOKEN, "model": "v1.0-20240301",
                                                      "rig_type": "biped", "spec": "mixamo", "out_format": "glb"})]
-    assert result["taskId"] == "task_rig"
+    assert result["taskId"] == RIG_ID
     assert json.loads(Path(f"{out}.tripo.json").read_text())["source_task_id"] is None
-    assert "could not use task task_gen" in capsys.readouterr().err
+    assert f"could not use task {TEXT_ID}" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("body,reason", [(ERR_INSUFFICIENT, INSUFFICIENT_CREDIT), (ERR_CONTENT, CONTENT_REFUSED)])
@@ -1182,10 +1221,12 @@ def test_the_free_check_is_repeated_on_a_5xx_and_an_unreachable_one_does_not_upl
 # never the key, a URL's query or a key- or token-named field's value.
 # ---------------------------------------------------------------------------
 
+# Synthetic on purpose, not captured: these bodies carry planted secrets (a signature, tokens, the
+# account's ids) to prove the capture removes them; the captures themselves have them removed.
 SIGNED_TASK = {
     "code": 0,
     "data": {
-        "task_id": "task_abc123", "type": "image_to_model", "status": "success", "progress": 100,
+        "task_id": TASK_ID, "type": "image_to_model", "status": "success", "progress": 100,
         "output": {"model_url": "https://cdn.tripo3d.ai/output/model_pbr.glb?Expires=1&Signature=sig-secret-1"},
         "credits_consumed": 30,
     },
@@ -1212,8 +1253,8 @@ def test_capture_writes_each_call_with_no_key_no_url_query_and_no_token(fake, tm
     fake.script = [_FakeResponse(200, CREATE_OK), _FakeResponse(200, SIGNED_TASK), _FakeResponse(200, BALANCE)]
     body = {"type": "image_to_model", "file": {"type": "png", "file_token": "tok-secret-2"},
             "image_url": "https://img.example/a.png?X-Amz-Signature=sig-secret-3", "apiKey": "key-secret-4"}
-    assert tripo.create("/generation/image-to-model", body) == "task_abc123"
-    tripo.wait("task_abc123")
+    assert tripo.create("/generation/image-to-model", body) == TASK_ID
+    tripo.wait(TASK_ID)
     tripo.check_key()
 
     files = _captures(cap)
@@ -1227,7 +1268,7 @@ def test_capture_writes_each_call_with_no_key_no_url_query_and_no_token(fake, tm
     assert submit["request"]["file"] == {"type": "png", "file_token": "<redacted>"}
     assert submit["request"]["image_url"] == "https://img.example/a.png?<query removed>"
     assert submit["response"] == CREATE_OK
-    assert task["path"] == "/tasks/task_abc123" and "request" not in task
+    assert task["path"] == f"/tasks/{TASK_ID}" and "request" not in task
     assert task["response"]["data"]["output"]["model_url"] == "https://cdn.tripo3d.ai/output/model_pbr.glb?<query removed>"
     assert balance["response"] == BALANCE
 
@@ -1259,3 +1300,18 @@ def test_capture_stays_in_its_folder_and_never_fails_a_call(fake, tmp_path, monk
     monkeypatch.setenv(tripo.CAPTURE_ENV, str(blocker))
     fake.script = [_FakeResponse(200, BALANCE)]
     assert tripo.check_key()["ok"] is True
+
+
+def test_capture_redacts_the_accounts_upload_and_storage_ids(fake, tmp_path, monkeypatch):
+    cap = tmp_path / "cap"
+    monkeypatch.setenv(tripo.CAPTURE_ENV, str(cap))
+    task = {"code": 0, "data": {"task_id": TASK_ID, "status": "success", "output": {
+        "model_url": "https://tripo-data.rg1.data.tripo3d.com/tcli_5dc7dfd5601248/20261018/m.glb?Expires=1"}}}
+    fake.script = [_FakeResponse(200, CREATE_OK), _FakeResponse(200, task)]
+    tripo.create("/generation/image-to-model", {"type": "image_to_model", "input": "file_4f2a6081-e31c-43d7"})
+    tripo.wait(TASK_ID)
+    submit, done = (json.loads(f.read_text()) for f in _captures(cap))
+    assert submit["request"]["input"] == "file_<redacted>"
+    assert done["response"]["data"]["output"]["model_url"] == \
+        "https://tripo-data.rg1.data.tripo3d.com/tcli_<redacted>/20261018/m.glb?<query removed>"
+    assert done["response"]["data"]["task_id"] == TASK_ID

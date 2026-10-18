@@ -4,8 +4,13 @@ bone naming each rig type gets, the exact request bodies, the resume record, and
 step's argument checks and fail codes. No network: the connector's HTTP functions are
 monkeypatched (the requests-layer flow is in tests/test_connectors_tripo.py).
 
-Tripo payloads are copied from Tripo's docs and say which page; anything built by hand
-says so.
+Tripo payloads are Tripo's own, captured in one paid run on 2026-10-18 and loaded from
+tests/fixtures/tripo/captures (README there): the finished rig task (25.0 credits) and
+the finished rig check (free, riggable biped). Every other check answer is built from
+that captured output with another field ("built from the documented shape, not captured":
+the run got only riggable: true). The ids in the stubs (task_check, task_rig, task_gen,
+...) are placeholders for the values the monkeypatched functions return, not responses;
+the requests-layer tests in tests/test_connectors_tripo.py use the captured ids.
 """
 import importlib.util
 import json
@@ -22,20 +27,23 @@ from connectors import (ConnectorError, CONTENT_REFUSED, INSUFFICIENT_CREDIT,  #
                         INVALID_API_KEY)
 import connectors.tripo as tripo  # noqa: E402
 from lib.glb_textures import GlbTextureError  # noqa: E402
+from tests.tripo_captures import captured  # noqa: E402
 
 _STEP_PATH = REPO_ROOT / "steps" / "generate" / "rig_model.py"
 _SCHEMA_PATH = REPO_ROOT / "steps" / "generate" / "rig_model.json"
 
-# documented example ("Task result"), developers.tripo3d.ai/en/docs/animations-rig.md, read 2026-10-13
-RIG_TASK = {
-    "task_id": "task_def456",
-    "status": "success",
-    "output": {"model_url": "https://cdn.tripo3d.ai/output/rigged.glb"},
-    "credits_consumed": 30.00,
-}
+# captured 2026-10-18: GET /tasks/{id} for a finished biped rig (25.0 credits) and for the
+# finished free rig check before it
+RIG_TASK = captured("task-rig-success")["data"]
+CHECK_TASK = captured("task-rig-check-success")["data"]
+CHECK_BIPED = CHECK_TASK["output"]
 
-# documented example ("Task result" output), developers.tripo3d.ai/en/docs/animations-rig-check.md, read 2026-10-13
-CHECK_BIPED = {"riggable": True, "rig_type": "biped"}
+
+def _check(**fields):
+    """Built from the documented shape, not captured: the captured check output with other
+    fields. The run got only {riggable: true, rig_type: biped}."""
+    return {**CHECK_BIPED, **fields}
+
 
 REPORT = {"reencoded": 0, "formats": {}}
 
@@ -114,7 +122,7 @@ def vendor(monkeypatch):
         if task_id in state.get("check_errors", {}):
             raise state["check_errors"].pop(task_id)
         if task_id.startswith("task_check"):
-            return {"task_id": task_id, "status": "success", "output": state["check"], "credits_consumed": 0.0}
+            return dict(CHECK_TASK, task_id=task_id, output=state["check"])
         state["sidecar_at_wait"] = state["sidecar_reader"]()
         if state["wait_error"]:
             raise state["wait_error"]
@@ -153,7 +161,7 @@ def _model(tmp_path, name="robot.glb", sidecar=None):
     if sidecar is None:
         sidecar = {"task_id": "task_gen", "kind": "model", "model": "v3.1-20260211",
                    "endpoint": "/generation/text-to-model", "created": "2026-10-13T10:00:00+00:00",
-                   "credits_consumed": 100.0}
+                   "credits_consumed": 20.0}
     if isinstance(sidecar, dict):
         _sidecar(glb).write_text(json.dumps(sidecar))
     elif isinstance(sidecar, str):
@@ -184,8 +192,8 @@ def test_a_generated_model_is_rigged_from_its_task_and_the_check_comes_first(ven
     datetime.fromisoformat(at_wait["created"])
     assert "credits_consumed" not in at_wait
     assert result == {"path": str(out), "taskId": "task_rig", "rigType": "biped", "rigModel": "v1.0-20240301",
-                      "spec": "mixamo", "creditsUsed": 30.0, "textures": REPORT}
-    assert json.loads(_sidecar(out).read_text())["credits_consumed"] == 30.0
+                      "spec": "mixamo", "creditsUsed": 25.0, "textures": REPORT}
+    assert json.loads(_sidecar(out).read_text())["credits_consumed"] == 25.0
     assert out.read_bytes() == b"glTF-rigged"
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "rigged.glb", "rigged.glb.tripo.json", "robot.glb", "robot.glb.tripo.json"]
@@ -194,7 +202,7 @@ def test_a_generated_model_is_rigged_from_its_task_and_the_check_comes_first(ven
 @pytest.mark.parametrize("sidecar,why", [
     (False, "no record"),
     ({"task_id": "task_gen", "kind": "model", "model": "v3.1-20260211"}, "a generation still unfinished"),
-    ({"task_id": "task_rig0", "kind": "rig", "rig_type": "biped", "credits_consumed": 30.0}, "a rig is not a generation"),
+    ({"task_id": "task_rig0", "kind": "rig", "rig_type": "biped", "credits_consumed": 25.0}, "a rig is not a generation"),
     ({"task_id": "task_anim0", "kind": "animation", "credits_consumed": 20.0}, "an animation is not a generation"),
     ("{not json", "an unreadable record"),
 ])
@@ -217,7 +225,7 @@ def test_an_unreadable_record_beside_the_source_warns_and_uploads(vendor, tmp_pa
     ("biped", *BIPED), ("quadruped", *CREATURE), ("hexapod", *CREATURE), ("octopod", *CREATURE),
     ("avian", *CREATURE), ("serpentine", *CREATURE), ("aquatic", *CREATURE)])
 def test_the_rig_model_and_bone_naming_follow_the_checked_type(vendor, tmp_path, rig_type, model, spec):
-    vendor["check"] = {"riggable": True, "rig_type": rig_type}
+    vendor["check"] = _check(rig_type=rig_type)
     out = tmp_path / "rigged.glb"
     asked = "avian" if rig_type == "avian" else None    # avian only when asked for by name
     result = tripo.rig_model(model_path=str(_model(tmp_path)), out_path=str(out), rig_type=asked)
@@ -230,7 +238,7 @@ def test_the_rig_model_and_bone_naming_follow_the_checked_type(vendor, tmp_path,
 
 def test_a_recommended_avian_rig_is_refused_before_any_rig_task(vendor, tmp_path):
     # animations-retarget.md (read 2026-10-13) lists no avian preset: such a rig could never be animated.
-    vendor["check"] = {"riggable": True, "rig_type": "avian"}
+    vendor["check"] = _check(rig_type="avian")
     out = tmp_path / "rigged.glb"
     with pytest.raises(tripo.InvalidInput) as e:
         tripo.rig_model(model_path=str(_model(tmp_path, "bird.glb")), out_path=str(out))
@@ -242,7 +250,7 @@ def test_a_recommended_avian_rig_is_refused_before_any_rig_task(vendor, tmp_path
 
 
 def test_an_avian_rig_asked_for_by_name_is_made_and_says_it_has_no_presets(vendor, tmp_path, capsys):
-    vendor["check"] = {"riggable": True, "rig_type": "avian"}
+    vendor["check"] = _check(rig_type="avian")
     result = tripo.rig_model(model_path=str(_model(tmp_path, "bird.glb")), out_path=str(tmp_path / "r.glb"),
                              rig_type="avian")
     assert vendor["creates"][1][1]["rig_type"] == "avian"
@@ -290,7 +298,7 @@ def test_an_uploaded_source_the_check_refuses_is_not_uploaded_twice(vendor, tmp_
 
 
 def test_an_explicit_rig_type_overrides_the_checks_recommendation(vendor, tmp_path, capsys):
-    vendor["check"] = {"riggable": True, "rig_type": "biped"}
+    vendor["check"] = _check()
     tripo.rig_model(model_path=str(_model(tmp_path)), out_path=str(tmp_path / "r.glb"), rig_type="Quadruped")
     assert vendor["creates"][1][1]["rig_type"] == "quadruped"
     assert vendor["creates"][1][1]["model"] == "v2.5-20260210" and vendor["creates"][1][1]["spec"] == "tripo"
@@ -303,7 +311,7 @@ def test_an_explicit_rig_type_that_agrees_says_nothing(vendor, tmp_path, capsys)
 
 
 def test_a_rig_type_is_needed_only_when_the_check_names_none(vendor, tmp_path):
-    vendor["check"] = {"riggable": True}
+    vendor["check"] = {"riggable": True}    # built: the captured output without its rig_type
     with pytest.raises(ConnectorError, match="named no rig type"):
         tripo.rig_model(model_path=str(_model(tmp_path)), out_path=str(tmp_path / "r.glb"))
     assert vendor["events"] == ["create:/animations/rig-check", "wait:task_check"]
@@ -313,7 +321,7 @@ def test_a_rig_type_is_needed_only_when_the_check_names_none(vendor, tmp_path):
 
 
 def test_a_type_montaj_does_not_know_is_not_guessed(vendor, tmp_path):
-    vendor["check"] = {"riggable": True, "rig_type": "centaur"}
+    vendor["check"] = _check(rig_type="centaur")
     with pytest.raises(ConnectorError, match="'centaur'.*Pass the rig type yourself"):
         tripo.rig_model(model_path=str(_model(tmp_path)), out_path=str(tmp_path / "r.glb"))
     assert not any(e.startswith("create:/animations/rig") and e != "create:/animations/rig-check"
@@ -322,8 +330,8 @@ def test_a_type_montaj_does_not_know_is_not_guessed(vendor, tmp_path):
 
 @pytest.mark.parametrize("rig_type", [None, "biped", "avian"])
 def test_a_not_riggable_model_makes_no_rig_task_whatever_type_was_asked(vendor, tmp_path, rig_type):
-    # Built from the documented field list (animations-rig-check.md): the docs show only riggable: true.
-    vendor["check"] = {"riggable": False, "rig_type": "quadruped"}
+    # Built from the documented shape, not captured: the captured check with riggable false.
+    vendor["check"] = _check(riggable=False, rig_type="quadruped")
     out = tmp_path / "rigged.glb"
     with pytest.raises(tripo.NotRiggable) as e:
         tripo.rig_model(model_path=str(_model(tmp_path, "rock.glb")), out_path=str(out), rig_type=rig_type)
@@ -335,7 +343,7 @@ def test_a_not_riggable_model_makes_no_rig_task_whatever_type_was_asked(vendor, 
 
 
 def test_a_check_with_no_answer_is_not_taken_for_a_yes(vendor, tmp_path):
-    vendor["check"] = {}
+    vendor["check"] = {}    # built: an output with neither field
     with pytest.raises(ConnectorError, match="returned no answer") as e:
         tripo.rig_model(model_path=str(_model(tmp_path)), out_path=str(tmp_path / "r.glb"))
     assert not isinstance(e.value, tripo.NotRiggable)
@@ -352,7 +360,7 @@ def test_a_retry_with_the_same_out_reattaches_without_a_new_check_or_task(vendor
 
     assert vendor["events"] == ["wait:task_earlier", "download", "guard:rigged.glb.download"]
     assert result["taskId"] == "task_earlier" and result["rigType"] == "biped" and result["spec"] == "mixamo"
-    assert json.loads(_sidecar(out).read_text()) == {**record, "credits_consumed": 30.0}
+    assert json.loads(_sidecar(out).read_text()) == {**record, "credits_consumed": 25.0}
     assert "Re-attaching to Tripo task task_earlier" in capsys.readouterr().err
 
 
@@ -482,7 +490,7 @@ def step_module():
 def _result(path, task="task_rig", rig_type="biped"):
     rig = tripo.RIG_MODELS[rig_type]
     return {"path": path, "taskId": task, "rigType": rig_type, "rigModel": rig["model"], "spec": rig["spec"],
-            "creditsUsed": 30.0, "textures": REPORT}
+            "creditsUsed": 25.0, "textures": REPORT}
 
 
 def _run(step_module, monkeypatch, argv):

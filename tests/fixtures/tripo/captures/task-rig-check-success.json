@@ -1,0 +1,27 @@
+{
+  "source": "20261018T081821-90482-003-get-tasks-135de005-95c4-4920-9c97-63cce1efafd1.json",
+  "method": "GET",
+  "path": "/tasks/135de005-95c4-4920-9c97-63cce1efafd1",
+  "status": 200,
+  "captured": "2026-10-18T08:18:21+00:00",
+  "response": {
+    "code": 0,
+    "status": "success",
+    "data": {
+      "type": "animate_prerigcheck",
+      "status": "success",
+      "progress": 100,
+      "input": {
+        "original_model_id": "0684f41b-e999-4312-9c54-41e74796b32f"
+      },
+      "output": {
+        "riggable": true,
+        "rig_type": "biped"
+      },
+      "task_id": "135de005-95c4-4920-9c97-63cce1efafd1",
+      "created_at": "2026-10-18T08:18:15.762625Z",
+      "completed_at": "2026-10-18T08:18:16.413719Z",
+      "credits_consumed": 0.0
+    }
+  }
+}

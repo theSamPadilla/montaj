@@ -350,8 +350,9 @@ def _error(status: int, body: dict, text: str, what: str, *, repeatable: bool = 
 # set, every API call's method, path, status and JSON bodies are written there,
 # one file per call, so a real run can replace the documented examples in the
 # tests. Unset (always, in normal use), nothing happens. Never written: headers
-# (the Bearer key), the query string of any URL (a signed download's signature)
-# and the value of any field named like a key or token, in either direction.
+# (the Bearer key), the query string of any URL (a signed download's signature),
+# the value of any field named like a key or token, in either direction, and the
+# account's upload and storage ids (`file_...`, `tcli_...`) wherever they appear.
 # A capture that cannot be written never fails the call.
 # ---------------------------------------------------------------------------
 
@@ -361,6 +362,10 @@ _SECRET_WORDS = {"key", "token", "secret", "password", "passwd", "auth", "author
                  "credential", "credentials", "cookie", "session", "sig"}
 _SECRET_ENDS = ("key", "token", "secret", "password", "signature")
 _URL_QUERY = re.compile(r"(\b[a-z][a-z0-9+.-]*://[^\s?#\"'<>]*)\?[^\s#\"'<>]*", re.I)
+# Ids that name the account's own uploads and storage: an uploaded file's id (sent
+# as `input`, not under a token-named field) and the account's storage folder in
+# every download URL's path.
+_ACCOUNT_IDS = re.compile(r"\b(file_|tcli_)[0-9A-Za-z-]{6,}")
 _capture_count = 0
 
 
@@ -379,7 +384,8 @@ def _redact(value):
     if isinstance(value, (list, tuple)):
         return [_redact(v) for v in value]
     if isinstance(value, str):
-        return _URL_QUERY.sub(r"\1?<query removed>", value)
+        value = _URL_QUERY.sub(r"\1?<query removed>", value)
+        return _ACCOUNT_IDS.sub(lambda m: m.group(1) + "<redacted>", value)
     return value
 
 

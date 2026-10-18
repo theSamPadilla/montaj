@@ -1,0 +1,30 @@
+{
+  "source": "20261018T081826-90482-006-get-tasks-f501fdba-8dd5-4698-aa47-de226d86e5ae.json",
+  "method": "GET",
+  "path": "/tasks/f501fdba-8dd5-4698-aa47-de226d86e5ae",
+  "status": 200,
+  "captured": "2026-10-18T08:18:26+00:00",
+  "response": {
+    "code": 0,
+    "status": "success",
+    "data": {
+      "type": "animate_rig",
+      "status": "success",
+      "progress": 100,
+      "input": {
+        "spec": "mixamo",
+        "topology": "biped",
+        "out_format": "glb",
+        "original_model_id": "0684f41b-e999-4312-9c54-41e74796b32f"
+      },
+      "output": {
+        "model_url": "https://tripo-data.rg1.data.tripo3d.com/tcli_<redacted>/20261018/f501fdba-8dd5-4698-aa47-de226d86e5ae/tripo_rigging_f501fdba-8dd5-4698-aa47-de226d86e5ae.glb?<query removed>",
+        "rendered_image_url": "https://tripo-data.rg1.data.tripo3d.com/tcli_<redacted>/20261018/f501fdba-8dd5-4698-aa47-de226d86e5ae/legacy_mesh.webp?<query removed>"
+      },
+      "task_id": "f501fdba-8dd5-4698-aa47-de226d86e5ae",
+      "created_at": "2026-10-18T08:18:21.627339Z",
+      "completed_at": "2026-10-18T08:18:26.165791Z",
+      "credits_consumed": 25.0
+    }
+  }
+}

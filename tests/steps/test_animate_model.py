@@ -4,8 +4,11 @@ and `animations` for several, the exact retarget body, the resume record, and th
 step's argument checks and fail codes. No network: the connector's HTTP functions are
 monkeypatched (the requests-layer flow is in tests/test_connectors_tripo.py).
 
-Tripo payloads are copied from Tripo's docs and say which page; anything built by hand
-says so.
+Tripo payloads are Tripo's own, captured in one paid run on 2026-10-18 and loaded from
+tests/fixtures/tripo/captures (README there): the finished retarget task (two presets,
+in place, 20.0 credits). The ids in the stubs (task_anim, task_rig, task_gen, ...) are
+placeholders for the values the monkeypatched functions return, not responses; the
+requests-layer tests in tests/test_connectors_tripo.py use the captured ids.
 """
 import importlib.util
 import json
@@ -22,17 +25,13 @@ from connectors import (ConnectorError, CONTENT_REFUSED, INSUFFICIENT_CREDIT,  #
                         INVALID_API_KEY)
 import connectors.tripo as tripo  # noqa: E402
 from lib.glb_textures import GlbTextureError  # noqa: E402
+from tests.tripo_captures import captured  # noqa: E402
 
 _STEP_PATH = REPO_ROOT / "steps" / "generate" / "animate_model.py"
 _SCHEMA_PATH = REPO_ROOT / "steps" / "generate" / "animate_model.json"
 
-# documented example ("Task result"), developers.tripo3d.ai/en/docs/animations-retarget.md, read 2026-10-13
-TASK = {
-    "task_id": "task_def456",
-    "status": "success",
-    "output": {"model_url": "https://cdn.tripo3d.ai/output/animated.glb"},
-    "credits_consumed": 20.00,
-}
+# captured 2026-10-18: GET /tasks/{id} for a finished retarget (walk and wave_goodbye_01, in place)
+TASK = captured("task-retarget-success")["data"]
 
 REPORT = {"reencoded": 0, "formats": {}}
 
@@ -98,7 +97,7 @@ def _rigged(tmp_path, name="rigged.glb", rig_type="biped", rig_model=V1, **overr
     glb.write_bytes(b"glTF-rigged")
     record = {"task_id": "task_rig", "kind": "rig", "rig_model": rig_model, "rig_type": rig_type,
               "spec": "mixamo" if rig_type == "biped" else "tripo", "source_task_id": "task_gen",
-              "created": "2026-10-13T10:00:00+00:00", "credits_consumed": 30.0}
+              "created": "2026-10-13T10:00:00+00:00", "credits_consumed": 25.0}
     record.update(overrides)
     _sidecar(glb).write_text(json.dumps(record))
     return glb
@@ -277,7 +276,7 @@ def test_a_plain_glb_is_refused_with_the_way_forward(vendor, tmp_path):
 
 
 @pytest.mark.parametrize("record,found", [
-    ({"task_id": "task_gen", "kind": "model", "credits_consumed": 100.0}, "model"),
+    ({"task_id": "task_gen", "kind": "model", "credits_consumed": 20.0}, "model"),
     ({"task_id": "task_old", "kind": "animation", "credits_consumed": 20.0}, "animation"),
     ({"task_id": "task_old", "credits_consumed": 20.0}, "model"),     # an older record without a kind
 ])

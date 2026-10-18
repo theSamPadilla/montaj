@@ -1,0 +1,27 @@
+{
+  "source": "20261018T081842-90898-001-post-animations-retarget.json",
+  "method": "POST",
+  "path": "/animations/retarget",
+  "status": 200,
+  "captured": "2026-10-18T08:18:42+00:00",
+  "request": {
+    "input": "f501fdba-8dd5-4698-aa47-de226d86e5ae",
+    "animations": [
+      "preset:biped:walk",
+      "preset:biped:wave_goodbye_01"
+    ],
+    "out_format": "glb",
+    "bake_animation": true,
+    "export_with_geometry": true,
+    "animate_in_place": true
+  },
+  "response": {
+    "code": 0,
+    "status": "success",
+    "data": {
+      "type": "animate_retarget",
+      "status": "queued",
+      "task_id": "d52560e7-8ca6-4396-a84d-d18e9b12d6d2"
+    }
+  }
+}

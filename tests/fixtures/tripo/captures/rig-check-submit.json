@@ -1,0 +1,19 @@
+{
+  "source": "20261018T081815-90482-001-post-animations-rig-check.json",
+  "method": "POST",
+  "path": "/animations/rig-check",
+  "status": 200,
+  "captured": "2026-10-18T08:18:15+00:00",
+  "request": {
+    "input": "0684f41b-e999-4312-9c54-41e74796b32f"
+  },
+  "response": {
+    "code": 0,
+    "status": "success",
+    "data": {
+      "type": "animate_prerigcheck",
+      "status": "queued",
+      "task_id": "135de005-95c4-4920-9c97-63cce1efafd1"
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "source": "20261018T081630-89347-001-post-generation-text-to-model.json",
+  "method": "POST",
+  "path": "/generation/text-to-model",
+  "status": 200,
+  "captured": "2026-10-18T08:16:30+00:00",
+  "request": {
+    "prompt": "A friendly cartoon robot character, full body, standing upright in an A-pose with arms held slightly away from the body, two legs, simple rounded shapes",
+    "model": "v3.1-20260211",
+    "texture": true,
+    "pbr": true,
+    "texture_quality": "standard",
+    "face_limit": 10000
+  },
+  "response": {
+    "code": 0,
+    "status": "success",
+    "data": {
+      "type": "text_to_model",
+      "status": "queued",
+      "task_id": "0684f41b-e999-4312-9c54-41e74796b32f"
+    }
+  }
+}
