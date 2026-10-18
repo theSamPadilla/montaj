@@ -11,8 +11,9 @@
 //     with no alpha, its drawing buffer preserved, as the app's 3D stage is)
 //     and transparent (an alpha canvas whose buffer is not preserved), compared
 //     premultiplied, as both averages are made;
-//   - a frame with no motion exactly the unblurred frame;
-//   - the page handed exactly subframeTimes, once per frame;
+//   - a frame with no motion in its shutter exactly the unblurred frame;
+//   - the page handed exactly frameTimes (the centred 3D shutter, §390), once per frame;
+//   - a stage's camera cuts keeping every sub-frame inside its shot;
 //   - a page that cannot average (no float render target) falling back to the
 //     sub-frame captures, the same bytes as the 2D path;
 //   - a keyframed slide, drawn outside the canvas, captured per sub-frame, the same bytes as the 2D path;
@@ -30,7 +31,7 @@ import { tmpdir } from 'node:os'
 import { FFMPEG } from '../ffmpeg-bin.js'
 import * as R from '../renderer.js'
 import { bundleComponent, cleanupBundle } from '../bundle.js'
-import { subframeTimes } from '../motion-blur.js'
+import { frameTimes } from '../motion-blur.js'
 
 const [W, H] = [160, 90]
 const FPS = 30
@@ -126,14 +127,14 @@ after(() => {
 })
 
 let jobs = 0
-function job(name, { subframes, scene3d }) {
+function job(name, { subframes, scene3d, shutter }) {
   const b = bundles[name]
   const id = `overlay-1--${name}-${++jobs}`
   return {
     id, componentPath: b.componentPath, htmlPath: b.htmlPath, fps: FPS, width: W, height: H, captureScale: 1,
     frameCount: FRAMES, startSeconds: 0, endSeconds: FRAMES / FPS,
     outputPath: join(base, 'segs', `${id}.mkv`), boundary: b.boundary, needsGoogleFonts: b.needsGoogleFonts,
-    opaque: CASES[name].opaque, subframes, ...(scene3d ? { scene3d: true } : {}),
+    opaque: CASES[name].opaque, subframes, ...(scene3d ? { scene3d: true } : {}), ...(shutter ? { shutter } : {}),
     ...(CASES[name].keyframes ? { keyframes: CASES[name].keyframes } : {}),
     frameStart: 0, frameEnd: FRAMES, chunkIndex: 0, totalChunks: 1,
   }
@@ -205,7 +206,7 @@ for (const name of Object.keys(CASES).filter(n => !CASES[n].own)) {
     let inPage, encoded, sharp
     try {
       inPage = await render(worker, job(name, { subframes: N, scene3d: true }))
-      encoded = await render(worker, job(name, { subframes: N, scene3d: false }))
+      encoded = await render(worker, job(name, { subframes: N, scene3d: false, shutter: 'centred' }))
       sharp = await render(worker, job(name, { subframes: 1, scene3d: true }))
     } finally {
       await worker.close().catch(() => {})
@@ -214,7 +215,7 @@ for (const name of Object.keys(CASES).filter(n => !CASES[n].own)) {
     assert.equal(inPage.length, FRAMES, 'one frame per output frame')
     assert.equal(encoded.length, FRAMES)
     assert.deepEqual(calls.map(c => c.n), Array.from({ length: FRAMES }, (_, f) => f), 'one page average per frame, no fallback, no retry')
-    for (const { n, times } of calls) assert.deepEqual(times, subframeTimes(n, N), `frame ${n}: the page got subframeTimes`)
+    for (const { n, times } of calls) assert.deepEqual(times, frameTimes({ subframes: N, scene3d: true }, n), `frame ${n}: the page got the centred shutter`)
 
     const report = []
     for (let f = 0; f < FRAMES; f++) {
@@ -228,7 +229,8 @@ for (const name of Object.keys(CASES).filter(n => !CASES[n].own)) {
       const moved = diff(inPage[f], sharp[f]).pixels
       assert.ok(moved > 20, `frame ${f} moves, so its blur must differ from the sharp frame (${moved} pixels)`)
     }
-    for (let f = STOP; f < FRAMES; f++) {
+    // The centred shutter reaches a quarter frame back, so frame STOP still sees the last of the slide.
+    for (let f = STOP + 1; f < FRAMES; f++) {
       assert.ok(Buffer.compare(inPage[f], sharp[f]) === 0, `frame ${f} holds still: blurred it is exactly the unblurred frame (${diff(inPage[f], sharp[f]).pixels} pixels differ)`)
     }
   })
@@ -241,7 +243,7 @@ test('a page that cannot average falls back to the sub-frame captures, the same 
   let fallback, encoded
   try {
     fallback = await render(worker, job('opaque', { subframes: N, scene3d: true }))
-    encoded = await render(worker, job('opaque', { subframes: N, scene3d: false }))
+    encoded = await render(worker, job('opaque', { subframes: N, scene3d: false, shutter: 'centred' }))
   } finally {
     await worker.close().catch(() => {})
   }
@@ -257,7 +259,7 @@ test('a keyframed slide is drawn outside the canvas, so its chunk is captured pe
   let kept, encoded
   try {
     kept = await render(worker, job('slide', { subframes: N, scene3d: true }))
-    encoded = await render(worker, job('slide', { subframes: N, scene3d: false }))
+    encoded = await render(worker, job('slide', { subframes: N, scene3d: false, shutter: 'centred' }))
   } finally {
     await worker.close().catch(() => {})
   }
@@ -295,4 +297,23 @@ test('a page that cannot average a later frame restarts the chunk per sub-frame'
   assert.equal(frames.length, FRAMES, `${FRAMES}/${FRAMES} frames`)
   assert.deepEqual(calls.map(c => c.n), [0, 1, 2, 3], 'averaged until the frame it could not, then every sub-frame')
   assert.equal(progress.length, FRAMES, 'progress is not counted twice')
+})
+
+test('a stage that reports a camera cut keeps every sub-frame inside its shot (§390)', { timeout: 240_000 }, async () => {
+  const calls = []
+  const worker = await R.launchWorkerBrowser({})
+  // The stand-in stage cuts at frame 3.5, as a scene's stage reports it (__montajCameraCuts, segment frames).
+  recording(worker, calls, () => { window.__montajCameraCuts = () => [3.5] })
+  let frames
+  try {
+    frames = await render(worker, job('opaque', { subframes: N, scene3d: true }))
+  } finally {
+    await worker.close().catch(() => {})
+  }
+  assert.equal(frames.length, FRAMES)
+  assert.deepEqual(calls.map(c => c.n), Array.from({ length: FRAMES }, (_, f) => f))
+  const at = Object.fromEntries(calls.map(c => [c.n, c.times]))
+  assert.ok(at[3].every(t => t > 2.75 && t < 3.5), `frame 3 stays before the cut: ${at[3]}`)
+  assert.ok(at[4].every(t => t >= 3.5 && t < 4.25), `frame 4 stays after it: ${at[4]}`)
+  assert.deepEqual(at[2], frameTimes({ subframes: N, scene3d: true }, 2), 'a frame away from the cut keeps its whole shutter')
 })

@@ -421,7 +421,7 @@ window.__setFrame = async (n) => {
 // After the capture: whether a canvas lost its drawing since (three-frame.js).
 window.__montajThreeCheck = threeCaptureCheck
 // A motion-blurred frame of a 3D overlay (§377): each sub-frame time in \`times\`
-// (motion-blur.js subframeTimes, passed by renderer.js) is set and drawn by
+// (motion-blur.js frameTimes, passed by renderer.js) is set and drawn by
 // __setFrame, and the average of the 3D canvases' sub-frames is drawn onto them
 // (three-bridge.js averageThreeFrames), so the frame is captured once. Returns
 // what __setFrame does, or { unsupported } when the page cannot average: the

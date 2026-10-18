@@ -19,7 +19,7 @@ import { childKilledError, isChildKilled, syncResultError, CHILD_KILLED_PHASES }
 import { adaptiveChunkSize } from './chunk-plan.js'
 import { availableMemoryBytes, workerFootprint, planWorkers, planWorkers2d, createMemoryGovernor, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
 import { toFileHref } from './file-url.js'
-import { subframeTimes, motionBlurFilter } from './motion-blur.js'
+import { frameTimes, shutterOf, cameraCutFrames, SHUTTER_3D, motionBlurFilter } from './motion-blur.js'
 import { geometryAt } from '@bycrux/timeline-core'
 import { overlayPageLaunchOptions, installPageGuard } from './page-guard.js'
 import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
@@ -613,7 +613,7 @@ export async function renderChunk(worker, job, { onFrame } = {}) {
     noteBlurFallback(job, err.reason)
     // The frames already reported are not reported twice.
     let skip = reported
-    return renderChunkOnce(worker, { ...job, scene3d: false }, { onFrame: () => { if (skip > 0) skip--; else onFrame?.() } })
+    return renderChunkOnce(worker, { ...job, scene3d: false, shutter: shutterOf(job) }, { onFrame: () => { if (skip > 0) skip--; else onFrame?.() } })
   }
 }
 
@@ -686,15 +686,16 @@ const steadyCache = new WeakMap()
 /**
  * Whether, for every output frame of the chunk (frameStart to frameEnd), the
  * item's keyframed geometry has the same value at all of that frame's sub-frame
- * times (subframeTimes). Evaluated with `geometryAt` from @bycrux/timeline-core
+ * times (frameTimes). Evaluated with `geometryAt` from @bycrux/timeline-core
  * at `t / fps`, exactly what the page's __bakeStyle calls (bundle.js) with the
  * time __setFrame gets, so the check and the page cannot disagree. Equal means
- * exactly, or within 1e-9.
+ * exactly, or within 1e-9. A centred shutter (§390) is checked at its window's
+ * two ends too: a camera cut narrows the window, which moves its samples.
  */
 export function keyframesSteady(job) {
   if (!job.keyframes?.length) return true
   if (steadyCache.has(job)) return steadyCache.get(job)
-  const { fps, subframes = 1, frameStart = 0 } = job
+  const { fps, frameStart = 0 } = job
   const frameEnd = job.frameEnd ?? job.frameCount ?? frameStart
   // The item as overlayBakeInputs (render.js) hands the page's bake.
   const item = {
@@ -705,7 +706,8 @@ export function keyframesSteady(job) {
   const PROPS = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 'opacity']
   let steady = true
   outer: for (let frame = frameStart; frame < frameEnd; frame++) {
-    const times = subframeTimes(frame, subframes)
+    const times = frameTimes(job, frame)
+    if (shutterOf(job) === 'centred' && times.length > 1) times.push(Math.max(0, frame - SHUTTER_3D / 2), frame + SHUTTER_3D / 2)
     const first = geometryAt(item, 'overlay', times[0] / fps)
     for (let i = 1; i < times.length; i++) {
       const g = geometryAt(item, 'overlay', times[i] / fps)
@@ -937,6 +939,14 @@ async function captureChunkFrames(worker, job, sinkFor, at, onFrame) {
       throw new Error(`window.__setFrame not initialized for segment ${id}: ${errDetail}`)
     }
 
+    // §390: a 3D overlay's camera cuts, in this segment's frames, which keep
+    // each frame's sub-frames inside its shot (shutterTimes). The stage reports
+    // them once its scene is built, which networkidle0 above has waited for; a
+    // stage that predates the hook reports none, and its shutter is only centred.
+    const cuts = subframes > 1 && shutterOf(job) === 'centred'
+      ? cameraCutFrames(await page.evaluate(() => (typeof window.__montajCameraCuts === 'function' ? window.__montajCameraCuts() : null)))
+      : []
+
     // Screenshot each frame
     at.phase = 'overlay-capture'
     const totalFrames = frameEnd - frameStart
@@ -982,9 +992,10 @@ async function captureChunkFrames(worker, job, sinkFor, at, onFrame) {
     let inPage = blursInPage(job)
     for (let frame = frameStart; frame < frameEnd; frame++) {
       const localIdx = frame - frameStart
-      // With motion blur on, each output frame is `subframes` sub-frames at
-      // f + i/subframes (subframeTimes).
-      const times = subframeTimes(frame, subframes)
+      // With motion blur on, each output frame is `subframes` sub-frames:
+      // f + i/subframes (subframeTimes), or for a 3D overlay a centred
+      // half-frame shutter kept inside its camera shot (shutterTimes, §390).
+      const times = frameTimes(job, frame, cuts)
       if (inPage) {
         try {
           // 1. The page sets and draws every sub-frame, draws their average onto

@@ -77,7 +77,7 @@ export function isThreeBlurUnsupported(err) {
  * not fit captureWithThree (sample-frame.js). Every `set()` is one attempt.
  *
  * `subframes` (§377): the sub-frame times of a motion-blurred frame
- * (motion-blur.js subframeTimes), which `set()` hands to the page's
+ * (motion-blur.js frameTimes), which `set()` hands to the page's
  * `__setFrameBlurred` as they are. A blank names the sub-frame that did not draw.
  *
  * @param {{ page: import('puppeteer').Page, frame: number, overlay: string,
