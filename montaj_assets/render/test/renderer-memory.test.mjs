@@ -8,7 +8,7 @@
 // no ffmpeg.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { planChunks, renderAllSegments, memoryPlanLines } from '../renderer.js'
+import { planChunks, renderAllSegments, memoryPlanLines, relaunchWorker } from '../renderer.js'
 import { SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES, SCENE3D_UNKNOWN_BYTES, PER_WORKER_BYTES } from '../memory.js'
 
 const GB = 1e9
@@ -216,4 +216,31 @@ test('renderAllSegments: a worker gets a fresh browser after every 3D chunk, and
     'launch', 'seg0', 'close', 'launch', 'seg1', 'close', 'launch',
     'seg2', 'seg3', 'seg4', 'seg5', 'seg6', 'close', 'launch', 'seg7', 'close',
   ])
+})
+
+test('relaunchWorker (§395): a failed browser relaunch is tried once more, and a second failure fails', async () => {
+  const lines = []
+  let calls = 0
+  const flaky = async () => { if (++calls === 1) throw new Error('launch timed out'); return 'browser' }
+  assert.equal(await relaunchWorker(flaky, { label: 'worker 0', delayMs: 0, write: (l) => lines.push(l) }), 'browser')
+  assert.equal(calls, 2)
+  assert.deepEqual(lines, ['worker 0: browser relaunch failed (launch timed out); trying once more'])
+  let tries = 0
+  await assert.rejects(relaunchWorker(async () => { tries++; throw new Error(`no ${tries}`) }, { label: 'worker 1', delayMs: 0, write: () => {} }), /no 2/)
+  assert.equal(tries, 2)
+  let once = 0
+  assert.equal(await relaunchWorker(async () => { once++; return 'b' }, { label: 'w', delayMs: 0, write: () => {} }), 'b')
+  assert.equal(once, 1, 'a launch that works runs once')
+})
+
+test('renderAllSegments (§395): a browser relaunch after a 3D chunk that fails once is retried, and the render finishes', async () => {
+  const f = fakes()
+  let launches = 0
+  const launchWorker = async () => { if (++launches === 2) throw new Error('launch timed out'); return { close: async () => {} } }
+  const out = await renderAllSegments(renderable3d(3), {
+    workers: 1, chunkSize: 1000, launchWorker, renderJob: f.renderJob, relaunchDelayMs: 0,
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1 },
+  })
+  assert.equal(out.length, 3)
+  assert.equal(launches, 4, 'the pool, a failed relaunch, its retry, and the next relaunch')
 })

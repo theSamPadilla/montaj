@@ -12,7 +12,7 @@ import { join } from 'path'
 import os from 'os'
 import {
   parseVmStat, parseMeminfo, availableMemoryBytes, imageSize, scene3dFootprint, workerFootprint, planWorkers,
-  createMemoryGovernor, reserveBytes, isScene3dSegment, captureWorkerBytes, PER_WORKER_BYTES, PER_WORKER_MIN_BYTES, SCENE3D_BASE_BYTES, SCENE3D_MAX_WORKERS,
+  createMemoryGovernor, GOVERNOR_ADMIT_GRACE_MS, reserveBytes, isScene3dSegment, captureWorkerBytes, PER_WORKER_BYTES, PER_WORKER_MIN_BYTES, SCENE3D_BASE_BYTES, SCENE3D_MAX_WORKERS,
   SCENE3D_TEXT_FACTOR, SCENE3D_TEXTURE_COPIES, SCENE3D_UNKNOWN_BYTES, TEXTURE_UNKNOWN_EXPANSION,
 } from '../memory.js'
 
@@ -263,9 +263,10 @@ function tracked(promise) {
 
 test('governor: with memory short, a second worker waits while the first renders, and goes when memory recovers', async () => {
   let available = 5 * GB
+  let t = 0
   const lines = []
   const clock = manualSleep()
-  const g = createMemoryGovernor({ perWorkerBytes: 2 * GB, reserveBytes: 9 * GB, readAvailable: () => available, sleep: clock.sleep, log: (l) => lines.push(l) })
+  const g = createMemoryGovernor({ perWorkerBytes: 2 * GB, reserveBytes: 9 * GB, readAvailable: () => available, sleep: clock.sleep, log: (l) => lines.push(l), now: () => t })
   assert.equal(await g.acquire('worker 0'), true)
   const second = tracked(g.acquire('worker 1'))
   await turns()
@@ -274,6 +275,7 @@ test('governor: with memory short, a second worker waits while the first renders
   assert.equal(second.done, false, 'still held back while memory is short')
   assert.equal(lines.filter((l) => l.includes('waiting for memory')).length, 1, 'one line however long it waits')
   available = 12 * GB // the reserve plus one worker's estimate is 11
+  t = GOVERNOR_ADMIT_GRACE_MS // and worker 0's chunk is in the reading by now (§394)
   clock.wake(); await turns()
   assert.equal(second.done, true)
   assert.equal(second.value, true)
@@ -316,4 +318,46 @@ test('governor: with room, workers go at once', async () => {
   assert.equal(await g.acquire('worker 1'), true)
   assert.equal(await g.acquire('worker 2'), true)
   assert.equal(g.running, 3)
+})
+
+test('governor (§394): a worker let in less than the grace ago holds its share on top of the reading', async () => {
+  // Worker 0 has just been let in: its browser is launching and its scene loading, so the reading does not show it yet.
+  let t = 0
+  const clock = manualSleep()
+  const lines = []
+  const g = createMemoryGovernor({ perWorkerBytes: 4 * GB, reserveBytes: 9 * GB, readAvailable: () => 15 * GB, sleep: clock.sleep, log: (l) => lines.push(l), now: () => t })
+  assert.equal(await g.acquire('worker 0'), true)
+  // 15 GB reads as room for one more (9 + 4 = 13), but worker 0's 4 GB is still to come: 15 - 4 = 11, short.
+  const second = tracked(g.acquire('worker 1'))
+  await turns()
+  assert.equal(second.done, false, 'held back while worker 0 settles')
+  assert.match(lines[0], /justStarted=1/)
+  t = GOVERNOR_ADMIT_GRACE_MS - 1
+  clock.wake(); await turns()
+  assert.equal(second.done, false, 'still inside the grace')
+  t = GOVERNOR_ADMIT_GRACE_MS
+  clock.wake(); await turns()
+  assert.equal(second.done, true, 'past the grace the reading is trusted')
+})
+
+test('governor (§394): a release frees that worker\'s share, by its name', async () => {
+  let t = 0
+  const clock = manualSleep()
+  const g = createMemoryGovernor({ perWorkerBytes: 4 * GB, reserveBytes: 9 * GB, readAvailable: () => 15 * GB, sleep: clock.sleep, now: () => t })
+  await g.acquire('worker 0')
+  t = 1000
+  const second = tracked(g.acquire('worker 1')) // held back by worker 0, let in 1 s ago
+  await turns()
+  assert.equal(second.done, false)
+  g.release('worker 0') // its chunk ended (a worker alone also never waits)
+  clock.wake(); await turns()
+  assert.equal(second.done, true)
+  // worker 1 is the one just let in now; a third waits on it, not on worker 0.
+  t = 2000
+  const third = tracked(g.acquire('worker 2'))
+  await turns()
+  assert.equal(third.done, false, 'worker 1 was let in 1 s ago')
+  g.release('worker 1')
+  clock.wake(); await turns()
+  assert.equal(third.done, true)
 })

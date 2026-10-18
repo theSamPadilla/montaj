@@ -192,6 +192,30 @@ export function createBakeProgress({ total, log: write }) {
   }
 }
 
+/** §395: how long a worker waits before its one retry of a browser relaunch that failed. */
+export const RELAUNCH_RETRY_MS = 1000
+
+/**
+ * §395: a worker's browser relaunch (after every 3D chunk, and every
+ * RECYCLE_AFTER 2D jobs), tried once more after `delayMs` when it fails, so
+ * one failed launch does not fail a render that relaunches a browser per 3D
+ * chunk. A second failure fails the render as before.
+ *
+ * @template T
+ * @param {() => Promise<T>} launch
+ * @param {{ label: string, delayMs?: number, write?: (msg: string) => void }} opts
+ * @returns {Promise<T>}
+ */
+export async function relaunchWorker(launch, { label, delayMs = RELAUNCH_RETRY_MS, write = log }) {
+  try {
+    return await launch()
+  } catch (err) {
+    write(`${label}: browser relaunch failed (${err?.message ?? err}); trying once more`)
+    await new Promise((r) => setTimeout(r, delayMs ?? RELAUNCH_RETRY_MS))
+    return await launch()
+  }
+}
+
 let lastPlan = null
 /** The worker count and chunk size the running render planned; null until it has. */
 export function currentRenderPlan() { return lastPlan }
@@ -246,7 +270,7 @@ export async function renderAllSegments(segments, config = {}) {
       ...(config.memory?.pollMs != null ? { pollMs: config.memory.pollMs } : {}),
       log,
     })
-    : { acquire: async (_name, more = () => true) => more(), release() {} }
+    : { acquire: async (_name, more = () => true) => more(), release(_name) {} }
 
   // §128: the first failed chunk fails the render, but only once every worker
   // has stopped: the other browsers are closed at once (their chunk in
@@ -265,7 +289,7 @@ export async function renderAllSegments(segments, config = {}) {
       while (await governor.acquire(`worker ${workerIdx}`, () => queue.length > 0)) {
         const job = queue.shift()
         // Another worker can take the last job between the acquire and here.
-        if (!job) { governor.release(); break }
+        if (!job) { governor.release(`worker ${workerIdx}`); break }
         const label = job.totalChunks > 1
           ? `${job.id} chunk ${job.chunkIndex + 1}/${job.totalChunks}`
           : job.id
@@ -274,7 +298,7 @@ export async function renderAllSegments(segments, config = {}) {
         try {
           ({ webmPath } = await renderJob(current, job, { onFrame: noteFrame }))
         } finally {
-          governor.release()
+          governor.release(`worker ${workerIdx}`)
         }
         jobsDone++
         jobsOnThisBrowser++
@@ -287,7 +311,7 @@ export async function renderAllSegments(segments, config = {}) {
         if ((after3d || jobsOnThisBrowser >= RECYCLE_AFTER) && queue.length > 0) {
           live.delete(current)
           await current.close()
-          current = await launchWorker({ needsGoogleFonts })
+          current = await relaunchWorker(() => launchWorker({ needsGoogleFonts }), { label: `worker ${workerIdx}`, delayMs: config.relaunchDelayMs })
           live.add(current)
           jobsOnThisBrowser = 0
           log(`worker ${workerIdx}: browser recycled${after3d ? ' after a 3d chunk' : ''}`)

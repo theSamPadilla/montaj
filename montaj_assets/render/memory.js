@@ -111,6 +111,11 @@ export const TEXTURE_UNKNOWN_EXPANSION = 8
 
 /** How often a held-back worker reads the memory again. */
 export const GOVERNOR_POLL_MS = 3000
+/**
+ * §394: how long after a worker is let in that its chunk's memory may not show in a reading yet: its browser is still
+ * launching and its scene loading. The governor counts a worker let in this recently as already holding its share.
+ */
+export const GOVERNOR_ADMIT_GRACE_MS = 20_000
 
 /** The reserve on a machine of `totalBytes`. */
 export function reserveBytes(totalBytes) {
@@ -392,14 +397,30 @@ const sleepFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
  * proceeds, so a render never deadlocks; a chunk in flight is never stopped.
  * A worker waits silently after its one log line.
  *
+ * §394: a reading taken while another worker is between chunks or still
+ * loading its scene does not show that worker's next chunk yet, so two 3D
+ * workers could start together with room for one. A worker let in less than
+ * `graceMs` ago (GOVERNOR_ADMIT_GRACE_MS) is counted as holding its share on
+ * top of the reading.
+ *
  * @param {{ perWorkerBytes: number, reserveBytes: number, readAvailable?: () => number,
- *           sleep?: (ms: number) => Promise<void>, pollMs?: number, log?: (msg: string) => void }} opts
+ *           sleep?: (ms: number) => Promise<void>, pollMs?: number, log?: (msg: string) => void,
+ *           now?: () => number, graceMs?: number }} opts
  */
 export function createMemoryGovernor({
   perWorkerBytes, reserveBytes: reserve, readAvailable = availableMemoryBytes,
   sleep = sleepFor, pollMs = GOVERNOR_POLL_MS, log = () => {},
+  now = Date.now, graceMs = GOVERNOR_ADMIT_GRACE_MS,
 }) {
   let running = 0
+  // When each worker rendering now was let in, by its name.
+  const admitted = new Map()
+  const justStarted = () => {
+    const t = now()
+    let n = 0
+    for (const at of admitted.values()) if (t - at < graceMs) n++
+    return n
+  }
   return {
     /**
      * Resolves true once `name` may take a chunk (it then counts as rendering
@@ -410,21 +431,23 @@ export function createMemoryGovernor({
       for (;;) {
         if (!more()) return false
         if (running === 0) break
-        const available = readAvailable()
-        if (available >= reserve + perWorkerBytes) break
+        const available = readAvailable(), fresh = justStarted()
+        if (available - fresh * perWorkerBytes >= reserve + perWorkerBytes) break
         if (!waited) {
-          log(`${name}: waiting for memory: available=${gb(available)} reserve=${gb(reserve)} perWorker=${gb(perWorkerBytes)} rendering=${running}`)
+          log(`${name}: waiting for memory: available=${gb(available)} reserve=${gb(reserve)} perWorker=${gb(perWorkerBytes)} rendering=${running} justStarted=${fresh}`)
           waited = true
         }
         await sleep(pollMs)
       }
       running++
+      admitted.set(name, now())
       if (waited) log(`${name}: continuing`)
       return true
     },
-    /** The chunk taken by the last acquire() of this worker has ended, either way. */
-    release() {
+    /** The chunk `name` took with its last acquire() has ended, either way (no name: the longest running). */
+    release(name) {
       running = Math.max(0, running - 1)
+      if (!admitted.delete(name)) { const first = admitted.keys().next(); if (!first.done) admitted.delete(first.value) }
     },
     get running() { return running },
   }
