@@ -415,6 +415,18 @@ window.__setFrame = async (n) => {
   // The caller retries such a frame, then fails it as three_frame_blank
   // (three-frame.js). null, without waiting, when the page has no 3D canvas.
   const three = await drawThreeFrame()
+  // §392(c): whether the overlay drew nothing at this frame (the component
+  // rendered null, nothing outside #root): renderer.js then writes the chunk's
+  // first such capture instead of taking another. A screenshot of a
+  // transparent page that draws nothing grows Chrome's GPU process by about
+  // one viewport-sized surface, kept after the page closes: captions in the
+  // gaps between lines took a render browser past 15 GB. Stamped before the
+  // frame, so a reader that sees the frame sees this.
+  const __host = document.getElementById('root')?.firstElementChild
+  const __inner = ${bakeGeometry ? '__host?.firstElementChild' : '__host'}
+  const __empty = !!__inner && __inner.childNodes.length === 0
+    && !document.body.querySelector(':scope > :not(#root):not(script)')
+  document.documentElement.dataset.renderedEmpty = __empty ? '1' : ''
   document.documentElement.dataset.renderedFrame = String(n)
   return three
 }

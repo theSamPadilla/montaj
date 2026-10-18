@@ -101,7 +101,7 @@ export function hostResolverRules({ needsGoogleFonts = false } = {}) {
  * `disableWebSecurity` keeps `--disable-web-security` for the two callers that
  * have always passed it (renderer.js, sample-frame.js); the carousel never has.
  */
-export function overlayPageLaunchOptions({ needsGoogleFonts = false, disableWebSecurity = false } = {}) {
+export function overlayPageLaunchOptions({ needsGoogleFonts = false, disableWebSecurity = false, gpuCompositing = true } = {}) {
   return {
     headless: 'new',
     args: [
@@ -115,6 +115,13 @@ export function overlayPageLaunchOptions({ needsGoogleFonts = false, disableWebS
       `--host-resolver-rules=${hostResolverRules({ needsGoogleFonts })}`,
       '--webrtc-ip-handling-policy=disable_non_proxied_udp',
       '--disable-blink-features=SharedWorker',
+      // §392(c): a browser that captures only captions composites in software.
+      // GPU compositing grew Chrome's GPU process by up to a viewport-sized
+      // surface per screenshot on some caption frames (a one-line caption, a
+      // gap with nothing drawn), kept until the browser closed: 11 to 15 GB
+      // over five caption chunks. Software compositing stays flat, captures
+      // faster, and differs by at most 3/255 on antialiased edges.
+      ...(gpuCompositing ? [] : ['--disable-gpu-compositing']),
     ],
     // puppeteer passes --disable-popup-blocking by default; a popup is a new
     // page this guard is not installed on.

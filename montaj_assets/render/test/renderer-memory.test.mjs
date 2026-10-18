@@ -8,7 +8,8 @@
 // no ffmpeg.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { planChunks, renderAllSegments, memoryPlanLines, relaunchWorker } from '../renderer.js'
+import { planChunks, renderAllSegments, memoryPlanLines, relaunchWorker, compositesOnGpu } from '../renderer.js'
+import { overlayPageLaunchOptions } from '../page-guard.js'
 import { SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES, SCENE3D_UNKNOWN_BYTES, PER_WORKER_BYTES } from '../memory.js'
 
 const GB = 1e9
@@ -278,4 +279,31 @@ test('renderAllSegments (§392): a 3D job still queued keeps the render at the 3
     memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1 },
   })
   assert.ok(most <= 2, `never past the 3D cap (${most})`)
+})
+
+test('§392(c): a captions job composites in software, everything else on the GPU', () => {
+  assert.equal(compositesOnGpu({ isCaption: true }), false)
+  assert.equal(compositesOnGpu({ scene3d: true }), true)
+  assert.equal(compositesOnGpu({}), true)
+  assert.equal(compositesOnGpu(undefined), true, 'no job left')
+  assert.ok(overlayPageLaunchOptions({ gpuCompositing: false }).args.includes('--disable-gpu-compositing'))
+  assert.ok(!overlayPageLaunchOptions({}).args.includes('--disable-gpu-compositing'), 'the GPU by default')
+})
+
+test('renderAllSegments (§392(c)): caption chunks run on software-composited browsers, 3D on GPU ones', async () => {
+  const lines = []
+  const launched = []
+  const ranOn = []
+  // Single-chunk segments (the fakes write no chunks to join): two caption-like ones after the 3D.
+  const caption = (id) => ({ ...renderable(1)[0], id, isCaption: true, outputPath: `/nonexistent/${id}.mkv` })
+  const segs = [...renderable3d(2), caption('captions'), caption('captions-b'), caption('captions-c')]
+  await renderAllSegments(segs, {
+    workers: 2, chunkSize: 1000, relaunchDelayMs: 0,
+    launchWorker: async (opts) => { launched.push(opts.gpuCompositing); return { gpuCompositing: opts.gpuCompositing, close: async () => {} } },
+    renderJob: async (worker, job) => { ranOn.push([job.id, worker.gpuCompositing]); await new Promise((r) => setTimeout(r, 5)); return { webmPath: job.outputPath } },
+    memory: { readAvailable: () => 30 * GB, totalBytes: TOTAL_36GB, pollMs: 1 },
+  })
+  for (const [id, gpu] of ranOn) assert.equal(gpu, !id.startsWith('captions'), `${id} on ${gpu ? 'the GPU' : 'software'}`)
+  assert.equal(ranOn.filter(([id]) => id.startsWith('captions')).length, 3, 'three caption jobs')
+  assert.ok(launched.includes(false), 'a software-composited browser was launched')
 })

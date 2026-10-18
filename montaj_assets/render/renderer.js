@@ -192,6 +192,19 @@ export function createBakeProgress({ total, log: write }) {
   }
 }
 
+/**
+ * §392(c): whether a job's browser composites on the GPU. A captions job does
+ * not: GPU compositing grew Chrome's GPU process by up to a viewport-sized
+ * surface per screenshot on some caption frames and kept it until the browser
+ * closed (11 to 15 GB over five caption chunks of a long video), and software
+ * compositing stays flat and captures captions faster. Everything else keeps
+ * the GPU: a 3D stage or a shader overlay draws WebGL, which software
+ * compositing would read back every frame. No job (an empty queue): the GPU.
+ */
+export function compositesOnGpu(job) {
+  return job?.isCaption !== true
+}
+
 /** §395: how long a worker waits before its one retry of a browser relaunch that failed. */
 export const RELAUNCH_RETRY_MS = 1000
 
@@ -244,8 +257,8 @@ export async function renderAllSegments(segments, config = {}) {
 
   log(`launching ${workerCount} browser worker(s) for ${jobs.length} job(s)...`)
 
-  // Launch browser pool
-  const workers = await launchPool(workerCount, () => launchWorker({ needsGoogleFonts }))
+  // Launch browser pool, composited for the first job (compositesOnGpu)
+  const workers = await launchPool(workerCount, () => launchWorker({ needsGoogleFonts, gpuCompositing: compositesOnGpu(jobs[0]) }))
 
   log(`browsers ready`)
 
@@ -305,11 +318,12 @@ export async function renderAllSegments(segments, config = {}) {
       runs.push((async () => {
         let browser
         try {
-          browser = await launchWorker({ needsGoogleFonts })
+          browser = await launchWorker({ needsGoogleFonts, gpuCompositing: compositesOnGpu(queue[0]) })
         } catch (err) {
           log(`worker ${idx}: could not launch (${err?.message ?? err}); the others carry on`)
           return
         }
+        browser.gpuCompositing ??= compositesOnGpu(queue[0])
         live.add(browser)
         return runWorker(browser, idx)
       })())
@@ -325,6 +339,18 @@ export async function renderAllSegments(segments, config = {}) {
         if (!job) { gate.release(`worker ${workerIdx}`); break }
         const is3d = isScene3dSegment(job)
         if (is3d) running3d++
+        // §392(c): captions run on a browser that composites in software,
+        // everything else on one that composites on the GPU (compositesOnGpu).
+        const gpu = compositesOnGpu(job)
+        if ((current.gpuCompositing ?? true) !== gpu) {
+          live.delete(current)
+          await current.close()
+          current = await relaunchWorker(() => launchWorker({ needsGoogleFonts, gpuCompositing: gpu }), { label: `worker ${workerIdx}`, delayMs: config.relaunchDelayMs })
+          current.gpuCompositing ??= gpu
+          live.add(current)
+          jobsOnThisBrowser = 0
+          log(`worker ${workerIdx}: browser relaunched to composite ${gpu ? 'on the GPU' : 'in software'}`)
+        }
         const label = job.totalChunks > 1
           ? `${job.id} chunk ${job.chunkIndex + 1}/${job.totalChunks}`
           : job.id
@@ -347,7 +373,9 @@ export async function renderAllSegments(segments, config = {}) {
         if ((after3d || jobsOnThisBrowser >= RECYCLE_AFTER) && queue.length > 0) {
           live.delete(current)
           await current.close()
-          current = await relaunchWorker(() => launchWorker({ needsGoogleFonts }), { label: `worker ${workerIdx}`, delayMs: config.relaunchDelayMs })
+          const next = compositesOnGpu(queue[0])
+          current = await relaunchWorker(() => launchWorker({ needsGoogleFonts, gpuCompositing: next }), { label: `worker ${workerIdx}`, delayMs: config.relaunchDelayMs })
+          current.gpuCompositing ??= next
           live.add(current)
           jobsOnThisBrowser = 0
           log(`worker ${workerIdx}: browser recycled${after3d ? ' after a 3d chunk' : ''}`)
@@ -480,17 +508,19 @@ export async function launchPool(count, launch) {
  * ~1 ms before the process's exit is seen, so a drop waits for the exit (up
  * to CHROME_EXIT_WAIT_MS) to learn the signal.
  *
- * @param {{ needsGoogleFonts?: boolean }} [opts]
+ * `gpuCompositing: false` launches it compositing in software (§392(c), compositesOnGpu); the worker says which.
+ *
+ * @param {{ needsGoogleFonts?: boolean, gpuCompositing?: boolean }} [opts]
  */
-export async function launchWorkerBrowser({ needsGoogleFonts = false } = {}) {
-  const browser = await puppeteer.launch(overlayPageLaunchOptions({ needsGoogleFonts, disableWebSecurity: true }))
+export async function launchWorkerBrowser({ needsGoogleFonts = false, gpuCompositing = true } = {}) {
+  const browser = await puppeteer.launch(overlayPageLaunchOptions({ needsGoogleFonts, disableWebSecurity: true, gpuCompositing }))
   const proc = browser.process()
   let closing = false
   let dead = null
   let exitWait = null
   const listeners = new Set()
   const worker = {
-    browser, close, onDeath, watchPage, deathWithin,
+    browser, close, onDeath, watchPage, deathWithin, gpuCompositing,
     get dead() { return dead },
     get closing() { return closing },
   }
@@ -1058,17 +1088,30 @@ async function captureChunkFrames(worker, job, sinkFor, at, onFrame) {
     const totalFrames = frameEnd - frameStart
     const reportEvery = Math.max(1, Math.floor(totalFrames / 20))
     const renderStartMs = Date.now()
+    // §392(c): a transparent capture of a frame where the overlay drew
+    // nothing (bundle.js stamps data-rendered-empty) is taken once per chunk
+    // and written for every later such frame: each screenshot of an empty
+    // transparent page grows Chrome's GPU process by about a viewport-sized
+    // surface, kept after the page closes (captions between lines).
+    const reuseEmpty = captureOptionsFor(job).omitBackground
+    let emptyCapture = null
     // Everything after the commit of frame (or sub-frame) `f`, up to and
     // including its screenshot.
     const captureAt = (f) => async () => {
       // 2. Wait until the DOM attribute confirms this exact frame has been committed.
       //    This is more reliable than rAF alone — rAF in headless Chrome can fire
       //    before the compositor has flushed, producing stale screenshots.
-      await page.waitForFunction(
-        (f) => document.documentElement.dataset.renderedFrame === String(f),
+      const committed = await page.waitForFunction(
+        (f) => {
+          const d = document.documentElement.dataset
+          return d.renderedFrame === String(f) && (d.renderedEmpty === '1' ? 'empty' : 'drawn')
+        },
         { timeout: 10000 },
         f,
       )
+      const empty = reuseEmpty && (await committed.jsonValue()) === 'empty'
+      await committed.dispose()
+      if (empty && emptyCapture) return emptyCapture
       // 2b. An image the props name with no extension is fetched when the page
       //     asks for it, so wait for it to arrive before capturing this frame
       //     (page-guard.js settleOnDemand; at once when the props name none).
@@ -1084,7 +1127,9 @@ async function captureChunkFrames(worker, job, sinkFor, at, onFrame) {
       // 4. Into the chunk's ffmpeg (§131): the same bytes a `path`
       //    screenshot wrote to disk. A PNG, or a JPEG for an opaque capture
       //    of an SDR master (§284: screenshotOptionsFor).
-      return page.screenshot(screenshotOptionsFor(job))
+      const shot = await page.screenshot(screenshotOptionsFor(job))
+      if (empty) emptyCapture = shot
+      return shot
     }
     const threeOpts = { overlay: overlayName(job), log, pageErrors }
     // §377: a 3D overlay under motion blur averages each frame's sub-frames in

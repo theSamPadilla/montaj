@@ -122,6 +122,11 @@ describe('(b) the launch flags', () => {
     }
   })
 
+  test('§392(c): software compositing only when asked', () => {
+    assert.ok(!overlayPageLaunchOptions().args.includes('--disable-gpu-compositing'))
+    assert.ok(overlayPageLaunchOptions({ gpuCompositing: false }).args.includes('--disable-gpu-compositing'))
+  })
+
   test('the popup blocker is on: puppeteer\'s default --disable-popup-blocking is dropped', () => {
     const opts = overlayPageLaunchOptions()
     assert.ok(puppeteer.defaultArgs(opts).includes('--disable-popup-blocking'), 'puppeteer adds it by default')
@@ -132,7 +137,7 @@ describe('(b) the launch flags', () => {
   test('--disable-web-security only for the callers that always had it', () => {
     assert.ok(!overlayPageLaunchOptions().args.includes('--disable-web-security'))
     assert.ok(overlayPageLaunchOptions({ disableWebSecurity: true }).args.includes('--disable-web-security'))
-    assert.match(src('renderer.js'), /overlayPageLaunchOptions\(\{ needsGoogleFonts, disableWebSecurity: true \}\)/)
+    assert.match(src('renderer.js'), /overlayPageLaunchOptions\(\{ needsGoogleFonts, disableWebSecurity: true, gpuCompositing \}\)/)
     assert.match(src('sample-frame.js'), /overlayPageLaunchOptions\(\{ needsGoogleFonts, disableWebSecurity: true \}\)/)
     assert.match(src('render-carousel.js'), /overlayPageLaunchOptions\(\{ needsGoogleFonts \}\)/)
   })
