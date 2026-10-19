@@ -254,3 +254,21 @@ test('previewGroups: planCompose\'s groups, the leading gap included', () => {
   assert.equal(g.at(-1).end, 6)
   assert.deepEqual(previewGroups([], [], 1080, 1920, FPS), [])
 })
+
+test('render.js renderInSlices: no phase marker in the loop, one of each before its finish', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../render.js', import.meta.url), 'utf8')
+  const at = src.indexOf('async function renderInSlices(')
+  assert.ok(at > 0)
+  const body = src.slice(at, src.indexOf('\n}\n', at))
+  assert.doesNotMatch(body, /with Puppeteer|bundling segment|concatenating/)
+  const finish = body.slice(body.indexOf('finish: ('), body.indexOf('keep:'))
+  assert.match(finish, /log\('composing final video\.\.\.'\)/)
+  assert.match(finish, /deriving SDR rendition/)
+  assert.equal(body.split("log('composing final video...')").length - 1, 1)
+  assert.equal(body.split('log(`deriving SDR rendition').length - 1, 1)
+  // main() takes the unsliced path, today's compose(), whenever slicing is off.
+  const main = src.slice(src.indexOf('async function main('), at)
+  assert.match(main, /if \(slicing\.sliced\) \{\n\s+await renderInSlices\(/)
+  assert.match(main, /\} else \{\n\s+log\(slicingLine\(slicing\)\)\n[\s\S]*renderAllSegments\(segmentSpecs, \{ workers, motionBlur \}\)[\s\S]*await compose\(/)
+})

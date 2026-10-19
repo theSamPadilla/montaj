@@ -13,12 +13,17 @@
  *
  * --estimate (§213): plan the render exactly as far as its disk check, print
  * one JSON line, `{"estimate":{"lower":{"tmpBytes","projectBytes"},"expected":
- * {...}},"volumes":[{"path","needBytes","freeBytes"}],"memory":{...}}` (volumes
- * against the expected need; memory the worker plan, estimateMemory), and
- * exit 0. It writes nothing, fetches nothing, normalizes nothing and launches
- * no browser; it only reads the project, probes its sources and reads the
- * memory available. --resolution and --fps stand in for the project's settings, for an
+ * {...}},"volumes":[{"path","needBytes","freeBytes"}],"memory":{...},"slicing":
+ * {"sliced","slices","budgetMB","peakBytes"}}` (volumes against the expected
+ * need; memory the worker plan, estimateMemory; slicing the time slices the
+ * overlays would be captured in, §434), and exit 0. It writes nothing,
+ * fetches nothing, normalizes nothing and launches no browser; it only reads
+ * the project, probes its sources and reads the memory available. --resolution and --fps stand in for the project's settings, for an
  * estimate asked before a settings change is saved; they apply to --estimate only.
+ *
+ * MONTAJ_SLICE_BUDGET_MB (§434): a smaller budget, in MB, for one time slice's
+ * overlay captures (default and ceiling 2000); it forces slicing on a small
+ * project. MONTAJ_KEEP_SEGMENTS keeps each slice's captures too.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync, openSync, writeSync, closeSync, renameSync } from 'fs'
 import { resolve, join, dirname, basename, extname } from 'path'
@@ -27,14 +32,22 @@ import { spawnSync, spawn } from 'child_process'
 
 import { bundleComponent, cleanupBundle } from './bundle.js'
 import { isMain as isMainModule }        from './is-main.js'
-import { renderAllSegments, planChunks, currentRenderPlan, stopSignal }  from './renderer.js'
+import { renderAllSegments, planChunks, currentRenderPlan, stopSignal, bakeTotal, createBakeProgress }  from './renderer.js'
 import { isChildKilled }              from './child-killed.js'
 import { isThreeFrameBlank }          from './three-frame.js'
-import { estimateRenderDisk, checkDiskSpace, diskFailure, isDiskFull, dirBytes } from './disk-space.js'
+import {
+  estimateRenderDisk, checkDiskSpace, diskFailure, isDiskFull, dirBytes,
+  FFV1_CAPTION_BYTES_PER_PIXEL, FFV1_DENSE_BYTES_PER_PIXEL,
+} from './disk-space.js'
+import { planSlices, fitBudget, parseSliceBudget, SLICE_BUDGET_BYTES } from './slice-plan.js'
+import {
+  runSlices, overlayDescriptor, plannedDescriptors, hdrCardCandidates, previewGroups, commonEdges,
+  sliceDiskTerms, slicingLine,
+} from './slice-run.js'
 import { tmpdir }                         from 'os'
 import { prefetchPropsUrls }              from './page-guard.js'
 import { namedPropsUrls }                 from './overlay-build.js'
-import { compose, embedThumbnail }        from './compose.js'
+import { compose, embedThumbnail, planCompose, startCompose, encodeComposeGroups, finishCompose } from './compose.js'
 import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { requireValidKey, detectFromTransfer, smartDetect, isHdr, specFor, DEFAULT_COLOR_SPACE } from './color-space.js'
@@ -55,6 +68,9 @@ const __dirname  = dirname(fileURLToPath(import.meta.url))
 // §128: where this render writes and what it is estimated to need, set by
 // main's disk check and read by the mid-render disk failure (the catch below).
 let diskRun = null
+// §434: the slices this render runs and the budget they were cut to, set
+// before capture and read by a failure line (failLine).
+let renderSlicing = null
 
 const isMain = isMainModule(import.meta.url, process.argv[1])
 // MONTAJ_ROOT is two levels above montaj_assets/render/ (i.e. the Python project root).
@@ -723,11 +739,13 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   //     normalize will build, the video segments and the export go to the
   //     project's disk (planDisk, disk-space.js). Refused only when the render
   //     certainly will not fit (the lower bound); a render that runs out later
-  //     fails the same way. The same plan --estimate prints.
+  //     fails the same way. The same plan --estimate prints. It also decides
+  //     whether the overlays are captured in time slices (§434, planDisk).
+  let slicing
   {
     const disk = planDisk({
-      projectJson, pristineProject, settings, workers, motionBlur, segmentSpecs, videoItems, captureScale,
-      renderWidth, renderHeight, projectColorSpace, exportPlan, workspaceDir, segDir,
+      projectJson, pristineProject, settings, workers, motionBlur, segmentSpecs, videoItems, imageItems, captureScale,
+      renderWidth, renderHeight, projectColorSpace, exportPlan, workspaceDir, segDir, renderDir,
     })
     diskRun = { tmpDir: tmpdir(), projectDir: renderDir, estimate: disk.estimate, scratch: disk.scratch }
     const at = { tmpDir: diskRun.tmpDir, projectDir: diskRun.projectDir, reclaimBytes: disk.reclaimBytes }
@@ -737,6 +755,17 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
       const f = diskFailure({ phase: 'preflight', estimate: disk.estimate, check: checkDiskSpace({ ...at, estimate: disk.estimate.expected }) })
       fail(f.code, f.message, f.extra)
     }
+    slicing = disk.slicing
+    if (slicing.refused) {
+      // Even the smallest slice does not fit beside what the render keeps on disk.
+      const f = diskFailure({
+        phase: 'preflight', estimate: disk.estimate,
+        check: { volumes: [{ path: renderDir, needBytes: slicing.needBytes, freeBytes: slicing.freeBytes }] },
+      })
+      log(`slicing: even the smallest slice does not fit (needs ${Math.round(slicing.needBytes / 1e6)} MB, free ${Math.round(slicing.freeBytes / 1e6)} MB)`)
+      fail(f.code, f.message, { ...f.extra, reason: 'even the smallest slice does not fit' })
+    }
+    renderSlicing = { slices: slicing.sliced ? slicing.slices : 1, sliceBudgetMB: Math.round(slicing.budgetBytes / 1e6) }
   }
 
   // 3 to 4b. Conform every video item to the project's own colour space: the
@@ -797,119 +826,93 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
     workDirs.push(workDir)
   }
 
-  // A capture is the same for every colour space: the page draws the overlay
-  // as authored, and an HDR compose maps the whole capture into the project's
-  // space (encode-segment.js, hdr-graphics.js). So one capture serves the HDR
-  // master and the SDR rendition alike. A saved `settings.imageTone` (the
-  // removed per-image tone) is ignored.
-  const renderedSegments = await renderAllSegments(segmentSpecs, { workers, motionBlur })
+  // §434: a render whose captures would not fit the slice budget captures and
+  // encodes in time slices (renderInSlices). Every other render takes the
+  // path below, unchanged.
+  if (slicing.sliced) {
+    await renderInSlices({
+      projectJson, pristineProject, settings, fps, workers, motionBlur, segmentSpecs, imageItems, videoItems,
+      renderWidth, renderHeight, captureScale, projectColorSpace, exportPlan, workspaceDir, segDir, sdrCurve, slicing,
+    })
+  } else {
+    log(slicingLine(slicing))
+    // A capture is the same for every colour space: the page draws the overlay
+    // as authored, and an HDR compose maps the whole capture into the project's
+    // space (encode-segment.js, hdr-graphics.js). So one capture serves the HDR
+    // master and the SDR rendition alike. A saved `settings.imageTone` (the
+    // removed per-image tone) is ignored.
+    const renderedSegments = await renderAllSegments(segmentSpecs, { workers, motionBlur })
 
-  // Attach positioning offsets back onto rendered segments so compose.js can apply
-  // x/y coordinates. Overlay size is derived from the output canvas at compose
-  // time (see encode-segment.js), so no scale factor is stamped here.
-  for (const rSeg of renderedSegments) {
-    const spec = segmentSpecs.find(s => s.id === rSeg.id)
-    if (spec) {
-      rSeg.offsetX   = spec.offsetX   ?? 0
-      rSeg.offsetY   = spec.offsetY   ?? 0
-      rSeg.scale     = spec.scale     ?? 1
-      // Same reference-flow argument as rotation below, and the same shape of
-      // partial failure: buildOverlayFilterParts sizes a non-keyframed overlay
-      // from `geometryFor(ov, 'overlay')` read off THIS object, and that
-      // resolver reads `scaleX`/`scaleY` before falling back to `scale`. Miss
-      // these two lines and a non-uniform overlay renders as a uniform box
-      // while the preview shows it stretched. Carried as authored (undefined
-      // when absent), never defaulted: geometryFor resolves `?? scale ?? 1`.
-      rSeg.scaleX    = spec.scaleX
-      rSeg.scaleY    = spec.scaleY
-      // rotation must be restated here too: these rSeg objects flow BY REFERENCE
-      // through segment-plan.js's `overlays` array (built via activeIn() over
-      // puppeteerSegs, preserving object identity) into buildOverlayFilterParts,
-      // which reads rotation off this very object via geometryFor(ov, 'overlay').
-      // Skipping this line is the worst partial failure: images/videos rotate
-      // correctly while overlays silently don't.
-      rSeg.rotation  = spec.rotation  ?? 0
-      // The OTHER half of the missing-overlay-opacity bug. collectPuppeteerSegments
-      // has always collected `opacity` onto the spec, but it stopped here — so even
-      // once buildOverlayFilterParts learned to emit `colorchannelmixer=aa=`, it
-      // would have read `undefined` off every descriptor and emitted nothing. Both
-      // halves are required; neither alone does anything.
-      rSeg.opacity   = spec.opacity   ?? 1
-      rSeg.opaque    = spec.opaque    ?? false
-      rSeg.isCaption = spec.isCaption ?? false
-      // §308 P3: where it stacks among the clips (segment-plan.js). Captions
-      // carry none: they are always last.
-      if (spec.layerTrack !== undefined) rSeg.layerTrack = spec.layerTrack
-      // Same reference-flow argument as rotation directly above, and the same
-      // worst-case partial failure: buildOverlayFilterParts reads `keyframes`
-      // off THIS object to decide that the capture is already positioned. Miss
-      // this line and an animated overlay gets its transform applied TWICE —
-      // once baked into the pixels, once by the compositor. Assigned only when
-      // the spec actually has tracks, so a static overlay's descriptor keeps no
-      // `keyframes` key at all and takes the byte-identical filter path.
-      if (spec.keyframes?.length) rSeg.keyframes = spec.keyframes
+    // Attach positioning offsets back onto rendered segments so compose.js can apply
+    // x/y coordinates. Overlay size is derived from the output canvas at compose
+    // time (see encode-segment.js), so no scale factor is stamped here. The
+    // fields, and why each must ride on THIS object, are overlayDescriptor's
+    // (slice-run.js), which the sliced path uses too.
+    for (const rSeg of renderedSegments) {
+      const spec = segmentSpecs.find(s => s.id === rSeg.id)
+      if (spec) overlayDescriptor(spec, rSeg)
     }
-  }
 
-  // 6. Output size: see outputSize. Overlays are composited by scaling the
-  // 1080-design canvas to the actual output dimensions at compose time (see
-  // buildOverlayFilterParts in encode-segment.js). No per-segment scale factor is
-  // stamped here; the compositor derives the size from the output canvas
-  // directly, so overlays fit any resolution (4K up, sub-1080 down, non-integer
-  // multiples) instead of being cropped onto smaller canvases.
-  let outputDims = null
+    // 6. Output size: see outputSize. Overlays are composited by scaling the
+    // 1080-design canvas to the actual output dimensions at compose time (see
+    // buildOverlayFilterParts in encode-segment.js). No per-segment scale factor is
+    // stamped here; the compositor derives the size from the output canvas
+    // directly, so overlays fit any resolution (4K up, sub-1080 down, non-integer
+    // multiples) instead of being cropped onto smaller canvases.
+    let outputDims = null
 
-  // 7. Compose final MP4 at the project's colour space (every mode but --export
-  //    sdr on an HDR project).
-  if (exportPlan.composePath) {
-    outputDims = outputSize(settings, videoItems, renderWidth, renderHeight)
-    // PHASE MARKER: "composing final video" → encoding in serve's _render_phase_for.
-    log('composing final video...')
-    await compose({
-      projectJson,
-      puppeteerSegments: renderedSegments,
-      imageItems,
-      videoItems,
-      outputPath: exportPlan.composePath,
-      videoWidth:  outputDims[0],
-      videoHeight: outputDims[1],
-      colorSpace:  projectColorSpace,
-      sdrCurve,
-    })
-  }
+    // 7. Compose final MP4 at the project's colour space (every mode but --export
+    //    sdr on an HDR project).
+    if (exportPlan.composePath) {
+      outputDims = outputSize(settings, videoItems, renderWidth, renderHeight)
+      // PHASE MARKER: "composing final video" → encoding in serve's _render_phase_for.
+      log('composing final video...')
+      await compose({
+        projectJson,
+        puppeteerSegments: renderedSegments,
+        imageItems,
+        videoItems,
+        outputPath: exportPlan.composePath,
+        videoWidth:  outputDims[0],
+        videoHeight: outputDims[1],
+        colorSpace:  projectColorSpace,
+        sdrCurve,
+      })
+    }
 
-  // 7b. The SDR rendition of an HDR project (--export sdr|both), composed per
-  //     layer (PV42): a second compose at sdr_bt709 in which each video layer is
-  //     brought to SDR on its own. HDR-origin clips are graded once, in the
-  //     segment encoder; SDR-origin clips come from their SDR original,
-  //     ungraded; overlays and images composite as authored. The HDR master is
-  //     neither read nor touched. For `both` it runs after the HDR compose,
-  //     never beside it (Sam, PV42 Q3). auto skips this block entirely.
-  if (exportPlan.derivePath) {
-    // PHASE MARKER: "deriving SDR rendition" → `sdr_derive` in serve's
-    // _render_phase_for (serve/routes/projects.py); the editor's render stepper
-    // keys off that phase name, and serve keeps it once reached, through this
-    // pass's own compose lines. Keep this substring in sync if you reword.
-    log(`deriving SDR rendition → ${basename(exportPlan.derivePath)} (per layer)...`)
-    const sdr = await prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir })
-    // One size for both files: the HDR pass's, when there is one.
-    const [sdrWidth, sdrHeight] = outputDims ?? outputSize(settings, sdr.videoItems, renderWidth, renderHeight)
-    // The overlay captures the SDR pass composites are the ones above, as they
-    // are: a capture holds the overlay as authored (see renderAllSegments
-    // above). Before the HDR <img> interceptor was removed, a capture whose
-    // image it had converted was taken again at sdr_bt709 here (PV42 T7).
-    // compose embeds this file's poster itself, as SDR: no LUT on the extract.
-    await compose({
-      projectJson: sdr.project,
-      puppeteerSegments: renderedSegments,
-      imageItems:  sdr.imageItems,
-      videoItems:  sdr.videoItems,
-      outputPath:  exportPlan.derivePath,
-      videoWidth:  sdrWidth,
-      videoHeight: sdrHeight,
-      colorSpace:  'sdr_bt709',
-      sdrCurve,
-    })
+    // 7b. The SDR rendition of an HDR project (--export sdr|both), composed per
+    //     layer (PV42): a second compose at sdr_bt709 in which each video layer is
+    //     brought to SDR on its own. HDR-origin clips are graded once, in the
+    //     segment encoder; SDR-origin clips come from their SDR original,
+    //     ungraded; overlays and images composite as authored. The HDR master is
+    //     neither read nor touched. For `both` it runs after the HDR compose,
+    //     never beside it (Sam, PV42 Q3). auto skips this block entirely.
+    if (exportPlan.derivePath) {
+      // PHASE MARKER: "deriving SDR rendition" → `sdr_derive` in serve's
+      // _render_phase_for (serve/routes/projects.py); the editor's render stepper
+      // keys off that phase name, and serve keeps it once reached, through this
+      // pass's own compose lines. Keep this substring in sync if you reword.
+      log(`deriving SDR rendition → ${basename(exportPlan.derivePath)} (per layer)...`)
+      const sdr = await prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir })
+      // One size for both files: the HDR pass's, when there is one.
+      const [sdrWidth, sdrHeight] = outputDims ?? outputSize(settings, sdr.videoItems, renderWidth, renderHeight)
+      // The overlay captures the SDR pass composites are the ones above, as they
+      // are: a capture holds the overlay as authored (see renderAllSegments
+      // above). Before the HDR <img> interceptor was removed, a capture whose
+      // image it had converted was taken again at sdr_bt709 here (PV42 T7).
+      // compose embeds this file's poster itself, as SDR: no LUT on the extract.
+      await compose({
+        projectJson: sdr.project,
+        puppeteerSegments: renderedSegments,
+        imageItems:  sdr.imageItems,
+        videoItems:  sdr.videoItems,
+        outputPath:  exportPlan.derivePath,
+        videoWidth:  sdrWidth,
+        videoHeight: sdrHeight,
+        colorSpace:  'sdr_bt709',
+        sdrCurve,
+      })
+    }
   }
 
   // 8. Cleanup temp bundles (always); intermediate segments only if --clean
@@ -925,6 +928,85 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   // serve's job.result) still sees the same thing it always has, and the SDR
   // sibling follows on line 2.
   process.stdout.write(exportPlan.outputs.join('\n') + '\n')
+}
+
+/**
+ * Steps 5 to 7b of a render cut in time slices (§434): the same composes as
+ * the unsliced path, planned before any capture, then each slice captured,
+ * encoded into every compose's segments and deleted (slice-run.js runSlices),
+ * then each compose finished. Peak capture disk is one slice.
+ *
+ * The descriptors compose plans with are built from the specs (whole spans, no
+ * webmPath); each slice's encode sees a copy pointing at its slice file. The
+ * SDR pass (7b) is prepared before the loop, since its groups encode slice by
+ * slice too. Slice edges sit on compose group boundaries, and for --export
+ * both only on boundaries the two composes share.
+ *
+ * Phase markers: none inside the loop. "composing final video..." comes once,
+ * before the main compose finishes, and "deriving SDR rendition" once, before
+ * the SDR one finishes.
+ */
+async function renderInSlices({
+  projectJson, pristineProject, settings, fps, workers, motionBlur, segmentSpecs, imageItems, videoItems,
+  renderWidth, renderHeight, captureScale, projectColorSpace, exportPlan, workspaceDir, segDir, sdrCurve, slicing,
+}) {
+  const descriptors = plannedDescriptors(segmentSpecs)
+  const passes = []
+  let outputDims = null
+  if (exportPlan.composePath) {
+    outputDims = outputSize(settings, videoItems, renderWidth, renderHeight)
+    passes.push({
+      kind: 'main',
+      plan: await planCompose({
+        projectJson, puppeteerSegments: descriptors, imageItems, videoItems,
+        outputPath: exportPlan.composePath, videoWidth: outputDims[0], videoHeight: outputDims[1],
+        colorSpace: projectColorSpace, sdrCurve,
+      }),
+    })
+  }
+  if (exportPlan.derivePath) {
+    const sdr = await prepareSdrPass(pristineProject, { projectColorSpace, workspaceDir })
+    const [sdrWidth, sdrHeight] = outputDims ?? outputSize(settings, sdr.videoItems, renderWidth, renderHeight)
+    passes.push({
+      kind: 'sdr',
+      plan: await planCompose({
+        projectJson: sdr.project, puppeteerSegments: descriptors, imageItems: sdr.imageItems, videoItems: sdr.videoItems,
+        outputPath: exportPlan.derivePath, videoWidth: sdrWidth, videoHeight: sdrHeight,
+        colorSpace: 'sdr_bt709', sdrCurve,
+      }),
+    })
+  }
+  // An empty plan writes nothing, as compose() does for it.
+  const live = passes.filter((p) => !p.plan.empty)
+  if (live.length === 0) return
+
+  const plans = live.map((p) => p.plan)
+  const overlays = descriptors.map((d) => ({ ...d, sparse: d.isCaption === true }))
+  const slicePlan = planSlices({
+    groups: plans[0].groups, overlays, fps, px: renderWidth * renderHeight * captureScale * captureScale,
+    budgetBytes: slicing.budgetBytes, extraEdges: plans.length > 1 ? commonEdges(plans) : undefined,
+  })
+  renderSlicing = { slices: slicePlan.slices.length, sliceBudgetMB: Math.round(slicePlan.budgetBytes / 1e6) }
+  log(slicingLine({ ...slicing, sliced: true, slices: slicePlan.slices.length, peakBytes: slicePlan.peakBytes }))
+
+  for (const plan of plans) startCompose(plan)
+  await runSlices({
+    plans, slices: slicePlan.slices, specs: segmentSpecs, segDir, fps,
+    capture: renderAllSegments,
+    encode: encodeComposeGroups,
+    finish: (plan, encoded, i) => {
+      // PHASE MARKERS, as in the unsliced path: "composing final video" →
+      // encoding, "deriving SDR rendition" → sdr_derive (serve's _render_phase_for).
+      if (live[i].kind === 'main') log('composing final video...')
+      else log(`deriving SDR rendition → ${basename(exportPlan.derivePath)} (per layer)...`)
+      return finishCompose(plan, encoded)
+    },
+    keep: !!process.env.MONTAJ_KEEP_SEGMENTS,
+    log,
+    captureConfig: { workers, motionBlur },
+    bakeTotal,
+    createBakeProgress: ({ total }) => createBakeProgress({ total, log }),
+  })
 }
 
 /**
@@ -1019,7 +1101,10 @@ function resolvePictureColorSpace(projectJson, settings, videoItems) {
  * volumes being checkDiskSpace against the EXPECTED need (one entry when TMPDIR
  * and the project share a disk), or [] when a disk cannot be read. Paths are
  * absolute, as in the insufficient_disk line. `memory` is the worker plan
- * (estimateMemory), null for a render that captures no overlays.
+ * (estimateMemory), null for a render that captures no overlays. `slicing`
+ * (§434) is `{ sliced, slices, budgetMB, peakBytes }`: whether the overlays
+ * would be captured in time slices, how many, the budget, and the peak
+ * slice's captures (the whole capture when unsliced).
  *
  * Mirrors main() step for step; a change to what main() writes before or at
  * its peak belongs in planDisk, which both run.
@@ -1031,6 +1116,8 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
   } = loadRenderProject(projectPath, { out, requireFinal: false, overrides })
 
   let estimate, reclaimBytes, memory = null
+  // §434: whether the render would capture in time slices, and at what budget.
+  let slicing = { sliced: false, slices: 1, budgetMB: Math.round((parseSliceBudget(process.env.MONTAJ_SLICE_BUDGET_MB) ?? SLICE_BUDGET_BYTES) / 1e6), peakBytes: 0 }
   // §378: what the picture needs, for the export window's Format row. null: not worked out.
   let pictureColor = null
   if (projectJson.renderMode === 'ffmpeg-drawtext') {
@@ -1045,7 +1132,7 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
     reclaimBytes = 0
   } else {
     const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
-    const { videoItems } = collectAllItems(projectJson)
+    const { imageItems, videoItems } = collectAllItems(projectJson)
     const captureScale = captureScaleFor(settings.resolution)
     // As main() does: planChunks' memory plan prices a 2D worker by its capture (memory.js captureWorkerBytes).
     for (const spec of segmentSpecs) spec.captureScale = captureScale
@@ -1055,15 +1142,19 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
     pictureColor = { colorSpace: picture.colorSpace, hdrVisible: picture.hdrVisible }
     const exportPlan = planExport({ exportMode, projectColorSpace, outputPath })
     const disk = planDisk({
-      projectJson, pristineProject, settings, workers, motionBlur, segmentSpecs, videoItems, captureScale,
-      renderWidth, renderHeight, projectColorSpace, exportPlan, workspaceDir, segDir,
+      projectJson, pristineProject, settings, workers, motionBlur, segmentSpecs, videoItems, imageItems, captureScale,
+      renderWidth, renderHeight, projectColorSpace, exportPlan, workspaceDir, segDir, renderDir,
     })
     estimate = disk.estimate
     reclaimBytes = disk.reclaimBytes
     memory = estimateMemory(disk.plan.memory)
+    slicing = {
+      sliced: disk.slicing.sliced, slices: disk.slicing.slices,
+      budgetMB: Math.round(disk.slicing.budgetBytes / 1e6), peakBytes: Math.round(disk.slicing.peakBytes),
+    }
   }
   const check = checkDiskSpace({ tmpDir: tmpdir(), projectDir: renderDir, estimate: estimate.expected, reclaimBytes })
-  return { estimate, volumes: check?.volumes ?? [], memory, ...(pictureColor ?? {}) }
+  return { estimate, volumes: check?.volumes ?? [], memory, ...(pictureColor ?? {}), slicing }
 }
 
 /**
@@ -1102,8 +1193,8 @@ function estimateMemory(m) {
  * and says so: the estimate never fails a render on its own.
  */
 function planDisk({
-  projectJson, pristineProject, settings, workers, motionBlur, segmentSpecs, videoItems, captureScale,
-  renderWidth, renderHeight, projectColorSpace, exportPlan, workspaceDir, segDir,
+  projectJson, pristineProject, settings, workers, motionBlur, segmentSpecs, videoItems, imageItems = [], captureScale,
+  renderWidth, renderHeight, projectColorSpace, exportPlan, workspaceDir, segDir, renderDir = dirname(segDir),
 }) {
   const plan = planChunks(segmentSpecs, { workers, motionBlur })
   const writes = { masters: new Map(), copies: new Map(), cutouts: new Map() }
@@ -1122,7 +1213,7 @@ function planDisk({
     log(`disk estimate: could not plan the source files this render writes (${err.message}); counting none`)
   }
   const [outWidth, outHeight] = outputSize(settings, videoItems, renderWidth, renderHeight)
-  const estimate = estimateRenderDisk({
+  const inputs = {
     segments: segmentSpecs.map(spec => ({ frames: spec.frameCount, sparse: spec.id === 'captions' })),
     width: renderWidth, height: renderHeight, captureScale,
     workerCount: plan.workerCount, chunkFrames: plan.chunkSize,
@@ -1135,9 +1226,90 @@ function planDisk({
     masters: [...writes.masters.values()],
     copies: [...writes.copies.values()],
     cutouts: [...writes.cutouts.values()],
-  })
+  }
   const scratch = [segDir, ...exportPlan.outputs.map(p => `${p}.segments`)]
-  return { plan, estimate, scratch, reclaimBytes: scratch.reduce((n, dir) => n + dirBytes(dir), 0) }
+  const reclaimBytes = scratch.reduce((n, dir) => n + dirBytes(dir), 0)
+  const unsliced = estimateRenderDisk(inputs)
+  const slicing = planSlicing({
+    inputs, unsliced, segmentSpecs, items: [...imageItems, ...videoItems], fps: settings.fps || 30,
+    renderWidth, renderHeight, captureScale, chunkFrames: plan.chunkSize, projectColorSpace, renderDir, reclaimBytes,
+  })
+  const estimate = slicing.terms ? estimateRenderDisk({ ...inputs, slicing: slicing.terms }) : unsliced
+  return { plan, estimate, scratch, reclaimBytes, slicing }
+}
+
+/**
+ * Whether a render captures its overlays in time slices (§434), and at what
+ * budget: planDisk's part, for the preflight and --estimate alike.
+ *
+ * The slices are planned on the groups compose would make before any
+ * normalize (slice-run.js previewGroups, at the capture canvas), so the plan
+ * is a preview of the one main() makes on the real groups; the budget it
+ * settles on is the one main() uses. The budget is MONTAJ_SLICE_BUDGET_MB or
+ * SLICE_BUDGET_BYTES, never above it, shrunk by slice-plan.js fitBudget to
+ * what the project's disk holds beside everything else the render keeps there
+ * at its peak (sources, compose, and TMPDIR when it shares the disk), with
+ * 1 GB to spare. A render is refused only when even the smallest slice does
+ * not fit beside those with no headroom at all; with headroom short only, it
+ * runs at the smallest slices.
+ *
+ * Unsliced, always, when an HDR render has a card candidate (slice-run.js
+ * hdrCardCandidates): the card probe reads a whole capture. If the planning
+ * throws, the unsliced numbers stand (they err high) and the render goes on.
+ *
+ * Returns `{ sliced, slices, budgetBytes, wantedBytes, freeBytes, peakBytes,
+ * captureBytes, reason, refused, needBytes, terms }`; `terms` (for
+ * estimateRenderDisk's `slicing`) only when sliced.
+ */
+function planSlicing({
+  inputs, unsliced, segmentSpecs, items, fps, renderWidth, renderHeight, captureScale, chunkFrames,
+  projectColorSpace, renderDir, reclaimBytes,
+}) {
+  const wantedBytes = parseSliceBudget(process.env.MONTAJ_SLICE_BUDGET_MB) ?? SLICE_BUDGET_BYTES
+  const px = renderWidth * renderHeight * captureScale * captureScale
+  const captureBytes = inputs.segments.reduce(
+    (n, s) => n + s.frames * px * (s.sparse ? FFV1_CAPTION_BYTES_PER_PIXEL : FFV1_DENSE_BYTES_PER_PIXEL), 0)
+  const off = (reason, extra = {}) => ({
+    sliced: false, slices: 1, budgetBytes: wantedBytes, wantedBytes, freeBytes: null, peakBytes: captureBytes,
+    captureBytes, reason, refused: false, needBytes: null, terms: null, ...extra,
+  })
+  if (segmentSpecs.length === 0) return off(null)
+  if (isHdr(projectColorSpace) && hdrCardCandidates(segmentSpecs).length > 0) {
+    return off('an HDR card candidate needs its whole capture probed')
+  }
+  try {
+    const overlays = plannedDescriptors(segmentSpecs).map((d) => ({ ...d, sparse: d.isCaption === true }))
+    const groups = previewGroups(items, overlays, renderWidth, renderHeight, fps)
+    // What the render keeps on the project's disk besides the captures, and
+    // that disk's free space (checkDiskSpace's reading, reclaim included).
+    const disk = checkDiskSpace({ tmpDir: tmpdir(), projectDir: renderDir, estimate: { tmpBytes: 0, projectBytes: 0 }, reclaimBytes })
+    const freeBytes = disk ? disk.volumes.at(-1).freeBytes : Infinity
+    const fixedBytes = estimateRenderDisk({ ...inputs, segments: [] }).expected.projectBytes
+      + (disk?.volumes.length === 1 ? unsliced.expected.tmpBytes : 0)
+    const floorBytes = 1e9
+    const fit = fitBudget({ groups, overlays, fps, px, wantedBytes, fixedBytes, freeBytes, floorBytes })
+    const known = { freeBytes: Number.isFinite(freeBytes) ? freeBytes : null }
+    // A refusal stands only when the smallest slice does not fit even without
+    // the headroom: a render the disk holds is never turned away for the
+    // margin, it runs at the smallest slices instead.
+    if (fit.refused && fit.needBytes - floorBytes > freeBytes) {
+      return off(null, { ...known, refused: true, needBytes: fit.needBytes })
+    }
+    const plan = fit.plan
+    const budgetBytes = fit.refused ? plan.budgetBytes : fit.budgetBytes
+    if (!(plan.sliced && plan.slices.length > 1)) {
+      // One slice over budget: a timeline no longer than the smallest slice.
+      return off(plan.sliced ? 'the timeline is a single slice at the smallest size' : null, { ...known, budgetBytes })
+    }
+    return {
+      sliced: true, slices: plan.slices.length, budgetBytes, wantedBytes, ...known, peakBytes: plan.peakBytes,
+      captureBytes, reason: null, refused: false, needBytes: null,
+      terms: sliceDiskTerms({ plan, overlays, fps, px, chunkFrames }),
+    }
+  } catch (err) {
+    log(`slicing: could not plan the slices (${err.message}); counting the captures unsliced`)
+    return off(null)
+  }
 }
 
 /**
@@ -2522,26 +2694,37 @@ function log(msg) {
 /**
  * The one JSON line a failed render writes to stderr. `extra` never overrides
  * `error`/`message`, and an empty message is the code; `plan` ({ workers,
- * chunkFrames }, null until the render has planned its chunks) rides along so
- * a failure says how the work was split, each field only when an integer.
+ * chunkFrames, slices, sliceBudgetMB }, null until the render has planned
+ * its chunks or its slices) rides along so a failure says how the work was
+ * split, each field only when an integer.
  */
 function failLine(code, message, extra = {}, plan = null) {
   const { error: _e, message: _m, ...rest } = extra ?? {}
   const line = { error: code, message: message || code, ...rest }
   if (Number.isInteger(plan?.workers)) line.workers = plan.workers
   if (Number.isInteger(plan?.chunkFrames)) line.chunkFrames = plan.chunkFrames
+  // §434: the time slices the render ran (1 unsliced) and their budget in MB.
+  if (Number.isInteger(plan?.slices)) line.slices = plan.slices
+  if (Number.isInteger(plan?.sliceBudgetMB)) line.sliceBudgetMB = plan.sliceBudgetMB
   return JSON.stringify(line)
 }
 
+/** The plan a failure line carries: the chunk plan and the slicing, each once known. */
+function renderPlanFacts() {
+  const chunks = currentRenderPlan()
+  if (!chunks && !renderSlicing) return null
+  return { ...(chunks ?? {}), ...(renderSlicing ?? {}) }
+}
+
 function fail(code, message, extra = {}) {
-  process.stderr.write(failLine(code, message, extra, currentRenderPlan()) + '\n')
+  process.stderr.write(failLine(code, message, extra, renderPlanFacts()) + '\n')
   process.exit(1)
 }
 
 export { normalizeIfNeeded, killNormalizeTree, failLine, stampSourceProbes, getTotalDurationSeconds, collectPuppeteerSegments, collectAllItems, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath,
          EXPORT_MODES, resolveExportMode, resolvePictureColorSpace, fillsFrameOpaquely, resolveSdrCurve, planExport, captureScaleFor,
          // §213: the disk estimate's planning, for its tests.
-         resolveEstimateOverrides, planVideoItemWrites, isConformant, normalizedMasterCache, estimateMain,
+         resolveEstimateOverrides, planVideoItemWrites, isConformant, normalizedMasterCache, estimateMain, planSlicing,
          UNTAGGED_MASTER_MARKER, originalOfSdrMaster,
          // glass-plate.js renders the base composite through the export's own item preparation.
          resolveProjectPaths, validateProjectFiles, repointStaleUntaggedMasters, prepareVideoItems, prepareSdrPass, outputSize,

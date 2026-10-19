@@ -50,8 +50,9 @@ process.env.STUB_FACTS = FACTS
 
 const {
   resolveEstimateOverrides, planVideoItemWrites, isConformant, normalizedMasterCache, estimateMain,
-  buildNormalizedOutputPath, UNTAGGED_MASTER_MARKER,
+  buildNormalizedOutputPath, UNTAGGED_MASTER_MARKER, planSlicing,
 } = await import('../render.js')
+const { estimateRenderDisk } = await import('../disk-space.js')
 const { MASTER_LOOK } = await import('../look.js')
 
 let n = 0
@@ -231,7 +232,10 @@ test('estimateMain: the estimate and the disk it would use, from a draft project
   const p = project({ settings: { resolution: [1080, 1920], fps: 30 } })
   const before = listing(p.dir)
   const r = await estimateMain(p.projectPath, { workers: 2 })
-  assert.deepEqual(Object.keys(r).sort(), ['colorSpace', 'estimate', 'hdrVisible', 'memory', 'volumes'])
+  assert.deepEqual(Object.keys(r).sort(), ['colorSpace', 'estimate', 'hdrVisible', 'memory', 'slicing', 'volumes'])
+  // §434: a 10 s project's captures fit the default budget: unsliced.
+  assert.deepEqual(r.slicing, { sliced: false, slices: 1, budgetMB: 2000, peakBytes: r.slicing.peakBytes })
+  assert.ok(r.slicing.peakBytes > 0)
   // The worker plan: what this machine has available now, so only its shape is fixed here (renderer-memory.test.mjs has the numbers).
   assert.deepEqual(Object.keys(r.memory).sort(), ['asked', 'availableBytes', 'limitedBy', 'perWorkerBytes', 'perWorkerKind', 'reserveBytes', 'workers'])
   assert.equal(r.memory.asked, 2, 'the --workers asked for: 2, over an overlay and the captions')
@@ -295,4 +299,150 @@ test('estimateMain: earlier segments left in render/ count as free space, since 
   } finally {
     delete process.env.MONTAJ_TEST_DISK_FREE_BYTES
   }
+})
+
+/** A 30 s project: three 10 s clips, a full-length overlay, captions over the first 2 s. */
+function longProject({ settings, overlay = {} } = {}) {
+  const { dir, paths } = sources({ 'clip.mov': SDR_444 })
+  writeFileSync(join(dir, 'title.jsx'), 'export default () => null\n')
+  const clip = (id, start) => ({ id, type: 'video', src: 'clip.mov', start, end: start + 10, inPoint: 0, outPoint: 10 })
+  const json = JSON.stringify({
+    version: '0.2', id: 'estimate-long', status: 'draft', name: 'estimate long',
+    settings,
+    tracks: [
+      { id: 'trk-0', items: [clip('a', 0), clip('b', 10), clip('c', 20)] },
+      { id: 'trk-1', items: [{ id: 'ov', type: 'overlay', src: 'title.jsx', start: 0, end: 30, ...overlay }] },
+    ],
+    captions: { style: 'clean', segments: [{ text: 'hello there', start: 0, end: 2, words: [
+      { word: 'hello', start: 0, end: 1 }, { word: 'there', start: 1, end: 2 }] }] },
+    audio: { tracks: [] },
+  }, null, 2)
+  writeFileSync(join(dir, 'project.json'), json)
+  return { dir, paths, json, projectPath: join(dir, 'project.json') }
+}
+
+/** Runs `f` with these env vars set, restoring them after. */
+async function withEnv(vars, f) {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]))
+  Object.assign(process.env, vars)
+  try { return await f() } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+  }
+}
+
+test('estimateMain §434: MONTAJ_SLICE_BUDGET_MB forces slices, and the estimate counts one slice of captures', async () => {
+  const p = longProject({ settings: { resolution: [1080, 1920], fps: 30, colorSpace: 'sdr_bt709' } })
+  const whole = await estimateMain(p.projectPath, { workers: 2 })
+  assert.equal(whole.slicing.sliced, false)
+  const sliced = await withEnv({ MONTAJ_SLICE_BUDGET_MB: '1' }, () => estimateMain(p.projectPath, { workers: 2 }))
+  // Groups end at 2, 10, 20, 30; a slice spans at least 240 frames (8 s at 30 fps).
+  assert.deepEqual(sliced.slicing, { sliced: true, slices: 3, budgetMB: 1, peakBytes: sliced.slicing.peakBytes })
+  // Each slice holds 300 frames of the overlay and of the captions (whose track spans the video).
+  const px = 1080 * 1920
+  assert.equal(sliced.slicing.peakBytes, Math.round(300 * px * 0.2 + 300 * px * 0.015))
+  const captures = 900 * px * 0.2 + 900 * px * 0.015
+  assert.equal(whole.slicing.peakBytes, Math.round(captures))
+  // Expected need: one slice of captures where it was all of them, and a
+  // smaller join (the largest file joined from chunks is a slice's window).
+  const saved = (whole.estimate.expected.projectBytes - sliced.estimate.expected.projectBytes)
+  assert.ok(saved >= captures - sliced.slicing.peakBytes - 1e6, `saved ${saved}`)
+  assert.ok(sliced.estimate.lower.projectBytes < whole.estimate.lower.projectBytes)
+  assert.deepEqual(sliced.estimate.expected.tmpBytes, whole.estimate.expected.tmpBytes)
+  assert.equal(readFileSync(p.projectPath, 'utf8'), p.json, 'never written to project.json')
+})
+
+test('estimateMain §434: an HDR project with a full-canvas card candidate stays unsliced', async () => {
+  const p = longProject({ settings: { resolution: [1080, 1920], fps: 30, colorSpace: 'hdr_hlg', colorSpaceSource: 'explicit' } })
+  const r = await withEnv({ MONTAJ_SLICE_BUDGET_MB: '1' }, () => estimateMain(p.projectPath, { workers: 2 }))
+  assert.equal(r.colorSpace, 'hdr_hlg')
+  assert.equal(r.slicing.sliced, false)
+  assert.equal(r.slicing.slices, 1)
+  // Moved off full canvas, it is no candidate, and the same project slices.
+  const q = longProject({ settings: { resolution: [1080, 1920], fps: 30, colorSpace: 'hdr_hlg', colorSpaceSource: 'explicit' }, overlay: { offsetX: 10 } })
+  const s = await withEnv({ MONTAJ_SLICE_BUDGET_MB: '1' }, () => estimateMain(q.projectPath, { workers: 2 }))
+  assert.equal(s.slicing.sliced, true)
+})
+
+// planSlicing on its own: a 30 s timeline cut at 2, 10, 20 and 30 s, one
+// dense full-length overlay and full-length captions at 1080x1920, 30 fps.
+const PX = 1080 * 1920
+function slicingCase() {
+  const segmentSpecs = [
+    { id: 'overlay-1--ov', startSeconds: 0, endSeconds: 30, frameCount: 900, fps: 30 },
+    { id: 'captions', startSeconds: 0, endSeconds: 30, frameCount: 900, fps: 30, isCaption: true },
+  ]
+  const items = [0, 2, 10, 20].map((start, i, a) => ({ id: `i${i}`, type: 'image', src: '/x.png', start, end: a[i + 1] ?? 30, trackIdx: 0 }))
+  const inputs = {
+    segments: [{ frames: 900, sparse: false }, { frames: 900, sparse: true }], width: 1080, height: 1920,
+    workerCount: 2, chunkFrames: 450, durationSeconds: 30, output: { width: 1080, height: 1920, fps: 30 }, passes: ['sdr_bt709'],
+  }
+  const unsliced = estimateRenderDisk(inputs)
+  const fixed = estimateRenderDisk({ ...inputs, segments: [] }).expected.projectBytes + unsliced.expected.tmpBytes
+  const renderDir = join(WORK, `slicing-${++n}`, 'render')
+  const args = {
+    inputs, unsliced, segmentSpecs, items, fps: 30, renderWidth: 1080, renderHeight: 1920, captureScale: 1,
+    chunkFrames: 450, projectColorSpace: 'sdr_bt709', renderDir, reclaimBytes: 0,
+  }
+  return { args, fixed, slice: 300 * PX * 0.2 + 300 * PX * 0.015, all: 900 * PX * 0.215 }
+}
+
+test('planSlicing §434: room for every capture is unsliced at the default budget', async () => {
+  const c = slicingCase()
+  const r = await withEnv({ MONTAJ_TEST_DISK_FREE_BYTES: String(1e12) }, () => planSlicing(c.args))
+  assert.equal(r.sliced, false)
+  assert.equal(r.budgetBytes, 2e9)
+  assert.equal(r.terms, null)
+  assert.ok(Math.abs(r.captureBytes - c.all) < 1)
+})
+
+test('planSlicing §434: a short disk shrinks the budget to what fits beside the rest', async () => {
+  const c = slicingCase()
+  // Room for 150 MB of captures past the 1 GB floor: less than all of them (401 MB), more than a 10 s slice (134 MB).
+  const free = Math.round(c.fixed + 1e9 + 150e6)
+  const r = await withEnv({ MONTAJ_TEST_DISK_FREE_BYTES: String(free) }, () => planSlicing(c.args))
+  assert.equal(r.sliced, true)
+  assert.equal(r.slices, 3)
+  assert.ok(Math.abs(r.peakBytes - c.slice) < 1)
+  // The largest budget whose plan peaks within the room: below two slices' worth.
+  assert.ok(r.budgetBytes < 2 * c.slice && r.budgetBytes >= c.slice, `budget ${r.budgetBytes}`)
+  assert.equal(r.wantedBytes, 2e9)
+  assert.equal(r.freeBytes, free)
+  assert.equal(r.refused, false)
+  assert.ok(Math.abs(r.terms.peakCaptureBytes - c.slice) < 1)
+})
+
+test('planSlicing §434: refused only when even the smallest slice does not fit without the headroom', async () => {
+  const c = slicingCase()
+  // Short of the floor but holding a slice: runs at the smallest slices.
+  const tight = Math.round(c.fixed + c.slice + 100e6)
+  const t = await withEnv({ MONTAJ_TEST_DISK_FREE_BYTES: String(tight) }, () => planSlicing(c.args))
+  assert.equal(t.refused, false)
+  assert.equal(t.sliced, true)
+  assert.equal(t.slices, 3)
+  // Not even one slice beside the rest: refused, with what it needs and what is free.
+  const none = Math.round(c.fixed + c.slice - 10e6)
+  const r = await withEnv({ MONTAJ_TEST_DISK_FREE_BYTES: String(none) }, () => planSlicing(c.args))
+  assert.equal(r.refused, true)
+  assert.equal(r.sliced, false)
+  assert.equal(r.freeBytes, none)
+  assert.ok(Math.abs(r.needBytes - (c.slice + c.fixed + 1e9)) < 1)
+})
+
+test('planSlicing §434: HDR with a card candidate is unsliced and says why; no overlays, nothing to plan', async () => {
+  const c = slicingCase()
+  const r = await withEnv({ MONTAJ_SLICE_BUDGET_MB: '1' }, () => planSlicing({ ...c.args, projectColorSpace: 'hdr_hlg' }))
+  assert.equal(r.sliced, false)
+  assert.equal(r.reason, 'an HDR card candidate needs its whole capture probed')
+  const sdr = await withEnv({ MONTAJ_SLICE_BUDGET_MB: '1' }, () => planSlicing(c.args))
+  assert.equal(sdr.sliced, true)
+  assert.equal(sdr.budgetBytes, 1e6)
+  const empty = planSlicing({ ...c.args, segmentSpecs: [], inputs: { ...c.args.inputs, segments: [] } })
+  assert.deepEqual([empty.sliced, empty.slices, empty.reason], [false, 1, null])
+})
+
+test('planSlicing §434: a plan that throws counts the captures unsliced, never fails', () => {
+  const c = slicingCase()
+  const r = planSlicing({ ...c.args, items: null })
+  assert.equal(r.sliced, false)
+  assert.equal(r.refused, false)
 })

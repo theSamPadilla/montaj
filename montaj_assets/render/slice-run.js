@@ -26,24 +26,47 @@ const EDGE_EPSILON = 1e-6
  * returns `base`.
  *
  * Every field rides by reference: segment-plan.js hands these very objects to
- * the encoder (buildOverlayFilterParts), which reads offset, scale, scaleX,
- * scaleY, rotation and opacity through geometryFor, and `keyframes` to know a
- * capture is already positioned. scaleX and scaleY are carried as authored
- * (undefined when absent), since geometryFor resolves `?? scale ?? 1`;
- * `layerTrack` and `keyframes` only when the spec has them, so a static
- * overlay keeps no `keyframes` key and takes the byte-identical filter path.
+ * the encoder (buildOverlayFilterParts). Moved here from render.js's loop over
+ * the rendered segments, unchanged.
  */
 export function overlayDescriptor(spec, base) {
   base.offsetX   = spec.offsetX   ?? 0
   base.offsetY   = spec.offsetY   ?? 0
   base.scale     = spec.scale     ?? 1
+  // Same reference-flow argument as rotation below, and the same shape of
+  // partial failure: buildOverlayFilterParts sizes a non-keyframed overlay
+  // from `geometryFor(ov, 'overlay')` read off this object, and that
+  // resolver reads `scaleX`/`scaleY` before falling back to `scale`. Miss
+  // these two lines and a non-uniform overlay renders as a uniform box
+  // while the preview shows it stretched. Carried as authored (undefined
+  // when absent), never defaulted: geometryFor resolves `?? scale ?? 1`.
   base.scaleX    = spec.scaleX
   base.scaleY    = spec.scaleY
+  // rotation must be restated here too: these objects flow BY REFERENCE
+  // through segment-plan.js's `overlays` array (built via activeIn() over
+  // puppeteerSegs, preserving object identity) into buildOverlayFilterParts,
+  // which reads rotation off this very object via geometryFor(ov, 'overlay').
+  // Skipping this line is the worst partial failure: images/videos rotate
+  // correctly while overlays silently don't.
   base.rotation  = spec.rotation  ?? 0
+  // The OTHER half of the missing-overlay-opacity bug. collectPuppeteerSegments
+  // has always collected `opacity` onto the spec, but it stopped here, so even
+  // once buildOverlayFilterParts learned to emit `colorchannelmixer=aa=`, it
+  // would have read `undefined` off every descriptor and emitted nothing. Both
+  // halves are required; neither alone does anything.
   base.opacity   = spec.opacity   ?? 1
   base.opaque    = spec.opaque    ?? false
   base.isCaption = spec.isCaption ?? false
+  // §308 P3: where it stacks among the clips (segment-plan.js). Captions
+  // carry none: they are always last.
   if (spec.layerTrack !== undefined) base.layerTrack = spec.layerTrack
+  // Same reference-flow argument as rotation directly above, and the same
+  // worst-case partial failure: buildOverlayFilterParts reads `keyframes`
+  // off this object to decide that the capture is already positioned. Miss
+  // this line and an animated overlay gets its transform applied TWICE:
+  // once baked into the pixels, once by the compositor. Assigned only when
+  // the spec actually has tracks, so a static overlay's descriptor keeps no
+  // `keyframes` key at all and takes the byte-identical filter path.
   if (spec.keyframes?.length) base.keyframes = spec.keyframes
   return base
 }

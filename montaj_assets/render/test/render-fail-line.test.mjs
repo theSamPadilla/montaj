@@ -51,6 +51,16 @@ test('failLine: workers and chunkFrames only when integers; an empty message is 
   assert.deepEqual(one, { error: 'render_error', message: 'render_error', workers: 3 })
 })
 
+test('failLine §434: slices and sliceBudgetMB ride along when integers, after the chunk plan', () => {
+  const line = failLine('render_error', 'x', {}, { workers: 4, chunkFrames: 240, slices: 10, sliceBudgetMB: 2000 })
+  assert.equal(line, '{"error":"render_error","message":"x","workers":4,"chunkFrames":240,"slices":10,"sliceBudgetMB":2000}')
+  // Unsliced is one slice; known before any chunk plan.
+  assert.deepEqual(JSON.parse(failLine('insufficient_disk', 'y', {}, { slices: 1, sliceBudgetMB: 2000 })),
+    { error: 'insufficient_disk', message: 'y', slices: 1, sliceBudgetMB: 2000 })
+  const bad = JSON.parse(failLine('render_error', 'z', {}, { slices: 1.5, sliceBudgetMB: NaN }))
+  assert.deepEqual(bad, { error: 'render_error', message: 'z' })
+})
+
 test('currentRenderPlan is null before any render plans', () => {
   assert.equal(currentRenderPlan(), null)
 })
