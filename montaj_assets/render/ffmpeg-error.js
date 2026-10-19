@@ -49,9 +49,10 @@ export function ffmpegErrorTail(stderr, lines = 10) {
  *   statfs?: (dir: string) => {bavail: number|bigint, bsize: number|bigint}}} o
  * @returns {string}
  */
-export function describeFfmpegExit({ status, signal, timedOut, timeoutMs, stalledMs, stderr, error, outputDir, statfs = statfsSync } = {}) {
+export function describeFfmpegExit({ status, signal, timedOut, timeoutMs, stalledMs, hardCapMs, stderr, error, outputDir, statfs = statfsSync } = {}) {
   let how
   if (stalledMs) how = `no output for ${Math.round(stalledMs / 1000)} s (stalled)`
+  else if (timedOut && hardCapMs) how = `timed out after ${Math.round(hardCapMs / 1000)} s`
   else if (timedOut) how = timeoutMs ? `timed out after ${Math.round(timeoutMs / 1000)} s` : 'timed out'
   else if (signal) how = `killed by ${signal}`
   else how = `exit ${status}`

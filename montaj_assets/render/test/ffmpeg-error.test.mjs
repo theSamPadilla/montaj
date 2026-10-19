@@ -104,6 +104,10 @@ test('describeFfmpegExit: exit, signal, timeout, stall', () => {
   assert.match(describeFfmpegExit({ status: null, signal: 'SIGKILL', timedOut: true, stalledMs: 300_000, stderr: 'x' }), /^no output for 300 s \(stalled\)\nx$/)
 })
 
+test('describeFfmpegExit: a hard cap names the cap, not the stall limit', () => {
+  assert.match(describeFfmpegExit({ status: null, signal: 'SIGKILL', timedOut: true, hardCapMs: 14_400_000, timeoutMs: 300_000, stderr: 'x' }), /^timed out after 14400 s\nx$/)
+})
+
 test('describeFfmpegExit: ENOSPC leads with free space from statfs', () => {
   const statfs = (d) => { assert.equal(d, '/out'); return { bavail: 2_500_000, bsize: 1000 } }
   const msg = describeFfmpegExit({ status: 1, stderr: 'av_interleaved_write_frame(): No space left on device', outputDir: '/out', statfs })
@@ -127,6 +131,8 @@ test('runFfmpeg: a healthy long run is capped by hardMs, not the stall limit', a
     assert.equal(r.timedOut, true)
     assert.equal(r.signal, 'SIGKILL')
     assert.equal(r.stalledMs, undefined)
+    assert.equal(r.hardCapMs, 2500)
+    assert.match(describeFfmpegExit({ ...r, timeoutMs: 60_000 }), /^timed out after 3 s\n/)
     assert.ok(Date.now() - t0 < 10_000)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

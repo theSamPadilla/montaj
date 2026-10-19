@@ -173,11 +173,12 @@ export function runFfmpeg(args, timeoutMs, scriptDir, { hardMs = 4 * 3600_000 } 
     let stderr = ''
     let timedOut = false
     let stalledMs
+    let hardCapMs
     // `timeoutMs` is a STALL limit: ffmpeg writes progress about every second,
     // so every stderr chunk resets it. `hardMs` caps the whole run.
     const kill = () => { timedOut = true; proc.kill('SIGKILL') }
     let timer = setTimeout(() => { stalledMs = timeoutMs; kill() }, timeoutMs)
-    const hardTimer = setTimeout(kill, hardMs)
+    const hardTimer = setTimeout(() => { hardCapMs = hardMs; kill() }, hardMs)
     proc.stderr.on('data', (d) => {
       stderr += d.toString('utf8')
       if (timedOut) return
@@ -194,7 +195,7 @@ export function runFfmpeg(args, timeoutMs, scriptDir, { hardMs = 4 * 3600_000 } 
       clearTimeout(timer)
       clearTimeout(hardTimer)
       script.cleanup()
-      resolve({ status, signal: timedOut ? 'SIGKILL' : signal, timedOut, ...(stalledMs ? { stalledMs } : {}), stderr })
+      resolve({ status, signal: timedOut ? 'SIGKILL' : signal, timedOut, ...(stalledMs ? { stalledMs } : {}), ...(hardCapMs && !stalledMs ? { hardCapMs } : {}), stderr })
     })
   })
 }
