@@ -152,11 +152,12 @@ export function sliceDirName(k) {
 /**
  * The disk terms of a slice plan, for disk-space.js estimateRenderDisk's
  * `slicing`: the captures of the peak slice at the expected rates, the
- * largest one file of it that is joined from chunks (it is on disk twice
- * while joined), and the peak slice's frames at the sparse rate (the lower
+ * largest single overlay window in it (a window may be joined from chunks,
+ * and planChunks sizes chunks on the longest window of a slice, so any window
+ * may be: it is on disk twice while joined, the safe upper bound), and the peak slice's frames at the sparse rate (the lower
  * bound). `overlays` carry startSeconds, endSeconds and `sparse`.
  */
-export function sliceDiskTerms({ plan, overlays, fps, px, chunkFrames = Infinity }) {
+export function sliceDiskTerms({ plan, overlays, fps, px }) {
   let peak = null
   for (const s of plan.slices) if (!peak || s.bytes > peak.bytes) peak = s
   if (!peak) return { peakCaptureBytes: 0, peakJoinBytes: 0, lowerCaptureBytes: 0 }
@@ -169,7 +170,7 @@ export function sliceDiskTerms({ plan, overlays, fps, px, chunkFrames = Infinity
     if (n <= 0) continue
     frames += n
     const bytes = n * px * (o.sparse ? FFV1_CAPTION_BYTES_PER_PIXEL : FFV1_DENSE_BYTES_PER_PIXEL)
-    if (n > chunkFrames) join = Math.max(join, bytes)
+    join = Math.max(join, bytes)
   }
   return { peakCaptureBytes: peak.bytes, peakJoinBytes: join, lowerCaptureBytes: frames * px * FFV1_SPARSE_BYTES_PER_PIXEL }
 }

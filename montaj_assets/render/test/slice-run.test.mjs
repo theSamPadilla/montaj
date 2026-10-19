@@ -214,7 +214,7 @@ test('hdrCardCandidates: full-canvas, not opaque, not a caption, no keyframes, f
   assert.deepEqual(hdrCardCandidates([]), [])
 })
 
-test('sliceDiskTerms: the peak slice, its largest joined file, its frames at the sparse rate', () => {
+test('sliceDiskTerms: the peak slice, its largest window (the join term), its frames at the sparse rate', () => {
   const px = 1080 * 1920
   const overlays = [
     { startSeconds: 0, endSeconds: 20, sparse: false },
@@ -224,7 +224,7 @@ test('sliceDiskTerms: the peak slice, its largest joined file, its frames at the
   const groups = groupsOf([0, 5, 10, 15, 20])
   const plan = planSlices({ groups, overlays, fps: FPS, px, budgetBytes: 1e8, minSliceFrames: 1 })
   assert.equal(plan.sliced, true)
-  const t = sliceDiskTerms({ plan, overlays, fps: FPS, px, chunkFrames: 100 })
+  const t = sliceDiskTerms({ plan, overlays, fps: FPS, px })
   assert.equal(t.peakCaptureBytes, plan.peakBytes)
   // The peak slice holds the short overlay too; the dense full-length window is the largest joined file.
   const peak = plan.slices.find((s) => s.bytes === plan.peakBytes)
@@ -233,8 +233,9 @@ test('sliceDiskTerms: the peak slice, its largest joined file, its frames at the
   const sparseFrames = 2 * frames + Math.max(0, Math.min(16 * FPS, Math.round(peak.end * FPS)) - Math.max(15 * FPS, Math.round(peak.start * FPS)))
   assert.equal(t.lowerCaptureBytes, sparseFrames * px * FFV1_SPARSE_BYTES_PER_PIXEL)
   assert.ok(FFV1_CAPTION_BYTES_PER_PIXEL < FFV1_DENSE_BYTES_PER_PIXEL)
-  // No window over the chunk size: nothing is joined.
-  assert.equal(sliceDiskTerms({ plan, overlays, fps: FPS, px }).peakJoinBytes, 0)
+  // chunkFrames is ignored: chunks are sized per slice, so any window may be joined.
+  assert.equal(sliceDiskTerms({ plan, overlays, fps: FPS, px, chunkFrames: 1e9 }).peakJoinBytes, t.peakJoinBytes)
+  assert.ok(t.peakJoinBytes > 0)
 })
 
 test('slicingLine: the sliced and unsliced lines, never a phase marker', () => {
