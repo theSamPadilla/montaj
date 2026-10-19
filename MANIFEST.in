@@ -25,6 +25,13 @@ include docs/CONNECTORS.md
 include docs/PROFILES.md
 include docs/RENDER.md
 include docs/UI.md
+# The schema references. An agent reading a project asks for project.md by name.
+include docs/schemas/color_space.md
+include docs/schemas/lyric-phrase.md
+include docs/schemas/overlay.md
+include docs/schemas/project.md
+include docs/schemas/step.md
+include docs/schemas/workflow.md
 
 # Bundled assets — Node render engine, Vite UI, MCP server.
 # Built artifacts (node_modules/, ui/dist/) are NOT shipped — `montaj install ui`
