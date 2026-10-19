@@ -411,21 +411,42 @@ test('planSlicing §434: a short disk shrinks the budget to what fits beside the
   assert.ok(Math.abs(r.terms.peakCaptureBytes - c.slice) < 1)
 })
 
-test('planSlicing §434: refused only when even the smallest slice does not fit without the headroom', async () => {
+test('planSlicing §434: refused only on lower bounds, never on expected figures or headroom', async () => {
   const c = slicingCase()
-  // Short of the floor but holding a slice: runs at the smallest slices.
-  const tight = Math.round(c.fixed + c.slice + 100e6)
+  const noCaptures = estimateRenderDisk({ ...c.args.inputs, segments: [] })
+  const lowerFixed = noCaptures.lower.projectBytes + c.args.unsliced.lower.tmpBytes
+  const lowerSlice = (300 + 300) * PX * 0.002
+  // The expected figures do not fit (fixed + slice), the lower bounds do: it runs at the smallest slices.
+  const tight = Math.round(lowerFixed + lowerSlice + 5e6)
   const t = await withEnv({ MONTAJ_TEST_DISK_FREE_BYTES: String(tight) }, () => planSlicing(c.args))
   assert.equal(t.refused, false)
   assert.equal(t.sliced, true)
   assert.equal(t.slices, 3)
-  // Not even one slice beside the rest: refused, with what it needs and what is free.
-  const none = Math.round(c.fixed + c.slice - 10e6)
+  // Not even the lower bound of one slice beside the rest: refused, with what it needs and what is free.
+  const none = Math.round(lowerFixed + lowerSlice - 10e6)
   const r = await withEnv({ MONTAJ_TEST_DISK_FREE_BYTES: String(none) }, () => planSlicing(c.args))
   assert.equal(r.refused, true)
   assert.equal(r.sliced, false)
   assert.equal(r.freeBytes, none)
-  assert.ok(Math.abs(r.needBytes - (c.slice + c.fixed + 1e9)) < 1)
+  assert.ok(Math.abs(r.needBytes - (lowerSlice + lowerFixed)) < 1)
+})
+
+test('planSlicing §434: a render that passes the lower-bound preflight is not refused by slicing', async () => {
+  // 10 s, 1080x1920, one small overlay: captures ~83 MB, far under the budget.
+  const segmentSpecs = [{ id: 'overlay-1--ov', startSeconds: 0, endSeconds: 10, frameCount: 300, fps: 30 }]
+  const items = [{ id: 'i0', type: 'image', src: '/x.png', start: 0, end: 10, trackIdx: 0 }]
+  const inputs = { segments: [{ frames: 300, sparse: false }], width: 1080, height: 1920, workerCount: 2, chunkFrames: 450,
+    durationSeconds: 10, output: { width: 1080, height: 1920, fps: 30 }, passes: ['sdr_bt709'] }
+  const unsliced = estimateRenderDisk(inputs)
+  const lower = unsliced.lower.tmpBytes + unsliced.lower.projectBytes
+  const expected = unsliced.expected.tmpBytes + unsliced.expected.projectBytes
+  const renderDir = join(WORK, `slicing-${++n}`, 'render')
+  for (const free of [lower + 1e6, (lower + expected) / 2, expected - 1e6]) {
+    const r = await withEnv({ MONTAJ_TEST_DISK_FREE_BYTES: String(Math.round(free)) }, () => planSlicing({
+      inputs, unsliced, segmentSpecs, items, fps: 30, renderWidth: 1080, renderHeight: 1920, captureScale: 1,
+      chunkFrames: 450, projectColorSpace: 'sdr_bt709', renderDir, reclaimBytes: 0 }))
+    assert.equal(r.refused, false, `${Math.round(free / 1e6)} MB free`)
+  }
 })
 
 test('planSlicing §434: HDR with a card candidate is unsliced and says why; no overlays, nothing to plan', async () => {

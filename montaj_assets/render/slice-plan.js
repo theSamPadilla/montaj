@@ -14,6 +14,7 @@
 import {
   FFV1_CAPTION_BYTES_PER_PIXEL,
   FFV1_DENSE_BYTES_PER_PIXEL,
+  FFV1_SPARSE_BYTES_PER_PIXEL,
 } from './disk-space.js'
 
 // The default budget for one slice's captures, and the ceiling: a budget is
@@ -41,6 +42,19 @@ export function sliceBytes(overlays, a, b, fps, px) {
     total += (to - from) * px * rate
   }
   return total
+}
+
+// The least a slice's captures can take: its frames, every overlay, at the
+// sparse rate (the lower bound disk-space.js prices captures at).
+function sliceLowerBytes(overlays, a, b, fps, px) {
+  const end = Math.round(b * fps)
+  const begin = Math.round(a * fps)
+  let frames = 0
+  for (const o of overlays) {
+    const n = Math.min(Math.round(o.endSeconds * fps), end) - Math.max(Math.round(o.startSeconds * fps), begin)
+    if (n > 0) frames += n
+  }
+  return frames * px * FFV1_SPARSE_BYTES_PER_PIXEL
 }
 
 function checkBudget(budgetBytes) {
@@ -134,6 +148,7 @@ export function fitBudget({
   px,
   wantedBytes = SLICE_BUDGET_BYTES,
   fixedBytes = 0,
+  lowerFixedBytes = fixedBytes,
   freeBytes = Infinity,
   floorBytes = 1e9,
   minSliceFrames = MIN_SLICE_FRAMES,
@@ -149,14 +164,11 @@ export function fitBudget({
   // A budget of one byte puts every group in its own slice, merged only up to
   // the minimum frames: the smallest peak this timeline can reach.
   const minimum = planAt(1)
-  if (minimum.peakBytes > room) {
-    return {
-      refused: true,
-      needBytes: minimum.peakBytes + fixedBytes + floorBytes,
-      freeBytes,
-      plan: minimum,
-    }
+  const lowerPeak = Math.max(...minimum.slices.map((sl) => sliceLowerBytes(overlays, sl.start, sl.end, fps, px)))
+  if (lowerPeak + lowerFixedBytes > freeBytes) {
+    return { refused: true, needBytes: lowerPeak + lowerFixedBytes, freeBytes, plan: minimum }
   }
+  if (minimum.peakBytes > room) return { budgetBytes: minimum.budgetBytes, plan: minimum, refused: false }
 
   let lo = 1
   let hi = wanted

@@ -1249,9 +1249,10 @@ function planDisk({
  * SLICE_BUDGET_BYTES, never above it, shrunk by slice-plan.js fitBudget to
  * what the project's disk holds beside everything else the render keeps there
  * at its peak (sources, compose, and TMPDIR when it shares the disk), with
- * 1 GB to spare. A render is refused only when even the smallest slice does
- * not fit beside those with no headroom at all; with headroom short only, it
- * runs at the smallest slices.
+ * 1 GB to spare. Those expected figures only choose the budget. A render is
+ * refused on lower bounds only, as the unsliced preflight is (the smallest
+ * slice at the sparse rate beside the lower bound of the rest, no headroom);
+ * anything the lower bounds hold runs, at the smallest slices if need be.
  *
  * Unsliced, always, when an HDR render has a card candidate (slice-run.js
  * hdrCardCandidates): the card probe reads a whole capture. If the planning
@@ -1284,19 +1285,21 @@ function planSlicing({
     // that disk's free space (checkDiskSpace's reading, reclaim included).
     const disk = checkDiskSpace({ tmpDir: tmpdir(), projectDir: renderDir, estimate: { tmpBytes: 0, projectBytes: 0 }, reclaimBytes })
     const freeBytes = disk ? disk.volumes.at(-1).freeBytes : Infinity
-    const fixedBytes = estimateRenderDisk({ ...inputs, segments: [] }).expected.projectBytes
-      + (disk?.volumes.length === 1 ? unsliced.expected.tmpBytes : 0)
+    const noCaptures = estimateRenderDisk({ ...inputs, segments: [] })
+    const oneVolume = disk?.volumes.length === 1
+    const fixedBytes = noCaptures.expected.projectBytes + (oneVolume ? unsliced.expected.tmpBytes : 0)
+    // The refusal is priced on lower bounds, as the unsliced preflight is.
+    const lowerFixedBytes = noCaptures.lower.projectBytes + (oneVolume ? unsliced.lower.tmpBytes : 0)
     const floorBytes = 1e9
-    const fit = fitBudget({ groups, overlays, fps, px, wantedBytes, fixedBytes, freeBytes, floorBytes })
+    const fit = fitBudget({ groups, overlays, fps, px, wantedBytes, fixedBytes, lowerFixedBytes, freeBytes, floorBytes })
     const known = { freeBytes: Number.isFinite(freeBytes) ? freeBytes : null }
-    // A refusal stands only when the smallest slice does not fit even without
-    // the headroom: a render the disk holds is never turned away for the
-    // margin, it runs at the smallest slices instead.
-    if (fit.refused && fit.needBytes - floorBytes > freeBytes) {
+    // Refused on lower bounds only (fitBudget): a render the disk can hold at
+    // all runs, at the smallest slices when the expected figures do not fit.
+    if (fit.refused) {
       return off(null, { ...known, refused: true, needBytes: fit.needBytes })
     }
     const plan = fit.plan
-    const budgetBytes = fit.refused ? plan.budgetBytes : fit.budgetBytes
+    const budgetBytes = fit.budgetBytes
     if (!(plan.sliced && plan.slices.length > 1)) {
       // One slice over budget: a timeline no longer than the smallest slice.
       return off(plan.sliced ? 'the timeline is a single slice at the smallest size' : null, { ...known, budgetBytes })
@@ -1304,7 +1307,7 @@ function planSlicing({
     return {
       sliced: true, slices: plan.slices.length, budgetBytes, wantedBytes, ...known, peakBytes: plan.peakBytes,
       captureBytes, reason: null, refused: false, needBytes: null,
-      terms: sliceDiskTerms({ plan, overlays, fps, px, chunkFrames }),
+      terms: sliceDiskTerms({ plan, overlays, fps, px }),
     }
   } catch (err) {
     log(`slicing: could not plan the slices (${err.message}); counting the captures unsliced`)

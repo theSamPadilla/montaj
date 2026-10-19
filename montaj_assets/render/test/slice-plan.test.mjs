@@ -12,6 +12,7 @@ import {
   fitBudget,
   parseSliceBudget,
 } from '../slice-plan.js'
+import { FFV1_SPARSE_BYTES_PER_PIXEL } from '../disk-space.js'
 
 const FPS = 60
 const PX = 1920 * 1080
@@ -129,11 +130,21 @@ test('fitBudget shrinks when free space is short', () => {
 
 test('fitBudget refuses with the bytes needed when the minimum slice cannot fit', () => {
   const groups = groupsOf(4, 5) // minimum slice: one 300-frame group
-  const base = { groups, overlays: [dense(0, 20)], fps: FPS, px: PX, fixedBytes: 2e9, floorBytes: 1e9 }
-  const r = fitBudget({ ...base, freeBytes: 3.1e9 })
+  const base = { groups, overlays: [dense(0, 20)], fps: FPS, px: PX, fixedBytes: 2e9, lowerFixedBytes: 2e9, floorBytes: 1e9 }
+  const lowerSlice = 300 * PX * FFV1_SPARSE_BYTES_PER_PIXEL
+  const r = fitBudget({ ...base, freeBytes: 2e9 + lowerSlice - 1 })
   assert.equal(r.refused, true)
-  assert.equal(r.needBytes, 300 * DENSE_FRAME + 2e9 + 1e9)
-  assert.equal(r.freeBytes, 3.1e9)
+  assert.equal(r.needBytes, lowerSlice + 2e9)
+  assert.equal(r.freeBytes, 2e9 + lowerSlice - 1)
+})
+
+test('fitBudget never refuses on expected figures: lower bounds hold, so it runs at the minimum plan', () => {
+  const groups = groupsOf(4, 5)
+  const base = { groups, overlays: [dense(0, 20)], fps: FPS, px: PX, fixedBytes: 2e9, lowerFixedBytes: 0.1e9, floorBytes: 1e9 }
+  // Expected need (300 dense frames + 3 GB) is far over 3.1 GB; the lower bound is far under it.
+  const r = fitBudget({ ...base, freeBytes: 3.1e9 })
+  assert.equal(r.refused, false)
+  assert.equal(r.plan.slices.length, 4)
 })
 
 test('fitBudget never exceeds 2 GB', () => {
