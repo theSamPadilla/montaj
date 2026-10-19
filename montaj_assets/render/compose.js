@@ -42,8 +42,24 @@ function clog(msg) { process.stderr.write(`${C.green}[montaj compose]${C.reset} 
 /**
  * Main entry point — replaces compose() from compose.js.
  * Same signature for drop-in compatibility with render.js.
+ *
+ * Chains the three phases below. They are exported separately so a caller can
+ * encode groups in batches and delete overlay captures between them.
  */
-export async function compose({
+export async function compose(opts) {
+  const plan = await planCompose(opts)
+  if (plan.empty) return { outputPath: plan.outputPath, leadingGap: 0 }
+  startCompose(plan)
+  const encoded = await encodeComposeGroups(plan, plan.groups.map((_, i) => i))
+  return finishCompose(plan, encoded)
+}
+
+/**
+ * Phase 1: everything before the first encode. Pure planning plus the logs.
+ * Returns the plan object the other phases take; `empty: true` when there is
+ * nothing to render.
+ */
+export async function planCompose({
   projectJson,
   puppeteerSegments = [],
   imageItems = [],
@@ -90,10 +106,10 @@ export async function compose({
 
   if (segments.length === 0) {
     clog('no segments to render')
-    // Same shape as the success return below — an empty plan has no gap. Kept
-    // uniform so `const { leadingGap } = await compose(...)` can't silently
-    // destructure `undefined` off a bare string on this path.
-    return { outputPath, leadingGap: 0 }
+    // compose() returns the same shape as its success path — an empty plan has
+    // no gap. Kept uniform so `const { leadingGap } = await compose(...)` can't
+    // silently destructure `undefined` off a bare string on this path.
+    return { empty: true, outputPath, leadingGap: 0, groups: [], segments, sdrCurve }
   }
 
   // ── RESPECT A LEADING GAP ───────────────────────────────────────────────
@@ -165,9 +181,19 @@ export async function compose({
       + `${joined.length} segment(s) of at least ${_minSegmentFrames} frames`)
   }
 
-  // 2. Encode each segment
+  return {
+    empty: false, groups, segments, leadingGap, vw, vh, fps, projectColorSpace,
+    audioTracks, loudness, hasAudio, outputPath, sdrCurve,
+    segDir: outputPath + '.segments',
+  }
+}
+
+/**
+ * Phase 2a: create the output and segment directories, wiping stale segments.
+ */
+export function startCompose(plan) {
+  const { outputPath, segDir } = plan
   mkdirSync(dirname(outputPath), { recursive: true })
-  const segDir = outputPath + '.segments'
   // WIPE stale segments from a previous (possibly partial) render before
   // (re)creating the directory. Without this, leftover seg-NNNN.mp4 files from
   // a prior failed render persist and the segment count from this run won't
@@ -177,30 +203,54 @@ export async function compose({
   // chunks) at the corresponding stage.
   rmSync(segDir, { recursive: true, force: true })
   mkdirSync(segDir, { recursive: true })
+}
 
+/**
+ * Phase 2b: encode the groups at `indices` (indices into plan.groups).
+ *
+ * `overlaysFor(overlay)` optionally maps every overlay object of those groups'
+ * parts for this encode only (e.g. to point webmPath at a slice file). The
+ * shared overlay objects are never mutated: parts are cloned for the call.
+ * `_encodeGroup` is a test hook.
+ *
+ * @returns {Promise<Array<{index:number, path:string, start:number, end:number}>>}
+ */
+export async function encodeComposeGroups(plan, indices, { overlaysFor, _encodeGroup = encodeSegmentGroup } = {}) {
+  const { groups, segDir, projectColorSpace, sdrCurve } = plan
   // Encode up to SEGMENT_WORKERS segments concurrently. pMap returns results in
-  // input order, so concatSegments below still joins them in timeline order; each
-  // segment writes a distinct seg-NNNN.mp4, so concurrent encodes never collide.
-  const encoded = await pMap(groups, async (group, i) => {
+  // input order; each segment writes a distinct seg-NNNN.mp4, so concurrent
+  // encodes never collide.
+  return pMap(indices, async (index) => {
+    const group = groups[index]
     // Stamp project color space onto each segment so the encoder knows what
     // codec/pix_fmt/color metadata to emit. planSegments doesn't know about
     // color space; that's a project-level concern threaded through here.
     for (const part of group.parts) part.colorSpace = projectColorSpace
-    const segPath = join(segDir, `seg-${String(i).padStart(4, '0')}.mp4`)
+    const segPath = join(segDir, `seg-${String(index).padStart(4, '0')}.mp4`)
     const items = new Set(group.parts.flatMap(p => p.items)).size
     const overlays = new Set(group.parts.flatMap(p => p.overlays)).size
 
-    clog(`segment ${i + 1}/${groups.length} (${group.start.toFixed(2)}-${group.end.toFixed(2)}s): ` +
+    clog(`segment ${index + 1}/${groups.length} (${group.start.toFixed(2)}-${group.end.toFixed(2)}s): ` +
          `${items} item(s), ${overlays} overlay(s)` +
          (group.parts.length > 1 ? `, ${group.parts.length} short parts` : ''))
 
-    await encodeSegmentGroup(group, segPath, { sdrCurve })
-    return { path: segPath, start: group.start, end: group.end }
+    const toEncode = overlaysFor
+      ? { ...group, parts: group.parts.map(p => ({ ...p, overlays: p.overlays.map(overlaysFor) })) }
+      : group
+    await _encodeGroup(toEncode, segPath, { sdrCurve })
+    return { index, path: segPath, start: group.start, end: group.end }
   }, SEGMENT_WORKERS)
+}
 
+/**
+ * Phase 3: concat, mix audio, poster, remove the segments.
+ */
+export function finishCompose(plan, encoded) {
+  const { outputPath, segDir, hasAudio, audioTracks, loudness, projectColorSpace, sdrCurve, leadingGap } = plan
+  const sorted = [...encoded].sort((x, y) => x.index - y.index)
   // 3. Concat all segments
   const preMixPath = hasAudio ? outputPath.replace(/(\.\w+)$/, '_premix$1') : outputPath
-  concatSegments(encoded, preMixPath)
+  concatSegments(sorted, preMixPath)
 
   // 4. Mix independent audio tracks (concat output guaranteed to have audio
   //    because every segment produces AAC 48kHz — either from source or anullsrc)
