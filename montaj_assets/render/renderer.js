@@ -79,6 +79,31 @@ export function resolveChunkSize(longest, targetWorkers, subframes, configChunkS
  * @returns {Promise<Array<{ id: string, webmPath: string, startSeconds: number, endSeconds: number }>>}
  */
 /**
+ * §434: the frames of an overlay one call captures. A segment with `frameFrom`
+ * and `frameTo` (indices relative to the overlay's own start, 0 <= from < to <=
+ * frameCount) is cut only over that window; without them it is the whole
+ * overlay, as before.
+ */
+function windowOf(seg) {
+  const from = seg.frameFrom ?? 0
+  const to   = seg.frameTo ?? seg.frameCount
+  return { from, to, length: to - from }
+}
+
+/**
+ * The output frames the jobs of `segments` write: what a render-wide
+ * createBakeProgress counter is sized with when it spans several
+ * renderAllSegments calls (config.bakeProgress).
+ *
+ * @param {object[]} segments
+ * @param {object} [config]
+ * @returns {number}
+ */
+export function bakeTotal(segments, config = {}) {
+  return planChunks(segments, config).jobs.reduce((n, j) => n + (j.frameEnd - j.frameStart), 0)
+}
+
+/**
  * The chunk plan renderAllSegments runs: every segment cut into chunks of
  * `chunkSize` frames, and how many browser workers capture them at once. Also
  * what render.js's disk check (disk-space.js, §128) sizes its estimate from.
@@ -101,7 +126,7 @@ export function resolveChunkSize(longest, targetWorkers, subframes, configChunkS
  */
 export function planChunks(segments, config = {}) {
   const userConfig    = readMontajConfig()
-  const longest       = segments.reduce((m, s) => Math.max(m, s.frameCount), 0)
+  const longest       = segments.reduce((m, s) => Math.max(m, windowOf(s).length), 0)
   const targetWorkers = config.workers ?? userConfig.render?.workers ?? os.cpus().length
   // Computed before chunkSize so the default can size on sub-frames — see
   // resolveChunkSize's doc comment.
@@ -119,15 +144,16 @@ export function planChunks(segments, config = {}) {
   for (const seg of segments) {
     const opaque = seg.opaque ?? false
     const segChunk = isScene3dSegment(seg) ? chunk3d : chunkSize
-    if (seg.frameCount > segChunk) {
-      const numChunks = Math.ceil(seg.frameCount / segChunk)
+    const { from, to, length } = windowOf(seg)
+    if (length > segChunk) {
+      const numChunks = Math.ceil(length / segChunk)
       for (let i = 0; i < numChunks; i++) {
-        const frameStart = i * segChunk
-        const frameEnd   = Math.min(frameStart + segChunk, seg.frameCount)
+        const frameStart = from + i * segChunk
+        const frameEnd   = Math.min(frameStart + segChunk, to)
         jobs.push({ ...seg, opaque, subframes, frameStart, frameEnd, chunkIndex: i, totalChunks: numChunks })
       }
     } else {
-      jobs.push({ ...seg, opaque, subframes, frameStart: 0, frameEnd: seg.frameCount, chunkIndex: 0, totalChunks: 1 })
+      jobs.push({ ...seg, opaque, subframes, frameStart: from, frameEnd: to, chunkIndex: 0, totalChunks: 1 })
     }
   }
 
@@ -246,7 +272,9 @@ export async function renderAllSegments(segments, config = {}) {
 
   const { jobs, workerCount, chunkSize, memory, targetWorkers } = planChunks(segments, config)
   lastPlan = { workers: workerCount, chunkFrames: chunkSize }
-  const noteFrame = createBakeProgress({ total: jobs.reduce((n, j) => n + (j.frameEnd - j.frameStart), 0), log })
+  // §434: a render cut in time slices passes one counter that spans every call.
+  const noteFrame = config.bakeProgress
+    ?? createBakeProgress({ total: jobs.reduce((n, j) => n + (j.frameEnd - j.frameStart), 0), log })
   log(`workers=${workerCount} chunk=${chunkSize}`)
   for (const line of memoryPlanLines(memory)) log(line)
   // Test seams: the browser a worker runs and how it renders a chunk.
@@ -422,7 +450,12 @@ export async function renderAllSegments(segments, config = {}) {
       mkdirSync(dirname(seg.outputPath), { recursive: true })
       webmPath = concatChunks(chunks, seg.outputPath)
     }
-    results.push({ id: seg.id, webmPath, startSeconds: seg.startSeconds, endSeconds: seg.endSeconds, opaque: seg.opaque ?? false })
+    // A windowed segment's file covers only its window: its times are the window's.
+    const windowed = seg.frameFrom != null || seg.frameTo != null
+    const { from, to } = windowOf(seg)
+    const startSeconds = windowed ? seg.startSeconds + from / seg.fps : seg.startSeconds
+    const endSeconds   = windowed ? seg.startSeconds + to / seg.fps : seg.endSeconds
+    results.push({ id: seg.id, webmPath, startSeconds, endSeconds, opaque: seg.opaque ?? false })
   }
 
   return results
@@ -719,6 +752,7 @@ export async function renderChunk(worker, job, { onFrame } = {}) {
 
 async function renderChunkOnce(worker, job, { onFrame } = {}) {
   const { id, chunkIndex, outputPath } = job
+  // Unique per slice of one overlay (§434): callers give each slice its own outputPath, and chunkIndex restarts per call.
   const chunkMkv = outputPath.replace(/\.\w+$/, '') + `-chunk-${chunkIndex}.mkv`
   mkdirSync(dirname(chunkMkv), { recursive: true })
 
@@ -1228,6 +1262,7 @@ function overlayName(job) {
 // §392: a 3D chunk where a keyframed prop changes within some frame encodes
 // every sub-frame; its other frames are still averaged in the page
 // (captureChunkFrames). Named once per segment.
+// Keyed by job.id, so a render cut in slices (§434) names each overlay once, not once per slice.
 const keyframesMoveNamed = new Set()
 function noteKeyframesMove(job) {
   if (keyframesMoveNamed.has(job.id)) return
