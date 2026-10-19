@@ -14,7 +14,7 @@ import { once } from 'events'
 import { homedir } from 'os'
 import os from 'os'
 import { FFMPEG } from './ffmpeg-bin.js'
-import { ffmpegErrorTail } from './ffmpeg-error.js'
+import { ffmpegErrorTail, describeFfmpegExit } from './ffmpeg-error.js'
 import { childKilledError, isChildKilled, syncResultError, CHILD_KILLED_PHASES } from './child-killed.js'
 import { adaptiveChunkSize } from './chunk-plan.js'
 import { availableMemoryBytes, workerFootprint, planWorkers, planWorkers2d, createMemoryGovernor, gb, isScene3dSegment, SCENE3D_MAX_WORKERS, SCENE3D_MAX_CHUNK_FRAMES } from './memory.js'
@@ -25,7 +25,9 @@ import { overlayPageLaunchOptions, installPageGuard } from './page-guard.js'
 import { fontLoadFailure, fontFailureWarning } from './google-fonts.js'
 import { captureWithThree, isThreeBlurUnsupported } from './three-frame.js'
 
-const FFMPEG_TIMEOUT_MS  = 600_000
+// A stream copy of chunks already on disk cannot stall for long, and spawnSync
+// cannot watch progress, so this is a generous wall clock (the callers are sync).
+const CONCAT_TIMEOUT_MS  = 30 * 60_000
 
 
 /**
@@ -1315,10 +1317,10 @@ function concatChunks(chunkPaths, outputPath) {
     '-cluster_size_limit',  '2000000',
     '-reserve_index_space', '1000000',
     mkvOutput,
-  ], { encoding: 'utf8', timeout: FFMPEG_TIMEOUT_MS })
+  ], { encoding: 'utf8', timeout: CONCAT_TIMEOUT_MS })
 
   if (result.status !== 0) {
-    const message = `ffmpeg chunk concat failed:\n${ffmpegErrorTail(result.stderr)}`
+    const message = `ffmpeg chunk concat failed:\n${describeFfmpegExit({ ...result, timedOut: result.error?.code === 'ETIMEDOUT', timeoutMs: CONCAT_TIMEOUT_MS, outputDir: dirname(mkvOutput) })}`
     throw syncResultError(result, { child: 'ffmpeg', phase: 'chunk-concat', message }) ?? new Error(message)
   }
 

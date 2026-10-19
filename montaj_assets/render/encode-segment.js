@@ -37,7 +37,7 @@ import { spawn, spawnSync } from 'child_process'
 import { mkdirSync, rmSync } from 'fs'
 import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
-import { ffmpegErrorTail, assertInputsExist, fileInputsOf } from './ffmpeg-error.js'
+import { describeFfmpegExit, assertInputsExist, fileInputsOf } from './ffmpeg-error.js'
 import { childKilledError } from './child-killed.js'
 import { specFor, encoderArgsFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { lutPath } from './look.js'
@@ -50,7 +50,8 @@ import {
   transitionProgress, hasCropKeyframes, imageFitFor, isFullFrameCrop, CROP_KEYFRAME_PROPS,
 } from '@bycrux/timeline-core'
 
-const FFMPEG_TIMEOUT_MS = 600_000
+// Stall limit for an encode: silence (no stderr progress) this long kills it.
+export const FFMPEG_STALL_MS = 300_000
 const IMAGE_EXTENSIONS = /\.(jpe?g|png|gif|webp|bmp|tiff?)$/i
 
 /**
@@ -157,7 +158,7 @@ function logFfmpegStderr(stderr) {
  * SIGKILL). A cancel kills the process without either, which is why the caller
  * passes the render's own segments dir: compose wipes it on every render.
  */
-export function runFfmpeg(args, timeoutMs, scriptDir) {
+export function runFfmpeg(args, timeoutMs, scriptDir, { hardMs = 4 * 3600_000 } = {}) {
   return new Promise((resolve) => {
     let script
     let proc
@@ -171,17 +172,29 @@ export function runFfmpeg(args, timeoutMs, scriptDir) {
     }
     let stderr = ''
     let timedOut = false
-    const timer = setTimeout(() => { timedOut = true; proc.kill('SIGKILL') }, timeoutMs)
-    proc.stderr.on('data', (d) => { stderr += d.toString('utf8') })
+    let stalledMs
+    // `timeoutMs` is a STALL limit: ffmpeg writes progress about every second,
+    // so every stderr chunk resets it. `hardMs` caps the whole run.
+    const kill = () => { timedOut = true; proc.kill('SIGKILL') }
+    let timer = setTimeout(() => { stalledMs = timeoutMs; kill() }, timeoutMs)
+    const hardTimer = setTimeout(kill, hardMs)
+    proc.stderr.on('data', (d) => {
+      stderr += d.toString('utf8')
+      if (timedOut) return
+      clearTimeout(timer)
+      timer = setTimeout(() => { stalledMs = timeoutMs; kill() }, timeoutMs)
+    })
     proc.on('error', (err) => {
       clearTimeout(timer)
+      clearTimeout(hardTimer)
       script.cleanup()
       resolve({ status: null, signal: null, stderr, error: err })
     })
     proc.on('close', (status, signal) => {
       clearTimeout(timer)
+      clearTimeout(hardTimer)
       script.cleanup()
-      resolve({ status, signal: timedOut ? 'SIGKILL' : signal, timedOut, stderr })
+      resolve({ status, signal: timedOut ? 'SIGKILL' : signal, timedOut, ...(stalledMs ? { stalledMs } : {}), stderr })
     })
   })
 }
@@ -2421,14 +2434,13 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   // Preflight ran long before this segment's turn; a file deleted since fails by name.
   assertInputsExist(fileInputsOf(inputs))
 
-  const result = await runFfmpeg(args, FFMPEG_TIMEOUT_MS, dirname(outputPath))
+  const result = await runFfmpeg(args, FFMPEG_STALL_MS, dirname(outputPath))
 
   if (result.stderr) logFfmpegStderr(result.stderr)
 
   if (result.status !== 0) {
     // spawn() can throw, or the script fail to write, before any stderr exists.
-    const cause = result.error ? `${result.error.message}\n` : ''
-    const message = `ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s):\n${cause}${ffmpegErrorTail(result.stderr)}`
+    const message = `ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s):\n${describeFfmpegExit({ ...result, timeoutMs: FFMPEG_STALL_MS, outputDir: dirname(outputPath) })}`
     if (result.signal && !result.timedOut) {
       throw childKilledError({ child: 'ffmpeg', signal: result.signal, phase: 'segment-encode', message })
     }
@@ -2488,12 +2500,11 @@ export async function encodeSegmentGroup(group, outputPath, opts = {}) {
     for (const [k, part] of parts.entries()) {
       await encodeSegment(part, partPath(k), { ...opts, intermediate: true })
     }
-    const result = await runFfmpeg(args, FFMPEG_TIMEOUT_MS, dirname(outputPath))
+    const result = await runFfmpeg(args, FFMPEG_STALL_MS, dirname(outputPath))
     if (result.stderr) logFfmpegStderr(result.stderr)
     if (result.status !== 0) {
-      const cause = result.error ? `${result.error.message}\n` : ''
       const message = `ffmpeg segment encode failed (${start.toFixed(2)}-${end.toFixed(2)}s, `
-        + `${parts.length} short parts joined):\n${cause}${ffmpegErrorTail(result.stderr)}`
+        + `${parts.length} short parts joined):\n${describeFfmpegExit({ ...result, timeoutMs: FFMPEG_STALL_MS, outputDir: dirname(outputPath) })}`
       if (result.signal && !result.timedOut) {
         throw childKilledError({ child: 'ffmpeg', signal: result.signal, phase: 'segment-group-join', message })
       }

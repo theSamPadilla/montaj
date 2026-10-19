@@ -70,7 +70,7 @@ import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { requireValidKey, detectFromTransfer, smartDetect, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
 import { curveIds } from './look.js'
 import { planSegments } from './segment-plan.js'
-import { encodeSegment, runFfmpeg } from './encode-segment.js'
+import { encodeSegment, runFfmpeg, FFMPEG_STALL_MS } from './encode-segment.js'
 import { trackItems } from './project-tracks.js'
 import { trackLayerPositions } from '@bycrux/timeline-core'
 import {
@@ -83,7 +83,6 @@ const isMain = isMainModule(import.meta.url, process.argv[1])
 const TTY = process.stderr.isTTY
 const C = { cyan: TTY ? '\x1b[96m' : '', reset: TTY ? '\x1b[0m' : '' }
 
-const FFMPEG_TIMEOUT_MS = 600_000
 // The overlay design canvas render.js falls back to when a project has no
 // settings.resolution (SHORT_EDGE_TARGET on a 9:16 portrait). Only its aspect
 // matters here: outputSize returns it when there is no resolution and no clip.
@@ -305,7 +304,7 @@ export async function renderPlates({ projectPath, itemId, shortEdge = 270, sigma
         // image2 reads % in the whole path as a pattern: a folder's own % is doubled.
         join(absOut.replace(/%/g, '%%'), `%04d.${ext}`),
       ]
-      const result = await runFfmpeg(args, FFMPEG_TIMEOUT_MS, workDir)
+      const result = await runFfmpeg(args, FFMPEG_STALL_MS, workDir)
       if (result.status !== 0) {
         // A process the system killed (memory pressure) leaves no stderr: name how it ended.
         const how = result.signal ? `killed by ${result.signal}` : `exit ${result.status}`
