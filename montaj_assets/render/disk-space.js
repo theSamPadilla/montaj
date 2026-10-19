@@ -14,7 +14,17 @@
 //       - the overlay FFV1 chunks (render/segments). A segment cut into chunks
 //         is joined into one file while its chunks still exist
 //         (renderer.js concatChunks), so the largest such segment is on disk
-//         twice for a moment.
+//         twice for a moment. Unsliced, every overlay's whole span stays on
+//         disk until compose, so this grows with length times overlays.
+//         Sliced (§434, slice-plan.js and slice-run.js: when the whole
+//         capture would not fit the slice budget, 2 GB or less), each time
+//         slice captures only the frames inside it into
+//         render/segments/slice-NN, its compose groups are encoded, and the
+//         slice is deleted before the next: the captures at the peak are one
+//         slice's (`slicing`, below), and the join is the largest one file of
+//         that slice. The video segments of every compose then build up slice
+//         by slice until each compose finishes. The slice peak is measured in
+//         §434's before/after run (see CHANGELOG).
 //       - normalized masters (`<source>_normalized_<space>.mp4`, beside the
 //         source), only those not already built (render.js
 //         planVideoItemWrites), audio-strip copies of sources with several
