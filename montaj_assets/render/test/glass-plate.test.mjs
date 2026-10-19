@@ -6,8 +6,9 @@
 // (alignment against sample_frame, colour on saturated swatches, and that a
 // clip outside the range is never normalized or audio-stripped).
 import { test } from 'node:test'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
-import { plateItemFilter, plateFrameFilter, plateRange, underItemFilter } from '../glass-plate.js'
+import { plateItemFilter, plateFrameFilter, plateRange, underItemFilter, plateFrameArgs } from '../glass-plate.js'
 import { collectAllItems } from '../render.js'
 
 const FPS = 24
@@ -63,4 +64,15 @@ test('underItemFilter: a plate holds only the clips stacked under its item, in t
   const { imageItems, videoItems } = collectAllItems(project)
   const under = [...imageItems, ...videoItems].filter(underItemFilter(project, trackIdx)).map(it => it.id).sort()
   assert.deepEqual(under, ['footage', 'plate-image', 'same-track'])
+})
+
+test('plateFrameArgs: -stats keeps ffmpeg printing progress under -v error, so the stall limit sees it', async () => {
+  const args = plateFrameArgs({ part: { path: '/p.mp4', frames: 5, startFrame: 3 }, vf: ['-vf', 'null'], quality: [], startFrame: 3, absOut: '/o', ext: 'jpg' })
+  assert.ok(args.includes('-stats'))
+  assert.ok(args.indexOf('-stats') < args.indexOf('-i'))
+  // Measured: the same logging flags on a real run write progress to stderr.
+  const { runFfmpeg } = await import('../encode-segment.js')
+  const withStats = await runFfmpeg(['-nostdin', '-y', '-v', 'error', '-stats', '-f', 'lavfi', '-i', 'testsrc=size=64x64:rate=10:duration=2', '-f', 'null', '-'], 60_000, tmpdir())
+  assert.equal(withStats.status, 0)
+  assert.match(withStats.stderr, /frame=/)
 })

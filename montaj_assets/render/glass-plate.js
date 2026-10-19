@@ -281,6 +281,19 @@ export async function renderBaseParts({ projectPath, itemId, shortEdge = 270, sd
   return { parts: rendered, fps, size: [vw, vh], startFrame, endFrame }
 }
 
+// The ffmpeg args that write one part's frames. `-stats` keeps the progress
+// line printing under `-v error`: runFfmpeg's stall limit counts stderr
+// output, and without it this command would be silent until it ended.
+export function plateFrameArgs({ part, vf, quality, startFrame, absOut, ext }) {
+  return [
+    '-y', '-v', 'error', '-stats', '-i', part.path, ...vf,
+    '-frames:v', String(part.frames), ...quality,
+    '-start_number', String(part.startFrame - startFrame),
+    // image2 reads % in the whole path as a pattern: a folder's own % is doubled.
+    join(absOut.replace(/%/g, '%%'), `%04d.${ext}`),
+  ]
+}
+
 /**
  * The plate for `itemId`: renderBaseParts, then each part blurred with
  * `sigma` (0 = none) and written one image per frame into `outDir`, named
@@ -297,13 +310,7 @@ export async function renderPlates({ projectPath, itemId, shortEdge = 270, sigma
     const vf = ['-vf', plateFrameFilter(ext, sigma)]
     const quality = ext === 'jpg' ? ['-q:v', '3'] : []
     for (const part of parts) {
-      const args = [
-        '-y', '-v', 'error', '-i', part.path, ...vf,
-        '-frames:v', String(part.frames), ...quality,
-        '-start_number', String(part.startFrame - startFrame),
-        // image2 reads % in the whole path as a pattern: a folder's own % is doubled.
-        join(absOut.replace(/%/g, '%%'), `%04d.${ext}`),
-      ]
+      const args = plateFrameArgs({ part, vf, quality, startFrame, absOut, ext })
       const result = await runFfmpeg(args, FFMPEG_STALL_MS, workDir)
       if (result.status !== 0) {
         // A process the system killed (memory pressure) leaves no stderr: name how it ended.
