@@ -133,11 +133,14 @@ const sum = (list, f) => list.reduce((n, x) => n + f(x), 0)
  *   normalized masters this render builds (whole sources)
  * @param {Array<{ bytes: number }>} [p.copies]  audio-strip copies (stream copies of a source)
  * @param {Array<{ durationSeconds: number, width: number, height: number, fps: number }>} [p.cutouts]  remove_bg cutouts it makes
+ * @param {{ peakCaptureBytes: number, peakJoinBytes: number, lowerCaptureBytes: number }} [p.slicing]
+ *   a render cut in time slices (§434, slice-run.js sliceDiskTerms): the captures are one slice's, so the
+ *   captures, the join and the lower bound's frames are the peak slice's instead of every segment's whole span
  * @returns {{ lower: {tmpBytes: number, projectBytes: number}, expected: {tmpBytes: number, projectBytes: number} }}
  */
 export function estimateRenderDisk({
   segments, width, height, captureScale = 1, workerCount = 1, chunkFrames = Infinity, durationSeconds,
-  output = null, passes = ['sdr_bt709'], masters = [], copies = [], cutouts = [],
+  output = null, passes = ['sdr_bt709'], masters = [], copies = [], cutouts = [], slicing = null,
 }) {
   const px = width * height * captureScale * captureScale
   const seconds = Math.max(0, Number(durationSeconds) || 0)
@@ -149,24 +152,34 @@ export function estimateRenderDisk({
   const tmpExpected = Math.max(overlayTmp, ...cutouts.map(cutoutBytes))
 
   // Overlay chunks, and the one segment joined from chunks while they remain.
+  // Sliced: one slice's captures at a time, so the peak slice's.
   const ffv1 = (s) => s.frames * px * (s.sparse ? FFV1_CAPTION_BYTES_PER_PIXEL : FFV1_DENSE_BYTES_PER_PIXEL)
-  const ffv1Expected = sum(segments, ffv1)
-  const joinExpected = Math.max(0, ...segments.filter((s) => s.frames > chunkFrames).map(ffv1))
-  const frames = sum(segments, (s) => s.frames)
+  const ffv1Expected = slicing ? Math.max(0, slicing.peakCaptureBytes) : sum(segments, ffv1)
+  const joinExpected = slicing
+    ? Math.max(0, slicing.peakJoinBytes)
+    : Math.max(0, ...segments.filter((s) => s.frames > chunkFrames).map(ffv1))
+  const captureLower = slicing
+    ? Math.max(0, slicing.lowerCaptureBytes)
+    : sum(segments, (s) => s.frames) * px * FFV1_SPARSE_BYTES_PER_PIXEL
 
   // Each compose: its segments and its export twice, over the exports before it.
-  let composeExpected = 0, composeLower = 0, before = 0, beforeLower = 0
-  for (const colorSpace of passes) {
+  // Sliced, every pass encodes its segments slice by slice before any finishes,
+  // so a pass's finish also has the segments of the passes after it on disk.
+  const perPass = passes.map((colorSpace) => {
     const video = videoBytesPerSecond({ ...out, colorSpace }) * seconds
-    const exportBytes = video + EXPORT_AAC_BYTES_PER_SECOND * seconds
-    const segmentBytes = video + SEGMENT_PCM_BYTES_PER_SECOND * seconds
-    composeExpected = Math.max(composeExpected, before + segmentBytes + 2 * exportBytes)
+    return { exportBytes: video + EXPORT_AAC_BYTES_PER_SECOND * seconds, segmentBytes: video + SEGMENT_PCM_BYTES_PER_SECOND * seconds }
+  })
+  let composeExpected = 0, composeLower = 0, before = 0, beforeLower = 0
+  perPass.forEach(({ exportBytes, segmentBytes }, k) => {
+    const later = slicing ? sum(perPass.slice(k + 1), (p) => p.segmentBytes) : 0
+    composeExpected = Math.max(composeExpected, before + later + segmentBytes + 2 * exportBytes)
     before += exportBytes
     // Lower: only the PCM is certain in the segments; each export at the floor.
     const exportLower = OUTPUT_FLOOR_BYTES_PER_SECOND * seconds
-    composeLower = Math.max(composeLower, beforeLower + SEGMENT_PCM_BYTES_PER_SECOND * seconds + 2 * exportLower)
+    const laterLower = slicing ? (perPass.length - k - 1) * SEGMENT_PCM_BYTES_PER_SECOND * seconds : 0
+    composeLower = Math.max(composeLower, beforeLower + laterLower + SEGMENT_PCM_BYTES_PER_SECOND * seconds + 2 * exportLower)
     beforeLower += exportLower
-  }
+  })
 
   // Beside the sources: these stay for good.
   const sourcesExpected = sum(masters, masterBytes) + sum(copies, (c) => c.bytes) + sum(cutouts, cutoutBytes)
@@ -175,7 +188,7 @@ export function estimateRenderDisk({
   return {
     lower: {
       tmpBytes: Math.round(0.5 * overlayTmp),
-      projectBytes: Math.round(frames * px * FFV1_SPARSE_BYTES_PER_PIXEL + sourcesLower + composeLower),
+      projectBytes: Math.round(captureLower + sourcesLower + composeLower),
     },
     expected: {
       tmpBytes: Math.round(tmpExpected),

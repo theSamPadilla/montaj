@@ -323,3 +323,60 @@ test('dirBytes sums the files under a directory, and a missing one is empty', ()
   assert.equal(dirBytes('/r/segments', { readdir, lstat }), 123)
   assert.equal(dirBytes('/r/nothing', { readdir, lstat }), 0)
 })
+
+// §434: a render cut in time slices holds one slice's captures at a time.
+const LONG = {
+  // 178 s at 60 fps, 12 full-length dense overlays at 1080x1920: the project
+  // whose whole-span captures estimate about 20 GB.
+  segments: Array.from({ length: 12 }, () => ({ frames: 178 * 60, sparse: false })),
+  width: 1080, height: 1920, captureScale: 1, workerCount: 12, chunkFrames: 1000, durationSeconds: 178,
+  output: { width: 1080, height: 1920, fps: 60 }, passes: ['sdr_bt709'],
+}
+
+test('sliced: the captures, the join and the lower bound are the peak slice\'s, the rest is unchanged', () => {
+  const whole = estimateRenderDisk(LONG)
+  const slicing = { peakCaptureBytes: 1.9e9, peakJoinBytes: 0.15e9, lowerCaptureBytes: 0.02e9 }
+  const sliced = estimateRenderDisk({ ...LONG, slicing })
+  const none = estimateRenderDisk({ ...LONG, segments: [] })
+  // Expected: sources and compose as before, captures and join from the slice.
+  const compose = none.expected.projectBytes
+  assert.equal(sliced.expected.projectBytes, Math.round(1.9e9 + Math.max(0.15e9, compose)))
+  assert.ok(whole.expected.projectBytes > 19e9, `whole-span ${whole.expected.projectBytes}`)
+  assert.ok(sliced.expected.projectBytes < whole.expected.projectBytes / 4)
+  // Lower: the slice's frames at the sparse rate replace every frame's.
+  assert.equal(sliced.lower.projectBytes, Math.round(0.02e9 + none.lower.projectBytes))
+  // TMPDIR is the same: every bundle still lives for the whole render.
+  assert.deepEqual(sliced.expected.tmpBytes, whole.expected.tmpBytes)
+  assert.deepEqual(sliced.lower.tmpBytes, whole.lower.tmpBytes)
+})
+
+test('sliced --export both: each finish also holds the segments of the passes after it', () => {
+  const out = { width: 2160, height: 3840, fps: 30 }
+  const base = { segments: [], width: 1080, height: 1920, durationSeconds: 60, output: out, passes: ['hdr_hlg', 'sdr_bt709'] }
+  const slicing = { peakCaptureBytes: 0, peakJoinBytes: 0, lowerCaptureBytes: 0 }
+  const sliced = estimateRenderDisk({ ...base, slicing })
+  const hdrVideo = videoBytesPerSecond({ ...out, colorSpace: 'hdr_hlg' }) * 60
+  const sdrVideo = videoBytesPerSecond({ ...out, colorSpace: 'sdr_bt709' }) * 60
+  const hdrExport = hdrVideo + EXPORT_AAC_BYTES_PER_SECOND * 60
+  const sdrExport = sdrVideo + EXPORT_AAC_BYTES_PER_SECOND * 60
+  const hdrSegs = hdrVideo + SEGMENT_PCM_BYTES_PER_SECOND * 60
+  const sdrSegs = sdrVideo + SEGMENT_PCM_BYTES_PER_SECOND * 60
+  const firstFinish = sdrSegs + hdrSegs + 2 * hdrExport
+  const secondFinish = hdrExport + sdrSegs + 2 * sdrExport
+  assert.equal(sliced.expected.projectBytes, Math.round(Math.max(firstFinish, secondFinish)))
+  const pcm = SEGMENT_PCM_BYTES_PER_SECOND * 60, floor = OUTPUT_FLOOR_BYTES_PER_SECOND * 60
+  assert.equal(sliced.lower.projectBytes, Math.round(Math.max(2 * pcm + 2 * floor, floor + pcm + 2 * floor)))
+})
+
+test('no slicing given: the estimate is exactly the whole-span one (unsliced renders unchanged)', () => {
+  for (const est of [MEASURED, LONG, { ...LONG, passes: ['hdr_hlg', 'sdr_bt709'] }]) {
+    assert.deepEqual(estimateRenderDisk({ ...est, slicing: null }), estimateRenderDisk(est))
+    assert.deepEqual(estimateRenderDisk({ ...est, slicing: undefined }), estimateRenderDisk(est))
+  }
+  // The measured figures the tests above pin still hold.
+  const { expected } = estimateRenderDisk(LONG)
+  const ffv1 = 12 * 178 * 60 * 1080 * 1920 * FFV1_DENSE_BYTES_PER_PIXEL
+  const join = 178 * 60 * 1080 * 1920 * FFV1_DENSE_BYTES_PER_PIXEL
+  const none = estimateRenderDisk({ ...LONG, segments: [] })
+  assert.equal(expected.projectBytes, Math.round(ffv1 + Math.max(join, none.expected.projectBytes)))
+})
