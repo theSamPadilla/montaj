@@ -18,6 +18,8 @@ def ws(tmp_path, monkeypatch, request):
         monkeypatch.setenv("MONTAJ_ENGINE_GUARD", "1")
     else:
         monkeypatch.delenv("MONTAJ_ENGINE_GUARD", raising=False)
+    monkeypatch.delenv("MONTAJ_SHELL_SECRET_STDIN", raising=False)
+    save_guard._inject_secret_for_tests("5e" * 32)
     save_guard.startup()
     ws = (tmp_path / "ws").resolve()
     (ws / "proj").mkdir(parents=True)

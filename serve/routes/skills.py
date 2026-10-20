@@ -30,6 +30,7 @@ async def get_info():
         "root_skill_path": str(MONTAJ_ROOT / "skills" / "SKILL.md"),
         "style_profile_skill_path": str(MONTAJ_ROOT / "skills/style-profile/SKILL.md"),
         # §477: the app reads both to know whether serve's save guard can be trusted.
+        "engineGuard": save_guard.enabled(),
         "revisionCanary": save_guard.canary_state(),
         "projectLock": "degraded" if lock_degraded() else "ok",
     }

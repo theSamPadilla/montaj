@@ -32,8 +32,9 @@ def _start(monkeypatch, guard=True):
         monkeypatch.setenv("MONTAJ_ENGINE_GUARD", "1")
     else:
         monkeypatch.delenv("MONTAJ_ENGINE_GUARD", raising=False)
-    monkeypatch.delenv("MONTAJ_SHELL_SECRET", raising=False)
-    save_guard._state.update({"secret": None, "logged": False})
+    monkeypatch.delenv("MONTAJ_SHELL_SECRET_STDIN", raising=False)
+    save_guard._state.update({"secret": None, "logged": False, "secret_logged": False})
+    save_guard._inject_secret_for_tests("5e" * 32)
     save_guard.startup()
 
 

@@ -28,6 +28,7 @@ def guard(monkeypatch):
     def set_on(on):
         monkeypatch.setitem(save_guard._state, "requested", on)
         monkeypatch.setitem(save_guard._state, "canary", "ok")
+        monkeypatch.setitem(save_guard._state, "secret", "5e" * 32)
     return set_on
 
 

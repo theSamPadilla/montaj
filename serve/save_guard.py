@@ -2,14 +2,18 @@
 was based on, and serve compares under the project lock.
 
 Inert unless the app started serve with MONTAJ_ENGINE_GUARD=1: standalone montaj and the
-CLI behave as before. The app also passes a per-launch secret (MONTAJ_SHELL_SECRET); only a
-request carrying it may name its writer class or ask for advisory mode, so any other local
-process calling serve directly is treated as the strictest class.
+CLI behave as before. The app also hands serve a per-launch secret on stdin (one line, with
+MONTAJ_SHELL_SECRET_STDIN=1); only a request carrying it may name its writer class or ask
+for advisory mode, so any other local process calling serve directly is treated as the
+strictest class. The secret is never in serve's environment: a process's environment block
+is readable by the same user (`ps eww`) even after os.environ forgets it.
 """
 import hmac
 import json
 import os
+import re
 import sys
+import threading
 
 from fastapi import HTTPException
 
@@ -17,22 +21,86 @@ from lib import project_revisions
 from lib.project_tracks import normalize_tracks
 
 GUARD_ENV = project_revisions.GUARD_ENV
+STDIN_ENV = "MONTAJ_SHELL_SECRET_STDIN"
+# Never read: a secret in the environment would be visible to `ps eww`. A stray one is
+# still removed so no step subprocess inherits it.
 SECRET_ENV = "MONTAJ_SHELL_SECRET"
 
 CANARY_MISMATCH_LINE = "save-guard: revision canary MISMATCH, engine guard disabled, shell guard only"
+SECRET_MISSING_LINE = "save-guard: shell secret not received, engine guard disabled, shell guard only"
 
-# Read once at startup. The secret never stays in os.environ: every step subprocess
-# inherits serve's environment, and a step has no business holding it.
-_state = {"requested": False, "secret": None, "canary": "ok", "logged": False}
+_SECRET_LINE = re.compile(rb"[0-9a-f]{64}\n")
+_STDIN_TIMEOUT_SECONDS = 5
+# The fd the shell writes the secret line to; a test points it at a pipe.
+_stdin_fd = 0
+
+_state = {"requested": False, "secret": None, "canary": "ok", "logged": False,
+          "stdin_done": False, "secret_logged": False}
+
+
+def _read_secret_line(fd, timeout) -> "str | None":
+    """One line from fd, at most 65 bytes and never past its newline, read on a thread so a
+    closed, silent or terminal stdin cannot hang startup. The secret when the line is 64
+    lowercase hex then a newline, else None. fd is then pointed at the null device, so
+    nothing serve starts can read the rest of the shell's pipe."""
+    box = {}
+
+    def read():
+        buf = b""
+        try:
+            while len(buf) < 65:
+                ch = os.read(fd, 1)
+                if not ch:
+                    break
+                buf += ch
+                if ch == b"\n":
+                    break
+        except OSError:
+            pass
+        box["line"] = buf
+
+    reader = threading.Thread(target=read, name="montaj-shell-secret", daemon=True)
+    reader.start()
+    reader.join(timeout)
+    line = box.get("line")
+    try:
+        null = os.open(os.devnull, os.O_RDONLY)
+        try:
+            os.dup2(null, fd)
+        finally:
+            os.close(null)
+    except OSError:
+        pass
+    if line is None or not _SECRET_LINE.fullmatch(line):
+        return None
+    return line[:64].decode("ascii")
+
+
+def _inject_secret_for_tests(secret) -> None:
+    """Tests only: hold secret as if the shell had sent it on stdin."""
+    _state["secret"] = secret
+    _state["stdin_done"] = True
 
 
 def startup() -> None:
-    """Take the guard switch and the secret from the environment, and check that this
-    hasher still agrees with the app's. Runs when `montaj serve` starts (before its
-    dependency checks spawn anything) and again when serve.server is imported; the
-    second run finds the secret already taken and keeps it."""
+    """Take the guard switch from the environment and the secret from stdin, and check that
+    this hasher still agrees with the app's. Runs when `montaj serve` starts (before its
+    dependency checks spawn anything) and again when serve.server is imported: stdin is read
+    on the first run only, and the second keeps what the first decided."""
+    os.environ.pop(SECRET_ENV, None)
+    if os.environ.pop(STDIN_ENV, None) == "1" and not _state["stdin_done"]:
+        _state["stdin_done"] = True
+        _state["secret"] = _read_secret_line(_stdin_fd, _STDIN_TIMEOUT_SECONDS)
     _state["requested"] = project_revisions.engine_guard_requested()
-    _state["secret"] = os.environ.pop(SECRET_ENV, None) or _state["secret"]
+    if _state["requested"] and not _state["secret"]:
+        # Without the secret serve cannot tell the window from any other caller, and would
+        # refuse every human save as the AI's. Off for this process and for every step it
+        # starts (they read the switch from the environment); the shell's guard still runs.
+        _state["requested"] = False
+        os.environ.pop(GUARD_ENV, None)
+        if not _state["secret_logged"]:
+            _state["secret_logged"] = True
+            print(SECRET_MISSING_LINE, file=sys.stderr, flush=True)
     _state["canary"] = "ok" if project_revisions.canary_ok() else "mismatch"
     if _state["requested"] and _state["canary"] != "ok" and not _state["logged"]:
         # A divergent hasher would refuse every save as stale; the shell's own guard
@@ -50,7 +118,8 @@ def secret_valid(sent) -> bool:
 
 
 def enabled() -> bool:
-    return _state["requested"] and _state["canary"] == "ok"
+    """The guard is effectively on: requested, the canary agrees and the secret arrived."""
+    return bool(_state["requested"] and _state["canary"] == "ok" and _state["secret"])
 
 
 def canary_state() -> str:

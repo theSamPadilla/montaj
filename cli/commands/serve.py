@@ -41,7 +41,9 @@ def handle(args):
     import uvicorn
     from serve import save_guard
 
-    # §477: the shell secret leaves the environment before the checks below spawn anything.
+    # §477: the shell secret is read from stdin (and stdin closed) before the checks below
+    # spawn anything, so no child inherits the shell's pipe. The server import runs it again
+    # and keeps what this run took.
     save_guard.startup()
     missing = check_fatal_deps()
     if missing:

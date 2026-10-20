@@ -38,13 +38,12 @@ def _start(monkeypatch, *, guard=True, secret=SECRET, canary=True):
         monkeypatch.setenv("MONTAJ_ENGINE_GUARD", "1")
     else:
         monkeypatch.delenv("MONTAJ_ENGINE_GUARD", raising=False)
-    if secret:
-        monkeypatch.setenv("MONTAJ_SHELL_SECRET", secret)
-    else:
-        monkeypatch.delenv("MONTAJ_SHELL_SECRET", raising=False)
+    monkeypatch.delenv("MONTAJ_SHELL_SECRET_STDIN", raising=False)
     if not canary:
         monkeypatch.setattr(save_guard.project_revisions, "canary_ok", lambda: False)
-    save_guard._state.update({"secret": None, "logged": False})
+    save_guard._state.update({"secret": None, "logged": False, "secret_logged": False})
+    if secret:
+        save_guard._inject_secret_for_tests(secret)
     save_guard.startup()
 
 
@@ -291,10 +290,15 @@ def test_forged_editor_or_advisory_without_the_secret_stays_strict(proj, monkeyp
     assert _bytes(proj) == before
 
 
-def test_without_a_configured_secret_nothing_is_trusted(proj, monkeypatch):
+def test_without_a_received_secret_the_guard_is_off_for_the_process(proj, monkeypatch):
+    """No secret means the shell's launch went wrong: serve steps aside (the shell's own guard
+    still runs) rather than refuse the window's saves as ai."""
     _start(monkeypatch, secret=None)
     headers = {"x-montaj-writer": "editor", "x-montaj-guard": "advisory", "x-montaj-shell": ""}
-    assert _put({"name": "x"}, headers=headers).status_code == 400
+    resp = _put({"name": "x"}, headers=headers)
+    assert resp.status_code == 200
+    assert _guard_headers(resp) == {}
+    assert not save_guard.secret_valid("")
 
 
 @pytest.mark.parametrize("writer", ["ai", "tool", "bogus"])
