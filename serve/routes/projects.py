@@ -4467,6 +4467,36 @@ async def version_frame(
     )
 
 
+def _rerun_under_lock(project_dir: Path, body: dict) -> tuple:
+    """A rerun's commit and write, blocking (call via asyncio.to_thread): the commit of the
+    completed version and the reset in one hold of the project lock."""
+    project_path = project_dir / "project.json"
+    with project_lock(project_path):
+        fresh = json.loads(project_path.read_text())
+        fresh_sources = fresh.get("sources")
+        if not fresh_sources:
+            raise bad_request("no_sources", "Project has no sources — cannot re-run")
+        run_count = fresh.get("runCount", 1)
+        version_label = body.get("versionName") or fresh.get("status", "draft")
+        _git_commit_sync(project_dir, f"version: run {run_count} — {version_label}")
+        # Restore video track to original source clips; drop captions/overlays.
+        # `order` is a legacy field: nothing downstream sorts or requires it, so a missing
+        # key on an init-created or ingested source degrades to None rather than KeyError.
+        source_clips = [{"id": c["id"], "src": c["src"], "order": c.get("order")} for c in fresh_sources]
+        updated = {
+            **fresh,
+            "status": "pending",
+            "runCount": run_count + 1,
+            "tracks": [{"id": "trk-0", "items": source_clips}],
+        }
+        if "prompt" in body:
+            updated["editingPrompt"] = body["prompt"]
+        if "workflow" in body:
+            updated["workflow"] = body["workflow"]
+        text = _write_project_json(project_path, updated)
+    return updated, text
+
+
 @router.post("/projects/{project_id}/rerun")
 async def rerun_project(project_id: str, request: Request, project_dir: Path = Depends(get_project_dir)):
     # §477: a rerun resets the tracks with no compare, so it is the human's.
@@ -4477,47 +4507,11 @@ async def rerun_project(project_id: str, request: Request, project_dir: Path = D
     except Exception:
         pass
 
-    project_path = project_dir / "project.json"
-    project = json.loads(project_path.read_text())
-
-    sources = project.get("sources")
-    if not sources:
-        raise bad_request("no_sources", "Project has no sources — cannot re-run")
-
-    run_count = project.get("runCount", 1)
-    version_label = body.get("versionName") or project.get("status", "draft")
-
-    # Commit the completed version to git before resetting (in a thread — non-blocking)
-    await asyncio.to_thread(_git_commit_sync, project_dir, f"version: run {run_count} — {version_label}")
-
-    # Restore video track to original source clips; drop captions/overlays.
-    # `order` is a legacy field: nothing downstream sorts or requires it (grep
-    # confirms no reader touches it), so a missing key on an init-created or
-    # ingested source (lib/ingest.py never sets it) degrades to None rather
-    # than KeyError-ing the whole rerun.
-    # The sources and the run count come from a fresh read under the project lock
-    # too, so an edit made while git ran is kept and a second rerun sees the
-    # first one's count (§467).
-    async with project_lock_async(project_path):
-        try:
-            fresh = json.loads(project_path.read_text())
-        except (OSError, ValueError):
-            fresh = project
-        fresh_sources = fresh.get("sources")
-        if not fresh_sources:
-            raise bad_request("no_sources", "Project has no sources — cannot re-run")
-        source_clips = [{"id": c["id"], "src": c["src"], "order": c.get("order")} for c in fresh_sources]
-        updated = {
-            **fresh,
-            "status": "pending",
-            "runCount": fresh.get("runCount", 1) + 1,
-            "tracks": [{"id": "trk-0", "items": source_clips}],
-        }
-        if "prompt" in body:
-            updated["editingPrompt"] = body["prompt"]
-        if "workflow" in body:
-            updated["workflow"] = body["workflow"]
-        text = _write_project_json(project_path, updated)
+    # One lock hold, off the event loop: read the project, commit it as the completed
+    # version, then reset it. A commit taken before the lock would let an edit land between
+    # the two and be lost from history (§477). The sources and the run count come from this
+    # read, so an edit made earlier is kept and a second rerun sees the first one's count (§467).
+    updated, text = await asyncio.to_thread(_rerun_under_lock, project_dir, body)
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     broadcaster.publish(project_id, _sse_data_frame(text))
     return updated

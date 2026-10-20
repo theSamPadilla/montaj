@@ -6,6 +6,7 @@ forward allowlist, so no AI tool reaches them legitimately."""
 import json
 import subprocess
 import threading
+import time
 
 import pytest
 from starlette.testclient import TestClient
@@ -164,3 +165,62 @@ def test_restore_takes_its_autosave_inside_the_lock_hold_that_reads_the_project(
     assert any("autosave before restore" in m for m in seen["messages"])
     assert json.loads(_git(proj, "show", "HEAD:project.json"))["name"] == "edited before the restore"
     assert json.loads(path.read_text())["name"] == "first"
+
+
+def test_rerun_takes_its_autosave_inside_the_lock_hold_that_reads_the_project(proj, monkeypatch):
+    """The commit before a rerun's reset and the reset itself share one lock hold."""
+    _guard(monkeypatch, on=False)
+    path = proj / "project.json"
+    doc = json.loads(path.read_text())
+    doc["name"] = "edited before the rerun"
+    write_json_atomic(path, doc)
+    seen = {}
+    real = projects_mod._git_commit_sync
+
+    def commit_and_probe(project_dir, message):
+        def probe():
+            try:
+                with project_lock(path, timeout=0.05):
+                    seen["held"] = False
+            except ProjectLockTimeout:
+                seen["held"] = True
+        t = threading.Thread(target=probe)
+        t.start()
+        t.join()
+        seen.setdefault("messages", []).append(message)
+        return real(project_dir, message)
+    monkeypatch.setattr(projects_mod, "_git_commit_sync", commit_and_probe)
+    resp = TestClient(app, raise_server_exceptions=False).post(f"/api/projects/{PID}/rerun", json={"versionName": "v-test"})
+    assert resp.status_code == 200, resp.text
+    assert seen["held"] is True
+    assert seen["messages"] == ["version: run 1 — v-test"]
+    assert json.loads(_git(proj, "show", "HEAD:project.json"))["name"] == "edited before the rerun"
+    body = resp.json()
+    assert body["status"] == "pending" and body["runCount"] == 2
+    assert body["tracks"] == [{"id": "trk-0", "items": [{"id": "s1", "src": "/x.mp4", "order": None}]}]
+    assert json.loads(path.read_text()) == body
+
+
+def test_rerun_keeps_an_edit_that_lands_just_before_its_lock_in_the_committed_autosave(proj, monkeypatch):
+    """Another writer holds the lock when the rerun starts and edits under it: the rerun
+    waits, then commits that edit as the version it replaces."""
+    _guard(monkeypatch, on=False)
+    path = proj / "project.json"
+    result = {}
+
+    def rerun():
+        result["resp"] = TestClient(app, raise_server_exceptions=False).post(f"/api/projects/{PID}/rerun")
+
+    with project_lock(path):
+        t = threading.Thread(target=rerun)
+        t.start()
+        time.sleep(0.5)
+        doc = json.loads(path.read_text())
+        doc["name"] = "late edit"
+        write_json_atomic(path, doc)
+    t.join(15)
+    assert result["resp"].status_code == 200, result["resp"].text
+    assert json.loads(_git(proj, "show", "HEAD:project.json"))["name"] == "late edit"
+    assert _git(proj, "log", "-1", "--format=%s") == "version: run 1 — draft"
+    assert json.loads(path.read_text())["name"] == "late edit"
+    assert json.loads(path.read_text())["runCount"] == 2
