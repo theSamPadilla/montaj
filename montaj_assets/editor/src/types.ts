@@ -1302,6 +1302,14 @@ export interface CarouselEditorProps<P extends Project = Project> {
    */
   renderControls?: (ctx: ControlsWindowContext) => ReactNode
 
+  /**
+   * Opt a host OUT of the toolbar Render button so it can draw Export in its
+   * own header, the way `VideoEditorProps.onProvideRenderTrigger` does. Called
+   * once with a stable `openRender()` that saves the project as final and
+   * opens the render window. It does nothing for a pending or empty project.
+   */
+  onProvideRenderTrigger?: (openRender: () => void) => void
+
   // ── Project notes (opt-in, PL70) ──────────────────────────────────────────
 
   /**

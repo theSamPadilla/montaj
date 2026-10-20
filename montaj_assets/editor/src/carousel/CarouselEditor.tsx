@@ -269,7 +269,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -539,6 +539,18 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     }
   }
 
+  // §448: a host that draws Export in its own header takes this trigger and
+  // the toolbar button is not drawn. A ref keeps the trigger stable while it
+  // always runs the latest handleRender (pending/empty projects are no-ops).
+  const handleRenderRef = useRef(handleRender)
+  handleRenderRef.current = handleRender
+  const canRenderRef = useRef(false)
+  canRenderRef.current = project.status !== 'pending' && slides.length > 0
+  const openRender = useCallback(() => {
+    if (canRenderRef.current) void handleRenderRef.current()
+  }, [])
+  useEffect(() => { onProvideRenderTrigger?.(openRender) }, [onProvideRenderTrigger, openRender])
+
   async function handleRefresh() {
     setRefreshing(true)
     setRefreshState('idle')
@@ -797,7 +809,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
 
           <div className="flex items-center gap-2">
             {slots?.toolbarActions}
-            <button
+            {!onProvideRenderTrigger && <button
               onClick={handleRender}
               disabled={rendering || project.status === 'pending' || slides.length === 0}
               className="flex items-center gap-2 px-3 py-2 rounded-md border border-[var(--editor-accent)] bg-[var(--editor-accent)] text-[var(--editor-accent-foreground)] hover:opacity-90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -811,7 +823,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             >
               <Download size={18} />
               <span className="text-xs font-medium">{rendering ? 'Starting…' : 'Render'}</span>
-            </button>
+            </button>}
           </div>
         </div>
 

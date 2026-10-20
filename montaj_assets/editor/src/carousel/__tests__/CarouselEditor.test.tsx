@@ -390,6 +390,32 @@ describe('CarouselEditor — editor-core integration', () => {
     await waitFor(() => expect(queryByTestId('host-render-window')).toBeNull())
   })
 
+  // §448: a host that places Export in its own header (as the video editor's
+  // host does) takes the trigger; the in-canvas toolbar button goes away.
+  it('onProvideRenderTrigger hides the toolbar Render button and hands the host a working trigger', async () => {
+    const adapter = makeFakeAdapter()
+    const seen: CarouselRenderModalContext<Project>[] = []
+    let trigger: (() => void) | undefined
+    const { findByTestId, queryByTitle, queryByText } = render(
+      <CarouselEditor
+        project={makeProject()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        onProvideRenderTrigger={(fn) => { trigger = fn }}
+        renderModal={(ctx) => {
+          seen.push(ctx)
+          return ctx.open ? <div data-testid="host-render-window" /> : null
+        }}
+      />,
+    )
+    await waitFor(() => expect(trigger).toBeDefined())
+    expect(queryByTitle('Render all slides as PNGs')).toBeNull()
+    expect(queryByText('Render')).toBeNull()
+    await act(async () => { trigger!() })
+    await findByTestId('host-render-window')
+    await waitFor(() => expect(adapter.saveCalls.some((c) => c.project.status === 'final')).toBe(true))
+  })
+
   // §337: Render never uses a system alert. A save that fails, or never
   // answers, goes to the host's onError and Render comes back.
   it('a failed save on Render calls onError, never alert, and re-enables Render', async () => {
