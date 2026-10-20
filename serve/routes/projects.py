@@ -35,6 +35,7 @@ from serve import context as context_store
 from serve.caption_job import build_audio_mix_spec
 from serve.caption_theme import sanitize_theme, seed_prev
 from serve import provenance
+from serve import save_guard
 from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import save_upload
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, canvas_for_footage, fps_from_rate, modal_dims
@@ -3090,9 +3091,24 @@ async def proxy_activity_status():
 
 
 @router.get("/projects/{project_id}")
-async def get_project(project_id: str, request: Request = None, project_dir: Path = Depends(get_project_dir)):
+async def get_project(project_id: str, request: Request = None, project_dir: Path = Depends(get_project_dir),
+                      response: Response = None, fields: str | None = None):
+    """The project. `fields=a,b` changes nothing in the body: with the §477 guard on,
+    the answer's x-montaj-revisions carries those fields' revisions (all fields when
+    `fields` is absent), the ones a later PUT is compared against."""
+    seen: dict = {}
+    project = await _open_project(project_id, request, project_dir, seen)
+    save_guard.get_headers(response, project, fields, seen.get("text"), seen.get("project"))
+    return project
+
+
+async def _open_project(project_id: str, request, project_dir: Path, seen: dict):
+    """GET /projects/{id}'s work. Records in `seen` the last text read or written
+    with the object parsed from it, so the revisions are hashed once per file version."""
     project_path = project_dir / "project.json"
-    project = json.loads(project_path.read_text())
+    raw = project_path.read_text()
+    project = json.loads(raw)
+    seen.update(text=raw, project=project)
     broadcaster = getattr(request.app.state, "broadcaster", None) if request is not None else None
     # §126: temp files a crash left in the folder and its assets/ (a copy's, a
     # write's), once an hour old, so a project that never copies again is
@@ -3137,6 +3153,7 @@ async def get_project(project_id: str, request: Request = None, project_dir: Pat
                 if normalized is not project:
                     try:
                         text = _write_project_json(project_path, normalized)
+                        seen.update(text=text, project=normalized)
                     except (OSError, ProjectReadOnly):
                         pass  # degrade to "not converged yet": a project must always open
                     project = normalized
@@ -3903,7 +3920,7 @@ def _late_save_follow_ups(
 
 async def _copy_and_patch_media(
     project_id: str, project_dir: Path, previous: dict, wanted: dict, also, broadcaster: "SSEBroadcaster",
-    follow_ups: bool,
+    follow_ups: bool, on_late=None,
 ) -> "tuple[dict | None, dict]":
     """After the save's own write: copy `wanted` into the project off the
     event loop, with no lock. The copy's completion runs the patch
@@ -3913,7 +3930,9 @@ async def _copy_and_patch_media(
     saved and announced all the same, and then runs the save's follow-ups on
     the patched project when `follow_ups`. Returns (the project as patched,
     or None when nothing was swapped in time; the report for the answer).
-    Never raises over the copy: the save already stands."""
+    `on_late` is called when the save answers before the patch (§477: the
+    answer's revisions are then not final). Never raises over the copy: the
+    save already stands."""
     outcome = asyncio.get_running_loop().create_future()
     late = False
 
@@ -3947,6 +3966,8 @@ async def _copy_and_patch_media(
         if outcome.done():
             return outcome.result()
         late = True
+        if on_late is not None:
+            on_late()
         return None, {"warnings": [
             f"Still copying into the project after {_SAVE_COPY_WAIT_SECONDS:g} s: {src}; saved with this "
             "path for now, and with the copy's once it is done." for src in wanted.values()
@@ -3970,7 +3991,11 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
     # another process rewrites project.json too. No await inside it; the SSE
     # broadcast and the follow-ups run after it is released.
     async with project_lock_async(project_path):
-        existing = json.loads(project_path.read_text())
+        raw = project_path.read_text()
+        existing = json.loads(raw)
+        # §477: a stale or unread field refuses the whole save here, before anything is
+        # merged or written. None (and no answer headers) unless the app switched it on.
+        verdict = save_guard.check_save(getattr(request, "headers", None), body, raw, existing)
         prev_status = existing.get("status")
         # Top-level shallow merge: preserve fields not present in the body. Agents
         # (per skills/native/SKILL.md) routinely PUT a partial body like
@@ -4059,10 +4084,15 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
     # or a copy tried again may repoint one.
     follow_ups = "tracks" in body or "sources" in body or bool(retrying)
     current, media_report = merged, {}
+    copy_pending = []
     if wanted:
         patched, media_report = await _copy_and_patch_media(
-            project_id, project_dir, existing, wanted, retrying, broadcaster, follow_ups)
+            project_id, project_dir, existing, wanted, retrying, broadcaster, follow_ups,
+            on_late=lambda: copy_pending.append(True))
         current = patched if patched is not None else merged
+    # A patch that landed is a file version of its own: hashed from the document, not `text`.
+    save_guard.answer_headers(response, verdict, existing, current,
+                              text if current is merged else None, final=not copy_pending)
     # Queue editor previews (proxies) for whatever video items this save just
     # added or repointed — an agent placing a clip via PUT (the only way a
     # clip's src reaches disk outside of import) must not leave it stuck on

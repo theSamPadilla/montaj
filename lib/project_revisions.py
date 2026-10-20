@@ -118,12 +118,14 @@ def revisions_of(project, fields=None) -> dict:
     return {f: revision_of(p.get(f)) for f in names}
 
 
-def stale_fields(project, changed_fields, read) -> dict:
+def stale_fields(project, changed_fields, read, revisions=None) -> dict:
     """Which of the fields a save changes cannot be written: missing (no revision was sent for it,
     so it was never read) and stale (the revision sent differs from the project's now). id is never
-    checked. Both keep the order of changed_fields."""
+    checked. Both keep the order of changed_fields. revisions, when given, are the project's
+    current revisions for those fields already computed (serve's cached ones)."""
     have = read if isinstance(read, dict) else {}
-    now = revisions_of(project, [f for f in changed_fields if f != "id"])
+    names = [f for f in changed_fields if f != "id"]
+    now = {f: revisions[f] for f in names} if revisions is not None else revisions_of(project, names)
     missing, stale = [], []
     for field, rev in now.items():
         sent = have.get(field)

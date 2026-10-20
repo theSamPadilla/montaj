@@ -1,0 +1,489 @@
+"""§477 engine save guard on PUT and GET /api/projects/{id}: a write carries the revision
+of every field it changes and serve compares under the project lock. Real FastAPI app,
+real lock; every project lives under tmp_path."""
+import json
+import threading
+import time
+
+import pytest
+from starlette.testclient import TestClient
+
+import serve.routes.projects as projects_mod
+from lib.project_lock import project_lock, write_json_atomic
+from lib.project_revisions import revision_of, revisions_of
+from lib.project_tracks import normalize_tracks
+from serve import save_guard
+from serve.common import get_project_dir
+from serve.server import app
+
+PID = "guard-proj"
+SECRET = "5e" * 32
+OTHER = "a1" * 32
+
+
+class _StubBroadcaster:
+    def publish(self, *a, **k):
+        pass
+
+
+def _base():
+    return {
+        "id": PID, "name": "first", "status": "draft", "notes": [{"id": "n1", "text": "hi"}],
+        "tracks": [{"id": "trk-0", "items": []}], "sources": [],
+    }
+
+
+def _start(monkeypatch, *, guard=True, secret=SECRET, canary=True):
+    if guard:
+        monkeypatch.setenv("MONTAJ_ENGINE_GUARD", "1")
+    else:
+        monkeypatch.delenv("MONTAJ_ENGINE_GUARD", raising=False)
+    if secret:
+        monkeypatch.setenv("MONTAJ_SHELL_SECRET", secret)
+    else:
+        monkeypatch.delenv("MONTAJ_SHELL_SECRET", raising=False)
+    if not canary:
+        monkeypatch.setattr(save_guard.project_revisions, "canary_ok", lambda: False)
+    save_guard._state.update({"secret": None, "logged": False})
+    save_guard.startup()
+
+
+@pytest.fixture
+def proj(tmp_path, monkeypatch):
+    saved = dict(save_guard._state)
+    project_dir = tmp_path / PID
+    project_dir.mkdir()
+    write_json_atomic(project_dir / "project.json", _base())
+
+    async def _no_previews(*a, **k):
+        return None
+
+    async def _no_dims(project_id, project_dir, project, broadcaster=None):
+        return project
+
+    monkeypatch.setattr(projects_mod, "_queue_previews_for_changed_items", _no_previews)
+    monkeypatch.setattr(projects_mod, "ensure_source_dims", _no_dims)
+    app.state.broadcaster = _StubBroadcaster()
+    app.dependency_overrides[get_project_dir] = lambda: project_dir
+    try:
+        yield project_dir
+    finally:
+        app.dependency_overrides.pop(get_project_dir, None)
+        save_guard._state.clear()
+        save_guard._state.update(saved)
+
+
+def _client():
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _bytes(project_dir):
+    return (project_dir / "project.json").read_bytes()
+
+
+def _disk(project_dir):
+    return json.loads(_bytes(project_dir))
+
+
+def _revs(project_dir, *fields):
+    return revisions_of(normalize_tracks(_disk(project_dir)), fields)
+
+
+def _put(body, read=None, headers=None, client=None):
+    h = dict(headers or {})
+    if read is not None:
+        h["x-montaj-read-revisions"] = read if isinstance(read, str) else json.dumps(read)
+    return (client or _client()).put(f"/api/projects/{PID}", json={"id": PID, **body}, headers=h)
+
+
+def _guard_headers(resp):
+    return {k: v for k, v in resp.headers.items() if k.startswith("x-montaj-")}
+
+
+# ── unset: byte for byte as before ─────────────────────────────────────────────
+
+def test_without_the_env_a_put_with_or_without_read_behaves_as_before(proj, tmp_path, monkeypatch):
+    _start(monkeypatch, guard=False)
+    twin = tmp_path / "twin"
+    twin.mkdir()
+    write_json_atomic(twin / "project.json", _base())
+    body = {"name": "second", "notes": None}
+
+    plain = _put(body)
+    plain_disk = _bytes(proj)
+    app.dependency_overrides[get_project_dir] = lambda: twin
+    stale = _put(body, read={"name": "000000000000", "notes": "bad"},
+                 headers={"x-montaj-writer": "editor", "x-montaj-guard": "advisory", "x-montaj-shell": OTHER})
+    assert plain.status_code == stale.status_code == 200
+    assert plain.json() == stale.json()
+    assert plain_disk == _bytes(twin)
+    assert _guard_headers(plain) == {} and _guard_headers(stale) == {}
+    assert "notes" not in _disk(twin) and _disk(twin)["name"] == "second"
+
+
+def test_without_the_env_a_get_carries_no_revisions(proj, monkeypatch):
+    _start(monkeypatch, guard=False)
+    resp = _client().get(f"/api/projects/{PID}?fields=name")
+    assert resp.status_code == 200
+    assert _guard_headers(resp) == {}
+
+
+def test_canary_mismatch_ignores_every_header(proj, monkeypatch):
+    _start(monkeypatch, canary=False)
+    resp = _put({"name": "second"}, read={"name": "000000000000"})
+    assert resp.status_code == 200
+    assert _guard_headers(resp) == {}
+    assert _disk(proj)["name"] == "second"
+    assert _put({"status": "final"}).status_code == 200
+
+
+# ── strict ─────────────────────────────────────────────────────────────────────
+
+def test_matching_read_applies_and_answers_the_written_revisions(proj, monkeypatch):
+    _start(monkeypatch)
+    resp = _put({"name": "second"}, read=_revs(proj, "name"))
+    assert resp.status_code == 200, resp.text
+    assert _disk(proj)["name"] == "second"
+    revs = json.loads(resp.headers["x-montaj-revisions"])
+    assert revs == {"name": revision_of("second")}
+    assert resp.headers["x-montaj-revisions-final"] == "1"
+    assert "x-montaj-overrode" not in resp.headers
+
+
+def test_answer_revisions_are_the_answer_bodys(proj, monkeypatch):
+    """Including fields the save changed that the body did not name (a legacy shape
+    normalised on write)."""
+    _start(monkeypatch)
+    legacy = {**_base(), "tracks": [[{"id": "c1", "type": "image", "src": "/x.png", "start": 0, "end": 1}]]}
+    write_json_atomic(proj / "project.json", legacy)
+    resp = _put({"name": "second", "status": "final"}, read=_revs(proj, "name", "status"))
+    assert resp.status_code == 200, resp.text
+    revs = json.loads(resp.headers["x-montaj-revisions"])
+    assert set(revs) == {"name", "status", "tracks"}
+    assert revs == revisions_of(resp.json(), list(revs))
+
+
+def test_missing_read_is_400_read_required_and_nothing_is_written(proj, monkeypatch):
+    _start(monkeypatch)
+    before = _bytes(proj)
+    resp = _put({"name": "second", "status": "final"}, read={"name": _revs(proj, "name")["name"]})
+    print("WIRE 400:", resp.text)
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": {
+        "error": "read_required", "stale": [], "missing": ["status"],
+        "message": 'save_project needs the revision of every field you change. Call get_project with '
+                   'fields ["status"] (the fields you are changing), then call save_project again with '
+                   'read set to the revisions it returned.',
+    }}
+    assert _bytes(proj) == before
+
+
+@pytest.mark.parametrize("header", [None, "not json", "[1,2]", '"name"'])
+def test_an_absent_or_unparseable_read_is_treated_as_absent(proj, monkeypatch, header):
+    _start(monkeypatch)
+    before = _bytes(proj)
+    resp = _put({"name": "second"}, read=header)
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["missing"] == ["name"]
+    assert _bytes(proj) == before
+
+
+def test_stale_read_is_409_project_changed_and_the_file_is_byte_identical(proj, monkeypatch):
+    _start(monkeypatch)
+    old = _revs(proj, "name")
+    _put({"name": "second"}, read=old)
+    before = _bytes(proj)
+    resp = _put({"name": "third"}, read=old)
+    print("WIRE 409:", resp.text)
+    assert resp.status_code == 409
+    assert resp.json() == {"detail": {
+        "error": "project_changed", "stale": ["name"], "missing": [],
+        "message": 'name changed since you read it (you or the user edited it, or Montaj updated it), so '
+                   'nothing was saved: call get_project with fields ["name"] and redo your change on what '
+                   'it returns, then save with the new revisions.',
+    }}
+    assert _bytes(proj) == before
+
+
+def test_stale_and_missing_together_name_both(proj, monkeypatch):
+    _start(monkeypatch)
+    resp = _put({"name": "x", "status": "final"}, read={"name": "000000000000"})
+    assert resp.status_code == 409
+    d = resp.json()["detail"]
+    assert (d["stale"], d["missing"]) == (["name"], ["status"])
+    assert d["message"].startswith("name, status changed since you read it (you or the user edited it, "
+                                   "or Montaj updated it) (you never read status), so nothing was saved")
+
+
+def test_a_stale_field_beside_a_fresh_one_refuses_the_whole_write(proj, monkeypatch):
+    _start(monkeypatch)
+    read = {**_revs(proj, "name"), "status": revision_of("final")}
+    before = _bytes(proj)
+    resp = _put({"name": "second", "status": "pending"}, read=read)
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["stale"] == ["status"]
+    assert _bytes(proj) == before
+
+
+def test_read_for_a_field_the_body_does_not_change_is_ignored(proj, monkeypatch):
+    _start(monkeypatch)
+    resp = _put({"name": "second"}, read={**_revs(proj, "name"), "tracks": "000000000000"})
+    assert resp.status_code == 200, resp.text
+
+
+def test_a_null_that_clears_a_field_is_compared_too(proj, monkeypatch):
+    _start(monkeypatch)
+    before = _bytes(proj)
+    assert _put({"notes": None}, read={"notes": revision_of([])}).status_code == 409
+    assert _bytes(proj) == before
+    resp = _put({"notes": None}, read=_revs(proj, "notes"))
+    assert resp.status_code == 200
+    assert "notes" not in _disk(proj)
+    assert json.loads(resp.headers["x-montaj-revisions"]) == {"notes": revision_of(None)}
+
+
+def test_id_mismatch_is_still_400_first(proj, monkeypatch):
+    _start(monkeypatch)
+    resp = _client().put(f"/api/projects/{PID}", json={"id": "other", "name": "x"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["error"] == "id_mismatch"
+
+
+def test_a_hub_template_only_body_needs_no_read(proj, monkeypatch):
+    _start(monkeypatch)
+    resp = _put({"hubTemplate": {"id": "t1"}})
+    assert resp.status_code == 200, resp.text
+    assert _disk(proj)["hubTemplate"] == {"id": "t1"}
+    assert json.loads(resp.headers["x-montaj-revisions"]) == {"hubTemplate": revision_of({"id": "t1"})}
+    assert _put({"hubTemplate": {"id": "t2"}, "name": "x"}).status_code == 400
+
+
+def test_report_keys_in_the_body_are_not_fields(proj, monkeypatch):
+    _start(monkeypatch)
+    resp = _put({"name": "second", "copied": [], "warnings": []}, read=_revs(proj, "name"))
+    assert resp.status_code == 200, resp.text
+
+
+def test_a_legacy_tracks_project_is_compared_in_its_normalised_form(proj, monkeypatch):
+    _start(monkeypatch)
+    legacy = {**_base(), "tracks": [[{"id": "c1", "type": "image", "src": "/x.png", "start": 0, "end": 1}]]}
+    write_json_atomic(proj / "project.json", legacy)
+    before = _bytes(proj)
+    raw_rev = {"tracks": revision_of(legacy["tracks"])}
+    assert _put({"tracks": normalize_tracks(legacy)["tracks"]}, read=raw_rev).status_code == 409
+    assert _bytes(proj) == before
+    norm_rev = {"tracks": revision_of(normalize_tracks(legacy)["tracks"])}
+    resp = _put({"tracks": normalize_tracks(legacy)["tracks"]}, read=norm_rev)
+    assert resp.status_code == 200, resp.text
+
+
+# ── who may ask for what ───────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("shell", [None, OTHER, ""])
+def test_forged_editor_or_advisory_without_the_secret_stays_strict(proj, monkeypatch, shell):
+    _start(monkeypatch)
+    before = _bytes(proj)
+    headers = {"x-montaj-writer": "editor", "x-montaj-guard": "advisory"}
+    if shell is not None:
+        headers["x-montaj-shell"] = shell
+    assert _put({"name": "x"}, headers=headers).status_code == 400
+    assert _put({"name": "x"}, read={"name": "000000000000"}, headers=headers).status_code == 409
+    assert _bytes(proj) == before
+
+
+def test_without_a_configured_secret_nothing_is_trusted(proj, monkeypatch):
+    _start(monkeypatch, secret=None)
+    headers = {"x-montaj-writer": "editor", "x-montaj-guard": "advisory", "x-montaj-shell": ""}
+    assert _put({"name": "x"}, headers=headers).status_code == 400
+
+
+@pytest.mark.parametrize("writer", ["ai", "tool", "bogus"])
+def test_ai_and_tool_with_the_secret_are_strict_even_asking_advisory(proj, monkeypatch, writer):
+    _start(monkeypatch)
+    headers = {"x-montaj-shell": SECRET, "x-montaj-writer": writer, "x-montaj-guard": "advisory"}
+    assert _put({"name": "x"}, read={"name": "000000000000"}, headers=headers).status_code == 409
+
+
+def test_editor_with_the_secret_but_strict_mode_is_strict(proj, monkeypatch):
+    _start(monkeypatch)
+    headers = {"x-montaj-shell": SECRET, "x-montaj-writer": "editor", "x-montaj-guard": "strict"}
+    assert _put({"name": "x"}, read={"name": "000000000000"}, headers=headers).status_code == 409
+
+
+def test_advisory_editor_with_the_secret_applies_and_logs_the_override_once(proj, monkeypatch, capsys):
+    _start(monkeypatch)
+    headers = {"x-montaj-shell": SECRET, "x-montaj-writer": "editor", "x-montaj-guard": "advisory"}
+    capsys.readouterr()
+    resp = _put({"name": "x", "status": "final", "sources": []},
+                read={"name": "000000000000", **_revs(proj, "sources")}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-montaj-overrode"] == "name,status"
+    assert _disk(proj)["name"] == "x"
+    out = capsys.readouterr()
+    lines = [l for l in (out.out + out.err).splitlines() if l.startswith("save-guard:")]
+    assert lines == ["save-guard: advisory override editor fields=name,status"]
+
+
+def test_advisory_editor_with_fresh_revisions_overrides_nothing(proj, monkeypatch, capsys):
+    _start(monkeypatch)
+    headers = {"x-montaj-shell": SECRET, "x-montaj-writer": "editor", "x-montaj-guard": "advisory"}
+    capsys.readouterr()
+    resp = _put({"name": "x"}, read=_revs(proj, "name"), headers=headers)
+    assert resp.status_code == 200
+    assert "x-montaj-overrode" not in resp.headers
+    out = capsys.readouterr()
+    assert "save-guard:" not in out.out + out.err
+
+
+# ── media copy: the answer's revisions are the final document's ───────────────
+
+def test_a_copy_patch_that_lands_in_time_is_in_the_answer_revisions(proj, monkeypatch):
+    _start(monkeypatch)
+    patched_sources = [{"id": "s1", "src": "/copied.mp4"}]
+    monkeypatch.setattr(projects_mod, "_plan_save_media", lambda *a: ({"k": "/borrowed.mp4"}, {}))
+
+    async def fake_copy(project_id, project_dir, previous, wanted, also, broadcaster, follow_ups, on_late=None):
+        doc = json.loads((project_dir / "project.json").read_text())
+        doc["sources"] = patched_sources
+        write_json_atomic(project_dir / "project.json", doc)
+        return doc, {"copied": ["/borrowed.mp4"]}
+    monkeypatch.setattr(projects_mod, "_copy_and_patch_media", fake_copy)
+    resp = _put({"name": "second"}, read=_revs(proj, "name"))
+    assert resp.status_code == 200, resp.text
+    revs = json.loads(resp.headers["x-montaj-revisions"])
+    assert revs == {"name": revision_of("second"), "sources": revision_of(patched_sources)}
+    assert resp.headers["x-montaj-revisions-final"] == "1"
+
+
+def test_a_copy_still_pending_marks_the_revisions_not_final(proj, monkeypatch):
+    _start(monkeypatch)
+    monkeypatch.setattr(projects_mod, "_plan_save_media", lambda *a: ({"k": "/borrowed.mp4"}, {}))
+
+    async def fake_copy(project_id, project_dir, previous, wanted, also, broadcaster, follow_ups, on_late=None):
+        on_late()
+        return None, {"warnings": ["still copying"]}
+    monkeypatch.setattr(projects_mod, "_copy_and_patch_media", fake_copy)
+    resp = _put({"name": "second"}, read=_revs(proj, "name"))
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-montaj-revisions-final"] == "0"
+    assert json.loads(resp.headers["x-montaj-revisions"]) == {"name": revision_of("second")}
+
+
+def test_a_copy_late_path_calls_on_late(tmp_path, monkeypatch):
+    """The real `_copy_and_patch_media`: past the wait, it says the copy is still pending."""
+    import asyncio
+    monkeypatch.setattr(projects_mod, "_SAVE_COPY_WAIT_SECONDS", 0.05)
+
+    def slow_copy(wanted, project_dir):
+        time.sleep(0.3)
+        return {}, []
+    monkeypatch.setattr(projects_mod, "copy_borrowed_media", slow_copy)
+    d = tmp_path / "p"
+    d.mkdir()
+    write_json_atomic(d / "project.json", {"id": "p"})
+    late = []
+
+    async def main():
+        out = await projects_mod._copy_and_patch_media(
+            "p", d, {}, {"k": "/b"}, (), _StubBroadcaster(), False, on_late=lambda: late.append(1))
+        await asyncio.sleep(0.5)
+        return out
+    patched, report = asyncio.run(main())
+    assert patched is None and late == [1]
+
+
+# ── GET ?fields ─────────────────────────────────────────────────────────────────
+
+def test_get_answers_revisions_for_the_fields_asked_and_the_body_is_unchanged(proj, monkeypatch):
+    _start(monkeypatch)
+    c = _client()
+    whole = c.get(f"/api/projects/{PID}")
+    some = c.get(f"/api/projects/{PID}?fields=name,status,missing")
+    assert whole.json() == some.json()
+    assert json.loads(some.headers["x-montaj-revisions"]) == revisions_of(some.json(), ["name", "status", "missing"])
+    assert json.loads(whole.headers["x-montaj-revisions"]) == revisions_of(whole.json())
+
+
+def test_get_revisions_after_a_legacy_open_are_the_normalised_ones(proj, monkeypatch):
+    _start(monkeypatch)
+    legacy = {**_base(), "tracks": [[{"id": "c1", "type": "image", "src": "/x.png", "start": 0, "end": 1}]]}
+    write_json_atomic(proj / "project.json", legacy)
+    resp = _client().get(f"/api/projects/{PID}?fields=tracks")
+    assert json.loads(resp.headers["x-montaj-revisions"]) == {
+        "tracks": revision_of(normalize_tracks(legacy)["tracks"])}
+
+
+def test_get_then_put_round_trips(proj, monkeypatch):
+    _start(monkeypatch)
+    c = _client()
+    read = json.loads(c.get(f"/api/projects/{PID}?fields=name").headers["x-montaj-revisions"])
+    put = _put({"name": "second"}, read=read, client=c)
+    assert put.status_code == 200
+    again = _put({"name": "third"}, read=json.loads(put.headers["x-montaj-revisions"]), client=c)
+    assert again.status_code == 200
+
+
+# ── races (matrix item 3) ──────────────────────────────────────────────────────
+
+def test_a_strict_put_loses_to_a_writer_that_took_the_lock_first(proj, monkeypatch):
+    _start(monkeypatch)
+    read = _revs(proj, "name")
+    path = proj / "project.json"
+    held, results = threading.Event(), {}
+
+    def step_writer():
+        with project_lock(path):
+            held.set()
+            time.sleep(0.3)   # the PUT arrives and waits for the lock
+            doc = json.loads(path.read_text())
+            doc["name"] = "by the step"
+            write_json_atomic(path, doc)
+
+    def put():
+        results["put"] = _put({"name": "by the ai"}, read=read)
+
+    w = threading.Thread(target=step_writer)
+    w.start()
+    held.wait()
+    p = threading.Thread(target=put)
+    p.start()
+    w.join()
+    p.join()
+    assert results["put"].status_code == 409
+    assert _disk(proj)["name"] == "by the step"
+
+
+def test_two_puts_with_the_same_revision_exactly_one_wins(proj, monkeypatch):
+    _start(monkeypatch)
+    for round_ in range(5):
+        read = _revs(proj, "name")
+        go, results = threading.Barrier(2), []
+
+        def put(n):
+            c = _client()
+            go.wait()
+            results.append((n, _put({"name": f"r{round_}-{n}"}, read=read, client=c).status_code))
+
+        threads = [threading.Thread(target=put, args=(n,)) for n in (1, 2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        codes = sorted(code for _, code in results)
+        assert codes == [200, 409], results
+        winner = next(n for n, code in results if code == 200)
+        assert _disk(proj)["name"] == f"r{round_}-{winner}"
+
+
+def test_the_revision_moves_after_every_write(proj, monkeypatch):
+    """The cache is keyed by file content: a write between two reads is never answered
+    from the old version."""
+    _start(monkeypatch)
+    c = _client()
+    r1 = c.get(f"/api/projects/{PID}?fields=name").headers["x-montaj-revisions"]
+    doc = _disk(proj)
+    doc["name"] = "outside"
+    write_json_atomic(proj / "project.json", doc)
+    r2 = c.get(f"/api/projects/{PID}?fields=name").headers["x-montaj-revisions"]
+    assert r1 != r2
+    assert _put({"name": "x"}, read=json.loads(r1), client=c).status_code == 409
