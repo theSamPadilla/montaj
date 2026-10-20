@@ -20,7 +20,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from urllib.parse import quote, urlparse
 
@@ -403,6 +403,18 @@ def _next_clip_id(project: dict) -> str:
     return f"clip-{max_n + 1}"
 
 
+async def _record_source_provenance(project_dir, clip: dict, entry: dict, log) -> None:
+    """POST /sources's provenance entry, for each file the clip stores: `src`, and
+    `normalizedSrc` when there is one. Best effort: a record that cannot be
+    written is logged and never fails the ingest."""
+    paths = [clip.get("src"), clip.get("normalizedSrc")]
+    for path in dict.fromkeys(p for p in paths if isinstance(p, str) and p):
+        try:
+            await asyncio.to_thread(provenance.record_provenance, project_dir, path, entry)
+        except Exception as e:
+            log(f"[ingest] provenance not recorded for {os.path.basename(path)}: {e}")
+
+
 async def _run_ingest_detached(
     project_id: str,
     project_dir: "Path",
@@ -410,6 +422,7 @@ async def _run_ingest_detached(
     color_space: str,
     broadcaster: "SSEBroadcaster",
     job: "_IngestJob",
+    provenance_entry: dict | None = None,
 ) -> None:
     """Run lib.ingest.ingest_source to completion regardless of any client,
     mirroring `_run_caption_detached`. `ingest_source` is blocking (ffmpeg
@@ -455,6 +468,8 @@ async def _run_ingest_detached(
             project.setdefault("sources", []).append(clip)
             text = _write_project_json(project_path, project)
         broadcaster.publish(project_id, _sse_data_frame(text))
+        if provenance_entry is not None:
+            await _record_source_provenance(project_dir, clip, provenance_entry, log)
 
         # Only now the clip is on disk under a stable (id, src) can the encode's
         # write-back find it. A bin entry on no track is a first-class target:
@@ -899,6 +914,12 @@ async def _finalize_source_download(
         text = _write_project_json(project_path, project)
     if broadcaster is not None:
         broadcaster.publish(project_id, _sse_data_frame(text))
+    # Where the file came from (serve/provenance.py). Best-effort, like the proxy below.
+    try:
+        await asyncio.to_thread(provenance.record_provenance, project_dir, clip["src"],
+                                {"kind": "web", "via": "youtube", "sourceUrl": url})
+    except Exception as e:
+        logger.warning("source download: provenance not recorded for %s: %s", clip.get("src"), e)
 
     # The proxy, as `_run_ingest_detached`: queued only once the clip is on
     # disk under its (id, src). Best-effort.
@@ -4186,8 +4207,45 @@ async def list_generated(project_id: str, project_dir: Path = Depends(get_projec
     """The project's files an AI provider made (serve/provenance.py):
     `{"dir": the project folder, "generated": {path relative to it: {provider,
     model, prompt, step, at}}}`, so a host can join the record to the items'
-    absolute `src`. `generated` is empty when nothing was recorded."""
-    return {"dir": str(project_dir), "generated": provenance.read(project_dir)}
+    absolute `src`. `generated` is empty when nothing was recorded. It is the
+    ai entries of the project's provenance record, `.provenance.json`'s and the
+    older `.generated.json`'s (`provenance.generated`)."""
+    return {"dir": str(project_dir), "generated": provenance.generated(project_dir)}
+
+
+def _provenance_refused(e: ValueError) -> HTTPException:
+    """A provenance path or entry the record refuses (ProvenanceError), or a
+    `provenance` field that is not JSON: 422 naming why."""
+    if isinstance(e, provenance.ProvenanceError):
+        return HTTPException(422, detail={"error": e.code, "message": str(e)})
+    return HTTPException(422, detail={"error": "invalid_entry", "message": f"provenance must be a JSON object: {e}"})
+
+
+@router.get("/projects/{project_id}/provenance")
+async def get_provenance(project_id: str, project_dir: Path = Depends(get_project_dir)):
+    """Where each file in the project came from (serve/provenance.py):
+    `{"dir": the project folder, "provenance": {path relative to it: {kind, at,
+    ...}}}`. `.provenance.json`'s entries, plus the older `.generated.json`'s as
+    kind `ai` for each path the new record has none for. A file with no entry
+    is untagged."""
+    return {"dir": str(project_dir), "provenance": provenance.merged(project_dir)}
+
+
+@router.post("/projects/{project_id}/provenance")
+async def record_project_provenance(project_id: str, body: dict = Body(...),
+                                    project_dir: Path = Depends(get_project_dir)):
+    """Record where one file in the project came from. Body: `{"path": relative
+    to the project folder or absolute inside it, "entry": {kind, ...}}` (the
+    kinds and their fields: serve/provenance.py). The app records its own
+    imports this way (user, library, template, brand_kit, montaj, web). Answers
+    `{path: the record's key, entry: as stored}`; a path outside the project or
+    an entry the record refuses is a 422 naming why."""
+    try:
+        entry = provenance.validate_entry(body.get("entry"))
+        key = await asyncio.to_thread(provenance.record_provenance, project_dir, body.get("path"), entry)
+    except provenance.ProvenanceError as e:
+        raise _provenance_refused(e)
+    return {"path": key, "entry": entry}
 
 
 @router.get("/projects/{project_id}/versions")
@@ -4761,13 +4819,32 @@ async def upload_outputs(
 async def upload_asset_to_project(
     project_id: str,
     file: UploadFile,
+    provenance_entry: str | None = Form(None, alias="provenance"),
     project_dir: Path = Depends(get_project_dir),
 ):
     """Accept a browser file drop scoped to a project, saving it into the
     project's own directory instead of the shared workspace _uploads/ folder.
-    Keeps each project self-contained and portable."""
+    Keeps each project self-contained and portable.
+
+    An optional `provenance` form field, the file's entry as JSON (`{kind, ...}`,
+    serve/provenance.py), is recorded for the stored file; one the record refuses
+    is a 422 and nothing is stored. Without it nothing is recorded. A record that
+    cannot be written once the file is stored does not fail the upload: the
+    answer carries `provenanceError` instead, for POST .../provenance to retry."""
+    entry = None
+    if provenance_entry is not None:
+        try:
+            entry = provenance.validate_entry(json.loads(provenance_entry))
+        except ValueError as e:
+            raise _provenance_refused(e)
     dest = await save_upload(file, project_dir)
-    return {"path": str(dest)}
+    answer = {"path": str(dest)}
+    if entry is not None:
+        try:
+            await asyncio.to_thread(provenance.record_provenance, project_dir, str(dest), entry)
+        except Exception as e:
+            answer["provenanceError"] = {"error": getattr(e, "code", "not_recorded"), "message": str(e)}
+    return answer
 
 
 @router.post("/projects/{project_id}/sources")
@@ -4785,14 +4862,23 @@ async def ingest_project_source(
     GET .../sources/status/{job_id} to follow progress and pick up the
     appended clip or error once terminal.
 
-    Body: {"path": "<absolute path to a readable video file>"}. The path is
-    typically one just staged via POST /upload-asset (browser drop) or picked
-    natively by the client (outside project_dir); lib.ingest.ingest_source
-    handles both without a double copy.
+    Body: {"path": "<absolute path to a readable video file>", "provenance"?:
+    {kind, ...}}. The path is typically one just staged via POST /upload-asset
+    (browser drop) or picked natively by the client (outside project_dir);
+    lib.ingest.ingest_source handles both without a double copy. `provenance`,
+    optional, is recorded for the files the clip stores (serve/provenance.py);
+    one the record refuses is a 422 before anything runs. Without it nothing is
+    recorded.
     """
     path = body.get("path")
     if not isinstance(path, str) or not path:
         raise bad_request("missing_field", "'path' is required")
+    entry = None
+    if body.get("provenance") is not None:
+        try:
+            entry = provenance.validate_entry(body["provenance"])
+        except provenance.ProvenanceError as e:
+            raise _provenance_refused(e)
     if not os.path.isfile(path):
         raise bad_request("invalid_path", f"'{path}' is not a readable file")
 
@@ -4811,7 +4897,8 @@ async def ingest_project_source(
     job_id = uuid.uuid4().hex
     _ingest_jobs[job_id] = job
     task = asyncio.create_task(
-        _run_ingest_detached(project_id, project_dir, path, color_space, broadcaster, job)
+        _run_ingest_detached(project_id, project_dir, path, color_space, broadcaster, job,
+                             provenance_entry=entry)
     )
     _ingest_task_refs.add(task)
     task.add_done_callback(_ingest_task_refs.discard)

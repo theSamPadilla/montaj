@@ -5,6 +5,7 @@
     "type": "image",
     "description": "Absolute path to the downloaded image file"
   },
+  "provenance": { "kind": "stock" },
   "params": [
     {
       "name": "url",
@@ -24,6 +25,37 @@
       "required": false,
       "default": 26214400,
       "description": "Maximum allowed file size in bytes (default: 25 MiB)"
+    },
+    {
+      "name": "licence",
+      "type": "string",
+      "required": false,
+      "description": "The image's licence, from its search_images result's license (e.g. CC BY-SA 4.0). Recorded in the project's provenance, not used to fetch"
+    },
+    {
+      "name": "artist",
+      "type": "string",
+      "required": false,
+      "description": "Who made the image, from its search_images result. Recorded in the project's provenance"
+    },
+    {
+      "name": "source",
+      "type": "enum",
+      "options": ["commons", "sportsdb", "web"],
+      "required": false,
+      "description": "Where search_images found it, from its result's source. Recorded in the project's provenance"
+    },
+    {
+      "name": "source-url",
+      "type": "string",
+      "required": false,
+      "description": "The page the image came from, when it is not the url fetched. Recorded in the project's provenance (default: url)"
+    },
+    {
+      "name": "title",
+      "type": "string",
+      "required": false,
+      "description": "The image's title, from its search_images result. Recorded in the project's provenance"
     }
   ]
 }

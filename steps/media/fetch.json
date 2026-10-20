@@ -5,6 +5,7 @@
     "type": "video",
     "description": "Path to downloaded file, or JSON {paths:[...]} for multi-video downloads. With meta, always JSON {paths:[...], videos:[{id, path, url, title, description, view_count, like_count, comment_count, upload_date, duration}]}; a value the site did not return is null"
   },
+  "provenance": { "kind": "web", "via": "fetch" },
   "params": [
     {
       "name": "url",

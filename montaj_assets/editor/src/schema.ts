@@ -281,7 +281,7 @@ export interface VisualItem {
   sourceCrop?: { x: number; y: number; w: number; h: number }  // video and image: the source region to show (0–1 fractions of its DISPLAY size). An image crops before its fit; a video needs sourceWidth/sourceHeight. Keyframed on images and videos by cropX/cropY/cropW/cropH.
   sourceWidth?: number    // video type only — intrinsic width of the source clip in pixels
   sourceHeight?: number   // video type only — intrinsic height of the source clip in pixels
-  generation?: {            // frozen provenance, set on the clip by kling_generate/veo_generate's project mode (ai_video). Any generate step's output in a project is also recorded in its assets/.generated.json, in this shape (serve/provenance.py).
+  generation?: {            // frozen provenance, set on the clip by kling_generate/veo_generate's project mode (ai_video). Any generate step's output in a project is also recorded in its assets/.provenance.json as kind ai, in this shape (serve/provenance.py).
     // Single-shot fields (present when multiShot is falsy).
     sceneId?: string
     prompt?: string

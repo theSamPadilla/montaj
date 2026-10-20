@@ -485,34 +485,33 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
     result = wrap_output(stdout_text, schema)
     if resolved_out and isinstance(result, dict):
         result.setdefault("out", resolved_out)
-    _note_provenance(name, schema, body, result, project_ref)
+    # In a thread: the record is written under the project lock, which blocks.
+    await asyncio.to_thread(_note_provenance, name, schema, body, result, project_ref)
     return result
 
 
 def _note_provenance(name: str, schema: dict, body: dict, result, project_ref) -> None:
-    """A generate step's output that landed in a project goes in its
-    `assets/.generated.json` (serve/provenance.py). The project is the one
-    `_project` named, else the folder above the output with a project.json.
-    Best effort: a record that cannot be written never fails the step."""
-    if not isinstance(schema.get("provenance"), dict):
-        return
+    """Each file a finished step made in a project's folder goes in that project's
+    `assets/.provenance.json` (serve/provenance.py: `step_records` says which
+    files and what entry). The project is the one `_project` named, else the
+    folder above the file with a project.json. Best effort: a record that cannot
+    be written never fails the step, and one file's failure leaves the others."""
     try:
-        entry = provenance.entry_for(name, schema, body, result)
-        out = provenance.output_path(result, body)
-        if entry is None or out is None:
-            return
-        pdir = None
+        named = None
         if project_ref is not None:
             try:
-                pdir = _project_dir_for(project_ref)
+                named = _project_dir_for(project_ref)
             except HTTPException:
-                pdir = None
-        if pdir is None:
-            pdir = provenance.project_dir_containing(out, str(resolve_workspace()))
-        if pdir is not None:
-            provenance.record(pdir, out, entry)
+                named = None
+        records = provenance.step_records(name, schema, body, result, str(resolve_workspace()), named)
     except Exception as e:  # never fail a finished step over its record
         print(f"[provenance] not recorded for {name}: {e}", file=sys.stderr)
+        return
+    for pdir, out, entry in records:
+        try:
+            provenance.record_provenance(pdir, out, entry)
+        except Exception as e:
+            print(f"[provenance] not recorded for {name} ({out}): {e}", file=sys.stderr)
 
 
 async def _run_to_job(job_id: str, name: str, schema: dict, py_path: Path, body: dict) -> None:

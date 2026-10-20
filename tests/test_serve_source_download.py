@@ -381,6 +381,20 @@ def test_download_on_a_draft_project_adds_the_source_only(tmp_path, monkeypatch,
     assert project["sourceDownload"]["clipId"] == project["sources"][0]["id"]
 
 
+def test_a_downloaded_source_is_recorded_as_web_from_youtube(tmp_path, monkeypatch, finalize_stubs):
+    from serve import provenance
+    pid = str(uuid.uuid4())
+    project_dir = tmp_path / "p"
+    _write_project(project_dir, pid, status="draft")
+    target = project_dir / f"youtube-{VID}.mp4"
+    _stub_spawn(monkeypatch, _ok_output(project_dir), writes=[target])
+
+    _download(pid, project_dir)
+
+    entry = provenance.read(project_dir)[target.name]
+    assert {k: v for k, v in entry.items() if k != "at"} == {"kind": "web", "via": "youtube", "sourceUrl": URL}
+
+
 def _reopen(pid: str, project_dir: Path):
     """GET /projects/{id} the way serve runs it, then wait for any task it started."""
     async def go():

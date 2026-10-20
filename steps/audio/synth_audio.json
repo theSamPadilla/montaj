@@ -2,6 +2,7 @@
   "name": "synth_audio",
   "description": "Synthesize a 48 kHz stereo WAV from a cue list of generic voices placed at exact times: kick, snare, hat, bass, sub, pad, pluck, whoosh, hit, click, riser. Each cue: {t, voice, dur?, note? (MIDI), freq?, gain? 0-2, pan? -1..1}. Deterministic for a given seed. Peak limited to -1 dBFS.",
   "output": { "type": "json", "description": "{path, duration, peak_db}" },
+  "provenance": { "kind": "synth" },
   "params": [
     { "name": "cues", "type": "path", "required": true, "description": "Cues JSON: {duration?, seed?, cues: [...]}" },
     { "name": "out", "type": "path", "required": true, "ext": ".wav", "description": "Output WAV path" },

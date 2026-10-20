@@ -225,6 +225,26 @@ def test_validate_fails_required_not_bool(tmp_path):
         vs.validate(path)
 
 
+@pytest.mark.parametrize("prov", [
+    {"provider": "kling"}, {"kind": "stock"}, {"kind": "synth"}, {"kind": "web", "via": "fetch"},
+    {"kind": "web", "via": "capture_site", "manifest": True},
+])
+def test_validate_passes_each_provenance_form(tmp_path, prov):
+    path = _write_schema(tmp_path, "my_step", {**VALID_SCHEMA, "provenance": prov})
+    assert vs.validate(path)["provenance"] == prov
+
+
+@pytest.mark.parametrize("prov", [
+    {"kind": "ai"}, {"kind": "derived"}, {"kind": "web"}, {"kind": "web", "via": "ftp"},
+    {"kind": "stock", "via": "fetch"}, {"kind": ["stock"]}, {"kind": "web", "via": "fetch", "manifest": "yes"},
+    {"provider": "kling", "kind": "stock"},
+])
+def test_validate_fails_a_provenance_the_funnel_cannot_read(tmp_path, prov):
+    path = _write_schema(tmp_path, "my_step", {**VALID_SCHEMA, "provenance": prov})
+    with pytest.raises(SystemExit):
+        vs.validate(path)
+
+
 # ---------------------------------------------------------------------------
 # validate_step — resolve_step_path()
 # ---------------------------------------------------------------------------

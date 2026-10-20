@@ -15,6 +15,12 @@ def main():
     p.add_argument("--out", required=True, help="Output file path")
     p.add_argument("--max-bytes", dest="max_bytes", type=int, default=26_214_400,
                    help="Maximum allowed file size in bytes (default: 25 MiB)")
+    # Serve records these in the project's provenance (serve/provenance.py); the fetch ignores them.
+    p.add_argument("--licence", help="The image's licence")
+    p.add_argument("--artist", help="Who made the image")
+    p.add_argument("--source", choices=["commons", "sportsdb", "web"], help="Where search_images found it")
+    p.add_argument("--source-url", dest="source_url", help="The page the image came from")
+    p.add_argument("--title", help="The image's title")
     args = p.parse_args()
 
     from pathlib import Path

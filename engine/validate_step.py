@@ -14,6 +14,26 @@ BUILT_IN_DIR   = os.path.join(MONTAJ_ROOT, "steps")
 USER_DIR       = os.path.expanduser("~/.montaj/steps")
 
 
+# The declarations serve/provenance.py's step funnel reads (its STEP_KINDS and WEB_VIA).
+_PROVENANCE_KINDS = {"stock", "web", "synth"}
+_WEB_VIA = {"url", "youtube", "capture_site", "fetch"}
+
+
+def _ai_provenance(prov, params):
+    return len(prov) == 1 and (
+        (isinstance(prov.get("provider"), str) and bool(prov["provider"].strip()))
+        or (isinstance(prov.get("providerParam"), str) and any(p.get("name") == prov["providerParam"] for p in params))
+    )
+
+
+def _kind_provenance(prov):
+    kind, via = prov.get("kind"), prov.get("via")
+    if kind == "web":
+        return (isinstance(via, str) and via in _WEB_VIA and set(prov) <= {"kind", "via", "manifest"}
+                and prov.get("manifest", True) is True)
+    return isinstance(kind, str) and kind in _PROVENANCE_KINDS and set(prov) == {"kind"}
+
+
 def validate(path):
     if not os.path.isfile(path):
         fail("file_not_found", f"Schema file not found: {path}")
@@ -75,12 +95,12 @@ def validate(path):
 
     prov = schema.get("provenance")
     if prov is not None:
-        ok = isinstance(prov, dict) and len(prov) == 1 and (
-            (isinstance(prov.get("provider"), str) and prov["provider"].strip())
-            or (isinstance(prov.get("providerParam"), str) and any(p.get("name") == prov["providerParam"] for p in params))
-        )
+        ok = isinstance(prov, dict) and (_ai_provenance(prov, params) or _kind_provenance(prov))
         if not ok:
-            fail("invalid_field", 'Field \'provenance\' must be {"provider": "<connector id>"} or {"providerParam": "<one of this step\'s params>"}')
+            fail("invalid_field", 'Field \'provenance\' must be {"provider": "<connector id>"}, '
+                                  '{"providerParam": "<one of this step\'s params>"}, {"kind": "stock"}, '
+                                  '{"kind": "synth"} or {"kind": "web", "via": "fetch"|"capture_site"|"url"|"youtube", '
+                                  '"manifest"?: true}')
 
     return schema
 

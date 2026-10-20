@@ -771,6 +771,52 @@ To use an asset in a `tracks[1+]` item, pass its `src` path via `props` (for ove
 
 ---
 
+## Where each file came from (`assets/.provenance.json`)
+
+A record beside project.json, never inside it, of where each file in the project folder came from. It maps the file's path relative to the project folder (so a moved project keeps it) to one entry. Serve is its only writer (`serve/provenance.py` `record_provenance`, under the project lock, written whole to a temp file and renamed over it); nothing else writes the file.
+
+```json
+{
+  "assets/elon.jpg": {"kind": "stock", "at": "2026-10-20T14:03:09+00:00", "source": "commons",
+                      "licence": "CC BY-SA 4.0", "artist": "Jane Doe",
+                      "sourceUrl": "https://upload.wikimedia.org/…/elon.jpg", "title": "Elon at the IPO"},
+  "assets/generate_image-20261020-140501.png": {"kind": "ai", "at": "2026-10-20T14:05:01+00:00",
+                      "provider": "gemini", "step": "generate_image", "prompt": "a cat on a sofa"},
+  "assets/cut.mp4":   {"kind": "derived", "at": "2026-10-20T14:07:44+00:00", "step": "trim", "from": ["clip.mp4"]}
+}
+```
+
+Every entry has `kind` and `at` (when it was recorded, ISO 8601 UTC to the second). The kind's own fields:
+
+| `kind` | Fields | Recorded by |
+|---|---|---|
+| `user` | `via` (required): `drop`, `picker`, `new-project`, `import`, `agent-image`, `import_model`, `record` | the app's import paths |
+| `stock` | `source` (`commons`, `sportsdb`, `web`), `licence`, `artist`, `sourceUrl`, `title` | `fetch_image`, given its search result's fields as params |
+| `web` | `via` (required): `url`, `youtube`, `capture_site`, `fetch`; `sourceUrl`, `title`, `uploader` | the `fetch` and `capture_site` steps, the YouTube source download (`sourceDownload`), the app |
+| `ai` | `provider` and `step` (required), `model`, `prompt` | every generate step |
+| `derived` | `step` (required), `from`: the inputs inside the project folder, as keys | every other step whose output lands in a project |
+| `synth` | `step` (required) | `synth_audio` |
+| `library` | `id` (required), `version` (string or integer), `spdx`, `source`, `notice` | the app |
+| `template` | `templateId` (required) | the app |
+| `brand_kit` | `profileId` (required) | the app |
+| `montaj` | `what` (required): `preset`, `sample` | the app |
+
+Strings are capped at 1000 characters (a prompt at 2000), `from` at 500 paths, and the record at 4 MB; a write that would pass the cap is refused and the record kept. A later entry for a path replaces the earlier one. A file with no entry is untagged: nothing is guessed. The steps declare what they record in their schema's `provenance` ([step.md](step.md)); a step run outside serve (the CLI) is not recorded.
+
+`assets/.generated.json`, the AI-only record this replaces (`{provider, model, prompt, step, at}` per path, no `kind`), is no longer written and is still read: its entries count as kind `ai` for any path the new record has no entry for.
+
+| Route | |
+|---|---|
+| `GET /api/projects/{id}/provenance` | `{dir, provenance: {path: entry}}`: the whole record, with `.generated.json`'s entries merged in |
+| `POST /api/projects/{id}/provenance` | Body `{path, entry}`: `path` relative to the project folder or absolute inside it. Answers `{path: the key, entry: as stored}`. 422 `outside_project` for a path outside the folder (symlinks followed), `invalid_path` for project.json, the lock, the records or `.git`, `invalid_entry` for an unknown kind or field, a wrong type, a value outside a field's set or a missing required field, `record_full` past the cap |
+| `POST /api/projects/{id}/upload-asset` | Takes an optional `provenance` form field (the entry as JSON) and records it for the stored file. A refused entry is a 422 and nothing is stored; a record that cannot be written once the file is stored answers `provenanceError` with the path |
+| `POST /api/projects/{id}/sources` | Takes an optional `provenance` (the entry) and records it for the files the clip stores (`src`, and `normalizedSrc` when there is one). A refused entry is a 422 before anything runs |
+| `GET /api/projects/{id}/generated` | `{dir, generated: {path: {provider, model, prompt, step, at}}}`: the record's ai entries, in `.generated.json`'s shape |
+
+Without an entry, upload-asset and sources record nothing.
+
+---
+
 ## Source download (`sourceDownload`)
 
 A project created from a YouTube link (`POST /api/run` with `clipUrls: ["<watch or youtu.be link>"]`) is created at once, as a canvas project with an empty `tracks[0]`, and serve downloads the video in the background with yt-dlp. The top-level `sourceDownload` record says where that stands. **Serve is its only writer** (`serve/routes/projects.py`, `_start_source_download` and below); a client never sets it.
@@ -1099,7 +1145,7 @@ This block is a **frozen snapshot** of what was sent to the provider when the cl
 | Field | Type | Description |
 |-------|------|-------------|
 | `generation.sceneId` | string | Optional pointer back to the `storyboard.scenes[i].id` this clip was generated from. Convenience for UI grouping when one scene is cut into multiple pieces. |
-| `generation.provider` | string | Currently `"kling"`. Could grow to include other video-gen providers. |
+| `generation.provider` | string | The connector id of the provider that made the clip: `"kling"`, or `"gemini"` for Veo clips (`lib/ai_video.py`). |
 | `generation.model` | string | Model used (e.g. `"kling-v3-omni"`). Recorded for reproducibility. |
 | `generation.prompt` | string | The exact combined prompt that was sent to the provider (includes `styleAnchor` and `<<<image_N>>>` tokens for reference images). Useful for "why did this clip look weird" debugging — one field, one answer. |
 | `generation.refImages` | string[] | IDs into `storyboard.imageRefs[]`. Regeneration resolves these to current paths (`imageRefs[i].refImages[0]`), so if the user regenerates a reference image, subsequent regens of this clip pick up the new visual. |
