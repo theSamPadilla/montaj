@@ -139,13 +139,16 @@ READ_HEADER = "x-montaj-read-revisions"
 
 class Verdict:
     """What the guard decided for one PUT that it let through."""
-    __slots__ = ("writer", "advisory", "changed", "overrode")
+    __slots__ = ("writer", "advisory", "changed", "overrode", "base_text")
 
-    def __init__(self, writer, advisory, changed):
+    def __init__(self, writer, advisory, changed, base_text=None):
         self.writer = writer
         self.advisory = advisory
         self.changed = changed
         self.overrode = []
+        # The text the save read, when its revisions are cached under it (the file already in
+        # the reader's shape): the answer reuses them for every field the save left alone.
+        self.base_text = base_text
 
 
 def changed_fields(body: dict) -> list:
@@ -212,7 +215,8 @@ def check_save(headers, body: dict, raw_text, existing: dict):
     writer, trusted = writer_of(headers)
     advisory = trusted and writer == "editor" and headers.get("x-montaj-guard") == "advisory"
     changed = changed_fields(body)
-    verdict = Verdict(writer, advisory, changed)
+    base_text = raw_text if normalize_tracks(existing) is existing else None
+    verdict = Verdict(writer, advisory, changed, base_text)
     if all(f in OWNED_FIELDS for f in changed):
         return verdict
     now = current_revisions(raw_text, existing, changed)
@@ -294,9 +298,11 @@ def answer_headers(response, verdict, existing: dict, current: dict, text, final
     if verdict is None or response is None:
         return
     keys = list(dict.fromkeys([*verdict.changed, *current, *existing]))
-    written = [k for k in keys if k in verdict.changed or existing.get(k) != current.get(k)]
+    written = [k for k in keys if k in verdict.changed
+               or (current.get(k) is not existing.get(k) and existing.get(k) != current.get(k))]
     if text is not None:
-        revs = project_revisions.revisions_for_text(text, current, written)
+        revs = project_revisions.revisions_for_text(text, current, written,
+                                                    base=(verdict.base_text, existing))
     else:
         revs = project_revisions.revisions_of(current, written)
     response.headers["x-montaj-revisions"] = json.dumps(revs, separators=(",", ":"))

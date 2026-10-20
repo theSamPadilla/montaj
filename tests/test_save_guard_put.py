@@ -559,3 +559,44 @@ def test_the_revision_moves_after_every_write(proj, monkeypatch):
     r2 = c.get(f"/api/projects/{PID}?fields=name").headers["x-montaj-revisions"]
     assert r1 != r2
     assert _put({"name": "x"}, read=json.loads(r1), client=c).status_code == 409
+
+
+# ── the revision cache after a save (only changed fields are hashed again) ────────
+
+def _counting(monkeypatch):
+    """Count revision_of calls per top-level value (by equality to the document's)."""
+    from lib import project_revisions as pr
+    calls = []
+    real = pr.revision_of
+
+    def counted(value):
+        calls.append(value)
+        return real(value)
+    monkeypatch.setattr(pr, "revision_of", counted)
+    return calls
+
+
+def test_a_save_reuses_the_revisions_of_the_fields_it_did_not_change(proj, monkeypatch):
+    _start(monkeypatch)
+    from lib import project_revisions as pr
+    big = [{"id": "trk-0", "items": [{"id": f"c{i}", "type": "image", "src": f"/x{i}.png", "start": i, "end": i + 1}
+                                     for i in range(200)]}]
+    write_json_atomic(proj / "project.json", {**_base(), "tracks": big})
+    pr.clear_cache()
+    calls = _counting(monkeypatch)
+    c = _client()
+    read = json.loads(c.get(f"/api/projects/{PID}?fields=tracks,name").headers["x-montaj-revisions"])
+    assert sum(1 for v in calls if v == big) == 1
+    put = _put({"name": "second"}, read={"name": read["name"]}, client=c)
+    assert put.status_code == 200, put.text
+    again = json.loads(c.get(f"/api/projects/{PID}?fields=tracks,name,status").headers["x-montaj-revisions"])
+    # The save changed name only: tracks is never hashed again, here or in the next check.
+    assert sum(1 for v in calls if v == big) == 1
+    assert _put({"tracks": big, "status": "final"},
+                read={"tracks": again["tracks"], "status": again["status"]}, client=c).status_code == 200
+    assert sum(1 for v in calls if v == big) == 2           # tracks was in the body: hashed once more
+    disk = normalize_tracks(_disk(proj))
+    final = json.loads(c.get(f"/api/projects/{PID}").headers["x-montaj-revisions"])
+    pr.clear_cache()
+    assert final == revisions_of(disk) and again["tracks"] == revision_of(big) == final["tracks"]
+    assert again == revisions_of({**_base(), "tracks": big, "name": "second"}, ["tracks", "name", "status"])

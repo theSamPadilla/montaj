@@ -149,20 +149,35 @@ def clear_cache() -> None:
         _cache.clear()
 
 
-def revisions_for_text(text, project=None, fields=None) -> dict:
+def _text_key(text) -> str:
+    raw = text.encode("utf-8") if isinstance(text, str) else bytes(text)
+    return hashlib.sha256(raw).hexdigest()
+
+
+def revisions_for_text(text, project=None, fields=None, base=None) -> dict:
     """revisions_of for the project.json whose raw text is text (str or bytes), cached by the sha256
     of that text, so each file version's fields are hashed once. project is the parsed text when the
-    caller has it; otherwise the text is parsed."""
-    raw = text.encode("utf-8") if isinstance(text, str) else bytes(text)
-    key = hashlib.sha256(raw).hexdigest()
+    caller has it; otherwise the text is parsed.
+
+    base, when given, is (the text of an earlier version, its parsed project) that project was made
+    from (a save's merge): every top-level field whose value in project is the very object it was in
+    base's project keeps base's cached revision, so a save hashes only the fields it changed."""
+    key = _text_key(text)
     with _cache_lock:
         known = _cache.get(key)
         if known is not None:
             _cache.move_to_end(key)
         known = dict(known or {})
+        old = _cache.get(_text_key(base[0])) if base is not None and base[0] is not None else None
+        old = dict(old) if old else None
     if project is None:
-        project = json.loads(raw)
+        project = json.loads(text.encode("utf-8") if isinstance(text, str) else bytes(text))
     p = project if isinstance(project, dict) else {}
+    if old and isinstance(base[1], dict):
+        before = base[1]
+        for f, rev in old.items():
+            if f not in known and (f in p) == (f in before) and p.get(f) is before.get(f):
+                known[f] = rev
     names = list(fields) if fields is not None else list(p)
     for f in names:
         if f not in known:
