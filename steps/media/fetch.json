@@ -3,7 +3,7 @@
   "description": "Download a video from a URL (YouTube, TikTok, Instagram, etc.) using yt-dlp",
   "output": {
     "type": "video",
-    "description": "Path to downloaded file, or JSON {paths:[...]} for multi-video downloads. With meta, always JSON {paths:[...], videos:[{id, path, url, title, description, view_count, like_count, comment_count, upload_date, duration}]}; a value the site did not return is null"
+    "description": "Path to downloaded file, or JSON {paths:[...]} for multi-video downloads. With meta, always JSON {paths:[...], videos:[{id, path, url, title, uploader, description, view_count, like_count, comment_count, upload_date, duration}]}; a value the site did not return is null"
   },
   "provenance": { "kind": "web", "via": "fetch" },
   "params": [
@@ -38,7 +38,7 @@
       "name": "meta",
       "type": "bool",
       "default": false,
-      "description": "Also return each video's id, title, caption text, views, likes, comments, upload date and duration as JSON"
+      "description": "Also return each video's id, title, uploader, caption text, views, likes, comments, upload date and duration as JSON"
     }
   ]
 }

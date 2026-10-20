@@ -236,13 +236,36 @@ def test_a_derived_output_with_no_input_in_the_project_has_no_from(env, tmp_path
     assert _fields(_record(pdir)["assets/cut.mp4"]) == {"kind": "derived", "step": "trim_thing"}
 
 
-def test_a_file_a_step_rewrites_in_place_keeps_its_record(env):
+def test_a_file_a_step_rewrites_in_place_keeps_its_record_with_its_new_size(env):
     pid, pdir, _ = env
     clip = pdir / "clip.mp4"
-    clip.write_bytes(b"v")
-    provenance.record_provenance(pdir, "clip.mp4", {"kind": "user", "via": "drop"})
-    client.post("/api/steps/trim_thing", json={"input": str(clip), "out": str(clip)})
-    assert _record(pdir)["clip.mp4"]["kind"] == "user"
+    clip.write_bytes(b"vvvv")
+    _, before = provenance.record_provenance(pdir, "clip.mp4", {"kind": "user", "via": "drop"})
+    assert before["bytes"] == 4
+    client.post("/api/steps/trim_thing", json={"input": str(clip), "out": str(clip)})   # the fake writes b"x"
+    entry = _record(pdir)["clip.mp4"]
+    assert entry == {**before, "bytes": 1}                     # same kind and time, the size it has now
+    got = client.get(f"/api/projects/{pid}/provenance").json()["provenance"]["clip.mp4"]
+    assert "stale" not in got
+
+
+def test_a_run_that_makes_several_files_writes_the_record_once(env, monkeypatch):
+    pid, pdir, _ = env
+    writes = []
+    real = provenance.write_text_atomic
+    monkeypatch.setattr(provenance, "write_text_atomic", lambda path, text: (writes.append(path), real(path, text)))
+    client.post("/api/steps/capture_site", json={"url": "https://example.com", "out-dir": str(pdir / "site")})
+    assert len(_record(pdir)) == 5 and len(writes) == 1
+
+
+@pytest.mark.parametrize("out", ["assets/.provenance.json", "assets/.generated.json", "assets/.Provenance.JSON"])
+def test_a_step_out_on_the_record_is_refused_before_it_runs(env, out):
+    pid, pdir, _ = env
+    r = client.post("/api/steps/trim_thing", json={"out": str(pdir / out)})
+    assert r.status_code == 422 and "provenance record" in r.json()["detail"]["message"]
+    r = client.post("/api/steps/generate_image", json={"prompt": "p", "_project": pid, "out": ".provenance.json"})
+    assert r.status_code == 422
+    assert not (pdir / "assets" / ".provenance.json").exists()
 
 
 # ── what records nothing ─────────────────────────────────────────────────────

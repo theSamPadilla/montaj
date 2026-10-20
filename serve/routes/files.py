@@ -26,8 +26,8 @@ CAPTION_STYLES = {"word-by-word", "pop", "karaoke", "subtitle", "highlight-box",
 # ntpath.isabs, never by patching os.path.isabs or sys.platform globally.
 _is_abs = os.path.isabs
 
-PROJECT_FILE_PROTECTED_MESSAGE = ("project.json and the project's lock file can't be written as files. "
-                                  "Change a project with save_project.")
+PROJECT_FILE_PROTECTED_MESSAGE = ("project.json, the project's lock file and its provenance records can't be "
+                                  "written as files. Change a project with save_project.")
 
 
 async def save_upload(file: UploadFile, dest_dir: Path) -> Path:

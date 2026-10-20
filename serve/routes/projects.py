@@ -4209,9 +4209,10 @@ async def list_generated(project_id: str, project_dir: Path = Depends(get_projec
     model, prompt, step, at}}}`, so a host can join the record to the items'
     absolute `src`. `generated` is empty when nothing was recorded. It is the
     ai entries of the project's provenance record, `.provenance.json`'s and the
-    older `.generated.json`'s (`provenance.generated`); one whose file is gone or
-    changed size since says `stale: true`."""
-    return {"dir": str(project_dir), "generated": provenance.generated(project_dir)}
+    older `.generated.json`'s (`provenance.generated`), leaving out any whose
+    file is gone or changed size since (GET .../provenance marks those `stale`).
+    Read in a thread: it stats every entry's file."""
+    return {"dir": str(project_dir), "generated": await asyncio.to_thread(provenance.generated, project_dir)}
 
 
 def _provenance_refused(e: ValueError) -> HTTPException:
@@ -4230,24 +4231,26 @@ async def get_provenance(project_id: str, project_dir: Path = Depends(get_projec
     kind `ai` for each path the new record has none for. An entry whose file is
     gone or changed size since it was recorded says `stale: true` (it is kept;
     the file it described is not the one there now). A file with no entry is
-    untagged."""
-    return {"dir": str(project_dir), "provenance": provenance.annotated(project_dir)}
+    untagged. Read in a thread: it stats every entry's file."""
+    return {"dir": str(project_dir), "provenance": await asyncio.to_thread(provenance.annotated, project_dir)}
 
 
 @router.post("/projects/{project_id}/provenance")
-async def record_project_provenance(project_id: str, body: dict = Body(...),
+async def record_project_provenance(project_id: str, request: Request, body: dict = Body(...),
                                     project_dir: Path = Depends(get_project_dir)):
     """Record where one file in the project came from. Body: `{"path": relative
     to the project folder or absolute inside it, "entry": {kind, ...}}` (the
     kinds and their fields: serve/provenance.py). The app records its own
     imports this way (user, library, template, brand_kit, montaj, web). Answers
     `{path: the record's key, entry: as stored}`; a path outside the project or
-    an entry the record refuses is a 422 naming why.
+    an entry the record refuses, or a file that does not exist, is a 422 naming
+    why.
 
-    Not `save_guard.require_editor`, on purpose: that admits only the window's
-    own requests (writer `editor`), and the app's main process calls serve as
-    writer `tool`, so it would refuse the app's own import paths. Keeping AI and
-    drive callers off this route is the app shell's job."""
+    The app's, never the AI's (`save_guard.require_shell`): with the guard on,
+    only the window (writer `editor`) and the app's main process (writer `tool`)
+    may record; an AI caller, or one without the launch secret, is 403. Not
+    `require_editor`, which would refuse the main process's own import paths."""
+    save_guard.require_shell(getattr(request, "headers", None))
     try:
         entry = provenance.validate_entry(body.get("entry"))
         key, stored = await asyncio.to_thread(provenance.record_provenance, project_dir, body.get("path"), entry)
@@ -4827,6 +4830,7 @@ async def upload_outputs(
 async def upload_asset_to_project(
     project_id: str,
     file: UploadFile,
+    request: Request,
     provenance_entry: str | None = Form(None, alias="provenance"),
     project_dir: Path = Depends(get_project_dir),
 ):
@@ -4836,11 +4840,14 @@ async def upload_asset_to_project(
 
     An optional `provenance` form field, the file's entry as JSON (`{kind, ...}`,
     serve/provenance.py), is recorded for the stored file; one the record refuses
-    is a 422 and nothing is stored. Without it nothing is recorded. A record that
-    cannot be written once the file is stored does not fail the upload: the
-    answer carries `provenanceError` instead, for POST .../provenance to retry."""
+    is a 422 and nothing is stored, and with the guard on it is the app's only,
+    as POST .../provenance (`save_guard.require_shell`, 403). Without it nothing
+    is recorded. A record that cannot be written once the file is stored does not
+    fail the upload: the answer carries `provenanceError` instead, for POST
+    .../provenance to retry."""
     entry = None
     if provenance_entry is not None:
+        save_guard.require_shell(getattr(request, "headers", None))
         try:
             entry = provenance.validate_entry(json.loads(provenance_entry))
         except ValueError as e:
@@ -4875,7 +4882,8 @@ async def ingest_project_source(
     (browser drop) or picked natively by the client (outside project_dir);
     lib.ingest.ingest_source handles both without a double copy. `provenance`,
     optional, is recorded for the files the clip stores (serve/provenance.py);
-    one the record refuses is a 422 before anything runs. Without it nothing is
+    one the record refuses is a 422 before anything runs, and with the guard on it
+    is the app's only (`save_guard.require_shell`, 403). Without it nothing is
     recorded.
     """
     path = body.get("path")
@@ -4883,6 +4891,7 @@ async def ingest_project_source(
         raise bad_request("missing_field", "'path' is required")
     entry = None
     if body.get("provenance") is not None:
+        save_guard.require_shell(getattr(request, "headers", None))
         try:
             entry = provenance.validate_entry(body["provenance"])
         except provenance.ProvenanceError as e:

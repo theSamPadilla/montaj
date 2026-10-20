@@ -773,7 +773,7 @@ To use an asset in a `tracks[1+]` item, pass its `src` path via `props` (for ove
 
 ## Where each file came from (`assets/.provenance.json`)
 
-A record beside project.json, never inside it, of where each file in the project folder came from. It maps the file's path relative to the project folder (so a moved project keeps it) to one entry. Serve is its only writer (`serve/provenance.py` `record_provenance`, under the project lock, written whole to a temp file and renamed over it); nothing else writes the file.
+A record beside project.json, never inside it, of where each file in the project folder came from. It maps the file's path relative to the project folder (so a moved project keeps it) to one entry. Serve is its only writer (`serve/provenance.py` `record_many`, under the project lock, written whole to a temp file and renamed over it, once per step run or request); nothing else writes the file. `POST /api/files`, `DELETE /api/projects/{id}/files`, a step's `out` and a media copy into `assets/` all refuse `.provenance.json` and `.generated.json`, by name under case and Unicode folding and as the same file on disk. A deleted project's folders are never made again for it.
 
 ```json
 {
@@ -786,7 +786,7 @@ A record beside project.json, never inside it, of where each file in the project
 }
 ```
 
-Every entry has `kind` and `at` (when it was recorded, ISO 8601 UTC to the second), and `bytes`, the file's size then, when the file existed. Serve sets `at` when the caller leaves it out and always sets `bytes`; a caller cannot send `bytes`. The kind's own fields:
+An entry is recorded only for a file (or folder) that exists. Every entry has `kind` and `at` (when it was recorded, ISO 8601 UTC to the second), and a file's entry has `bytes`, its size then. Serve sets `at` when the caller leaves it out, and sets `bytes` when the file exists; a caller cannot send `bytes`. Keys are the path in Unicode NFC. The kind's own fields:
 
 | `kind` | Fields | Recorded by |
 |---|---|---|
@@ -794,24 +794,24 @@ Every entry has `kind` and `at` (when it was recorded, ISO 8601 UTC to the secon
 | `stock` | `source` (`commons`, `sportsdb`, `web`), `licence`, `artist`, `sourceUrl`, `title` | `fetch_image`, given its search result's fields as params |
 | `web` | `via` (required): `url`, `youtube`, `capture_site`, `fetch`; `sourceUrl`, `title`, `uploader` | the `fetch` and `capture_site` steps, the YouTube source download (`sourceDownload`), the app |
 | `ai` | `provider` and `step` (required), `model`, `prompt` | every generate step |
-| `derived` | `step` (required), `from`: the inputs inside the project folder, as keys | every other step whose output lands in a project |
+| `derived` | `step` (required), `from`: the inputs inside the project folder, as keys | every other step whose output lands in a project (a file it rewrites in place keeps its entry, with its new `bytes`) |
 | `synth` | `step` (required) | `synth_audio` |
 | `library` | `id` (required), `version` (string or integer), `spdx`, `source`, `notice` | the app |
 | `template` | `templateId` (required) | the app |
 | `brand_kit` | `profileId` (required) | the app |
 | `montaj` | `what` (required): `preset`, `sample` | the app |
 
-Strings are capped at 1000 characters (a prompt at 2000), `from` at 500 paths, and the record at 4 MB; a write that would pass the cap is refused and the record kept. A later entry for a path replaces the earlier one. A file with no entry is untagged: nothing is guessed. The readers mark an entry `stale: true` when its file is gone or is not the size `bytes` says (an entry without `bytes` only when the file is gone), so a new file under a deleted file's name inherits nothing; the entry itself is kept. A replacement of exactly the same size is not caught. The steps declare what they record in their schema's `provenance` ([step.md](step.md)); a step run outside serve (the CLI) is not recorded.
+Strings are capped at 1000 characters (a prompt at 2000), `from` at 500 paths, and the record at 4 MB: a write that would pass the cap first drops the entries whose file is gone, and is refused, with the record kept, only when it still would. A later entry for a path replaces the earlier one. A file with no entry is untagged: nothing is guessed. `GET .../provenance` marks an entry `stale: true` when its file is gone or is not the size `bytes` says (an entry without `bytes`, a folder's or an older `.generated.json` one, only when the file is gone), and `GET .../generated` leaves those out, so a new file under a deleted file's name inherits nothing; the entry itself is kept. A replacement of exactly the same size is not caught. The steps declare what they record in their schema's `provenance` ([step.md](step.md)); a step run outside serve (the CLI) is not recorded.
 
 `assets/.generated.json`, the AI-only record this replaces (`{provider, model, prompt, step, at}` per path, no `kind`), is no longer written and is still read: its entries count as kind `ai` for any path the new record has no entry for.
 
 | Route | |
 |---|---|
 | `GET /api/projects/{id}/provenance` | `{dir, provenance: {path: entry}}`: the whole record, with `.generated.json`'s entries merged in and `stale: true` on each entry whose file is gone or changed size |
-| `POST /api/projects/{id}/provenance` | Open to any caller: the engine's `require_editor` admits only the window's own requests, and the app's main process writes too. Body `{path, entry}`: `path` relative to the project folder or absolute inside it. Answers `{path: the key, entry: as stored}`. 422 `outside_project` for a path outside the folder (symlinks followed), `invalid_path` for project.json, the lock, the records or `.git`, `invalid_entry` for an unknown kind or field, a wrong type, a value outside a field's set or a missing required field, `record_full` past the cap |
-| `POST /api/projects/{id}/upload-asset` | Takes an optional `provenance` form field (the entry as JSON) and records it for the stored file. A refused entry is a 422 and nothing is stored; a record that cannot be written once the file is stored answers `provenanceError` with the path |
-| `POST /api/projects/{id}/sources` | Takes an optional `provenance` (the entry) and records it for the files the clip stores (`src`, and `normalizedSrc` when there is one). A refused entry is a 422 before anything runs |
-| `GET /api/projects/{id}/generated` | `{dir, generated: {path: {provider, model, prompt, step, at}}}`: the record's ai entries, in `.generated.json`'s shape, with `bytes` and `stale` as above |
+| `POST /api/projects/{id}/provenance` | The app's only: with the engine guard on (`MONTAJ_ENGINE_GUARD=1`), a caller needs the launch secret and writer `editor` (the window) or `tool` (the app's main process); the AI, or a caller without the secret, is 403 `shell_only`. Body `{path, entry}`: `path` relative to the project folder or absolute inside it. Answers `{path: the key, entry: as stored}`. 422 `outside_project` for a path outside the folder (symlinks followed), `invalid_path` for project.json, the lock, the records or `.git` (folded, or the same file), `file_not_found` for a path that does not exist, `invalid_entry` for an unknown kind or field, a wrong type, a value outside a field's set or a missing required field, `record_full` past the cap, `project_gone` for a deleted project |
+| `POST /api/projects/{id}/upload-asset` | Takes an optional `provenance` form field (the entry as JSON) and records it for the stored file, with the same guard as above. A refused entry is a 422 (403 for the guard) and nothing is stored; a record that cannot be written once the file is stored answers `provenanceError` with the path |
+| `POST /api/projects/{id}/sources` | Takes an optional `provenance` (the entry) and records it for the files the clip stores (`src`, and `normalizedSrc` when there is one), with the same guard. A refused entry is a 422 (403 for the guard) before anything runs |
+| `GET /api/projects/{id}/generated` | `{dir, generated: {path: {provider, model, prompt, step, at}}}`: the record's ai entries whose file is still the one recorded, in `.generated.json`'s shape (plus `bytes` on newer ones) |
 
 Without an entry, upload-asset and sources record nothing.
 

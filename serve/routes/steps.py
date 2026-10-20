@@ -12,7 +12,9 @@ from lib.color_provenance import ProbeError, is_probe_retryable
 from lib.credentials import CredentialError, build_env_overlay
 from serve.common import (
     MONTAJ_ROOT,
+    PROVENANCE_RECORD_NAMES,
     find_project_dir,
+    lands_on_project_file,
     resolve_workspace,
     run_subprocess,
     not_found, bad_request, server_error,
@@ -329,8 +331,11 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
     left off: that step keeps its own stable place in the project, replaced on
     a re-run (glass_plate's `plates/<item>/`), where a timestamped name would
     leave every earlier run behind (§176).
+    An `out` that lands on a project's provenance record is a 422, given or
+    resolved (`_refuse_record_out`).
     Returns the resolved path, or None when nothing was resolved."""
     from datetime import datetime
+    _refuse_record_out(body.get("out"))
     project = body.pop("_project", None)
     if project is None:
         return None
@@ -365,9 +370,28 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
         n += 1
     if Path(os.path.realpath(cand.parent)) != Path(os.path.realpath(assets)) or cand.parent != assets:
         raise HTTPException(422, detail={"error": "invalid_params", "message": "resolved output left the project's assets folder"})
+    _refuse_record_out(str(cand))
     _RESERVED_OUTS.add(str(cand))
     body["out"] = str(cand)
     return str(cand)
+
+
+def _refuse_record_out(out) -> None:
+    """An `out` that is a project's provenance record (`assets/.provenance.json`,
+    `.generated.json`), by name under case and Unicode folding or as the same file on
+    disk, is a 422: serve/provenance.py is its only writer. A relative `out` is the
+    workspace's, as the step's cwd is."""
+    if not isinstance(out, str) or not out:
+        return
+    p = Path(out) if os.path.isabs(out) else Path(resolve_workspace()) / out
+    try:
+        real = Path(os.path.realpath(p))
+    except (OSError, ValueError):
+        real = p
+    if lands_on_project_file(p, real, names=PROVENANCE_RECORD_NAMES):
+        raise HTTPException(422, detail={
+            "error": "invalid_params",
+            "message": "'out' is a project's provenance record, which only Montaj writes. Choose another name."})
 
 
 def wrap_output(stdout: str, schema: dict) -> dict:
@@ -507,10 +531,16 @@ def _note_provenance(name: str, schema: dict, body: dict, result, project_ref) -
     except Exception as e:  # never fail a finished step over its record
         print(f"[provenance] not recorded for {name}: {e}", file=sys.stderr)
         return
+    by_project: dict = {}
     for pdir, out, entry in records:
+        by_project.setdefault(pdir, []).append((out, entry))
+    for pdir, items in by_project.items():   # one write per project
         try:
-            provenance.record_provenance(pdir, out, entry)
+            _, refused = provenance.record_many(pdir, items)
         except Exception as e:
+            print(f"[provenance] not recorded for {name} in {pdir}: {e}", file=sys.stderr)
+            continue
+        for out, e in refused:
             print(f"[provenance] not recorded for {name} ({out}): {e}", file=sys.stderr)
 
 

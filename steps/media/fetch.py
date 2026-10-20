@@ -21,7 +21,7 @@ _HINTS = {
 }
 
 # One JSON object per downloaded video at after_move, so a profile prints one line each.
-META_PRINT = ("after_move:%(.{id,title,description,view_count,like_count,comment_count,"
+META_PRINT = ("after_move:%(.{id,title,uploader,description,view_count,like_count,comment_count,"
               "upload_date,duration,webpage_url,filepath})j")
 DESCRIPTION_MAX = 2200
 
@@ -69,6 +69,7 @@ def parse_meta_lines(stdout):
             "path": path,
             "url": info.get("webpage_url"),
             "title": info.get("title"),
+            "uploader": info.get("uploader"),
             "description": desc[:DESCRIPTION_MAX] if isinstance(desc, str) else None,
             "view_count": info.get("view_count"),
             "like_count": info.get("like_count"),
@@ -125,7 +126,7 @@ def main():
     parser.add_argument("--max-filesize", type=int,
                         help="Refuse, before downloading, a video larger than this many bytes when its size is known")
     parser.add_argument("--meta",   action="store_true",
-                        help="Also return each video's id, title, caption text, views, likes, comments, upload date and duration as JSON")
+                        help="Also return each video's id, title, uploader, caption text, views, likes, comments, upload date and duration as JSON")
     args = parser.parse_args()
 
     out = args.out or os.getcwd()

@@ -17,9 +17,9 @@ YT = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 TT = "https://www.tiktok.com/@tiktok"
 IG = "https://www.instagram.com/instagram/"
 OUT = "/tmp/montaj-fetch-x"
-TEMPLATE = ("after_move:%(.{id,title,description,view_count,like_count,comment_count,"
+TEMPLATE = ("after_move:%(.{id,title,uploader,description,view_count,like_count,comment_count,"
             "upload_date,duration,webpage_url,filepath})j")
-KEYS = {"id", "path", "url", "title", "description", "view_count", "like_count",
+KEYS = {"id", "path", "url", "title", "uploader", "description", "view_count", "like_count",
         "comment_count", "upload_date", "duration"}
 
 
@@ -81,10 +81,31 @@ def test_capture_values_pass_through():
     assert v["id"] == "jNQXAC9IVRw" and v["title"] == "Me at the zoo" and v["upload_date"] == "20050424"
 
 
+def test_the_uploader_comes_through_from_a_line_yt_dlp_prints(tmp_path):
+    """yt-dlp itself evaluates the meta template (offline: an info JSON it loads,
+    nothing downloaded) on a video whose `uploader`, yt-dlp's documented output field,
+    is set. The captures above predate the field, so they carry no uploader."""
+    pytest.importorskip("yt_dlp")
+    info = tmp_path / "info.json"
+    info.write_text(json.dumps({
+        "id": "abc123", "title": "A talk", "uploader": "Some Channel", "extractor": "generic",
+        "extractor_key": "Generic", "webpage_url": "https://www.youtube.com/watch?v=abc123",
+        "url": "https://example.invalid/v.mp4", "ext": "mp4", "duration": 12}))
+    template = fetch.META_PRINT.split(":", 1)[1]    # the default stage: nothing is moved here
+    proc = subprocess.run([sys.executable, "-m", "yt_dlp", "--ignore-config", "--no-warnings", "--skip-download",
+                           "--load-info-json", str(info), "--print", template],
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    v = fetch.parse_meta_lines(proc.stdout)["videos"][0]
+    assert v["uploader"] == "Some Channel" and v["title"] == "A talk"
+    assert v["url"] == "https://www.youtube.com/watch?v=abc123"
+
+
 def test_missing_values_are_null():
     got = fetch.parse_meta_lines('{"id": "a", "title": "t", "filepath": "/p/a.mp4"}\n')
     v = got["videos"][0]
     assert v["view_count"] is None and v["description"] is None and v["url"] is None and v["upload_date"] is None
+    assert v["uploader"] is None
     assert v["path"] == "/p/a.mp4"
 
 

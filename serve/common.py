@@ -153,9 +153,12 @@ def validate_project_subpath(project_dir: Path, rel_path: str) -> Path:
     return candidate
 
 
+# The provenance records in a project's assets/ (serve/provenance.py), which only
+# `record_provenance` writes.
+PROVENANCE_RECORD_NAMES = (".provenance.json", ".generated.json")
 # §477: a project's own files. A write or delete here would bypass the project lock and
 # the save guard, so only save_project (and serve's own writers) touch them.
-PROJECT_FILE_NAMES = ("project.json", "project.json.tmp", ".project.lock")
+PROJECT_FILE_NAMES = ("project.json", "project.json.tmp", ".project.lock") + PROVENANCE_RECORD_NAMES
 
 
 def _norm_name(name: str) -> str:
@@ -165,25 +168,26 @@ def _norm_name(name: str) -> str:
     return unicodedata.normalize("NFKC", name).rstrip(". ").casefold()
 
 
-def is_project_file_name(path) -> bool:
-    """The last segment, by either slash, names one of a project's own files under the
-    folding above."""
+def is_project_file_name(path, names=PROJECT_FILE_NAMES) -> bool:
+    """The last segment, by either slash, names one of a project's own files (`names`)
+    under the folding above."""
     base = re.split(r"[\\/]", str(path))[-1]
-    return _norm_name(base) in {_norm_name(n) for n in PROJECT_FILE_NAMES}
+    return _norm_name(base) in {_norm_name(n) for n in names}
 
 
-def lands_on_project_file(*paths) -> bool:
+def lands_on_project_file(*paths, names=PROJECT_FILE_NAMES) -> bool:
     """Any of paths is, by name or as the very same file on disk, a project's own file in
-    its folder: os.path.samefile against `<its parent>/project.json` (and the lock and
-    temp file) where both exist, so a name the filesystem folds in a way the name rule
-    does not know, or a hard link, is caught too."""
+    its folder: os.path.samefile against `<its parent>/project.json` (and the lock, the
+    temp file and the provenance records; or just `names`) where both exist, so a name
+    the filesystem folds in a way the name rule does not know, or a hard link, is caught
+    too."""
     for path in paths:
         if path is None:
             continue
-        if is_project_file_name(path):
+        if is_project_file_name(path, names):
             return True
         path = Path(path)
-        for name in PROJECT_FILE_NAMES:
+        for name in names:
             try:
                 if os.path.samefile(path, path.parent / name):
                     return True

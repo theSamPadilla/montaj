@@ -320,13 +320,18 @@ async def project_lock_async(project_path, timeout: float | None = None):
 
 
 def write_json_atomic(project_path, project: dict, *, indent=2, ensure_ascii: bool = True) -> str:
+    """`project` as JSON, written by `write_text_atomic`. Returns the text written."""
+    text = json.dumps(project, indent=indent, ensure_ascii=ensure_ascii)
+    write_text_atomic(project_path, text)
+    return text
+
+
+def write_text_atomic(project_path, text: str) -> None:
     """tmp + os.replace under a temp name of its own (pid + random), so two
     writers never share one. A replace refused with PermissionError (Windows:
     an antivirus or the indexer holding project.json for a moment) is tried
-    again a few times, 50 ms apart, before the write fails. Returns the text
-    written."""
+    again a few times, 50 ms apart, before the write fails."""
     project_path = Path(project_path)
-    text = json.dumps(project, indent=indent, ensure_ascii=ensure_ascii)
     tmp = f"{project_path}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     try:
         try:
@@ -351,7 +356,6 @@ def write_json_atomic(project_path, project: dict, *, indent=2, ensure_ascii: bo
         except OSError:
             pass
         raise
-    return text
 
 
 def update_project(project_path, apply, *, timeout: float | None = None,

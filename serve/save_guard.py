@@ -251,6 +251,22 @@ def require_editor(headers) -> None:
         raise HTTPException(403, detail={"error": "human_only", "message": HUMAN_ONLY_MESSAGE})
 
 
+SHELL_ONLY_MESSAGE = "Only the Montaj app can do this."
+
+
+def require_shell(headers) -> None:
+    """For a route the app's own writers use, from the window or the main process, and
+    the AI must not (recording where a file came from): with the guard on, only a
+    request carrying the launch secret with writer `editor` or `tool` may call it;
+    anything else, `ai` or a caller without the secret, is 403 shell_only. Nothing when
+    the guard is off."""
+    if not enabled():
+        return
+    writer, trusted = writer_of(headers)
+    if not (trusted and writer in ("editor", "tool")):
+        raise HTTPException(403, detail={"error": "shell_only", "message": SHELL_ONLY_MESSAGE})
+
+
 def read_required_message(missing, action) -> str:
     """What a route other than save_project says when its write carries no revision."""
     return (f"{action} needs the revision of {', '.join(missing)} you read. Call get_project with fields "

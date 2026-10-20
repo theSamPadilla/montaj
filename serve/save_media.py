@@ -92,6 +92,7 @@ import weakref
 from collections import Counter, OrderedDict
 
 from lib.project_tracks import normalize_tracks
+from serve.common import PROVENANCE_RECORD_NAMES
 from project.init import _free_name, _try_clone
 
 # Plain copies only (a clone takes no space and no time).
@@ -652,8 +653,8 @@ def _recorded_copy(record: dict, real: str, st: os.stat_result, assets_dir: str)
 
 
 def _reserved(name: str) -> bool:
-    """A name in `assets/` that is this module's own, never a copy's."""
-    return name in (RECORD_NAME, PENDING_NAME) or name.startswith(_TEMP_PREFIX)
+    """A name in `assets/` that is this module's own or the provenance record's, never a copy's."""
+    return name in (RECORD_NAME, PENDING_NAME, *PROVENANCE_RECORD_NAMES) or name.startswith(_TEMP_PREFIX)
 
 
 def _make_assets(project_dir: str, assets_dir: str) -> None:

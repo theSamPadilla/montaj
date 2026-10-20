@@ -16,10 +16,11 @@ project keeps it) to one entry: its `kind`, when it was recorded (`at`, ISO
   montaj     what: preset, sample
 
 `ai`'s `provider` is the connector id (kling, fal, kinovi, gemini, openai,
-elevenlabs, tripo). An entry for a file that existed when it was recorded also
-has `bytes`, its size then; a reader (`annotated`) marks the entry `stale` when
-the file is gone or its size changed, so a new file under an old name inherits
-nothing. Serve is the one writer, and `record_provenance` is the
+elevenlabs, tripo). An entry is recorded only for a file (or folder) that
+exists, and a file's entry also has `bytes`, its size then. `annotated` marks
+an entry `stale` when the file is gone or its size changed, and `generated`
+leaves those out, so a new file under an old name inherits nothing. Serve is
+the one writer, and `record_provenance` is the
 only code that writes the file. Serve's step funnel calls it for every step
 whose output lands in a project (`_note_provenance` in serve/routes/steps.py,
 which builds the entries with `step_records`), and the project routes call it
@@ -35,18 +36,23 @@ import json
 import os
 import re
 import shutil
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
-from lib.project_lock import project_lock, write_json_atomic
+from lib.project_lock import project_lock, write_text_atomic
+from serve.common import PROVENANCE_RECORD_NAMES, _norm_name
+from serve.save_media import project_gone
 
-RECORD_NAME = ".provenance.json"
-LEGACY_NAME = ".generated.json"
+RECORD_NAME, LEGACY_NAME = PROVENANCE_RECORD_NAMES   # ".provenance.json", ".generated.json"
 ASSETS_DIR = "assets"
 _PROMPT_MAX = 2000
 _STRING_MAX = 1000
 _FROM_MAX = 500
 _RECORD_MAX_BYTES = 4 * 1024 * 1024
+# A record past the cap (an older, bigger cap; a hand edit) is still read for a write, up
+# to this, so the files that are gone can be dropped to bring it back under.
+_RECORD_READ_MAX_BYTES = 4 * _RECORD_MAX_BYTES
 _MANIFEST_MAX_BYTES = 1024 * 1024
 
 USER_VIA = ("drop", "picker", "new-project", "import", "agent-image", "import_model", "record")
@@ -76,7 +82,11 @@ KINDS = {
 STEP_KINDS = ("stock", "web", "synth")
 
 _AT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\+00:00|Z)")
-_RESERVED = {"project.json", ".project.lock", f"{ASSETS_DIR}/{RECORD_NAME}", f"{ASSETS_DIR}/{LEGACY_NAME}"}
+# The project's own files, as path segments: never a key.
+_RESERVED = [("project.json",), ("project.json.tmp",), (".project.lock",),
+             *((ASSETS_DIR, name) for name in PROVENANCE_RECORD_NAMES)]
+_RESERVED_NORM = {tuple(_norm_name(seg) for seg in rel) for rel in _RESERVED}
+_RECORD_PREFIXES = tuple(_norm_name(name) + "." for name in PROVENANCE_RECORD_NAMES)   # temp and aside copies
 
 
 class ProvenanceError(ValueError):
@@ -154,11 +164,31 @@ def validate_entry(entry) -> dict:
     return clean
 
 
+def _is_reserved(pdir: Path, key: str, real: Path) -> bool:
+    """`key` is one of the project's own files: project.json, its temp file, the lock,
+    the records (and their temp and aside copies) or anything in .git. By segment
+    under case and Unicode folding (serve.common._norm_name), and as the same file on
+    disk, so a name the filesystem folds onto one, or a hard link, is caught too."""
+    segs = tuple(_norm_name(seg) for seg in key.split("/"))
+    if segs[0] == ".git" or segs in _RESERVED_NORM:
+        return True
+    if len(segs) == 2 and segs[0] == ASSETS_DIR and segs[1].startswith(_RECORD_PREFIXES):
+        return True
+    for rel in _RESERVED:
+        try:
+            if os.path.samefile(real, pdir.joinpath(*rel)):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 def key_for(project_dir, path) -> str:
     """`path` (relative to the project folder, or absolute) as the record's key: its
-    path relative to the folder, symlinks followed. Raises ProvenanceError when it
+    path relative to the folder, symlinks followed, in Unicode NFC (so the composed
+    and decomposed spellings of a name are one key). Raises ProvenanceError when it
     is not inside the folder (outside_project) or is one of the project's own files
-    (project.json, the lock, the records, .git)."""
+    (invalid_path, `_is_reserved`)."""
     if not isinstance(path, str) or not path.strip() or "\x00" in path:
         raise ProvenanceError("invalid_path", "'path' must be the path of a file in the project")
     pdir = Path(os.path.realpath(project_dir))
@@ -166,8 +196,8 @@ def key_for(project_dir, path) -> str:
     real = Path(os.path.realpath(p if p.is_absolute() else pdir / p))
     if pdir not in real.parents:
         raise ProvenanceError("outside_project", f"'{path}' is not inside the project folder")
-    key = real.relative_to(pdir).as_posix()
-    if key in _RESERVED or key == ".git" or key.startswith((".git/", f"{ASSETS_DIR}/{RECORD_NAME}.")):
+    key = unicodedata.normalize("NFC", real.relative_to(pdir).as_posix())
+    if _is_reserved(pdir, key, real):
         raise ProvenanceError("invalid_path", f"'{key}' is one of the project's own files")
     return key
 
@@ -226,21 +256,22 @@ def annotated(project_dir) -> dict:
 
 
 def generated(project_dir) -> dict:
-    """The ai entries of `annotated`, in the shape the AI-only record had (no
-    `kind`): what `GET /projects/{id}/generated` answers."""
+    """The ai entries of `merged` whose file is still the one recorded (stale ones are
+    left out), in the shape the AI-only record had (no `kind`): what
+    `GET /projects/{id}/generated` answers."""
     return {k: {f: v for f, v in e.items() if f != "kind"}
-            for k, e in annotated(project_dir).items() if e.get("kind") == "ai"}
+            for k, e in merged(project_dir).items() if e.get("kind") == "ai" and not _is_stale(project_dir, k, e)}
 
 
 def _read_for_write(target: Path) -> dict:
-    """The record about to be changed. Missing: {}. Over the size cap: refused
-    (record_full), so a full record is never replaced by a near-empty one. Not a
+    """The record about to be changed. Missing: {}. Past `_RECORD_READ_MAX_BYTES`:
+    refused (record_full), so a record is never replaced by a near-empty one. Not a
     JSON object: copied aside to `.provenance.json.unreadable-<time>` (kept), then {}."""
     try:
         size = target.stat().st_size
     except FileNotFoundError:
         return {}
-    if size > _RECORD_MAX_BYTES:
+    if size > _RECORD_READ_MAX_BYTES:
         raise ProvenanceError("record_full", "The project's provenance record is full")
     try:
         data = json.loads(target.read_text(encoding="utf-8"))
@@ -253,39 +284,96 @@ def _read_for_write(target: Path) -> dict:
     return {}
 
 
-def record_provenance(project_dir, path, entry) -> tuple[str, dict]:
-    """Record `entry` (validated by `validate_entry`) for `path`, a file in
-    `project_dir`, with `bytes` (the file's size) when the file exists; returns
-    the key and the entry as stored. The one writer of `.provenance.json`.
+def _serialise(pdir: Path, data: dict) -> str:
+    """The record as the text written, under `_RECORD_MAX_BYTES`. Past it, the
+    entries whose file is gone are dropped (from `data`) to make room; still past
+    it is record_full."""
+    text = json.dumps(data, indent=2)
+    if len(text.encode()) <= _RECORD_MAX_BYTES:
+        return text
+    for key in [k for k in data if not (pdir / k).exists()]:
+        del data[key]
+    text = json.dumps(data, indent=2)
+    if len(text.encode()) > _RECORD_MAX_BYTES:
+        raise ProvenanceError("record_full", "The project's provenance record is full")
+    return text
 
-    Under the project lock (lib/project_lock.py) it re-reads the record, changes
-    the one key and writes the whole file to a temp file renamed over it, so
-    concurrent writers never lose an entry and a reader never sees half a file.
-    A module lock would not be enough: serve is one process (uvicorn.run with no
-    workers, cli/commands/serve.py), but a second serve may run on the same
-    workspace (serve/lockfile.py). It blocks while it waits, so serve's async
-    code calls it through asyncio.to_thread. Raises ProvenanceError,
-    ProjectLockTimeout, ProjectReadOnly or OSError, and the record is then as it
-    was."""
-    clean = validate_entry(entry)
-    key = key_for(project_dir, path)
+
+def record_many(project_dir, items) -> tuple[dict, list]:
+    """Record several entries in one project with one read and one write of
+    `.provenance.json`, its only writer. `items` is `[(path, entry)]`: a path in
+    `project_dir` (`key_for`), and an entry (`validate_entry`), or None to keep the
+    path's entry and only refresh its `bytes` (a file rewritten in place). The file
+    must exist; one that does is given `bytes`, its size now.
+
+    Returns `({key: entry as stored}, [(path, ProvenanceError)])`: an item refused
+    (a bad entry or path, a file that does not exist) is left out and the rest are
+    written. Raises, writing nothing, when the project is gone (project_gone: a
+    deleted project's folders are never made again), the record is full
+    (record_full, after dropping the entries whose file is gone), or the lock or the
+    write fails (ProjectLockTimeout, ProjectReadOnly, OSError).
+
+    Under the project lock (lib/project_lock.py) it re-reads the record, changes its
+    keys and writes the whole file to a temp file renamed over it, so concurrent
+    writers never lose an entry and a reader never sees half a file. A module lock
+    would not be enough: serve is one process (uvicorn.run with no workers,
+    cli/commands/serve.py), but a second serve may run on the same workspace
+    (serve/lockfile.py). It blocks while it waits, so serve's async code calls it
+    through asyncio.to_thread."""
     pdir = Path(os.path.realpath(project_dir))
+    prepared, refused = [], []
+    for path, entry in items:
+        try:
+            prepared.append((path, key_for(pdir, path), None if entry is None else validate_entry(entry)))
+        except ProvenanceError as e:
+            refused.append((path, e))
+    written: dict = {}
+    if not prepared:
+        return written, refused
+    gone = ProvenanceError("project_gone", "The project was deleted")
+    if project_gone(pdir):
+        raise gone
     assets = pdir / ASSETS_DIR
     with project_lock(pdir):
+        if project_gone(pdir):
+            raise gone
         if assets.is_symlink():
             raise ProvenanceError("invalid_path", "The project's assets folder is a symlink; the record "
                                                   "is not written through it")
-        assets.mkdir(exist_ok=True)
         target = assets / RECORD_NAME
         data = _read_for_write(target)
-        file = pdir / key
-        if file.is_file():
-            clean["bytes"] = file.stat().st_size
-        data[key] = clean
-        if len(json.dumps(data, indent=2).encode()) > _RECORD_MAX_BYTES:
-            raise ProvenanceError("record_full", "The project's provenance record is full")
-        write_json_atomic(target, data)
-    return key, clean
+        for path, key, clean in prepared:
+            file = pdir / key
+            if not file.exists():
+                refused.append((path, ProvenanceError("file_not_found", f"'{key}' does not exist in the project")))
+                continue
+            if clean is None:
+                if not isinstance(data.get(key), dict) or not file.is_file():
+                    continue
+                clean = dict(data[key])
+            if file.is_file():
+                clean = {**clean, "bytes": file.stat().st_size}
+            data[key] = clean
+            written[key] = clean
+        if not written:
+            return written, refused
+        text = _serialise(pdir, data)
+        assets.mkdir(exist_ok=True)
+        write_text_atomic(target, text)
+    return written, refused
+
+
+def record_provenance(project_dir, path, entry) -> tuple[str, dict]:
+    """Record one `entry` for `path` (`record_many`); returns the key and the entry
+    as stored. Raises ProvenanceError for a refused entry or path, and whatever
+    `record_many` raises."""
+    if entry is None:
+        raise ProvenanceError("invalid_entry", "entry must be an object")
+    written, refused = record_many(project_dir, [(path, entry)])
+    if refused:
+        raise refused[0][1]
+    [(key, stored)] = written.items()
+    return key, stored
 
 
 # ── the step funnel ──────────────────────────────────────────────────────────
@@ -427,16 +515,17 @@ def _inputs_inside(pdir: Path, schema: dict, body: dict, workspace: str) -> list
 
 
 def step_records(name: str, schema: dict, body: dict, result, workspace: str,
-                 named: Path | None = None) -> list[tuple[Path, str, dict]]:
+                 named: Path | None = None) -> list[tuple[Path, str, dict | None]]:
     """(project folder, output path, entry) for each file a finished run of step
     `name` made in a project's folder: `named` (the project the run's `_project`
     named) when the file is inside it, else the nearest folder above the file
     with a project.json. The kind comes from the step's `provenance` declaration:
     a `provider` or `providerParam` is ai, `{"kind": "stock"|"web"|"synth"}` is
     that kind (fields from the step's params and result), and no declaration is
-    derived, `from` the run's input paths inside the project. Not recorded: an AI
-    run whose provider cannot be told, and a derived output that is one of its
-    own inputs (a file rewritten in place keeps its record)."""
+    derived, `from` the run's input paths inside the project. An AI run whose
+    provider cannot be told is not recorded. A derived output that is one of its
+    own inputs (a file rewritten in place) keeps its entry: its entry here is None,
+    which `record_many` reads as "refresh its bytes"."""
     prov = schema.get("provenance") if isinstance(schema.get("provenance"), dict) else None
     kind = (prov.get("kind") or "ai") if prov else "derived"
     if kind not in ("ai", "derived") + STEP_KINDS:
@@ -465,10 +554,9 @@ def step_records(name: str, schema: dict, body: dict, result, workspace: str,
         else:
             inputs = _inputs_inside(pdir, schema, body, workspace)
             try:
-                if key_for(pdir, out) in inputs:
-                    continue
+                in_place = key_for(pdir, out) in inputs
             except ProvenanceError:
                 continue
-            entry = {"kind": "derived", "step": name, "from": inputs}
+            entry = None if in_place else {"kind": "derived", "step": name, "from": inputs}
         records.append((pdir, out, entry))
     return records
