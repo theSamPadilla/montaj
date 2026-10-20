@@ -4,7 +4,7 @@ import json, os, re, sys, argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, run, get_duration, ffmpeg_bin
+from common import fail, require_file, run, get_duration, ffmpeg_bin, ff_seconds
 from parallelism import batch_workers
 
 
@@ -15,7 +15,7 @@ def process_one(input_path: str, threshold: str, min_silence: str) -> dict:
     # Detect silences
     r = run(
         [ffmpeg_bin(), "-i", input_path,
-         "-af", f"silencedetect=noise={threshold}dB:d={min_silence}",
+         "-af", f"silencedetect=noise={threshold}dB:d={ff_seconds(min_silence)}",
          "-f", "null", "-"],
         check=False,
     )

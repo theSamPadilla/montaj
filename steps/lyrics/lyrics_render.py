@@ -8,7 +8,7 @@ import json, ntpath, os, sys, argparse, subprocess
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, run_ffmpeg, get_duration, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path, filter_script
+from common import fail, require_file, check_output, run, run_ffmpeg, get_duration, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path, filter_script, ff_seconds
 
 try:
     import static_ffmpeg
@@ -71,7 +71,7 @@ def _detect_text_color(video_path: str) -> str:
         for i in range(5):
             seek = dur * (i + 0.5) / 5
             res = subprocess.run(
-                [ffmpeg_bin(), "-ss", str(seek), "-i", video_path,
+                [ffmpeg_bin(), "-ss", ff_seconds(seek), "-i", video_path,
                  "-vf", "scale=16:16", "-frames:v", "1",
                  "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"],
                 capture_output=True, timeout=10,
@@ -457,9 +457,9 @@ def main():
                 "-y",
                 "-stream_loop", "-1",
                 "-i", args.input,
-                "-ss", str(audio_seek),
+                "-ss", ff_seconds(audio_seek),
                 "-i", args.audio,
-                "-t", str(duration),
+                "-t", ff_seconds(duration),
                 "-/vf", vf_path,
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23",
                 "-c:a", "aac", "-b:a", "192k",
@@ -472,9 +472,9 @@ def main():
             ffmpeg_args = [
                 "-y",
                 "-f", "lavfi", "-i", lavfi_src,
-                "-ss", str(audio_seek),
+                "-ss", ff_seconds(audio_seek),
                 "-i", args.audio,
-                "-t", str(duration),
+                "-t", ff_seconds(duration),
                 "-/vf", vf_path,
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23",
                 "-c:a", "aac", "-b:a", "192k",

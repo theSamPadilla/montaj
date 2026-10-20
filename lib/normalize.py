@@ -20,7 +20,7 @@ The sys.path.insert below adds lib/ itself so `from common import ...` works in 
 import sys, os, json, subprocess, argparse, glob, re, functools
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
-from common import ffmpeg_error_tail, fail, require_file, progress, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path
+from common import ffmpeg_error_tail, fail, require_file, progress, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path, ff_seconds
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types.colorspace` works
 from lib.types.colorspace import (
@@ -863,7 +863,8 @@ def normalize_window(
         "-ss", f"{near:.6f}",
         "-t", f"{fine + duration + 1:.6f}" if has_trim else f"{fine + duration:.6f}",
     ]
-    post_input_seek = f"{fine:.6f}" if fine > 0 else None
+    # §478: a residue under 1e-6 is no seek at all, not "-ss 0.000000" (the digits stay the measured 6 decimals)
+    post_input_seek = f"{fine:.6f}" if float(ff_seconds(fine)) > 0 else None
     # 6 decimals for the trims too: a 4-decimal `duration=` can round UP past
     # a frame boundary for periodic fractions like 8/30s ("0.2667" vs the true
     # 0.266667), admitting one extra frame at the trim's own cut point —

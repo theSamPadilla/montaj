@@ -3,7 +3,7 @@
 import json, math, mimetypes, os, sys, argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, ffmpeg_bin
+from common import fail, require_file, check_output, run, ffmpeg_bin, ff_seconds
 
 PRESETS = {
     "youtube":   -14,
@@ -66,7 +66,7 @@ def main():
     require_file(args.input)
     target_lufs = args.lufs if args.target == "custom" else PRESETS[args.target]
 
-    seek_flags = ["-ss", str(args.window_in), "-t", str(args.window_out - args.window_in)] if windowed else []
+    seek_flags = ["-ss", ff_seconds(args.window_in), "-t", ff_seconds(args.window_out - args.window_in)] if windowed else []
 
     # First pass: measure loudness
     r = run([ffmpeg_bin(), *seek_flags, "-i", args.input,

@@ -572,3 +572,25 @@ def test_run_leaves_cwd_unset_for_other_callers(monkeypatch):
     seen = _capture_whisper_spawn(monkeypatch)
     common.run(["echo", "x"])
     assert seen["kw"].get("cwd") is None
+
+
+# ── ff_seconds() (§478) ──────────────────────────────────────────────────────
+# ffmpeg refuses a time in exponent notation ("Invalid duration"), and str() writes any |x| under 1e-4 that way.
+
+def test_ff_seconds_a_residue_under_1e_6_is_zero_so_a_positive_guard_drops_the_seek():
+    assert str(78.4 - 78.39999999999999) == "1.4210854715202004e-14"
+    assert common.ff_seconds(78.4 - 78.39999999999999) == "0"
+    assert common.ff_seconds(-1.4210854715202004e-14) == "0"  # a negative residue too, never "-0"
+    assert common.ff_seconds(9.99e-7) == "0"
+    assert not float(common.ff_seconds(1e-14)) > 0
+
+
+def test_ff_seconds_writes_str_exponents_in_plain_decimals_and_keeps_every_other_time_as_str_writes_it():
+    assert common.ff_seconds(1e-6) == "0.000001"  # the boundary
+    assert str(5e-05) == "5e-05"
+    assert common.ff_seconds(5e-05) == "0.00005"
+    assert common.ff_seconds(1.2345e-05) == "0.000012345"
+    for x in [78.4, 2.0, 0.5, 137 / 30, 82.96666666666667, -0.5, 3]:
+        assert common.ff_seconds(x) == str(x)
+    for x in [1e-6, 1.5e-6, 5e-05, 9.9e-05, 0.1, 1 / 3]:
+        assert "e" not in common.ff_seconds(x).lower(), x

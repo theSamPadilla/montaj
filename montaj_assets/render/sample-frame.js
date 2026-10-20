@@ -41,6 +41,7 @@ import { isMain as isMainModule } from './is-main.js'
 import { toFileHref, propFilePath } from './file-url.js'
 import { pMap } from './p-map.js'
 import { FFMPEG } from './ffmpeg-bin.js'
+import { ffSeconds } from './ff-seconds.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { externalizeFilterGraph } from './filter-script.js'
 import { isHdr } from './color-space.js'
@@ -1116,9 +1117,9 @@ export async function sampleFrame({
     const fineSeek = seek - fastSeek
     const ffmpegExtractArgs = [
       '-y', '-v', 'error',
-      ...(fastSeek > 0 ? ['-ss', String(fastSeek)] : []),
+      ...(Number(ffSeconds(fastSeek)) > 0 ? ['-ss', ffSeconds(fastSeek)] : []),
       '-i', src,
-      '-ss', String(fineSeek),
+      '-ss', ffSeconds(fineSeek), // §478: seek - fastSeek can leave a 1e-15 residue, which String() wrote as "1e-15"
     ]
 
     // Filter chain: the optional source crop (clips workflow vertical reframe)
@@ -1213,7 +1214,7 @@ export async function sampleFrame({
 
   // Black canvas base
   inputs.push('-f', 'lavfi', '-i',
-    `color=black:size=${actualWidth}x${actualHeight}:rate=${fps}:duration=${duration}`)
+    `color=black:size=${actualWidth}x${actualHeight}:rate=${fps}:duration=${ffSeconds(duration)}`)
   filterParts.push(`[0:v]format=rgba[canvas]`)
   videoLabel = '[canvas]'
   inputIdx++

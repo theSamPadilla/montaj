@@ -37,6 +37,7 @@ import { spawn, spawnSync } from 'child_process'
 import { mkdirSync, rmSync } from 'fs'
 import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
+import { ffSeconds } from './ff-seconds.js'
 import { describeFfmpegExit, assertInputsExist, fileInputsOf } from './ffmpeg-error.js'
 import { childKilledError } from './child-killed.js'
 import { specFor, encoderArgsFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
@@ -122,10 +123,10 @@ export const AUDIO_FILL_BY_TIMESTAMP = 'aresample=async=1000:min_hard_comp=0.02:
  * @returns {{near: number, fine: string} | null}
  */
 export function twoStageSeek(actualIn) {
-  if (!(actualIn > 0)) return null
-  const s = String(actualIn)
+  const s = ffSeconds(actualIn) // §478: never "1e-14", and a residue under 1e-6 is no seek
+  if (!(Number(s) > 0)) return null
   const dot = s.indexOf('.')
-  const whole = dot < 0 ? actualIn : Number(s.slice(0, dot))
+  const whole = Number(dot < 0 ? s : s.slice(0, dot))
   const near = Math.max(0, whole - SEEK_PREROLL_S)
   const fine = near === 0 ? s : `${whole - near}${dot < 0 ? '' : s.slice(dot)}`
   return { near, fine }
@@ -1203,7 +1204,7 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   const imgOffset = segStart == null ? 0 : Math.max(0, segStart - (item.start ?? 0))
   const anim = animatedGeometry(item, 'image', vw, vh, imgOffset, duration, warnIfCapped(item, 'image'))
 
-  const inputArgs = ['-loop', '1', '-t', String(duration), '-i', item.src]
+  const inputArgs = ['-loop', '1', '-t', ffSeconds(duration), '-i', item.src]
   const filterParts = []
 
   // Fit the source image into its scaledW×scaledH box. Default 'cover' preserves
@@ -1406,18 +1407,18 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // (measured: up to 17394 off on a beep of 16383). Read from the first
   // packet, the decoder primes itself and drops the priming samples, and the
   // timestamps come out the same (pinned by audio-first-samples.integration).
-  const seekArgs = (t) => (t > 0 ? ['-ss', String(t)] : [])
+  const seekArgs = (t) => (Number(ffSeconds(t)) > 0 ? ['-ss', ffSeconds(t)] : [])
   // -err_detect ignore_err + -max_error_rate 1.0: tolerate broken audio
   // packets from iPhone .MOV sources (see encodeSegment for full comment).
   const inputArgs = [
     '-err_detect', 'ignore_err',
     '-max_error_rate', '1.0',
     ...(seek
-      ? [...seekArgs(seek.near), '-t', String(Number(seek.fine) + srcDur + 1), '-i', item.src]
-      : ['-t', String(srcDur), '-i', item.src]),
+      ? [...seekArgs(seek.near), '-t', ffSeconds(Number(seek.fine) + srcDur + 1), '-i', item.src]
+      : ['-t', ffSeconds(srcDur), '-i', item.src]),
   ]
-  const trimStep = seek ? `trim=start=${seek.fine}:duration=${srcDur},` : ''
-  const audioTrim = seek ? `atrim=start=${seek.fine}:duration=${srcDur}` : `atrim=0:${srcDur}`
+  const trimStep = seek ? `trim=start=${seek.fine}:duration=${ffSeconds(srcDur)},` : ''
+  const audioTrim = seek ? `atrim=start=${seek.fine}:duration=${ffSeconds(srcDur)}` : `atrim=0:${ffSeconds(srcDur)}`
   const filterParts = []
 
   // The box the footage is fitted and padded into: the PEAK box when the box
@@ -1699,8 +1700,10 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   }
 
   const inputArgs = loopedInput
-    ? ['-loop', '1', '-t', String(duration), '-i', ov.webmPath]
-    : ['-ss', String(Math.max(0, segStart - ov.startSeconds)), '-t', String(duration), '-i', ov.webmPath]
+    ? ['-loop', '1', '-t', ffSeconds(duration), '-i', ov.webmPath]
+    // §478: an overlay baked from a render slice's start leaves segStart - startSeconds at 1.4e-14, which String()
+    // wrote as exponent notation and ffmpeg refused ("Invalid duration for option ss"): the export failed.
+    : ['-ss', ffSeconds(Math.max(0, segStart - ov.startSeconds)), '-t', ffSeconds(duration), '-i', ov.webmPath]
   const filterParts = []
 
   // Overlay sizing: scale the overlay from its design canvas (always rendered at
@@ -2000,7 +2003,7 @@ export function segmentVideoArgs(spec, projectColorSpace, fps, duration) {
     // on an encode of 2 frames or fewer (segment-plan.js MIN_SEGMENT_FRAMES).
     ...(/265|hevc/i.test(spec.encoder) ? ['-bsf:v', 'filter_units=remove_types=62'] : []),
     '-g', String(fps), '-keyint_min', String(fps),
-    '-t', String(duration),
+    '-t', ffSeconds(duration),
     '-movflags', '+faststart',
   ]
 }
@@ -2012,7 +2015,7 @@ export function segmentVideoArgs(spec, projectColorSpace, fps, duration) {
  * them to the millisecond). Colour tags are restamped by that encode.
  */
 function intermediateVideoArgs(spec, duration) {
-  return ['-c:v', 'ffv1', '-level', '3', '-pix_fmt', spec.outputPixFmt, '-t', String(duration), '-f', 'nut']
+  return ['-c:v', 'ffv1', '-level', '3', '-pix_fmt', spec.outputPixFmt, '-t', ffSeconds(duration), '-f', 'nut']
 }
 
 /**
@@ -2096,7 +2099,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   // Its RANGE is still also pinned at the encoder (Step 6).
   // Pinned by hdr-overlay-color.integration.test.mjs.
   inputs.push('-f', 'lavfi', '-i',
-    `color=black:size=${vw}x${vh}:rate=${fps}:duration=${duration}`)
+    `color=black:size=${vw}x${vh}:rate=${fps}:duration=${ffSeconds(duration)}`)
   const canvasTag = `,${spec.setparams}:range=tv`
   filterParts.push(`[0:v]format=${spec.outputPixFmt}${canvasTag}[canvas]`)
   videoLabel = '[canvas]'
@@ -2376,7 +2379,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   let audioLabel
   if (audioLabels.length === 0) {
     inputs.push('-f', 'lavfi', '-i', `anullsrc=cl=stereo:r=48000`)
-    filterParts.push(`[${inputIdx}:a]atrim=0:${duration},asetpts=PTS-STARTPTS[sil]`)
+    filterParts.push(`[${inputIdx}:a]atrim=0:${ffSeconds(duration)},asetpts=PTS-STARTPTS[sil]`)
     audioLabel = '[sil]'
     inputIdx++
   } else if (audioLabels.length === 1) {

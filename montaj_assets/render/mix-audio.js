@@ -14,6 +14,7 @@ import { spawnSync } from 'child_process'
 import { tmpdir } from 'os'
 import { audioSourceWindow } from '@bycrux/timeline-core'
 import { FFMPEG } from './ffmpeg-bin.js'
+import { ffSeconds } from './ff-seconds.js'
 import { externalizeFilterGraph } from './filter-script.js'
 import { ffmpegErrorTail, assertInputsExist } from './ffmpeg-error.js'
 import { syncResultError } from './child-killed.js'
@@ -96,14 +97,14 @@ function buildFadeFilters(track) {
   let fadeFilters = ''
   // Begins the instant the adelay padding ends — i.e. when the track starts.
   if (fadeIn > 0) {
-    fadeFilters += `,afade=t=in:st=${start}:d=${fadeIn}:curve=${ffmpegFadeCurve(track.fadeInCurve)}`
+    fadeFilters += `,afade=t=in:st=${ffSeconds(start)}:d=${ffSeconds(fadeIn)}:curve=${ffmpegFadeCurve(track.fadeInCurve)}`
   }
   // Must FINISH at the track's end on the timeline, so it begins one fade-length
   // before it. `end`, not `end - start`: see the stream-time note above. With no
   // declared end there is no timeline position to fade out AT, so emit nothing
   // rather than guess — the track simply plays out.
   if (fadeOut > 0 && end !== null && end > start) {
-    fadeFilters += `,afade=t=out:st=${Math.max(0, end - fadeOut)}:d=${fadeOut}:curve=${ffmpegFadeCurve(track.fadeOutCurve)}`
+    fadeFilters += `,afade=t=out:st=${ffSeconds(Math.max(0, end - fadeOut))}:d=${ffSeconds(fadeOut)}:curve=${ffmpegFadeCurve(track.fadeOutCurve)}`
   }
   return fadeFilters
 }
@@ -131,8 +132,8 @@ export function buildAudioTrackInputs(audioTracks = []) {
   for (const track of audioTracks) {
     if (track.muted) continue
     const { inPoint, outPoint } = audioSourceWindow(track)
-    if (inPoint > 0)       args.push('-ss', String(inPoint))
-    if (outPoint !== null) args.push('-to', String(outPoint))
+    if (Number(ffSeconds(inPoint)) > 0) args.push('-ss', ffSeconds(inPoint))
+    if (outPoint !== null)               args.push('-to', ffSeconds(outPoint))
     args.push('-i', track.src)
   }
   return args

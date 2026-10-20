@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Shared helpers for video-toolkit scripts. All scripts import from here."""
 import contextlib, json, math, os, re, shutil, subprocess, sys, tempfile
+from decimal import Decimal
 
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -150,6 +151,23 @@ def ffmpeg_bin():
 
 def ffprobe_bin():
     return _resolve_av_bin("ffprobe", "MONTAJ_FFPROBE")
+
+
+def ff_seconds(x) -> str:
+    """Seconds as an ffmpeg time argument (-ss, -t, -to, a filter's duration option): never exponent notation.
+
+    ffmpeg refuses "1e-05" ("Invalid duration"), and str() writes any |x| under 1e-4 that way, a residue of
+    subtracting two equal times included (§478). Gives "0" under 1e-6, so a `> 0` guard on its value drops a seek to
+    0 (an input -ss 0 still seeks, past the AAC priming). A time str() writes in plain decimals is passed as it is,
+    digit for digit; one it writes as an exponent (1e-6 to 1e-4) is written out in plain decimals instead. The twin of
+    montaj_assets/render/ff-seconds.js."""
+    v = float(x)
+    if abs(v) < 1e-6:
+        return "0"
+    s = str(x)
+    if "e" not in s.lower() or not math.isfinite(v):
+        return s
+    return format(Decimal(repr(v)), "f")
 
 
 def node_child_env() -> dict:

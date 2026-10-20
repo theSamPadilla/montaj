@@ -178,7 +178,7 @@ import subprocess
 import tempfile
 from datetime import datetime, timezone
 
-from common import DEFAULT_WHISPER_MODEL, ffmpeg_bin, get_duration, progress, require_whisper_model, transcribe_words  # noqa: E402
+from common import DEFAULT_WHISPER_MODEL, ff_seconds, ffmpeg_bin, get_duration, progress, require_whisper_model, transcribe_words  # noqa: E402
 
 
 class SkipVideo(Exception):
@@ -226,7 +226,7 @@ def merge_meta(it, meta):
 
 def _frame(path, at, dest):
     # -ss before -i on a non-zero time (never -ss 0: it still seeks)
-    subprocess.run([ffmpeg_bin(), "-y", "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1",
+    subprocess.run([ffmpeg_bin(), "-y", "-v", "error", "-ss", ff_seconds(at), "-i", str(path), "-frames:v", "1",
                     "-vf", "scale=720:-2", "-q:v", "3", str(dest)], check=True, timeout=120)
 
 

@@ -16,7 +16,7 @@ from array import array
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin
+from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin, ff_seconds
 
 RESOLUTIONS = (50, 200, 800)      # bucketed samples-per-second values
 MAX_PEAK_PAIRS = 500_000          # total-samples clamp per invocation
@@ -45,7 +45,7 @@ def decode_mono_samples(input_path: str, start: float, duration: float, timeout:
     os.close(fd)
     try:
         run([ffmpeg_bin(), "-y",
-             "-ss", str(start), "-t", str(duration),
+             "-ss", ff_seconds(start), "-t", ff_seconds(duration),
              "-i", input_path,
              "-map", "0:a:0", "-ac", "1", "-ar", str(DECODE_SAMPLE_RATE),
              "-c:a", "pcm_s16le",

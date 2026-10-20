@@ -21,7 +21,7 @@ Point-in-time (--at <seconds>):
 import math, os, sys, argparse, glob
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin
+from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin, ff_seconds
 
 
 def main():
@@ -66,7 +66,7 @@ def main():
         # Full-resolution single-frame extraction. Using -ss BEFORE -i for
         # fast seek; accuracy is sufficient for our boundary-frame use case.
         run([ffmpeg_bin(), "-y",
-             "-ss", str(args.at),
+             "-ss", ff_seconds(args.at),
              "-i", args.input,
              "-frames:v", "1",
              "-q:v", "2",  # high-quality JPEG (scale: 1=best..31=worst)
@@ -89,7 +89,7 @@ def main():
         os.makedirs(out_dir, exist_ok=True)
 
         run([ffmpeg_bin(), "-y",
-             "-ss", str(window_start), "-to", str(window_end),
+             "-ss", ff_seconds(window_start), "-to", ff_seconds(window_end),
              "-i", args.input,
              "-vf", "scale=320:-1",
              os.path.join(out_dir, "frame_%04d.jpg")])
@@ -128,7 +128,7 @@ def main():
     interval = max(0.033, interval)   # cap at ~30 fps
 
     run([ffmpeg_bin(), "-y",
-         "-ss", str(window_start), "-to", str(window_end),
+         "-ss", ff_seconds(window_start), "-to", ff_seconds(window_end),
          "-i", args.input,
          "-vf", f"fps=1/{interval},scale=320:-1,tile={cols}x{rows}",
          "-frames:v", "1", out])

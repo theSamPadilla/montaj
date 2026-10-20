@@ -16,6 +16,7 @@ import { mkdirSync, writeFileSync, rmSync, renameSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { randomBytes } from 'crypto'
 import { FFMPEG } from './ffmpeg-bin.js'
+import { ffSeconds } from './ff-seconds.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { syncResultError } from './child-killed.js'
 import { planSegments, groupShortSegments, MIN_SEGMENT_FRAMES } from './segment-plan.js'
@@ -334,8 +335,8 @@ export function embedThumbnail(outputPath, colorSpace, opts = {}) {
     const seek = twoStageSeek(seekSeconds)
     const args = ['-y', '-v', 'error',
       ...(seek
-        ? [...(seek.near > 0 ? ['-ss', String(seek.near)] : []), '-i', outputPath]
-        : ['-ss', String(seekSeconds), '-i', outputPath]),
+        ? [...(seek.near > 0 ? ['-ss', ffSeconds(seek.near)] : []), '-i', outputPath]
+        : ['-ss', ffSeconds(seekSeconds), '-i', outputPath]),
       '-frames:v', '1']
     // SDR files have no `vf` (no LUT to protect from), but still need the
     // exact frame, so the trim filter is the whole `-vf` there when a seek
