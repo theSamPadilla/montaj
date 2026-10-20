@@ -47,6 +47,21 @@ class ProjectLockTimeout(RuntimeError):
     """The project's write lock was not free within the timeout."""
 
 
+PROJECT_READ_ONLY_MESSAGE = ("This project's folder is read-only, so Montaj can't save changes to it. "
+                             "Make the folder writable (or copy the project somewhere writable) and try again.")
+
+
+class ProjectReadOnly(RuntimeError):
+    """project.json could not be written because its folder is read-only. Nothing
+    was written and no temp file is left; retrying is pointless."""
+
+    def __init__(self, message: str = PROJECT_READ_ONLY_MESSAGE):
+        super().__init__(message)
+
+
+_READ_ONLY_ERRNOS = {errno.EROFS, errno.EACCES, errno.EPERM}
+
+
 class _Entry:
     __slots__ = ("rlock", "depth", "fd")
 
@@ -240,6 +255,8 @@ def project_lock_or_fail(project_path, fail, timeout: float | None = None):
         if entered:
             raise
         fail("project_locked", str(e))
+    except ProjectReadOnly as e:
+        fail("project_read_only", str(e))
 
 
 def update_project_or_fail(project_path, apply, fail, **kwargs):
@@ -249,6 +266,8 @@ def update_project_or_fail(project_path, apply, fail, **kwargs):
         return update_project(project_path, apply, **kwargs)
     except ProjectLockTimeout as e:
         fail("project_locked", str(e))
+    except ProjectReadOnly as e:
+        fail("project_read_only", str(e))
 
 
 @contextlib.asynccontextmanager
@@ -300,13 +319,20 @@ def write_json_atomic(project_path, project: dict, *, indent=2, ensure_ascii: bo
     text = json.dumps(project, indent=indent, ensure_ascii=ensure_ascii)
     tmp = f"{project_path}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     try:
-        Path(tmp).write_text(text, encoding="utf-8")
+        try:
+            Path(tmp).write_text(text, encoding="utf-8")
+        except OSError as e:
+            if e.errno in _READ_ONLY_ERRNOS or isinstance(e, PermissionError):
+                raise ProjectReadOnly() from e
+            raise
         for attempt in range(_REPLACE_TRIES):
             try:
                 os.replace(tmp, project_path)
                 break
-            except PermissionError:
+            except PermissionError as e:
                 if attempt == _REPLACE_TRIES - 1:
+                    if os.name != "nt":
+                        raise ProjectReadOnly() from e
                     raise
                 time.sleep(_REPLACE_PAUSE_SECONDS)
     except BaseException:

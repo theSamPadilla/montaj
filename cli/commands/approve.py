@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from cli.main import add_global_flags
 from cli.output import emit_error
-from lib.project_lock import ProjectLockTimeout, update_project
+from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, update_project
 
 
 def register(subparsers):
@@ -130,6 +130,8 @@ def handle(args):
         update_project(path, apply)
     except ProjectLockTimeout as e:
         emit_error("project_locked", str(e))
+    except ProjectReadOnly as e:
+        emit_error("project_read_only", str(e))
 
     scene_count = len(scenes)
     project_label = project.get("name") or project.get("id") or "<unnamed>"

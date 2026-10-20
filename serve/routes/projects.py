@@ -42,7 +42,7 @@ from lib.ingest import ingest_source
 from lib.project_versions import commit_version
 from lib.fs_remove import rmtree_force
 from lib import project_lock as _project_lock_mod
-from lib.project_lock import ProjectLockTimeout, project_lock, project_lock_async, write_json_atomic
+from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, project_lock, project_lock_async, write_json_atomic
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
@@ -590,7 +590,7 @@ def _start_source_download(
         project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "downloading", "jobId": job_id}
         try:
             text = _write_project_json(project_path, project)
-        except OSError as e:
+        except (OSError, ProjectReadOnly) as e:
             set_error(job_id, {"error": "failed", "message": str(e)})
             return None
     task = asyncio.create_task(
@@ -703,7 +703,7 @@ def _update_downloading_record(project_dir: Path, job_id: str, change) -> str | 
             return None
         try:
             return _write_project_json(project_path, project)
-        except OSError:
+        except (OSError, ProjectReadOnly):
             return None
 
 
@@ -933,7 +933,7 @@ def _fail_source_download(
             project = json.loads(project_path.read_text())
             project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "failed", "error": code}
             text = _write_project_json(project_path, project)
-        except (OSError, ValueError):
+        except (OSError, ValueError, ProjectReadOnly):
             text = None
     if text is not None and broadcaster is not None:
         broadcaster.publish(project_id, _sse_data_frame(text))
@@ -1824,6 +1824,11 @@ async def _locked_writeback(project_paths, fn):
                     await stack.enter_async_context(
                         project_lock_async(path, timeout=min(_project_lock_mod.DEFAULT_TIMEOUT, _WRITEBACK_LOCK_TIMEOUT)))
                 return fn()
+        except ProjectReadOnly:
+            # A read-only folder stays read-only: retrying is pointless.
+            logger.warning("Dropped a background write-back: project folder is read-only (%s)",
+                           ", ".join(str(p) for p in project_paths))
+            return None
         except ProjectLockTimeout:
             if attempt == _WRITEBACK_TRIES - 1:
                 logger.warning("Dropped a background write-back: project busy for %d attempts (%s)",
@@ -1935,7 +1940,7 @@ def _apply_project_edits_locked(project_path: Path, edits, settings):
         return None
     try:
         text = _write_project_json(project_path, project)
-    except OSError:
+    except (OSError, ProjectReadOnly):
         return None
     return project, text
 
@@ -2264,7 +2269,7 @@ def _set_background_normalize_locked(project_path: Path, pending: bool) -> tuple
         return None
     try:
         text = _write_project_json(project_path, project)
-    except OSError:
+    except (OSError, ProjectReadOnly):
         return None
     return project, text
 
@@ -3132,7 +3137,7 @@ async def get_project(project_id: str, request: Request = None, project_dir: Pat
                 if normalized is not project:
                     try:
                         text = _write_project_json(project_path, normalized)
-                    except OSError:
+                    except (OSError, ProjectReadOnly):
                         pass  # degrade to "not converged yet": a project must always open
                     project = normalized
         except ProjectLockTimeout:

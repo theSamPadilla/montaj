@@ -1691,7 +1691,9 @@ def test_project_json_replace_gives_up_and_leaves_no_temp(this, monkeypatch):
     resp = _put(pid, name="never")
     monkeypatch.undo()
 
-    assert resp.status_code == 500
+    # Off Windows a replace that stays refused means the folder is read-only (409);
+    # on Windows it is an antivirus hold that outlasted the retries (500).
+    assert resp.status_code == (500 if os.name == "nt" else 409)
     assert (folder / "project.json").read_text() == before
     assert sorted(p.name for p in folder.iterdir() if p.name != ".project.lock") == ["project.json"]
 

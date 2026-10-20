@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from cli.deps import render_runtime_dir
+from lib.project_lock import PROJECT_READ_ONLY_MESSAGE
 
 MONTAJ_ROOT = Path(__file__).resolve().parent.parent
 
@@ -204,6 +205,12 @@ def server_error(code: str, msg: str) -> HTTPException:
 PROJECT_LOCKED_DETAIL = {
     "error": "project_locked",
     "message": "Montaj is finishing another change to this project. Try again in a moment.",
+}
+
+
+PROJECT_READ_ONLY_DETAIL = {
+    "error": "project_read_only",
+    "message": PROJECT_READ_ONLY_MESSAGE,
 }
 
 

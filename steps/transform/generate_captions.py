@@ -35,7 +35,7 @@ from caption_translation import finish_regenerated_track, merge_caption_theme as
 sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
 from serve.caption_job import build_audio_mix_spec  # noqa: E402
-from lib.project_lock import ProjectLockTimeout, update_project  # noqa: E402
+from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, update_project  # noqa: E402
 
 # The whisper run before this write took minutes: a short lock wait must not throw it away.
 STEP_LOCK_TIMEOUT = 30.0
@@ -156,6 +156,8 @@ def main():
             update_project(project_path, apply, timeout=STEP_LOCK_TIMEOUT)
         except ProjectLockTimeout as e:
             fail("project_locked", str(e))
+        except ProjectReadOnly as e:
+            fail("project_read_only", str(e))
         except (OSError, ValueError):
             fail("project_not_found", f"project.json for {args.project_id} not readable")
         track = written["track"]
