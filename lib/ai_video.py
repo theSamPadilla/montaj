@@ -10,6 +10,7 @@ from normalize import normalize, normalized_output_path, is_normalized, probe_vi
 from lib.types.colorspace import normalize_key, DEFAULT_COLOR_SPACE, detect_from_transfer, is_hdr
 from lib.project_tracks import track_items, replace_track_items
 from lib.project_lock import project_lock_or_fail, update_project_or_fail, write_json_atomic
+from lib import project_revisions
 
 
 # Optimal Kling prompt order: camera first (framing context), then subject
@@ -141,12 +142,23 @@ def save_project_changes(path: Path, original: dict, project: dict, keys=("track
     (taken before the step mutated anything). When a `guard` key on disk no
     longer equals the original's, someone edited it meanwhile: fail with
     `project_changed` and write nothing. Everything else in the fresh document
-    is kept."""
+    is kept.
+
+    With the engine guard on (§477) the compare is the shared one: the guard
+    keys' revisions as read (from `original`) against the fresh document's,
+    with the shared step message."""
+    read = project_revisions.revisions_of(original, guard) if project_revisions.engine_guard_enabled() else None
+
     def apply(fresh):
-        for key in guard:
-            if fresh.get(key) != original.get(key):
-                fail("project_changed",
-                     f"The project's {key} changed while this step ran: read it again and redo the cut.")
+        if read is not None:
+            stale = project_revisions.stale_fields(fresh, list(guard), read)["stale"]
+            if stale:
+                fail("project_changed", project_revisions.step_stale_message(stale))
+        else:
+            for key in guard:
+                if fresh.get(key) != original.get(key):
+                    fail("project_changed",
+                         f"The project's {key} changed while this step ran: read it again and redo the cut.")
         for key in keys:
             if key in project:
                 fresh[key] = project[key]

@@ -9,6 +9,7 @@ JSON-parsed value, and CANARY checks that they still do.
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 import threading
@@ -215,6 +216,30 @@ def canary_ok() -> bool:
         return revisions_of(_canary_document(), list(CANARY["revisions"])) == CANARY["revisions"]
     except Exception:
         return False
+
+
+# ── the switch, for serve and for the steps it starts ─────────────────────────
+
+GUARD_ENV = "MONTAJ_ENGINE_GUARD"
+
+
+def engine_guard_requested() -> bool:
+    """True when the app started serve with MONTAJ_ENGINE_GUARD=1. Every step serve starts
+    inherits it (only the shell secret is taken out), so a step reads it here without
+    importing serve."""
+    return os.environ.get(GUARD_ENV) == "1"
+
+
+def engine_guard_enabled() -> bool:
+    """The §477 comparisons are on: requested, and this hasher still agrees with the app's.
+    Off, every writer behaves as it did before §477."""
+    return engine_guard_requested() and canary_ok()
+
+
+def step_stale_message(fields) -> str:
+    """What a step says when a field it read changed before it could write (§477)."""
+    return (f"The project changed while the step ran: {', '.join(fields)} changed since it was read. "
+            f"Read the project again and rerun.")
 
 
 def _check_corpus(path) -> int:

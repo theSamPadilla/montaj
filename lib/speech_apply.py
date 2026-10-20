@@ -14,7 +14,7 @@ import shutil
 import sys
 import tempfile
 
-from lib import speech_text
+from lib import project_revisions, speech_text
 from lib.common import fail
 from lib.project_lock import project_lock_or_fail
 from lib.project_tracks import normalize_tracks
@@ -39,6 +39,14 @@ def _read_view(project: dict) -> str:
     view = {k: project.get(k) for k in _READ_KEYS}
     view["fps"] = (project.get("settings") or {}).get("fps")
     return json.dumps(view, sort_keys=True)
+
+
+def _read_revisions(project: dict) -> dict:
+    """The same view as revisions (§477): one per read key, plus settings.fps on its own so
+    another setting changing does not refuse the edit."""
+    revs = project_revisions.revisions_of(project, _READ_KEYS)
+    revs["settings.fps"] = project_revisions.revision_of((project.get("settings") or {}).get("fps"))
+    return revs
 
 
 def _title(project: dict) -> str:
@@ -95,6 +103,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     with open(project_path, encoding="utf-8") as f:
         project = normalize_tracks(json.load(f))
     as_read = copy.deepcopy(project)   # as read, before anything mutates it
+    read = _read_revisions(project) if project_revisions.engine_guard_enabled() else None
 
     header, rows = speech_text.parse(text)
     derived = speech_text.derive(project, project_dir, track=header["track"])   # the track the text was read from
@@ -154,7 +163,11 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     with project_lock_or_fail(project_path, fail):
         with open(project_path, encoding="utf-8") as f:
             fresh = normalize_tracks(json.load(f))
-        if _read_view(fresh) != _read_view(as_read):
+        if read is not None:
+            stale = project_revisions.stale_fields(None, list(read), read, revisions=_read_revisions(fresh))["stale"]
+            if stale:
+                fail("project_changed", project_revisions.step_stale_message(stale))
+        elif _read_view(fresh) != _read_view(as_read):
             fail("project_changed", "The project changed while the edit was applied: read the text again and redo it.")
         merged = dict(fresh)
         for key in set(candidate) | set(as_read):

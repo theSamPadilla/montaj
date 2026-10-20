@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from lib import project_revisions
 from lib.project_tracks import normalize_tracks
 
-GUARD_ENV = "MONTAJ_ENGINE_GUARD"
+GUARD_ENV = project_revisions.GUARD_ENV
 SECRET_ENV = "MONTAJ_SHELL_SECRET"
 
 CANARY_MISMATCH_LINE = "save-guard: revision canary MISMATCH, engine guard disabled, shell guard only"
@@ -31,7 +31,7 @@ def startup() -> None:
     hasher still agrees with the app's. Runs when `montaj serve` starts (before its
     dependency checks spawn anything) and again when serve.server is imported; the
     second run finds the secret already taken and keeps it."""
-    _state["requested"] = os.environ.get(GUARD_ENV) == "1"
+    _state["requested"] = project_revisions.engine_guard_requested()
     _state["secret"] = os.environ.pop(SECRET_ENV, None) or _state["secret"]
     _state["canary"] = "ok" if project_revisions.canary_ok() else "mismatch"
     if _state["requested"] and _state["canary"] != "ok" and not _state["logged"]:
