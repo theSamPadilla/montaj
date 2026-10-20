@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -385,3 +386,60 @@ def test_step_guard_off_writes_as_today(edit, monkeypatch, tmp_path, capsys):
     monkeypatch.delenv("MONTAJ_ENGINE_GUARD", raising=False)
     _, path, _ = _run_step(tmp_path, monkeypatch, edit)
     assert json.loads(path.read_text())["captions"]["segments"][0]["text"] == "new words"
+
+
+# ── the SSE path's error frame carries the structured refusal ──────────────────
+
+class _SseRequest:
+    query_params = {}
+
+    def __init__(self):
+        self.app = SimpleNamespace(state=SimpleNamespace(broadcaster=_Broadcaster()))
+
+    async def is_disconnected(self):
+        return False
+
+
+def _sse_frames(pdir, project_id="p1"):
+    async def run():
+        resp = await projects_mod.generate_captions(project_id, _SseRequest(), body={}, project_dir=pdir)
+        out = []
+        async for chunk in resp.body_iterator:
+            out.append(chunk if isinstance(chunk, str) else chunk.decode())
+        return "".join(out)
+    projects_mod._active_caption_jobs.discard(project_id)
+    return [f for f in asyncio.run(run()).split("\n\n") if f]
+
+
+def _fields(frame):
+    out = {}
+    for line in frame.split("\n"):
+        name, _, value = line.partition(": ")
+        out[name] = value
+    return out
+
+
+def test_sse_refusal_frame_carries_the_structured_detail_and_keeps_the_message(guard, tmp_path, monkeypatch):
+    guard(True)
+    monkeypatch.setattr(projects_mod, "whisper_model_missing", lambda model: None)
+    pdir, path, _, seen = _route_setup(tmp_path, monkeypatch, clip_volume)
+    frames = [_fields(f) for f in _sse_frames(pdir)]
+    errors = [f for f in frames if f.get("event") == "error"]
+    assert len(errors) == 1
+    # An existing consumer reads the data line as the message, as before.
+    assert errors[0]["data"] == AUDIO_MSG
+    assert json.loads(errors[0]["detail"]) == {"error": "project_changed", "stale": ["tracks"], "missing": [],
+                                               "message": AUDIO_MSG}
+    assert path.read_bytes() == seen["bytes"]
+
+
+def test_sse_other_errors_keep_their_frame(guard, tmp_path, monkeypatch):
+    guard(True)
+    monkeypatch.setattr(projects_mod, "whisper_model_missing", lambda model: None)
+    pdir, _, _, _ = _route_setup(tmp_path, monkeypatch, None)
+
+    async def boom(*a, **k):
+        raise projects_mod.CaptionPipelineError("transcribe failed (exit 1)")
+    monkeypatch.setattr(projects_mod, "_run_caption_pipeline", boom)
+    errors = [f for f in _sse_frames(pdir) if f.startswith("event: error")]
+    assert errors == ["event: error\ndata: transcribe failed (exit 1)"]

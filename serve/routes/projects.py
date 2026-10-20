@@ -5592,6 +5592,16 @@ class CaptionPipelineError(Exception):
         self.status_code = status_code
 
 
+def _caption_error_frame(e: "CaptionPipelineError") -> str:
+    """The SSE `error` frame for a caption pipeline failure. `data` is the message, as every
+    consumer reads it. A structured refusal (§477's project_changed) also rides on a
+    `detail:` field line holding the same {error, stale, missing, message} the detached
+    job's errorDetail answers; an SSE parser ignores a field it does not know."""
+    if isinstance(e.detail, dict):
+        return f"event: error\ndetail: {json.dumps(e.detail)}\ndata: {e.message}\n\n"
+    return f"event: error\ndata: {e.message}\n\n"
+
+
 def _merge_caption_theme(prev: dict, track: dict) -> dict:
     """Carry forward every prior caption-track key the pipeline didn't just
     regenerate, so a new theme field survives caption regeneration by default
@@ -5908,7 +5918,7 @@ async def generate_captions(
                 yield f"event: error\ndata: {str(e)}\n\n"
                 return
             except CaptionPipelineError as e:
-                yield f"event: error\ndata: {e.message}\n\n"
+                yield _caption_error_frame(e)
                 return
             except Exception as e:
                 # Catch-all so the stream ALWAYS ends with a terminal frame.
