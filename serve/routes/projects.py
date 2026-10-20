@@ -39,6 +39,7 @@ from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, canvas_f
 from lib.ingest import ingest_source
 from lib.project_versions import commit_version
 from lib.fs_remove import rmtree_force
+from lib.project_lock import project_lock, write_json_atomic
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
@@ -439,11 +440,11 @@ async def _run_ingest_detached(
         # Read fresh right before the append+write to minimize clobbering a
         # concurrent editor save (mirrors the caption pipeline's late read).
         project_path = Path(project_dir) / "project.json"
-        project = json.loads(project_path.read_text())
-        clip = {"id": _next_clip_id(project), **clip}
-        project.setdefault("sources", []).append(clip)
-        text = json.dumps(project, indent=2)
-        project_path.write_text(text)
+        with project_lock(project_path):
+            project = json.loads(project_path.read_text())
+            clip = {"id": _next_clip_id(project), **clip}
+            project.setdefault("sources", []).append(clip)
+            text = _write_project_json(project_path, project)
         broadcaster.publish(project_id, _sse_data_frame(text))
 
         # Only now the clip is on disk under a stable (id, src) can the encode's
@@ -543,36 +544,12 @@ def _parse_clip_urls(raw, clips, remote_clips) -> dict | None:
     return parsed
 
 
-_REPLACE_TRIES = 5
-_REPLACE_PAUSE_SECONDS = 0.05
-
-
 def _write_project_json(project_path: Path, project: dict) -> str:
-    """tmp + os.replace, as `_apply_project_edits`, under a temp name of its
-    own (pid + random), so two writers at once, in serve or in another process
-    (the CLI render's colour heal writes `project.json.tmp`), never share one.
-    A replace refused with PermissionError (Windows: an antivirus or the
-    indexer holding project.json for a moment) is tried again a few times,
-    50 ms apart, before the write fails. Returns the text written."""
-    text = json.dumps(project, indent=2)
-    tmp = f"{project_path}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    try:
-        Path(tmp).write_text(text)
-        for attempt in range(_REPLACE_TRIES):
-            try:
-                os.replace(tmp, project_path)
-                break
-            except PermissionError:
-                if attempt == _REPLACE_TRIES - 1:
-                    raise
-                time.sleep(_REPLACE_PAUSE_SECONDS)   # on the loop, but at most 0.2 s and only then
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    return text
+    """tmp + os.replace under a temp name of its own (pid + random), with the
+    PermissionError retry (lib/project_lock.write_json_atomic). Callers that read
+    project.json first hold `project_lock` from their read to this write (§467).
+    Returns the text written."""
+    return write_json_atomic(project_path, project)
 
 
 def _start_source_download(
@@ -595,21 +572,22 @@ def _start_source_download(
     if live is not None and not live.done():
         return None
     project_path = Path(project_dir) / "project.json"
-    try:
-        project = json.loads(project_path.read_text())
-    except (OSError, ValueError):
-        return None
-    if resume:
-        current = project.get("sourceDownload")
-        if not isinstance(current, dict) or current.get("status") != "downloading" or current.get("url") != url:
+    with project_lock(project_path):
+        try:
+            project = json.loads(project_path.read_text())
+        except (OSError, ValueError):
             return None
-    job_id = create_job()
-    project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "downloading", "jobId": job_id}
-    try:
-        text = _write_project_json(project_path, project)
-    except OSError as e:
-        set_error(job_id, {"error": "failed", "message": str(e)})
-        return None
+        if resume:
+            current = project.get("sourceDownload")
+            if not isinstance(current, dict) or current.get("status") != "downloading" or current.get("url") != url:
+                return None
+        job_id = create_job()
+        project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "downloading", "jobId": job_id}
+        try:
+            text = _write_project_json(project_path, project)
+        except OSError as e:
+            set_error(job_id, {"error": "failed", "message": str(e)})
+            return None
     task = asyncio.create_task(
         _run_source_download(project_id, Path(project_dir), url, video_id, job_id, broadcaster)
     )
@@ -708,19 +686,20 @@ def _update_downloading_record(project_dir: Path, job_id: str, change) -> str | 
     this job's download, and only when `change` returns True. Synchronous, so
     no await falls between the read and the write. Returns the text written."""
     project_path = Path(project_dir) / "project.json"
-    try:
-        project = json.loads(project_path.read_text())
-    except (OSError, ValueError):
-        return None
-    record = project.get("sourceDownload")
-    if not isinstance(record, dict) or record.get("status") != "downloading" or record.get("jobId") != job_id:
-        return None
-    if not change(project, record):
-        return None
-    try:
-        return _write_project_json(project_path, project)
-    except OSError:
-        return None
+    with project_lock(project_path):
+        try:
+            project = json.loads(project_path.read_text())
+        except (OSError, ValueError):
+            return None
+        record = project.get("sourceDownload")
+        if not isinstance(record, dict) or record.get("status") != "downloading" or record.get("jobId") != job_id:
+            return None
+        if not change(project, record):
+            return None
+        try:
+            return _write_project_json(project_path, project)
+        except OSError:
+            return None
 
 
 def _source_download_line_handler(project_id: str, project_dir: Path, job_id: str,
@@ -856,31 +835,32 @@ async def _finalize_source_download(
     # export conforms anything else inline. The proxy is queued below.
     clip = await asyncio.to_thread(ingest_source, str(project_dir), path, color_space, "lazy", proxy=False)
 
-    try:
-        project = json.loads(project_path.read_text())
-    except (OSError, ValueError):
-        return  # deleted meanwhile
-    sources = project.get("sources")
-    if not isinstance(sources, list):
-        sources = project["sources"] = []
-    existing = next((s for s in sources if isinstance(s, dict) and isinstance(s.get("src"), str)
-                     and _same_path(s["src"], clip["src"])), None)
-    if existing is not None:
-        clip = existing
-    else:
-        clip = {"id": _next_clip_id(project), **clip}
-        sources.append(clip)
-        if project.get("status") == "pending":
-            tracks = project.get("tracks")
-            if not isinstance(tracks, list) or not tracks:
-                tracks = project["tracks"] = [{"id": "trk-0", "items": []}]
-            first = tracks[0]
-            if isinstance(first, dict):
-                first.setdefault("items", []).append(dict(clip))
-            elif isinstance(first, list):
-                first.append(dict(clip))
-    project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "done", "clipId": clip["id"]}
-    text = _write_project_json(project_path, project)
+    with project_lock(project_path):
+        try:
+            project = json.loads(project_path.read_text())
+        except (OSError, ValueError):
+            return  # deleted meanwhile
+        sources = project.get("sources")
+        if not isinstance(sources, list):
+            sources = project["sources"] = []
+        existing = next((s for s in sources if isinstance(s, dict) and isinstance(s.get("src"), str)
+                         and _same_path(s["src"], clip["src"])), None)
+        if existing is not None:
+            clip = existing
+        else:
+            clip = {"id": _next_clip_id(project), **clip}
+            sources.append(clip)
+            if project.get("status") == "pending":
+                tracks = project.get("tracks")
+                if not isinstance(tracks, list) or not tracks:
+                    tracks = project["tracks"] = [{"id": "trk-0", "items": []}]
+                first = tracks[0]
+                if isinstance(first, dict):
+                    first.setdefault("items", []).append(dict(clip))
+                elif isinstance(first, list):
+                    first.append(dict(clip))
+        project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "done", "clipId": clip["id"]}
+        text = _write_project_json(project_path, project)
     if broadcaster is not None:
         broadcaster.publish(project_id, _sse_data_frame(text))
 
@@ -916,12 +896,13 @@ def _fail_source_download(
             except OSError:
                 pass
     project_path = project_dir / "project.json"
-    try:
-        project = json.loads(project_path.read_text())
-        project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "failed", "error": code}
-        text = _write_project_json(project_path, project)
-    except (OSError, ValueError):
-        text = None
+    with project_lock(project_path):
+        try:
+            project = json.loads(project_path.read_text())
+            project["sourceDownload"] = {"kind": "youtube", "url": url, "status": "failed", "error": code}
+            text = _write_project_json(project_path, project)
+        except (OSError, ValueError):
+            text = None
     if text is not None and broadcaster is not None:
         broadcaster.publish(project_id, _sse_data_frame(text))
     set_error(job_id, {"error": code, "message": message or _SOURCE_DOWNLOAD_MESSAGES.get(code, _SOURCE_DOWNLOAD_MESSAGES["failed"])})
@@ -1800,6 +1781,11 @@ def _apply_project_edits(project_path: Path, edits: list[tuple],
     The project may have changed since the edits were computed: items are
     matched by (id, src), and an item that no longer exists is simply skipped.
     """
+    with project_lock(project_path):
+        return _apply_project_edits_locked(project_path, edits, settings)
+
+
+def _apply_project_edits_locked(project_path: Path, edits, settings):
     try:
         project = json.loads(project_path.read_text())
     except (OSError, ValueError):
@@ -1824,11 +1810,8 @@ def _apply_project_edits(project_path: Path, edits: list[tuple],
                 changed = True
     if not changed:
         return None
-    text = json.dumps(project, indent=2)
     try:
-        tmp = str(project_path) + ".tmp"
-        Path(tmp).write_text(text)
-        os.replace(tmp, project_path)
+        text = _write_project_json(project_path, project)
     except OSError:
         return None
     return project, text
@@ -2132,6 +2115,11 @@ def _set_background_normalize(project_path: Path, pending: bool) -> tuple[dict, 
     """Set or clear the marker (and drop the `normalize: "lazy"` init wrote on
     serve's behalf — the lazy run was serve's choice, not the project's). Same
     no-await read-modify-write as `_apply_project_edits`. None when unchanged."""
+    with project_lock(project_path):
+        return _set_background_normalize_locked(project_path, pending)
+
+
+def _set_background_normalize_locked(project_path: Path, pending: bool) -> tuple[dict, str] | None:
     try:
         project = json.loads(project_path.read_text())
     except (OSError, ValueError):
@@ -2151,11 +2139,8 @@ def _set_background_normalize(project_path: Path, pending: bool) -> tuple[dict, 
         changed = True
     if not changed:
         return None
-    text = json.dumps(project, indent=2)
     try:
-        tmp = str(project_path) + ".tmp"
-        Path(tmp).write_text(text)
-        os.replace(tmp, project_path)
+        text = _write_project_json(project_path, project)
     except OSError:
         return None
     return project, text
@@ -2980,19 +2965,23 @@ async def get_project(project_id: str, request: Request = None, project_dir: Pat
     # shape second, off of look migration's returned project, would risk a
     # background write-back re-reading the disk BEFORE our shape write landed
     # and re-persisting the legacy shape underneath it.
-    normalized = normalize_tracks(project)
-    if normalized is not project:
-        text = json.dumps(normalized, indent=2)
+    # Under the project lock, on a fresh read, so a step's write in another
+    # process is not undone by the copy read at the top of this handler (§467).
+    text = None
+    with project_lock(project_path):
         try:
-            tmp = str(project_path) + ".tmp"
-            Path(tmp).write_text(text)
-            os.replace(tmp, project_path)
-        except OSError:
-            pass  # degrade to "not converged yet" — a project must always open
-        else:
-            if broadcaster is not None:
-                broadcaster.publish(project_id, _sse_data_frame(text))
-        project = normalized
+            project = json.loads(project_path.read_text())
+        except (OSError, ValueError):
+            pass
+        normalized = normalize_tracks(project)
+        if normalized is not project:
+            try:
+                text = _write_project_json(project_path, normalized)
+            except OSError:
+                pass  # degrade to "not converged yet" — a project must always open
+            project = normalized
+    if text is not None and broadcaster is not None:
+        broadcaster.publish(project_id, _sse_data_frame(text))
 
     # Heal look-stale artifact pointers before handing the project over. The
     # response is the MIGRATED body — the pass only ever does name/stat work
@@ -3602,21 +3591,22 @@ def _patch_copied_media(
     program part way through writing it: the copies are kept to try again),
     `_PATCH_OTHER_PROJECT` when it is now another project (its id is not
     `project_id`)."""
-    try:
-        project = json.loads(project_path.read_text())
-    except FileNotFoundError:
-        return _PATCH_GONE
-    except (OSError, ValueError, RecursionError):
-        return _PATCH_UNREADABLE
-    if not isinstance(project, dict):
-        return _PATCH_UNREADABLE
-    if project_id is not None and project.get("id") != project_id:
-        return _PATCH_OTHER_PROJECT
-    project = normalize_tracks(project)
-    copied = apply_borrowed_media(previous, project, made, also)
-    if not copied:
-        return None
-    return project, _write_project_json(project_path, project), copied
+    with project_lock(project_path):
+        try:
+            project = json.loads(project_path.read_text())
+        except FileNotFoundError:
+            return _PATCH_GONE
+        except (OSError, ValueError, RecursionError):
+            return _PATCH_UNREADABLE
+        if not isinstance(project, dict):
+            return _PATCH_UNREADABLE
+        if project_id is not None and project.get("id") != project_id:
+            return _PATCH_OTHER_PROJECT
+        project = normalize_tracks(project)
+        copied = apply_borrowed_media(previous, project, made, also)
+        if not copied:
+            return None
+        return project, _write_project_json(project_path, project), copied
 
 
 def _finish_save_copy(
@@ -3771,82 +3761,86 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
     if body.get("id") != project_id:
         raise bad_request("id_mismatch", "Body id must match URL id")
     project_path = project_dir / "project.json"
-    existing = json.loads(project_path.read_text())
-    prev_status = existing.get("status")
-    # Top-level shallow merge: preserve fields not present in the body. Agents
-    # (per skills/native/SKILL.md) routinely PUT a partial body like
-    # {id, status, tracks} when transitioning pending→draft; without this merge
-    # creation-time metadata (name, workflow, editingPrompt, projectType,
-    # runCount, settings, profile, …) gets wiped. To explicitly clear a field,
-    # callers must send it as null in the body.
-    # The answer's own fields (§126: `copied`, `warnings`) never reach
-    # project.json, even from a client that saves an answer back.
-    body = {key: value for key, value in body.items() if key not in _SAVE_REPORT_KEYS}
-    merged = {**existing, **body}
-    # The editor deletes its last marker/note by sending `markers: null` /
-    # `notes: null` (an omitted key would keep the old list through the merge
-    # above). Drop the key so a project with none is stored without one.
-    for _key in ("markers", "notes"):
-        if _key in body and body[_key] is None:
-            merged.pop(_key, None)
-    # Agents routinely PUT a still-legacy `tracks` shape (or a whole project
-    # they hand-built). Normalize before writing so a server write never leaves
-    # legacy tracks on disk — a no-op (same object back) when already
-    # normalized or when `tracks` is absent/null, so the shallow-merge and
-    # explicit-null-clears-a-field semantics above are untouched.
-    merged = normalize_tracks(merged)
-    # A save that picks a resolution or fps is the user's (or an agent's) choice: pin it
-    # so footage never overrides it. A body whose settings leave the
-    # marker out keeps the stored one.
-    if isinstance(body.get("settings"), dict) and isinstance(merged.get("settings"), dict):
-        old_settings = existing.get("settings") if isinstance(existing.get("settings"), dict) else {}
-        new_settings = dict(merged["settings"])
-        if "resolution" in new_settings and new_settings["resolution"] != old_settings.get("resolution"):
-            new_settings["resolutionSource"] = SOURCE_EXPLICIT
-        if "fps" in new_settings and new_settings["fps"] != old_settings.get("fps"):
-            new_settings["fpsSource"] = SOURCE_EXPLICIT
-        # §378: choosing a colour space is the creator's; footage never overrides it.
-        if "colorSpace" in new_settings and new_settings["colorSpace"] != old_settings.get("colorSpace"):
-            new_settings["colorSpaceSource"] = "explicit"
-        for marker in ("resolutionSource", "fpsSource", "aspectSource", "colorSpaceSource"):
-            if marker not in new_settings and marker in old_settings:
-                new_settings[marker] = old_settings[marker]
-        merged["settings"] = new_settings
-    # Overlay items are checked only when this save carries `tracks`: a delta
-    # that leaves tracks alone (a status flip, a rename) must not start failing
-    # over an item already on disk. Nothing is written when an item is wrong,
-    # and every problem is named in `message`, which is the one field the MCP
-    # clients show the agent. Only NEW or CHANGED items are checked (against
-    # `existing`, the project as it was before this PUT) — otherwise an item
-    # already broken on disk before this validator existed would block every
-    # future save of the project forever, even one that doesn't touch it.
-    if "tracks" in body:
-        overlay_errors = overlay_item_errors(merged, previous=normalize_tracks(existing))
-        if overlay_errors:
-            raise HTTPException(400, detail={
-                "error": "invalid_overlay_items",
-                "message": "Project not saved. Fix these overlay items: " + "; ".join(overlay_errors),
-                "errors": overlay_errors,
-            })
-    # §126: a new or changed media path into another project's folder, the
-    # import staging area or uploads is copied into this project, so deleting
-    # that other project (or sweeping the staging area) can never break this
-    # one (serve/save_media.py has the rule). Deciding takes stat calls only.
-    # The save itself is written as it always was, borrowed paths and all,
-    # with no await between its read and its write, and with nothing to copy
-    # (the usual save) that is all. Otherwise the copy runs after the write,
-    # off the loop and with no lock, and its own completion runs a second
-    # synchronous read-modify-write that swaps only the copied paths
-    # (`_patch_copied_media`), so a write that landed meanwhile (an ingest,
-    # another save) is kept. The answer waits up to _SAVE_COPY_WAIT_SECONDS
-    # for that patch; a later one still lands. A copy not saved before (it
-    # failed, the project was unreadable at its patch, or serve stopped
-    # mid-copy) is tried again here (`pending`), whatever this save carries,
-    # unless it is still running in this process. Best-effort:
-    # the save never fails over it; the answer says what it did.
-    wanted, pending = _plan_save_media(
-        project_id, existing, merged, project_dir, any(key in body for key in _SAVE_MEDIA_KEYS))
-    text = _write_project_json(project_path, merged)
+    # The read-merge-write is one section under the project lock (§467): a step in
+    # another process rewrites project.json too. No await inside it; the SSE
+    # broadcast and the follow-ups run after it is released.
+    with project_lock(project_path):
+        existing = json.loads(project_path.read_text())
+        prev_status = existing.get("status")
+        # Top-level shallow merge: preserve fields not present in the body. Agents
+        # (per skills/native/SKILL.md) routinely PUT a partial body like
+        # {id, status, tracks} when transitioning pending→draft; without this merge
+        # creation-time metadata (name, workflow, editingPrompt, projectType,
+        # runCount, settings, profile, …) gets wiped. To explicitly clear a field,
+        # callers must send it as null in the body.
+        # The answer's own fields (§126: `copied`, `warnings`) never reach
+        # project.json, even from a client that saves an answer back.
+        body = {key: value for key, value in body.items() if key not in _SAVE_REPORT_KEYS}
+        merged = {**existing, **body}
+        # The editor deletes its last marker/note by sending `markers: null` /
+        # `notes: null` (an omitted key would keep the old list through the merge
+        # above). Drop the key so a project with none is stored without one.
+        for _key in ("markers", "notes"):
+            if _key in body and body[_key] is None:
+                merged.pop(_key, None)
+        # Agents routinely PUT a still-legacy `tracks` shape (or a whole project
+        # they hand-built). Normalize before writing so a server write never leaves
+        # legacy tracks on disk — a no-op (same object back) when already
+        # normalized or when `tracks` is absent/null, so the shallow-merge and
+        # explicit-null-clears-a-field semantics above are untouched.
+        merged = normalize_tracks(merged)
+        # A save that picks a resolution or fps is the user's (or an agent's) choice: pin it
+        # so footage never overrides it. A body whose settings leave the
+        # marker out keeps the stored one.
+        if isinstance(body.get("settings"), dict) and isinstance(merged.get("settings"), dict):
+            old_settings = existing.get("settings") if isinstance(existing.get("settings"), dict) else {}
+            new_settings = dict(merged["settings"])
+            if "resolution" in new_settings and new_settings["resolution"] != old_settings.get("resolution"):
+                new_settings["resolutionSource"] = SOURCE_EXPLICIT
+            if "fps" in new_settings and new_settings["fps"] != old_settings.get("fps"):
+                new_settings["fpsSource"] = SOURCE_EXPLICIT
+            # §378: choosing a colour space is the creator's; footage never overrides it.
+            if "colorSpace" in new_settings and new_settings["colorSpace"] != old_settings.get("colorSpace"):
+                new_settings["colorSpaceSource"] = "explicit"
+            for marker in ("resolutionSource", "fpsSource", "aspectSource", "colorSpaceSource"):
+                if marker not in new_settings and marker in old_settings:
+                    new_settings[marker] = old_settings[marker]
+            merged["settings"] = new_settings
+        # Overlay items are checked only when this save carries `tracks`: a delta
+        # that leaves tracks alone (a status flip, a rename) must not start failing
+        # over an item already on disk. Nothing is written when an item is wrong,
+        # and every problem is named in `message`, which is the one field the MCP
+        # clients show the agent. Only NEW or CHANGED items are checked (against
+        # `existing`, the project as it was before this PUT) — otherwise an item
+        # already broken on disk before this validator existed would block every
+        # future save of the project forever, even one that doesn't touch it.
+        if "tracks" in body:
+            overlay_errors = overlay_item_errors(merged, previous=normalize_tracks(existing))
+            if overlay_errors:
+                raise HTTPException(400, detail={
+                    "error": "invalid_overlay_items",
+                    "message": "Project not saved. Fix these overlay items: " + "; ".join(overlay_errors),
+                    "errors": overlay_errors,
+                })
+        # §126: a new or changed media path into another project's folder, the
+        # import staging area or uploads is copied into this project, so deleting
+        # that other project (or sweeping the staging area) can never break this
+        # one (serve/save_media.py has the rule). Deciding takes stat calls only.
+        # The save itself is written as it always was, borrowed paths and all,
+        # with no await between its read and its write, and with nothing to copy
+        # (the usual save) that is all. Otherwise the copy runs after the write,
+        # off the loop and with no lock, and its own completion runs a second
+        # synchronous read-modify-write that swaps only the copied paths
+        # (`_patch_copied_media`), so a write that landed meanwhile (an ingest,
+        # another save) is kept. The answer waits up to _SAVE_COPY_WAIT_SECONDS
+        # for that patch; a later one still lands. A copy not saved before (it
+        # failed, the project was unreadable at its patch, or serve stopped
+        # mid-copy) is tried again here (`pending`), whatever this save carries,
+        # unless it is still running in this process. Best-effort:
+        # the save never fails over it; the answer says what it did.
+        wanted, pending = _plan_save_media(
+            project_id, existing, merged, project_dir, any(key in body for key in _SAVE_MEDIA_KEYS))
+        text = _write_project_json(project_path, merged)
     if pending:
         # Kept until this save's patch deals with them; one no entry holds, or
         # no longer borrowed, has nothing left to do.
@@ -4007,11 +4001,18 @@ async def restore_version(project_id: str, commit: str, request: Request, projec
     restored = normalize_tracks(restored)
     # Notes are the operator's private review notes, not version content: a
     # restore keeps the current ones rather than swapping in the old commit's.
-    if current_project.get("notes"):
-        restored["notes"] = current_project["notes"]
-    else:
-        restored.pop("notes", None)
-    project_path.write_text(json.dumps(restored, indent=2))
+    # The notes are read again under the project lock, so a note added while
+    # git ran is kept (§467).
+    with project_lock(project_path):
+        try:
+            current_project = json.loads(project_path.read_text())
+        except (OSError, ValueError):
+            pass
+        if current_project.get("notes"):
+            restored["notes"] = current_project["notes"]
+        else:
+            restored.pop("notes", None)
+        _write_project_json(project_path, restored)
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     broadcaster.publish(project_id, f"data: {json.dumps(restored)}\n\n")
     return restored
@@ -4200,19 +4201,24 @@ async def rerun_project(project_id: str, request: Request, project_dir: Path = D
     # ingested source (lib/ingest.py never sets it) degrades to None rather
     # than KeyError-ing the whole rerun.
     source_clips = [{"id": c["id"], "src": c["src"], "order": c.get("order")} for c in sources]
-    updated = {
-        **project,
-        "status": "pending",
-        "runCount": run_count + 1,
-        "tracks": [{"id": "trk-0", "items": source_clips}],
-    }
-    if "prompt" in body:
-        updated["editingPrompt"] = body["prompt"]
-    if "workflow" in body:
-        updated["workflow"] = body["workflow"]
-
-    text = json.dumps(updated, indent=2)
-    project_path.write_text(text)
+    # Everything else comes from a fresh read under the project lock, so an
+    # edit made while git ran is kept (§467).
+    with project_lock(project_path):
+        try:
+            fresh = json.loads(project_path.read_text())
+        except (OSError, ValueError):
+            fresh = project
+        updated = {
+            **fresh,
+            "status": "pending",
+            "runCount": run_count + 1,
+            "tracks": [{"id": "trk-0", "items": source_clips}],
+        }
+        if "prompt" in body:
+            updated["editingPrompt"] = body["prompt"]
+        if "workflow" in body:
+            updated["workflow"] = body["workflow"]
+        text = _write_project_json(project_path, updated)
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     broadcaster.publish(project_id, _sse_data_frame(text))
     return updated
@@ -4265,29 +4271,30 @@ async def include_profile_asset(project_id: str, body: dict = Body(...), request
     elif mime.startswith("audio/"): asset_type = "audio"
     else:                            asset_type = "file"
 
-    existing = project.get("assets") or []
-    next_idx = 0
-    for a in existing:
-        aid = a.get("id", "")
-        if isinstance(aid, str) and aid.startswith("asset-"):
-            try:
-                n = int(aid.split("-", 1)[1])
-                if n + 1 > next_idx:
-                    next_idx = n + 1
-            except ValueError:
-                pass
+    with project_lock(project_path):
+        project = json.loads(project_path.read_text())   # fresh, under the lock
+        existing = project.get("assets") or []
+        next_idx = 0
+        for a in existing:
+            aid = a.get("id", "")
+            if isinstance(aid, str) and aid.startswith("asset-"):
+                try:
+                    n = int(aid.split("-", 1)[1])
+                    if n + 1 > next_idx:
+                        next_idx = n + 1
+                except ValueError:
+                    pass
 
-    new_entry = {
-        "id":   f"asset-{next_idx}",
-        "src":  str(dest),
-        "type": asset_type,
-        "name": dest.name,
-    }
-    existing.append(new_entry)
-    project["assets"] = existing
+        new_entry = {
+            "id":   f"asset-{next_idx}",
+            "src":  str(dest),
+            "type": asset_type,
+            "name": dest.name,
+        }
+        existing.append(new_entry)
+        project["assets"] = existing
 
-    text = json.dumps(project, indent=2)
-    project_path.write_text(text)
+        text = _write_project_json(project_path, project)
     # Broadcast so SSE-subscribed UIs see the new asset immediately, matching
     # the pattern in save_project / restore_version / rerun_project.
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
@@ -5428,18 +5435,18 @@ async def _run_caption_pipeline(
     # Re-read the project first: the AI or the editor may have saved it while
     # the pipeline ran (a translation, any edit), and writing back the copy
     # read at the start would undo that (§244).
-    try:
-        project = json.loads(project_path.read_text())
-    except (OSError, ValueError):
-        pass
-    prev = seed_prev(project.get("captions") or {}, theme)
-    # Theme carried forward, ids minted, translated rows kept and re-cut at
-    # their phrase boundaries (lib/caption_translation.py).
-    track = finish_regenerated_track(prev, track)
-    record_source_language(track, language, project_dir / "_caption_words.json")
-    project["captions"] = track
-    text = json.dumps(project, indent=2)
-    project_path.write_text(text)
+    with project_lock(project_path):
+        try:
+            project = json.loads(project_path.read_text())
+        except (OSError, ValueError):
+            pass
+        prev = seed_prev(project.get("captions") or {}, theme)
+        # Theme carried forward, ids minted, translated rows kept and re-cut at
+        # their phrase boundaries (lib/caption_translation.py).
+        track = finish_regenerated_track(prev, track)
+        record_source_language(track, language, project_dir / "_caption_words.json")
+        project["captions"] = track
+        text = _write_project_json(project_path, project)
     broadcaster.publish(project_id, _sse_data_frame(text))
 
     return track
@@ -5713,20 +5720,21 @@ async def caption_translation(project_id: str, body: dict = Body(...), request: 
     if "phrases" not in body and "show" not in body:
         raise bad_request("bad_body", "Send {lang, phrases} and/or {show}.")
     project_path = project_dir / "project.json"
-    project = json.loads(project_path.read_text())
-    try:
-        captions = project.get("captions")
-        if "phrases" in body:
-            had = {s.get("lang") for s in (captions or {}).get("segments", []) if is_translation(s)} if isinstance(captions, dict) else set()
-            captions = apply_translation(captions, body.get("lang"), body.get("phrases"))
-            if body.get("phrases") and body.get("lang") not in had:
-                captions = show_new_language(captions, body.get("lang"))
-        if "show" in body:
-            captions = apply_show(captions, body.get("show"))
-    except TranslationError as e:
-        raise bad_request(e.code, e.message)
-    project["captions"] = captions
-    text = _write_project_json(project_path, project)
+    with project_lock(project_path):
+        project = json.loads(project_path.read_text())
+        try:
+            captions = project.get("captions")
+            if "phrases" in body:
+                had = {s.get("lang") for s in (captions or {}).get("segments", []) if is_translation(s)} if isinstance(captions, dict) else set()
+                captions = apply_translation(captions, body.get("lang"), body.get("phrases"))
+                if body.get("phrases") and body.get("lang") not in had:
+                    captions = show_new_language(captions, body.get("lang"))
+            if "show" in body:
+                captions = apply_show(captions, body.get("show"))
+        except TranslationError as e:
+            raise bad_request(e.code, e.message)
+        project["captions"] = captions
+        text = _write_project_json(project_path, project)
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     broadcaster.publish(project_id, _sse_data_frame(text))
     row = [s for s in captions["segments"] if is_translation(s) and s.get("lang") == body.get("lang")]

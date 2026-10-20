@@ -1677,7 +1677,7 @@ def test_project_json_replace_is_retried_while_another_program_holds_it(this, mo
 
     assert resp.status_code == 200, resp.text
     assert _on_disk(folder)["name"] == "saved" and held["n"] == 0
-    assert sorted(p.name for p in folder.iterdir()) == ["project.json"]
+    assert sorted(p.name for p in folder.iterdir() if p.name != ".project.lock") == ["project.json"]
 
 
 def test_project_json_replace_gives_up_and_leaves_no_temp(this, monkeypatch):
@@ -1693,7 +1693,7 @@ def test_project_json_replace_gives_up_and_leaves_no_temp(this, monkeypatch):
 
     assert resp.status_code == 500
     assert (folder / "project.json").read_text() == before
-    assert sorted(p.name for p in folder.iterdir()) == ["project.json"]
+    assert sorted(p.name for p in folder.iterdir() if p.name != ".project.lock") == ["project.json"]
 
 
 def test_stale_project_json_temps_are_swept_by_a_copying_save(this, other, monkeypatch):

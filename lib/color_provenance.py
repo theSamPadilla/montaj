@@ -47,6 +47,7 @@ from common import ffmpeg_bin, ffprobe_bin, progress
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types...` works
 from lib.normalize import SDR_ORIGIN_MARKER, UNTAGGED_AS_BT709_VF
+from lib.project_lock import project_lock, write_json_atomic
 from lib.types.colorspace import detect_from_transfer, is_hdr
 
 __all__ = [
@@ -1022,42 +1023,41 @@ def plan_color_provenance(project_dir) -> dict:
 
 def write_color_provenance(project_path, edits, settings) -> Optional[tuple]:
     """Apply `edits` and `settings` to project.json in one read-modify-write
-    (tmp + os.replace). Items are matched by (id, src), so an item changed or
+    (atomic, under the project lock). Items are matched by (id, src), so an item changed or
     removed since the plan is skipped; a None value deletes the field. Same
     contract as serve's _apply_project_edits. Returns (project, text), or None
     when nothing changed or the file cannot be read."""
     project_path = Path(project_path)
-    try:
-        project = json.loads(project_path.read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(project, dict):
-        return None
-    changed = False
-    for item in _video_items(project):
-        for item_id, item_src, field, value in edits:
-            if item.get("src") != item_src or item.get("id") != item_id:
-                continue
-            if value is None:
-                if field in item:
-                    del item[field]
+    # One read-modify-write under the project lock (§467): serve and the steps write it too.
+    with project_lock(project_path):
+        try:
+            project = json.loads(project_path.read_text())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(project, dict):
+            return None
+        changed = False
+        for item in _video_items(project):
+            for item_id, item_src, field, value in edits:
+                if item.get("src") != item_src or item.get("id") != item_id:
+                    continue
+                if value is None:
+                    if field in item:
+                        del item[field]
+                        changed = True
+                elif item.get(field) != value:
+                    item[field] = value
                     changed = True
-            elif item.get(field) != value:
-                item[field] = value
-                changed = True
-    current = project.get("settings")
-    if settings and isinstance(current, dict):
-        for k, v in settings.items():
-            if current.get(k) != v:
-                current[k] = v
-                changed = True
-    if not changed:
-        return None
-    text = json.dumps(project, indent=2)
-    tmp = str(project_path) + ".tmp"
-    Path(tmp).write_text(text)
-    os.replace(tmp, project_path)
-    return project, text
+        current = project.get("settings")
+        if settings and isinstance(current, dict):
+            for k, v in settings.items():
+                if current.get(k) != v:
+                    current[k] = v
+                    changed = True
+        if not changed:
+            return None
+        text = write_json_atomic(project_path, project)
+        return project, text
 
 
 def ensure_color_provenance(project_dir) -> dict:

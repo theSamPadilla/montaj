@@ -5,6 +5,7 @@ import json, os, re, sys
 from itertools import chain
 from cli.main import add_global_flags
 from cli.output import emit_error
+from lib.project_lock import project_lock
 from lib.project_tracks import track_items
 from lib.look import PREVIOUS_MASTER_LOOKS
 from lib.proxy import PROXY_LOOK
@@ -222,25 +223,26 @@ def handle(args):
             if "project.json" not in filenames:
                 continue
             pj = os.path.join(dirpath, "project.json")
-            try:
-                data = json.loads(open(pj).read())
-            except Exception:
-                continue
-            changed = False
-            for group in track_items(data) + [data.get("sources", [])]:
-                for item in group or []:
-                    if isinstance(item, dict) and item.get("proxySrc") in deleted:
-                        del item["proxySrc"]
-                        changed = True
-            if changed:
-                # Atomic rewrite (SP3 fix S6): truncate-then-dump destroys the
-                # project file on a crash or full disk. Same tmp+os.replace
-                # pattern as lib/credentials.py.
-                tmp = pj + ".tmp"
-                with open(tmp, "w") as f:
-                    json.dump(data, f, indent=2)
-                os.replace(tmp, pj)
-                projects_updated += 1
+            with project_lock(pj):   # read-modify-write against serve and the steps (§467)
+                try:
+                    data = json.loads(open(pj).read())
+                except Exception:
+                    continue
+                changed = False
+                for group in track_items(data) + [data.get("sources", [])]:
+                    for item in group or []:
+                        if isinstance(item, dict) and item.get("proxySrc") in deleted:
+                            del item["proxySrc"]
+                            changed = True
+                if changed:
+                    # Atomic rewrite (SP3 fix S6): truncate-then-dump destroys the
+                    # project file on a crash or full disk. Same tmp+os.replace
+                    # pattern as lib/credentials.py.
+                    tmp = pj + ".tmp"
+                    with open(tmp, "w") as f:
+                        json.dump(data, f, indent=2)
+                    os.replace(tmp, pj)
+                    projects_updated += 1
 
     if args.json:
         print(json.dumps(matches, indent=2))

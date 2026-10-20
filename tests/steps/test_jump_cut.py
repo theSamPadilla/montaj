@@ -40,11 +40,11 @@ def project_with(*clips):
 
 def run_step(module, argv, project, monkeypatch, tmp_path):
     """Drive the step's real main() against an in-memory project. Only
-    find_project / save_project are stubbed."""
+    find_project / save_project_changes are stubbed."""
     path = tmp_path / "project.json"
     saved = {}
     monkeypatch.setattr(module, "find_project", lambda pid: (path, project))
-    monkeypatch.setattr(module, "save_project", lambda p, proj: saved.update(project=proj))
+    monkeypatch.setattr(module, "save_project_changes", lambda p, orig, proj: saved.update(project=proj))
     monkeypatch.setattr(sys, "argv", argv)
     module.main()
     assert "project" in saved, "step did not save the project"
@@ -55,8 +55,8 @@ def expect_missing_fields_fail(module, argv, project, monkeypatch, tmp_path, cap
     """The step must fail(\"missing_fields\", ...) before writing anything."""
     monkeypatch.setattr(module, "find_project", lambda pid: (tmp_path / "project.json", project))
     monkeypatch.setattr(
-        module, "save_project",
-        lambda p, proj: pytest.fail("step must not save the project when a clip is unprobed"),
+        module, "save_project_changes",
+        lambda p, orig, proj: pytest.fail("step must not save the project when a clip is unprobed"),
     )
     monkeypatch.setattr(sys, "argv", argv)
 

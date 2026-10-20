@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Interleave segments from two clips (A-roll / B-roll). Project-level metadata
 operation — no video encoding. The render engine materializes at render time."""
-import json, os, sys, argparse
+import copy, json, os, sys, argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail
-from ai_video import find_project, save_project
+from ai_video import find_project, save_project_changes
 from lib.project_tracks import track_items, replace_track_items
 
 
@@ -38,6 +38,9 @@ def main():
         fail("invalid_params", "Segment duration must be >= 0.2s")
 
     project_path, project = find_project(args.project_id)
+    # The step rewrites only `tracks`, onto a fresh read under the project lock;
+    # this copy is what it read, to notice tracks edited meanwhile.
+    original = copy.deepcopy(project)
     items = track_items(project)
     tracks0 = items[0] if items else []
 
@@ -129,7 +132,7 @@ def main():
     # Overlay item times are deliberately left where they are; they do not
     # ripple with the primary track's retiming.
     project["tracks"] = replace_track_items(project, 0, tracks0)
-    save_project(project_path, project)
+    save_project_changes(project_path, original, project)
 
     total_dur = sum(c["end"] - c["start"] for c in new_clips)
     result = {

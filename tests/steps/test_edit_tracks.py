@@ -82,12 +82,12 @@ def by_id(project, track_id):
 
 def run_step(module, argv, project, monkeypatch, tmp_path):
     """Drive a step's real main() — and therefore its real write path — against
-    an in-memory project. Only find_project / save_project are stubbed, so the
+    an in-memory project. Only find_project / save_project_changes are stubbed, so the
     `project["tracks"] = replace_track_items(...)` line under test runs for real."""
     path = tmp_path / "project.json"
     saved = {}
     monkeypatch.setattr(module, "find_project", lambda pid: (path, project))
-    monkeypatch.setattr(module, "save_project", lambda p, proj: saved.update(project=proj))
+    monkeypatch.setattr(module, "save_project_changes", lambda p, orig, proj: saved.update(project=proj))
     monkeypatch.setattr(sys, "argv", argv)
     module.main()
     assert "project" in saved, "step did not save the project"

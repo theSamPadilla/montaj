@@ -460,3 +460,64 @@ def test_step_transcribes_with_fit_pauses(tmp_path, monkeypatch, capsys):
     transcribe = [c for c in calls if any(a.endswith("transcribe.py") for a in c)]
     assert len(transcribe) == 1 and "--fit-pauses" in transcribe[0]
     assert all("--fit-pauses" not in c for c in calls if c not in transcribe)
+
+
+# ── §467: the step writes only `captions`, under the project lock ────────────
+
+def _run_step_with_human_edit(tmp_path, monkeypatch, capsys, human_edit):
+    """Drive the step's real main() with the pipeline subprocesses stubbed;
+    `human_edit(path)` runs while 'whisper' is working (before the step's write)."""
+    import sys as _sys
+    mod = _load_step_module()
+    proj_dir = tmp_path / "proj"
+    proj_dir.mkdir()
+    path = proj_dir / "project.json"
+    path.write_text(json.dumps({
+        "id": "p1", "name": "orig",
+        "tracks": [{"id": "trk-0", "items": [{"id": "c", "type": "video", "src": "a.mp4",
+                                              "start": 0, "end": 2, "inPoint": 0, "outPoint": 2}]}],
+    }))
+    monkeypatch.setattr(mod, "get_project_dir", lambda pid: proj_dir)
+    monkeypatch.setattr(mod, "require_whisper_model", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "build_audio_mix_spec", lambda p: {"segments": []})
+    monkeypatch.setattr(mod, "whisper_runaway_timeout_for", lambda p: 1)
+
+    def fake_run(cmd, **kw):
+        if "caption.py" in " ".join(cmd):
+            (proj_dir / "_caption_track.json").write_text(json.dumps({"style": "pop", "segments": []}))
+            human_edit(path)
+        if "transcribe.py" in " ".join(cmd):
+            (proj_dir / "_caption_words.json").write_text("{}")
+    monkeypatch.setattr(mod, "run", fake_run)
+    monkeypatch.setattr(_sys, "argv", ["generate_captions.py", "--project-id", "p1"])
+    mod.main()
+    return json.loads(path.read_text())
+
+
+def test_step_keeps_an_edit_made_while_whisper_ran(tmp_path, monkeypatch, capsys):
+    def human(path):
+        doc = json.loads(path.read_text())
+        doc["name"] = "renamed by hand"
+        doc["tracks"][0]["items"][0]["volume"] = 0.5
+        path.write_text(json.dumps(doc))
+
+    out = _run_step_with_human_edit(tmp_path, monkeypatch, capsys, human)
+    assert out["name"] == "renamed by hand"
+    assert out["tracks"][0]["items"][0]["volume"] == 0.5
+    assert out["captions"]["segments"] == []
+
+
+def test_step_write_waits_for_the_project_lock(tmp_path, monkeypatch, capsys):
+    from tests.test_project_lock import spawn_holder
+
+    holder = {}
+
+    def human(path):
+        holder["p"] = spawn_holder(path, 0.6)       # another process is mid-write
+        started[0] = __import__("time").monotonic()
+
+    started = [0]
+    out = _run_step_with_human_edit(tmp_path, monkeypatch, capsys, human)
+    holder["p"].wait()
+    assert __import__("time").monotonic() - started[0] >= 0.3
+    assert "captions" in out

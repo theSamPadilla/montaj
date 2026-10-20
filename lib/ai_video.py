@@ -9,6 +9,7 @@ from common import fail, get_duration
 from normalize import normalize, normalized_output_path, is_normalized, probe_video
 from lib.types.colorspace import normalize_key, DEFAULT_COLOR_SPACE, detect_from_transfer, is_hdr
 from lib.project_tracks import track_items, replace_track_items
+from lib.project_lock import project_lock, update_project, write_json_atomic
 
 
 # Optimal Kling prompt order: camera first (framing context), then subject
@@ -122,8 +123,32 @@ def find_project(project_id: str) -> tuple[Path, dict]:
 
 
 def save_project(path: Path, project: dict):
-    """Write project JSON back to disk."""
-    path.write_text(json.dumps(project, indent=2, ensure_ascii=False), encoding="utf-8")
+    """Write the WHOLE document back (atomic, under the project lock). A step
+    that read the project earlier must use save_project_changes instead, so a
+    concurrent edit survives."""
+    with project_lock(path):
+        write_json_atomic(path, project, indent=2, ensure_ascii=False)
+
+
+def save_project_changes(path: Path, original: dict, project: dict, keys=("tracks",), *, guard=("tracks",)):
+    """Write only `keys` of `project` onto a fresh read of the file, under the
+    project lock. `original` is a deep copy of the document as the step read it
+    (taken before the step mutated anything). When a `guard` key on disk no
+    longer equals the original's, someone edited it meanwhile: fail with
+    `project_changed` and write nothing. Everything else in the fresh document
+    is kept."""
+    def apply(fresh):
+        for key in guard:
+            if fresh.get(key) != original.get(key):
+                fail("project_changed",
+                     f"The project's {key} changed while this step ran: read it again and redo the cut.")
+        for key in keys:
+            if key in project:
+                fresh[key] = project[key]
+            else:
+                fresh.pop(key, None)
+        return fresh
+    return update_project(path, apply, indent=2, ensure_ascii=False)
 
 
 def compose_prompt(project: dict, scene: dict, ref_tokens: bool = True) -> str:
@@ -219,31 +244,12 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
     """Append the generated clip to tracks[0] and save the project.
 
     `provider` is recorded as generation.provider ("gemini" for Veo clips)."""
-    items = track_items(project)
-    tracks0 = items[0] if items else []
-    scenes = project.get("storyboard", {}).get("scenes", [])
-
-    # Remove any existing clip for this scene before appending (idempotency)
-    tracks0 = [c for c in tracks0 if c.get("generation", {}).get("sceneId") != scene["id"]]
-
-    # Compute cumulative start from storyboard scene order and durations.
-    # Always use storyboard scene durations — not clip outPoints — so
-    # position is deterministic regardless of which clips exist or what
-    # order they were generated in.
-    scene_order = [s["id"] for s in scenes]
-    scene_durations = {s["id"]: s["duration"] for s in scenes}
-    cumulative = 0.0
-    for sid in scene_order:
-        if sid == scene["id"]:
-            break
-        cumulative += scene_durations.get(sid, 0)
-
     clip = {
         "id": f"clip-{scene['id']}",
         "type": "video",
         "src": out_path,
-        "start": cumulative,
-        "end": cumulative + scene["duration"],
+        "start": 0.0,   # placed on the fresh document, under the lock
+        "end": scene["duration"],
         "inPoint": 0,
         "outPoint": scene["duration"],
         "generation": {
@@ -293,34 +299,69 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
     except Exception:
         clip["sourceDuration"] = scene["duration"]
 
-    tracks0.append(clip)
-    tracks0.sort(key=lambda c: c.get("start", 0))
-    # Assign into the caller's dict at the one key — the caller keeps using it.
-    project["tracks"] = replace_track_items(project, 0, tracks0)
+    def apply(fresh):
+        # The slow work above ran outside the lock: place the clip on a fresh
+        # read, so an edit made while it ran is kept.
+        items = track_items(fresh)
+        tracks0 = items[0] if items else []
+        scenes = fresh.get("storyboard", {}).get("scenes", [])
 
-    # Clear lastError on this scene
-    for s in scenes:
-        if s["id"] == scene["id"]:
-            s.pop("lastError", None)
+        # Remove any existing clip for this scene before appending (idempotency)
+        tracks0 = [c for c in tracks0 if c.get("generation", {}).get("sceneId") != scene["id"]]
 
-    # Check if all scenes have clips → set draft
-    scene_ids = {s["id"] for s in scenes}
-    clip_ids = {c.get("generation", {}).get("sceneId") for c in tracks0}
-    for c in tracks0:
-        for bs in c.get("generation", {}).get("batchShots", []):
-            clip_ids.add(bs.get("sceneId"))
-    if scene_ids and scene_ids <= clip_ids:
-        project["status"] = "draft"
+        # Compute cumulative start from storyboard scene order and durations.
+        # Always use storyboard scene durations, not clip outPoints, so
+        # position is deterministic regardless of which clips exist or what
+        # order they were generated in.
+        cumulative = 0.0
+        for s in scenes:
+            if s["id"] == scene["id"]:
+                break
+            cumulative += s["duration"]
+        clip["start"] = cumulative
+        clip["end"] = cumulative + scene["duration"]
 
-    save_project(project_path, project)
+        tracks0.append(clip)
+        tracks0.sort(key=lambda c: c.get("start", 0))
+        # Assign into the document at the one key.
+        fresh["tracks"] = replace_track_items(fresh, 0, tracks0)
+
+        # Clear lastError on this scene
+        for s in scenes:
+            if s["id"] == scene["id"]:
+                s.pop("lastError", None)
+
+        # Check if all scenes have clips -> set draft
+        scene_ids = {s["id"] for s in scenes}
+        clip_ids = {c.get("generation", {}).get("sceneId") for c in tracks0}
+        for c in tracks0:
+            for bs in c.get("generation", {}).get("batchShots", []):
+                clip_ids.add(bs.get("sceneId"))
+        if scene_ids and scene_ids <= clip_ids:
+            fresh["status"] = "draft"
+        return fresh
+
+    _commit_fresh(project_path, project, apply)
+
+
+def _commit_fresh(project_path: Path, project: dict, apply):
+    """Run `apply` on a fresh read under the project lock and write it; the
+    caller's `project` dict is refreshed to what was written."""
+    written = update_project(project_path, apply, indent=2, ensure_ascii=False)
+    if written is not None and written is not project:
+        project.clear()
+        project.update(written)
 
 
 def save_error_to_project(project_path: Path, project: dict, scene_id: str, error_msg: str):
-    """Record lastError on a scene and save."""
-    for s in project.get("storyboard", {}).get("scenes", []):
-        if s["id"] == scene_id:
-            s["lastError"] = {
-                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "message": error_msg,
-            }
-    save_project(project_path, project)
+    """Record lastError on a scene and save (on a fresh read, under the lock)."""
+    def apply(fresh):
+        for s in fresh.get("storyboard", {}).get("scenes", []):
+            if s["id"] == scene_id:
+                s["lastError"] = {
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "message": error_msg,
+                }
+        return fresh
+
+    _commit_fresh(project_path, project, apply)

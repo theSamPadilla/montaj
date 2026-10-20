@@ -185,13 +185,13 @@ def _save_clip(project, tmp_path, monkeypatch, scene_id="scene-1"):
 
     monkeypatch.setattr(av, "probe_video", lambda p: None)
     monkeypatch.setattr(av, "get_duration", lambda p: 5.0)
-    saved = {}
-    monkeypatch.setattr(av, "save_project", lambda p, proj: saved.update(project=proj))
+    # The save re-reads the file under the project lock (§467): put it on disk.
+    (tmp_path / "project.json").write_text(json.dumps(project))
 
     scene = next(s for s in project["storyboard"]["scenes"] if s["id"] == scene_id)
     av.save_clip_to_project(tmp_path / "project.json", project, scene,
                             str(tmp_path / "out.mp4"), "a prompt")
-    return saved["project"]
+    return project   # refreshed in place with what was written
 
 
 def _storyboard_project(tracks):
@@ -244,9 +244,9 @@ def _save_normalized_clip(tmp_path, monkeypatch, color_space, transfer="bt709"):
     monkeypatch.setattr(av, "is_normalized", lambda p, info, cs: False)
     monkeypatch.setattr(av, "normalize", lambda src, out, cs, info=None: calls.append((src, out, cs)))
     monkeypatch.setattr(av, "get_duration", lambda p: durations.append(p) or 5.0)
-    monkeypatch.setattr(av, "save_project", lambda p, proj: None)
     project = _storyboard_project([{"id": "trk-0", "items": []}])
     project["settings"] = {"colorSpace": color_space}
+    (tmp_path / "project.json").write_text(json.dumps(project))   # re-read under the lock (§467)
     scene = project["storyboard"]["scenes"][0]
     av.save_clip_to_project(tmp_path / "project.json", project, scene,
                             str(tmp_path / "out.mp4"), "a prompt")
@@ -315,12 +315,11 @@ def _save_clip_provider(tmp_path, monkeypatch, **kw):
 
     monkeypatch.setattr(av, "probe_video", lambda p: None)
     monkeypatch.setattr(av, "get_duration", lambda p: 5.0)
-    saved = {}
-    monkeypatch.setattr(av, "save_project", lambda p, proj: saved.update(project=proj))
     project = _storyboard_project([])
+    (tmp_path / "project.json").write_text(json.dumps(project))   # re-read under the lock (§467)
     av.save_clip_to_project(tmp_path / "project.json", project, project["storyboard"]["scenes"][0],
                             str(tmp_path / "out.mp4"), "a prompt", **kw)
-    return saved["project"]["tracks"][0]["items"][0]["generation"]
+    return project["tracks"][0]["items"][0]["generation"]
 
 
 def test_save_clip_provider_defaults_to_kling(tmp_path, monkeypatch):

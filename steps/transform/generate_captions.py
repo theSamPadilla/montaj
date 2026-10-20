@@ -35,6 +35,7 @@ from caption_translation import finish_regenerated_track, merge_caption_theme as
 sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
 from serve.caption_job import build_audio_mix_spec  # noqa: E402
+from lib.project_lock import ProjectLockTimeout, update_project  # noqa: E402
 
 def resolve_style(args_style, project: dict) -> str:
     """style = explicit arg, else prior captions.style, else 'pop'.
@@ -134,19 +135,26 @@ def main():
         #    translations), persist onto project.
         with open(track_path, encoding="utf-8") as f:
             track = json.load(f)
-        # Re-read the project first: the AI or the editor may have saved it
-        # while whisper ran (a translation, any edit), and writing back the
-        # copy read at the start would undo that.
+        # Re-read the project UNDER the project lock and set only `captions`:
+        # the AI or the editor may have saved it while whisper ran (a
+        # translation, any edit), and writing back the copy read at the start
+        # would undo that.
+        written = {}
+
+        def apply(fresh):
+            done = finish_regenerated_track(fresh.get("captions"), dict(track))
+            record_source_language(done, args.language, words_json_path)
+            fresh["captions"] = done
+            written["track"] = done
+            return fresh
+
         try:
-            with open(project_path, encoding="utf-8") as f:
-                project = json.load(f)
+            update_project(project_path, apply)
+        except ProjectLockTimeout as e:
+            fail("project_locked", str(e))
         except (OSError, ValueError):
-            pass
-        track = finish_regenerated_track(project.get("captions"), track)
-        record_source_language(track, args.language, words_json_path)
-        project["captions"] = track
-        with open(project_path, "w") as f:
-            json.dump(project, f, indent=2)
+            fail("project_not_found", f"project.json for {args.project_id} not readable")
+        track = written["track"]
 
         print(json.dumps(track))
     finally:

@@ -15,6 +15,7 @@ import tempfile
 
 from lib import speech_text
 from lib.common import fail
+from lib.project_lock import project_lock
 from lib.project_tracks import normalize_tracks
 from lib.project_versions import commit_version, is_own_repo
 from lib.speech_build import DEFAULT_FEEL, items_from_runs, runs_from_rows
@@ -80,6 +81,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     project_dir = os.path.dirname(project_path)
     with open(project_path, encoding="utf-8") as f:
         project = normalize_tracks(json.load(f))
+    read_text = json.dumps(project, sort_keys=True)   # as read, before anything mutates it
 
     header, rows = speech_text.parse(text)
     derived = speech_text.derive(project, project_dir, track=header["track"])   # the track the text was read from
@@ -130,14 +132,22 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     # extension) write as an overlay source and would push it to the overlay channel. This name is
     # ignored, and the replace lands as an on_moved event onto project.json, which it broadcasts.
     tmp = os.path.join(project_dir, f"project.json.tmp-{os.getpid()}")
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(candidate, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        os.replace(tmp, project_path)
-    finally:
-        if os.path.exists(tmp):
-            os.remove(tmp)
+    # The candidate was built from the copy read at the top, a git commit ago. Under the
+    # project lock, a project that is not what was read (an edit or a step wrote it meanwhile)
+    # is refused rather than overwritten (§467).
+    with project_lock(project_path):
+        with open(project_path, encoding="utf-8") as f:
+            fresh = normalize_tracks(json.load(f))
+        if json.dumps(fresh, sort_keys=True) != read_text:
+            fail("project_changed", "The project changed while the edit was applied: read the text again and redo it.")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(candidate, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            os.replace(tmp, project_path)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
     with open(os.path.join(project_dir, "speech-text.md"), "w", encoding="utf-8") as f:
         f.write(new_text)
     return _result(applied=True, preview=False, version=version, before=before, after=after,
