@@ -41,6 +41,7 @@ from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, canvas_f
 from lib.ingest import ingest_source
 from lib.project_versions import commit_version
 from lib.fs_remove import rmtree_force
+from lib import project_lock as _project_lock_mod
 from lib.project_lock import ProjectLockTimeout, project_lock, project_lock_async, write_json_atomic
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
@@ -458,7 +459,7 @@ async def _run_ingest_detached(
         job.phase = "queueing proxy"
         try:
             await _warm_proxy_inputs(_video_srcs(project))
-            swept = _ensure_current_proxies(project_id, Path(project_dir), project, broadcaster)
+            swept = await _ensure_current_proxies_async(project_id, Path(project_dir), project, broadcaster)
             queued = swept["scheduled"]
             # `queued` counts every un-proxied item in the project, not just the
             # one just ingested: _ensure_current_proxies sweeps the whole thing,
@@ -706,6 +707,32 @@ def _update_downloading_record(project_dir: Path, job_id: str, change) -> str | 
             return None
 
 
+_line_update_tasks: set = set()
+
+
+def _schedule_record_update(project_dir: Path, job_id: str, change, publish) -> None:
+    """The line handler runs inside a stream-reader callback, which cannot
+    await: hand the write to a small task that takes the async lock first, so
+    a busy lock never blocks the event loop. A lock that stays busy drops this
+    update (the next progress line writes a newer one)."""
+    async def run():
+        try:
+            async with project_lock_async(Path(project_dir) / "project.json"):
+                text = _update_downloading_record(project_dir, job_id, change)
+        except ProjectLockTimeout:
+            return
+        except Exception:
+            return
+        publish(text)
+
+    try:
+        task = asyncio.get_running_loop().create_task(run())
+    except RuntimeError:
+        return   # no event loop (never in serve): nothing to write from here
+    _line_update_tasks.add(task)
+    task.add_done_callback(_line_update_tasks.discard)
+
+
 def _source_download_line_handler(project_id: str, project_dir: Path, job_id: str,
                                   broadcaster: "SSEBroadcaster | None", *, clock=time.monotonic):
     """§51: what yt-dlp prints, as it prints it. The title names a project
@@ -724,7 +751,7 @@ def _source_download_line_handler(project_id: str, project_dir: Path, job_id: st
                 return False
             project["name"] = title
             return True
-        publish(_update_downloading_record(project_dir, job_id, change))
+        _schedule_record_update(project_dir, job_id, change, publish)
 
     def set_percent(pct):
         def change(_project, record):
@@ -732,7 +759,7 @@ def _source_download_line_handler(project_id: str, project_dir: Path, job_id: st
                 return False
             record["percent"] = pct
             return True
-        publish(_update_downloading_record(project_dir, job_id, change))
+        _schedule_record_update(project_dir, job_id, change, publish)
 
     def on_line(line):
         event = parse_montaj_line(line)
@@ -798,9 +825,8 @@ async def _run_source_download(
                 if not path or not os.path.isfile(path):
                     code, path = "failed", None
             if code is not None:
-                async with project_lock_async(project_dir / "project.json"):
-                    _fail_source_download(project_id, project_dir, url, video_id, job_id, code,
-                                          broadcaster, remove_partials=True)
+                await _fail_source_download_patiently(
+                    project_id, project_dir, url, video_id, job_id, code, broadcaster, remove_partials=True)
                 return
         await _finalize_source_download(project_id, project_dir, url, path, job_id, broadcaster)
     except asyncio.CancelledError:
@@ -810,9 +836,9 @@ async def _run_source_download(
         # A finalize that failed on a complete file keeps the file (a clip
         # already in `sources` may point at it); only yt-dlp's failures above
         # remove what it wrote.
-        async with project_lock_async(project_dir / "project.json"):
-            _fail_source_download(project_id, project_dir, url, video_id, job_id, "failed",
-                                  broadcaster, remove_partials=False, message=str(e))
+        await _fail_source_download_patiently(
+            project_id, project_dir, url, video_id, job_id, "failed", broadcaster,
+            remove_partials=False, message=str(e))
     finally:
         if proc is not None and _source_download_procs.get(project_id) is proc:
             del _source_download_procs[project_id]
@@ -841,7 +867,7 @@ async def _finalize_source_download(
     # export conforms anything else inline. The proxy is queued below.
     clip = await asyncio.to_thread(ingest_source, str(project_dir), path, color_space, "lazy", proxy=False)
 
-    async with project_lock_async(project_path):
+    async with _patient_lock(project_path):
         try:
             project = json.loads(project_path.read_text())
         except (OSError, ValueError):
@@ -874,7 +900,7 @@ async def _finalize_source_download(
     # disk under its (id, src). Best-effort.
     try:
         await _warm_proxy_inputs(_video_srcs(project))
-        _ensure_current_proxies(project_id, project_dir, project, broadcaster)
+        await _ensure_current_proxies_async(project_id, project_dir, project, broadcaster)
     except Exception:
         pass
     # The canvas and fps follow this first footage. Never raises.
@@ -955,8 +981,18 @@ async def retry_source_download(project_id: str, request: Request, project_dir: 
     parsed = parse_youtube_url(record.get("url"))
     if not parsed["ok"]:
         raise bad_request("invalid_clip_url", "The download's link is not a YouTube watch or youtu.be link")
-    # No await since the read above, so the record is still the failed one.
+    # The record is read again under the lock (the first read was before it, and a
+    # lock wait is an await): it must still be the failed one.
     async with project_lock_async(project_dir / "project.json"):
+        try:
+            record = json.loads((project_dir / "project.json").read_text()).get("sourceDownload")
+        except (OSError, ValueError):
+            raise not_found("not_found", "Project not found")
+        if not isinstance(record, dict) or record.get("status") != "failed":
+            raise HTTPException(409, detail={"error": "not_failed", "message": "Only a failed download can be tried again."})
+        parsed = parse_youtube_url(record.get("url"))
+        if not parsed["ok"]:
+            raise bad_request("invalid_clip_url", "The download's link is not a YouTube watch or youtu.be link")
         started = _start_source_download(project_id, project_dir, record["url"], parsed["id"],
                                          request.app.state.broadcaster)
     if started is None:
@@ -1220,7 +1256,7 @@ async def _run_init_subprocess(
     # scheduled (the editor's manual migration remains the fallback).
     try:
         await _warm_proxy_inputs(_video_srcs(project))
-        _ensure_current_proxies(project.get("id"), project_path.parent, project, broadcaster)
+        await _ensure_current_proxies_async(project.get("id"), project_path.parent, project, broadcaster)
     except Exception:
         pass
 
@@ -1717,7 +1753,9 @@ def _look_migration_enqueue(unit: _LookMigrationUnit) -> None:
         _look_migration_worker = asyncio.create_task(_look_migration_drain())
 
 
-_WRITEBACK_TRIES = 5
+CAPTION_LOCK_TIMEOUT = 30.0   # as steps/transform/generate_captions.py STEP_LOCK_TIMEOUT: a finished pipeline is not thrown away over a short wait
+_WRITEBACK_TRIES = 30
+_WRITEBACK_LOCK_TIMEOUT = 1.0   # per project; a busy one never keeps another held for long
 _WRITEBACK_PAUSE_SECONDS = 1.0
 
 
@@ -1727,6 +1765,46 @@ def _unit_project_paths(unit) -> list[Path]:
     for _pid, project_dir, *_rest in unit.targets:
         seen.setdefault(str(project_dir), Path(project_dir) / "project.json")
     return list(seen.values())
+
+
+_PATIENT_LOCK_TRIES = 3
+
+
+@contextlib.asynccontextmanager
+async def _patient_lock(project_path):
+    """`project_lock_async`, asked again a few times when it stays busy, for a
+    background task that must not fail over a slow holder. A ProjectLockTimeout
+    raised by the body is not retried. The body is synchronous (no await)."""
+    for attempt in range(_PATIENT_LOCK_TRIES):
+        entered = False
+        try:
+            async with project_lock_async(project_path):
+                entered = True
+                yield
+            return
+        except ProjectLockTimeout:
+            if entered or attempt == _PATIENT_LOCK_TRIES - 1:
+                raise
+
+
+async def _fail_source_download_patiently(
+    project_id: str, project_dir: Path, url: str, video_id: str, job_id: str, code: str,
+    broadcaster: "SSEBroadcaster | None", *, remove_partials: bool, message: str | None = None,
+) -> None:
+    """Record a failed download without ever raising out of the task. If the
+    project stays locked the record is left `downloading` (it resumes at the
+    next open, as after a quit) and the job still reports the error."""
+    try:
+        async with _patient_lock(project_dir / "project.json"):
+            _fail_source_download(project_id, project_dir, url, video_id, job_id, code,
+                                  broadcaster, remove_partials=remove_partials, message=message)
+    except Exception as e:
+        logger.warning("Could not record a failed download for %s: %s", project_id, e)
+        try:
+            set_error(job_id, {"error": code, "message": message or _SOURCE_DOWNLOAD_MESSAGES.get(
+                code, _SOURCE_DOWNLOAD_MESSAGES["failed"])})
+        except Exception:
+            pass
 
 
 async def _locked_writeback(project_paths, fn):
@@ -1739,8 +1817,12 @@ async def _locked_writeback(project_paths, fn):
     for attempt in range(_WRITEBACK_TRIES):
         try:
             async with contextlib.AsyncExitStack() as stack:
-                for path in project_paths:
-                    await stack.enter_async_context(project_lock_async(path))
+                # Each lock is asked for briefly: a busy second project must not keep
+                # the first held for the full wait. On a timeout the stack releases
+                # every lock taken and the whole set is tried again.
+                for path in sorted(project_paths, key=str):
+                    await stack.enter_async_context(
+                        project_lock_async(path, timeout=min(_project_lock_mod.DEFAULT_TIMEOUT, _WRITEBACK_LOCK_TIMEOUT)))
                 return fn()
         except ProjectLockTimeout:
             if attempt == _WRITEBACK_TRIES - 1:
@@ -2307,7 +2389,7 @@ async def _ensure_background_normalize(
     if swapped_now:
         try:
             await _warm_proxy_inputs(_video_srcs(latest[0]))
-            _ensure_current_proxies(project_id, project_dir, latest[0], broadcaster)
+            await _ensure_current_proxies_async(project_id, project_dir, latest[0], broadcaster)
         except Exception:
             pass
 
@@ -2428,30 +2510,41 @@ async def _ensure_canvas_follows_footage(
             fps = fps_from_rate((info or {}).get("frame_rate") or (info or {}).get("r_frame_rate"))
             if fps:
                 break
+
+    def _decide(current: dict) -> dict:
+        settings = current["settings"]
+        edits: dict = {}
+        canvas = settings.get("resolution")
+        if settings.get("resolutionSource") == SOURCE_DEFAULT:
+            footage = modal_dims(
+                (item["sourceWidth"], item["sourceHeight"])
+                for item in _look_migration_items(current)
+                if _positive_dim(item.get("sourceWidth")) and _positive_dim(item.get("sourceHeight"))
+            )
+            if footage is not None and isinstance(canvas, list) and len(canvas) == 2 and all(_positive_dim(v) for v in canvas):
+                # An aspect nobody chose follows the footage's orientation; a chosen one, or a
+                # project made before aspectSource existed, keeps its aspect.
+                follow = settings.get("aspectSource") == SOURCE_DEFAULT
+                edits["resolution"] = canvas_for_footage(canvas, footage, follow_orientation=follow)
+                edits["resolutionSource"] = SOURCE_FOOTAGE
+        if fps and settings.get("fpsSource") == SOURCE_DEFAULT:
+            edits["fps"] = fps
+            edits["fpsSource"] = SOURCE_FOOTAGE
+        return edits
+
+    # Nothing to change on the copy read above: no lock taken (an open that writes
+    # nothing must not wait for one).
+    if not _decide(current):
+        return None
+    # The final read AND the decision happen inside the lock: a PUT that set an
+    # explicit value while this waited must not be overwritten.
+    async with project_lock_async(project_path):
         current = _read()
         if current is None:
             return None
-        settings = current["settings"]
-    edits: dict = {}
-    canvas = settings.get("resolution")
-    if settings.get("resolutionSource") == SOURCE_DEFAULT:
-        footage = modal_dims(
-            (item["sourceWidth"], item["sourceHeight"])
-            for item in _look_migration_items(current)
-            if _positive_dim(item.get("sourceWidth")) and _positive_dim(item.get("sourceHeight"))
-        )
-        if footage is not None and isinstance(canvas, list) and len(canvas) == 2 and all(_positive_dim(v) for v in canvas):
-            # An aspect nobody chose follows the footage's orientation; a chosen one, or a
-            # project made before aspectSource existed, keeps its aspect.
-            follow = settings.get("aspectSource") == SOURCE_DEFAULT
-            edits["resolution"] = canvas_for_footage(canvas, footage, follow_orientation=follow)
-            edits["resolutionSource"] = SOURCE_FOOTAGE
-    if fps and settings.get("fpsSource") == SOURCE_DEFAULT:
-        edits["fps"] = fps
-        edits["fpsSource"] = SOURCE_FOOTAGE
-    if not edits:
-        return None
-    async with project_lock_async(project_path):
+        edits = _decide(current)
+        if not edits:
+            return None
         result = _apply_project_edits(project_path, [], settings=edits)
     if result is None:
         return None
@@ -2825,6 +2918,16 @@ async def _ensure_project_color_provenance(
         return result[0]
 
 
+async def _ensure_current_proxies_async(
+    project_id: str, project_dir: Path, project: dict, broadcaster: "SSEBroadcaster | None" = None,
+) -> dict:
+    """`_ensure_current_proxies` for code on the event loop: its write-backs take
+    the project lock, so it runs under the async lock (a busy one never blocks
+    the loop). May raise ProjectLockTimeout."""
+    async with project_lock_async(Path(project_dir) / "project.json"):
+        return _ensure_current_proxies(project_id, project_dir, project, broadcaster)
+
+
 def _ensure_current_proxies(
     project_id: str,
     project_dir: Path,
@@ -2954,7 +3057,7 @@ async def ensure_project_proxies(project_id: str, request: Request, project_dir:
     broadcaster = getattr(request.app.state, "broadcaster", None) if request is not None else None
     try:
         await _warm_proxy_inputs(_video_srcs(project))
-        result = _ensure_current_proxies(project_id, project_dir, project, broadcaster)
+        result = await _ensure_current_proxies_async(project_id, project_dir, project, broadcaster)
     except Exception:
         result = {"scheduled": 0, "alreadyFresh": 0, "probeFailed": []}
     return JSONResponse(result, status_code=202 if result["scheduled"] else 200)
@@ -3019,18 +3122,22 @@ async def get_project(project_id: str, request: Request = None, project_dir: Pat
     if normalize_tracks(project) is not project:
         # Only a project that is about to be rewritten takes the lock; an open
         # that writes nothing (the usual one, and any read-only folder) does not.
-        async with project_lock_async(project_path):
-            try:
-                project = json.loads(project_path.read_text())
-            except (OSError, ValueError):
-                pass
-            normalized = normalize_tracks(project)
-            if normalized is not project:
+        try:
+            async with project_lock_async(project_path):
                 try:
-                    text = _write_project_json(project_path, normalized)
-                except OSError:
-                    pass  # degrade to "not converged yet": a project must always open
-                project = normalized
+                    project = json.loads(project_path.read_text())
+                except (OSError, ValueError):
+                    pass
+                normalized = normalize_tracks(project)
+                if normalized is not project:
+                    try:
+                        text = _write_project_json(project_path, normalized)
+                    except OSError:
+                        pass  # degrade to "not converged yet": a project must always open
+                    project = normalized
+        except ProjectLockTimeout:
+            # A project must always open: serve the converged copy, write nothing.
+            project = normalize_tracks(project)
     if text is not None and broadcaster is not None:
         broadcaster.publish(project_id, _sse_data_frame(text))
 
@@ -3060,8 +3167,16 @@ async def get_project(project_id: str, request: Request = None, project_dir: Pat
             pass
 
     # A YouTube source still `downloading` with no live task: restart it under
-    # a new jobId (PL28). Best-effort, never raises.
-    return _ensure_source_download(project_id, project_dir, project, broadcaster)
+    # a new jobId (PL28). Best-effort, never raises. Only a project that is
+    # still downloading takes the lock (async: a busy one never freezes the loop).
+    record = project.get("sourceDownload")
+    if not isinstance(record, dict) or record.get("status") != "downloading":
+        return project
+    try:
+        async with project_lock_async(project_path):
+            return _ensure_source_download(project_id, project_dir, project, broadcaster)
+    except ProjectLockTimeout:
+        return project
 
 
 @router.get("/projects/{project_id}/stream")
@@ -3430,7 +3545,8 @@ async def _rescue_dependents(project_id: str, project_dir: Path, broadcaster: "S
         _save_copy_tasks.add(task)
         task.add_done_callback(_save_copy_tasks.discard)
         await asyncio.wait({task})
-        patched, report = _finish_save_copy(other_id, folder, other, wanted, set(wanted), task, broadcaster)
+        patched, report = await _finish_save_copy_async(
+            other_id, folder, other, wanted, set(wanted), task, broadcaster)
         if patched is not None and broadcaster is not None:
             _late_save_follow_ups(other_id, folder, other, patched, broadcaster)
         if report.get("warnings"):
@@ -3586,7 +3702,7 @@ async def _queue_previews_for_changed_items(
             "sources": [],
             "settings": merged.get("settings"),
         }
-        _ensure_current_proxies(project_id, project_dir, cutdown, broadcaster)
+        await _ensure_current_proxies_async(project_id, project_dir, cutdown, broadcaster)
     except Exception as e:
         print(f"[montaj] save_project: could not queue previews for {project_id}: {e}")
 
@@ -3680,6 +3796,33 @@ def _finish_save_copy(
         settle_copies(project_dir, wanted, settled)
 
 
+_FINISH_COPY_LOCK_TRIES = 3
+
+
+async def _finish_save_copy_async(
+    project_id: str, project_dir: Path, previous: dict, wanted: dict, also, task: "asyncio.Future",
+    broadcaster: "SSEBroadcaster",
+) -> "tuple[dict | None, dict]":
+    """`_finish_save_copy` under the async project lock (its patch takes the
+    lock; a done-callback or a handler on the loop must not block on it). A lock
+    that stays busy is tried a few times; then the copies are kept to try again
+    at the next save and the report says so. Never raises over the lock."""
+    project_path = Path(project_dir) / "project.json"
+    for _ in range(_FINISH_COPY_LOCK_TRIES):
+        try:
+            async with project_lock_async(project_path):
+                return _finish_save_copy(project_id, project_dir, previous, wanted, also, task, broadcaster)
+        except ProjectLockTimeout:
+            continue
+    print(f"[montaj] save_project: project busy, could not save the copied paths for {project_id}")
+    retry_later(project_dir, wanted)
+    settle_copies(project_dir, wanted, set())
+    return None, {"warnings": [
+        f"Copied into the project but not saved: {src} (the project was busy), so the project still depends on it."
+        for src in wanted.values()
+    ]}
+
+
 def _finish_copy_and_patch(
     project_id: str, project_dir: Path, previous: dict, wanted: dict, also, task: "asyncio.Future",
     broadcaster: "SSEBroadcaster", settled: set,
@@ -3769,9 +3912,9 @@ async def _copy_and_patch_media(
     outcome = asyncio.get_running_loop().create_future()
     late = False
 
-    def finished(task):
+    async def finish(task):
         try:
-            result = _finish_save_copy(project_id, project_dir, previous, wanted, also, task, broadcaster)
+            result = await _finish_save_copy_async(project_id, project_dir, previous, wanted, also, task, broadcaster)
         except Exception as e:
             print(f"[montaj] save_project: could not finish copying borrowed media for {project_id}: {e}")
             result = (None, {"warnings": [
@@ -3781,6 +3924,12 @@ async def _copy_and_patch_media(
         outcome.set_result(result)
         if late and follow_ups and result[0] is not None:
             _late_save_follow_ups(project_id, project_dir, previous, result[0], broadcaster)
+
+    def finished(task):
+        # A done-callback cannot await the lock: a small task takes it and runs the patch.
+        finisher = asyncio.ensure_future(finish(task))
+        _save_copy_tasks.add(finisher)
+        finisher.add_done_callback(_save_copy_tasks.discard)
 
     begin_copies(project_dir, wanted)   # ended by `_finish_save_copy`, however the copy ends
     task = asyncio.ensure_future(asyncio.to_thread(copy_borrowed_media, wanted, project_dir))
@@ -4058,7 +4207,7 @@ async def restore_version(project_id: str, commit: str, request: Request, projec
         try:
             current_project = json.loads(project_path.read_text())
         except (OSError, ValueError):
-            pass
+            current_project = {}
         if current_project.get("notes"):
             restored["notes"] = current_project["notes"]
         else:
@@ -4251,18 +4400,22 @@ async def rerun_project(project_id: str, request: Request, project_dir: Path = D
     # confirms no reader touches it), so a missing key on an init-created or
     # ingested source (lib/ingest.py never sets it) degrades to None rather
     # than KeyError-ing the whole rerun.
-    source_clips = [{"id": c["id"], "src": c["src"], "order": c.get("order")} for c in sources]
-    # Everything else comes from a fresh read under the project lock, so an
-    # edit made while git ran is kept (§467).
+    # The sources and the run count come from a fresh read under the project lock
+    # too, so an edit made while git ran is kept and a second rerun sees the
+    # first one's count (§467).
     async with project_lock_async(project_path):
         try:
             fresh = json.loads(project_path.read_text())
         except (OSError, ValueError):
             fresh = project
+        fresh_sources = fresh.get("sources")
+        if not fresh_sources:
+            raise bad_request("no_sources", "Project has no sources — cannot re-run")
+        source_clips = [{"id": c["id"], "src": c["src"], "order": c.get("order")} for c in fresh_sources]
         updated = {
             **fresh,
             "status": "pending",
-            "runCount": run_count + 1,
+            "runCount": fresh.get("runCount", 1) + 1,
             "tracks": [{"id": "trk-0", "items": source_clips}],
         }
         if "prompt" in body:
@@ -5487,7 +5640,7 @@ async def _run_caption_pipeline(
     # Re-read the project first: the AI or the editor may have saved it while
     # the pipeline ran (a translation, any edit), and writing back the copy
     # read at the start would undo that (§244).
-    async with project_lock_async(project_path):
+    async with project_lock_async(project_path, timeout=CAPTION_LOCK_TIMEOUT):
         try:
             project = json.loads(project_path.read_text())
         except (OSError, ValueError):

@@ -58,7 +58,7 @@ class _Entry:
 
 _entries: dict = {}
 _entries_guard = threading.Lock()
-_warned_unlockable = False
+_warned_paths: set = set()
 
 # errno values that mean "somebody else holds it": the only ones that are waited out.
 _BUSY_ERRNOS = {errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES}
@@ -86,31 +86,44 @@ def _lock_path(project_path) -> str:
 def _open_lock_file(path: str):
     """(fd, entry key). The key is the lock file's (device, inode), so every
     spelling of one folder (case variants on a case-insensitive volume, hard
-    links, symlinks) shares one in-process entry. When the file cannot be
-    created or opened (a read-only folder) there is no fd and the key is the
-    path: the lock then excludes only this process, and the caller is never
-    failed over it."""
+    links, symlinks) shares one in-process entry. A lock file that exists but
+    is not writable (mode 0444) is opened read-only: flock works on a read-only
+    descriptor. When the file cannot be created or opened at all (a read-only
+    folder) there is no fd and the key is the path: the lock then excludes only
+    this process, it is logged once per path, and the caller is never failed
+    over it."""
     try:
         fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-    except OSError:
-        return None, path
+    except OSError as e:
+        fd = None
+        if os.path.exists(path):
+            try:
+                fd = os.open(path, os.O_RDONLY)
+            except OSError as e2:
+                e = e2
+        if fd is None:
+            _warn_unlockable(e, path)
+            return None, path
     try:
         st = os.fstat(fd)
-    except OSError:
+    except OSError as e:
         os.close(fd)
+        _warn_unlockable(e, path)
         return None, path
     return fd, (st.st_dev, st.st_ino)
 
 
-def _warn_unlockable(err: OSError) -> None:
-    global _warned_unlockable
-    if not _warned_unlockable:
-        _warned_unlockable = True
-        logger.warning("File locking is not available here (%s): project writes are serialised "
-                       "within this process only.", err)
+def _warn_unlockable(err: OSError, path: str = "") -> None:
+    """Log (once per path) that locking degraded to this process only."""
+    with _entries_guard:
+        if path in _warned_paths:
+            return
+        _warned_paths.add(path)
+    logger.warning("File locking is not available here (%s%s): project writes are serialised "
+                   "within this process only.", err, f", {path}" if path else "")
 
 
-def _try_os_lock(fd: int) -> str:
+def _try_os_lock(fd: int, path: str = "") -> str:
     """'locked', 'busy' (held elsewhere: wait) or 'unsupported' (this filesystem
     cannot lock at all: never wait for it)."""
     try:
@@ -123,7 +136,7 @@ def _try_os_lock(fd: int) -> str:
     except OSError as e:
         if e.errno in _BUSY_ERRNOS:
             return "busy"
-        _warn_unlockable(e)
+        _warn_unlockable(e, path)
         return "unsupported"
 
 
@@ -150,14 +163,14 @@ def _timeout_error(timeout: float) -> ProjectLockTimeout:
     return ProjectLockTimeout(f"The project is being written by another task (waited {timeout:g}s): try again.")
 
 
-def _take_os_lock(entry: _Entry, fd) -> bool:
+def _take_os_lock(entry: _Entry, fd, path: str = "") -> bool:
     """With entry.rlock held by this thread: take the OS lock if this is the
     outermost entry. True when the caller now holds the lock (and has bumped the
     depth), False when another process holds it. Consumes `fd` on success or on
     a nested entry; leaves it open on False so the caller can poll again."""
     if entry.depth == 0:
         if fd is not None:
-            state = _try_os_lock(fd)
+            state = _try_os_lock(fd, path)
             if state == "busy":
                 return False
             if state == "unsupported":
@@ -181,7 +194,7 @@ def _release(entry: _Entry) -> None:
 
 
 @contextlib.contextmanager
-def project_lock(project_path, timeout: float = DEFAULT_TIMEOUT):
+def project_lock(project_path, timeout: float | None = None):
     """Exclusive lock for the project holding `project_path` (its project.json
     or its folder), across threads and processes. Reentrant in a thread.
     Raises ProjectLockTimeout when not acquired within `timeout` seconds.
@@ -189,14 +202,17 @@ def project_lock(project_path, timeout: float = DEFAULT_TIMEOUT):
     BLOCKS the calling thread while it waits: never call it on an event-loop
     thread unless the lock is already held there (then it only reenters). Serve
     handlers use `project_lock_async`."""
-    fd, key = _open_lock_file(_lock_path(project_path))
+    if timeout is None:
+        timeout = DEFAULT_TIMEOUT
+    lock_path = _lock_path(project_path)
+    fd, key = _open_lock_file(lock_path)
     entry = _entry_for(key)
     deadline = time.monotonic() + timeout
     if not entry.rlock.acquire(timeout=max(timeout, 0)):
         _close(fd)
         raise _timeout_error(timeout)
     try:
-        while not _take_os_lock(entry, fd):
+        while not _take_os_lock(entry, fd, lock_path):
             if time.monotonic() >= deadline:
                 raise _timeout_error(timeout)
             time.sleep(_POLL_SECONDS)
@@ -208,6 +224,31 @@ def project_lock(project_path, timeout: float = DEFAULT_TIMEOUT):
         yield
     finally:
         _release(entry)
+
+
+@contextlib.contextmanager
+def project_lock_or_fail(project_path, fail, timeout: float | None = None):
+    """`project_lock` for a step: when the lock stays busy, call `fail` (the
+    step's structured exit) with the error `project_locked`. A timeout raised
+    from inside the block is not translated."""
+    entered = False
+    try:
+        with project_lock(project_path, timeout):
+            entered = True
+            yield
+    except ProjectLockTimeout as e:
+        if entered:
+            raise
+        fail("project_locked", str(e))
+
+
+def update_project_or_fail(project_path, apply, fail, **kwargs):
+    """`update_project` for a step: a lock that stays busy ends the step with the
+    structured error `project_locked`."""
+    try:
+        return update_project(project_path, apply, **kwargs)
+    except ProjectLockTimeout as e:
+        fail("project_locked", str(e))
 
 
 @contextlib.asynccontextmanager
@@ -223,14 +264,15 @@ async def project_lock_async(project_path, timeout: float | None = None):
     `project_lock` again; it reenters."""
     if timeout is None:
         timeout = DEFAULT_TIMEOUT
-    fd, key = _open_lock_file(_lock_path(project_path))
+    lock_path = _lock_path(project_path)
+    fd, key = _open_lock_file(lock_path)
     entry = _entry_for(key)
     deadline = time.monotonic() + timeout
     try:
         while True:
             if entry.rlock.acquire(blocking=False):
                 try:
-                    if _take_os_lock(entry, fd):
+                    if _take_os_lock(entry, fd, lock_path):
                         fd = None   # consumed
                         break
                 except BaseException:
@@ -276,7 +318,7 @@ def write_json_atomic(project_path, project: dict, *, indent=2, ensure_ascii: bo
     return text
 
 
-def update_project(project_path, apply, *, timeout: float = DEFAULT_TIMEOUT,
+def update_project(project_path, apply, *, timeout: float | None = None,
                    indent=2, ensure_ascii: bool = True):
     """Under the lock, re-read project.json, call `apply(project)` and write
     what it returns atomically. `apply` returns the document to write, or None

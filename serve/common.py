@@ -207,10 +207,5 @@ PROJECT_LOCKED_DETAIL = {
 }
 
 
-def project_locked() -> HTTPException:
-    """503 for a project write lock that stayed busy past its timeout (§467)."""
-    return HTTPException(503, detail=dict(PROJECT_LOCKED_DETAIL))
-
-
 def forbidden(code: str, msg: str) -> HTTPException:
     return HTTPException(403, detail={"error": code, "message": msg})

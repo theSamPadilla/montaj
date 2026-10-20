@@ -189,7 +189,7 @@ def test_unlockable_filesystem_falls_back_to_the_process_lock(tmp_path, monkeypa
 @pytest.mark.skipif(pl.fcntl is None, reason="posix flock")
 def test_unlockable_filesystem_is_logged_once_and_still_excludes_threads(tmp_path, monkeypatch, caplog):
     p = _project(tmp_path)
-    monkeypatch.setattr(pl, "_warned_unlockable", False, raising=False)
+    monkeypatch.setattr(pl, "_warned_paths", set())
 
     def no_flock(fd, op):
         if op & pl.fcntl.LOCK_UN:

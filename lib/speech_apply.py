@@ -16,7 +16,7 @@ import tempfile
 
 from lib import speech_text
 from lib.common import fail
-from lib.project_lock import project_lock
+from lib.project_lock import project_lock_or_fail
 from lib.project_tracks import normalize_tracks
 from lib.project_versions import commit_version, is_own_repo
 from lib.speech_build import DEFAULT_FEEL, items_from_runs, runs_from_rows
@@ -147,10 +147,11 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     tmp = os.path.join(project_dir, f"project.json.tmp-{os.getpid()}")
     # The candidate was built from the copy read at the top, a git commit ago. Under the
     # project lock, a project whose KEYS THE EDIT READS are not what was read (an edit or a step
-    # wrote them meanwhile) is refused rather than overwritten (§467). Anything else that changed
-    # in the window (a background proxy, a normalize, dims, a colour record) is not this edit's
-    # business: it is kept, and only the keys the edit changed are written onto the fresh document.
-    with project_lock(project_path):
+    # wrote them meanwhile) is refused rather than overwritten (§467). That includes a background
+    # proxy, normalize or dims write, which lands inside tracks or sources: the edit is refused and
+    # read again. Anything outside the read keys (the name, the status, the other settings, a
+    # colour record) is kept, and only the keys the edit changed are written onto the fresh document.
+    with project_lock_or_fail(project_path, fail):
         with open(project_path, encoding="utf-8") as f:
             fresh = normalize_tracks(json.load(f))
         if _read_view(fresh) != _read_view(as_read):

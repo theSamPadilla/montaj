@@ -9,7 +9,7 @@ from common import fail, get_duration
 from normalize import normalize, normalized_output_path, is_normalized, probe_video
 from lib.types.colorspace import normalize_key, DEFAULT_COLOR_SPACE, detect_from_transfer, is_hdr
 from lib.project_tracks import track_items, replace_track_items
-from lib.project_lock import project_lock, update_project, write_json_atomic
+from lib.project_lock import project_lock_or_fail, update_project_or_fail, write_json_atomic
 
 
 # Optimal Kling prompt order: camera first (framing context), then subject
@@ -131,7 +131,7 @@ def save_project(path: Path, project: dict):
     writer (the editor, serve, another step) saved since `project` was read is
     lost. Use it only when `project` was read under the same lock hold, or when
     the document is yours alone (a new project)."""
-    with project_lock(path):
+    with project_lock_or_fail(path, fail):
         write_json_atomic(path, project, indent=2, ensure_ascii=False)
 
 
@@ -153,7 +153,7 @@ def save_project_changes(path: Path, original: dict, project: dict, keys=("track
             else:
                 fresh.pop(key, None)
         return fresh
-    return update_project(path, apply, indent=2, ensure_ascii=False)
+    return update_project_or_fail(path, apply, fail, indent=2, ensure_ascii=False)
 
 
 def compose_prompt(project: dict, scene: dict, ref_tokens: bool = True) -> str:
@@ -352,7 +352,7 @@ def save_clip_to_project(project_path: Path, project: dict, scene: dict,
 def _commit_fresh(project_path: Path, project: dict, apply):
     """Run `apply` on a fresh read under the project lock and write it; the
     caller's `project` dict is refreshed to what was written."""
-    written = update_project(project_path, apply, indent=2, ensure_ascii=False)
+    written = update_project_or_fail(project_path, apply, fail, indent=2, ensure_ascii=False)
     if written is not None and written is not project:
         project.clear()
         project.update(written)
