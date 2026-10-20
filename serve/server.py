@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from serve import lockfile
+from serve import lockfile, save_guard
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly
 from serve.common import PROJECT_LOCKED_DETAIL, PROJECT_READ_ONLY_DETAIL, resolve_workspace
 from serve.sse import SSEBroadcaster
@@ -38,6 +38,10 @@ _HOP_BY_HOP = frozenset({
 # serve never opens a browser, in either mode (it used to, outside headless).
 # See docs/plans/2026-05-02-headless-serve.md.
 HEADLESS = os.environ.get("MONTAJ_HEADLESS") == "1"
+
+# §477: at import, before anything can start a subprocess, so the shell secret is gone
+# from the environment every step inherits.
+save_guard.startup()
 
 
 

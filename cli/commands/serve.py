@@ -39,7 +39,10 @@ def register(subparsers):
 
 def handle(args):
     import uvicorn
+    from serve import save_guard
 
+    # §477: the shell secret leaves the environment before the checks below spawn anything.
+    save_guard.startup()
     missing = check_fatal_deps()
     if missing:
         print(red("error: missing dependencies:"), file=sys.stderr)

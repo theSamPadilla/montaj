@@ -74,6 +74,9 @@ class _Entry:
 _entries: dict = {}
 _entries_guard = threading.Lock()
 _warned_paths: set = set()
+# Set once any lock in this process fell back to in-process only: a compare made under
+# the lock is then not atomic against a step in another process. Reported on /api/info.
+_degraded = False
 
 # errno values that mean "somebody else holds it": the only ones that are waited out.
 _BUSY_ERRNOS = {errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES}
@@ -130,12 +133,19 @@ def _open_lock_file(path: str):
 
 def _warn_unlockable(err: OSError, path: str = "") -> None:
     """Log (once per path) that locking degraded to this process only."""
+    global _degraded
+    _degraded = True
     with _entries_guard:
         if path in _warned_paths:
             return
         _warned_paths.add(path)
     logger.warning("File locking is not available here (%s%s): project writes are serialised "
                    "within this process only.", err, f", {path}" if path else "")
+
+
+def lock_degraded() -> bool:
+    """True once any project lock in this process could not take an OS lock."""
+    return _degraded
 
 
 def _try_os_lock(fd: int, path: str = "") -> str:

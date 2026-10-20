@@ -6,6 +6,8 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from lib.project_lock import lock_degraded
+from serve import save_guard
 from serve.common import MONTAJ_ROOT, resolve_workspace
 
 router = APIRouter(prefix="/api")
@@ -27,6 +29,9 @@ async def get_info():
         "skill_path": str(MONTAJ_ROOT / "skills/onboarding/SKILL.md"),
         "root_skill_path": str(MONTAJ_ROOT / "skills" / "SKILL.md"),
         "style_profile_skill_path": str(MONTAJ_ROOT / "skills/style-profile/SKILL.md"),
+        # §477: the app reads both to know whether serve's save guard can be trusted.
+        "revisionCanary": save_guard.canary_state(),
+        "projectLock": "degraded" if lock_degraded() else "ok",
     }
 
     # Filesystem-level only, deliberately not a du walk: /api/info is called
