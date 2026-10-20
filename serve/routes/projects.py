@@ -36,6 +36,7 @@ from serve.caption_job import build_audio_mix_spec, caption_input_change, captio
 from serve.caption_theme import sanitize_theme, seed_prev
 from serve import provenance
 from serve import save_guard
+from lib import project_revisions
 from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import save_upload
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, canvas_for_footage, fps_from_rate, modal_dims
@@ -3102,6 +3103,43 @@ async def get_project(project_id: str, request: Request = None, project_dir: Pat
     project = await _open_project(project_id, request, project_dir, seen)
     save_guard.get_headers(response, project, fields, seen.get("text"), seen.get("project"))
     return project
+
+
+_REVISION_FIELD_RE = re.compile(r"[A-Za-z0-9_.-]+")
+_REVISION_FIELDS_MAX = 64
+
+
+@router.get("/projects/{project_id}/revisions")
+async def get_project_revisions(project_id: str, response: Response,
+                                project_dir: Path = Depends(get_project_dir), fields: str | None = None):
+    """§477: the revisions of a project's fields (`fields=a,b`, all top-level ones when
+    absent) without opening it. Strictly read-only: no migration, sweep, SSE frame, task or
+    lock, so a caller that must not trigger an open (the app's name sync) can use it. 404
+    when the engine guard is off, so a caller falls back to the GET."""
+    if not project_revisions.engine_guard_enabled():
+        raise not_found("not_found", "Revisions are not available")
+    names = save_guard.parse_fields(fields)
+    if names is not None and (len(names) > _REVISION_FIELDS_MAX
+                              or not all(_REVISION_FIELD_RE.fullmatch(n) for n in names)):
+        raise bad_request("bad_fields", f"fields must be at most {_REVISION_FIELDS_MAX} names of letters, digits, _ . -")
+    # No lock: every project.json write is an atomic rename, so one read sees one whole version.
+    try:
+        raw = (project_dir / "project.json").read_text()
+        project = json.loads(raw)
+    except (OSError, ValueError):
+        project = None
+    if not isinstance(project, dict):
+        raise HTTPException(502, detail={
+            "error": "project_unreadable",
+            "message": "This project's file could not be read",
+        })
+    normalized = normalize_tracks(project)  # as a reader sees it; never written here
+    if normalized is project:
+        revs = project_revisions.revisions_for_text(raw, project, names)
+    else:
+        revs = project_revisions.revisions_of(normalized, names)
+    response.headers["x-montaj-revisions"] = json.dumps(revs, separators=(",", ":"))
+    return {"revisions": revs}
 
 
 async def _open_project(project_id: str, request, project_dir: Path, seen: dict):
