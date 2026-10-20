@@ -356,16 +356,71 @@ def test_a_copy_patch_that_lands_in_time_is_in_the_answer_revisions(proj, monkey
     monkeypatch.setattr(projects_mod, "_plan_save_media", lambda *a: ({"k": "/borrowed.mp4"}, {}))
 
     async def fake_copy(project_id, project_dir, previous, wanted, also, broadcaster, follow_ups, on_late=None):
-        doc = json.loads((project_dir / "project.json").read_text())
+        read = (project_dir / "project.json").read_text()
+        doc = json.loads(read)
         doc["sources"] = patched_sources
         write_json_atomic(project_dir / "project.json", doc)
-        return doc, {"copied": ["/borrowed.mp4"]}
+        return doc, {"copied": ["/borrowed.mp4"], projects_mod._PATCH_READ_KEY: read}
     monkeypatch.setattr(projects_mod, "_copy_and_patch_media", fake_copy)
     resp = _put({"name": "second"}, read=_revs(proj, "name"))
     assert resp.status_code == 200, resp.text
     revs = json.loads(resp.headers["x-montaj-revisions"])
     assert revs == {"name": revision_of("second"), "sources": revision_of(patched_sources)}
     assert resp.headers["x-montaj-revisions-final"] == "1"
+
+
+def _real_copy_with(monkeypatch, during_copy):
+    """The real copy and patch, with the copy itself and the swap faked: during_copy runs
+    in the copy thread (where a concurrent writer can land), then sources is repointed."""
+    monkeypatch.setattr(projects_mod, "_plan_save_media", lambda *a: ({"k": "/borrowed.mp4"}, {}))
+
+    def fake_copy(wanted, project_dir):
+        during_copy(project_dir)
+        return {"k": "/copied.mp4"}, []
+
+    def fake_apply(previous, project, made, also=()):
+        project["sources"] = [{"id": "s1", "src": "/copied.mp4"}]
+        return [{"from": "/borrowed.mp4", "to": "/copied.mp4"}]
+    monkeypatch.setattr(projects_mod, "copy_borrowed_media", fake_copy)
+    monkeypatch.setattr(projects_mod, "apply_borrowed_media", fake_apply)
+
+
+def test_a_copy_patch_over_a_write_that_landed_mid_copy_answers_the_saves_own_revisions(proj, monkeypatch):
+    """The patch re-reads project.json. A human edit that landed during the copy is in what
+    it re-read, so the answer must not hand those revisions to the AI as if it had seen them."""
+    _start(monkeypatch)
+
+    def human_writes(project_dir):
+        path = project_dir / "project.json"
+        with project_lock(path):
+            doc = json.loads(path.read_text())
+            doc["status"] = "final"
+            write_json_atomic(path, doc)
+    _real_copy_with(monkeypatch, human_writes)
+    resp = _put({"name": "second"}, read=_revs(proj, "name"))
+    assert resp.status_code == 200, resp.text
+    assert _disk(proj)["status"] == "final" and _disk(proj)["sources"] == [{"id": "s1", "src": "/copied.mp4"}]
+    revs = json.loads(resp.headers["x-montaj-revisions"])
+    saved = {**_base(), "name": "second"}
+    assert revs == revisions_of(saved, list(revs)) and "name" in revs
+    assert resp.headers["x-montaj-revisions-final"] == "0"
+    assert "_patchRead" not in resp.json()
+    before = _bytes(proj)
+    again = _put({"status": "draft"}, read={**revs, "status": revision_of("draft")})
+    assert again.status_code == 409, again.text
+    assert again.json()["detail"]["stale"] == ["status"]
+    assert _bytes(proj) == before
+
+
+def test_a_copy_patch_with_nothing_landing_mid_copy_answers_the_patched_revisions(proj, monkeypatch):
+    _start(monkeypatch)
+    _real_copy_with(monkeypatch, lambda project_dir: None)
+    resp = _put({"name": "second"}, read=_revs(proj, "name"))
+    assert resp.status_code == 200, resp.text
+    revs = json.loads(resp.headers["x-montaj-revisions"])
+    assert revs == {"name": revision_of("second"), "sources": revision_of([{"id": "s1", "src": "/copied.mp4"}])}
+    assert resp.headers["x-montaj-revisions-final"] == "1"
+    assert _put({"sources": []}, read=revs).status_code == 200
 
 
 def test_a_copy_still_pending_marks_the_revisions_not_final(proj, monkeypatch):

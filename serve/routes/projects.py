@@ -3801,13 +3801,16 @@ def _plan_save_media(
 
 
 _PATCH_GONE = "gone"
+# The report's private key for the text the patch re-read (§477); a save pops it
+# before answering, so it never reaches a client or project.json.
+_PATCH_READ_KEY = "_patchRead"
 _PATCH_UNREADABLE = "unreadable"
 _PATCH_OTHER_PROJECT = "other project"
 
 
 def _patch_copied_media(
     project_path: Path, previous: dict, made: dict, also=(), project_id: "str | None" = None,
-) -> "tuple[dict, str, list] | str | None":
+) -> "tuple[dict, str, list, str] | str | None":
     """The patch (§126): re-read project.json (in the current tracks shape,
     whatever another writer left), point each entry that is new or changed
     against `previous` (the project before the save), or holds a file of
@@ -3819,10 +3822,13 @@ def _patch_copied_media(
     project.json is gone, `_PATCH_UNREADABLE` when it can't be read (another
     program part way through writing it: the copies are kept to try again),
     `_PATCH_OTHER_PROJECT` when it is now another project (its id is not
-    `project_id`)."""
+    `project_id`). The tuple's last item is the text the patch re-read (§477:
+    a save compares it with the text it wrote, to know whether another write
+    landed in between)."""
     with project_lock(project_path):
         try:
-            project = json.loads(project_path.read_text())
+            read_text = project_path.read_text()
+            project = json.loads(read_text)
         except FileNotFoundError:
             return _PATCH_GONE
         except (OSError, ValueError, RecursionError):
@@ -3835,7 +3841,7 @@ def _patch_copied_media(
         copied = apply_borrowed_media(previous, project, made, also)
         if not copied:
             return None
-        return project, _write_project_json(project_path, project), copied
+        return project, _write_project_json(project_path, project), copied, read_text
 
 
 def _finish_save_copy(
@@ -3926,7 +3932,7 @@ def _finish_copy_and_patch(
             ]
             retry_later(project_dir, failed)
         if result is not None:
-            patched, text, report["copied"] = result
+            patched, text, report["copied"], report[_PATCH_READ_KEY] = result
             try:
                 broadcaster.publish(project_id, _sse_data_frame(text))
             except Exception as e:   # written all the same: the report still says so
@@ -4130,9 +4136,16 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
             project_id, project_dir, existing, wanted, retrying, broadcaster, follow_ups,
             on_late=lambda: copy_pending.append(True))
         current = patched if patched is not None else merged
-    # A patch that landed is a file version of its own: hashed from the document, not `text`.
-    save_guard.answer_headers(response, verdict, existing, current,
-                              text if current is merged else None, final=not copy_pending)
+    patch_read = media_report.pop(_PATCH_READ_KEY, None) if media_report else None
+    if current is not merged and patch_read != text:
+        # The patch re-read a file another write had changed since this save wrote it (a
+        # human edit during the copy): its revisions are not this writer's to hold. Answer
+        # what this save wrote, not final, so the caller re-reads before it saves again.
+        save_guard.answer_headers(response, verdict, existing, merged, text, final=False)
+    else:
+        # A patch that landed is a file version of its own: hashed from the document, not `text`.
+        save_guard.answer_headers(response, verdict, existing, current,
+                                  text if current is merged else None, final=not copy_pending)
     # Queue editor previews (proxies) for whatever video items this save just
     # added or repointed — an agent placing a clip via PUT (the only way a
     # clip's src reaches disk outside of import) must not leave it stuck on
