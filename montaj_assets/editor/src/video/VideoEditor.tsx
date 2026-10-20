@@ -1883,7 +1883,12 @@ function ReviewSurface<P extends Project>({
     // resolve the base-track clip under `time` and scope the split to its id;
     // if nothing on the main track sits under `time`, there's nothing to split
     // — a no-op, rather than cutting overlays/audio too.
-    let targetId = primarySelectedId ?? null
+    // Two or more non-caption items selected: split every one the time falls
+    // inside (the rest are skipped by `splitAtTime`), in one mutation. Caption
+    // ids are never targets.
+    const selectedTargets = selectedIds.filter(id => !captionIdSet.has(id))
+    let targetId: string | string[] | null =
+      selectedTargets.length >= 2 ? selectedTargets : (primarySelectedId ?? null)
     if (targetId === null) {
       const mainItem = (trackItems(base)[0] ?? []).find(it => time > it.start && time < it.end)
       if (!mainItem) return

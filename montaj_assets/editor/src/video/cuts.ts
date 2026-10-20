@@ -536,15 +536,22 @@ function splitAudioTrack(track: AudioTrack, at: number): [AudioTrack, AudioTrack
  *
  * - If `itemId` is provided, only that item is split (must contain `at`).
  *   Works for both visual items (tracks[][]) and audio tracks (audio.tracks[]).
+ * - If `itemId` is a list, every listed item the time falls inside is split in
+ *   one pass; listed items not under the time are left alone.
  * - If `itemId` is null, every clip across all tracks that contains `at` is split.
  * - Returns the same project reference if nothing was split.
  */
-export function splitAtTime<P extends Project>(project: P, at: number, itemId: string | null): P {
+export function splitAtTime<P extends Project>(project: P, at: number, itemId: string | readonly string[] | null): P {
   let changed = false
+  // A list splits every listed item the time falls strictly inside, in one
+  // pass (one result, one undo step). Splitting never touches captions, so a
+  // list cannot cut them twice. An empty list matches nothing.
+  const ids: ReadonlySet<string> | null =
+    itemId === null ? null : new Set(typeof itemId === 'string' ? [itemId] : itemId)
 
   const newTracks = mapTrackItems(project, items =>
     items.flatMap(item => {
-      if (itemId !== null && item.id !== itemId) return [item]
+      if (ids !== null && !ids.has(item.id)) return [item]
       if (at <= item.start || at >= item.end) return [item]      // playhead not inside this clip
       changed = true
       return splitClip(item, { start: at, end: at })
@@ -554,7 +561,7 @@ export function splitAtTime<P extends Project>(project: P, at: number, itemId: s
   // Also split audio tracks
   const audioTracks = project.audio?.tracks ?? []
   const newAudioTracks = audioTracks.flatMap(track => {
-    if (itemId !== null && track.id !== itemId) return [track]
+    if (ids !== null && !ids.has(track.id)) return [track]
     if (at <= track.start || at >= track.end) return [track]
     changed = true
     return splitAudioTrack(track, at)

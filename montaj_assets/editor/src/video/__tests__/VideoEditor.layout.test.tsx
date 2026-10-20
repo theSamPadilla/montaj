@@ -231,6 +231,29 @@ describe('VideoEditor — a caption id ahead of a clip id in selectedIds (D1)', 
     fireEvent.keyDown(input, { key: 'Enter' })
   }
 
+  it('S splits every selected non-caption item under the playhead', async () => {
+    onTestFinished(installCanvasHarness())
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    const project = makeMixedProject()
+    const { container } = render(
+      <VideoEditor project={project} adapter={adapter} onProjectChange={onProjectChange} />,
+    )
+    await selectCaptionThenAdditively(container, project, { type: 'video' })
+    selectCanvasItem(container, project, { type: 'overlay' }, { metaKey: true })
+
+    await seekTo('2')
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))
+    })
+
+    await waitFor(() => {
+      const last = onProjectChange.mock.calls[onProjectChange.mock.calls.length - 1][0] as Project
+      expect(last.tracks?.[0]?.items).toHaveLength(2)
+      expect(last.tracks?.[1]?.items).toHaveLength(2)
+    })
+  })
+
   it('resolves cropTarget to the clip, not null, and S still splits it', async () => {
     onTestFinished(installCanvasHarness())
     const adapter = makeFakeAdapter()

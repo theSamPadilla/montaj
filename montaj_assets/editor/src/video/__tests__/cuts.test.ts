@@ -271,6 +271,67 @@ describe('splitAtTime', () => {
     expect(out.tracks![0].items).toHaveLength(3)
   })
 
+  describe('with a list of ids', () => {
+    const stacked = () => makeProject({
+      tracks: vtracks(
+        [{ id: 'a', type: 'video', start: 0, end: 10, inPoint: 0, outPoint: 10 }],
+        [{ id: 'b', type: 'video', start: 0, end: 10, inPoint: 0, outPoint: 10 }],
+        [{ id: 'o', type: 'overlay', src: 'o.jsx', start: 0, end: 3 } as VisualItem],
+      ),
+    })
+
+    it('splits every listed item under the time in one pass and leaves one ending before it', () => {
+      const out = splitAtTime(stacked(), 5, ['a', 'b', 'o'])
+      expect(out.tracks![0].items).toHaveLength(2)
+      expect(out.tracks![1].items).toHaveLength(2)
+      expect(out.tracks![2].items).toEqual([{ id: 'o', type: 'overlay', src: 'o.jsx', start: 0, end: 3 }])
+    })
+
+    it('does not split unlisted items', () => {
+      const out = splitAtTime(stacked(), 5, ['a', 'o'])
+      expect(out.tracks![0].items).toHaveLength(2)
+      expect(out.tracks![1].items).toHaveLength(1)
+    })
+
+    it('splits a selected audio track together with a selected clip', () => {
+      const p = makeProject({
+        tracks: vtracks([{ id: 'a', type: 'video', start: 0, end: 10, inPoint: 0, outPoint: 10 }]),
+        audio: { tracks: [{ id: 'au', src: 'a.mp3', start: 0, end: 10, inPoint: 0 }] },
+      })
+      const out = splitAtTime(p, 4, ['a', 'au'])
+      expect(out.tracks![0].items).toHaveLength(2)
+      expect(out.audio!.tracks).toHaveLength(2)
+      expect(out.audio!.tracks[0]).toMatchObject({ end: 4 })
+    })
+
+    it('leaves captions exactly as a single split gives', () => {
+      const p = makeProject({
+        tracks: vtracks(
+          [{ id: 'a', type: 'video', start: 0, end: 10, inPoint: 0, outPoint: 10 }],
+          [{ id: 'b', type: 'video', start: 0, end: 10, inPoint: 0, outPoint: 10 }],
+        ),
+        captions: { style: 'pop', segments: [{ id: 'c1', text: 'x', start: 3, end: 6 }, { id: 'c2', text: 'y', start: 7, end: 9 }] },
+      } as Partial<Project>)
+      const single = splitAtTime(p, 5, 'a')
+      const multi = splitAtTime(p, 5, ['a', 'b'])
+      expect(multi.captions).toEqual(single.captions)
+      expect(multi.captions).toEqual(p.captions)
+    })
+
+    it('one id in a list is identical to the bare id', () => {
+      // Fragment ids are generated, so compare everything but the ids.
+      const strip = (p: Project) => p.tracks!.map(t => t.items.map(({ id: _id, ...rest }) => rest))
+      expect(strip(splitAtTime(stacked(), 5, ['a']))).toEqual(strip(splitAtTime(stacked(), 5, 'a')))
+    })
+
+    it('returns the same reference for an empty list or when no listed item is under the time', () => {
+      const p = stacked()
+      expect(splitAtTime(p, 5, [])).toBe(p)
+      expect(splitAtTime(p, 5, ['o'])).toBe(p)
+      expect(splitAtTime(p, 5, ['missing'])).toBe(p)
+    })
+  })
+
   it('splits audio tracks containing `at`', () => {
     const p = makeProject({
       tracks: vtracks([]),
