@@ -193,6 +193,15 @@ def missing_message(missing) -> str:
             f"read set to the revisions it returned.")
 
 
+def writer_of(headers) -> "tuple[str, bool]":
+    """(writer class, trusted). Only a request carrying the launch secret may name its class;
+    any other is `ai`, the strictest."""
+    headers = headers if headers is not None else {}
+    trusted = secret_valid(headers.get("x-montaj-shell"))
+    writer = headers.get("x-montaj-writer") if trusted else None
+    return (writer if writer in WRITERS else "ai"), trusted
+
+
 def check_save(headers, body: dict, raw_text, existing: dict):
     """Run under the project lock, after the project is read and before anything is merged.
     None when the guard is off. Raises the refusal (nothing written yet) or returns the
@@ -200,9 +209,7 @@ def check_save(headers, body: dict, raw_text, existing: dict):
     if not enabled():
         return None
     headers = headers if headers is not None else {}
-    trusted = secret_valid(headers.get("x-montaj-shell"))
-    writer = headers.get("x-montaj-writer") if trusted else None
-    writer = writer if writer in WRITERS else "ai"
+    writer, trusted = writer_of(headers)
     advisory = trusted and writer == "editor" and headers.get("x-montaj-guard") == "advisory"
     changed = changed_fields(body)
     verdict = Verdict(writer, advisory, changed)
@@ -225,22 +232,38 @@ def check_save(headers, body: dict, raw_text, existing: dict):
                                      "message": missing_message(missing)})
 
 
-def check_read(headers, raw_text, existing: dict, fields) -> None:
-    """For a route that accepts `read` without requiring it (the caption translation): run
-    under the project lock before anything is written. Every one of fields the request sent
-    a revision for must still have it, or the write is refused as stale; a field it sent
-    nothing for is left to the route's own checks."""
+def read_required_message(missing, action) -> str:
+    """What a route other than save_project says when its write carries no revision."""
+    return (f"{action} needs the revision of {', '.join(missing)} you read. Call get_project with fields "
+            f"{_fields_json(missing)}, then {action.lower()} again with read set to the revisions it "
+            f"returned.")
+
+
+def check_read(headers, raw_text, existing: dict, fields, action: str) -> None:
+    """For a route that writes `fields` from a read taken outside its lock hold (the caption
+    translation): run under the project lock before anything is written. Strict for the ai
+    and tool writers: a field with no revision sent is 400 read_required, one whose revision
+    moved 409 project_changed. Advisory for the window's editor (secret-checked): applied,
+    and a stale field is logged as an override. Nothing when the guard is off."""
     if not enabled():
         return
-    read = _read_header(headers if headers is not None else {})
-    sent = [f for f in fields if read and isinstance(read.get(f), str) and read[f]]
-    if not sent:
+    headers = headers if headers is not None else {}
+    writer, _ = writer_of(headers)
+    now = current_revisions(raw_text, existing, fields)
+    found = project_revisions.stale_fields(None, fields, _read_header(headers), revisions=now)
+    stale, missing = found["stale"], found["missing"]
+    if writer == "editor":
+        if stale:
+            # Field names only, never values, as the PUT's override line.
+            print(f"save-guard: advisory override editor fields={_header_value(stale)}",
+                  file=sys.stderr, flush=True)
         return
-    now = current_revisions(raw_text, existing, sent)
-    stale = project_revisions.stale_fields(None, sent, read, revisions=now)["stale"]
     if stale:
-        raise HTTPException(409, detail={"error": "project_changed", "stale": stale, "missing": [],
-                                         "message": stale_message(stale, [])})
+        raise HTTPException(409, detail={"error": "project_changed", "stale": stale, "missing": missing,
+                                         "message": stale_message(stale, missing)})
+    if missing:
+        raise HTTPException(400, detail={"error": "read_required", "stale": [], "missing": missing,
+                                         "message": read_required_message(missing, action)})
 
 
 def _header_value(names) -> str:

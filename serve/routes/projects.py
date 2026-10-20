@@ -6027,9 +6027,11 @@ async def caption_translation(project_id: str, body: dict = Body(...), request: 
     async with project_lock_async(project_path):
         raw = project_path.read_text()
         project = json.loads(raw)
-        # A request that read the captions' revision is compared here (§477); without one,
-        # apply_translation's source-words check is the guard.
-        save_guard.check_read(getattr(request, "headers", None), raw, project, ["captions"])
+        # §477, with the guard on: the AI and tools must send the captions revision they read
+        # (strict); the window's editor is advisory. Guard off: apply_translation's
+        # source-words check is the guard, as before.
+        save_guard.check_read(getattr(request, "headers", None), raw, project, ["captions"],
+                              "Translate captions")
         try:
             captions = project.get("captions")
             if "phrases" in body:
