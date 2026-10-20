@@ -232,6 +232,21 @@ def check_save(headers, body: dict, raw_text, existing: dict):
                                      "message": missing_message(missing)})
 
 
+HUMAN_ONLY_MESSAGE = "Only the Montaj window can do this."
+
+
+def require_editor(headers) -> None:
+    """For a route that replaces project content wholesale with no compare (restore, rerun,
+    asset include, delete files): with the guard on, only the window's editor (the launch
+    secret AND writer editor) may call it; anything else is 403 human_only. Nothing when
+    the guard is off."""
+    if not enabled():
+        return
+    writer, trusted = writer_of(headers)
+    if not (trusted and writer == "editor"):
+        raise HTTPException(403, detail={"error": "human_only", "message": HUMAN_ONLY_MESSAGE})
+
+
 def read_required_message(missing, action) -> str:
     """What a route other than save_project says when its write carries no revision."""
     return (f"{action} needs the revision of {', '.join(missing)} you read. Call get_project with fields "

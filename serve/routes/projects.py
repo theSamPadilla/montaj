@@ -4255,20 +4255,31 @@ async def create_version(project_id: str, request: Request, project_dir: Path = 
     return await asyncio.to_thread(_git_log)
 
 
+def _restore_under_lock(project_dir: Path, restored: dict) -> None:
+    """A restore's write, blocking (call via asyncio.to_thread): the autosave and the write
+    in one hold of the project lock, keeping the current notes."""
+    project_path = project_dir / "project.json"
+    with project_lock(project_path):
+        try:
+            current_project = json.loads(project_path.read_text())
+        except (OSError, ValueError):
+            current_project = {}
+        if not isinstance(current_project, dict):
+            current_project = {}
+        run_count = current_project.get("runCount", 1)
+        _git_commit_sync(project_dir, f"version: run {run_count} — autosave before restore")
+        if current_project.get("notes"):
+            restored["notes"] = current_project["notes"]
+        else:
+            restored.pop("notes", None)
+        _write_project_json(project_path, restored)
+
+
 @router.post("/projects/{project_id}/versions/{commit}/restore")
 async def restore_version(project_id: str, commit: str, request: Request, project_dir: Path = Depends(get_project_dir)):
+    # §477: a restore replaces the whole project with no compare, so it is the human's.
+    save_guard.require_editor(getattr(request, "headers", None))
     project_path = project_dir / "project.json"
-    # Read current runCount from on-disk project.json before restoring, so the
-    # "autosave before restore" snapshot lands in the current run's history.
-    # _git_commit_sync is no-op-safe, so this only creates a version when the
-    # working tree actually has uncommitted edits — the history won't fill
-    # with noise on every restore.
-    current_project = json.loads(project_path.read_text())
-    current_run_count = current_project.get("runCount", 1)
-    await asyncio.to_thread(
-        _git_commit_sync, project_dir,
-        f"version: run {current_run_count} — autosave before restore",
-    )
     proc = await asyncio.create_subprocess_exec(
         "git", "show", f"{commit}:project.json",
         cwd=str(project_dir),
@@ -4287,20 +4298,14 @@ async def restore_version(project_id: str, commit: str, request: Request, projec
     # leaves legacy tracks on disk — a no-op (same object back) when the
     # restored version is already normalized, matching save_project's rule.
     restored = normalize_tracks(restored)
-    # Notes are the operator's private review notes, not version content: a
-    # restore keeps the current ones rather than swapping in the old commit's.
-    # The notes are read again under the project lock, so a note added while
-    # git ran is kept (§467).
-    async with project_lock_async(project_path):
-        try:
-            current_project = json.loads(project_path.read_text())
-        except (OSError, ValueError):
-            current_project = {}
-        if current_project.get("notes"):
-            restored["notes"] = current_project["notes"]
-        else:
-            restored.pop("notes", None)
-        _write_project_json(project_path, restored)
+    # One lock hold, off the event loop: read the project, commit it as the "autosave before
+    # restore" version (in the current run's history), then write the restored one. A
+    # commit taken before the lock would let an edit land between the two and be lost from
+    # history (§477). _git_commit_sync is no-op-safe, so the autosave is a new version only
+    # when the working tree has uncommitted edits.
+    # Notes are the operator's private review notes, not version content: a restore keeps
+    # the current ones rather than swapping in the old commit's (§467).
+    await asyncio.to_thread(_restore_under_lock, project_dir, restored)
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
     broadcaster.publish(project_id, f"data: {json.dumps(restored)}\n\n")
     return restored
@@ -4464,6 +4469,8 @@ async def version_frame(
 
 @router.post("/projects/{project_id}/rerun")
 async def rerun_project(project_id: str, request: Request, project_dir: Path = Depends(get_project_dir)):
+    # §477: a rerun resets the tracks with no compare, so it is the human's.
+    save_guard.require_editor(getattr(request, "headers", None))
     body = {}
     try:
         body = await request.json()
@@ -4523,6 +4530,8 @@ async def include_profile_asset(project_id: str, body: dict = Body(...), request
     Body: {"from": {"profile": <name>, "filename": <name>}}.
     Drafts the change in project.json; the user commits separately via PUT.
     """
+    # §477: the human's, with the guard on (no AI tool reaches this route).
+    save_guard.require_editor(getattr(request, "headers", None))
     src_ref = (body or {}).get("from") or {}
     profile_name = src_ref.get("profile")
     filename     = src_ref.get("filename")
@@ -5055,6 +5064,7 @@ async def get_download_job(
 async def delete_files(
     project_id: str,
     body: dict = Body(...),
+    request: Request = None,
     project_dir: Path = Depends(get_project_dir),
 ):
     """Delete files or subdirectories from the project workspace.
@@ -5083,6 +5093,8 @@ async def delete_files(
     the idempotent "missing → deleted" branch, so the link survives.
     Acceptable for current callers.
     """
+    # §477: deleting project files is the human's, with the guard on (no AI tool reaches it).
+    save_guard.require_editor(getattr(request, "headers", None))
     paths = body.get("paths")
     if not isinstance(paths, list) or not paths:
         raise bad_request("invalid_body", "'paths' must be a non-empty list")
