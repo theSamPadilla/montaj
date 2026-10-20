@@ -818,6 +818,106 @@ describe('WaveformPeaksStore.audioColumns', () => {
   })
 })
 
+describe('WaveformPeaksStore.audioColumns, whole-source cache (split/trim keep the waveform)', () => {
+  // A 10s source, 10 samples: sample i (1s each) has peak +-(i+1)*100.
+  const wholePeaks: number[] = []
+  for (let i = 0; i < 10; i++) wholePeaks.push(-(i + 1) * 100, (i + 1) * 100)
+  const whole = (over: Partial<PeaksData> = {}) => peaksFixture({ start: 0, duration: 10, peaks: wholePeaks, ...over })
+  // 10px/s: a 5s track is 50px wide; everything fully visible.
+  const vp = { pxPerSecond: 10, scrollSeconds: 0, widthPx: 2000 }
+  const draw = (store: WaveformPeaksStore, track: AudioTrack, fetcher: ReturnType<typeof vi.fn>) => {
+    const width = (track.end - track.start) * 10
+    return store.audioColumns(
+      track,
+      rect({ x: track.start * 10, width }),
+      queryCtx({ getWaveformPeaks: fetcher, viewport: vp, pxPerSecond: 10 }),
+    )
+  }
+  const warm = async (store: WaveformPeaksStore, track: AudioTrack, fetcher: ReturnType<typeof vi.fn>) => {
+    draw(store, track, fetcher)
+    await flush()
+  }
+
+  it('split: both halves draw at once from the cached whole source, zero new fetches', async () => {
+    const store = new WaveformPeaksStore()
+    const fetcher = vi.fn().mockResolvedValue(whole())
+    const original = audio({ id: 'a0', start: 0, end: 10 })
+    await warm(store, original, fetcher)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(fetcher.mock.calls[0][0].start).toBeUndefined()
+    expect(fetcher.mock.calls[0][0].duration).toBeUndefined()
+
+    const left = audio({ id: 'a0', start: 0, end: 5, inPoint: 0, outPoint: 5 })
+    const right = audio({ id: 'a1', start: 5, end: 10, inPoint: 5, outPoint: 10 })
+    const l = draw(store, left, fetcher)
+    const r = draw(store, right, fetcher)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(l && r).toBeTruthy()
+    expect(l!.columns.length).toBeGreaterThan(0)
+    expect(r!.columns.length).toBeGreaterThan(0)
+    expect(l!.columns).toEqual(resamplePeaksToColumns(wholePeaks.slice(0, 10), 50))
+    expect(r!.columns).toEqual(resamplePeaksToColumns(wholePeaks.slice(10, 20), 50))
+  })
+
+  it('trim: a new outPoint re-slices locally, zero new fetches', async () => {
+    const store = new WaveformPeaksStore()
+    const fetcher = vi.fn().mockResolvedValue(whole())
+    await warm(store, audio({ start: 0, end: 10 }), fetcher)
+    const trimmed = audio({ start: 0, end: 4, inPoint: 0, outPoint: 4 })
+    const result = draw(store, trimmed, fetcher)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(result).not.toBeNull()
+    expect(result!.columns).toEqual(resamplePeaksToColumns(wholePeaks.slice(0, 8), 40))
+  })
+
+  it('two audio tracks on the same src share one fetch', async () => {
+    const store = new WaveformPeaksStore()
+    const fetcher = vi.fn().mockResolvedValue(whole())
+    draw(store, audio({ id: 'x', start: 0, end: 5, inPoint: 0, outPoint: 5 }), fetcher)
+    draw(store, audio({ id: 'y', start: 20, end: 25, inPoint: 5, outPoint: 10 }), fetcher)
+    await flush()
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(draw(store, audio({ id: 'y', start: 20, end: 25, inPoint: 5, outPoint: 10 }), fetcher)).not.toBeNull()
+  })
+
+  it('a never-fetched src still draws nothing until it resolves', () => {
+    const store = new WaveformPeaksStore()
+    const fetcher = vi.fn().mockResolvedValue(whole())
+    expect(draw(store, audio({ start: 0, end: 5 }), fetcher)).toBeNull()
+  })
+
+  it('falls back to the windowed fetch when the whole fetch reports no duration', async () => {
+    const store = new WaveformPeaksStore()
+    const fetcher = vi.fn().mockImplementation(async (a: { start?: number; duration?: number }) =>
+      a.start === undefined
+        ? whole({ duration: 0 })
+        : peaksFixture({ start: a.start, duration: a.duration, peaks: [-7, 7, -8, 8] }))
+    const track = audio({ start: 0, end: 4, inPoint: 2, outPoint: 6 })
+    await warm(store, track, fetcher)
+    await warm(store, track, fetcher)
+    const result = draw(store, track, fetcher)
+    expect(fetcher.mock.calls.some(c => c[0].start === 2 && c[0].duration === 4)).toBe(true)
+    expect(result).not.toBeNull()
+    expect(result!.columns).toEqual(resamplePeaksToColumns([-7, 7, -8, 8], 40))
+  })
+
+  it('a track running off screen still shows only its visible slice of the window', async () => {
+    const store = new WaveformPeaksStore()
+    const fetcher = vi.fn().mockResolvedValue(whole())
+    // Source 2..10 over 8s at 10px/s (80px); viewport shows the first 40px.
+    const track = audio({ start: 0, end: 8, inPoint: 2, outPoint: 10 })
+    const view = { pxPerSecond: 10, scrollSeconds: 0, widthPx: 40 }
+    const ctx = () => queryCtx({ getWaveformPeaks: fetcher, viewport: view, pxPerSecond: 10 })
+    store.audioColumns(track, rect({ x: 0, width: 40 }), ctx())
+    await flush()
+    const result = store.audioColumns(track, rect({ x: 0, width: 40 }), ctx())
+    expect(result).not.toBeNull()
+    expect(result!.rect.width).toBeCloseTo(40)
+    // First 4s of the window = source 2..6 = samples 2..5 (peaks index 4..12).
+    expect(result!.columns).toEqual(resamplePeaksToColumns(wholePeaks.slice(4, 12), 40))
+  })
+})
+
 // ── Draw integration via drawTimelineContent (draw.ts) ────────────────────
 
 function project(over: Partial<Project> = {}): Project {

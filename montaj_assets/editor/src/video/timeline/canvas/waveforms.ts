@@ -21,21 +21,19 @@
  * Clips fetch from `item.proxySrc` ONLY — no fallback to `item.src` — so a
  * clip with no proxy yet simply renders no waveform (graceful, no spinner,
  * no error) until the import pipeline delivers one. Audio lanes fetch from
- * `track.src` (audio tracks have no proxies), windowed to the track's own
- * trim.
+ * `track.src` (audio tracks have no proxies).
  *
- * Clips are NOT windowed at fetch time. The editing proxy is the WHOLE
- * source, never trimmed server-side, so it is shared, unwindowed data every
- * clip pointing at that `proxySrc` can reuse regardless of which clip, or
- * which trim, is asking — `clipColumns` fetches (and caches) it ONCE, keyed
- * by src alone, and slices the clip's own [inPoint, outPoint] window out of
- * it locally. Before this, the fetch itself was windowed and keyed by
- * `(item.id, window)`, so splitting a clip (new ids) or trimming it (a new
- * window) changed the key, forced a re-decode, and flashed the waveform
- * blank for a frame — even though the underlying proxy data hadn't changed
- * at all.
+ * Neither is windowed at fetch time. The source file is the same whichever
+ * clip or track points at it and whatever its trim, so it is shared,
+ * unwindowed data: `clipColumns` and `audioColumns` fetch (and cache) it ONCE,
+ * keyed by src alone, and slice the item's own [inPoint, outPoint] window out
+ * of it locally (`sliceToSourceWindow`). Before this, the fetch itself was
+ * windowed and keyed by `(owner id, window)`, so splitting (new ids, new
+ * windows) or trimming (a new window) changed the key, forced a re-decode,
+ * and flashed the waveform blank for a frame, even though the underlying
+ * source data hadn't changed at all. The windowed, owner-keyed fetch survives
+ * only as a fallback for when the whole fetch's duration is unusable.
  *
-
  * ── Zoom-crisp resolution (bucket scheme) ─────────────────────────────────
  * `resolveBucket` picks 50/200/800 from the current px/second. `resolve()`
  * (private, on `WaveformPeaksStore`) fetches the needed bucket only when
@@ -441,12 +439,14 @@ function sliceToSourceWindow(
   peaks: number[],
   proxyDuration: number,
   window: { start: number; duration: number },
+  /** Source time the peaks array begins at (0 for a true whole-file fetch). */
+  origin = 0,
 ): number[] | null {
   if (!(proxyDuration > 0)) return null
   const totalSamples = Math.floor(peaks.length / 2)
   if (totalSamples <= 0) return peaks
-  const f0 = Math.max(0, Math.min(1, window.start / proxyDuration))
-  const f1 = Math.max(0, Math.min(1, (window.start + window.duration) / proxyDuration))
+  const f0 = Math.max(0, Math.min(1, (window.start - origin) / proxyDuration))
+  const f1 = Math.max(0, Math.min(1, (window.start + window.duration - origin) / proxyDuration))
   const s0 = Math.min(totalSamples, Math.floor(f0 * totalSamples))
   const s1 = Math.max(s0, Math.min(totalSamples, Math.ceil(f1 * totalSamples)))
   return peaks.slice(s0 * 2, s1 * 2)
@@ -459,14 +459,13 @@ function sliceToSourceWindow(
  * `getWaveformPeaks`), plus an owner id since one store instance serves
  * every clip and audio track on the surface.
  *
- * `ownerId`/`start`/`duration` are OMITTED from a CLIP's key — see
- * `clipColumns` — because the editing proxy is shared, unwindowed data every
- * clip pointing at that `proxySrc` can reuse regardless of which clip or
- * which trim is asking; splitting or trimming a clip must not change its
- * key. Audio-lane fetches keep the FULL key (owner + window): audio tracks
- * have their own per-take sources, never a shared proxy, so there is nothing
- * to gain by dropping either field there and doing so would only make an
- * audio track's own trim stop invalidating its own cache entry.
+ * `ownerId`/`start`/`duration` are OMITTED from the key for BOTH clips and
+ * audio lanes (see `clipColumns` and `audioColumns`) because the source is
+ * shared, unwindowed data every clip or track pointing at that src can reuse
+ * regardless of which one, or which trim, is asking. Splitting or trimming
+ * must not change the key: a split gives the right half a new id, yet both
+ * halves read the same file. The full key (owner + window) is used only by
+ * the fallback fetch, when the whole fetch can't map a window.
  *
  * One instance lives for the lifetime of a mounted `TimelineCanvas` (held in
  * a ref), so fetches already in flight or resolved survive across redraws.
@@ -541,8 +540,12 @@ export class WaveformPeaksStore {
 
   /**
    * Audio-lane waveforms fetch from `track.src` (audio tracks have no
-   * proxies), windowed to the track's own trim (`audioTrackSourceWindow`) —
-   * NOT to whatever is currently visible, so scrolling never re-fetches.
+   * proxies), UNWINDOWED and keyed by src alone like `clipColumns`, so a
+   * split or trim of a track serves from the existing entry with no blank
+   * frame. The track's own trim (`audioTrackSourceWindow`) is sliced out
+   * locally; only when the whole fetch reports no usable duration does it
+   * fall back to the windowed, owner-keyed fetch. Never fetches for what is
+   * currently visible, so scrolling never re-fetches.
    * Returns the VISIBLE slice's own bar-relative sub-rect alongside its
    * columns, so it draws in the right place rather than stretched across
    * whatever rect the caller happened to hand in.
@@ -569,7 +572,25 @@ export class WaveformPeaksStore {
     const window = audioTrackSourceWindow(track)
     if (window.duration <= 0) return null
 
-    const data = this.resolve({ ownerId: track.id, src: track.src, start: window.start, duration: window.duration }, ctx)
+    let data: PeaksData | null
+    const whole = this.resolve({ src: track.src }, ctx)
+    if (!whole) return null
+    if (whole.duration > 0) {
+      // The whole fetch covers [whole.start, whole.start + whole.duration]
+      // (start is 0 for a true whole-file fetch). Narrow the track's window
+      // to that range, then slice locally; the result carries the real
+      // covered range, exactly as a clamped windowed fetch would.
+      const a = Math.max(window.start, whole.start)
+      const b = Math.min(window.start + window.duration, whole.start + whole.duration)
+      if (b <= a) return null
+      const peaks = sliceToSourceWindow(whole.peaks, whole.duration, { start: a, duration: b - a }, whole.start)
+      if (!peaks) return null
+      data = { samplesPerSecond: whole.samplesPerSecond, start: a, duration: b - a, peaks }
+    } else {
+      // Whole fetch can't map a window (unknown duration): fetch this
+      // track's own windowed peaks, as before.
+      data = this.resolve({ ownerId: track.id, src: track.src, start: window.start, duration: window.duration }, ctx)
+    }
     if (!data) return null
 
     const dataX0 = sourceTimeToBarFraction(data.start, window)
