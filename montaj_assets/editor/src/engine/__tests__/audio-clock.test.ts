@@ -17,7 +17,6 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { sourceWindow } from '@bycrux/timeline-core'
 import {
   MAX_EXTRAPOLATION_MS,
-  STRETCH_STEP_FRAMES,
   audioTrackIsDecodable,
   createMasterClock,
   createStreamStretch,
@@ -31,6 +30,7 @@ import {
   type ClipTimebase,
 } from '../audio-clock'
 import type { ChunkSource, SampleRef } from '../demux'
+import { STRETCH_LOOKAHEAD_FRAMES, timeStretch } from '../time-stretch'
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -549,10 +549,12 @@ describe('createMasterClock — fallback transport coherence', () => {
   })
 })
 
-// ── Streaming time-stretch (the createAudioClock output-callback wrapper) ─────
+// ── Streaming time-stretch (what the createAudioClock output callback pushes into) ──
 
 describe('createStreamStretch', () => {
   const RATE = 48000
+  /** A size unit for the signals below: ~43ms at 48kHz. */
+  const BLOCK = 2048
 
   /** Mono sine of `freq` Hz, `frames` samples, amplitude 0.5. */
   function sine(freq: number, frames: number, offset = 0): Float32Array {
@@ -596,24 +598,65 @@ describe('createStreamStretch', () => {
   })
 
   it('total output length ≈ input · factor across rates (chunks smaller than one WSOLA frame)', () => {
-    // 960-frame chunks are smaller than the 1024 analysis frame — the whole
-    // reason a streaming wrapper is needed rather than a per-chunk stretch.
-    const total = 40 * STRETCH_STEP_FRAMES // large enough that block-edge loss is a small %
+    // 960-frame chunks are smaller than the 2048 analysis frame; the stream
+    // carries its state across them.
+    const total = 40 * BLOCK // large enough that the held look-ahead is a small %
     for (const factor of [0.25, 0.5, 2, 4]) {
       const out = feedInChunks(440, total, factor)
       const ratio = out.length / (total * factor)
-      // Short by up to ~(context + one leftover block)·factor, negligible at this size.
+      // Short by about the look-ahead·factor, negligible at this size.
       expect(ratio).toBeGreaterThan(0.9)
       expect(ratio).toBeLessThan(1.05)
     }
   })
 
+  it('output does not depend on how the input was chunked', () => {
+    const total = 12 * BLOCK
+    const x = sine(220, total)
+    const one = createStreamStretch(1, 1 / 1.12).push(x)
+    for (const chunk of [1, 960, 2048, 4097]) {
+      const s = createStreamStretch(1, 1 / 1.12)
+      const parts: number[] = []
+      for (let off = 0; off < total; off += chunk) parts.push(...s.push(x.subarray(off, Math.min(total, off + chunk))))
+      expect(parts.length).toBe(one.length)
+      expect(parts.every((v, i) => v === one[i])).toBe(true)
+    }
+  })
+
+  it('is the batch timeStretch, streamed: push then flush gives timeStretch output', () => {
+    const x = sine(180, 6 * BLOCK)
+    const s = createStreamStretch(1, 0.8)
+    const out = [...s.push(x), ...s.flush()]
+    const batch = timeStretch(x, 1, 0.8)
+    expect(out.length).toBeGreaterThanOrEqual(batch.length)
+    expect(batch.every((v, i) => v === out[i])).toBe(true)
+  })
+
+  it('never drifts: cumulative output stays within a fixed bound of input · factor', () => {
+    for (const factor of [1 / 1.12, 1 / 0.9, 0.37, 2.3]) {
+      const s = createStreamStretch(2, factor)
+      let inFrames = 0
+      let outFrames = 0
+      let worst = 0
+      for (let i = 0; i < 300; i++) {
+        const chunk = new Float32Array(2 * 2048)
+        inFrames += 2048
+        outFrames += s.push(chunk).length / 2
+        // Once the look-ahead has filled, output trails by it plus under one hop.
+        if (inFrames < STRETCH_LOOKAHEAD_FRAMES) continue
+        const lag = inFrames * factor - outFrames
+        worst = Math.max(worst, Math.abs(lag - STRETCH_LOOKAHEAD_FRAMES * factor))
+      }
+      expect(worst).toBeLessThanOrEqual(1024 + 1)
+    }
+  })
+
   it('preserves amplitude and never emits NaN/Infinity when slowed or sped', () => {
     for (const factor of [0.5, 2]) {
-      const out = feedInChunks(440, 20 * STRETCH_STEP_FRAMES, factor)
+      const out = feedInChunks(440, 20 * BLOCK, factor)
       expect(finite(out)).toBe(true)
       // Unity-gain overlap-add of an amplitude-0.5 tone stays near 0.5 — not
-      // collapsed to silence (a broken crossfade) nor blown past unity.
+      // collapsed to silence nor blown past unity.
       expect(maxAbs(out)).toBeGreaterThan(0.3)
       expect(maxAbs(out)).toBeLessThan(0.9)
     }
@@ -622,34 +665,58 @@ describe('createStreamStretch', () => {
   it('keeps stereo channels interleaved and finite', () => {
     const s = createStreamStretch(2, 0.5)
     // Interleave a 300Hz L with a silent R.
-    const frames = 8 * STRETCH_STEP_FRAMES
+    const frames = 8 * BLOCK
     const inter = new Float32Array(frames * 2)
     for (let i = 0; i < frames; i++) inter[i * 2] = 0.5 * Math.sin((2 * Math.PI * 300 * i) / RATE)
     const out = s.push(inter)
     expect(out.length % 2).toBe(0)
     expect(finite(out)).toBe(true)
     expect(out.length).toBeGreaterThan(0)
+    for (let i = 1; i < out.length; i += 2) expect(out[i]).toBe(0)
   })
 
-  it('reset() drops buffered input so a partial block never leaks across it', () => {
+  it('reset() drops buffered input so it never leaks into the next stream', () => {
     const s = createStreamStretch(1, 0.5)
-    // Under one block: buffered, nothing emitted yet.
-    expect(s.push(sine(440, 500)).length).toBe(0)
+    // One frame short of the look-ahead: buffered, nothing emitted yet.
+    expect(s.push(sine(440, STRETCH_LOOKAHEAD_FRAMES - 1)).length).toBe(0)
     s.reset()
-    // With the pre-reset 500 dropped, this sub-block push must still buffer, not
-    // complete a block by combining with stale input.
-    const out = s.push(sine(440, STRETCH_STEP_FRAMES - 500))
-    expect(out.length).toBe(0)
+    // With the pre-reset input dropped, one more frame cannot complete a frame.
+    expect(s.push(sine(440, 1)).length).toBe(0)
+    // And after a reset the stream is a fresh one: same input, same output.
+    s.reset()
+    const x = sine(330, 4 * BLOCK)
+    const fresh = createStreamStretch(1, 0.5).push(x)
+    const again = s.push(x)
+    expect(again.length).toBe(fresh.length)
+    expect(again.every((v, i) => v === fresh[i])).toBe(true)
   })
 
-  it('adopts a new factor mid-stream without crashing and stays finite', () => {
+  it('adopts a new factor mid-stream without a gap and stays finite', () => {
     const s = createStreamStretch(1, 2)
-    const a = s.push(sine(440, 4 * STRETCH_STEP_FRAMES))
+    const a = s.push(sine(440, 4 * BLOCK))
     s.setFactor(0.5)
-    const b = s.push(sine(440, 4 * STRETCH_STEP_FRAMES, 4 * STRETCH_STEP_FRAMES))
+    const b = s.push(sine(440, 4 * BLOCK, 4 * BLOCK))
     expect(finite(a)).toBe(true)
     expect(finite(b)).toBe(true)
     expect(a.length).toBeGreaterThan(0)
     expect(b.length).toBeGreaterThan(0)
+    // The state carried over: no frame of the join is silent.
+    const joined = new Float32Array(a.length + b.length)
+    joined.set(a)
+    joined.set(b, a.length)
+    for (let s0 = 1024; s0 + 480 <= joined.length; s0 += 240) {
+      expect(maxAbs(joined.subarray(s0, s0 + 480))).toBeGreaterThan(0.3)
+    }
+  })
+
+  it('setFactor(1) returns to the zero-copy identity and drops the stretched stream', () => {
+    const s = createStreamStretch(1, 0.5)
+    s.push(sine(440, BLOCK))
+    s.setFactor(1)
+    const c = sine(440, 960)
+    expect(s.push(c)).toBe(c)
+    s.setFactor(0.5)
+    // A fresh stream: the pre-identity input is gone.
+    expect(s.push(sine(440, STRETCH_LOOKAHEAD_FRAMES - 1)).length).toBe(0)
   })
 })

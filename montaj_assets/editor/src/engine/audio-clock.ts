@@ -44,7 +44,7 @@
 import { sampleAtOrBefore, type ChunkSource } from './demux'
 import { audioWorkletSource, RING_PROCESSOR_NAME } from './audio-worklet-source'
 import { getSharedAudioContext } from '../video/preview/audio-context'
-import { timeStretch } from './time-stretch'
+import { createStreamStretch } from './time-stretch'
 
 // ── Tuning constants ────────────────────────────────────────────────────────
 
@@ -402,144 +402,15 @@ export function resampleInterleaved(
   return { pcm: out, phase: phase + outFrames * ratio - inFrames }
 }
 
-// ── Streaming time-stretch (wraps the batch WSOLA primitive) ─────────────────
+// ── Streaming time-stretch ───────────────────────────────────────────────────
 
 /**
- * New input frames (per channel) the streamer consumes per WSOLA batch. ~43ms at
- * 48kHz — many decoded Opus packets (~960 frames each), so the batch primitive
- * (`timeStretch`, whose analysis frame is 1024) sees far more than one frame and
- * its similarity search has room to lock. Larger = fewer block joins but more
- * latency before the first stretched audio appears.
+ * The decoder hands us ~20ms packets; `createStreamStretch` (`time-stretch.ts`)
+ * is a natively streaming WSOLA that carries its state across them, so the
+ * output callback pushes each packet as it lands and posts whatever is final.
+ * Re-exported here for the callers and tests that reach it through the clock.
  */
-export const STRETCH_STEP_FRAMES = 2048
-
-/**
- * Input frames (per channel) carried from the tail of one block to the head of
- * the next. The next block re-renders this shared content, and the two
- * independent WSOLA renderings of it are crossfaded — that overlap-add is what
- * hides the phase discontinuity between otherwise-independent batches. One full
- * analysis frame (1024) of lead-in.
- */
-export const STRETCH_CONTEXT_FRAMES = 1024
-
-/**
- * A streaming wrapper over the batch `timeStretch`.
- *
- * `timeStretch` is a whole-buffer WSOLA and the decoder hands us ~20ms packets —
- * smaller than one 1024-sample analysis frame — so it cannot be called
- * per-packet. This accumulates volume-scaled PCM across packets and stretches in
- * `STRETCH_STEP_FRAMES` blocks, carrying `STRETCH_CONTEXT_FRAMES` of INPUT
- * overlap between blocks and crossfading the two renderings of that overlap on
- * the OUTPUT side (the "synthesis overlap"). The seam it hides is the price of
- * wrapping a batch primitive rather than a natively-streaming one; the join is
- * click-free at preview quality, not sample-exact — see `time-stretch.ts`.
- */
-export interface StreamStretch {
-  /**
-   * Stretch a chunk of interleaved PCM, returning whatever whole-block output is
-   * ready now (interleaved, same channel count) — possibly EMPTY while the first
-   * block is still filling. At factor 1 it is a zero-copy identity (the input
-   * buffer itself is returned, no buffering, no added latency), so it agrees with
-   * the caller's own strict bypass.
-   */
-  push(input: Float32Array): Float32Array
-  /** Adopt a new factor. Drops the cross-block carry (a one-block seam); keeps pending input. */
-  setFactor(factor: number): void
-  /** Clear all buffered input and cross-block carry — the ring-reset twin. */
-  reset(): void
-}
-
-/** Concatenate two interleaved buffers (returns the non-empty one directly when possible). */
-function concatPcm(a: Float32Array, b: Float32Array): Float32Array {
-  if (a.length === 0) return b
-  if (b.length === 0) return a
-  const out = new Float32Array(a.length + b.length)
-  out.set(a, 0)
-  out.set(b, a.length)
-  return out
-}
-
-/**
- * Linear crossfade of two equal-length interleaved buffers: `a` fades out while
- * `b` fades in. Both are WSOLA renderings of the SAME content, so a linear blend
- * (not equal-power) is correct — the two are already near-identical and in phase.
- */
-function crossfadePcm(a: Float32Array, b: Float32Array, channels: number): Float32Array {
-  const frames = Math.floor(Math.min(a.length, b.length) / channels)
-  const out = new Float32Array(frames * channels)
-  for (let i = 0; i < frames; i++) {
-    const t = frames > 1 ? i / (frames - 1) : 1
-    for (let ch = 0; ch < channels; ch++) {
-      const idx = i * channels + ch
-      out[idx] = a[idx] * (1 - t) + b[idx] * t
-    }
-  }
-  return out
-}
-
-export function createStreamStretch(channels: number, factor: number): StreamStretch {
-  const step = STRETCH_STEP_FRAMES * channels
-  const context = STRETCH_CONTEXT_FRAMES * channels
-  let f = factor
-  /** Accumulated, not-yet-consumed input (interleaved). */
-  let pending: Float32Array = new Float32Array(0)
-  /** Last CONTEXT frames of the previous block's input — the next block's lead-in. */
-  let tailIn: Float32Array = new Float32Array(0)
-  /** Held output tail (the synthesis overlap) awaiting crossfade with the next block's head. */
-  let heldOut: Float32Array | null = null
-
-  const push = (input: Float32Array): Float32Array => {
-    if (f === 1) return input // strict identity — no buffering, no copy
-    if (input.length > 0) pending = concatPcm(pending, input)
-    // Held-frame count: the output span the carried input context maps to. Same
-    // value for what we HOLD and what we crossfade, so the two always align.
-    const hold = Math.round(STRETCH_CONTEXT_FRAMES * f) * channels
-    let emitted: Float32Array = new Float32Array(0)
-
-    while (pending.length >= step) {
-      const newInput = pending.subarray(0, step)
-      const feed = concatPcm(tailIn, newInput)
-      const out = timeStretch(feed, channels, f)
-      // Keep hold within half the block so `mid` below is never negative.
-      const h = Math.min(hold, Math.floor(out.length / channels / 2) * channels)
-
-      let blockOut: Float32Array
-      if (heldOut && h > 0) {
-        // out[0..h) and heldOut are two renderings of the carried context; blend
-        // them, then take the interior, holding a fresh tail for the next block.
-        const head = crossfadePcm(heldOut, out.subarray(0, h), channels)
-        const mid = out.subarray(h, out.length - h)
-        blockOut = concatPcm(head, mid)
-      } else {
-        // First block after a reset/factor change: nothing to blend with yet.
-        blockOut = out.subarray(0, Math.max(0, out.length - h))
-      }
-      heldOut = h > 0 ? out.slice(out.length - h) : null
-      // Carry the last CONTEXT frames of THIS input as the next block's lead-in.
-      tailIn = newInput.slice(newInput.length - context)
-      pending = pending.slice(step)
-      emitted = concatPcm(emitted, blockOut)
-    }
-    return emitted
-  }
-
-  return {
-    push,
-    setFactor(next: number) {
-      if (next === f) return
-      f = next
-      // Drop the cross-block carry so the next block starts clean at the new
-      // factor; pending input is kept (a smaller seam than dropping it).
-      tailIn = new Float32Array(0)
-      heldOut = null
-    },
-    reset() {
-      pending = new Float32Array(0)
-      tailIn = new Float32Array(0)
-      heldOut = null
-    },
-  }
-}
+export { createStreamStretch, type StreamStretch } from './time-stretch'
 
 /**
  * Can this track's audio be handed to `AudioDecoder` at all?
@@ -825,9 +696,9 @@ async function createAudioClock(
         const scaled = scaleAndInterleavePlanes(planes, frames, 1)
         // Pitch-preserving time-stretch at the DECODED rate, BEFORE the device
         // resample. Strict bypass at factor 1 — `scaled` passes straight through,
-        // exactly as before variable rate. Otherwise the streaming wrapper
-        // accumulates across these tiny (~20ms) packets and emits whole WSOLA
-        // blocks, so `push` returns nothing until a block is ready.
+        // exactly as before variable rate. Otherwise the streaming stretch
+        // carries its WSOLA state across these tiny (~20ms) packets and returns
+        // whatever output is final, nothing while its ~53ms look-ahead fills.
         const stretched = stretchFactor === 1 ? scaled : streamStretch.push(scaled)
         if (stretched.length === 0) return
         const ratio = frame.sampleRate / renderRate
@@ -973,8 +844,8 @@ async function createAudioClock(
     postedFrames = 0
     drainedFrames = 0
     resamplePhase = 0
-    // The stretcher's buffered input and cross-block carry describe the old ring
-    // epoch; drop them so the new epoch's first block starts clean.
+    // The stretcher's buffered input and overlap state describe the old ring
+    // epoch; drop them so the new epoch starts a fresh stream.
     streamStretch.reset()
     feedFailed = false
     lastReportMs = nowMs()
@@ -1071,8 +942,9 @@ async function createAudioClock(
       // continuous across the rate step (no jump).
       const nowProjectS = read()
       transportRate = rate
-      // Re-derive the stretch factor and hand it to the streamer (drops its
-      // cross-block carry, re-blocks at the new factor).
+      // Re-derive the stretch factor and hand it to the streamer (it carries
+      // on at the new factor from its next frame; a playing restart below
+      // resets it anyway).
       stretchFactor = 1 / (rate * clipSpeed)
       streamStretch.setFactor(stretchFactor)
       if (wasPlaying) {

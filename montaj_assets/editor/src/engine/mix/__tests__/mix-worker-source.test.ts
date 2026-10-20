@@ -3,15 +3,15 @@
  *
  * Two layers. The DSP and cache internals come out through the test hook and
  * are tested as functions: the WSOLA port against time-stretch.ts (identical
- * output), the streaming wrapper against audio-clock.ts's, the resampler on a
+ * output, batch and streaming), the resampler on a
  * sine, int16 conversion and the LRU. Then the Worker runs whole: a plan, a
  * transport and clock from a fake worklet port, and an in-memory ranged
  * `fetch`, and the blocks it posts are checked frame by frame against the
  * source they must carry.
  */
 import { describe, it, expect } from 'vitest'
-import { timeStretch } from '../../time-stretch'
-import { createStreamStretch, resampleInterleaved } from '../../audio-clock'
+import { STRETCH_LOOKAHEAD_FRAMES, createStreamStretch, timeStretch } from '../../time-stretch'
+import { resampleInterleaved } from '../../audio-clock'
 import { placeK } from '../mix-protocol'
 import { Bus, fakeFetch, loadWorkerSource, pcmS16, workerRig, type Msg, type WorkerInternals } from './mix-harness'
 
@@ -64,9 +64,9 @@ describe('streaming stretch', () => {
   const w = internals()
   const x = testSignal(48000)
 
-  it('without drift correction, emits exactly what audio-clock.ts createStreamStretch emits', () => {
-    for (const f of [0.5, 1 / 1.1, 1.5]) {
-      const ours = w.createStreamStretch(2, f, false)
+  it('emits exactly what time-stretch.ts createStreamStretch emits, push for push', () => {
+    for (const f of [0.5, 1 / 1.12, 1.5]) {
+      const ours = w.createStreamStretch(2, f)
       const theirs = createStreamStretch(2, f)
       for (let off = 0; off < 48000; off += 960) {
         const chunk = x.slice(off * 2, (off + 960) * 2)
@@ -74,30 +74,36 @@ describe('streaming stretch', () => {
         const b = theirs.push(chunk.slice())
         expect(Array.from(a)).toEqual(Array.from(b))
       }
+      expect(Array.from(ours.flush())).toEqual(Array.from(theirs.flush()))
     }
   })
 
-  it('with drift correction, the cumulative output never leaves the ideal length', () => {
+  it('reads in SRC_CHUNK steps give the same stream as decoder-sized pushes', () => {
+    const f = 1 / 1.12
+    const a = w.createStreamStretch(2, f)
+    const b = w.createStreamStretch(2, f)
+    const outA: number[] = []
+    const outB: number[] = []
+    for (let off = 0; off < 48000; off += 2048) outA.push(...a.push(x.slice(off * 2, Math.min(48000, off + 2048) * 2)))
+    for (let off = 0; off < 48000; off += 960) outB.push(...b.push(x.slice(off * 2, Math.min(48000, off + 960) * 2)))
+    expect(outA).toEqual(outB)
+  })
+
+  it('never drifts: the cumulative output stays within one hop of (input - look-ahead) x factor', () => {
     for (const f of [1 / 1.1, 1 / 0.9, 0.37, 2.3]) {
-      const s = w.createStreamStretch(2, f, true)
+      const s = w.createStreamStretch(2, f)
       let inFrames = 0
       let outFrames = 0
       for (let i = 0; i < 300; i++) {
         const chunk = testSignal(2048)
         inFrames += 2048
         outFrames += s.push(chunk).length / 2
-        const blocks = Math.floor(inFrames / 2048)
-        expect(outFrames).toBe(Math.round((blocks * 2048 - 1024) * f))
+        if (inFrames < STRETCH_LOOKAHEAD_FRAMES) continue
+        const ideal = (inFrames - STRETCH_LOOKAHEAD_FRAMES) * f
+        expect(outFrames).toBeGreaterThan(ideal)
+        expect(outFrames).toBeLessThanOrEqual(ideal + 1024 + 1)
       }
     }
-  })
-
-  it('the uncorrected wrapper does drift, which is why the correction exists', () => {
-    const f = 1 / 1.1
-    const s = w.createStreamStretch(2, f, false)
-    let outFrames = 0
-    for (let i = 0; i < 300; i++) outFrames += s.push(testSignal(2048)).length / 2
-    expect(Math.abs(outFrames - Math.round((300 * 2048 - 1024) * f))).toBeGreaterThan(10)
   })
 })
 

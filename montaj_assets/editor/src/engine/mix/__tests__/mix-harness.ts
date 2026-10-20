@@ -198,8 +198,7 @@ export interface WorkerInternals {
   createStreamStretch(
     channels: number,
     factor: number,
-    exact: boolean,
-  ): { push(input: Float32Array): Float32Array; setFactor(f: number): void; reset(): void }
+  ): { push(input: Float32Array): Float32Array; flush(): Float32Array; setFactor(f: number): void; reset(): void }
   createResampler(ratio: number): {
     push(c: Float32Array): void
     pull(out: Float32Array, off: number, max: number): number

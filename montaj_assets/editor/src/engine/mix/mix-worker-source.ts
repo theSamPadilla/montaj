@@ -27,11 +27,11 @@
  *     `cacheBytes` (64 MB). int16 becomes float32, mono becomes stereo.
  *  4. **Rate.** Per-clip speed times the transport rate is the source seconds
  *     per output second. When its magnitude is not 1 the audio is
- *     time-stretched with the WSOLA from `time-stretch.ts`, ported here line
- *     for line (the tests hold the two to identical output), inside the same
- *     streaming wrapper `audio-clock.ts` uses, plus a drift corrector so a long
- *     stretched segment never slides off the clock. A negative rate reads the
- *     source backwards.
+ *     time-stretched by the streaming WSOLA from `time-stretch.ts`, ported
+ *     here line for line (the tests hold the two to identical output). It
+ *     carries its state across reads and places every frame by its exact
+ *     source position, so a long stretched segment never slides off the clock.
+ *     A negative rate reads the source backwards.
  *  5. **Resampling** from the conformed rate (48 kHz) to the context's, with
  *     4-point, 3rd-order Lagrange interpolation (cubic), streamed with its
  *     phase and history carried across blocks.
@@ -64,7 +64,7 @@ var blockS = 0.25;
 var maxPostS = 0.25;
 var cacheCap = 64 * 1024 * 1024;
 var maxInflight = 6;
-var SRC_CHUNK = 2048;      // source frames read per pipeline step (one WSOLA step)
+var SRC_CHUNK = 2048;      // source frames read per pipeline step
 var RETRY_MS = 500;        // first retry of a failed block; doubles per failure, up to RETRY_MAX_MS
 var RETRY_MAX_MS = 8000;
 var STATS_MS = 1000;
@@ -103,21 +103,25 @@ function fin(v, d) {
 function postMain(msg) { self.postMessage(msg); }
 
 // ── WSOLA: a line-for-line port of time-stretch.ts (keep the two identical) ──
-var FRAME = 1024;
+var FRAME = 2048;
 var SYNTH_HOP = FRAME / 2;
 var OVERLAP = FRAME - SYNTH_HOP;
-var SEARCH = 128;
+var SEARCH = 512;
+var DECIMATE = 4;
+var CENTER_BIAS = 0.3;
 var MAX_STRETCH = 32;
 var WEIGHT_EPSILON = 1e-6;
 var ENERGY_EPSILON = 1e-9;
+var COMPACT_FRAMES = 8192;
+var STRETCH_LOOKAHEAD_FRAMES = SEARCH + FRAME;
+var COARSE_TARGET = OVERLAP / DECIMATE;
+var COARSE_REGION = (2 * SEARCH + OVERLAP) / DECIMATE;
+var COARSE_STEPS = (2 * SEARCH) / DECIMATE;
+var WINDOW = hann(FRAME);
 
 function timeStretch(input, channels, factor) {
-  if (!Number.isFinite(factor) || factor <= 0) {
-    throw new Error('timeStretch: factor must be a finite positive number, got ' + factor);
-  }
-  if (!Number.isInteger(channels) || channels < 1) {
-    throw new Error('timeStretch: channels must be a positive integer, got ' + channels);
-  }
+  checkFactor(factor);
+  checkChannels(channels);
   if (input.length === 0) return new Float32Array(0);
   if (factor === 1) return input.slice();
 
@@ -125,199 +129,254 @@ function timeStretch(input, channels, factor) {
   var inFrames = Math.floor(input.length / channels);
   if (inFrames === 0) return new Float32Array(0);
 
-  var analysisHop = Math.max(1, Math.round(SYNTH_HOP / f));
-  var numFrames = Math.max(1, Math.round(inFrames / analysisHop));
+  var stream = createStreamStretch(channels, f);
+  var head = stream.push(input.subarray(0, inFrames * channels));
+  var tail = stream.flush();
+  var outLen = Math.round(inFrames * f) * channels;
+  var out = new Float32Array(outLen);
+  out.set(head.subarray(0, Math.min(head.length, outLen)));
+  if (head.length < outLen) out.set(tail.subarray(0, Math.min(tail.length, outLen - head.length)), head.length);
+  return out;
+}
 
-  var mono = channels === 1 ? input : downmix(input, channels, inFrames);
-  var win = hann(FRAME);
+function createStreamStretch(channels, factor) {
+  checkFactor(factor);
+  checkChannels(channels);
+  var f = factor;
+  var advance = SYNTH_HOP / Math.min(f, MAX_STRETCH);
 
-  var outFrames = Math.round(inFrames * f);
-  var spanFrames = (numFrames - 1) * SYNTH_HOP + FRAME;
-  var totalFrames = Math.max(spanFrames, outFrames);
-  var out = new Float32Array(totalFrames * channels);
-  var weight = new Float32Array(totalFrames);
+  var store = new Float32Array(0);
+  var mono = store;
+  var base = 0;
+  var held = 0;
+
+  var pos = 0;
+  var prevRead = 0;
+  var hasPrev = false;
+
+  var acc = new Float32Array(FRAME * channels);
+  var weight = new Float32Array(FRAME);
 
   var target = new Float32Array(OVERLAP);
-  var hasTarget = false;
+  var region = new Float32Array(2 * SEARCH + OVERLAP);
+  var coarseTarget = new Float64Array(COARSE_TARGET);
+  var coarseRegion = new Float64Array(COARSE_REGION);
 
-  for (var m = 0; m < numFrames; m++) {
-    var idealPos = m * analysisHop;
-    var readPos = hasTarget ? idealPos + bestOffset(mono, inFrames, idealPos, target) : idealPos;
-    var synthPos = m * SYNTH_HOP;
-
-    for (var ch = 0; ch < channels; ch++) {
-      for (var i = 0; i < FRAME; i++) {
-        var src = readPos + i;
-        if (src < 0 || src >= inFrames) continue;
-        out[(synthPos + i) * channels + ch] += input[src * channels + ch] * win[i];
+  function append(input) {
+    var n = Math.floor(input.length / channels);
+    if (n === 0) return;
+    if ((held + n) * channels > store.length) {
+      var cap = Math.max(16384, store.length / channels);
+      while (cap < held + n) cap *= 2;
+      var next = new Float32Array(cap * channels);
+      next.set(store.subarray(0, held * channels));
+      if (channels === 1) {
+        mono = next;
+      } else {
+        var nextMono = new Float32Array(cap);
+        nextMono.set(mono.subarray(0, held));
+        mono = nextMono;
+      }
+      store = next;
+    }
+    store.set(input.subarray(0, n * channels), held * channels);
+    if (channels > 1) {
+      for (var fr = 0; fr < n; fr++) {
+        var s = 0;
+        for (var ch = 0; ch < channels; ch++) s += input[fr * channels + ch];
+        mono[held + fr] = s / channels;
       }
     }
-    for (var i2 = 0; i2 < FRAME; i2++) weight[synthPos + i2] += win[i2];
-
-    for (var i3 = 0; i3 < OVERLAP; i3++) {
-      var p = readPos + SYNTH_HOP + i3;
-      target[i3] = p >= 0 && p < inFrames ? mono[p] : 0;
-    }
-    hasTarget = true;
+    held += n;
   }
 
-  for (var fr = 0; fr < totalFrames; fr++) {
-    var w = weight[fr];
-    for (var c2 = 0; c2 < channels; c2++) {
-      out[fr * channels + c2] = w > WEIGHT_EPSILON ? out[fr * channels + c2] / w : 0;
+  function monoAt(p) {
+    var i = p - base;
+    return i >= 0 && i < held ? mono[i] : 0;
+  }
+
+  function bestOffset(ideal) {
+    var start = ideal - SEARCH;
+    for (var i = 0; i < region.length; i++) region[i] = monoAt(start + i);
+    for (var j = 0; j < COARSE_TARGET; j++) {
+      var s = 0;
+      for (var q = 0; q < DECIMATE; q++) s += target[j * DECIMATE + q];
+      coarseTarget[j] = s;
+    }
+    for (var j2 = 0; j2 < COARSE_REGION; j2++) {
+      var s2 = 0;
+      for (var q2 = 0; q2 < DECIMATE; q2++) s2 += region[j2 * DECIMATE + q2];
+      coarseRegion[j2] = s2;
+    }
+
+    var energy = 0;
+    for (var j3 = 0; j3 < COARSE_TARGET; j3++) energy += coarseRegion[j3] * coarseRegion[j3];
+    var center = SEARCH / DECIMATE;
+    var bestK = center;
+    var bestScore = -Infinity;
+    for (var k = 0; k <= COARSE_STEPS; k++) {
+      if (k > 0) {
+        var out = coarseRegion[k - 1];
+        var inn = coarseRegion[k + COARSE_TARGET - 1];
+        energy += inn * inn - out * out;
+      }
+      var dot = 0;
+      for (var j4 = 0; j4 < COARSE_TARGET; j4++) dot += coarseRegion[k + j4] * coarseTarget[j4];
+      var score = weigh(energy <= ENERGY_EPSILON ? 0 : dot / Math.sqrt(energy), k * DECIMATE - SEARCH);
+      if (score > bestScore || (score === bestScore && k === center)) {
+        bestScore = score;
+        bestK = k;
+      }
+    }
+
+    var coarse = bestK * DECIMATE - SEARCH;
+    var lo = Math.max(-SEARCH, coarse - DECIMATE);
+    var hi = Math.min(SEARCH, coarse + DECIMATE);
+    var bestOff = coarse;
+    bestScore = fineScore(coarse);
+    for (var off = lo; off <= hi; off++) {
+      if (off === coarse) continue;
+      var sc = fineScore(off);
+      if (sc > bestScore) {
+        bestScore = sc;
+        bestOff = off;
+      }
+    }
+    return bestOff;
+  }
+
+  function fineScore(off) {
+    var at = off + SEARCH;
+    var dot = 0;
+    var energy = 0;
+    for (var i = 0; i < OVERLAP; i++) {
+      var c = region[at + i];
+      dot += c * target[i];
+      energy += c * c;
+    }
+    return weigh(energy <= ENERGY_EPSILON ? 0 : dot / Math.sqrt(energy), off);
+  }
+
+  function step(out, at) {
+    var ideal = Math.round(pos);
+    var readPos = hasPrev ? ideal + bestOffset(ideal) : ideal;
+
+    for (var i = 0; i < FRAME; i++) {
+      var w = WINDOW[i];
+      weight[i] += w;
+      var src = readPos + i - base;
+      if (src < 0 || src >= held) continue;
+      for (var ch = 0; ch < channels; ch++) acc[i * channels + ch] += store[src * channels + ch] * w;
+    }
+
+    for (var i2 = 0; i2 < OVERLAP; i2++) target[i2] = monoAt(readPos + SYNTH_HOP + i2);
+    prevRead = readPos;
+    hasPrev = true;
+    pos += advance;
+
+    emit(out, at);
+    acc.copyWithin(0, SYNTH_HOP * channels);
+    acc.fill(0, (FRAME - SYNTH_HOP) * channels);
+    weight.copyWithin(0, SYNTH_HOP);
+    weight.fill(0, FRAME - SYNTH_HOP);
+  }
+
+  function emit(out, at) {
+    for (var i = 0; i < SYNTH_HOP; i++) {
+      var w = weight[i];
+      for (var ch = 0; ch < channels; ch++) {
+        out[(at + i) * channels + ch] = w > WEIGHT_EPSILON ? acc[i * channels + ch] / w : 0;
+      }
     }
   }
 
-  return out.length === outFrames * channels ? out : out.slice(0, outFrames * channels);
+  function countSteps(limit) {
+    var n = 0;
+    var p = pos;
+    while (limit(Math.round(p))) {
+      n++;
+      p += advance;
+    }
+    return n;
+  }
+
+  function compact() {
+    var keep = Math.min(hasPrev ? prevRead + SYNTH_HOP : Infinity, Math.round(pos) - SEARCH);
+    var drop = keep - base;
+    if (drop < COMPACT_FRAMES || drop > held) return;
+    store.copyWithin(0, drop * channels, held * channels);
+    if (channels > 1) mono.copyWithin(0, drop, held);
+    held -= drop;
+    base += drop;
+  }
+
+  function reset() {
+    base = 0;
+    held = 0;
+    pos = 0;
+    prevRead = 0;
+    hasPrev = false;
+    acc.fill(0);
+    weight.fill(0);
+    target.fill(0);
+  }
+
+  return {
+    push: function (input) {
+      if (f === 1) return input;
+      append(input);
+      var end = base + held;
+      var n = countSteps(function (ideal) { return ideal + STRETCH_LOOKAHEAD_FRAMES <= end; });
+      var out = new Float32Array(n * SYNTH_HOP * channels);
+      for (var k = 0; k < n; k++) step(out, k * SYNTH_HOP);
+      compact();
+      return out;
+    },
+    flush: function () {
+      if (f === 1) {
+        reset();
+        return new Float32Array(0);
+      }
+      var end = base + held;
+      var n = countSteps(function (ideal) { return ideal < end; });
+      var out = new Float32Array((n + 1) * SYNTH_HOP * channels);
+      for (var k = 0; k < n; k++) step(out, k * SYNTH_HOP);
+      emit(out, n * SYNTH_HOP);
+      reset();
+      return out;
+    },
+    setFactor: function (next) {
+      checkFactor(next);
+      if (next === f) return;
+      f = next;
+      advance = SYNTH_HOP / Math.min(f, MAX_STRETCH);
+      if (f === 1) reset();
+    },
+    reset: reset,
+  };
+}
+
+function checkFactor(factor) {
+  if (!Number.isFinite(factor) || factor <= 0) {
+    throw new Error('timeStretch: factor must be a finite positive number, got ' + factor);
+  }
+}
+
+function checkChannels(channels) {
+  if (!Number.isInteger(channels) || channels < 1) {
+    throw new Error('timeStretch: channels must be a positive integer, got ' + channels);
+  }
+}
+
+function weigh(score, off) {
+  var o = off / SEARCH;
+  return score * (1 - CENTER_BIAS * o * o);
 }
 
 function hann(n) {
   var w = new Float32Array(n);
   for (var i = 0; i < n; i++) w[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / n));
   return w;
-}
-
-function downmix(input, channels, inFrames) {
-  var mono = new Float32Array(inFrames);
-  for (var fr = 0; fr < inFrames; fr++) {
-    var s = 0;
-    for (var ch = 0; ch < channels; ch++) s += input[fr * channels + ch];
-    mono[fr] = s / channels;
-  }
-  return mono;
-}
-
-function bestOffset(mono, inFrames, idealPos, target) {
-  var bestOff = 0;
-  var bestScore = correlate(mono, inFrames, idealPos, target);
-  for (var off = -SEARCH; off <= SEARCH; off++) {
-    if (off === 0) continue;
-    var score = correlate(mono, inFrames, idealPos + off, target);
-    if (score > bestScore) {
-      bestScore = score;
-      bestOff = off;
-    }
-  }
-  return bestOff;
-}
-
-function correlate(mono, inFrames, pos, target) {
-  var dot = 0;
-  var energy = 0;
-  for (var i = 0; i < OVERLAP; i++) {
-    var p = pos + i;
-    var c = p >= 0 && p < inFrames ? mono[p] : 0;
-    dot += c * target[i];
-    energy += c * c;
-  }
-  return energy <= ENERGY_EPSILON ? 0 : dot / Math.sqrt(energy);
-}
-
-// ── Streaming stretch: audio-clock.ts's createStreamStretch, plus drift ─────
-var STRETCH_STEP_FRAMES = 2048;
-var STRETCH_CONTEXT_FRAMES = 1024;
-
-function concatPcm(a, b) {
-  if (a.length === 0) return b;
-  if (b.length === 0) return a;
-  var out = new Float32Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-function crossfadePcm(a, b, channels) {
-  var frames = Math.floor(Math.min(a.length, b.length) / channels);
-  var out = new Float32Array(frames * channels);
-  for (var i = 0; i < frames; i++) {
-    var t = frames > 1 ? i / (frames - 1) : 1;
-    for (var ch = 0; ch < channels; ch++) {
-      var idx = i * channels + ch;
-      out[idx] = a[idx] * (1 - t) + b[idx] * t;
-    }
-  }
-  return out;
-}
-
-// exact: hold the cumulative output to round((stepsIn * 2048 - 1024) * factor)
-// frames by padding or trimming one frame at a block's end. Off, the output is
-// identical to audio-clock.ts's createStreamStretch; on, a long stretched
-// segment cannot drift from the clock (each block's integer rounding would
-// otherwise accumulate, about 0.1 ms per second at speed 1.1).
-function createStreamStretch(channels, factor, exact) {
-  var step = STRETCH_STEP_FRAMES * channels;
-  var context = STRETCH_CONTEXT_FRAMES * channels;
-  var f = factor;
-  var pending = new Float32Array(0);
-  var tailIn = new Float32Array(0);
-  var heldOut = null;
-  var blocks = 0;   // blocks emitted since the last reset or factor change
-  var emittedFrames = 0;
-
-  function correct(emitted) {
-    var ideal = Math.round((blocks * STRETCH_STEP_FRAMES - STRETCH_CONTEXT_FRAMES) * f);
-    var have = emittedFrames + emitted.length / channels;
-    var debt = ideal - have;
-    if (debt === 0) return emitted;
-    var frames = emitted.length / channels;
-    var keep = Math.max(0, frames + debt);
-    var out = new Float32Array(keep * channels);
-    out.set(emitted.subarray(0, Math.min(keep, frames) * channels));
-    for (var i = frames; i < keep; i++) {
-      for (var ch = 0; ch < channels; ch++) out[i * channels + ch] = emitted[(frames - 1) * channels + ch];
-    }
-    return out;
-  }
-
-  function push(input) {
-    if (f === 1) return input;
-    if (input.length > 0) pending = concatPcm(pending, input);
-    var hold = Math.round(STRETCH_CONTEXT_FRAMES * f) * channels;
-    var emitted = new Float32Array(0);
-
-    while (pending.length >= step) {
-      var newInput = pending.subarray(0, step);
-      var feed = concatPcm(tailIn, newInput);
-      var out = timeStretch(feed, channels, f);
-      var h = Math.min(hold, Math.floor(out.length / channels / 2) * channels);
-
-      var blockOut;
-      if (heldOut && h > 0) {
-        var head = crossfadePcm(heldOut, out.subarray(0, h), channels);
-        var mid = out.subarray(h, out.length - h);
-        blockOut = concatPcm(head, mid);
-      } else {
-        blockOut = out.subarray(0, Math.max(0, out.length - h));
-      }
-      heldOut = h > 0 ? out.slice(out.length - h) : null;
-      tailIn = newInput.slice(newInput.length - context);
-      pending = pending.slice(step);
-      emitted = concatPcm(emitted, blockOut);
-      blocks++;
-    }
-    if (exact && blocks > 0 && emitted.length > 0) emitted = correct(emitted);
-    emittedFrames += emitted.length / channels;
-    return emitted;
-  }
-
-  return {
-    push: push,
-    setFactor: function (next) {
-      if (next === f) return;
-      f = next;
-      tailIn = new Float32Array(0);
-      heldOut = null;
-      blocks = 0;
-      emittedFrames = 0;
-    },
-    reset: function () {
-      pending = new Float32Array(0);
-      tailIn = new Float32Array(0);
-      heldOut = null;
-      blocks = 0;
-      emittedFrames = 0;
-    },
-  };
 }
 
 // ── Resampler: 4-point, 3rd-order Lagrange, streaming, stereo ─────────────
@@ -636,7 +695,7 @@ function createStream(s, kFrom) {
     dir: v < 0 ? -1 : 1,
     absV: absV,
     srcNext: Math.round((s.srcIn + (tl - s.tlStart) * s.speed) * s.sampleRate),
-    stretch: Math.abs(absV - 1) > 1e-9 ? createStreamStretch(2, 1 / absV, true) : null,
+    stretch: Math.abs(absV - 1) > 1e-9 ? createStreamStretch(2, 1 / absV) : null,
     waiting: false,
     resampling: s.sampleRate !== outRate,
     // A resampled stream that starts mid-file, unstretched and forwards, hands
@@ -707,7 +766,7 @@ function prefetch(st, targetK) {
   var bf = blockFrames(s);
   var total = fileFrames(s);
   var need = Math.ceil((targetK - st.nextK) * st.absV * s.sampleRate / outRate)
-    + SRC_CHUNK + (st.stretch ? STRETCH_STEP_FRAMES + STRETCH_CONTEXT_FRAMES : 0) + 4;
+    + SRC_CHUNK + (st.stretch ? STRETCH_LOOKAHEAD_FRAMES : 0) + 4;
   var lo = st.dir > 0 ? st.srcNext : st.srcNext - need;
   var hi = st.dir > 0 ? st.srcNext + need : st.srcNext + 1;
   lo = Math.max(lo, 0);
