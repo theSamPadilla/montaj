@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from serve.common import (
     resolve_workspace, find_project_dir, _is_under, _allowed_file_roots,
-    not_found, bad_request, server_error, forbidden,
+    not_found, bad_request, server_error, forbidden, lands_on_project_file,
 )
 from serve.sse import sse_stream, SSEBroadcaster, JSX_GLOBAL_CHANNEL
 from cli.deps import render_runtime_dir
@@ -26,18 +26,8 @@ CAPTION_STYLES = {"word-by-word", "pop", "karaoke", "subtitle", "highlight-box",
 # ntpath.isabs, never by patching os.path.isabs or sys.platform globally.
 _is_abs = os.path.isabs
 
-# §477: a project's own files. A write here would bypass the project lock and the save
-# guard, so only save_project (and serve's own writers) touch them.
-_PROTECTED_NAMES = {"project.json", "project.json.tmp", ".project.lock"}
 PROJECT_FILE_PROTECTED_MESSAGE = ("project.json and the project's lock file can't be written as files. "
                                   "Change a project with save_project.")
-
-
-def _protected(path) -> bool:
-    """The last segment, by either slash, lowercased and without the trailing dots and
-    spaces Windows ignores, is one of the project's own files."""
-    base = re.split(r"[\\/]", str(path))[-1].rstrip(". ").lower()
-    return base in _PROTECTED_NAMES
 
 
 async def save_upload(file: UploadFile, dest_dir: Path) -> Path:
@@ -171,10 +161,12 @@ async def write_file(request: Request):
     if not isinstance(content, str):
         raise bad_request("bad_request", "content must be a string")
 
-    if _protected(raw_path):
+    if lands_on_project_file(raw_path):
         raise bad_request("project_file_protected", PROJECT_FILE_PROTECTED_MESSAGE)
 
     p = Path(raw_path)
+    if re.split(r"[\\/]", raw_path)[-1] in ("", ".", ".."):
+        raise bad_request("bad_request", f"path must name a file: {raw_path!r}")
     workspace_root = resolve_workspace().resolve()
 
     # Resolve the parent directory — we check the parent (not the file itself,
@@ -190,12 +182,13 @@ async def write_file(request: Request):
     # Use the canonical absolute path derived from the parent so we don't
     # resolve a non-existent file (which would silently keep the raw path).
     resolved = resolved_parent / p.name
-    # A symlink under another name may still land on one.
+    # A symlink under another name, or a name the filesystem folds onto one, may still
+    # land on one: checked by name and as the same file on disk.
     try:
         landing = resolved.resolve()
     except OSError:
         landing = resolved
-    if _protected(landing):
+    if lands_on_project_file(resolved, landing):
         raise bad_request("project_file_protected", PROJECT_FILE_PROTECTED_MESSAGE)
 
     # Create parent dirs (a spec may be the first file in a subdir)

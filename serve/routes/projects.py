@@ -29,7 +29,7 @@ from serve.common import (
     resolve_workspace, find_project_dir, get_project_dir, is_nested_project_json,
     run_subprocess,
     not_found, bad_request, forbidden, server_error,
-    validate_project_subpath, _is_under,
+    validate_project_subpath, _is_under, lands_on_project_file,
 )
 from serve import context as context_store
 from serve.caption_job import build_audio_mix_spec, caption_input_change, caption_input_fingerprint
@@ -5100,6 +5100,12 @@ async def delete_files(
             # extract the code for the per-item result.
             err_code = e.detail["error"] if isinstance(e.detail, dict) else "validation_error"
             results.append({"path": raw, "status": "error", "error": err_code})
+            continue
+        # §477: project.json and its lock go only through save_project, never deleted as files.
+        # By name (a case-folding filesystem lands project.jſon on project.json) and as the
+        # same file on disk, for the given path and the resolved one (a symlink to it).
+        if lands_on_project_file(project_dir / raw, target):
+            results.append({"path": raw, "status": "error", "error": "project_file_protected"})
             continue
         try:
             if target.is_dir() and not target.is_symlink():
