@@ -138,6 +138,13 @@ export function useProjectSync<P extends Project = Project>(
   // Reset to null after a successful commit or a non-transient mutation.
   const transientBaseline = useRef<P | null>(null)
 
+  // True when an external frame cleared the baseline of a gesture in progress:
+  // the pre-gesture document is gone, so the next commit() cannot say what the
+  // gesture changed and passes `before: undefined`. Reset when a new gesture
+  // starts and after every commit. A commit with no transient changes at all is
+  // different: nothing changed, so it passes the current project as `before`.
+  const baselineLost = useRef(false)
+
   // Synchronously-updated mirror of reducer state. Written in the render phase
   // (below) AND inside every mutation path after computing `next`. The same-tick
   // writes are critical: a caller (e.g. `commit()` invoked immediately after a
@@ -175,6 +182,7 @@ export function useProjectSync<P extends Project = Project>(
     const reconcile = reconcileRef.current
     const next = reconcile ? reconcile(base, incoming) : incoming
     projectRef.current = next
+    if (transientBaseline.current !== null) baselineLost.current = true
     transientBaseline.current = null
     setProject(next)
   }, [])
@@ -281,6 +289,7 @@ export function useProjectSync<P extends Project = Project>(
     const base = projectRef.current
     if (transientBaseline.current === null) {
       transientBaseline.current = base
+      baselineLost.current = false
     }
     const next = fn(base)
     projectRef.current = next
@@ -294,6 +303,8 @@ export function useProjectSync<P extends Project = Project>(
     const current = projectRef.current
     const baseline = transientBaseline.current
     transientBaseline.current = null
+    const lost = baselineLost.current
+    baselineLost.current = false
     if (baseline !== null) {
       pushUndo(baseline, current)
       onLocalEditRef.current?.()
@@ -301,7 +312,7 @@ export function useProjectSync<P extends Project = Project>(
     const rollbackTo = baseline ?? current
     const removed = baseline !== null ? keysAdded(current, baseline) : []
     return queue.current.enqueue(() =>
-      save(current, rollbackTo, removed, baseline ?? undefined).catch((err) => {
+      save(current, rollbackTo, removed, baseline ?? (lost ? undefined : current)).catch((err) => {
         setLastError(err instanceof Error ? err.message : String(err))
         throw err
       }),

@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
-- Changed: `saveProject` receives the document as it was before the edit as an optional third argument.
+- Changed: `saveProject` receives the document as it was before the edit as an optional third argument, absent when the core cannot say (for example an external change arrived mid-gesture). A commit with no changes passes the current project.
 
 ## 2.6.0
 

@@ -731,6 +731,68 @@ describe('useProjectSync — saveProject receives the document before the edit',
     expect(adapter.saveCalls[0].before).toBeUndefined()
   })
 
+  it('a commit with no transient changes still saves, and passes the current project as before (not undefined)', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveCalls).toHaveLength(1)
+    expect(adapter.saveCalls[0].argc).toBe(3)
+    expect(adapter.saveCalls[0].before).toBe(initial)
+    expect(adapter.saveCalls[0].project).toEqual(initial)
+  })
+
+  it('an external frame with no gesture in progress does not make the next empty commit undefined', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    act(() => { result.current.applyExternal(named('External')) })
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveCalls[0].before?.name).toBe('External')
+  })
+
+  it('a gesture started after an external frame has a baseline again', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    act(() => { result.current.mutateTransient((p) => ({ ...p, name: 'Drag' })) })
+    act(() => { result.current.applyExternal(named('External')) })
+    act(() => { result.current.mutateTransient((p) => ({ ...p, name: 'Drag 2' })) })
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveCalls[0].argc).toBe(3)
+    expect(adapter.saveCalls[0].before?.name).toBe('External')
+    expect(adapter.saveCalls[0].project.name).toBe('Drag 2')
+  })
+
+  it('after a refused gesture, the next gesture and the next empty commit are normal', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    act(() => { result.current.mutateTransient((p) => ({ ...p, name: 'Drag' })) })
+    act(() => { result.current.applyExternal(named('External')) })
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveCalls[0].before).toBeUndefined()
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveCalls[1].before?.name).toBe('External')
+    act(() => { result.current.mutateTransient((p) => ({ ...p, name: 'Next' })) })
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveCalls[2].before?.name).toBe('External')
+  })
+
+  it('two gestures in a row: each passes its own pre-gesture document', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    act(() => { result.current.mutateTransient((p) => ({ ...p, name: 'G1' })) })
+    await act(async () => { await result.current.commit() })
+    act(() => { result.current.mutateTransient((p) => ({ ...p, name: 'G2' })) })
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveCalls.map((c) => [c.before?.name, c.project.name])).toEqual([
+      ['Test Project', 'G1'],
+      ['G1', 'G2'],
+    ])
+  })
+
   it('a failed save still rolls back, and before was passed', async () => {
     const adapter = makeFakeAdapter({ failSave: true })
     const initial = makeProject()
