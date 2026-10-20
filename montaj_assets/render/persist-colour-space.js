@@ -11,38 +11,58 @@
 // an old copy.
 //
 // REMAINING WINDOW: Node has no flock and the Python project lock
-// (lib/project_lock.py) is flock-based, so this cannot take it. A write that
-// lands between the re-read below and the rename (microseconds) can still be
-// lost. The heal only writes when colorSpace is unset, so the loss only means
-// the next render detects the colour again.
+// (lib/project_lock.py) is flock-based, so this cannot take it. The rename
+// puts back the copy read just before, so a write that lands between the
+// re-read and the rename (a human edit or an AI save through serve) is
+// ERASED, not merely delayed. The window is the read, stringify, temp write
+// and rename: milliseconds for a large project, not microseconds. It is
+// narrowed, not closed, by comparing project.json's size, mtime and inode
+// just before the rename and skipping the rename when any changed (a write
+// inside the last few microseconds still slips through). The follow-up that
+// closes it: let serve save the detected value under its own project lock.
 //
 // Temp name matches lib/project_lock.write_json_atomic:
 // project.json.<pid>.<hex>.tmp, so serve's temp sweep recognises it.
-import { readFileSync, writeFileSync, renameSync, unlinkSync } from 'fs'
+import { readFileSync, writeFileSync, renameSync, unlinkSync, statSync } from 'fs'
 import { randomBytes } from 'crypto'
 
 const NOOP_LOG = () => {}
 
 export function persistColorSpace(absProjectPath, colorSpace, { fsImpl, log = NOOP_LOG } = {}) {
-  const fs = { readFileSync, writeFileSync, renameSync, unlinkSync, ...(fsImpl ?? {}) }
+  const fs = { readFileSync, writeFileSync, renameSync, unlinkSync, statSync, ...(fsImpl ?? {}) }
   const tmp = `${absProjectPath}.${process.pid}.${randomBytes(16).toString('hex')}.tmp`
   let tmpMade = false
+  let step = 'read'
+  const ident = (st) => `${st.size}:${st.mtimeMs}:${st.ino}`
   try {
     // Fresh read: the in-memory project has absolute srcs and must not be
     // serialised; and the file may have changed since detection.
+    const before = ident(fs.statSync(absProjectPath))
     const raw = JSON.parse(fs.readFileSync(absProjectPath, 'utf8'))
     const current = raw.settings?.colorSpace
     if (current != null && current !== '') return { written: false }
     raw.settings = { ...(raw.settings ?? {}), colorSpace }
+    const text = JSON.stringify(raw, null, 2)
     tmpMade = true
-    fs.writeFileSync(tmp, JSON.stringify(raw, null, 2))
+    step = 'write'
+    fs.writeFileSync(tmp, text)
+    if (ident(fs.statSync(absProjectPath)) !== before) {
+      fs.unlinkSync(tmp)
+      tmpMade = false
+      log('project.json changed while the colorSpace write-back was prepared; skipped it, the next render detects it again')
+      return { written: false, reason: 'changed' }
+    }
+    step = 'rename'
     fs.renameSync(tmp, absProjectPath)
     tmpMade = false
     return { written: true }
   } catch (e) {
     if (tmpMade) { try { fs.unlinkSync(tmp) } catch { /* already gone */ } }
-    const why = ['EACCES', 'EROFS', 'EPERM'].includes(e?.code) ? 'project folder is read-only' : (e?.message ?? String(e))
-    log(`could not write colorSpace back to project.json (${why}); continuing, the next render detects it again`)
+    let msg
+    if (step === 'rename' && e?.code === 'EPERM') msg = 'could not replace project.json (in use)'
+    else if (step === 'write' && ['EROFS', 'EACCES'].includes(e?.code)) msg = 'could not write colorSpace back to project.json (project folder is read-only)'
+    else msg = `could not write colorSpace back to project.json (${e?.message ?? String(e)})`
+    log(`${msg}; continuing, the next render detects it again`)
     return { written: false, error: e }
   }
 }

@@ -6,7 +6,7 @@
 // (used to run the same tests against the old inline logic).
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, chmodSync, renameSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, chmodSync, renameSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -109,6 +109,7 @@ test('(e) read-only folder: no throw, no temp left, a log line', () => {
   const r = persistColorSpace(p, 'hlg', { log: (m) => logs.push(m), fsImpl: { writeFileSync: () => { throw eacces } } })
   assert.equal(r.written, false)
   assert.equal(logs.length, 1)
+  assert.match(logs[0], /read-only/)
   assert.equal(readFileSync(p, 'utf8'), text)
   noTemps(d)
 })
@@ -121,7 +122,59 @@ test('(e) a failing rename: no throw, temp removed, a log line', () => {
   const r = persistColorSpace(p, 'hlg', { log: (m) => logs.push(m), fsImpl: { renameSync: () => { throw Object.assign(new Error('x'), { code: 'EPERM' }) } } })
   assert.equal(r.written, false)
   assert.equal(logs.length, 1)
+  assert.match(logs[0], /could not replace project\.json \(in use\)/)
+  assert.doesNotMatch(logs[0], /read-only/)
   assert.equal(readFileSync(p, 'utf8'), text)
+  noTemps(d)
+})
+
+// Window narrowing: a hook that runs after the temp is written, before the rename.
+function hooked(p, mutate) {
+  return { writeFileSync: (f, t) => { writeFileSync(f, t); mutate() } }
+}
+
+test('(g) a write landing after the temp is written is not overwritten (size change)', () => {
+  const d = folder(), p = join(d, 'project.json')
+  writeFileSync(p, JSON.stringify(baseProject(), null, 2))
+  const edited = JSON.stringify({ ...baseProject(), name: 'human edit' }, null, 2)
+  const logs = []
+  const r = persistColorSpace(p, 'hlg', { log: (m) => logs.push(m), fsImpl: hooked(p, () => writeFileSync(p, edited)) })
+  assert.equal(r.written, false)
+  assert.equal(r.reason, 'changed')
+  assert.equal(logs.length, 1)
+  assert.equal(readFileSync(p, 'utf8'), edited)
+  noTemps(d)
+})
+
+test('(g) an mtime-only change is detected', () => {
+  const d = folder(), p = join(d, 'project.json')
+  const text = JSON.stringify(baseProject(), null, 2)
+  writeFileSync(p, text)
+  const r = persistColorSpace(p, 'hlg', { log: () => {}, fsImpl: hooked(p, () => utimesSync(p, new Date(), new Date(Date.now() + 5000))) })
+  assert.equal(r.reason, 'changed')
+  assert.equal(readFileSync(p, 'utf8'), text)
+  noTemps(d)
+})
+
+test('(g) an inode change (file replaced by another writer rename) is detected', () => {
+  const d = folder(), p = join(d, 'project.json')
+  const text = JSON.stringify(baseProject(), null, 2)
+  writeFileSync(p, text)
+  const r = persistColorSpace(p, 'hlg', { log: () => {}, fsImpl: hooked(p, () => {
+    const o = p + '.other'; writeFileSync(o, text); renameSync(o, p) // same size and content, new inode
+  }) })
+  assert.equal(r.written, false)
+  assert.equal(r.reason, 'changed')
+  assert.equal(readFileSync(p, 'utf8'), text)
+  noTemps(d)
+})
+
+test('(g) an unchanged file still gets renamed', () => {
+  const d = folder(), p = join(d, 'project.json')
+  writeFileSync(p, JSON.stringify(baseProject(), null, 2))
+  const r = persistColorSpace(p, 'hlg', { log: () => {}, fsImpl: hooked(p, () => {}) })
+  assert.equal(r.written, true)
+  assert.equal(JSON.parse(readFileSync(p, 'utf8')).settings.colorSpace, 'hlg')
   noTemps(d)
 })
 
