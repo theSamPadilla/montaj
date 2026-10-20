@@ -2,6 +2,7 @@
 import asyncio
 import mimetypes
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,19 @@ CAPTION_STYLES = {"word-by-word", "pop", "karaoke", "subtitle", "highlight-box",
 # for str paths); tests prove Windows behaviour by swapping this to
 # ntpath.isabs, never by patching os.path.isabs or sys.platform globally.
 _is_abs = os.path.isabs
+
+# §477: a project's own files. A write here would bypass the project lock and the save
+# guard, so only save_project (and serve's own writers) touch them.
+_PROTECTED_NAMES = {"project.json", "project.json.tmp", ".project.lock"}
+PROJECT_FILE_PROTECTED_MESSAGE = ("project.json and the project's lock file can't be written as files. "
+                                  "Change a project with save_project.")
+
+
+def _protected(path) -> bool:
+    """The last segment, by either slash, lowercased and without the trailing dots and
+    spaces Windows ignores, is one of the project's own files."""
+    base = re.split(r"[\\/]", str(path))[-1].rstrip(". ").lower()
+    return base in _PROTECTED_NAMES
 
 
 async def save_upload(file: UploadFile, dest_dir: Path) -> Path:
@@ -157,6 +171,9 @@ async def write_file(request: Request):
     if not isinstance(content, str):
         raise bad_request("bad_request", "content must be a string")
 
+    if _protected(raw_path):
+        raise bad_request("project_file_protected", PROJECT_FILE_PROTECTED_MESSAGE)
+
     p = Path(raw_path)
     workspace_root = resolve_workspace().resolve()
 
@@ -173,6 +190,13 @@ async def write_file(request: Request):
     # Use the canonical absolute path derived from the parent so we don't
     # resolve a non-existent file (which would silently keep the raw path).
     resolved = resolved_parent / p.name
+    # A symlink under another name may still land on one.
+    try:
+        landing = resolved.resolve()
+    except OSError:
+        landing = resolved
+    if _protected(landing):
+        raise bad_request("project_file_protected", PROJECT_FILE_PROTECTED_MESSAGE)
 
     # Create parent dirs (a spec may be the first file in a subdir)
     resolved.parent.mkdir(parents=True, exist_ok=True)
