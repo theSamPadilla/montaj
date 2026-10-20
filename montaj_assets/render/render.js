@@ -51,6 +51,7 @@ import { compose, embedThumbnail, planCompose, startCompose, encodeComposeGroups
 import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { requireValidKey, detectFromTransfer, smartDetect, isHdr, specFor, DEFAULT_COLOR_SPACE } from './color-space.js'
+import { persistColorSpace }              from './persist-colour-space.js'
 import { pMap }                           from './p-map.js'
 import { visibleVideoItems, effectiveColorSpace } from './visible-video.js'
 import { fileHasAudio, probeVideoGeometry } from './encode-segment.js'
@@ -718,12 +719,9 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   if (downgraded) log(`rendering in SDR: ${settings.colorSpace} is only the project default and no video on screen is HDR`)
   if (detectedFrom != null) {
     log(`colorSpace not set — smart-detected ${projectColorSpace} from ${detectedFrom} clip(s); writing back to project.json`)
-    // Re-read the raw JSON to patch settings.colorSpace — projectJson in memory
-    // has been mutated by resolveProjectPaths (relative srcs → absolute), and
-    // serialising that would corrupt the on-disk project.json.
-    const rawProject = JSON.parse(readFileSync(absProjectPath, 'utf8'))
-    rawProject.settings = { ...(rawProject.settings ?? {}), colorSpace: projectColorSpace }
-    writeFileSync(absProjectPath, JSON.stringify(rawProject, null, 2))
+    // Re-reads the raw JSON itself (projectJson in memory has absolute srcs) and
+    // writes atomically; see persist-colour-space.js.
+    persistColorSpace(absProjectPath, projectColorSpace, { log })
   }
 
   // 2b. Export plan — what this render emits, and where compose writes. Resolved
