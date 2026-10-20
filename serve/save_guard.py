@@ -154,6 +154,24 @@ def check_save(headers, body: dict, raw_text, existing: dict):
                                      "message": missing_message(missing)})
 
 
+def check_read(headers, raw_text, existing: dict, fields) -> None:
+    """For a route that accepts `read` without requiring it (the caption translation): run
+    under the project lock before anything is written. Every one of fields the request sent
+    a revision for must still have it, or the write is refused as stale; a field it sent
+    nothing for is left to the route's own checks."""
+    if not enabled():
+        return
+    read = _read_header(headers if headers is not None else {})
+    sent = [f for f in fields if read and isinstance(read.get(f), str) and read[f]]
+    if not sent:
+        return
+    now = current_revisions(raw_text, existing, sent)
+    stale = project_revisions.stale_fields(None, sent, read, revisions=now)["stale"]
+    if stale:
+        raise HTTPException(409, detail={"error": "project_changed", "stale": stale, "missing": [],
+                                         "message": stale_message(stale, [])})
+
+
 def _header_value(names) -> str:
     # A top-level key can be any string; a header value must be latin-1.
     return ",".join(names).encode("ascii", "backslashreplace").decode("ascii")

@@ -5974,7 +5974,11 @@ async def caption_translation(project_id: str, body: dict = Body(...), request: 
         raise bad_request("bad_body", "Send {lang, phrases} and/or {show}.")
     project_path = project_dir / "project.json"
     async with project_lock_async(project_path):
-        project = json.loads(project_path.read_text())
+        raw = project_path.read_text()
+        project = json.loads(raw)
+        # A request that read the captions' revision is compared here (§477); without one,
+        # apply_translation's source-words check is the guard.
+        save_guard.check_read(getattr(request, "headers", None), raw, project, ["captions"])
         try:
             captions = project.get("captions")
             if "phrases" in body:
