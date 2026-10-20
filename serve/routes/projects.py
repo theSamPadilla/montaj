@@ -1,8 +1,10 @@
 """POST /run and all /projects/{id}* endpoints, plus _git_commit_sync helper."""
 import asyncio
+import contextlib
 import errno
 import io
 import json
+import logging
 import math
 import mimetypes
 import re
@@ -39,7 +41,7 @@ from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, canvas_f
 from lib.ingest import ingest_source
 from lib.project_versions import commit_version
 from lib.fs_remove import rmtree_force
-from lib.project_lock import project_lock, write_json_atomic
+from lib.project_lock import ProjectLockTimeout, project_lock, project_lock_async, write_json_atomic
 from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwargs
 from lib.overlay_validation import overlay_item_errors
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
@@ -66,6 +68,8 @@ from lib.workflow import read_workflow
 from lib.normalize import SEEK_PREROLL_S
 from cli.deps import render_runtime_dir
 from project.carousel_normalize import normalize_carousel_assets
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -440,7 +444,7 @@ async def _run_ingest_detached(
         # Read fresh right before the append+write to minimize clobbering a
         # concurrent editor save (mirrors the caption pipeline's late read).
         project_path = Path(project_dir) / "project.json"
-        with project_lock(project_path):
+        async with project_lock_async(project_path):
             project = json.loads(project_path.read_text())
             clip = {"id": _next_clip_id(project), **clip}
             project.setdefault("sources", []).append(clip)
@@ -794,8 +798,9 @@ async def _run_source_download(
                 if not path or not os.path.isfile(path):
                     code, path = "failed", None
             if code is not None:
-                _fail_source_download(project_id, project_dir, url, video_id, job_id, code,
-                                      broadcaster, remove_partials=True)
+                async with project_lock_async(project_dir / "project.json"):
+                    _fail_source_download(project_id, project_dir, url, video_id, job_id, code,
+                                          broadcaster, remove_partials=True)
                 return
         await _finalize_source_download(project_id, project_dir, url, path, job_id, broadcaster)
     except asyncio.CancelledError:
@@ -805,8 +810,9 @@ async def _run_source_download(
         # A finalize that failed on a complete file keeps the file (a clip
         # already in `sources` may point at it); only yt-dlp's failures above
         # remove what it wrote.
-        _fail_source_download(project_id, project_dir, url, video_id, job_id, "failed",
-                              broadcaster, remove_partials=False, message=str(e))
+        async with project_lock_async(project_dir / "project.json"):
+            _fail_source_download(project_id, project_dir, url, video_id, job_id, "failed",
+                                  broadcaster, remove_partials=False, message=str(e))
     finally:
         if proc is not None and _source_download_procs.get(project_id) is proc:
             del _source_download_procs[project_id]
@@ -835,7 +841,7 @@ async def _finalize_source_download(
     # export conforms anything else inline. The proxy is queued below.
     clip = await asyncio.to_thread(ingest_source, str(project_dir), path, color_space, "lazy", proxy=False)
 
-    with project_lock(project_path):
+    async with project_lock_async(project_path):
         try:
             project = json.loads(project_path.read_text())
         except (OSError, ValueError):
@@ -950,8 +956,9 @@ async def retry_source_download(project_id: str, request: Request, project_dir: 
     if not parsed["ok"]:
         raise bad_request("invalid_clip_url", "The download's link is not a YouTube watch or youtu.be link")
     # No await since the read above, so the record is still the failed one.
-    started = _start_source_download(project_id, project_dir, record["url"], parsed["id"],
-                                     request.app.state.broadcaster)
+    async with project_lock_async(project_dir / "project.json"):
+        started = _start_source_download(project_id, project_dir, record["url"], parsed["id"],
+                                         request.app.state.broadcaster)
     if started is None:
         raise HTTPException(409, detail={"error": "not_failed", "message": "This download is already running."})
     return {"sourceDownload": started["sourceDownload"]}
@@ -1610,10 +1617,10 @@ async def run_project(request: Request, response: Response, body: dict = Body(..
         return project
     # Returned WITH the record, so the editor's first paint has the spinner.
     project_dir = find_project_dir(resolve_workspace(), project.get("id"))
-    started = (
-        _start_source_download(project["id"], project_dir, youtube["url"], youtube["id"], broadcaster)
-        if project_dir is not None else None
-    )
+    started = None
+    if project_dir is not None:
+        async with project_lock_async(project_dir / "project.json"):
+            started = _start_source_download(project["id"], project_dir, youtube["url"], youtube["id"], broadcaster)
     if started is None:
         raise server_error("source_download_failed", "Project created but its download could not start")
     return started
@@ -1710,6 +1717,39 @@ def _look_migration_enqueue(unit: _LookMigrationUnit) -> None:
         _look_migration_worker = asyncio.create_task(_look_migration_drain())
 
 
+_WRITEBACK_TRIES = 5
+_WRITEBACK_PAUSE_SECONDS = 1.0
+
+
+def _unit_project_paths(unit) -> list[Path]:
+    """The distinct project.json files a look-migration unit writes back to."""
+    seen: dict[str, Path] = {}
+    for _pid, project_dir, *_rest in unit.targets:
+        seen.setdefault(str(project_dir), Path(project_dir) / "project.json")
+    return list(seen.values())
+
+
+async def _locked_writeback(project_paths, fn):
+    """Run the synchronous write-back `fn` with every project's lock already
+    held (so its own `project_lock` calls only reenter), waiting for them
+    without blocking the event loop. A lock that stays busy is tried again a few
+    times, a second apart, before the result is given up on and logged: a proxy
+    that took minutes to encode is not thrown away for a short lock wait. No
+    await runs while the locks are held."""
+    for attempt in range(_WRITEBACK_TRIES):
+        try:
+            async with contextlib.AsyncExitStack() as stack:
+                for path in project_paths:
+                    await stack.enter_async_context(project_lock_async(path))
+                return fn()
+        except ProjectLockTimeout:
+            if attempt == _WRITEBACK_TRIES - 1:
+                logger.warning("Dropped a background write-back: project busy for %d attempts (%s)",
+                               _WRITEBACK_TRIES, ", ".join(str(p) for p in project_paths))
+                return None
+            await asyncio.sleep(_WRITEBACK_PAUSE_SECONDS)
+
+
 async def _look_migration_drain() -> None:
     """Run queued migration encodes one at a time, writing each result back into
     project.json as it lands."""
@@ -1727,11 +1767,12 @@ async def _look_migration_drain() -> None:
             if path:
                 try:
                     await _warm_proxy_inputs(_look_migration_target_srcs(unit, path))
-                    _apply_look_migration_result(unit, path)
+                    await _locked_writeback(
+                        _unit_project_paths(unit), lambda: _apply_look_migration_result(unit, path))
                 except Exception:
                     pass  # one bad write-back must not stop the rest of the queue
             try:
-                _settle_background_normalize(unit)
+                await _locked_writeback(_unit_project_paths(unit), lambda: _settle_background_normalize(unit))
             except Exception:
                 pass
     finally:
@@ -2243,11 +2284,13 @@ async def _ensure_background_normalize(
         if _is_fresh(out, src):
             if sdr_stretch:
                 # A cache, not a new `src`: the proxy is unchanged, none is owed.
-                result = _apply_project_edits(project_path, _cache_items_for(project_path, src, out))
+                async with project_lock_async(project_path):
+                    result = _apply_project_edits(project_path, _cache_items_for(project_path, src, out))
                 if result is not None:
                     latest = result
                 continue
-            result = _apply_project_edits(project_path, _src_items_for(project_path, src, out))
+            async with project_lock_async(project_path):
+                result = _apply_project_edits(project_path, _src_items_for(project_path, src, out))
             if result is not None:
                 latest, swapped_now = result, True
             continue
@@ -2268,7 +2311,8 @@ async def _ensure_background_normalize(
         except Exception:
             pass
 
-    marked = _set_background_normalize(project_path, _background_normalize_pending(str(project_dir)))
+    async with project_lock_async(project_path):
+        marked = _set_background_normalize(project_path, _background_normalize_pending(str(project_dir)))
     if marked is not None:
         latest = marked
     if latest is not None and broadcaster is not None:
@@ -2407,7 +2451,8 @@ async def _ensure_canvas_follows_footage(
         edits["fpsSource"] = SOURCE_FOOTAGE
     if not edits:
         return None
-    result = _apply_project_edits(project_path, [], settings=edits)
+    async with project_lock_async(project_path):
+        result = _apply_project_edits(project_path, [], settings=edits)
     if result is None:
         return None
     if broadcaster is not None:
@@ -2451,7 +2496,8 @@ async def _ensure_source_dims(
             edits.append((item.get("id"), item["src"], "sourceHeight", dims[1]))
     if not edits:
         return None
-    result = _apply_project_edits(project_dir / "project.json", edits)
+    async with project_lock_async(project_dir / "project.json"):
+        result = _apply_project_edits(project_dir / "project.json", edits)
     if result is None:
         return None
     if broadcaster is not None:
@@ -2682,10 +2728,11 @@ async def _migrate_project_look(
 
     result = None
     if edits:
-        result = _apply_project_edits(
-            project_dir / "project.json",
-            [(item_id, item_src, field, value) for (item_id, item_src, field), value in edits.items()],
-        )
+        async with project_lock_async(project_dir / "project.json"):
+            result = _apply_project_edits(
+                project_dir / "project.json",
+                [(item_id, item_src, field, value) for (item_id, item_src, field), value in edits.items()],
+            )
         if result is not None and broadcaster is not None:
             broadcaster.publish(project_id, _sse_data_frame(result[1]))
 
@@ -2758,7 +2805,8 @@ async def _ensure_project_color_provenance(
             return None
         if plan["edits"]:
             await asyncio.to_thread(_git_commit_sync, project_dir, "version: before colour provenance")
-        result = _apply_project_edits(project_dir / "project.json", plan["edits"], settings=plan["settings"])
+        async with project_lock_async(project_dir / "project.json"):
+            result = _apply_project_edits(project_dir / "project.json", plan["edits"], settings=plan["settings"])
         if result is None:
             return None
         if broadcaster is not None:
@@ -2968,18 +3016,21 @@ async def get_project(project_id: str, request: Request = None, project_dir: Pat
     # Under the project lock, on a fresh read, so a step's write in another
     # process is not undone by the copy read at the top of this handler (§467).
     text = None
-    with project_lock(project_path):
-        try:
-            project = json.loads(project_path.read_text())
-        except (OSError, ValueError):
-            pass
-        normalized = normalize_tracks(project)
-        if normalized is not project:
+    if normalize_tracks(project) is not project:
+        # Only a project that is about to be rewritten takes the lock; an open
+        # that writes nothing (the usual one, and any read-only folder) does not.
+        async with project_lock_async(project_path):
             try:
-                text = _write_project_json(project_path, normalized)
-            except OSError:
-                pass  # degrade to "not converged yet" — a project must always open
-            project = normalized
+                project = json.loads(project_path.read_text())
+            except (OSError, ValueError):
+                pass
+            normalized = normalize_tracks(project)
+            if normalized is not project:
+                try:
+                    text = _write_project_json(project_path, normalized)
+                except OSError:
+                    pass  # degrade to "not converged yet": a project must always open
+                project = normalized
     if text is not None and broadcaster is not None:
         broadcaster.publish(project_id, _sse_data_frame(text))
 
@@ -3764,7 +3815,7 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
     # The read-merge-write is one section under the project lock (§467): a step in
     # another process rewrites project.json too. No await inside it; the SSE
     # broadcast and the follow-ups run after it is released.
-    with project_lock(project_path):
+    async with project_lock_async(project_path):
         existing = json.loads(project_path.read_text())
         prev_status = existing.get("status")
         # Top-level shallow merge: preserve fields not present in the body. Agents
@@ -4003,7 +4054,7 @@ async def restore_version(project_id: str, commit: str, request: Request, projec
     # restore keeps the current ones rather than swapping in the old commit's.
     # The notes are read again under the project lock, so a note added while
     # git ran is kept (§467).
-    with project_lock(project_path):
+    async with project_lock_async(project_path):
         try:
             current_project = json.loads(project_path.read_text())
         except (OSError, ValueError):
@@ -4203,7 +4254,7 @@ async def rerun_project(project_id: str, request: Request, project_dir: Path = D
     source_clips = [{"id": c["id"], "src": c["src"], "order": c.get("order")} for c in sources]
     # Everything else comes from a fresh read under the project lock, so an
     # edit made while git ran is kept (§467).
-    with project_lock(project_path):
+    async with project_lock_async(project_path):
         try:
             fresh = json.loads(project_path.read_text())
         except (OSError, ValueError):
@@ -4271,7 +4322,7 @@ async def include_profile_asset(project_id: str, body: dict = Body(...), request
     elif mime.startswith("audio/"): asset_type = "audio"
     else:                            asset_type = "file"
 
-    with project_lock(project_path):
+    async with project_lock_async(project_path):
         project = json.loads(project_path.read_text())   # fresh, under the lock
         existing = project.get("assets") or []
         next_idx = 0
@@ -4645,9 +4696,10 @@ async def probe_source_duration(
     # report as success — (2) and (3) probed a real value that never made it
     # to disk, which is the same silent-failure shape this feature exists to
     # fix. We already hold the pre-probe value, so we can tell them apart.
-    result = _apply_project_edits(
-        project_path, [(source_id, src, "sourceDuration", duration)]
-    )
+    async with project_lock_async(project_path):
+        result = _apply_project_edits(
+            project_path, [(source_id, src, "sourceDuration", duration)]
+        )
     if result is None and source.get("sourceDuration") != duration:
         raise server_error(
             "probe_write_failed",
@@ -5435,7 +5487,7 @@ async def _run_caption_pipeline(
     # Re-read the project first: the AI or the editor may have saved it while
     # the pipeline ran (a translation, any edit), and writing back the copy
     # read at the start would undo that (§244).
-    with project_lock(project_path):
+    async with project_lock_async(project_path):
         try:
             project = json.loads(project_path.read_text())
         except (OSError, ValueError):
@@ -5720,7 +5772,7 @@ async def caption_translation(project_id: str, body: dict = Body(...), request: 
     if "phrases" not in body and "show" not in body:
         raise bad_request("bad_body", "Send {lang, phrases} and/or {show}.")
     project_path = project_dir / "project.json"
-    with project_lock(project_path):
+    async with project_lock_async(project_path):
         project = json.loads(project_path.read_text())
         try:
             captions = project.get("captions")

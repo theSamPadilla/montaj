@@ -125,7 +125,12 @@ def find_project(project_id: str) -> tuple[Path, dict]:
 def save_project(path: Path, project: dict):
     """Write the WHOLE document back (atomic, under the project lock). A step
     that read the project earlier must use save_project_changes instead, so a
-    concurrent edit survives."""
+    concurrent edit survives.
+
+    WARNING: this overwrites the whole file with `project`. Anything another
+    writer (the editor, serve, another step) saved since `project` was read is
+    lost. Use it only when `project` was read under the same lock hold, or when
+    the document is yours alone (a new project)."""
     with project_lock(path):
         write_json_atomic(path, project, indent=2, ensure_ascii=False)
 

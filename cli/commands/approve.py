@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from cli.main import add_global_flags
 from cli.output import emit_error
+from lib.project_lock import ProjectLockTimeout, update_project
 
 
 def register(subparsers):
@@ -119,10 +120,16 @@ def handle(args):
 
     # --- Write approval ---
     approved_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-    storyboard["approval"] = {"approvedAt": approved_at}
-    project["storyboard"] = storyboard
 
-    _write_atomic(path, project)
+    def apply(fresh):
+        # Re-read under the project lock: set only the approval, keep every other edit.
+        fresh.setdefault("storyboard", {})["approval"] = {"approvedAt": approved_at}
+        return fresh
+
+    try:
+        update_project(path, apply)
+    except ProjectLockTimeout as e:
+        emit_error("project_locked", str(e))
 
     scene_count = len(scenes)
     project_label = project.get("name") or project.get("id") or "<unnamed>"

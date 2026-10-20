@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from cli.main import add_global_flags
 from cli.output import emit_error
+from lib.project_lock import ProjectLockTimeout, update_project
 from lib.project_tracks import track_items
 
 
@@ -189,9 +190,20 @@ def _build_and_enqueue(args, *, mode, subrange):
     }
 
     # 6. Append to regenQueue and write
-    queue = project.setdefault("regenQueue", [])
-    queue.append(entry)
-    _write_atomic(path, project)
+    queued = {}
+
+    def apply(fresh):
+        # Re-read under the project lock: append to the queue as it is now, keep every other edit.
+        queue = fresh.setdefault("regenQueue", [])
+        queue.append(entry)
+        queued["queue"] = queue
+        return fresh
+
+    try:
+        update_project(path, apply)
+    except ProjectLockTimeout as e:
+        emit_error("project_locked", str(e))
+    queue = queued["queue"]
 
     # 7. Output
     label = project.get("name") or project.get("id") or "<unnamed>"

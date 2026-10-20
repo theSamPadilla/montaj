@@ -6,6 +6,7 @@ replace project.json atomically. Every refusal and every failure before the repl
 project.json untouched and makes no commit.
 """
 import contextlib
+import copy
 import io
 import json
 import os
@@ -26,6 +27,18 @@ _ENGINE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if _ENGINE not in sys.path:
     sys.path.append(_ENGINE)
 from engine.validate import validate_project  # noqa: E402
+
+
+# The top-level keys the derive/build/carry pipeline reads (the speech track and everything it
+# carries: captions, audio, markers, notes, overlay tracks, source files) plus the frame rate.
+_READ_KEYS = ("tracks", "captions", "audio", "markers", "notes", "sources")
+
+
+def _read_view(project: dict) -> str:
+    """The part of a document this edit depends on, comparable across two reads."""
+    view = {k: project.get(k) for k in _READ_KEYS}
+    view["fps"] = (project.get("settings") or {}).get("fps")
+    return json.dumps(view, sort_keys=True)
 
 
 def _title(project: dict) -> str:
@@ -81,7 +94,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     project_dir = os.path.dirname(project_path)
     with open(project_path, encoding="utf-8") as f:
         project = normalize_tracks(json.load(f))
-    read_text = json.dumps(project, sort_keys=True)   # as read, before anything mutates it
+    as_read = copy.deepcopy(project)   # as read, before anything mutates it
 
     header, rows = speech_text.parse(text)
     derived = speech_text.derive(project, project_dir, track=header["track"])   # the track the text was read from
@@ -133,16 +146,25 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     # ignored, and the replace lands as an on_moved event onto project.json, which it broadcasts.
     tmp = os.path.join(project_dir, f"project.json.tmp-{os.getpid()}")
     # The candidate was built from the copy read at the top, a git commit ago. Under the
-    # project lock, a project that is not what was read (an edit or a step wrote it meanwhile)
-    # is refused rather than overwritten (§467).
+    # project lock, a project whose KEYS THE EDIT READS are not what was read (an edit or a step
+    # wrote them meanwhile) is refused rather than overwritten (§467). Anything else that changed
+    # in the window (a background proxy, a normalize, dims, a colour record) is not this edit's
+    # business: it is kept, and only the keys the edit changed are written onto the fresh document.
     with project_lock(project_path):
         with open(project_path, encoding="utf-8") as f:
             fresh = normalize_tracks(json.load(f))
-        if json.dumps(fresh, sort_keys=True) != read_text:
+        if _read_view(fresh) != _read_view(as_read):
             fail("project_changed", "The project changed while the edit was applied: read the text again and redo it.")
+        merged = dict(fresh)
+        for key in set(candidate) | set(as_read):
+            if key in candidate:
+                if candidate[key] != as_read.get(key) or key not in as_read:
+                    merged[key] = candidate[key]
+            elif key in as_read:
+                merged.pop(key, None)
         try:
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(candidate, f, indent=2, ensure_ascii=False)
+                json.dump(merged, f, indent=2, ensure_ascii=False)
                 f.write("\n")
             os.replace(tmp, project_path)
         finally:

@@ -37,6 +37,10 @@ from serve.common import get_project_dir  # noqa: E402
 from serve.caption_job import build_audio_mix_spec  # noqa: E402
 from lib.project_lock import ProjectLockTimeout, update_project  # noqa: E402
 
+# The whisper run before this write took minutes: a short lock wait must not throw it away.
+STEP_LOCK_TIMEOUT = 30.0
+
+
 def resolve_style(args_style, project: dict) -> str:
     """style = explicit arg, else prior captions.style, else 'pop'.
 
@@ -149,7 +153,7 @@ def main():
             return fresh
 
         try:
-            update_project(project_path, apply)
+            update_project(project_path, apply, timeout=STEP_LOCK_TIMEOUT)
         except ProjectLockTimeout as e:
             fail("project_locked", str(e))
         except (OSError, ValueError):

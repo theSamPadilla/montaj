@@ -9,11 +9,12 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from serve import lockfile
-from serve.common import resolve_workspace
+from lib.project_lock import ProjectLockTimeout
+from serve.common import PROJECT_LOCKED_DETAIL, resolve_workspace
 from serve.sse import SSEBroadcaster
 from serve.watcher import GlobalOverlayWatcher, ProjectWatcher
 
@@ -123,6 +124,13 @@ class _TrustedHostsFromEnv:
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(_TrustedHostsFromEnv)
+
+
+@app.exception_handler(ProjectLockTimeout)
+async def _project_locked_handler(request: Request, exc: ProjectLockTimeout):
+    """A project write lock that stayed busy is a 503 with the error shape every
+    route uses (`detail: {error, message}`), never a bare 500."""
+    return JSONResponse(status_code=503, content={"detail": dict(PROJECT_LOCKED_DETAIL)})
 
 # All API routes live under /api so they never collide with React Router paths.
 # The SPA catch-all at the bottom handles everything else cleanly.
