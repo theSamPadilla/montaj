@@ -34,7 +34,8 @@ from caption_translation import finish_regenerated_track, merge_caption_theme as
 
 sys.path.insert(0, MONTAJ_ROOT)
 from serve.common import get_project_dir  # noqa: E402
-from serve.caption_job import build_audio_mix_spec  # noqa: E402
+from serve.caption_job import build_audio_mix_spec, caption_input_change, caption_input_fingerprint  # noqa: E402
+from lib.project_revisions import engine_guard_enabled  # noqa: E402
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, update_project  # noqa: E402
 
 # The whisper run before this write took minutes: a short lock wait must not throw it away.
@@ -86,6 +87,9 @@ def main():
             project = json.load(f)
     except Exception:
         fail("project_not_found", f"project.json for {args.project_id} not found")
+    # What the result depends on, as read now (§477): compared under the lock before the
+    # write, so an audio or caption-text edit made while whisper ran is not overwritten.
+    fingerprint = caption_input_fingerprint(project) if engine_guard_enabled() else None
 
     # Before mixing: no weight fails as whisper_model_missing here, rather than
     # surfacing later inside transcribe's unexpected_error.
@@ -146,6 +150,10 @@ def main():
         written = {}
 
         def apply(fresh):
+            if fingerprint is not None:
+                change = caption_input_change(fingerprint, fresh)
+                if change is not None:
+                    fail("project_changed", change["message"])
             done = finish_regenerated_track(fresh.get("captions"), dict(track))
             record_source_language(done, args.language, words_json_path)
             fresh["captions"] = done

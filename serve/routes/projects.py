@@ -32,7 +32,7 @@ from serve.common import (
     validate_project_subpath, _is_under,
 )
 from serve import context as context_store
-from serve.caption_job import build_audio_mix_spec
+from serve.caption_job import build_audio_mix_spec, caption_input_change, caption_input_fingerprint
 from serve.caption_theme import sanitize_theme, seed_prev
 from serve import provenance
 from serve import save_guard
@@ -290,12 +290,13 @@ class _CaptionJob:
     """Live state of a detached caption job, polled by GET /captions/status. The
     pipeline runs to completion independent of any client connection — a dropped
     request must NOT abort it."""
-    __slots__ = ("status", "result", "error")
+    __slots__ = ("status", "result", "error", "detail")
 
     def __init__(self) -> None:
         self.status: str = "running"   # running | done | error
         self.result: dict | None = None  # caption track dict (done)
         self.error: str | None = None    # error message (error)
+        self.detail: dict | None = None  # the structured refusal, when the error is one (§477)
 
 
 _caption_jobs: dict[str, _CaptionJob] = {}
@@ -335,6 +336,7 @@ async def _run_caption_detached(
         job.status, job.result = "done", track
     except CaptionPipelineError as e:
         job.status, job.error = "error", e.message
+        job.detail = e.detail
     except Exception as e:
         job.status, job.error = "error", str(e)
     finally:
@@ -5510,11 +5512,15 @@ async def render_status(project_id: str, project_dir: Path = Depends(get_project
 class CaptionPipelineError(Exception):
     """A caption pipeline step exited non-zero. `message` is the human-readable
     text the SSE path surfaces as an `event: error` frame (and a detached caller
-    can record as the job's error)."""
+    can record as the job's error). `detail`, when set, is a structured
+    refusal (§477's project_changed) and `status_code` the HTTP status it
+    answers with where an answer has not already started."""
 
-    def __init__(self, message: str):
+    def __init__(self, message: str, *, detail: dict = None, status_code: int = 500):
         super().__init__(message)
         self.message = message
+        self.detail = detail
+        self.status_code = status_code
 
 
 def _merge_caption_theme(prev: dict, track: dict) -> dict:
@@ -5584,6 +5590,9 @@ async def _run_caption_pipeline(
     `event: error` vs. a recorded job error.
     """
     project_path = project_dir / "project.json"
+    # What this job's result depends on, as read now (§477): compared under the lock
+    # before the write, so an audio or caption-text edit made meanwhile is not overwritten.
+    fingerprint = caption_input_fingerprint(project) if save_guard.enabled() else None
 
     mix_timeline_py = MONTAJ_ROOT / "steps" / "audio" / "mix_timeline.py"
     transcribe_py = MONTAJ_ROOT / "steps" / "speech" / "transcribe.py"
@@ -5680,6 +5689,10 @@ async def _run_caption_pipeline(
             project = json.loads(project_path.read_text())
         except (OSError, ValueError):
             pass
+        if fingerprint is not None:
+            change = caption_input_change(fingerprint, project)
+            if change is not None:
+                raise CaptionPipelineError(change["message"], detail=change, status_code=409)
         prev = seed_prev(project.get("captions") or {}, theme)
         # Theme carried forward, ids minted, translated rows kept and re-cut at
         # their phrase boundaries (lib/caption_translation.py).
@@ -6001,6 +6014,8 @@ async def captions_status(project_id: str, project_dir: Path = Depends(get_proje
         out["captions"] = job.result
     elif job.status == "error":
         out["error"] = job.error
+        if job.detail is not None:
+            out["errorDetail"] = job.detail
     return out
 
 

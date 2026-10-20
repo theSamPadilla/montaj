@@ -40,6 +40,8 @@ WHAT THIS DELIBERATELY DOES NOT MODEL
   and the raw, un-rebased ``inPoint`` that goes with it.
 """
 
+from lib.caption_translation import is_translation
+from lib.project_revisions import canonical, revision_of
 from lib.project_tracks import normalize_tracks
 
 
@@ -212,3 +214,58 @@ def build_audio_mix_spec(project: dict, sample_rate: int = 16000) -> dict:
         "sampleRate": sample_rate,
         "segments": segments,
     }
+
+
+# ── the job's input fingerprint (§477) ────────────────────────────────────────
+
+CAPTION_AUDIO_CHANGED = "The audio changed while captions were generated. Run captions again."
+CAPTION_TEXT_CHANGED = "The captions were edited while they were generated. Run captions again."
+
+
+def _src_as_id(item):
+    """item with its src named by the item's id: background normalize rewrites src while a
+    job runs, and that is not a change to what the job hears."""
+    if isinstance(item, dict) and isinstance(item.get("id"), str) and isinstance(item.get("src"), str) and item["src"]:
+        return {**item, "src": "id:" + item["id"]}
+    return item
+
+
+def _segments_revision(segments: list) -> str:
+    # Order-free: a reordered array with the same audible segments is the same mix.
+    return revision_of(sorted(segments, key=canonical))
+
+
+def caption_input_fingerprint(project: dict) -> dict:
+    """What a caption job's result depends on, as revisions: `tracks` and `audio` are the
+    audible mix (build_audio_mix_spec's segments from the visual tracks and from the audio
+    tracks, each src replaced by its item id), `captions` the source caption segments.
+    Translated rows and the theme are carried forward by the regeneration, so they are not
+    part of it. A caption writer takes this when the job reads the project and compares it
+    under the project lock before it writes."""
+    p = normalize_tracks(project) if isinstance(project, dict) else {}
+    tracks = [{**t, "items": [_src_as_id(i) for i in (t.get("items") or [])]} if isinstance(t, dict) else t
+              for t in (p.get("tracks") or [])]
+    audio = p.get("audio")
+    if isinstance(audio, dict) and isinstance(audio.get("tracks"), list):
+        audio = {**audio, "tracks": [_src_as_id(t) for t in audio["tracks"]]}
+    view = {"tracks": tracks, "audio": audio}
+    captions = p.get("captions")
+    segments = captions.get("segments") if isinstance(captions, dict) else None
+    if isinstance(segments, list):
+        segments = [s for s in segments if not is_translation(s)]
+    return {
+        "tracks": _segments_revision(_visual_segments(view)),
+        "audio": _segments_revision(_audio_track_segments(view)),
+        "captions": revision_of(segments),
+    }
+
+
+def caption_input_change(before: dict, project: dict):
+    """None when project's fingerprint still equals before (taken when the job read the
+    project). Otherwise the project_changed refusal, naming what moved."""
+    now = caption_input_fingerprint(project)
+    stale = [k for k in ("tracks", "audio", "captions") if before.get(k) != now[k]]
+    if not stale:
+        return None
+    message = CAPTION_AUDIO_CHANGED if any(k != "captions" for k in stale) else CAPTION_TEXT_CHANGED
+    return {"error": "project_changed", "stale": stale, "missing": [], "message": message}
