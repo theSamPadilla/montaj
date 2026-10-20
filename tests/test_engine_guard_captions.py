@@ -1,6 +1,6 @@
 """§477: both caption writers (the serve route's pipeline and the generate_captions step)
-fingerprint their input when the job starts (the audible mix with every src replaced by its
-item id, and the source caption segments) and compare it under the project lock at
+fingerprint their input when the job starts (the audible mix with every src named by its
+original media, and the source caption segments) and compare it under the project lock at
 write-back. Equal: only `captions` is written. Different: nothing is written and the job
 fails with project_changed. Without the guard both behave exactly as before."""
 import asyncio
@@ -35,7 +35,9 @@ def _project(tmp_dir):
             {"id": "trk-ov", "items": []},
         ],
         "audio": {"tracks": [{"id": "m1", "src": str(tmp_dir / "music.mp3"), "start": 0.0, "end": 2.0,
-                              "inPoint": 0.0, "volume": 0.3}]},
+                              "inPoint": 0.0, "volume": 0.3},
+                             # An audio item with no id: its media is still what is compared.
+                             {"src": str(tmp_dir / "vo.wav"), "start": 0.0, "end": 1.5, "inPoint": 0.0}]},
         "captions": {"style": "pop", "color": "#ffffff", "segments": [
             {"id": "cap-0", "text": "old words", "start": 0.0, "end": 1.0,
              "words": [{"word": "old", "start": 0.0, "end": 0.5}, {"word": "words", "start": 0.5, "end": 1.0}]}]},
@@ -62,8 +64,56 @@ def caption_theme(d):
 
 
 def normalize_src(d):
-    d["tracks"][0]["items"][0]["src"] = d["tracks"][0]["items"][0]["src"].replace("a.mp4", "a.norm.mp4")
-    d["audio"]["tracks"][0]["src"] = d["audio"]["tracks"][0]["src"].replace("music.mp3", "music.norm.mp3")
+    """Background normalize swaps a clip's src onto its normalized master."""
+    from lib.normalize import normalized_output_path
+    item = d["tracks"][0]["items"][0]
+    item["src"] = normalized_output_path(item["src"], "sdr_bt709", tonemapped=True)
+
+
+def _copy_into_assets(src):
+    """What a save's media copy does: the file lands in <project>/assets/ under a free
+    name, recorded in assets/.copied.json under the original's realpath."""
+    folder = os.path.dirname(src)
+    assets = os.path.join(folder, "assets")
+    os.makedirs(assets, exist_ok=True)
+    record_path = os.path.join(assets, ".copied.json")
+    try:
+        record = json.loads(open(record_path).read())
+    except OSError:
+        record = {}
+    stem, ext = os.path.splitext(os.path.basename(src))
+    name = f"{stem}_1{ext}"
+    record[os.path.realpath(src)] = {"name": name, "size": 1, "mtimeNs": 1, "copyMtimeNs": 1}
+    with open(record_path, "w") as f:
+        f.write(json.dumps(record))
+    return os.path.join(assets, name)
+
+
+def media_copy(d):
+    """A save's media-copy patch repoints every borrowed path, id or no id."""
+    item = d["tracks"][0]["items"][0]
+    item["src"] = _copy_into_assets(item["src"])
+    for t in d["audio"]["tracks"]:
+        t["src"] = _copy_into_assets(t["src"])
+
+
+def normalize_after_copy(d):
+    media_copy(d)
+    normalize_src(d)
+
+
+def swap_clip_media(d):
+    """Another file under the same item id: different audio."""
+    item = d["tracks"][0]["items"][0]
+    item["src"] = item["src"].replace("a.mp4", "other-take.mp4")
+
+
+def swap_music_media(d):
+    d["audio"]["tracks"][0]["src"] = d["audio"]["tracks"][0]["src"].replace("music.mp3", "other.mp3")
+
+
+def swap_idless_audio_media(d):
+    d["audio"]["tracks"][1]["src"] = d["audio"]["tracks"][1]["src"].replace("vo.wav", "vo-2.wav")
 
 
 def clip_volume(d):
@@ -78,12 +128,22 @@ def caption_text(d):
     d["captions"]["segments"][0]["text"] = "old wordz"
 
 
-UNRELATED = [rename, add_overlay, recolour, caption_theme, normalize_src]
+UNRELATED = [rename, add_overlay, recolour, caption_theme, normalize_src, media_copy, normalize_after_copy]
+MEDIA_SWAPS = [(swap_clip_media, "tracks"), (swap_music_media, "audio"), (swap_idless_audio_media, "audio")]
 
 
 # ── the fingerprint ───────────────────────────────────────────────────────────
 
-def test_fingerprint_ignores_src_and_unrelated_fields(tmp_path):
+def test_fingerprint_moves_when_a_clip_s_media_is_swapped_under_the_same_id(tmp_path):
+    base = caption_input_fingerprint(_project(tmp_path))
+    for edit, field in MEDIA_SWAPS:
+        d = _project(tmp_path)
+        edit(d)
+        now = caption_input_fingerprint(d)
+        assert [k for k in base if base[k] != now[k]] == [field], edit.__name__
+
+
+def test_fingerprint_ignores_src_rewrites_and_unrelated_fields(tmp_path):
     base = caption_input_fingerprint(_project(tmp_path))
     for edit in UNRELATED:
         d = _project(tmp_path)
@@ -196,7 +256,9 @@ def test_route_unrelated_edit_lands_with_the_captions(edit, guard, tmp_path, mon
     (clip_volume, ["tracks"], AUDIO_MSG),
     (music_moved, ["audio"], AUDIO_MSG),
     (caption_text, ["captions"], TEXT_MSG),
-], ids=["clip-volume", "music-moved", "caption-text"])
+    (swap_clip_media, ["tracks"], AUDIO_MSG),
+    (swap_idless_audio_media, ["audio"], AUDIO_MSG),
+], ids=["clip-volume", "music-moved", "caption-text", "clip-media-swap", "idless-audio-swap"])
 def test_route_refuses_and_writes_nothing(edit, stale, message, guard, tmp_path, monkeypatch):
     guard(True)
     pdir, path, project, seen = _route_setup(tmp_path, monkeypatch, edit)
@@ -304,8 +366,8 @@ def test_step_unrelated_edit_lands_with_the_captions(edit, monkeypatch, tmp_path
 
 
 @pytest.mark.parametrize("edit,message", [
-    (clip_volume, AUDIO_MSG), (music_moved, AUDIO_MSG), (caption_text, TEXT_MSG),
-], ids=["clip-volume", "music-moved", "caption-text"])
+    (clip_volume, AUDIO_MSG), (music_moved, AUDIO_MSG), (caption_text, TEXT_MSG), (swap_clip_media, AUDIO_MSG),
+], ids=["clip-volume", "music-moved", "caption-text", "clip-media-swap"])
 def test_step_refuses_and_writes_nothing(edit, message, monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("MONTAJ_ENGINE_GUARD", "1")
     holder = {}

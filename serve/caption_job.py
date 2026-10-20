@@ -40,6 +40,10 @@ WHAT THIS DELIBERATELY DOES NOT MODEL
   and the raw, un-rebased ``inPoint`` that goes with it.
 """
 
+import json
+import os
+import re
+
 from lib.caption_translation import is_translation
 from lib.project_revisions import canonical, revision_of
 from lib.project_tracks import normalize_tracks
@@ -222,11 +226,62 @@ CAPTION_AUDIO_CHANGED = "The audio changed while captions were generated. Run ca
 CAPTION_TEXT_CHANGED = "The captions were edited while they were generated. Run captions again."
 
 
-def _src_as_id(item):
-    """item with its src named by the item's id: background normalize rewrites src while a
-    job runs, and that is not a change to what the job hears."""
-    if isinstance(item, dict) and isinstance(item.get("id"), str) and isinstance(item.get("src"), str) and item["src"]:
-        return {**item, "src": "id:" + item["id"]}
+# lib.normalize.normalized_output_path: `<stem>_normalized_<color space>[_<look>][_w203].mp4`.
+_NORMALIZED = re.compile(r"^(?P<stem>.*)_normalized_[A-Za-z0-9_]+\.mp4$")
+_COPY_RECORD = ".copied.json"      # serve/save_media.py RECORD_NAME, kept in <project>/assets/
+
+
+def _stem(path: str) -> str:
+    """path without its extension, and without a normalized master's suffix (whose original
+    extension is gone, so no identity keeps one)."""
+    m = _NORMALIZED.match(path)
+    return m.group("stem") if m else os.path.splitext(path)[0]
+
+
+def _copied_from(stem: str) -> "str | None":
+    """The original of a save's media copy: `<project>/assets/<name>` recorded in that
+    folder's .copied.json under the realpath of the file it was copied from."""
+    folder, base = os.path.split(stem)
+    if os.path.basename(folder) != "assets":
+        return None
+    try:
+        with open(os.path.join(folder, _COPY_RECORD), encoding="utf-8") as f:
+            record = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    for original, entry in record.items():
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if isinstance(name, str) and isinstance(original, str) and os.path.splitext(name)[0] == base:
+            return original
+    return None
+
+
+def media_identity(src):
+    """What a src names as media, through the rewrites serve makes while a job runs: a
+    background normalize (src onto `<stem>_normalized_...mp4` beside it, and back again)
+    and a save's media copy (a borrowed path onto its copy in the project's assets/). Both
+    end at the original file's path without its extension; any other src is itself. A
+    different file under the same item id is a different identity."""
+    if not isinstance(src, str) or not src:
+        return src
+    stem = _stem(src)
+    for _ in range(4):        # a copy of a normalized master of a copy ...
+        original = _copied_from(stem)
+        if original is None:
+            break
+        stem = _stem(original)
+    if os.path.isabs(stem):
+        folder, base = os.path.split(stem)
+        stem = os.path.join(os.path.realpath(folder), base)
+    return "media:" + stem
+
+
+def _src_as_media(item):
+    """item with its src named by its original media (media_identity)."""
+    if isinstance(item, dict) and isinstance(item.get("src"), str) and item["src"]:
+        return {**item, "src": media_identity(item["src"])}
     return item
 
 
@@ -238,16 +293,17 @@ def _segments_revision(segments: list) -> str:
 def caption_input_fingerprint(project: dict) -> dict:
     """What a caption job's result depends on, as revisions: `tracks` and `audio` are the
     audible mix (build_audio_mix_spec's segments from the visual tracks and from the audio
-    tracks, each src replaced by its item id), `captions` the source caption segments.
+    tracks, each src named by its original media, so a normalize or a media copy mid-run
+    is no change and a swapped file is), `captions` the source caption segments.
     Translated rows and the theme are carried forward by the regeneration, so they are not
     part of it. A caption writer takes this when the job reads the project and compares it
     under the project lock before it writes."""
     p = normalize_tracks(project) if isinstance(project, dict) else {}
-    tracks = [{**t, "items": [_src_as_id(i) for i in (t.get("items") or [])]} if isinstance(t, dict) else t
+    tracks = [{**t, "items": [_src_as_media(i) for i in (t.get("items") or [])]} if isinstance(t, dict) else t
               for t in (p.get("tracks") or [])]
     audio = p.get("audio")
     if isinstance(audio, dict) and isinstance(audio.get("tracks"), list):
-        audio = {**audio, "tracks": [_src_as_id(t) for t in audio["tracks"]]}
+        audio = {**audio, "tracks": [_src_as_media(t) for t in audio["tracks"]]}
     view = {"tracks": tracks, "audio": audio}
     captions = p.get("captions")
     segments = captions.get("segments") if isinstance(captions, dict) else None
