@@ -238,6 +238,7 @@ describe('VideoEditor — editor-package integration', () => {
       expect(adapter.saveProject).toHaveBeenCalledWith(
         'vid-1',
         expect.objectContaining({ status: 'final' }),
+        expect.objectContaining({ id: 'vid-1' }),
       )
     })
   })

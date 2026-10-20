@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+- Changed: `saveProject` receives the document as it was before the edit as an optional third argument.
+
 ## 2.6.0
 
 - Changed: the carousel's Render reports a failed or stalled save to the host through the new `onError({ title, detail })` prop instead of a system alert, and Render is enabled again. The save gives up after `renderSaveTimeoutMs` (default 30 s). A guard keeps `alert`, `confirm` and `prompt` out of the editor's source. See the root CHANGELOG (v5.35.0).

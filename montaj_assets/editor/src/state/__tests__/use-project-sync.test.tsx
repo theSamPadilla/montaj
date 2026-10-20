@@ -36,7 +36,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 
 interface FakeAdapter extends EditorAdapter {
   emit: (p: Project) => void
-  saveCalls: Array<{ id: string; project: Project }>
+  saveCalls: Array<{ id: string; project: Project; before?: Project; argc: number }>
   unsub: ReturnType<typeof vi.fn>
 }
 
@@ -46,13 +46,14 @@ function makeFakeAdapter(opts: {
   blockSave?: boolean
 } = {}): FakeAdapter & { release: () => void } {
   let onFrame: ((p: Project) => void) | null = null
-  const saveCalls: Array<{ id: string; project: Project }> = []
+  const saveCalls: Array<{ id: string; project: Project; before?: Project; argc: number }> = []
   const unsub = vi.fn(() => { onFrame = null })
   let releaseSave: (() => void) | null = null
   const adapter: FakeAdapter & { release: () => void } = {
     loadProject: vi.fn(async () => makeProject()),
-    saveProject: vi.fn(async (id: string, project: Project) => {
-      saveCalls.push({ id, project })
+    saveProject: vi.fn(async (...args: [string, Project, Project?]) => {
+      const [id, project, before] = args
+      saveCalls.push({ id, project, before, argc: args.length })
       if (opts.blockSave) await new Promise<void>((res) => { releaseSave = res })
       if (opts.failSave) throw new Error('save boom')
     }),
@@ -642,3 +643,103 @@ describe('useProjectSync — undo/redo clear only the keys their own edit change
   })
 })
 
+
+describe('useProjectSync — saveProject receives the document before the edit', () => {
+  const named = (name: string) => makeProject({ name })
+
+  it('mutate passes the document before the edit; the first save of a session passes the seeded initial', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'A' })) })
+    expect(adapter.saveCalls[0].argc).toBe(3)
+    expect(adapter.saveCalls[0].before).toBe(initial)
+    expect(adapter.saveCalls[0].project.name).toBe('A')
+  })
+
+  it('two edits, undo, redo: before is the state just before each step', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'A' })) })
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'B' })) })
+    await act(async () => { result.current.undo() })
+    await act(async () => { result.current.redo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(4))
+    const seen = adapter.saveCalls.map((c) => [c.before?.name, c.project.name])
+    expect(seen).toEqual([['Test Project', 'A'], ['A', 'B'], ['B', 'A'], ['A', 'B']])
+  })
+
+  it('a setting toggled on, off, on: each before is the previous state', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({ settings: { resolution: [1080, 1080] } })
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    const toggle = (on: boolean) => (p: Project) =>
+      ({ ...p, settings: { ...p.settings, flag: on } }) as Project
+    await act(async () => { await result.current.mutate(toggle(true)) })
+    await act(async () => { await result.current.mutate(toggle(false)) })
+    await act(async () => { await result.current.mutate(toggle(true)) })
+    const flags = adapter.saveCalls.map((c) => [
+      (c.before?.settings as { flag?: boolean }).flag,
+      (c.project.settings as { flag?: boolean }).flag,
+    ])
+    expect(flags).toEqual([[undefined, true], [true, false], [false, true]])
+  })
+
+  it('an edit while an external frame is held passes the editor own state, and the held frame lands after the drain', async () => {
+    const adapter = makeFakeAdapter({ blockSave: true })
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    let p1: Promise<void> = Promise.resolve()
+    let p2: Promise<void> = Promise.resolve()
+    act(() => { p1 = result.current.mutate((p) => ({ ...p, name: 'Own 1' })) })
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+    act(() => { adapter.emit(named('Held frame')) })
+    expect(result.current.project.name).toBe('Own 1')
+    act(() => { p2 = result.current.mutate((p) => ({ ...p, name: 'Own 2' })) })
+    await act(async () => { adapter.release(); await p1 })
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(2))
+    expect(adapter.saveCalls[1].before?.name).toBe('Own 1')
+    expect(result.current.project.name).toBe('Own 2')
+    await act(async () => { adapter.release(); await p2 })
+    await waitFor(() => expect(result.current.project.name).toBe('Held frame'))
+  })
+
+  it('a committed gesture passes the pre-gesture document', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    await act(async () => {
+      result.current.mutateTransient((p) => ({ ...p, name: 'Drag 1' }))
+      result.current.mutateTransient((p) => ({ ...p, name: 'Drag 2' }))
+    })
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveCalls[0].argc).toBe(3)
+    expect(adapter.saveCalls[0].before).toBe(initial)
+    expect(adapter.saveCalls[0].project.name).toBe('Drag 2')
+  })
+
+  it('a gesture whose baseline an external frame cleared passes before: undefined, explicitly', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    act(() => { result.current.mutateTransient((p) => ({ ...p, name: 'Drag' })) })
+    act(() => { result.current.applyExternal(named('External')) })
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveCalls).toHaveLength(1)
+    expect(adapter.saveCalls[0].argc).toBe(3)
+    expect(adapter.saveCalls[0].before).toBeUndefined()
+  })
+
+  it('a failed save still rolls back, and before was passed', async () => {
+    const adapter = makeFakeAdapter({ failSave: true })
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    await act(async () => {
+      await result.current.mutate((p) => ({ ...p, name: 'Doomed' })).catch(() => {})
+    })
+    expect(adapter.saveCalls[0].before).toBe(initial)
+    expect(result.current.project.name).toBe('Test Project')
+    expect(result.current.lastError).toBe('save boom')
+  })
+})

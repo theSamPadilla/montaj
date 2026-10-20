@@ -229,13 +229,17 @@ export function useProjectSync<P extends Project = Project>(
   }, [adapter, projectId, applyExternal])
 
   // Internal: persist the full project via the adapter; rollback on failure.
+  // `before` is the document as it was before the edit being written (undefined
+  // when unknown, e.g. a gesture whose baseline an external frame cleared).
   // `clear` names the top-level keys this write took away (see withKeysNulled):
   // the ones a plain edit removed, or the ones an undo/redo step's own edit
   // added/removed. Nothing else is ever sent as null.
   const save = useCallback(
-    async (next: P, snapshot: P, clear: readonly string[]) => {
+    async (next: P, snapshot: P, clear: readonly string[], before: P | undefined) => {
       try {
-        await adapter.saveProject(projectId, withKeysNulled(next, clear))
+        // `before` is always passed (explicitly undefined when the core cannot
+        // say), so a host can tell "no baseline" from an older core.
+        await adapter.saveProject(projectId, withKeysNulled(next, clear), before)
       } catch (err) {
         projectRef.current = snapshot
         setProject(snapshot)
@@ -262,7 +266,7 @@ export function useProjectSync<P extends Project = Project>(
       onLocalEditRef.current?.()
       const removed = keysAdded(next, base)
       return queue.current.enqueue(() =>
-        save(next, base, removed).catch((err) => {
+        save(next, base, removed, base).catch((err) => {
           setLastError(err instanceof Error ? err.message : String(err))
           throw err
         }),
@@ -297,7 +301,7 @@ export function useProjectSync<P extends Project = Project>(
     const rollbackTo = baseline ?? current
     const removed = baseline !== null ? keysAdded(current, baseline) : []
     return queue.current.enqueue(() =>
-      save(current, rollbackTo, removed).catch((err) => {
+      save(current, rollbackTo, removed, baseline ?? undefined).catch((err) => {
         setLastError(err instanceof Error ? err.message : String(err))
         throw err
       }),
@@ -340,7 +344,7 @@ export function useProjectSync<P extends Project = Project>(
     setProject(prev)
     onLocalEditRef.current?.()
     void queue.current.enqueue(() =>
-      save(prev, current, entry.added).catch((err) => {
+      save(prev, current, entry.added, current).catch((err) => {
         setLastError(err instanceof Error ? err.message : String(err))
         throw err
       }),
@@ -360,7 +364,7 @@ export function useProjectSync<P extends Project = Project>(
     setProject(next)
     onLocalEditRef.current?.()
     void queue.current.enqueue(() =>
-      save(next, current, entry.removed).catch((err) => {
+      save(next, current, entry.removed, current).catch((err) => {
         setLastError(err instanceof Error ? err.message : String(err))
         throw err
       }),

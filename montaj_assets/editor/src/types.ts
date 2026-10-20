@@ -718,8 +718,12 @@ export interface EditorAdapter<P extends Project = Project> {
   /** Fetch the full project by id. */
   loadProject(id: string): Promise<P>
 
-  /** Persist the full project. Mirrors Montaj's `PUT /api/projects/:id`. */
-  saveProject(id: string, project: P): Promise<void>
+  /**
+   * Persist the full project. Mirrors Montaj's `PUT /api/projects/:id`.
+   * `before` is the document as it was before this edit, so a host can save
+   * only the fields the edit changed; absent when the core cannot say.
+   */
+  saveProject(id: string, project: P, before?: P): Promise<void>
 
   /**
    * Subscribe to live project frames (e.g. an SSE stream). `onFrame` is invoked
