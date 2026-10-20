@@ -284,6 +284,30 @@ def _read_for_write(target: Path) -> dict:
     return {}
 
 
+def _input_key(pdir: Path, path: str) -> str:
+    """An input of a derived file (relative to the project folder, or absolute) as a
+    key: inside the folder and not one of its own files (`key_for`), and existing
+    (file_not_found). The funnel leaves out an input this refuses; a posted entry's
+    `from` is refused for it."""
+    key = key_for(pdir, path)
+    if not os.path.exists(path if os.path.isabs(path) else os.path.join(pdir, path)):
+        raise ProvenanceError("file_not_found", f"'{path}' does not exist in the project")
+    return key
+
+
+def _from_keys(pdir: Path, paths: list) -> list[str]:
+    """A derived entry's `from`, each path checked and made a key (`_input_key`)."""
+    keys = []
+    for path in paths:
+        try:
+            key = _input_key(pdir, path)
+        except ProvenanceError as e:
+            raise ProvenanceError(e.code, f"'from': {e}") from None
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
 def _serialise(pdir: Path, data: dict) -> str:
     """The record as the text written, under `_RECORD_MAX_BYTES`. Past it, the
     entries whose file is gone are dropped (from `data`) to make room; still past
@@ -302,9 +326,11 @@ def _serialise(pdir: Path, data: dict) -> str:
 def record_many(project_dir, items) -> tuple[dict, list]:
     """Record several entries in one project with one read and one write of
     `.provenance.json`, its only writer. `items` is `[(path, entry)]`: a path in
-    `project_dir` (`key_for`), and an entry (`validate_entry`), or None to keep the
-    path's entry and only refresh its `bytes` (a file rewritten in place). The file
-    must exist; one that does is given `bytes`, its size now.
+    `project_dir` (`key_for`), and an entry (`validate_entry`; a derived entry's
+    `from` must name existing files inside the project, stored as keys,
+    `_from_keys`), or None to keep the path's entry and only refresh its `bytes` (a
+    file rewritten in place). The file must exist; one that does is given `bytes`,
+    its size now.
 
     Returns `({key: entry as stored}, [(path, ProvenanceError)])`: an item refused
     (a bad entry or path, a file that does not exist) is left out and the rest are
@@ -324,7 +350,11 @@ def record_many(project_dir, items) -> tuple[dict, list]:
     prepared, refused = [], []
     for path, entry in items:
         try:
-            prepared.append((path, key_for(pdir, path), None if entry is None else validate_entry(entry)))
+            key = key_for(pdir, path)
+            clean = None if entry is None else validate_entry(entry)
+            if clean is not None and clean.get("from"):
+                clean["from"] = _from_keys(pdir, clean["from"])
+            prepared.append((path, key, clean))
         except ProvenanceError as e:
             refused.append((path, e))
     written: dict = {}
@@ -500,13 +530,11 @@ def _path_values(schema: dict, body: dict):
 
 
 def _inputs_inside(pdir: Path, schema: dict, body: dict, workspace: str) -> list[str]:
+    """The run's input paths that `_input_key` takes, as keys; the rest are left out."""
     keys = []
     for v in _path_values(schema, body):
-        p = _absolute(v, workspace)
-        if not os.path.exists(p):
-            continue
         try:
-            key = key_for(pdir, p)
+            key = _input_key(pdir, _absolute(v, workspace))
         except ProvenanceError:
             continue
         if key not in keys:

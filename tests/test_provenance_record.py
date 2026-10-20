@@ -151,6 +151,23 @@ def test_an_entry_the_record_refuses_is_a_422_and_writes_nothing(env, entry, say
     assert not (pdir / "assets" / ".provenance.json").exists()
 
 
+def test_a_posted_derived_entrys_from_is_checked_like_the_funnels(env, tmp_path):
+    pid, pdir = env
+    _touch(pdir, "assets/cut.mp4", "clip.mp4", "assets/music.mp3")
+    outside = tmp_path / "elsewhere.mp4"
+    outside.write_bytes(b"v")
+    r = _post(pid, "assets/cut.mp4", {"kind": "derived", "step": "trim",
+                                      "from": [str(pdir / "clip.mp4"), "assets/music.mp3", "clip.mp4"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["entry"]["from"] == ["clip.mp4", "assets/music.mp3"]    # keys, once each
+    for bad, code in ((str(outside), "outside_project"), ("../2026-10-19-other/a.mp4", "outside_project"),
+                      ("missing.mp4", "file_not_found"), ("project.json", "invalid_path")):
+        r = _post(pid, "assets/cut.mp4", {"kind": "derived", "step": "trim", "from": ["clip.mp4", bad]})
+        assert r.status_code == 422, (bad, r.text)
+        assert r.json()["detail"]["error"] == code and "'from'" in r.json()["detail"]["message"], bad
+    assert _record(pdir)["assets/cut.mp4"]["from"] == ["clip.mp4", "assets/music.mp3"]   # kept as it was
+
+
 def test_a_file_that_does_not_exist_is_refused(env):
     pid, pdir = env
     r = _post(pid, "assets/later.png", {"kind": "user", "via": "drop"})
