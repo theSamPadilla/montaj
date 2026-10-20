@@ -107,17 +107,52 @@ function withKeysNulled<P extends Project>(project: P, keys: readonly string[]):
   return (body ?? project) as P
 }
 
-// One undo/redo step. `snapshot` is the project the step restores; `added` and
-// `removed` are the top-level keys the EDIT this step belongs to added and
-// removed, fixed when the edit was made (`mutate` / `commit`) and carried with
-// it between the stacks. Undo restores the pre-edit snapshot and clears only
-// `added`; redo restores the post-edit snapshot and clears only `removed`
-// (the undo before it wrote those keys back by value). Every other key a
-// restore lacks is omitted from the body, so the host keeps it.
+// One undo/redo step. `before` and `after` are the project either side of the
+// EDIT this step belongs to; `keys` are the top-level keys that edit changed
+// (by reference, plus added and removed), fixed when the edit was made. Undo
+// restores only those keys from `before`, redo only those from `after`, each on
+// top of a copy of the CURRENT project, so a field another writer changed since
+// (an AI save, an external frame, a later edit that failed and rolled back) is
+// never reverted. A restored key the source lacks is deleted, and travels in
+// the save body as `null` so the host drops it.
 interface HistoryEntry<P> {
-  snapshot: P
-  added: string[]
-  removed: string[]
+  before: P
+  after: P
+  keys: string[]
+}
+
+/** Top-level keys whose value differs between `a` and `b` (added, removed, or a
+ *  different reference). An `undefined` value counts as absent. */
+function changedKeys(a: Project, b: Project): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const k of [...Object.keys(a), ...Object.keys(b)]) {
+    if (seen.has(k)) continue
+    seen.add(k)
+    if ((a as Keyed)[k] !== (b as Keyed)[k]) out.push(k)
+  }
+  return out
+}
+
+/** `current` with each of `keys` set to its value in `source`; a key `source`
+ *  lacks is removed. Also returns the removed keys (to be sent as null). */
+function restoreKeys<P extends Project>(
+  current: P,
+  source: P,
+  keys: readonly string[],
+): { next: P; cleared: string[] } {
+  const next: Keyed = { ...current }
+  const cleared: string[] = []
+  for (const k of keys) {
+    const v = (source as Keyed)[k]
+    if (v === undefined) {
+      delete next[k]
+      cleared.push(k)
+    } else {
+      next[k] = v
+    }
+  }
+  return { next: next as P, cleared }
 }
 
 export function useProjectSync<P extends Project = Project>(
@@ -199,11 +234,7 @@ export function useProjectSync<P extends Project = Project>(
   const bumpHistory = useCallback(() => setHistoryVersion((v) => v + 1), [])
   // Record an edit from `before` to `after`: one undo step restoring `before`.
   const pushUndo = useCallback((before: P, after: P) => {
-    undoStackRef.current.push({
-      snapshot: before,
-      added: keysAdded(before, after),
-      removed: keysAdded(after, before),
-    })
+    undoStackRef.current.push({ before, after, keys: changedKeys(before, after) })
     if (undoStackRef.current.length > MAX_HISTORY) undoStackRef.current.shift()
     redoStackRef.current = []
     bumpHistory()
@@ -263,14 +294,17 @@ export function useProjectSync<P extends Project = Project>(
   // N+1's base) and the save body carries the correct shape without a re-render.
   const mutate = useCallback(
     (fn: (p: P) => P): Promise<void> => {
-      const base = projectRef.current
-      const next = fn(base)
+      // An open gesture is part of this edit: its pre-gesture document is the
+      // baseline, so the preview is saved and undone with it, not discarded.
+      const base = transientBaseline.current ?? projectRef.current
+      const next = fn(projectRef.current)
       pushUndo(base, next)
       projectRef.current = next
       setProject(next)
       // Non-transient mutations reset the baseline so any subsequent gesture
       // starts from the freshly committed state.
       transientBaseline.current = null
+      baselineLost.current = false
       onLocalEditRef.current?.()
       const removed = keysAdded(next, base)
       return queue.current.enqueue(() =>
@@ -327,35 +361,37 @@ export function useProjectSync<P extends Project = Project>(
   // commit() into pushing a stale baseline for a gesture that never happened.
   const discardTransient = useCallback((): void => {
     const baseline = transientBaseline.current
-    if (baseline === null) return
+    if (baseline === null) {
+      baselineLost.current = false
+      return
+    }
     transientBaseline.current = null
+    baselineLost.current = false
     projectRef.current = baseline
     setProject(baseline)
   }, [])
 
-  // undo()/redo() — snapshot swap. Pops the target stack, pushes current state
-  // to the opposite stack, replaces the entire state, and enqueues a save so the
-  // host persists the swap. Also clears transientBaseline: it replaces state
-  // wholesale, so any in-progress gesture's pre-gesture snapshot is stale after
-  // this and must not be resurrected by a later commit()/undo() (see applyExternal).
-  //
-  // The step's key lists travel with it between the stacks, so the save clears
-  // only what that step's own edit added (undo) or removed (redo), never a key
-  // the host added or removed since (see HistoryEntry).
+  // undo()/redo(): restore the keys the step's edit changed, on top of the
+  // current project (see HistoryEntry), and enqueue a save so the host persists
+  // it. The entry moves between the stacks. Also clears transientBaseline and
+  // baselineLost: the state changes under any in-progress gesture, so its
+  // pre-gesture snapshot is stale and must not be resurrected by a later
+  // commit()/undo() (see applyExternal).
   const undo = useCallback((): void => {
     const entry = undoStackRef.current.pop()
     if (!entry) return
-    const prev = entry.snapshot
     const current = projectRef.current
-    redoStackRef.current.push({ ...entry, snapshot: current })
+    const { next, cleared } = restoreKeys(current, entry.before, entry.keys)
+    redoStackRef.current.push(entry)
     if (redoStackRef.current.length > MAX_HISTORY) redoStackRef.current.shift()
     bumpHistory()
-    projectRef.current = prev
+    projectRef.current = next
     transientBaseline.current = null
-    setProject(prev)
+    baselineLost.current = false
+    setProject(next)
     onLocalEditRef.current?.()
     void queue.current.enqueue(() =>
-      save(prev, current, entry.added, current).catch((err) => {
+      save(next, current, cleared, current).catch((err) => {
         setLastError(err instanceof Error ? err.message : String(err))
         throw err
       }),
@@ -365,17 +401,18 @@ export function useProjectSync<P extends Project = Project>(
   const redo = useCallback((): void => {
     const entry = redoStackRef.current.pop()
     if (!entry) return
-    const next = entry.snapshot
     const current = projectRef.current
-    undoStackRef.current.push({ ...entry, snapshot: current })
+    const { next, cleared } = restoreKeys(current, entry.after, entry.keys)
+    undoStackRef.current.push(entry)
     if (undoStackRef.current.length > MAX_HISTORY) undoStackRef.current.shift()
     bumpHistory()
     projectRef.current = next
     transientBaseline.current = null
+    baselineLost.current = false
     setProject(next)
     onLocalEditRef.current?.()
     void queue.current.enqueue(() =>
-      save(next, current, entry.removed, current).catch((err) => {
+      save(next, current, cleared, current).catch((err) => {
         setLastError(err instanceof Error ? err.message : String(err))
         throw err
       }),

@@ -528,8 +528,9 @@ describe('useProjectSync — undo/redo clear only the keys their own edit change
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
 
     expect(body(adapter, 1).name).toBe('Test Project')
-    expect(body(adapter, 1).assets).not.toBeNull()
-    expect('assets' in body(adapter, 1)).toBe(false)
+    // The host's key rides along unchanged (equal to `before`), never null.
+    expect(body(adapter, 1).assets).toEqual([asset])
+    expect(adapter.saveCalls[1].before?.assets).toEqual([asset])
   })
 
   it('undo of the first note after the host added a key clears only notes', async () => {
@@ -544,7 +545,7 @@ describe('useProjectSync — undo/redo clear only the keys their own edit change
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
 
     expect(body(adapter, 1).notes).toBeNull()
-    expect('assets' in body(adapter, 1)).toBe(false)
+    expect(body(adapter, 1).assets).toEqual([asset])
   })
 
   it('a committed gesture records the keys it added, so its undo clears only those', async () => {
@@ -563,7 +564,7 @@ describe('useProjectSync — undo/redo clear only the keys their own edit change
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
 
     expect(body(adapter, 1).notes).toBeNull()
-    expect('assets' in body(adapter, 1)).toBe(false)
+    expect(body(adapter, 1).assets).toEqual([asset])
   })
 
   it('redo after the host added a key never deletes that key', async () => {
@@ -580,7 +581,7 @@ describe('useProjectSync — undo/redo clear only the keys their own edit change
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
 
     expect(body(adapter, 2).name).toBe('Renamed')
-    expect('assets' in body(adapter, 2)).toBe(false)
+    expect(body(adapter, 2).assets).toEqual([asset])
   })
 
   it('redo after undoing the first note restores it', async () => {
@@ -803,5 +804,168 @@ describe('useProjectSync — saveProject receives the document before the edit',
     expect(adapter.saveCalls[0].before).toBe(initial)
     expect(result.current.project.name).toBe('Test Project')
     expect(result.current.lastError).toBe('save boom')
+  })
+})
+
+// Undo and redo restore ONLY the keys their edit changed, on top of the current
+// project; a field another writer changed since is never reverted. A gesture
+// left open when a mutate happens is saved as part of that edit. A lost
+// baseline never outlives the gesture it belonged to.
+describe('useProjectSync: keyed undo/redo, open gestures, stale baselineLost', () => {
+  const note = (id: string) => ({ id, slideId: 'slide-0', text: id })
+  const body = (adapter: FakeAdapter, i: number) => adapter.saveCalls[i].project as Record<string, unknown>
+  const before = (adapter: FakeAdapter, i: number) => adapter.saveCalls[i].before as Record<string, unknown> | undefined
+  const named = (name: string) => makeProject({ name })
+  const tracks = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `t${i}` }))
+  const setup = (initial: Project = makeProject()) => {
+    const adapter = makeFakeAdapter()
+    const hook = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    return { adapter, result: hook.result, initial }
+  }
+
+  it('A1: undo after an external frame brought notes keeps those notes and the host sees them unchanged', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'Renamed' })) })
+    act(() => { adapter.emit({ ...result.current.projectRef.current!, notes: [note('ai')] } as Project) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(body(adapter, 1).name).toBe('Test Project')
+    expect(body(adapter, 1).notes).toEqual([note('ai')])
+    expect(body(adapter, 1).notes).toBe(before(adapter, 1)!.notes)
+  })
+
+  it('A2: redo after an external frame brought notes keeps those notes', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'Renamed' })) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    act(() => { adapter.emit({ ...result.current.projectRef.current!, notes: [note('ai')] } as Project) })
+    act(() => { result.current.redo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(body(adapter, 2).name).toBe('Renamed')
+    expect(body(adapter, 2).notes).toBe(before(adapter, 2)!.notes)
+    expect(result.current.project.notes).toEqual([note('ai')])
+  })
+
+  it('D1: a failed edit rolled back is not written back by the undo of a later edit', async () => {
+    const { adapter, result } = setup()
+    ;(adapter.saveProject as ReturnType<typeof vi.fn>).mockImplementationOnce(async (...a: unknown[]) => {
+      adapter.saveCalls.push({ id: a[0] as string, project: a[1] as Project, before: a[2] as Project, argc: a.length })
+      throw new Error('boom')
+    })
+    // Both edits in one tick: edit 2 starts from a state that holds edit 1.
+    await act(async () => {
+      const p1 = result.current.mutate((p) => ({ ...p, name: 'Failed' })).catch(() => {})
+      const p2 = result.current.mutate((p) => ({ ...p, tracks: tracks(2) } as Project))
+      await Promise.all([p1, p2])
+    })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(body(adapter, 2).name).toBe('Test Project')
+    expect(body(adapter, 2).tracks).toBeNull()
+  })
+
+  it('undo restores only the edit keys when other keys changed externally', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'N', status: 'final' })) })
+    act(() => { adapter.emit({ ...result.current.projectRef.current!, status: 'pending', editingPrompt: 'ext' }) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(result.current.project.name).toBe('Test Project')
+    expect(result.current.project.status).toBe('draft')
+    expect(result.current.project.editingPrompt).toBe('ext')
+  })
+
+  it('redo restores only the edit keys when other keys changed externally', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'N' })) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    act(() => { adapter.emit({ ...result.current.projectRef.current!, editingPrompt: 'ext' }) })
+    act(() => { result.current.redo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(result.current.project.name).toBe('N')
+    expect(result.current.project.editingPrompt).toBe('ext')
+  })
+
+  it('undo of an edit that added a key removes only that key', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => ({ ...p, markers: [{ id: 'm', t: 1, label: '' }] } as Project)) })
+    act(() => { adapter.emit({ ...result.current.projectRef.current!, notes: [note('ai')] } as Project) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(body(adapter, 1).markers).toBeNull()
+    expect(body(adapter, 1).notes).toEqual([note('ai')])
+    expect('markers' in result.current.project).toBe(false)
+  })
+
+  it('undo of an edit that removed a key restores only that key', async () => {
+    const { adapter, result } = setup(makeProject({ notes: [note('n1')] } as Partial<Project>))
+    await act(async () => {
+      await result.current.mutate((p) => { const { notes: _n, ...rest } = p; return rest as Project })
+    })
+    act(() => { adapter.emit({ ...result.current.projectRef.current!, markers: [{ id: 'm', t: 1, label: '' }] } as Project) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(body(adapter, 1).notes).toEqual([note('n1')])
+    expect(result.current.project.markers).toEqual([{ id: 'm', t: 1, label: '' }])
+  })
+
+  it('undo still swaps the whole edit when nothing else changed', async () => {
+    const { adapter, result, initial } = setup()
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'N', status: 'final' })) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(result.current.project).toEqual(initial)
+    act(() => { result.current.redo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(result.current.project).toEqual({ ...initial, name: 'N', status: 'final' })
+  })
+
+  it('H1: a mutate during an uncommitted gesture saves the gesture too', async () => {
+    const { adapter, result, initial } = setup()
+    act(() => { result.current.mutateTransient((p) => ({ ...p, tracks: tracks(3) } as Project)) })
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'M' })) })
+    expect(adapter.saveCalls[0].before).toBe(initial)
+    expect(body(adapter, 0).name).toBe('M')
+    expect(body(adapter, 0).tracks).toEqual(tracks(3))
+    await act(async () => { await result.current.commit() })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(result.current.project).toEqual(initial)
+  })
+
+  it('B1: a discarded gesture whose baseline was lost does not make the next empty commit undefined', async () => {
+    const { adapter, result } = setup()
+    act(() => { result.current.mutateTransient((p) => ({ ...p, name: 'Drag' })) })
+    act(() => { result.current.applyExternal(named('External')) })
+    act(() => { result.current.discardTransient() })
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveCalls[0].before?.name).toBe('External')
+  })
+
+  it('B2: a mutate after a lost baseline does not leave the next empty commit undefined', async () => {
+    const { adapter, result } = setup()
+    act(() => { result.current.mutateTransient((p) => ({ ...p, name: 'Drag' })) })
+    act(() => { result.current.applyExternal(named('External')) })
+    await act(async () => { await result.current.mutate((p) => ({ ...p, status: 'final' })) })
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveCalls[1].before).toBeDefined()
+    expect(adapter.saveCalls[1].before?.status).toBe('final')
+  })
+
+  it('undo and redo also reset a lost baseline', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'A' })) })
+    act(() => { result.current.mutateTransient((p) => ({ ...p, status: 'pending' })) })
+    act(() => { result.current.applyExternal({ ...result.current.projectRef.current!, status: 'pending' }) })
+    act(() => { result.current.undo() })
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveCalls[adapter.saveCalls.length - 1].before).toBeDefined()
+    act(() => { result.current.mutateTransient((p) => ({ ...p, status: 'storyboard_ready' })) })
+    act(() => { result.current.applyExternal({ ...result.current.projectRef.current!, status: 'storyboard_ready' }) })
+    act(() => { result.current.redo() })
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveCalls[adapter.saveCalls.length - 1].before).toBeDefined()
   })
 })
