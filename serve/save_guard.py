@@ -145,7 +145,9 @@ def check_save(headers, body: dict, raw_text, existing: dict):
     if not stale and not missing:
         return verdict
     if advisory:
-        verdict.overrode = stale + missing
+        # An override is a field whose revision differs. A field the editor sent no
+        # revision for was never read, which is not an override.
+        verdict.overrode = stale
         return verdict
     if stale:
         raise HTTPException(409, detail={"error": "project_changed", "stale": stale, "missing": missing,

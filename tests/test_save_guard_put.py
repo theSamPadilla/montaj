@@ -317,11 +317,24 @@ def test_advisory_editor_with_the_secret_applies_and_logs_the_override_once(proj
     resp = _put({"name": "x", "status": "final", "sources": []},
                 read={"name": "000000000000", **_revs(proj, "sources")}, headers=headers)
     assert resp.status_code == 200, resp.text
-    assert resp.headers["x-montaj-overrode"] == "name,status"
-    assert _disk(proj)["name"] == "x"
+    # status was never read: a save with no read is not an override, so only the stale name counts.
+    assert resp.headers["x-montaj-overrode"] == "name"
+    assert _disk(proj)["name"] == "x" and _disk(proj)["status"] == "final"
     out = capsys.readouterr()
     lines = [l for l in (out.out + out.err).splitlines() if l.startswith("save-guard:")]
-    assert lines == ["save-guard: advisory override editor fields=name,status"]
+    assert lines == ["save-guard: advisory override editor fields=name"]
+
+
+def test_advisory_editor_with_no_read_applies_and_overrides_nothing(proj, monkeypatch, capsys):
+    _start(monkeypatch)
+    headers = {"x-montaj-shell": SECRET, "x-montaj-writer": "editor", "x-montaj-guard": "advisory"}
+    capsys.readouterr()
+    resp = _put({"name": "x", "status": "final"}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert "x-montaj-overrode" not in resp.headers
+    assert _disk(proj)["name"] == "x"
+    out = capsys.readouterr()
+    assert "save-guard:" not in out.out + out.err
 
 
 def test_advisory_editor_with_fresh_revisions_overrides_nothing(proj, monkeypatch, capsys):
