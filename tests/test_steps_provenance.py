@@ -82,6 +82,13 @@ def _record(pdir):
     return json.loads(p.read_text()) if p.exists() else {}
 
 
+def _fields(entry, size=1):
+    """An entry's kind fields: without `at`, and `bytes`, checked to be the file's
+    size (these fakes write b"x")."""
+    assert entry.get("bytes") == size, entry
+    return {k: v for k, v in entry.items() if k not in ("at", "bytes")}
+
+
 # ── ai ───────────────────────────────────────────────────────────────────────
 
 def test_a_generated_image_in_a_project_is_recorded_by_its_path_in_the_project(env):
@@ -134,7 +141,7 @@ def test_fetch_image_records_the_search_results_licence_as_stock(env):
         "licence": "CC BY-SA 4.0", "artist": "Jane Doe", "source": "commons", "title": "Elon at the IPO"})
     assert r.status_code == 200, r.text
     entry = _record(pdir)["assets/elon.jpg"]
-    assert {k: v for k, v in entry.items() if k != "at"} == {
+    assert _fields(entry) == {
         "kind": "stock", "source": "commons", "licence": "CC BY-SA 4.0", "artist": "Jane Doe",
         "sourceUrl": "https://upload.wikimedia.org/a/elon.jpg", "title": "Elon at the IPO"}
 
@@ -145,7 +152,7 @@ def test_fetch_image_without_the_licence_params_is_still_stock_with_its_url(env)
         "url": "https://upload.wikimedia.org/b.jpg", "_project": pid, "out": "b.jpg",
         "source-url": "https://commons.wikimedia.org/wiki/File:b.jpg"})
     entry = _record(pdir)["assets/b.jpg"]
-    assert {k: v for k, v in entry.items() if k != "at"} == {
+    assert _fields(entry) == {
         "kind": "stock", "sourceUrl": "https://commons.wikimedia.org/wiki/File:b.jpg"}
 
 
@@ -167,7 +174,7 @@ def test_synth_audio_is_recorded_as_synth(env):
     r = client.post("/api/steps/synth_audio", json={"cues": str(cues), "_project": pid, "out": "beat"})
     assert r.status_code == 200, r.text
     entry = _record(pdir)["assets/beat.wav"]
-    assert entry["kind"] == "synth" and entry["step"] == "synth_audio" and set(entry) == {"kind", "step", "at"}
+    assert _fields(entry) == {"kind": "synth", "step": "synth_audio"} and "at" in entry
 
 
 # ── web ──────────────────────────────────────────────────────────────────────
@@ -177,7 +184,7 @@ def test_fetch_records_a_downloaded_video_as_web_with_its_url(env):
     r = client.post("/api/steps/fetch", json={"url": "https://youtu.be/abc", "_project": pid, "out": "talk.mp4"})
     assert r.status_code == 200, r.text
     entry = _record(pdir)["assets/talk.mp4"]
-    assert {k: v for k, v in entry.items() if k != "at"} == {
+    assert _fields(entry) == {
         "kind": "web", "via": "fetch", "sourceUrl": "https://youtu.be/abc"}
 
 
@@ -201,8 +208,8 @@ def test_capture_site_records_every_file_its_manifest_lists_as_web(env):
     rec = _record(pdir)
     assert set(rec) == {"site/manifest.json", "site/desktop.png", "site/mobile.png", "site/full.png",
                         "site/logos/logo-0.svg"}
-    for entry in rec.values():
-        assert {k: v for k, v in entry.items() if k != "at"} == {
+    for key, entry in rec.items():
+        assert _fields(entry, (pdir / key).stat().st_size) == {
             "kind": "web", "via": "capture_site", "sourceUrl": "https://example.com/", "title": "Example"}
 
 
@@ -217,7 +224,7 @@ def test_any_other_step_in_a_project_is_derived_from_its_inputs_inside_the_proje
         "input": str(pdir / "clip.mp4"), "mask": str(outside), "out": str(pdir / "assets" / "cut.mp4")})
     assert r.status_code == 200, r.text
     entry = _record(pdir)["assets/cut.mp4"]
-    assert {k: v for k, v in entry.items() if k != "at"} == {
+    assert _fields(entry) == {
         "kind": "derived", "step": "trim_thing", "from": ["clip.mp4"]}
 
 
@@ -226,7 +233,7 @@ def test_a_derived_output_with_no_input_in_the_project_has_no_from(env, tmp_path
     src = tmp_path / "elsewhere.mp4"
     src.write_bytes(b"v")
     client.post("/api/steps/trim_thing", json={"input": str(src), "out": str(pdir / "assets" / "cut.mp4")})
-    assert set(_record(pdir)["assets/cut.mp4"]) == {"kind", "step", "at"}
+    assert _fields(_record(pdir)["assets/cut.mp4"]) == {"kind": "derived", "step": "trim_thing"}
 
 
 def test_a_file_a_step_rewrites_in_place_keeps_its_record(env):

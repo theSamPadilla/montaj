@@ -16,7 +16,10 @@ project keeps it) to one entry: its `kind`, when it was recorded (`at`, ISO
   montaj     what: preset, sample
 
 `ai`'s `provider` is the connector id (kling, fal, kinovi, gemini, openai,
-elevenlabs, tripo). Serve is the one writer, and `record_provenance` is the
+elevenlabs, tripo). An entry for a file that existed when it was recorded also
+has `bytes`, its size then; a reader (`annotated`) marks the entry `stale` when
+the file is gone or its size changed, so a new file under an old name inherits
+nothing. Serve is the one writer, and `record_provenance` is the
 only code that writes the file. Serve's step funnel calls it for every step
 whose output lands in a project (`_note_provenance` in serve/routes/steps.py,
 which builds the entries with `step_records`), and the project routes call it
@@ -200,11 +203,33 @@ def merged(project_dir) -> dict:
     return {**legacy, **read(project_dir)}
 
 
+def _is_stale(project_dir, key: str, entry: dict) -> bool:
+    """The file is gone, or it is not the size `bytes` says it was when recorded.
+    An entry with no `bytes` (the file did not exist yet, or the older record) is
+    stale only when the file is gone."""
+    file = Path(project_dir) / key
+    try:
+        if not file.exists():
+            return True
+        size = entry.get("bytes")
+        return (isinstance(size, int) and not isinstance(size, bool) and file.is_file()
+                and file.stat().st_size != size)
+    except (OSError, ValueError):
+        return True
+
+
+def annotated(project_dir) -> dict:
+    """`merged`, each entry whose file is gone or changed size marked `stale: true`
+    (`_is_stale`). Nothing is deleted: what GET /projects/{id}/provenance answers."""
+    return {k: {**e, "stale": True} if _is_stale(project_dir, k, e) else e
+            for k, e in merged(project_dir).items()}
+
+
 def generated(project_dir) -> dict:
-    """The ai entries of `merged`, in the shape the AI-only record had (no `kind`):
-    what `GET /projects/{id}/generated` answers."""
+    """The ai entries of `annotated`, in the shape the AI-only record had (no
+    `kind`): what `GET /projects/{id}/generated` answers."""
     return {k: {f: v for f, v in e.items() if f != "kind"}
-            for k, e in merged(project_dir).items() if e.get("kind") == "ai"}
+            for k, e in annotated(project_dir).items() if e.get("kind") == "ai"}
 
 
 def _read_for_write(target: Path) -> dict:
@@ -228,9 +253,10 @@ def _read_for_write(target: Path) -> dict:
     return {}
 
 
-def record_provenance(project_dir, path, entry) -> str:
+def record_provenance(project_dir, path, entry) -> tuple[str, dict]:
     """Record `entry` (validated by `validate_entry`) for `path`, a file in
-    `project_dir`; returns its key. The one writer of `.provenance.json`.
+    `project_dir`, with `bytes` (the file's size) when the file exists; returns
+    the key and the entry as stored. The one writer of `.provenance.json`.
 
     Under the project lock (lib/project_lock.py) it re-reads the record, changes
     the one key and writes the whole file to a temp file renamed over it, so
@@ -252,11 +278,14 @@ def record_provenance(project_dir, path, entry) -> str:
         assets.mkdir(exist_ok=True)
         target = assets / RECORD_NAME
         data = _read_for_write(target)
+        file = pdir / key
+        if file.is_file():
+            clean["bytes"] = file.stat().st_size
         data[key] = clean
         if len(json.dumps(data, indent=2).encode()) > _RECORD_MAX_BYTES:
             raise ProvenanceError("record_full", "The project's provenance record is full")
         write_json_atomic(target, data)
-    return key
+    return key, clean
 
 
 # ── the step funnel ──────────────────────────────────────────────────────────

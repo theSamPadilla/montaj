@@ -139,6 +139,11 @@ def _make_client(client: httpx.Client | None = None) -> httpx.Client:
 # Wikimedia Commons search
 # ---------------------------------------------------------------------------
 
+def _is_page_url(value) -> bool:
+    # A page is only recorded, never fetched, so http is fine.
+    return isinstance(value, str) and value.startswith(("https://", "http://"))
+
+
 def commons_search(
     query: str,
     limit: int = 10,
@@ -147,7 +152,8 @@ def commons_search(
     """Search Wikimedia Commons for freely-licensed images.
 
     Returns a list of dicts with keys:
-      title, url, width, height, mime, license, artist, source
+      title, url, width, height, mime, license, artist, source, and pageUrl
+      (the file's description page) when the API gives it
     """
     own_client = client is None
     c = _make_client(client)
@@ -200,7 +206,7 @@ def commons_search(
         if not url:
             continue
 
-        results.append({
+        result = {
             "title": page.get("title", ""),
             "url": url,
             "width": ii.get("width"),
@@ -209,7 +215,11 @@ def commons_search(
             "license": license_val,
             "artist": artist,
             "source": "commons",
-        })
+        }
+        # iiprop=url also gives `descriptionurl`, the File: page (MediaWiki API, prop=imageinfo).
+        if _is_page_url(ii.get("descriptionurl")):
+            result["pageUrl"] = ii["descriptionurl"]
+        results.append(result)
         if len(results) >= limit:
             break
 
@@ -277,7 +287,8 @@ def serpapi_image_search(
 ) -> list[dict]:
     """Search the open web for images via SerpApi's google_images engine.
 
-    Returns the same dict shape as commons_search (plus a `thumbnail`). License
+    Returns the same dict shape as commons_search (plus a `thumbnail`, and
+    `pageUrl`, the page the image is on, from the result's `link`). License
     is reported as "unknown" — web results are NOT license-filtered; editorial
     use is the caller's call (the account pushes licensing downstream to the
     posting platform). Only HTTPS originals are returned, so the downstream
@@ -322,7 +333,7 @@ def serpapi_image_search(
         url = (r.get("original") or "").strip()
         if not url.startswith("https://"):
             continue  # HTTPS-only so the downstream fetch_image will accept it
-        results.append({
+        result = {
             "title": r.get("title") or "",
             "url": url,
             "width": r.get("original_width"),
@@ -332,7 +343,11 @@ def serpapi_image_search(
             "artist": (r.get("source") or None),
             "source": "web",
             "thumbnail": r.get("thumbnail"),
-        })
+        }
+        # `link` is the page the image was found on (SerpApi Google Images API, images_results).
+        if _is_page_url(r.get("link")):
+            result["pageUrl"] = r["link"]
+        results.append(result)
         if len(results) >= limit:
             break
     return results

@@ -43,7 +43,7 @@ def _post(pid, path, entry):
 
 
 def _strip_at(entry):
-    return {k: v for k, v in entry.items() if k != "at"}
+    return {k: v for k, v in entry.items() if k not in ("at", "bytes")}
 
 
 # ── the route records each kind the app writes ───────────────────────────────
@@ -217,6 +217,8 @@ def test_the_older_generated_json_is_still_read_by_both_routes(env):
                               "step": "kling_generate", "at": "2026-10-01T10:00:00+00:00"},
            "assets/both.png": {"provider": "gemini", "step": "generate_image", "at": "2026-10-01T10:00:00+00:00"}}
     (pdir / "assets" / ".generated.json").write_text(json.dumps(old))
+    for name in ("old.png", "both.png", "new.png", "mine.mov"):
+        (pdir / "assets" / name).write_bytes(b"x")
     _post(pid, "assets/new.png", {"kind": "ai", "provider": "openai", "step": "generate_image", "model": "gpt-image-1"})
     _post(pid, "assets/both.png", {"kind": "user", "via": "drop"})   # the newer record wins
     _post(pid, "assets/mine.mov", {"kind": "user", "via": "picker"})
@@ -235,6 +237,64 @@ def test_the_older_generated_json_is_still_read_by_both_routes(env):
     assert gen["generated"]["assets/new.png"]["provider"] == "openai"
     # the old file is read, never written
     assert json.loads((pdir / "assets" / ".generated.json").read_text()) == old
+
+
+# ── bytes, and an entry whose file is no longer the one recorded ────────────
+
+def test_an_entry_records_the_files_size_when_the_file_exists(env):
+    pid, pdir = env
+    (pdir / "assets" / "here.png").write_bytes(b"12345")
+    assert _post(pid, "assets/here.png", {"kind": "user", "via": "drop"}).json()["entry"]["bytes"] == 5
+    assert "bytes" not in _post(pid, "assets/later.png", {"kind": "user", "via": "drop"}).json()["entry"]
+    (pdir / "models" / "robot").mkdir(parents=True)
+    assert "bytes" not in _post(pid, "models/robot", {"kind": "user", "via": "import_model"}).json()["entry"]
+    assert _record(pdir)["assets/here.png"]["bytes"] == 5
+
+
+@pytest.mark.parametrize("field", [{"bytes": 5}, {"stale": False}])
+def test_bytes_and_stale_are_the_writers_and_the_readers_never_a_callers(env, field):
+    pid, pdir = env
+    r = _post(pid, "a.png", {"kind": "user", "via": "drop", **field})
+    assert r.status_code == 422 and r.json()["detail"]["error"] == "invalid_entry"
+
+
+def test_a_new_file_under_a_deleted_files_name_inherits_nothing(env):
+    pid, pdir = env
+    gen = pdir / "assets" / "hero.png"
+    gen.write_bytes(b"made by a model")
+    _post(pid, "assets/hero.png", {"kind": "ai", "provider": "gemini", "step": "generate_image"})
+    (pdir / "assets" / "kept.png").write_bytes(b"k")
+    _post(pid, "assets/kept.png", {"kind": "user", "via": "drop"})
+    gone = pdir / "assets" / "gone.png"
+    gone.write_bytes(b"g")
+    _post(pid, "assets/gone.png", {"kind": "user", "via": "drop"})
+    _post(pid, "assets/never.png", {"kind": "user", "via": "drop"})       # recorded before the file existed
+
+    gen.unlink()
+    gen.write_bytes(b"the user's own photo, a different file")
+    gone.unlink()
+    prov = client.get(f"/api/projects/{pid}/provenance").json()["provenance"]
+    assert prov["assets/hero.png"]["stale"] is True and prov["assets/hero.png"]["kind"] == "ai"
+    assert prov["assets/gone.png"]["stale"] is True
+    assert prov["assets/never.png"]["stale"] is True                      # no bytes, and no file
+    assert "stale" not in prov["assets/kept.png"]
+    gen_route = client.get(f"/api/projects/{pid}/generated").json()["generated"]
+    assert gen_route["assets/hero.png"]["stale"] is True                  # marked, not dropped
+    # nothing is deleted or rewritten by reading
+    assert set(_record(pdir)) == {"assets/hero.png", "assets/kept.png", "assets/gone.png", "assets/never.png"}
+    assert not any("stale" in e for e in _record(pdir).values())
+
+    (pdir / "assets" / "never.png").write_bytes(b"n")                     # no bytes to compare: not stale
+    assert "stale" not in client.get(f"/api/projects/{pid}/provenance").json()["provenance"]["assets/never.png"]
+
+
+def test_an_older_ai_entry_whose_file_is_gone_reads_as_stale(env):
+    pid, pdir = env
+    (pdir / "assets" / ".generated.json").write_text(json.dumps({
+        "assets/old.png": {"provider": "kling", "step": "kling_generate", "at": "2026-10-01T10:00:00+00:00"}}))
+    assert client.get(f"/api/projects/{pid}/generated").json()["generated"]["assets/old.png"]["stale"] is True
+    (pdir / "assets" / "old.png").write_bytes(b"x")
+    assert "stale" not in client.get(f"/api/projects/{pid}/generated").json()["generated"]["assets/old.png"]
 
 
 def test_both_routes_answer_empty_for_a_project_with_no_record(env):

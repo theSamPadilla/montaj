@@ -3,7 +3,7 @@
   "description": "Search for images — Wikimedia Commons, TheSportsDB, or the open web (SerpApi/Google Images)",
   "output": {
     "type": "json",
-    "description": "JSON object with {results: [{title, url, width, height, mime, license, artist, source, thumbnail?}]}"
+    "description": "JSON object with {results: [{title, url, width, height, mime, license, artist, source, thumbnail?, pageUrl?}]}; pageUrl is the page the image came from (commons and web)"
   },
   "params": [
     {

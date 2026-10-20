@@ -4209,7 +4209,8 @@ async def list_generated(project_id: str, project_dir: Path = Depends(get_projec
     model, prompt, step, at}}}`, so a host can join the record to the items'
     absolute `src`. `generated` is empty when nothing was recorded. It is the
     ai entries of the project's provenance record, `.provenance.json`'s and the
-    older `.generated.json`'s (`provenance.generated`)."""
+    older `.generated.json`'s (`provenance.generated`); one whose file is gone or
+    changed size since says `stale: true`."""
     return {"dir": str(project_dir), "generated": provenance.generated(project_dir)}
 
 
@@ -4226,9 +4227,11 @@ async def get_provenance(project_id: str, project_dir: Path = Depends(get_projec
     """Where each file in the project came from (serve/provenance.py):
     `{"dir": the project folder, "provenance": {path relative to it: {kind, at,
     ...}}}`. `.provenance.json`'s entries, plus the older `.generated.json`'s as
-    kind `ai` for each path the new record has none for. A file with no entry
-    is untagged."""
-    return {"dir": str(project_dir), "provenance": provenance.merged(project_dir)}
+    kind `ai` for each path the new record has none for. An entry whose file is
+    gone or changed size since it was recorded says `stale: true` (it is kept;
+    the file it described is not the one there now). A file with no entry is
+    untagged."""
+    return {"dir": str(project_dir), "provenance": provenance.annotated(project_dir)}
 
 
 @router.post("/projects/{project_id}/provenance")
@@ -4239,13 +4242,18 @@ async def record_project_provenance(project_id: str, body: dict = Body(...),
     kinds and their fields: serve/provenance.py). The app records its own
     imports this way (user, library, template, brand_kit, montaj, web). Answers
     `{path: the record's key, entry: as stored}`; a path outside the project or
-    an entry the record refuses is a 422 naming why."""
+    an entry the record refuses is a 422 naming why.
+
+    Not `save_guard.require_editor`, on purpose: that admits only the window's
+    own requests (writer `editor`), and the app's main process calls serve as
+    writer `tool`, so it would refuse the app's own import paths. Keeping AI and
+    drive callers off this route is the app shell's job."""
     try:
         entry = provenance.validate_entry(body.get("entry"))
-        key = await asyncio.to_thread(provenance.record_provenance, project_dir, body.get("path"), entry)
+        key, stored = await asyncio.to_thread(provenance.record_provenance, project_dir, body.get("path"), entry)
     except provenance.ProvenanceError as e:
         raise _provenance_refused(e)
-    return {"path": key, "entry": entry}
+    return {"path": key, "entry": stored}
 
 
 @router.get("/projects/{project_id}/versions")

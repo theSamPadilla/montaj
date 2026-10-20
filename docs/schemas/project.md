@@ -786,7 +786,7 @@ A record beside project.json, never inside it, of where each file in the project
 }
 ```
 
-Every entry has `kind` and `at` (when it was recorded, ISO 8601 UTC to the second). The kind's own fields:
+Every entry has `kind` and `at` (when it was recorded, ISO 8601 UTC to the second), and `bytes`, the file's size then, when the file existed. Serve sets `at` when the caller leaves it out and always sets `bytes`; a caller cannot send `bytes`. The kind's own fields:
 
 | `kind` | Fields | Recorded by |
 |---|---|---|
@@ -801,17 +801,17 @@ Every entry has `kind` and `at` (when it was recorded, ISO 8601 UTC to the secon
 | `brand_kit` | `profileId` (required) | the app |
 | `montaj` | `what` (required): `preset`, `sample` | the app |
 
-Strings are capped at 1000 characters (a prompt at 2000), `from` at 500 paths, and the record at 4 MB; a write that would pass the cap is refused and the record kept. A later entry for a path replaces the earlier one. A file with no entry is untagged: nothing is guessed. The steps declare what they record in their schema's `provenance` ([step.md](step.md)); a step run outside serve (the CLI) is not recorded.
+Strings are capped at 1000 characters (a prompt at 2000), `from` at 500 paths, and the record at 4 MB; a write that would pass the cap is refused and the record kept. A later entry for a path replaces the earlier one. A file with no entry is untagged: nothing is guessed. The readers mark an entry `stale: true` when its file is gone or is not the size `bytes` says (an entry without `bytes` only when the file is gone), so a new file under a deleted file's name inherits nothing; the entry itself is kept. A replacement of exactly the same size is not caught. The steps declare what they record in their schema's `provenance` ([step.md](step.md)); a step run outside serve (the CLI) is not recorded.
 
 `assets/.generated.json`, the AI-only record this replaces (`{provider, model, prompt, step, at}` per path, no `kind`), is no longer written and is still read: its entries count as kind `ai` for any path the new record has no entry for.
 
 | Route | |
 |---|---|
-| `GET /api/projects/{id}/provenance` | `{dir, provenance: {path: entry}}`: the whole record, with `.generated.json`'s entries merged in |
-| `POST /api/projects/{id}/provenance` | Body `{path, entry}`: `path` relative to the project folder or absolute inside it. Answers `{path: the key, entry: as stored}`. 422 `outside_project` for a path outside the folder (symlinks followed), `invalid_path` for project.json, the lock, the records or `.git`, `invalid_entry` for an unknown kind or field, a wrong type, a value outside a field's set or a missing required field, `record_full` past the cap |
+| `GET /api/projects/{id}/provenance` | `{dir, provenance: {path: entry}}`: the whole record, with `.generated.json`'s entries merged in and `stale: true` on each entry whose file is gone or changed size |
+| `POST /api/projects/{id}/provenance` | Open to any caller: the engine's `require_editor` admits only the window's own requests, and the app's main process writes too. Body `{path, entry}`: `path` relative to the project folder or absolute inside it. Answers `{path: the key, entry: as stored}`. 422 `outside_project` for a path outside the folder (symlinks followed), `invalid_path` for project.json, the lock, the records or `.git`, `invalid_entry` for an unknown kind or field, a wrong type, a value outside a field's set or a missing required field, `record_full` past the cap |
 | `POST /api/projects/{id}/upload-asset` | Takes an optional `provenance` form field (the entry as JSON) and records it for the stored file. A refused entry is a 422 and nothing is stored; a record that cannot be written once the file is stored answers `provenanceError` with the path |
 | `POST /api/projects/{id}/sources` | Takes an optional `provenance` (the entry) and records it for the files the clip stores (`src`, and `normalizedSrc` when there is one). A refused entry is a 422 before anything runs |
-| `GET /api/projects/{id}/generated` | `{dir, generated: {path: {provider, model, prompt, step, at}}}`: the record's ai entries, in `.generated.json`'s shape |
+| `GET /api/projects/{id}/generated` | `{dir, generated: {path: {provider, model, prompt, step, at}}}`: the record's ai entries, in `.generated.json`'s shape, with `bytes` and `stale` as above |
 
 Without an entry, upload-asset and sources record nothing.
 

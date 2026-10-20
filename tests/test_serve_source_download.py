@@ -392,7 +392,8 @@ def test_a_downloaded_source_is_recorded_as_web_from_youtube(tmp_path, monkeypat
     _download(pid, project_dir)
 
     entry = provenance.read(project_dir)[target.name]
-    assert {k: v for k, v in entry.items() if k != "at"} == {"kind": "web", "via": "youtube", "sourceUrl": URL}
+    assert {k: v for k, v in entry.items() if k != "at"} == {
+        "kind": "web", "via": "youtube", "sourceUrl": URL, "bytes": target.stat().st_size}
 
 
 def _reopen(pid: str, project_dir: Path):

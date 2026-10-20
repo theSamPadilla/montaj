@@ -57,6 +57,8 @@ COMMONS_PAYLOAD = {
                 "imageinfo": [
                     {
                         "url": "https://upload.wikimedia.org/wikipedia/commons/test.jpg",
+                        # iiprop=url's description page (MediaWiki API docs, prop=imageinfo; not a capture)
+                        "descriptionurl": "https://commons.wikimedia.org/wiki/File:TestImage.jpg",
                         "width": 1920,
                         "height": 1080,
                         "mime": "image/jpeg",
@@ -239,6 +241,17 @@ class TestCommonsSearch:
         assert r["width"] == 1920
         assert r["height"] == 1080
 
+    def test_page_url_is_the_files_description_page(self):
+        c = httpx.Client(transport=_json_transport(COMMONS_PAYLOAD))
+        assert commons_search("test", limit=10, client=c)[0]["pageUrl"] == \
+            "https://commons.wikimedia.org/wiki/File:TestImage.jpg"
+
+    def test_no_page_url_when_the_api_gives_none(self):
+        payload = json.loads(json.dumps(COMMONS_PAYLOAD))
+        del payload["query"]["pages"][0]["imageinfo"][0]["descriptionurl"]
+        c = httpx.Client(transport=_json_transport(payload))
+        assert "pageUrl" not in commons_search("test", limit=10, client=c)[0]
+
     def test_parses_license(self):
         transport = _json_transport(COMMONS_PAYLOAD)
         c = httpx.Client(transport=transport)
@@ -390,6 +403,8 @@ SERPAPI_PAYLOAD = {
             "original_height": 2500,
             "thumbnail": "https://serpapi.example/thumb1.jpg",
             "source": "example-news.com",
+            # the page the image is on (SerpApi Google Images API docs, images_results; not a capture)
+            "link": "https://example-news.com/2026/james",
         },
         {
             "title": "insecure result",
@@ -421,6 +436,7 @@ class TestSerpapiImageSearch:
         assert r["artist"] == "example-news.com"
         assert r["mime"] == "image/jpeg"
         assert r["thumbnail"] == "https://serpapi.example/thumb1.jpg"
+        assert r["pageUrl"] == "https://example-news.com/2026/james"
 
     def test_limit_caps_results(self):
         payload = {"images_results": [

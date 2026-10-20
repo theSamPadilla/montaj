@@ -19,8 +19,8 @@ Run step `search_images` with the following args. Returns candidate results; no 
 | `provider` | `commons` | `commons` · `sportsdb` · `web` (see below) |
 | `limit` | `10` | Max results, capped at 30 |
 
-Output: `{ "results": [ { title, url, width, height, mime, license, artist, source, thumbnail? } ] }`
-`url` is always an HTTPS original (so the downstream `fetch_image` step accepts it).
+Output: `{ "results": [ { title, url, width, height, mime, license, artist, source, thumbnail?, pageUrl? } ] }`
+`url` is always an HTTPS original (so the downstream `fetch_image` step accepts it). `pageUrl` is the page the image came from, when the provider gives one.
 
 ### Providers
 
@@ -41,6 +41,13 @@ Run step `fetch_image` with the following args. Downloads one HTTPS URL to a wor
 | `url` | — | HTTPS URL from a search result's `url` field |
 | `out` | — | Destination path. Use `<project>/assets/<name>.jpg` |
 | `max-bytes` | 25 MiB | Size cap |
+| `licence` | — | The result's `license` |
+| `artist` | — | The result's `artist` |
+| `source` | — | The result's `source` (`commons`, `sportsdb` or `web`) |
+| `source-url` | `url` | The result's `pageUrl` |
+| `title` | — | The result's `title` |
+
+Always pass the last five from the result you picked, leaving out any the result lacks or has as null: the project records where the image came from and under what licence, and a fetch without them is recorded with no licence.
 
 Output: `{ "path": "/abs/path/to/file.jpg" }`. Some hosts return `403` to non-browser fetches — if one fails, run step `fetch_image` with the next candidate instead of fighting it.
 
@@ -77,7 +84,7 @@ Always use the **local fetched path** (absolute), never the remote URL.
 ```
 1. Run step `search_images` with {query:"Elon Musk portrait 2025", provider:"web", limit:6}
 2. Eyeball results → pick a clean ≥1500px original
-3. Run step `fetch_image` with {url:"https://…/elon.jpg", out:"<project>/assets/elon_musk.jpg"}
+3. Run step `fetch_image` with {url:"https://…/elon.jpg", out:"<project>/assets/elon_musk.jpg", licence:"unknown", artist:"example-news.com", source:"web", "source-url":"https://example-news.com/…", title:"Elon Musk at …"} (all five from the picked result)
 4. Read the downloaded file → confirm subject + no watermark/chyron
 5. Add it as a `type: "image"` clip on `tracks[1+]` (src = the fetched path, start/end on the beat)
 ```
