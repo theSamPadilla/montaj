@@ -308,8 +308,11 @@ def git(args, cwd):
 
 
 def _git(args, cwd):
+    # Safety flags (H5): ignore any hooks and any configured core.fsmonitor program, so even a malicious
+    # global git config cannot run code during montaj's own project-init commits.
+    from lib.project_versions import GIT_SAFE_FLAGS
     result = subprocess.run(
-        ["git"] + args, cwd=cwd, capture_output=True, text=True,
+        ["git", *GIT_SAFE_FLAGS] + args, cwd=cwd, capture_output=True, text=True,
         env={**os.environ,
              "GIT_AUTHOR_NAME": "montaj", "GIT_AUTHOR_EMAIL": "montaj@local",
              "GIT_COMMITTER_NAME": "montaj", "GIT_COMMITTER_EMAIL": "montaj@local"}

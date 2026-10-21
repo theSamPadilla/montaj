@@ -3,6 +3,17 @@ import os
 import subprocess
 from pathlib import Path
 
+# Flags on EVERY git command serve runs in a project repo (H5). A project's `.git/` is writable through
+# `POST /api/files` and step `out`, and serve shells git there (add/commit/show/log/rev-parse). These make git
+# ignore any hooks (a written pre-commit/post-commit would otherwise run) and any `core.fsmonitor` program
+# (another configured path git would exec). Passed as leading `-c key=value` before the subcommand.
+GIT_SAFE_FLAGS = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
+
+
+def git_cmd(*args: str) -> list[str]:
+    """`git` with the safety flags, then `args` (H5)."""
+    return ["git", *GIT_SAFE_FLAGS, *args]
+
 
 def _env() -> dict:
     return {
@@ -16,7 +27,7 @@ def is_own_repo(project_dir) -> bool:
     """True when the project folder is the root of its own git repo. A folder inside someone else's
     repo is not: a version there would commit into that repo's history."""
     try:
-        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=str(Path(project_dir)),
+        top = subprocess.run(git_cmd("rev-parse", "--show-toplevel"), cwd=str(Path(project_dir)),
                              env=_env(), capture_output=True, text=True)
     except FileNotFoundError:
         return False
@@ -39,17 +50,17 @@ def commit_version(project_dir, message) -> bool:
     if not is_own_repo(project_dir):
         return False
     try:
-        added = subprocess.run(["git", "add", "project.json"], cwd=cwd, env=env,
+        added = subprocess.run(git_cmd("add", "project.json"), cwd=cwd, env=env,
                                capture_output=True)
         if added.returncode != 0:
             return False
-        staged = subprocess.run(["git", "diff", "--cached", "--quiet", "--", "project.json"], cwd=cwd, env=env,
+        staged = subprocess.run(git_cmd("diff", "--cached", "--quiet", "--", "project.json"), cwd=cwd, env=env,
                                 capture_output=True)
         if staged.returncode == 0:
             return False  # nothing staged
         if staged.returncode != 1:
             return False  # diff itself failed
-        done = subprocess.run(["git", "commit", "-m", message, "--", "project.json"], cwd=cwd, env=env,
+        done = subprocess.run(git_cmd("commit", "-m", message, "--", "project.json"), cwd=cwd, env=env,
                               capture_output=True)
         return done.returncode == 0
     except FileNotFoundError:

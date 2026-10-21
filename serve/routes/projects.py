@@ -41,7 +41,7 @@ from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import save_upload
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, canvas_for_footage, fps_from_rate, modal_dims
 from lib.ingest import ingest_source
-from lib.project_versions import commit_version
+from lib.project_versions import GIT_SAFE_FLAGS, commit_version
 from lib.fs_remove import rmtree_force
 from lib import project_lock as _project_lock_mod
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, project_lock, project_lock_async, write_json_atomic
@@ -4263,7 +4263,7 @@ async def record_project_provenance(project_id: str, request: Request, body: dic
 async def list_versions(project_id: str, project_dir: Path = Depends(get_project_dir)):
     def _git_log():
         result = subprocess.run(
-            ["git", "log", "--pretty=format:%H|%s|%aI", "--", "project.json"],
+            ["git", *GIT_SAFE_FLAGS, "log", "--pretty=format:%H|%s|%aI", "--", "project.json"],
             cwd=str(project_dir), capture_output=True, text=True,
         )
         versions = []
@@ -4311,7 +4311,7 @@ async def create_version(project_id: str, request: Request, project_dir: Path = 
     # replace its list in one call.
     def _git_log():
         result = subprocess.run(
-            ["git", "log", "--pretty=format:%H|%s|%aI", "--", "project.json"],
+            ["git", *GIT_SAFE_FLAGS, "log", "--pretty=format:%H|%s|%aI", "--", "project.json"],
             cwd=str(project_dir), capture_output=True, text=True,
         )
         versions = []
@@ -4344,13 +4344,20 @@ def _restore_under_lock(project_dir: Path, restored: dict) -> None:
         _write_project_json(project_path, restored)
 
 
+_COMMIT_RE = re.compile(r"^[0-9a-f]{4,64}$")
+
+
 @router.post("/projects/{project_id}/versions/{commit}/restore")
 async def restore_version(project_id: str, commit: str, request: Request, project_dir: Path = Depends(get_project_dir)):
+    # low 17: `commit` is handed to `git show <commit>:project.json`; a git revision expression could name
+    # another ref or run a pager. Require a plain hex sha.
+    if not _COMMIT_RE.fullmatch(commit):
+        raise bad_request("invalid_commit", "commit must be a hex sha")
     # §477: a restore replaces the whole project with no compare, so it is the human's.
     save_guard.require_editor(getattr(request, "headers", None))
     project_path = project_dir / "project.json"
     proc = await asyncio.create_subprocess_exec(
-        "git", "show", f"{commit}:project.json",
+        "git", *GIT_SAFE_FLAGS, "show", f"{commit}:project.json",
         cwd=str(project_dir),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -4415,6 +4422,11 @@ async def version_frame(
     if t < 0:
         raise bad_request("invalid_argument", "t must be >= 0")
 
+    # low 17: `commit` reaches `git rev-parse` and `git show <commit>:project.json`; require the 'working'
+    # sentinel or a plain hex sha, never an arbitrary git revision expression.
+    if commit != "working" and not _COMMIT_RE.fullmatch(commit):
+        raise bad_request("invalid_commit", "commit must be 'working' or a hex sha")
+
     is_working = commit == "working"
 
     # Validate the commit exists before doing anything expensive. Mirrors the
@@ -4422,7 +4434,7 @@ async def version_frame(
     # with rev-parse we can 404 without allocating stdout bytes.
     if not is_working:
         proc = await asyncio.create_subprocess_exec(
-            "git", "rev-parse", "--verify", f"{commit}^{{commit}}",
+            "git", *GIT_SAFE_FLAGS, "rev-parse", "--verify", f"{commit}^{{commit}}",
             cwd=str(project_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -4468,7 +4480,7 @@ async def version_frame(
         input_json = project_dir / "render" / "versions" / commit / "project.json"
         input_json.parent.mkdir(parents=True, exist_ok=True)
         show = await asyncio.create_subprocess_exec(
-            "git", "show", f"{commit}:project.json",
+            "git", *GIT_SAFE_FLAGS, "show", f"{commit}:project.json",
             cwd=str(project_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

@@ -78,3 +78,29 @@ def test_commits_only_project_json(repo):
     assert commit_version(repo, "version: p") is True
     assert _git(repo, "show", "--name-only", "--format=", "HEAD").split() == ["project.json"]
     assert _git(repo, "diff", "--cached", "--name-only").split() == ["other.txt"]
+
+
+# ── H5: serve's git carries hooksPath=/dev/null and fsmonitor=false ───────────
+
+def test_git_cmd_carries_the_safety_flags():
+    from lib.project_versions import git_cmd
+    cmd = git_cmd("status")
+    assert cmd[0] == "git" and cmd[-1] == "status"
+    assert "core.hooksPath=/dev/null" in cmd and "core.fsmonitor=false" in cmd
+
+
+def test_commit_version_runs_git_with_the_safety_flags(repo, monkeypatch):
+    import lib.project_versions as pv
+    seen = []
+    real = pv.subprocess.run
+
+    def spy(cmd, *a, **k):
+        seen.append(cmd)
+        return real(cmd, *a, **k)
+
+    monkeypatch.setattr(pv.subprocess, "run", spy)
+    commit_version(repo, "v")
+    assert seen
+    for cmd in seen:
+        assert cmd[0] == "git"
+        assert "core.hooksPath=/dev/null" in cmd and "core.fsmonitor=false" in cmd

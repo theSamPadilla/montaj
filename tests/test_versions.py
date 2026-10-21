@@ -648,3 +648,33 @@ def test_version_frame_endpoint_rejects_negative_t(tmp_path):
         app.dependency_overrides.pop(get_project_dir, None)
 
     assert resp.status_code == 400, resp.text
+
+
+# ── low 17: `commit` must be a hex sha (git revision injection) ───────────────
+
+@pytest.mark.parametrize("bad", ["HEAD", "main", "zzzz", "WORKING", "abcg"])
+def test_restore_refuses_a_non_hex_commit(tmp_path, bad):
+    project_dir = tmp_path / "proj"
+    _git_commit_current_version(project_dir, run_count=1)
+    client = TestClient(app, raise_server_exceptions=False)
+    app.state.broadcaster = _StubBroadcaster()
+    app.dependency_overrides[get_project_dir] = lambda: project_dir
+    try:
+        resp = client.post(f"/api/projects/{PID}/versions/{bad}/restore")
+    finally:
+        app.dependency_overrides.pop(get_project_dir, None)
+    assert resp.status_code == 400 and resp.json()["detail"]["error"] == "invalid_commit", resp.text
+
+
+@pytest.mark.parametrize("bad", ["HEAD", "main", "zzzz"])
+def test_version_frame_refuses_a_non_hex_commit(tmp_path, bad):
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    client = TestClient(app, raise_server_exceptions=False)
+    app.state.broadcaster = _StubBroadcaster()
+    app.dependency_overrides[get_project_dir] = lambda: project_dir
+    try:
+        resp = client.get(f"/api/projects/{PID}/versions/{bad}/frame", params={"t": 1.0})
+    finally:
+        app.dependency_overrides.pop(get_project_dir, None)
+    assert resp.status_code == 400 and resp.json()["detail"]["error"] == "invalid_commit", resp.text
