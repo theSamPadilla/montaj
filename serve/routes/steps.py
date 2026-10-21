@@ -79,11 +79,16 @@ def _step_timeout(schema: dict, body: dict) -> int:
     return max(STEP_TIMEOUT_S, whisper_runaway_timeout(duration) + WHISPER_STEP_OVERHEAD_S)
 
 
+# The built-in steps. A step found here is native; one from ~/.montaj/steps is
+# custom, and may shadow a native one of the same name on purpose.
+NATIVE_STEPS_DIR = MONTAJ_ROOT / "steps"
+
+
 def scan_steps() -> dict[str, tuple[dict, Path]]:
     """Scan native (built-in) then custom (~/.montaj/steps). Later scope overwrites earlier.
     Returns dict[name, (schema, py_path)]. Schema gets an injected 'category' field from subdirectory name."""
     scopes = [
-        MONTAJ_ROOT / "steps",
+        NATIVE_STEPS_DIR,
         Path.home() / ".montaj" / "steps",
     ]
     steps: dict[str, tuple[dict, Path]] = {}
@@ -551,6 +556,23 @@ def _note_provenance(name: str, schema: dict, body: dict, result, project_ref) -
             print(f"[provenance] not recorded for {name} ({out}): {e}", file=sys.stderr)
 
 
+def job_step_name(name: str, py_path: Path) -> str:
+    """The step an async job records, which a caller may trust to say what ran:
+    `name` only when the step is the native one (its schema's folder and its
+    script, by real path, under NATIVE_STEPS_DIR, the script being <name>.py),
+    else "custom:<name>". A custom step that shadows a native one still runs;
+    its record just cannot pass for the native step's."""
+    try:
+        root = NATIVE_STEPS_DIR.resolve(strict=True)
+        folder = Path(py_path).parent.resolve(strict=True)
+        script = Path(py_path).resolve(strict=True)
+    except OSError:
+        return f"custom:{name}"
+    if folder.is_relative_to(root) and script.is_relative_to(root) and script.name == f"{name}.py":
+        return name
+    return f"custom:{name}"
+
+
 async def _run_to_job(job_id: str, name: str, schema: dict, py_path: Path, body: dict) -> None:
     """Background driver: run a step and record its result/error on the job."""
     try:
@@ -581,8 +603,9 @@ async def run_step(name: str, body: dict = Body(default={})):
     if not is_async:
         return await _execute_step(name, schema, py_path, body)
 
-    # The job records the step by the route's own name, never anything in the body.
-    job_id = create_job(name)
+    # The job records the step by the route's own name, never anything in the
+    # body, and only as itself when it is the native step (job_step_name).
+    job_id = create_job(job_step_name(name, py_path))
     task = asyncio.create_task(_run_to_job(job_id, name, schema, py_path, body))
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)

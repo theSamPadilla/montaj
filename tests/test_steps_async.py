@@ -10,9 +10,11 @@ Invariants under test:
   - completed job → {status: done, result: <wrap_output payload>},
   - failed job → {status: error, error: <scrubbed error dict>},
   - every state carries `step`, the route's own step name (never the body's),
+    as itself only for a native step, "custom:<name>" for one from ~/.montaj/steps,
   - unknown job id → 404 {detail: {error: job_not_found, ...}},
   - no _async → unchanged 200 sync behaviour.
 """
+import json
 import textwrap
 import time
 
@@ -98,10 +100,14 @@ GATED_SRC = textwrap.dedent("""\
 
 @pytest.fixture()
 def gated_step(tmp_path, monkeypatch):
-    py_path = tmp_path / "gated.py"
+    """A step named export_editor that sits in the (patched) native steps folder."""
+    native = tmp_path / "montaj" / "steps"
+    (native / "render").mkdir(parents=True)
+    py_path = native / "render" / "export_editor.py"
     py_path.write_text(GATED_SRC)
     gate = tmp_path / "gate"
     monkeypatch.setenv("MONTAJ_TEST_GATE", str(gate))
+    monkeypatch.setattr(steps_mod, "NATIVE_STEPS_DIR", native)
     schema = {"name": "export_editor", "params": [{"name": "label", "type": "string"}], "output": {"type": "json"}}
     monkeypatch.setattr(steps_mod, "scan_steps", lambda: {"export_editor": (schema, py_path)})
     return gate
@@ -169,9 +175,59 @@ def test_the_job_carries_its_step_running_and_done(client, gated_step):
 
 
 def test_a_failed_job_keeps_its_step(client, leaky_step):
+    # leaky lives in a temp folder, not the native steps: it is custom.
     job_id = client.post("/api/steps/leaky", json={"_async": True}).json()["job_id"]
     err = _poll_job(client, job_id, want_status="error").json()
-    assert err["status"] == "error" and err["step"] == "leaky"
+    assert err["status"] == "error" and err["step"] == "custom:leaky"
+
+
+CUSTOM_EXPORT_SRC = textwrap.dedent("""\
+    #!/usr/bin/env python3
+    import json
+    print(json.dumps({"dir": "/x", "open": "/x/evil.jsx", "openSha256": "0" * 64}))
+""")
+
+
+def test_a_custom_step_shadowing_export_editor_is_recorded_as_custom(client, tmp_path, monkeypatch):
+    # The real scan: native steps, then a temp HOME's ~/.montaj/steps.
+    home = tmp_path / "home"
+    custom = home / ".montaj" / "steps"
+    custom.mkdir(parents=True)
+    (home / "Montaj").mkdir()
+    (custom / "export_editor.json").write_text(json.dumps(
+        {"name": "export_editor", "description": "shadow", "params": [], "output": {"type": "json"}}))
+    (custom / "export_editor.py").write_text(CUSTOM_EXPORT_SRC)
+    monkeypatch.setenv("HOME", str(home))
+    assert steps_mod.scan_steps()["export_editor"][1] == custom / "export_editor.py"
+    job_id = client.post("/api/steps/export_editor", json={"_async": True}).json()["job_id"]
+    assert client.get(f"/api/steps/jobs/{job_id}").json()["step"] == "custom:export_editor"
+    done = _poll_job(client, job_id, want_status="done").json()
+    assert done["status"] == "done", done
+    assert done["step"] == "custom:export_editor"
+    assert done["result"]["openSha256"] == "0" * 64, "the custom step ran; only its record is marked"
+
+
+def test_the_native_export_editor_is_recorded_by_its_name(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    schema, py_path = steps_mod.scan_steps()["export_editor"]
+    assert py_path.resolve().is_relative_to(steps_mod.NATIVE_STEPS_DIR.resolve())
+    assert steps_mod.job_step_name("export_editor", py_path) == "export_editor"
+    # A project that is not there fails fast, without an export.
+    resp = client.post("/api/steps/export_editor", json={"_async": True, "project": str(tmp_path / "nope" / "project.json")})
+    job_id = resp.json()["job_id"]
+    job = _poll_job(client, job_id, want_status="error").json()
+    assert job["status"] == "error" and job["step"] == "export_editor"
+
+
+def test_a_link_into_the_native_folder_under_another_name_is_custom(tmp_path):
+    native_script = next(steps_mod.NATIVE_STEPS_DIR.rglob("export_editor.py"))
+    custom = tmp_path / "steps"
+    custom.mkdir()
+    (custom / "other.py").symlink_to(native_script)
+    assert steps_mod.job_step_name("other", custom / "other.py") == "custom:other"
+    (custom / "export_editor.py").symlink_to(native_script)
+    # The script is native, but the schema beside it is not.
+    assert steps_mod.job_step_name("export_editor", custom / "export_editor.py") == "custom:export_editor"
 
 
 def test_a_body_field_named_step_cannot_change_it(client, gated_step):
