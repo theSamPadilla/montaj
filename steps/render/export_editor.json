@@ -1,6 +1,6 @@
 {
   "name": "export_editor",
-  "description": "Export a project for a video editor: writes a package folder <out>/<name> (<Editor>)/ holding <name>.xml (FCP7 XML), a copy of every footage and audio file the timeline uses (media/), one ProRes 4444 alpha movie per overlay (graphics/<clip id>.mov), captions.mov and captions.srt. Cuts, crossfades, speed, placement and sound become real editor clips; overlays and captions are rendered once to transparent movies so they look exactly as in the Montaj render. What an editor cannot hold (moving zoom, loop, background removal, ducking) stays in Montaj and is marked on its clip; the result lists these in leftOut. Nothing already in the out folder is touched: when the package's name is taken the new one is named ... 2, ... 3. Run async (montaj_step async:true) when the project has many overlays, and poll montaj_step_status. Takes a project, not a file input.",
+  "description": "Export a project for a video editor (Premiere Pro, DaVinci Resolve, Final Cut Pro or After Effects): writes a package folder <out>/<name> (<Editor>)/ holding the timeline file (<name>.xml, FCP7 XML, for premiere and resolve; <name>.fcpxml for fcp; for ae, <name>.jsx, a script that builds the composition and saves <name>.aep), a copy of every footage and audio file the timeline uses (media/), one ProRes 4444 alpha movie per overlay (graphics/<clip id>.mov), captions.mov and captions.srt. Cuts, crossfades, speed, placement and sound become real editor clips; overlays and captions are rendered once to transparent movies so they look exactly as in the Montaj render. What an editor cannot hold (moving zoom, loop, background removal, ducking) stays in Montaj and is marked on its clip; the result lists these in leftOut. Nothing already in the out folder is touched: when the package's name is taken the new one is named ... 2, ... 3. Run async (montaj_step async:true) when the project has many overlays, and poll montaj_step_status. Takes a project, not a file input.",
   "timeout_s": 10800,
   "input": {
     "type": "none",
@@ -8,7 +8,7 @@
   },
   "output": {
     "type": "json",
-    "description": "{dir (the package folder), open (the file to hand the editor: the .xml), xml, files: [paths relative to dir], leftOut: [{clip, label}], warnings: [...], seconds}"
+    "description": "{dir (the package folder), open (the file to hand the editor: the .xml, .fcpxml or .jsx), xml (the same file), aep (ae only: where the script saves the project), files: [paths relative to dir], leftOut: [{clip, label}], warnings: [...], seconds}"
   },
   "params": [
     {

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Export a project for a video editor (Premiere Pro, DaVinci Resolve).
+"""Export a project for a video editor (Premiere Pro, DaVinci Resolve, Final Cut Pro, After Effects).
 
-Runs render/export-editor.js (FCP7 XML + a copy of the media + one ProRes 4444
-alpha movie per overlay + captions movie + captions.srt) and prints its JSON result. The CLI's
+Runs render/export-editor.js (the timeline as .xml, .fcpxml or an After Effects .jsx + a copy of the media + one
+ProRes 4444 alpha movie per overlay + captions movie + captions.srt) and prints its JSON result. The CLI's
 per-movie progress lines ({"progress": {...}}) are relayed to stderr as they
 arrive; its error, if any, is the last JSON line on stderr, which serve reads.
 """

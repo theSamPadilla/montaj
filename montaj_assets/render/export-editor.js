@@ -3,24 +3,27 @@
 /**
  * Export for editor: write a project's edit as a package an editor opens.
  *
- *   export-editor.js --project <project.json> [--editor premiere|resolve] [--name <name>] [--out <folder>]
+ *   export-editor.js --project <project.json> [--editor premiere|resolve|fcp|ae] [--name <name>] [--out <folder>]
  *
  * `--out` is the folder the package goes IN (default `<projectDir>/export/`); the package is
  * `<out>/<name> (<Editor label>)/`, and when that name is taken it becomes `... 2`, `... 3`. Nothing already in the
  * folder is ever touched or replaced. The package:
  *
- *   <name>.xml          FCP7 XML (Premiere Pro and DaVinci Resolve read it)
+ *   <name>.xml          FCP7 XML, for premiere (Premiere Pro) and resolve (DaVinci Resolve)
+ *   <name>.fcpxml       FCPXML 1.9, for fcp (Final Cut Pro)
+ *   <name>.jsx          for ae (After Effects): a script that builds the composition and saves <name>.aep beside it
  *   media/<file>        a copy of every footage and audio file the timeline uses, so the package opens anywhere
  *   graphics/<id>.mov   one ProRes 4444 alpha movie per overlay
  *   captions.mov        the caption layer, ProRes 4444 alpha
  *   captions.srt        the captions as text
  *
- * The XML links the copies in the package by their absolute path (an editor's `pathurl`); move the folder and the
- * editor asks to locate the media, as for any package.
+ * The XML and FCPXML link the copies in the package by their absolute path; move the folder and the editor asks to
+ * locate the media, as for any package. The .jsx finds them beside itself.
  *
  * Progress goes to stderr, one JSON line per finished step: `{"progress":{"done":3,"total":8,"label":"..."}}`.
- * The ONE result goes to stdout: `{ dir, open, xml, files, leftOut, warnings, seconds }`; `open` is the file to hand the
- * editor (the XML), `leftOut` is what the XML marks as staying in Montaj, `[{ clip, label }]`. A failure is
+ * The ONE result goes to stdout: `{ dir, open, xml, files, leftOut, warnings, seconds }`, plus `aep` for ae; `open`
+ * (and `xml`) is the file to hand the editor (the .xml, .fcpxml or .jsx), `aep` is where the script saves the
+ * project, `leftOut` is what the timeline marks as staying in Montaj, `[{ clip, label }]`. A failure is
  * `{"error","message"}` on stderr and a non-zero exit.
  *
  * Every package holds a `.montaj-editor-export` marker file (the app launches only a file whose folder has it).
@@ -70,7 +73,7 @@ const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),
  *   projectPath: string,
  *   name?: string,
  *   out?: string,       the folder the package goes in
- *   editor?: 'premiere' | 'resolve',
+ *   editor?: 'premiere' | 'resolve' | 'fcp' | 'ae',
  *   onProgress?: (p: { done: number, total: number, label: string }) => void,
  * }} options
  * @returns {Promise<{ dir: string, open: string, xml: string, files: string[], leftOut: { clip: string, label: string }[], warnings: string[], seconds: number }>}
@@ -322,7 +325,7 @@ if (isMain) {
   try {
     const argv = process.argv.slice(2)
     if (!argv.length || argv.includes('--help')) {
-      process.stderr.write('Usage: export-editor.js --project <project.json> [--editor premiere|resolve] [--name <name>] [--out <folder>]\n')
+      process.stderr.write('Usage: export-editor.js --project <project.json> [--editor premiere|resolve|fcp|ae] [--name <name>] [--out <folder>]\n')
       process.exit(1)
     }
     const args = parseArgs(argv)
