@@ -587,6 +587,51 @@ describe('aejsx: nothing in the data can become code or move the save', () => {
     assert.equal(log.saved, `${pkg}/${cleanFileName(name)}.aep`)
   })
 
+  test('hostile media file names and a hostile package folder keep the same invariants and come back as written', () => {
+    const pkg = '/out/#x //@include   "q" (After Effects)'
+    const files = { '/abs/a.mp4': '#include a.mp4', '/abs//@include b.mov': '//@include b.mov', '/abs/c.mp4': 'line sep.mp4', '/abs/m.wav': '#music "x".wav' }
+    const project = {
+      ...oneTrack([
+        clip('a'), clip('b', { src: '/abs//@include b.mov', start: 2, end: 4 }), clip('c', { start: 4, end: 6 }),
+      ]),
+      audio: { tracks: [{ id: 'm', src: '/abs/m.wav', start: 0, end: 6 }] },
+    }
+    project.tracks.push({ id: 'trk-1', items: [{ id: 'g', type: 'overlay', src: '/abs/g.jsx', start: 0, end: 2 }] })
+    const { tl } = make('hostile-files', project)
+    const mediaPaths = Object.fromEntries(Object.keys(tl.sources).filter((p) => files[p]).map((p) => [p, `${pkg}/media/${files[p]}`]))
+    const { jsx, warnings } = writeAeScript(tl, {}, {
+      name: 'Edit', pkgDir: pkg, mediaPaths,
+      graphics: { g: `${pkg}/graphics/#include g .mov` },
+      captions: `${pkg}/#captions //@include .mov`,
+      captionSegments: [{ text: 'hi', start: 0, end: 1 }],
+    })
+    assert.deepEqual(warnings.filter((w) => /not media/.test(w)), [])
+
+    const lines = jsx.split('\n')
+    assert.equal(lines.length, tplLines.length)
+    lines.forEach((line, i) => {
+      if (i === dataIndex) assert.ok(/^var DATA = \{.*\};$/.test(line) && !line.includes('#') && !line.includes('//'), 'the DATA line')
+      else assert.equal(line, tplLines[i], `line ${i + 1}`)
+    })
+    assert.match(jsx, /^[\x00-\x7e]*$/)
+
+    const d = dataOf(jsx)
+    assert.equal(d.dir, pkg)
+    assert.deepEqual(d.layers.map((l) => l.path), ['media/#include a.mp4', 'media/@include b.mov', 'media/line sep.mp4', 'graphics/#include g .mov'])
+    assert.deepEqual(d.audio.map((x) => x.path), ['media/#music "x".wav'])
+    // A media path is relative to the package (path.relative collapses its //); dir is written as given, // and all.
+    assert.equal(d.captionsMovie, '#captions /@include .mov')
+
+    // Run from the package and as a copy elsewhere: every file comes in under its own name, in the package.
+    const want = [...d.layers.map((l) => l.path), ...d.audio.map((x) => x.path), d.captionsMovie].map((r) => `${pkg}/${r}`).sort()
+    for (const fileName of [`${pkg}/Edit.jsx`, '/private/app/run/abc.jsx']) {
+      const log = runMock(jsx, { fileName, markerIn: [pkg] })
+      assert.deepEqual(log.alerts, [], fileName)
+      assert.deepEqual([...log.imports].sort(), want, fileName)
+      assert.equal(log.saved, `${pkg}/Edit.aep`)
+    }
+  })
+
   test('the template loads no code; its one directive is the fixed #target line', () => {
     for (const bad of ['$.evalFile', 'eval(', 'Function(', '#include', '//@include', '#script', '#includepath']) {
       assert.ok(!AE_SCRIPT_TEMPLATE.includes(bad), bad)
