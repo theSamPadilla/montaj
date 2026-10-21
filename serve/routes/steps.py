@@ -581,7 +581,8 @@ async def run_step(name: str, body: dict = Body(default={})):
     if not is_async:
         return await _execute_step(name, schema, py_path, body)
 
-    job_id = create_job()
+    # The job records the step by the route's own name, never anything in the body.
+    job_id = create_job(name)
     task = asyncio.create_task(_run_to_job(job_id, name, schema, py_path, body))
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)

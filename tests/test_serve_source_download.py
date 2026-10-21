@@ -296,7 +296,7 @@ def test_run_with_a_link_creates_a_canvas_project_with_a_download_record(init_sp
     assert record == {"kind": "youtube", "url": URL, "status": "downloading", "jobId": job_id}
     assert len(job_id) == 32 and int(job_id, 16) >= 0
     assert _read(init_spy["dir"])["sourceDownload"] == record
-    assert jobs.get_job(job_id) == {"status": "running"}
+    assert jobs.get_job(job_id) == {"status": "running", "step": None}
     # The task started (and was cancelled with the request's loop; the record
     # stays `downloading`, so the next open resumes it).
     assert len(spawned) == 1
@@ -357,7 +357,7 @@ def test_download_on_a_pending_project_puts_the_clip_on_the_timeline(tmp_path, m
     # The agent's wait: GET /api/steps/jobs/<jobId>, which get_step_result polls.
     resp = client.get(f"/api/steps/jobs/{job_id}")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "done", "result": clip}
+    assert resp.json() == {"status": "done", "step": None, "result": clip}
 
     # The editor learns over the project's SSE stream.
     frames = _data_frames(rec, pid)
@@ -521,7 +521,7 @@ def test_open_resumes_a_dropped_download_with_one_task(tmp_path, monkeypatch, fi
     record = _read(project_dir)["sourceDownload"]
     assert record["status"] == "downloading"
     assert record["jobId"] != stale
-    assert jobs.get_job(record["jobId"]) == {"status": "running"}
+    assert jobs.get_job(record["jobId"]) == {"status": "running", "step": None}
     assert live == 1
     assert len(spawned) == 1
     assert a["sourceDownload"] == record

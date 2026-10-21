@@ -9,6 +9,7 @@ Invariants under test:
   - _async=true → 202 {job_id, status: running}, no blocking on the subprocess,
   - completed job → {status: done, result: <wrap_output payload>},
   - failed job → {status: error, error: <scrubbed error dict>},
+  - every state carries `step`, the route's own step name (never the body's),
   - unknown job id → 404 {detail: {error: job_not_found, ...}},
   - no _async → unchanged 200 sync behaviour.
 """
@@ -82,6 +83,30 @@ def leaky_step(tmp_path, monkeypatch):
     return py_path
 
 
+GATED_SRC = textwrap.dedent("""\
+    #!/usr/bin/env python3
+    import json, os, sys, time
+    # Runs until the gate file exists, so a test can see the job running.
+    gate = os.environ["MONTAJ_TEST_GATE"]
+    for _ in range(1000):
+        if os.path.exists(gate):
+            break
+        time.sleep(0.01)
+    print(json.dumps({"ok": True}))
+""")
+
+
+@pytest.fixture()
+def gated_step(tmp_path, monkeypatch):
+    py_path = tmp_path / "gated.py"
+    py_path.write_text(GATED_SRC)
+    gate = tmp_path / "gate"
+    monkeypatch.setenv("MONTAJ_TEST_GATE", str(gate))
+    schema = {"name": "export_editor", "params": [{"name": "label", "type": "string"}], "output": {"type": "json"}}
+    monkeypatch.setattr(steps_mod, "scan_steps", lambda: {"export_editor": (schema, py_path)})
+    return gate
+
+
 def _poll_job(client, job_id, *, want_status, tries=200, delay=0.02):
     """Poll the job-status endpoint until it leaves `running` (or timeout)."""
     last = None
@@ -129,6 +154,42 @@ def test_async_failed_job_carries_scrubbed_error(client, leaky_step):
     assert isinstance(payload["error"], dict)
     assert "sk-SUPER-SECRET-XYZ" not in done.text
     assert "[redacted]" in done.text
+
+
+def test_the_job_carries_its_step_running_and_done(client, gated_step):
+    resp = client.post("/api/steps/export_editor", json={"_async": True, "label": "hi"})
+    assert resp.status_code == 202, resp.text
+    job_id = resp.json()["job_id"]
+    running = client.get(f"/api/steps/jobs/{job_id}").json()
+    assert running == {"status": "running", "step": "export_editor"}
+    gated_step.write_text("go")
+    done = _poll_job(client, job_id, want_status="done").json()
+    assert done["status"] == "done" and done["step"] == "export_editor"
+    assert done["result"]["ok"] is True
+
+
+def test_a_failed_job_keeps_its_step(client, leaky_step):
+    job_id = client.post("/api/steps/leaky", json={"_async": True}).json()["job_id"]
+    err = _poll_job(client, job_id, want_status="error").json()
+    assert err["status"] == "error" and err["step"] == "leaky"
+
+
+def test_a_body_field_named_step_cannot_change_it(client, gated_step):
+    resp = client.post("/api/steps/export_editor", json={"_async": True, "step": "render", "label": "hi"})
+    job_id = resp.json()["job_id"]
+    assert client.get(f"/api/steps/jobs/{job_id}").json()["step"] == "export_editor"
+    gated_step.write_text("go")
+    done = _poll_job(client, job_id, want_status="done").json()
+    assert done["step"] == "export_editor"
+
+
+def test_other_jobs_have_no_step():
+    job_id = jobs_mod.create_job()
+    assert jobs_mod.get_job(job_id) == {"status": "running", "step": None}
+    jobs_mod.set_done(job_id, {"path": "/x"})
+    assert jobs_mod.get_job(job_id) == {"status": "done", "step": None, "result": {"path": "/x"}}
+    jobs_mod.set_error(job_id, {"error": "e"})
+    assert jobs_mod.get_job(job_id)["step"] is None
 
 
 def test_unknown_job_id_404(client, ok_step):
