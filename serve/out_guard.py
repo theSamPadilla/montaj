@@ -6,12 +6,13 @@ native step write anywhere, including over code serve or node runs later (~/.cac
 ~/.montaj/steps/*.py) or a shell rc file. A denylist of such places cannot be complete, so this is an
 allowlist, checked before the step starts (sync and async alike):
 
-- every step: a write path must resolve inside the workspace root, the system temp folder, or the folder of
+- every step: a write path must resolve inside the workspace root, the system temp folder (on macOS also /tmp),
+  or the folder of
   the project the step runs on, where that folder comes from serve's own record of the project id
   (`find_project_dir`), never from a path the caller gave;
 - a param a NATIVE step's schema marks `"outKind": "export"` (a folder the user picks anywhere, e.g. ~/Movies)
-  may also be any existing folder that is not hidden (no component starts with "."), not in ~/Library or
-  ~/AppData of the real user home, not in serve's HOME's .montaj or .cache, not in the montaj package and not
+  may also be any existing folder that is not hidden (no component starts with "."), not in ~/Library (except the
+  iCloud Drive and ~/Library/CloudStorage/<provider> folders) or ~/AppData of the real user home, not in serve's HOME's .montaj or .cache, not in the montaj package and not
   in the Python install. Such a step writes only into a new folder it creates inside it. A custom step (from
   ~/.montaj/steps) never gets this, whatever its schema says.
 
@@ -77,6 +78,19 @@ _PROJECT_ID_FIELDS = ("_project", "project-id", "project_id", "projectId", "proj
 
 def _system_temp_dir() -> str:
     return os.path.realpath(tempfile.gettempdir())
+
+
+def _is_darwin() -> bool:
+    return sys.platform == "darwin"
+
+
+def _temp_roots() -> list[str]:
+    """The system temp folder; on macOS also /tmp (its realpath is /private/tmp), as tempfile.gettempdir() is
+    /var/folders/... there and an agent writes /tmp/x.png. Nothing is executed from temp."""
+    roots = [os.path.normcase(_system_temp_dir())]
+    if _is_darwin():
+        roots.append(os.path.normcase(os.path.realpath("/tmp")))
+    return roots
 
 
 def _real_home() -> str:
@@ -169,14 +183,45 @@ def _deny_roots() -> list[str]:
     return [_fold(_real(r)) for r in roots]
 
 
+def _cloud_roots() -> list[str]:
+    """The two cloud-storage subtrees of ~/Library an export may go in (macOS only, by real path, folded):
+    iCloud Drive (`Library/Mobile Documents/com~apple~CloudDocs`) and each File Provider sync folder
+    (`Library/CloudStorage/<Provider>-<account>`: Dropbox, Google Drive, OneDrive, Box). Not `Mobile Documents`
+    itself (other apps' containers), not `CloudStorage` itself, nothing else in ~/Library.
+    Windows needs none: OneDrive lives under the home folder, not under AppData."""
+    if not _is_darwin():
+        return []
+    lib = os.path.join(_real_home(), "Library")
+    roots = [os.path.join(lib, "Mobile Documents", "com~apple~CloudDocs")]
+    cloud = os.path.join(lib, "CloudStorage")
+    try:
+        roots += [os.path.join(cloud, e) for e in os.listdir(cloud)]
+    except OSError:
+        pass
+    # An entry that is a link out of its parent (a CloudStorage/x pointing at ~/Library/LaunchAgents) opens nothing.
+    parents = {os.path.dirname(r): _fold(_real(os.path.dirname(r))) for r in roots}
+    out = []
+    for r in roots:
+        real = _fold(_real(r))
+        if real != parents[os.path.dirname(r)] and _within(real, parents[os.path.dirname(r)]):
+            out.append(real)
+    return out
+
+
 def _export_folder_ok(real: str) -> bool:
-    """An existing folder a user may pick for an export: not hidden, not a system or app folder."""
+    """An existing folder a user may pick for an export: not hidden, not a system or app folder (cloud-storage
+    folders in ~/Library excepted, `_cloud_roots`; their hidden folders are still refused)."""
     if not os.path.isdir(real):
         return False
     if any(part.startswith(".") for part in Path(real).parts):
         return False
     folded = _fold(real)
-    return not any(_within(folded, root) for root in _deny_roots())
+    library = _fold(_real(os.path.join(_real_home(), "Library")))
+    cloud = any(_within(folded, r) for r in _cloud_roots())
+    for root in _deny_roots():
+        if _within(folded, root) and not (cloud and root == library):
+            return False
+    return True
 
 
 def _write_values(schema: dict, body: dict):
@@ -200,19 +245,19 @@ def _write_values(schema: dict, body: dict):
                 yield name, param.get("outKind") == EXPORT_OUT_KIND, text
 
 
-def check_step_out(name: str, schema: dict, body: dict, *, native: bool) -> None:
-    """Refuse (403 out_not_allowed, naming the param, never the path) a step run whose write paths leave the
-    allowed places (module docstring). `native`: the step is the built-in one (steps.job_step_name), the only
-    kind whose `"outKind": "export"` counts. Reads the body, changes nothing."""
+def check_write_paths(name: str, items, body: dict, *, native: bool) -> None:
+    """Refuse (403 out_not_allowed, naming the param, never the path) the first of `items`, (param name,
+    export-marked, value) triples, that leaves the allowed places (module docstring). `body` names the project
+    (for its folder). `native`: only then does an export mark count. Reads, changes nothing."""
     roots = None
     project_roots = None
-    for param, export, value in _write_values(schema, body):
+    for param, export, value in items:
         cands = _candidates(value)
         ok = cands is not None
         for cand in cands or []:
             real = _real(cand)
             if roots is None:
-                roots = [_real(str(resolve_workspace())), os.path.normcase(_system_temp_dir())]
+                roots = [_real(str(resolve_workspace()))] + _temp_roots()
             if any(_within(real, r) for r in roots):
                 continue
             if project_roots is None:
@@ -232,3 +277,16 @@ def check_step_out(name: str, schema: dict, body: dict, *, native: bool) -> None
                 "error": "out_not_allowed",
                 "message": f"'{param}' of {name} must be {where}.",
             })
+
+
+def check_step_out(name: str, schema: dict, body: dict, *, native: bool) -> None:
+    """The write params of a step run through POST /api/steps/{name}: `check_write_paths` on each."""
+    check_write_paths(name, _write_values(schema, body), body, native=native)
+
+
+def check_route_out(name: str, body: dict) -> None:
+    """The `out` of a serve route that is not a step run (/api/normalize, /api/proxy): the ordinary rule."""
+    val = body.get("out")
+    if val is None or val == "":
+        return
+    check_write_paths(name, [("out", False, str(val))], body, native=False)

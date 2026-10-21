@@ -21,7 +21,7 @@ from serve.common import (
     not_found, bad_request, server_error,
 )
 from serve.jobs import create_job, set_done, set_error, get_job
-from serve.out_guard import check_step_out
+from serve.out_guard import check_route_out, check_step_out
 from serve import provenance
 
 router = APIRouter(prefix="/api")
@@ -656,6 +656,8 @@ async def normalize_video(body: dict = Body(...)):
             f"colorSpace must be one of {ALL_COLOR_SPACES} (got {color_space!r})",
         )
     explicit_out = body.get("out")
+    # Where this route may write: the ordinary step rule (serve/out_guard.py).
+    check_route_out("normalize", body)
 
     return await asyncio.to_thread(_normalize_sync, input_path, color_space, explicit_out)
 
@@ -786,6 +788,8 @@ async def proxy_video(body: dict = Body(...)):
     input_path = body.get("input")
     if not input_path or not Path(input_path).is_file():
         raise bad_request("missing_input", "'input' must be an absolute path to an existing file")
+
+    check_route_out("proxy", body)  # before any probe or encode (serve/out_guard.py)
 
     tonemap = body.get("tonemap") if "tonemap" in body else None
     source = input_path  # the file the proxy is encoded from (run_proxy_job's rule)

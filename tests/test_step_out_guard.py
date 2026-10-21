@@ -299,3 +299,111 @@ def test_the_route_gives_a_custom_export_step_no_export_folder(places, client, m
     picked.mkdir()
     r = client.post("/api/steps/export_editor", json={"project": "p", "out": str(picked)})
     assert r.status_code == 403 and r.json()["detail"]["error"] == "out_not_allowed"
+
+
+# ── cloud-storage folders in ~/Library ───────────────────────────────────────
+
+@pytest.fixture()
+def darwin(monkeypatch):
+    monkeypatch.setattr(guard, "_is_darwin", lambda: True)
+
+
+def test_icloud_drive_and_file_provider_folders_are_export_targets(places, darwin):
+    schema = native_schema("export_overlay_pages")
+    icloud = places["home"] / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "Exports"
+    icloud.mkdir(parents=True)
+    dropbox = places["home"] / "Library" / "CloudStorage" / "Dropbox-Acme" / "Videos"
+    dropbox.mkdir(parents=True)
+    allowed(schema, {"out": str(icloud)})
+    allowed(schema, {"out": str(icloud.parent)})            # iCloud Drive itself
+    allowed(schema, {"out": str(dropbox)})
+    allowed(schema, {"out": str(dropbox.parent)})           # the provider's root
+
+
+def test_a_hidden_folder_inside_a_cloud_folder_is_still_refused(places, darwin):
+    schema = native_schema("export_overlay_pages")
+    hidden = places["home"] / "Library" / "CloudStorage" / "GoogleDrive-a@b.c" / ".shortcut-targets"
+    hidden.mkdir(parents=True)
+    refused(schema, {"out": str(hidden)})
+    hidden2 = places["home"] / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / ".Trash"
+    hidden2.mkdir(parents=True)
+    refused(schema, {"out": str(hidden2)})
+
+
+def test_nothing_else_in_library_opens_up(places, darwin):
+    schema = native_schema("export_overlay_pages")
+    lib = places["home"] / "Library"
+    for sub in ("LaunchAgents", "Mobile Documents", "Mobile Documents/com~apple~Notes", "CloudStorage",
+                "Application Support"):
+        (lib / sub).mkdir(parents=True, exist_ok=True)
+        refused(schema, {"out": str(lib / sub)})
+    # a link inside CloudStorage that points into LaunchAgents counts as its target
+    (lib / "CloudStorage" / "Evil-x").symlink_to(lib / "LaunchAgents", target_is_directory=True)
+    refused(schema, {"out": str(lib / "CloudStorage" / "Evil-x")})
+
+
+def test_the_cloud_folders_are_not_opened_off_macos(places, monkeypatch):
+    monkeypatch.setattr(guard, "_is_darwin", lambda: False)
+    icloud = places["home"] / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+    icloud.mkdir(parents=True)
+    refused(native_schema("export_overlay_pages"), {"out": str(icloud)})
+
+
+def test_a_cloud_folder_is_no_ordinary_step_target(places, darwin):
+    icloud = places["home"] / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+    icloud.mkdir(parents=True)
+    refused(PLAIN, {"out": str(icloud / "x.png")})          # the carve-out is for export steps only
+
+
+# ── /tmp on macOS ────────────────────────────────────────────────────────────
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="/tmp is a link to /private/tmp on macOS only")
+def test_tmp_counts_as_temp_on_macos(places):
+    allowed(PLAIN, {"out": "/tmp/x.png"})
+    allowed(PLAIN, {"out": "/private/tmp/new/x.png"})
+    refused(PLAIN, {"out": "/private/etc/x.png"})
+    refused(PLAIN, {"out": "/private/var/x.png"})
+
+
+# ── /api/normalize and /api/proxy ────────────────────────────────────────────
+
+@pytest.fixture()
+def media(places):
+    f = places["ws"] / "in.mp4"
+    f.write_bytes(b"x")
+    return f
+
+
+def _stub_routes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(steps_mod, "_normalize_sync",
+                        lambda i, c, o: calls.append(o) or {"path": o or i, "skipped": False})
+    import lib.proxy as proxy
+    monkeypatch.setattr(proxy, "is_proxy_fresh", lambda out, src: True)
+    return calls
+
+
+@pytest.mark.parametrize("route", ["normalize", "proxy"])
+def test_normalize_and_proxy_refuse_an_out_outside(places, client, media, monkeypatch, route):
+    calls = _stub_routes(monkeypatch)
+    (places["ws"] / "link").symlink_to(places["elsewhere"], target_is_directory=True)
+    bad = ["../x.mp4", str(places["elsewhere"] / "x.mp4"), "/etc/x.mp4", "link/x.mp4",
+           str(places["ws"] / "link" / "new" / "x.mp4"), "file:/etc/x.mp4"]
+    for out in bad:
+        r = client.post(f"/api/{route}", json={"input": str(media), "colorSpace": "sdr_bt709", "tonemap": False,
+                                               "out": out})
+        assert r.status_code == 403, (out, r.text)
+        assert r.json()["detail"]["error"] == "out_not_allowed"
+        assert "'out'" in r.json()["detail"]["message"] and out not in r.json()["detail"]["message"]
+    assert calls == []
+
+
+@pytest.mark.parametrize("route", ["normalize", "proxy"])
+def test_normalize_and_proxy_accept_an_out_in_the_workspace_or_none(places, client, media, monkeypatch, route):
+    _stub_routes(monkeypatch)
+    for out in (str(places["ws"] / "proj" / "assets" / "x.mp4"), "rel/x.mp4", str(places["systmp"] / "x.mp4")):
+        r = client.post(f"/api/{route}", json={"input": str(media), "colorSpace": "sdr_bt709", "tonemap": False,
+                                               "out": out})
+        assert r.status_code == 200, (out, r.text)
+    body = {"input": str(media), "colorSpace": "sdr_bt709", "tonemap": False}   # no out: the route's default
+    assert client.post(f"/api/{route}", json=body).status_code != 403
