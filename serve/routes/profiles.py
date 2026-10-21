@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from lib.profile_assets import NAME_RE
 from serve.common import not_found
 
 router = APIRouter(prefix="/api")
@@ -114,6 +115,10 @@ async def list_profiles():
 @router.get("/profiles/{name}")
 async def get_profile(name: str):
     """Return profile metadata + style document content."""
+    # A profile name is one path segment; still validate it, like the asset and overlay routes, so a crafted
+    # `name` can never build a path outside the profiles folder (defence in depth; FastAPI already bars `/`).
+    if not NAME_RE.match(name or ""):
+        raise not_found("not_found", f"Profile '{name}' not found")
     profile_dir = Path.home() / ".montaj" / "profiles" / name
     if not (profile_dir / "analysis_current.json").exists():
         raise not_found("not_found", f"Profile '{name}' not found")
