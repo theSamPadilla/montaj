@@ -14,7 +14,8 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildNleTimeline } from '../nle/timeline.js'
-import { writeAeScript } from '../nle/aejsx.js'
+import { writeAeScript, AE_SCRIPT_TEMPLATE } from '../nle/aejsx.js'
+import { cleanFileName } from '../nle/file-name.js'
 import { ExportError } from '../nle/export-error.js'
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'nle')
@@ -183,6 +184,12 @@ function assertBalanced(log) {
 /** Arrays made inside the vm are of its realm; compare them as plain data. */
 const plain = (v) => JSON.parse(JSON.stringify(v))
 const dataOf = (jsx) => JSON.parse(jsx.match(/var DATA = ([\s\S]*?);\nvar HERE/)[1])
+/** The script with its DATA edited, as a hand-edited (or forged) script would carry it. */
+const withData = (jsx, edit) => {
+  const d = dataOf(jsx)
+  edit(d)
+  return jsx.replace(/^var DATA = .*$/m, () => `var DATA = ${JSON.stringify(d)};`)
+}
 const layerOf = (log, clip) => log.layers.find((l) => l.name === clip || l.name === `Overlay ${clip}`)
 
 /** A one-track project of video clips, for the cases the fixtures do not hold. */
@@ -227,7 +234,7 @@ describe('aejsx: the script', () => {
     const text = JSON.stringify(rest)
     assert.ok(!text.includes('"/out/') && !text.includes('/proj/'), 'no other absolute path in the data')
     assert.ok(data.layers.every((l) => !l.path.startsWith('/')))
-    assert.match(out.jsx, /"path": "media\//)
+    assert.ok(data.layers.every((l) => l.path.startsWith(l.kind === 'graphic' ? 'graphics/' : 'media/')))
     assert.ok(dir)
   })
 
@@ -403,7 +410,8 @@ describe('aejsx: the script', () => {
   test('run from the package: its own folder holds the marker, so everything resolves beside it', () => {
     const { out } = make('hard-cut')
     // DATA.dir is a stale path that holds no marker: the script's own folder wins.
-    const moved = out.jsx.replace(`"dir": ${JSON.stringify(PKG)}`, '"dir": "/gone/away"')
+    const moved = withData(out.jsx, (d) => { d.dir = '/gone/away' })
+    assert.equal(dataOf(moved).dir, '/gone/away')
     const log = runMock(moved, { markerIn: [PKG] })
     assert.ok(log.imports.length > 0 && log.imports.every((p) => p.startsWith(`${PKG}/media/`)))
     assert.equal(log.saved, `${PKG}/Edit (After Effects).aep`)
@@ -500,6 +508,81 @@ describe('aejsx: the script', () => {
     const b = plain(layerOf(log, t.toClipId).props['Audio Levels'].keys)
     assert.deepEqual(a, [[s, [0, 0]], [e, [-96, -96]]])
     assert.deepEqual(b, [[s, [-96, -96]], [e, [0, 0]]])
+  })
+})
+
+describe('aejsx: nothing in the data can become code or move the save', () => {
+  const HOSTILE = ['\n#include x', '//@include y', '#target aftereffects', '*/', 'a\u2028b', '#includepath "/tmp"', '#script evil', '\r\n//@include z']
+  const segments = HOSTILE.map((text, i) => ({ id: `c${i}`, text, start: i * 0.4, end: i * 0.4 + 0.3 }))
+  const tl = make('hostile', oneTrack([clip('a', { id: '#include clip' }), clip('//@include', { start: 2, end: 4 })])).tl
+  const write = (name, pkgDir) => writeAeScript(tl, {}, { name, pkgDir, captionSegments: segments })
+  const tplLines = AE_SCRIPT_TEMPLATE.split('\n')
+  const dataIndex = tplLines.indexOf('var DATA = /*DATA*/;')
+
+  test('every line is a template line, but the one DATA line, which has no # and no //', () => {
+    assert.ok(dataIndex > 0)
+    for (const name of [...HOSTILE, 'Edit (After Effects)']) {
+      const { jsx } = write(name, `/out/${cleanFileName(name)} (After Effects)`)
+      const lines = jsx.split('\n')
+      assert.equal(lines.length, tplLines.length, JSON.stringify(name))
+      lines.forEach((line, i) => {
+        if (i === dataIndex) {
+          assert.match(line, /^var DATA = \{.*\};$/)
+          assert.ok(!line.includes('#') && !line.includes('//'), `${JSON.stringify(name)}: the DATA line has no # or //`)
+        } else {
+          assert.equal(line, tplLines[i], `${JSON.stringify(name)}: line ${i + 1} is the template's`)
+        }
+      })
+      assert.match(jsx, /^[\x00-\x7e]*$/)
+      // Nothing is lost: the data parses back to what was written.
+      const d = dataOf(jsx)
+      assert.equal(d.name, name)
+      assert.deepEqual(d.captions.map((c) => c.text), HOSTILE)
+    }
+  })
+
+  test('the hostile text still runs and comes back as written', () => {
+    const name = '\n#include x'
+    const pkg = `/out/${cleanFileName(name)} (After Effects)`
+    const { jsx } = write(name, pkg)
+    const log = runMock(jsx, { fileName: `${pkg}/x.jsx`, markerIn: [pkg] })
+    assert.deepEqual(log.text, HOSTILE)
+    assert.equal(log.comps[0][0], name)
+    assert.equal(log.saved, `${pkg}/${cleanFileName(name)}.aep`)
+  })
+
+  test('the template loads no code; its one directive is the fixed #target line', () => {
+    for (const bad of ['$.evalFile', 'eval(', 'Function(', '#include', '//@include', '#script', '#includepath']) {
+      assert.ok(!AE_SCRIPT_TEMPLATE.includes(bad), bad)
+    }
+    const directives = tplLines.filter((l) => /^\s*(#|\/\/@)/.test(l))
+    assert.deepEqual(directives, ['#target aftereffects'])
+  })
+
+  test('the save target is always <package folder>/<cleaned name>.aep', () => {
+    for (const name of [...HOSTILE, '../up', 'a/b', 'a\\b', '..', '.', 'ok']) {
+      const pkg = '/out/pkg (After Effects)'
+      const { jsx, aep } = write(name, pkg)
+      const want = `${pkg}/${cleanFileName(name)}.aep`
+      assert.equal(aep, want, JSON.stringify(name))
+      for (const fileName of [`${pkg}/x.jsx`, '/private/app/run/abc.jsx']) {
+        const log = runMock(jsx, { fileName, markerIn: [pkg] })
+        assert.equal(log.saved, want, JSON.stringify(name))
+      }
+    }
+  })
+
+  test('a script whose DATA aims the save elsewhere refuses and builds nothing', () => {
+    const { jsx } = write('ok', PKG)
+    for (const aep of ['../evil.aep', 'sub/evil.aep', 'sub\\evil.aep', '/abs/evil.aep']) {
+      const forged = withData(jsx, (d) => { d.aep = aep })
+      const log = runMock(forged, { markerIn: [PKG] })
+      assert.equal(log.saved, null, aep)
+      assert.equal(log.opened, null, aep)
+      assert.equal(log.calls.newProject, 0, aep)
+      assert.equal(log.alerts.length, 1, aep)
+      assert.match(log.alerts[0], /outside its package folder/)
+    }
   })
 })
 

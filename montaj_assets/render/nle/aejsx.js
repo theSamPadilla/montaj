@@ -29,13 +29,17 @@
  * no save. A file that is missing or will not import is named once at the end, and the rest is built.
  *
  * The script is ExtendScript (ES3): `var`, no arrow functions, no template literals, no JSON object. The data is
- * one object literal at the top (`DATA`); everything after is generic. The whole script is ASCII: every character
- * from U+007F up is a `\uXXXX` escape in the data (ES3 reads U+2028 and U+2029 as line ends, and how
- * ExtendScript guesses a file's encoding is not something to depend on).
+ * one object literal on ONE line at the top (`DATA`); every other line is the fixed template (`AE_SCRIPT_TEMPLATE`),
+ * which loads no code (no include, no eval). The whole script is ASCII: every character from U+007F up is a `\uXXXX`
+ * escape in the data (ES3 reads U+2028 and U+2029 as line ends, and how ExtendScript guesses a file's encoding is not
+ * something to depend on). The data line has no `#` and no `//` either (`#`, `\/`), so nothing in a caption or
+ * a name can read as a preprocessor directive (`#include`, `//@include`, ...). The `.aep` is saved only directly in
+ * the package folder, under the package's cleaned name; the script refuses any other target.
  */
 import { relative, sep } from 'node:path'
 import { motionOf, markerLabel } from './xmeml.js'
 import { ExportError } from './export-error.js'
+import { cleanFileName } from './file-name.js'
 
 const FALLBACK_DURATION = 5
 
@@ -140,7 +144,8 @@ export function writeAeScript(timeline, probes, options) {
     .map((s) => ({ text: s.text, start: s.start, end: s.end }))
   if (segs.length) warnings.push('captions are text layers in a plain style; captions.mov (hidden layer) holds the exact look')
 
-  const aep = `${name}.aep`
+  // A single file name, whatever the caller passed: the script saves it directly in the package folder.
+  const aep = `${cleanFileName(name)}.aep`
   const data = {
     name,
     aep,
@@ -156,7 +161,11 @@ export function writeAeScript(timeline, probes, options) {
     captionsMovie: captions ? rel(pkgDir, captions) : null,
   }
   checkData(data)
-  const literal = JSON.stringify(data, null, 1).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+  // One line, ASCII, and no `#` or `//`: all are JSON escapes, so the data is unchanged.
+  const literal = JSON.stringify(data)
+    .replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+    .replace(/#/g, '\\u0023')
+    .replace(/\//g, '\\/')
   return { jsx: SCRIPT.replace('/*DATA*/', () => literal), aep: `${pkgDir}/${aep}`, warnings, leftOut }
 }
 
@@ -221,8 +230,13 @@ function lin2db(v) { return v <= 0.00001 ? -96 : 20 * Math.log(v) / Math.LN10; }
 
 if (parseFloat(app.version) < 14) { alert("This script needs After Effects 2017 or newer."); return; }
 if (!HERE) { alert("Montaj: this script's package folder is missing; open it from the package folder."); return; }
-// Built already: open it, never build over it.
+// The project is saved only directly in the package folder, under one file name.
 var target = fileAt(DATA.aep);
+if (/[\\\\\\/]/.test(DATA.aep) || target.parent.fsName !== HERE.fsName) {
+  alert("Montaj: this script would save its project outside its package folder, so nothing was built. Export again.");
+  return;
+}
+// Built already: open it, never build over it.
 if (target.exists) {
   if (!app.open(target)) alert("Montaj: " + DATA.aep + " is already beside this script; open it from File > Open.");
   return;
@@ -414,3 +428,6 @@ try {
 if (note) alert(note);
 })();
 `
+
+/** The fixed lines of every script (all but the one `var DATA` line); for tests. */
+export const AE_SCRIPT_TEMPLATE = SCRIPT
