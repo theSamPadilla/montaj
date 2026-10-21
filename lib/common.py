@@ -41,6 +41,24 @@ def check_output(path: str):
         fail("empty_output", f"Output file is empty: {path}")
 
 
+def new_folder_in(parent: str, name: str) -> str:
+    """Make a folder that did not exist inside `parent` (which is made if missing): `name`, then `name 2`,
+    `name 3`, ... Nothing already in `parent` is changed. Returns its absolute path. An export step writes only
+    into the folder this returns."""
+    parent = os.path.abspath(parent)
+    if os.path.exists(parent) and not os.path.isdir(parent):
+        fail("out_exists", "out is a file; pick a folder")
+    os.makedirs(parent, exist_ok=True)
+    for n in range(1, 10000):
+        path = os.path.join(parent, name if n == 1 else f"{name} {n}")
+        try:
+            os.mkdir(path)
+            return path
+        except FileExistsError:
+            continue
+    fail("out_exists", f"out already holds too many {name} folders; pick another folder")
+
+
 _FFMPEG_BANNER = re.compile(
     r"^(ffmpeg version|ffprobe version|\s*built with|\s*configuration:|\s*lib\w+\s+\d+\.\s*\d+\.\s*\d+)"
 )

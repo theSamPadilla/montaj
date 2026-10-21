@@ -366,6 +366,11 @@ def fetch_image_to_path(
 ) -> Path:
     """Fetch *url* to *out*, enforcing safety checks.
 
+    *out* must not exist: it is created exclusively (never through a link)
+    before anything is fetched, so an existing file is never replaced or
+    deleted (`out_exists`, nothing fetched). On any failure the file this call
+    created is removed.
+
     Raises SystemExit(1) via fail() on any violation (mirrors step convention).
     Returns *out* resolved as an absolute Path on success.
     """
@@ -376,47 +381,60 @@ def fetch_image_to_path(
     if err:
         fail("url_rejected", err)
 
-    out = Path(out).resolve()
+    # Absolute but not resolved: the last component is created as itself, so a
+    # link already at *out* is refused as existing rather than followed.
+    out = Path(os.path.abspath(out))
     out.parent.mkdir(parents=True, exist_ok=True)
-
-    own_client = client is None
-    c = _make_client(client)
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
     try:
-        # follow_redirects=False is forced per-request so an injected client
-        # configured with follow_redirects=True can never silently follow a
-        # redirect (which would bypass the pre-connection host checks).
-        with c.stream("GET", url, headers={"User-Agent": _UA},
-                      follow_redirects=False) as resp:
-            if resp.is_redirect:
-                fail("redirect_rejected", f"Redirect not followed: {url}")
-            if resp.status_code < 200 or resp.status_code >= 300:
-                fail("upstream_error", f"Upstream returned {resp.status_code}")
+        fd = os.open(out, flags, 0o644)
+    except FileExistsError:
+        fail("out_exists", "out already exists; fetch_image never replaces a file. Choose a new name.")
+    except OSError as exc:
+        fail("write_error", str(exc))
 
-            ct = resp.headers.get("content-type", "")
-            if not ct.split(";")[0].strip().lower().startswith("image/"):
-                fail("not_an_image", f"Expected image/*, got {ct!r}")
+    done = False
+    own_client = client is None
+    c = None
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            c = _make_client(client)
+            # follow_redirects=False is forced per-request so an injected client
+            # configured with follow_redirects=True can never silently follow a
+            # redirect (which would bypass the pre-connection host checks).
+            with c.stream("GET", url, headers={"User-Agent": _UA},
+                          follow_redirects=False) as resp:
+                if resp.is_redirect:
+                    fail("redirect_rejected", f"Redirect not followed: {url}")
+                if resp.status_code < 200 or resp.status_code >= 300:
+                    fail("upstream_error", f"Upstream returned {resp.status_code}")
 
-            count = 0
-            try:
-                with out.open("wb") as fh:
-                    for chunk in resp.iter_bytes():
-                        count += len(chunk)
-                        if count > max_bytes:
-                            fh.close()
-                            out.unlink(missing_ok=True)
-                            fail("too_large", f"Response exceeded {max_bytes} bytes")
+                ct = resp.headers.get("content-type", "")
+                if not ct.split(";")[0].strip().lower().startswith("image/"):
+                    fail("not_an_image", f"Expected image/*, got {ct!r}")
+
+                count = 0
+                for chunk in resp.iter_bytes():
+                    count += len(chunk)
+                    if count > max_bytes:
+                        fail("too_large", f"Response exceeded {max_bytes} bytes")
+                    try:
                         fh.write(chunk)
-            except OSError as exc:
-                out.unlink(missing_ok=True)
-                fail("write_error", str(exc))
+                    except OSError as exc:
+                        fail("write_error", str(exc))
+        done = True
     except httpx.TimeoutException as exc:
-        out.unlink(missing_ok=True)
         fail("timeout", str(exc))
     except httpx.TransportError as exc:
-        out.unlink(missing_ok=True)
         fail("network_error", str(exc))
+    except OSError as exc:
+        fail("write_error", str(exc))
     finally:
-        if own_client:
+        if not done:
+            # Only ever the file this call created above.
+            out.unlink(missing_ok=True)
+        if own_client and c is not None:
             c.close()
 
-    return out
+    return out.resolve()

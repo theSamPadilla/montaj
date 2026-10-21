@@ -2,17 +2,18 @@
 """Export a carousel as web pages: one still page per slide and a swipeable index.html.
 
 Runs render/render-carousel.js with --html-dir --html-only (the slides are drawn by the same code and page that
-produce the PNGs) and prints a JSON result. Its progress lines go to stderr; its error, if any, is the last JSON line
-on stderr, which serve reads.
+produce the PNGs) into a new folder inside --out (`slides`, then `slides 2`, ...; nothing already in --out is
+changed) and prints a JSON result. Its progress lines go to stderr; its error, if any, is the last JSON line on
+stderr, which serve reads.
 """
 import argparse, json, os, shutil, subprocess, sys, tempfile
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
 from cli.deps import render_runtime_dir
-from lib.common import node_child_env, fail, require_file
+from lib.common import node_child_env, fail, new_folder_in, require_file
 
-MARKER = ".montaj-carousel-pages"
+FOLDER = "slides"
 
 
 def read_project(path: str) -> dict:
@@ -24,16 +25,6 @@ def read_project(path: str) -> dict:
     if project.get("projectType") != "carousel":
         fail("not_a_carousel", f"projectType must be 'carousel', got '{project.get('projectType')}'")
     return project
-
-
-def check_out(out: str) -> None:
-    """The folder is replaced only when it is new, empty, or one this step wrote."""
-    if not os.path.exists(out):
-        return
-    if not os.path.isdir(out):
-        fail("out_exists", f"{out} is a file")
-    if os.listdir(out) and not os.path.exists(os.path.join(out, MARKER)):
-        fail("out_exists", f"{out} already has other files in it; pick an empty folder")
 
 
 def build_command(node_bin: str, project_path: str, out: str, tmp: str, slides) -> list:
@@ -48,7 +39,7 @@ def build_command(node_bin: str, project_path: str, out: str, tmp: str, slides) 
 def main():
     parser = argparse.ArgumentParser(description="Export a carousel as web pages")
     parser.add_argument("--project", required=True, help="Absolute path to project.json")
-    parser.add_argument("--out", default=None, help="The folder to write the pages to")
+    parser.add_argument("--out", default=None, help="The folder to put the pages' new folder in")
     parser.add_argument("--slides", default=None, help="Comma-separated slide numbers (default: all)")
     parser.add_argument("--list", dest="list_only", action="store_true", help="List the slides and write nothing")
     args = parser.parse_args()
@@ -69,12 +60,7 @@ def main():
     if not os.path.isfile(os.path.join(render_runtime_dir(), "render-carousel.js")):
         fail("not_found", "render-carousel.js not found")
 
-    out = os.path.abspath(args.out)
-    check_out(out)
-    shutil.rmtree(out, ignore_errors=True)
-    os.makedirs(out)
-    with open(os.path.join(out, MARKER), "w") as f:
-        f.write("written by export_carousel_pages; a re-export replaces this folder\n")
+    out = new_folder_in(args.out, FOLDER)
 
     env = node_child_env()
     env["MONTAJ_ROOT"] = MONTAJ_ROOT
@@ -88,14 +74,14 @@ def main():
     sys.stderr.write(stderr)
     warnings = [l.split("warning: ", 1)[1] for l in stderr.splitlines() if "warning: " in l]
     if proc.returncode != 0:
+        shutil.rmtree(out, ignore_errors=True)  # the new folder this run made, and only that
         if '{"error"' not in stderr:
             fail("export_failed", f"render-carousel.js exited {proc.returncode}")
         sys.exit(proc.returncode)
     files = []
     for root, _dirs, names in os.walk(out):
         for n in sorted(names):
-            if n != MARKER:
-                files.append(os.path.relpath(os.path.join(root, n), out))
+            files.append(os.path.relpath(os.path.join(root, n), out))
     files.sort()
     pages = [f for f in files if f.startswith("slide-") and f.endswith(".html")]
     sys.stdout.write(json.dumps({"dir": out, "pages": pages, "index": "index.html", "files": files, "warnings": warnings}) + "\n")

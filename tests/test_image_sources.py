@@ -591,3 +591,59 @@ class TestFetchImageToPath:
         err = json.loads(capsys.readouterr().err)
         assert err["error"] == "redirect_rejected"
         assert not out.exists()
+
+    # -- never overwrites --------------------------------------------------
+
+    def _counting_client(self, calls, content=b"NEW", mime="image/jpeg"):
+        def handler(request):
+            calls.append(str(request.url))
+            return httpx.Response(200, headers={"content-type": mime}, content=content)
+        return httpx.Client(transport=httpx.MockTransport(handler))
+
+    def test_existing_target_refused_and_nothing_fetched_or_written(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("91.198.174.192"))
+        out = tmp_path / "taken.jpg"
+        out.write_bytes(b"KEEP")
+        calls = []
+        with pytest.raises(SystemExit):
+            fetch_image_to_path("https://upload.wikimedia.org/test.jpg", out, self.HOSTS,
+                                client=self._counting_client(calls))
+        err = json.loads(capsys.readouterr().err)
+        assert err["error"] == "out_exists" and str(out) not in err["message"]
+        assert out.read_bytes() == b"KEEP"
+        assert calls == []
+
+    def test_link_at_target_refused_and_its_target_untouched(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("91.198.174.192"))
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        dangling = tmp_path / "dangling.jpg"
+        dangling.symlink_to(elsewhere / "made-through-link.sh")
+        live_target = elsewhere / "rc"
+        live_target.write_bytes(b"KEEP")
+        live = tmp_path / "live.jpg"
+        live.symlink_to(live_target)
+        calls = []
+        for out in (dangling, live):
+            with pytest.raises(SystemExit):
+                fetch_image_to_path("https://upload.wikimedia.org/test.jpg", out, self.HOSTS,
+                                    client=self._counting_client(calls))
+            assert json.loads(capsys.readouterr().err)["error"] == "out_exists"
+        assert not (elsewhere / "made-through-link.sh").exists()
+        assert live_target.read_bytes() == b"KEEP"
+        assert calls == []
+
+    def test_failed_fetch_removes_only_the_file_it_made(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(socket, "getaddrinfo", _mock_getaddrinfo("91.198.174.192"))
+
+        def handler(request):
+            raise httpx.ConnectTimeout("slow", request=request)
+
+        out = tmp_path / "new.jpg"
+        neighbour = tmp_path / "neighbour.jpg"
+        neighbour.write_bytes(b"KEEP")
+        with pytest.raises(SystemExit):
+            fetch_image_to_path("https://upload.wikimedia.org/test.jpg", out, self.HOSTS,
+                                client=httpx.Client(transport=httpx.MockTransport(handler)))
+        assert not out.exists()
+        assert neighbour.read_bytes() == b"KEEP"

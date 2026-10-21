@@ -48,23 +48,30 @@ def test_carousel_step_needs_a_carousel_and_a_folder(tmp_path):
     assert r.returncode != 0 and "--out" in r.stderr
 
 
-def test_carousel_out_folder_is_replaced_only_when_empty_or_ours(tmp_path):
-    mod = load("export_carousel_pages")
-    other = tmp_path / "other"
-    other.mkdir()
-    (other / "keep.txt").write_text("mine")
+def test_pages_go_in_a_new_folder_and_nothing_in_out_changes(tmp_path):
+    """Both steps write only into a folder they make inside --out: `overlays` / `slides`, then ` 2`, ` 3`, ..."""
+    from lib.common import new_folder_in
+    assert load("export_overlay_pages").FOLDER == "overlays" and load("export_carousel_pages").FOLDER == "slides"
+    out = tmp_path / "picked"
+    out.mkdir()
+    (out / "keep.txt").write_text("mine")
+    (out / "slides").mkdir()
+    (out / "slides" / "slide-01.html").write_text("old")
+    first = new_folder_in(str(out), "slides")
+    assert first == str(out / "slides 2") and os.listdir(first) == []
+    assert new_folder_in(str(out), "slides") == str(out / "slides 3")
+    assert (out / "keep.txt").read_text() == "mine" and (out / "slides" / "slide-01.html").read_text() == "old"
+    # a link already at the name is taken as existing, never written through
+    (tmp_path / "elsewhere").mkdir()
+    (out / "overlays").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    assert new_folder_in(str(out), "overlays") == str(out / "overlays 2")
+    assert os.listdir(tmp_path / "elsewhere") == []
+    # out made when missing (the CLI; serve wants an existing folder outside the workspace)
+    assert new_folder_in(str(tmp_path / "new" / "deep"), "overlays") == str(tmp_path / "new" / "deep" / "overlays")
+    (tmp_path / "a-file").write_text("x")
     with pytest.raises(SystemExit):
-        mod.check_out(str(other))
-    assert (other / "keep.txt").read_text() == "mine"
-    ours = tmp_path / "ours"
-    ours.mkdir()
-    (ours / mod.MARKER).write_text("x")
-    (ours / "slide-01.html").write_text("old")
-    mod.check_out(str(ours))          # ours: allowed
-    mod.check_out(str(tmp_path / "new"))  # new: allowed
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    mod.check_out(str(empty))         # empty: allowed
+        new_folder_in(str(tmp_path / "a-file"), "slides")
+    assert (tmp_path / "a-file").read_text() == "x"
 
 
 def test_commands_carry_the_choices():

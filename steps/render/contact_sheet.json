@@ -8,7 +8,7 @@
     { "name": "every", "type": "float", "required": false, "description": "Sample every N seconds across the project (must be > 0; not combined with --at; capped at 120 samples)" },
     { "name": "cols", "type": "int", "default": 6, "description": "Tiles per row" },
     { "name": "tile-width", "type": "int", "default": 320, "description": "Tile width in px" },
-    { "name": "frames-dir", "type": "path", "required": false, "description": "Keep the sampled frame PNGs here (f_0000.png...) instead of discarding them, and report their paths" },
+    { "name": "frames-dir", "type": "path", "required": false, "outKind": "write", "description": "Keep the sampled frame PNGs here (f_0000.png...) instead of discarding them, and report their paths" },
     { "name": "out", "type": "path", "required": true, "ext": ".png", "description": "Output PNG path" }
   ]
 }

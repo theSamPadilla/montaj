@@ -5,7 +5,7 @@
   "params": [
     { "name": "items", "type": "string", "required": true, "description": "JSON array of up to 30 posts, newest first: [{\"url\": \"...\"} or {\"path\": \"...\"}, plus optional \"views\", \"likes\", \"posted_at\" (YYYY-MM-DD), \"caption\"]" },
     { "name": "out", "type": "path", "description": "Folder for diagnostic.json and stills/ (default: a new temp folder)" },
-    { "name": "inbox", "type": "path", "description": "Folder holding videos saved for this run; each is deleted once measured" },
+    { "name": "inbox", "type": "path", "outKind": "write", "description": "Folder holding videos saved for this run; each is deleted once measured" },
     { "name": "top", "type": "int", "default": 10, "min": 1, "max": 30, "description": "How many posts to measure: the most-viewed, else the newest" },
     { "name": "whisper-model", "type": "string", "default": "large-v3-turbo-q5_0", "description": "Speech model" },
     { "name": "language", "type": "string", "default": "auto", "description": "Spoken language code, or auto" }

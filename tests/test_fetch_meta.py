@@ -152,3 +152,19 @@ def test_instagram_profile_failure_has_code_and_hint(monkeypatch, capsys):
     assert j["code"] == j["error"] == "instagram_profile"
     assert "reel" in j["hint"] and "—" not in j["hint"] and "\n" not in j["hint"]
     assert j["stderr_tail"] and j["hint"] in j["message"]
+
+
+def test_out_reaches_yt_dlp_as_exactly_that_path(monkeypatch, capsys, tmp_path):
+    """yt-dlp fills `%(field)s` and expands `~` and `$VAR` in --output; fetch hands it the path as written."""
+    cmd, _ = _run_main(monkeypatch, capsys, ["--url", YT, "--out", OUT + "/100%(id)s.mp4"], 0, "/p/x.mp4\n")
+    assert cmd[cmd.index("--output") + 1] == OUT + "/100%%(id)s.mp4"
+    monkeypatch.chdir(tmp_path)
+    cmd, _ = _run_main(monkeypatch, capsys, ["--url", YT, "--out", "~/clips"], 0, "/p/x.mp4\n")
+    assert cmd[cmd.index("--output") + 1] == str(tmp_path / "~" / "clips" / "%(id)s.%(ext)s")
+
+
+@pytest.mark.parametrize("out", ["$HOME/.montaj/steps/x.py", "${HOME}/x.mp4", OUT + "/$USER"])
+def test_out_with_a_dollar_is_refused_before_anything_runs(monkeypatch, capsys, out):
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, capsys, ["--url", YT, "--out", out], 0, "")
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == "invalid_out"

@@ -76,13 +76,22 @@ def test_existing_file_gets_suffix(env):
     assert calls[-1][calls[-1].index("--out") + 1] == str(pdir / "assets" / "hero-2.png")
 
 
-@pytest.mark.parametrize("odd", ["../x.png", "sub/x.png", "..", ".", "a\\b", "/abs/x.png"])
+@pytest.mark.parametrize("odd", ["sub/x.png", ".", "a\\b"])
 def test_non_plain_out_passes_through_unchanged(env, odd):
     pid, pdir, calls = env
     r = _post(_project=pid, out=odd)
     assert r.status_code == 200, r.text
     assert calls[-1][calls[-1].index("--out") + 1] == odd
     assert not (pdir / "assets").exists()
+
+
+@pytest.mark.parametrize("odd", ["../x.png", "..", "/abs/x.png"])
+def test_an_out_that_leaves_the_allowed_places_is_refused_before_the_step(env, odd):
+    # serve/out_guard.py: a `..` component, or a path outside the workspace, temp folder and project.
+    pid, pdir, calls = env
+    r = _post(_project=pid, out=odd)
+    assert r.status_code == 403 and r.json()["detail"]["error"] == "out_not_allowed"
+    assert not calls and not (pdir / "assets").exists()
 
 
 def test_folder_outside_workspace_refused(env, tmp_path):
@@ -152,7 +161,7 @@ def test_empty_out_not_resolved_into_assets(env):
 def test_final_parent_assertion_catches_a_name_that_slipped_the_plain_check(env, monkeypatch):
     pid, pdir, calls = env
     monkeypatch.setattr(steps_mod, "_is_plain_name", lambda out: True)
-    r = _post(_project=pid, out="../escape.png")
+    r = _post(_project=pid, out="sub/escape.png")   # allowed by the out guard; leaves assets/ for sub/
     assert r.status_code == 422 and not calls
 
 

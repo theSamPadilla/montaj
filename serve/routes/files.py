@@ -30,18 +30,36 @@ PROJECT_FILE_PROTECTED_MESSAGE = ("project.json, the project's lock file and its
                                   "written as files. Change a project with save_project.")
 
 
+def upload_name(filename) -> str:
+    """The name an upload is saved under: the last component of the multipart
+    filename, by either slash, so no `../` or absolute name leaves the folder.
+    Empty, `.`, `..`, a NUL (or, on Windows, a drive or stream colon) is a 400
+    invalid_filename, as profile_assets does."""
+    base = re.split(r"[\\/]", filename or "upload")[-1]
+    if not base or base in (".", "..") or "\x00" in base or (os.name == "nt" and ":" in base):
+        raise bad_request("invalid_filename", "Invalid filename")
+    return base
+
+
 async def save_upload(file: UploadFile, dest_dir: Path) -> Path:
-    """Stream an uploaded file into dest_dir, de-duplicating the filename.
+    """Stream an uploaded file into dest_dir under its own name (upload_name),
+    de-duplicated. The file is created new (O_EXCL: never an existing file,
+    never through a link), so an upload never replaces anything.
     Returns the absolute path written. Shared by the workspace-level and
     project-scoped upload routes."""
+    name = upload_name(file.filename)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / (file.filename or "upload")
+    dest = dest_dir / name
     stem, suffix = dest.stem, dest.suffix
     counter = 1
-    while dest.exists():
-        dest = dest_dir / f"{stem}_{counter}{suffix}"
-        counter += 1
-    with open(dest, "wb") as f:
+    while True:
+        try:
+            f = open(dest, "xb")
+            break
+        except FileExistsError:
+            dest = dest_dir / f"{stem}_{counter}{suffix}"
+            counter += 1
+    with f:
         while chunk := await file.read(1024 * 1024):  # 1 MB chunks
             f.write(chunk)
     return dest

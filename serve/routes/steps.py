@@ -21,6 +21,7 @@ from serve.common import (
     not_found, bad_request, server_error,
 )
 from serve.jobs import create_job, set_done, set_error, get_job
+from serve.out_guard import check_step_out
 from serve import provenance
 
 router = APIRouter(prefix="/api")
@@ -337,7 +338,8 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
     own `"ext"` when it declares one (the file a step writes is not always what
     it prints: synth_audio prints JSON and writes a WAV), else the step's
     output type's. Any other
-    `out` passes through unchanged. A name already taken gets -2, -3, ... The
+    `out` passes through unchanged here; the route has already refused one that
+    leaves the allowed places (serve/out_guard.py). A name already taken gets -2, -3, ... The
     result never leaves `<project>/assets/` (a symlinked assets is a 422).
     An `out` param marked `"projectDefault": "step"` is left off when it is
     left off: that step keeps its own stable place in the project, replaced on
@@ -598,6 +600,8 @@ async def run_step(name: str, body: dict = Body(default={})):
         raise not_found("not_found", f"Step '{name}' not found")
 
     schema, py_path = steps[name]
+    # Before anything runs, sync or async: where this step may write (serve/out_guard.py).
+    check_step_out(name, schema, body, native=job_step_name(name, py_path) == name)
 
     is_async = bool(body.pop("_async", False))
     if not is_async:

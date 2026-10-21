@@ -116,6 +116,16 @@ def _fail_with(code, hint, stderr):
     sys.exit(1)
 
 
+def ytdlp_literal(path: str) -> str:
+    """`path` as a yt-dlp output template that names exactly that path. yt-dlp fills `%(field)s` and expands
+    `~` and `$VAR` in its template, so `$HOME/x` would land in the home folder while serve checked the path as
+    written. Absolute (no leading `~` left) and with `%` doubled; a `$` is refused, since on macOS and Linux
+    yt-dlp's `$$` does not keep a variable after it from expanding."""
+    if "$" in path:
+        fail("invalid_out", "out cannot contain $; pick another folder or name")
+    return os.path.abspath(path).replace("%", "%%")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Download a video from a URL using yt-dlp")
     parser.add_argument("--url",    required=True, help="URL to download (video, profile, or playlist)")
@@ -130,6 +140,7 @@ def main():
     args = parser.parse_args()
 
     out = args.out or os.getcwd()
+    literal = ytdlp_literal(out)   # before anything is made
     cmd = [
         # montaj's own interpreter, never a PATH lookup: a packaged app has a
         # minimal PATH and must not depend on a system yt-dlp.
@@ -168,12 +179,12 @@ def main():
     # If out has no extension treat it as a directory
     if os.path.isdir(out) or not os.path.splitext(out)[1]:
         os.makedirs(out, exist_ok=True)
-        cmd += ["--output", os.path.join(out, "%(id)s.%(ext)s")]
+        cmd += ["--output", os.path.join(literal, "%(id)s.%(ext)s")]
     else:
         parent = os.path.dirname(os.path.abspath(out))
         if parent:
             os.makedirs(parent, exist_ok=True)
-        cmd += ["--output", out]
+        cmd += ["--output", literal]
 
     cmd.append(args.url)
 

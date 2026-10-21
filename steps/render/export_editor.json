@@ -40,7 +40,8 @@
       "name": "out",
       "type": "path",
       "required": false,
-      "description": "The folder to put the package in. Defaults to <project_dir>/export/. The package is a new folder inside it; nothing already there is changed or replaced."
+      "outKind": "export",
+      "description": "The folder to put the package in. Defaults to <project_dir>/export/. The package is a new folder inside it; nothing already there is changed or replaced. Outside the workspace it must be an existing folder that is not hidden and not a system or app folder."
     }
   ]
 }

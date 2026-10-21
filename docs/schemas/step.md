@@ -118,6 +118,7 @@ Each param:
 | `options` | array | no | `enum` type only — list of valid string values |
 | `repeatable` | boolean | no | The flag may be given more than once (argparse `action="append"`). Over the API the param takes a list; serve checks each item and repeats the flag per item. |
 | `ext` | string | no | `out` only: the extension of the file the step writes (`".wav"`), when it differs from what `output.type` implies (a step that prints JSON but writes a WAV). serve's `_project` auto-name uses it. |
+| `outKind` | string | no | A path the step writes to (or deletes in). Over the API, `out` and `out-dir` on any step, and every param with `outKind`, must resolve inside the workspace, the system temp folder, or the folder of the project the step runs on (by its id), else 403 `out_not_allowed` (`serve/out_guard.py`). `"write"`: just that. `"export"`: a folder the user picks; on a built-in step it may also be any existing folder that is not hidden and not a system or app folder, and the step writes only into a new folder it makes inside it. A custom step's `"export"` counts as `"write"`. |
 
 **Param types:**
 
