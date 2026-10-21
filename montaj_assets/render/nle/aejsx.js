@@ -16,10 +16,13 @@
  *   - overlays as transparent ProRes 4444 layers over their own window (the movies the graphics step rendered:
  *     their motion is in the pixels, as in the XML).
  *
- * Self-contained: media paths are written relative to the package folder and resolved from the script's own file
- * (`File($.fileName).parent`, each segment through `File.encode`, since `File()` decodes `%XX`), so the package
- * works from anywhere. It ends with `app.project.save`; if After Effects refuses (most likely "Allow Scripts to Write
- * Files and Access Network" is off), it says so once and leaves the composition open to save by hand.
+ * Where it runs from does not matter: media paths and the `.aep` are written relative to the package folder, and the
+ * package folder is the script's own folder when that holds the package marker (`.montaj-editor-export`: run from
+ * the package by hand), else `DATA.dir`, the package's absolute path at export time, when THAT holds the marker (a
+ * copy of the script run from elsewhere, as the app does), else nothing is built. Every segment goes through
+ * `File.encode`, since `File()` and `Folder()` decode `%XX`. It ends with `app.project.save`; if After Effects
+ * refuses (most likely "Allow Scripts to Write Files and Access Network" is off), it says so once and leaves the
+ * composition open to save by hand.
  *
  * Safe to run twice: when the `.aep` is already beside the script it is opened, never built over. A cancelled
  * "save the open project?" prompt builds nothing. The build is one undo group; an error in it is one alert and
@@ -46,7 +49,7 @@ const rel = (pkgDir, p) => relative(pkgDir, p).split(sep).join('/')
  * @param {Object<string, object>} probes   probe results keyed by the timeline's source path (media size)
  * @param {{
  *   name?: string,
- *   pkgDir: string,                       the package folder the script sits in (final path)
+ *   pkgDir: string,                       the package folder the script sits in (final path), written as DATA.dir
  *   mediaPaths?: Object<string, string>,  original path to its copy in the package
  *   graphics?: Object<string, string>,    overlay clip id to its rendered movie
  *   captions?: string | null,             the rendered captions movie
@@ -141,6 +144,7 @@ export function writeAeScript(timeline, probes, options) {
   const data = {
     name,
     aep,
+    dir: pkgDir,
     fps,
     width: timeline.width,
     height: timeline.height,
@@ -184,21 +188,39 @@ function checkData(data) {
 
 /** The script. `DATA` is the one object literal; the rest does not depend on the project. ExtendScript (ES3), ASCII. */
 const SCRIPT = `// Montaj: build this edit in After Effects. Open it from After Effects (File > Scripts > Run Script File), or let Montaj run it.
-// Media is found beside this file, so the folder can be moved.
+// Media is found in the package folder (this file's own, or the one it was written to), so the package can be moved.
 #target aftereffects
 (function () {
 var DATA = /*DATA*/;
-var HERE = File($.fileName).parent;
-// File() decodes %XX, so each segment goes in encoded: a file named "a%20b.mp4" stays itself.
-function fileAt(rel) {
-  var parts = rel.split("/");
+var HERE = packageFolder();
+// File() and Folder() decode %XX, so each segment goes in encoded: a file named "a%20b.mp4" stays itself.
+function encoded(path) {
+  var parts = path.split("/");
   for (var i = 0; i < parts.length; i++) parts[i] = File.encode(parts[i]);
-  return new File(HERE.absoluteURI + "/" + parts.join("/"));
+  return parts.join("/");
+}
+function fileAt(rel) { return new File(HERE.absoluteURI + "/" + encoded(rel)); }
+// The package: this script's own folder when it holds the package marker (run from the package), else the folder
+// the export wrote it to (a copy run from elsewhere), when that holds it. Null when neither does.
+function packageFolder() {
+  var marker = File.encode(".montaj-editor-export");
+  var holds = function (folder) {
+    try { return !!folder && folder.exists && new File(folder.absoluteURI + "/" + marker).exists; } catch (e) { return false; }
+  };
+  var own = null;
+  try { own = File($.fileName).parent; } catch (e) {}
+  if (holds(own)) return own;
+  // A Windows drive path in the form File and Folder take everywhere: C:\\a\\b is /c/a/b.
+  var p = DATA.dir.replace(/\\\\/g, "/");
+  var drive = /^([A-Za-z]):\\//.exec(p);
+  if (drive) p = "/" + drive[1].toLowerCase() + p.slice(2);
+  var made = new Folder(encoded(p));
+  return holds(made) ? made : null;
 }
 function lin2db(v) { return v <= 0.00001 ? -96 : 20 * Math.log(v) / Math.LN10; }
 
 if (parseFloat(app.version) < 14) { alert("This script needs After Effects 2017 or newer."); return; }
-if (!File($.fileName).exists) { alert("Run this script from its own file (File > Scripts > Run Script File)."); return; }
+if (!HERE) { alert("Montaj: this script's package folder is missing; open it from the package folder."); return; }
 // Built already: open it, never build over it.
 var target = fileAt(DATA.aep);
 if (target.exists) {

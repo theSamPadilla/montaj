@@ -20,13 +20,15 @@ import { ExportError } from '../nle/export-error.js'
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'nle')
 const PROJECT_DIR = resolve('/proj')
 const PKG = '/out/Edit (After Effects)'
+const PKG_DIR = PKG
+const MARKER = '.montaj-editor-export'
 const names = readdirSync(FIXTURES).filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -5))
 
 const VIDEO = { exists: true, hasVideo: true, hasAudio: true, width: 1920, height: 1080, isStill: false }
 const IMAGE = { ...VIDEO, hasAudio: false, width: 1000, height: 800, isStill: true }
 const AUDIO = { ...VIDEO, hasVideo: false, width: null, height: null }
 
-function make(name, project = JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), 'utf8'))) {
+function make(name, project = JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), 'utf8')), PKG = PKG_DIR) {
   const tl = buildNleTimeline(project, { projectDir: PROJECT_DIR })
   const probes = {}
   for (const [p, s] of Object.entries(tl.sources)) probes[p] = s.kind === 'image' ? IMAGE : s.kind === 'audio' ? AUDIO : VIDEO
@@ -57,13 +59,14 @@ const encodeUri = (p) => p.split('/').map((x) => encodeURIComponent(x)).join('/'
  *   addCompThrows     items.addComp throws
  *   noAudio           every layer has no audio (setting audioEnabled then throws, as After Effects does)
  *   fileName          what $.fileName is
+ *   markerIn          folders that hold the package marker (default: the package)
  */
 function runMock(jsx, {
   saveThrows = false, missing = [], existing = [], openResult = {}, newProjectNull = false, importThrows = [],
-  addCompThrows = false, noAudio = false, fileName = `${PKG}/Edit (After Effects).jsx`,
+  addCompThrows = false, noAudio = false, fileName = `${PKG}/Edit (After Effects).jsx`, markerIn = [PKG],
 } = {}) {
   const log = {
-    comps: [], layers: [], imports: [], items: [], alerts: [], saved: null, opened: null, text: [],
+    comps: [], layers: [], imports: [], items: [], alerts: [], saved: null, opened: null, text: [], folders: [],
     calls: { beginUndoGroup: 0, endUndoGroup: 0, beginSuppressDialogs: 0, endSuppressDialogs: 0, newProject: 0 },
   }
   const prop = (o = {}) => {
@@ -73,20 +76,28 @@ function runMock(jsx, {
   class MarkerValue { constructor(c) { this.comment = c } }
   class Shape {}
   class ImportOptions { constructor(f) { this.file = f } }
-  // ExtendScript's File() works with or without `new`, and decodes %XX.
+  // ExtendScript's File() and Folder() work with or without `new`, and decode %XX.
+  function Folder(path) {
+    if (!(this instanceof Folder)) return new Folder(path)
+    this.fsName = decodeUri(path)
+    this.absoluteURI = encodeUri(this.fsName)
+    log.folders.push(this.fsName)
+  }
+  Object.defineProperty(Folder.prototype, 'exists', { get() { return true } })
   function File(path) {
     if (!(this instanceof File)) return new File(path)
     const fs = decodeUri(path)
     this.fsName = fs
     this.absoluteURI = encodeUri(fs)
-    const parent = fs.replace(/\/[^/]*$/, '')
-    this.parent = { fsName: parent, absoluteURI: encodeUri(parent) }
+    this.parent = new Folder(encodeUri(fs.replace(/\/[^/]*$/, '')))
   }
   File.encode = (s) => encodeURIComponent(s)
   Object.defineProperty(File.prototype, 'exists', {
     get() {
-      if (this.fsName.endsWith('.aep')) return existing.some((m) => this.fsName.endsWith(m))
-      return !missing.some((m) => this.fsName.endsWith(m))
+      const f = this.fsName
+      if (f.endsWith(`/${MARKER}`)) return markerIn.includes(f.slice(0, -MARKER.length - 1))
+      if (f.endsWith('.aep')) return existing.some((m) => f.endsWith(m))
+      return !missing.some((m) => f.endsWith(m))
     },
   })
   // A TextDocument: fill and stroke colours cannot be set while fill or stroke is off.
@@ -152,7 +163,7 @@ function runMock(jsx, {
       beginUndoGroup: count('beginUndoGroup'), endUndoGroup: count('endUndoGroup'),
       beginSuppressDialogs: count('beginSuppressDialogs'), endSuppressDialogs: count('endSuppressDialogs'),
     },
-    File, ImportOptions, MarkerValue, Shape,
+    File, Folder, ImportOptions, MarkerValue, Shape,
     AlphaMode: { STRAIGHT: 'STRAIGHT', PREMULTIPLIED: 'PREMULTIPLIED', IGNORE: 'IGNORE' },
     ParagraphJustification: { CENTER_JUSTIFY: 1 },
     alert: (m) => log.alerts.push(m),
@@ -208,11 +219,16 @@ describe('aejsx: the script', () => {
     }
   })
 
-  test('media is written relative to the script, never absolute', () => {
+  test('media is written relative to the package; the package folder itself is the one absolute path', () => {
     const { out } = make('layers')
-    const data = out.jsx.match(/var DATA = ([\s\S]*?);\nvar HERE/)[1]
-    assert.ok(!data.includes('"/out/') && !data.includes('/proj/'), 'no absolute path in the data')
-    assert.match(data, /"path": "media\//)
+    const data = dataOf(out.jsx)
+    assert.equal(data.dir, PKG)
+    const { dir, ...rest } = data
+    const text = JSON.stringify(rest)
+    assert.ok(!text.includes('"/out/') && !text.includes('/proj/'), 'no other absolute path in the data')
+    assert.ok(data.layers.every((l) => !l.path.startsWith('/')))
+    assert.match(out.jsx, /"path": "media\//)
+    assert.ok(dir)
   })
 
   test('layers: one per footage and image clip, in order, with static placement', () => {
@@ -384,12 +400,58 @@ describe('aejsx: the script', () => {
     assert.deepEqual(log.alerts, [])
   })
 
-  test('run other than from its own file, it says how to run it and builds nothing', () => {
+  test('run from the package: its own folder holds the marker, so everything resolves beside it', () => {
     const { out } = make('hard-cut')
-    const log = runMock(out.jsx, { missing: ['.jsx'] })
-    assert.equal(log.alerts.length, 1)
-    assert.match(log.alerts[0], /Run this script from its own file/)
+    // DATA.dir is a stale path that holds no marker: the script's own folder wins.
+    const moved = out.jsx.replace(`"dir": ${JSON.stringify(PKG)}`, '"dir": "/gone/away"')
+    const log = runMock(moved, { markerIn: [PKG] })
+    assert.ok(log.imports.length > 0 && log.imports.every((p) => p.startsWith(`${PKG}/media/`)))
+    assert.equal(log.saved, `${PKG}/Edit (After Effects).aep`)
+    assert.deepEqual(log.alerts, [])
+  })
+
+  test('a copy run from elsewhere: the package folder written into it (DATA.dir) holds the marker', () => {
+    const { out } = make('hard-cut')
+    const log = runMock(out.jsx, { fileName: '/private/app/run/abc123.jsx', markerIn: [PKG] })
+    assert.ok(log.imports.length > 0 && log.imports.every((p) => p.startsWith(`${PKG}/media/`)), log.imports.join(' '))
+    assert.equal(log.saved, `${PKG}/Edit (After Effects).aep`)
+    assert.deepEqual(log.alerts, [])
+  })
+
+  test('a copy run from elsewhere finds an .aep already in the package and opens it', () => {
+    const { out } = make('hard-cut')
+    const log = runMock(out.jsx, { fileName: '/private/app/run/abc123.jsx', existing: ['/Edit (After Effects).aep'] })
+    assert.equal(log.opened, `${PKG}/Edit (After Effects).aep`)
     assert.equal(log.calls.newProject, 0)
+  })
+
+  test('neither the script\'s folder nor DATA.dir holds the marker: one alert, nothing built', () => {
+    const { out } = make('hard-cut')
+    const log = runMock(out.jsx, { fileName: '/private/app/run/abc123.jsx', markerIn: [] })
+    assert.deepEqual(log.alerts, ["Montaj: this script's package folder is missing; open it from the package folder."])
+    assert.equal(log.calls.newProject, 0)
+    assert.equal(log.calls.beginUndoGroup, 0)
+    assert.equal(log.saved, null)
+    assert.equal(log.opened, null)
+  })
+
+  test('DATA.dir keeps a %XX and non-ASCII in the package name, and stays ASCII in the script', () => {
+    const pkg = '/out/caf\u00e9 100%25 (After Effects)'
+    const { out } = make('hard-cut', undefined, pkg)
+    assert.match(out.jsx, /^[\x00-\x7e]*$/)
+    assert.equal(dataOf(out.jsx).dir, pkg)
+    const log = runMock(out.jsx, { fileName: '/private/app/run/abc123.jsx', markerIn: [pkg] })
+    assert.ok(log.imports.length > 0 && log.imports.every((p) => p.startsWith(`${pkg}/media/`)), log.imports.join(' '))
+    assert.equal(log.saved, `${pkg}/Edit (After Effects).aep`)
+  })
+
+  test('a Windows package folder is read in the /c/... form File and Folder take', () => {
+    const tl = make('hard-cut').tl
+    const jsx = writeAeScript(tl, {}, { name: 'W', pkgDir: 'C:\\Users\\me\\W (After Effects)' }).jsx
+    assert.equal(dataOf(jsx).dir, 'C:\\Users\\me\\W (After Effects)')
+    const log = runMock(jsx, { fileName: '/private/app/run/abc123.jsx', markerIn: ['/c/Users/me/W (After Effects)'] })
+    assert.deepEqual(log.alerts.filter((a) => /package folder is missing/.test(a)), [])
+    assert.equal(log.saved, '/c/Users/me/W (After Effects)/W.aep')
   })
 
   test('a crop is a mask measured from the layer\'s top left', () => {

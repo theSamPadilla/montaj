@@ -174,9 +174,11 @@ test('--editor ae: a .jsx beside relative media, an .aep path in the result, tex
   assert.equal(res.aep, join(res.dir, 'a.aep'))
   assert.equal(res.openSha256, sha256Of(res.open), 'the hash is of the .jsx')
   const jsx = readFileSync(res.open, 'utf8')
-  assert.ok(jsx.includes('"path": "media/'), 'media is relative to the script')
-  assert.ok(!jsx.includes(res.dir), 'the package folder path is not baked in')
+  assert.ok(jsx.includes('"path": "media/'), 'media is relative to the package')
+  const data = JSON.parse(jsx.match(/var DATA = ([\s\S]*?);\nvar HERE/)[1])
+  assert.equal(data.dir, res.dir, 'the package folder is written in, for a copy run from elsewhere')
   assert.ok(readdirSync(res.dir).includes('.montaj-editor-export'))
+  assert.ok(jsx.includes('".montaj-editor-export"'), 'the script looks for the marker the package holds')
 })
 
 test('--out: the package goes in the folder asked for, which is created if it is new', { timeout: 300_000 }, (t) => {
