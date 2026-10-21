@@ -33,7 +33,7 @@ import { dirname, join, resolve, relative, basename, sep, isAbsolute } from 'nod
 import { isMain as isMainModule } from './is-main.js'
 import { buildNleTimeline } from './nle/timeline.js'
 import { probeSources } from './nle/probe.js'
-import { renderNleGraphics } from './nle/graphics.js'
+import { renderNleGraphics, removeNleScratch } from './nle/graphics.js'
 import { captionsToSrt } from './nle/srt.js'
 import { writeXmeml } from './nle/xmeml.js'
 import { writeAeScript } from './nle/aejsx.js'
@@ -57,6 +57,13 @@ export const EDITORS = {
 }
 /** What this build writes. All four write. */
 export const AVAILABLE_EDITORS = ['premiere', 'resolve', 'fcp', 'ae']
+
+/** How many times the package is moved into place before the export gives up. */
+export const RENAME_TRIES = 50
+/** Windows: a folder still held open (an indexer, an antivirus scan) refuses a rename for a moment. */
+const WIN_BUSY = new Set(['EPERM', 'EBUSY', 'EACCES'])
+
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 
 /**
  * @param {{
@@ -98,8 +105,12 @@ export async function exportForEditor({ projectPath, name, out, editor = 'premie
   const tmpDir = mkdtempSync(join(base, `.${packageName}.tmp-`))
   // mkdtemp makes it owner-only; the package should have the folder's usual mode.
   chmodSync(tmpDir, 0o777 & ~process.umask())
-  // Killed mid-run, the hidden folder must not stay behind.
-  const cleanup = () => rmSync(tmpDir, { recursive: true, force: true })
+  // Killed mid-run, the hidden folder (and any movie's scratch) must not stay behind. Cleanup never throws, so it
+  // cannot hide the error that brought it on.
+  const cleanup = () => {
+    try { rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+    try { removeNleScratch() } catch {}
+  }
   process.on('exit', cleanup)
   try {
     // The package's own folder: `<name> (<label>)`, then `... 2`, `... 3`; one that exists is never touched.
@@ -154,17 +165,14 @@ export async function exportForEditor({ projectPath, name, out, editor = 'premie
     writeFileSync(join(tmpDir, xmlName), built.xml, 'utf8')
     writeFileSync(join(tmpDir, PACKAGE_MARKER), `Montaj Export for editor (${label}).\n`, 'utf8')
 
-    for (;;) {
-      try {
-        renameSync(tmpDir, finalDir)
-        break
-      } catch (e) {
-        if (e?.code !== 'ENOTEMPTY' && e?.code !== 'EEXIST') throw e
+    finalDir = renameIntoPlace(tmpDir, finalDir, {
+      repick: () => {
         finalDir = pickDir()
         built = build()
         writeFileSync(join(tmpDir, xmlName), built.xml, 'utf8')
-      }
-    }
+        return finalDir
+      },
+    })
 
     return {
       dir: finalDir,
@@ -181,6 +189,30 @@ export async function exportForEditor({ projectPath, name, out, editor = 'premie
     throw e
   } finally {
     process.off('exit', cleanup)
+  }
+}
+
+/**
+ * Rename `from` to `to`; when another export took `to` meanwhile, `repick()` names the next free folder (and rewrites
+ * what names it). On Windows a folder that is busy for a moment is retried after 100 ms. At most `tries` attempts;
+ * the last error is thrown after that. Returns where the folder went.
+ */
+export function renameIntoPlace(from, to, { repick, tries = RENAME_TRIES, platform = process.platform, rename = renameSync, wait = sleepSync, exists = existsSync }) {
+  let dest = to
+  for (let attempt = 1; ; attempt++) {
+    try {
+      rename(from, dest)
+      return dest
+    } catch (e) {
+      if (attempt >= tries) throw e
+      const code = e?.code
+      if (code === 'ENOTEMPTY' || code === 'EEXIST') dest = repick()
+      else if (platform === 'win32' && WIN_BUSY.has(code)) {
+        // Windows says EPERM for a folder that is already there, too.
+        if (exists(dest)) dest = repick()
+        else wait(100)
+      } else throw e
+    }
   }
 }
 
@@ -277,6 +309,14 @@ if (isMain) {
   }
   // A closed stderr (the parent went away) ends the run; the exit hook removes the scratch folder.
   process.stderr.on('error', () => process.exit(1))
+  // So does the parent going away while stderr is quiet (the step killed during a long movie): an orphan is
+  // re-parented (its ppid changes), and on Windows, which does not re-parent, the parent is simply gone.
+  const parent = process.ppid
+  const parentGone = () => {
+    if (process.ppid !== parent) return true
+    try { process.kill(parent, 0); return false } catch (e) { return e?.code === 'ESRCH' }
+  }
+  setInterval(() => { if (parentGone()) process.exit(1) }, 2000).unref()
   // A signal's default is to die without running exit hooks; exit instead.
   for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => process.exit(128 + (sig === 'SIGINT' ? 2 : 15)))
   try {

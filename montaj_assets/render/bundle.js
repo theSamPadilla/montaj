@@ -77,6 +77,7 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
   const id      = randomBytes(8).toString('hex')
   const workDir = join(tmpdir(), `montaj-bundle-${id}`)
   mkdirSync(workDir, { recursive: true })
+  liveBundles.add(workDir)
   // What this overlay may read, at bundle time (the esbuild guard below) and at
   // run time (the page guard its caller installs): see overlayReadBoundary.
   const boundary = overlayReadBoundary({ projectDir, workDir, fontsDir: fontsBaseDir, props, files: [componentPath] })
@@ -143,6 +144,18 @@ export async function bundleComponent({ componentPath, props, fps, durationFrame
 /** Remove the temp directory for a bundle. Call after the WebM segment is encoded. */
 export function cleanupBundle(workDir) {
   rmSync(workDir, { recursive: true, force: true })
+  liveBundles.delete(workDir)
+}
+
+/** Every bundle's temp directory not yet cleaned up, from the moment it is made (bundling takes a while). */
+const liveBundles = new Set()
+
+/** Remove every bundle directory this process still holds: for an exit hook (export-editor.js), so it never throws. */
+export function removeLiveBundles() {
+  for (const dir of liveBundles) {
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
+  liveBundles.clear()
 }
 
 // ---------------------------------------------------------------------------

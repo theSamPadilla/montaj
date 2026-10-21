@@ -59,6 +59,9 @@
  *
  * Scratch (bundles, frame PNGs, capture chunks) goes to the OS temp dir, never
  * the project, and each movie's is removed as soon as the movie is written.
+ * While a movie is in progress its scratch folder is in a module-level set
+ * (and its bundle in bundle.js's), so a process that exits mid-movie removes
+ * them too (`removeNleScratch`, which export-editor.js's exit hook calls).
  */
 import { mkdirSync, mkdtempSync, rmSync, existsSync } from 'fs'
 import { join, resolve, dirname } from 'path'
@@ -74,7 +77,7 @@ import {
 } from '../render.js'
 import { overlayDescriptor } from '../slice-run.js'
 import { renderAllSegments } from '../renderer.js'
-import { cleanupBundle } from '../bundle.js'
+import { cleanupBundle, removeLiveBundles } from '../bundle.js'
 import { cleanFileName } from './file-name.js'
 import { prefetchPropsUrls } from '../page-guard.js'
 import { namedPropsUrls } from '../overlay-build.js'
@@ -83,6 +86,18 @@ import { FFMPEG } from '../ffmpeg-bin.js'
 import { externalizeFilterGraph } from '../filter-script.js'
 import { isHdr } from '../color-space.js'
 import { trackItems } from '../project-tracks.js'
+
+/** The scratch folders of the movies in progress. */
+const liveScratch = new Set()
+
+/** Remove every scratch folder and bundle still in use: for an exit hook, so it never throws. */
+export function removeNleScratch() {
+  for (const dir of liveScratch) {
+    try { rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
+  liveScratch.clear()
+  try { removeLiveBundles() } catch {}
+}
 
 /** Where a movie's composite and encode may run before it is called stuck. */
 const FFMPEG_TIMEOUT_MS = 600_000
@@ -249,6 +264,7 @@ async function renderMovie(job, { fps, width, height, designW, designH, projectD
   }
 
   const scratch = mkdtempSync(join(tmpdir(), 'montaj-nle-graphics-'))
+  liveScratch.add(scratch)
   let bundleDir = null
   try {
     // The page is the render's, built for the layer's FULL length; only the
@@ -277,6 +293,7 @@ async function renderMovie(job, { fps, width, height, designW, designH, projectD
   } finally {
     if (bundleDir) cleanupBundle(bundleDir)
     rmSync(scratch, { recursive: true, force: true })
+    liveScratch.delete(scratch)
   }
 }
 

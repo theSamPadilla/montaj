@@ -325,3 +325,48 @@ test('SIGTERM mid-run leaves no hidden temp folder', { timeout: 120_000 }, async
   await exited
   assert.deepEqual(readdirSync(d), [], 'no temp folder and no package')
 })
+
+test('SIGTERM mid-movie leaves no movie scratch in the temp dir', { timeout: 120_000 }, async (t) => {
+  if (skip || process.platform === 'win32') { t.skip('needs ffmpeg and POSIX signals'); return }
+  const d = join(dir, 'sigterm-movie')
+  const tmp = join(dir, 'sigterm-movie-tmp')
+  mkdirSync(d)
+  mkdirSync(tmp)
+  const child = spawn(process.execPath, [CLI, '--project', projectPath, '--name', 'k', '--out', d], {
+    stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, TMPDIR: tmp },
+  })
+  const exited = new Promise((res) => child.on('exit', (code, signal) => res({ code, signal })))
+  const scratch = () => readdirSync(tmp).filter((e) => e.startsWith('montaj-nle-graphics-') || e.startsWith('montaj-bundle-'))
+  const deadline = Date.now() + 60_000
+  while (!scratch().some((e) => e.startsWith('montaj-nle-graphics-')) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
+  assert.ok(scratch().length, 'a movie started its scratch')
+  child.kill('SIGTERM')
+  await exited
+  assert.deepEqual(scratch(), [], 'no movie scratch left')
+  assert.deepEqual(readdirSync(d), [], 'no temp folder and no package')
+})
+
+test('an export whose parent is killed stops by itself and leaves nothing behind', { timeout: 120_000 }, async (t) => {
+  if (skip || process.platform === 'win32') { t.skip('needs ffmpeg and POSIX signals'); return }
+  const d = join(dir, 'orphan')
+  mkdirSync(d)
+  // The parent gives the export no pipes (a closed pipe would end it another way), says its pid, and waits.
+  const args = [CLI, '--project', projectPath, '--name', 'o', '--out', d]
+  const parentJs = `const c = require('node:child_process').spawn(process.execPath, ${JSON.stringify(args)}, { stdio: 'ignore' });`
+    + ' console.log(c.pid); setInterval(() => {}, 1000)'
+  const parent = spawn(process.execPath, ['-e', parentJs], { stdio: ['ignore', 'pipe', 'inherit'] })
+  const pid = Number(await new Promise((res) => parent.stdout.once('data', (b) => res(String(b).trim()))))
+  const alive = () => { try { process.kill(pid, 0); return true } catch { return false } }
+  try {
+    const started = Date.now() + 30_000
+    while (!readdirSync(d).some((e) => e.includes('.tmp-')) && Date.now() < started) await new Promise((r) => setTimeout(r, 10))
+    assert.ok(readdirSync(d).length, 'the export started')
+    parent.kill('SIGKILL')
+    const deadline = Date.now() + 15_000
+    while (alive() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100))
+    assert.ok(!alive(), 'the orphaned export exited')
+    assert.deepEqual(readdirSync(d), [], 'no temp folder and no package')
+  } finally {
+    if (alive()) process.kill(pid, 'SIGKILL')
+  }
+})
