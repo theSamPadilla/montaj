@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
+from lib.fs_safe import open_write_no_follow
 from serve.common import (
     resolve_workspace, find_project_dir, _is_under, _allowed_file_roots,
     not_found, bad_request, forbidden, lands_on_project_file,
@@ -156,9 +157,9 @@ async def write_file(request: Request):
     resolved.parent.mkdir(parents=True, exist_ok=True)
     encoded = content.encode("utf-8")
     try:
-        fd = os.open(resolved, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+        fd = open_write_no_follow(str(resolved))
     except OSError:
-        # ELOOP (a symlink sits at the target) or any other open failure: refuse rather than follow it.
+        # ELOOP (a symlink or reparse point sits at the target) or any other open failure: refuse, never follow it.
         raise forbidden("forbidden", "Path is outside the workspace root")
     with os.fdopen(fd, "wb") as f:
         f.write(encoded)

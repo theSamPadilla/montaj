@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, fps_from_rate, modal_dims
 from lib.common import SAFE_NAME, fail, ffprobe_bin, progress
 from lib.fs_remove import rmtree_force
+from lib.fs_safe import open_write_no_follow
 from lib.remote_io import fetch_to_disk, parse_allowed_hosts
 from lib.color_provenance import ProbeError, proxy_source_for
 from lib.normalize import normalize, normalized_output_path, is_normalized, probe_video
@@ -96,12 +97,12 @@ def _timed(phase: str, fn):
 def _write_project_json(project_path: str, project: dict) -> None:
     t0 = time.perf_counter()
     try:
-        # O_NOFOLLOW (H4): never write THROUGH a symlink sitting at project.json. The project dir is created
-        # fresh, but a staged clip/asset must not be able to redirect this write outside it. O_TRUNC, not
-        # O_EXCL: a regular file left there is overwritten, a symlink is refused (ELOOP).
-        fd = os.open(project_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
-        with os.fdopen(fd, "w") as f:
-            json.dump(project, f, indent=2)
+        # H4: never write THROUGH a symlink sitting at project.json. The project dir is created fresh, but a
+        # staged clip/asset must not be able to redirect this write outside it. open_write_no_follow refuses a
+        # link (ELOOP) on every OS and overwrites a regular file; the bytes are identical on macOS and Windows.
+        fd = open_write_no_follow(project_path)
+        with os.fdopen(fd, "wb") as f:
+            f.write(json.dumps(project, indent=2).encode("utf-8"))
     finally:
         _add_phase("write", t0)
 
