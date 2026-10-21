@@ -244,12 +244,19 @@ function packageFolder() {
   return holds(made) ? made : null;
 }
 function lin2db(v) { return v <= 0.00001 ? -96 : 20 * Math.log(v) / Math.LN10; }
+// A folder as one comparable string, however After Effects writes it: through Folder(), no trailing separator,
+// and on Windows either separator and any case.
+function folderKey(folder) {
+  var s = new Folder(folder.absoluteURI).fsName.replace(/[\\\\\\/]+$/, "");
+  if (/^win/i.test(String($.os))) s = s.replace(/\\//g, "\\\\").toLowerCase();
+  return s;
+}
 
 if (parseFloat(app.version) < 14) { alert("This script needs After Effects 2017 or newer."); return; }
 if (!HERE) { alert("Montaj: this script's package folder is missing; open it from the package folder."); return; }
 // The project is saved only directly in the package folder, under one file name.
 var target = fileAt(DATA.aep);
-if (/[\\\\\\/]/.test(DATA.aep) || target.parent.fsName !== HERE.fsName) {
+if (/[\\\\\\/]/.test(DATA.aep) || folderKey(target.parent) !== folderKey(HERE)) {
   alert("Montaj: this script would save its project outside its package folder, so nothing was built. Export again.");
   return;
 }

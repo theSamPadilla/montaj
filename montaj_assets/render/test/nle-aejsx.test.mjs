@@ -62,10 +62,13 @@ const encodeUri = (p) => p.split('/').map((x) => encodeURIComponent(x)).join('/'
  *   fileName          what $.fileName is
  *   markerIn          folders that hold the package marker (default: the package)
  *   notFootage        endings ImportOptions.canImportAs(FOOTAGE) says no to
+ *   aepParent         how the .aep File writes its parent folder (another form of the same folder, or another one)
+ *   os                what $.os says
  */
 function runMock(jsx, {
   saveThrows = false, missing = [], existing = [], openResult = {}, newProjectNull = false, importThrows = [],
   addCompThrows = false, noAudio = false, fileName = `${PKG}/Edit (After Effects).jsx`, markerIn = [PKG], notFootage = [],
+  aepParent = null, os = 'Macintosh OS 14.5.0',
 } = {}) {
   const log = {
     comps: [], layers: [], imports: [], importAs: [], items: [], alerts: [], saved: null, opened: null, text: [], folders: [],
@@ -94,7 +97,8 @@ function runMock(jsx, {
     const fs = decodeUri(path)
     this.fsName = fs
     this.absoluteURI = encodeUri(fs)
-    this.parent = new Folder(encodeUri(fs.replace(/\/[^/]*$/, '')))
+    const dir = fs.replace(/\/[^/]*$/, '')
+    this.parent = new Folder(encodeUri(aepParent && fs.endsWith('.aep') ? aepParent(dir) : dir))
   }
   File.encode = (s) => encodeURIComponent(s)
   Object.defineProperty(File.prototype, 'exists', {
@@ -161,7 +165,7 @@ function runMock(jsx, {
   }
   const count = (n, fn) => (...a) => { log.calls[n]++; return fn?.(...a) }
   const ctx = {
-    $: { fileName },
+    $: { fileName, os },
     app: {
       version: '24.0x1',
       newProject: count('newProject', () => (newProjectNull ? null : proj)),
@@ -650,6 +654,33 @@ describe('aejsx: nothing in the data can become code or move the save', () => {
         const log = runMock(jsx, { fileName, markerIn: [pkg] })
         assert.equal(log.saved, want, JSON.stringify(name))
       }
+    }
+  })
+
+  test('the save check compares folders however After Effects writes them', () => {
+    const { jsx } = write('ok', PKG)
+    const passes = [
+      ['a trailing slash', { aepParent: (d) => `${d}/` }],
+      ['Windows: another case', { os: 'Windows/64 10.0', aepParent: (d) => d.toUpperCase() }],
+      ['Windows: backslashes and a trailing one', { os: 'Windows/64 10.0', aepParent: (d) => `${d.replace(/\//g, '\\')}\\` }],
+    ]
+    for (const [what, opts] of passes) {
+      const log = runMock(jsx, { markerIn: [PKG], ...opts })
+      assert.deepEqual(log.alerts, [], what)
+      assert.ok(log.saved, what)
+    }
+    const refuses = [
+      ['another folder', { aepParent: () => '/elsewhere' }],
+      ['a folder inside the package', { aepParent: (d) => `${d}/sub` }],
+      ['the parent folder', { aepParent: (d) => d.replace(/\/[^/]*$/, '') }],
+      ['macOS: another case is another folder', { aepParent: (d) => d.toUpperCase() }],
+      ['Windows: another folder', { os: 'Windows/64 10.0', aepParent: () => 'C:\\elsewhere' }],
+    ]
+    for (const [what, opts] of refuses) {
+      const log = runMock(jsx, { markerIn: [PKG], ...opts })
+      assert.equal(log.saved, null, what)
+      assert.equal(log.calls.newProject, 0, what)
+      assert.match(log.alerts[0] ?? '', /outside its package folder/, what)
     }
   })
 
