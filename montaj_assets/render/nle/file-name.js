@@ -7,12 +7,14 @@
  */
 
 /**
- * A safe file name stem for a clip id: the id itself when it already is one,
- * with any path or reserved character replaced.
+ * A safe file name stem for a clip id (and the editor export's package name):
+ * the id itself when it already is one, with any path separator, reserved or
+ * control character (C0, DEL, C1) replaced, and `.` or `..` made `_`, so the
+ * name can never step out of the folder it is joined to.
  *
  * @param {unknown} id
  * @returns {string}
  */
 export function cleanFileName(id) {
-  return String(id).replace(/[\/\\:*?"<>|\x00-\x1f]/g, '_').replace(/^\.+$/, '_') || 'graphic'
+  return String(id).replace(/[\/\\:*?"<>|\x00-\x1f\x7f-\x9f]/g, '_').replace(/^\.+$/, '_') || 'graphic'
 }

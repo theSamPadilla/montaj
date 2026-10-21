@@ -379,3 +379,20 @@ test('an export whose parent is killed stops by itself and leaves nothing behind
     if (alive()) process.kill(pid, 'SIGKILL')
   }
 })
+
+test('a --name with a separator, . or .., or a control character still lands directly in --out', { timeout: 300_000 }, (t) => {
+  if (skip) { t.skip('ffmpeg/ffprobe not available'); return }
+  const proj = plainProject('names')
+  const box = join(dir, 'names-box')
+  const out = join(box, 'out')
+  mkdirSync(out, { recursive: true })
+  for (const name of ['../x', 'a/b', 'a\\b', '..', '.', 'c\x01d']) {
+    const r = runCli(['--project', proj.path, '--name', name, '--out', out])
+    assert.equal(r.status, 0, `${JSON.stringify(name)}: ${r.stderr}`)
+    const res = JSON.parse(r.stdout)
+    assert.equal(dirname(res.dir), out, `${JSON.stringify(name)} lands directly in --out`)
+    assert.equal(dirname(res.open), res.dir)
+    assert.ok(!/[\/\\\x00-\x1f]/.test(res.dir.slice(out.length + 1)), JSON.stringify(res.dir))
+  }
+  assert.deepEqual(readdirSync(box), ['out'], 'nothing beside --out')
+})

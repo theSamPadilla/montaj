@@ -1,8 +1,13 @@
 // render/test/export-editor.test.mjs
-/** export-editor.js without ffmpeg or a browser: moving the package into place (`renameIntoPlace`). */
+/** export-editor.js without ffmpeg or a browser: the package's name, moving it into place, and where it lands. */
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { renameIntoPlace, RENAME_TRIES } from '../export-editor.js'
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { renameIntoPlace, RENAME_TRIES, checkInside } from '../export-editor.js'
+import { cleanFileName } from '../nle/file-name.js'
+import { ExportError } from '../nle/export-error.js'
 
 const fsError = (code) => Object.assign(new Error(code), { code })
 
@@ -81,5 +86,51 @@ describe('renameIntoPlace', () => {
     renameIntoPlace('/t', '/a', { repick: () => '/b', rename, platform: 'win32', exists: () => false })
     const ms = Date.now() - t0
     assert.ok(ms >= 90 && ms < 1000, `${ms} ms`)
+  })
+})
+
+describe('the package name cannot leave --out', () => {
+  test('separators, . and .., and control characters are replaced', () => {
+    const cases = {
+      '../x': '.._x', 'a/b': 'a_b', 'a\\b': 'a_b', '..': '_', '.': '_', '...': '_',
+      'a\x00b': 'a_b', 'a\x01b': 'a_b', 'tab\there': 'tab_here', 'a\x7fb': 'a_b', 'a\x85b': 'a_b', 'C:\\x': 'C__x',
+    }
+    for (const [name, want] of Object.entries(cases)) {
+      const clean = cleanFileName(name)
+      assert.equal(clean, want, JSON.stringify(name))
+      assert.ok(!/[\/\\\x00-\x1f\x7f-\x9f]/.test(clean) && clean !== '.' && clean !== '..', JSON.stringify(name))
+    }
+    assert.equal(cleanFileName('My Cut'), 'My Cut')
+    assert.equal(cleanFileName('caf\u00e9 \u{1F600}'), 'caf\u00e9 \u{1F600}')
+  })
+})
+
+describe('checkInside', () => {
+  const scratch = () => realpathSync(mkdtempSync(join(tmpdir(), 'montaj-check-inside-')))
+
+  test('a package directly in out, with its file directly in it, passes', () => {
+    const d = scratch()
+    try {
+      mkdirSync(join(d, 'out', 'p'), { recursive: true })
+      writeFileSync(join(d, 'out', 'p', 'p.xml'), 'x')
+      assert.doesNotThrow(() => checkInside(join(d, 'out'), join(d, 'out', 'p'), join(d, 'out', 'p', 'p.xml')))
+    } finally { rmSync(d, { recursive: true, force: true }) }
+  })
+
+  test('a package deeper in, or a link that leads elsewhere, is invalid_args', () => {
+    const d = scratch()
+    const isInvalid = (e) => e instanceof ExportError && e.code === 'invalid_args'
+    try {
+      mkdirSync(join(d, 'out', 'a', 'p'), { recursive: true })
+      writeFileSync(join(d, 'out', 'a', 'p', 'p.xml'), 'x')
+      assert.throws(() => checkInside(join(d, 'out'), join(d, 'out', 'a', 'p'), join(d, 'out', 'a', 'p', 'p.xml')), isInvalid)
+      mkdirSync(join(d, 'elsewhere'))
+      writeFileSync(join(d, 'elsewhere', 'p.xml'), 'x')
+      symlinkSync(join(d, 'elsewhere'), join(d, 'out', 'linked'))
+      assert.throws(() => checkInside(join(d, 'out'), join(d, 'out', 'linked'), join(d, 'out', 'linked', 'p.xml')), isInvalid)
+      mkdirSync(join(d, 'out', 'q'))
+      symlinkSync(join(d, 'elsewhere', 'p.xml'), join(d, 'out', 'q', 'q.xml'))
+      assert.throws(() => checkInside(join(d, 'out'), join(d, 'out', 'q'), join(d, 'out', 'q', 'q.xml')), isInvalid)
+    } finally { rmSync(d, { recursive: true, force: true }) }
   })
 })

@@ -32,7 +32,7 @@
  * The package is built in a hidden sibling folder and renamed into place at the end, so a failed export leaves no
  * half package.
  */
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, existsSync, readdirSync, statSync, chmodSync, copyFileSync, constants as fsConstants } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, existsSync, readdirSync, statSync, chmodSync, copyFileSync, realpathSync, constants as fsConstants } from 'node:fs'
 import { dirname, join, resolve, relative, basename, sep, isAbsolute } from 'node:path'
 import { createHash } from 'node:crypto'
 import { isMain as isMainModule } from './is-main.js'
@@ -95,6 +95,7 @@ export async function exportForEditor({ projectPath, name, out, editor = 'premie
     throw new ExportError(e?.code === 'ENOENT' ? 'project_not_found' : 'invalid_project', `Could not read ${absProject}: ${e.message}`)
   }
 
+  // No separator, `.`/`..` or control character (cleanFileName), so the package cannot land outside `--out`.
   const packageName = cleanFileName(String(name ?? '').trim() || project.name || project.id || basename(projectDir))
   const base = resolve(out || join(projectDir, 'export'))
   const inside = relative(base, projectDir)
@@ -179,8 +180,10 @@ export async function exportForEditor({ projectPath, name, out, editor = 'premie
       },
     })
 
-    // The hash of the file to open, read back from its final place.
     const openPath = join(finalDir, xmlName)
+    checkInside(base, finalDir, openPath)
+
+    // The hash of the file to open, read back from its final place.
     const openSha256 = createHash('sha256').update(readFileSync(openPath)).digest('hex')
 
     return {
@@ -200,6 +203,18 @@ export async function exportForEditor({ projectPath, name, out, editor = 'premie
   } finally {
     process.off('exit', cleanup)
   }
+}
+
+/**
+ * The package is a folder directly in `--out`, and the file to open is directly in the package, by their real paths
+ * (so no link takes either elsewhere). Throws `invalid_args` otherwise.
+ */
+export function checkInside(base, dir, open) {
+  const realBase = realpathSync(base)
+  const realDir = realpathSync(dir)
+  const realOpen = realpathSync(open)
+  if (dirname(realDir) !== realBase) throw new ExportError('invalid_args', `the package ${dir} is not directly in ${base}`)
+  if (dirname(realOpen) !== realDir) throw new ExportError('invalid_args', `${open} is not directly in the package ${dir}`)
 }
 
 /**
