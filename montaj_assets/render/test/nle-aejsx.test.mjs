@@ -61,13 +61,14 @@ const encodeUri = (p) => p.split('/').map((x) => encodeURIComponent(x)).join('/'
  *   noAudio           every layer has no audio (setting audioEnabled then throws, as After Effects does)
  *   fileName          what $.fileName is
  *   markerIn          folders that hold the package marker (default: the package)
+ *   notFootage        endings ImportOptions.canImportAs(FOOTAGE) says no to
  */
 function runMock(jsx, {
   saveThrows = false, missing = [], existing = [], openResult = {}, newProjectNull = false, importThrows = [],
-  addCompThrows = false, noAudio = false, fileName = `${PKG}/Edit (After Effects).jsx`, markerIn = [PKG],
+  addCompThrows = false, noAudio = false, fileName = `${PKG}/Edit (After Effects).jsx`, markerIn = [PKG], notFootage = [],
 } = {}) {
   const log = {
-    comps: [], layers: [], imports: [], items: [], alerts: [], saved: null, opened: null, text: [], folders: [],
+    comps: [], layers: [], imports: [], importAs: [], items: [], alerts: [], saved: null, opened: null, text: [], folders: [],
     calls: { beginUndoGroup: 0, endUndoGroup: 0, beginSuppressDialogs: 0, endSuppressDialogs: 0, newProject: 0 },
   }
   const prop = (o = {}) => {
@@ -76,7 +77,10 @@ function runMock(jsx, {
   }
   class MarkerValue { constructor(c) { this.comment = c } }
   class Shape {}
-  class ImportOptions { constructor(f) { this.file = f } }
+  class ImportOptions {
+    constructor(f) { this.file = f; this.importAs = null }
+    canImportAs(t) { return t === 'FOOTAGE' && !notFootage.some((m) => this.file.fsName.endsWith(m)) }
+  }
   // ExtendScript's File() and Folder() work with or without `new`, and decode %XX.
   function Folder(path) {
     if (!(this instanceof Folder)) return new Folder(path)
@@ -148,6 +152,7 @@ function runMock(jsx, {
       const path = opt.file.fsName
       if (importThrows.some((m) => path.endsWith(m))) throw new Error('unsupported file')
       log.imports.push(path)
+      log.importAs.push(opt.importAs)
       const item = { path, still: /\.(png|jpe?g)$/i.test(path), mainSource: { alphaMode: null } }
       log.items.push(item)
       return item
@@ -165,6 +170,7 @@ function runMock(jsx, {
       beginSuppressDialogs: count('beginSuppressDialogs'), endSuppressDialogs: count('endSuppressDialogs'),
     },
     File, Folder, ImportOptions, MarkerValue, Shape,
+    ImportAsType: { FOOTAGE: 'FOOTAGE', PROJECT: 'PROJECT', COMP: 'COMP', COMP_CROPPED_LAYERS: 'COMP_CROPPED_LAYERS' },
     AlphaMode: { STRAIGHT: 'STRAIGHT', PREMULTIPLIED: 'PREMULTIPLIED', IGNORE: 'IGNORE' },
     ParagraphJustification: { CENTER_JUSTIFY: 1 },
     alert: (m) => log.alerts.push(m),
@@ -211,6 +217,8 @@ describe('aejsx: the script', () => {
       assert.equal(log.calls.beginUndoGroup, 1)
       assertBalanced(log)
       assert.match(out.jsx, /^[\x00-\x7e]*$/, 'the script is ASCII')
+      assert.ok(log.imports.length > 0)
+      assert.ok(log.importAs.every((t) => t === 'FOOTAGE'), 'every import is forced to footage')
     })
   }
 
@@ -376,6 +384,34 @@ describe('aejsx: the script', () => {
     assert.ok(layerOf(log, 'b') && layerOf(log, 'c') && layerOf(log, 'd'))
     assertBalanced(log)
     assert.ok(log.saved)
+  })
+
+  test('a file After Effects cannot import as footage is not imported, and is named at the end', () => {
+    const { out } = make('hard-cut')
+    const log = runMock(out.jsx, { notFootage: ['/b.mp4'] })
+    assert.ok(!log.imports.some((p) => p.endsWith('/b.mp4')))
+    assert.ok(!layerOf(log, 'b'))
+    assert.ok(layerOf(log, 'a'))
+    assert.equal(log.alerts.length, 1)
+    assert.match(log.alerts[0], /Could not import: media\/b\.mp4\./)
+    assertBalanced(log)
+  })
+
+  test('a project, script or preset file as a source is left out, with one warning each', () => {
+    const exts = ['aep', 'AEPX', 'aet', 'prproj', 'jsx', 'JsxBin', 'jsxinc', 'ffx', 'mogrt']
+    const items = exts.map((e, i) => clip(`p${i}`, { src: `/abs/proj${i}.${e}`, start: i, end: i + 1 }))
+    items.push(clip('ok', { start: 10, end: 12 }), clip('again', { src: '/abs/proj0.aep', start: 12, end: 13 }))
+    const project = { ...oneTrack(items), audio: { tracks: [{ id: 'm', src: '/abs/score.PRPROJ', start: 0, end: 5 }, { id: 'w', src: '/abs/w.wav', start: 0, end: 5 }] } }
+    const { out } = make('project-files', project)
+    const data = dataOf(out.jsx)
+    assert.deepEqual(data.layers.map((l) => l.id), ['ok'])
+    assert.deepEqual(data.audio.map((a) => a.id), ['w'])
+    const warned = out.warnings.filter((w) => /is a project, script or preset file, not media/.test(w))
+    assert.equal(warned.length, exts.length + 1, 'one warning per file (proj0.aep twice is one)')
+    for (let i = 0; i < exts.length; i++) assert.ok(warned.some((w) => w.startsWith(`proj${i}.${exts[i]} `)), exts[i])
+    assert.ok(warned.some((w) => w.startsWith('score.PRPROJ ')))
+    const log = runMock(out.jsx)
+    assert.ok(log.imports.every((p) => !/\.(aepx?|aet|prproj|jsx(bin|inc)?|ffx|mogrt)$/i.test(p)), log.imports.join(' '))
   })
 
   test('a missing file shared by several clips is named once', () => {
