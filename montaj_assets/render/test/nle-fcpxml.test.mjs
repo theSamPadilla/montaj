@@ -54,6 +54,25 @@ describe('fcpxml', () => {
     assert.match(make('muted').out.xml, /<adjust-volume amount="-96dB"\/>/)
   })
 
+  test('a control character in a clip id or a file name is dropped, so the XML stays well-formed', () => {
+    const project = {
+      id: 'ctl', status: 'final', settings: { resolution: [1920, 1080], fps: 30 },
+      tracks: [{ id: 'trk-0', items: [
+        { id: 'a\u0001b\u001f"<&>', type: 'video', src: '/abs/bell\u0007.mp4', start: 0, end: 2, inPoint: 0, outPoint: 2, loop: true },
+      ] }],
+    }
+    const tl = buildNleTimeline(project, { projectDir: PROJECT_DIR })
+    const probes = Object.fromEntries(Object.keys(tl.sources).map((p) => [p, VIDEO]))
+    const { xml } = writeFcpxml(tl, probes, { name: 'Edit\u0002' })
+    assert.ok(!/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(xml), 'no control character left')
+    assert.match(xml, /name="ab&quot;&lt;&amp;&gt;"/)
+    assert.match(xml, /<event name="Edit">/)
+    if (spawnSyncOk()) {
+      const r = spawnSync(XMLLINT, ['--noout', '-'], { input: xml, encoding: 'utf8' })
+      assert.equal(r.status, 0, r.stderr)
+    }
+  })
+
   test('captions movie rides the top lane', () => {
     const { out } = make('captions')
     assert.match(out.xml, /name="Captions"/)

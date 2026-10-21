@@ -14,7 +14,7 @@
  * transparent movies, and a marker on a clip for what stays in Montaj. A crossfade is not a Final Cut transition (those
  * need the clips on the primary storyline); an editor can replace it.
  */
-import { markerLabel, motionOf, pathUrl } from './xmeml.js'
+import { markerLabel, motionOf, pathUrl, escapeAttr } from './xmeml.js'
 
 const FALLBACK_FRAMES = 150
 
@@ -26,7 +26,8 @@ function frameDurationOf(fps) {
   return [1, r]
 }
 
-const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+// Every attribute value: XML-forbidden characters (most control characters, a lone surrogate) dropped, then escaped.
+const esc = escapeAttr
 const num = (v) => { const r = Math.round(v * 1e5) / 1e5; return Object.is(r, -0) ? '0' : String(r) }
 const baseName = (p) => p.split(/[\\/]/).filter(Boolean).pop() ?? p
 const db = (v) => (v <= 0.00001 ? -96 : 20 * Math.log10(v))

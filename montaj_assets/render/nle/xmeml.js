@@ -1122,6 +1122,7 @@ function escapeText(s) {
   return stripForbidden(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-function escapeAttr(s) {
+/** An attribute value: XML-forbidden characters dropped, then `& < > " '` escaped. FCPXML's writer uses it too. */
+export function escapeAttr(s) {
   return escapeText(s).replace(/"/g, '&quot;').replace(/'/g, '&apos;')
 }
