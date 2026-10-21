@@ -425,3 +425,24 @@ test('openSha256 is the hash of the bytes written, never of a read-back, through
   assert.equal(res2.openSha256, createHash('sha256').update(again[1]).digest('hex'))
   assert.equal(res2.openSha256, sha256Of(res2.open))
 })
+
+test('--editor ae: a project or script file as a source is not copied into the package, with one warning', { timeout: 300_000 }, (t) => {
+  if (skip) { t.skip('ffmpeg/ffprobe not available'); return }
+  const proj = plainProject('not-media', (p) => {
+    p.tracks[0].items.push(
+      { id: 'proj', type: 'video', src: 'cut.aep ', start: 2, end: 3, inPoint: 0, outPoint: 1 },
+      { id: 'proj2', type: 'video', src: 'cut.aep ', start: 3, end: 4, inPoint: 0, outPoint: 1 },
+    )
+    return p
+  })
+  writeFileSync(join(proj.dir, 'cut.aep '), 'not media')
+  const out = join(dir, 'not-media-out')
+  const r = runCli(['--project', proj.path, '--name', 'n', '--editor', 'ae', '--out', out])
+  assert.equal(r.status, 0, r.stderr)
+  const res = JSON.parse(r.stdout)
+  assert.deepEqual(readdirSync(join(res.dir, 'media')), ['clip.mp4'])
+  assert.equal(res.warnings.filter((w) => /cut\.aep +is a project, script or preset file, not media/.test(w)).length, 1, res.warnings.join(' | '))
+  assert.ok(!res.leftOut.some((l) => l.clip.startsWith('proj')))
+  const data = JSON.parse(readFileSync(res.open, 'utf8').match(/var DATA = ([\s\S]*?);\nvar HERE/)[1])
+  assert.deepEqual(data.layers.map((l) => l.id), ['clip'])
+})

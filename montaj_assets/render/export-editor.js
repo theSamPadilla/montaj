@@ -43,7 +43,7 @@ import { captionsToSrt } from './nle/srt.js'
 import { writeXmeml } from './nle/xmeml.js'
 import { writeAeScript } from './nle/aejsx.js'
 import { writeFcpxml } from './nle/fcpxml.js'
-import { cleanFileName } from './nle/file-name.js'
+import { cleanFileName, isNotMedia, notMediaWarning } from './nle/file-name.js'
 import { ExportError } from './nle/export-error.js'
 import { resolveProjectSrc, resolveFilePath } from './project-paths.js'
 import { trackItems } from './project-tracks.js'
@@ -139,7 +139,8 @@ export async function exportForEditor({ projectPath, name, out, editor = 'premie
 
     // Footage and audio, copied beside the timeline so the package opens anywhere (App Store Resolve cannot read
     // ~/Montaj, only the folders it was handed).
-    const mediaCopies = copyMedia(sourcePaths, tmpDir, onProgress)
+    // After Effects leaves a project, script or preset file out of the composition, so it is not copied either.
+    const mediaCopies = copyMedia(sourcePaths, tmpDir, onProgress, { skip: EDITORS[editor].writer === 'jsx' ? isNotMedia : null })
 
     const rendered = await renderNleGraphics(project, timeline, { projectDir, outDir: tmpDir, onProgress })
 
@@ -246,15 +247,20 @@ export function renameIntoPlace(from, to, { repick, tries = RENAME_TRIES, platfo
 /**
  * Copy every media file the timeline names into `<tmpDir>/media/`, each under its own name (a second file of the same
  * name gets ` 2`, ...). A clone where the volume has them (APFS), a plain copy elsewhere. A file that is not there is
- * left linked where it was, with a warning. Returns `{ paths: {original: copy}, warnings }`.
+ * left linked where it was, with a warning, and one `skip` says no to is not copied (a warning too). Returns
+ * `{ paths: {original: copy}, warnings }`.
  */
-export function copyMedia(sourcePaths, tmpDir, onProgress) {
+export function copyMedia(sourcePaths, tmpDir, onProgress, { skip = null } = {}) {
   const paths = {}
   const warnings = []
   const used = new Set()
   const dir = join(tmpDir, 'media')
   let done = 0
   for (const src of sourcePaths) {
+    if (skip?.(src)) {
+      warnings.push(notMediaWarning(src))
+      continue
+    }
     let ok = false
     try { ok = statSync(src).isFile() } catch { ok = false }
     if (!ok) {

@@ -36,18 +36,12 @@
  * a name can read as a preprocessor directive (`#include`, `//@include`, ...). The `.aep` is saved only directly in
  * the package folder, under the package's cleaned name; the script refuses any other target.
  */
-import { relative, sep, extname, basename } from 'node:path'
+import { relative, sep } from 'node:path'
 import { motionOf, markerLabel } from './xmeml.js'
 import { ExportError } from './export-error.js'
-import { cleanFileName } from './file-name.js'
+import { cleanFileName, isNotMedia, notMediaWarning } from './file-name.js'
 
 const FALLBACK_DURATION = 5
-
-/**
- * Project, script and preset files: imported, After Effects would open them as a project (expressions and all) or
- * run them, so a source of one of these kinds is left out, with a warning.
- */
-const NOT_MEDIA = new Set(['.aep', '.aepx', '.aet', '.prproj', '.jsx', '.jsxbin', '.jsxinc', '.ffx', '.mogrt'])
 
 /** What `items.addComp` takes (After Effects Scripting Guide, ItemCollection.addComp). */
 const AE_COMP = { minSize: 4, maxSize: 30000, maxDuration: 10800, minFps: 1, maxFps: 99 }
@@ -79,12 +73,13 @@ export function writeAeScript(timeline, probes, options) {
     return label
   }
   const linkOf = (src) => rel(pkgDir, mediaPaths[src] ?? src)
+  // A project, script or preset file as a source is left out (file-name.js isNotMedia), with one warning per file.
   const skipped = new Set()
   const notMedia = (src) => {
-    if (!NOT_MEDIA.has(extname(String(src)).toLowerCase())) return false
+    if (!isNotMedia(src)) return false
     if (!skipped.has(src)) {
       skipped.add(src)
-      warnings.push(`${basename(String(src))} is a project, script or preset file, not media, so it is not in the composition`)
+      warnings.push(notMediaWarning(src))
     }
     return true
   }
@@ -93,6 +88,8 @@ export function writeAeScript(timeline, probes, options) {
   const transitions = []
   for (const track of timeline.videoTracks) {
     for (const clip of track.clips) {
+      // Before its marks, so a clip left out is not in leftOut either. (An overlay's src is its component: not media.)
+      if (clip.kind !== 'graphic' && (notMedia(clip.src) || notMedia(mediaPaths[clip.src] ?? clip.src))) continue
       const marks = []
       for (const key of [...clip.unsupported]) {
         if (key.startsWith('keyframes:') || key === 'motionBlur') continue
@@ -105,7 +102,6 @@ export function writeAeScript(timeline, probes, options) {
         layers.push({ ...base, kind: 'graphic', path: rel(pkgDir, movie), name: `Overlay ${clip.id}` })
         continue
       }
-      if (notMedia(clip.src) || notMedia(mediaPaths[clip.src] ?? clip.src)) continue
       const p = probes[clip.src]
       const media = { width: p?.width ?? timeline.width, height: p?.height ?? timeline.height }
       const motion = motionOf(clip, media, { width: timeline.width, height: timeline.height })

@@ -2,11 +2,11 @@
 /** export-editor.js without ffmpeg or a browser: the package's name, moving it into place, and where it lands. */
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { renameIntoPlace, RENAME_TRIES, checkInside } from '../export-editor.js'
-import { cleanFileName } from '../nle/file-name.js'
+import { renameIntoPlace, RENAME_TRIES, checkInside, copyMedia } from '../export-editor.js'
+import { cleanFileName, isNotMedia, notMediaWarning } from '../nle/file-name.js'
 import { ExportError } from '../nle/export-error.js'
 
 const fsError = (code) => Object.assign(new Error(code), { code })
@@ -131,6 +131,42 @@ describe('checkInside', () => {
       mkdirSync(join(d, 'out', 'q'))
       symlinkSync(join(d, 'elsewhere', 'p.xml'), join(d, 'out', 'q', 'q.xml'))
       assert.throws(() => checkInside(join(d, 'out'), join(d, 'out', 'q'), join(d, 'out', 'q', 'q.xml')), isInvalid)
+    } finally { rmSync(d, { recursive: true, force: true }) }
+  })
+})
+
+describe('project, script and preset files are not media', () => {
+  const TRICKY = ['x.aep.', 'x.aep..', 'x.aep ', '.jsx']
+
+  test('a trailing dot or space, a dotfile and any case still count', () => {
+    for (const n of [...TRICKY, 'x.AEP', 'x.aepx', 'x.aet', 'x.PrProj', 'x.jsx', 'x.jsxbin', 'x.jsxinc', 'x.ffx', 'x.mogrt', '/a/b/x.aep ', 'C:\\a\\x.prproj.']) {
+      assert.ok(isNotMedia(n), JSON.stringify(n))
+    }
+    for (const n of ['a.mp4', 'a.mp4.', 'x.aep.mp4', 'jsx', 'aep', 'a.wav ']) assert.ok(!isNotMedia(n), JSON.stringify(n))
+  })
+
+  test('cleanFileName drops the trailing dots and spaces, so the cleaned name reads the same', () => {
+    assert.deepEqual(TRICKY.map(cleanFileName), ['x.aep', 'x.aep', 'x.aep', '.jsx'])
+    for (const n of TRICKY) assert.ok(isNotMedia(cleanFileName(n)), JSON.stringify(n))
+    assert.equal(cleanFileName('..'), '_')
+    assert.equal(cleanFileName('My Cut.'), 'My Cut')
+  })
+
+  test('copyMedia copies none of them when told to skip them, with one warning each; others are copied', () => {
+    const d = realpathSync(mkdtempSync(join(tmpdir(), 'montaj-copy-media-')))
+    try {
+      const names = ['a.mp4', ...TRICKY, 'y.MOGRT']
+      for (const n of names) writeFileSync(join(d, n), n)
+      const srcs = names.map((n) => join(d, n))
+      const pkg = join(d, 'pkg')
+      mkdirSync(pkg)
+      const { paths, warnings } = copyMedia(srcs, pkg, null, { skip: isNotMedia })
+      assert.deepEqual(Object.keys(paths), [join(d, 'a.mp4')])
+      assert.deepEqual(readdirSync(join(pkg, 'media')), ['a.mp4'])
+      assert.deepEqual(warnings, srcs.slice(1).map(notMediaWarning))
+      const pkg2 = join(d, 'pkg2')
+      mkdirSync(pkg2)
+      assert.equal(Object.keys(copyMedia(srcs, pkg2, null).paths).length, names.length, 'without skip, as before')
     } finally { rmSync(d, { recursive: true, force: true }) }
   })
 })

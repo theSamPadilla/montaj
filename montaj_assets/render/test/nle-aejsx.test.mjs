@@ -418,6 +418,29 @@ describe('aejsx: the script', () => {
     assert.ok(log.imports.every((p) => !/\.(aepx?|aet|prproj|jsx(bin|inc)?|ffx|mogrt)$/i.test(p)), log.imports.join(' '))
   })
 
+  test('a trailing dot or space, or a dotfile, does not hide a project or script file', () => {
+    const tricky = ['x.aep.', 'x.aep..', 'x.aep ', '.jsx']
+    const project = oneTrack([...tricky.map((n, i) => clip(`t${i}`, { src: `/abs/${n}`, start: i, end: i + 1 })), clip('ok', { start: 5, end: 6 })])
+    const { out } = make('tricky', project)
+    assert.deepEqual(dataOf(out.jsx).layers.map((l) => l.id), ['ok'])
+    assert.equal(out.warnings.filter((w) => /not media/.test(w)).length, tricky.length)
+  })
+
+  test('a clip left out as not media is not in leftOut either', () => {
+    const project = oneTrack([clip('p', { src: '/abs/x.aep', loop: true, remove_bg: true }), clip('k', { start: 2, end: 4, loop: true })])
+    const { out } = make('skipped-left-out', project)
+    assert.deepEqual(out.leftOut.map((l) => l.clip), ['k'])
+    assert.deepEqual(dataOf(out.jsx).layers.map((l) => l.id), ['k'])
+  })
+
+  test('an overlay is never taken for a script file (its src is its .jsx component)', () => {
+    const { tl, out } = make('keyframes')
+    const graphicsIds = tl.videoTracks.flatMap((t) => t.clips).filter((c) => c.kind === 'graphic').map((c) => c.id)
+    assert.ok(graphicsIds.length > 0)
+    for (const id of graphicsIds) assert.ok(dataOf(out.jsx).layers.some((l) => l.id === id), id)
+    assert.deepEqual(out.warnings.filter((w) => /not media/.test(w)), [])
+  })
+
   test('a missing file shared by several clips is named once', () => {
     const { out } = make('shared', oneTrack([clip('a', { src: '/abs/same.mp4' }), clip('b', { src: '/abs/same.mp4', start: 2, end: 4 })]))
     const log = runMock(out.jsx, { missing: ['same.mp4'] })
