@@ -15,6 +15,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildNleTimeline } from '../nle/timeline.js'
 import { writeAeScript } from '../nle/aejsx.js'
+import { ExportError } from '../nle/export-error.js'
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'nle')
 const PROJECT_DIR = resolve('/proj')
@@ -41,9 +42,30 @@ function make(name, project = JSON.parse(readFileSync(join(FIXTURES, `${name}.js
   return { tl, out, project }
 }
 
-/** A recording stand-in for the After Effects object model. Returns what the script did. */
-function runMock(jsx, { saveThrows = false, missing = [] } = {}) {
-  const log = { comps: [], layers: [], imports: [], alerts: [], saved: null, text: [] }
+/** ExtendScript's File() decodes `%XX` runs on construction; a stray `%` stays. */
+const decodeUri = (s) => String(s).replace(/(%[0-9A-Fa-f]{2})+/g, (m) => { try { return decodeURIComponent(m) } catch { return m } })
+const encodeUri = (p) => p.split('/').map((x) => encodeURIComponent(x)).join('/')
+
+/**
+ * A recording stand-in for the After Effects object model. Returns what the script did.
+ *   saveThrows        proj.save throws
+ *   missing           file names (endings) that do not exist
+ *   existing          .aep endings that DO exist (by default none)
+ *   openResult        what app.open returns (default: a project)
+ *   newProjectNull    app.newProject returns null (the user cancelled its save prompt)
+ *   importThrows      endings proj.importFile refuses
+ *   addCompThrows     items.addComp throws
+ *   noAudio           every layer has no audio (setting audioEnabled then throws, as After Effects does)
+ *   fileName          what $.fileName is
+ */
+function runMock(jsx, {
+  saveThrows = false, missing = [], existing = [], openResult = {}, newProjectNull = false, importThrows = [],
+  addCompThrows = false, noAudio = false, fileName = `${PKG}/Edit (After Effects).jsx`,
+} = {}) {
+  const log = {
+    comps: [], layers: [], imports: [], items: [], alerts: [], saved: null, opened: null, text: [],
+    calls: { beginUndoGroup: 0, endUndoGroup: 0, beginSuppressDialogs: 0, endSuppressDialogs: 0, newProject: 0 },
+  }
   const prop = (o = {}) => {
     const p = { keys: [], value: null, setValue(v) { p.value = v }, setValueAtTime(t, v) { p.keys.push([t, v]) }, ...o }
     return p
@@ -51,25 +73,52 @@ function runMock(jsx, { saveThrows = false, missing = [] } = {}) {
   class MarkerValue { constructor(c) { this.comment = c } }
   class Shape {}
   class ImportOptions { constructor(f) { this.file = f } }
-  // ExtendScript's File() works with or without `new`.
+  // ExtendScript's File() works with or without `new`, and decodes %XX.
   function File(path) {
     if (!(this instanceof File)) return new File(path)
-    this.fsName = path
-    this.parent = { fsName: path.replace(/\/[^/]*$/, '') }
+    const fs = decodeUri(path)
+    this.fsName = fs
+    this.absoluteURI = encodeUri(fs)
+    const parent = fs.replace(/\/[^/]*$/, '')
+    this.parent = { fsName: parent, absoluteURI: encodeUri(parent) }
   }
-  Object.defineProperty(File.prototype, 'exists', { get() { return !missing.some((m) => this.fsName.endsWith(m)) } })
+  File.encode = (s) => encodeURIComponent(s)
+  Object.defineProperty(File.prototype, 'exists', {
+    get() {
+      if (this.fsName.endsWith('.aep')) return existing.some((m) => this.fsName.endsWith(m))
+      return !missing.some((m) => this.fsName.endsWith(m))
+    },
+  })
+  // A TextDocument: fill and stroke colours cannot be set while fill or stroke is off.
+  const textDoc = () => {
+    const d = { text: 'x', applyFill: false, applyStroke: false }
+    const guarded = (name, flag) => {
+      let v
+      Object.defineProperty(d, name, {
+        get: () => v,
+        set: (x) => { if (!d[flag]) throw new Error(`${name} set while ${flag} is false`); v = x },
+        enumerable: true,
+      })
+    }
+    guarded('fillColor', 'applyFill'); guarded('strokeColor', 'applyStroke'); guarded('strokeWidth', 'applyStroke')
+    return d
+  }
   const makeLayer = (src, isText) => {
     const props = {}
     const get = (n) => (props[n] ??= prop())
+    let audioEnabled = true
     const layer = {
-      source: src, name: '', stretch: 100, startTime: 0, inPoint: 0, outPoint: 1e9, enabled: true, audioEnabled: true, hasAudio: true,
-      markers: [],
+      source: src, name: '', stretch: 100, startTime: 0, inPoint: 0, outPoint: 1e9, enabled: true,
+      hasAudio: !noAudio && !isText && !!src && !src.still,
+      get audioEnabled() { return audioEnabled },
+      set audioEnabled(v) { if (!layer.hasAudio) throw new Error('no audio'); audioEnabled = v },
+      markers: [], masks: [],
       property(n) {
         if (n === 'Transform') return { property: get }
         if (n === 'Marker') return { setValueAtTime(t, v) { layer.markers.push([t, v.comment]) } }
-        if (n === 'Masks') return { addProperty() { return { property: () => prop() } } }
+        if (n === 'Masks') return { addProperty() { const m = prop(); layer.masks.push(m); return { property: () => m } } }
         if (n === 'Audio') return { property: get }
-        if (n === 'Source Text') return props['Source Text'] ??= prop({ value: { text: 'x' } })
+        if (n === 'Source Text') return props['Source Text'] ??= prop({ value: textDoc() })
         return get(n)
       },
       props, isText,
@@ -78,26 +127,56 @@ function runMock(jsx, { saveThrows = false, missing = [] } = {}) {
     return layer
   }
   const comp = {
-    layers: { add: (item) => makeLayer(item, false), addText: (t) => { const l = makeLayer(null, true); l.text = t; return l } },
+    layers: { add: (item) => makeLayer(item, false), addText: (t) => { const l = makeLayer(null, true); l.text = t; log.text.push(t); return l } },
     openInViewer() {},
   }
   const proj = {
-    items: { addComp(...a) { log.comps.push(a); return comp } },
-    importFile(opt) { log.imports.push(opt.file.fsName); return { path: opt.file.fsName } },
+    items: { addComp(...a) { if (addCompThrows) throw new Error('addComp refused'); log.comps.push(a); return comp } },
+    importFile(opt) {
+      const path = opt.file.fsName
+      if (importThrows.some((m) => path.endsWith(m))) throw new Error('unsupported file')
+      log.imports.push(path)
+      const item = { path, still: /\.(png|jpe?g)$/i.test(path), mainSource: { alphaMode: null } }
+      log.items.push(item)
+      return item
+    },
     save(f) { if (saveThrows) throw new Error('no'); log.saved = f.fsName },
   }
+  const count = (n, fn) => (...a) => { log.calls[n]++; return fn?.(...a) }
   const ctx = {
-    $: { fileName: `${PKG}/Edit (After Effects).jsx` },
-    app: { version: '24.0x1', newProject: () => proj, beginUndoGroup() {}, endUndoGroup() {} },
+    $: { fileName },
+    app: {
+      version: '24.0x1',
+      newProject: count('newProject', () => (newProjectNull ? null : proj)),
+      open: (f) => { log.opened = f.fsName; return openResult },
+      beginUndoGroup: count('beginUndoGroup'), endUndoGroup: count('endUndoGroup'),
+      beginSuppressDialogs: count('beginSuppressDialogs'), endSuppressDialogs: count('endSuppressDialogs'),
+    },
     File, ImportOptions, MarkerValue, Shape,
+    AlphaMode: { STRAIGHT: 'STRAIGHT', PREMULTIPLIED: 'PREMULTIPLIED', IGNORE: 'IGNORE' },
     ParagraphJustification: { CENTER_JUSTIFY: 1 },
     alert: (m) => log.alerts.push(m),
-    parseFloat, Math,
+    parseFloat, Math, String,
   }
   vm.createContext(ctx)
   vm.runInContext(jsx.replace(/^#target.*$/m, ''), ctx)
   return log
 }
+
+/** The undo group and the dialog suppression each close what they open. */
+function assertBalanced(log) {
+  assert.equal(log.calls.beginUndoGroup, log.calls.endUndoGroup, 'undo groups balanced')
+  assert.equal(log.calls.beginSuppressDialogs, log.calls.endSuppressDialogs, 'dialog suppression balanced')
+}
+
+/** Arrays made inside the vm are of its realm; compare them as plain data. */
+const plain = (v) => JSON.parse(JSON.stringify(v))
+const dataOf = (jsx) => JSON.parse(jsx.match(/var DATA = ([\s\S]*?);\nvar HERE/)[1])
+const layerOf = (log, clip) => log.layers.find((l) => l.name === clip || l.name === `Overlay ${clip}`)
+
+/** A one-track project of video clips, for the cases the fixtures do not hold. */
+const oneTrack = (items, settings = { resolution: [1920, 1080], fps: 30 }) => ({ id: 'one', status: 'final', settings, tracks: [{ id: 'trk-0', items }] })
+const clip = (id, extra = {}) => ({ id, type: 'video', src: `/abs/${id}.mp4`, start: 0, end: 2, inPoint: 0, outPoint: 2, ...extra })
 
 describe('aejsx: the script', () => {
   for (const name of names) {
@@ -111,6 +190,9 @@ describe('aejsx: the script', () => {
       assert.equal(log.saved, `${PKG}/Edit (After Effects).aep`)
       assert.equal(out.aep, log.saved)
       assert.deepEqual(log.alerts, [])
+      assert.equal(log.calls.beginUndoGroup, 1)
+      assertBalanced(log)
+      assert.match(out.jsx, /^[\x00-\x7e]*$/, 'the script is ASCII')
     })
   }
 
@@ -167,7 +249,7 @@ describe('aejsx: the script', () => {
   test('audio.tracks become audio layers with fades', () => {
     const { out } = make('audio')
     const log = runMock(out.jsx)
-    const data = JSON.parse(out.jsx.match(/var DATA = ([\s\S]*?);\nvar HERE/)[1])
+    const data = dataOf(out.jsx)
     assert.ok(data.audio.length > 0)
     const l = log.layers.find((x) => x.name === data.audio[0].id)
     assert.ok(l)
@@ -179,11 +261,20 @@ describe('aejsx: the script', () => {
     assert.ok(log.layers.some((l) => l.audioEnabled === false))
   })
 
-  test('a refused save says how to allow it, once', () => {
+  test('a muted clip whose layer has no sound is left alone (audioEnabled would throw)', () => {
+    const { out } = make('muted')
+    const log = runMock(out.jsx, { noAudio: true })
+    assert.deepEqual(log.alerts, [])
+    assert.ok(log.saved)
+  })
+
+  test('a refused save says why it failed and what may cause it, once', () => {
     const { out } = make('hard-cut')
     const log = runMock(out.jsx, { saveThrows: true })
     assert.equal(log.alerts.length, 1)
-    assert.match(log.alerts[0], /Allow Scripts to Write Files/)
+    assert.match(log.alerts[0], /could not be saved \(Error: no\)/)
+    assert.match(log.alerts[0], /Allow Scripts to Write Files and Access Network .* may be off/)
+    assertBalanced(log)
   })
 
   test('a missing media file is named, not fatal', () => {
@@ -193,11 +284,190 @@ describe('aejsx: the script', () => {
     assert.match(log.alerts[0], /Not found beside this script/)
   })
 
-  test('left-out features come back as markers and in leftOut', () => {
-    const { out } = make('keyframes')
+  test('left-out features come back in leftOut and as ONE marker on their clip naming each', () => {
+    let checked = 0
+    for (const name of names) {
+      const { tl, out } = make(name)
+      const log = runMock(out.jsx)
+      const videoIds = new Set(tl.videoTracks.flatMap((t) => t.clips).map((c) => c.id))
+      for (const { clip: id, label } of out.leftOut) {
+        if (!videoIds.has(id)) continue
+        const l = layerOf(log, id)
+        assert.ok(l, `${name}: ${id} is a layer`)
+        assert.equal(l.markers.length, 1, `${name}: ${id} has one marker`)
+        assert.ok(l.markers[0][1].includes(label), `${name}: ${id}'s marker names ${label}`)
+        checked++
+      }
+    }
+    assert.ok(checked >= 3, 'the fixtures leave something out')
+  })
+
+  test('two left-out features on one clip share one marker', () => {
+    const { out } = make('two-marks', oneTrack([clip('a', { loop: true, remove_bg: true })]))
     const log = runMock(out.jsx)
-    assert.ok(Array.isArray(out.leftOut))
-    const marked = log.layers.flatMap((l) => l.markers)
-    assert.equal(marked.length >= out.leftOut.length ? true : out.leftOut.length === 0, true)
+    const a = layerOf(log, 'a')
+    assert.deepEqual(a.markers, [[0, 'Stays in Montaj: loop; Stays in Montaj: background removal']])
+    assert.equal(out.leftOut.length, 2)
+  })
+
+  test('the script is ASCII and every caption comes back as written', () => {
+    const texts = ['line\u2028sep\u2029para', 'emoji \u{1F600} and caf\u00e9', 'quote " and back\\slash', 'not a comment */ end', 'del\u007f']
+    const project = {
+      ...oneTrack([clip('a')]),
+      captions: { style: 'subtitle', segments: texts.map((text, i) => ({ id: `c${i}`, text, start: i * 0.3, end: i * 0.3 + 0.2 })) },
+    }
+    const { out } = make('unicode', project)
+    assert.match(out.jsx, /^[\x00-\x7e]*$/)
+    const log = runMock(out.jsx)
+    assert.deepEqual(log.text, texts)
+    assert.deepEqual(log.alerts, [])
+  })
+
+  test('a cancelled save prompt on the open project builds nothing', () => {
+    const { out } = make('hard-cut')
+    const log = runMock(out.jsx, { newProjectNull: true })
+    assert.equal(log.alerts.length, 1)
+    assert.match(log.alerts[0], /your open project was kept/)
+    assert.equal(log.calls.beginUndoGroup, 0)
+    assertBalanced(log)
+    assert.equal(log.comps.length, 0)
+    assert.equal(log.saved, null)
+  })
+
+  test('an error while building is one alert, the undo group closes and nothing is saved', () => {
+    const { out } = make('hard-cut')
+    const log = runMock(out.jsx, { addCompThrows: true })
+    assert.equal(log.alerts.length, 1)
+    assert.match(log.alerts[0], /^Montaj could not build the composition: Error: addComp refused.*Nothing was saved\.$/)
+    assert.equal(log.calls.beginUndoGroup, 1)
+    assertBalanced(log)
+    assert.equal(log.saved, null)
+  })
+
+  test('a file that will not import is named at the end and the rest is built', () => {
+    const { out } = make('hard-cut')
+    const log = runMock(out.jsx, { importThrows: ['/a.mp4'] })
+    assert.equal(log.alerts.length, 1)
+    assert.match(log.alerts[0], /Could not import: media\/a\.mp4 \(Error: unsupported file\)/)
+    assert.ok(!layerOf(log, 'a'))
+    assert.ok(layerOf(log, 'b') && layerOf(log, 'c') && layerOf(log, 'd'))
+    assertBalanced(log)
+    assert.ok(log.saved)
+  })
+
+  test('a missing file shared by several clips is named once', () => {
+    const { out } = make('shared', oneTrack([clip('a', { src: '/abs/same.mp4' }), clip('b', { src: '/abs/same.mp4', start: 2, end: 4 })]))
+    const log = runMock(out.jsx, { missing: ['same.mp4'] })
+    assert.equal(log.alerts.length, 1)
+    assert.equal(log.alerts[0].match(/same\.mp4/g).length, 1)
+  })
+
+  test('an .aep already beside the script is opened, never rebuilt or saved over', () => {
+    const { out } = make('hard-cut')
+    const log = runMock(out.jsx, { existing: ['/Edit (After Effects).aep'] })
+    assert.equal(log.opened, `${PKG}/Edit (After Effects).aep`)
+    assert.equal(log.calls.newProject, 0)
+    assert.equal(log.comps.length, 0)
+    assert.equal(log.saved, null)
+    assert.deepEqual(log.alerts, [])
+    assertBalanced(log)
+    const refused = runMock(out.jsx, { existing: ['/Edit (After Effects).aep'], openResult: null })
+    assert.equal(refused.alerts.length, 1)
+    assert.match(refused.alerts[0], /is already beside this script; open it from File > Open/)
+    assert.equal(refused.saved, null)
+  })
+
+  test('a %XX in a file name stays itself (File() decodes, the script encodes each segment)', () => {
+    const { out } = make('percent', oneTrack([clip('a', { src: '/abs/a%20b.mp4' })]))
+    const log = runMock(out.jsx)
+    assert.deepEqual(log.imports, [`${PKG}/media/a%20b.mp4`])
+    assert.deepEqual(log.alerts, [])
+  })
+
+  test('run other than from its own file, it says how to run it and builds nothing', () => {
+    const { out } = make('hard-cut')
+    const log = runMock(out.jsx, { missing: ['.jsx'] })
+    assert.equal(log.alerts.length, 1)
+    assert.match(log.alerts[0], /Run this script from its own file/)
+    assert.equal(log.calls.newProject, 0)
+  })
+
+  test('a crop is a mask measured from the layer\'s top left', () => {
+    const { tl, out } = make('layers')
+    const log = runMock(out.jsx)
+    const data = dataOf(out.jsx)
+    let checked = 0
+    for (const L of data.layers.filter((x) => x.crop)) {
+      const [w, h] = L.mediaSize
+      const { left, right, top, bottom } = L.crop
+      const x0 = (left / 100) * w, x1 = w - (right / 100) * w, y0 = (top / 100) * h, y1 = h - (bottom / 100) * h
+      const v = plain(layerOf(log, L.id).masks[0].value.vertices)
+      assert.deepEqual(v, [[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
+      assert.ok(v.flat().every((n) => n >= 0), 'inside the layer, not about its centre')
+      checked++
+    }
+    assert.ok(checked >= 2 && tl)
+    const logo = plain(layerOf(log, 'logo').masks[0].value.vertices)
+    assert.deepEqual(logo, [[250, 200], [750, 200], [750, 600], [250, 600]])
+  })
+
+  test('caption text turns fill and stroke on before their colours', () => {
+    const { out } = make('captions')
+    const log = runMock(out.jsx)
+    const cap = log.layers.find((l) => l.isText)
+    const doc = cap.props['Source Text'].value
+    assert.deepEqual(plain([doc.applyFill, doc.applyStroke, doc.fillColor, doc.strokeColor]), [true, true, [1, 1, 1], [0, 0, 0]])
+    assert.deepEqual(log.alerts, [])
+  })
+
+  test('overlay and caption movies are read as straight alpha; footage is left as After Effects guesses', () => {
+    const { out } = make('captions')
+    const log = runMock(out.jsx)
+    const movies = log.items.filter((i) => /\/graphics\/|captions\.mov$/.test(i.path))
+    assert.ok(movies.length >= 1)
+    for (const m of movies) assert.equal(m.mainSource.alphaMode, 'STRAIGHT', m.path)
+    for (const m of log.items.filter((i) => i.path.includes('/media/'))) assert.equal(m.mainSource.alphaMode, null, m.path)
+  })
+
+  test('a crossfade crosses the two clips\' sound too, so it does not double', () => {
+    const { tl, out } = make('crossfade')
+    const log = runMock(out.jsx)
+    const t = tl.videoTracks.flatMap((x) => x.transitions)[0]
+    const [s, e] = [t.startFrame / tl.fps, t.endFrame / tl.fps]
+    const a = plain(layerOf(log, t.fromClipId).props['Audio Levels'].keys)
+    const b = plain(layerOf(log, t.toClipId).props['Audio Levels'].keys)
+    assert.deepEqual(a, [[s, [0, 0]], [e, [-96, -96]]])
+    assert.deepEqual(b, [[s, [-96, -96]], [e, [0, 0]]])
+  })
+})
+
+describe('aejsx: what After Effects can take', () => {
+  const tlOf = (name) => make(name).tl
+  const write = (tl) => writeAeScript(tl, {}, { name: 'X', pkgDir: PKG })
+  const rejects = (tl, re) => assert.throws(() => write(tl), (e) => e instanceof ExportError && e.code === 'invalid_project' && re.test(e.message))
+
+  test('a size, length or rate outside addComp\'s ranges is invalid_project', () => {
+    rejects({ ...tlOf('hard-cut'), width: 3 }, /width must be a whole number of pixels from 4 to 30000/)
+    rejects({ ...tlOf('hard-cut'), height: 30001 }, /height/)
+    rejects({ ...tlOf('hard-cut'), width: 1920.5 }, /width/)
+    rejects({ ...tlOf('hard-cut'), fps: 120 }, /frame rate must be from 1 to 99/)
+    rejects({ ...tlOf('hard-cut'), fps: 0.5 }, /frame rate/)
+    const long = tlOf('hard-cut')
+    rejects({ ...long, durationFrames: 10801 * long.fps }, /at most 10800 seconds/)
+  })
+
+  test('a number that is not finite anywhere in the data is invalid_project', () => {
+    const tl = structuredClone(tlOf('hard-cut'))
+    tl.videoTracks[0].clips[0].volume = NaN
+    rejects(tl, /volume is not a number/)
+    const t2 = structuredClone(tlOf('hard-cut'))
+    t2.videoTracks[0].clips[0].speed = Infinity
+    rejects(t2, /not a number/)
+  })
+
+  test('the edges of the ranges are fine', () => {
+    const tl = tlOf('hard-cut')
+    assert.doesNotThrow(() => write({ ...tl, width: 4, height: 30000, fps: 99 }))
+    assert.doesNotThrow(() => write({ ...tl, fps: 1, durationFrames: 10800 }))
   })
 })

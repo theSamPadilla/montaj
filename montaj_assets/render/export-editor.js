@@ -39,6 +39,7 @@ import { writeXmeml } from './nle/xmeml.js'
 import { writeAeScript } from './nle/aejsx.js'
 import { writeFcpxml } from './nle/fcpxml.js'
 import { cleanFileName } from './nle/file-name.js'
+import { ExportError } from './nle/export-error.js'
 import { resolveProjectSrc, resolveFilePath } from './project-paths.js'
 import { trackItems } from './project-tracks.js'
 
@@ -56,13 +57,6 @@ export const EDITORS = {
 }
 /** What this build writes. All four write. */
 export const AVAILABLE_EDITORS = ['premiere', 'resolve', 'fcp', 'ae']
-
-class ExportError extends Error {
-  constructor(code, message) {
-    super(message)
-    this.code = code
-  }
-}
 
 /**
  * @param {{
