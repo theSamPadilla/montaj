@@ -21,10 +21,11 @@
  * locate the media, as for any package. The .jsx finds them beside itself.
  *
  * Progress goes to stderr, one JSON line per finished step: `{"progress":{"done":3,"total":8,"label":"..."}}`.
- * The ONE result goes to stdout: `{ dir, open, xml, files, leftOut, warnings, seconds }`, plus `aep` for ae; `open`
- * (and `xml`) is the file to hand the editor (the .xml, .fcpxml or .jsx), `aep` is where the script saves the
- * project, `leftOut` is what the timeline marks as staying in Montaj, `[{ clip, label }]`. A failure is
- * `{"error","message"}` on stderr and a non-zero exit.
+ * The ONE result goes to stdout: `{ dir, open, openSha256, xml, files, leftOut, warnings, seconds }`, plus `aep` for
+ * ae; `open` (and `xml`) is the file to hand the editor (the .xml, .fcpxml or .jsx), `openSha256` the lower-case hex
+ * SHA-256 of that file as it is in the package (so a launcher can check it is what was written), `aep` is where the
+ * script saves the project, `leftOut` is what the timeline marks as staying in Montaj, `[{ clip, label }]`. A failure
+ * is `{"error","message"}` on stderr and a non-zero exit.
  *
  * Every package holds a `.montaj-editor-export` marker file (the app launches only a file whose folder has it).
  *
@@ -33,6 +34,7 @@
  */
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, existsSync, readdirSync, statSync, chmodSync, copyFileSync, constants as fsConstants } from 'node:fs'
 import { dirname, join, resolve, relative, basename, sep, isAbsolute } from 'node:path'
+import { createHash } from 'node:crypto'
 import { isMain as isMainModule } from './is-main.js'
 import { buildNleTimeline } from './nle/timeline.js'
 import { probeSources } from './nle/probe.js'
@@ -76,7 +78,7 @@ const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),
  *   editor?: 'premiere' | 'resolve' | 'fcp' | 'ae',
  *   onProgress?: (p: { done: number, total: number, label: string }) => void,
  * }} options
- * @returns {Promise<{ dir: string, open: string, xml: string, files: string[], leftOut: { clip: string, label: string }[], warnings: string[], seconds: number }>}
+ * @returns {Promise<{ dir: string, open: string, openSha256: string, xml: string, aep?: string, files: string[], leftOut: { clip: string, label: string }[], warnings: string[], seconds: number }>}
  */
 export async function exportForEditor({ projectPath, name, out, editor = 'premiere', onProgress }) {
   const startedAt = Date.now()
@@ -177,10 +179,15 @@ export async function exportForEditor({ projectPath, name, out, editor = 'premie
       },
     })
 
+    // The hash of the file to open, read back from its final place.
+    const openPath = join(finalDir, xmlName)
+    const openSha256 = createHash('sha256').update(readFileSync(openPath)).digest('hex')
+
     return {
       dir: finalDir,
-      open: join(finalDir, xmlName),
-      xml: join(finalDir, xmlName),
+      open: openPath,
+      openSha256,
+      xml: openPath,
       ...(isJsx ? { aep: built.aep } : {}),
       files: listFiles(finalDir),
       leftOut: built.leftOut,

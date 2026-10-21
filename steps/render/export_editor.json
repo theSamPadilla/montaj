@@ -8,7 +8,7 @@
   },
   "output": {
     "type": "json",
-    "description": "{dir (the package folder), open (the file to hand the editor: the .xml, .fcpxml or .jsx), xml (the same file), aep (ae only: where the script saves the project), files: [paths relative to dir], leftOut: [{clip, label}], warnings: [...], seconds}"
+    "description": "{dir (the package folder), open (the file to hand the editor: the .xml, .fcpxml or .jsx), openSha256 (lower-case hex SHA-256 of the file at open), xml (the same file), aep (ae only: where the script saves the project), files: [paths relative to dir], leftOut: [{clip, label}], warnings: [...], seconds}"
   },
   "params": [
     {

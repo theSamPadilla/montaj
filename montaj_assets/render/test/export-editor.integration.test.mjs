@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync, copyFileSync, existsSync, readdirSy
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
 import { FFMPEG, FFPROBE } from '../ffmpeg-bin.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -53,6 +54,8 @@ function runCli(args) {
   return r
 }
 
+const sha256Of = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
+
 const progressLines = (stderr) => stderr.split('\n').filter((l) => l.startsWith('{"progress"')).map((l) => JSON.parse(l).progress)
 
 before(() => {
@@ -77,7 +80,9 @@ test('the package: XML, media copy, graphic, captions movie and srt, one JSON re
 
   const pkg = join(projDir, 'export', 'My Cut (Premiere Pro)')
   const result = JSON.parse(r.stdout)
-  assert.deepEqual(Object.keys(result).sort(), ['dir', 'files', 'leftOut', 'open', 'seconds', 'warnings', 'xml'])
+  assert.deepEqual(Object.keys(result).sort(), ['dir', 'files', 'leftOut', 'open', 'openSha256', 'seconds', 'warnings', 'xml'])
+  assert.equal(result.openSha256, sha256Of(result.open))
+  assert.match(result.openSha256, /^[0-9a-f]{64}$/)
   assert.equal(result.dir, pkg)
   assert.equal(result.xml, join(pkg, 'My Cut.xml'))
   assert.equal(result.open, result.xml, 'open is the file to hand the editor')
@@ -151,6 +156,7 @@ test('--editor fcp: an .fcpxml linking the media copies by file URL', { timeout:
   const res = JSON.parse(r.stdout)
   assert.equal(res.dir, join(out, 'f (Final Cut Pro)'))
   assert.equal(res.open, join(res.dir, 'f.fcpxml'))
+  assert.equal(res.openSha256, sha256Of(res.open))
   const xml = readFileSync(res.open, 'utf8')
   assert.match(xml, /<fcpxml version="1.9">/)
   assert.ok(xml.includes('src="file://' + res.dir.split('/').map(encodeURIComponent).join('/')) || xml.includes('/media/'), 'media linked in the package')
@@ -166,6 +172,7 @@ test('--editor ae: a .jsx beside relative media, an .aep path in the result, tex
   assert.equal(res.dir, join(out, 'a (After Effects)'))
   assert.equal(res.open, join(res.dir, 'a.jsx'))
   assert.equal(res.aep, join(res.dir, 'a.aep'))
+  assert.equal(res.openSha256, sha256Of(res.open), 'the hash is of the .jsx')
   const jsx = readFileSync(res.open, 'utf8')
   assert.ok(jsx.includes('"path": "media/'), 'media is relative to the script')
   assert.ok(!jsx.includes(res.dir), 'the package folder path is not baked in')
