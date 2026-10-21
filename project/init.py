@@ -96,10 +96,21 @@ def _timed(phase: str, fn):
 def _write_project_json(project_path: str, project: dict) -> None:
     t0 = time.perf_counter()
     try:
-        with open(project_path, "w") as f:
+        # O_NOFOLLOW (H4): never write THROUGH a symlink sitting at project.json. The project dir is created
+        # fresh, but a staged clip/asset must not be able to redirect this write outside it. O_TRUNC, not
+        # O_EXCL: a regular file left there is overwritten, a symlink is refused (ELOOP).
+        fd = os.open(project_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+        with os.fdopen(fd, "w") as f:
             json.dump(project, f, indent=2)
     finally:
         _add_phase("write", t0)
+
+
+def _safe_clip_ext(path: str) -> str:
+    """A clip's extension, kept only when it is an ordinary short alphanumeric one (`.mov`, `.mp4`); anything
+    odd is dropped. Used to name a symlinked clip `clip-<n><ext>` without carrying a source's hostile name."""
+    ext = os.path.splitext(path)[1]
+    return ext if re.fullmatch(r"\.[A-Za-z0-9]{1,10}", ext) else ""
 
 
 def _probe_duration(path: str) -> float | None:
@@ -207,7 +218,7 @@ def _free_name(dest_dir: str, name: str, prefix: str) -> str:
     return dest
 
 
-def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = False) -> str:
+def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = False, name: str | None = None) -> str:
     """Copy (or symlink) *src* into *dest_dir*, avoiding name collisions with a numeric suffix.
 
     On collision the destination is renamed ``<base>_<prefix><N><ext>`` where N
@@ -217,11 +228,15 @@ def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = Fals
     When *link* is True, an absolute symlink is created instead of a copy so
     that the staged file survives cwd changes.
 
+    *name* overrides the destination's base name (default: the source's own
+    basename). Clips staged as symlinks pass ``clip-<n><ext>`` so a source
+    called ``project.json`` cannot plant that name in the project dir (H4).
+
     This is the shared implementation used by both the ``create_project`` closure
     (via its thin wrapper) and external callers such as
     ``serve/routes/projects.py:include_profile_asset``.
     """
-    name = os.path.basename(src)
+    name = name or os.path.basename(src)
     dest = os.path.join(dest_dir, name)
     if os.path.abspath(src) == os.path.abspath(dest):
         return dest  # already in workspace
@@ -647,9 +662,9 @@ def _main():
     uploads_dir = os.path.realpath(os.path.join(workspace_root, "_uploads"))
     staged_uploads: set = set()
 
-    def copy_into_workspace(src: str, prefix: str, link: bool = False) -> str:
+    def copy_into_workspace(src: str, prefix: str, link: bool = False, name: str | None = None) -> str:
         """Thin wrapper around the module-level helper, bound to workspace_dir."""
-        dest = _copy_into_workspace(src, workspace_dir, prefix, link=link)
+        dest = _copy_into_workspace(src, workspace_dir, prefix, link=link, name=name)
         # Track for post-init cleanup: real copies only (a symlink still
         # points at the source), and only files sitting directly inside the
         # workspace-level _uploads/ junk drawer.
@@ -659,15 +674,22 @@ def _main():
                 staged_uploads.add(src_real)
         return dest
 
-    clips = [
-        # start/end are placeholder 0.0 values — the agent sets real values
-        # after running probe. Zero-duration is technically valid under the
-        # validator (which only requires the fields exist, not that end > start).
-        {"id": f"clip-{i}", "type": "video",
-         "src": copy_into_workspace(os.path.abspath(clip), "clip", link=args.symlink_clips),
-         "start": 0.0, "end": 0.0}
-        for i, clip in enumerate(args.clips)
-    ]
+    # start/end are placeholder 0.0 values — the agent sets real values after running probe. Zero-duration
+    # is technically valid under the validator (it only requires the fields exist, not that end > start).
+    clips = []
+    for i, clip in enumerate(args.clips):
+        abs_clip = os.path.abspath(clip)
+        if args.symlink_clips:
+            # H4: a symlinked clip is named clip-<n><ext>, never the source's own name, so a source called
+            # project.json (or a dot-name) cannot plant that name as a link in the project dir; and only a
+            # file that probes as a real video may be linked, so arbitrary files cannot be symlinked in.
+            if probe_video(abs_clip) is None:
+                fail("not_a_video",
+                     f"--symlink-clips only links files that probe as video; {clip!r} does not")
+            src = copy_into_workspace(abs_clip, "clip", link=True, name=f"clip-{i}{_safe_clip_ext(abs_clip)}")
+        else:
+            src = copy_into_workspace(abs_clip, "clip")
+        clips.append({"id": f"clip-{i}", "type": "video", "src": src, "start": 0.0, "end": 0.0})
 
     # Project resolution = output canvas size (final MP4 dimensions, Puppeteer overlay
     # design dims). Source clips are NOT scaled to match this — they remain at native

@@ -1377,10 +1377,11 @@ def test_init_with_invalid_id_rejected(tmp_path, monkeypatch, bad_id):
 # --symlink-clips and --derived-from tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 def test_symlink_clips_creates_symlink(tmp_path):
-    """--symlink-clips stages the clip as a symlink instead of a copy."""
+    """--symlink-clips stages the clip as a symlink named clip-<n><ext> (H4), not the source's own name."""
     ws = tmp_path / "ws"; ws.mkdir()
-    src = tmp_path / "source.mp4"; src.write_bytes(b"\x00" * 1024)
+    src = tmp_path / "source.mov"; _make_clip(src, duration=1)
     result = run_init(
         "--prompt", "p", "--workflow", "overlays",
         "--clips", str(src),
@@ -1390,9 +1391,59 @@ def test_symlink_clips_creates_symlink(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     proj_json = _project_path_from_stdout(result.stdout)
-    staged = proj_json.parent / "source.mp4"
+    staged = proj_json.parent / "clip-0.mov"
     assert staged.is_symlink(), "clip should be symlinked, not copied"
     assert staged.resolve() == src.resolve()
+    assert not (proj_json.parent / "source.mov").exists()  # never the source's own name
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_symlink_clips_named_project_json_does_not_plant_it(tmp_path):
+    """H4: a clip source called project.json (or a dot-name) is staged as clip-<n>..., never as a link
+    that could redirect the project.json write. (probe_video reads content, not the extension, so a real
+    video renamed project.json still links; lazy mode keeps the symlink as-is.)"""
+    ws = tmp_path / "ws"; ws.mkdir()
+    real = tmp_path / "real.mp4"; _make_clip(real, duration=1)
+    bad = tmp_path / "project.json"; shutil.copy(real, bad)
+    dot = tmp_path / ".hidden.mov"; shutil.copy(real, dot)
+    result = run_init(
+        "--prompt", "p", "--workflow", "overlays", "--normalize", "lazy",
+        "--clips", str(bad), str(dot),
+        "--symlink-clips", "--project-path", "proj",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws)},
+    )
+    assert result.returncode == 0, result.stderr
+    proj_json = _project_path_from_stdout(result.stdout)
+    staged = sorted(p.name for p in proj_json.parent.iterdir() if p.is_symlink())
+    assert staged == ["clip-0.json", "clip-1.mov"], staged
+    # the real project.json is a regular file montaj wrote, not a link into a clip source
+    assert not (proj_json.parent / "project.json").is_symlink()
+    assert json.loads(proj_json.read_text())["id"]
+
+
+def test_symlink_clips_refuses_a_non_video(tmp_path):
+    """H4: only files that probe as video may be linked, so an arbitrary file cannot be symlinked in."""
+    ws = tmp_path / "ws"; ws.mkdir()
+    notvideo = tmp_path / "secret.mov"; notvideo.write_bytes(b"\x00" * 1024)
+    result = run_init(
+        "--prompt", "p", "--workflow", "overlays",
+        "--clips", str(notvideo), "--symlink-clips", "--project-path", "proj",
+        env_override={"MONTAJ_WORKSPACE_DIR": str(ws)},
+    )
+    assert result.returncode != 0
+    assert "video" in result.stderr.lower()
+
+
+def test_write_project_json_does_not_follow_a_planted_symlink(tmp_path):
+    """H4: _write_project_json opens O_NOFOLLOW, so a symlink planted at project.json is not written
+    through (its target is left untouched)."""
+    import project.init as init_mod
+    victim = tmp_path / "victim.txt"; victim.write_text("KEEP")
+    proj = tmp_path / "proj"; proj.mkdir()
+    link = proj / "project.json"; link.symlink_to(victim)
+    with pytest.raises(OSError):
+        init_mod._write_project_json(str(link), {"id": "x"})
+    assert victim.read_text() == "KEEP"
 
 
 def test_derived_from_written(tmp_path):
@@ -2013,15 +2064,16 @@ def test_init_keeps_sources_outside_uploads(tmp_path):
     assert clip.exists()
 
 
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
 def test_init_symlink_clips_keeps_staged_upload(tmp_path):
     """With --symlink-clips the project points at the staged file via symlink,
     so the staged source must NOT be deleted."""
     uploads = tmp_path / "_uploads"
     uploads.mkdir()
     clip = uploads / "clip.mp4"
-    clip.write_bytes(b"fake")
+    _make_clip(clip, duration=1)
 
-    result = run_init("--clips", str(clip), "--symlink-clips",
+    result = run_init("--clips", str(clip), "--symlink-clips", "--normalize", "lazy",
                       "--prompt", "test",
                       env_override={"MONTAJ_WORKSPACE_DIR": str(tmp_path)})
     assert result.returncode == 0, result.stderr
