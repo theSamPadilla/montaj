@@ -34,15 +34,15 @@ PLAIN = {"name": "plain", "params": [{"name": "out", "type": "path"}, {"name": "
 
 @pytest.fixture()
 def places(tmp_path, monkeypatch):
-    """A workspace, a stand-in system temp folder, somewhere else, the real home and serve's HOME, all apart.
-    (pytest's own tmp_path is under the real temp folder, so the guard's temp folder is swapped for one here.)"""
+    """A workspace, somewhere else, the real home and serve's HOME, all apart. `systmp` is a folder that was
+    the system temp allowance until M11 dropped it (2026-10-21), kept as another "outside" place to prove it
+    is refused now."""
     p = {k: (tmp_path / k) for k in ("ws", "systmp", "elsewhere", "home", "servehome")}
     for d in p.values():
         d.mkdir()
     p = {k: Path(os.path.realpath(v)) for k, v in p.items()}
     monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(p["ws"]))
     monkeypatch.setenv("HOME", str(p["servehome"]))
-    monkeypatch.setattr(guard, "_system_temp_dir", lambda: str(p["systmp"]))
     monkeypatch.setattr(guard, "_real_home", lambda: str(p["home"]))
     return p
 
@@ -98,13 +98,25 @@ def test_a_path_that_does_not_exist_yet_is_judged_by_its_nearest_existing_folder
     refused(PLAIN, {"out": str(places["elsewhere"] / "a" / "b" / "x.png")})
 
 
-def test_the_workspace_and_the_system_temp_folder_are_allowed(places):
+def test_the_workspace_is_allowed(places):
     allowed(PLAIN, {"out": ".cache/overlay-previews/ov-1.png", "out-dir": ".cache/filmstrips/p/k"})
     allowed(PLAIN, {"out": str(places["ws"] / "proj" / "assets" / "x.png")})
-    allowed(PLAIN, {"out": str(places["systmp"] / "x.png")})
-    allowed(PLAIN, {"out": str(places["systmp"] / "new" / "x.png")})
     allowed(PLAIN, {"out": "plain-name.png"})                    # a plain name is the workspace's
     allowed(PLAIN, {})                                           # nothing to check
+
+
+def test_the_system_temp_folder_is_no_longer_allowed(places):
+    # M11 (2026-10-21): temp dropped from the allowlist — nothing montaj ships writes a step out there.
+    refused(PLAIN, {"out": str(places["systmp"] / "x.png")})
+    refused(PLAIN, {"out": str(places["systmp"] / "new" / "x.png")})
+
+
+def test_a_file_out_equal_to_a_root_is_refused_but_a_folder_out_may_equal_it(places):
+    # low 13: a FILE output must be strictly below a root (transcribe writes `<out>.json` in the parent);
+    # a folder output (out-dir) may equal a root.
+    refused(PLAIN, {"out": str(places["ws"])})
+    refused(PLAIN, {"out": "."})
+    allowed(PLAIN, {"out-dir": str(places["ws"])})
 
 
 def test_a_leading_tilde_is_checked_as_the_home_it_may_expand_to(places):
@@ -134,7 +146,7 @@ def test_list_values_and_write_marked_params_are_checked(places):
 def test_native_write_params_are_marked(places):
     inbox = native_schema("creator_diagnostic")
     refused(inbox, {"inbox": str(places["elsewhere"])})          # it deletes the videos in it
-    allowed(inbox, {"inbox": str(places["systmp"] / "inbox")})
+    allowed(inbox, {"inbox": str(places["ws"] / "inbox")})
     sheet = native_schema("contact_sheet")
     refused(sheet, {"frames-dir": str(places["elsewhere"]), "out": "s.png"})
 
@@ -355,14 +367,80 @@ def test_a_cloud_folder_is_no_ordinary_step_target(places, darwin):
     refused(PLAIN, {"out": str(icloud / "x.png")})          # the carve-out is for export steps only
 
 
+# ── firmlink / .app / system roots (M8) ──────────────────────────────────────
+
+def test_a_dot_app_bundle_is_refused_as_an_export_target(places):
+    schema = native_schema("export_editor")
+    bundle = places["elsewhere"] / "Montaj.app" / "Contents"
+    bundle.mkdir(parents=True)
+    refused(schema, {"out": str(bundle)})
+    refused(schema, {"out": str(places["elsewhere"] / "Montaj.app")})
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS system roots")
+def test_real_system_roots_are_refused_as_export_targets(places):
+    # Deny roots compare by dev:ino, so these real folders are refused whatever string reaches them (M8).
+    schema = native_schema("export_editor")
+    for root in ("/Applications", "/usr/local", "/opt/homebrew"):
+        if os.path.isdir(root):
+            refused(schema, {"out": root})
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or not os.path.isdir("/System/Volumes/Data"),
+                    reason="macOS data-volume firmlink")
+def test_the_system_volumes_firmlink_form_is_refused(places):
+    # The firmlink-canonical form ~/Library becomes (/System/Volumes/Data/Users/.../Library) lives under
+    # /System/Volumes/, which realpath leaves intact and this rule refuses outright (M8).
+    schema = native_schema("export_editor")
+    refused(schema, {"out": "/System/Volumes/Data"})
+
+
+# ── beside-input steps (M9) ───────────────────────────────────────────────────
+
+def test_a_beside_input_step_checks_the_input_folder_when_out_is_omitted(places):
+    schema = {"name": "extract_audio", "input": {"type": "video"}, "params": []}
+    # No out: the file lands beside the input, so the input's folder must be allowed.
+    refused(schema, {"input": str(places["elsewhere"] / "clip.mp4")})
+    allowed(schema, {"input": str(places["ws"] / "clip.mp4")})
+    # inputs (plural) and a workspace-relative input too.
+    refused(schema, {"inputs": [str(places["ws"] / "ok.mp4"), str(places["elsewhere"] / "bad.mp4")]})
+    allowed(schema, {"input": "footage/clip.mp4"})
+
+
+def test_a_beside_input_step_with_an_explicit_out_is_not_a_beside_write(places):
+    schema = {"name": "extract_audio", "input": {"type": "video"}, "params": [{"name": "out", "type": "path"}]}
+    # With an allowed out, the outside input folder is not checked (it is only read).
+    allowed(schema, {"input": str(places["elsewhere"] / "clip.mp4"), "out": str(places["ws"] / "a.wav")})
+
+
+def test_a_beside_input_spec_checks_each_segment_src_folder(places):
+    spec = places["ws"] / "cut.json"
+    spec.write_text(json.dumps({"segments": [{"src": str(places["ws"] / "a.mp4")},
+                                             {"src": str(places["elsewhere"] / "b.mp4")}]}))
+    refused({"name": "mix_timeline", "input": {"type": "video"}, "params": []}, {"input": str(spec)})
+
+
+# ── .git is never a write target (H5) ─────────────────────────────────────────
+
+def test_a_git_component_in_a_write_path_is_refused(places):
+    proj = places["ws"] / "proj"
+    (proj / ".git" / "hooks").mkdir(parents=True)
+    refused(PLAIN, {"out": str(proj / ".git" / "hooks" / "pre-commit")})
+    refused(PLAIN, {"out": "proj/.git/config"})
+    # a link with an innocent name that resolves into .git counts too
+    (proj / "sneaky").symlink_to(proj / ".git", target_is_directory=True)
+    refused(PLAIN, {"out": str(proj / "sneaky" / "config")})
+    allowed(PLAIN, {"out": str(proj / "assets" / "x.png")})
+
+
 # ── /tmp on macOS ────────────────────────────────────────────────────────────
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="/tmp is a link to /private/tmp on macOS only")
-def test_tmp_counts_as_temp_on_macos(places):
-    allowed(PLAIN, {"out": "/tmp/x.png"})
-    allowed(PLAIN, {"out": "/private/tmp/new/x.png"})
+def test_tmp_is_no_longer_a_target(places):
+    # M11: temp (and /tmp on macOS) was dropped from the allowlist.
+    refused(PLAIN, {"out": "/tmp/x.png"})
+    refused(PLAIN, {"out": "/private/tmp/new/x.png"})
     refused(PLAIN, {"out": "/private/etc/x.png"})
-    refused(PLAIN, {"out": "/private/var/x.png"})
 
 
 # ── /api/normalize and /api/proxy ────────────────────────────────────────────
@@ -401,7 +479,7 @@ def test_normalize_and_proxy_refuse_an_out_outside(places, client, media, monkey
 @pytest.mark.parametrize("route", ["normalize", "proxy"])
 def test_normalize_and_proxy_accept_an_out_in_the_workspace_or_none(places, client, media, monkeypatch, route):
     _stub_routes(monkeypatch)
-    for out in (str(places["ws"] / "proj" / "assets" / "x.mp4"), "rel/x.mp4", str(places["systmp"] / "x.mp4")):
+    for out in (str(places["ws"] / "proj" / "assets" / "x.mp4"), "rel/x.mp4"):
         r = client.post(f"/api/{route}", json={"input": str(media), "colorSpace": "sdr_bt709", "tonemap": False,
                                                "out": out})
         assert r.status_code == 200, (out, r.text)

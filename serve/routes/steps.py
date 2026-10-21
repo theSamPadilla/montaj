@@ -13,7 +13,6 @@ from lib.color_provenance import ProbeError, is_probe_retryable
 from lib.credentials import CredentialError, build_env_overlay
 from serve.common import (
     MONTAJ_ROOT,
-    PROVENANCE_RECORD_NAMES,
     find_project_dir,
     lands_on_project_file,
     resolve_workspace,
@@ -175,8 +174,50 @@ def build_cli_args(schema: dict, body: dict) -> list[str]:
     return flags
 
 
+def _is_plain_number(value: str) -> bool:
+    """`value` is a plain number (so `-1.5` on an int/float param is a legitimate negative, not a flag)."""
+    try:
+        float(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _reject_flag_values(schema: dict, body: dict) -> None:
+    """A string value (or list item) that begins with `-` would be read by argparse as a FLAG, not a value:
+    `--out=/x` smuggled in `inputs`, a bare `-rf`, `--output-dir=...`. build_cli_args turns every value into
+    argv, so such an item becomes a real `--out`/`--out-dir` the out-guard never saw (H2). Refuse it (422
+    `invalid_param`, naming the param), EXCEPT a plain negative number on an int/float param. A path that
+    merely CONTAINS a dash (`/a/-b/c`) is fine; only a value that STARTS with `-` is refused."""
+    numeric = {p["name"] for p in schema.get("params", [])
+               if isinstance(p, dict) and p.get("type") in ("int", "float")}
+
+    def _check(param_name: str, value, numeric_ok: bool) -> None:
+        for item in (value if isinstance(value, list) else [value]):
+            if isinstance(item, str) and item.startswith("-"):
+                if numeric_ok and _is_plain_number(item):
+                    continue
+                raise HTTPException(422, detail={
+                    "error": "invalid_param",
+                    "message": (f"'{param_name}' may not begin with '-'; it would be read as a "
+                                "command-line flag. Pass a path or value that does not start with a dash."),
+                })
+
+    for key in ("input", "inputs"):
+        if body.get(key) is not None:
+            _check(key, body[key], numeric_ok=False)
+    for param in schema.get("params", []):
+        name = param["name"]
+        val = body.get(name)
+        if val is None:
+            val = body.get(name.replace("-", "_"))
+        if val is not None:
+            _check(name, val, numeric_ok=name in numeric)
+
+
 def validate_params(schema: dict, body: dict) -> None:
     """Validate body params against schema constraints. Raises HTTPException 422 on failure."""
+    _reject_flag_values(schema, body)
     errors = []
 
     # Reject unknown fields. Silently dropping an unrecognized arg is the footgun
@@ -249,9 +290,13 @@ def resolve_project_param(schema: dict, body: dict) -> None:
     """A step whose `project` param is the path of a project.json
     (sample_frame, contact_sheet) also takes the project's id or its folder,
     the way every other project tool does. Resolved here, in place, to that
-    project's project.json before the step runs. A value that is already an
-    absolute path to a file, or to anything that is not a project folder,
-    passes through for the step to report.
+    project's project.json before the step runs. An absolute path is allowed
+    only when it resolves INSIDE the workspace (low 14): the step opens the
+    project it names and writes in that folder by default, so a path outside
+    the workspace would be an unguarded write target. An absolute path inside
+    the workspace that is a project folder is rewritten to its project.json;
+    anything else absolute-and-inside passes through for the step to report;
+    an absolute path OUTSIDE the workspace is a 422.
 
     `projectId` and `project_id` are aliases of `project`, and so is the
     step's own `input` when its input block is `"type": "project"`
@@ -279,6 +324,14 @@ def resolve_project_param(schema: dict, body: dict) -> None:
     value = value.strip()
     path = Path(value).expanduser()
     if path.is_absolute():
+        real = Path(os.path.realpath(path))
+        ws = Path(os.path.realpath(resolve_workspace()))
+        if real != ws and ws not in real.parents:
+            raise HTTPException(422, detail={
+                "error": "invalid_params",
+                "message": ('"project" must be a project id, its folder, or a path inside the workspace. '
+                            f"Example: {_PROJECT_EXAMPLE}"),
+            })
         if path.is_dir() and (path / "project.json").is_file():
             body["project"] = str(path / "project.json")
         return
@@ -349,7 +402,7 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
     resolved (`_refuse_record_out`).
     Returns the resolved path, or None when nothing was resolved."""
     from datetime import datetime
-    _refuse_record_out(body.get("out"))
+    _refuse_record_out(body.get("out"), name=name)
     project = body.pop("_project", None)
     if project is None:
         return None
@@ -379,33 +432,43 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
     n = 1
     while True:
         cand = assets / (f"{stem}{suffix}" if n == 1 else f"{stem}-{n}{suffix}")
-        if not cand.exists() and str(cand) not in _RESERVED_OUTS:
+        # lexists, not exists: a dangling or redirecting symlink at the name is still "taken", so the
+        # resolved out is never a path that writes THROUGH a pre-planted link (low 15).
+        if not os.path.lexists(cand) and str(cand) not in _RESERVED_OUTS:
             break
         n += 1
     if Path(os.path.realpath(cand.parent)) != Path(os.path.realpath(assets)) or cand.parent != assets:
         raise HTTPException(422, detail={"error": "invalid_params", "message": "resolved output left the project's assets folder"})
-    _refuse_record_out(str(cand))
+    _refuse_record_out(str(cand), name=name)
     _RESERVED_OUTS.add(str(cand))
     body["out"] = str(cand)
     return str(cand)
 
 
-def _refuse_record_out(out) -> None:
-    """An `out` that is a project's provenance record (`assets/.provenance.json`,
-    `.generated.json`), by name under case and Unicode folding or as the same file on
-    disk, is a 422: serve/provenance.py is its only writer. A relative `out` is the
+def _refuse_record_out(out, *, name: str | None = None) -> None:
+    """An `out` that lands on one of a project's OWN files — project.json, its temp file, its lock, or a
+    provenance record (`PROJECT_FILE_NAMES`) — by name under case and Unicode folding or as the same file on
+    disk, is a 422: serve is their only writer, and a step `out` here would bypass the project lock and the
+    §477 save guard (M10). For transcribe, whose `out` is a prefix, its `<out>.json` and `<out>.srt` sidecars
+    are checked too, so `out=<project>/project` cannot write `project.json`. A relative `out` is the
     workspace's, as the step's cwd is."""
     if not isinstance(out, str) or not out:
         return
-    p = Path(out) if os.path.isabs(out) else Path(resolve_workspace()) / out
-    try:
-        real = Path(os.path.realpath(p))
-    except (OSError, ValueError):
-        real = p
-    if lands_on_project_file(p, real, names=PROVENANCE_RECORD_NAMES):
-        raise HTTPException(422, detail={
-            "error": "invalid_params",
-            "message": "'out' is a project's provenance record, which only Montaj writes. Choose another name."})
+    candidates = [out]
+    if name == "transcribe":
+        candidates += [out + ".json", out + ".srt"]
+    for value in candidates:
+        p = Path(value) if os.path.isabs(value) else Path(resolve_workspace()) / value
+        try:
+            real = Path(os.path.realpath(p))
+        except (OSError, ValueError):
+            real = p
+        if lands_on_project_file(p, real):
+            raise HTTPException(422, detail={
+                "error": "invalid_params",
+                "message": ("'out' would write a project's own file (project.json, its lock or a provenance "
+                            "record), which only Montaj writes. Choose another name."),
+            })
 
 
 def wrap_output(stdout: str, schema: dict) -> dict:
@@ -468,6 +531,11 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
     project_ref = body.get("_project")
     resolved_out = resolve_project_out(name, schema, body)
     resolve_project_param(schema, body)
+    # Re-run the write guard: `_project` naming and the `project` param resolve `out`/`project` to new paths
+    # AFTER run_step's first guard pass, and both resolve only inside the workspace, so this never refuses a
+    # legitimate resolved path but catches anything the resolution produced that would leave the allowed
+    # roots (low 15).
+    check_step_out(name, schema, body, native=job_step_name(name, py_path) == name)
     validate_params(schema, body)
     cli_args = build_cli_args(schema, body)
     if timeout is None:

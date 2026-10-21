@@ -70,10 +70,21 @@ def test_full_project_json_path_passes_through_unchanged(project):
     assert body == {"project": str(pdir / "project.json"), "at": 1.0}
 
 
-def test_a_missing_absolute_path_is_left_for_the_step_to_report(tmp_path, project):
-    body = {"project": str(tmp_path / "nope" / "project.json"), "at": 1.0}
+def test_a_missing_absolute_path_inside_the_workspace_is_left_for_the_step_to_report(project):
+    _, pdir = project
+    missing = str(pdir.parent / "nope" / "project.json")  # inside the workspace, but no project there
+    body = {"project": missing, "at": 1.0}
     resolve_project_param(SAMPLE_FRAME, body)
-    assert body["project"] == str(tmp_path / "nope" / "project.json")
+    assert body["project"] == missing
+
+
+def test_an_absolute_path_outside_the_workspace_is_refused(tmp_path, project):
+    # low 14: `project` may be an id or a path inside the workspace; an absolute path elsewhere is a 422,
+    # since the step would open and write in that folder unguarded.
+    body = {"project": str(tmp_path / "outside" / "project.json"), "at": 1.0}
+    with pytest.raises(HTTPException) as e:
+        resolve_project_param(SAMPLE_FRAME, body)
+    assert e.value.status_code == 422 and "project" in str(e.value.detail).lower()
 
 
 @pytest.mark.parametrize("alias", ["projectId", "project_id"])

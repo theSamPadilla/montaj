@@ -220,3 +220,40 @@ def test_remove_bg_real_schema_batch_and_flags():
     assert "--progress" in args
     assert "True" not in args
     assert args.count("--inputs") == 1
+
+
+# ── flag smuggling (H2) ───────────────────────────────────────────────────────
+
+class TestRejectFlagValues:
+    """A string value (or list item) that begins with '-' would be read as a CLI flag, so a '--out=/x'
+    smuggled through `inputs` or any array/string param becomes a real --out the out-guard never saw.
+    Refused with 422 invalid_param, except a plain negative number on an int/float param."""
+
+    def _refused(self, schema, body):
+        with pytest.raises(HTTPException) as e:
+            validate_params(schema, body)
+        assert e.value.status_code == 422 and e.value.detail["error"] == "invalid_param"
+
+    def test_a_flag_smuggled_in_inputs_is_refused(self):
+        self._refused(_schema([]), {"inputs": ["--out=/tmp/x"]})
+
+    def test_a_flag_as_input_is_refused(self):
+        self._refused(_schema([]), {"input": "-rf"})
+
+    def test_a_flag_in_an_array_param_is_refused(self):
+        schema = _schema([{"name": "refs", "type": "array"}])
+        self._refused(schema, {"refs": ["ok.png", "--output-dir=/x"]})
+
+    def test_a_flag_in_a_string_param_is_refused(self):
+        self._refused(_schema([{"name": "label", "type": "string"}]), {"label": "--out=/x"})
+
+    def test_a_plain_negative_number_on_a_number_param_is_allowed(self):
+        validate_params(_schema([{"name": "offset", "type": "float"}]), {"offset": "-1.5"})
+        validate_params(_schema([{"name": "n", "type": "int"}]), {"n": "-3"})
+
+    def test_a_flag_on_a_number_param_is_still_refused(self):
+        self._refused(_schema([{"name": "n", "type": "int"}]), {"n": "--n=/x"})
+
+    def test_a_dash_elsewhere_in_a_path_is_allowed(self):
+        validate_params(_schema([{"name": "p", "type": "path"}]), {"p": "/a/-b/c"})
+        validate_params(_schema([]), {"input": "/a/-b/c.mp4"})

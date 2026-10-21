@@ -62,6 +62,11 @@ def main():
         if args.at < 0:
             fail("invalid_at", f"--at must be 0 or more seconds into the 3D (got {args.at}).")
 
+    # The project must exist BEFORE any makedirs: the default-output branch below creates
+    # <project_dir>/render/samples, so a bogus --project would otherwise plant folders next to an
+    # arbitrary path (low 14). require_file exits invalid_file for a missing/non-file project.
+    require_file(args.project)
+
     # Build default output path if not specified.
     if args.out:
         out = args.out

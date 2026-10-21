@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from starlette.testclient import TestClient
 
 import serve.routes.steps as steps_mod
@@ -262,23 +263,48 @@ def test_a_run_that_makes_several_files_writes_the_record_once(env, monkeypatch)
 def test_a_step_out_on_the_record_is_refused_before_it_runs(env, out):
     pid, pdir, _ = env
     r = client.post("/api/steps/trim_thing", json={"out": str(pdir / out)})
-    assert r.status_code == 422 and "provenance record" in r.json()["detail"]["message"]
+    assert r.status_code == 422 and "project" in r.json()["detail"]["message"].lower()
     r = client.post("/api/steps/generate_image", json={"prompt": "p", "_project": pid, "out": ".provenance.json"})
     assert r.status_code == 422
     assert not (pdir / "assets" / ".provenance.json").exists()
 
 
+@pytest.mark.parametrize("name", ["project.json", "project.json.tmp", ".project.lock", "PROJECT.JSON"])
+def test_a_step_out_on_a_project_file_is_refused(env, name):
+    # M10: `out` onto a project's own files bypasses the project lock and the §477 save guard.
+    pid, pdir, _ = env
+    before = (pdir / "project.json").read_text()
+    r = client.post("/api/steps/trim_thing", json={"out": str(pdir / name)})
+    assert r.status_code == 422 and "project" in r.json()["detail"]["message"].lower()
+    assert (pdir / "project.json").read_text() == before  # never overwritten
+    r = client.post("/api/steps/generate_image", json={"prompt": "p", "_project": pid, "out": "project.json"})
+    assert r.status_code == 422
+
+
+def test_transcribe_out_whose_sidecar_is_project_json_is_refused(env):
+    # transcribe's `out` is a prefix; `<out>.json` would be project.json (M10).
+    from serve.routes.steps import _refuse_record_out
+    pid, pdir, _ = env
+    with pytest.raises(HTTPException) as e:
+        _refuse_record_out(str(pdir / "project"), name="transcribe")
+    assert e.value.status_code == 422
+    _refuse_record_out(str(pdir / "notes"), name="transcribe")  # notes.json / notes.srt are fine
+
+
 # ── what records nothing ─────────────────────────────────────────────────────
 
-def test_output_outside_every_project_is_not_recorded(env, tmp_path):
+def test_output_outside_every_project_is_not_recorded(env):
+    # Inside the workspace but in no project folder: the out guard allows it (M11 dropped the temp
+    # allowance, so the target must be inside the workspace), and provenance records nothing.
     pid, pdir, _ = env
-    out = tmp_path / "elsewhere" / "x.png"
+    ws = pdir.parent
+    out = ws / "elsewhere" / "x.png"
     assert client.post("/api/steps/generate_image", json={"prompt": "p", "out": str(out)}).status_code == 200
-    src = tmp_path / "in.mp4"
+    src = ws / "in.mp4"
     src.write_bytes(b"v")
-    assert client.post("/api/steps/trim_thing", json={"input": str(src), "out": str(tmp_path / "cut.mp4")}).status_code == 200
+    assert client.post("/api/steps/trim_thing", json={"input": str(src), "out": str(ws / "cut.mp4")}).status_code == 200
     assert not (pdir / "assets" / ".provenance.json").exists()
-    assert not list(tmp_path.rglob(".provenance.json"))
+    assert not list(ws.rglob(".provenance.json"))
 
 
 def test_a_failed_step_records_nothing(env):

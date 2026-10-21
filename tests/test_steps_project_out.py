@@ -76,13 +76,32 @@ def test_existing_file_gets_suffix(env):
     assert calls[-1][calls[-1].index("--out") + 1] == str(pdir / "assets" / "hero-2.png")
 
 
-@pytest.mark.parametrize("odd", ["sub/x.png", ".", "a\\b"])
+def test_a_dangling_symlink_at_the_auto_name_is_skipped(env):
+    # low 15: lexists, not exists — a planted (dangling) link at the name is "taken", so the resolved out
+    # is never a path that would write THROUGH the link.
+    pid, pdir, calls = env
+    assets = pdir / "assets"
+    assets.mkdir()
+    (assets / "hero.png").symlink_to(pdir / "nowhere.png")
+    _post(_project=pid, out="hero")
+    assert calls[-1][calls[-1].index("--out") + 1] == str(assets / "hero-2.png")
+
+
+@pytest.mark.parametrize("odd", ["sub/x.png", "a\\b"])
 def test_non_plain_out_passes_through_unchanged(env, odd):
     pid, pdir, calls = env
     r = _post(_project=pid, out=odd)
     assert r.status_code == 200, r.text
     assert calls[-1][calls[-1].index("--out") + 1] == odd
     assert not (pdir / "assets").exists()
+
+
+def test_out_equal_to_the_workspace_root_is_refused_for_a_file(env):
+    # "." resolves to the workspace root; a FILE output must be strictly below a root (low 13).
+    pid, pdir, calls = env
+    r = _post(_project=pid, out=".")
+    assert r.status_code == 403 and r.json()["detail"]["error"] == "out_not_allowed"
+    assert not calls
 
 
 @pytest.mark.parametrize("odd", ["../x.png", "..", "/abs/x.png"])
@@ -131,11 +150,13 @@ def test_unknown_project_422_names_project(env):
     assert "project" in json.dumps(r.json()).lower()
 
 
-def test_absolute_out_unchanged(env, tmp_path):
+def test_absolute_out_unchanged(env):
+    # An absolute out inside the workspace (and the project) is not rewritten into assets; it passes
+    # through unchanged. (An absolute out OUTSIDE the workspace is refused by the out guard, M11.)
     pid, pdir, calls = env
-    target = str(tmp_path / "elsewhere.png")
+    target = str(pdir / "custom.png")
     r = _post(_project=pid, out=target)
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
     assert calls[-1][calls[-1].index("--out") + 1] == target
     assert not (pdir / "assets").exists()
 
