@@ -395,29 +395,109 @@ def test_the_system_volumes_firmlink_form_is_refused(places):
     refused(schema, {"out": "/System/Volumes/Data"})
 
 
-# ── beside-input steps (M9) ───────────────────────────────────────────────────
+# ── beside-input steps (M9, deny-root) ────────────────────────────────────────
+# A beside-input step with no `out` writes a fixed, step-chosen sidecar into the input's own folder. The
+# sidecar name/suffix is the step's, never the caller's (proven in test_beside_input_defaults.py), so the
+# folder is checked as a DENY location, not against the allowlist: a normal outside folder like ~/Desktop is
+# allowed (an earlier round, M9, wrongly refused it); only hidden/system/package/home-config folders are
+# refused. An explicit `out` is unchanged (the allowlist).
 
-def test_a_beside_input_step_checks_the_input_folder_when_out_is_omitted(places):
-    schema = {"name": "extract_audio", "input": {"type": "video"}, "params": []}
-    # No out: the file lands beside the input, so the input's folder must be allowed.
-    refused(schema, {"input": str(places["elsewhere"] / "clip.mp4")})
-    allowed(schema, {"input": str(places["ws"] / "clip.mp4")})
-    # inputs (plural) and a workspace-relative input too.
-    refused(schema, {"inputs": [str(places["ws"] / "ok.mp4"), str(places["elsewhere"] / "bad.mp4")]})
-    allowed(schema, {"input": "footage/clip.mp4"})
+
+def _beside_schema(name="extract_audio"):
+    return {"name": name, "input": {"type": "video"}, "params": []}
+
+
+def test_a_beside_input_step_allows_the_workspace_and_a_normal_outside_folder(places):
+    schema = _beside_schema()
+    allowed(schema, {"input": str(places["ws"] / "clip.mp4")})          # workspace
+    allowed(schema, {"input": "footage/clip.mp4"})                      # workspace-relative
+    allowed(schema, {"input": str(places["elsewhere"] / "clip.mp4")})   # a normal outside folder (restored)
+    # inputs (plural): both in ordinary folders → allowed.
+    allowed(schema, {"inputs": [str(places["ws"] / "ok.mp4"), str(places["elsewhere"] / "bad.mp4")]})
+
+
+def test_a_beside_input_step_refuses_a_deny_root_folder(places):
+    # transcribe is the step mcp.md leaves `out` off for; S5 (the Windows smoke) hits exactly this.
+    schema = _beside_schema("transcribe")
+
+    # A hidden folder.
+    hidden = places["elsewhere"] / ".secret"
+    hidden.mkdir()
+    refused(schema, {"input": str(hidden / "clip.mp4")})
+
+    # Under the real home's ~/Library.
+    lib = places["home"] / "Library" / "LaunchAgents"
+    lib.mkdir(parents=True)
+    refused(schema, {"input": str(lib / "clip.mp4")})
+    refused(schema, {"input": str(places["home"] / "Library" / "clip.mp4")})
+
+    # Under serve's HOME .montaj and .cache.
+    montaj = places["servehome"] / ".montaj" / "steps"
+    montaj.mkdir(parents=True)
+    refused(schema, {"input": str(montaj / "clip.mp4")})
+    cache = places["servehome"] / ".cache" / "montaj"
+    cache.mkdir(parents=True)
+    refused(schema, {"input": str(cache / "clip.mp4")})
+
+    # One bad input among good ones still refuses the whole run.
+    refused(schema, {"inputs": [str(places["ws"] / "ok.mp4"), str(lib / "bad.mp4")]})
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or not os.path.isdir("/System/Volumes/Data"),
+                    reason="macOS data-volume firmlink")
+def test_a_beside_input_under_the_system_volumes_firmlink_is_refused(places):
+    # The firmlink form of ~/Library (/System/Volumes/Data/...) that realpath leaves intact is refused (M8).
+    refused(_beside_schema("transcribe"), {"input": "/System/Volumes/Data/clip.mp4"})
+
+
+def test_a_beside_input_into_a_git_folder_is_refused(places):
+    # A `.git` folder is never a write target (H5), even inside the workspace.
+    (places["ws"] / "proj" / ".git").mkdir(parents=True)
+    refused(_beside_schema(), {"input": str(places["ws"] / "proj" / ".git" / "clip.mp4")})
+
+
+def test_a_beside_input_with_a_dotdot_input_folder_is_refused(places):
+    refused(_beside_schema(), {"input": "../outside/clip.mp4"})
 
 
 def test_a_beside_input_step_with_an_explicit_out_is_not_a_beside_write(places):
     schema = {"name": "extract_audio", "input": {"type": "video"}, "params": [{"name": "out", "type": "path"}]}
     # With an allowed out, the outside input folder is not checked (it is only read).
     allowed(schema, {"input": str(places["elsewhere"] / "clip.mp4"), "out": str(places["ws"] / "a.wav")})
+    # An explicit hostile out is still refused (the allowlist, unchanged).
+    refused(schema, {"input": str(places["ws"] / "clip.mp4"), "out": str(places["elsewhere"] / "a.wav")})
 
 
 def test_a_beside_input_spec_checks_each_segment_src_folder(places):
-    spec = places["ws"] / "cut.json"
-    spec.write_text(json.dumps({"segments": [{"src": str(places["ws"] / "a.mp4")},
-                                             {"src": str(places["elsewhere"] / "b.mp4")}]}))
-    refused({"name": "mix_timeline", "input": {"type": "video"}, "params": []}, {"input": str(spec)})
+    # A spec input (mix_timeline / materialize_cut): each segments[].src folder is checked too. A src in a
+    # normal outside folder is allowed; a src under a deny root refuses the run.
+    (places["home"] / "Library").mkdir(parents=True, exist_ok=True)
+    ok_spec = places["ws"] / "ok.json"
+    ok_spec.write_text(json.dumps({"segments": [{"src": str(places["ws"] / "a.mp4")},
+                                                {"src": str(places["elsewhere"] / "b.mp4")}]}))
+    allowed({"name": "mix_timeline", "input": {"type": "video"}, "params": []}, {"input": str(ok_spec)})
+
+    bad_spec = places["ws"] / "bad.json"
+    bad_spec.write_text(json.dumps({"segments": [{"src": str(places["ws"] / "a.mp4")},
+                                                 {"src": str(places["home"] / "Library" / "b.mp4")}]}))
+    refused({"name": "mix_timeline", "input": {"type": "video"}, "params": []}, {"input": str(bad_spec)})
+
+
+def test_a_trim_spec_checks_the_source_media_folder_not_just_the_spec(places):
+    # The single-source trim spec {"input": ..., "keeps": [...]} (transcribe, materialize_cut): the step writes
+    # its output BESIDE the spec's source media, so the source's folder faces the deny check, not only the spec
+    # file's folder. A spec sitting in an allowed folder must not be a way to write a sidecar into a deny root.
+    (places["home"] / "Library").mkdir(parents=True, exist_ok=True)
+    for step in ("transcribe", "materialize_cut"):
+        schema = {"name": step, "input": {"type": "video"}, "params": []}
+        ok_spec = places["ws"] / f"ok_{step}.json"
+        ok_spec.write_text(json.dumps({"input": str(places["elsewhere"] / "clip.mp4"), "keeps": [[0, 1]]}))
+        allowed(schema, {"input": str(ok_spec)})
+
+        # The spec is in an allowed folder, but its source media is under ~/Library: refused.
+        bad_spec = places["ws"] / f"bad_{step}.json"
+        bad_spec.write_text(json.dumps({"input": str(places["home"] / "Library" / "clip.mp4"), "keeps": [[0, 1]]}))
+        refused(schema, {"input": str(bad_spec)})
 
 
 # ── .git is never a write target (H5) ─────────────────────────────────────────

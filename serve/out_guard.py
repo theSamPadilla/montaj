@@ -23,10 +23,15 @@ allowlist, checked before the step starts (sync and async alike):
   of any of them (`/System/Volumes/Data/Users/<u>/Library/...`) is refused too (M8). Such a step writes only
   into a new folder it creates inside the picked one. A custom step (from ~/.montaj/steps) never gets this,
   whatever its schema says.
-- a BESIDE_INPUT step (M9: extract_audio, normalize, resize, ...) run with NO write param writes into whatever
-  folder holds each input, so that folder (and each spec `segments[].src` folder) is checked as a write path.
-  For a project inside the workspace this is the project's own folder (allowed), so `mcp.md`'s guidance to omit
-  `out` and pass `project` still works; an input OUTSIDE the allowed roots with no `out` is refused.
+- a BESIDE_INPUT step (M9: extract_audio, normalize, resize, ...) run with NO write param writes a fixed,
+  step-chosen sidecar into whatever folder holds each input, so that folder (and each spec `segments[].src`
+  folder) is checked. The default output's name and suffix are the step's, never the caller's (see
+  `_check_beside_input` and tests/test_beside_input_defaults.py), so this is a DENY check, not the allowlist:
+  the folder is allowed when it is the workspace or the step's project folder (so `mcp.md`'s guidance to omit
+  `out` and pass `project` still works), and otherwise allowed only when it passes the export carve-out
+  (`_export_folder_ok` — an ordinary non-hidden, non-system folder). A normal outside folder (e.g. `~/Desktop`)
+  is allowed; a hidden folder, `~/Library`, `.montaj`, `.cache`, the package, the Python install or a system
+  root is refused with the same 403. An explicit `out` is unchanged (the allowlist, via `check_write_paths`).
 
 Paths are compared by real path: the path itself, or when it does not exist yet its nearest existing ancestor
 plus the rest, so a symlink anywhere counts as its target. A `..` component, a NUL and a URL scheme (`file:`,
@@ -53,7 +58,8 @@ Inventory (2026-10-21): the params a native step WRITES to (or deletes in), chec
   beside the input when `out` is omitted (BESIDE_INPUT_STEPS, M9): extract_audio, normalize, resize, snapshot,
       stem_separation, waveform_image, caption, lyrics_sync, lyrics_render, crop_spec, paper_cutout, remove_bg,
       mix_timeline, materialize_cut, transcribe. The input's folder (and each spec `segments[].src` folder) is
-      then checked as the write path.
+      then checked as a DENY location (`_check_beside_input`), not against the allowlist: a normal outside
+      folder is allowed, a hidden/system/package/home-config folder is refused.
   `project` (the id or folder of the project a step reads; speech_edit and speech_text also write in its folder,
       and glass_plate, sample_frame and export_editor put their default output there) is confined to a project
       serve finds by id or a path INSIDE the workspace (steps.py, low 14); an absolute path elsewhere no longer
@@ -361,18 +367,24 @@ def check_write_paths(name: str, items, body: dict, *, native: bool) -> None:
             })
 
 
-def _spec_segment_srcs(path: str) -> list[str]:
-    """The `segments[].src` paths of a cut/timeline spec JSON, best effort. A spec is how mix_timeline and
-    materialize_cut take their inputs; each segment names a media file the step reads (and writes beside)."""
+def _spec_media_srcs(path: str) -> list[str]:
+    """The media files a cut/timeline spec JSON names, best effort. A spec is how mix_timeline, materialize_cut
+    and transcribe take their inputs; the step reads each and writes its default output BESIDE it, so each one's
+    folder must face the same deny check as a plain input. Two shapes: `segments[].src` (a multi-segment spec),
+    and the single-source trim spec `{"input": ..., "keeps": [...]}`, whose top-level `input` is the source media
+    (materialize_cut and transcribe write beside it, not beside the spec file)."""
     try:
         data = json.loads(Path(path).read_text())
     except (OSError, ValueError):
         return []
-    segs = data.get("segments") if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return []
     out = []
-    for seg in segs or []:
+    for seg in data.get("segments") or []:
         if isinstance(seg, dict) and isinstance(seg.get("src"), str) and seg["src"]:
             out.append(seg["src"])
+    if "keeps" in data and isinstance(data.get("input"), str) and data["input"]:
+        out.append(data["input"])
     return out
 
 
@@ -388,18 +400,61 @@ def _beside_input_paths(body: dict) -> list[str]:
     paths: list[str] = []
     for item in raw:
         paths.append(item)
-        paths += _spec_segment_srcs(item if os.path.isabs(item)
-                                    else os.path.join(os.path.abspath(resolve_workspace()), item))
+        paths += _spec_media_srcs(item if os.path.isabs(item)
+                                  else os.path.join(os.path.abspath(resolve_workspace()), item))
     return paths
 
 
 def _check_beside_input(name: str, body: dict) -> None:
-    """A beside-input step with no write param writes into each input's own folder (M9): refuse if that
-    folder is outside the allowed roots, so the caller must pass an allowed `out`. The parent folder is a
-    directory output (`out-dir` semantics), so it may equal an allowed root."""
-    items = [("out-dir", False, os.path.dirname(p) or p) for p in _beside_input_paths(body)]
-    if items:
-        check_write_paths(name, items, body, native=False)
+    """A beside-input step with no write param writes a fixed, step-chosen sidecar into the folder of each
+    input (M9). The default output's NAME and suffix are the STEP's, never the caller's (proven for every
+    member of BESIDE_INPUT_STEPS in tests/test_beside_input_defaults.py: never an in-place overwrite, always a
+    safe non-executable suffix), so that folder only has to be kept out of code and config locations, not
+    confined to the workspace. For each input's real folder:
+
+      - allow when it is the workspace or the step's project folder, or below one (the existing allow);
+      - else allow only when `_export_folder_ok` is True, i.e. it is an ordinary place a user could pick for an
+        export: an existing folder that is not hidden, not under `/System/Volumes/`, not an `.app` bundle, and
+        not ~/Library or ~/AppData of the real home, `.montaj`, `.cache`, the montaj package, the Python
+        install, /Applications, /usr/local or /opt/homebrew (compared by dev:ino, so a firmlink form of any of
+        them is caught too, with the cloud-storage carve-out);
+      - else refuse 403 `out_not_allowed`.
+
+    This restores writing beside an input that sits in a normal outside folder (e.g. `~/Desktop/clip.mov` with
+    no project and no `out`), which an earlier security round (M9) had refused, while still keeping the sidecar
+    out of the deny roots. A `.git` folder is never a write target (H5), and a `..`/NUL/URL-scheme path is
+    refused outright. A folder of outputs written beside the input (snapshot `--frames all`, stem_separation,
+    waveform_image) lands in this same checked folder, so this one check covers it. An explicit `out` does not
+    reach here: it is the allowlist via `check_write_paths`."""
+    ws = None
+    project_roots = None
+    for path in _beside_input_paths(body):
+        cands = _candidates(os.path.dirname(path) or path)
+        refuse = cands is None
+        for cand in cands or []:
+            real_dir = _real(cand)
+            if _has_git_component(cand, real_dir):
+                refuse = True
+                break
+            if ws is None:
+                ws = _real(str(resolve_workspace()))
+            if _within(real_dir, ws):
+                continue
+            if project_roots is None:
+                project_roots = _project_roots(body)
+            if any(_within(real_dir, r) for r in project_roots):
+                continue
+            if _export_folder_ok(real_dir):
+                continue
+            refuse = True
+            break
+        if refuse:
+            raise HTTPException(403, detail={
+                "error": "out_not_allowed",
+                "message": (f"{name} writes beside its input when no 'out' is given, but that input's folder "
+                            f"is not a place it may write. Pass an allowed 'out', or move the input out of a "
+                            f"hidden or system folder."),
+            })
 
 
 def check_step_out(name: str, schema: dict, body: dict, *, native: bool) -> None:
