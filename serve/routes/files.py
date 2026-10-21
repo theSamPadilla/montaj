@@ -1,10 +1,7 @@
-"""File-serving + asset endpoints: /files, /files/stream, /upload, /pick-files, /caption-template."""
-import asyncio
+"""File-serving + asset endpoints: /files, /files/stream, /upload, /caption-template."""
 import mimetypes
 import os
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 from fastapi import APIRouter, Request, UploadFile
@@ -12,8 +9,9 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from serve.common import (
     resolve_workspace, find_project_dir, _is_under, _allowed_file_roots,
-    not_found, bad_request, server_error, forbidden, lands_on_project_file,
+    not_found, bad_request, forbidden, lands_on_project_file,
 )
+from serve.out_guard import _has_git_component
 from serve.sse import sse_stream, SSEBroadcaster, JSX_GLOBAL_CHANNEL
 from cli.deps import render_runtime_dir
 
@@ -72,76 +70,6 @@ async def upload_file(file: UploadFile):
     return {"path": str(dest)}
 
 
-@router.get("/pick-files")
-async def pick_files(extensions: str | None = None, prompt: str = "Select files"):
-    """Open a native file dialog and return selected absolute paths.
-
-    extensions: optional comma-separated list of lowercase extensions without dots, e.g. "mp4,mov,avi"
-    """
-    exts = {e.strip().lower() for e in extensions.split(",")} if extensions else None
-    return await asyncio.to_thread(_pick_files_sync, exts, prompt)
-
-
-def _downloads_dir() -> Path:
-    return Path.home() / "Downloads"
-
-
-def _existing_downloads_dir() -> Path | None:
-    """~/Downloads if it exists on disk, else None — so the native picker is
-    given no default location at all rather than one that would make
-    AppleScript error."""
-    downloads = _downloads_dir()
-    return downloads if downloads.is_dir() else None
-
-
-def _pick_files_sync(exts: set[str] | None, prompt: str) -> dict:
-    """Blocking file-picker — runs in a thread pool so it doesn't block the event loop."""
-    default_dir = _existing_downloads_dir()
-    if sys.platform == "darwin":
-        default_location = ""
-        if default_dir is not None:
-            location = str(default_dir).replace("\\", "\\\\").replace('"', '\\"')
-            default_location = f'default location (POSIX file "{location}") '
-        script = (
-            f'set chosen to choose file '
-            f'with multiple selections allowed '
-            f'with prompt "{prompt}" '
-            f'{default_location}\n'
-            'set out to ""\n'
-            'repeat with f in chosen\n'
-            '  set out to out & POSIX path of f & "\\n"\n'
-            'end repeat\n'
-            'return out'
-        )
-        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-        if r.returncode != 0:
-            raise bad_request("cancelled", "No files selected")
-        paths = [p for p in r.stdout.strip().split("\n") if p]
-    else:
-        try:
-            import tkinter as tk
-            from tkinter import filedialog
-            root = tk.Tk()
-            root.withdraw()
-            root.wm_attributes("-topmost", True)
-            if exts:
-                pattern = " ".join(f"*.{e}" for e in sorted(exts))
-                filetypes = [(f"Supported files", pattern), ("All files", "*.*")]
-            else:
-                filetypes = [("All files", "*.*")]
-            askopen_kwargs = {"title": prompt, "filetypes": filetypes}
-            if default_dir is not None:
-                askopen_kwargs["initialdir"] = str(default_dir)
-            paths = list(filedialog.askopenfilenames(**askopen_kwargs))
-            root.destroy()
-        except Exception as exc:
-            raise server_error("picker_failed", str(exc))
-
-    if exts:
-        paths = [p for p in paths if p.rsplit(".", 1)[-1].lower() in exts]
-    return {"paths": paths}
-
-
 @router.get("/caption-template/{style}")
 async def get_caption_template(style: str):
     """Serve a built-in caption template JSX file for in-browser preview."""
@@ -162,7 +90,10 @@ async def write_file(request: Request):
     Path safety: the resolved parent directory must be under the workspace root
     only — NOT under the overlay/profile/template library roots (those are
     read-only). Rejects paths that are not absolute, that contain .. escaping
-    the workspace, or that resolve outside the workspace root.
+    the workspace, or that resolve outside the workspace root. The final file's
+    real path must stay inside the workspace, the open is O_NOFOLLOW so a
+    symlink planted at the target is refused, not written through (H3), and a
+    `.git` component is refused (H5).
     """
     try:
         body = await request.json()
@@ -209,10 +140,28 @@ async def write_file(request: Request):
     if lands_on_project_file(resolved, landing):
         raise bad_request("project_file_protected", PROJECT_FILE_PROTECTED_MESSAGE)
 
+    # H5: a .git component (given, through a symlinked parent, or at the final link) would plant a git
+    # hook or config where serve shells git in a project.
+    if _has_git_component(raw_path, str(resolved), str(landing)):
+        raise bad_request("project_file_protected", "A file path may not write inside a project's .git folder.")
+
+    # H3: only the parent was checked before, so a symlink planted AT the destination redirected the write
+    # outside the workspace. Require the final file's real path to stay inside the workspace, and open with
+    # O_NOFOLLOW so a symlink at the target is refused (ELOOP) rather than written through. The route
+    # legitimately overwrites (editing an overlay JSX, a spec), so O_TRUNC, not O_EXCL.
+    if not _is_under(Path(os.path.realpath(resolved)), workspace_root):
+        raise forbidden("forbidden", "Path is outside the workspace root")
+
     # Create parent dirs (a spec may be the first file in a subdir)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     encoded = content.encode("utf-8")
-    resolved.write_bytes(encoded)
+    try:
+        fd = os.open(resolved, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    except OSError:
+        # ELOOP (a symlink sits at the target) or any other open failure: refuse rather than follow it.
+        raise forbidden("forbidden", "Path is outside the workspace root")
+    with os.fdopen(fd, "wb") as f:
+        f.write(encoded)
     return {"path": str(resolved), "bytes": len(encoded)}
 
 

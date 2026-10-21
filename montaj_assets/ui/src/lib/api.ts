@@ -178,13 +178,11 @@ export const api = {
   saveWorkflow: (name: string, workflow: Record<string, unknown>) =>
     request<unknown>(`/api/workflows/${name}`, { method: 'PUT', body: JSON.stringify(workflow) }),
 
-  pickFiles: (options?: { extensions?: string[]; prompt?: string }) => {
-    const params = new URLSearchParams()
-    if (options?.extensions?.length) params.set('extensions', options.extensions.join(','))
-    if (options?.prompt) params.set('prompt', options.prompt)
-    const qs = params.toString()
-    return request<{ paths: string[] }>(`/api/pick-files${qs ? `?${qs}` : ''}`)
-  },
+  // The server-side native file picker (GET /api/pick-files) was removed: it built an AppleScript from
+  // the caller's prompt, which is command execution from any window or MCP caller. The desktop app opens
+  // files through its own Electron dialog; this standalone-UI helper now rejects.
+  pickFiles: (_options?: { extensions?: string[]; prompt?: string }): Promise<{ paths: string[] }> =>
+    Promise.reject(new Error('The in-app file picker is not available; drag files in or use the desktop app.')),
 
   uploadFile: async (file: File, projectId?: string): Promise<string> => {
     const form = new FormData()
