@@ -12,6 +12,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { FFMPEG, FFPROBE } from '../ffmpeg-bin.js'
+import { exportForEditor } from '../export-editor.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CLI = join(__dirname, '..', 'export-editor.js')
@@ -395,4 +396,31 @@ test('a --name with a separator, . or .., or a control character still lands dir
     assert.ok(!/[\/\\\x00-\x1f]/.test(res.dir.slice(out.length + 1)), JSON.stringify(res.dir))
   }
   assert.deepEqual(readdirSync(box), ['out'], 'nothing beside --out')
+})
+
+test('openSha256 is the hash of the bytes written, never of a read-back, through a re-picked name too', { timeout: 300_000 }, async (t) => {
+  if (skip) { t.skip('ffmpeg/ffprobe not available'); return }
+  const proj = plainProject('hash')
+  const out = join(dir, 'hash-out')
+  const written = []
+  // Writes the bytes, then alters the file on disk, as something else could before a read-back.
+  const tamper = (path, bytes) => { written.push(Buffer.from(bytes)); writeFileSync(path, bytes); writeFileSync(path, 'altered') }
+  const res = await exportForEditor({ projectPath: proj.path, name: 'h', out, writeFile: tamper })
+  assert.equal(written.length, 1)
+  assert.equal(res.openSha256, createHash('sha256').update(written[0]).digest('hex'))
+  assert.notEqual(res.openSha256, sha256Of(res.open), 'the file was altered after the write; the report was not')
+
+  // The name is taken while the export runs: the re-picked build's bytes are the ones hashed.
+  const again = []
+  const taking = (path, bytes) => {
+    again.push(Buffer.from(bytes))
+    if (again.length === 1) mkdirSync(join(out, 'h (Premiere Pro) 2', 'taken'), { recursive: true })
+    writeFileSync(path, bytes)
+  }
+  const res2 = await exportForEditor({ projectPath: proj.path, name: 'h', out, writeFile: taking })
+  assert.equal(res2.dir, join(out, 'h (Premiere Pro) 3'))
+  assert.equal(again.length, 2, 'written again for the re-picked name')
+  assert.ok(!again[0].equals(again[1]), 'the XML names its folder, so the bytes differ')
+  assert.equal(res2.openSha256, createHash('sha256').update(again[1]).digest('hex'))
+  assert.equal(res2.openSha256, sha256Of(res2.open))
 })

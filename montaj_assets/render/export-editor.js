@@ -23,7 +23,7 @@
  * Progress goes to stderr, one JSON line per finished step: `{"progress":{"done":3,"total":8,"label":"..."}}`.
  * The ONE result goes to stdout: `{ dir, open, openSha256, xml, files, leftOut, warnings, seconds }`, plus `aep` for
  * ae; `open` (and `xml`) is the file to hand the editor (the .xml, .fcpxml or .jsx), `openSha256` the lower-case hex
- * SHA-256 of that file as it is in the package (so a launcher can check it is what was written), `aep` is where the
+ * SHA-256 of the exact bytes written to it (never read back, so a launcher can check the file is what this wrote), `aep` is where the
  * script saves the project, `leftOut` is what the timeline marks as staying in Montaj, `[{ clip, label }]`. A failure
  * is `{"error","message"}` on stderr and a non-zero exit.
  *
@@ -77,10 +77,11 @@ const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),
  *   out?: string,       the folder the package goes in
  *   editor?: 'premiere' | 'resolve' | 'fcp' | 'ae',
  *   onProgress?: (p: { done: number, total: number, label: string }) => void,
+ *   writeFile?: (path: string, bytes: Buffer) => void,   writes the timeline file (tests); writeFileSync by default
  * }} options
  * @returns {Promise<{ dir: string, open: string, openSha256: string, xml: string, aep?: string, files: string[], leftOut: { clip: string, label: string }[], warnings: string[], seconds: number }>}
  */
-export async function exportForEditor({ projectPath, name, out, editor = 'premiere', onProgress }) {
+export async function exportForEditor({ projectPath, name, out, editor = 'premiere', onProgress, writeFile = writeFileSync }) {
   const startedAt = Date.now()
   if (!projectPath) throw new ExportError('invalid_args', '--project is required')
   if (!EDITORS[editor]) throw new ExportError('invalid_args', `--editor must be one of ${Object.keys(EDITORS).join(', ')} (got ${JSON.stringify(editor)})`)
@@ -167,24 +168,25 @@ export async function exportForEditor({ projectPath, name, out, editor = 'premie
       if (isFcp) return writeFcpxml(timeline, probes, { name: packageName, graphics, captions, mediaPaths })
       return writeXmeml(timeline, probes, { name: packageName, graphics, captions, xmlDir: finalDir, mediaPaths })
     }
+    // The timeline file's bytes are made once per build; those exact bytes are written and hashed.
     let built = build()
-    writeFileSync(join(tmpDir, xmlName), built.xml, 'utf8')
+    let openBytes = Buffer.from(built.xml, 'utf8')
+    writeFile(join(tmpDir, xmlName), openBytes)
     writeFileSync(join(tmpDir, PACKAGE_MARKER), `Montaj Export for editor (${label}).\n`, 'utf8')
 
     finalDir = renameIntoPlace(tmpDir, finalDir, {
       repick: () => {
         finalDir = pickDir()
         built = build()
-        writeFileSync(join(tmpDir, xmlName), built.xml, 'utf8')
+        openBytes = Buffer.from(built.xml, 'utf8')
+        writeFile(join(tmpDir, xmlName), openBytes)
         return finalDir
       },
     })
 
     const openPath = join(finalDir, xmlName)
     checkInside(base, finalDir, openPath)
-
-    // The hash of the file to open, read back from its final place.
-    const openSha256 = createHash('sha256').update(readFileSync(openPath)).digest('hex')
+    const openSha256 = createHash('sha256').update(openBytes).digest('hex')
 
     return {
       dir: finalDir,
