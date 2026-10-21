@@ -105,11 +105,14 @@ def deletable(path, media_dir, inbox):
 
 
 def check_inbox(inbox):
-    """The inbox is deleted from, so it can never be a root, the home folder, or a folder holding it."""
+    """The inbox is deleted from, so it can never be a root, the home folder, or a folder holding it, and it
+    must not be a project folder (a project.json inside it): deleting a project's media is not this step's job."""
     p = Path(inbox).resolve()
     home = Path.home().resolve()
     if p == Path(p.anchor) or p == home or p in home.parents:
         fail("invalid_argument", f"--inbox cannot be {p}: pick a folder just for these videos")
+    if (p / "project.json").exists():
+        fail("invalid_argument", f"--inbox {p} holds a project.json; point it at a folder of loose videos, not a project")
 
 
 def shot_metrics(shots, duration):
@@ -322,15 +325,16 @@ def main():
                 v = measure_video(Path(path), stills, n, a.whisper_model, a.language)
                 videos.append({"source": it["url"] or source, "views": it["views"], "likes": it["likes"],
                                "posted_at": it["posted_at"], "caption": it["caption"], **v})
+                # Delete only AFTER a successful measure (M10): a failed measure must never destroy the
+                # user's own file in --inbox. (A download in _media is removed wholesale below either way.)
+                if path and deletable(path, media_dir, a.inbox):
+                    Path(path).unlink(missing_ok=True)
             except SkipVideo as e:
                 failed.append({"source": source, "code": e.code, "message": e.message})
             except SystemExit:  # a helper called fail(); its JSON is already on stderr
                 failed.append({"source": source, "code": "measure_failed", "message": "a measuring step failed (see the progress log)"})
             except (subprocess.SubprocessError, OSError, KeyError, IndexError, ValueError) as e:
                 failed.append({"source": source, "code": "measure_failed", "message": str(e)[:200] or type(e).__name__})
-            finally:
-                if path and deletable(path, media_dir, a.inbox):
-                    Path(path).unlink(missing_ok=True)
     finally:
         if made_media:
             shutil.rmtree(media_dir, ignore_errors=True)

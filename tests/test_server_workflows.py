@@ -118,3 +118,42 @@ def test_get_workflow_non_dict_step_entry_does_not_500(tmp_path, monkeypatch):
 def test_get_workflow_still_404s_for_missing_workflow():
     resp = client.get("/api/workflows/does-not-exist-xyz")
     assert resp.status_code == 404
+
+
+# ── H7: a workflow name must be a single plain segment ────────────────────────
+
+import pytest  # noqa: E402
+from lib.workflow import is_valid_workflow_name, resolve_workflow_path  # noqa: E402
+
+
+def test_workflow_name_validation_rejects_traversal():
+    assert is_valid_workflow_name("my-flow_2")
+    for bad in ["../x", "a/b", "a\\b", ".", "", "x.json", "a b", "x" * 65, "..\\..\\win"]:
+        assert not is_valid_workflow_name(bad), bad
+
+
+def test_resolve_workflow_path_rejects_a_traversing_name():
+    # Even if such a file existed, a traversing name never resolves to it.
+    assert resolve_workflow_path("../../etc/passwd") is None
+    assert resolve_workflow_path("..\\..\\x") is None
+
+
+@pytest.mark.parametrize("bad", ["evil.x", "x" * 65, "a~b"])
+def test_put_workflow_rejects_an_invalid_name(bad):
+    resp = client.put(f"/api/workflows/{bad}", json={"steps": []})
+    assert resp.status_code == 400 and resp.json()["detail"]["error"] == "invalid_name", (bad, resp.status_code)
+
+
+@pytest.mark.parametrize("bad", ["evil.x", "a~b"])
+def test_get_workflow_rejects_an_invalid_name(bad):
+    resp = client.get(f"/api/workflows/{bad}")
+    assert resp.status_code == 400 and resp.json()["detail"]["error"] == "invalid_name", (bad, resp.status_code)
+
+
+def test_put_then_get_a_valid_workflow_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    resp = client.put("/api/workflows/my-flow", json={"steps": [], "project_type": "editing"})
+    assert resp.status_code == 200, resp.text
+    assert (tmp_path / ".montaj" / "workflows" / "my-flow.json").is_file()
+    got = client.get("/api/workflows/my-flow")
+    assert got.status_code == 200 and got.json()["project_type"] == "editing"

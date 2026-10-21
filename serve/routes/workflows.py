@@ -6,9 +6,26 @@ from fastapi import APIRouter, Body, HTTPException
 
 from serve.common import MONTAJ_ROOT
 from lib.types.project import normalize_project_type
+from lib.workflow import is_valid_workflow_name
 from engine.resolve_workflow import resolve_step
 
 router = APIRouter(prefix="/api")
+
+
+def _require_workflow_name(name: str) -> None:
+    """A workflow name must be a single plain segment (H7): `{name}` is joined into `{name}.json`, so `..`
+    or a `\\` would read or write any *.json on disk."""
+    if not is_valid_workflow_name(name):
+        raise HTTPException(status_code=400, detail={"error": "invalid_name",
+                                                     "message": "workflow name must match [A-Za-z0-9_-]{1,64}"})
+
+
+def _in_dir(path: Path, directory: Path) -> bool:
+    """The resolved file sits directly in `directory` (belt-and-suspenders over the name regex)."""
+    try:
+        return path.resolve().parent == directory.resolve()
+    except OSError:
+        return False
 
 
 def _annotate_steps(workflow: dict) -> None:
@@ -100,9 +117,10 @@ async def get_workflow(name: str):
     executable — call get_skill and do it yourself) from a real step, without
     guessing from list_steps. See _annotate_steps.
     """
+    _require_workflow_name(name)
     for _scope, d in _workflow_dirs():
         path = d / f"{name}.json"
-        if path.exists():
+        if path.exists() and _in_dir(path, d):
             workflow = json.loads(path.read_text())
             _annotate_steps(workflow)
             return workflow
@@ -112,8 +130,11 @@ async def get_workflow(name: str):
 @router.put("/workflows/{name}")
 async def save_workflow(name: str, body: dict = Body(...)):
     """Save a workflow to ~/.montaj/workflows/ (user-global scope)."""
+    _require_workflow_name(name)
     user_dir = Path.home() / ".montaj" / "workflows"
     user_dir.mkdir(parents=True, exist_ok=True)
     path = user_dir / f"{name}.json"
+    if not _in_dir(path, user_dir):
+        raise HTTPException(status_code=400, detail={"error": "invalid_name", "message": "invalid workflow name"})
     path.write_text(json.dumps(body, indent=2))
     return body

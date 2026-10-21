@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 from cli.deps import render_runtime_dir
 from lib.common import node_child_env
+from lib.profile_assets import NAME_RE
 from serve.common import (
     MONTAJ_ROOT,
     _allowed_file_roots,
@@ -122,6 +123,9 @@ async def create_overlay_group(body: dict = Body(...)):
 @router.get("/profiles/{name}/overlays")
 async def list_profile_overlays(name: str):
     """List overlays from a profile's overlay library (~/.montaj/profiles/{name}/overlays/)."""
+    # low 18: `{name}` is the profile segment; a `..` or `\` would escape the profiles folder.
+    if not NAME_RE.match(name or ""):
+        raise bad_request("invalid_name", "Invalid profile name")
     overlays_dir = Path.home() / ".montaj" / "profiles" / name / "overlays"
     return scan_overlays(overlays_dir)
 
@@ -129,6 +133,10 @@ async def list_profile_overlays(name: str):
 @router.post("/profiles/{name}/overlays/groups", status_code=201)
 async def create_profile_overlay_group(name: str, body: dict = Body(...)):
     """Create a new group folder inside ~/.montaj/profiles/{name}/overlays/."""
+    # low 18: `{name}` is the profile segment; a `..` or `\` would escape the profiles folder and
+    # mkdir anywhere. Require the same plain-name shape profile_assets uses.
+    if not NAME_RE.match(name or ""):
+        raise bad_request("invalid_name", "Invalid profile name")
     group = str(body.get("name", "")).strip()
     if not group or "/" in group or "\\" in group or group.startswith("."):
         raise bad_request("invalid_name", "Invalid group name")

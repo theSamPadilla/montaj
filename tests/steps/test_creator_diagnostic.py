@@ -193,3 +193,29 @@ def test_music_threshold_from_measured_clips(monkeypatch):
         monkeypatch.setattr(detect_beats, "analyze", lambda p, c=conf: {"bpm": 100.0, "bpm_confidence": c, "beats": []})
         music, _ = cd._music("x.mp4", [])
         assert music["likely"] is likely, (conf, music)
+
+
+def test_check_inbox_refuses_a_project_folder(tmp_path):
+    # M10: the inbox is deleted from, so it must not be a project folder.
+    proj = tmp_path / "proj"; proj.mkdir()
+    (proj / "project.json").write_text("{}")
+    with pytest.raises(SystemExit):
+        cd.check_inbox(str(proj))
+    plain = tmp_path / "vids"; plain.mkdir()
+    cd.check_inbox(str(plain))  # no project.json: fine
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg missing")
+def test_a_failed_measure_keeps_the_inbox_file(tmp_path, fake_whisper_env):
+    # M10: delete only after a successful measure — a file whose measure fails must survive.
+    inbox, out = tmp_path / "inbox", tmp_path / "out"
+    inbox.mkdir()
+    good = inbox / "good.mp4"; _clip(good)
+    bad = inbox / "bad.mp4"; bad.write_bytes(b"not a video at all")
+    items = [{"path": str(good)}, {"path": str(bad)}]
+    proc = run_step_env("creator_diagnostic.py", fake_whisper_env, "--items", json.dumps(items),
+                        "--out", str(out), "--inbox", str(inbox),
+                        "--whisper-model", "base.en", "--language", "en")
+    assert proc.returncode == 0, proc.stderr          # good.mp4 measured, so the run succeeds
+    assert not good.exists()                           # measured, in inbox: deleted
+    assert bad.exists()                                # measure failed: the user's file is kept

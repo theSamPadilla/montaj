@@ -168,3 +168,26 @@ def test_sidecar_wrong_types_are_omitted(tmp_path):
     assert len(entries) == 1
     for k in ("durationSeconds", "fps", "width", "height", "googleFonts", "opaque", "defaults"):
         assert k not in entries[0]
+
+
+# ── low 18: the profile {name} segment is validated before any mkdir ──────────
+
+# (a `/` in the name — %2f — is rejected by the router itself before the handler, so only single-segment
+# bad names reach the guard: a dot, a tilde, and an encoded backslash traversal.)
+@pytest.mark.parametrize("bad", ["a.b", "a~b", "%2e%2e%5cwin"])
+def test_profile_overlay_group_rejects_a_bad_profile_name(bad):
+    r = client.post(f"/api/profiles/{bad}/overlays/groups", json={"name": "grp"})
+    assert r.status_code == 400 and r.json()["detail"]["error"] == "invalid_name", (bad, r.status_code)
+
+
+@pytest.mark.parametrize("bad", ["a.b", "a~b"])
+def test_list_profile_overlays_rejects_a_bad_profile_name(bad):
+    r = client.get(f"/api/profiles/{bad}/overlays")
+    assert r.status_code == 400 and r.json()["detail"]["error"] == "invalid_name", (bad, r.status_code)
+
+
+def test_profile_overlay_group_accepts_a_plain_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    r = client.post("/api/profiles/default/overlays/groups", json={"name": "grp"})
+    assert r.status_code == 201, r.text
+    assert (tmp_path / ".montaj" / "profiles" / "default" / "overlays" / "grp").is_dir()
