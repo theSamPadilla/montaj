@@ -1509,6 +1509,15 @@ export interface VideoEditorProps<P extends Project = Project> {
    */
   syncedProject?: boolean
   /**
+   * Called when the editor goes busy or idle, on transitions only. Busy is a
+   * save in flight or a gesture open (a drag, trim or slider whose preview is
+   * not yet committed or cancelled); a gesture that starts during a save keeps
+   * it busy until both end. Never called on mount with false, and not after
+   * unmount (no final false). A host that syncs the project uses it to hold a
+   * pull while a person is mid-edit. Absent: nothing extra happens.
+   */
+  onBusyChange?: (busy: boolean) => void
+  /**
    * Where the host's `slots.assetsPanel` is placed in the review layout:
    * - `'sidebar'` — stacked inside the right-hand version/run-history rail, below
    *   it, sharing one column. This is the historical Montaj-local OS layout

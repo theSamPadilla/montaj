@@ -76,6 +76,15 @@ export interface UseProjectSyncOptions<P extends Project> {
    * notice draws it here. Read through a ref.
    */
   onHistoryPruned?: (info: HistoryPruned) => void
+  /**
+   * Called when the editor goes busy or idle: busy is a save in flight or a
+   * gesture open (a preview not yet committed or cancelled). Fires on
+   * transitions only, so never with a repeated value and never on mount with
+   * false; a gesture that starts during a save keeps it busy until both end.
+   * Not called after unmount (no final false). Read through a ref; absent, the
+   * hook does nothing extra.
+   */
+  onBusyChange?: (busy: boolean) => void
 }
 
 export interface UseProjectSync<P extends Project = Project> {
@@ -181,11 +190,32 @@ export function useProjectSync<P extends Project = Project>(
   const [project, setProject] = useReducer((_prev: P, next: P) => next, initial)
   const [connection, setConnection] = useState<Connection>('connecting')
   const [lastError, setLastError] = useState<string | null>(null)
-  const queue = useRef(createMutationQueue())
+  // Busy (a save in flight or a gesture open) is recomputed at every point
+  // either can change, and reported only when it differs from the last report.
+  const onBusyChangeRef = useRef(options?.onBusyChange)
+  onBusyChangeRef.current = options?.onBusyChange
+  const reportedBusy = useRef(false)
+  const mounted = useRef(true)
+  const checkBusyRef = useRef<() => void>(() => {})
+  const queue = useRef(createMutationQueue(() => checkBusyRef.current()))
 
   // Snapshot taken before the first transient mutation in the current gesture.
   // Reset to null after a successful commit or a non-transient mutation.
   const transientBaseline = useRef<P | null>(null)
+
+  const checkBusy = useCallback(() => {
+    const cb = onBusyChangeRef.current
+    if (!cb || !mounted.current) return
+    const busy = queue.current.isPending() || transientBaseline.current !== null
+    if (busy === reportedBusy.current) return
+    reportedBusy.current = busy
+    cb(busy)
+  }, [])
+  checkBusyRef.current = checkBusy
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
   // True when an external frame cleared the baseline of a gesture in progress:
   // the pre-gesture document is gone, so the next commit() cannot say what the
@@ -253,7 +283,8 @@ export function useProjectSync<P extends Project = Project>(
     if (transientBaseline.current !== null) baselineLost.current = true
     transientBaseline.current = null
     setProject(next)
-  }, [])
+    checkBusy()
+  }, [checkBusy])
 
   // Undo/redo: snapshot-based stacks of full project state. Each committed local
   // mutation pushes the pre-mutation snapshot (with the keys that mutation added
@@ -426,7 +457,8 @@ export function useProjectSync<P extends Project = Project>(
     const next = fn(base)
     projectRef.current = next
     setProject(next)
-  }, [])
+    checkBusy()
+  }, [checkBusy])
 
   // commit() — enqueues ONE save with the current (post-gesture) state. On
   // failure, rolls back to the pre-gesture baseline. One undo step per gesture:
@@ -467,7 +499,8 @@ export function useProjectSync<P extends Project = Project>(
     baselineLost.current = false
     projectRef.current = baseline
     setProject(baseline)
-  }, [])
+    checkBusy()
+  }, [checkBusy])
 
   // undo()/redo(): restore the keys the step's edit changed, on top of the
   // current project (see HistoryEntry), and enqueue a save so the host persists

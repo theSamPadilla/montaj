@@ -24,13 +24,18 @@ export interface MutationQueue {
   onceDrained(cb: () => void): void
 }
 
-export function createMutationQueue(): MutationQueue {
+/**
+ * `onChange`, when given, runs after `pending` changes (an op enqueued, or one
+ * settled and counted off), so a caller can watch the queue go busy and idle.
+ */
+export function createMutationQueue(onChange?: () => void): MutationQueue {
   let tail: Promise<unknown> = Promise.resolve()
   let pending = 0
   let onDrain: (() => void) | null = null
   return {
     enqueue<T>(fn: () => Promise<T>): Promise<T> {
       pending++
+      onChange?.()
       const next = tail.catch(() => undefined).then(() => fn())
       // Chain the decrement onto the swallowed `tail`, NOT onto `next`. The
       // caller's rejection handling lives on `next`; adding a .finally() to
@@ -45,6 +50,7 @@ export function createMutationQueue(): MutationQueue {
           onDrain = null
           cb()
         }
+        onChange?.()
       })
       return next
     },
