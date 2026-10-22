@@ -1960,3 +1960,34 @@ def test_dark_r40_with_the_var_unset_nothing_new_is_read_compared_or_locked(ws, 
     assert isinstance(_tracks(d)[0], dict)
     assert compared == []
     assert spy.touched("studio-sync") == [] and spy.touched("clash-set") == []
+
+
+# ── 1, the audit: include-asset lands a file too ──────────────────────────────
+
+
+@pytest.fixture
+def brand_logo(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".montaj" / "profiles" / "brand" / "assets").mkdir(parents=True)
+    (home / ".montaj" / "profiles" / "brand" / "assets" / "logo.png").write_bytes(b"png")
+    monkeypatch.setenv("HOME", str(home))
+    return {"from": {"profile": "brand", "filename": "logo.png"}}
+
+
+def test_r1_audit_include_asset_is_checked_on_the_file_it_lands(ws, state, brand_logo):
+    """A clashed file that does not exist here yet (theirs only) could be created by an asset include."""
+    d = _project(ws, profile="brand", assets=[])
+    _sidecar(state, files=["logo.png"])
+    before = _disk(d)
+    _refused(_client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=DRIVE), ["logo.png"])
+    assert not (d / "logo.png").exists() and _disk(d) == before
+    assert _client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=EDITOR).status_code == 200
+
+
+def test_r1_audit_include_asset_is_checked_on_the_name_it_really_lands_on(ws, state, brand_logo, monkeypatch):
+    d = _project(ws, profile="brand", assets=[])
+    (d / "logo.png").write_bytes(b"mine")
+    _sidecar(state, files=["logo_asset2.png"])
+    before = _disk(d)
+    _refused(_client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=DRIVE), ["logo_asset2.png"])
+    assert sorted(p.name for p in d.iterdir()) == ["logo.png", "project.json"] and _disk(d) == before
