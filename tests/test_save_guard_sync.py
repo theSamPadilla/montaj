@@ -2405,3 +2405,55 @@ def test_harden_pin_no_notice_with_the_var_unset_a_folder_there_or_in_a_step(ws,
     missing_log._missing_log.update(armed=False, logged=False)
     _sc().check_step_write(PID, ["notes"])
     assert _notices(capsys.readouterr().err) == []
+
+
+# ── sg2: two whole-project clashes, a file held inside an owned folder, a pull deleting a clashed field ──
+
+TWO_STARS = [{"id": "c1", "fields": ["*"], "files": ["*"]},
+             {"id": "c2", "fields": ["*"], "files": ["*"]}]
+
+
+def test_sg2_a_star_resolve_is_not_held_by_another_clashs_star(ws, state):
+    d = _project(ws)
+    (d / "overlays").mkdir()
+    _sidecar(state, fields=["*"], files=["*"], clashes=TWO_STARS)
+    resp = _put(ws, {"name": "renamed", "tracks": [{"id": "trk-9", "items": []}]}, RESOLVE("c1"))
+    assert resp.status_code == 200, resp.text
+    assert _write_file(d / "overlays" / "b.jsx", RESOLVE("c2")).status_code == 200
+
+
+def test_sg2_unit_two_stars_hold_nothing_but_a_named_field_or_file_still_holds():
+    sc = _sc()
+    two = sc._parse(json.dumps({"v": 1, "projectId": PID, "fields": ["*"], "files": ["*"],
+                                "clashes": TWO_STARS}).encode(), PID)
+    assert sc.outside_clash(two, "c1", ["name"], ["overlays/b.jsx"], ["tracks"]) == []
+    assert sc.outside_clash(two, "c1", everything=True) == []
+    three = sc._parse(json.dumps({"v": 1, "projectId": PID, "fields": ["*", "captions"],
+                                  "files": ["*", "overlays/a.jsx"],
+                                  "clashes": [*TWO_STARS, {"id": "c3", "fields": ["captions"],
+                                                           "files": ["overlays/a.jsx"]}]}).encode(), PID)
+    assert sc.outside_clash(three, "c1", ["captions", "name"], ["overlays/a.jsx", "overlays/b.jsx"]) \
+        == ["captions", "overlays/a.jsx"]
+    assert sc.outside_clash(three, "c1", everything=True) == ["captions", "overlays/a.jsx"]
+
+
+def test_sg2_a_resolve_owning_a_folder_may_not_write_a_file_another_clash_names_inside_it(ws, state):
+    d = _project(ws)
+    (d / "models" / "robot").mkdir(parents=True)
+    _sidecar(state, files=["models/robot/", "models/robot/rig.json"], clashes=[
+        {"id": "c1", "fields": [], "files": ["models/robot/"]},
+        {"id": "c2", "fields": [], "files": ["models/robot/rig.json"]}])
+    _refused(_write_file(d / "models" / "robot" / "rig.json", RESOLVE("c1")), ["models/robot/rig.json"])
+    assert not (d / "models" / "robot" / "rig.json").exists()
+    assert _write_file(d / "models" / "robot" / "mesh.bin", RESOLVE("c1")).status_code == 200
+    assert _write_file(d / "models" / "robot" / "rig.json", RESOLVE("c2")).status_code == 200
+
+
+def test_sg2_a_sync_pull_may_delete_a_field_that_is_in_an_open_clash(ws, state):
+    # Decision: the pull writes the merge, and the merge keeps mine at clash targets, so a clashed field
+    # reaches the pull as null only when the merge itself decided it. Serve lets it through with 200.
+    d = _project(ws)
+    _sidecar(state, fields=["notes"])
+    resp = _put(ws, {"notes": None}, SYNC)
+    assert resp.status_code == 200, resp.text
+    assert "notes" not in json.loads(_disk(d))
