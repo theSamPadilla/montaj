@@ -16,6 +16,7 @@ import { useEnginePlayback, type EnginePlayback } from './useEnginePlayback'
 import EngineSurface from './EngineSurface'
 import { checkProjectShapeEligibility, evaluateEngineEligibility, engineRequiredReason } from '../../engine/eligibility'
 import type { AcquiredDemux, MixerScrub } from '../../engine'
+import { useMissingClips, missingClipAt, missingClipsAhead, missingDetail, MISSING_TITLE } from '../missingClips'
 import { usePlaybackTime, type PlaybackClock } from '../playback-clock'
 import { gateTimeSink, handOverToHover, useHoverScrubTime, type HoverScrub } from '../hover-scrub'
 import { sourceCropVideoStyle } from './sourceCropStyle'
@@ -271,6 +272,11 @@ function useEngineMode(
 ): EngineMode | null {
   const enabled = !!engine?.enabled
   const projectId = project.id
+  // Absent footage keeps the project on the legacy player, which sets no src
+  // for a missing clip; the engine would fetch it and fail.
+  const { ids: missingIds } = useMissingClips()
+  const hasMissingRef = useRef(missingIds.size > 0)
+  hasMissingRef.current = missingIds.size > 0
   const [decision, setDecision] = useState<EngineDecision | null>(null)
 
   useEffect(() => {
@@ -280,8 +286,10 @@ function useEngineMode(
     // later. A capability failure is session-cached and final, so a project
     // that failed on it is never re-probed.
     const shapeFailed = !checkProjectShapeEligibility(project).eligible
-    void evaluateEngineEligibility(project).then((result) => {
+    void evaluateEngineEligibility(project).then((evaluated) => {
+      let result = evaluated
       if (cancelled) return
+      if (hasMissingRef.current) result = { ...result, eligible: false, reason: 'footage missing' }
       if (!result.eligible) {
         // ONE line, with the reason. Not a warning: falling back is the
         // designed behavior, not a fault.
@@ -511,11 +519,34 @@ function PreviewSurface({
   // from the render that last wrote the ref.
   // Engine mode carries the real rate knob; the legacy path has none (no-op).
   const setRate = playback.mode === 'engine' ? playback.setRate : NO_RATE
+
+  // Absent footage: starting play with a missing clip at or ahead of the
+  // playhead is refused, through the host's onError, naming the clips. Pausing
+  // is never refused. With no `missingClips` this is the plain togglePlay.
+  const { ids: missingIds, notify: notifyMissing } = useMissingClips()
+  const missingHere = missingIds.size > 0 ? missingClipAt(project, missingIds, currentTime) : null
+  const guardRef = useRef({ project, missingIds, notifyMissing, currentTime, isPlaying })
+  guardRef.current = { project, missingIds, notifyMissing, currentTime, isPlaying }
+  const rawTogglePlayRef = useRef(playback.togglePlay)
+  rawTogglePlayRef.current = playback.togglePlay
+  const guardedTogglePlay = useCallback(() => {
+    const g = guardRef.current
+    if (!g.isPlaying && g.missingIds.size > 0) {
+      const blocking = missingClipsAhead(g.project, g.missingIds, g.currentTime)
+      if (blocking.length > 0) {
+        const notice = { title: MISSING_TITLE, detail: missingDetail(blocking) }
+        if (g.notifyMissing) g.notifyMissing(notice)
+        else console.warn(`[montaj] ${notice.title}: ${notice.detail}`)
+        return
+      }
+    }
+    rawTogglePlayRef.current()
+  }, [])
   useEffect(() => {
     if (!transportRef) return
-    transportRef.current = { togglePlay, isPlaying: () => isPlaying, setRate }
+    transportRef.current = { togglePlay: guardedTogglePlay, isPlaying: () => isPlaying, setRate }
     return () => { transportRef.current = null }
-  }, [transportRef, togglePlay, isPlaying, setRate])
+  }, [transportRef, guardedTogglePlay, isPlaying, setRate])
 
   // Push play/pause to the host. Held in a ref so a new callback identity
   // never re-fires it; only a real `isPlaying` change does.
@@ -675,7 +706,7 @@ function PreviewSurface({
     <div style={FIT_PARENT_STYLE}>
     <div ref={containerRef} data-montaj-preview-frame="" className="relative bg-black overflow-hidden rounded" style={{ ...fitBoxStyle(RENDER_W, RENDER_H), isolation: 'isolate' }}>
       {isCanvasProject ? (
-        <div className="absolute inset-0 cursor-pointer" style={{ zIndex: 10 }} role="button" aria-label="Play or pause" onClick={togglePlay} />
+        <div className="absolute inset-0 cursor-pointer" style={{ zIndex: 10 }} role="button" aria-label="Play or pause" onClick={guardedTogglePlay} />
       ) : clips.length === 0 ? (
         <div className="absolute inset-0 flex items-center justify-center text-gray-600 text-sm">
           No clips
@@ -753,6 +784,19 @@ function PreviewSurface({
         </div>
       )}
 
+      {/* Absent footage under the playhead: a card in place of the picture.
+          Under the play-toggle (z 10) so a click still reaches it. */}
+      {missingHere && (
+        <div
+          data-testid="footage-missing-card"
+          className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-[var(--editor-surface)] text-[var(--editor-text)] pointer-events-none"
+          style={{ zIndex: 9 }}
+        >
+          <span className="text-sm font-medium">Footage missing</span>
+          <span className="text-xs opacity-60 max-w-[80%] truncate">{missingHere.name}</span>
+        </div>
+      )}
+
       {/* Base-video transform handles — drag to move, corner-drag or scroll to
           zoom. Shown only when the on-screen clip is selected. Above the
           play-toggle (z 10), below overlays (z 12+). */}
@@ -799,7 +843,7 @@ function PreviewSurface({
           style={{ zIndex: 10 }}
           role="button"
           aria-label="Play or pause"
-          onClick={togglePlay}
+          onClick={guardedTogglePlay}
         />
       )}
 

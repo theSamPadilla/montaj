@@ -997,6 +997,9 @@ export interface ClipDrawArgs {
   label: string
   /** A skipped track's clips are faded — the DOM path's `opacity-30`. */
   dimmed?: boolean
+  /** The clip's footage is absent: drawn dimmed with a diagonal hatch in the
+   *  track's own border colour. */
+  missing?: boolean
   /** Content layer drawn between the fill/border and the label — the T6
    *  per-clip waveform hooks in here (filmstrip, T7, will too). Receives the
    *  same rect as the clip itself. */
@@ -1122,6 +1125,22 @@ export function drawItemHandles(
   }
 }
 
+/** Diagonal stripes over a clip whose footage is absent. Drawn inside the
+ *  caller's body clip, in the track's own border colour (a theme token). */
+const MISSING_HATCH_GAP_PX = 8
+function drawMissingHatch(ctx: DrawContext, body: Rect, color: string): void {
+  ctx.save()
+  ctx.strokeStyle = color
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  for (let x = body.x - body.height; x < body.x + body.width; x += MISSING_HATCH_GAP_PX) {
+    ctx.moveTo(x, body.y + body.height)
+    ctx.lineTo(x + body.height, body.y)
+  }
+  ctx.stroke()
+  ctx.restore()
+}
+
 /** `args.palette` is the TRACK's own hue (already resolved by the caller from
  *  the mode-appropriate cycle); the trailing `palette` is the surface-wide set
  *  the mode-independent furniture — the selection outline, the label's halo —
@@ -1131,7 +1150,7 @@ export function drawClipRect(
   args: ClipDrawArgs,
   palette: TimelinePalette = DARK_TIMELINE_PALETTE,
 ): void {
-  const { rect, palette: trackPalette, selected, label, dimmed, drawContent } = args
+  const { rect, palette: trackPalette, selected, label, dimmed, drawContent, missing } = args
   if (rect.width <= 0) return
 
   const body = clipBodyRect(rect)
@@ -1141,6 +1160,7 @@ export function drawClipRect(
 
   ctx.save()
   if (dimmed) ctx.globalAlpha = 0.3
+  else if (missing) ctx.globalAlpha = 0.5
 
   // Fill and content clipped to the rounded body, so filmstrip tiles and
   // waveform bars stop at the corners instead of squaring them off.
@@ -1150,6 +1170,7 @@ export function drawClipRect(
   ctx.fillStyle = selected ? trackPalette.fillSelected : trackPalette.fill
   ctx.fillRect(body.x, body.y, body.width, body.height)
   drawContent?.(ctx, body)
+  if (missing) drawMissingHatch(ctx, body, trackPalette.border)
   ctx.restore()
 
   // The outline is the selection. A 1px inset ring in the track's own hue was
@@ -1831,6 +1852,9 @@ export interface TimelineScene {
    *  clip rect). Absent → no filmstrips drawn, same graceful omission as
    *  `waveforms`. */
   filmstrips?: FilmstripSceneLookup
+  /** Item ids whose footage is absent. Such a clip draws dimmed and hatched and
+   *  is never asked for a filmstrip or a waveform. Absent/empty → no change. */
+  missingClips?: ReadonlySet<string>
   /** Which ground to paint on, resolved from the host theme by `VideoEditor`.
    *  Absent → `'dark'`, so every caller that predates light mode — and every
    *  existing test — paints byte-identical pixels. */
@@ -2210,8 +2234,9 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
       // Both lookups size to the BODY, the rect `drawClipRect` actually paints
       // into — not the full span, which is two gutters wider.
       const body = clipBodyRect(rect)
-      const clipWaveform = scene.waveforms?.clipColumns(item, body) ?? null
-      const filmstripTiles = scene.filmstrips?.clipTiles(item, body) ?? null
+      const itemMissing = scene.missingClips?.has(item.id) === true
+      const clipWaveform = itemMissing ? null : (scene.waveforms?.clipColumns(item, body) ?? null)
+      const filmstripTiles = itemMissing ? null : (scene.filmstrips?.clipTiles(item, body) ?? null)
       // Mirrors `effectiveItemAudio`'s track-or-item OR without needing a full
       // VisualTrack in scope here — `row.trackMuted` already folded in the
       // track's own `muted`, so only the item's is left to OR in.
@@ -2237,6 +2262,7 @@ export function drawTimelineContent(ctx: DrawContext, scene: TimelineScene): Dra
         label: visualItemLabel(item),
         dimmed,
         drawContent,
+        missing: itemMissing,
       }, themePalette)
       // The keyframe strip (SP9b T3.3): selected, keyframed overlays only —
       // see `drawKeyframeStrip`'s own doc for why this is gated here rather

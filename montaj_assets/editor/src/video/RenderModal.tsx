@@ -112,6 +112,15 @@ interface RenderModalProps<P extends Project = Project> {
    *  follow the theme tokens instead. Absent -> dark,
    *  matching every existing caller. */
   mode?: 'light' | 'dark'
+  /** Names of clips on enabled tracks whose footage is absent
+   *  (`VideoEditorProps.missingClips`). When non-empty the render is refused,
+   *  never started, and the failed state lists them. Absent/empty → no change. */
+  missingClipNames?: readonly string[]
+}
+
+/** The refusal text for an export blocked by absent footage. */
+export function missingFootageMessage(names: readonly string[]): string {
+  return `Footage missing: ${names.join(', ')}`
 }
 
 /** Promoted render output (R2-presigned), as carried by `RenderStatus.media`. */
@@ -390,7 +399,7 @@ function ProgressBar({ value }: { value: number | null }) {
   )
 }
 
-export default function RenderModal<P extends Project = Project>({ projectId, adapter, onClose, onCancel, onRenderComplete, exportActions, progressView, preRenderOptions, mode = 'dark' }: RenderModalProps<P>) {
+export default function RenderModal<P extends Project = Project>({ projectId, adapter, onClose, onCancel, onRenderComplete, exportActions, progressView, preRenderOptions, mode = 'dark', missingClipNames }: RenderModalProps<P>) {
   const [status, setStatus]     = useState<'running' | 'done' | 'error'>('running')
   const [phase, setPhase]       = useState<RenderPhase>('preparing')
   const [logs, setLogs]         = useState<string[]>([])
@@ -567,6 +576,14 @@ export default function RenderModal<P extends Project = Project>({ projectId, ad
 
   useEffect(() => {
     if (!started) return
+
+    // Absent footage on an enabled track: refuse before anything is sent to
+    // the adapter, and say which clips.
+    if (missingClipNames && missingClipNames.length > 0) {
+      setError(missingFootageMessage(missingClipNames))
+      setStatus('error')
+      return
+    }
 
     // React StrictMode in dev fires mount → cleanup → mount synchronously to
     // catch effects that aren't idempotent. Triggering a render is the textbook

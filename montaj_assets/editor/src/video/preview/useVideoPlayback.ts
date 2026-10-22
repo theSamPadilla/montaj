@@ -17,6 +17,7 @@ import {
 import type { EditorProject as Project, VisualItem, VisualTrack } from '../../schema'
 import { NO_MIXER, type MixerState } from '../../engine'
 import { createLegacyMixer, type LegacyMixer, type LegacyMixerDeps } from './legacy-mixer'
+import { useMissingClips } from '../missingClips'
 import { audioEnd, effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../timeline/timeline-model'
 
 // Typed extension for video elements that cache their GainNode
@@ -209,6 +210,12 @@ export function useVideoPlayback(
   // Keep fileUrl in a ref so callbacks that captured it early don't go stale
   const fileUrlRef = useRef(fileUrl)
   useEffect(() => { fileUrlRef.current = fileUrl }, [fileUrl])
+  // Clips whose footage is absent (`VideoEditorProps.missingClips`): no src is
+  // ever set for them, so there is no 404 and no proxy-fallback churn.
+  const { ids: missingIds } = useMissingClips()
+  const missingIdsRef = useRef(missingIds)
+  missingIdsRef.current = missingIds
+  const isMissing = (clip: { id: string }) => missingIdsRef.current.has(clip.id)
 
   // The AUDIBLE-time bridge to the store. Every playback-advance emission in
   // this hook (rAF canvas tick, gap tick, `handleTimeUpdate`, clip-switch and
@@ -683,7 +690,7 @@ export function useVideoPlayback(
     // (proxyFailTick bump) changes the identity and triggers the reload that
     // swaps the clip back to its master.
     const identity = clips
-      .map(c => `${c.nobg_preview_src ?? ''}|${isProxyUsable(c.proxySrc) ? c.proxySrc : ''}|${c.src}|${c.inPoint ?? 0}|${c.outPoint ?? ''}`)
+      .map(c => `${c.nobg_preview_src ?? ''}|${isProxyUsable(c.proxySrc) ? c.proxySrc : ''}|${c.src}|${c.inPoint ?? 0}|${c.outPoint ?? ''}|${missingIds.has(c.id) ? 'm' : ''}`)
       .join(',')
     if (identity === clipsSourceRef.current) return
     clipsSourceRef.current = identity
@@ -692,13 +699,18 @@ export function useVideoPlayback(
     loopOffsetRef.current = 0
     setActiveSlot(0)
     preloadSrcRef.current = ''
-    video.src = fileUrlRef.current(playbackSrcFor(clips[0]))
-    video.currentTime = effectiveInPoint(clips[0])
+    if (isMissing(clips[0])) {
+      video.pause()
+      video.removeAttribute('src')
+    } else {
+      video.src = fileUrlRef.current(playbackSrcFor(clips[0]))
+      video.currentTime = effectiveInPoint(clips[0])
+    }
     applyClipVolume(clips[0])
     // Clear inactive slot
     const inactive = getInactiveVideo()
     if (inactive) { inactive.pause(); inactive.removeAttribute('src') }
-  }, [clips, proxyFailTick])
+  }, [clips, proxyFailTick, missingIds])
 
   const handlePause = useCallback(() => {
     // Ignore pause events while the gap clock owns playback state
@@ -799,6 +811,12 @@ export function useVideoPlayback(
       activeIdxRef.current = clipIdx
       const video = getActiveVideo()
       if (!video) return
+      if (isMissing(clip)) {
+        video.pause()
+        video.removeAttribute('src')
+        preloadSrcRef.current = ''
+        return
+      }
       const targetSrc = fileUrlRef.current(playbackSrcFor(clip))
       if (video.src !== targetSrc) {
         video.src = targetSrc
@@ -861,7 +879,7 @@ export function useVideoPlayback(
     // current clip as runway instead; the preloadSrcRef guard keeps it idempotent
     // and a scrub clears it.
     const nextIdx = activeIdxRef.current + 1
-    if (nextIdx < clips.length && clips[nextIdx].src) {
+    if (nextIdx < clips.length && clips[nextIdx].src && !isMissing(clips[nextIdx])) {
       const inactiveVideo = slot === 0 ? video1Ref.current : video0Ref.current
       const nextSrc = fileUrlRef.current(playbackSrcFor(clips[nextIdx]))
       if (inactiveVideo && preloadSrcRef.current !== nextSrc) {

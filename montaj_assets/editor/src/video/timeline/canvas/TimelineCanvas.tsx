@@ -33,6 +33,7 @@
  * hook does it.
  */
 
+import { useMissingClips } from '../../missingClips'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { GetFilmstripArgs, GetWaveformPeaksArgs, FilmstripIndex, PeaksData, PendingDrop, Project, FootageDropPayload, ResolveFilePath, TimelineDropPlacement, TimelinePin } from '../../../types'
 import { FOOTAGE_DND_MIME } from '../../../types'
@@ -515,8 +516,9 @@ export default function TimelineCanvas({
   // at the old one would float over the wrong track.
   const pendingDropBandList = useMemo(() => pendingDropBands(pendingDrops, layout), [pendingDrops, layout])
 
-  const sceneRef = useRef({ project, layout, selectedIds, selectedKeyframe, totalDuration, mode, pendingDropBandList, pins })
-  sceneRef.current = { project, layout, selectedIds, selectedKeyframe, totalDuration, mode, pendingDropBandList, pins }
+  const { ids: missingClips } = useMissingClips()
+  const sceneRef = useRef({ project, layout, selectedIds, selectedKeyframe, totalDuration, mode, pendingDropBandList, pins, missingClips })
+  sceneRef.current = { project, layout, selectedIds, selectedKeyframe, totalDuration, mode, pendingDropBandList, pins, missingClips }
 
   // The preview-axis cursor, tracked imperatively for the same reason the
   // filmstrip hover thumb is: it moves with every mousemove, and a React state
@@ -624,6 +626,7 @@ export default function TimelineCanvas({
           filmstrips,
           mode: scene.mode,
           pins: scene.pins,
+          missingClips: scene.missingClips,
         })
       }
     }
@@ -775,7 +778,7 @@ export default function TimelineCanvas({
   // dependency of `layout` above (so a new list always produces a new layout
   // object): the redundancy is the point — it keeps this repaint correct if the
   // layout memo's deps are ever narrowed.
-  useEffect(() => { requestRedraw('content') }, [project, layout, selectionKey, selectedKeyframe, pins, requestRedraw])
+  useEffect(() => { requestRedraw('content') }, [project, layout, selectionKey, selectedKeyframe, pins, missingClips, requestRedraw])
 
   // ── Overlay: the pending-import ghosts ──
   //

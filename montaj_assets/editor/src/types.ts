@@ -1422,6 +1422,22 @@ export interface VideoEditorProps<P extends Project = Project> {
   readOnly?: boolean
   onBackToSetup?: () => void
   /**
+   * Ids of track items (`tracks[*][*].id`) whose footage file is absent. Those
+   * clips draw dimmed and hatched on the timeline with no filmstrip or
+   * waveform, the preview shows a "Footage missing" card and loads nothing for
+   * them, play is refused, and export is refused with the list of names. Moving,
+   * trimming, deleting and the inspector keep working. Absent or empty:
+   * nothing changes. Never stored in the project.
+   */
+  missingClips?: ReadonlySet<string>
+  /**
+   * A failure the user should see, which the editor does not show itself.
+   * Today one: Play was refused because `missingClips` names footage on an
+   * enabled track (`title` is "Footage missing", `detail` the clip names). The
+   * host shows it its own way. Absent: logged to the console.
+   */
+  onError?: (notice: { title: string; detail: string }) => void
+  /**
    * What renders while `project.status === 'pending'`:
    * - `'default'` — the built-in pending surface (agent prompt, `slots.pendingStatus`,
    *   project id, back-to-setup).

@@ -47,6 +47,7 @@ import TabNav from './panels/TabNav'
 import VersionCompare from './VersionCompare'
 import CaptionListPanel, { type CaptionListPanelProps, type CaptionEditFocusRequest, nextEditFocus } from './CaptionListPanel'
 import RenderModal from './RenderModal'
+import { MissingClipsProvider, useMissingClips, enabledMissingClips } from './missingClips'
 import CaptionRegenModal from './CaptionRegenModal'
 import AudioPolishModal from './AudioPolishModal'
 import CommandPalette, { type PaletteCommand } from './CommandPalette'
@@ -267,6 +268,8 @@ export default function VideoEditor<P extends Project = Project>({
   theme,
   slots,
   onBackToSetup,
+  missingClips,
+  onError,
   pendingSurface = 'default',
   onUserEdit,
   assetsPlacement = 'right',
@@ -432,6 +435,7 @@ export default function VideoEditor<P extends Project = Project>({
 
   if (isPending && pendingSurface !== 'host') {
     return (
+      <MissingClipsProvider ids={missingClips} notify={onError}>
       <div ref={containerRef} className="flex flex-col h-full bg-[var(--editor-bg)] text-[var(--editor-text)]">
         <PendingSurface
           sync={sync}
@@ -445,10 +449,12 @@ export default function VideoEditor<P extends Project = Project>({
           timelineMode={timelineMode}
         />
       </div>
+      </MissingClipsProvider>
     )
   }
 
   return (
+    <MissingClipsProvider ids={missingClips} notify={onError}>
     <div ref={containerRef} className="flex flex-col h-full bg-[var(--editor-bg)] text-[var(--editor-text)]">
       <ReviewSurface
         sync={sync}
@@ -483,6 +489,7 @@ export default function VideoEditor<P extends Project = Project>({
         timelineMode={timelineMode}
       />
     </div>
+    </MissingClipsProvider>
   )
 }
 
@@ -1136,6 +1143,13 @@ function ReviewSurface<P extends Project>({
   // tracks[0] video item. Cleared when selection changes.
   const [cropMode, setCropMode]       = useState(false)
   const [renderOpen, setRenderOpen]   = useState(false)
+  // Footage the host says is absent: the export dialog refuses to render while
+  // any of it sits on an enabled track.
+  const { ids: missingIds } = useMissingClips()
+  const missingForExport = useMemo(
+    () => (missingIds.size === 0 ? [] : Array.from(new Set(enabledMissingClips(sync.project, missingIds).map(c => c.name)))),
+    [sync.project, missingIds],
+  )
   const [regenCaptionsOpen, setRegenCaptionsOpen] = useState(false)
   // Opens the caption-regeneration modal — CaptionListPanel's toolbar button.
   // `onRegenerateCaptions` (host prop) wins when provided: a host that passes
@@ -3323,6 +3337,7 @@ function ReviewSurface<P extends Project>({
             exportActions={slots?.exportActions}
             progressView={renderProgressView}
             preRenderOptions={preRenderOptions}
+            missingClipNames={missingForExport}
             onClose={() => setRenderOpen(false)}
             onCancel={() => setRenderOpen(false)}
             onRenderComplete={() => { void refreshVersions() }}
