@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useProjectSync } from '../use-project-sync'
-import type { EditorAdapter, Project, ImageElement, RenderEvent } from '../../types'
+import type { UseProjectSync, UseProjectSyncOptions } from '../use-project-sync'
+import type { EditorAdapter, FrameWriter, Project, ImageElement, RenderEvent } from '../../types'
 import { removeSlideNotes } from '../../carousel/notes'
 import { removeNotes } from '../../video/timeline/notes'
 import { rippleDelete } from '../../video/cuts'
@@ -36,7 +37,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 }
 
 interface FakeAdapter extends EditorAdapter {
-  emit: (p: Project) => void
+  emit: (p: Project, stamp?: FrameWriter) => void
   saveCalls: Array<{ id: string; project: Project; before?: Project; argc: number }>
   unsub: ReturnType<typeof vi.fn>
 }
@@ -46,7 +47,7 @@ function makeFakeAdapter(opts: {
   /** When set, saveProject blocks on this until `release` is called. */
   blockSave?: boolean
 } = {}): FakeAdapter & { release: () => void } {
-  let onFrame: ((p: Project) => void) | null = null
+  let onFrame: ((p: Project, stamp?: FrameWriter) => void) | null = null
   const saveCalls: Array<{ id: string; project: Project; before?: Project; argc: number }> = []
   const unsub = vi.fn(() => { onFrame = null })
   let releaseSave: (() => void) | null = null
@@ -58,7 +59,7 @@ function makeFakeAdapter(opts: {
       if (opts.blockSave) await new Promise<void>((res) => { releaseSave = res })
       if (opts.failSave) throw new Error('save boom')
     }),
-    subscribe: (_id: string, cb: (p: Project) => void) => {
+    subscribe: (_id: string, cb: (p: Project, stamp?: FrameWriter) => void) => {
       onFrame = cb
       return unsub
     },
@@ -71,7 +72,7 @@ function makeFakeAdapter(opts: {
     listSystemOverlays: vi.fn(async () => []),
     uploadFile: vi.fn(async () => '/path'),
     fileUrl: (path: string) => path,
-    emit: (p: Project) => onFrame?.(p),
+    emit: (p: Project, stamp?: FrameWriter) => onFrame?.(p, stamp),
     saveCalls,
     unsub,
     release: () => releaseSave?.(),
@@ -992,5 +993,253 @@ describe('useProjectSync: keyed undo/redo, open gestures, stale baselineLost', (
     act(() => { result.current.redo() })
     await act(async () => { await result.current.commit() })
     expect(adapter.saveCalls[adapter.saveCalls.length - 1].before).toBeDefined()
+  })
+})
+
+// §482 U-1: an undo or redo step restores whole top-level fields from snapshots taken before
+// a teammate's pull, so undoing it after the pull would put the pre-pull clips back. A frame
+// stamped as a sync pull (writer `tool`, origin `sync`) prunes the history instead: a step that
+// changed what the pull changed is dropped (per clip in `tracks`, whole for any other field),
+// the drop cascades to steps that changed what a dropped step changed, and every other step is
+// rebased onto the pulled values. Every other frame leaves the history as it was.
+describe('useProjectSync: a sync pull prunes the undo and redo steps that would revert it (§482 U-1)', () => {
+  type Clip = { id: string; type: 'video'; src: string; start: number; end: number; [k: string]: unknown }
+  const SYNC: FrameWriter = { writer: 'tool', origin: 'sync' }
+  const clip = (id: string, start: number, end: number): Clip =>
+    ({ id, type: 'video', src: `/media/${id}.mp4`, start, end })
+  const video = (): Project => makeProject({
+    workflow: 'video',
+    tracks: [{ id: 'trk-0', items: [clip('A', 0, 5), clip('B', 5, 10)] }],
+    captions: { segments: [{ text: 'hi', start: 0, end: 1 }] },
+  } as unknown as Partial<Project>)
+  const tracksOf = (p: Project) => p.tracks as unknown as Array<{ id: string; items: Clip[] }>
+  const clipOf = (p: Project, id: string): Clip | undefined =>
+    tracksOf(p).flatMap((t) => t.items).find((c) => c.id === id)
+  /** `p` with clip `id` changed by `patch`. */
+  const setClip = (p: Project, id: string, patch: Partial<Clip>): Project => ({
+    ...p,
+    tracks: tracksOf(p).map((t) => ({ ...t, items: t.items.map((c) => (c.id === id ? { ...c, ...patch } : c)) })),
+  } as unknown as Project)
+  const addClip = (p: Project, c: Clip): Project => ({
+    ...p,
+    tracks: tracksOf(p).map((t, i) => (i === 0 ? { ...t, items: [...t.items, c] } : t)),
+  } as unknown as Project)
+  const deepFreeze = <T,>(v: T): T => {
+    if (v && typeof v === 'object') {
+      Object.values(v).forEach(deepFreeze)
+      Object.freeze(v)
+    }
+    return v
+  }
+  /** A frame as a host hands it over: a fresh parse of what was written, frozen so that a
+   *  write into the reloaded document throws. */
+  const frame = (p: Project): Project => deepFreeze(JSON.parse(JSON.stringify(p)) as Project)
+  const caps = (text: string) => ({ segments: [{ text, start: 0, end: 1 }] }) as unknown as Project['captions']
+  const setup = (opts: UseProjectSyncOptions<Project> = {}) => {
+    const adapter = makeFakeAdapter()
+    const initial = video()
+    const hook = renderHook(() => useProjectSync(adapter, initial.id, initial, opts))
+    return { adapter, result: hook.result, initial }
+  }
+  const now = (r: { current: UseProjectSync<Project> }) => r.current.projectRef.current!
+
+  it('a kept step is rebased: undoing an edit of clip A after a pull changed clip B keeps the pulled B, in state and in the save', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+    const pulled = frame(setClip(now(result), 'B', { end: 12 }))
+    act(() => { adapter.emit(pulled, SYNC) })
+    // The reloaded document is applied as it came.
+    expect(result.current.project).toBe(pulled)
+    expect(result.current.canUndo).toBe(true)
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(clipOf(result.current.project, 'A')?.end).toBe(5)
+    expect(clipOf(result.current.project, 'B')?.end).toBe(12)
+    expect(clipOf(adapter.saveCalls[1].project, 'A')?.end).toBe(5)
+    expect(clipOf(adapter.saveCalls[1].project, 'B')?.end).toBe(12)
+  })
+
+  it('a step that changed the pulled clip is dropped, so undo sends nothing that reverts the pull', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+    act(() => { adapter.emit(frame(setClip(now(result), 'B', { end: 12 })), SYNC) })
+    expect(result.current.canUndo).toBe(false)
+    act(() => { result.current.undo() })
+    expect(clipOf(result.current.project, 'B')?.end).toBe(12)
+    expect(adapter.saveCalls).toHaveLength(1)
+  })
+
+  it('a drop cascades: an older step that changed a clip the dropped step also changed is dropped, and an unrelated step still undoes', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'Renamed' })) })
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+    // One edit that moved A's end and B's start together (a ripple).
+    await act(async () => { await result.current.mutate((p) => setClip(setClip(p, 'A', { end: 3 }), 'B', { start: 3 })) })
+    act(() => { adapter.emit(frame(setClip(now(result), 'B', { end: 12 })), SYNC) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(4))
+    expect(result.current.project.name).toBe('Test Project')
+    expect(clipOf(result.current.project, 'A')?.end).toBe(3)
+    expect(clipOf(result.current.project, 'B')).toMatchObject({ start: 3, end: 12 })
+    expect(result.current.canUndo).toBe(false)
+  })
+
+  it('a pull that changes a field it cannot split (captions) drops every step that changed it and keeps the rest', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => ({ ...p, captions: caps('one') })) })
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'Renamed' })) })
+    await act(async () => { await result.current.mutate((p) => ({ ...p, captions: caps('two') })) })
+    act(() => { adapter.emit(frame({ ...now(result), captions: caps('pulled') }), SYNC) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(4))
+    expect(result.current.project.name).toBe('Test Project')
+    expect(result.current.project.captions).toEqual(caps('pulled'))
+    expect(adapter.saveCalls[3].project.captions).toEqual(caps('pulled'))
+    expect(result.current.canUndo).toBe(false)
+  })
+
+  it('redo is pruned the same way', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+    act(() => { result.current.undo() })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(4))
+    act(() => { adapter.emit(frame(setClip(now(result), 'B', { end: 12 })), SYNC) })
+    act(() => { result.current.redo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(5))
+    expect(clipOf(result.current.project, 'A')?.end).toBe(4)
+    expect(clipOf(result.current.project, 'B')?.end).toBe(12)
+    expect(clipOf(adapter.saveCalls[4].project, 'B')?.end).toBe(12)
+    expect(result.current.canRedo).toBe(false)
+  })
+
+  it('a pull that adds a clip keeps an edit of another clip and drops an edit that changed the same track clip list', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+    await act(async () => { await result.current.mutate((p) => addClip(p, clip('X', 10, 12))) })
+    act(() => { adapter.emit(frame(addClip(now(result), clip('D', 12, 14))), SYNC) })
+    // Adding X changed trk-0's clip list, which the pull changed too: that step is dropped.
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(tracksOf(result.current.project)[0].items.map((c) => c.id)).toEqual(['A', 'B', 'X', 'D'])
+    expect(clipOf(result.current.project, 'A')?.end).toBe(5)
+    expect(result.current.canUndo).toBe(false)
+  })
+
+  it.each([
+    ['no stamp', undefined],
+    ['a tool stamp with no origin', { writer: 'tool' }],
+    ['a tool stamp with another origin', { writer: 'tool', origin: 'restore' }],
+    ['an ai write', { writer: 'ai' }],
+    ['an ai write that names origin sync', { writer: 'ai', origin: 'sync' }],
+    ['the editor own save', { writer: 'editor' }],
+  ] as Array<[string, FrameWriter | undefined]>)('%s never prunes: the history stays as it was', async (_name, stamp) => {
+    const onHistoryPruned = vi.fn()
+    const { adapter, result } = setup({ onHistoryPruned })
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+    act(() => { adapter.emit(frame(setClip(now(result), 'B', { end: 12 })), stamp) })
+    expect(result.current.canUndo).toBe(true)
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(clipOf(result.current.project, 'B')?.end).toBe(10)
+    expect(onHistoryPruned).not.toHaveBeenCalled()
+  })
+
+  it('serve maintenance writes (dims, a copied src, *Source markers) never prune, and undoing a clip add still works after the dims land', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => addClip(p, clip('X', 10, 12))) })
+    act(() => { adapter.emit(frame(setClip(now(result), 'X', { sourceWidth: 3840, sourceHeight: 2160 }))) })
+    act(() => {
+      const patched = setClip(now(result), 'X', { src: '/proj/assets/X.mp4' })
+      adapter.emit(frame({ ...patched, settings: { ...patched.settings, resolutionSource: 'footage' } } as Project))
+    })
+    expect(result.current.canUndo).toBe(true)
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(clipOf(result.current.project, 'X')).toBeUndefined()
+  })
+
+  it('a sync frame equal to what the editor holds (its own echo) prunes nothing', async () => {
+    const onHistoryPruned = vi.fn()
+    const { adapter, result } = setup({ onHistoryPruned })
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+    act(() => { adapter.emit(frame(now(result)), SYNC) })
+    expect(result.current.canUndo).toBe(true)
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(clipOf(result.current.project, 'B')?.end).toBe(10)
+    expect(onHistoryPruned).not.toHaveBeenCalled()
+  })
+
+  it('a sync frame held during a save still prunes when an unstamped copy replaced it before the drain, and the mark never carries over', async () => {
+    const adapter = makeFakeAdapter({ blockSave: true })
+    const initial = video()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    let saving: Promise<void> = Promise.resolve()
+    act(() => { saving = result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+    const pulled = setClip(now(result), 'B', { end: 12 })
+    act(() => { adapter.emit(frame(pulled), SYNC) })
+    // The watcher's copy of the same write, unstamped, takes its place in the hold.
+    act(() => { adapter.emit(frame(pulled)) })
+    await act(async () => { adapter.release(); await saving })
+    await waitFor(() => expect(clipOf(result.current.project, 'B')?.end).toBe(12))
+    expect(result.current.canUndo).toBe(false)
+
+    // A later hold of an unstamped frame does not prune.
+    act(() => { saving = result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(2))
+    act(() => { adapter.emit(frame(setClip(now(result), 'A', { end: 2 }))) })
+    await act(async () => { adapter.release(); await saving })
+    await waitFor(() => expect(clipOf(result.current.project, 'A')?.end).toBe(2))
+    expect(result.current.canUndo).toBe(true)
+  })
+
+  it('onHistoryPruned fires once per pruning frame with the steps it dropped, and never when nothing was dropped', async () => {
+    const onHistoryPruned = vi.fn()
+    const { adapter, result } = setup({ onHistoryPruned })
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { start: 6 })) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    // A pull of a field no step changed drops nothing.
+    act(() => { adapter.emit(frame({ ...now(result), editingPrompt: 'pulled' }), SYNC) })
+    expect(onHistoryPruned).not.toHaveBeenCalled()
+    act(() => { adapter.emit(frame(setClip(now(result), 'B', { end: 12 })), SYNC) })
+    expect(onHistoryPruned).toHaveBeenCalledTimes(1)
+    expect(onHistoryPruned).toHaveBeenCalledWith({ undo: 1, redo: 1 })
+    expect(result.current.canUndo).toBe(false)
+    expect(result.current.canRedo).toBe(false)
+  })
+
+  it('the trigger is one predicate, so a host can choose which frames prune', async () => {
+    const prunesHistory = vi.fn((stamp?: FrameWriter) => stamp?.origin === 'restore')
+    const { adapter, result } = setup({ prunesHistory })
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+    act(() => { adapter.emit(frame(setClip(now(result), 'B', { end: 12 })), SYNC) })
+    expect(result.current.canUndo).toBe(true)
+    act(() => { adapter.emit(frame(setClip(now(result), 'B', { end: 13 })), { writer: 'tool', origin: 'restore' }) })
+    expect(result.current.canUndo).toBe(false)
+    expect(prunesHistory).toHaveBeenLastCalledWith({ writer: 'tool', origin: 'restore' })
+  })
+
+  it('with no frame from outside, undo and redo over clips behave exactly as before', async () => {
+    const { adapter, result, initial } = setup()
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+    const afterA = now(result)
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+    const afterB = now(result)
+    act(() => { result.current.undo() })
+    expect(result.current.project).toEqual(afterA)
+    act(() => { result.current.undo() })
+    expect(result.current.project).toEqual(initial)
+    act(() => { result.current.redo() })
+    act(() => { result.current.redo() })
+    expect(result.current.project).toEqual(afterB)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(6))
+    expect(adapter.saveCalls.map((c) => [clipOf(c.before!, 'A')?.end, clipOf(c.project, 'B')?.end])).toEqual([
+      [5, 10], [4, 9], [4, 10], [4, 10], [5, 10], [4, 9],
+    ])
   })
 })
