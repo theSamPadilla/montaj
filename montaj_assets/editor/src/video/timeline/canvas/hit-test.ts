@@ -63,6 +63,15 @@ export const FADE_GRIP_ZONE_HEIGHT_PX = 10
  *  that the LABEL is clickable, not just the 2px stem. */
 export const MARKER_HIT_WIDTH_PX = 72
 
+/** How far LEFT of a marker's 2px stem still selects it. The stem is the thing
+ *  an operator aims at and a mouse lands a few pixels either side of it; the
+ *  label side already reaches `MARKER_HIT_WIDTH_PX`, so only the left needed
+ *  slop. About a fingertip: 9px. It lives in the marker STRIP only, above the
+ *  ruler, so it cannot take a click meant for the playhead scrub or a clip, and
+ *  where two markers' regions overlap the later (right-hand) one wins, as the
+ *  painter draws it on top. */
+export const MARKER_HIT_SLOP_PX = 9
+
 export interface HitTestOptions {
   visualEdgeTolerancePx?: number
   audioEdgeTolerancePx?: number
@@ -402,7 +411,8 @@ export function hitTest(
       // drag it.
       //
       // The predicate is copied from the painter (`Math.round(x) + 0.5 < 0`)
-      // but the hit region is measured from the TRUE `x`. That asymmetry is
+      // but the hit region is measured from the TRUE `x` (less `MARKER_HIT_SLOP_PX`
+      // on the left, so a click a few pixels off the 2px stem still lands). That asymmetry is
       // deliberate: the painter's `+ 0.5` is a half-pixel crispness offset for
       // drawing a sharp 1px stem, not a position. Folding it into the hit
       // region shifts every marker's target half a pixel right of its own
@@ -412,7 +422,7 @@ export function hitTest(
       // here, since a hit requires `point.x >= x` and `point.x` never exceeds
       // the surface.
       if (Math.round(x) + 0.5 < 0) continue
-      if (point.x >= x && point.x <= x + MARKER_HIT_WIDTH_PX) {
+      if (point.x >= x - MARKER_HIT_SLOP_PX && point.x <= x + MARKER_HIT_WIDTH_PX) {
         return { kind: 'marker', t, markerId: m.id, marker: m }
       }
     }

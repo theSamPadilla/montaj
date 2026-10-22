@@ -14,10 +14,11 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
-import { AUDIO_ITEM_INSET_PX, RULER_HEIGHT_PX, computeTimelineLayout } from '../draw'
+import { AUDIO_ITEM_INSET_PX, MARKER_STRIP_HEIGHT_PX, RULER_HEIGHT_PX, computeTimelineLayout } from '../draw'
 import {
   AUDIO_EDGE_TOLERANCE_PX,
   FADE_GRIP_ZONE_HEIGHT_PX,
+  MARKER_HIT_SLOP_PX,
   MARKER_HIT_WIDTH_PX,
   VISUAL_EDGE_TOLERANCE_PX,
   hitTest,
@@ -516,6 +517,41 @@ describe('marker hit region', () => {
     const hit = hitTest({ x: 10, y: 8 }, markerLayout(), scrolled, { markers })
     expect(hit.kind).toBe('marker')
     expect(hit.markerId).toBe('m1')
+  })
+
+  it('selects the marker for a click a few px LEFT of the 2px stem (the slop)', () => {
+    for (const dx of [-1, -4, -MARKER_HIT_SLOP_PX]) {
+      const hit = hitTest({ x: FLAG_X + dx, y: 8 }, markerLayout(), VIEWPORT, { markers })
+      expect(hit.kind).toBe('marker')
+      expect(hit.markerId).toBe('m1')
+    }
+  })
+
+  it('does not claim past the slop on the left', () => {
+    const hit = hitTest({ x: FLAG_X - MARKER_HIT_SLOP_PX - 1, y: 8 }, markerLayout(), VIEWPORT, { markers })
+    expect(hit.kind).toBe('background')
+  })
+
+  it('the slop never reaches the clips: a click near the flag x in the rows still hits the clip', () => {
+    // The slop lives in the strip band only. A marker over a clip (t=2.5, where
+    // the fixture has a clip): the same x in the strip selects the marker, in
+    // the row below it selects the clip.
+    const over = [{ id: 'm2', t: 2.5, label: '1' }]
+    const lay = computeTimelineLayout({ ...project, markers: over } as unknown as Project)
+    const clipBefore = at(246, BASE_Y)             // no strip: what the clip is
+    expect(clipBefore.kind).toBe('item-body')
+    const y = BASE_Y + MARKER_STRIP_HEIGHT_PX      // rows sit one strip lower once markers exist
+    const inRow = hitTest({ x: 246, y }, lay, VIEWPORT, { markers: over })
+    expect(inRow.kind).toBe('item-body')
+    expect(inRow.itemId).toBe(clipBefore.itemId)
+    expect(hitTest({ x: 246, y: 8 }, lay, VIEWPORT, { markers: over }).kind).toBe('marker')
+  })
+
+  it('with two close markers the right-hand one wins in the overlap, each still reachable', () => {
+    const two = [{ id: 'a', t: 5, label: '1' }, { id: 'b', t: 5.5, label: '2' }]   // x = 500 and 550
+    const lay = computeTimelineLayout({ ...project, markers: two } as unknown as Project)
+    expect(hitTest({ x: 545, y: 8 }, lay, VIEWPORT, { markers: two }).markerId).toBe('b')   // b's slop
+    expect(hitTest({ x: 520, y: 8 }, lay, VIEWPORT, { markers: two }).markerId).toBe('a')   // a's label
   })
 
   it('stops claiming past the label box', () => {
