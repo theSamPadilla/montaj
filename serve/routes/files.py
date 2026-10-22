@@ -154,19 +154,20 @@ async def write_file(request: Request):
     if not _is_under(Path(os.path.realpath(resolved)), workspace_root):
         raise forbidden("forbidden", "Path is outside the workspace root")
 
-    # §482: a file in an open Studio sync clash, as its relpath in the topmost project folder holding it.
-    save_guard.check_sync_paths(getattr(request, "headers", None), [(str(resolved), False)])
-
-    # Create parent dirs (a spec may be the first file in a subdir)
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    encoded = content.encode("utf-8")
-    try:
-        fd = open_write_no_follow(str(resolved))
-    except OSError:
-        # ELOOP (a symlink or reparse point sits at the target) or any other open failure: refuse, never follow it.
-        raise forbidden("forbidden", "Path is outside the workspace root")
-    with os.fdopen(fd, "wb") as f:
-        f.write(encoded)
+    # §482: a file in an open Studio sync clash, as its relpath in the topmost project folder holding it, checked
+    # and written under that project's lock (review 40: no clash recorded under the lock can fall between the
+    # check and the write). Sync off, the window and the pull: no lock, as before.
+    async with save_guard.sync_paths_locked(getattr(request, "headers", None), [(str(resolved), False)]):
+        # Create parent dirs (a spec may be the first file in a subdir)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        encoded = content.encode("utf-8")
+        try:
+            fd = open_write_no_follow(str(resolved))
+        except OSError:
+            # ELOOP (a symlink or reparse point sits at the target) or any other open failure: refuse, never follow it.
+            raise forbidden("forbidden", "Path is outside the workspace root")
+        with os.fdopen(fd, "wb") as f:
+            f.write(encoded)
     return {"path": str(resolved), "bytes": len(encoded)}
 
 

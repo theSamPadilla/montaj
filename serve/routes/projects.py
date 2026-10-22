@@ -4154,6 +4154,50 @@ async def _copy_and_patch_media(
         raise
 
 
+def _merged_for_save(existing: dict, body: dict) -> dict:
+    """The document a save writes: `existing` with `body` (its report keys already dropped) merged in, every
+    rewrite the save makes applied. Pure: reads and writes nothing, so it runs before the checks."""
+    # Top-level shallow merge: preserve fields not present in the body. Agents
+    # (per skills/native/SKILL.md) routinely PUT a partial body like
+    # {id, status, tracks} when transitioning pending→draft; without this merge
+    # creation-time metadata (name, workflow, editingPrompt, projectType,
+    # runCount, settings, profile, …) gets wiped. To explicitly clear a field,
+    # callers must send it as null in the body.
+    # The answer's own fields (§126: `copied`, `warnings`) never reach
+    # project.json, even from a client that saves an answer back.
+    merged = {**existing, **body}
+    # The editor deletes its last marker/note by sending `markers: null` /
+    # `notes: null` (an omitted key would keep the old list through the merge
+    # above). Drop the key so a project with none is stored without one.
+    for _key in ("markers", "notes"):
+        if _key in body and body[_key] is None:
+            merged.pop(_key, None)
+    # Agents routinely PUT a still-legacy `tracks` shape (or a whole project
+    # they hand-built). Normalize before writing so a server write never leaves
+    # legacy tracks on disk: a no-op (same object back) when already
+    # normalized or when `tracks` is absent/null, so the shallow-merge and
+    # explicit-null-clears-a-field semantics above are untouched.
+    merged = normalize_tracks(merged)
+    # A save that picks a resolution or fps is the user's (or an agent's) choice: pin it
+    # so footage never overrides it. A body whose settings leave the
+    # marker out keeps the stored one.
+    if isinstance(body.get("settings"), dict) and isinstance(merged.get("settings"), dict):
+        old_settings = existing.get("settings") if isinstance(existing.get("settings"), dict) else {}
+        new_settings = dict(merged["settings"])
+        if "resolution" in new_settings and new_settings["resolution"] != old_settings.get("resolution"):
+            new_settings["resolutionSource"] = SOURCE_EXPLICIT
+        if "fps" in new_settings and new_settings["fps"] != old_settings.get("fps"):
+            new_settings["fpsSource"] = SOURCE_EXPLICIT
+        # §378: choosing a colour space is the creator's; footage never overrides it.
+        if "colorSpace" in new_settings and new_settings["colorSpace"] != old_settings.get("colorSpace"):
+            new_settings["colorSpaceSource"] = "explicit"
+        for marker in ("resolutionSource", "fpsSource", "aspectSource", "colorSpaceSource"):
+            if marker not in new_settings and marker in old_settings:
+                new_settings[marker] = old_settings[marker]
+        merged["settings"] = new_settings
+    return merged
+
+
 @router.put("/projects/{project_id}")
 async def save_project(project_id: str, response: Response, body: dict = Body(...), request: Request = None, project_dir: Path = Depends(get_project_dir)):
     save_started = time.perf_counter()
@@ -4166,53 +4210,22 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
     async with project_lock_async(project_path):
         raw = project_path.read_text()
         existing = json.loads(raw)
+        headers = getattr(request, "headers", None)
+        # Computed before any check: the merge reads nothing and writes nothing, and the sync check below needs
+        # the document exactly as it will be written.
+        named = save_guard.changed_fields(body)
+        body = {key: value for key, value in body.items() if key not in _SAVE_REPORT_KEYS}
+        merged = _merged_for_save(existing, body)
         # §482: a field in an open Studio sync clash refuses the whole save, from anyone but a person, before
-        # the revisions are compared. Nothing is read unless the app named its sync state folder.
-        save_guard.check_sync(getattr(request, "headers", None), project_id, save_guard.changed_fields(body))
+        # the revisions are compared. Every field the write really changes counts, not only the body's: a
+        # normalisation of a legacy `tracks` the body never named is still a write of `tracks` (review 40, 1).
+        # Nothing is read or compared unless the app named its sync state folder.
+        save_guard.check_sync_document(headers, project_id, existing, merged, named)
         # §477: a stale or unread field refuses the whole save here, before anything is
         # merged or written. None (and no answer headers) unless the app switched it on.
-        verdict = save_guard.check_save(getattr(request, "headers", None), body, raw, existing,
-                                        project=str(project_path))
+        # (`body` without its report keys: check_save never counts them as fields either.)
+        verdict = save_guard.check_save(headers, body, raw, existing, project=str(project_path))
         prev_status = existing.get("status")
-        # Top-level shallow merge: preserve fields not present in the body. Agents
-        # (per skills/native/SKILL.md) routinely PUT a partial body like
-        # {id, status, tracks} when transitioning pending→draft; without this merge
-        # creation-time metadata (name, workflow, editingPrompt, projectType,
-        # runCount, settings, profile, …) gets wiped. To explicitly clear a field,
-        # callers must send it as null in the body.
-        # The answer's own fields (§126: `copied`, `warnings`) never reach
-        # project.json, even from a client that saves an answer back.
-        body = {key: value for key, value in body.items() if key not in _SAVE_REPORT_KEYS}
-        merged = {**existing, **body}
-        # The editor deletes its last marker/note by sending `markers: null` /
-        # `notes: null` (an omitted key would keep the old list through the merge
-        # above). Drop the key so a project with none is stored without one.
-        for _key in ("markers", "notes"):
-            if _key in body and body[_key] is None:
-                merged.pop(_key, None)
-        # Agents routinely PUT a still-legacy `tracks` shape (or a whole project
-        # they hand-built). Normalize before writing so a server write never leaves
-        # legacy tracks on disk — a no-op (same object back) when already
-        # normalized or when `tracks` is absent/null, so the shallow-merge and
-        # explicit-null-clears-a-field semantics above are untouched.
-        merged = normalize_tracks(merged)
-        # A save that picks a resolution or fps is the user's (or an agent's) choice: pin it
-        # so footage never overrides it. A body whose settings leave the
-        # marker out keeps the stored one.
-        if isinstance(body.get("settings"), dict) and isinstance(merged.get("settings"), dict):
-            old_settings = existing.get("settings") if isinstance(existing.get("settings"), dict) else {}
-            new_settings = dict(merged["settings"])
-            if "resolution" in new_settings and new_settings["resolution"] != old_settings.get("resolution"):
-                new_settings["resolutionSource"] = SOURCE_EXPLICIT
-            if "fps" in new_settings and new_settings["fps"] != old_settings.get("fps"):
-                new_settings["fpsSource"] = SOURCE_EXPLICIT
-            # §378: choosing a colour space is the creator's; footage never overrides it.
-            if "colorSpace" in new_settings and new_settings["colorSpace"] != old_settings.get("colorSpace"):
-                new_settings["colorSpaceSource"] = "explicit"
-            for marker in ("resolutionSource", "fpsSource", "aspectSource", "colorSpaceSource"):
-                if marker not in new_settings and marker in old_settings:
-                    new_settings[marker] = old_settings[marker]
-            merged["settings"] = new_settings
         # Overlay items are checked only when this save carries `tracks`: a delta
         # that leaves tracks alone (a status flip, a rename) must not start failing
         # over an item already on disk. Nothing is written when an item is wrong,
@@ -5226,7 +5239,7 @@ _DOWNLOAD_TASKS: set[asyncio.Task] = set()
 
 
 async def _run_download_to_job(
-    job_id: str, downloads: list, project_dir: Path, allowed_hosts: set
+    job_id: str, downloads: list, project_dir: Path, allowed_hosts: set, *, land_check=None,
 ) -> None:
     """Run a transfer to completion independent of any client connection.
 
@@ -5235,10 +5248,33 @@ async def _run_download_to_job(
     the job itself an error.
     """
     try:
-        results = await fetch_to_disk_async(downloads, project_dir, allowed_hosts)
+        # §482: land_check only when there is one, so a call with sync off is exactly as before.
+        extra = {"land_check": land_check} if land_check is not None else {}
+        results = await fetch_to_disk_async(downloads, project_dir, allowed_hosts, **extra)
         set_done(job_id, {"results": results})
     except Exception as e:
         set_error(job_id, {"error": "download_failed", "message": str(e)})
+
+
+def _download_land_check(project_id: str, project_dir: Path, headers):
+    """§482, review 40: a download is checked again as each file lands, right before its rename and with no await
+    between them, so a clash recorded while it downloaded refuses that file (an error item with the refusal, the
+    temp file removed). Not under the project lock: the fetches run concurrently in lib/remote_io, which takes no
+    project lock, and the rename is the whole write. None (no check, as before) with sync off, for the window and
+    for the pull."""
+    if not save_guard.sync_checked(headers):
+        return None
+    who = save_guard.sync_who(headers)
+    root = Path(project_dir).resolve()
+
+    def check(dest: Path) -> "dict | None":
+        try:
+            rel = Path(dest).resolve().relative_to(root).as_posix()
+        except (ValueError, OSError):
+            return None   # outside the project: validate_project_subpath already refused it
+        return save_guard.sync_refusal(project_id, who, files=[rel])
+
+    return check
 
 
 def _project_relpaths(project_dir: Path, raws) -> list:
@@ -5292,20 +5328,23 @@ async def download_assets(
     if not allowed_hosts:
         raise forbidden("allowlist_unset", "MONTAJ_HTTP_ALLOWED_HOSTS is required")
     # §482: a destination in an open Studio sync clash (fetch_to_disk_async validates each path itself).
-    save_guard.check_sync(getattr(request, "headers", None), project_id, files=_project_relpaths(
+    headers = getattr(request, "headers", None)
+    save_guard.check_sync(headers, project_id, files=_project_relpaths(
         project_dir, [d.get("destPath") for d in downloads if isinstance(d, dict)]))
+    land_check = _download_land_check(project_id, project_dir, headers)
 
     is_async = bool(body.get("_async", False))
     if is_async:
         job_id = create_job()
         task = asyncio.create_task(
-            _run_download_to_job(job_id, downloads, project_dir, allowed_hosts)
+            _run_download_to_job(job_id, downloads, project_dir, allowed_hosts, land_check=land_check)
         )
         _DOWNLOAD_TASKS.add(task)
         task.add_done_callback(_DOWNLOAD_TASKS.discard)
         return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)
 
-    results = await fetch_to_disk_async(downloads, project_dir, allowed_hosts)
+    extra = {"land_check": land_check} if land_check is not None else {}
+    results = await fetch_to_disk_async(downloads, project_dir, allowed_hosts, **extra)
 
     any_error = any(r.get("status") == "error" for r in results)
     return JSONResponse(
@@ -5373,9 +5412,25 @@ async def delete_files(
     paths = body.get("paths")
     if not isinstance(paths, list) or not paths:
         raise bad_request("invalid_body", "'paths' must be a non-empty list")
-    # §482: a file, or a folder holding one, in an open Studio sync clash refuses the whole request.
-    save_guard.check_sync(getattr(request, "headers", None), project_id, files=_project_relpaths(project_dir, paths))
+    # §482: a file, or a folder holding one, in an open Studio sync clash refuses the whole request. Checked and
+    # deleted under the project lock (review 40: the time-of-check gap); sync off, the window and the pull: no lock.
+    headers = getattr(request, "headers", None)
+    if save_guard.sync_checked(headers):
+        async with project_lock_async(project_dir / "project.json"):
+            save_guard.check_sync(headers, project_id, files=_project_relpaths(project_dir, paths))
+            results = _delete_project_paths(project_dir, paths)
+    else:
+        results = _delete_project_paths(project_dir, paths)
 
+    any_error = any(r.get("status") == "error" for r in results)
+    return JSONResponse(
+        status_code=207 if any_error else 200,
+        content={"results": results},
+    )
+
+
+def _delete_project_paths(project_dir: Path, paths: list) -> list:
+    """delete_files' deletes, one result per path (no await: one hold of the lock covers them all)."""
     results: list[dict] = []
     for raw in paths:
         if not isinstance(raw, str):
@@ -5407,12 +5462,7 @@ async def delete_files(
             results.append({"path": raw, "status": "deleted"})
         except OSError as e:
             results.append({"path": raw, "status": "error", "error": str(e)})
-
-    any_error = any(r.get("status") == "error" for r in results)
-    return JSONResponse(
-        status_code=207 if any_error else 200,
-        content={"results": results},
-    )
+    return results
 
 
 async def _render_body(request: Request) -> dict:
@@ -6053,7 +6103,8 @@ async def _run_caption_pipeline(
         # §482: checked again as the request's writer, for a clash recorded while whisper ran.
         clash = save_guard.sync_refusal(project_id, who if who is not None else save_guard.MAINTENANCE, ["captions"])
         if clash is not None:
-            raise CaptionPipelineError(clash["message"], detail=clash, status_code=409)
+            raise CaptionPipelineError(clash["message"], detail=clash,
+                                       status_code=save_guard.sync_exception(clash).status_code)
         prev = seed_prev(project.get("captions") or {}, theme)
         # Theme carried forward, ids minted, translated rows kept and re-cut at
         # their phrase boundaries (lib/caption_translation.py).
@@ -6306,7 +6357,8 @@ async def put_project_overlay(
         return created
 
     # §482: with Studio sync on, under the project lock, the overlay's file in an open sync clash is refused.
-    # Off, the write is as it always was (no lock).
+    # Off, the write is as it always was (no lock), and no time-of-check gap opens (review 40): the variable is
+    # serve's environment, fixed for its life, so with it unset no sidecar exists that serve would honour.
     if save_guard.sync_clash.state_dir():
         async with project_lock_async(project_dir / "project.json"):
             created = write()

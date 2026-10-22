@@ -10,8 +10,15 @@ names-only sidecar per synced project, `<dir>/<projectId>/clash-set.json`:
 
 - The variable unset: sync is off. Nothing here is read, and every writer behaves as before.
 - No sidecar for the project (no folder, or no file in it): no clash.
-- Anything else that is not a valid sidecar (the folder missing or unreadable, a corrupt file, an unknown `v`, an id
-  that cannot name a folder, a link out of the folder): UNSURE, which refuses every non-human write.
+- No state folder at all (nothing at that name, review 40 3a): no clash for any project. The app writes every sidecar
+  AND its own clash record (conflicts.json) under that folder, so with no folder neither exists, and the app's own
+  state reads it as "nothing synced" too (studio-sync/state.cjs scan(): ENOENT is an empty list). Evidence of sync is
+  a project's own folder in the state folder; with no state folder there can be none. The app creates the folder
+  before it launches serve (its launch assert), so this is the never-made case, not a lost one.
+- Anything else that is not a valid sidecar (a state folder that exists but is not a readable folder, a dangling link
+  as the state folder, a project folder that cannot be read, a corrupt file, an unknown `v`, an id that cannot name a
+  folder, a link out of the folder): UNSURE, which refuses every non-human write. An unreadable state folder hides
+  every project's folder, so it stays closed for all: nothing can tell a synced project from a never-synced one.
 
 Read fresh on every write (a few hundred bytes, no cache): a cache keyed on the file's stat can miss an in-place
 rewrite, and the shell's atomic rename is the common case.
@@ -51,25 +58,37 @@ def valid_project_id(project_id) -> bool:
     return not _DEVICE_RE.fullmatch(project_id.split(".", 1)[0])
 
 
+def _segment_key(segment: str) -> str:
+    """One segment as Windows opens it: a `:stream` suffix (`new.png::$DATA` IS new.png) and trailing dots and
+    spaces (`new.png.` and `new.png ` ARE new.png) dropped. A segment that would be left empty is kept as given
+    (`..` stays `..`). Applied everywhere, like the case fold: on a disk that tells them apart it only refuses more,
+    because both sides of every compare go through it."""
+    base = segment.split(":", 1)[0].rstrip(". ")
+    return base or segment
+
+
 def file_key(relpath: str) -> str:
-    """A relpath as compared: NFC, `/`-separated, no empty or `.` segment, case-folded (a case-insensitive disk
-    names one file many ways; on a case-sensitive one the fold only refuses more). A trailing `/` is kept."""
+    """A relpath as compared: NFC, `/`-separated, no empty or `.` segment, each segment as Windows names it
+    (_segment_key), case-folded (a case-insensitive disk names one file many ways; on a case-sensitive one the fold
+    only refuses more). A trailing `/` is kept."""
     p = unicodedata.normalize("NFC", relpath).replace("\\", "/")
-    key = "/".join(s for s in p.split("/") if s not in ("", "."))
+    key = "/".join(_segment_key(s) for s in p.split("/") if s not in ("", "."))
     if key and p.endswith("/"):
         key += "/"
     return key.casefold()
 
 
 class ClashSet:
-    """What one sidecar says. `files` maps file_key to the sidecar's own spelling; `unsure` refuses everything."""
-    __slots__ = ("fields", "files", "ids", "unsure")
+    """What one sidecar says. `files` maps file_key to the sidecar's own spelling; `unsure` refuses everything.
+    `by_id` holds each clash's own names, {id: (fields, {file_key: spelling})}, for a resolve of that id."""
+    __slots__ = ("fields", "files", "ids", "unsure", "by_id")
 
-    def __init__(self, fields=frozenset(), files=None, ids=frozenset(), unsure=False):
+    def __init__(self, fields=frozenset(), files=None, ids=frozenset(), unsure=False, by_id=None):
         self.fields = frozenset(fields)
         self.files = dict(files or {})
         self.ids = frozenset(ids)
         self.unsure = unsure
+        self.by_id = dict(by_id or {})
 
 
 NO_CLASH = ClashSet()
@@ -93,7 +112,7 @@ def _parse(raw: bytes, project_id: str) -> ClashSet:
     fields, files, clashes = _names(doc.get("fields")), _names(doc.get("files")), doc.get("clashes")
     if fields is None or files is None or not isinstance(clashes, list):
         return UNSURE
-    ids = set()
+    ids, by_id = set(), {}
     for clash in clashes:
         if not isinstance(clash, dict) or not isinstance(clash.get("id"), str) or not clash["id"]:
             return UNSURE
@@ -101,9 +120,23 @@ def _parse(raw: bytes, project_id: str) -> ClashSet:
         if more_fields is None or more_files is None:
             return UNSURE
         ids.add(clash["id"])
+        own_fields, own_files = by_id.get(clash["id"], (frozenset(), {}))
+        by_id[clash["id"]] = (own_fields | frozenset(more_fields),
+                              {**own_files, **{file_key(f): f for f in more_files}})
         fields = fields + more_fields
         files = files + more_files
-    return ClashSet(fields=fields, files={file_key(f): f for f in files}, ids=ids)
+    return ClashSet(fields=fields, files={file_key(f): f for f in files}, ids=ids, by_id=by_id)
+
+
+def _nothing_at(path) -> bool:
+    """True when nothing at all is at `path`, not even a link (a missing parent counts: nothing is there)."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return False
 
 
 def load(project_id) -> ClashSet:
@@ -114,7 +147,9 @@ def load(project_id) -> ClashSet:
     try:
         root = os.path.realpath(base)
         if not os.path.isdir(root):
-            return UNSURE
+            # Nothing at that name: the app never made it, and no project has a clash recorded (module docstring).
+            # Anything else there (a file, a dangling link, a folder that cannot be looked into) stays unsure.
+            return NO_CLASH if _nothing_at(base) else UNSURE
         folder = os.path.realpath(os.path.join(root, project_id))
     except (OSError, ValueError):
         return UNSURE
@@ -157,6 +192,13 @@ def load(project_id) -> ClashSet:
     return _parse(b"".join(chunks), project_id)
 
 
+def _file_hit(written_key: str, clashed_key: str) -> bool:
+    """A written relpath (as file_key) meets a clashed one: the same, or either is a folder holding the other."""
+    return clashed_key == EVERYTHING or written_key == clashed_key \
+        or (written_key.endswith("/") and clashed_key.startswith(written_key)) \
+        or (clashed_key.endswith("/") and written_key.startswith(clashed_key))
+
+
 def touched(clashes: ClashSet, fields=(), files=(), everything: bool = False) -> list:
     """The clashed names a write touches: field names, then the sidecar's own relpaths. `everything` (or `*` in
     `fields`/`files`) is a write whose scope is the whole project. An unsure set names the write's own names
@@ -177,10 +219,28 @@ def touched(clashes: ClashSet, fields=(), files=(), everything: bool = False) ->
         for written in files:
             w = file_key(written)
             for k, spelled in clashes.files.items():
-                if k == EVERYTHING or w == k or (w.endswith("/") and k.startswith(w)) \
-                        or (k.endswith("/") and w.startswith(k)):
+                if _file_hit(w, k):
                     hit.append(spelled)
     return list(dict.fromkeys(hit))
+
+
+def outside_clash(clashes: ClashSet, clash_id: str, fields=(), files=(), derived=(), everything: bool = False) -> list:
+    """For a person's resolve of the open clash `clash_id` (review 40, 4): the names it may not write. Every field
+    and file it names outside that clash's own names (a file is inside when it is one of them or under one of its
+    folders; `*` covers all), in the write's own spelling; and every `derived` field (one the write changes without
+    naming it, a normalisation) that another open clash holds. A whole-project write is `*`, unless the clash
+    itself is the whole project."""
+    own_fields, own_files = clashes.by_id.get(clash_id, (frozenset(), {}))
+    if everything:
+        return [] if EVERYTHING in own_fields and EVERYTHING in own_files else [EVERYTHING]
+    out = [f for f in fields if f not in own_fields and EVERYTHING not in own_fields]
+    for written in files:
+        w = file_key(written)
+        if not any(k == EVERYTHING or w == k or (k.endswith("/") and w.startswith(k)) for k in own_files):
+            out.append(written)
+    if EVERYTHING not in own_fields:
+        out += [f for f in derived if f not in own_fields and (f in clashes.fields or EVERYTHING in clashes.fields)]
+    return list(dict.fromkeys(out))
 
 
 def message(names) -> str:
@@ -198,11 +258,27 @@ def refusal(names) -> dict:
 _MISSING = object()
 
 
+def _same_on_disk(a, b) -> bool:
+    """Whether two JSON values write the same. `==` is not enough: True == 1 == 1.0 in Python, never on disk. The
+    same object, or values `==` says differ, decide at once; only an equal pair of distinct objects is compared again
+    by their canonical JSON (key order aside). Anything that cannot be compared counts as changed."""
+    if a is b:
+        return True
+    try:
+        if a != b:
+            return False
+        return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+    except (TypeError, ValueError, RecursionError):
+        return False
+
+
 def changed_fields(before: dict, after: dict) -> list:
-    """Top-level keys whose value differs between two documents, or that one of them lacks."""
+    """Top-level keys whose value differs on disk between two documents (a change of type included), or that one of
+    them lacks."""
     before = before if isinstance(before, dict) else {}
     after = after if isinstance(after, dict) else {}
-    return [k for k in dict.fromkeys([*before, *after]) if before.get(k, _MISSING) != after.get(k, _MISSING)]
+    return [k for k in dict.fromkeys([*before, *after])
+            if not _same_on_disk(before.get(k, _MISSING), after.get(k, _MISSING))]
 
 
 class SyncConflict(RuntimeError):

@@ -24,8 +24,10 @@ MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."
 sys.path.insert(0, MONTAJ_ROOT)
 from cli.deps import render_runtime_dir
 from lib.canvas import design_canvas
+from lib import sync_clash
 from lib.common import node_child_env, fail, require_file
 from lib.look import curve_ids
+from lib.project_lock import project_lock_or_fail
 from lib.project_tracks import track_items
 
 # The runtime copy of the render engine, as sample_frame.py resolves it: the
@@ -152,7 +154,7 @@ def main():
             plate = json.loads(result.stdout.decode("utf-8", errors="replace"))
         except ValueError:
             fail("glass_plate_failed", "The plate renderer returned no result.")
-        frames = _swap_in(plate["frames"], out_dir)
+        frames = _land(project_path, project.get("id"), plate["frames"], out_dir)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
 
@@ -162,6 +164,29 @@ def main():
         "size": plate["size"],
         "canvas": design_canvas(project.get("settings") or {}),
     }))
+
+
+def _land(project_path, project_id, staged, out_dir):
+    """_swap_in. §482, review 40: with Studio sync on and the frames folder inside this project's folder, the folder
+    is checked again against the project's open clashes under the project lock, and swapped in in the same hold
+    (serve checked it before the minutes-long render; a clash recorded since refuses it, the previous plate stays).
+    A folder outside the project folder was checked by serve before the run only. Off, or the window's run: as
+    before."""
+    if not sync_clash.state_dir():
+        return _swap_in(staged, out_dir)
+    project_dir = os.path.realpath(os.path.dirname(project_path))
+    real_out = os.path.realpath(out_dir)
+    if os.path.commonpath([project_dir, real_out]) != project_dir:
+        return _swap_in(staged, out_dir)
+    # The project folder itself: its frames could be any file there.
+    rel = sync_clash.EVERYTHING if real_out == project_dir else \
+        os.path.relpath(real_out, project_dir).replace(os.sep, "/") + "/"
+    with project_lock_or_fail(project_path, fail):
+        try:
+            sync_clash.check_step_write(project_id, files=[rel])
+        except sync_clash.SyncConflict as e:
+            sync_clash.exit_refused(e.body)
+        return _swap_in(staged, out_dir)
 
 
 def _swap_in(staged, out_dir):

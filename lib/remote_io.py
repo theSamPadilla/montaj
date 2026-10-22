@@ -164,7 +164,7 @@ def _do_fetch(item: dict, target_dir: Path, allowed_hosts: set[str],
 
 
 async def _do_fetch_async(item: dict, target_dir: Path, allowed_hosts: set[str],
-                          sem: asyncio.Semaphore, transport=None) -> dict:
+                          sem: asyncio.Semaphore, transport=None, land_check=None) -> dict:
     async with sem:
         dest_path = item.get("destPath", "")
         url = item.get("url", "")
@@ -221,6 +221,13 @@ async def _do_fetch_async(item: dict, target_dir: Path, allowed_hosts: set[str],
                         tmp.unlink(missing_ok=True)
                         return {"destPath": dest_path, "status": "error", "error": "size_mismatch",
                                 "message": f"Expected {size_bytes} bytes, got {count}"}
+
+                    # The caller's last word before the file lands (serve's Studio sync check): a dict refuses it,
+                    # and is the item's error. No await between it and the rename.
+                    refused = land_check(dest) if land_check is not None else None
+                    if refused is not None:
+                        tmp.unlink(missing_ok=True)
+                        return {"destPath": dest_path, "status": "error", **refused}
 
                     os.replace(tmp, dest)
                     return {"destPath": dest_path, "status": "ok", "bytesWritten": count}
@@ -365,10 +372,12 @@ def fetch_to_disk(items: list[dict], target_dir: Path,
 
 
 async def fetch_to_disk_async(items: list[dict], target_dir: Path,
-                              allowed_hosts: set[str], *, transport=None) -> list[dict]:
+                              allowed_hosts: set[str], *, transport=None, land_check=None) -> list[dict]:
+    """`land_check(dest) -> dict | None`, when given, runs just before each file's rename into place: a dict
+    refuses that file (the temp file goes; the dict is merged into its error item)."""
     sem = asyncio.Semaphore(_MAX_WORKERS)
     return list(await asyncio.gather(
-        *(_do_fetch_async(i, target_dir, allowed_hosts, sem, transport) for i in items)
+        *(_do_fetch_async(i, target_dir, allowed_hosts, sem, transport, land_check) for i in items)
     ))
 
 

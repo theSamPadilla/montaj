@@ -699,6 +699,13 @@ STEP_WRITES_NOTHING = frozenset({
     "sample_frame", "contact_sheet", "export_editor", "export_overlay_pages", "export_carousel_pages",
     "track_points", "probe", "transcribe",
 })
+# Where a step writes inside the project it names when no `out` is given (review 40): checked as that folder. Neither
+# is a folder Studio sync carries today (the uploader skips render/, and export/ holds nothing a project references),
+# so these refuse only if a later sync scope names a file there; guarded rather than assumed.
+STEP_DEFAULT_OUT = {
+    "sample_frame": "render/samples/",   # steps/render/sample_frame.py: <project>/render/samples/frame-<at>s.png
+    "export_editor": "export/",          # montaj_assets/render/export-editor.js: <project>/export/<package>/
+}
 _STEP_PROJECT_FIELDS = ("project", "project-id", "project_id", "projectId")
 
 
@@ -719,7 +726,14 @@ def _named_project(value) -> "tuple[str | None, Path | None] | None":
 
 def check_step_sync(name: str, schema: dict, body: dict, headers) -> None:
     """§482: refuse (409 sync_conflict) a step run that would write a clashed field or file. Nothing is read
-    with MONTAJ_SYNC_STATE_DIR unset, or for the window's run."""
+    with MONTAJ_SYNC_STATE_DIR unset, or for the window's run.
+
+    This runs before the step, which may take minutes. What closes the gap after it (review 40): a step's
+    project.json write is checked again under the project lock on the fields it really changes (update_project,
+    speech_apply); speech_text's speech-text.md and glass_plate's plates/ folder are checked again under the lock
+    as they are written. Not checked again: the `out` file of kling_generate and veo_generate, which the provider
+    connector writes in place at the end of the generation (a check there needs the connectors to land by rename),
+    and any other step's own output file; for those this check is the only one."""
     if not sync_clash.state_dir() or save_guard.sync_who(headers).kind in ("human", "sync"):
         return
     targets: dict = {}
@@ -738,6 +752,8 @@ def check_step_sync(name: str, schema: dict, body: dict, headers) -> None:
             add(named[0], *STEP_WRITES[name])
         elif name not in STEP_WRITES_NOTHING:
             add(named[0], everything=True)
+        if name in STEP_DEFAULT_OUT and not _has_explicit_write(schema, body):
+            add(named[0], files=[STEP_DEFAULT_OUT[name]])
     named = _named_project(body.get("_project"))
     if named is not None:
         add(named[0], files=["assets/"])
