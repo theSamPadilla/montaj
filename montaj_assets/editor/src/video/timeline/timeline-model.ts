@@ -470,7 +470,7 @@ export function moveItemAcrossTracks(args: CrossTrackMoveArgs): VisualTrack[] {
   const removed = tracks.map(t => ({ ...t, items: t.items.filter(other => other.id !== item.id) }))
   const movedItem = { ...item, start, end }
   const newTrack = (): VisualTrack => ({
-    id: assignTrackId(removed.length, new Set(removed.map(t => t.id))),
+    id: newTrackId(new Set(removed.map(t => t.id))),
     items: [movedItem],
   })
 
@@ -843,6 +843,13 @@ function sameTrack(a: KeyframeTrack, b: KeyframeTrack): boolean {
  * `montaj_assets/render/project-tracks.js`. Change one, change all three — a
  * legacy project normalized by any of them must produce the same ids and the
  * same structure.
+ *
+ * Two kinds of generated id (§482). Normalization fills in the id of a track
+ * already in the document and stays deterministic (`trk-<index>`,
+ * `assignTrackId`). A NEW track (`nextVisualTrackId`, the track
+ * `moveItemAcrossTracks` mints) is `trk-<6 hex>`, so two copies of one project
+ * each adding a track never mint one id for two different tracks. An existing
+ * id is never rewritten.
  */
 
 /** Plain object (not an array, not null) — the shape a track object arrives as. */
@@ -889,24 +896,40 @@ function assignTrackId(index: number, taken: Set<string>, prefix: string = 'trk'
 }
 
 /**
+ * Six lower-case hex characters of randomness, the random part of a minted id
+ * (§482): two copies of one project edited apart must never mint one id for
+ * two different things. Mirrors `lib/item_ids.py`. `getRandomValues` rather
+ * than `randomUUID`, which exists only in a secure context.
+ */
+export function idSuffix(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(3))
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** The id of a NEW track: `trk-<6 hex>`, drawn again while it is in `taken`. */
+function newTrackId(taken: ReadonlySet<string>): string {
+  let candidate = `trk-${idSuffix()}`
+  while (taken.has(candidate)) candidate = `trk-${idSuffix()}`
+  return candidate
+}
+
+/**
  * A fresh, collision-free track id for a track about to be appended at the
- * end of `tracks` — the public door onto `assignTrackId` above, for callers
- * outside this module that mint a whole new track (today: `placement.ts`'s
- * "no free video track, make one" case). Delegates to the same private rule
- * `normalizeTracks`/`moveItemAcrossTracks` use (`trk-<index>`, then
- * `trk-<index>-2`, `-3`, … until free) rather than re-deriving it, so there
- * remains exactly ONE implementation of the id convention.
+ * end of `tracks`, for callers outside this module that mint a whole new
+ * track (today: `placement.ts`'s "no free video track, make one" case). Same
+ * rule as the track `moveItemAcrossTracks` mints: `trk-<6 hex>`, never one
+ * already in `tracks` (see the track-shape comment above for why a new track
+ * is not `trk-<index>`).
  *
- * `index` is `tracks.length` — the new track's own position once appended —
- * and `taken` is every id already in `tracks`, collected fresh on each call
- * so a caller never has to keep its own id set in sync.
+ * `taken` is every id already in `tracks`, collected fresh on each call so a
+ * caller never has to keep its own id set in sync.
  */
 export function nextVisualTrackId(tracks: readonly unknown[]): string {
   const taken = new Set<string>()
   for (const track of tracks) {
     if (isTrackObject(track) && isTrackId(track.id)) taken.add(track.id)
   }
-  return assignTrackId(tracks.length, taken)
+  return newTrackId(taken)
 }
 
 // ── Track group ordering ─────────────────────────────────────────────────

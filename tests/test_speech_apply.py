@@ -420,3 +420,31 @@ def test_silences_are_measured_once_per_source_per_apply(env, monkeypatch):
     r = apply(env, delete_row(env.text, "A4"))
     assert r["applied"] is True
     assert len(calls) == 1, calls
+
+
+# ---- §482: minted ids are random, so a later apply must keep them
+
+def test_a_later_apply_keeps_a_minted_piece_and_its_state(env):
+    """Shortening A11's pause splits clip-3 and mints clip-3-s2-<6 hex>. State put on that piece
+    (as the editor would) survives a re-apply of the text it returned (a no-op) and an edit before
+    it (A4 deleted): same id, same state, moved earlier."""
+    r = apply(env, env.text.replace('A11 {0.48} "You, Tom!"', 'A11 {0.25} "You, Tom!"'))
+    assert r["applied"] is True
+    p = json.loads(open(env.path).read())
+    piece = next(it for it in p["tracks"][0]["items"] if re.fullmatch(r"clip-3-s2-[0-9a-f]{6}", it["id"]))
+    piece["scale"] = 1.25
+    with open(env.path, "w") as f:
+        json.dump(p, f, indent=2)
+    text = render(derive(p, env.dir), p.get("name") or p["id"])
+    before = snapshot(env)
+
+    assert apply(env, text)["noop"] is True
+    assert snapshot(env) == before
+
+    assert apply(env, delete_row(text, "A4"))["applied"] is True
+    after = json.loads(open(env.path).read())["tracks"][0]["items"]
+    moved = next(it for it in after if it["id"] == piece["id"])
+    assert moved["scale"] == 1.25
+    assert (moved["inPoint"], moved["outPoint"]) == (piece["inPoint"], piece["outPoint"])
+    assert moved["start"] < piece["start"] - 1.0
+    assert sorted(it["id"] for it in after if it["id"].startswith("clip-3")) == sorted(["clip-3", piece["id"]])

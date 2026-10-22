@@ -15,6 +15,7 @@ move_a7_after_a9.
 The fixture is the real speech of tests/fixtures/speech_text (its README); word times quoted below are
 the refined words derive() gives on it (see tests/test_speech_build.py).
 """
+import contextlib
 import copy
 import dataclasses
 import inspect
@@ -26,7 +27,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lib import speech_apply
+from lib import speech_apply, speech_build, speech_carry
 from lib.speech_build import FEELS, items_from_runs, runs_from_rows
 from lib.speech_pauses import silences
 from lib.speech_text import derive, parse, render
@@ -65,9 +66,25 @@ def fx(tmp_path_factory):
     return _fx(tmp_path_factory.mktemp("feel") / "fx")
 
 
+# The random part of a minted id (§482, lib/item_ids.py), pinned while a snapshot is taken and then
+# dropped from it: the golden was recorded before minted ids had one, and every other byte still compares.
+PINNED_SFX = "f00d5e"
+
+
+@contextlib.contextmanager
+def _pinned_ids():
+    saved = speech_build.id_suffix, speech_carry.id_suffix
+    speech_build.id_suffix = speech_carry.id_suffix = lambda: PINNED_SFX
+    try:
+        yield
+    finally:
+        speech_build.id_suffix, speech_carry.id_suffix = saved
+
+
 def _canon(pdir, obj) -> str:
-    """JSON with the copy's folder put back to the fixture's placeholder, so two copies compare equal."""
-    return json.dumps(obj, sort_keys=True).replace(str(pdir), "/FIXTURE")
+    """JSON with the copy's folder put back to the fixture's placeholder, so two copies compare equal,
+    and the pinned id part dropped."""
+    return json.dumps(obj, sort_keys=True).replace(str(pdir), "/FIXTURE").replace(f"-{PINNED_SFX}", "")
 
 
 # ---------------------------------------------------------------- the edits
@@ -120,7 +137,8 @@ def build(fx, text, max_pause=None, derived=None, **kw):
 
 def build_snapshot(fx, name, **kw) -> str:
     fn, max_pause = _edits()[name]
-    b = build(fx, fn(fx.text), max_pause, **kw)
+    with _pinned_ids():
+        b = build(fx, fn(fx.text), max_pause, **kw)
     return _canon(fx.pdir, {"runs": [dataclasses.asdict(r) for r in b.runs], "report": b.report.as_dict(),
                             "items": b.items, "prov": b.prov})
 
@@ -132,7 +150,8 @@ def apply_snapshot(tmp, name, **kw) -> str:
         subprocess.run([*GIT, *args], cwd=pdir, capture_output=True, check=True)
     fn, max_pause = _edits()[name]
     text = fn(render(derive(project, pdir), project.get("name") or project["id"]))
-    result = speech_apply.apply(os.path.join(pdir, "project.json"), text, preview=False, max_pause=max_pause, **kw)
+    with _pinned_ids():
+        result = speech_apply.apply(os.path.join(pdir, "project.json"), text, preview=False, max_pause=max_pause, **kw)
     with open(os.path.join(pdir, "project.json"), encoding="utf-8") as f:
         written = f.read()
     with open(os.path.join(pdir, "speech-text.md"), encoding="utf-8") as f:
@@ -185,7 +204,8 @@ def test_natural_is_the_default():
 
 def test_no_feel_builds_what_natural_builds(fx):
     t = edit(fx.text, 'A11 {0.48} "You, Tom!"', 'A11 "You, Tom!"')
-    assert build(fx, t).items == build(fx, t, feel="natural").items != build(fx, t, feel="tight").items
+    with _pinned_ids():   # two builds mint two random parts; the cut is what is compared
+        assert build(fx, t).items == build(fx, t, feel="natural").items != build(fx, t, feel="tight").items
 
 
 def test_unknown_feel_is_refused(fx, capsys):

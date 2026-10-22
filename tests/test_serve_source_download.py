@@ -13,6 +13,7 @@ on its own event loop and cancels whatever that request left running.
 import asyncio
 import json
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -71,6 +72,10 @@ def _write_project(project_dir: Path, pid: str, *, status="pending", record=None
     if record is not None:
         project["sourceDownload"] = record
     (project_dir / "project.json").write_text(json.dumps(project, indent=2))
+
+
+# The first clip an import mints: clip-0 plus a random part (§482, lib/item_ids.py).
+CLIP_0 = re.compile(r"^clip-0-[0-9a-f]{6}$")
 
 
 def _read(project_dir: Path) -> dict:
@@ -343,11 +348,13 @@ def test_download_on_a_pending_project_puts_the_clip_on_the_timeline(tmp_path, m
     assert finalize_stubs["ingest"] == [{"path": str(target), "color_space": "sdr_bt709",
                                          "normalize": "lazy", "proxy": False}]
     project = _read(project_dir)
-    clip = {"id": "clip-0", "type": "video", "src": str(target), "start": 0.0, "end": 0.0,
+    cid = project["sources"][0]["id"]
+    assert CLIP_0.match(cid), cid
+    clip = {"id": cid, "type": "video", "src": str(target), "start": 0.0, "end": 0.0,
             "sourceDuration": 212.0, "sourceWidth": 1920, "sourceHeight": 1080}
     assert project["sources"] == [clip]
     assert project["tracks"][0]["items"] == [clip]
-    assert project["sourceDownload"] == {"kind": "youtube", "url": URL, "status": "done", "clipId": "clip-0"}
+    assert project["sourceDownload"] == {"kind": "youtube", "url": URL, "status": "done", "clipId": cid}
     assert project["status"] == "pending"
 
     # The proxy is queued and the canvas heal runs only once the clip is on disk.
@@ -432,7 +439,9 @@ def test_a_stale_save_then_an_open_finalizes_once(workspace, monkeypatch, finali
     assert len(spawned) == 1, "the complete file is reused, yt-dlp does not run again"
     assert project["sources"] == first["sources"]
     assert project["tracks"][0]["items"] == first["tracks"][0]["items"]
-    assert project["sourceDownload"] == {"kind": "youtube", "url": URL, "status": "done", "clipId": "clip-0"}
+    cid = first["sources"][0]["id"]
+    assert CLIP_0.match(cid), cid
+    assert project["sourceDownload"] == {"kind": "youtube", "url": URL, "status": "done", "clipId": cid}
 
 
 def test_a_stale_save_that_dropped_the_clip_gets_it_back_once(workspace, monkeypatch, finalize_stubs):
@@ -663,7 +672,9 @@ def test_progress_sets_a_rising_percent_below_100_then_done_drops_it(tmp_path, m
 
     # Video 0..600 of 1000, then audio 0..400 on top of it, never back, never 100.
     assert _percents(rec, pid) == [0, 15, 30, 60, 80, 99]
-    assert _read(project_dir)["sourceDownload"] == {"kind": "youtube", "url": URL, "status": "done", "clipId": "clip-0"}
+    record = _read(project_dir)["sourceDownload"]
+    assert CLIP_0.match(record.pop("clipId"))
+    assert record == {"kind": "youtube", "url": URL, "status": "done"}
 
 
 def test_percent_writes_are_throttled(tmp_path, monkeypatch, finalize_stubs):

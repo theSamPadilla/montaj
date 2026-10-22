@@ -8,12 +8,14 @@ that fixture (deleting A4 cuts source 11.758-14.956 out of clip-2, for instance)
 import copy
 import json
 import os
+import re
 import shutil
 import sys
 from types import SimpleNamespace
 
 import pytest
 
+from lib import speech_build, speech_carry
 from lib.keyframe_curves import sample_track
 from lib.speech_build import items_from_runs, runs_from_rows
 from lib.speech_carry import BED_SHARE, TimeMap, carry, words_by_src
@@ -43,6 +45,16 @@ def fx(tmp_path_factory):
 
 def speech_items(project):
     return project["tracks"][0]["items"]
+
+
+SFX = "5eed00"
+
+
+@pytest.fixture
+def pinned_sfx(monkeypatch):
+    """The random part of a minted id (§482, lib/item_ids.py), pinned so a minted id can be named whole."""
+    monkeypatch.setattr(speech_build, "id_suffix", lambda: SFX)
+    monkeypatch.setattr(speech_carry, "id_suffix", lambda: SFX)
 
 
 def track(project, tid):
@@ -172,10 +184,10 @@ def test_an_old_cut_that_plays_a_line_twice_carries_unchanged(fx, row):
 # ---------------------------------------------------------------- the time map
 
 
-def test_time_map_forward_next_kept_and_new_times(fx):
+def test_time_map_forward_next_kept_and_new_times(fx, pinned_sfx):
     r = run(fx, edit(fx.text, A4, None))
     tm, src = r.tmap, fx.src
-    c2b = item(r.project, "clip-2-s2")                  # clip-2 after "Hartford,": source 14.956-19.7
+    c2b = item(r.project, f"clip-2-s2-{SFX}")                  # clip-2 after "Hartford,": source 14.956-19.7
     assert tm.source_at(12.0) == (src, pytest.approx(12.6))
     assert tm.source_at(5.0) == (src, 5.0)
     assert tm.forward(5.0) == 5.0                       # before the cut: exactly unchanged
@@ -196,12 +208,12 @@ def _face_with_keyframes(fx):
     return project
 
 
-def test_linked_layer_follows_its_speech_piece_by_piece(fx):
+def test_linked_layer_follows_its_speech_piece_by_piece(fx, pinned_sfx):
     project = _face_with_keyframes(fx)
     face = item(project, "face-1")
     r = run(fx, edit(fx.text, A5, "A5 {0.78} CHAPTER {0.22} I"), project=project)   # "1876" cut inside clip-2
     pieces = track(r.project, "st-face")["items"]
-    assert [p["id"] for p in pieces] == ["face-1", "face-1-s2"]
+    assert [p["id"] for p in pieces] == ["face-1", f"face-1-s2-{SFX}"]
     for p in pieces:
         partner = holder(r.items, p["src"], p["inPoint"] + EPS)
         assert abs((p["start"] - p["inPoint"]) - (partner["start"] - partner["inPoint"])) < EPS, p["id"]
@@ -216,10 +228,54 @@ def test_linked_layer_follows_its_speech_piece_by_piece(fx):
     assert r.report.carried["linked"] == 2
 
 
-def test_linked_layer_replicates_for_a_repeat_and_goes_when_cut(fx):
+def test_two_carries_of_one_edit_mint_different_linked_piece_ids(fx):
+    """§482: two copies of a project making the same edit never mint one id for two layer pieces."""
+    t = edit(fx.text, A5, "A5 {0.78} CHAPTER {0.22} I")
+    a, b = [[p["id"] for p in track(run(fx, t).project, "st-face")["items"]] for _ in range(2)]
+    assert a[0] == b[0] == "face-1"
+    assert re.fullmatch(r"face-1-s2-[0-9a-f]{6}", a[1]) and re.fullmatch(r"face-1-s2-[0-9a-f]{6}", b[1])
+    assert a[1] != b[1]
+
+
+def test_a_rebuild_keeps_minted_ids_and_the_state_keyed_by_them(fx):
+    """§482: a minted piece's id is random, so a later edit must keep it, never mint it again, or
+    whatever is keyed by it is orphaned. Edit 1 cuts "1876" inside clip-2, so clip-2 and face-1 each
+    split and mint a piece. State goes on both minted pieces and an overlay sits on the speech piece.
+    The unchanged text then changes nothing, and edit 2 (words of A1, before them) moves them all
+    earlier with their ids and state."""
+    project = run(fx, edit(fx.text, A5, "A5 {0.78} CHAPTER {0.22} I")).project
+    sp = next(it for it in speech_items(project) if re.fullmatch(r"clip-2-s2-[0-9a-f]{6}", it["id"]))
+    lk = next(it for it in track(project, "st-face")["items"] if re.fullmatch(r"face-1-s2-[0-9a-f]{6}", it["id"]))
+    sp["scale"] = 1.5
+    sp["keyframes"] = [{"prop": "opacity", "points": [{"t": 0, "value": 0.5}, {"t": 1.0, "value": 1}]}]
+    lk["scale"] = 0.45
+    ov = {"id": "on-piece", "type": "overlay", "src": "a.jsx", "start": round(sp["start"] + 0.2, 6),
+          "end": round(sp["start"] + 0.8, 6), "props": {}}
+    project["tracks"].append({"id": "trk-x", "items": [ov]})
+    d = derive(project, fx.pdir)
+    text = render(d, project["id"])
+
+    same = run(fx, text, project=project, derived=d)
+    assert json.dumps(same.project) == json.dumps(project)
+
+    r = run(fx, text.replace(A1_CUT_FROM, A1_CUT_TO), project=project, derived=d)
+    sp2, lk2, ov2 = item(r.project, sp["id"]), item(r.project, lk["id"]), item(r.project, "on-piece")
+    shift = sp["start"] - sp2["start"]
+    assert shift > 1.0                                   # words 7-12 of A1 are gone
+    assert r.prov[sp["id"]]["old_id"] == sp["id"]
+    assert (sp2["scale"], sp2["keyframes"]) == (1.5, sp["keyframes"])
+    assert (sp2["inPoint"], sp2["outPoint"]) == (sp["inPoint"], sp["outPoint"])
+    assert lk2["scale"] == 0.45 and lk2["start"] == pytest.approx(lk["start"] - shift, abs=1e-6)
+    assert ov2["start"] == pytest.approx(ov["start"] - shift, abs=1e-6)
+    assert ov2["end"] == pytest.approx(ov["end"] - shift, abs=1e-6)
+    minted = {i for i in all_ids(r.project, skip_track=-1) | {it["id"] for it in r.items}} - all_ids(project, skip_track=-1)
+    assert not [i for i in minted if i.startswith(("clip-2-s", "face-1-s"))], minted
+
+
+def test_linked_layer_replicates_for_a_repeat_and_goes_when_cut(fx, pinned_sfx):
     r = run(fx, append(fx.text, A4))                    # "Hartford," played twice
     pieces = track(r.project, "st-face")["items"]
-    assert [p["id"] for p in pieces] == ["face-1", "face-1-s2"]
+    assert [p["id"] for p in pieces] == ["face-1", f"face-1-s2-{SFX}"]
     rep = holder(r.items[3:], fx.src, fx.words[26].start)
     assert abs((pieces[1]["start"] - pieces[1]["inPoint"]) - (rep["start"] - rep["inPoint"])) < EPS
     assert pieces[0] == item(fx.project, "face-1")      # the original play is untouched
@@ -330,7 +386,7 @@ def item_text(fx, sid):
     return next(s["text"] for s in fx.project["captions"]["segments"] if s["id"] == sid)
 
 
-def test_a_repeated_line_gets_copies_of_its_caption_words(fx):
+def test_a_repeated_line_gets_copies_of_its_caption_words(fx, pinned_sfx):
     project = copy.deepcopy(fx.project)
     cap3 = next(s for s in project["captions"]["segments"] if s["id"] == "cap-3")
     cap3.update(color="#ff0000", lane=1, offsetY=4)
@@ -339,7 +395,7 @@ def test_a_repeated_line_gets_copies_of_its_caption_words(fx):
     segs = {s["id"]: s for s in r.project["captions"]["segments"]}
     assert segs["cap-3"] == cap3                         # the first play keeps everything
     copy_ = segs["cap-3-2"]
-    rep = item(r.project, "clip-2-s2")
+    rep = item(r.project, f"clip-2-s2-{SFX}")
     assert [w["word"] for w in copy_["words"]] == ['"Tom!"'] and copy_["words"][0]["accent"] == "serif"
     assert (copy_["color"], copy_["lane"], copy_["offsetY"], copy_["text"]) == ("#ff0000", 1, 4, '"Tom!"')
     assert rep["start"] - EPS <= copy_["start"] and copy_["end"] <= rep["end"] + EPS
@@ -407,9 +463,9 @@ def test_voice_line_moves_with_item_3(fx):
 # ---------------------------------------------------------------- markers and notes
 
 
-def test_marker_in_a_cut_moves_to_the_next_kept_moment(fx):
+def test_marker_in_a_cut_moves_to_the_next_kept_moment(fx, pinned_sfx):
     r = run(fx, edit(fx.text, A4, None))
-    c2b = item(r.project, "clip-2-s2")
+    c2b = item(r.project, f"clip-2-s2-{SFX}")
     assert r.project["markers"] == [{"id": "m1", "t": pytest.approx(c2b["start"]), "label": "beat"}]
     assert [f["id"] for f in flags(r.report, "marker_moved")] == ["m1", "note-1"]
 
@@ -422,11 +478,11 @@ def test_markers_stay_sorted(fx):
     assert flags(r.report, "marker_moved") == []
 
 
-def test_notes_carry_their_range_and_are_never_removed(fx):
+def test_notes_carry_their_range_and_are_never_removed(fx, pinned_sfx):
     project = copy.deepcopy(fx.project)
     project["notes"].append({"id": "note-2", "t": 12.0, "tEnd": 12.5, "text": "all cut", "done": True})
     r = run(fx, edit(fx.text, A4, None), project=project)
-    c2b = item(r.project, "clip-2-s2")
+    c2b = item(r.project, f"clip-2-s2-{SFX}")
     n1, n2 = r.project["notes"]
     # note-1 14.0-15.5 is source 14.6-16.1: its start is cut, the rest (from 14.956) survives
     assert (n1["t"], n1["tEnd"], n1["text"]) == (pytest.approx(c2b["start"]), pytest.approx(c2b["start"] + 16.1 - c2b["inPoint"]), "check this line")

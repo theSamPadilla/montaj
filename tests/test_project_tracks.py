@@ -6,6 +6,7 @@ idempotent, and returns the SAME OBJECT when the project is already in object
 form (the lazy on-open migration reads that identity as "no write needed").
 """
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -267,9 +268,12 @@ def test_replace_track_items_preserves_the_target_tracks_own_settings_and_id():
 
 
 def test_replace_track_items_grows_past_the_end():
+    """A track grown past the end is NEW: trk-<6 hex> (§482), not trk-<index>."""
     p = {"id": "p1", "tracks": [[item("a")]]}
     out = replace_track_items(p, 2, [item("z")])
-    assert [t["id"] for t in out] == ["trk-0", "trk-1", "trk-2"]
+    assert out[0]["id"] == "trk-0"
+    assert all(re.fullmatch(r"trk-[0-9a-f]{6}", t["id"]) for t in out[1:]), out
+    assert out[1]["id"] != out[2]["id"]
     assert out[1]["items"] == []
     assert out[2]["items"] == [item("z")]
 

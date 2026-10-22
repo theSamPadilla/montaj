@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail
 from ai_video import find_project, save_project_changes
 from lib.project_tracks import track_items, replace_track_items
+from lib.item_ids import id_suffix
 
 
 def segment_clip(clip, seg_duration):
@@ -66,6 +67,10 @@ def main():
     segs_a = segment_clip(clip_a, args.segment_duration)
     segs_b = segment_clip(clip_b, args.segment_duration)
 
+    # One random part per run (lib/item_ids.py): two copies of a project
+    # cutting the same clips must not mint the same ids.
+    sfx = id_suffix()
+
     # Interleave: A1, B1, A2, B2, ...
     # Use min length, then append remaining from whichever is longer
     new_clips = []
@@ -78,7 +83,7 @@ def main():
             ls, le = segs_a[i]
             seg_dur = le - ls
             new_clips.append({
-                "id": f"{clip_a['id']}-x-{i + 1}",
+                "id": f"{clip_a['id']}-x-{i + 1}-{sfx}",
                 "type": clip_a["type"],
                 "src": clip_a["src"],
                 "start": round(timeline_cursor, 6),
@@ -94,7 +99,7 @@ def main():
             ls, le = segs_b[i]
             seg_dur = le - ls
             new_clips.append({
-                "id": f"{clip_b['id']}-x-{i + 1}",
+                "id": f"{clip_b['id']}-x-{i + 1}-{sfx}",
                 "type": clip_b["type"],
                 "src": clip_b["src"],
                 "start": round(timeline_cursor, 6),

@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail
 from ai_video import find_project, save_project_changes
 from lib.project_tracks import track_items, replace_track_items
+from lib.item_ids import id_suffix
 
 
 def main():
@@ -57,6 +58,9 @@ def main():
 
     # Build montage beats: one beat per clip, round-robin
     # Each beat extracts beat_duration from the clip starting at offset
+    # One random part per run (lib/item_ids.py): two copies of a project
+    # cutting the same clips must not mint the same ids.
+    sfx = id_suffix()
     new_clips = []
     timeline_start = min(c["start"] for c in clips)
     cursor = timeline_start
@@ -78,7 +82,7 @@ def main():
                 continue
 
             new_clips.append({
-                "id": f"{clip['id']}-m-{round_i + 1}",
+                "id": f"{clip['id']}-m-{round_i + 1}-{sfx}",
                 "type": clip["type"],
                 "src": clip["src"],
                 "start": round(cursor, 6),

@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail
 from ai_video import find_project, save_project_changes
 from lib.project_tracks import track_items, replace_track_items
+from lib.item_ids import id_suffix
 
 
 def cuts_to_keeps(cuts, clip_duration):
@@ -100,13 +101,15 @@ def main():
     if not keeps:
         fail("invalid_params", "No keep ranges remain after filtering")
 
-    # Build new clip items
+    # Build new clip items. One random part per run (lib/item_ids.py): two
+    # copies of a project cutting the same clip must not mint the same ids.
+    sfx = id_suffix()
     new_clips = []
     cursor = clip["start"]
     for seg_i, (ks, ke) in enumerate(keeps):
         seg_duration = ke - ks
         new_clip = {
-            "id": f"{clip['id']}-seg-{seg_i + 1}",
+            "id": f"{clip['id']}-seg-{seg_i + 1}-{sfx}",
             "type": clip["type"],
             "src": clip["src"],
             "start": round(cursor, 6),

@@ -30,7 +30,17 @@ Mirrored, semantics for semantics, by ``montaj_assets/render/project-tracks.js``
 and ``normalizeTracks``/``trackItems`` in
 ``montaj_assets/editor/src/video/timeline/timeline-model.ts``. Change one,
 change all three.
+
+Two kinds of generated id (§482). Normalization fills in the id of a track
+that is already in the document, and must give every machine and all three
+implementations the same answer: ``trk-<index>`` (:func:`_assign_id`). A NEW
+track, created after init, is ``trk-<6 hex>`` (:func:`_new_track_id`, the
+editor's ``nextVisualTrackId``), so two copies of one project each adding a
+track never mint one id for two different tracks. An existing id is never
+rewritten.
 """
+
+from lib.item_ids import id_suffix
 
 
 def _is_object_form(tracks: list) -> bool:
@@ -62,6 +72,16 @@ def _assign_id(index: int, taken: set) -> str:
     while candidate in taken:
         candidate = f"trk-{index}-{suffix}"
         suffix += 1
+    taken.add(candidate)
+    return candidate
+
+
+def _new_track_id(taken: set) -> str:
+    """The id of a NEW track: ``trk-<6 hex>`` (lib/item_ids.py), drawn again
+    while it is in ``taken``. ``taken`` is updated in place."""
+    candidate = f"trk-{id_suffix()}"
+    while candidate in taken:
+        candidate = f"trk-{id_suffix()}"
     taken.add(candidate)
     return candidate
 
@@ -136,8 +156,10 @@ def replace_track_items(project: dict, index: int, items: list) -> list:
 
     Every other track is preserved, and every track's ``id`` / ``volume`` /
     ``muted`` / ``enabled`` survives. Pure — does not mutate ``project`` or any
-    existing track dict. Grows the list with fresh empty tracks (ids from
-    :func:`_assign_id`) if ``index`` is past the end.
+    existing track dict. Grows the list with fresh empty tracks if ``index`` is
+    past the end: the primary track (index 0, a project with no tracks) is
+    ``trk-0``, as init and serve name it; any later one is a new track, with an
+    id from :func:`_new_track_id`.
 
     Assign the result straight back into the project at the one key::
 
@@ -152,7 +174,8 @@ def replace_track_items(project: dict, index: int, items: list) -> list:
     out = [dict(track) for track in tracks]
     taken = {t["id"] for t in out if isinstance(t.get("id"), str)}
     while len(out) <= index:
-        out.append({"id": _assign_id(len(out), taken), "items": []})
+        tid = _assign_id(0, taken) if not out else _new_track_id(taken)
+        out.append({"id": tid, "items": []})
     out[index]["items"] = list(items)
     return out
 

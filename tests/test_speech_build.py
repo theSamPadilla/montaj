@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from lib import speech_build
 from lib.keyframe_curves import EASING_NAMES, sample_track
 from lib.speech_build import (HARD_CUT_PAD_S, MIN_PAUSE_S, SNAP_WINDOW_S, Run, items_from_runs, runs_from_rows)
 from lib.speech_pauses import silences
@@ -44,6 +45,15 @@ def fx(tmp_path_factory):
 
 def speech_items(project):
     return project["tracks"][0]["items"]
+
+
+SFX = "5eed00"
+
+
+@pytest.fixture
+def pinned_sfx(monkeypatch):
+    """The build's random id part (§482, lib/item_ids.py), pinned so a minted id can be asserted whole."""
+    monkeypatch.setattr(speech_build, "id_suffix", lambda: SFX)
 
 
 def build(fx, text, max_pause=None, project=None, derived=None, reserved=(), feel="tight"):
@@ -265,14 +275,14 @@ def test_a_row_split_in_two_stays_one_item(fx):
 # ---------------------------------------------------------------- pauses
 
 
-def test_pause_shortened_to_025_keeps_exactly_025(fx):
+def test_pause_shortened_to_025_keeps_exactly_025(fx, pinned_sfx):
     # A11's lead-in is the 0.477 s gap between "wonder?"" (41) and ""You," (42), inside clip-3
     b = build(fx, edit(fx.text, 'A11 {0.48} "You, Tom!"', 'A11 {0.25} "You, Tom!"'))
     assert abs(pause_after(fx, b.items, 41) - 0.25) <= 0.001
     assert b.report.hard_cuts == 0
     assert b.report.pauses == [{"line": "A11", "from": 0.48, "to": 0.25}]
     assert b.report.clamped == []
-    assert [it["id"] for it in b.items] == ["clip-1", "clip-2", "clip-3", "clip-3-s2"]
+    assert [it["id"] for it in b.items] == ["clip-1", "clip-2", "clip-3", f"clip-3-s2-{SFX}"]
 
 
 def test_pause_raised_to_2_is_clamped_to_the_source_and_reported(fx):
@@ -426,7 +436,7 @@ def assert_keyframes_hold(old_item, new_items, prop):
     return n_cmp
 
 
-def test_crop_keyframes_unchanged_at_kept_frames(fx):
+def test_crop_keyframes_unchanged_at_kept_frames(fx, pinned_sfx):
     project = copy.deepcopy(fx.project)
     c1 = speech_items(project)[0]
     c1["keyframes"] += [
@@ -438,7 +448,7 @@ def test_crop_keyframes_unchanged_at_kept_frames(fx):
     assert set(EASING_NAMES) >= {"hold", "ease-in-out"}
     b = build(fx, edit(fx.text, A1, A1_CUT), project=project)
     pieces = [it for it in b.items if it["id"].startswith("clip-1")]
-    assert [it["id"] for it in pieces] == ["clip-1", "clip-1-s2"]
+    assert [it["id"] for it in pieces] == ["clip-1", f"clip-1-s2-{SFX}"]
     n = sum(assert_keyframes_hold(c1, pieces, p) for p in ("cropX", "cropY", "cropW"))
     assert n > 300
 
@@ -547,15 +557,15 @@ def test_run_spanning_two_items_takes_the_first_and_flags_it(fx):
 # ---------------------------------------------------------------- ids, provenance, special rows
 
 
-def test_ids_pieces_repeats_and_unused_lines(fx):
+def test_ids_pieces_repeats_and_unused_lines(fx, pinned_sfx):
     t = edit(fx.text, "A4 {1.60} Hartford,", None).replace("## Unused", 'A6 {0.77} "Tom!"\n\n## Unused')
-    b = build(fx, t, reserved={"clip-2-s2"})
+    b = build(fx, t, reserved={f"clip-2-s2-{SFX}"})
     ids = [it["id"] for it in b.items]
-    assert ids == ["clip-1", "clip-2", "clip-2-s3", "clip-3", "clip-2-s4"]
+    assert ids == ["clip-1", "clip-2", f"clip-2-s3-{SFX}", "clip-3", f"clip-2-s4-{SFX}"]
     assert len(set(ids)) == len(ids)
-    assert b.prov["clip-2-s4"]["repeat"] is True and b.prov["clip-2"]["repeat"] is False
-    assert b.prov["clip-2-s3"]["old_id"] == "clip-2"
-    # a line no old item played (clip-3 removed): sp-<line>-<n>, props of the nearest old item, no keyframes
+    assert b.prov[f"clip-2-s4-{SFX}"]["repeat"] is True and b.prov["clip-2"]["repeat"] is False
+    assert b.prov[f"clip-2-s3-{SFX}"]["old_id"] == "clip-2"
+    # a line no old item played (clip-3 removed): sp-<line>-<n>-<sfx>, props of the nearest old item, no keyframes
     project = copy.deepcopy(fx.project)
     del speech_items(project)[2]
     d = derive(project, fx.pdir)
@@ -564,10 +574,30 @@ def test_ids_pieces_repeats_and_unused_lines(fx):
     t = text.replace("\n\n## Unused", "\nA13 The old lady pulled her speckle.\n\n## Unused", 1)
     b = build(fx, t, project=project, derived=d)
     new = b.items[-1]
-    assert new["id"] == "sp-A13-1" and b.prov["sp-A13-1"]["old_id"] is None
+    assert new["id"] == f"sp-A13-1-{SFX}" and b.prov[f"sp-A13-1-{SFX}"]["old_id"] is None
     assert (new["sourceWidth"], new["type"], new["src"]) == (64, "video", fx.src)
     assert "keyframes" not in new
     assert new["inPoint"] == pytest.approx(fx.words[45].end) and new["outPoint"] == pytest.approx(30.0)
+
+
+def test_two_builds_on_one_base_keep_old_ids_and_mint_different_new_ones(fx):
+    """§482: two copies of a project making the same speech edit never mint one id for two pieces.
+    An old item's id never changes; only a new piece takes the random part."""
+    t = edit(fx.text, 'A11 {0.48} "You, Tom!"', 'A11 {0.25} "You, Tom!"')
+    a, b = [[it["id"] for it in build(fx, t).items] for _ in range(2)]
+    assert a[:3] == b[:3] == ["clip-1", "clip-2", "clip-3"]
+    assert re.fullmatch(r"clip-3-s2-[0-9a-f]{6}", a[3]) and re.fullmatch(r"clip-3-s2-[0-9a-f]{6}", b[3])
+    assert a[3] != b[3]
+
+
+def test_two_builds_of_a_line_no_old_item_played_mint_different_sp_ids(fx):
+    project = copy.deepcopy(fx.project)
+    del speech_items(project)[2]
+    d = derive(project, fx.pdir)
+    t = render(d, project["id"]).replace("\n\n## Unused", "\nA13 The old lady pulled her speckle.\n\n## Unused", 1)
+    a, b = [build(fx, t, project=project, derived=d).items[-1]["id"] for _ in range(2)]
+    assert re.fullmatch(r"sp-A13-1-[0-9a-f]{6}", a) and re.fullmatch(r"sp-A13-1-[0-9a-f]{6}", b)
+    assert a != b
 
 
 def test_gap_image_and_no_speech_rows(fx):

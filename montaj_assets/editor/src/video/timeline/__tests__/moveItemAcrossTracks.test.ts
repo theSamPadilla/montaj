@@ -14,7 +14,7 @@
  * results through `ids()`; the settings-preservation suite at the bottom is the
  * one that looks at the track objects themselves.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { VisualItem, VisualTrack } from '../../../schema'
 import { moveItemAcrossTracks, VISUAL_ROW_HEIGHT_PX } from '../timeline-model'
 
@@ -364,15 +364,35 @@ describe('moveItemAcrossTracks — bookkeeping', () => {
   })
 
   it('gives a newly minted top track an id that collides with nothing', () => {
-    // `trk-2` is deliberately squatting on the id the index rule would hand out
-    // for the new track, so the normalizer's dedupe suffix has to kick in.
-    const tracks: VisualTrack[] = [
-      { id: 'trk-0', items: [dragged, clip('stay', 50, 60)] },
-      { id: 'trk-2', items: [clip('b', 50, 60)] },
-    ]
-    const moved = moveItemAcrossTracks({ tracks, item: dragged, start: 0, end: 10, sourceTrackIdx: 0, dy: -240 })
-    expect(moved.map(t => t.id)).toEqual(['trk-0', 'trk-2', 'trk-2-2'])
-    expect(ids(moved)).toEqual([['stay'], ['b'], ['d']])
+    // A new track is `trk-<6 hex>` (§482). The first draw lands on `trk-abcdef`,
+    // already in use, so the id has to be drawn again.
+    const draws = [[0xab, 0xcd, 0xef], [0x01, 0x23, 0x45]]
+    const spy = vi.spyOn(crypto, 'getRandomValues').mockImplementation((array) => {
+      (array as Uint8Array).set(draws.shift()!)
+      return array
+    })
+    try {
+      const tracks: VisualTrack[] = [
+        { id: 'trk-0', items: [dragged, clip('stay', 50, 60)] },
+        { id: 'trk-abcdef', items: [clip('b', 50, 60)] },
+      ]
+      const moved = moveItemAcrossTracks({ tracks, item: dragged, start: 0, end: 10, sourceTrackIdx: 0, dy: -240 })
+      expect(moved.map(t => t.id)).toEqual(['trk-0', 'trk-abcdef', 'trk-012345'])
+      expect(ids(moved)).toEqual([['stay'], ['b'], ['d']])
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('mints a different new-track id on each of two copies of one project (§482)', () => {
+    const tracks: VisualTrack[] = [{ id: 'trk-0', items: [dragged, clip('stay', 50, 60)] }]
+    const mint = () =>
+      moveItemAcrossTracks({ tracks, item: dragged, start: 0, end: 10, sourceTrackIdx: 0, dy: -240 })[1].id
+    const a = mint()
+    const b = mint()
+    expect(a).toMatch(/^trk-[0-9a-f]{6}$/)
+    expect(b).toMatch(/^trk-[0-9a-f]{6}$/)
+    expect(a).not.toBe(b)
   })
 })
 
@@ -426,7 +446,8 @@ describe('moveItemAcrossTracks — settings survive the prune', () => {
     })
 
     expect(ids(moved)).toEqual([['a'], ['c'], ['solo']])
-    expect(moved.map(t => t.id)).toEqual(['trk-a', 'trk-c', 'trk-3'])
+    expect(moved.map(t => t.id).slice(0, 2)).toEqual(['trk-a', 'trk-c'])
+    expect(moved[2].id).toMatch(/^trk-[0-9a-f]{6}$/)   // a new track (§482)
     expect(moved.map(t => [t.volume, t.muted])).toEqual([
       [0.2, undefined],
       [undefined, true],

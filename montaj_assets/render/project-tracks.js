@@ -33,6 +33,11 @@
  * `montaj_assets/editor/src/video/timeline/timeline-model.ts`. Change one,
  * change all three — a legacy project normalized by any of them must produce
  * the same ids and the same structure.
+ *
+ * Normalization's `trk-<index>` stays deterministic: it names a track already
+ * in the document, and every machine must agree on it (§482). A NEW track is
+ * `trk-<6 hex>`, minted by the editor (`nextVisualTrackId`) and by
+ * `lib/project_tracks.py`; render reads projects and mints none.
  */
 
 /** Plain object (not an array, not null) — the shape a track dict arrives as. */

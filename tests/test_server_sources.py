@@ -36,6 +36,7 @@ tests/test_server_rerun_tracks.py.
 """
 import asyncio
 import json
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -173,6 +174,33 @@ def test_ingest_calls_ingest_source_with_proxy_false(tmp_path, monkeypatch):
     assert len(calls) == 1
     args, kwargs = calls[0]
     assert kwargs.get("proxy") is False, f"expected proxy=False, got args={args!r} kwargs={kwargs!r}"
+
+
+# ---------------------------------------------------------------------------
+# _next_clip_id (§482): clip-<N>-<6 hex>, N max+1 over both forms
+# ---------------------------------------------------------------------------
+
+def test_next_clip_id_is_max_plus_one_over_both_forms_with_a_random_part():
+    project = {
+        "sources": [{"id": "clip-0"}, {"id": "clip-4-0a1b2c"}, {"id": "not-a-clip"}],
+        "tracks": [{"id": "trk-0", "items": [{"id": "clip-2"}, {"id": "clip-1-seg-1-abcdef"}]}],
+    }
+    nid = projects_mod._next_clip_id(project)
+    assert re.fullmatch(r"clip-5-[0-9a-f]{6}", nid), nid
+
+
+def test_next_clip_id_counts_an_item_only_id_and_never_reuses_a_number():
+    project = {"sources": [], "tracks": [{"id": "trk-0", "items": [{"id": "clip-7-ffffff"}]}]}
+    assert projects_mod._next_clip_id(project).startswith("clip-8-")
+    assert projects_mod._next_clip_id({"sources": [], "tracks": []}).startswith("clip-0-")
+
+
+def test_two_imports_into_one_base_mint_different_ids():
+    """Two copies of one project each importing a clip must not both mint clip-<N>."""
+    base = {"sources": [{"id": "clip-0"}], "tracks": [{"id": "trk-0", "items": [{"id": "clip-0"}]}]}
+    a, b = projects_mod._next_clip_id(base), projects_mod._next_clip_id(base)
+    assert a.startswith("clip-1-") and b.startswith("clip-1-")
+    assert a != b
 
 
 # ---------------------------------------------------------------------------

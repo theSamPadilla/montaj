@@ -122,6 +122,21 @@ describe('placeDroppedClip — new track creation', () => {
     expect(tracks[2].items).toHaveLength(1)
     expect(tracks[2].items[0]).toMatchObject({ start: 2, end: 5, type: 'video' })
     expect(tracks[3].items).toEqual([imageItem('ov', 0, 100)]) // the overlay track, still last
+    expect(tracks[2].id).toMatch(/^trk-[0-9a-f]{6}$/) // a new track (§482)
+    expect(new Set(tracks.map(t => t.id)).size).toBe(4)
+  })
+
+  it('mints a different new-track id on each of two copies of one project (§482)', () => {
+    const p = makeProject({ tracks: vtracks([videoItem('a', 0, 10)]) })
+    const drop = () =>
+      placeDroppedClip(p, { atTime: 2, preferredTrackIndex: 0, clip: { src: 'n.mp4', sourceDuration: 3 } })
+    const a = drop()
+    const b = drop()
+    expect(a.createdTrack && b.createdTrack).toBe(true)
+    const idA = a.project.tracks![a.trackIndex].id
+    const idB = b.project.tracks![b.trackIndex].id
+    expect(idA).toMatch(/^trk-[0-9a-f]{6}$/)
+    expect(idA).not.toBe(idB)
   })
 })
 

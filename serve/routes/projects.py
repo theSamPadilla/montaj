@@ -49,6 +49,7 @@ from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwarg
 from lib.overlay_validation import overlay_item_errors
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
 from lib.project_tracks import normalize_tracks, track_items
+from lib.item_ids import id_suffix
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from lib.youtube import (
     DownloadProgress, classify_error, parse_montaj_line, parse_printed_path, parse_youtube_url, ytdlp_argv,
@@ -381,15 +382,20 @@ _ingest_jobs: dict[str, _IngestJob] = {}
 # fire-and-forget tasks, so without this an ingest task could be GC'd mid-run.
 _ingest_task_refs: set = set()
 
-_CLIP_ID_RE = re.compile(r"^clip-(\d+)$")
+# `clip-<N>` (init, older imports) and `clip-<N>-<6 hex>` (an import since §482).
+_CLIP_ID_RE = re.compile(r"^clip-(\d+)(?:-[0-9a-f]{6})?$")
 
 
 def _next_clip_id(project: dict) -> str:
-    """Smallest ``clip-<N>`` id guaranteed not to collide with any existing
+    """A ``clip-<N>-<6 hex>`` id guaranteed not to collide with any existing
     source or timeline-item id. Scans both project["sources"] and every
     track's items (a placed clip shares its source's id, and a future
     placement of THIS new clip must not collide with it either) — mirrors the
-    max+1 `asset-<N>` allocation in include_profile_asset below."""
+    max+1 `asset-<N>` allocation in include_profile_asset below.
+
+    N is max+1 over both forms, so a number is never reused. The random part
+    is §482's: two copies of one project each importing a clip into the same
+    base must not both mint ``clip-<N>`` (lib/item_ids.py)."""
     max_n = -1
     for src in project.get("sources") or []:
         m = _CLIP_ID_RE.match(str(src.get("id", "")))
@@ -400,7 +406,7 @@ def _next_clip_id(project: dict) -> str:
             m = _CLIP_ID_RE.match(str(item.get("id", "")))
             if m:
                 max_n = max(max_n, int(m.group(1)))
-    return f"clip-{max_n + 1}"
+    return f"clip-{max_n + 1}-{id_suffix()}"
 
 
 async def _record_source_provenance(project_dir, clip: dict, entry: dict, log) -> None:

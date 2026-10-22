@@ -76,6 +76,7 @@ import re
 from dataclasses import dataclass, field
 
 from lib.common import fail
+from lib.item_ids import id_suffix
 from lib.keyframe_curves import rebase
 from lib.speech_align import align_row
 from lib.speech_lines import norm
@@ -953,8 +954,11 @@ def items_from_runs(runs, old_items, fps, *, report: Report | None = None, sourc
     CARRIED from the nearest old item of its source (no keyframes), else src and the source fields
     from the project `sources` entry.
 
-    Ids: the first piece of an old item keeps its id; later pieces are `<id>-s<n>` (n counts the
-    item's pieces, raised past any id in use); a run with no old item is `sp-<line>-<n>`.
+    Ids: the first piece of an old item keeps its id; later pieces are `<id>-s<n>-<sfx>` (n counts
+    the item's pieces, raised past any id in use); a run with no old item is `sp-<line>-<n>-<sfx>`.
+    `<sfx>` is one random part per build (lib/item_ids.py, §482), so two copies of a project
+    editing the same speech never mint one id for two different pieces. Only a NEW piece takes it:
+    an old item's id is never changed, so whatever is keyed by it (provenance, the carry) holds.
     reserved_ids: ids used elsewhere in the project.
 
     Provenance: {"kind", "old_id", "piece", "src", "s_in", "s_out", "speed", "line", "row_index",
@@ -971,20 +975,21 @@ def items_from_runs(runs, old_items, fps, *, report: Report | None = None, sourc
     frame = 1.0 / fps if fps else 0.0
     items, prov = [], {}
     cursor, prev = 0.0, None
+    sfx = id_suffix()
 
     def new_id(base_id, line):
         if base_id is None:
             n = 1
-            while f"sp-{line}-{n}" in taken | used:
+            while f"sp-{line}-{n}-{sfx}" in taken | used:
                 n += 1
-            return f"sp-{line}-{n}"
+            return f"sp-{line}-{n}-{sfx}"
         pieces[base_id] = pieces.get(base_id, 0) + 1
         if pieces[base_id] == 1 and base_id not in used:
             return base_id
         n = max(2, pieces[base_id])
-        while f"{base_id}-s{n}" in taken | used:
+        while f"{base_id}-s{n}-{sfx}" in taken | used:
             n += 1
-        return f"{base_id}-s{n}"
+        return f"{base_id}-s{n}-{sfx}"
 
     for run in runs:
         if run.kind == "gap":

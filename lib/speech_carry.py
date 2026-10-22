@@ -50,7 +50,8 @@ Rules (`carry`)
    `new.start + (s - new.inPoint) / speed`, with the layer's fields and its keyframes re-based (a
    repeat replicates the layer). Lineage, rather than every new item of the source, keeps an old
    cut that already repeated a line from doubling its layers. The first piece in timeline order
-   keeps the id; later pieces are `<id>-s<n>`. A layer with no piece is removed: `linked_removed`.
+   keeps the id; later pieces are `<id>-s<n>-<sfx>` (one random part per carry, lib/item_ids.py).
+   A layer with no piece is removed: `linked_removed`.
    Source the layer covers but no partner played is not carried: `linked_clipped`.
 2. **Overlays, images, other video and anything else timed on the other tracks** (not linked):
    - `new_start = forward(start)`; if that moment was cut, `next_kept(start)`, flagged
@@ -107,6 +108,7 @@ from dataclasses import dataclass, field, fields
 
 from lib.caption_group import group
 from lib.common import fail
+from lib.item_ids import id_suffix
 from lib.keyframe_curves import rebase
 from lib.project_tracks import normalize_tracks, replace_track_items
 from lib.speech_build import Report
@@ -596,6 +598,7 @@ class _Carry:
         self.counts = {"linked": 0, "overlays": 0, "captionWords": 0, "audio": 0, "markers": 0, "notes": 0}
         self.taken = {it.get("id") for t in normalize_tracks(self.p).get("tracks", []) for it in t["items"]}
         self.taken |= {it.get("id") for it in new_items}
+        self.sfx = id_suffix()   # the random part of every id this carry mints (§482)
 
     def flag(self, kind, iid, **kw):
         self.rep.flagged.append({"kind": kind, "id": iid, **kw})
@@ -709,9 +712,9 @@ class _Carry:
         return piece
 
     def piece_id(self, base, n):
-        while f"{base}-s{n}" in self.taken:
+        while f"{base}-s{n}-{self.sfx}" in self.taken:
             n += 1
-        nid = f"{base}-s{n}"
+        nid = f"{base}-s{n}-{self.sfx}"
         self.taken.add(nid)
         return nid
 
