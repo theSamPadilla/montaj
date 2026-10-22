@@ -249,13 +249,20 @@ export function applyMoveDeltaToSelection(
  *   one of them: every clip that ends up on the target must share one coarse
  *   kind, so a video clip never lands on an overlay track or the reverse, and
  *   a group mixing the two kinds cannot consolidate onto one track at all.
+ * - the target track, as it stands AFTER the prune and re-grouping, would break
+ *   a rule `engine/validate.py` enforces: containment on any track but
+ *   tracks[0], or three clips live at once on any track (`landsLegally`).
+ *   This is what catches a pair that was legally nested on tracks[0] being
+ *   carried onto a track where nesting is not allowed.
  * There is no fan-out to another track, unlike `moveItemAcrossTracks`: a group
  * goes where it was pointed or nowhere.
  *
  * Tracks left empty are pruned and the stack is re-grouped into the canonical
  * video-block/overlay-block order (`normalizeTrackOrder`), exactly as
  * `moveItemAcrossTracks` leaves a single-item move. Surviving track objects
- * keep their own id and settings.
+ * keep their own id and settings. One difference: when the whole base track is
+ * gathered onto a NEW track that then becomes tracks[0], that track keeps the
+ * old base track's id and settings rather than a fresh random id.
  */
 export function moveSelectionToTrack(
   project: Project,
@@ -296,10 +303,55 @@ export function moveSelectionToTrack(
       ? { ...track, items: track.items.filter(item => !movingIds.has(item.id)) }
       : track,
   )
+  const mintedId = target ? undefined : nextVisualTrackId(tracks)
   const placed = target
     ? stripped.map(track => (track === target ? { ...track, items: [...track.items, ...arrived] } : track))
-    : [...stripped, { id: nextVisualTrackId(tracks), items: arrived }]
-  return normalizeTrackOrder({ ...normalized, tracks: placed.filter(track => track.items.length > 0) })
+    : [...stripped, { id: mintedId!, items: arrived }]
+  let finalTracks = normalizeTrackOrder({ ...normalized, tracks: placed.filter(track => track.items.length > 0) }).tracks ?? []
+
+  // Gathering the whole base track onto a new track: when the minted track
+  // ends up as tracks[0] and the old tracks[0] is gone, it IS the base track
+  // under a random id, so it takes the old base track's id and settings back.
+  const oldBase = tracks[0]
+  if (mintedId !== undefined && oldBase && finalTracks[0]?.id === mintedId
+      && !finalTracks.some(track => track.id === oldBase.id)) {
+    finalTracks = [{ ...oldBase, items: finalTracks[0].items }, ...finalTracks.slice(1)]
+  }
+
+  // engine/validate.py's track rules, read on the FINAL list (after the prune
+  // and the re-grouping), so a track that becomes tracks[0] is judged by the
+  // tracks[0] rules. Only pairs or instants involving a moved clip are judged:
+  // what was already on the target was not put there by this move.
+  const landedIdx = finalTracks.findIndex(track => track.items.some(item => movingIds.has(item.id)))
+  if (!landsLegally(finalTracks[landedIdx].items, movingIds, landedIdx === 0)) return null
+
+  return { ...normalized, tracks: finalTracks }
+}
+
+/**
+ * Mirrors the two visual-track rules in `engine/validate.py`: no item may
+ * contain another (both ways round, ends included, identical spans too) on any
+ * track but tracks[0], and no three items may be live at one instant on any
+ * track (an instant is a start, live is `start <= t < end`). Judged only where
+ * a `moved` item is involved.
+ */
+function landsLegally(items: readonly VisualItem[], moved: ReadonlySet<string>, isBase: boolean): boolean {
+  if (!isBase) {
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const a = items[i], b = items[j]
+        if (!moved.has(a.id) && !moved.has(b.id)) continue
+        const contains = (a.start <= b.start && a.end >= b.end) || (b.start <= a.start && b.end >= a.end)
+        // Touching end to start is not containment (zero-length overlap).
+        if (contains && Math.min(a.end, b.end) > Math.max(a.start, b.start)) return false
+      }
+    }
+  }
+  for (const probe of items) {
+    const live = items.filter(x => x.start <= probe.start && probe.start < x.end)
+    if (live.length > 2 && live.some(x => moved.has(x.id))) return false
+  }
+  return true
 }
 
 /** The caption half of a group move. Word timings are ABSOLUTE seconds, so

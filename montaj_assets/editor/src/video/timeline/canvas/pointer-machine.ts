@@ -327,6 +327,13 @@ export type MachineState =
        *  this to follow the selection onto the diamond's new time. Undefined
        *  for every gesture but `keyframe-move`. */
       keyframeT?: number
+      /** `move` only: latched once the pointer has been over a visual row
+       *  other than the pressed one during this gesture, and never cleared.
+       *  Until then a multi-select move over the pressed row is the
+       *  horizontal-only move; after it, the pressed row is a target like any
+       *  other, so a selection can be gathered onto the pressed clip's own
+       *  track by leaving it and coming back. See `pressedRowLeft`. */
+      leftPressedRow?: boolean
     }
 
 export function initialMachineState(): MachineState {
@@ -933,7 +940,22 @@ function trackIdxUnder(layout: TimelineLayout, y: number, trackCount: number): n
   return rows[rows.length - 1].trackIdx
 }
 
-function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
+/** The visual row under `point` for a `move` press, and the track count it is
+ *  measured against (see `trackIdxUnder`). */
+function rowUnder(press: Press, point: Point): number | undefined {
+  const trackCount = (normalizeTracks(press.baseProject).tracks ?? []).length
+  return trackIdxUnder(press.layout, point.y, trackCount)
+}
+
+/** Is a `move` gesture's pointer over a visual row other than the pressed one?
+ *  Feeds the `leftPressedRow` latch on the dragging state. */
+function pressedRowLeft(gesture: GestureKind, press: Press, point: Point): boolean {
+  if (gesture !== 'move' || press.hit.trackIdx === undefined) return false
+  const under = rowUnder(press, point)
+  return under !== undefined && under !== press.hit.trackIdx
+}
+
+function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean, leftPressedRow = false): Applied {
   const item = press.hit.item
   if (!item || press.hit.trackIdx === undefined) return noChange(snap, lastProject)
 
@@ -942,13 +964,14 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
   // its shape. When the pointer is over a different visual row than the one
   // pressed, every selected CLIP also moves onto that row
   // (`moveSelectionToTrack`), or the move is refused and snaps back. Over the
-  // pressed row it is the horizontal-only move, unchanged. Only a drag that
+  // pressed row it is the horizontal-only move, unchanged, until the pointer
+  // has left that row once in this gesture (`leftPressedRow`); after that the
+  // pressed row gathers like any other. Only a drag that
   // starts on a clip changes tracks: one that starts on an audio bar or a
   // caption has no visual row to measure from and stays horizontal.
   if (ctx.selectedIds.length > 1 && ctx.selectedIds.includes(item.id)) {
-    const trackCount = (normalizeTracks(press.baseProject).tracks ?? []).length
-    const under = trackIdxUnder(press.layout, point.y, trackCount)
-    const toTrackIdx = under !== undefined && under !== press.hit.trackIdx ? under : undefined
+    const under = rowUnder(press, point)
+    const toTrackIdx = under !== undefined && (leftPressedRow || under !== press.hit.trackIdx) ? under : undefined
     return applyGroupMove(ctx, press, point, snap, lastProject, escaped, item, ctx.selectedIds, toTrackIdx)
   }
 
@@ -1702,11 +1725,12 @@ function applyGesture(
   snap: SnapState,
   lastProject: Project,
   escaped: boolean,
+  leftPressedRow = false,
 ): Applied {
   // Before first layout there is no scale, so a pixel delta has no meaning.
   if (!(ctx.viewport.pxPerSecond > 0)) return noChange(snap, lastProject)
   switch (gesture) {
-    case 'move':        return applyMove(ctx, press, point, snap, lastProject, escaped)
+    case 'move':        return applyMove(ctx, press, point, snap, lastProject, escaped, leftPressedRow)
     case 'trim':        return applyTrim(ctx, press, point, snap, lastProject, escaped)
     case 'roll':        return applyRoll(ctx, press, point, snap, lastProject, escaped)
     case 'slip':        return applySlip(ctx, press, point, snap, lastProject)
@@ -1788,10 +1812,12 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
     // Latched, never cleared: once this gesture has pulled clear of its origin
     // the boundary it started on stays armed for the rest of the drag.
     const escaped = state.escaped || hasEscaped(ctx, state.press, point)
-    const applied = applyGesture(state.gesture, ctx, state.press, point, state.snap, state.lastProject, escaped)
+    const leftPressedRow = state.leftPressedRow || pressedRowLeft(state.gesture, state.press, point)
+    const applied = applyGesture(state.gesture, ctx, state.press, point, state.snap, state.lastProject, escaped, leftPressedRow)
     return {
       state: {
         ...state,
+        leftPressedRow,
         snap: applied.snap,
         guide: applied.guide,
         lastProject: applied.lastProject,
@@ -1915,7 +1941,8 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
           ? [{ type: 'selectMany', ids: [draggedId], additive: false }]
           : []
       const escaped = hasEscaped(ctx, state.press, point)
-      const applied = applyGesture(gesture, ctx, state.press, point, createSnapState(), state.press.baseProject, escaped)
+      const leftPressedRow = pressedRowLeft(gesture, state.press, point)
+      const applied = applyGesture(gesture, ctx, state.press, point, createSnapState(), state.press.baseProject, escaped, leftPressedRow)
       const next: MachineState = {
         kind: 'dragging',
         cursor: state.cursor,
@@ -1926,6 +1953,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         lastProject: applied.lastProject,
         escaped,
         keyframeT: applied.keyframeLandedT,
+        leftPressedRow,
       }
       return withCursor(next, cursorForGesture(gesture), guideEffects(null, applied.guide, [...selectFirst, ...applied.effects]))
     }

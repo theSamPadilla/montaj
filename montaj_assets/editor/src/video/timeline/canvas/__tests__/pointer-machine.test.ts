@@ -22,7 +22,7 @@ import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
 import { trackFor, valueAt } from '../../../keyframeOps'
 import { CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, moveItemAcrossTracks, normalizeTracks, trackItems } from '../../timeline-model'
-import { applyMoveDeltaToSelection } from '../../multiSelectOps'
+import { applyMoveDeltaToSelection, moveSelectionToTrack } from '../../multiSelectOps'
 import { AUDIO_ITEM_INSET_PX, computeTimelineLayout } from '../draw'
 import {
   CAPTION_MIN_DURATION_S,
@@ -2739,7 +2739,11 @@ describe('multi-select move across tracks', () => {
     d.down(O1_X, rowMidYFor(ctx, 1))
     d.move(O1_X + 100, rowMidYFor(ctx, 4))
     const backHome = lastProjectChange(d.move(O1_X + 100, rowMidYFor(ctx, 1)))
-    expect(backHome).toEqual(applyMoveDeltaToSelection(ctx.project, ['o1', 'o2', 'o3'], 1, ctx.totalDuration))
+    // Back over the pressed row after leaving it gathers there (it does not
+    // fall back to the horizontal-only move), rebuilt from the press-time project.
+    expect(backHome).toEqual(
+      moveSelectionToTrack(applyMoveDeltaToSelection(ctx.project, ['o1', 'o2', 'o3'], 1, ctx.totalDuration), ['o1', 'o2', 'o3'], 1),
+    )
     d.move(O1_X + 100, rowMidYFor(ctx, 4))
     const final = lastProjectChange(d.move(O1_X + 100, rowMidYFor(ctx, 4) + 1))
 
