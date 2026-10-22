@@ -2749,6 +2749,42 @@ describe('multi-select move across tracks', () => {
     expect(of(d.up(O1_X + 100, rowMidYFor(ctx, 4)), 'commit')).toHaveLength(1)
   })
 
+  it('leaving the pressed row and coming back gathers onto the pressed row', () => {
+    const ctx = groupCtx()
+    const d = new Driver(ctx)
+    d.down(400, rowMidYFor(ctx, 2))                    // press o2, on trk-2
+    d.move(400, rowMidYFor(ctx, 4))                    // leave the row
+    const back = lastProjectChange(d.move(400, rowMidYFor(ctx, 2)))
+    for (const id of ['o1', 'o2', 'o3']) expect(trackIdOf(back, id)).toBe('trk-2')
+    expect(visual(back, 'o1')).toMatchObject({ start: 0, end: 2 })
+    const commits = of(d.up(400, rowMidYFor(ctx, 2)), 'commit')
+    expect(commits).toHaveLength(1)
+    expect(commits[0].project).toEqual(back)
+  })
+
+  it('never leaving the pressed row stays the horizontal-only move', () => {
+    const ctx = groupCtx()
+    const d = new Driver(ctx)
+    d.down(400, rowMidYFor(ctx, 2))
+    d.move(450, rowMidYFor(ctx, 2) + 10)
+    const flat = lastProjectChange(d.move(500, rowMidYFor(ctx, 2) - 10))
+    expect(flat).toEqual(applyMoveDeltaToSelection(ctx.project, ['o1', 'o2', 'o3'], 1, ctx.totalDuration))
+    expect(trackIdOf(flat, 'o1')).toBe('trk-1')
+  })
+
+  it('leave, return, and an overlap on the pressed row shows the press-time project', () => {
+    const project = groupProject()
+    // An unselected clip on trk-2 that o1 (0-2) would land on.
+    ;(project.tracks![2] as { items: unknown[] }).items.push({ id: 'n2', type: 'overlay', start: 1, end: 2.5 })
+    const ctx = groupCtx({ project })
+    const d = new Driver(ctx)
+    d.down(400, rowMidYFor(ctx, 2))
+    d.move(450, rowMidYFor(ctx, 4))
+    // Half a second right: o1 at 0.5-2.5 still lands on n2 (1-2.5).
+    expect(lastProjectChange(d.move(450, rowMidYFor(ctx, 2)))).toBe(ctx.project)
+    expect(of(d.up(450, rowMidYFor(ctx, 2)), 'commit')).toEqual([])
+  })
+
   it('a group drag that starts on a caption stays horizontal-only', () => {
     const ctx = groupCtx({ selectedIds: ['o1', 's0'] })
     const captionY = Math.round(ctx.layout.captions![0].y + ctx.layout.captions![0].height / 2)
