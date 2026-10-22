@@ -1756,8 +1756,9 @@ def test_low_the_window_and_the_pull_take_no_lock_for_files_and_delete(ws, state
     _sidecar(state, files=["overlays/elsewhere.jsx"])
     with project_lock(d / "project.json"):
         assert _write_file(d / "overlays" / "title.jsx", headers).status_code == 200
+        # (delete_files is the window's alone with the guard on: the pull's tool writer is 403 there.)
         resp = _client().request("DELETE", f"/api/projects/{PID}/files", json={"paths": ["overlays/old.jsx"]},
-                                 headers={**EDITOR, **({} if headers is EDITOR else {})})
+                                 headers=EDITOR)
         assert resp.status_code == 200, resp.text
 
 
