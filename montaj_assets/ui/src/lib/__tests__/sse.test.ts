@@ -120,3 +120,94 @@ describe('subscribeProjectStream: writer stamps (§482)', () => {
     expect(onFrame.mock.calls[0][1]).toEqual({ writer: 'tool', origin: 'sync' })
   })
 })
+
+// §482 U-1 FIX 1: a teammate's pull that lands while the stream is down is stamped
+// to no listener, so the first frame on the reopened connection (serve's current
+// state, unstamped) may carry it. The pool marks that one frame `{ gap: true }` so
+// the editor core can treat it as possibly a pull. The mark is separate from the
+// writer stamp: a gap never becomes a stamp and a stamp never becomes a gap.
+describe('subscribeProjectStream: the first frame after a reconnect is marked as a gap (§482)', () => {
+  function recordInfo() {
+    const seen: Array<[unknown, unknown, unknown]> = []
+    subscribeProjectStream('p1', { onFrame: (p, stamp, info) => seen.push([p.name, stamp, info]) })
+    return seen
+  }
+
+  it('frames on the first connection carry no gap', () => {
+    const seen = recordInfo()
+    es().dispatch('open')
+    es().dispatch('message', project('initial'))
+    es().dispatch('message', project('later'))
+    expect(seen).toEqual([['initial', undefined, undefined], ['later', undefined, undefined]])
+  })
+
+  it('after an error and a reopen, the first frame carries gap and the next does not', () => {
+    const seen = recordInfo()
+    es().dispatch('open')
+    es().dispatch('message', project('initial'))
+    es().dispatch('error')
+    es().dispatch('open')
+    es().dispatch('message', project('reconnect'))
+    es().dispatch('message', project('later'))
+    expect(seen).toEqual([
+      ['initial', undefined, undefined],
+      ['reconnect', undefined, { gap: true }],
+      ['later', undefined, undefined],
+    ])
+  })
+
+  it('every frame listener sees the gap on that frame', () => {
+    const seen = recordInfo()
+    const other = vi.fn()
+    subscribeProjectStream('p1', { onFrame: other })
+    es().dispatch('error')
+    es().dispatch('open')
+    es().dispatch('message', project('reconnect'))
+    expect(seen).toEqual([['reconnect', undefined, { gap: true }]])
+    expect(other.mock.calls[0][2]).toEqual({ gap: true })
+  })
+
+  it('two drops before a frame give one gap frame', () => {
+    const seen = recordInfo()
+    es().dispatch('error')
+    es().dispatch('open')
+    es().dispatch('error')
+    es().dispatch('open')
+    es().dispatch('message', project('reconnect'))
+    es().dispatch('message', project('later'))
+    expect(seen).toEqual([['reconnect', undefined, { gap: true }], ['later', undefined, undefined]])
+  })
+
+  it('a reopen with no error before it is no gap', () => {
+    const seen = recordInfo()
+    es().dispatch('open')
+    es().dispatch('open')
+    es().dispatch('message', project('x'))
+    expect(seen).toEqual([['x', undefined, undefined]])
+  })
+
+  it('a malformed first frame does not spend the gap: frames were missed before the next good one too', () => {
+    const seen = recordInfo()
+    es().dispatch('error')
+    es().dispatch('open')
+    es().dispatch('message', '{not json')
+    es().dispatch('message', project('next'))
+    es().dispatch('message', project('later'))
+    expect(seen).toEqual([['next', undefined, { gap: true }], ['later', undefined, undefined]])
+  })
+
+  it('a gap is never a stamp: the gap frame carries the stamp it came with, and none is invented', () => {
+    const seen = recordInfo()
+    es().dispatch('error')
+    es().dispatch('open')
+    es().dispatch('writer', 'ai')
+    es().dispatch('message', project('stamped reconnect'))
+    es().dispatch('error')
+    es().dispatch('open')
+    es().dispatch('message', project('plain reconnect'))
+    expect(seen).toEqual([
+      ['stamped reconnect', { writer: 'ai' }, { gap: true }],
+      ['plain reconnect', undefined, { gap: true }],
+    ])
+  })
+})

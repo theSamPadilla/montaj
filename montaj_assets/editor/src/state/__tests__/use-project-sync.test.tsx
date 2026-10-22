@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useProjectSync } from '../use-project-sync'
 import type { UseProjectSync, UseProjectSyncOptions } from '../use-project-sync'
-import type { EditorAdapter, FrameWriter, Project, ImageElement, RenderEvent } from '../../types'
+import type { EditorAdapter, FrameInfo, FrameWriter, Project, ImageElement, RenderEvent } from '../../types'
 import { removeSlideNotes } from '../../carousel/notes'
 import { removeNotes } from '../../video/timeline/notes'
 import { rippleDelete } from '../../video/cuts'
@@ -37,7 +37,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 }
 
 interface FakeAdapter extends EditorAdapter {
-  emit: (p: Project, stamp?: FrameWriter) => void
+  emit: (p: Project, stamp?: FrameWriter, info?: FrameInfo) => void
   saveCalls: Array<{ id: string; project: Project; before?: Project; argc: number }>
   unsub: ReturnType<typeof vi.fn>
 }
@@ -47,7 +47,7 @@ function makeFakeAdapter(opts: {
   /** When set, saveProject blocks on this until `release` is called. */
   blockSave?: boolean
 } = {}): FakeAdapter & { release: () => void } {
-  let onFrame: ((p: Project, stamp?: FrameWriter) => void) | null = null
+  let onFrame: ((p: Project, stamp?: FrameWriter, info?: FrameInfo) => void) | null = null
   const saveCalls: Array<{ id: string; project: Project; before?: Project; argc: number }> = []
   const unsub = vi.fn(() => { onFrame = null })
   let releaseSave: (() => void) | null = null
@@ -59,7 +59,7 @@ function makeFakeAdapter(opts: {
       if (opts.blockSave) await new Promise<void>((res) => { releaseSave = res })
       if (opts.failSave) throw new Error('save boom')
     }),
-    subscribe: (_id: string, cb: (p: Project, stamp?: FrameWriter) => void) => {
+    subscribe: (_id: string, cb: (p: Project, stamp?: FrameWriter, info?: FrameInfo) => void) => {
       onFrame = cb
       return unsub
     },
@@ -72,7 +72,7 @@ function makeFakeAdapter(opts: {
     listSystemOverlays: vi.fn(async () => []),
     uploadFile: vi.fn(async () => '/path'),
     fileUrl: (path: string) => path,
-    emit: (p: Project, stamp?: FrameWriter) => onFrame?.(p, stamp),
+    emit: (p: Project, stamp?: FrameWriter, info?: FrameInfo) => onFrame?.(p, stamp, info),
     saveCalls,
     unsub,
     release: () => releaseSave?.(),
@@ -1324,5 +1324,319 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
     expect(result.current.project.name).toBe('Test Project')
     expect(ends(result.current.project)).toEqual([4, 12])
     expect(result.current.canUndo).toBe(false)
+  })
+
+  // FIX 1. A teammate's pull that lands while the stream is down is stamped to no
+  // listener. The first frame on the reopened connection (serve's current state,
+  // unstamped) may carry it, so the transport marks that frame `{ gap: true }` and
+  // the core prunes on it like a pull. Only content that differs from what the
+  // editor holds prunes anything, so an identical reconnect (or the editor's own
+  // save coming back) leaves the history as it was.
+  describe('a frame after a gap may hold a pull, so it prunes like one (FIX 1)', () => {
+    const GAP: FrameInfo = { gap: true }
+
+    it('the stream drops, a teammate pull lands in the gap, the stream reopens: the next undo keeps the teammate change and no save reverts it', async () => {
+      const onHistoryPruned = vi.fn()
+      const { adapter, result } = setup({ onHistoryPruned })
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+      // The pull's stamped frame went to no listener. Serve's first frame on the new
+      // connection is its current state, with no stamp.
+      const reconnect = frame(setClip(now(result), 'B', { end: 12 }))
+      act(() => { adapter.emit(reconnect, undefined, GAP) })
+      expect(result.current.project).toBe(reconnect)
+      expect(onHistoryPruned).toHaveBeenCalledTimes(1)
+      expect(onHistoryPruned).toHaveBeenCalledWith({ undo: 1, redo: 0 })
+      act(() => { result.current.undo() })
+      await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+      expect(clipOf(result.current.project, 'A')?.end).toBe(5)
+      expect(clipOf(result.current.project, 'B')?.end).toBe(12)
+      expect(result.current.canUndo).toBe(false)
+      act(() => { result.current.undo() })
+      expect(adapter.saveCalls).toHaveLength(3)
+      expect(clipOf(adapter.saveCalls[2].project, 'B')?.end).toBe(12)
+    })
+
+    it('an identical reconnect frame, or an edit saved while the stream was down coming back as the editor own echo, leaves the history untouched', async () => {
+      const onHistoryPruned = vi.fn()
+      const { adapter, result } = setup({ onHistoryPruned })
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+      act(() => { adapter.emit(frame(now(result)), undefined, GAP) })
+      // Saved over HTTP while the stream was down; the reconnect frame holds it.
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+      act(() => { adapter.emit(frame(now(result)), undefined, GAP) })
+      expect(onHistoryPruned).not.toHaveBeenCalled()
+      act(() => { result.current.undo() })
+      act(() => { result.current.undo() })
+      await waitFor(() => expect(adapter.saveCalls).toHaveLength(4))
+      expect(clipOf(result.current.project, 'A')?.end).toBe(5)
+      expect(clipOf(result.current.project, 'B')?.end).toBe(10)
+    })
+
+    it('refetch reads across a possible gap: a changed document prunes, an unchanged one leaves the history alone', async () => {
+      const onHistoryPruned = vi.fn()
+      const { adapter, result } = setup({ onHistoryPruned })
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+      adapter.loadProject = vi.fn(async () => frame(now(result)))
+      await act(async () => { await result.current.refetch() })
+      expect(onHistoryPruned).not.toHaveBeenCalled()
+      const fresh = frame(setClip(now(result), 'B', { end: 12 }))
+      adapter.loadProject = vi.fn(async () => fresh)
+      await act(async () => { await result.current.refetch() })
+      expect(result.current.project).toBe(fresh)
+      expect(onHistoryPruned).toHaveBeenCalledWith({ undo: 1, redo: 0 })
+      act(() => { result.current.undo() })
+      await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+      expect(clipOf(adapter.saveCalls[2].project, 'A')?.end).toBe(5)
+      expect(clipOf(adapter.saveCalls[2].project, 'B')?.end).toBe(12)
+      expect(result.current.canUndo).toBe(false)
+    })
+
+    it('a gap frame is never taken for a sync or AI write: the predicate sees the writer it came with, no local edit fires, and the gap prunes whatever the predicate says', async () => {
+      const prunesHistory = vi.fn(() => false)
+      const onLocalEdit = vi.fn()
+      const { adapter, result } = setup({ prunesHistory, onLocalEdit })
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+      onLocalEdit.mockClear()
+      const reconnect = frame(setClip(now(result), 'B', { end: 12 }))
+      act(() => { adapter.emit(reconnect, undefined, GAP) })
+      expect(prunesHistory).toHaveBeenLastCalledWith(undefined)
+      expect(onLocalEdit).not.toHaveBeenCalled()
+      expect(result.current.project).toBe(reconnect)
+      act(() => { adapter.emit(frame(setClip(now(result), 'A', { end: 3 })), { writer: 'ai' }, GAP) })
+      expect(prunesHistory).toHaveBeenLastCalledWith({ writer: 'ai' })
+      expect(onLocalEdit).not.toHaveBeenCalled()
+      expect(result.current.canUndo).toBe(false)
+    })
+
+    it('the gap binds to its one frame: a later unstamped frame with a change prunes nothing', async () => {
+      const onHistoryPruned = vi.fn()
+      const { adapter, result } = setup({ onHistoryPruned })
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+      act(() => { adapter.emit(frame(now(result)), undefined, GAP) })
+      act(() => { adapter.emit(frame(setClip(now(result), 'B', { end: 12 }))) })
+      expect(onHistoryPruned).not.toHaveBeenCalled()
+      expect(result.current.canUndo).toBe(true)
+      act(() => { result.current.undo() })
+      await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+      expect(clipOf(result.current.project, 'B')?.end).toBe(10)
+    })
+  })
+
+  // FIX 2. While a save is in flight every frame is held and only the latest is
+  // applied when it finishes. Disk is written in order, so a frame that replaces a
+  // held pull already contains it. The core keeps the latest pruning frame (a sync
+  // pull or a gap frame) apart from the latest frame: on the drain it prunes
+  // against the pruning frame's content, measured from the screen at that moment,
+  // then applies the latest frame without pruning. The history comes out as it
+  // would with the same frames and no save in flight.
+  describe('a held pull replaced by a later frame prunes for the pull only (FIX 2)', () => {
+    const GAP: FrameInfo = { gap: true }
+    type Emit = [Project, FrameWriter?, FrameInfo?]
+    const ends = (p: unknown) => ['A', 'B'].map((id) => clipOf(p as Project, id)?.end)
+
+    /**
+     * Make `edits`, then hand the hook the frames `make` builds from the editor's
+     * document: `held`, with the last edit's save still in flight, so the core holds
+     * them until it finishes; `live`, after every save finished, so each applies as
+     * it comes. Returns the document after the frames, then after each undo until
+     * none is left, then after each redo, with what onHistoryPruned reported.
+     */
+    async function replay(mode: 'held' | 'live', edits: Array<(p: Project) => Project>, make: (doc: Project) => Emit[]) {
+      const onHistoryPruned = vi.fn()
+      const adapter = makeFakeAdapter()
+      const save = adapter.saveProject
+      let gate: Promise<void> | null = null
+      let open = () => {}
+      adapter.saveProject = vi.fn(async (...args: [string, Project, Project?]) => {
+        await save(...args)
+        if (gate) await gate
+      })
+      const initial = video()
+      const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial, { onHistoryPruned }))
+      for (const edit of edits.slice(0, -1)) await act(async () => { await result.current.mutate(edit) })
+      const last = edits[edits.length - 1]
+      let frames: Emit[] = []
+      if (mode === 'live') {
+        await act(async () => { await result.current.mutate(last) })
+        frames = make(now(result))
+        for (const f of frames) act(() => { adapter.emit(...f) })
+      } else {
+        gate = new Promise<void>((res) => { open = res })
+        let saving: Promise<void> = Promise.resolve()
+        act(() => { saving = result.current.mutate(last) })
+        await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(edits.length))
+        const screen = now(result)
+        frames = make(screen)
+        for (const f of frames) act(() => { adapter.emit(...f) })
+        // Held: nothing applied, nothing pruned yet.
+        expect(now(result)).toBe(screen)
+        expect(onHistoryPruned).not.toHaveBeenCalled()
+        gate = null
+        await act(async () => { open(); await saving })
+      }
+      const latest = frames[frames.length - 1][0]
+      await waitFor(() => expect(now(result)).toBe(latest))
+      const doc = (p: Project) => JSON.parse(JSON.stringify(p)) as unknown
+      const states: unknown[] = [doc(now(result))]
+      for (let i = 0; i < 60 && result.current.canUndo; i++) {
+        act(() => { result.current.undo() })
+        states.push(doc(now(result)))
+      }
+      states.push('redo')
+      for (let i = 0; i < 60 && result.current.canRedo; i++) {
+        act(() => { result.current.redo() })
+        states.push(doc(now(result)))
+      }
+      return { states, pruned: onHistoryPruned.mock.calls.map((c) => c[0]), adapter }
+    }
+
+    const both = async (edits: Array<(p: Project) => Project>, make: (doc: Project) => Emit[]) => {
+      const held = await replay('held', edits, make)
+      const live = await replay('live', edits, make)
+      expect(held.states).toEqual(live.states)
+      return held
+    }
+
+    // (a) and (b): the reviewer's case. The AI frame's own change prunes nothing, the pull still does.
+    it('a held pull replaced by an AI frame that contains it: the step on the AI-changed clip is kept, the step on the pulled clip is dropped, as with no save in flight', async () => {
+      const held = await both(
+        [(p) => setClip(p, 'A', { end: 4 }), (p) => setClip(p, 'B', { end: 9 })],
+        (doc) => {
+          const pull = frame(setClip(doc, 'B', { end: 12 }))
+          return [[pull, SYNC], [frame(setClip(pull, 'A', { end: 2 }))]]
+        },
+      )
+      expect(held.pruned).toEqual([{ undo: 1, redo: 0 }])
+      // After the drain; after undoing the kept A step; then the redo of it.
+      expect(held.states.map((s) => (s === 'redo' ? s : ends(s)))).toEqual([[2, 12], [5, 12], 'redo', [4, 12]])
+      expect(held.adapter.saveCalls.slice(2).map((c) => clipOf(c.project, 'B')?.end)).toEqual([12, 12])
+    })
+
+    // (c)
+    it('a held pull replaced by the watcher identical copy prunes the same, as with no save in flight', async () => {
+      const held = await both(
+        [(p) => setClip(p, 'A', { end: 4 }), (p) => setClip(p, 'B', { end: 9 })],
+        (doc) => {
+          const pull = setClip(doc, 'B', { end: 12 })
+          return [[frame(pull), SYNC], [frame(pull)]]
+        },
+      )
+      expect(held.pruned).toEqual([{ undo: 1, redo: 0 }])
+      expect(held.states.map((s) => (s === 'redo' ? s : ends(s)))).toEqual([[4, 12], [5, 12], 'redo', [4, 12]])
+    })
+
+    // (d)
+    it('a held gap frame replaced by a later unstamped frame prunes for the gap frame content, as with no save in flight', async () => {
+      const held = await both(
+        [(p) => setClip(p, 'A', { end: 4 }), (p) => setClip(p, 'B', { end: 9 })],
+        (doc) => {
+          const reconnect = frame(setClip(doc, 'B', { end: 12 }))
+          return [[reconnect, undefined, GAP], [frame(setClip(reconnect, 'A', { end: 2 }))]]
+        },
+      )
+      expect(held.pruned).toEqual([{ undo: 1, redo: 0 }])
+      expect(held.states.map((s) => (s === 'redo' ? s : ends(s)))).toEqual([[2, 12], [5, 12], 'redo', [4, 12]])
+    })
+
+    it('two held pulls then an unstamped frame: one prune against the later pull (it holds the first), then the frame, as with no save in flight', async () => {
+      const held = await both(
+        [
+          (p) => ({ ...p, captions: caps('one') }),
+          (p) => setClip(p, 'A', { end: 4 }),
+          (p) => setClip(p, 'B', { end: 9 }),
+        ],
+        (doc) => {
+          const first = frame(setClip(doc, 'B', { end: 12 }))
+          const second = frame({ ...first, captions: caps('pulled') })
+          return [[first, SYNC], [second, SYNC], [frame(setClip(second, 'A', { end: 2 }))]]
+        },
+      )
+      // Once per drain: both pulls' changes in one report.
+      expect(held.pruned).toEqual([{ undo: 2, redo: 0 }])
+      expect(held.states.map((s) => (s === 'redo' ? s : ends(s)))).toEqual([[2, 12], [5, 12], 'redo', [4, 12]])
+      expect((held.states[1] as Project).captions).toEqual(caps('pulled'))
+    })
+
+    it('an AI frame that reverts the clip the pull changed: the step on that clip stays dropped and nothing comes back', async () => {
+      const held = await both(
+        [(p) => ({ ...p, name: 'Renamed' }), (p) => setClip(p, 'B', { end: 9 })],
+        (doc) => {
+          const pull = frame(setClip(doc, 'B', { end: 12 }))
+          // Back to the value the editor held before the pull.
+          return [[pull, SYNC], [frame(setClip(pull, 'B', { end: 9 }))]]
+        },
+      )
+      expect(held.pruned).toEqual([{ undo: 1, redo: 0 }])
+      // Only the rename undoes; B is never 10 again, in state or in a save.
+      expect(held.states.map((s) => (s === 'redo' ? s : [(s as Project).name, ends(s)[1]]))).toEqual([
+        ['Renamed', 9], ['Test Project', 9], 'redo', ['Renamed', 9],
+      ])
+      expect(held.adapter.saveCalls.map((c) => clipOf(c.project, 'B')?.end)).not.toContain(10)
+    })
+
+    it('a gap frame held after a held pull is the later content: one prune against it, one report per drain', async () => {
+      const held = await both(
+        [
+          (p) => ({ ...p, captions: caps('one') }),
+          (p) => ({ ...p, name: 'Renamed' }),
+          (p) => setClip(p, 'B', { end: 9 }),
+        ],
+        (doc) => {
+          const pull = frame(setClip(doc, 'B', { end: 12 }))
+          // A second pull went to no listener while the stream was down.
+          return [[pull, SYNC], [frame({ ...pull, captions: caps('pulled') }), undefined, GAP]]
+        },
+      )
+      expect(held.pruned).toEqual([{ undo: 2, redo: 0 }])
+      expect(held.states.map((s) => (s === 'redo' ? s : [(s as Project).name, ends(s)[1]]))).toEqual([
+        ['Renamed', 12], ['Test Project', 12], 'redo', ['Renamed', 12],
+      ])
+    })
+
+    it('the pull is measured from the screen when the save finishes, so an edit made while it was held is measured too', async () => {
+      const onHistoryPruned = vi.fn()
+      const adapter = makeFakeAdapter()
+      const save = adapter.saveProject
+      let gate: Promise<void> | null = null
+      let open = () => {}
+      adapter.saveProject = vi.fn(async (...args: [string, Project, Project?]) => {
+        await save(...args)
+        if (gate) await gate
+      })
+      const initial = video()
+      const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial, { onHistoryPruned }))
+      await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'Renamed' })) })
+      gate = new Promise<void>((res) => { open = res })
+      let first: Promise<void> = Promise.resolve()
+      act(() => { first = result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+      await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(2))
+      const pull = frame(setClip(now(result), 'B', { end: 12 }))
+      act(() => { adapter.emit(pull, SYNC) })
+      // While the pull is held the user edits A. The pull frame predates that edit.
+      let second: Promise<void> = Promise.resolve()
+      act(() => { second = result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+      // The edit's echo replaces the pull in the hold.
+      const echo = frame(setClip(pull, 'A', { end: 4 }))
+      act(() => { adapter.emit(echo) })
+      expect(onHistoryPruned).not.toHaveBeenCalled()
+      gate = null
+      await act(async () => { open(); await first; await second })
+      await waitFor(() => expect(now(result)).toBe(echo))
+      // Measured from the screen at the drain (A 4, B 9) to the pull (A 5, B 12): both
+      // the B step and the A step made while the pull was held go. That is the
+      // conservative side: from the screen when the pull was held (A 5) the A step
+      // would have been rebuilt on the pull instead. The rename is kept.
+      expect(onHistoryPruned).toHaveBeenCalledTimes(1)
+      expect(onHistoryPruned).toHaveBeenCalledWith({ undo: 2, redo: 0 })
+      act(() => { result.current.undo() })
+      await waitFor(() => expect(adapter.saveCalls).toHaveLength(4))
+      expect(result.current.project.name).toBe('Test Project')
+      expect(ends(result.current.project)).toEqual([4, 12])
+      expect(clipOf(adapter.saveCalls[3].project, 'B')?.end).toBe(12)
+      expect(result.current.canUndo).toBe(false)
+    })
   })
 })

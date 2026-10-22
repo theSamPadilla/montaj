@@ -29,3 +29,17 @@ describe('montajAdapter.subscribe', () => {
     expect(onFrame.mock.calls[1][1]).toBeUndefined()
   })
 })
+
+describe('montajAdapter.subscribe: the gap mark (§482 U-1 FIX 1)', () => {
+  it('passes the pool\'s gap mark to the editor core with its frame, and no mark when there is none', () => {
+    const onFrame = vi.fn()
+    subscribeProjectStream.mockClear()
+    createMontajAdapter().subscribe('p1', onFrame)
+    const handlers = subscribeProjectStream.mock.calls[0][1]
+    const frame = { id: 'p1', name: 'reconnect' }
+    handlers.onFrame?.(frame, undefined, { gap: true })
+    handlers.onFrame?.(frame)
+    expect(onFrame.mock.calls[0]).toEqual([frame, undefined, { gap: true }])
+    expect(onFrame.mock.calls[1][2]).toBeUndefined()
+  })
+})
