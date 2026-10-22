@@ -242,3 +242,55 @@ describe('newClipId', () => {
     for (const id of ids) expect(id).not.toMatch(/^clip-\d+$/)
   })
 })
+
+// §527 (Sam, 2026-10-22): a ripple moves everything after it. A ripple insert
+// that pushed its own track's later items moves the other tracks' items, the
+// captions, the audio tracks, the notes and the markers after the insertion
+// point by the new clip's length; ones straddling it keep their start.
+describe('insertClipAt — §527 a ripple insert moves everything after it', () => {
+  const v = (id: string, start: number, end: number): VisualItem => ({ id, type: 'video', start, end })
+  const clip = { src: '/f/new.mov', sourceDuration: 3 }
+
+  it('moves overlays, captions, audio, notes and markers at/after the insertion point; straddling ones keep their start', () => {
+    const p = makeProject({
+      tracks: vtracks([v('a', 0, 5), v('b', 5, 10)], [{ id: 'o-before', type: 'overlay', start: 1, end: 2 }, { id: 'o-straddle', type: 'overlay', start: 4, end: 6 }, { id: 'o-after', type: 'overlay', start: 7, end: 8 }]),
+      captions: {
+        style: 'subtitle',
+        segments: [
+          { text: 'before', start: 1, end: 2, words: [{ word: 'x', start: 1, end: 2 }] },
+          { text: 'across', start: 4, end: 6, words: [{ word: 'y', start: 4, end: 4.5 }, { word: 'z', start: 5.2, end: 6 }] },
+          { text: 'after', start: 7, end: 8, words: [{ word: 'w', start: 7, end: 8 }] },
+        ],
+      },
+      audio: { tracks: [{ id: 'bed', src: 'bed.mp3', start: 0, end: 30 }, { id: 'sfx', src: 'hit.wav', start: 6, end: 6.5 }] },
+      notes: [{ id: 'n1', t: 2, text: '' }, { id: 'n2', t: 6, text: '' }, { id: 'range', t: 4, tEnd: 7, text: '' }],
+      markers: [{ id: 'm', t: 8, label: '1' }],
+    })
+    const out = insertClipAt(p, 'trk-0', clip, 5, { ripple: true }) // between a and b
+    const t1 = out.tracks![1].items
+    expect(t1.map(i => [i.id, i.start, i.end])).toEqual([['o-before', 1, 2], ['o-straddle', 4, 6], ['o-after', 10, 11]])
+    const segs = out.captions!.segments
+    expect(segs.map(s => [s.text, s.start, s.end])).toEqual([['before', 1, 2], ['across', 4, 9], ['after', 10, 11]])
+    expect(segs[1].words!.map(w => [w.word, w.start])).toEqual([['y', 4], ['z', 8.2]])
+    expect(out.audio!.tracks.map(t => [t.id, t.start, t.end])).toEqual([['bed', 0, 30], ['sfx', 9, 9.5]])
+    expect(out.notes!.map(n => [n.id, (n as { t: number }).t, (n as { tEnd?: number }).tEnd])).toEqual([['n1', 2, undefined], ['range', 4, 10], ['n2', 9, undefined]])
+    expect(out.markers!.map(m => m.t)).toEqual([11])
+  })
+
+  it('an insert that pushed nothing (past the last clip, or onto an empty track) moves nothing else', () => {
+    const p = makeProject({
+      tracks: vtracks([v('a', 0, 5)], [{ id: 'o', type: 'overlay', start: 7, end: 8 }]),
+      audio: { tracks: [{ id: 'sfx', src: 'hit.wav', start: 6, end: 6.5 }] },
+      notes: [{ id: 'n', t: 9, text: '' }],
+    })
+    const out = insertClipAt(p, 'trk-0', clip, 5, { ripple: true })
+    expect(out.tracks![1].items[0]).toMatchObject({ start: 7, end: 8 })
+    expect(out.audio).toBe(p.audio)
+    expect(out.notes).toBe(p.notes)
+  })
+
+  it('ripple off moves nothing else either', () => {
+    const p = makeProject({ tracks: vtracks([v('a', 0, 5), v('b', 5, 10)]), notes: [{ id: 'n', t: 7, text: '' }] })
+    expect(insertClipAt(p, 'trk-0', clip, 5, { ripple: false }).notes).toBe(p.notes)
+  })
+})

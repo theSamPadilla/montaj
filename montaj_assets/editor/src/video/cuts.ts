@@ -367,6 +367,25 @@ function rippleAudio(audio: Project['audio'], from: number, by: number): Project
   return changed ? { ...audio, tracks } : audio
 }
 
+/** Caption segments at or after `from` moved by `by`; a segment straddling
+ *  `from` keeps its start, its later words move and its end moves. The same
+ *  captions object when none moves. */
+function shiftCaptionsAfter(captions: Project['captions'], from: number, by: number): Project['captions'] {
+  if (!captions?.segments?.length || by === 0) return captions
+  const at = (t: number) => t >= from - EPSILON
+  let changed = false
+  const segments = captions.segments.map(seg => {
+    if (at(seg.start)) {
+      changed = true
+      return { ...seg, start: seg.start + by, end: seg.end + by, words: seg.words?.map(w => ({ ...w, start: w.start + by, end: w.end + by })) }
+    }
+    if (!(seg.end > from + EPSILON)) return seg
+    changed = true
+    return { ...seg, end: seg.end + by, words: seg.words?.map(w => (at(w.start) ? { ...w, start: w.start + by, end: w.end + by } : w)) }
+  })
+  return changed ? { ...captions, segments } : captions
+}
+
 // ── Per-item collapse cut ────────────────────────────────────────────────────
 
 /**
@@ -1248,7 +1267,12 @@ export function overlapsAny(s: number, e: number, items: VisualItem[]): boolean 
  *     whose `start` is at/after the (possibly snapped) insertion point then
  *     moves right by the new clip's length, and the new clip takes the freed
  *     slot at the insertion point. This leaves NO overlaps and preserves order;
- *     splitting the straddling clip is intentionally NOT done here.
+ *     splitting the straddling clip is intentionally NOT done here. §527: a
+ *     ripple moves everything after it, so when the insert pushed this track's
+ *     items, the other tracks' items that start at/after that point, the
+ *     captions, the audio tracks that start there, the notes and the markers
+ *     move right by the same length (one that straddles the point keeps its
+ *     start). An insert that pushed nothing moves nothing else.
  *
  *     The tie-break is Sam's product call (2026-08-25): "never split a clip,
  *     always keep them whole — if the drop is over 50% into the clip, make
@@ -1324,6 +1348,31 @@ export function insertClipAt<P extends Project>(
   }
 
   const newItems = [...shifted, placed].sort((a, b) => a.start - b.start)
+  // §527: a ripple insert that pushed this track's later items moves everything
+  // after the insertion point, the other tracks' items too. One that pushed
+  // nothing (an empty or freshly made track, a drop past the last item) made
+  // no room in anything, so nothing else moves.
+  const pushed = opts.ripple && shifted.some((it, i) => it !== existing[i])
+  const tracksOut = mapTrackItems(project, (items, i) => {
+    if (i === trackIdx) return newItems
+    if (!pushed) return items
+    return items.map(it => (it.start >= start - EPSILON ? { ...it, start: it.start + len, end: it.end + len } : it))
+  })
+  if (!pushed) return { ...project, tracks: tracksOut }
 
-  return { ...project, tracks: mapTrackItems(project, (items, i) => (i === trackIdx ? newItems : items)) }
+  // §527: and the captions, the audio tracks that start at or after the
+  // insertion point, the notes and the markers (straddling ones keep their
+  // start), as `rippleDelete` moves them the other way.
+  const captions = shiftCaptionsAfter(project.captions, start, len)
+  const audio = rippleAudio(project.audio, start, len)
+  return shiftMarks(
+    {
+      ...project,
+      tracks: tracksOut,
+      ...(captions !== project.captions ? { captions } : {}),
+      ...(audio !== project.audio ? { audio } : {}),
+    },
+    start,
+    len,
+  )
 }
