@@ -14,10 +14,76 @@ from lib.project_lock import PROJECT_READ_ONLY_MESSAGE
 MONTAJ_ROOT = Path(__file__).resolve().parent.parent
 
 
-# id -> project dir. Validated on every hit (cheap single read) so it can never
-# go stale: a moved/deleted project misses validation and falls through to a
-# rescan. Populated opportunistically during scans.
-_project_dir_cache: dict[str, Path] = {}
+class DuplicateProjectId(Exception):
+    """Two or more topmost (non-nested) project.json folders claim the same id,
+    so the resolver cannot say which folder the id means and refuses rather than
+    guess (§518). Carries every claiming folder so the caller can name them.
+
+    The bug this closes: a copied project folder that kept the original's id used
+    to silently take over the real project. `find_project_dir`'s rglob was FIRST
+    MATCH WINS, so whichever folder the walk reached first became the one every
+    read, write and render resolved to, and the per-folder project lock never
+    serialised the two. serve maps this to a 409 `duplicate_project_id`."""
+
+    def __init__(self, project_id: str, dirs) -> None:
+        self.project_id = project_id
+        self.dirs = [Path(d) for d in dirs]
+        joined = ", ".join(str(d) for d in self.dirs)
+        super().__init__(
+            f"Two or more folders use the project id '{project_id}': {joined}. "
+            "Give the copy a new project id."
+        )
+
+
+class _DuplicateIds:
+    """Cache sentinel: this id is held by >1 topmost folder. Stored during a scan
+    so a LATER resolve of the id raises on a cache HIT, not only on a fresh scan.
+    Without it, a clean single-folder entry cached before the copy appeared would
+    keep resolving (and silently serving the wrong folder) until the next
+    rescan. Re-validated on every hit like a normal entry: each folder is
+    re-checked against the live tree, and the sentinel is dropped once the
+    collision is gone (down to one live folder)."""
+    __slots__ = ("dirs",)
+
+    def __init__(self, dirs) -> None:
+        self.dirs = [Path(d) for d in dirs]
+
+
+# id -> project dir (a Path) for a resolved id, or a `_DuplicateIds` sentinel for
+# a colliding one. Validated on every hit (cheap reads) so it can never go stale:
+# a moved/deleted project, or a collision that resolved, misses validation and
+# falls through to a rescan. Populated during scans.
+_project_dir_cache: dict[str, "Path | _DuplicateIds"] = {}
+
+
+def _dir_claims_id(workspace: Path, project_id: str, project_dir: Path) -> bool:
+    """True when `project_dir` is still a topmost (non-nested) project folder
+    under `workspace` whose project.json carries `project_id`. One cheap read;
+    the check a cache hit has always made, factored out so the duplicate sentinel
+    can re-validate each of its folders the same way a single entry is."""
+    try:
+        pj = project_dir / "project.json"
+        return (
+            project_dir.is_relative_to(workspace)
+            and not is_nested_project_json(pj, workspace)
+            and json.loads(pj.read_text()).get("id") == project_id
+        )
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _live_duplicate_dirs(workspace: Path, project_id: str, dirs) -> list[Path]:
+    """The subset of `dirs` that still claim `project_id` as topmost folders.
+    De-duplicated by path, so a sentinel re-validation counts real folders."""
+    live: list[Path] = []
+    seen: set[str] = set()
+    for d in dirs:
+        d = Path(d)
+        key = str(d)
+        if key not in seen and _dir_claims_id(workspace, project_id, d):
+            live.append(d)
+            seen.add(key)
+    return live
 
 
 def is_nested_project_json(path: Path, workspace: Path) -> bool:
@@ -34,6 +100,16 @@ def is_nested_project_json(path: Path, workspace: Path) -> bool:
             return True
         folder = folder.parent
     return False
+
+
+def prime_project_dir_cache(by_id: "dict[str, list[Path]]") -> None:
+    """Record a scan's id -> topmost-folders map in the cache: a single folder as
+    a plain Path (the fast path), a collision as a `_DuplicateIds` sentinel so a
+    later resolve of it raises even on a cache hit. Shared by `find_project_dir`'s
+    scan and `GET /projects`, so either one seeing a duplicate makes the
+    per-project routes refuse it immediately."""
+    for pid, dirs in by_id.items():
+        _project_dir_cache[pid] = _DuplicateIds(dirs) if len(dirs) > 1 else Path(dirs[0])
 
 
 def find_project_dir(workspace: Path, project_id: str) -> Path | None:
@@ -56,17 +132,39 @@ def find_project_dir(workspace: Path, project_id: str) -> Path | None:
     Comparing versions writes such a snapshot, with the project's own id, and
     before this rule a full scan cached the last match per id, which pointed
     the project's later reads and saves at the snapshot folder.
+
+    §518: when an id is claimed by TWO OR MORE topmost folders the resolver
+    cannot pick one, so it raises `DuplicateProjectId` instead of guessing (the
+    old scan took the first match and silently served it). The collision is
+    detected during the ONE rglob (the scan records id -> list-of-dirs rather
+    than returning at the first match), and a sentinel is cached for every
+    colliding id so a later resolve raises even on a cache hit. Residual window:
+    a copy created AFTER a clean single entry was cached, with nothing triggering
+    a rescan in between, stays hidden until the next scan (a cache miss for any
+    id, a revalidation failure, or `GET /projects`, which always scans and primes
+    this cache through `prime_project_dir_cache`, so a duplicate it flags is
+    refused by the per-project routes from then on). The
+    sentinel is re-validated every hit, so once written the duplicate cannot be
+    served; correctness is preferred over the cache for a colliding id.
     """
     cached = _project_dir_cache.get(project_id)
     if cached is not None:
-        try:
-            if cached.is_relative_to(workspace) and \
-                    json.loads((cached / "project.json").read_text()).get("id") == project_id:
-                return cached
-        except (OSError, ValueError, AttributeError):
-            pass
-        del _project_dir_cache[project_id]
+        if isinstance(cached, _DuplicateIds):
+            live = _live_duplicate_dirs(workspace, project_id, cached.dirs)
+            if len(live) >= 2:
+                raise DuplicateProjectId(project_id, live)
+            # Down to one (or zero) live folder: the collision resolved. Drop the
+            # sentinel and rescan, which re-caches the id as a normal entry.
+            del _project_dir_cache[project_id]
+        elif _dir_claims_id(workspace, project_id, cached):
+            return cached
+        else:
+            del _project_dir_cache[project_id]
 
+    # Full scan: record id -> every topmost folder that claims it, so a collision
+    # is seen in this one walk rather than missed by an early return at the first
+    # match.
+    by_id: dict[str, list[Path]] = {}
     for p in workspace.rglob("project.json"):
         if is_nested_project_json(p, workspace):
             continue
@@ -75,10 +173,18 @@ def find_project_dir(workspace: Path, project_id: str) -> Path | None:
         except (OSError, ValueError, AttributeError):
             continue
         if pid:
-            _project_dir_cache[pid] = p.parent
-        if pid == project_id:
-            return p.parent
-    return None
+            by_id.setdefault(pid, []).append(p.parent)
+
+    # Cache every id the scan saw: a single folder as a plain Path (the fast
+    # path), a collision as a sentinel so a later resolve of it raises on a hit.
+    prime_project_dir_cache(by_id)
+
+    dirs = by_id.get(project_id)
+    if not dirs:
+        return None
+    if len(dirs) > 1:
+        raise DuplicateProjectId(project_id, dirs)
+    return dirs[0]
 
 
 def resolve_workspace() -> Path:

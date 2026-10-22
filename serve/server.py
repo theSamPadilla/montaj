@@ -14,7 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from serve import lockfile, save_guard
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly
-from serve.common import PROJECT_LOCKED_DETAIL, PROJECT_READ_ONLY_DETAIL, resolve_workspace
+from serve.common import DuplicateProjectId, PROJECT_LOCKED_DETAIL, PROJECT_READ_ONLY_DETAIL, resolve_workspace
 from serve.sse import SSEBroadcaster
 from serve.watcher import GlobalOverlayWatcher, ProjectWatcher
 
@@ -141,6 +141,19 @@ async def _project_read_only_handler(request: Request, exc: ProjectReadOnly):
     """A project folder that cannot be written is a 409 with the shared error
     shape, never a bare 500 with a traceback."""
     return JSONResponse(status_code=409, content={"detail": dict(PROJECT_READ_ONLY_DETAIL)})
+
+@app.exception_handler(DuplicateProjectId)
+async def _duplicate_project_id_handler(request: Request, exc: DuplicateProjectId):
+    """§518: an id claimed by two or more topmost project folders cannot be
+    resolved to one folder, so every read and write for it refuses with a 409
+    that names all the folders, so the AI can give the copy a new id. This is
+    behind the Depends() ~22 routes share, so the refusal is uniform."""
+    return JSONResponse(status_code=409, content={"detail": {
+        "error": "duplicate_project_id",
+        "message": str(exc),
+        "projectId": exc.project_id,
+        "folders": [str(d) for d in exc.dirs],
+    }})
 
 # All API routes live under /api so they never collide with React Router paths.
 # The SPA catch-all at the bottom handles everything else cleanly.
