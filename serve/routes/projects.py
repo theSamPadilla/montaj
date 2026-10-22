@@ -1696,17 +1696,37 @@ async def run_project(request: Request, response: Response, body: dict = Body(..
 @router.get("/projects")
 async def list_projects(status: str | None = None):
     workspace = resolve_workspace()
-    projects = []
     # A project.json nested in a project's folder (a Compare versions snapshot)
     # is not a project of its own: listed, it showed the project twice.
     found = [p for p in workspace.rglob("project.json") if not is_nested_project_json(p, workspace)]
+    # §518: an id claimed by 2+ topmost folders is a duplicate (a copied folder
+    # that kept the id). Both copies are listed, and each is flagged so the
+    # UI/AI can see which ids collide and where, and tell serve already refuses
+    # every read/write for them (find_project_dir raises). Built across all
+    # found folders, independent of the `status` filter, so the flag is complete
+    # even on a filtered list. Shape is additive: two extra fields on the
+    # colliding entries, the array shape unchanged.
+    folders_by_id: dict[str, list[str]] = {}
+    parsed: list[dict] = []
     for p in sorted(found, key=lambda f: f.stat().st_mtime, reverse=True):
         try:
             proj = json.loads(p.read_text())
         except Exception:
             continue
+        if not isinstance(proj, dict):
+            continue
+        parsed.append(proj)
+        pid = proj.get("id")
+        if pid:
+            folders_by_id.setdefault(pid, []).append(str(p.parent))
+    projects = []
+    for proj in parsed:
         if status and proj.get("status") != status:
             continue
+        folders = folders_by_id.get(proj.get("id"), [])
+        if len(folders) > 1:
+            proj["duplicate"] = True
+            proj["duplicateFolders"] = folders
         projects.append(proj)
     return projects
 
