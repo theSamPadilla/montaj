@@ -1998,3 +1998,392 @@ def test_r1_audit_include_asset_is_checked_on_the_name_it_really_lands_on(ws, st
     _refused(_client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=DRIVE), ["logo_asset2.png"])
     assert sorted(p.name for p in d.iterdir() if not p.name.startswith(".")) == ["logo.png", "project.json"]
     assert _disk(d) == before
+
+
+# ── nulls: a trusted sync pull deletes the top-level fields it sends as null ──
+#
+# The pull writes the merged head, and a field the head no longer has is sent as null. Only a trusted `tool` PUT with
+# x-montaj-write-origin: sync (the launch secret, the same trust as G-2) drops each top-level key it sends as null,
+# exactly as serve already drops `markers` and `notes` for everyone. Every other request stores the null as before.
+
+_REAL_DIMS = projects_mod.ensure_source_dims
+_REAL_PREVIEWS = projects_mod._queue_previews_for_changed_items
+
+NULLED = ("captions", "audio", "voiceover", "storyboard")
+
+
+def _with_fields(ws, **more):
+    return _project(ws, captions={"segments": [{"id": "s1", "text": "hi", "start": 0, "end": 1}]},
+                    audio={"tracks": []}, voiceover={"src": "/vo.mp3"}, storyboard={"beats": []}, **more)
+
+
+def _frame_docs(recorder, pid=PID):
+    """The project document of every default (unnamed) data frame published for pid, in order."""
+    docs = []
+    for project_id, data in recorder.published:
+        if project_id != pid:
+            continue
+        for block in data.split("\n\n"):
+            lines = [line for line in block.split("\n") if line]
+            if lines and not any(line.startswith("event:") for line in lines):
+                docs.append(json.loads("\n".join(line[len("data: "):] for line in lines)))
+    return docs
+
+
+@pytest.mark.parametrize("sync_on", [False, True], ids=["sync-off", "sync-on"])
+def test_nulls_a_trusted_sync_pull_drops_every_top_level_key_it_sends_as_null(ws, tmp_path, monkeypatch, recorder,
+                                                                              sync_on):
+    if sync_on:
+        (tmp_path / "studio-sync").mkdir()
+        monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", str(tmp_path / "studio-sync"))
+        _sidecar(tmp_path / "studio-sync", fields=["tracks"])
+    d = _with_fields(ws, markers=[{"id": "m1", "time": 1}])
+    resp = _put(ws, {**{k: None for k in NULLED}, "markers": None, "name": "pulled"}, SYNC)
+    assert resp.status_code == 200, resp.text
+    disk = json.loads(_disk(d))
+    for key in (*NULLED, "markers"):
+        assert key not in disk, key
+        assert key not in resp.json(), key           # (e) the answer has it really absent, not null
+        assert key not in _frame_docs(recorder)[-1], key
+    assert disk["name"] == "pulled" and disk["notes"] == [{"id": "n1", "text": "a"}]
+
+
+def test_nulls_a_trusted_sync_pull_drops_nulls_with_the_guard_switch_off(ws, monkeypatch, recorder):
+    """The trust is the launch secret, as for the sync check (case 5): the revision guard stepping aside changes
+    nothing here."""
+    _start(monkeypatch, guard=False)
+    d = _with_fields(ws)
+    resp = _put(ws, {"voiceover": None}, SYNC, read=False)
+    assert resp.status_code == 200, resp.text
+    assert "voiceover" not in json.loads(_disk(d)) and "voiceover" not in resp.json()
+
+
+UNTRUSTED_OR_OTHER = [
+    {"x-montaj-writer": "tool", "x-montaj-write-origin": "sync"},
+    {"x-montaj-shell": "a1" * 32, "x-montaj-writer": "tool", "x-montaj-write-origin": "sync"},
+    AI,
+    TRUSTED_AI,
+    {**TRUSTED_AI, "x-montaj-write-origin": "sync"},
+    EDITOR,
+    {**EDITOR, "x-montaj-write-origin": "sync"},
+    TOOL,
+    APP,
+    RESOLVE("c1"),
+]
+UNTRUSTED_OR_OTHER_IDS = ["sync-no-secret", "sync-wrong-secret", "ai", "trusted-ai", "ai-naming-sync", "editor",
+                          "editor-naming-sync", "tool", "tool-app", "resolve"]
+
+
+@pytest.mark.parametrize("headers", UNTRUSTED_OR_OTHER, ids=UNTRUSTED_OR_OTHER_IDS)
+def test_nulls_every_other_request_stores_the_null_exactly_as_before(ws, recorder, headers):
+    d = _with_fields(ws, markers=[{"id": "m1", "time": 1}])
+    resp = _put(ws, {"captions": None, "voiceover": None, "markers": None}, headers,
+                read=headers.get("x-montaj-writer") != "editor")
+    assert resp.status_code == 200, resp.text
+    disk = json.loads(_disk(d))
+    assert "captions" in disk and disk["captions"] is None
+    assert "voiceover" in disk and disk["voiceover"] is None
+    assert "markers" not in disk                       # markers and notes: dropped for everyone, as before
+    assert resp.json()["captions"] is None and resp.json()["voiceover"] is None
+    frame = _frame_docs(recorder)[-1]
+    assert frame["captions"] is None and frame["voiceover"] is None
+
+
+def test_nulls_top_level_only_a_nested_null_is_stored(ws, recorder):
+    d = _with_fields(ws, settings={"resolution": [1080, 1920], "fps": 30})
+    body = {"settings": {"resolution": [1080, 1920], "fps": None}, "captions": {"segments": None},
+            "audio": {"tracks": [None]}}
+    resp = _put(ws, body, SYNC)
+    assert resp.status_code == 200, resp.text
+    disk = json.loads(_disk(d))
+    assert "fps" in disk["settings"] and disk["settings"]["fps"] is None
+    assert disk["captions"] == {"segments": None} and disk["audio"] == {"tracks": [None]}
+    assert resp.json()["captions"] == {"segments": None}
+
+
+@pytest.mark.parametrize("gone", [["tracks"], ["status"], ["settings"], ["sources"],
+                                  ["tracks", "status", "settings", "sources", "name", *NULLED]],
+                         ids=["tracks", "status", "settings", "sources", "all"])
+def test_nulls_a_pull_deleting_a_field_serve_reads_crashes_nothing(ws, monkeypatch, recorder, gone):
+    """(c) Through the save's own readers (normalize_tracks, the overlay check, the media plan, the previews and
+    dims follow-ups, check_save), the SSE frame, the open-time heals of GET, the project list, and the next guarded
+    write, which reads the field as absent."""
+    monkeypatch.setattr(projects_mod, "ensure_source_dims", _REAL_DIMS)
+    monkeypatch.setattr(projects_mod, "_queue_previews_for_changed_items", _REAL_PREVIEWS)
+    d = _with_fields(ws, settings={"resolution": [1080, 1920], "fps": 30})
+    resp = _put(ws, {k: None for k in gone}, SYNC)
+    assert resp.status_code == 200, resp.text
+    disk = json.loads(_disk(d))
+    assert not set(gone) & set(disk) and not set(gone) & set(resp.json())
+    assert normalize_tracks(disk) is disk
+    assert not set(gone) & set(_frame_docs(recorder)[-1])
+    for headers in (EDITOR, AI):
+        got = _client().get(f"/api/projects/{PID}", headers=headers)
+        assert got.status_code == 200, got.text
+        assert not set(gone) & set(got.json())
+    listed = _client().get("/api/projects")
+    assert listed.status_code == 200, listed.text
+    again = _put(ws, {"tracks": [{"id": "trk-0", "items": []}], "status": "draft", "name": "back"}, AI)
+    assert again.status_code == 200, again.text
+    assert json.loads(_disk(d))["status"] == "draft"
+
+
+def test_nulls_a_pull_deleting_a_clash_free_field_reads_removed_with_a_concurrent_editor_save(ws, state, recorder):
+    """(d) The pull deletes voiceover (clash-free; captions is in clash) while the open window still holds the
+    document from before it. Serve sees voiceover removed everywhere, never as a null that differs from absent."""
+    d = _with_fields(ws)
+    _sidecar(state, fields=["captions"])
+    pre = json.loads(_disk(d))
+    seen = revisions_of(normalize_tracks(pre), list(pre))          # what the open window read
+    absent = revisions_of({}, ["voiceover"])["voiceover"]
+
+    pulled = _put(ws, {"voiceover": None}, SYNC)
+    assert pulled.status_code == 200, pulled.text
+    assert json.loads(pulled.headers["x-montaj-revisions"])["voiceover"] == absent
+    head = {k: v for k, v in pre.items() if k != "voiceover"}     # the document the pull meant
+    assert _sc().changed_fields(head, json.loads(_disk(d))) == []
+
+    # The window saves an edit of tracks on its pre-pull read: applied, nothing overridden, voiceover still gone.
+    edit = {"tracks": [{"id": "trk-0", "items": []}, {"id": "trk-1", "items": []}]}
+    saved = _put(ws, edit, {**EDITOR, "x-montaj-read-revisions": json.dumps({"tracks": seen["tracks"]})}, read=False)
+    assert saved.status_code == 200, saved.text
+    assert "x-montaj-overrode" not in saved.headers and "x-montaj-unread" not in saved.headers
+    assert "voiceover" not in json.loads(_disk(d))
+
+    # A fresh read and an AI save on it: voiceover reads absent, and neither the sync check nor the revisions count it.
+    got = _client().get(f"/api/projects/{PID}", headers=AI)
+    assert json.loads(got.headers["x-montaj-revisions"])["voiceover"] == absent
+    ai = _put(ws, {"name": "third"}, AI)
+    assert ai.status_code == 200, ai.text
+    assert _sc().changed_fields({**head, "tracks": edit["tracks"], "name": "third"}, json.loads(_disk(d))) == []
+
+    # The window's stale whole document, the old voiceover in it, is an override of the removal (reported).
+    stale = _put(ws, {"voiceover": pre["voiceover"]},
+                 {**EDITOR, "x-montaj-read-revisions": json.dumps({"voiceover": seen["voiceover"]})}, read=False)
+    assert stale.status_code == 200 and stale.headers.get("x-montaj-overrode") == "voiceover"
+
+
+def test_nulls_pin_a_pulled_removal_is_marked_like_any_pulled_change(ws, recorder):
+    _with_fields(ws)
+    assert _put(ws, {"voiceover": None}, SYNC).status_code == 200
+    resp = _put(ws, {"voiceover": {"src": "/new.mp3"}}, EDITOR, read=False)
+    assert resp.status_code == 200 and resp.headers.get("x-montaj-unread") == "voiceover"
+
+
+@pytest.mark.parametrize("headers", UNTRUSTED_OR_OTHER, ids=UNTRUSTED_OR_OTHER_IDS)
+def test_nulls_dark_without_a_trusted_sync_origin_bytes_answers_and_frames_match_a_null_kept(ws, recorder, headers):
+    """(f) With no trusted sync origin, a body with nulls writes exactly what the shallow merge always wrote (markers
+    and notes dropped, every other null kept) and answers and publishes it: compared with the text that merge writes."""
+    from lib.project_lock import write_json_atomic as _w
+    d = _with_fields(ws, markers=[{"id": "m1", "time": 1}])
+    existing = json.loads(_disk(d))
+    body = {"captions": None, "storyboard": None, "markers": None, "notes": None, "name": "x"}
+    expected = {k: v for k, v in {**existing, **body}.items() if not (k in ("markers", "notes") and v is None)}
+    resp = _put(ws, body, headers, read=headers.get("x-montaj-writer") != "editor")
+    assert resp.status_code == 200, resp.text
+    ref = d.parent / "ref" / "project.json"
+    ref.parent.mkdir()
+    _w(ref, expected)
+    assert _disk(d) == ref.read_bytes()
+    assert resp.json() == expected
+    assert _frame_docs(recorder)[-1] == expected
+
+
+# ── review folds ──────────────────────────────────────────────────────────────
+
+
+def test_fold_speech_apply_checks_the_file_as_on_disk_under_the_lock(tmp_path, state, capsys, monkeypatch):
+    """A legacy tracks on disk is written back in object form by any speech edit, so under a tracks clash that is a
+    write of tracks, even when the edit leaves tracks as a reader sees them: the check compares the raw file."""
+    import copy as _copy
+    from lib import speech_apply
+    pj, pid, edited = _speech_env(tmp_path)
+    doc = json.loads(pj.read_text())
+    pj.write_text(json.dumps({**doc, "tracks": [doc["tracks"][0]["items"], *doc["tracks"][1:]]}, indent=2))
+    assert normalize_tracks(json.loads(pj.read_text()))["tracks"] == doc["tracks"]
+
+    def carry_leaving_tracks(project, ti, items, tmap, fps, report=None):
+        return {**_copy.deepcopy(project), "editingPrompt": "edited"}, report
+
+    monkeypatch.setattr(speech_apply, "carry", carry_leaving_tracks)
+    _sidecar(state, pid=pid, fields=["tracks"])
+    before = pj.read_bytes()
+    with pytest.raises(SystemExit):
+        speech_apply.apply(str(pj), edited, preview=False, max_pause=None, feel="tight")
+    err = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert err == {"error": "sync_conflict", "fields": ["tracks"], "message": _message(["tracks"])}
+    assert pj.read_bytes() == before
+
+
+def test_fold_speech_apply_pin_the_same_edit_with_tracks_unclashed_applies(tmp_path, state, monkeypatch):
+    import copy as _copy
+    from lib import speech_apply
+    pj, pid, edited = _speech_env(tmp_path)
+    doc = json.loads(pj.read_text())
+    pj.write_text(json.dumps({**doc, "tracks": [doc["tracks"][0]["items"], *doc["tracks"][1:]]}, indent=2))
+    monkeypatch.setattr(speech_apply, "carry",
+                        lambda project, ti, items, tmap, fps, report=None:
+                        ({**_copy.deepcopy(project), "editingPrompt": "edited"}, report))
+    _sidecar(state, pid=pid, fields=["settings"])
+    assert speech_apply.apply(str(pj), edited, preview=False, max_pause=None, feel="tight")["applied"] is True
+    assert json.loads(pj.read_text())["editingPrompt"] == "edited"
+
+
+STAR_CLASHES = [{"id": "c1", "fields": ["*"], "files": ["*"]},
+                {"id": "c2", "fields": ["captions"], "files": ["overlays/a.jsx"]}]
+
+
+def test_fold_a_star_resolve_may_not_write_another_open_clashs_field(ws, state):
+    d = _project(ws, captions={"segments": []})
+    _sidecar(state, fields=["*", "captions"], files=["*", "overlays/a.jsx"], clashes=STAR_CLASHES)
+    before = _disk(d)
+    _refused(_put(ws, {"captions": {"segments": [1]}}, RESOLVE("c1")), ["captions"])
+    _refused(_put(ws, {"captions": {"segments": [1]}, "name": "renamed"}, RESOLVE("c1")), ["captions"])
+    assert _disk(d) == before
+    resp = _put(ws, {"name": "renamed", "tracks": [{"id": "trk-9", "items": []}]}, RESOLVE("c1"))
+    assert resp.status_code == 200, resp.text
+    assert _put(ws, {"captions": {"segments": [2]}}, RESOLVE("c2")).status_code == 200
+
+
+def test_fold_a_star_resolve_whose_save_normalises_another_clashs_field_is_refused(ws, state):
+    d = _legacy(ws)
+    _sidecar(state, fields=["*", "tracks"], clashes=[{"id": "c1", "fields": ["*"], "files": []},
+                                                     {"id": "c2", "fields": ["tracks"], "files": []}])
+    before = _disk(d)
+    _refused(_put(ws, {"name": "second"}, RESOLVE("c1")), ["tracks"])
+    assert _disk(d) == before
+
+
+def test_fold_a_star_resolve_may_not_write_another_open_clashs_file(ws, state):
+    d = _project(ws)
+    (d / "overlays").mkdir()
+    _sidecar(state, fields=["*", "captions"], files=["*", "overlays/a.jsx"], clashes=STAR_CLASHES)
+    _refused(_write_file(d / "overlays" / "a.jsx", RESOLVE("c1")), ["overlays/a.jsx"])
+    assert not (d / "overlays" / "a.jsx").exists()
+    assert _write_file(d / "overlays" / "b.jsx", RESOLVE("c1")).status_code == 200
+    assert _write_file(d / "overlays" / "a.jsx", RESOLVE("c2")).status_code == 200
+
+
+def test_fold_unit_a_star_resolve_closes_its_own_names_and_what_no_other_clash_holds():
+    sc = _sc()
+    clashes = sc._parse(json.dumps({"v": 1, "projectId": PID, "fields": ["*", "captions", "notes"],
+                                    "files": ["*", "overlays/a.jsx"], "clashes": STAR_CLASHES}).encode(), PID)
+    # `notes` is clashed with no clash of its own (the top-level list only): held, so refused too.
+    assert sc.outside_clash(clashes, "c1", ["captions", "name", "notes"], ["overlays/a.jsx", "overlays/b.jsx"],
+                            ["tracks", "captions"]) == ["captions", "notes", "overlays/a.jsx"]
+    assert sc.outside_clash(clashes, "c1", everything=True) == ["captions", "notes", "overlays/a.jsx"]
+    alone = sc._parse(json.dumps({"v": 1, "projectId": PID, "fields": ["*"], "files": ["*"],
+                                  "clashes": [STAR_CLASHES[0]]}).encode(), PID)
+    assert sc.outside_clash(alone, "c1", ["captions", "name"], ["overlays/a.jsx"], ["tracks"]) == []
+    assert sc.outside_clash(alone, "c1", everything=True) == []
+
+
+def test_fold_a_step_write_that_changes_the_id_is_checked_against_the_original_projects_clashes(tmp_path, state):
+    from lib.project_lock import update_project
+    path = _lib_project(tmp_path)
+    _sidecar(state, fields=["tracks"])
+    before = path.read_bytes()
+    with pytest.raises(_sc().SyncConflict) as e:
+        update_project(path, lambda p: {**p, "id": "renamed-proj", "tracks": [{"id": "trk-1", "items": []}]})
+    assert e.value.body == _sc().refusal(["tracks"])
+    assert path.read_bytes() == before
+
+
+def test_fold_a_heal_that_changes_the_id_is_checked_against_the_original_projects_clashes(ws, state):
+    _sidecar(state, fields=["tracks"])
+    raw = json.dumps({"id": PID, "tracks": []})
+    after = {"id": "renamed-proj", "tracks": [{"id": "trk-1", "items": []}]}
+    assert save_guard.maintenance_refusal(raw, after) == _sc().refusal(["tracks"])
+    assert not save_guard.maintenance_allows(raw, after)
+
+
+# ── fail-open hardening: the state folder named badly or out of reach ─────────
+
+
+@pytest.mark.parametrize("exists", [True, False], ids=["folder-there", "nothing-there"])
+@pytest.mark.parametrize("value", ["studio-sync", "./studio-sync", "~/studio-sync"])
+def test_harden_a_relative_state_dir_is_misconfigured_and_fails_closed(ws, tmp_path, monkeypatch, exists, value):
+    monkeypatch.chdir(tmp_path)
+    if exists:
+        (tmp_path / "studio-sync").mkdir()
+    monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", value)
+    d = _project(ws)
+    before = _disk(d)
+    _refused(_put(ws, {"notes": []}, AI), ["notes"])
+    _refused(_put(ws, {"notes": []}, TOOL), ["notes"])
+    assert _disk(d) == before
+    with pytest.raises(_sc().SyncConflict):
+        _sc().check_step_write(PID, ["notes"])
+    assert _put(ws, {"notes": []}, EDITOR, read=False).status_code == 200
+
+
+@pytest.mark.parametrize("under", ["studio-sync", "runtime/studio-sync"], ids=["parent", "grandparent"])
+def test_harden_a_state_dir_under_a_dangling_link_fails_closed(ws, tmp_path, monkeypatch, under):
+    """An unmounted volume: the link is there, what it points at is not. Never "no folder, so no clash"."""
+    vol = tmp_path / "Volumes" / "Backup"
+    vol.parent.mkdir()
+    vol.symlink_to(tmp_path / "unmounted", target_is_directory=True)
+    monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", str(vol / under))
+    d = _project(ws)
+    before = _disk(d)
+    _refused(_put(ws, {"notes": []}, AI), ["notes"])
+    assert _disk(d) == before
+    with pytest.raises(_sc().SyncConflict):
+        _sc().check_step_write(PID, ["notes"])
+    assert _put(ws, {"notes": []}, EDITOR, read=False).status_code == 200
+
+
+def test_harden_pin_a_state_dir_missing_under_a_live_link_is_no_clash(ws, tmp_path, monkeypatch):
+    (tmp_path / "real").mkdir()
+    (tmp_path / "linked").symlink_to(tmp_path / "real", target_is_directory=True)
+    monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", str(tmp_path / "linked" / "runtime" / "studio-sync"))
+    _project(ws)
+    assert _put(ws, {"notes": []}, AI).status_code == 200
+
+
+@pytest.fixture
+def missing_log(monkeypatch):
+    """serve's one-line notice of a missing state folder, as a fresh serve process has it."""
+    monkeypatch.setattr(_sc(), "_missing_log", {"armed": False, "logged": False})
+    return _sc()
+
+
+def _notices(err):
+    return [line for line in err.splitlines() if line == _sc().MISSING_STATE_LINE]
+
+
+def test_harden_serve_logs_one_line_at_startup_when_the_state_folder_is_missing(ws, no_state_dir, missing_log,
+                                                                                 capsys):
+    _project(ws)
+    capsys.readouterr()
+    save_guard.startup()
+    save_guard.startup()      # `montaj serve`, then serve.server's import: still one line
+    for _ in range(3):
+        assert _put(ws, {"notes": []}, AI).status_code == 200
+    assert len(_notices(capsys.readouterr().err)) == 1
+
+
+def test_harden_serve_logs_one_line_on_first_detection_of_a_missing_state_folder(ws, state, missing_log, capsys):
+    _project(ws)
+    capsys.readouterr()
+    save_guard.startup()
+    assert _notices(capsys.readouterr().err) == []
+    state.rmdir()
+    for _ in range(3):
+        assert _put(ws, {"notes": []}, AI).status_code == 200
+    assert len(_notices(capsys.readouterr().err)) == 1
+
+
+def test_harden_pin_no_notice_with_the_var_unset_a_folder_there_or_in_a_step(ws, tmp_path, monkeypatch, missing_log,
+                                                                             capsys):
+    capsys.readouterr()
+    save_guard.startup()
+    monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", str(tmp_path / "studio-sync"))
+    (tmp_path / "studio-sync").mkdir()
+    save_guard.startup()
+    assert _notices(capsys.readouterr().err) == []
+    # A step is its own process and never starts serve: it never prints the notice (its stderr carries its answer).
+    (tmp_path / "studio-sync").rmdir()
+    missing_log._missing_log.update(armed=False, logged=False)
+    _sc().check_step_write(PID, ["notes"])
+    assert _notices(capsys.readouterr().err) == []
