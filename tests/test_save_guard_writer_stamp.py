@@ -128,40 +128,41 @@ def test_a_trusted_tool_save_with_origin_sync_is_stamped_just_before_its_frame(p
     _start(monkeypatch)
     _put(proj, {"name": "pulled"}, {**TOOL, **SYNC})
     # One publish: the stamp and its frame are adjacent on every connection.
-    assert len(_frames(recorder)) == 1
+    assert len(recorder.published) == 1
     [(event, stamp), (kind, data)] = _frames(recorder)[0]
     assert (event, stamp) == ("writer", "tool;origin=sync")
     assert kind == "message"
     assert json.loads(data)["name"] == "pulled"
 
 
-@pytest.mark.parametrize("headers, stamp", [
-    (TOOL, "tool"),
-    (EDITOR, "editor"),
-    ({**EDITOR, **SYNC}, "editor;origin=sync"),
-])
-def test_a_trusted_save_is_stamped_with_its_class_and_any_origin_it_names(proj, recorder, monkeypatch, headers, stamp):
+@pytest.mark.parametrize("headers", [
+    TOOL,
+    EDITOR,
+    {**EDITOR, **SYNC},
+    {"x-montaj-shell": SECRET, "x-montaj-writer": "ai", **SYNC},
+], ids=["plain-tool", "editor", "editor-naming-sync", "trusted-ai-naming-sync"])
+def test_only_a_trusted_tool_sync_save_is_stamped(proj, recorder, monkeypatch, headers):
+    """Narrowed: a plain tool, an editor (even naming sync) and an ai save get no stamp."""
     _start(monkeypatch)
     _put(proj, {"name": "second"}, headers)
-    assert [e for e, _ in _frames(recorder)[0]] == ["writer", "message"]
-    assert _frames(recorder)[0][0][1] == stamp
+    assert [e for e, _ in _frames(recorder)[0]] == ["message"]
 
 
 @pytest.mark.parametrize("headers", [
     {"x-montaj-writer": "tool", **SYNC},
     {"x-montaj-shell": OTHER, "x-montaj-writer": "tool", **SYNC},
 ], ids=["no-secret", "wrong-secret"])
-def test_an_untrusted_save_is_stamped_ai_and_its_origin_is_ignored(proj, recorder, monkeypatch, headers):
+def test_an_untrusted_request_naming_sync_is_not_stamped(proj, recorder, monkeypatch, headers):
     _start(monkeypatch)
     _put(proj, {"name": "second"}, headers)
-    assert _frames(recorder)[0][0] == ("writer", "ai")
+    assert [e for e, _ in _frames(recorder)[0]] == ["message"]
 
 
-@pytest.mark.parametrize("origin", ["Sync", "sync;origin=x", "sync pull", "a" * 33, ""])
-def test_an_origin_that_is_not_a_short_lowercase_token_is_left_out(proj, recorder, monkeypatch, origin):
+@pytest.mark.parametrize("origin", ["Sync", "sync;origin=x", "sync pull", "a" * 33, "", "other"])
+def test_an_origin_other_than_exactly_sync_is_not_stamped(proj, recorder, monkeypatch, origin):
     _start(monkeypatch)
     _put(proj, {"name": "second"}, {**TOOL, "x-montaj-write-origin": origin})
-    assert _frames(recorder)[0][0] == ("writer", "tool")
+    assert [e for e, _ in _frames(recorder)[0]] == ["message"]
 
 
 def test_with_the_guard_off_no_save_is_stamped(proj, recorder, monkeypatch):
@@ -215,3 +216,29 @@ def test_the_copied_media_patch_after_a_sync_save_is_not_stamped(tmp_path, recor
     assert frames[0][0][1] == "tool;origin=sync"
     assert [e for e, _ in frames[1]] == ["message"]
     assert json.loads(frames[1][0][1])["tracks"][0]["items"][0]["src"] == str(folder / "assets" / "still.png")
+
+
+def test_dark_parity_no_unread_header_and_broadcasts_byte_identical_to_before_the_stamp(proj, recorder, monkeypatch):
+    """With no sync-origin write, serve behaves as at df0f1602: no x-montaj-unread on any answer,
+    and each broadcast is exactly the one string that commit emitted, `data: ` + json.dumps of the
+    saved document (default separators) + a blank line. No `event: writer` anywhere."""
+    _start(monkeypatch)
+    client = TestClient(app, raise_server_exceptions=False)
+    steps = [
+        ({"name": "t1"}, TOOL),
+        ({"name": "a1"}, {}),
+        ({"status": "final"}, {"x-montaj-shell": SECRET, "x-montaj-writer": "ai"}),
+        ({"name": "e1"}, EDITOR),
+        ({"status": "draft"}, EDITOR),
+    ]
+    for n, (body, headers) in enumerate(steps, start=1):
+        if headers is EDITOR:
+            resp = client.put(f"/api/projects/{PID}", json={"id": PID, **body}, headers=headers)
+            assert resp.status_code == 200, resp.text
+        else:
+            resp = _put(proj, body, headers)
+        assert "x-montaj-unread" not in resp.headers
+        saved = json.loads((proj / "project.json").read_text())
+        published = [data for pid, data in recorder.published if pid == PID]
+        assert len(published) == n
+        assert published[-1] == "data: " + json.dumps(saved) + "\n\n"

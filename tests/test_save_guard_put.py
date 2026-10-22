@@ -606,12 +606,14 @@ def test_a_save_reuses_the_revisions_of_the_fields_it_did_not_change(proj, monke
 
 EDITOR = {"x-montaj-shell": SECRET, "x-montaj-writer": "editor", "x-montaj-guard": "advisory"}
 TOOL = {"x-montaj-shell": SECRET, "x-montaj-writer": "tool"}
+# Marks are set only by the app's Studio sync pull: a trusted tool write naming origin sync.
+SYNC = {**TOOL, "x-montaj-write-origin": "sync"}
 UNREAD = "x-montaj-unread"
 OVERRODE = "x-montaj-overrode"
 
 
 def _tool_put(proj, body, client=None):
-    resp = _put(body, read=_revs(proj, *body), headers=TOOL, client=client)
+    resp = _put(body, read=_revs(proj, *body), headers=SYNC, client=client)
     assert resp.status_code == 200, resp.text
     return resp
 
@@ -727,33 +729,52 @@ def test_non_editor_writers_never_answer_unread(proj, monkeypatch):
     _tool_put(proj, {"name": "pulled"})
     ai = _put({"name": "by the ai"}, read=_revs(proj, "name"))
     assert ai.status_code == 200 and UNREAD not in ai.headers
-    assert _put({"name": "x"}, headers=TOOL).status_code == 400
+    assert _put({"name": "x"}, headers=SYNC).status_code == 400
     assert _put({"name": "x"}).status_code == 400
 
 
-def test_an_ai_write_is_a_guarded_write_too(proj, monkeypatch):
+def test_an_ai_write_and_a_plain_tool_write_set_no_marks(proj, monkeypatch):
+    """Narrowed (sync only): only a trusted tool write with origin sync marks fields."""
     _start(monkeypatch)
     assert _put({"name": "by the ai"}, read=_revs(proj, "name")).status_code == 200
-    assert _put({"name": "x"}, headers=EDITOR).headers[UNREAD] == "name"
+    assert UNREAD not in _put({"name": "x"}, headers=EDITOR).headers
+    assert _put({"status": "final"}, read=_revs(proj, "status"), headers=TOOL).status_code == 200
+    assert UNREAD not in _put({"status": "draft"}, headers=EDITOR).headers
+
+
+def test_a_forged_sync_origin_sets_no_marks(proj, monkeypatch):
+    _start(monkeypatch)
+    forged = {"x-montaj-writer": "tool", "x-montaj-write-origin": "sync"}
+    wrong = {"x-montaj-shell": "a1" * 32, **forged}
+    for headers in (forged, wrong):
+        assert _put({"name": "forged"}, read=_revs(proj, "name"), headers=headers).status_code == 200
+        assert UNREAD not in _put({"name": "x"}, headers=EDITOR).headers
+
+
+def test_a_trusted_ai_write_naming_sync_sets_no_marks(proj, monkeypatch):
+    _start(monkeypatch)
+    ai_sync = {"x-montaj-shell": SECRET, "x-montaj-writer": "ai", "x-montaj-write-origin": "sync"}
+    assert _put({"name": "ai"}, read=_revs(proj, "name"), headers=ai_sync).status_code == 200
+    assert UNREAD not in _put({"name": "x"}, headers=EDITOR).headers
 
 
 def test_a_refused_tool_write_records_nothing(proj, monkeypatch):
     _start(monkeypatch)
-    assert _put({"name": "pulled"}, read={"name": "000000000000"}, headers=TOOL).status_code == 409
+    assert _put({"name": "pulled"}, read={"name": "000000000000"}, headers=SYNC).status_code == 409
     resp = _put({"name": "x"}, headers=EDITOR)
     assert resp.status_code == 200 and UNREAD not in resp.headers
 
 
 def test_a_hub_template_change_is_never_reported(proj, monkeypatch):
     _start(monkeypatch)
-    assert _put({"hubTemplate": {"id": "t1"}}, headers=TOOL).status_code == 200
+    assert _put({"hubTemplate": {"id": "t1"}}, headers=SYNC).status_code == 200
     resp = _put({"hubTemplate": {"id": "t2"}, "name": "x"}, headers=EDITOR)
     assert resp.status_code == 200 and UNREAD not in resp.headers
 
 
 def test_without_the_guard_nothing_is_recorded_or_reported(proj, monkeypatch):
     _start(monkeypatch, guard=False)
-    _put({"name": "pulled"}, headers=TOOL)
+    _put({"name": "pulled"}, headers=SYNC)
     resp = _put({"name": "x"}, headers=EDITOR)
     assert resp.status_code == 200 and _guard_headers(resp) == {}
 
