@@ -305,11 +305,13 @@ export const TIMELINE_COLORS = {
   rulerTick: 'rgba(148,163,184,0.55)',
   rulerTickMinor: 'rgba(148,163,184,0.25)',
   rulerText: 'rgba(148,163,184,0.9)',
-  /** A marker's flag stem, in the strip above the ruler. Sky-400 — every
-   *  saturated hue below it is spoken for (red is playback, yellow the
-   *  preview axis, cyan the snap guide, amber a keyframe, emerald audio), and
-   *  a marker is none of those: it is a bookmark, not a state of the edit. */
-  markerFlag: '#38bdf8',
+  /** A marker's flag stem, in the strip above the ruler. Violet-400. It was
+   *  sky-400, which sat one step from the note pin's cyan (`pinFlagNote`) in the
+   *  same strip and read as the same mark. Violet is clear of every line and
+   *  state colour here (red is playback, yellow the preview axis and host pins,
+   *  cyan the snap guide and notes, amber a keyframe, emerald audio) and is
+   *  only otherwise used as a track-fill hue, never a flag or rule. */
+  markerFlag: '#a78bfa',
   /** The one marker in the current selection. White, the same selection
    *  vocabulary `clipSelectedOutline`/`handleFill` already use. */
   markerFlagSelected: '#f8fafc',
@@ -496,15 +498,15 @@ export const LIGHT_TIMELINE_COLORS: TimelineColors = {
   rulerTick: 'rgba(71,85,105,0.55)',
   rulerTickMinor: 'rgba(71,85,105,0.3)',
   rulerText: 'rgba(51,65,85,0.85)',
-  /** Still sky, stepped from sky-400 to sky-600 for the same reason
+  /** Still violet, stepped from violet-400 to violet-600 for the same reason
    *  `snapGuide` steps cyan-400 to cyan-600: the lighter tone doesn't clear a
    *  light row. */
-  markerFlag: '#0284c7',
+  markerFlag: '#7c3aed',
   /** The selected marker. Near-black, following `clipSelectedOutline` into
    *  the same "white becomes near-black here" rule. */
   markerFlagSelected: '#0f172a',
   /** Still yellow, stepped from yellow-300 to yellow-600 for the same reason
-   *  `markerFlag` steps sky-400 to sky-600: the lighter tone is invisible on a
+   *  `markerFlag` steps violet-400 to violet-600: the lighter tone is invisible on a
    *  pale strip. */
   pinFlag: '#ca8a04',
   /** The label, stepped further down the same ramp (yellow-800) — on a pale

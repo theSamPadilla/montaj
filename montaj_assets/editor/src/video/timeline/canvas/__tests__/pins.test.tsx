@@ -192,6 +192,17 @@ describe('the pin tokens exist in both palettes', () => {
   })
 })
 
+describe('marker colour', () => {
+  it('differs from both pin colours (host pin and note) in dark and light', () => {
+    for (const c of [TIMELINE_COLORS, LIGHT_TIMELINE_COLORS]) {
+      for (const pin of [c.pinFlag, c.pinFlagNote]) {
+        expect(c.markerFlag).not.toBe(pin)
+      }
+      expect(c.markerFlag).not.toBe(c.markerFlagSelected)
+    }
+  })
+})
+
 // ── The strip's layout ───────────────────────────────────────────────────
 
 describe('the strip is reserved for pins as well as markers', () => {
