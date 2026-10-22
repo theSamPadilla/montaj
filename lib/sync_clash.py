@@ -14,11 +14,15 @@ names-only sidecar per synced project, `<dir>/<projectId>/clash-set.json`:
   AND its own clash record (conflicts.json) under that folder, so with no folder neither exists, and the app's own
   state reads it as "nothing synced" too (studio-sync/state.cjs scan(): ENOENT is an empty list). Evidence of sync is
   a project's own folder in the state folder; with no state folder there can be none. The app creates the folder
-  before it launches serve (its launch assert), so this is the never-made case, not a lost one.
-- Anything else that is not a valid sidecar (a state folder that exists but is not a readable folder, a dangling link
-  as the state folder, a project folder that cannot be read, a corrupt file, an unknown `v`, an id that cannot name a
-  folder, a link out of the folder): UNSURE, which refuses every non-human write. An unreadable state folder hides
-  every project's folder, so it stays closed for all: nothing can tell a synced project from a never-synced one.
+  before it launches serve (its launch assert), so this is the never-made case, not a lost one. "Nothing there" means
+  a real folder above it lacks the name: a missing name under a link that points nowhere (an unmounted volume) is
+  unsure. serve prints MISSING_STATE_LINE once (at startup, or when it first finds the folder gone), so this
+  fail-open is never silent.
+- Anything else that is not a valid sidecar (a relative path, which names a different folder for every working
+  directory, a state folder that exists but is not a readable folder, a dangling link as the state folder or above it,
+  a project folder that cannot be read, a corrupt file, an unknown `v`, an id that cannot name a folder, a link out of
+  the folder): UNSURE, which refuses every non-human write. An unreadable state folder hides every project's folder,
+  so it stays closed for all: nothing can tell a synced project from a never-synced one.
 
 Read fresh on every write (a few hundred bytes, no cache): a cache keyed on the file's stat can miss an in-place
 rewrite, and the shell's atomic rename is the common case.
@@ -44,6 +48,12 @@ EVERYTHING = "*"
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _DEVICE_RE = re.compile(r"(con|prn|aux|nul|com[0-9]|lpt[0-9])", re.IGNORECASE)
 _MAX_BYTES = 4 * 1024 * 1024
+
+# serve's notice of a missing state folder: no paths (it reaches us through crash-report log tails). Only serve arms it
+# (serve/save_guard.startup); a step is a process of its own whose stderr carries its answer, and never prints it.
+MISSING_STATE_LINE = ("studio-sync: MONTAJ_SYNC_STATE_DIR is set but its folder does not exist, "
+                      "so serve sees no Studio sync clash in any project")
+_missing_log = {"armed": False, "logged": False}
 
 
 def state_dir() -> "str | None":
@@ -129,14 +139,65 @@ def _parse(raw: bytes, project_id: str) -> ClashSet:
 
 
 def _nothing_at(path) -> bool:
-    """True when nothing at all is at `path`, not even a link (a missing parent counts: nothing is there)."""
+    """True when nothing at all is at `path`, not even a link, because a real folder above it lacks the next name (a
+    missing parent counts: nothing is there). The nearest thing that IS there, walking up, must be a folder through
+    any links: a link that points nowhere (an unmounted volume) or a file is not "nothing", it is unsure."""
     try:
         os.lstat(path)
     except FileNotFoundError:
-        return True
+        pass
     except (OSError, ValueError):
         return False
-    return False
+    else:
+        return False
+    here = path
+    while True:
+        up = os.path.dirname(here)
+        if up == here:
+            return False
+        here = up
+        try:
+            os.lstat(here)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return False
+        return os.path.isdir(here)
+
+
+_MISSING_ROOT = ""
+
+
+def _state_root(base) -> "str | None":
+    """The state folder's real path; _MISSING_ROOT when nothing is at its name; None when unsure."""
+    if not os.path.isabs(base):
+        return None   # misconfigured: a relative path names another folder from every working directory
+    try:
+        root = os.path.realpath(base)
+        if os.path.isdir(root):
+            return root
+        # Nothing at that name: the app never made it, and no project has a clash recorded (module docstring).
+        # Anything else there (a file, a dangling link, a folder that cannot be looked into) stays unsure.
+        if _nothing_at(base):
+            _note_missing()
+            return _MISSING_ROOT
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _note_missing() -> None:
+    if _missing_log["armed"] and not _missing_log["logged"]:
+        _missing_log["logged"] = True
+        print(MISSING_STATE_LINE, file=sys.stderr, flush=True)
+
+
+def startup() -> None:
+    """For serve only, at startup: arm the missing-folder notice, and print it now when the folder is missing."""
+    _missing_log["armed"] = True
+    base = state_dir()
+    if base:
+        _state_root(base)
 
 
 def load(project_id) -> ClashSet:
@@ -144,12 +205,12 @@ def load(project_id) -> ClashSet:
     base = state_dir()
     if not base or not valid_project_id(project_id):
         return UNSURE
+    root = _state_root(base)
+    if root is None:
+        return UNSURE
+    if root == _MISSING_ROOT:
+        return NO_CLASH
     try:
-        root = os.path.realpath(base)
-        if not os.path.isdir(root):
-            # Nothing at that name: the app never made it, and no project has a clash recorded (module docstring).
-            # Anything else there (a file, a dangling link, a folder that cannot be looked into) stays unsure.
-            return NO_CLASH if _nothing_at(base) else UNSURE
         folder = os.path.realpath(os.path.join(root, project_id))
     except (OSError, ValueError):
         return UNSURE
@@ -229,18 +290,54 @@ def outside_clash(clashes: ClashSet, clash_id: str, fields=(), files=(), derived
     and file it names outside that clash's own names (a file is inside when it is one of them or under one of its
     folders; `*` covers all), in the write's own spelling; and every `derived` field (one the write changes without
     naming it, a normalisation) that another open clash holds. A whole-project write is `*`, unless the clash
-    itself is the whole project."""
+    itself is the whole project. A clash whose own fields (or files) are `*` covers only what no other open clash
+    holds: its resolve may not write another open clash's field or file (review fold), and its whole-project write is
+    refused on the names the others hold."""
     own_fields, own_files = clashes.by_id.get(clash_id, (frozenset(), {}))
+    all_fields, all_files = EVERYTHING in own_fields, EVERYTHING in own_files
+    other_fields, other_files = _held_by_others(clashes, clash_id)
     if everything:
-        return [] if EVERYTHING in own_fields and EVERYTHING in own_files else [EVERYTHING]
-    out = [f for f in fields if f not in own_fields and EVERYTHING not in own_fields]
+        if not (all_fields and all_files):
+            return [EVERYTHING]
+        # The clash is the whole project: it writes everything but what another open clash holds.
+        return [*sorted(other_fields), *(other_files[k] for k in sorted(other_files))]
+
+    def other_field(f):
+        return f in other_fields or EVERYTHING in other_fields
+
+    if all_fields:
+        # A `*` clash closes its own names and the fields no other open clash holds (review fold): never another's.
+        out = [f for f in fields if f not in own_fields and other_field(f)]
+    else:
+        out = [f for f in fields if f not in own_fields]
     for written in files:
         w = file_key(written)
-        if not any(k == EVERYTHING or w == k or (k.endswith("/") and w.startswith(k)) for k in own_files):
-            out.append(written)
-    if EVERYTHING not in own_fields:
+        if any(w == k or (k.endswith("/") and w.startswith(k)) for k in own_files if k != EVERYTHING):
+            continue
+        if all_files and not any(_file_hit(w, k) for k in other_files):
+            continue
+        out.append(written)
+    if all_fields:
+        out += [f for f in derived if f not in own_fields and other_field(f)]
+    else:
         out += [f for f in derived if f not in own_fields and (f in clashes.fields or EVERYTHING in clashes.fields)]
     return list(dict.fromkeys(out))
+
+
+def _held_by_others(clashes: ClashSet, clash_id: str) -> "tuple[frozenset, dict]":
+    """The fields and files ({file_key: spelling}) some open clash other than `clash_id` holds, plus any the sidecar
+    lists with no clash of its own (its top-level lists are the union, so a name in them alone is held too)."""
+    fields, files = set(), {}
+    for cid, (f, k) in clashes.by_id.items():
+        if cid == clash_id:
+            continue
+        fields |= f
+        files.update(k)
+    every_field = set().union(*(f for f, _ in clashes.by_id.values()))
+    every_file = {k for _, ks in clashes.by_id.values() for k in ks}
+    fields |= clashes.fields - every_field
+    files.update({k: v for k, v in clashes.files.items() if k not in every_file})
+    return frozenset(fields), files
 
 
 def message(names) -> str:
@@ -305,7 +402,8 @@ def check_step_document(before: dict, after: dict, files=()) -> None:
     """check_step_write on the top-level fields `after` changes from `before` (both read under the lock)."""
     if not state_dir():
         return
-    pid = (after if isinstance(after, dict) else {}).get("id") or (before if isinstance(before, dict) else {}).get("id")
+    # The project's id as read: a write that changes `id` is checked against the clashes of the project it changes.
+    pid = (before if isinstance(before, dict) else {}).get("id") or (after if isinstance(after, dict) else {}).get("id")
     check_step_write(pid, changed_fields(before, after), files)
 
 

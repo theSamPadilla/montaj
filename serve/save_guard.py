@@ -106,6 +106,9 @@ def startup() -> None:
         if not _state["secret_logged"]:
             _state["secret_logged"] = True
             print(SECRET_MISSING_LINE, file=sys.stderr, flush=True)
+    # §482: one line when MONTAJ_SYNC_STATE_DIR names a folder that does not exist (no clash anywhere), now or the
+    # first time a write finds it gone, so that fail-open is never silent. Once per process.
+    sync_clash.startup()
     _state["canary"] = "ok" if project_revisions.canary_ok() else "mismatch"
     if _state["requested"] and _state["canary"] != "ok" and not _state["logged"]:
         # A divergent hasher would refuse every save as stale; the shell's own guard
@@ -599,9 +602,10 @@ def maintenance_refusal(raw_text, project: dict, who=None) -> "dict | None":
     changed = sync_clash.changed_fields(before, project)
     if not changed:
         return None
-    pid = project.get("id") if isinstance(project, dict) else None
-    if not pid and isinstance(before, dict):
-        pid = before.get("id")
+    # The id as read under the lock: a write that changes `id` is checked against the project it changes.
+    pid = before.get("id") if isinstance(before, dict) else None
+    if not pid and isinstance(project, dict):
+        pid = project.get("id")
     # Derived: a follow-up names nothing itself (a resolve's may change its own clash's fields and unclashed ones).
     return sync_refusal(pid, who if who is not None else MAINTENANCE, derived=changed)
 

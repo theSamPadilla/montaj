@@ -113,8 +113,12 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     project_path = os.path.abspath(project_path)
     project_dir = os.path.dirname(project_path)
     with open(project_path, encoding="utf-8") as f:
-        project = normalize_tracks(json.load(f))
+        on_disk = json.load(f)
+    project = normalize_tracks(on_disk)
     as_read = copy.deepcopy(project)   # as read, before anything mutates it
+    # §482: the sync check compares with the file as it is on disk (a legacy `tracks` the write converts is a write
+    # of tracks); everything else works on the reader's shape. The same document unless the file is legacy.
+    on_disk_as_read = as_read if project is on_disk else copy.deepcopy(on_disk)
     read = _read_revisions(project) if project_revisions.engine_guard_enabled() else None
 
     header, rows = speech_text.parse(text)
@@ -158,7 +162,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
 
     # §482: a field this edit changes, or its text file, in an open Studio sync clash refuses it before the
     # version commit; the check runs again under the lock, on the fresh document.
-    _check_sync(as_read, candidate)
+    _check_sync(on_disk_as_read, candidate)
     # Everything that can fail runs before the write, so nothing fails after it.
     new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id, sils=derived.silences), _title(candidate))
     version = commit_version(project_dir, "version: before speech edit")
@@ -177,7 +181,8 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     # colour record) is kept, and only the keys the edit changed are written onto the fresh document.
     with project_lock_or_fail(project_path, fail):
         with open(project_path, encoding="utf-8") as f:
-            fresh = normalize_tracks(json.load(f))
+            fresh_on_disk = json.load(f)
+        fresh = normalize_tracks(fresh_on_disk)   # pure: fresh_on_disk stays the file as read
         if read is not None:
             stale = project_revisions.stale_fields(None, list(read), read, revisions=_read_revisions(fresh))["stale"]
             if stale:
@@ -191,7 +196,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
                     merged[key] = candidate[key]
             elif key in as_read:
                 merged.pop(key, None)
-        _check_sync(fresh, merged)
+        _check_sync(fresh_on_disk, merged)
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(merged, f, indent=2, ensure_ascii=False)

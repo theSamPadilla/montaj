@@ -4154,9 +4154,10 @@ async def _copy_and_patch_media(
         raise
 
 
-def _merged_for_save(existing: dict, body: dict) -> dict:
+def _merged_for_save(existing: dict, body: dict, *, drop_nulls: bool = False) -> dict:
     """The document a save writes: `existing` with `body` (its report keys already dropped) merged in, every
-    rewrite the save makes applied. Pure: reads and writes nothing, so it runs before the checks."""
+    rewrite the save makes applied. Pure: reads and writes nothing, so it runs before the checks. `drop_nulls`
+    (a trusted Studio sync pull only) drops every top-level key the body sends as null."""
     # Top-level shallow merge: preserve fields not present in the body. Agents
     # (per skills/native/SKILL.md) routinely PUT a partial body like
     # {id, status, tracks} when transitioning pending→draft; without this merge
@@ -4169,8 +4170,10 @@ def _merged_for_save(existing: dict, body: dict) -> dict:
     # The editor deletes its last marker/note by sending `markers: null` /
     # `notes: null` (an omitted key would keep the old list through the merge
     # above). Drop the key so a project with none is stored without one.
-    for _key in ("markers", "notes"):
-        if _key in body and body[_key] is None:
+    # §482: the app's Studio sync pull sends null for every field the merged head
+    # no longer has, and the field is deleted, not stored as null (top level only).
+    for _key, _value in body.items():
+        if _value is None and (drop_nulls or _key in ("markers", "notes")):
             merged.pop(_key, None)
     # Agents routinely PUT a still-legacy `tracks` shape (or a whole project
     # they hand-built). Normalize before writing so a server write never leaves
@@ -4215,7 +4218,8 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
         # the document exactly as it will be written.
         named = save_guard.changed_fields(body)
         body = {key: value for key, value in body.items() if key not in _SAVE_REPORT_KEYS}
-        merged = _merged_for_save(existing, body)
+        merged = _merged_for_save(existing, body,
+                                  drop_nulls=save_guard.sync_origin_of(headers) == save_guard.SYNC_ORIGIN)
         # §482: a field in an open Studio sync clash refuses the whole save, from anyone but a person, before
         # the revisions are compared. Every field the write really changes counts, not only the body's: a
         # normalisation of a legacy `tracks` the body never named is still a write of `tracks` (review 40, 1).
