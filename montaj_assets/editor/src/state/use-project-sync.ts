@@ -219,23 +219,23 @@ export function useProjectSync<P extends Project = Project>(
   const syncedProjectRef = useRef(options?.syncedProject === true)
   syncedProjectRef.current = options?.syncedProject === true
 
-  // Latest deferred external frame. Held while saves are in flight because an
-  // echo for an earlier save can arrive while a later save is still mid-flight —
-  // applying it would regress the optimistic state to the older value (visible
-  // as jitter on the canvas while the operator is typing). Last-write-wins:
-  // only the most recent frame is kept.
-  const deferredSseRef = useRef<P | null>(null)
-  // The latest held frame that prunes (a sync pull or a gap frame), kept apart
-  // from `deferredSseRef` because a later frame may replace it there: an AI
-  // write, the watcher's copy, an adapter's refetch. Disk is written in order,
-  // so that later frame already contains the pull. On the drain the history is
-  // pruned against THIS frame's content, then the latest frame is applied
-  // without pruning: the same history as when the frames arrive with no save in
-  // flight, so the later frame's own changes prune nothing and the pull's still
-  // do. Only the latest pruning frame is kept (it contains any earlier one), so
-  // a drain prunes and reports once. Cleared on every drain, so it never carries
-  // over to a later hold.
-  const deferredPullRef = useRef<P | null>(null)
+  // Subscribed frames held while saves are in flight, oldest first, each with
+  // whether it prunes (a sync pull, or a gap frame in a synced project) and the
+  // project it came for. Held because an echo for an earlier save can arrive
+  // while a later save is still mid-flight: applying it would regress the
+  // optimistic state to the older value (visible as jitter on the canvas while
+  // the operator is typing). On the drain they are applied in order, each
+  // pruning frame pruning as it would have live, so the history is the one the
+  // same frames give with no save in flight: a frame on top of a pull (an AI
+  // write, the watcher's copy, an adapter's refetch) prunes nothing of its own,
+  // and a later pull is measured from a screen that holds the frames before it.
+  // A run of frames that do not prune keeps only its last, since applied one
+  // after another they touch no history and leave the last one's content. A
+  // drain reports what it dropped once.
+  const heldRef = useRef<Array<{ frame: P; prunes: boolean; projectId: string }>>([])
+  // Whether the subscribe effect has subscribed before: every later
+  // subscription's first frame is treated as a gap frame.
+  const subscribedRef = useRef(false)
 
   // Fold an external frame into current state (reconcile, or plain replace) and
   // apply it. No save, no undo push. Stable — reads reconcile via ref.
@@ -273,22 +273,38 @@ export function useProjectSync<P extends Project = Project>(
     bumpHistory()
   }, [bumpHistory])
 
-  // Apply a subscribed frame. A pruning frame (a sync pull) also drops the
-  // undo and redo steps that changed what it changed and rebases the rest onto
-  // it (`history-prune`). The pull's change is measured from the document the
-  // history knows: an open gesture's baseline, not its unsaved preview.
-  const applyFrame = useCallback((incoming: P, prunes: boolean) => {
-    const known = transientBaseline.current ?? projectRef.current
-    applyExternal(incoming)
-    if (!prunes) return
-    const pruned = pruneHistory(undoStackRef.current, redoStackRef.current, known, projectRef.current)
-    if (!pruned) return
-    undoStackRef.current = pruned.undo
-    redoStackRef.current = pruned.redo
-    if (pruned.dropped.undo + pruned.dropped.redo === 0) return
+  // Apply subscribed frames in order. A pruning frame (a sync pull) also drops
+  // the undo and redo steps that changed what it changed and rebases the rest
+  // onto it (`history-prune`). Each pull's change is measured from the document
+  // the history knows when it applies: an open gesture's baseline, not its
+  // unsaved preview. What the frames dropped is reported once.
+  //
+  // Known cost, not fixed (finding 7): a frame is serve's JSON as written, the
+  // screen may be a normalised form of it (a host `reconcile`, fields the
+  // editor fills in on load). A difference that is only normalisation counts as
+  // a change, so steps on that unit are dropped. Undo steps, never content.
+  const applyFrames = useCallback((frames: ReadonlyArray<{ frame: P; prunes: boolean }>) => {
+    let undo = 0
+    let redo = 0
+    for (const { frame, prunes } of frames) {
+      const known = transientBaseline.current ?? projectRef.current
+      applyExternal(frame)
+      if (!prunes) continue
+      const pruned = pruneHistory(undoStackRef.current, redoStackRef.current, known, projectRef.current)
+      if (!pruned) continue
+      undoStackRef.current = pruned.undo
+      redoStackRef.current = pruned.redo
+      undo += pruned.dropped.undo
+      redo += pruned.dropped.redo
+    }
+    if (undo + redo === 0) return
     bumpHistory()
-    onHistoryPrunedRef.current?.(pruned.dropped)
+    onHistoryPrunedRef.current?.({ undo, redo })
   }, [applyExternal, bumpHistory])
+  const applyFrame = useCallback(
+    (frame: P, prunes: boolean) => applyFrames([{ frame, prunes }]),
+    [applyFrames],
+  )
 
   // Subscription lifecycle. The adapter owns the transport (SSE, websocket,
   // poll); we just receive fresh frames and reconcile them. `applyFrame` is
@@ -296,33 +312,49 @@ export function useProjectSync<P extends Project = Project>(
   useEffect(() => {
     setConnection('connecting')
     let active = true
+    // Apply what was held, once the queue drains. A replaced subscription's
+    // drain does nothing; this one takes its place below.
+    //
+    // Known costs, not fixed (§482 review item 3, re-check finding 2): a held
+    // pull can predate a save of the editor's own, in flight when it was held
+    // or made while it was, whose echo comes later; and a reconnect while a
+    // save is in flight gives a gap frame read before that save landed. Either
+    // frame is measured from the screen when it applies, so it seems to have
+    // changed what that save changed, and the save's undo step is dropped too.
+    // One undo step lost, never content.
+    const drain = () => {
+      if (!active) return
+      const frames = heldRef.current
+      heldRef.current = []
+      applyFrames(frames)
+    }
+    // Frames held for another project never apply here. Ones held for this
+    // project by the subscription this one replaced (a host that re-created its
+    // adapter) still apply, on this subscription's drain: dropping them would
+    // leave the screen without a write until the next frame.
+    heldRef.current = heldRef.current.filter((h) => h.projectId === projectId)
+    if (heldRef.current.length > 0) queue.current.onceDrained(drain)
+    // Every subscription after the first may have missed frames while it was
+    // replaced, and a pooled transport sends no fresh state to a new listener:
+    // its first frame is a gap frame.
+    let firstIsGap = subscribedRef.current
+    subscribedRef.current = true
     const unsubscribe = adapter.subscribe(projectId, (next, writer, info?: FrameInfo) => {
       if (!active) return
       setConnection('live')
+      const gap = info?.gap === true || firstIsGap
+      firstIsGap = false
       // In a synced project a gap frame prunes like a pull. Its writer is still
       // the one it came with (usually none): the predicate and everything else
       // see that.
-      const prunes = prunesHistoryRef.current(writer) || (info?.gap === true && syncedProjectRef.current)
+      const prunes = prunesHistoryRef.current(writer) || (gap && syncedProjectRef.current)
       if (queue.current.isPending()) {
         // Hold the frame; apply it once the queue drains.
-        deferredSseRef.current = next
-        if (prunes) deferredPullRef.current = next
-        queue.current.onceDrained(() => {
-          const held = deferredSseRef.current
-          const pull = deferredPullRef.current
-          deferredSseRef.current = null
-          deferredPullRef.current = null
-          // The pull is measured from the screen now, at the drain, so a step
-          // pushed while it was held is pruned or rebased like any other.
-          //
-          // Known cost, not fixed (§482 review item 3): the pull frame can
-          // predate a save of the editor's own, in flight when it was held or
-          // made while it was, whose echo comes later. Measured from the screen,
-          // the pull then seems to have changed what that save changed, so the
-          // save's undo step is dropped too. One undo step lost, never content.
-          if (pull && pull !== held) applyFrame(pull, true)
-          if (held) applyFrame(held, held === pull)
-        })
+        const held = heldRef.current
+        const last = held[held.length - 1]
+        if (last && !last.prunes && !prunes) held.pop()
+        held.push({ frame: next, prunes, projectId })
+        queue.current.onceDrained(drain)
         return
       }
       applyFrame(next, prunes)
@@ -331,7 +363,7 @@ export function useProjectSync<P extends Project = Project>(
       active = false
       unsubscribe()
     }
-  }, [adapter, projectId, applyFrame])
+  }, [adapter, projectId, applyFrame, applyFrames])
 
   // Internal: persist the full project via the adapter; rollback on failure.
   // `before` is the document as it was before the edit being written (undefined

@@ -1504,13 +1504,12 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
     })
   })
 
-  // FIX 2. While a save is in flight every frame is held and only the latest is
-  // applied when it finishes. Disk is written in order, so a frame that replaces a
-  // held pull already contains it. The core keeps the latest pruning frame (a sync
-  // pull or a gap frame) apart from the latest frame: on the drain it prunes
-  // against the pruning frame's content, measured from the screen at that moment,
-  // then applies the latest frame without pruning. The history comes out as it
-  // would with the same frames and no save in flight.
+  // FIX 2. While a save is in flight every frame is held. Disk is written in
+  // order, so a frame after a held pull already contains it. On the drain the held
+  // frames are applied in order, each pull (or gap frame) pruning against its own
+  // content, measured from the screen at that moment, and every other frame
+  // without pruning. The history comes out as it would with the same frames and
+  // no save in flight, and the drain reports once.
   describe('a held pull replaced by a later frame prunes for the pull only (FIX 2)', () => {
     const GAP: FrameInfo = { gap: true }
     type Emit = [Project, FrameWriter?, FrameInfo?]
@@ -1621,7 +1620,7 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
       expect(held.states.map((s) => (s === 'redo' ? s : ends(s)))).toEqual([[2, 12], [5, 12], 'redo', [4, 12]])
     })
 
-    it('two held pulls then an unstamped frame: one prune against the later pull (it holds the first), then the frame, as with no save in flight', async () => {
+    it('two held pulls then an unstamped frame: each pull prunes in order, then the frame, one report per drain, as with no save in flight', async () => {
       const held = await both(
         [
           (p) => ({ ...p, captions: caps('one') }),
@@ -1658,7 +1657,7 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
       expect(held.adapter.saveCalls.slice(2).map((c) => clipOf(c.project, 'B')?.end)).toEqual([9, 9])
     })
 
-    it('a gap frame held after a held pull is the later content: one prune against it, one report per drain', async () => {
+    it('a gap frame held after a held pull prunes after it, in order, with one report per drain', async () => {
       const held = await both(
         [
           (p) => ({ ...p, captions: caps('one') }),
