@@ -56,14 +56,20 @@ export interface UseProjectSyncOptions<P extends Project> {
    * Whether a subscribed frame, by the writer the adapter reported with it,
    * prunes the undo and redo history (see `history-prune`). Called once per
    * frame, with `undefined` when the frame came with no writer. Defaults to a
-   * Studio sync pull: writer `tool`, origin `sync`. A frame the adapter marks
-   * `info.gap` (the first after a reconnect) and every `refetch` prune whatever
-   * this says: either may hold a pull whose stamp went to no listener. Only a
-   * change from what the editor holds prunes anything, so an identical one
-   * leaves the history as it was. `applyExternal` never prunes. Read through a
-   * ref.
+   * Studio sync pull: writer `tool`, origin `sync`. `applyExternal` never
+   * prunes. Read through a ref.
    */
   prunesHistory?: (writer?: FrameWriter) => boolean
+  /**
+   * The host says this project is synced (a Studio project another person can
+   * pull into). Then a frame the adapter marks `info.gap` (the first after a
+   * reconnect) and every `refetch` also prune, whatever `prunesHistory` says:
+   * either may hold a pull whose stamp went to no listener. Only a change from
+   * what the editor holds prunes anything, so an identical one leaves the
+   * history as it was. Absent or false: both apply as any unstamped frame, with
+   * no pruning. Read through a ref, so it may change while mounted.
+   */
+  syncedProject?: boolean
   /**
    * Called once per pruning frame that dropped at least one step, with how
    * many it dropped from each stack. No UI of its own: a host that wants a
@@ -210,6 +216,8 @@ export function useProjectSync<P extends Project = Project>(
   prunesHistoryRef.current = options?.prunesHistory ?? isSyncPull
   const onHistoryPrunedRef = useRef(options?.onHistoryPruned)
   onHistoryPrunedRef.current = options?.onHistoryPruned
+  const syncedProjectRef = useRef(options?.syncedProject === true)
+  syncedProjectRef.current = options?.syncedProject === true
 
   // Latest deferred external frame. Held while saves are in flight because an
   // echo for an earlier save can arrive while a later save is still mid-flight —
@@ -291,9 +299,10 @@ export function useProjectSync<P extends Project = Project>(
     const unsubscribe = adapter.subscribe(projectId, (next, writer, info?: FrameInfo) => {
       if (!active) return
       setConnection('live')
-      // A gap frame prunes like a pull. Its writer is still the one it came
-      // with (usually none): the predicate and everything else see that.
-      const prunes = prunesHistoryRef.current(writer) || info?.gap === true
+      // In a synced project a gap frame prunes like a pull. Its writer is still
+      // the one it came with (usually none): the predicate and everything else
+      // see that.
+      const prunes = prunesHistoryRef.current(writer) || (info?.gap === true && syncedProjectRef.current)
       if (queue.current.isPending()) {
         // Hold the frame; apply it once the queue drains.
         deferredSseRef.current = next
@@ -486,12 +495,13 @@ export function useProjectSync<P extends Project = Project>(
 
   // Force a fresh load of the project via the adapter and reconcile it in.
   // Useful when local state has drifted from the server (e.g. after a gap).
-  // That is the only reason to refetch, so the read prunes like a gap frame: a
-  // pull may be among what was missed. Identical content prunes nothing.
+  // That is the only reason to refetch, so in a synced project the read prunes
+  // like a gap frame: a pull may be among what was missed. Identical content
+  // prunes nothing. Not synced: applied with no pruning, as before.
   const refetch = useCallback(async () => {
     try {
       const next = await adapter.loadProject(projectId)
-      applyFrame(next, true)
+      applyFrame(next, syncedProjectRef.current)
     } catch (err) {
       setLastError(err instanceof Error ? err.message : String(err))
       throw err

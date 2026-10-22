@@ -721,7 +721,8 @@ export interface FrameWriter {
  * frame is the first on a connection that replaced a dropped one (Montaj's
  * serve sends its current state first on every connection), so frames may have
  * been missed just before it, a sync pull's among them, with its stamp sent to
- * no listener. Set on that one frame only; it never stands for a writer.
+ * no listener. Set on that one frame only; it never stands for a writer. It
+ * prunes only when the host says the project is synced (`syncedProject`).
  */
 export interface FrameInfo {
   gap?: boolean
@@ -764,8 +765,9 @@ export interface EditorAdapter<P extends Project = Project> {
    * frame's writer: only the stamp that came with THAT frame, never one carried
    * over from an earlier event. A frame stamped as a sync pull prunes the undo
    * and redo steps that would revert it. `info.gap` marks the first frame after
-   * the transport reconnected: it may hold a pull whose stamp was lost, so it
-   * prunes the same way when its content differs from what the editor holds.
+   * the transport reconnected: it may hold a pull whose stamp was lost, so in a
+   * project the host says is synced it prunes the same way when its content
+   * differs from what the editor holds.
    * Returns an unsubscribe function the editor calls on teardown.
    */
   subscribe(id: string, onFrame: (project: P, writer?: FrameWriter, info?: FrameInfo) => void): () => void
@@ -1497,6 +1499,15 @@ export interface VideoEditorProps<P extends Project = Project> {
    * called when nothing was dropped. The editor shows nothing itself.
    */
   onHistoryPruned?: (info: HistoryPruned) => void
+  /**
+   * The project is synced (another person can pull into it). Then the first
+   * frame after the adapter reconnects (`FrameInfo.gap`) and a refetch also
+   * prune the undo and redo history when they change something, since a pull's
+   * stamp may have gone to no listener while the stream was down. Absent or
+   * false: they apply with no pruning, as before. A stamped sync pull prunes
+   * either way.
+   */
+  syncedProject?: boolean
   /**
    * Where the host's `slots.assetsPanel` is placed in the review layout:
    * - `'sidebar'` — stacked inside the right-hand version/run-history rail, below

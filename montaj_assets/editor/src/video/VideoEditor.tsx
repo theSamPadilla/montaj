@@ -273,6 +273,7 @@ export default function VideoEditor<P extends Project = Project>({
   pendingSurface = 'default',
   onUserEdit,
   onHistoryPruned,
+  syncedProject,
   assetsPlacement = 'right',
   renderProgressView = 'phases',
   renderGenerationPanel,
@@ -305,7 +306,8 @@ export default function VideoEditor<P extends Project = Project>({
   // `onUserEdit` rides the core's `onLocalEdit` (held in a ref there, so a new
   // identity per render is harmless): fired for user edits only, never SSE.
   // `onHistoryPruned` likewise: fired when a sync pull drops undo/redo steps.
-  const sync = useProjectSync<P>(adapter, project.id, project, { onLocalEdit: onUserEdit, onHistoryPruned })
+  // `syncedProject` turns on pruning for a frame after a reconnect and a refetch.
+  const sync = useProjectSync<P>(adapter, project.id, project, { onLocalEdit: onUserEdit, onHistoryPruned, syncedProject })
 
   // Set for the duration of a caption drag gesture (ReviewSurface's
   // `handleProjectChange` → `commitTimelineEdit`), read by the lane-
