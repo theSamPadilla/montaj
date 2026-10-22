@@ -34,17 +34,19 @@ def grid_times(duration, every):
     return times or [0.0]
 
 
-def _sample_frame(project, t, out):
+def _sample_frame(project, t, out, raw=False):
+    cmd = [sys.executable, SAMPLE_FRAME, "--project", project, "--at", str(t), "--out", out]
+    if raw:
+        cmd.append("--raw")
     try:
-        proc = subprocess.run([sys.executable, SAMPLE_FRAME, "--project", project, "--at", str(t), "--out", out],
-                              capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
         fail("sample_failed", f"sample_frame at {t}s exceeded 120s")
     if proc.returncode != 0 or not os.path.isfile(out):
         fail("sample_failed", f"sample_frame at {t}s failed: {proc.stderr.strip()[-400:]}")
 
 
-def build(project, times, cols, tile_width, out, sampler=_sample_frame, frames_dir=None):
+def build(project, times, cols, tile_width, out, sampler=_sample_frame, frames_dir=None, raw=False):
     from PIL import Image, ImageDraw
     if frames_dir:
         os.makedirs(frames_dir, exist_ok=True)
@@ -53,7 +55,7 @@ def build(project, times, cols, tile_width, out, sampler=_sample_frame, frames_d
         frames = []
         for i, t in enumerate(times):
             p = os.path.join(work, f"f_{i:04d}.png")
-            sampler(project, t, p)
+            sampler(project, t, p, raw=True) if raw else sampler(project, t, p)
             frames.append(os.path.abspath(p))
             im = Image.open(p).convert("RGB")
             h = int(im.size[1] * tile_width / im.size[0] + 0.5)  # round half up
@@ -84,6 +86,8 @@ def main():
     ap.add_argument("--every", type=float, help="Sample every N seconds across the whole project")
     ap.add_argument("--cols", type=int, default=6)
     ap.add_argument("--tile-width", type=int, default=320)
+    ap.add_argument("--raw", action="store_true",
+                    help="Tile the untouched SOURCE frames under each time: no crop, zoom, overlays or captions")
     ap.add_argument("--frames-dir", help="Keep the sampled frame PNGs here (f_0000.png...) and report their paths")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
@@ -99,7 +103,7 @@ def main():
     times = args.at or grid_times(project_duration(args.project), args.every)
     if len(times) > MAX_TILES:
         fail("invalid_args", f"{len(times)} samples > {MAX_TILES}; raise --every")
-    print(json.dumps(build(args.project, times, args.cols, args.tile_width, args.out, frames_dir=args.frames_dir)))
+    print(json.dumps(build(args.project, times, args.cols, args.tile_width, args.out, frames_dir=args.frames_dir, raw=args.raw)))
 
 
 if __name__ == "__main__":
