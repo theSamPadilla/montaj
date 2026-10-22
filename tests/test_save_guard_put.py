@@ -359,7 +359,7 @@ def test_a_copy_patch_that_lands_in_time_is_in_the_answer_revisions(proj, monkey
     patched_sources = [{"id": "s1", "src": "/copied.mp4"}]
     monkeypatch.setattr(projects_mod, "_plan_save_media", lambda *a: ({"k": "/borrowed.mp4"}, {}))
 
-    async def fake_copy(project_id, project_dir, previous, wanted, also, broadcaster, follow_ups, on_late=None):
+    async def fake_copy(project_id, project_dir, previous, wanted, also, broadcaster, follow_ups, on_late=None, who=None):
         read = (project_dir / "project.json").read_text()
         doc = json.loads(read)
         doc["sources"] = patched_sources
@@ -431,7 +431,7 @@ def test_a_copy_still_pending_marks_the_revisions_not_final(proj, monkeypatch):
     _start(monkeypatch)
     monkeypatch.setattr(projects_mod, "_plan_save_media", lambda *a: ({"k": "/borrowed.mp4"}, {}))
 
-    async def fake_copy(project_id, project_dir, previous, wanted, also, broadcaster, follow_ups, on_late=None):
+    async def fake_copy(project_id, project_dir, previous, wanted, also, broadcaster, follow_ups, on_late=None, who=None):
         on_late()
         return None, {"warnings": ["still copying"]}
     monkeypatch.setattr(projects_mod, "_copy_and_patch_media", fake_copy)

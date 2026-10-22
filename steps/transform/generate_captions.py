@@ -37,6 +37,7 @@ from serve.common import get_project_dir  # noqa: E402
 from serve.caption_job import build_audio_mix_spec, caption_input_change, caption_input_fingerprint  # noqa: E402
 from lib.project_revisions import engine_guard_enabled  # noqa: E402
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly, update_project  # noqa: E402
+from lib.sync_clash import SyncConflict, exit_refused  # noqa: E402
 
 # The whisper run before this write took minutes: a short lock wait must not throw it away.
 STEP_LOCK_TIMEOUT = 30.0
@@ -166,6 +167,8 @@ def main():
             fail("project_locked", str(e))
         except ProjectReadOnly as e:
             fail("project_read_only", str(e))
+        except SyncConflict as e:   # §482: captions in an open Studio sync clash
+            exit_refused(e.body)
         except (OSError, ValueError):
             fail("project_not_found", f"project.json for {args.project_id} not readable")
         track = written["track"]

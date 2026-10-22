@@ -854,7 +854,7 @@ def test_case9_a_new_asset_lands(ws, state):
 
 def _commit(d):
     subprocess.run(["git", "init", "-q"], cwd=str(d), check=True)
-    projects_mod._git_commit_sync(d, "version: run 1 — draft")
+    projects_mod._git_commit_sync(d, "version: before the clash")
     out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(d), capture_output=True, text=True)
     return out.stdout.strip()
 
@@ -981,15 +981,25 @@ def test_case12_an_item_write_back_skips_only_a_clashed_owner(ws, state):
     assert projects_mod._apply_project_edits(d / "project.json", [("clip-0", "/x.mp4", "proxySrc", "/p.mp4")])
 
 
-def test_case12_a_late_save_copy_patch_of_the_ai_is_kept_for_the_next_save(ws, state):
-    """The copy patch after a save is the save's follow-up: checked again under its lock as the save's writer."""
+def test_case12_a_late_save_copy_patch_of_the_ai_is_kept_for_the_next_save(ws, state, monkeypatch):
+    """The copy patch after a save is the save's follow-up: checked again under its lock as the save's writer,
+    and kept for the next save when refused."""
     d = _project(ws)
     _sidecar(state, fields=["tracks"])
     previous = json.loads(_disk(d))
-    made = {"tracks/0/x": "/copied.mp4"}
-    out = projects_mod._patch_copied_media(d / "project.json", previous, made, project_id=PID,
+
+    def swap(prev, project, made, also):
+        project["tracks"] = [{"id": "trk-0", "items": [{"id": "clip-0", "src": "/copied.mp4"}]}]
+        return ["/copied.mp4"]
+
+    monkeypatch.setattr(projects_mod, "apply_borrowed_media", swap)
+    before = _disk(d)
+    out = projects_mod._patch_copied_media(d / "project.json", previous, {"k": "/copied.mp4"}, project_id=PID,
                                            who=save_guard.sync_who(AI))
-    assert out is projects_mod._PATCH_SYNC_CLASH
+    assert out is projects_mod._PATCH_SYNC_CLASH and _disk(d) == before
+    out = projects_mod._patch_copied_media(d / "project.json", previous, {"k": "/copied.mp4"}, project_id=PID,
+                                           who=save_guard.sync_who(EDITOR))
+    assert isinstance(out, tuple) and json.loads(_disk(d))["tracks"][0]["items"][0]["src"] == "/copied.mp4"
 
 
 # ── case 13: corrupt, unreadable, unknown ─────────────────────────────────────
@@ -1357,10 +1367,13 @@ def test_routes_provenance_record_is_refused_on_its_file(ws, state):
 
 
 def test_routes_normalize_beside_a_clashed_project_file_is_refused(ws, state):
+    from lib.normalize import normalized_output_path
     d = _project(ws)
     (d / "clip.mp4").write_bytes(b"x")
-    _sidecar(state, files=["clip.mp4"])
-    _refused(_client().post("/api/normalize", json={"input": str(d / "clip.mp4")}, headers=AI), ["clip.mp4"])
+    out = normalized_output_path(str(d / "clip.mp4"), "sdr_bt709", tonemapped=False, sdr_stretch=False)
+    rel = os.path.relpath(out, d).replace(os.sep, "/")
+    _sidecar(state, files=[rel])
+    _refused(_client().post("/api/normalize", json={"input": str(d / "clip.mp4")}, headers=AI), [rel])
 
 
 def test_routes_proxy_out_onto_a_clashed_file_is_refused(ws, state):

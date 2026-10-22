@@ -14,7 +14,7 @@ import shutil
 import sys
 import tempfile
 
-from lib import project_revisions, speech_text
+from lib import project_revisions, speech_text, sync_clash
 from lib.common import fail
 from lib.project_lock import project_lock_or_fail
 from lib.project_tracks import normalize_tracks
@@ -96,6 +96,18 @@ def _noop(report, warnings) -> dict:
     return {"applied": False, "noop": True, **report.as_dict(), "warnings": warnings}
 
 
+SPEECH_TEXT_FILE = "speech-text.md"
+
+
+def _check_sync(before: dict, after: dict) -> None:
+    """§482: the fields `after` changes and the text file, against the project's open Studio sync clashes (a
+    no-op with MONTAJ_SYNC_STATE_DIR unset, or for the window's run). A refusal ends the step with it."""
+    try:
+        sync_clash.check_step_document(before, after, files=[SPEECH_TEXT_FILE])
+    except sync_clash.SyncConflict as e:
+        sync_clash.exit_refused(e.body)
+
+
 def apply(project_path: str, text: str, *, preview: bool, max_pause: float | None,
           feel: str = DEFAULT_FEEL) -> dict:
     project_path = os.path.abspath(project_path)
@@ -144,6 +156,9 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
         return _result(applied=False, preview=True, version=False, before=before, after=after,
                        report=report, warnings=derived.warnings, text=new_text)
 
+    # §482: a field this edit changes, or its text file, in an open Studio sync clash refuses it before the
+    # version commit; the check runs again under the lock, on the fresh document.
+    _check_sync(as_read, candidate)
     # Everything that can fail runs before the write, so nothing fails after it.
     new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id, sils=derived.silences), _title(candidate))
     version = commit_version(project_dir, "version: before speech edit")
@@ -176,6 +191,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
                     merged[key] = candidate[key]
             elif key in as_read:
                 merged.pop(key, None)
+        _check_sync(fresh, merged)
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(merged, f, indent=2, ensure_ascii=False)
@@ -184,7 +200,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)
-    with open(os.path.join(project_dir, "speech-text.md"), "w", encoding="utf-8") as f:
+    with open(os.path.join(project_dir, SPEECH_TEXT_FILE), "w", encoding="utf-8") as f:
         f.write(new_text)
     return _result(applied=True, preview=False, version=version, before=before, after=after,
                    report=report, warnings=warnings, text=new_text)

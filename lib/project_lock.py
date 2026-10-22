@@ -27,6 +27,8 @@ import time
 import uuid
 from pathlib import Path
 
+from lib import sync_clash
+
 logger = logging.getLogger(__name__)
 
 LOCK_NAME = ".project.lock"
@@ -271,13 +273,16 @@ def project_lock_or_fail(project_path, fail, timeout: float | None = None):
 
 def update_project_or_fail(project_path, apply, fail, **kwargs):
     """`update_project` for a step: a lock that stays busy ends the step with the
-    structured error `project_locked`."""
+    structured error `project_locked`, and a write refused for an open Studio sync
+    clash (§482) with the refusal itself (lib/sync_clash.py)."""
     try:
         return update_project(project_path, apply, **kwargs)
     except ProjectLockTimeout as e:
         fail("project_locked", str(e))
     except ProjectReadOnly as e:
         fail("project_read_only", str(e))
+    except sync_clash.SyncConflict as e:
+        sync_clash.exit_refused(e.body)
 
 
 @contextlib.asynccontextmanager
@@ -362,12 +367,21 @@ def update_project(project_path, apply, *, timeout: float | None = None,
                    indent=2, ensure_ascii: bool = True):
     """Under the lock, re-read project.json, call `apply(project)` and write
     what it returns atomically. `apply` returns the document to write, or None
-    to leave the file untouched. Returns the document written (None if not)."""
+    to leave the file untouched. Returns the document written (None if not).
+
+    §482: with MONTAJ_SYNC_STATE_DIR set, a write that changes a top-level field
+    in an open Studio sync clash raises `sync_clash.SyncConflict` and writes
+    nothing, unless serve ran the step for the window (MONTAJ_WRITE_ORIGIN=human).
+    Unset, nothing more is read."""
     project_path = Path(project_path)
     with project_lock(project_path, timeout):
-        project = json.loads(project_path.read_text(encoding="utf-8"))
+        raw = project_path.read_text(encoding="utf-8")
+        project = json.loads(raw)
         result = apply(project)
         if result is None:
             return None
+        if sync_clash.state_dir():
+            # `apply` may change `project` in place: compare with a fresh parse of what was read.
+            sync_clash.check_step_document(json.loads(raw), result)
         write_json_atomic(project_path, result, indent=indent, ensure_ascii=ensure_ascii)
         return result

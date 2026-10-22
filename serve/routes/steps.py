@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from lib.color_provenance import ProbeError, is_probe_retryable
@@ -19,9 +19,13 @@ from serve.common import (
     run_subprocess,
     not_found, bad_request, server_error,
 )
+from lib import sync_clash
 from serve.jobs import create_job, set_done, set_error, get_job
-from serve.out_guard import check_route_out, check_step_out
-from serve import provenance
+from serve.out_guard import (
+    BESIDE_INPUT_STEPS, _DIR_WRITE_PARAMS, _beside_input_paths, _candidates, _has_explicit_write, _write_values,
+    check_route_out, check_step_out,
+)
+from serve import provenance, save_guard
 
 router = APIRouter(prefix="/api")
 
@@ -493,7 +497,8 @@ async def list_steps():
     return [{**schema, "runsWhisper": _runs_whisper(schema)} for schema, _ in scan_steps().values()]
 
 
-async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, timeout: int | None = None) -> dict:
+async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, timeout: int | None = None,
+                        origin: str | None = None) -> dict:
     """Run one step subprocess and return its wrap_output payload.
 
     Raises HTTPException on credential/validation/subprocess error exactly as
@@ -527,6 +532,10 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
         if overlay:
             env = {**os.environ, **overlay}
             secret_values = list(overlay.values())
+    if origin is not None and sync_clash.state_dir():
+        # §482: whose run this is, for the step's own check under the project lock (lib/sync_clash.py). Only
+        # serve sets it, and only with Studio sync on; `human` is the window's run alone.
+        env = {**(env if env is not None else os.environ), sync_clash.ORIGIN_ENV: origin}
 
     project_ref = body.get("_project")
     resolved_out = resolve_project_out(name, schema, body)
@@ -580,6 +589,10 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
                 continue
         if not err:
             err = {"error": "step_failed", "message": stderr_text.strip()}
+        if err.get("error") == "sync_conflict" and isinstance(err.get("fields"), list):
+            # §482: the step's write refused under the lock, answered in the binding shape.
+            raise HTTPException(409, detail=sync_clash.refusal(
+                [f for f in err["fields"] if isinstance(f, str)]))
         # Passthrough credential values must never leave the server, even when
         # an upstream provider echoes the caller's own key in its error body
         # (OpenAI does: "Incorrect API key provided: <key>"). The error detail
@@ -643,10 +656,11 @@ def job_step_name(name: str, py_path: Path) -> str:
     return f"custom:{name}"
 
 
-async def _run_to_job(job_id: str, name: str, schema: dict, py_path: Path, body: dict) -> None:
+async def _run_to_job(job_id: str, name: str, schema: dict, py_path: Path, body: dict,
+                      origin: str | None = None) -> None:
     """Background driver: run a step and record its result/error on the job."""
     try:
-        result = await _execute_step(name, schema, py_path, body)
+        result = await _execute_step(name, schema, py_path, body, origin=origin)
         set_done(job_id, result)
     except HTTPException as e:
         set_error(job_id, e.detail)
@@ -661,8 +675,90 @@ async def _run_to_job(job_id: str, name: str, schema: dict, py_path: Path, body:
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
+# ── §482 M4: what a step writes, for the Studio sync backstop ────────────────
+#
+# No step declares what it writes, so this table comes from the steps' code (montaj-app
+# docs/plans/s482-m4-design.md §3). For a project the body names (`project`, `project-id`, `projectId`,
+# `project_id`): a step here is checked on its fields and files; a step in STEP_WRITES_NOTHING runs; any other
+# step is refused while ANY clash is open in that project (fail closed: a new step that writes the project must
+# get a row). `_project` (the out folder) is `assets/`. Every write path (out, out-dir, an outKind param) inside a
+# project folder is checked as its relpath, and a beside-input step with no write path as its input's folder.
+# The step checks again itself, under the project lock, on the fields it really changes (lib/sync_clash.py).
+STEP_WRITES = {
+    "jump_cut": (("tracks",), ()),
+    "montage": (("tracks",), ()),
+    "cross_cut": (("tracks",), ()),
+    "speech_edit": (("tracks", "captions", "audio", "markers", "notes"), ("speech-text.md",)),
+    "generate_captions": (("captions",), ()),
+    "kling_generate": (("tracks", "storyboard", "status"), ()),
+    "veo_generate": (("tracks", "storyboard", "status"), ()),
+    "speech_text": ((), ("speech-text.md",)),
+    "glass_plate": ((), ("plates/",)),
+}
+STEP_WRITES_NOTHING = frozenset({
+    "sample_frame", "contact_sheet", "export_editor", "export_overlay_pages", "export_carousel_pages",
+    "track_points", "probe", "transcribe",
+})
+_STEP_PROJECT_FIELDS = ("project", "project-id", "project_id", "projectId")
+
+
+def _named_project(value) -> "tuple[str | None, Path | None] | None":
+    """(id, folder) of a project a step body names: an id, its folder or its project.json. None for none."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    v = value.strip()
+    path = Path(v).expanduser()
+    if path.is_absolute():
+        folder = path.parent if path.name == "project.json" else path
+        found = save_guard.project_of_path(str(folder), folder=True)
+        return (found[0], folder) if found is not None else None
+    folder = find_project_dir(resolve_workspace(), v)
+    # An id no project has: the step finds nothing to write either (it answers that itself).
+    return (v, folder) if folder is not None else None
+
+
+def check_step_sync(name: str, schema: dict, body: dict, headers) -> None:
+    """§482: refuse (409 sync_conflict) a step run that would write a clashed field or file. Nothing is read
+    with MONTAJ_SYNC_STATE_DIR unset, or for the window's run."""
+    if not sync_clash.state_dir() or save_guard.sync_who(headers).kind in ("human", "sync"):
+        return
+    targets: dict = {}
+
+    def add(pid, fields=(), files=(), everything=False):
+        t = targets.setdefault(pid, {"fields": [], "files": [], "everything": False})
+        t["fields"] += list(fields)
+        t["files"] += list(files)
+        t["everything"] = t["everything"] or everything
+
+    for key in _STEP_PROJECT_FIELDS:
+        named = _named_project(body.get(key))
+        if named is None:
+            continue
+        if name in STEP_WRITES:
+            add(named[0], *STEP_WRITES[name])
+        elif name not in STEP_WRITES_NOTHING:
+            add(named[0], everything=True)
+    named = _named_project(body.get("_project"))
+    if named is not None:
+        add(named[0], files=["assets/"])
+    writes = []
+    for param, export, value in _write_values(schema, body):
+        for cand in _candidates(value) or []:
+            writes.append((cand, param in _DIR_WRITE_PARAMS or export))
+    if name in BESIDE_INPUT_STEPS and not _has_explicit_write(schema, body):
+        for path in _beside_input_paths(body):
+            for cand in _candidates(os.path.dirname(path) or path) or []:
+                writes.append((cand, True))
+    for path, is_folder in writes:
+        found = save_guard.project_of_path(path, folder=is_folder)
+        if found is not None:
+            add(found[0], files=[found[1]])
+    for pid, t in targets.items():
+        save_guard.check_sync(headers, pid, t["fields"], t["files"], everything=t["everything"])
+
+
 @router.post("/steps/{name}")
-async def run_step(name: str, body: dict = Body(default={})):
+async def run_step(name: str, body: dict = Body(default={}), request: Request = None):
     steps = scan_steps()
     if name not in steps:
         raise not_found("not_found", f"Step '{name}' not found")
@@ -670,15 +766,19 @@ async def run_step(name: str, body: dict = Body(default={})):
     schema, py_path = steps[name]
     # Before anything runs, sync or async: where this step may write (serve/out_guard.py).
     check_step_out(name, schema, body, native=job_step_name(name, py_path) == name)
+    # §482: what it may write, against open Studio sync clashes (and again by the step itself, under the lock).
+    headers = getattr(request, "headers", None)
+    check_step_sync(name, schema, body, headers)
+    origin = save_guard.step_origin(headers)
 
     is_async = bool(body.pop("_async", False))
     if not is_async:
-        return await _execute_step(name, schema, py_path, body)
+        return await _execute_step(name, schema, py_path, body, origin=origin)
 
     # The job records the step by the route's own name, never anything in the
     # body, and only as itself when it is the native step (job_step_name).
     job_id = create_job(job_step_name(name, py_path))
-    task = asyncio.create_task(_run_to_job(job_id, name, schema, py_path, body))
+    task = asyncio.create_task(_run_to_job(job_id, name, schema, py_path, body, origin))
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
     return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)
@@ -705,7 +805,7 @@ def _scrub_secrets(text: str, secrets: list[str]) -> str:
 
 
 @router.post("/normalize")
-async def normalize_video(body: dict = Body(...)):
+async def normalize_video(body: dict = Body(...), request: Request = None):
     """Normalize a video file to the project's working color space + codec.
 
     Request:  { "input": "/abs/path/to/video.mp4", "colorSpace": "sdr_bt709", "out": "/abs/path/to/output.mp4" }
@@ -726,6 +826,14 @@ async def normalize_video(body: dict = Body(...)):
     explicit_out = body.get("out")
     # Where this route may write: the ordinary step rule (serve/out_guard.py).
     check_route_out("normalize", body)
+    # §482: the file it writes, `out` or each name the default may take beside the input.
+    if explicit_out:
+        outs = [explicit_out]
+    else:
+        from lib.normalize import normalized_output_path
+        outs = [normalized_output_path(input_path, color_space, tonemapped=t, sdr_stretch=st)
+                for t in (False, True) for st in (False, True)]
+    save_guard.check_sync_paths(getattr(request, "headers", None), [(o, False) for o in outs])
 
     return await asyncio.to_thread(_normalize_sync, input_path, color_space, explicit_out)
 
@@ -822,7 +930,7 @@ async def _run_proxy_to_job(job_id: str, schema: dict, py_path: Path, body: dict
 
 
 @router.post("/proxy")
-async def proxy_video(body: dict = Body(...)):
+async def proxy_video(body: dict = Body(...), request: Request = None):
     """Encode the full-source, 720p, all-intra AV1+Opus editing proxy for `input`.
 
     Request:  { "input": "/abs/path/to/video.mp4", "out": "/abs/path/to/video_proxy_natural1_h264.mp4", "tonemap": false }
@@ -858,6 +966,8 @@ async def proxy_video(body: dict = Body(...)):
         raise bad_request("missing_input", "'input' must be an absolute path to an existing file")
 
     check_route_out("proxy", body)  # before any probe or encode (serve/out_guard.py)
+    if body.get("out"):   # §482: an explicit proxy file in a project folder, before any probe
+        save_guard.check_sync_paths(getattr(request, "headers", None), [(body["out"], False)])
 
     tonemap = body.get("tonemap") if "tonemap" in body else None
     source = input_path  # the file the proxy is encoded from (run_proxy_job's rule)
@@ -874,6 +984,8 @@ async def proxy_video(body: dict = Body(...)):
             raise probe_failed_error(e)
 
     out = body.get("out") or proxy_path_for(source)
+    if not body.get("out"):   # §482: the default proxy file, when it lands in a project folder
+        save_guard.check_sync_paths(getattr(request, "headers", None), [(out, False)])
 
     if is_proxy_fresh(out, source):
         return {"path": out, "skipped": True}

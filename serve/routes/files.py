@@ -12,6 +12,7 @@ from serve.common import (
     resolve_workspace, find_project_dir, _is_under, _allowed_file_roots,
     not_found, bad_request, forbidden, lands_on_project_file,
 )
+from serve import save_guard
 from serve.out_guard import _has_git_component
 from serve.sse import sse_stream, SSEBroadcaster, JSX_GLOBAL_CHANNEL
 from cli.deps import render_runtime_dir
@@ -152,6 +153,9 @@ async def write_file(request: Request):
     # legitimately overwrites (editing an overlay JSX, a spec), so O_TRUNC, not O_EXCL.
     if not _is_under(Path(os.path.realpath(resolved)), workspace_root):
         raise forbidden("forbidden", "Path is outside the workspace root")
+
+    # §482: a file in an open Studio sync clash, as its relpath in the topmost project folder holding it.
+    save_guard.check_sync_paths(getattr(request, "headers", None), [(str(resolved), False)])
 
     # Create parent dirs (a spec may be the first file in a subdir)
     resolved.parent.mkdir(parents=True, exist_ok=True)

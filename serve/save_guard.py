@@ -18,7 +18,7 @@ from collections import OrderedDict
 
 from fastapi import HTTPException
 
-from lib import project_revisions
+from lib import project_revisions, sync_clash
 from lib.project_tracks import normalize_tracks
 
 GUARD_ENV = project_revisions.GUARD_ENV
@@ -89,6 +89,9 @@ def startup() -> None:
     dependency checks spawn anything) and again when serve.server is imported: stdin is read
     on the first run only, and the second keeps what the first decided."""
     os.environ.pop(SECRET_ENV, None)
+    # §482: a step learns it was the window's only from serve (check_sync's step_origin); an inherited value
+    # must never reach a step or anything else serve starts.
+    os.environ.pop(sync_clash.ORIGIN_ENV, None)
     if os.environ.pop(STDIN_ENV, None) == "1" and not _state["stdin_done"]:
         _state["stdin_done"] = True
         _state["secret"] = _read_secret_line(_stdin_fd, _STDIN_TIMEOUT_SECONDS)
@@ -456,3 +459,158 @@ def get_headers(response, project, fields, raw_text=None, raw_project=None) -> N
     else:
         revs = project_revisions.revisions_of(project, names)
     response.headers["x-montaj-revisions"] = json.dumps(revs, separators=(",", ":"))
+
+
+# ── §482 M4: the Studio sync clash backstop ──────────────────────────────────
+#
+# With MONTAJ_SYNC_STATE_DIR set, every project write asks check_sync, under the project lock where the route has
+# one and BEFORE check_save/check_read: a write that touches a field or file in an open Studio sync clash
+# (lib/sync_clash.py) is refused with the binding 409 {error: sync_conflict, fields, message}, unless it is a
+# person's. Unset: nothing is read and nothing changes. The trust rule is x-montaj-writer's: only a request with the
+# launch secret may name its origin.
+#
+#   human     trusted `editor` with no x-montaj-write-origin: the window. Passes.
+#   sync      trusted `tool` + origin `sync`: the app's Studio sync pull (it writes the merge). Passes.
+#   resolve   trusted `tool` + origin `resolve` + x-montaj-sync-resolve: <clash id>: a person's resolve, written by
+#             the shell. Passes when the id is an open clash in the sidecar, or when the sidecar is unsure (it can
+#             not be checked, and the person must still be able to resolve).
+#   other     everything else: `ai`, no or a wrong secret, plain `tool`, `tool` + `app`, `editor` + any origin
+#             (`drive`), a step run by any of these, and serve's own maintenance heals. Refused on a clashed name.
+
+RESOLVE_ORIGIN = "resolve"
+RESOLVE_HEADER = "x-montaj-sync-resolve"
+_RESOLVE_ID_MAX = 256
+
+
+class SyncWho:
+    """Who a write is, for the sync check: `human`, `sync`, `resolve` (with its clash id) or `other`."""
+    __slots__ = ("kind", "clash_id")
+
+    def __init__(self, kind, clash_id=None):
+        self.kind = kind
+        self.clash_id = clash_id
+
+
+MAINTENANCE = SyncWho("other")
+
+
+def sync_who(headers) -> SyncWho:
+    if isinstance(headers, SyncWho):
+        return headers
+    headers = headers if headers is not None else {}
+    writer, trusted = writer_of(headers)
+    if not trusted:
+        return MAINTENANCE
+    origin = headers.get(ORIGIN_HEADER)
+    if writer == "editor" and not origin:
+        return SyncWho("human")
+    if writer == "tool" and origin == SYNC_ORIGIN:
+        return SyncWho("sync")
+    if writer == "tool" and origin == RESOLVE_ORIGIN:
+        clash_id = headers.get(RESOLVE_HEADER)
+        if isinstance(clash_id, str) and 0 < len(clash_id) <= _RESOLVE_ID_MAX and clash_id.isprintable():
+            return SyncWho("resolve", clash_id)
+    return MAINTENANCE
+
+
+def step_origin(headers) -> str:
+    """MONTAJ_WRITE_ORIGIN for a step serve runs: `human` for the window only, else `ai`."""
+    return sync_clash.HUMAN_ORIGIN if sync_who(headers).kind == "human" else "ai"
+
+
+def sync_refusal(project_id, who, fields=(), files=(), *, everything: bool = False) -> "dict | None":
+    """The refusal body for a write, or None to go on. Reads nothing with MONTAJ_SYNC_STATE_DIR unset."""
+    if not sync_clash.state_dir():
+        return None
+    who = sync_who(who)
+    if who.kind in ("human", "sync"):
+        return None
+    if not everything and not fields and not files:
+        return None
+    clashes = sync_clash.load(project_id)
+    if who.kind == "resolve" and (clashes.unsure or who.clash_id in clashes.ids):
+        return None
+    names = sync_clash.touched(clashes, fields, files, everything)
+    return sync_clash.refusal(names) if names else None
+
+
+def check_sync(headers, project_id, fields=(), files=(), *, everything: bool = False) -> None:
+    """Raise the binding 409 when this write touches a clashed name. `headers` is the request's, or a SyncWho;
+    `fields` are top-level keys, `files` relpaths in the project folder (a trailing `/` a folder), `everything` a
+    write of the whole project (a restore, a delete)."""
+    body = sync_refusal(project_id, headers, fields, files, everything=everything)
+    if body is not None:
+        raise HTTPException(409, detail=body)
+
+
+def maintenance_refusal(raw_text, project: dict, who=None) -> "dict | None":
+    """For serve's own write-backs (a heal, a proxy, a copy patch, a download landing), under the project lock:
+    the refusal when the write changes a top-level field in an open clash or the clash set is unsure, else None.
+    The write is then skipped, and runs again at the next open or save. `raw_text` is the file as read under the
+    lock; `who` is the request a follow-up belongs to (default: serve's own maintenance)."""
+    if not sync_clash.state_dir():
+        return None
+    try:
+        before = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
+    except ValueError:
+        before = None
+    changed = sync_clash.changed_fields(before, project)
+    if not changed:
+        return None
+    pid = project.get("id") if isinstance(project, dict) else None
+    if not pid and isinstance(before, dict):
+        pid = before.get("id")
+    return sync_refusal(pid, who if who is not None else MAINTENANCE, fields=changed)
+
+
+def maintenance_allows(raw_text, project: dict, who=None) -> bool:
+    return maintenance_refusal(raw_text, project, who) is None
+
+
+def project_of_path(path, *, folder: bool = False) -> "tuple[str | None, str] | None":
+    """(project id, relpath) of the topmost project folder in the workspace holding `path` (real path: `..`, a
+    symlinked parent and the like resolve first), or None outside every project. The relpath ends with `/` when
+    `folder`; the project folder itself is `*`. An unreadable project.json gives id None (which reads unsure)."""
+    from serve.common import resolve_workspace
+    try:
+        ws = os.path.realpath(resolve_workspace())
+        real = os.path.realpath(path)
+    except (OSError, ValueError):
+        return None
+    try:
+        if os.path.commonpath([real, ws]) != ws or real == ws:
+            return None
+    except ValueError:
+        return None
+    parts = os.path.relpath(real, ws).split(os.sep)
+    here = ws
+    for i, part in enumerate(parts):
+        here = os.path.join(here, part)
+        if i == len(parts) - 1 and not folder:
+            break
+        if os.path.isfile(os.path.join(here, "project.json")):
+            try:
+                with open(os.path.join(here, "project.json"), encoding="utf-8") as f:
+                    pid = json.load(f).get("id")
+            except (OSError, ValueError, AttributeError):
+                pid = None
+            rest = parts[i + 1:]
+            if not rest:
+                return (pid if isinstance(pid, str) else None), sync_clash.EVERYTHING
+            rel = "/".join(rest) + ("/" if folder else "")
+            return (pid if isinstance(pid, str) else None), rel
+    return None
+
+
+def check_sync_paths(headers, writes) -> None:
+    """check_sync for writes given as absolute paths: `writes` is [(path, is_folder)]. Each path inside a project
+    folder is checked against that project's clash set as its relpath."""
+    if not sync_clash.state_dir() or sync_who(headers).kind in ("human", "sync"):
+        return
+    by_project: dict = {}
+    for path, is_folder in writes:
+        found = project_of_path(path, folder=is_folder)
+        if found is not None:
+            by_project.setdefault(found[0], []).append(found[1])
+    for pid, rels in by_project.items():
+        check_sync(headers, pid, files=rels)
