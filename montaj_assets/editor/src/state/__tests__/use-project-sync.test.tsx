@@ -1328,16 +1328,18 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
 
   // FIX 1. A teammate's pull that lands while the stream is down is stamped to no
   // listener. The first frame on the reopened connection (serve's current state,
-  // unstamped) may carry it, so the transport marks that frame `{ gap: true }` and
-  // the core prunes on it like a pull. Only content that differs from what the
-  // editor holds prunes anything, so an identical reconnect (or the editor's own
-  // save coming back) leaves the history as it was.
-  describe('a frame after a gap may hold a pull, so it prunes like one (FIX 1)', () => {
+  // unstamped) may carry it, so the transport marks that frame `{ gap: true }` and,
+  // for a project the host says is synced, the core prunes on it like a pull. Only
+  // content that differs from what the editor holds prunes anything, so an
+  // identical reconnect (or the editor's own save coming back) leaves the history
+  // as it was.
+  describe('in a synced project a frame after a gap may hold a pull, so it prunes like one (FIX 1)', () => {
     const GAP: FrameInfo = { gap: true }
+    const SYNCED = { syncedProject: true }
 
     it('the stream drops, a teammate pull lands in the gap, the stream reopens: the next undo keeps the teammate change and no save reverts it', async () => {
       const onHistoryPruned = vi.fn()
-      const { adapter, result } = setup({ onHistoryPruned })
+      const { adapter, result } = setup({ ...SYNCED, onHistoryPruned })
       await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
       await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
       // The pull's stamped frame went to no listener. Serve's first frame on the new
@@ -1359,7 +1361,7 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
 
     it('an identical reconnect frame, or an edit saved while the stream was down coming back as the editor own echo, leaves the history untouched', async () => {
       const onHistoryPruned = vi.fn()
-      const { adapter, result } = setup({ onHistoryPruned })
+      const { adapter, result } = setup({ ...SYNCED, onHistoryPruned })
       await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
       act(() => { adapter.emit(frame(now(result)), undefined, GAP) })
       // Saved over HTTP while the stream was down; the reconnect frame holds it.
@@ -1375,7 +1377,7 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
 
     it('refetch reads across a possible gap: a changed document prunes, an unchanged one leaves the history alone', async () => {
       const onHistoryPruned = vi.fn()
-      const { adapter, result } = setup({ onHistoryPruned })
+      const { adapter, result } = setup({ ...SYNCED, onHistoryPruned })
       await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
       await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
       adapter.loadProject = vi.fn(async () => frame(now(result)))
@@ -1396,7 +1398,7 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
     it('a gap frame is never taken for a sync or AI write: the predicate sees the writer it came with, no local edit fires, and the gap prunes whatever the predicate says', async () => {
       const prunesHistory = vi.fn(() => false)
       const onLocalEdit = vi.fn()
-      const { adapter, result } = setup({ prunesHistory, onLocalEdit })
+      const { adapter, result } = setup({ ...SYNCED, prunesHistory, onLocalEdit })
       await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
       await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
       onLocalEdit.mockClear()
@@ -1413,7 +1415,7 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
 
     it('the gap binds to its one frame: a later unstamped frame with a change prunes nothing', async () => {
       const onHistoryPruned = vi.fn()
-      const { adapter, result } = setup({ onHistoryPruned })
+      const { adapter, result } = setup({ ...SYNCED, onHistoryPruned })
       await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
       act(() => { adapter.emit(frame(now(result)), undefined, GAP) })
       act(() => { adapter.emit(frame(setClip(now(result), 'B', { end: 12 }))) })
@@ -1422,6 +1424,83 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
       act(() => { result.current.undo() })
       await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
       expect(clipOf(result.current.project, 'B')?.end).toBe(10)
+    })
+  })
+
+  // FIX 1 is dark: with `syncedProject` absent or false, a gap frame and a refetch
+  // apply exactly as any unstamped frame did before U-1 (6243c387's parent), and
+  // prune nothing. The stamped path is unchanged either way.
+  describe('with syncedProject absent or false, a gap frame and a refetch prune nothing (FIX 1 is dark)', () => {
+    const GAP: FrameInfo = { gap: true }
+    type Deliver = (adapter: FakeAdapter, r: { current: UseProjectSync<Project> }, next: Project) => Promise<void>
+    const plain: Deliver = async (adapter, _r, next) => { act(() => { adapter.emit(next) }) }
+    const gap: Deliver = async (adapter, _r, next) => { act(() => { adapter.emit(next, undefined, GAP) }) }
+    const refetch: Deliver = async (adapter, r, next) => {
+      adapter.loadProject = vi.fn(async () => next)
+      await act(async () => { await r.current.refetch() })
+    }
+    const ends = (p: unknown) => ['A', 'B'].map((id) => clipOf(p as Project, id)?.end)
+    const doc = (p: Project) => JSON.parse(JSON.stringify(p)) as unknown
+
+    /** Two edits, a frame that changes B delivered by `deliver`, then every undo and every redo. */
+    async function trace(opts: UseProjectSyncOptions<Project>, deliver: Deliver) {
+      const onHistoryPruned = vi.fn()
+      const { adapter, result } = setup({ ...opts, onHistoryPruned })
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+      await deliver(adapter, result, frame(setClip(now(result), 'B', { end: 12 })))
+      const states: unknown[] = [doc(now(result))]
+      for (let i = 0; i < 10 && result.current.canUndo; i++) {
+        act(() => { result.current.undo() })
+        states.push(doc(now(result)))
+      }
+      states.push('redo')
+      for (let i = 0; i < 10 && result.current.canRedo; i++) {
+        act(() => { result.current.redo() })
+        states.push(doc(now(result)))
+      }
+      // The two edits, then one save per undo and redo (`states` holds the frame, each step and the marker).
+      await waitFor(() => expect(adapter.saveCalls).toHaveLength(states.length))
+      return { states, saves: adapter.saveCalls.map((c) => doc(c.project)), pruned: onHistoryPruned.mock.calls.length }
+    }
+
+    it.each([
+      ['a reconnect frame, syncedProject absent', {}, gap],
+      ['a reconnect frame, syncedProject false', { syncedProject: false }, gap],
+      ['a refetch, syncedProject absent', {}, refetch],
+      ['a refetch, syncedProject false', { syncedProject: false }, refetch],
+    ] as Array<[string, UseProjectSyncOptions<Project>, Deliver]>)('%s: applied as an unstamped frame was before U-1, every state and save the same', async (_name, opts, deliver) => {
+      const want = await trace({}, plain)
+      const got = await trace(opts, deliver)
+      expect(got).toEqual(want)
+      expect(got.pruned).toBe(0)
+      // As before U-1: the undo of the B edit restores its whole snapshot, B 10.
+      expect(got.states.map((s) => (s === 'redo' ? s : ends(s)))).toEqual([[4, 12], [4, 10], [5, 10], 'redo', [4, 10], [4, 9]])
+    })
+
+    it('a reconnect frame held during a save, syncedProject absent: applied on the drain with the history untouched', async () => {
+      const onHistoryPruned = vi.fn()
+      const adapter = makeFakeAdapter({ blockSave: true })
+      const initial = video()
+      const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial, { onHistoryPruned }))
+      let saving: Promise<void> = Promise.resolve()
+      act(() => { saving = result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+      await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+      const reconnect = frame(setClip(now(result), 'B', { end: 12 }))
+      act(() => { adapter.emit(reconnect, undefined, GAP) })
+      await act(async () => { adapter.release(); await saving })
+      await waitFor(() => expect(now(result)).toBe(reconnect))
+      expect(onHistoryPruned).not.toHaveBeenCalled()
+      expect(result.current.canUndo).toBe(true)
+    })
+
+    it('the stamped path is unchanged with syncedProject absent: a sync pull still prunes', async () => {
+      const onHistoryPruned = vi.fn()
+      const { adapter, result } = setup({ onHistoryPruned })
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+      act(() => { adapter.emit(frame(setClip(now(result), 'B', { end: 12 })), SYNC) })
+      expect(onHistoryPruned).toHaveBeenCalledWith({ undo: 1, redo: 0 })
+      expect(result.current.canUndo).toBe(false)
     })
   })
 
@@ -1455,7 +1534,8 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
         if (gate) await gate
       })
       const initial = video()
-      const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial, { onHistoryPruned }))
+      // Synced, so a gap frame in the hold prunes too.
+      const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial, { onHistoryPruned, syncedProject: true }))
       for (const edit of edits.slice(0, -1)) await act(async () => { await result.current.mutate(edit) })
       const last = edits[edits.length - 1]
       let frames: Emit[] = []
