@@ -28,7 +28,7 @@ import {
   clearOverlayCache as hostClearOverlayCache,
 } from '@/lib/overlay-eval'
 import { watchWorkspaceFile } from '@/lib/file-watch'
-import { subscribeProjectStream } from '@/lib/sse'
+import { subscribeProjectStream, type FrameWriter } from '@/lib/sse'
 import type {
   EditorAdapter,
   OverlayFactory,
@@ -167,13 +167,15 @@ export function createMontajAdapter(): EditorAdapter<Project> {
       await api.saveProject(id, project)
     },
 
-    subscribe: (id: string, onFrame: (project: Project) => void): (() => void) =>
+    subscribe: (id: string, onFrame: (project: Project, writer?: FrameWriter) => void): (() => void) =>
       // Multiplex over the shared per-project SSE pool (lib/sse) rather than
       // opening a dedicated EventSource: the host page's `useProjectStream` and
       // this editor subscription would otherwise be two connections to the same
       // `/api/projects/:id/stream` URL (the pool exists to avoid the browser
       // connection-pool exhaustion that froze the editor — CHANGELOG v3.6.2).
       // 'log' events are ignored here; the host consumes those via useProjectStream.
+      // The pool hands each frame's writer stamp along with it, unchanged: the
+      // editor core prunes its undo history on a sync pull's frame.
       subscribeProjectStream(id, { onFrame }),
 
     // `opts` (the RenderModal's export choice + SDR curve) rides on the POST

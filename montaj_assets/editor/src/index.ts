@@ -62,6 +62,8 @@ export type {
   SlidePin,
   SlidePinDisplay,
   EditorAdapter,
+  FrameWriter,
+  HistoryPruned,
   EditorContext,
   EditorTheme,
   EditorSlots,

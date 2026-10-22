@@ -16,6 +16,7 @@ import type {
   ImageElement,
   CarouselElement,
 } from '../types'
+import { deepEqual } from './deep-equal'
 
 // The reducer/Action are generic over the host's concrete project type `P`,
 // constrained to the editor-facing `Project` (= EditorProject) slice. A host can
@@ -63,38 +64,8 @@ export type Action<P extends Project = Project> =
 // SSE merge helpers
 // ---------------------------------------------------------------------------
 
-// Structural equality. Used to decide whether to reuse a previous reference
-// in the SSE merge. Tree shape (project.json) is small, no cycles, no
-// special types — a recursive walk is fine and short-circuits early on mismatch.
-function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true
-  if (typeof a !== typeof b) return false
-  if (a === null || b === null) return false
-  if (typeof a !== 'object') return false
-  if (Array.isArray(a)) {
-    if (!Array.isArray(b) || a.length !== b.length) return false
-    for (let i = 0; i < a.length; i++) {
-      if (!deepEqual(a[i], b[i])) return false
-    }
-    return true
-  }
-  if (Array.isArray(b)) return false
-  // Compare objects treating `undefined`-valued properties as absent. Required
-  // because the reducer writes `{...el, crop: undefined}` to clear a field,
-  // but the SSE echo round-trip serialises through Montaj's `json.dumps`,
-  // which drops undefined-valued keys. Without this normalisation, the
-  // identity short-circuit in mergeProject silently misses on every echo
-  // following an image resize.
-  const ao = a as Record<string, unknown>
-  const bo = b as Record<string, unknown>
-  const keys = new Set<string>()
-  for (const k of Object.keys(ao)) if (ao[k] !== undefined) keys.add(k)
-  for (const k of Object.keys(bo)) if (bo[k] !== undefined) keys.add(k)
-  for (const k of keys) {
-    if (!deepEqual(ao[k], bo[k])) return false
-  }
-  return true
-}
+// Structural equality (`./deep-equal`) decides whether to reuse a previous
+// reference in the SSE merge.
 
 function mergeElement(prev: CarouselElement, next: CarouselElement): CarouselElement {
   return deepEqual(prev, next) ? prev : next

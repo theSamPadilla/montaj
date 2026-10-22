@@ -704,6 +704,28 @@ export interface EditorContext {
 }
 
 /**
+ * Who wrote a project frame, as the host's transport reports it with the frame
+ * (Montaj's serve sends a named SSE `writer` event, `<writer>[;origin=<origin>]`,
+ * immediately before the frame it belongs to). Absent when the transport names
+ * no writer, which is every frame but a Studio sync pull's today.
+ */
+export interface FrameWriter {
+  /** The writer's class: `editor`, `tool`, `ai`, ... */
+  writer: string
+  /** Where a write came from, when the writer says: `sync` for a Studio sync pull. */
+  origin?: string
+}
+
+/**
+ * What one frame's pruning dropped from the undo and redo history: how many
+ * steps from each stack. Reported only when at least one step was dropped.
+ */
+export interface HistoryPruned {
+  undo: number
+  redo: number
+}
+
+/**
  * The contract a host implements to drive the editor. All transport,
  * authentication, and URL-shape concerns live behind this interface; the
  * editor calls only these methods.
@@ -727,10 +749,13 @@ export interface EditorAdapter<P extends Project = Project> {
 
   /**
    * Subscribe to live project frames (e.g. an SSE stream). `onFrame` is invoked
-   * with each fresh project snapshot. Returns an unsubscribe function the
+   * with each fresh project snapshot and, when the transport names one, the
+   * frame's writer: only the stamp that came with THAT frame, never one carried
+   * over from an earlier event. A frame stamped as a sync pull prunes the undo
+   * and redo steps that would revert it. Returns an unsubscribe function the
    * editor calls on teardown.
    */
-  subscribe(id: string, onFrame: (project: P) => void): () => void
+  subscribe(id: string, onFrame: (project: P, writer?: FrameWriter) => void): () => void
 
   /**
    * Start a render and stream progress as an async iterable of `RenderEvent`s.
@@ -1453,6 +1478,12 @@ export interface VideoEditorProps<P extends Project = Project> {
    * agent's writes. Fires on every edit; the host dedupes.
    */
   onUserEdit?: () => void
+  /**
+   * Called once for each frame whose sync pull dropped undo or redo steps (the
+   * steps that would have reverted it), with how many from each stack. Never
+   * called when nothing was dropped. The editor shows nothing itself.
+   */
+  onHistoryPruned?: (info: HistoryPruned) => void
   /**
    * Where the host's `slots.assetsPanel` is placed in the review layout:
    * - `'sidebar'` — stacked inside the right-hand version/run-history rail, below

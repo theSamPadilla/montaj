@@ -15,17 +15,43 @@ import type { Project } from './types/schema'
  * one connection per project, mirroring that file-watch pool.
  *
  * Transport: GET /api/projects/:id/stream. The default (unnamed) event carries a
- * full project.json frame; the named 'log' event carries an agent status message.
+ * full project.json frame; the named 'log' event carries an agent status message;
+ * the named 'writer' event (`<writer>[;origin=<origin>]`, serve sends it only for
+ * a Studio sync pull) stamps the project frame that immediately follows it.
  * Reconnects are handled by EventSource automatically.
  */
 
-type FrameCallback = (project: Project) => void
+/** Who wrote a project frame (the editor's `FrameWriter`, same shape). */
+export interface FrameWriter {
+  writer: string
+  origin?: string
+}
+
+type FrameCallback = (project: Project, writer?: FrameWriter) => void
 type LogCallback = (message: string) => void
 
 interface StreamEntry {
   es: EventSource
   frameListeners: Set<FrameCallback>
   logListeners: Set<LogCallback>
+  /** The stamp waiting for the next project frame; spent by that frame. */
+  pendingWriter: FrameWriter | undefined
+}
+
+/** A `writer` event's data, `<writer>[;<key>=<value>]...`: the writer and its
+ *  `origin` (unknown keys ignored, an empty origin absent). Empty data is no stamp. */
+export function parseWriterStamp(data: string): FrameWriter | undefined {
+  const [head = '', ...params] = data.split(';')
+  const writer = head.trim()
+  if (!writer) return undefined
+  const stamp: FrameWriter = { writer }
+  for (const param of params) {
+    const eq = param.indexOf('=')
+    if (eq < 0) continue
+    const value = param.slice(eq + 1).trim()
+    if (param.slice(0, eq).trim() === 'origin' && value) stamp.origin = value
+  }
+  return stamp
 }
 
 const streams = new Map<string, StreamEntry>()
@@ -38,10 +64,15 @@ function ensureStream(projectId: string): StreamEntry {
     es: new EventSource(`/api/projects/${projectId}/stream`),
     frameListeners: new Set(),
     logListeners: new Set(),
+    pendingWriter: undefined,
   }
 
-  // Default (unnamed) events → project.json updates.
+  // Default (unnamed) events → project.json updates. The stamp that came just
+  // before is this frame's alone: taken here even when the frame is malformed,
+  // so it can never reach a later frame.
   entry.es.onmessage = (e) => {
+    const writer = entry.pendingWriter
+    entry.pendingWriter = undefined
     let p: Project
     try {
       p = JSON.parse(e.data) as Project
@@ -50,8 +81,14 @@ function ensureStream(projectId: string): StreamEntry {
       return
     }
     // Copy before iterating: a callback may unsubscribe itself.
-    for (const cb of [...entry.frameListeners]) cb(p)
+    for (const cb of [...entry.frameListeners]) cb(p, writer)
   }
+
+  // Named 'writer' events → the stamp for the next project frame. No listener
+  // hears the event itself.
+  entry.es.addEventListener('writer', (e) => {
+    entry.pendingWriter = parseWriterStamp((e as MessageEvent).data ?? '')
+  })
 
   // Named 'log' events → agent status messages.
   entry.es.addEventListener('log', (e) => {
@@ -65,8 +102,14 @@ function ensureStream(projectId: string): StreamEntry {
     for (const cb of [...entry.logListeners]) cb(message)
   })
 
+  // Connection dropped or (re)opened: EventSource retries automatically. A
+  // stamp whose frame never came is dropped, so it never reaches a frame sent
+  // on the new connection.
   entry.es.onerror = () => {
-    // Connection dropped — EventSource retries automatically; nothing to do.
+    entry.pendingWriter = undefined
+  }
+  entry.es.onopen = () => {
+    entry.pendingWriter = undefined
   }
 
   streams.set(projectId, entry)

@@ -25,7 +25,8 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { createMutationQueue } from './mutation-queue'
-import type { Project, EditorAdapter } from '../types'
+import { isSyncPull, pruneHistory, type HistoryEntry } from './history-prune'
+import type { Project, EditorAdapter, FrameWriter, HistoryPruned } from '../types'
 
 // Connection lifecycle: 'connecting' from mount until the first frame arrives,
 // then 'live'. The adapter's subscribe auto-reconnects on drop — the editor
@@ -51,6 +52,20 @@ export interface UseProjectSyncOptions<P extends Project> {
    * harmless and never re-create the returned callbacks.
    */
   onLocalEdit?: () => void
+  /**
+   * Whether a subscribed frame, by the writer the adapter reported with it,
+   * prunes the undo and redo history (see `history-prune`). Called once per
+   * frame, with `undefined` when the frame came with no writer. Defaults to a
+   * Studio sync pull: writer `tool`, origin `sync`. `applyExternal` and
+   * `refetch` never prune. Read through a ref.
+   */
+  prunesHistory?: (writer?: FrameWriter) => boolean
+  /**
+   * Called once per pruning frame that dropped at least one step, with how
+   * many it dropped from each stack. No UI of its own: a host that wants a
+   * notice draws it here. Read through a ref.
+   */
+  onHistoryPruned?: (info: HistoryPruned) => void
 }
 
 export interface UseProjectSync<P extends Project = Project> {
@@ -107,19 +122,8 @@ function withKeysNulled<P extends Project>(project: P, keys: readonly string[]):
   return (body ?? project) as P
 }
 
-// One undo/redo step. `before` and `after` are the project either side of the
-// EDIT this step belongs to; `keys` are the top-level keys that edit changed
-// (by reference, plus added and removed), fixed when the edit was made. Undo
-// restores only those keys from `before`, redo only those from `after`, each on
-// top of a copy of the CURRENT project, so a field another writer changed since
-// (an AI save, an external frame, a later edit that failed and rolled back) is
-// never reverted. A restored key the source lacks is deleted, and travels in
-// the save body as `null` so the host drops it.
-interface HistoryEntry<P> {
-  before: P
-  after: P
-  keys: string[]
-}
+// One undo/redo step: `HistoryEntry` in `history-prune`, which also rebuilds
+// the steps a sync pull leaves standing.
 
 /** Top-level keys whose value differs between `a` and `b` (added, removed, or a
  *  different reference). An `undefined` value counts as absent. */
@@ -197,12 +201,23 @@ export function useProjectSync<P extends Project = Project>(
   const onLocalEditRef = useRef(options?.onLocalEdit)
   onLocalEditRef.current = options?.onLocalEdit
 
+  // The pruning trigger and report, likewise.
+  const prunesHistoryRef = useRef(options?.prunesHistory ?? isSyncPull)
+  prunesHistoryRef.current = options?.prunesHistory ?? isSyncPull
+  const onHistoryPrunedRef = useRef(options?.onHistoryPruned)
+  onHistoryPrunedRef.current = options?.onHistoryPruned
+
   // Latest deferred external frame. Held while saves are in flight because an
   // echo for an earlier save can arrive while a later save is still mid-flight —
   // applying it would regress the optimistic state to the older value (visible
   // as jitter on the canvas while the operator is typing). Last-write-wins:
   // only the most recent frame is kept.
   const deferredSseRef = useRef<P | null>(null)
+  // True while the held frame stands for a pruning frame: set when one is held
+  // and kept when a later frame replaces it in the hold (the watcher's unstamped
+  // copy of the same write), cleared when the hold is applied. So the mark is
+  // applied once and never carries over to a later hold.
+  const deferredPrunesRef = useRef(false)
 
   // Fold an external frame into current state (reconcile, or plain replace) and
   // apply it. No save, no undo push. Stable — reads reconcile via ref.
@@ -225,8 +240,8 @@ export function useProjectSync<P extends Project = Project>(
   // Undo/redo: snapshot-based stacks of full project state. Each committed local
   // mutation pushes the pre-mutation snapshot (with the keys that mutation added
   // and removed) to undoStack and clears redoStack. undo() pops undo→redo;
-  // redo() pops redo→undo. External frames do NOT touch the stacks — server
-  // changes stay opaque to local history.
+  // redo() pops redo→undo. External frames do NOT touch the stacks, except a
+  // subscribed frame `prunesHistory` marks (a sync pull): see `applyFrame`.
   const MAX_HISTORY = 50
   const undoStackRef = useRef<HistoryEntry<P>[]>([])
   const redoStackRef = useRef<HistoryEntry<P>[]>([])
@@ -240,32 +255,53 @@ export function useProjectSync<P extends Project = Project>(
     bumpHistory()
   }, [bumpHistory])
 
+  // Apply a subscribed frame. A pruning frame (a sync pull) also drops the
+  // undo and redo steps that changed what it changed and rebases the rest onto
+  // it (`history-prune`). The pull's change is measured from the document the
+  // history knows: an open gesture's baseline, not its unsaved preview.
+  const applyFrame = useCallback((incoming: P, prunes: boolean) => {
+    const known = transientBaseline.current ?? projectRef.current
+    applyExternal(incoming)
+    if (!prunes) return
+    const pruned = pruneHistory(undoStackRef.current, redoStackRef.current, known, projectRef.current)
+    if (!pruned) return
+    undoStackRef.current = pruned.undo
+    redoStackRef.current = pruned.redo
+    if (pruned.dropped.undo + pruned.dropped.redo === 0) return
+    bumpHistory()
+    onHistoryPrunedRef.current?.(pruned.dropped)
+  }, [applyExternal, bumpHistory])
+
   // Subscription lifecycle. The adapter owns the transport (SSE, websocket,
-  // poll); we just receive fresh frames and reconcile them. `applyExternal` is
+  // poll); we just receive fresh frames and reconcile them. `applyFrame` is
   // stable so this only re-subscribes on adapter/projectId change.
   useEffect(() => {
     setConnection('connecting')
     let active = true
-    const unsubscribe = adapter.subscribe(projectId, (next) => {
+    const unsubscribe = adapter.subscribe(projectId, (next, writer) => {
       if (!active) return
       setConnection('live')
+      const prunes = prunesHistoryRef.current(writer)
       if (queue.current.isPending()) {
         // Hold the frame; apply it once the queue drains.
         deferredSseRef.current = next
+        if (prunes) deferredPrunesRef.current = true
         queue.current.onceDrained(() => {
           const held = deferredSseRef.current
+          const heldPrunes = deferredPrunesRef.current
           deferredSseRef.current = null
-          if (held) applyExternal(held)
+          deferredPrunesRef.current = false
+          if (held) applyFrame(held, heldPrunes)
         })
         return
       }
-      applyExternal(next)
+      applyFrame(next, prunes)
     })
     return () => {
       active = false
       unsubscribe()
     }
-  }, [adapter, projectId, applyExternal])
+  }, [adapter, projectId, applyFrame])
 
   // Internal: persist the full project via the adapter; rollback on failure.
   // `before` is the document as it was before the edit being written (undefined

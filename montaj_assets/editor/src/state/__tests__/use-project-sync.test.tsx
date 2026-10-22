@@ -1242,4 +1242,87 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
       [5, 10], [4, 9], [4, 10], [4, 10], [5, 10], [4, 9],
     ])
   })
+
+  it('a kept clip add is rebased too: undoing it after a pull changed another clip removes only the added clip', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => addClip(p, clip('Y', 10, 12))) })
+    act(() => { adapter.emit(frame(setClip(now(result), 'A', { end: 4 })), SYNC) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(tracksOf(result.current.project)[0].items.map((c) => c.id)).toEqual(['A', 'B'])
+    expect(clipOf(result.current.project, 'A')?.end).toBe(4)
+    expect(clipOf(adapter.saveCalls[1].project, 'A')?.end).toBe(4)
+  })
+
+  // The unknown-state rule. A kept step is rebuilt as the reloaded document with only the
+  // step's own units (here trk-0's clip list and clip Y) taken from its snapshot. When a
+  // frame OUTSIDE the history (unstamped, so it pruned nothing) removed a clip that restored
+  // list names, or added one it lacks, the rebuilt snapshot would have to invent that clip
+  // or silently delete it. The step refuses instead: it is dropped (and reported) like a
+  // conflicting step, undo changes nothing and sends nothing, and the clip stays as it is.
+  it.each([
+    ['removed a clip the step\'s restored list names', (p: Project) => ({
+      ...p,
+      tracks: tracksOf(p).map((t) => ({ ...t, items: t.items.filter((c) => c.id !== 'B') })),
+    } as unknown as Project), ['A', 'Y']],
+    ['added a clip the step\'s restored list lacks', (p: Project) => addClip(p, clip('Z', 12, 14)), ['A', 'B', 'Y', 'Z']],
+  ] as Array<[string, (p: Project) => Project, string[]]>)(
+    'an undo pruned past an unknown state refuses: a frame outside the history %s, so the step is dropped and undo does nothing',
+    async (_name, outside, ids) => {
+      const onHistoryPruned = vi.fn()
+      const { adapter, result } = setup({ onHistoryPruned })
+      await act(async () => { await result.current.mutate((p) => addClip(p, clip('Y', 10, 12))) })
+      act(() => { adapter.emit(frame(outside(now(result)))) })
+      expect(result.current.canUndo).toBe(true)
+      act(() => { adapter.emit(frame(setClip(now(result), 'A', { end: 4 })), SYNC) })
+      expect(onHistoryPruned).toHaveBeenCalledTimes(1)
+      expect(onHistoryPruned).toHaveBeenCalledWith({ undo: 1, redo: 0 })
+      expect(result.current.canUndo).toBe(false)
+      const held = now(result)
+      act(() => { result.current.undo() })
+      expect(now(result)).toBe(held)
+      expect(adapter.saveCalls).toHaveLength(1)
+      expect(tracksOf(result.current.project)[0].items.map((c) => c.id)).toEqual(ids)
+      expect(clipOf(result.current.project, 'A')?.end).toBe(4)
+    },
+  )
+
+  it('an open gesture is not taken for the pull\'s change: the pull is measured from the gesture\'s baseline', async () => {
+    const { adapter, result } = setup()
+    await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+    const saved = now(result)
+    act(() => { result.current.mutateTransient((p) => setClip(p, 'A', { end: 3 })) })
+    act(() => { adapter.emit(frame(setClip(saved, 'B', { end: 12 })), SYNC) })
+    expect(result.current.canUndo).toBe(true)
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(clipOf(result.current.project, 'A')?.end).toBe(5)
+    expect(clipOf(result.current.project, 'B')?.end).toBe(12)
+  })
+
+  it('tracks that do not split by id are one field: a pull that changes them drops every step that changed them', async () => {
+    type Loose = { id: string; items: Array<{ type: 'video'; src: string; start: number; end: number }> }
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({
+      workflow: 'video',
+      tracks: [{ id: 'trk-0', items: [
+        { type: 'video', src: '/a.mp4', start: 0, end: 5 },
+        { type: 'video', src: '/b.mp4', start: 5, end: 10 },
+      ] }],
+    } as unknown as Partial<Project>)
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    const setEnd = (p: Project, i: number, end: number): Project => ({
+      ...p,
+      tracks: (p.tracks as unknown as Loose[]).map((t) => ({ ...t, items: t.items.map((c, j) => (j === i ? { ...c, end } : c)) })),
+    } as unknown as Project)
+    const ends = (p: Project) => (p.tracks as unknown as Loose[])[0].items.map((c) => c.end)
+    await act(async () => { await result.current.mutate((p) => ({ ...p, name: 'Renamed' })) })
+    await act(async () => { await result.current.mutate((p) => setEnd(p, 0, 4)) })
+    act(() => { adapter.emit(frame(setEnd(now(result), 1, 12)), SYNC) })
+    act(() => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(result.current.project.name).toBe('Test Project')
+    expect(ends(result.current.project)).toEqual([4, 12])
+    expect(result.current.canUndo).toBe(false)
+  })
 })
