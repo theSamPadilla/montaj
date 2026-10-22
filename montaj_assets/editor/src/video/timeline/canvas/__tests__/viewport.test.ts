@@ -16,6 +16,7 @@ import {
   backingStoreSize,
   clampPxPerSecond,
   clampScrollSeconds,
+  revealAtEdge,
   createViewportStore,
   edgeScrollDelta,
   fitPxPerSecond,
@@ -132,6 +133,35 @@ describe('scroll clamping', () => {
     expect(panByPixels(v, 250, 1000).scrollSeconds).toBe(15)
     expect(panByPixels(v, -250, 1000).scrollSeconds).toBe(5)
     expect(panByPixels(v, -1e6, 1000).scrollSeconds).toBe(0)
+  })
+})
+
+describe('revealAtEdge (jump-to-start/end keeps the playhead in view)', () => {
+  it("start: scrolls to 0 so t=0 is at the left edge, from anywhere", () => {
+    const v = vp({ pxPerSecond: 10, scrollSeconds: 120, widthPx: 1000 }) // zoomed, scrolled away
+    expect(revealAtEdge(v, 0, 'start', 300).scrollSeconds).toBe(0)
+  })
+
+  it('end: puts the end at the right edge (scroll = end - a screenful)', () => {
+    const v = vp({ pxPerSecond: 10, scrollSeconds: 0, widthPx: 1000 }) // 100s visible
+    // content end 300, so the right edge shows 300 when scrolled to 200
+    expect(revealAtEdge(v, 300, 'end', 300).scrollSeconds).toBe(200)
+  })
+
+  it('end: clamps to the scrollable max (overscroll headroom), never past it', () => {
+    const v = vp({ pxPerSecond: 10, scrollSeconds: 0, widthPx: 1000 })
+    const atEnd = revealAtEdge(v, 300, 'end', 300).scrollSeconds
+    expect(atEnd).toBeLessThanOrEqual(maxScrollSeconds(v, 300))
+  })
+
+  it('pins to 0 when the whole project already fits (end stays visible)', () => {
+    const v = vp({ pxPerSecond: 10, scrollSeconds: 0, widthPx: 1000 }) // 100s visible
+    expect(revealAtEdge(v, 30, 'end', 30).scrollSeconds).toBe(0)
+  })
+
+  it('returns the same object when the scroll does not change (no needless re-render)', () => {
+    const v = vp({ pxPerSecond: 10, scrollSeconds: 0, widthPx: 1000 })
+    expect(revealAtEdge(v, 0, 'start', 300)).toBe(v)
   })
 })
 

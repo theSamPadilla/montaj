@@ -22,7 +22,7 @@ import { removeMarkers } from './markers'
 import { computeAutoCrossfade, computeDerivedTiming, computeVisualCrossfade, trackItems } from './timeline-model'
 import TimelineCanvas, { useCanvasZoomControls, type ZoomControls } from './canvas/TimelineCanvas'
 import type { KeyframeSelection } from './canvas/pointer-machine'
-import { timeToX, useViewportStore, useViewportValue, xToTime, type ViewportStore } from './canvas/viewport'
+import { revealAtEdge, timeToX, useViewportStore, useViewportValue, xToTime, type ViewportStore } from './canvas/viewport'
 import { useKeymap, matchesArrowLeft, matchesArrowRight, matchesDelete, matchesModKey } from '../keymap'
 import { Tooltip } from '../../ui/Tooltip'
 
@@ -764,6 +764,9 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       guard: () => totalDuration > 0,
       action: () => {
         clock.set(0)
+        // Follow the playhead: when zoomed in, scroll the view to the start so the playhead is at the left edge,
+        // not left behind off-screen (Sam, 2026-10-21). revealAtEdge is a no-op when the view already shows it.
+        viewportStore.set(vp => revealAtEdge(vp, 0, 'start', totalDuration))
       },
     },
     {
@@ -777,6 +780,8 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
       // The jump belongs at the last real element, not into that headroom.
       action: () => {
         clock.set(contentDuration)
+        // Follow the playhead to the end: scroll so the last element sits at the right edge when zoomed in.
+        viewportStore.set(vp => revealAtEdge(vp, contentDuration, 'end', totalDuration))
       },
     },
     {

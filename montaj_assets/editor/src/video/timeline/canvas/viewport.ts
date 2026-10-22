@@ -110,6 +110,18 @@ export function clampScrollSeconds(scrollSeconds: number, vp: Viewport, totalDur
   return Math.max(0, Math.min(maxScrollSeconds(vp, totalDuration), scrollSeconds))
 }
 
+/** Pan the viewport so `time` sits at the named edge of the visible range, respecting the current zoom: `start`
+ *  puts it at the left edge, `end` at the right edge. Used by the jump-to-start/end shortcuts so the playhead stays
+ *  in view when zoomed in, instead of jumping off to a region the viewport is not showing. Clamped to the legal
+ *  scroll range (so content that already fits pans to 0 and the time stays visible), and a no-op (returns the same
+ *  object) when the scroll does not change, so a store set with `viewportsEqual` does not re-render. */
+export function revealAtEdge(vp: Viewport, time: number, edge: 'start' | 'end', totalDuration: number): Viewport {
+  const target = edge === 'start' ? time : time - visibleDuration(vp)
+  const scrollSeconds = clampScrollSeconds(target, vp, totalDuration)
+  if (scrollSeconds === vp.scrollSeconds) return vp
+  return { ...vp, scrollSeconds }
+}
+
 /** How close to the surface's left/right edge a drag's pointer must sit before
  *  edge auto-scroll starts panning the view to follow it (CSS px). This is
  *  only the TRIGGER band — how far the pointer must intrude before panning
