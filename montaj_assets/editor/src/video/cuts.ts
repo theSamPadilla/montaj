@@ -237,6 +237,15 @@ function applyCutToCaptions(segments: CaptionSegment[], cut: Cut): CaptionSegmen
   return result
 }
 
+// ── The base footage track ──────────────────────────────────────────────────
+
+/** The base footage track: the first track holding a video item, else track
+ *  0. `collapseGaps` closes its gaps; a ripple on it moves everything (§527). */
+function baseTrackIndex(tracks: VisualItem[][]): number {
+  const i = tracks.findIndex(t => t.some(c => c.type === 'video'))
+  return i >= 0 ? i : 0
+}
+
 // ── Anchors: audio tracks, notes and markers ride a ripple (§527) ──────────
 //
 // A ripple moves EVERYTHING after it (Sam, 2026-10-22), not only the visual
@@ -540,8 +549,7 @@ export function collapseGaps<P extends Project>(
 ): P {
   const tracks = trackItems(project)
 
-  const primaryIdx = tracks.findIndex(t => t.some(c => c.type === 'video'))
-  const effectiveIdx = primaryIdx >= 0 ? primaryIdx : 0
+  const effectiveIdx = baseTrackIndex(tracks)
 
   const primaryTrack = tracks[effectiveIdx] ?? []
   if (primaryTrack.length < 2) return project
@@ -852,10 +860,12 @@ export function splitAtTime<P extends Project>(project: P, at: number, itemId: s
 //     the same `?? Infinity` convention `timeline/multiSelectOps.ts` uses.
 //   • Every op returns the SAME project reference when it would change nothing.
 //
-// AUDIO COUPLING (§527, Sam 2026-10-22: a ripple moves everything): a ripple
-// (`rippleDelete`, `collapseGaps`) moves the audio tracks that start at or after
-// its point, as it moves the visual items, and leaves a track that starts
-// before it (a music bed under the edit) where it is. It only ever MOVES audio,
+// AUDIO COUPLING (§527, Sam 2026-10-22: a ripple on the base footage moves
+// everything): a base-track ripple (`rippleDelete` of base footage,
+// `collapseGaps`, a base-track ripple insert) moves the audio tracks that start
+// at or after its point, as it moves the visual items, and leaves a track that
+// starts before it (a music bed under the edit) where it is. A ripple on any
+// other track moves no audio. It only ever MOVES audio,
 // never trims or deletes it. `splitAtTime` splits audio rather than shifting
 // it. Ripple targets are visual items only; an audio-track id is a no-op.
 
@@ -915,11 +925,12 @@ function shiftCaptionsInWindow(
  * - Captions are remapped with the same `applyCutToCaptions` rules the lift cut
  *   uses: segments inside the deleted window are dropped, partials are trimmed,
  *   and later segments (and their words) shift by the deleted duration.
- * - §527: audio tracks that start at/after the deleted item's end shift earlier
- *   by its duration (moved, never trimmed); later notes and markers shift. When
- *   the item was base footage, the notes and markers inside its window are
- *   deleted and a note range over its edge is clipped; an overlay's window
- *   keeps them, since the footage under it stays (see AUDIO COUPLING above).
+ * - §527 (Sam): on the BASE footage track the ripple moves everything: audio
+ *   tracks that start at/after the deleted item's end shift earlier by its
+ *   duration (moved, never trimmed), the notes and markers inside its window
+ *   are deleted, a note range over its edge is clipped, and later ones shift
+ *   (see AUDIO COUPLING above). On any other track it closes the gap on that
+ *   track only: the other tracks, captions, audio, notes and markers stay.
  * - Empty tracks are kept, as everywhere else in this file.
  * - Returns the same project reference if `itemId` names no visual item.
  */
@@ -930,42 +941,40 @@ export function rippleDelete<P extends Project>(project: P, itemId: string): P {
 
   const item = tracks[found.ti][found.ii]
   const duration = item.end - item.start
+  // §527 (Sam, 2026-10-22): a ripple on the base footage track moves
+  // everything after it; one on any other track closes the gap on THAT track
+  // only, since the footage, and the captions, audio, notes, markers and other
+  // tracks timed to it, did not move.
+  const onBase = found.ti === baseTrackIndex(tracks)
 
-  const newTracks = mapTrackItems(project, items =>
-    items
-      .filter(other => other.id !== itemId)
-      .map(other =>
-        duration > EPSILON && other.start >= item.end - EPSILON
-          ? { ...other, start: other.start - duration, end: other.end - duration }
-          : other,
-      ),
+  const newTracks = mapTrackItems(project, (items, i) =>
+    !onBase && i !== found.ti
+      ? items
+      : items
+          .filter(other => other.id !== itemId)
+          .map(other =>
+            duration > EPSILON && other.start >= item.end - EPSILON
+              ? { ...other, start: other.start - duration, end: other.end - duration }
+              : other,
+          ),
   )
+  if (!onBase || duration <= EPSILON) return { ...project, tracks: newTracks }
 
   const removed = { start: item.start, end: item.end }
-  const newCaptions = project.captions && duration > EPSILON
+  const newCaptions = project.captions
     ? {
         ...project.captions,
         segments: applyCutToCaptions(project.captions.segments, removed),
       }
     : project.captions
-
-  if (duration <= EPSILON) return { ...project, tracks: newTracks, captions: newCaptions }
   const audio = rippleAudio(project.audio, item.end, -duration)
-  const next = {
+  return {
     ...project,
     tracks: newTracks,
     captions: newCaptions,
     ...(audio !== project.audio ? { audio } : {}),
+    ...cutAnchors(project, removed, duration),
   }
-  // §527: notes and markers inside the window are deleted only when the
-  // deleted item was base footage (the first track holding a video, as
-  // `collapseGaps` reads it): then that moment is gone. Deleting an overlay
-  // leaves the footage under it, so the notes and markers there stay put and
-  // only the later ones move.
-  const primaryIdx = tracks.findIndex(t => t.some(c => c.type === 'video'))
-  const baseIdx = primaryIdx >= 0 ? primaryIdx : 0
-  if (found.ti === baseIdx) return { ...next, ...cutAnchors(project, removed, duration) }
-  return shiftMarks(next, item.end, -duration)
 }
 
 /**
@@ -1289,11 +1298,12 @@ export function overlapsAny(s: number, e: number, items: VisualItem[]): boolean 
  *     moves right by the new clip's length, and the new clip takes the freed
  *     slot at the insertion point. This leaves NO overlaps and preserves order;
  *     splitting the straddling clip is intentionally NOT done here. §527: a
- *     ripple moves everything after it, so when the insert pushed this track's
- *     items, the other tracks' items that start at/after that point, the
- *     captions, the audio tracks that start there, the notes and the markers
- *     move right by the same length (one that straddles the point keeps its
- *     start). An insert that pushed nothing moves nothing else.
+ *     ripple insert on the BASE footage track moves everything after it, so
+ *     when it pushed that track's items, the other tracks' items that start
+ *     at/after that point, the captions, the audio tracks that start there,
+ *     the notes and the markers move right by the same length (one that
+ *     straddles the point keeps its start). An insert on any other track, or
+ *     one that pushed nothing, moves nothing else.
  *
  *     The tie-break is Sam's product call (2026-08-25): "never split a clip,
  *     always keep them whole — if the drop is over 50% into the clip, make
@@ -1373,7 +1383,10 @@ export function insertClipAt<P extends Project>(
   // after the insertion point, the other tracks' items too. One that pushed
   // nothing (an empty or freshly made track, a drop past the last item) made
   // no room in anything, so nothing else moves.
-  const pushed = opts.ripple && shifted.some((it, i) => it !== existing[i])
+  // On the base footage track only (Sam, §527): a ripple insert on any other
+  // track pushes that track alone, since the footage did not move.
+  const baseIdx = baseTrackIndex(tracks.map(t => t.items))
+  const pushed = opts.ripple && trackIdx === baseIdx && shifted.some((it, i) => it !== existing[i])
   const tracksOut = mapTrackItems(project, (items, i) => {
     if (i === trackIdx) return newItems
     if (!pushed) return items

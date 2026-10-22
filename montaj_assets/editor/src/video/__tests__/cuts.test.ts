@@ -1665,15 +1665,26 @@ describe('§527 a ripple moves audio, notes and markers', () => {
       }
     })
 
-    it('ripple-deleting an overlay keeps the notes and markers in its window (the footage under it stays) and moves the later ones', () => {
+    it('[Sam, §527] ripple-deleting an overlay closes the gap on its own track only: the base track, other tracks, captions, audio, notes and markers stay', () => {
       const p = makeProject({
-        tracks: vtracks([v('a', 0, 20)], [{ id: 'o1', type: 'overlay', start: 5, end: 8 }, { id: 'o2', type: 'overlay', start: 10, end: 12 }]),
+        tracks: vtracks(
+          [v('a', 0, 20)],
+          [{ id: 'o1', type: 'overlay', start: 5, end: 8 }, { id: 'o2', type: 'overlay', start: 10, end: 12 }],
+          [{ id: 'x', type: 'overlay', start: 13, end: 14 }],
+        ),
+        captions: { style: 'subtitle', segments: [{ text: 'c', start: 9, end: 11, words: [{ word: 'c', start: 9, end: 11 }] }] },
+        audio: { tracks: [au('sfx', 10, 11)] },
         notes: [note('under', 6), note('later', 15), note('range', 7, 11)],
         markers: [mk('m-under', 7), mk('m-later', 16)],
       })
       const out = rippleDelete(p, 'o1')
-      expect(out.notes!.map(n => [n.id, (n as { t: number }).t, (n as { tEnd?: number }).tEnd])).toEqual([['under', 6, undefined], ['range', 7, 8], ['later', 12, undefined]])
-      expect(out.markers!.map(m => [m.id, m.t])).toEqual([['m-under', 7], ['m-later', 13]])
+      expect(out.tracks![1].items.map(i => [i.id, i.start, i.end])).toEqual([['o2', 7, 9]])
+      expect(out.tracks![0]).toEqual(p.tracks![0])
+      expect(out.tracks![2]).toEqual(p.tracks![2])
+      expect(out.captions).toBe(p.captions)
+      expect(out.audio).toBe(p.audio)
+      expect(out.notes).toBe(p.notes)
+      expect(out.markers).toBe(p.markers)
     })
   })
 

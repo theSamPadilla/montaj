@@ -277,6 +277,28 @@ describe('insertClipAt — §527 a ripple insert moves everything after it', () 
     expect(out.markers!.map(m => m.t)).toEqual([11])
   })
 
+  it('[Sam, §527] a ripple insert on an overlay track pushes that track only: the base track, other tracks, captions, audio, notes and markers stay', () => {
+    const p = makeProject({
+      tracks: vtracks(
+        [v('a', 0, 10), v('b', 10, 20)],
+        [v('o1', 2, 4), v('o2', 6, 8)],
+        [{ id: 'x', type: 'overlay', start: 7, end: 9 }],
+      ),
+      captions: { style: 'subtitle', segments: [{ text: 'c', start: 7, end: 9, words: [{ word: 'c', start: 7, end: 9 }] }] },
+      audio: { tracks: [{ id: 'sfx', src: 'hit.wav', start: 7, end: 7.5 }] },
+      notes: [{ id: 'n', t: 7, text: '' }],
+      markers: [{ id: 'm', t: 8, label: '1' }],
+    })
+    const out = insertClipAt(p, 'trk-1', clip, 5, { ripple: true }) // between o1 and o2
+    expect(out.tracks![1].items.filter(i => i.id === 'o2')[0]).toMatchObject({ start: 9, end: 11 })
+    expect(out.tracks![0]).toEqual(p.tracks![0])
+    expect(out.tracks![2]).toEqual(p.tracks![2])
+    expect(out.captions).toBe(p.captions)
+    expect(out.audio).toBe(p.audio)
+    expect(out.notes).toBe(p.notes)
+    expect(out.markers).toBe(p.markers)
+  })
+
   it('an insert that pushed nothing (past the last clip, or onto an empty track) moves nothing else', () => {
     const p = makeProject({
       tracks: vtracks([v('a', 0, 5)], [{ id: 'o', type: 'overlay', start: 7, end: 8 }]),
