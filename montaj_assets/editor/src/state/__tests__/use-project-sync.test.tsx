@@ -1574,7 +1574,8 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
       expect(held.states.map((s) => (s === 'redo' ? s : [(s as Project).name, ends(s)[1]]))).toEqual([
         ['Renamed', 9], ['Test Project', 9], 'redo', ['Renamed', 9],
       ])
-      expect(held.adapter.saveCalls.map((c) => clipOf(c.project, 'B')?.end)).not.toContain(10)
+      // The saves after the pull: the rename's undo and redo, B as the AI left it.
+      expect(held.adapter.saveCalls.slice(2).map((c) => clipOf(c.project, 'B')?.end)).toEqual([9, 9])
     })
 
     it('a gap frame held after a held pull is the later content: one prune against it, one report per drain', async () => {

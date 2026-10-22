@@ -217,11 +217,17 @@ export function useProjectSync<P extends Project = Project>(
   // as jitter on the canvas while the operator is typing). Last-write-wins:
   // only the most recent frame is kept.
   const deferredSseRef = useRef<P | null>(null)
-  // True while the held frame stands for a pruning frame: set when one is held
-  // and kept when a later frame replaces it in the hold (the watcher's unstamped
-  // copy of the same write), cleared when the hold is applied. So the mark is
-  // applied once and never carries over to a later hold.
-  const deferredPrunesRef = useRef(false)
+  // The latest held frame that prunes (a sync pull or a gap frame), kept apart
+  // from `deferredSseRef` because a later frame may replace it there: an AI
+  // write, the watcher's copy, an adapter's refetch. Disk is written in order,
+  // so that later frame already contains the pull. On the drain the history is
+  // pruned against THIS frame's content, then the latest frame is applied
+  // without pruning: the same history as when the frames arrive with no save in
+  // flight, so the later frame's own changes prune nothing and the pull's still
+  // do. Only the latest pruning frame is kept (it contains any earlier one), so
+  // a drain prunes and reports once. Cleared on every drain, so it never carries
+  // over to a later hold.
+  const deferredPullRef = useRef<P | null>(null)
 
   // Fold an external frame into current state (reconcile, or plain replace) and
   // apply it. No save, no undo push. Stable — reads reconcile via ref.
@@ -291,13 +297,22 @@ export function useProjectSync<P extends Project = Project>(
       if (queue.current.isPending()) {
         // Hold the frame; apply it once the queue drains.
         deferredSseRef.current = next
-        if (prunes) deferredPrunesRef.current = true
+        if (prunes) deferredPullRef.current = next
         queue.current.onceDrained(() => {
           const held = deferredSseRef.current
-          const heldPrunes = deferredPrunesRef.current
+          const pull = deferredPullRef.current
           deferredSseRef.current = null
-          deferredPrunesRef.current = false
-          if (held) applyFrame(held, heldPrunes)
+          deferredPullRef.current = null
+          // The pull is measured from the screen now, at the drain, so a step
+          // pushed while it was held is pruned or rebased like any other.
+          //
+          // Known cost, not fixed (§482 review item 3): the pull frame can
+          // predate a save of the editor's own, in flight when it was held or
+          // made while it was, whose echo comes later. Measured from the screen,
+          // the pull then seems to have changed what that save changed, so the
+          // save's undo step is dropped too. One undo step lost, never content.
+          if (pull && pull !== held) applyFrame(pull, true)
+          if (held) applyFrame(held, held === pull)
         })
         return
       }
