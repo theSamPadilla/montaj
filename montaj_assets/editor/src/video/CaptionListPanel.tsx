@@ -99,6 +99,9 @@ const chipClass = (active: boolean): string =>
  *  the rest. Worn by every row there so the whole tab reads as a two-column
  *  grid (label · control) rather than a stack of loose widgets. */
 const rowClass = 'flex items-center gap-1.5'
+
+/** §531: after a wheel, touch or press on the caption list, this long passes before a new selection may scroll it. */
+const USER_SCROLL_QUIET_MS = 1200
 /** The label cell of a `rowClass` row. The width is FIXED rather than intrinsic
  *  — that is the entire point: it is what makes the labels a column, so every
  *  control starts at the same x instead of "Font" and "Alignment" indenting
@@ -541,6 +544,34 @@ function CaptionListPanelBody({
     el.scrollIntoView({ block: 'nearest' })
     el.querySelector<HTMLElement>('[contenteditable="true"]')?.focus()
   }, [editFocusId, search, rowFilter, segs, tab, setTab])
+
+  // ── §531: the list follows the selection. When the selected caption changes
+  // (picked on the timeline, in the preview, or by any key that selects one),
+  // its row scrolls into view, smoothly and only when it is not fully in view,
+  // so a visible row is never moved. Never against the person: a wheel, touch
+  // or press on the list in the last USER_SCROLL_QUIET_MS leaves it where they
+  // put it. The tab, the search and the row chip are left alone (selecting a
+  // caption to style it on the Format tab must not flip the tab); a row they
+  // hide is simply not scrolled to. A row click selects a row that is already
+  // in view, so it never scrolls. ──
+  const listRef = useRef<HTMLDivElement | null>(null)
+  const userScrollAtRef = useRef(-Infinity)
+  const noteUserScroll = () => {
+    userScrollAtRef.current = performance.now()
+  }
+  const selectedSegId = useMemo(() => segs.find(s => s.id && selectedIds.includes(s.id))?.id ?? null, [segs, selectedIds])
+  useEffect(() => {
+    if (!selectedSegId || tab !== 'captions') return
+    if (performance.now() - userScrollAtRef.current < USER_SCROLL_QUIET_MS) return
+    const row = rowRefs.current.get(selectedSegId)
+    const list = listRef.current
+    if (!row || !list) return
+    const r = row.getBoundingClientRect()
+    const l = list.getBoundingClientRect()
+    if (r.top >= l.top && r.bottom <= l.bottom) return
+    row.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    // `segs` is read through `selectedSegId`; edits to the captions must not re-scroll, so it is not a dependency.
+  }, [selectedSegId, tab])
 
   function handleRowClick(segId: string | undefined, start: number, end: number) {
     if (!segId) return
@@ -1155,7 +1186,15 @@ function CaptionListPanelBody({
           </div>
 
           {/* ── Scrollable numbered list ── */}
-          <div role="list" aria-label="Caption segments" className="flex-1 min-h-0 overflow-y-auto px-2 py-2 flex flex-col gap-1">
+          <div
+            role="list"
+            aria-label="Caption segments"
+            ref={listRef}
+            onWheel={noteUserScroll}
+            onTouchMove={noteUserScroll}
+            onPointerDown={noteUserScroll}
+            className="flex-1 min-h-0 overflow-y-auto px-2 py-2 flex flex-col gap-1"
+          >
         {totalVisible === 0 ? (
           <p className="text-xs text-[color-mix(in_srgb,var(--editor-text)_50%,transparent)] italic text-center mt-4 px-2">No matching captions.</p>
         ) : (
@@ -1200,7 +1239,8 @@ function CaptionListPanelBody({
                     // panel. Accent (indigo-500 == --editor-accent #6366f1) is
                     // used through real Tailwind classes, not `/N` on the arbitrary
                     // var — the latter is a silent no-op on a hex-valued var.
-                    className={`group flex items-start gap-2.5 rounded-md px-2.5 py-2 cursor-pointer border transition-colors ${
+                    // §531: with sticky "Row N" headers, scrolling to a row leaves room for its header.
+                    className={`group flex items-start gap-2.5 rounded-md px-2.5 py-2 cursor-pointer border transition-colors ${multiLane ? 'scroll-mt-8 ' : ''}${
                       isSelected
                         ? 'bg-indigo-500/10 border-indigo-500/60'
                         : isActive

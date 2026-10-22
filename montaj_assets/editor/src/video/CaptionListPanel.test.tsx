@@ -1268,3 +1268,95 @@ describe('CaptionListPanel — Format edits land on the selection unless "Apply 
     expect(committed(onCaptionEdit).segments[1]).not.toHaveProperty('fontWeight')
   })
 })
+
+// §531: the list follows the selection. jsdom lays nothing out, so geometry is
+// stubbed: the list shows [0, 100] and the Nth row sits at [50N, 50N + 40].
+describe('§531 CaptionListPanel follows the selected caption', () => {
+  const rect = (top: number, bottom: number) => ({ top, bottom, left: 0, right: 100, width: 100, height: bottom - top, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+  const SEGS: CaptionSegment[] = Array.from({ length: 8 }, (_, i) => ({ id: `cap-${i}`, text: `line ${i}`, start: i * 2, end: i * 2 + 1.5 }))
+  let now = 10_000
+
+  function setup(selectedIds: string[]) {
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute('role') === 'list') return rect(0, 100)
+      if (this.getAttribute('role') === 'listitem') {
+        const i = Array.from(this.parentElement?.children ?? []).indexOf(this)
+        return rect(i * 50, i * 50 + 40)
+      }
+      return rect(0, 0)
+    })
+    const scrolled: Array<{ id: string | null; opts: unknown }> = []
+    vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(function (this: Element, opts?: unknown) {
+      scrolled.push({ id: this.querySelector('[data-testid^="caption-text-"]')?.getAttribute('data-testid') ?? this.textContent, opts })
+    })
+    const project = makeProject('karaoke', SEGS)
+    const props = (ids: string[]) => ({
+      captionTrack: project.captions,
+      project,
+      currentTime: 0,
+      selectedIds: ids,
+      onSelectCaption: vi.fn(),
+      fps: 30,
+      clock: makeClock(0),
+      editFocusId: null,
+    })
+    const view = render(<CaptionListPanel {...props(selectedIds)} />)
+    const select = (ids: string[]) => view.rerender(<CaptionListPanel {...props(ids)} />)
+    return { view, select, scrolled, project, props }
+  }
+  afterEach(() => {
+    vi.restoreAllMocks()
+    Element.prototype.scrollIntoView = vi.fn()
+    now = 10_000
+  })
+
+  it('a caption selected elsewhere that is out of view scrolls into view, smoothly, and is marked selected', () => {
+    const { select, scrolled } = setup([])
+    select(['cap-5'])
+    expect(scrolled).toHaveLength(1)
+    expect(scrolled[0].opts).toEqual({ block: 'nearest', behavior: 'smooth' })
+    const row = screen.getAllByRole('listitem')[5]
+    expect(row.getAttribute('aria-current')).toBe('true')
+    expect(row.textContent).toContain('line 5')
+  })
+
+  it('a caption already fully in view does not move the list', () => {
+    const { select, scrolled } = setup([])
+    select(['cap-1'])
+    expect(scrolled).toHaveLength(0)
+    expect(screen.getAllByRole('listitem')[1].getAttribute('aria-current')).toBe('true')
+  })
+
+  it('opening the panel with an out-of-view caption selected scrolls to it', () => {
+    const { scrolled } = setup(['cap-6'])
+    expect(scrolled).toHaveLength(1)
+  })
+
+  it('never fights the person: right after they wheel the list, a new selection leaves it alone; later it scrolls again', () => {
+    const { select, scrolled } = setup([])
+    fireEvent.wheel(screen.getByRole('list'))
+    now += 500
+    select(['cap-5'])
+    expect(scrolled).toHaveLength(0)
+    now += 2000
+    select(['cap-7'])
+    expect(scrolled).toHaveLength(1)
+  })
+
+  it('an edit to the captions with the same selection does not scroll again', () => {
+    const { view, scrolled, props, project } = setup(['cap-5'])
+    expect(scrolled).toHaveLength(1)
+    const edited = { ...project, captions: { ...project.captions!, segments: project.captions!.segments.map(s => (s.id === 'cap-5' ? { ...s, text: 'edited' } : s)) } } as Project
+    view.rerender(<CaptionListPanel {...props(['cap-5'])} captionTrack={edited.captions} project={edited} />)
+    expect(scrolled).toHaveLength(1)
+  })
+
+  it('on the Format tab a selection neither flips the tab nor scrolls', () => {
+    const { select, scrolled } = setup([])
+    fireEvent.click(screen.getByRole('button', { name: 'Format' }))
+    select(['cap-5'])
+    expect(screen.queryByRole('list', { name: 'Caption segments' })).toBeNull()
+    expect(scrolled).toHaveLength(0)
+  })
+})
