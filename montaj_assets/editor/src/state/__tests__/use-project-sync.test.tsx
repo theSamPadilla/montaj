@@ -1719,5 +1719,120 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
       expect(clipOf(adapter.saveCalls[3].project, 'B')?.end).toBe(12)
       expect(result.current.canUndo).toBe(false)
     })
+
+    // Re-check finding 1: the frames held during a save are replayed in order, so a
+    // later pull is measured from a screen that already holds the AI frame before it.
+    it('a pull, an AI frame, then a pull, all held: replayed in order, so the AI change prunes nothing and the step on its clip is kept, as with no save in flight', async () => {
+      const held = await both(
+        [
+          (p) => setClip(p, 'A', { end: 4 }),
+          (p) => ({ ...p, captions: caps('one') }),
+          (p) => setClip(p, 'B', { end: 9 }),
+        ],
+        (doc) => {
+          const first = frame(setClip(doc, 'B', { end: 12 }))
+          const ai = frame(setClip(first, 'A', { end: 2 }))
+          return [[first, SYNC], [ai], [frame({ ...ai, captions: caps('pulled') }), SYNC]]
+        },
+      )
+      // The B step and the captions step go, in one report; the A step stays.
+      expect(held.pruned).toEqual([{ undo: 2, redo: 0 }])
+      expect(ends(held.states[0])).toEqual([2, 12])
+      expect(ends(held.states[1])).toEqual([5, 12])
+      expect(held.states[2]).toBe('redo')
+    })
+  })
+
+  // Re-check findings 4 and 5: what a resubscribe (a project switch, or a host that
+  // re-creates its adapter) does to a held frame and to the first frame after it.
+  describe('a resubscribe: held frames stay with their project, and its first frame is a gap', () => {
+    const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+    const other = () => frame({ ...video(), id: 'proj-2', name: 'Other project' } as Project)
+
+    it('a project switch while a pull is held: nothing from the old project applies or prunes on the new one', async () => {
+      const onHistoryPruned = vi.fn()
+      const adapter = makeFakeAdapter({ blockSave: true })
+      const initial = video()
+      const { result, rerender } = renderHook(
+        ({ id }) => useProjectSync(adapter, id, initial, { onHistoryPruned, syncedProject: true }),
+        { initialProps: { id: initial.id } },
+      )
+      let saving: Promise<void> = Promise.resolve()
+      act(() => { saving = result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+      await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+      const screen = now(result)
+      act(() => { adapter.emit(frame(setClip(screen, 'B', { end: 12 })), SYNC) })
+      rerender({ id: 'proj-2' })
+      await act(async () => { adapter.release(); await saving })
+      await flush()
+      expect(now(result)).toBe(screen)
+      expect(onHistoryPruned).not.toHaveBeenCalled()
+      expect(result.current.canUndo).toBe(true)
+    })
+
+    it('a project switch while a pull is held, then a frame of the new project held too: only the new frame applies, and the old pull prunes nothing', async () => {
+      const onHistoryPruned = vi.fn()
+      const adapter = makeFakeAdapter({ blockSave: true })
+      const initial = video()
+      const { result, rerender } = renderHook(
+        ({ id }) => useProjectSync(adapter, id, initial, { onHistoryPruned }),
+        { initialProps: { id: initial.id } },
+      )
+      let saving: Promise<void> = Promise.resolve()
+      act(() => { saving = result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+      await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+      act(() => { adapter.emit(frame(setClip(now(result), 'B', { end: 12 })), SYNC) })
+      rerender({ id: 'proj-2' })
+      const next = other()
+      act(() => { adapter.emit(next) })
+      await act(async () => { adapter.release(); await saving })
+      await waitFor(() => expect(now(result)).toBe(next))
+      await flush()
+      expect(now(result)).toBe(next)
+      expect(onHistoryPruned).not.toHaveBeenCalled()
+      expect(result.current.canUndo).toBe(true)
+    })
+
+    it('the same project resubscribed while a frame is held (the host re-created its adapter): the held frame still applies on the drain', async () => {
+      const first = makeFakeAdapter({ blockSave: true })
+      const second = makeFakeAdapter()
+      const initial = video()
+      const { result, rerender } = renderHook(
+        ({ adapter }) => useProjectSync(adapter, initial.id, initial),
+        { initialProps: { adapter: first as EditorAdapter } },
+      )
+      let saving: Promise<void> = Promise.resolve()
+      act(() => { saving = result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+      await waitFor(() => expect(first.saveProject).toHaveBeenCalledTimes(1))
+      const ai = frame(setClip(now(result), 'A', { end: 2 }))
+      act(() => { first.emit(ai) })
+      rerender({ adapter: second })
+      await act(async () => { first.release(); await saving })
+      await waitFor(() => expect(now(result)).toBe(ai))
+    })
+
+    it.each([
+      ['synced: the first frame on the new subscription prunes like a gap frame, and only that one', true, [{ undo: 1, redo: 0 }]],
+      ['not synced: it prunes nothing, as before', false, []],
+    ] as Array<[string, boolean, unknown[]]>)('a resubscribe of the same project, %s', async (_name, syncedProject, reports) => {
+      const onHistoryPruned = vi.fn()
+      const first = makeFakeAdapter()
+      const second = makeFakeAdapter()
+      const initial = video()
+      const { result, rerender } = renderHook(
+        ({ adapter }) => useProjectSync(adapter, initial.id, initial, { onHistoryPruned, syncedProject }),
+        { initialProps: { adapter: first as EditorAdapter } },
+      )
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'A', { end: 4 })) })
+      await act(async () => { await result.current.mutate((p) => setClip(p, 'B', { end: 9 })) })
+      // The first subscription's first frame is no gap.
+      act(() => { first.emit(frame(setClip(now(result), 'B', { end: 11 }))) })
+      expect(onHistoryPruned).not.toHaveBeenCalled()
+      rerender({ adapter: second })
+      act(() => { second.emit(frame(setClip(now(result), 'B', { end: 12 }))) })
+      act(() => { second.emit(frame(setClip(now(result), 'A', { end: 2 }))) })
+      expect(onHistoryPruned.mock.calls.map((c) => c[0])).toEqual(reports)
+      expect(result.current.canUndo).toBe(true)
+    })
   })
 })
