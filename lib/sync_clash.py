@@ -300,10 +300,15 @@ def outside_clash(clashes: ClashSet, clash_id: str, fields=(), files=(), derived
         if not (all_fields and all_files):
             return [EVERYTHING]
         # The clash is the whole project: it writes everything but what another open clash holds.
-        return [*sorted(other_fields), *(other_files[k] for k in sorted(other_files))]
+        return [*sorted(f for f in other_fields if f != EVERYTHING),
+                *(other_files[k] for k in sorted(other_files) if k != EVERYTHING)]
 
+    # Another clash's `*` holds nothing here: two whole-project clashes do not block each other's resolve. Another
+    # clash's named fields and files still do.
     def other_field(f):
-        return f in other_fields or EVERYTHING in other_fields
+        return f != EVERYTHING and f in other_fields
+
+    named_others = [k for k in other_files if k != EVERYTHING]
 
     if all_fields:
         # A `*` clash closes its own names and the fields no other open clash holds (review fold): never another's.
@@ -312,9 +317,14 @@ def outside_clash(clashes: ClashSet, clash_id: str, fields=(), files=(), derived
         out = [f for f in fields if f not in own_fields]
     for written in files:
         w = file_key(written)
-        if any(w == k or (k.endswith("/") and w.startswith(k)) for k in own_files if k != EVERYTHING):
+        if w in own_files:
+            continue   # named by this clash itself
+        if any(_file_hit(w, k) for k in named_others):
+            out.append(written)   # held by another clash, even inside a folder this resolve owns
             continue
-        if all_files and not any(_file_hit(w, k) for k in other_files):
+        if any(k.endswith("/") and w.startswith(k) for k in own_files if k != EVERYTHING):
+            continue
+        if all_files:
             continue
         out.append(written)
     if all_fields:

@@ -545,6 +545,9 @@ def sync_refusal(project_id, who, fields=(), files=(), *, everything: bool = Fal
         return None
     who = sync_who(who)
     if who.kind in ("human", "sync"):
+        # A sync pull passes even when it deletes (sends as null) a field that is itself in an open clash, and
+        # answers 200. Intended: the pull writes the merge, and the merge keeps mine at clash targets, so a
+        # clashed field arrives as a delete only when the merge decided it.
         return None
     if not everything and not fields and not files and not derived:
         return None
