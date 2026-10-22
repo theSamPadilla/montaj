@@ -130,6 +130,23 @@ def test_get_project_is_409_naming_both_folders(workspace):
     assert str(a) in detail["message"] and str(b) in detail["message"]
 
 
+def test_list_projects_primes_the_cache_so_a_hit_is_409(workspace):
+    # A clean single entry is cached, then a copy appears. GET /projects flags
+    # it AND primes the sentinel, so the per-project route is 409 on a cache hit
+    # with no find_project_dir scan in between.
+    _project(workspace, "orig", "dup-1")
+    assert client.get("/api/projects/dup-1").status_code == 200
+    assert isinstance(sc._project_dir_cache["dup-1"], Path)
+    _project(workspace, "copy", "dup-1")
+    assert client.get("/api/projects/dup-1").status_code == 200  # still the hidden window
+    listed = client.get("/api/projects").json()
+    assert [p["duplicate"] for p in listed if p["id"] == "dup-1"] == [True, True]
+    assert isinstance(sc._project_dir_cache["dup-1"], sc._DuplicateIds)
+    r = client.get("/api/projects/dup-1")
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["error"] == "duplicate_project_id"
+
+
 def test_put_project_is_409(workspace):
     _project(workspace, "orig", "dup-1")
     _project(workspace, "copy", "dup-1")

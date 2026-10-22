@@ -26,7 +26,7 @@ from urllib.parse import quote, urlparse
 
 from serve.common import (
     MONTAJ_ROOT,
-    resolve_workspace, find_project_dir, get_project_dir, is_nested_project_json,
+    resolve_workspace, find_project_dir, get_project_dir, prime_project_dir_cache, is_nested_project_json,
     run_subprocess,
     not_found, bad_request, forbidden, server_error,
     validate_project_subpath, _is_under, lands_on_project_file,
@@ -1719,6 +1719,9 @@ async def list_projects(status: str | None = None):
         pid = proj.get("id")
         if pid:
             folders_by_id.setdefault(pid, []).append(str(p.parent))
+    # Seed the resolver's cache from this same scan, so an id flagged below is
+    # refused by every per-project route from now on, with no scan in between.
+    prime_project_dir_cache({pid: [Path(d) for d in dirs] for pid, dirs in folders_by_id.items()})
     projects = []
     for proj in parsed:
         if status and proj.get("status") != status:

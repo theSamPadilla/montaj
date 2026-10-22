@@ -102,6 +102,16 @@ def is_nested_project_json(path: Path, workspace: Path) -> bool:
     return False
 
 
+def prime_project_dir_cache(by_id: "dict[str, list[Path]]") -> None:
+    """Record a scan's id -> topmost-folders map in the cache: a single folder as
+    a plain Path (the fast path), a collision as a `_DuplicateIds` sentinel so a
+    later resolve of it raises even on a cache hit. Shared by `find_project_dir`'s
+    scan and `GET /projects`, so either one seeing a duplicate makes the
+    per-project routes refuse it immediately."""
+    for pid, dirs in by_id.items():
+        _project_dir_cache[pid] = _DuplicateIds(dirs) if len(dirs) > 1 else Path(dirs[0])
+
+
 def find_project_dir(workspace: Path, project_id: str) -> Path | None:
     """Find the project directory for a given project id.
 
@@ -131,7 +141,9 @@ def find_project_dir(workspace: Path, project_id: str) -> Path | None:
     colliding id so a later resolve raises even on a cache hit. Residual window:
     a copy created AFTER a clean single entry was cached, with nothing triggering
     a rescan in between, stays hidden until the next scan (a cache miss for any
-    id, a revalidation failure, or `GET /projects`, which always scans). The
+    id, a revalidation failure, or `GET /projects`, which always scans and primes
+    this cache through `prime_project_dir_cache`, so a duplicate it flags is
+    refused by the per-project routes from then on). The
     sentinel is re-validated every hit, so once written the duplicate cannot be
     served; correctness is preferred over the cache for a colliding id.
     """
@@ -165,8 +177,7 @@ def find_project_dir(workspace: Path, project_id: str) -> Path | None:
 
     # Cache every id the scan saw: a single folder as a plain Path (the fast
     # path), a collision as a sentinel so a later resolve of it raises on a hit.
-    for pid, dirs in by_id.items():
-        _project_dir_cache[pid] = _DuplicateIds(dirs) if len(dirs) > 1 else dirs[0]
+    prime_project_dir_cache(by_id)
 
     dirs = by_id.get(project_id)
     if not dirs:
