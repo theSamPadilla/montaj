@@ -18,7 +18,10 @@ import type { Project } from './types/schema'
  * full project.json frame; the named 'log' event carries an agent status message;
  * the named 'writer' event (`<writer>[;origin=<origin>]`, serve sends it only for
  * a Studio sync pull) stamps the project frame that immediately follows it.
- * Reconnects are handled by EventSource automatically.
+ * Reconnects are handled by EventSource automatically. Serve sends its current
+ * state as the first frame on every connection, so the first frame after a
+ * reconnect is marked `{ gap: true }`: a stamp sent while the stream was down
+ * reached no listener, and that frame may hold the write it stamped.
  */
 
 /** Who wrote a project frame (the editor's `FrameWriter`, same shape). */
@@ -27,7 +30,14 @@ export interface FrameWriter {
   origin?: string
 }
 
-type FrameCallback = (project: Project, writer?: FrameWriter) => void
+/** What the pool knows about a project frame besides its writer (the editor's
+ *  `FrameInfo`, same shape). `gap`: the first frame delivered on a connection
+ *  that replaced a dropped one, so frames may have been missed just before it. */
+export interface FrameInfo {
+  gap?: boolean
+}
+
+type FrameCallback = (project: Project, writer?: FrameWriter, info?: FrameInfo) => void
 type LogCallback = (message: string) => void
 
 interface StreamEntry {
@@ -36,6 +46,10 @@ interface StreamEntry {
   logListeners: Set<LogCallback>
   /** The stamp waiting for the next project frame; spent by that frame. */
   pendingWriter: FrameWriter | undefined
+  /** The connection errored and has not reopened yet. */
+  dropped: boolean
+  /** The next delivered frame is the first since a reopen; spent by that frame. */
+  gap: boolean
 }
 
 /** A `writer` event's data, `<writer>[;<key>=<value>]...`: the writer and its
@@ -65,11 +79,15 @@ function ensureStream(projectId: string): StreamEntry {
     frameListeners: new Set(),
     logListeners: new Set(),
     pendingWriter: undefined,
+    dropped: false,
+    gap: false,
   }
 
   // Default (unnamed) events → project.json updates. The stamp that came just
   // before is this frame's alone: taken here even when the frame is malformed,
-  // so it can never reach a later frame.
+  // so it can never reach a later frame. The gap mark is spent only by a frame
+  // that is delivered: after a malformed one, frames were still missed before
+  // the next good one.
   entry.es.onmessage = (e) => {
     const writer = entry.pendingWriter
     entry.pendingWriter = undefined
@@ -80,8 +98,10 @@ function ensureStream(projectId: string): StreamEntry {
       console.warn('[sse] malformed project frame:', e.data)
       return
     }
+    const info: FrameInfo | undefined = entry.gap ? { gap: true } : undefined
+    entry.gap = false
     // Copy before iterating: a callback may unsubscribe itself.
-    for (const cb of [...entry.frameListeners]) cb(p, writer)
+    for (const cb of [...entry.frameListeners]) cb(p, writer, info)
   }
 
   // Named 'writer' events → the stamp for the next project frame. No listener
@@ -104,12 +124,16 @@ function ensureStream(projectId: string): StreamEntry {
 
   // Connection dropped or (re)opened: EventSource retries automatically. A
   // stamp whose frame never came is dropped, so it never reaches a frame sent
-  // on the new connection.
+  // on the new connection. An open that follows an error is a reconnect: its
+  // first frame is marked as a gap. The first open of a stream is not.
   entry.es.onerror = () => {
     entry.pendingWriter = undefined
+    entry.dropped = true
   }
   entry.es.onopen = () => {
     entry.pendingWriter = undefined
+    if (entry.dropped) entry.gap = true
+    entry.dropped = false
   }
 
   streams.set(projectId, entry)

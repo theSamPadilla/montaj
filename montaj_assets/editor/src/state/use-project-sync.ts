@@ -26,7 +26,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { createMutationQueue } from './mutation-queue'
 import { isSyncPull, pruneHistory, type HistoryEntry } from './history-prune'
-import type { Project, EditorAdapter, FrameWriter, HistoryPruned } from '../types'
+import type { Project, EditorAdapter, FrameInfo, FrameWriter, HistoryPruned } from '../types'
 
 // Connection lifecycle: 'connecting' from mount until the first frame arrives,
 // then 'live'. The adapter's subscribe auto-reconnects on drop — the editor
@@ -56,8 +56,12 @@ export interface UseProjectSyncOptions<P extends Project> {
    * Whether a subscribed frame, by the writer the adapter reported with it,
    * prunes the undo and redo history (see `history-prune`). Called once per
    * frame, with `undefined` when the frame came with no writer. Defaults to a
-   * Studio sync pull: writer `tool`, origin `sync`. `applyExternal` and
-   * `refetch` never prune. Read through a ref.
+   * Studio sync pull: writer `tool`, origin `sync`. A frame the adapter marks
+   * `info.gap` (the first after a reconnect) and every `refetch` prune whatever
+   * this says: either may hold a pull whose stamp went to no listener. Only a
+   * change from what the editor holds prunes anything, so an identical one
+   * leaves the history as it was. `applyExternal` never prunes. Read through a
+   * ref.
    */
   prunesHistory?: (writer?: FrameWriter) => boolean
   /**
@@ -278,10 +282,12 @@ export function useProjectSync<P extends Project = Project>(
   useEffect(() => {
     setConnection('connecting')
     let active = true
-    const unsubscribe = adapter.subscribe(projectId, (next, writer) => {
+    const unsubscribe = adapter.subscribe(projectId, (next, writer, info?: FrameInfo) => {
       if (!active) return
       setConnection('live')
-      const prunes = prunesHistoryRef.current(writer)
+      // A gap frame prunes like a pull. Its writer is still the one it came
+      // with (usually none): the predicate and everything else see that.
+      const prunes = prunesHistoryRef.current(writer) || info?.gap === true
       if (queue.current.isPending()) {
         // Hold the frame; apply it once the queue drains.
         deferredSseRef.current = next
@@ -465,15 +471,17 @@ export function useProjectSync<P extends Project = Project>(
 
   // Force a fresh load of the project via the adapter and reconcile it in.
   // Useful when local state has drifted from the server (e.g. after a gap).
+  // That is the only reason to refetch, so the read prunes like a gap frame: a
+  // pull may be among what was missed. Identical content prunes nothing.
   const refetch = useCallback(async () => {
     try {
       const next = await adapter.loadProject(projectId)
-      applyExternal(next)
+      applyFrame(next, true)
     } catch (err) {
       setLastError(err instanceof Error ? err.message : String(err))
       throw err
     }
-  }, [adapter, projectId, applyExternal])
+  }, [adapter, projectId, applyFrame])
 
   return {
     project,

@@ -717,6 +717,17 @@ export interface FrameWriter {
 }
 
 /**
+ * What the host's transport knows about a frame besides its writer. `gap`: the
+ * frame is the first on a connection that replaced a dropped one (Montaj's
+ * serve sends its current state first on every connection), so frames may have
+ * been missed just before it, a sync pull's among them, with its stamp sent to
+ * no listener. Set on that one frame only; it never stands for a writer.
+ */
+export interface FrameInfo {
+  gap?: boolean
+}
+
+/**
  * What one frame's pruning dropped from the undo and redo history: how many
  * steps from each stack. Reported only when at least one step was dropped.
  */
@@ -752,10 +763,12 @@ export interface EditorAdapter<P extends Project = Project> {
    * with each fresh project snapshot and, when the transport names one, the
    * frame's writer: only the stamp that came with THAT frame, never one carried
    * over from an earlier event. A frame stamped as a sync pull prunes the undo
-   * and redo steps that would revert it. Returns an unsubscribe function the
-   * editor calls on teardown.
+   * and redo steps that would revert it. `info.gap` marks the first frame after
+   * the transport reconnected: it may hold a pull whose stamp was lost, so it
+   * prunes the same way when its content differs from what the editor holds.
+   * Returns an unsubscribe function the editor calls on teardown.
    */
-  subscribe(id: string, onFrame: (project: P, writer?: FrameWriter) => void): () => void
+  subscribe(id: string, onFrame: (project: P, writer?: FrameWriter, info?: FrameInfo) => void): () => void
 
   /**
    * Start a render and stream progress as an async iterable of `RenderEvent`s.
