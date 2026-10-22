@@ -354,15 +354,26 @@ export function shiftMarks<P extends Project>(project: P, from: number, by: numb
   return 'notes' in anchors || 'markers' in anchors ? { ...project, ...anchors } : project
 }
 
+/** An audio track's start: absent means 0 (docs/schemas/project.md, Audio). */
+const audioStart = (t: AudioTrack): number => (typeof t.start === 'number' && Number.isFinite(t.start) ? t.start : 0)
+
+/** An audio track moved by `d`, its length kept: `start` written, `end` moved
+ *  only when it is a number (an end-less track plays to its slice's end). */
+function movedAudio(t: AudioTrack, d: number): AudioTrack {
+  const out: AudioTrack = { ...t, start: audioStart(t) + d }
+  if (typeof t.end === 'number' && Number.isFinite(t.end)) out.end = t.end + d
+  return out
+}
+
 /** The audio tracks that start at or after `from`, moved by `by`, length kept;
  *  the same object when none moves. */
 function rippleAudio(audio: Project['audio'], from: number, by: number): Project['audio'] {
   if (!audio?.tracks?.length || by === 0) return audio
   let changed = false
   const tracks = audio.tracks.map(t => {
-    if (!(t.start >= from - EPSILON)) return t
+    if (!(audioStart(t) >= from - EPSILON)) return t
     changed = true
-    return { ...t, start: t.start + by, end: t.end + by }
+    return movedAudio(t, by)
   })
   return changed ? { ...audio, tracks } : audio
 }
@@ -620,10 +631,11 @@ export function collapseGaps<P extends Project>(
   if (audio?.tracks?.length) {
     let moved = false
     const tracks = audio.tracks.map(track => {
-      const d = mapTime(track.start) - track.start
+      const start = audioStart(track)
+      const d = mapTime(start) - start
       if (d === 0) return track
       moved = true
-      return { ...track, start: track.start + d, end: track.end + d }
+      return movedAudio(track, d)
     })
     if (moved) audioPatch = { audio: { ...audio, tracks } }
   }
@@ -904,9 +916,10 @@ function shiftCaptionsInWindow(
  *   uses: segments inside the deleted window are dropped, partials are trimmed,
  *   and later segments (and their words) shift by the deleted duration.
  * - §527: audio tracks that start at/after the deleted item's end shift earlier
- *   by its duration (moved, never trimmed); notes and markers inside the deleted
- *   window are deleted, a note range over its edge is clipped, and later ones
- *   shift (see AUDIO COUPLING above).
+ *   by its duration (moved, never trimmed); later notes and markers shift. When
+ *   the item was base footage, the notes and markers inside its window are
+ *   deleted and a note range over its edge is clipped; an overlay's window
+ *   keeps them, since the footage under it stays (see AUDIO COUPLING above).
  * - Empty tracks are kept, as everywhere else in this file.
  * - Returns the same project reference if `itemId` names no visual item.
  */
@@ -938,13 +951,21 @@ export function rippleDelete<P extends Project>(project: P, itemId: string): P {
 
   if (duration <= EPSILON) return { ...project, tracks: newTracks, captions: newCaptions }
   const audio = rippleAudio(project.audio, item.end, -duration)
-  return {
+  const next = {
     ...project,
     tracks: newTracks,
     captions: newCaptions,
     ...(audio !== project.audio ? { audio } : {}),
-    ...cutAnchors(project, removed, duration),
   }
+  // §527: notes and markers inside the window are deleted only when the
+  // deleted item was base footage (the first track holding a video, as
+  // `collapseGaps` reads it): then that moment is gone. Deleting an overlay
+  // leaves the footage under it, so the notes and markers there stay put and
+  // only the later ones move.
+  const primaryIdx = tracks.findIndex(t => t.some(c => c.type === 'video'))
+  const baseIdx = primaryIdx >= 0 ? primaryIdx : 0
+  if (found.ti === baseIdx) return { ...next, ...cutAnchors(project, removed, duration) }
+  return shiftMarks(next, item.end, -duration)
 }
 
 /**

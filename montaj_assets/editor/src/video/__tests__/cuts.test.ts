@@ -1652,6 +1652,31 @@ describe('§527 a ripple moves audio, notes and markers', () => {
     })
   })
 
+  describe('[40 M3, M4] edge cases', () => {
+    it('an audio track with no end, or no start (0), never gets NaN: an end-less one moves its start only, a start-less one is at 0 and stays', () => {
+      const tracksIn = [{ id: 'noEnd', src: 'a.mp3', start: 10 }, { id: 'noStart', src: 'b.mp3', end: 4 }] as unknown as NonNullable<Project['audio']>['tracks']
+      const ripple = rippleDelete(makeProject({ tracks: vtracks([v('a', 0, 5), v('b', 5, 9), v('c', 9, 14)]), audio: { tracks: tracksIn } }), 'b')
+      expect(ripple.audio!.tracks).toEqual([{ id: 'noEnd', src: 'a.mp3', start: 6 }, { id: 'noStart', src: 'b.mp3', end: 4 }])
+      const gapTracks = [{ id: 'noEnd', src: 'a.mp3', start: 9 }, { id: 'noStart', src: 'b.mp3' }] as unknown as NonNullable<Project['audio']>['tracks']
+      const collapsed = collapseGaps(makeProject({ tracks: vtracks([v('a', 0, 5), v('b', 8, 12)]), audio: { tracks: gapTracks } }))
+      expect(collapsed.audio!.tracks).toEqual([{ id: 'noEnd', src: 'a.mp3', start: 6 }, { id: 'noStart', src: 'b.mp3' }])
+      for (const t of [...ripple.audio!.tracks, ...collapsed.audio!.tracks]) {
+        for (const k of ['start', 'end'] as const) if (k in t) expect(Number.isFinite((t as unknown as Record<string, number>)[k])).toBe(true)
+      }
+    })
+
+    it('ripple-deleting an overlay keeps the notes and markers in its window (the footage under it stays) and moves the later ones', () => {
+      const p = makeProject({
+        tracks: vtracks([v('a', 0, 20)], [{ id: 'o1', type: 'overlay', start: 5, end: 8 }, { id: 'o2', type: 'overlay', start: 10, end: 12 }]),
+        notes: [note('under', 6), note('later', 15), note('range', 7, 11)],
+        markers: [mk('m-under', 7), mk('m-later', 16)],
+      })
+      const out = rippleDelete(p, 'o1')
+      expect(out.notes!.map(n => [n.id, (n as { t: number }).t, (n as { tEnd?: number }).tEnd])).toEqual([['under', 6, undefined], ['range', 7, 8], ['later', 12, undefined]])
+      expect(out.markers!.map(m => [m.id, m.t])).toEqual([['m-under', 7], ['m-later', 13]])
+    })
+  })
+
   describe('applyCutToTracks (lift)', () => {
     it('deletes the notes and markers inside the cut and clips ranges to its edges, moving nothing; audio waits for the gap close', () => {
       const bed = au('bed', 0, 30)

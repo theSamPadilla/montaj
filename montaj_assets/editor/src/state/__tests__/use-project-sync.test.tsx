@@ -4,6 +4,7 @@ import { useProjectSync } from '../use-project-sync'
 import type { EditorAdapter, Project, ImageElement, RenderEvent } from '../../types'
 import { removeSlideNotes } from '../../carousel/notes'
 import { removeNotes } from '../../video/timeline/notes'
+import { rippleDelete } from '../../video/cuts'
 
 // ---------------------------------------------------------------------------
 // Fixtures — mirrors the use-project-state test's FakeAdapter, but drives the
@@ -225,6 +226,30 @@ describe('useProjectSync — undo/redo', () => {
 
     // mutate save + undo save + redo save
     await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(3))
+  })
+
+  it('§527: undo of a ripple delete brings back the audio, notes and markers it moved or deleted', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({
+      slides: undefined,
+      tracks: [{ id: 'trk-0', items: [
+        { id: 'a', type: 'video', start: 0, end: 5 },
+        { id: 'b', type: 'video', start: 5, end: 9 },
+        { id: 'c', type: 'video', start: 9, end: 14 },
+      ] }],
+      audio: { tracks: [{ id: 'sfx', src: 'hit.wav', start: 10, end: 11 }] },
+      notes: [{ id: 'gone', t: 7, text: '' }, { id: 'moved', t: 12, text: '' }],
+      markers: [{ id: 'm', t: 11, label: '1' }],
+    } as Partial<Project>)
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial))
+    await act(async () => { await result.current.mutate((p) => rippleDelete(p, 'b')) })
+    expect(result.current.project.audio!.tracks[0].start).toBe(6)
+    expect(result.current.project.notes).toEqual([{ id: 'moved', t: 8, text: '' }])
+    await act(async () => { result.current.undo() })
+    expect(result.current.project.audio).toEqual(initial.audio)
+    expect(result.current.project.notes).toEqual(initial.notes)
+    expect(result.current.project.markers).toEqual(initial.markers)
+    expect(result.current.project.tracks).toEqual(initial.tracks)
   })
 
   it('undo is a no-op with an empty history', async () => {
