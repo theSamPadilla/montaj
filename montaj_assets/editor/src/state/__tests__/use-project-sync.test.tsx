@@ -1835,3 +1835,110 @@ describe('useProjectSync: a sync pull prunes the undo and redo steps that would 
     })
   })
 })
+
+// §482 onBusyChange: busy is a save in flight OR a gesture open. It fires on
+// transitions only, never on mount, and a host that passes nothing sees no change.
+describe('useProjectSync onBusyChange', () => {
+  function busySetup(opts: { blockSave?: boolean } = {}) {
+    const adapter = makeFakeAdapter(opts)
+    const initial = makeProject()
+    const onBusyChange = vi.fn()
+    const hook = renderHook(() => useProjectSync(adapter, initial.id, initial, { onBusyChange }))
+    return { adapter, onBusyChange, ...hook }
+  }
+
+  it('a save in flight gives true, then false when it settles', async () => {
+    const { adapter, onBusyChange, result } = busySetup({ blockSave: true })
+    expect(onBusyChange).not.toHaveBeenCalled()
+    let p: Promise<void> = Promise.resolve()
+    act(() => { p = result.current.mutate((x) => ({ ...x, name: 'A' })) })
+    expect(onBusyChange.mock.calls).toEqual([[true]])
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+    await act(async () => { adapter.release(); await p })
+    expect(onBusyChange.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('a failed save also ends busy', async () => {
+    const adapter = makeFakeAdapter({ failSave: true })
+    const initial = makeProject()
+    const onBusyChange = vi.fn()
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial, { onBusyChange }))
+    await act(async () => { await result.current.mutate((x) => ({ ...x, name: 'A' })).catch(() => {}) })
+    expect(onBusyChange.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('a gesture open gives true, then false on commit', async () => {
+    const { onBusyChange, result } = busySetup()
+    act(() => { result.current.mutateTransient((x) => ({ ...x, name: 'D1' })) })
+    act(() => { result.current.mutateTransient((x) => ({ ...x, name: 'D2' })) })
+    expect(onBusyChange.mock.calls).toEqual([[true]])
+    await act(async () => { await result.current.commit() })
+    expect(onBusyChange.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('a gesture open gives true, then false on cancel', () => {
+    const { onBusyChange, result } = busySetup()
+    act(() => { result.current.mutateTransient((x) => ({ ...x, name: 'D1' })) })
+    act(() => { result.current.discardTransient() })
+    expect(onBusyChange.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('a gesture ended by an external frame ends busy', () => {
+    const { adapter, onBusyChange, result } = busySetup()
+    act(() => { result.current.mutateTransient((x) => ({ ...x, name: 'D1' })) })
+    act(() => { adapter.emit(makeProject({ name: 'Ext' })) })
+    expect(onBusyChange.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('a save and a gesture that overlap give exactly one true and one false', async () => {
+    const { adapter, onBusyChange, result } = busySetup({ blockSave: true })
+    let p: Promise<void> = Promise.resolve()
+    act(() => { p = result.current.mutate((x) => ({ ...x, name: 'A' })) })
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+    act(() => { result.current.mutateTransient((x) => ({ ...x, name: 'D1' })) })
+    // The save settles while the gesture is still open: still busy.
+    await act(async () => { adapter.release(); await p })
+    expect(onBusyChange.mock.calls).toEqual([[true]])
+    // Committing queues a second save; busy never dips between the two.
+    let c: Promise<void> = Promise.resolve()
+    act(() => { c = result.current.commit() })
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(2))
+    await act(async () => { adapter.release(); await c })
+    expect(onBusyChange.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('makes no calls when nothing changes', async () => {
+    const { adapter, onBusyChange, result } = busySetup()
+    act(() => { adapter.emit(makeProject({ name: 'Ext' })) })
+    act(() => { result.current.discardTransient() })
+    await act(async () => { await result.current.refetch() })
+    expect(onBusyChange).not.toHaveBeenCalled()
+  })
+
+  it('with the prop absent nothing changes: no extra renders', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    let renders = 0
+    const { result } = renderHook(() => { renders++; return useProjectSync(adapter, initial.id, initial) })
+    const before = renders
+    await act(async () => { await result.current.mutate((x) => ({ ...x, name: 'A' })) })
+    const without = renders - before
+    const adapter2 = makeFakeAdapter()
+    let renders2 = 0
+    const { result: r2 } = renderHook(() => { renders2++; return useProjectSync(adapter2, initial.id, initial, { onBusyChange: () => {} }) })
+    const before2 = renders2
+    await act(async () => { await r2.current.mutate((x) => ({ ...x, name: 'A' })) })
+    expect(renders2 - before2).toBe(without)
+  })
+
+  it('unmount while busy calls nothing after it (no final false)', async () => {
+    const { adapter, onBusyChange, result, unmount } = busySetup({ blockSave: true })
+    let p: Promise<void> = Promise.resolve()
+    act(() => { p = result.current.mutate((x) => ({ ...x, name: 'A' })) })
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(1))
+    unmount()
+    expect(onBusyChange.mock.calls).toEqual([[true]])
+    await act(async () => { adapter.release(); await p.catch(() => {}) })
+    expect(onBusyChange.mock.calls).toEqual([[true]])
+  })
+})
