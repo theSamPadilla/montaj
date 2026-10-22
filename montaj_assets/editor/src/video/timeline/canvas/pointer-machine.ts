@@ -63,8 +63,8 @@ import { playheadInside } from '../../captionSeek'
 import { collapseGaps, rollEdit, slideItem, slipItem } from '../../cuts'
 import { canKeyframe, enableKeyframing, moveKeyframe, setKeyframe, transformProps, valueAt } from '../../keyframeOps'
 import { moveMarker } from '../markers'
-import { applyMoveDeltaToSelection, applyResizeDeltaToSelection } from '../multiSelectOps'
-import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, computeDerivedTiming, groupAudioLanes, hasVerticalIntent, mapTrackItems, moveItemAcrossTracks, normalizeTracks, resolveTargetTrackIdx, trackItems, updateAudioTrack } from '../timeline-model'
+import { applyMoveDeltaToSelection, applyResizeDeltaToSelection, moveSelectionToTrack } from '../multiSelectOps'
+import { AUDIO_LANE_HEIGHT_PX, CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, computeDerivedTiming, groupAudioLanes, hasVerticalIntent, mapTrackItems, moveItemAcrossTracks, normalizeTracks, resolveTargetTrackIdx, trackItems, updateAudioTrack } from '../timeline-model'
 import { DRAG_THRESHOLD_PX, computeResizedItem, resizeWindowedItem, type Draggable } from '../useItemDragDrop'
 import type { TimelineLayout } from './draw'
 import { keyframeUnionTimes } from './keyframe-strip'
@@ -292,6 +292,13 @@ export interface Press {
    *  exclusion stays exact and the recompute never reads a live, re-rendered
    *  project either. */
   snapBoundaries: readonly SnapPoint[]
+  /** The layout as it stood when the press began. A multi-select move reads
+   *  which visual row the pointer is over from HERE, not from the live
+   *  `ctx.layout`: the host re-lays the surface out from every echoed
+   *  `projectChange`, and a group move that prunes or mints tracks reshapes
+   *  that layout under the pointer, so reading it live would let the preview
+   *  decide where the next frame points. See `trackIdxUnder`. */
+  layout: TimelineLayout
 }
 
 export type MachineState =
@@ -515,10 +522,10 @@ function itemSnapPoints(
  *
  * "The row it is CURRENTLY over" means the row `moveItemAcrossTracks` actually
  * PLACES it on, which is not the row the vertical travel points at — see
- * `applyMove`'s call site and `resolveTargetTrackIdx`. A multi-select move is
- * exempt for a different reason: `applyMoveDeltaToSelection` shifts a group in
- * place and never changes anyone's track, so a group's current row IS its
- * press-time row and `applyGroupMove` correctly stays on the frozen tier.
+ * `applyMove`'s call site and `resolveTargetTrackIdx`. A multi-select move
+ * stays on the frozen press-time tier: its snap reads the DRAGGED item's
+ * edges only, and a group that changes track (`moveSelectionToTrack`) carries
+ * clips from several rows at once, so there is no one row to re-tier against.
  *
  * Audio lanes tier against the LANE, matching how `hitTest` addresses them: a
  * lane can hold several tracks, and to an editor they are one row.
@@ -881,6 +888,7 @@ function applyGroupMove(
   escaped: boolean,
   dragged: { id: string; start: number; end: number },
   selection: readonly string[],
+  toTrackIdx?: number,
 ): Applied {
   const duration = dragged.end - dragged.start
   const dt = dragDeltaSeconds(ctx, press, point)
@@ -888,7 +896,41 @@ function applyGroupMove(
   const points = snapPointsForSpan(boundaries, duration)
   const snapped = applySnap(dragged.start + dt, points, ctx.viewport, snap, ctx.snapConfig)
   const next = applyMoveDeltaToSelection(press.baseProject, selection, snapped.time - dragged.start, ctx.totalDuration)
-  return change(next, lastProject, snapped.state, spanSnapGuide(snapped, duration, boundaries))
+  const guide = spanSnapGuide(snapped, duration, boundaries)
+  if (toTrackIdx === undefined) return change(next, lastProject, snapped.state, guide)
+  // The vertical half, applied to the horizontal result so the overlap test
+  // sees the clips at their FINAL times. Refused means the whole selection
+  // snaps back to where the press found it: the preview shows the press-time
+  // project, and since that is `baseProject` itself, a release there commits
+  // nothing (`pointerUp` commits only a project that differs from it).
+  const moved = moveSelectionToTrack(next, selection, toTrackIdx)
+  if (moved === null) return change(press.baseProject, lastProject, snapped.state, null)
+  return change(moved, lastProject, snapped.state, guide)
+}
+
+/**
+ * Which visual track the pointer is over, read off the PRESS-TIME layout (see
+ * `Press.layout`), as an index in `normalizeTracks(baseProject)` order.
+ *
+ * The row actually under the pointer, not `moveItemAcrossTracks`'
+ * `sourceTrackIdx - dy/24`: that arithmetic steps roughly two tracks per
+ * rendered overlay row, which a single-item move survives only because its
+ * outward search corrects the landing. A group move has no search to correct
+ * it (it lands where it is pointed or is refused), so it reads the rows.
+ *
+ * Above the top row is `trackCount`, a track that does not exist yet: a drop
+ * there mints one, as a single-item move dragged past the top does. A row owns
+ * the gap below it, and anything below the bottom row (a caption band between
+ * the blocks lands on the first row under it; the audio lanes, on the bottom
+ * one) resolves to the nearest row below, the same floor at track 0 a
+ * single-item move clamps to.
+ */
+function trackIdxUnder(layout: TimelineLayout, y: number, trackCount: number): number | undefined {
+  const rows = layout.rows
+  if (rows.length === 0) return undefined
+  if (y < rows[0].y) return trackCount
+  for (const row of rows) if (y < row.y + row.height + ROW_GAP_PX) return row.trackIdx
+  return rows[rows.length - 1].trackIdx
 }
 
 function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapState, lastProject: Project, escaped: boolean): Applied {
@@ -897,10 +939,17 @@ function applyMove(ctx: PointerContext, press: Press, point: Point, snap: SnapSt
 
   // Multi-select move: the pressed item belongs to a selection of more than
   // one, so the whole selection travels together by the same delta and keeps
-  // its shape. Cross-track movement is dropped for the group (see
-  // `applyMoveDeltaToSelection`); a single-item move keeps it, below.
+  // its shape. When the pointer is over a different visual row than the one
+  // pressed, every selected CLIP also moves onto that row
+  // (`moveSelectionToTrack`), or the move is refused and snaps back. Over the
+  // pressed row it is the horizontal-only move, unchanged. Only a drag that
+  // starts on a clip changes tracks: one that starts on an audio bar or a
+  // caption has no visual row to measure from and stays horizontal.
   if (ctx.selectedIds.length > 1 && ctx.selectedIds.includes(item.id)) {
-    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, item, ctx.selectedIds)
+    const trackCount = (normalizeTracks(press.baseProject).tracks ?? []).length
+    const under = trackIdxUnder(press.layout, point.y, trackCount)
+    const toTrackIdx = under !== undefined && under !== press.hit.trackIdx ? under : undefined
+    return applyGroupMove(ctx, press, point, snap, lastProject, escaped, item, ctx.selectedIds, toTrackIdx)
   }
 
   const duration = item.end - item.start
@@ -1809,6 +1858,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
             // A scrub never reads these (it uses `playheadSnapPoints`), but a
             // Press without them would be a Press with a hole in it.
             snapBoundaries: tieredBoundaries(ctx.project, hit.trackIdx, hit.laneIdx, hit.itemId),
+            layout: ctx.layout,
           },
           gesture: 'scrub',
           snap: applied.snap,
@@ -1833,6 +1883,7 @@ export function pointerReducer(state: MachineState, event: PointerMachineEvent):
         baseProject: ctx.project,
         wasSelected: hit.itemId !== undefined && ctx.selectedIds.includes(hit.itemId),
         snapBoundaries: tieredBoundaries(ctx.project, hit.trackIdx, hit.laneIdx, hit.itemId),
+        layout: ctx.layout,
       }
       return withCursor({ kind: 'pressed', cursor: state.cursor, press }, cursorForHit(hit), [])
     }
