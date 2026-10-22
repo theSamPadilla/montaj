@@ -51,7 +51,7 @@ import { MissingClipsProvider, useMissingClips, enabledMissingClips } from './mi
 import CaptionRegenModal from './CaptionRegenModal'
 import AudioPolishModal from './AudioPolishModal'
 import CommandPalette, { type PaletteCommand } from './CommandPalette'
-import { createShuttleController } from './shuttle'
+import { createShuttleController, formatShuttleRate, type ShuttleRate } from './shuttle'
 import { useKeymap, matchesKey, matchesModAltKey, matchesModKey, matchesPlainKey, matchesRedo, matchesShiftDelete, matchesUndo } from './keymap'
 import { useReportContext } from './use-report-context'
 import PanelBoundary from './PanelBoundary'
@@ -1238,6 +1238,8 @@ function ReviewSurface<P extends Project>({
   // (clock, transportRef, the duration getter above), so there's nothing to
   // recreate it over. See shuttle.ts for the rate-stepping/cancellation design.
   const shuttleRef = useRef<ReturnType<typeof createShuttleController> | null>(null)
+  // §532: the shuttle's speed, for the playback bar's badge (shown when it is not 0 or 1x).
+  const [shuttleRate, setShuttleRate] = useState<ShuttleRate>(0)
   if (!shuttleRef.current) {
     shuttleRef.current = createShuttleController({
       clock,
@@ -1247,6 +1249,7 @@ function ReviewSurface<P extends Project>({
       pause: () => { if (transportRef.current?.isPlaying()) transportRef.current.togglePlay() },
       setRate: (rate) => transportRef.current?.setRate(rate),
       grain: (t, dir) => scrubberRef.current?.jog(t, dir),
+      onRateChange: setShuttleRate,
     })
   }
   const shuttle = shuttleRef.current
@@ -2451,17 +2454,30 @@ function ReviewSurface<P extends Project>({
               w-5 h-5 icon buttons, `aria-pressed` colouring for true toggles,
               a styled `Tooltip` on every button instead of a native `title=`. */}
           <div className="shrink-0 flex items-center gap-1.5 px-3 py-1 border-t border-[var(--editor-border)] bg-[var(--editor-surface)]">
-            <span
-              data-testid="preview-timecode"
-              className="mr-auto text-[10px] font-mono tabular-nums text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] select-none"
-            >
-              {/* The playhead can sit past `previewDuration` while parked in
-                  `getTotalDuration()`'s ~20% trailing headroom (drag room for
-                  the timeline canvas) — clamp the DISPLAYED current time only,
-                  so the readout never shows e.g. "1:10.0 / 1:00.0". The clock
-                  itself and the total are untouched. */}
-              {formatTimecode(Math.min(currentTime, previewDuration))} / {formatTimecode(previewDuration)}
-            </span>
+            <div className="mr-auto flex items-center gap-1.5 min-w-0">
+              <span
+                data-testid="preview-timecode"
+                className="text-[10px] font-mono tabular-nums text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] select-none"
+              >
+                {/* The playhead can sit past `previewDuration` while parked in
+                    `getTotalDuration()`'s ~20% trailing headroom (drag room for
+                    the timeline canvas) — clamp the DISPLAYED current time only,
+                    so the readout never shows e.g. "1:10.0 / 1:00.0". The clock
+                    itself and the total are untouched. */}
+                {formatTimecode(Math.min(currentTime, previewDuration))} / {formatTimecode(previewDuration)}
+              </span>
+              {/* §532: the J/K/L speed, beside the timecode (Sam: in the playback bar, not on the video), only when
+                  it is not 1x: just the number. */}
+              {shuttleRate !== 0 && shuttleRate !== 1 && (
+                <span
+                  data-testid="playback-speed"
+                  aria-label={`Playback speed ${formatShuttleRate(shuttleRate)}`}
+                  className="px-1 rounded border border-[var(--editor-border)] text-[10px] font-mono tabular-nums text-[color-mix(in_srgb,var(--editor-text)_75%,transparent)] select-none"
+                >
+                  {formatShuttleRate(shuttleRate)}
+                </span>
+              )}
+            </div>
             {/* Zoom-to-fit lives in the timeline zoom chrome ("fit" next to the
                 +/- zoom buttons, Timeline.tsx) — no duplicate control here. */}
             <Tooltip label="Preview for social media">

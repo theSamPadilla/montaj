@@ -1,11 +1,13 @@
 import { describe, it, expect, vi } from 'vitest'
-import { nextShuttleRate, createShuttleController } from '../shuttle'
+import { nextShuttleRate, createShuttleController, formatShuttleRate } from '../shuttle'
 import { createPlaybackClock } from '../playback-clock'
 
 describe('nextShuttleRate — pure rate-stepping', () => {
-  it('steps the same direction 1x -> 2x -> 4x, capped at 4x', () => {
+  it('steps the same direction 1x -> 1.5x -> 2x -> 4x, capped at 4x (§532: 1.5x added)', () => {
     let rate = nextShuttleRate(0, 1)
     expect(rate).toBe(1)
+    rate = nextShuttleRate(rate, 1)
+    expect(rate).toBe(1.5)
     rate = nextShuttleRate(rate, 1)
     expect(rate).toBe(2)
     rate = nextShuttleRate(rate, 1)
@@ -18,17 +20,19 @@ describe('nextShuttleRate — pure rate-stepping', () => {
     let rate = nextShuttleRate(0, -1)
     expect(rate).toBe(-1)
     rate = nextShuttleRate(rate, -1)
+    expect(rate).toBe(-1.5)
+    rate = nextShuttleRate(rate, -1)
     expect(rate).toBe(-2)
     rate = nextShuttleRate(rate, -1)
     expect(rate).toBe(-4)
   })
 
   it('the opposite direction resets to that direction at 1x', () => {
-    const forward2x = nextShuttleRate(nextShuttleRate(0, 1), 1)
+    const forward2x = nextShuttleRate(nextShuttleRate(nextShuttleRate(0, 1), 1), 1)
     expect(forward2x).toBe(2)
     expect(nextShuttleRate(forward2x, -1)).toBe(-1)
 
-    const backward4x = nextShuttleRate(nextShuttleRate(nextShuttleRate(0, -1), -1), -1)
+    const backward4x = nextShuttleRate(nextShuttleRate(nextShuttleRate(nextShuttleRate(0, -1), -1), -1), -1)
     expect(backward4x).toBe(-4)
     expect(nextShuttleRate(backward4x, 1)).toBe(1)
   })
@@ -82,12 +86,15 @@ describe('createShuttleController', () => {
     expect(clock.get()).toBe(10)               // the shuttle isn't driving the clock
   })
 
-  it('repeating forward bumps the engine rate 1x -> 2x -> 4x (audible), never the seek-loop', () => {
+  it('repeating forward bumps the engine rate 1x -> 1.5x -> 2x -> 4x (audible), never the seek-loop', () => {
     const clock = createPlaybackClock(0)
     const { deps, play, setRate, fake } = makeDeps(clock)
     const controller = createShuttleController(deps)
 
     controller.press(1)                          // real play @1x
+    controller.press(1)                          // -> 1.5x (§532)
+    expect(setRate).toHaveBeenLastCalledWith(1.5)
+    expect(controller.getRate()).toBe(1.5)
     controller.press(1)                          // -> 2x, STILL real playback
     expect(setRate).toHaveBeenLastCalledWith(2)
     expect(controller.getRate()).toBe(2)
@@ -176,6 +183,7 @@ describe('createShuttleController', () => {
     const { deps, fake } = makeDeps(clock, () => 100)
     const controller = createShuttleController(deps)
     controller.press(-1)  // -1x reverse seek-loop
+    controller.press(-1)  // -> -1.5x (§532)
     controller.press(-1)  // -> -2x
     expect(controller.getRate()).toBe(-2)
     fake.pump(0)          // establishes the frame baseline, no time delta yet
@@ -225,5 +233,31 @@ describe('createShuttleController', () => {
     fake.pump(200)
     expect(grain).toHaveBeenLastCalledWith(clock.get(), -1)
     c.stop()
+  })
+
+  it('§532: reports every rate change (press, stop, and a stop of its own) for the speed badge', () => {
+    const clock = createPlaybackClock(50)
+    const { deps, fake } = makeDeps(clock)
+    const seen: number[] = []
+    const controller = createShuttleController({ ...deps, onRateChange: (r) => seen.push(r) })
+    controller.press(1)
+    controller.press(1)
+    controller.stop()
+    expect(seen).toEqual([1, 1.5, 0])
+    controller.press(-1)
+    fake.pump(0)
+    clock.set(10) // an external seek during the reverse loop stops the shuttle by itself
+    fake.pump(16)
+    expect(seen).toEqual([1, 1.5, 0, -1, 0])
+    expect(controller.getRate()).toBe(0)
+  })
+})
+
+describe('§532 formatShuttleRate', () => {
+  it('is the number and a times sign: 1.5×, 2×, -1×, -4×', () => {
+    expect(formatShuttleRate(1.5)).toBe('1.5×')
+    expect(formatShuttleRate(2)).toBe('2×')
+    expect(formatShuttleRate(-1)).toBe('-1×')
+    expect(formatShuttleRate(-4)).toBe('-4×')
   })
 })

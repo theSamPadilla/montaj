@@ -226,6 +226,30 @@ describe('VideoEditor — T9 ripple-delete binding', () => {
   })
 })
 
+describe('VideoEditor — §532 J/K/L speed badge in the playback bar', () => {
+  const press = (key: string) => act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key })) })
+  const badge = () => screen.queryByTestId('playback-speed')
+
+  it('L steps 1x -> 1.5x -> 2x and the bar shows the speed beside the timecode; K hides it; 1x shows nothing; J shows -1x', async () => {
+    render(<VideoEditor project={makeVideoProject()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} slots={{ exportActions: <div /> }} />)
+    await screen.findByTestId('preview-timecode')
+    expect(badge()).toBeNull()
+    await press('l')
+    expect(badge()).toBeNull() // 1x: no badge
+    await press('l')
+    expect(badge()?.textContent).toBe('1.5×')
+    // beside the timecode, in the playback bar (not on the video)
+    expect(screen.getByTestId('preview-timecode').parentElement?.contains(badge())).toBe(true)
+    await press('l')
+    expect(badge()?.textContent).toBe('2×')
+    await press('k')
+    expect(badge()).toBeNull()
+    await press('j')
+    expect(badge()?.textContent).toBe('-1×')
+    await press('k')
+  })
+})
+
 describe('VideoEditor — T9 command palette', () => {
   it('Cmd+K opens the palette listing commands', async () => {
     const adapter = makeFakeAdapter()

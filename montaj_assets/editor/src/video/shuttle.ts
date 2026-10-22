@@ -2,14 +2,14 @@ import type { PlaybackClock } from './playback-clock'
 
 /**
  * J/K/L shuttle. L plays forward, J plays backward, K stops. Repeating the same
- * direction doubles the rate (1x -> 2x -> 4x, capped); the opposite direction
- * resets to that direction at 1x.
+ * direction steps the rate up SHUTTLE_STEPS (1x -> 1.5x -> 2x -> 4x, capped;
+ * §532 added 1.5x); the opposite direction resets to that direction at 1x.
  *
  * Two mechanisms, split by what can carry audio:
  *
- *  - **Forward (1x/2x/4x) IS real playback, with sound.** The engine has a live
+ *  - **Forward (1x/1.5x/2x/4x) IS real playback, with sound.** The engine has a live
  *    transport rate (`deps.setRate`): project time advances R× and audio is
- *    pitch-corrected via a streaming time-stretch, so 2x/4x forward is audible,
+ *    pitch-corrected via a streaming time-stretch, so 1.5x/2x/4x forward is audible,
  *    not just faster. A forward press ensures the engine transport is running
  *    (via `deps.play()` — the same gesture-anchored path Space uses, AudioContext
  *    resume and all) and sets the rate to the shuttle's magnitude.
@@ -24,19 +24,28 @@ import type { PlaybackClock } from './playback-clock'
  *    reverse rate of its own (`MixClock.setRate` takes negatives), but the
  *    scheduler decodes forward only, so the picture could not follow it.
  */
-export type ShuttleRate = -4 | -2 | -1 | 0 | 1 | 2 | 4
+export type ShuttleRate = -4 | -2 | -1.5 | -1 | 0 | 1 | 1.5 | 2 | 4
+
+/** The shuttle's speeds, one per press in the same direction (§532, Sam: "mainly I want the 1.5x option"). */
+export const SHUTTLE_STEPS = [1, 1.5, 2, 4] as const
 
 /**
  * Pure rate-stepping — unit-testable without rAF. Pressing the same
- * direction again doubles the magnitude (capped at 4x); pressing the
- * opposite direction resets to that direction at 1x.
+ * direction again takes the next of SHUTTLE_STEPS (capped at the last);
+ * pressing the opposite direction resets to that direction at 1x.
  */
 export function nextShuttleRate(current: ShuttleRate, direction: 1 | -1): ShuttleRate {
   const sign = Math.sign(current)
   if (sign !== 0 && sign === direction) {
-    return (Math.min(4, Math.abs(current) * 2) * direction) as ShuttleRate
+    const i = SHUTTLE_STEPS.indexOf(Math.abs(current) as (typeof SHUTTLE_STEPS)[number])
+    return (SHUTTLE_STEPS[Math.min(SHUTTLE_STEPS.length - 1, i + 1)] * direction) as ShuttleRate
   }
   return direction
+}
+
+/** §532: the speed badge's text, the number and a times sign: `1.5×`, `-2×`. */
+export function formatShuttleRate(rate: number): string {
+  return `${rate}×`
 }
 
 export interface ShuttleDeps {
@@ -55,12 +64,15 @@ export interface ShuttleDeps {
    *  reverse seek-loop, and by stop() when the shuttle itself started playback. */
   pause: () => void
   /** Set the engine's live transport rate R. A forward press sets it to the
-   *  shuttle magnitude (1/2/4) for audible fast-forward; reverse and stop reset
+   *  shuttle magnitude (1/1.5/2/4) for audible fast-forward; reverse and stop reset
    *  it to 1x before pausing/scrubbing so nothing plays at a stale rate. */
   setRate: (rate: number) => void
   /** §190 T4: sound the reverse loop's position (a backwards scrub grain). Called
    *  at each step with the new time; the callee throttles. Absent: J stays silent. */
   grain?: (t: number, dir: -1) => void
+  /** §532: told every time the shuttle's rate changes (a press, K, or a stop of its own: an external seek, a real
+   *  play, either end of the timeline), with 0 for stopped. Drives the preview's speed badge. */
+  onRateChange?: (rate: ShuttleRate) => void
   /** Injectable for tests; defaults to `requestAnimationFrame`/`cancelAnimationFrame`. */
   raf?: (cb: (ms: number) => void) => number
   caf?: (id: number) => void
@@ -87,7 +99,7 @@ export function createShuttleController(deps: ShuttleDeps): ShuttleController {
   // Scrubber click, an arrow-key step, another editor gesture).
   let lastWritten: number | null = null
   // True while the shuttle itself is driving real forward playback (any of
-  // 1x/2x/4x). Tells stop() to pause it back, and tells a move to reverse to
+  // 1x/1.5x/2x/4x). Tells stop() to pause it back, and tells a move to reverse to
   // mute first.
   let realPlaying = false
 
@@ -97,8 +109,14 @@ export function createShuttleController(deps: ShuttleDeps): ShuttleController {
     lastMs = null
   }
 
+  function setShuttleRate(next: ShuttleRate) {
+    if (next === rate) return
+    rate = next
+    deps.onRateChange?.(next)
+  }
+
   function stop() {
-    rate = 0
+    setShuttleRate(0)
     stopLoop()
     deps.setRate(1)
     if (realPlaying) { deps.pause(); realPlaying = false }
@@ -138,7 +156,7 @@ export function createShuttleController(deps: ShuttleDeps): ShuttleController {
       const next = nextShuttleRate(rate, direction)
 
       if (next > 0) {
-        // FORWARD 1x/2x/4x = REAL playback at the engine transport rate — with
+        // FORWARD 1x/1.5x/2x/4x = REAL playback at the engine transport rate — with
         // audio, pitch-corrected. Drop any reverse seek-loop, make sure the
         // engine is playing (resuming the AudioContext), then set the rate.
         // Ownership (`realPlaying`) is only claimed when the shuttle itself
@@ -148,7 +166,7 @@ export function createShuttleController(deps: ShuttleDeps): ShuttleController {
         stopLoop()
         if (!deps.isPlaying()) { deps.play(); realPlaying = true }
         deps.setRate(next)
-        rate = next
+        setShuttleRate(next)
         return
       }
 
@@ -158,7 +176,7 @@ export function createShuttleController(deps: ShuttleDeps): ShuttleController {
       deps.setRate(1)
       if (deps.isPlaying()) deps.pause()
       realPlaying = false
-      rate = next
+      setShuttleRate(next)
       startLoopIfNeeded()
     },
     stop,
