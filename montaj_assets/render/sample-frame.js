@@ -314,6 +314,7 @@ if (isMain) {
   let atArg         = null
   let sdrCurveArg   = null
   let preferProxyArg = false
+  let rawArg        = false
   let clampToEndArg = false
   let sceneArg      = null
   // shared
@@ -336,6 +337,7 @@ if (isMain) {
     if (a === '--sdr-curve')    { sdrCurveArg   = argv[++i]; continue }
     if (a === '--clamp-to-end') { clampToEndArg = true; continue }
     if (a === '--prefer-proxy') { preferProxyArg = true; continue }
+    if (a === '--raw')          { rawArg = true; continue }
     if (a === '--scene')        { sceneArg      = argv[++i] ?? null; if (sceneArg === null) fail('missing_argument', '--scene needs a 3D id, or \'\' for the project\'s own'); continue }
     if (a === '--out')          { outArg        = argv[++i]; continue }
   }
@@ -390,7 +392,7 @@ if (isMain) {
         outPath: resolve(outArg),
         sdrCurve: sdrCurveArg,
       })
-      : sampleFrame({
+      : (rawArg ? sampleRawFrame : sampleFrame)({
         projectJson: resolve(projectArg),
         atSeconds: atArg,
         outPath: resolve(outArg),
@@ -1769,5 +1771,67 @@ function shouldUseProxy(item, preferProxy, exists) {
   if (item.remove_bg && item.nobg_src) return false
   return !!exists(item.proxySrc)
 }
+
+/**
+ * The topmost video item of a resolved scene (the one the picture shows, by the
+ * editor's track order), or null. Pure: the raw sampler's source choice.
+ */
+export function pickRawVideo(items, layerOf = {}) {
+  const videos = items.filter(ri => ri.kind === 'video')
+  if (!videos.length) return null
+  const layer = ri => layerOf[ri.trackIdx] ?? ri.trackIdx
+  return videos.reduce((top, ri) => (layer(ri) >= layer(top) ? ri : top))
+}
+
+/** Source seconds under timeline time `at` for a clip, in its own file's coordinates. */
+export function rawSeekSeconds(item, at) {
+  return Math.max(0, (item.inPoint ?? 0) + (item.speed ?? 1) * Math.max(0, at - item.start))
+}
+
+/**
+ * RAW sample: the untouched SOURCE frame under the playhead. Same clip choice as
+ * sampleFrame (resolveAt, topmost video), but the clip's ORIGINAL file is decoded
+ * directly with ffmpeg: no crop, zoom/transform, fit, grade, images, overlays or
+ * captions, and no browser. Source resolution and colour as stored (an HDR source
+ * is not tone-mapped). With no video at `atSeconds` the frame is black at project size.
+ */
+export async function sampleRawFrame({ projectJson, atSeconds, outPath, clampToEnd = false, projectDir: projectDirOpt = null }) {
+  if (!outPath) throw new Error('outPath is required')
+  if (atSeconds == null) throw new Error('atSeconds is required')
+  let projectPath = null
+  let project = projectJson
+  if (typeof projectJson === 'string') {
+    projectPath = resolve(projectJson)
+    if (!existsSync(projectPath)) throw new Error(`project.json not found: ${projectPath}`)
+    project = JSON.parse(readFileSync(projectPath, 'utf8'))
+  }
+  const projectDir = projectPath ? dirname(projectPath) : projectDirOpt
+  const resolved = deepClone(project)
+  if (projectDir) resolveProjectPaths(resolved, projectDir)
+  const fps = resolved.settings?.fps ?? 30
+  if (clampToEnd) atSeconds = clampAtToEnd(atSeconds, getTotalDurationSeconds(resolved), fps).at
+  const total = getTotalDurationSeconds(resolved)
+  if (total > 0 && atSeconds > total) throw new Error(`Requested timestamp ${atSeconds} is past project end ${total}`)
+
+  const scene = resolveAt(withEnabledItemTracks(resolved), atSeconds, { variant: 'render' })
+  const ri = pickRawVideo(scene.items, trackLayerPositions(trackItems(resolved)))
+  mkdirSync(dirname(outPath), { recursive: true })
+  let args
+  if (ri && ri.item.src) {
+    const seek = rawSeekSeconds(ri.item, atSeconds)
+    const fast = Math.max(0, seek - SEEK_PREROLL_S)
+    log(`raw: decoding ${basename(ri.item.src)} at source t=${seek.toFixed(3)}s`)
+    args = ['-y', '-v', 'error', ...(Number(ffSeconds(fast)) > 0 ? ['-ss', ffSeconds(fast)] : []),
+      '-i', ri.item.src, '-ss', ffSeconds(seek - fast), '-frames:v', '1', '-update', '1', outPath]
+  } else {
+    const [w, h] = resolved.settings?.resolution ?? [1080, 1920]
+    log('raw: no video under this time, writing a black frame')
+    args = ['-y', '-v', 'error', '-f', 'lavfi', '-i', `color=c=black:s=${w}x${h}`, '-frames:v', '1', '-update', '1', outPath]
+  }
+  const r = spawnSync(FFMPEG, args, { encoding: 'utf8', timeout: 60_000 })
+  if (r.status !== 0) throw new Error(`ffmpeg raw frame extract failed: ${ffmpegErrorTail(r.stderr)}`)
+  return { pngPath: outPath }
+}
+
 
 export { shouldUseProxy, resolveVideoSource, buildFrameCacheKey, buildOverlayCacheKey, SAMPLE_CACHE_VERSION }

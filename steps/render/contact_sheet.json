@@ -8,6 +8,7 @@
     { "name": "every", "type": "float", "required": false, "description": "Sample every N seconds across the project (must be > 0; not combined with --at; capped at 120 samples)" },
     { "name": "cols", "type": "int", "default": 6, "description": "Tiles per row" },
     { "name": "tile-width", "type": "int", "default": 320, "description": "Tile width in px" },
+    { "name": "raw", "type": "bool", "required": false, "default": false, "description": "Tile the untouched SOURCE frame under each time instead of the composite: no crop, zoom, fit, grade, image items, overlays or captions. Use it to read the footage itself without making a stripped copy of the project. A time with no video is black." },
     { "name": "frames-dir", "type": "path", "required": false, "outKind": "write", "description": "Keep the sampled frame PNGs here (f_0000.png...) instead of discarding them, and report their paths" },
     { "name": "out", "type": "path", "required": true, "ext": ".png", "description": "Output PNG path" }
   ]

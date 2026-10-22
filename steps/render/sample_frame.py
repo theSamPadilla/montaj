@@ -50,9 +50,16 @@ def main():
                              "when a proxy exists — a fast path for quick previews. The proxy is "
                              "already SDR, so no HDR tone-map is applied; do not combine with "
                              "--sdr-curve. Falls back to the master per clip when no proxy exists.")
+    parser.add_argument("--raw", action="store_true",
+                        help="Sample the untouched SOURCE frame under --at: the clip the timeline shows "
+                             "there, decoded straight from its file, with no crop, zoom, fit, grade, "
+                             "image items, overlays or captions. For reading the footage itself.")
     parser.add_argument("--out", default=None,
                         help="Output PNG path (default: <project_dir>/render/samples/frame-<at>s.png)")
     args = parser.parse_args()
+
+    if args.raw and args.scene is not None:
+        fail("invalid_args", "--raw samples the timeline's source; it cannot combine with --scene.")
 
     if args.scene is not None:
         if args.scene != "" and not SCENE_ID.fullmatch(args.scene):
@@ -75,7 +82,7 @@ def main():
         samples_dir = os.path.join(project_dir, "render", "samples")
         os.makedirs(samples_dir, exist_ok=True)
         if args.scene is None:
-            name = f"frame-{args.at}s.png"
+            name = f"frame-{args.at}s-raw.png" if args.raw else f"frame-{args.at}s.png"
         else:
             name = f"3d-{args.scene}-{args.at}s.png" if args.scene else f"3d-{args.at}s.png"
         out = os.path.join(samples_dir, name)
@@ -90,6 +97,9 @@ def main():
 
     if args.prefer_proxy:
         cmd.append("--prefer-proxy")
+
+    if args.raw:
+        cmd.append("--raw")
 
     if args.scene is not None:
         cmd += ["--scene", args.scene]
