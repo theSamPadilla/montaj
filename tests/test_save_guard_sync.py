@@ -9,8 +9,9 @@ pull (trusted `tool` + origin `sync`) and the shell's human resolve (trusted `to
 `tool` + `app`, `editor` + `drive`, a step run by any of them, serve's own maintenance heals) is refused with the
 binding 409 `{"error": "sync_conflict", "fields": [...], "message": "..."}` when it touches a clashed name.
 
-Unset: serve never reads a sidecar and behaves exactly as before. Set but unreadable (no folder, a corrupt or
-unknown sidecar, an id that cannot name a folder): fail closed, every non-human write is refused.
+Unset: serve never reads a sidecar and behaves exactly as before. Set but unreadable (a corrupt or unknown
+sidecar, a state folder that exists but cannot be read, an id that cannot name a folder): fail closed, every non-human
+write is refused. A state folder that does not exist at all records no clash (review 40, 3a).
 
 The design is montaj-app docs/plans/s482-m4-design.md §4 (its 15 pytest cases are marked `case N`). Real FastAPI
 app, real lock; every path lives under tmp_path."""
@@ -1049,7 +1050,8 @@ def _corrupt(state, how, pid=PID):
         raise AssertionError(how)
 
 
-CORRUPT = ["no-state-dir", "state-dir-is-a-file", "project-folder-is-a-file", "not-json", "torn", "v2", "v-true",
+# "no-state-dir" is not here: a state folder that does not exist records no clash (review 40, 3a, below).
+CORRUPT = ["state-dir-is-a-file", "project-folder-is-a-file", "not-json", "torn", "v2", "v-true",
            "other-project", "fields-not-a-list", "no-clashes", "bad-clash", "array", "a-folder", "huge", "unreadable"]
 
 
@@ -1412,3 +1414,549 @@ def test_unit_no_env_var_load_is_never_reached_by_check_sync(ws, monkeypatch):
 
     monkeypatch.setattr(_sc(), "load", boom)
     save_guard.check_sync(AI, PID, fields=["tracks"])
+
+
+# ══ review 40 (sg-review-40.md): the fixes ═══════════════════════════════════
+#
+# 1   a save is checked on every field it really changes on disk (after the merge and normalize_tracks), not only on
+#     the body's keys, and a value that changes type counts as changed.
+# 3a  a state folder that does not exist records no clash: a project never synced writes as with sync off. A state
+#     folder that exists but cannot be read, a dangling link, or a project's own unreadable folder still fail closed.
+# 3b  with no launch secret a resolve is refused `untrusted` (403), sidecar sure or not, so the app can say "restart".
+# 4   a resolve writes only the fields and files of ITS clash id; a field it changes unnamed may not be another
+#     clash's.
+# lows: /files and delete_files check under the project lock; a download is checked again as it lands; speech_text
+#     and glass_plate check their files again under the lock; the default outputs of sample_frame and export_editor
+#     are guarded; Windows spellings of a relpath (a trailing dot or space, a `::$DATA` stream) match.
+
+ROOT = Path(__file__).resolve().parent.parent
+LEGACY_TRACKS = [[{"id": "clip-0", "type": "video", "src": "/x.mp4", "start": 0, "end": 1}]]
+UNTRUSTED_MESSAGE = "Montaj could not confirm this resolve, so nothing was saved. Restart Montaj and try again."
+
+
+def _untrusted(resp, names):
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == {"error": "untrusted", "fields": list(names), "message": UNTRUSTED_MESSAGE}
+
+
+def _tracks(d):
+    return json.loads(_disk(d))["tracks"]
+
+
+# ── 1: the fields a save really changes ───────────────────────────────────────
+
+
+@pytest.mark.parametrize("headers", [AI, TRUSTED_AI, TOOL, APP, DRIVE], ids=["ai", "trusted-ai", "tool", "tool-app",
+                                                                          "drive"])
+@pytest.mark.parametrize("body", [{"name": "second"}, {"notes": []}, {"status": "final"}],
+                         ids=["name", "notes", "status"])
+def test_r1_a_save_that_normalises_a_clashed_tracks_it_did_not_name_is_refused(ws, state, recorder, headers, body):
+    """A1b/A1c: legacy tracks in clash, and a save of another field with valid reads. normalize_tracks would rewrite
+    tracks, so the save is refused naming tracks, and nothing is written or published."""
+    d = _legacy(ws)
+    _sidecar(state, fields=["tracks"])
+    before = _disk(d)
+    _refused(_put(ws, body, headers, read=headers is not DRIVE), ["tracks"])
+    assert _disk(d) == before
+    assert recorder.published == []
+
+
+def test_r1_a_legacy_save_with_tracks_unclashed_still_normalises(ws, state):
+    d = _legacy(ws)
+    _sidecar(state, fields=["settings"])
+    assert _put(ws, {"name": "second"}, AI).status_code == 200
+    assert isinstance(_tracks(d)[0], dict)
+
+
+@pytest.mark.parametrize("headers", [EDITOR, SYNC], ids=["editor", "sync"])
+def test_r1_the_window_and_the_pull_still_normalise_a_clashed_tracks(ws, state, headers):
+    d = _legacy(ws)
+    _sidecar(state, fields=["tracks"])
+    assert _put(ws, {"name": "second"}, headers, read=headers is not EDITOR).status_code == 200
+    assert isinstance(_tracks(d)[0], dict)
+
+
+def test_r1_a_resolve_whose_save_normalises_another_clashs_field_is_refused(ws, state):
+    d = _legacy(ws)
+    _sidecar(state, fields=["name", "tracks"], clashes=[{"id": "c1", "fields": ["name"], "files": []},
+                                                        {"id": "c2", "fields": ["tracks"], "files": []}])
+    before = _disk(d)
+    _refused(_put(ws, {"name": "second"}, RESOLVE("c1")), ["tracks"])
+    assert _disk(d) == before
+
+
+def test_r1_a_resolve_may_normalise_a_field_no_clash_names(ws, state):
+    d = _legacy(ws)
+    _sidecar(state, fields=["name"])
+    resp = _put(ws, {"name": "second"}, RESOLVE("c1"))
+    assert resp.status_code == 200, resp.text
+    assert json.loads(_disk(d))["name"] == "second" and isinstance(_tracks(d)[0], dict)
+
+
+def test_r1_changed_fields_counts_a_value_that_changes_type():
+    """True == 1 == 1.0 in Python, never on disk: a write of 1 over true changes the field."""
+    sc = _sc()
+    before = {"a": True, "b": 1, "c": {"x": 1, "y": [1, "s"]}, "d": None}
+    after = {"a": 1, "b": 1.0, "c": {"y": [1, "s"], "x": 1}, "d": None}
+    assert sc.changed_fields(before, after) == ["a", "b"]
+    assert sc.changed_fields({"a": [True]}, {"a": [1]}) == ["a"]
+
+
+def test_r1_pin_a_step_that_normalises_a_clashed_tracks_it_did_not_mean_to_change_is_refused(tmp_path, state):
+    from lib.project_lock import update_project
+    d = tmp_path / "lib-proj"
+    d.mkdir()
+    write_json_atomic(d / "project.json", {"id": PID, "tracks": LEGACY_TRACKS, "notes": []})
+    _sidecar(state, fields=["tracks"])
+    before = (d / "project.json").read_bytes()
+    with pytest.raises(_sc().SyncConflict) as e:
+        update_project(d / "project.json", lambda p: {**normalize_tracks(p), "notes": [{"id": "n2"}]})
+    assert e.value.body["fields"] == ["tracks"]
+    assert (d / "project.json").read_bytes() == before
+
+
+def test_r1_pin_translation_leaves_a_clashed_legacy_tracks_as_it_is(ws, state):
+    d = _project(ws, tracks=LEGACY_TRACKS, captions={"segments": []})
+    _sidecar(state, fields=["tracks"])
+    read = {"x-montaj-read-revisions": json.dumps(revisions_of(normalize_tracks(json.loads(_disk(d))), ["captions"]))}
+    resp = _client().post(f"/api/projects/{PID}/captions/translation", json={"show": ["source"]},
+                          headers={**TOOL, **read})
+    assert "sync_conflict" not in resp.text, resp.text
+    assert _tracks(d) == LEGACY_TRACKS
+
+
+def test_r1_pin_include_asset_leaves_a_clashed_legacy_tracks_as_it_is(ws, state, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".montaj" / "profiles" / "brand" / "assets").mkdir(parents=True)
+    (home / ".montaj" / "profiles" / "brand" / "assets" / "logo.png").write_bytes(b"png")
+    monkeypatch.setenv("HOME", str(home))
+    d = _project(ws, profile="brand", assets=[], tracks=LEGACY_TRACKS)
+    _sidecar(state, fields=["tracks"])
+    resp = _client().post(f"/api/projects/{PID}/assets", json={"from": {"profile": "brand", "filename": "logo.png"}},
+                          headers=DRIVE)
+    assert resp.status_code == 200, resp.text
+    assert _tracks(d) == LEGACY_TRACKS
+
+
+# ── 3a: a state folder that does not exist ────────────────────────────────────
+
+
+@pytest.fixture
+def no_state_dir(ws, tmp_path, monkeypatch):
+    """MONTAJ_SYNC_STATE_DIR names a folder the app never made: nothing at that name at all."""
+    missing = tmp_path / "runtime" / "studio-sync"
+    monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", str(missing))
+    return missing
+
+
+@pytest.mark.parametrize("headers", [AI, TRUSTED_AI, TOOL, APP, DRIVE], ids=["ai", "trusted-ai", "tool", "tool-app",
+                                                                          "drive"])
+def test_r3a_a_missing_state_folder_is_no_clash_for_a_project_never_synced(ws, no_state_dir, headers):
+    d = _project(ws)
+    resp = _put(ws, {"notes": [], "tracks": [{"id": "trk-9", "items": []}]}, headers, read=headers is not DRIVE)
+    assert resp.status_code == 200, resp.text
+    assert _tracks(d)[0]["id"] == "trk-9"
+    assert not no_state_dir.exists()
+
+
+def test_r3a_a_missing_state_folder_lets_the_heals_and_the_steps_write(ws, no_state_dir, tmp_path):
+    from lib.project_lock import update_project
+    d = _legacy(ws)
+    assert _client().get(f"/api/projects/{PID}", headers=AI).status_code == 200
+    assert isinstance(_tracks(d)[0], dict)
+    path = _lib_project(tmp_path)
+    update_project(path, lambda p: {**p, "tracks": [{"id": "trk-1", "items": []}]})
+    assert json.loads(path.read_text())["tracks"][0]["id"] == "trk-1"
+    assert not no_state_dir.exists()
+
+
+def test_r3a_pin_a_state_folder_that_is_a_dangling_link_fails_closed(ws, tmp_path, monkeypatch):
+    link = tmp_path / "studio-sync"
+    link.symlink_to(tmp_path / "nowhere", target_is_directory=True)
+    monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", str(link))
+    _project(ws)
+    _refused(_put(ws, {"notes": []}, AI), ["notes"])
+
+
+def test_r3a_pin_a_state_folder_under_a_file_fails_closed(ws, tmp_path, monkeypatch):
+    (tmp_path / "a-file").write_text("x")
+    monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", str(tmp_path / "a-file" / "studio-sync"))
+    _project(ws)
+    _refused(_put(ws, {"notes": []}, AI), ["notes"])
+
+
+def _unreadable_dirs_apply():
+    return not (os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0))
+
+
+@pytest.mark.skipif(not _unreadable_dirs_apply(), reason="a mode-0 folder is readable here")
+def test_r3a_pin_an_unreadable_state_folder_fails_closed_for_every_project(ws, state):
+    _project(ws)
+    _project(ws, pid="never-synced")
+    state.chmod(0)
+    try:
+        _refused(_put(ws, {"notes": []}, AI), ["notes"])
+        _refused(_put(ws, {"notes": []}, AI, pid="never-synced"), ["notes"])
+        assert _put(ws, {"notes": []}, EDITOR, read=False).status_code == 200
+    finally:
+        state.chmod(0o755)
+
+
+@pytest.mark.skipif(not _unreadable_dirs_apply(), reason="a mode-0 folder is readable here")
+def test_r3a_pin_a_project_whose_own_state_folder_is_unreadable_fails_closed(ws, state):
+    _project(ws)
+    _project(ws, pid="never-synced")
+    (state / PID).mkdir()
+    (state / PID).chmod(0)
+    try:
+        _refused(_put(ws, {"notes": []}, AI), ["notes"])
+        assert _put(ws, {"notes": []}, AI, pid="never-synced").status_code == 200
+    finally:
+        (state / PID).chmod(0o755)
+
+
+# ── 3b: a resolve when the launch secret never arrived ────────────────────────
+
+
+def _no_secret(monkeypatch):
+    """The guard asked for, the launch secret never received: serve trusts no request."""
+    monkeypatch.setenv("MONTAJ_ENGINE_GUARD", "1")
+    monkeypatch.delenv("MONTAJ_SHELL_SECRET_STDIN", raising=False)
+    save_guard._state.update({"secret": None, "stdin_done": True, "logged": False, "secret_logged": True})
+    save_guard.startup()
+    assert save_guard._state["secret"] is None
+
+
+def test_r3b_without_the_launch_secret_a_resolve_is_untrusted_on_a_sure_sidecar(ws, state, monkeypatch):
+    _no_secret(monkeypatch)
+    d = _project(ws)
+    _sidecar(state, fields=["tracks"])
+    before = _disk(d)
+    _untrusted(_put(ws, {"tracks": []}, RESOLVE("c1"), read=False), ["tracks"])
+    assert _disk(d) == before
+
+
+@pytest.mark.parametrize("corrupt", ["state-dir-is-a-file", "not-json", "other-project"], indirect=True)
+def test_r3b_without_the_launch_secret_a_resolve_is_untrusted_on_an_unsure_sidecar(ws, corrupt, monkeypatch):
+    _no_secret(monkeypatch)
+    d = _project(ws)
+    before = _disk(d)
+    _untrusted(_put(ws, {"notes": []}, RESOLVE("c1"), read=False), ["notes"])
+    assert _disk(d) == before
+
+
+def test_r3b_without_the_launch_secret_every_other_write_keeps_the_binding_refusal(ws, state, monkeypatch):
+    _no_secret(monkeypatch)
+    _project(ws)
+    _sidecar(state, fields=["tracks"])
+    for headers in (AI, EDITOR, SYNC, TOOL, {**EDITOR, "x-montaj-write-origin": "resolve"}):
+        _refused(_put(ws, {"tracks": []}, headers, read=False), ["tracks"])
+
+
+def test_r3b_without_the_launch_secret_a_resolve_of_nothing_clashed_saves(ws, state, monkeypatch):
+    _no_secret(monkeypatch)
+    d = _project(ws)
+    _sidecar(state, fields=["tracks"])
+    assert _put(ws, {"notes": []}, RESOLVE("c1"), read=False).status_code == 200
+    assert json.loads(_disk(d)).get("notes") in ([], None)
+
+
+def test_r3b_pin_with_the_secret_a_resolve_without_it_is_still_the_binding_refusal(ws, state):
+    _project(ws)
+    _sidecar(state, fields=["tracks"])
+    headers = {k: v for k, v in RESOLVE("c1").items() if k != "x-montaj-shell"}
+    _refused(_put(ws, {"tracks": []}, headers, read=False), ["tracks"])
+
+
+# ── 4: a resolve writes only its own clash ────────────────────────────────────
+
+
+def test_r4_a_resolve_writes_only_its_own_clashs_fields(ws, state):
+    d = _project(ws, captions={"segments": []})
+    _sidecar(state, fields=["tracks", "captions"], clashes=[{"id": "c1", "fields": ["tracks"], "files": []},
+                                                           {"id": "c2", "fields": ["captions"], "files": []}])
+    before = _disk(d)
+    _refused(_put(ws, {"tracks": [], "captions": {"segments": [1]}}, RESOLVE("c1")), ["captions"])
+    _refused(_put(ws, {"tracks": [], "name": "renamed"}, RESOLVE("c1")), ["name"])
+    _refused(_put(ws, {"notes": []}, RESOLVE("c2")), ["notes"])
+    assert _disk(d) == before
+    assert _put(ws, {"tracks": [{"id": "trk-9", "items": []}]}, RESOLVE("c1")).status_code == 200
+    assert _put(ws, {"captions": {"segments": []}}, RESOLVE("c2")).status_code == 200
+
+
+def test_r4_a_resolve_writes_only_its_own_clashs_files(ws, state):
+    d = _project(ws)
+    (d / "overlays").mkdir()
+    (d / "models" / "robot").mkdir(parents=True)
+    _sidecar(state, files=["overlays/a.jsx", "models/robot/"], clashes=[
+        {"id": "c1", "fields": [], "files": ["overlays/a.jsx"]},
+        {"id": "c2", "fields": [], "files": ["models/robot/"]}])
+    _refused(_write_file(d / "overlays" / "b.jsx", RESOLVE("c1")), ["overlays/b.jsx"])
+    _refused(_write_file(d / "models" / "robot" / "rig.json", RESOLVE("c1")), ["models/robot/rig.json"])
+    _refused(_write_file(d / "overlays" / "a.jsx", RESOLVE("c2")), ["overlays/a.jsx"])
+    assert not (d / "overlays" / "b.jsx").exists() and not (d / "models" / "robot" / "rig.json").exists()
+    assert _write_file(d / "overlays" / "a.jsx", RESOLVE("c1")).status_code == 200
+    assert _write_file(d / "models" / "robot" / "rig.json", RESOLVE("c2")).status_code == 200
+
+
+def test_r4_a_resolve_of_a_whole_project_write_is_refused(ws, state):
+    _sidecar(state, fields=["tracks"])
+    assert save_guard.sync_refusal(PID, RESOLVE("c1"), everything=True) == _sc().refusal(["*"])
+
+
+def test_r4_pin_a_resolve_on_an_unsure_set_still_passes(ws, state):
+    _project(ws)
+    (state / PID).mkdir()
+    (state / PID / "clash-set.json").write_text("{not json")
+    assert _put(ws, {"notes": [], "name": "x"}, RESOLVE("c1")).status_code == 200
+
+
+# ── lows: the time-of-check gaps ──────────────────────────────────────────────
+
+
+@pytest.fixture
+def short_lock(monkeypatch):
+    import lib.project_lock as lock_mod
+    monkeypatch.setattr(lock_mod, "DEFAULT_TIMEOUT", 0.3)
+
+
+def test_low_a_files_write_checks_and_writes_under_the_project_lock(ws, state, short_lock):
+    d = _project(ws)
+    (d / "overlays").mkdir()
+    _sidecar(state, files=["overlays/elsewhere.jsx"])
+    with project_lock(d / "project.json"):
+        resp = _write_file(d / "overlays" / "title.jsx")
+    assert resp.status_code == 503, resp.text
+    assert not (d / "overlays" / "title.jsx").exists()
+    assert _write_file(d / "overlays" / "title.jsx").status_code == 200
+
+
+def test_low_delete_files_checks_and_deletes_under_the_project_lock(ws, state, short_lock):
+    d = _project(ws)
+    (d / "overlays").mkdir()
+    (d / "overlays" / "title.jsx").write_text("x")
+    _sidecar(state, files=["overlays/elsewhere.jsx"])
+    with project_lock(d / "project.json"):
+        resp = _client().request("DELETE", f"/api/projects/{PID}/files", json={"paths": ["overlays/title.jsx"]},
+                                 headers=DRIVE)
+    assert resp.status_code == 503, resp.text
+    assert (d / "overlays" / "title.jsx").exists()
+
+
+@pytest.mark.parametrize("headers", [EDITOR, SYNC], ids=["editor", "sync"])
+def test_low_the_window_and_the_pull_take_no_lock_for_files_and_delete(ws, state, short_lock, headers):
+    d = _project(ws)
+    (d / "overlays").mkdir()
+    (d / "overlays" / "old.jsx").write_text("x")
+    _sidecar(state, files=["overlays/elsewhere.jsx"])
+    with project_lock(d / "project.json"):
+        assert _write_file(d / "overlays" / "title.jsx", headers).status_code == 200
+        resp = _client().request("DELETE", f"/api/projects/{PID}/files", json={"paths": ["overlays/old.jsx"]},
+                                 headers={**EDITOR, **({} if headers is EDITOR else {})})
+        assert resp.status_code == 200, resp.text
+
+
+def _mock_download(monkeypatch, handler):
+    import httpx
+    import lib.remote_io as rio
+    real = rio._make_async_client
+    monkeypatch.setattr(rio, "_make_async_client", lambda transport=None: real(httpx.MockTransport(handler)))
+    monkeypatch.setenv("MONTAJ_HTTP_ALLOWED_HOSTS", "example.com")
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_low_a_download_is_checked_again_as_it_lands(ws, state, monkeypatch, is_async):
+    """A clash recorded while the file downloads: the landing is refused for that file, which is never created."""
+    import httpx
+    d = _project(ws)
+    data = b"\x89PNG-bytes"
+
+    def handler(request):
+        _sidecar(state, files=["models/robot/mesh.png"])   # recorded while it downloads
+        return httpx.Response(200, content=data, headers={"content-type": "image/png"})
+
+    _mock_download(monkeypatch, handler)
+    body = {"downloads": [{"url": "https://example.com/a.png", "destPath": "models/robot/mesh.png",
+                           "contentType": "image/png", "sizeBytes": len(data)}], "_async": is_async}
+    resp = _client().post(f"/api/projects/{PID}/download", json=body, headers=AI)
+    if is_async:
+        assert resp.status_code == 202, resp.text
+        job = _client().get(f"/api/projects/{PID}/download/jobs/{resp.json()['job_id']}").json()
+        results = job["result"]["results"] if "result" in job else job["results"]
+    else:
+        assert resp.status_code == 207, resp.text
+        results = resp.json()["results"]
+    assert results[0]["status"] == "error" and results[0]["error"] == "sync_conflict", results
+    assert results[0]["fields"] == ["models/robot/mesh.png"]
+    folder = d / "models" / "robot"
+    assert not (folder / "mesh.png").exists()
+    assert [p.name for p in folder.iterdir()] == [] if folder.is_dir() else True
+
+
+def test_low_a_download_by_the_window_lands_after_a_clash_is_recorded(ws, state, monkeypatch):
+    import httpx
+    d = _project(ws)
+    data = b"\x89PNG-bytes"
+
+    def handler(request):
+        _sidecar(state, files=["models/robot/mesh.png"])
+        return httpx.Response(200, content=data, headers={"content-type": "image/png"})
+
+    _mock_download(monkeypatch, handler)
+    body = {"downloads": [{"url": "https://example.com/a.png", "destPath": "models/robot/mesh.png",
+                           "contentType": "image/png", "sizeBytes": len(data)}]}
+    resp = _client().post(f"/api/projects/{PID}/download", json=body, headers=EDITOR)
+    assert resp.status_code == 200, resp.text
+    assert (d / "models" / "robot" / "mesh.png").read_bytes() == data
+
+
+def _run_speech_text(pj, state, origin):
+    env = {**os.environ, "MONTAJ_SYNC_STATE_DIR": str(state), "MONTAJ_WRITE_ORIGIN": origin}
+    return subprocess.run([sys.executable, str(ROOT / "steps" / "speech" / "speech_text.py"), "--project", str(pj)],
+                          capture_output=True, text=True, env=env, cwd=str(ROOT))
+
+
+def test_low_speech_text_checks_its_file_again_under_the_lock(tmp_path, state):
+    pj, pid, _edited = _speech_env(tmp_path)
+    _sidecar(state, pid=pid, files=["speech-text.md"])
+    out = _run_speech_text(pj, state, "ai")
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert json.loads(out.stderr.strip().splitlines()[-1]) == _sc().refusal(["speech-text.md"])
+    assert not (pj.parent / "speech-text.md").exists()
+    out = _run_speech_text(pj, state, "human")
+    assert out.returncode == 0, out.stderr
+    assert (pj.parent / "speech-text.md").exists()
+
+
+def _glass_plate_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("glass_plate_step_r40", ROOT / "steps" / "render" / "glass_plate.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_low_glass_plate_checks_its_frames_folder_again_under_the_lock(tmp_path, state, monkeypatch, capsys):
+    gp = _glass_plate_module()
+    d = tmp_path / "gp"
+    d.mkdir()
+    write_json_atomic(d / "project.json", {"id": PID, "settings": {}, "tracks": [
+        {"id": "trk-0", "items": [{"id": "ov", "type": "overlay", "start": 0, "end": 1}]}]})
+
+    def fake_run(cmd, **kwargs):
+        stage = cmd[cmd.index("--out-dir") + 1]
+        frame = os.path.join(stage, "0000.jpg")
+        with open(frame, "wb") as f:
+            f.write(b"jpg")
+        _sidecar(state, files=["plates/ov/"])   # recorded while the plate rendered
+        out = json.dumps({"frames": [frame], "fps": 30, "size": [2, 2]}).encode()
+        return subprocess.CompletedProcess(cmd, 0, out, b"")
+
+    monkeypatch.setattr(gp.subprocess, "run", fake_run)
+    monkeypatch.setenv("MONTAJ_WRITE_ORIGIN", "ai")
+    monkeypatch.setattr(sys, "argv", ["glass_plate", "--project", str(d / "project.json"), "--item", "ov"])
+    with pytest.raises(SystemExit) as e:
+        gp.main()
+    assert e.value.code == 1
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1]) == _sc().refusal(["plates/ov/"])
+    assert not (d / "plates" / "ov" / "0000.jpg").exists()
+
+
+# ── lows: the default outputs inside the project ─────────────────────────────
+
+
+def test_low_sample_frame_with_no_out_is_guarded_on_its_default_folder(ws, state, ran):
+    _project(ws)
+    _sidecar(state, files=["render/samples/frame-1.000s.png"])
+    _refused(_step("sample_frame", {"project": PID, "at": 1.0}), ["render/samples/frame-1.000s.png"])
+    assert ran == []
+
+
+def test_low_export_editor_with_no_out_is_guarded_on_its_default_folder(ws, state, ran):
+    _project(ws)
+    _sidecar(state, files=["export/"])
+    _refused(_step("export_editor", {"project": PID}), ["export/"])
+    assert ran == []
+
+
+def test_low_default_outputs_run_beside_other_clashes_and_with_an_out_elsewhere(ws, state, ran, tmp_path):
+    d = _project(ws)
+    _sidecar(state, fields=["tracks"], files=["overlays/a.jsx", "export/"])
+    assert _step("sample_frame", {"project": PID, "at": 1.0}).status_code == 200
+    (d / "elsewhere").mkdir()
+    resp = _step("export_editor", {"project": PID, "out": str(d / "elsewhere")})
+    assert resp.status_code == 200, resp.text
+    assert len(ran) == 2
+
+
+# ── lows: Windows spellings of a relpath ──────────────────────────────────────
+
+
+@pytest.mark.parametrize("spelling", ["assets/new.png.", "assets/new.png ", "assets/new.png. .", "assets./new.png",
+                                      "assets /new.png", "Assets/NEW.png", "assets/new.png::$DATA",
+                                      "assets\\new.png."])
+def test_low_windows_spellings_of_a_relpath_compare_equal(spelling):
+    sc = _sc()
+    assert sc.file_key(spelling) == sc.file_key("assets/new.png")
+
+
+def test_low_windows_folder_spellings_keep_their_folder_mark():
+    sc = _sc()
+    assert sc.file_key("models/robot./") == sc.file_key("models/robot/") == "models/robot/"
+    assert sc.file_key("..") == ".." and sc.file_key("a/../b") == "a/../b"
+
+
+def test_low_a_trailing_dot_cannot_create_a_clashed_file_that_does_not_exist_yet(ws, state):
+    d = _project(ws)
+    (d / "assets").mkdir()
+    _sidecar(state, files=["assets/new.png"])
+    _refused(_write_file(d / "assets" / "new.png."), ["assets/new.png"])
+    _refused(_write_file(d / "assets" / "new.png "), ["assets/new.png"])
+    assert sorted(p.name for p in (d / "assets").iterdir()) == []
+    _sidecar(state, files=["assets/other.png."])
+    _refused(_write_file(d / "assets" / "other.png"), ["assets/other.png."])
+
+
+# ── dark parity for all of the above ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize("headers", [AI, TOOL, EDITOR, SYNC, RESOLVE("c1")], ids=["ai", "tool", "editor", "sync",
+                                                                               "resolve"])
+def test_dark_r40_a_legacy_save_is_byte_identical_with_the_var_unset_and_with_no_sidecar(
+        ws, tmp_path, monkeypatch, recorder, headers):
+    body = {"name": "second", "notes": []}
+    runs = []
+    for var in (None, str(tmp_path / "studio-sync")):
+        if var is None:
+            monkeypatch.delenv("MONTAJ_SYNC_STATE_DIR", raising=False)
+        else:
+            Path(var).mkdir(exist_ok=True)
+            monkeypatch.setenv("MONTAJ_SYNC_STATE_DIR", var)
+        d = _legacy(ws)
+        recorder.published.clear()
+        resp = _put(ws, body, headers, read=headers is not EDITOR)
+        runs.append((_answer(resp), list(recorder.published), _disk(d)))
+    assert runs[0] == runs[1]
+    assert runs[0][0][0] == 200
+
+
+def test_dark_r40_with_the_var_unset_nothing_new_is_read_compared_or_locked(ws, tmp_path, monkeypatch, short_lock):
+    d = _legacy(ws)
+    (d / "overlays").mkdir()
+    (d / "overlays" / "old.jsx").write_text("x")
+    unnamed = tmp_path / "studio-sync"
+    unnamed.mkdir()
+    _sidecar(unnamed, fields=["tracks", "name"], files=["overlays/a.jsx", "overlays/old.jsx"])
+    compared = []
+    monkeypatch.setattr(_sc(), "changed_fields", lambda *a, **k: compared.append(a) or [])
+    spy = _Spy(monkeypatch)
+    with project_lock(d / "project.json"):
+        assert _write_file(d / "overlays" / "a.jsx", DRIVE).status_code == 200
+        resp = _client().request("DELETE", f"/api/projects/{PID}/files", json={"paths": ["overlays/old.jsx"]},
+                                 headers=DRIVE)
+        assert resp.status_code == 200, resp.text
+    assert _put(ws, {"name": "second"}, AI).status_code == 200
+    assert _put(ws, {"name": "third"}, RESOLVE("c9")).status_code == 200
+    assert isinstance(_tracks(d)[0], dict)
+    assert compared == []
+    assert spy.touched("studio-sync") == [] and spy.touched("clash-set") == []
