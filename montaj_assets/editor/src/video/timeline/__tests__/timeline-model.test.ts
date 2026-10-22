@@ -552,6 +552,18 @@ describe('normalizeTracks / trackItems', () => {
     expect(normalizeTracks(p)).toBe(p)
   })
 
+  it('keeps minted trk-<hex> ids as they are (same object back), so every Mac reads one id', () => {
+    const p: Proj = {
+      id: 'p1',
+      tracks: [
+        { id: 'trk-0', items: [item('a')] },
+        { id: 'trk-3f9a0c', items: [item('b')] },
+      ],
+    }
+    expect(normalizeTracks(p)).toBe(p)
+    expect(tracksOf(p).map(t => t.id)).toEqual(['trk-0', 'trk-3f9a0c'])
+  })
+
   it('is idempotent and converges, so a second pass needs no write', () => {
     const once = normalizeTracks(legacy())
     const twice = normalizeTracks(once)

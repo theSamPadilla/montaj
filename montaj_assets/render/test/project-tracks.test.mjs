@@ -77,6 +77,12 @@ test('normalizeTracks: already-normalized project is returned as the same object
   assert.equal(normalizeTracks(p), p)
 })
 
+test('normalizeTracks: minted trk-<hex> ids are kept as they are (same object back)', () => {
+  const p = { id: 'p1', tracks: [{ id: 'trk-0', items: [item('a')] }, { id: 'trk-3f9a0c', items: [item('b')] }] }
+  assert.equal(normalizeTracks(p), p)
+  assert.deepEqual(normalizeTracks(p).tracks.map(t => t.id), ['trk-0', 'trk-3f9a0c'])
+})
+
 test('normalizeTracks: is idempotent and converges to the same object', () => {
   const once = normalizeTracks(legacyProject())
   const twice = normalizeTracks(once)
