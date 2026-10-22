@@ -2151,7 +2151,8 @@ def test_nulls_a_pull_deleting_a_clash_free_field_reads_removed_with_a_concurren
     assert "voiceover" not in json.loads(_disk(d))
 
     # A fresh read and an AI save on it: voiceover reads absent, and neither the sync check nor the revisions count it.
-    got = _client().get(f"/api/projects/{PID}", headers=AI)
+    got = _client().get(f"/api/projects/{PID}?fields=voiceover,name", headers=AI)
+    assert "voiceover" not in got.json()
     assert json.loads(got.headers["x-montaj-revisions"])["voiceover"] == absent
     ai = _put(ws, {"name": "third"}, AI)
     assert ai.status_code == 200, ai.text
@@ -2161,6 +2162,23 @@ def test_nulls_a_pull_deleting_a_clash_free_field_reads_removed_with_a_concurren
     stale = _put(ws, {"voiceover": pre["voiceover"]},
                  {**EDITOR, "x-montaj-read-revisions": json.dumps({"voiceover": seen["voiceover"]})}, read=False)
     assert stale.status_code == 200 and stale.headers.get("x-montaj-overrode") == "voiceover"
+
+
+def test_nulls_the_editor_save_first_then_the_pull_deleting_a_clash_free_field(ws, state, recorder):
+    """(d), the other order: the window's save lands first, then the pull on its earlier read of voiceover alone."""
+    d = _with_fields(ws)
+    _sidecar(state, fields=["captions"])
+    pre = json.loads(_disk(d))
+    pull_read = {"x-montaj-read-revisions": json.dumps(revisions_of(normalize_tracks(pre), ["voiceover"]))}
+    edit = {"tracks": [{"id": "trk-0", "items": []}, {"id": "trk-1", "items": []}]}
+    assert _put(ws, edit, EDITOR, read=False).status_code == 200
+    pulled = _put(ws, {"voiceover": None}, {**SYNC, **pull_read}, read=False)
+    assert pulled.status_code == 200, pulled.text
+    disk = json.loads(_disk(d))
+    assert "voiceover" not in disk and "voiceover" not in pulled.json()
+    assert disk["tracks"] == edit["tracks"]
+    assert _sc().changed_fields({**{k: v for k, v in pre.items() if k != "voiceover"}, **edit}, disk) == []
+    assert _put(ws, {"name": "third"}, AI).status_code == 200
 
 
 def test_nulls_pin_a_pulled_removal_is_marked_like_any_pulled_change(ws, recorder):
