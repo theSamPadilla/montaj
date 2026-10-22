@@ -21,7 +21,8 @@
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../../types'
 import { trackFor, valueAt } from '../../../keyframeOps'
-import { CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, trackItems } from '../../timeline-model'
+import { CAPTION_ROW_HEIGHT_PX, ROW_GAP_PX, VISUAL_ROW_HEIGHT_PX, computeDerivedTiming, moveItemAcrossTracks, normalizeTracks, trackItems } from '../../timeline-model'
+import { applyMoveDeltaToSelection } from '../../multiSelectOps'
 import { AUDIO_ITEM_INSET_PX, computeTimelineLayout } from '../draw'
 import {
   CAPTION_MIN_DURATION_S,
@@ -2596,6 +2597,181 @@ describe('multi-select move', () => {
       expect(visual(proj, 'c0').start).toBe(0)
       expect(visual(proj, 'c1').start).toBe(5)
     }
+  })
+})
+
+// ── Multi-select move across tracks ─────────────────────────────────────
+//
+// A group drag whose pointer ends over another visual row carries every
+// selected CLIP onto that row, at the times the horizontal half of the drag
+// gives them. Refused (snaps back to the press-time project, commits nothing)
+// when any clip would overlap something there. Audio and captions in the
+// selection only ever move horizontally.
+//
+//   row  track 4 — o4 10s–12s
+//   row  track 3 — o3 6s–8s
+//   row  track 2 — o2 3s–5s
+//   row  track 1 — o1 0s–2s
+//   band caption s0 1s–2s
+//   row  track 0 — v0 0s–10s (video)
+//   lane audio a0 1s–6s
+
+function groupProject(o4: { start: number; end: number } = { start: 10, end: 12 }): Project {
+  return {
+    id: 'p',
+    tracks: [
+      { id: 'trk-0', items: [{ id: 'v0', type: 'video', src: 'a.mp4', start: 0, end: 10, inPoint: 0, outPoint: 10, sourceDuration: 20 }] },
+      { id: 'trk-1', items: [{ id: 'o1', type: 'overlay', start: 0, end: 2 }] },
+      { id: 'trk-2', items: [{ id: 'o2', type: 'overlay', start: 3, end: 5 }] },
+      { id: 'trk-3', items: [{ id: 'o3', type: 'overlay', start: 6, end: 8 }] },
+      { id: 'trk-4', items: [{ id: 'o4', type: 'overlay', ...o4 }] },
+    ],
+    audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 1, end: 6, lane: 0 }] },
+    captions: { style: 'pop', segments: [{ id: 's0', text: 'hi', start: 1, end: 2 }] },
+  } as unknown as Project
+}
+
+function groupCtx(overrides: Partial<PointerContext> = {}): PointerContext {
+  return makeContext({ project: groupProject(), snapConfig: ZERO_SNAP, selectedIds: ['o1', 'o2', 'o3'], ...overrides })
+}
+
+const trackIdOf = (p: Project, id: string) => normalizeTracks(p).tracks!.find(t => t.items.some(i => i.id === id))!.id
+/** Above the top visual row: a drop there mints a new track. */
+const aboveTopY = (ctx: PointerContext) => ctx.layout.rows[0].y - 2
+const O1_X = 100
+
+describe('multi-select move across tracks', () => {
+  it('consolidates clips from three source tracks onto the track under the pointer, as ONE commit', () => {
+    const ctx = groupCtx()
+    const d = new Driver(ctx)
+    d.down(O1_X, rowMidYFor(ctx, 1))
+    const preview = lastProjectChange(d.move(O1_X, rowMidYFor(ctx, 4)))
+    for (const id of ['o1', 'o2', 'o3', 'o4']) expect(trackIdOf(preview, id)).toBe('trk-4')
+    expect(visual(preview, 'o1')).toMatchObject({ start: 0, end: 2 })
+    expect(visual(preview, 'o2')).toMatchObject({ start: 3, end: 5 })
+    expect(visual(preview, 'o3')).toMatchObject({ start: 6, end: 8 })
+    // The emptied source tracks are pruned, as a single-item move prunes.
+    expect(normalizeTracks(preview).tracks!.map(t => t.id)).toEqual(['trk-0', 'trk-4'])
+    const commits = of(d.up(O1_X, rowMidYFor(ctx, 4)), 'commit')
+    expect(commits).toHaveLength(1)
+    expect(commits[0].project).toEqual(preview)
+  })
+
+  it('consolidates onto a NEW track when the pointer is above the top row', () => {
+    const ctx = groupCtx()
+    const d = new Driver(ctx)
+    d.down(O1_X, rowMidYFor(ctx, 1))
+    const preview = lastProjectChange(d.move(O1_X, aboveTopY(ctx)))
+    const target = trackIdOf(preview, 'o1')
+    expect(['trk-0', 'trk-1', 'trk-2', 'trk-3', 'trk-4']).not.toContain(target)
+    expect(trackIdOf(preview, 'o2')).toBe(target)
+    expect(trackIdOf(preview, 'o3')).toBe(target)
+    expect(trackIdOf(preview, 'o4')).toBe('trk-4')
+    expect(normalizeTracks(preview).tracks).toHaveLength(3)
+  })
+
+  it('applies the horizontal delta and the track change together', () => {
+    const ctx = groupCtx()
+    const d = new Driver(ctx)
+    d.down(O1_X, rowMidYFor(ctx, 1))
+    const preview = lastProjectChange(d.move(O1_X + 100, rowMidYFor(ctx, 4)))
+    expect(visual(preview, 'o1')).toMatchObject({ start: 1, end: 3 })
+    expect(visual(preview, 'o3')).toMatchObject({ start: 7, end: 9 })
+    expect(trackIdOf(preview, 'o3')).toBe('trk-4')
+  })
+
+  it('refuses when any clip would overlap a clip on the target: snaps back and commits nothing', () => {
+    // o4 at 4-6 overlaps o2 (3-5).
+    const ctx = groupCtx({ project: groupProject({ start: 4, end: 6 }) })
+    const d = new Driver(ctx)
+    d.down(O1_X, rowMidYFor(ctx, 1))
+    // A legal horizontal preview first, so the snap back is observable.
+    expect(visual(lastProjectChange(d.move(O1_X + 50, rowMidYFor(ctx, 1))), 'o1').start).toBeCloseTo(0.5)
+    const back = lastProjectChange(d.move(O1_X + 50, rowMidYFor(ctx, 4)))
+    expect(back).toBe(ctx.project)
+    expect(of(d.up(O1_X + 50, rowMidYFor(ctx, 4)), 'commit')).toEqual([])
+  })
+
+  it('refuses when the moved clips would overlap each other on the target', () => {
+    const project = groupProject()
+    // o2 moved to 1-3: it overlaps o1 (0-2) once both share one track.
+    ;(project.tracks![2] as { items: Array<{ start: number; end: number }> }).items[0].start = 1
+    ;(project.tracks![2] as { items: Array<{ start: number; end: number }> }).items[0].end = 3
+    const ctx = groupCtx({ project })
+    const d = new Driver(ctx)
+    d.down(O1_X, rowMidYFor(ctx, 1))
+    const eff = d.move(O1_X, aboveTopY(ctx))
+    expect(of(eff, 'projectChange')).toEqual([])
+    expect(of(d.up(O1_X, aboveTopY(ctx)), 'commit')).toEqual([])
+  })
+
+  it('keeps audio and captions in a mixed selection on their own lanes', () => {
+    const ctx = groupCtx({ selectedIds: ['o1', 'o2', 'a0', 's0'] })
+    const d = new Driver(ctx)
+    d.down(O1_X, rowMidYFor(ctx, 1))
+    const preview = lastProjectChange(d.move(O1_X + 100, rowMidYFor(ctx, 4)))
+    expect(trackIdOf(preview, 'o1')).toBe('trk-4')
+    expect(trackIdOf(preview, 'o2')).toBe('trk-4')
+    expect(trackIdOf(preview, 'o3')).toBe('trk-3')
+    expect(audio(preview, 'a0')).toMatchObject({ start: 2, end: 7, lane: 0 })
+    const s0 = preview.captions!.segments.find(s => s.id === 's0')!
+    expect(s0).toMatchObject({ start: 2, end: 3 })
+    expect(s0.lane).toBeUndefined()
+    expect(of(d.up(O1_X + 100, rowMidYFor(ctx, 4)), 'commit')).toHaveLength(1)
+  })
+
+  it('a group drag that stays on the pressed row is exactly the horizontal-only move', () => {
+    const ctx = groupCtx()
+    const flat = new Driver(ctx)
+    flat.down(O1_X, rowMidYFor(ctx, 1))
+    const flatProject = lastProjectChange(flat.move(O1_X + 150, rowMidYFor(ctx, 1)))
+    const expected = applyMoveDeltaToSelection(ctx.project, ['o1', 'o2', 'o3'], 1.5, ctx.totalDuration)
+    expect(flatProject).toEqual(expected)
+    // A small vertical wiggle that never leaves the pressed row changes nothing.
+    const wiggle = new Driver(ctx)
+    wiggle.down(O1_X, rowMidYFor(ctx, 1))
+    expect(lastProjectChange(wiggle.move(O1_X + 150, rowMidYFor(ctx, 1) + 14))).toEqual(expected)
+  })
+
+  it('dragging back and forth between rows does not compound', () => {
+    const ctx = groupCtx()
+    const d = new Driver(ctx)
+    d.down(O1_X, rowMidYFor(ctx, 1))
+    d.move(O1_X + 100, rowMidYFor(ctx, 4))
+    const backHome = lastProjectChange(d.move(O1_X + 100, rowMidYFor(ctx, 1)))
+    expect(backHome).toEqual(applyMoveDeltaToSelection(ctx.project, ['o1', 'o2', 'o3'], 1, ctx.totalDuration))
+    d.move(O1_X + 100, rowMidYFor(ctx, 4))
+    const final = lastProjectChange(d.move(O1_X + 100, rowMidYFor(ctx, 4) + 1))
+
+    const once = new Driver(groupCtx())
+    once.down(O1_X, rowMidYFor(ctx, 1))
+    expect(final).toEqual(lastProjectChange(once.move(O1_X + 100, rowMidYFor(ctx, 4))))
+    expect(of(d.up(O1_X + 100, rowMidYFor(ctx, 4)), 'commit')).toHaveLength(1)
+  })
+
+  it('a group drag that starts on a caption stays horizontal-only', () => {
+    const ctx = groupCtx({ selectedIds: ['o1', 's0'] })
+    const captionY = Math.round(ctx.layout.captions![0].y + ctx.layout.captions![0].height / 2)
+    const d = new Driver(ctx)
+    d.down(150, captionY)
+    const preview = lastProjectChange(d.move(250, rowMidYFor(ctx, 4)))
+    expect(trackIdOf(preview, 'o1')).toBe('trk-1')
+    expect(visual(preview, 'o1').start).toBeCloseTo(1)
+  })
+
+  it('a single selected clip still takes the single-item cross-track path', () => {
+    const ctx = groupCtx({ selectedIds: ['o1'] })
+    const d = new Driver(ctx)
+    const from = { x: O1_X, y: rowMidYFor(ctx, 1) }
+    const to = { x: O1_X, y: rowMidYFor(ctx, 3) }
+    d.down(from.x, from.y)
+    const preview = lastProjectChange(d.move(to.x, to.y))
+    const o1 = visual(ctx.project, 'o1')
+    const expected = moveItemAcrossTracks({
+      tracks: normalizeTracks(ctx.project).tracks!, item: o1, start: 0, end: 2, sourceTrackIdx: 1, dy: to.y - from.y,
+    })
+    // Item for item (a minted track's id is random, so ids are not compared).
+    expect(preview.tracks!.map(t => t.items)).toEqual(expected.map(t => t.items))
   })
 })
 
