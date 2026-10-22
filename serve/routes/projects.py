@@ -4771,8 +4771,9 @@ async def include_profile_asset(project_id: str, body: dict = Body(...), request
         raise forbidden("traversal", "Path escapes assets dir")
     if not src_path.is_file():
         raise not_found("not_found", f"Asset '{filename}' not found in profile '{profile_name}'")
-    # §482: `assets` in an open Studio sync clash, before the copy (and again under the lock).
-    save_guard.check_sync(getattr(request, "headers", None), project_id, ["assets"])
+    # §482: `assets` and the file the copy lands as, in an open Studio sync clash, before the copy (and again
+    # under the lock, by the name it really landed on: a clashed file that does not exist here yet is theirs).
+    save_guard.check_sync(getattr(request, "headers", None), project_id, ["assets"], files=[filename])
 
     # Copy into project_dir, reusing the shared helper from project/init.py so
     # the collision-suffix pattern stays in one place.
@@ -4787,7 +4788,8 @@ async def include_profile_asset(project_id: str, body: dict = Body(...), request
 
     async with project_lock_async(project_path):
         try:
-            save_guard.check_sync(getattr(request, "headers", None), project_id, ["assets"])
+            save_guard.check_sync(getattr(request, "headers", None), project_id, ["assets"],
+                                  files=[dest.resolve().relative_to(project_dir.resolve()).as_posix()])
         except HTTPException:
             dest.unlink(missing_ok=True)   # the copy made above, new and nobody's yet
             raise

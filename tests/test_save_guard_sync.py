@@ -88,6 +88,7 @@ def _start(monkeypatch, *, guard=True):
 @pytest.fixture
 def recorder(monkeypatch):
     saved = dict(save_guard._state)
+    had = hasattr(app.state, "broadcaster")
     previous = getattr(app.state, "broadcaster", None)
 
     async def _no_previews(*a, **k):
@@ -103,7 +104,11 @@ def recorder(monkeypatch):
     try:
         yield rec
     finally:
-        app.state.broadcaster = previous
+        # Restored as found: a later module sets its own broadcaster only when app.state has none at all.
+        if had:
+            app.state.broadcaster = previous
+        else:
+            del app.state.broadcaster
         save_guard._state.clear()
         save_guard._state.update(saved)
 
@@ -1990,4 +1995,5 @@ def test_r1_audit_include_asset_is_checked_on_the_name_it_really_lands_on(ws, st
     _sidecar(state, files=["logo_asset2.png"])
     before = _disk(d)
     _refused(_client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=DRIVE), ["logo_asset2.png"])
-    assert sorted(p.name for p in d.iterdir()) == ["logo.png", "project.json"] and _disk(d) == before
+    assert sorted(p.name for p in d.iterdir() if not p.name.startswith(".")) == ["logo.png", "project.json"]
+    assert _disk(d) == before
