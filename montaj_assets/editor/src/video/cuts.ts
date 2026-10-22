@@ -1,6 +1,7 @@
 import type { Project } from '../types'
-import type { VisualItem, AudioTrack, CaptionSegment, Word, VisualTrack, KeyframeTrack } from '../schema'
+import type { VisualItem, AudioTrack, CaptionSegment, Word, VisualTrack, KeyframeTrack, Marker, Note } from '../schema'
 import { mapTrackItems, trackItems, normalizeTracks } from './timeline/timeline-model'
+import { isNote } from './timeline/notes'
 import { normalizeTrack, sampleTrack } from '@bycrux/timeline-core'
 import { canKeyframe } from './keyframeOps'
 import { isScene3dItem, scene3dInPoint, shiftScene3dInPoint } from './scene3d'
@@ -236,6 +237,136 @@ function applyCutToCaptions(segments: CaptionSegment[], cut: Cut): CaptionSegmen
   return result
 }
 
+// ── Anchors: audio tracks, notes and markers ride a ripple (§527) ──────────
+//
+// A ripple moves EVERYTHING after it (Sam, 2026-10-22), not only the visual
+// items and the captions:
+//   - an audio track whose start is at or after the ripple point moves with
+//     it; one that starts before it stays put, as a straddling item does. Audio
+//     is only ever MOVED by a ripple, never trimmed or deleted, and keeps its
+//     length;
+//   - a note or marker inside a ripple-DELETED window (the item `rippleDelete`
+//     removes, a lift cut's range) is deleted, and a note range that overlaps
+//     one is clipped to its edge;
+//   - one in a gap `collapseGaps` closes MOVES to where the gap closes: a gap
+//     held no footage, so nothing it marked is gone.
+// A point exactly on a window's edge (within EPSILON) is outside it. Slide
+// notes (no `t`, carousel projects) never move: a list holding anything
+// `isNote` refuses is left alone.
+
+/** A point `t` against a removed window [a, b]: kept before it, moved by
+ *  `shift` (the window's length for a ripple, 0 for a lift, which moves
+ *  nothing) after it, null inside it. */
+function cutPoint(t: number, cut: Cut, shift: number): number | null {
+  if (t <= cut.start + EPSILON) return t
+  if (t >= cut.end - EPSILON) return t - shift
+  return null
+}
+
+function cutNote(n: Note, cut: Cut, shift: number): Note | null {
+  const { start: a, end: b } = cut
+  if (n.tEnd === undefined) {
+    const t = cutPoint(n.t, cut, shift)
+    return t === null ? null : t === n.t ? n : { ...n, t }
+  }
+  const e = n.tEnd
+  if (e <= a + EPSILON) return n
+  if (n.t >= b - EPSILON) return shift ? { ...n, t: n.t - shift, tEnd: e - shift } : n
+  if (n.t >= a - EPSILON && e <= b + EPSILON) return null
+  // Overlaps an edge: the part inside the window goes, what follows it moves.
+  const t = n.t < a ? n.t : b - shift
+  const tEnd = e > b ? e - shift : a
+  return tEnd - t > EPSILON ? { ...n, t, tEnd } : null
+}
+
+const byT = <T extends { t: number }>(x: T, y: T) => x.t - y.t
+
+/** `list` through `each`, null entries dropped, re-sorted by `t`; the same
+ *  array when nothing changed, `null` when it emptied (an explicit null, as
+ *  the notes and markers models write it: serve shallow-merges a save). */
+function remapList<T extends { t: number }>(list: readonly T[], each: (x: T) => T | null): T[] | null | undefined {
+  let changed = false
+  const out: T[] = []
+  for (const x of list) {
+    const y = each(x)
+    if (y !== x) changed = true
+    if (y !== null) out.push(y)
+  }
+  if (!changed) return undefined
+  return out.length === 0 ? null : out.sort(byT)
+}
+
+/** The notes and markers of `project` through `noteFn` and `markerFn`: only the
+ *  keys that changed, so a project with neither is spread unchanged. */
+function remapAnchors<P extends Project>(
+  project: P,
+  noteFn: (n: Note) => Note | null,
+  markerFn: (m: Marker) => Marker | null,
+): Partial<Pick<P, 'notes' | 'markers'>> {
+  const out: Partial<Pick<Project, 'notes' | 'markers'>> = {}
+  const notes = project.notes
+  if (Array.isArray(notes) && notes.length > 0 && notes.every(isNote)) {
+    const next = remapList(notes as Note[], noteFn)
+    if (next !== undefined) out.notes = next
+  }
+  const markers = project.markers
+  if (Array.isArray(markers) && markers.length > 0) {
+    const next = remapList(markers, markerFn)
+    if (next !== undefined) out.markers = next
+  }
+  return out as Partial<Pick<P, 'notes' | 'markers'>>
+}
+
+/** Notes and markers for a removed window: deleted inside, clipped on an edge,
+ *  moved `shift` earlier after it. */
+function cutAnchors<P extends Project>(project: P, cut: Cut, shift: number): Partial<Pick<P, 'notes' | 'markers'>> {
+  return remapAnchors(
+    project,
+    n => cutNote(n, cut, shift),
+    m => {
+      const t = cutPoint(m.t, cut, shift)
+      return t === null ? null : t === m.t ? m : { ...m, t }
+    },
+  )
+}
+
+/**
+ * Move the notes and markers at or after `from` by `by` seconds (a note range
+ * that starts before `from` and ends after it moves its end only). For a
+ * ripple that moves the rest itself: `audioPolish`'s lead-gap close shifts its
+ * own tracks and audio. The caller keeps every time at or above 0.
+ */
+export function shiftMarks<P extends Project>(project: P, from: number, by: number): P {
+  if (by === 0) return project
+  const at = (t: number) => t >= from - EPSILON
+  const anchors = remapAnchors(
+    project,
+    n => {
+      if (at(n.t)) return { ...n, t: n.t + by, ...(n.tEnd !== undefined ? { tEnd: n.tEnd + by } : {}) }
+      if (n.tEnd === undefined || !at(n.tEnd)) return n
+      const tEnd = n.tEnd + by
+      if (tEnd - n.t > EPSILON) return { ...n, tEnd }
+      const { tEnd: _gone, ...point } = n
+      return point
+    },
+    m => (at(m.t) ? { ...m, t: m.t + by } : m),
+  )
+  return 'notes' in anchors || 'markers' in anchors ? { ...project, ...anchors } : project
+}
+
+/** The audio tracks that start at or after `from`, moved by `by`, length kept;
+ *  the same object when none moves. */
+function rippleAudio(audio: Project['audio'], from: number, by: number): Project['audio'] {
+  if (!audio?.tracks?.length || by === 0) return audio
+  let changed = false
+  const tracks = audio.tracks.map(t => {
+    if (!(t.start >= from - EPSILON)) return t
+    changed = true
+    return { ...t, start: t.start + by, end: t.end + by }
+  })
+  return changed ? { ...audio, tracks } : audio
+}
+
 // ── Per-item collapse cut ────────────────────────────────────────────────────
 
 /**
@@ -311,9 +442,14 @@ function cutSingleItem(item: VisualItem, cut: Cut): VisualItem[] {
 /**
  * Apply a lift-style cut to a project.
  *
- * Only tracks[0] (primary clips) and captions are mutated.
+ * Only tracks[0] (primary clips), captions, notes and markers are mutated.
  * tracks[1+] overlay items are passed through unchanged — their start/end are
  * absolute and they intentionally sit over any gap left in the primary track.
+ *
+ * §527: a note or marker inside the cut is deleted, and a note range over one
+ * of its edges is clipped to it; nothing else moves here. Audio tracks, notes
+ * and markers ride the `collapseGaps` that closes the lifted range (`audioPolish`
+ * composes the two), so each moves exactly once.
  *
  * Returns a new Project — no re-encoding, pure JSON.
  */
@@ -328,7 +464,7 @@ export function applyCutToTracks<P extends Project>(project: P, cut: Cut): P {
     ? { ...project.captions, segments: applyCutToCaptions(project.captions.segments, cut) }
     : project.captions
 
-  return { ...project, tracks: newTracks, captions: newCaptions }
+  return { ...project, tracks: newTracks, captions: newCaptions, ...cutAnchors(project, cut, 0) }
 }
 
 /** Options for `collapseGaps`. */
@@ -342,6 +478,13 @@ export interface CollapseGapsOptions {
  * Close all gaps between primary clips by shifting each clip left to butt
  * against the previous one. Captions and all other tracks are remapped to
  * follow using the same shifts.
+ *
+ * §527: audio tracks, notes and markers follow too, through the same time map:
+ * a point inside a clip moves with that clip, one in a closed gap to where the
+ * gap closes (it is moved, never deleted: a gap held no footage), one past the
+ * last clip with the last clip. An audio track moves by where its START lands
+ * and keeps its length, so a bed that starts before the first gap stays put.
+ * `remapCaptions` governs the captions alone: a lift cut moves none of these.
  *
  * The primary track is the first track containing video clips; falls back to
  * tracks[0] if no video track exists.
@@ -397,6 +540,19 @@ export function collapseGaps<P extends Project>(
     return entry?.delta ?? 0
   }
 
+  // The collapse as a map of time (§527): before the first clip, unchanged (the
+  // lead is not collapsed); inside a clip's old window, that clip's delta; in
+  // the gap after clip k, the point it closes to (clip k's new end); past the
+  // last clip, the last clip's delta. `shifts` is in old-start order.
+  function mapTime(t: number): number {
+    let k = -1
+    for (let i = 0; i < shifts.length && shifts[i].oldStart <= t + EPSILON; i++) k = i
+    if (k < 0) return t
+    const s = shifts[k]
+    if (t < s.oldEnd - EPSILON || k === shifts.length - 1) return t + s.delta
+    return s.oldEnd + s.delta
+  }
+
   const newTracks = mapTrackItems(project, (items, i) => {
     if (i === effectiveIdx) return compacted
     return items.map(clip => {
@@ -421,7 +577,39 @@ export function collapseGaps<P extends Project>(
     newCaptions = { ...newCaptions, segments }
   }
 
-  return { ...project, tracks: newTracks, captions: newCaptions }
+  const anchors = remapAnchors(
+    project,
+    n => {
+      const t = mapTime(n.t)
+      if (n.tEnd === undefined) return t === n.t ? n : { ...n, t }
+      const tEnd = mapTime(n.tEnd)
+      if (t === n.t && tEnd === n.tEnd) return n
+      if (tEnd - t > EPSILON) return { ...n, t, tEnd }
+      const { tEnd: _gone, ...point } = n // a range wholly in a closed gap is now a point
+      return { ...point, t }
+    },
+    m => {
+      const t = mapTime(m.t)
+      return t === m.t ? m : { ...m, t }
+    },
+  )
+
+  // An audio track moves by where its start lands, its length kept; the key
+  // is written only when one moved.
+  const audio = project.audio
+  let audioPatch: Pick<Project, 'audio'> | undefined
+  if (audio?.tracks?.length) {
+    let moved = false
+    const tracks = audio.tracks.map(track => {
+      const d = mapTime(track.start) - track.start
+      if (d === 0) return track
+      moved = true
+      return { ...track, start: track.start + d, end: track.end + d }
+    })
+    if (moved) audioPatch = { audio: { ...audio, tracks } }
+  }
+
+  return { ...project, tracks: newTracks, captions: newCaptions, ...audioPatch, ...anchors }
 }
 
 /**
@@ -633,11 +821,12 @@ export function splitAtTime<P extends Project>(project: P, at: number, itemId: s
 //     the same `?? Infinity` convention `timeline/multiSelectOps.ts` uses.
 //   • Every op returns the SAME project reference when it would change nothing.
 //
-// AUDIO COUPLING: `project.audio.tracks` is never moved by these ops, matching
-// `collapseGaps` — music beds and voiceover are timed independently of the
-// visual track, so rippling video must not desync them. `splitAtTime` is the
-// only op in this file that reaches into audio, and it splits rather than
-// shifts. Ripple targets are visual items only; an audio-track id is a no-op.
+// AUDIO COUPLING (§527, Sam 2026-10-22: a ripple moves everything): a ripple
+// (`rippleDelete`, `collapseGaps`) moves the audio tracks that start at or after
+// its point, as it moves the visual items, and leaves a track that starts
+// before it (a music bed under the edit) where it is. It only ever MOVES audio,
+// never trims or deletes it. `splitAtTime` splits audio rather than shifting
+// it. Ripple targets are visual items only; an audio-track id is a no-op.
 
 /** Locate an item by id in a project's ITEMS — the `trackItems(project)` view,
  *  not `project.tracks` — so `{ti, ii}` indexes straight back into that view.
@@ -695,7 +884,10 @@ function shiftCaptionsInWindow(
  * - Captions are remapped with the same `applyCutToCaptions` rules the lift cut
  *   uses: segments inside the deleted window are dropped, partials are trimmed,
  *   and later segments (and their words) shift by the deleted duration.
- * - Audio tracks are untouched (see AUDIO COUPLING above).
+ * - §527: audio tracks that start at/after the deleted item's end shift earlier
+ *   by its duration (moved, never trimmed); notes and markers inside the deleted
+ *   window are deleted, a note range over its edge is clipped, and later ones
+ *   shift (see AUDIO COUPLING above).
  * - Empty tracks are kept, as everywhere else in this file.
  * - Returns the same project reference if `itemId` names no visual item.
  */
@@ -717,14 +909,23 @@ export function rippleDelete<P extends Project>(project: P, itemId: string): P {
       ),
   )
 
+  const removed = { start: item.start, end: item.end }
   const newCaptions = project.captions && duration > EPSILON
     ? {
         ...project.captions,
-        segments: applyCutToCaptions(project.captions.segments, { start: item.start, end: item.end }),
+        segments: applyCutToCaptions(project.captions.segments, removed),
       }
     : project.captions
 
-  return { ...project, tracks: newTracks, captions: newCaptions }
+  if (duration <= EPSILON) return { ...project, tracks: newTracks, captions: newCaptions }
+  const audio = rippleAudio(project.audio, item.end, -duration)
+  return {
+    ...project,
+    tracks: newTracks,
+    captions: newCaptions,
+    ...(audio !== project.audio ? { audio } : {}),
+    ...cutAnchors(project, removed, duration),
+  }
 }
 
 /**

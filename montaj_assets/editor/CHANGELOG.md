@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+- Changed: a ripple moves audio tracks, notes and markers with the edit (§527). `rippleDelete` moves the audio tracks that start at or after the deleted item's end earlier by its length; `collapseGaps` moves each audio track with the clip its start lies in (to where the gap closes when it starts in one), whatever `remapCaptions` says. Audio is only ever moved, never trimmed or deleted. Notes and markers inside a ripple-deleted window (`rippleDelete`'s item, `applyCutToTracks`'s range) are deleted and a note range over its edge is clipped; later ones move; one in a gap `collapseGaps` closes moves to where it closes. `shiftMarks` is new. See the root CHANGELOG.
 - Changed: `saveProject` receives the document as it was before the edit as an optional third argument, absent when the core cannot say (for example an external change arrived mid-gesture). A commit with no changes passes the current project.
 - Changed: undo and redo restore only the fields the edit changed, so a field another writer changed since is not reverted. A `mutate` during an open gesture saves the gesture with it.
 

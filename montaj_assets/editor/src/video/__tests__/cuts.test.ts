@@ -1587,3 +1587,135 @@ describe('per-clip speed', () => {
     })
   })
 })
+
+// §527 (Sam, 2026-10-22): a ripple moves everything after it. Audio tracks that
+// start at or after the ripple point move with it (never trimmed or deleted);
+// notes and markers inside a ripple-DELETED window are deleted, a note range over
+// its edge is clipped, later ones move; one in a gap collapseGaps closes moves to
+// where it closes.
+describe('§527 a ripple moves audio, notes and markers', () => {
+  const v = (id: string, start: number, end: number): VisualItem => ({ id, type: 'video', start, end })
+  const au = (id: string, start: number, end: number) => ({ id, src: `${id}.mp3`, start, end })
+  const note = (id: string, t: number, tEnd?: number) => ({ id, t, text: id, ...(tEnd !== undefined ? { tEnd } : {}) })
+  const mk = (id: string, t: number) => ({ id, t, label: id })
+
+  describe('rippleDelete', () => {
+    // a [0,5], b [5,9] (deleted, 4 s), c [9,14]
+    const base = (over: Partial<Project> = {}) =>
+      makeProject({ tracks: vtracks([v('a', 0, 5), v('b', 5, 9), v('c', 9, 14)]), ...over })
+
+    it('moves audio that starts at or after the deleted item\'s end earlier by its duration, length kept; a bed before it and a track starting inside it stay', () => {
+      const out = rippleDelete(base({ audio: { tracks: [au('bed', 0, 30), au('inside', 6, 7), au('after', 9, 10), au('later', 12, 13.5)] } }), 'b')
+      expect(out.audio!.tracks.map(t => [t.id, t.start, t.end])).toEqual([
+        ['bed', 0, 30],
+        ['inside', 6, 7],
+        ['after', 5, 6],
+        ['later', 8, 9.5],
+      ])
+    })
+
+    it('deletes the notes and markers inside the window, keeps those on its start edge, moves the later ones, clips ranges to the edge', () => {
+      const out = rippleDelete(base({
+        notes: [
+          note('before', 2), note('onStart', 5), note('inside', 7), note('onEnd', 9), note('after', 11),
+          note('left', 3, 6), note('right', 7, 12), note('span', 4, 10), note('within', 6, 8),
+        ],
+        markers: [mk('m-in', 6), mk('m-after', 10), mk('m-before', 1)],
+      }), 'b')
+      expect(out.notes!.map(n => [n.id, (n as { t: number }).t, (n as { tEnd?: number }).tEnd])).toEqual([
+        ['before', 2, undefined],
+        ['left', 3, 5],
+        ['span', 4, 6],
+        ['onStart', 5, undefined],
+        ['onEnd', 5, undefined], // ties keep their order
+        ['right', 5, 8],
+        ['after', 7, undefined],
+      ])
+      expect(out.markers!.map(m => [m.id, m.t])).toEqual([['m-before', 1], ['m-after', 6]])
+    })
+
+    it('a list it empties is an explicit null, as the notes and markers models write it', () => {
+      const out = rippleDelete(base({ notes: [note('n', 7)], markers: [mk('m', 6)] }), 'b')
+      expect(out.notes).toBeNull()
+      expect(out.markers).toBeNull()
+    })
+
+    it('leaves absent notes, markers and audio absent, and carousel slide notes untouched', () => {
+      const plain = rippleDelete(base(), 'b')
+      expect('notes' in plain).toBe(false)
+      expect('markers' in plain).toBe(false)
+      expect('audio' in plain).toBe(false)
+      const gappy = makeProject({ tracks: vtracks([v('a', 0, 5), v('b', 8, 12)]) })
+      expect('audio' in collapseGaps(gappy)).toBe(false)
+      const slides = [{ id: 's1', slideId: 'slide-1', text: 'x' }]
+      expect(rippleDelete(base({ notes: slides }), 'b').notes).toBe(slides)
+    })
+  })
+
+  describe('applyCutToTracks (lift)', () => {
+    it('deletes the notes and markers inside the cut and clips ranges to its edges, moving nothing; audio waits for the gap close', () => {
+      const bed = au('bed', 0, 30)
+      const sfx = au('sfx', 12, 13)
+      const p = makeProject({
+        tracks: vtracks([v('a', 0, 20)]),
+        audio: { tracks: [bed, sfx] },
+        notes: [note('in', 6), note('after', 12), note('left', 3, 6), note('right', 7, 15)],
+        markers: [mk('m-in', 5.5), mk('m-after', 15)],
+      })
+      const out = applyCutToTracks(p, { start: 5, end: 10 })
+      expect(out.notes!.map(n => [n.id, (n as { t: number }).t, (n as { tEnd?: number }).tEnd])).toEqual([
+        ['left', 3, 5],
+        ['right', 10, 15],
+        ['after', 12, undefined],
+      ])
+      expect(out.markers!.map(m => [m.id, m.t])).toEqual([['m-after', 15]])
+      expect(out.audio).toBe(p.audio)
+    })
+  })
+
+  describe('collapseGaps', () => {
+    // a [0,5], gap [5,8], b [8,12], gap [12,15], c [15,20]: b moves -3, c moves -6
+    const gapped = (over: Partial<Project> = {}) =>
+      makeProject({ tracks: vtracks([v('a', 0, 5), v('b', 8, 12), v('c', 15, 20)]), ...over })
+
+    it('moves audio by where its start lands: with its clip, a closed gap to its close point, length kept; a bed from 0 stays', () => {
+      const out = collapseGaps(gapped({ audio: { tracks: [au('bed', 0, 40), au('inB', 9, 10), au('inGap', 13, 14.5), au('inC', 16, 30)] } }))
+      expect(out.audio!.tracks.map(t => [t.id, t.start, t.end])).toEqual([
+        ['bed', 0, 40],
+        ['inB', 6, 7],
+        ['inGap', 9, 10.5],
+        ['inC', 10, 24],
+      ])
+    })
+
+    it('moves notes and markers with their clip, and those in a closed gap to where it closes, never deleting one', () => {
+      const out = collapseGaps(gapped({
+        notes: [note('inA', 2), note('gap1', 6), note('inB', 9), note('gap2', 13), note('inC', 18), note('past', 25), note('span', 4, 16), note('gapRange', 12.5, 14)],
+        markers: [mk('m-gap', 7), mk('m-c', 16)],
+      }))
+      expect(out.notes!.map(n => [n.id, (n as { t: number }).t, (n as { tEnd?: number }).tEnd])).toEqual([
+        ['inA', 2, undefined],
+        ['span', 4, 10],
+        ['gap1', 5, undefined],
+        ['inB', 6, undefined],
+        ['gap2', 9, undefined],
+        ['gapRange', 9, undefined], // a range wholly in a closed gap is now a point
+        ['inC', 12, undefined],
+        ['past', 19, undefined],
+      ])
+      expect(out.markers!.map(m => [m.id, m.t])).toEqual([['m-gap', 5], ['m-c', 10]])
+    })
+
+    it('remapCaptions: false leaves the captions only: audio, notes and markers still move', () => {
+      const out = collapseGaps(gapped({ audio: { tracks: [au('inB', 9, 10)] }, notes: [note('inB', 9)], markers: [mk('m', 9)] }), { remapCaptions: false })
+      expect(out.audio!.tracks[0]).toMatchObject({ start: 6, end: 7 })
+      expect((out.notes![0] as { t: number }).t).toBe(6)
+      expect(out.markers![0].t).toBe(6)
+    })
+
+    it('still returns the same reference when there is no gap, notes and audio or not', () => {
+      const p = makeProject({ tracks: vtracks([v('a', 0, 5), v('b', 5, 9)]), audio: { tracks: [au('x', 6, 7)] }, notes: [note('n', 6)] })
+      expect(collapseGaps(p)).toBe(p)
+    })
+  })
+})

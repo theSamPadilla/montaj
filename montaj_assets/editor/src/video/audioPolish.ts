@@ -40,12 +40,14 @@
 //     → loudness
 //     → voice isolation
 //
-// `applyCutToTracks` and `collapseGaps` mutate `tracks[0]`, `tracks[1+]` and
-// `captions` only; they deliberately do NOT shift `project.audio.tracks` (a
-// music bed must not ripple when you trim a take). A stem track minted before
-// the cuts would therefore end up misaligned. Cuts and the gap close run first,
-// so clip geometry is final before stem tracks are built against it. Loudness
-// sits in the middle because it is per-clip and order-insensitive.
+// `applyCutToTracks` and `collapseGaps` mutate `tracks[0]`, `tracks[1+]`,
+// `captions`, notes and markers, and (§527) the gap close moves an audio track
+// that starts inside a clip with that clip; a music bed that starts before the
+// first gap stays put. A stem track minted before the cuts would still end up
+// misaligned (it spans the cuts, and audio is moved, never trimmed). Cuts and
+// the gap close run first, so clip geometry is final before stem tracks are
+// built against it. Loudness sits in the middle because it is per-clip and
+// order-insensitive.
 //
 // `remapCaptions: false` is not an optimisation — see the invariant comment
 // above `collapseGaps` in cuts.ts. `applyCutToTracks` has ALREADY rippled the
@@ -78,7 +80,7 @@
 import type { Project } from '../types'
 import type { AudioTrack, VisualItem, VisualTrack, Word } from '../schema'
 import { mapTrackItems, normalizeTracks, trackItems } from './timeline/timeline-model'
-import { applyCutToTracks, collapseGaps, type Cut } from './cuts'
+import { applyCutToTracks, collapseGaps, shiftMarks, type Cut } from './cuts'
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -645,7 +647,9 @@ function closeLeadGap<P extends Project>(draft: P, baseline: P, cuts: readonly C
     ? { ...draft.audio, tracks: draft.audio.tracks.map(t => shiftAudioTrack(t, delta)) }
     : draft.audio
 
-  return { ...draft, tracks, audio }
+  // §527: notes and markers after the lead move with it (the cuts already
+  // deleted the ones inside them).
+  return shiftMarks({ ...draft, tracks, audio }, leadAfter, -delta)
 }
 
 /** One audio track moved `delta` earlier, head-trimmed instead of going

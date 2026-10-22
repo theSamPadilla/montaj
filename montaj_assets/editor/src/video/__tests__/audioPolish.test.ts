@@ -848,7 +848,7 @@ describe('buildDraft', () => {
     expect(out.audio!.tracks.find(t => t.id === 'polish_voice_a')!.src).toBe('/f/NEW.wav')
   })
 
-  it('leaves the music bed exactly where it is (cuts never ripple audio tracks)', () => {
+  it('leaves a music bed that starts before the cuts where it is (§527: a ripple moves only the audio that starts after its point)', () => {
     const bed = { id: 'music', src: '/f/bed.mp3', start: 0, end: 40 }
     const p = makeProject({
       tracks: vtracks([clip({ id: 'a', start: 0, end: 20, inPoint: 0, outPoint: 20 })]),
@@ -856,6 +856,21 @@ describe('buildDraft', () => {
     })
     const out = buildDraft(p, { clips: { a: { removals: [{ start: 5, end: 6 }] } } })
     expect(out.audio!.tracks).toEqual([bed])
+  })
+
+  it('§527: a note or marker inside a removed range is deleted; later ones and a sound effect move up by the removed time; the bed stays', () => {
+    const bed = { id: 'music', src: '/f/bed.mp3', start: 0, end: 40 }
+    const p = makeProject({
+      tracks: vtracks([clip({ id: 'a', start: 0, end: 20, inPoint: 0, outPoint: 20 })]),
+      audio: { tracks: [bed, { id: 'sfx', src: '/f/hit.wav', start: 14, end: 15 }] },
+      notes: [{ id: 'n-in', t: 5.5, text: '' }, { id: 'n-after', t: 15, text: '' }],
+      markers: [{ id: 'm-in', t: 11, label: '1' }, { id: 'm-after', t: 18, label: '2' }],
+    })
+    const out = buildDraft(p, { clips: { a: { removals: [{ start: 5, end: 6 }, { start: 10, end: 12 }] } } })
+    expect(out.tracks![0].items.map(i => [i.start, i.end])).toEqual([[0, 5], [5, 9], [9, 17]])
+    expect(out.notes).toEqual([{ id: 'n-after', t: 12, text: '' }])
+    expect(out.markers).toEqual([{ id: 'm-after', t: 15, label: '2' }])
+    expect(out.audio!.tracks).toEqual([bed, { id: 'sfx', src: '/f/hit.wav', start: 11, end: 12 }])
   })
 
   it('skips voice isolation on a sped clip and leaves it unmuted', () => {
@@ -983,6 +998,18 @@ describe('buildDraft', () => {
       // The overlay still sits over the same source frames: timeline 4 on a
       // clip starting at 0 with inPoint 6 is source 10, where it began.
       expect(sourceUnder(out, 4)).toEqual({ src: '/f/a.mov', source: 10 })
+    })
+
+    it('§527: notes and markers after the lead move up with it; one inside the head cut is deleted', () => {
+      const p = makeProject({
+        tracks: vtracks([clip({ id: 'a', start: 0, end: 20, inPoint: 0, outPoint: 20 })]),
+        notes: [{ id: 'gone', t: 3, text: '' }, { id: 'kept', t: 10, text: '' }],
+        markers: [{ id: 'm', t: 8, label: '1' }],
+      })
+      const out = buildDraft(p, { clips: { a: { removals: [{ start: 0, end: 6 }] } } })
+      expect(out.tracks![0].items.map(i => [i.start, i.end])).toEqual([[0, 14]])
+      expect(out.notes).toEqual([{ id: 'kept', t: 4, text: '' }])
+      expect(out.markers).toEqual([{ id: 'm', t: 2, label: '1' }])
     })
 
     // THE MINIMAL REPRODUCTION. One clip, one head cut, one caption after it —
