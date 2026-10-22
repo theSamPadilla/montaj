@@ -12,6 +12,7 @@ import { ensureGoogleFontsLoaded } from '../../lib/google-fonts'
 import { useFontEpoch } from '../../lib/use-font-epoch'
 import type { Corner, Edge, OverlayChanges } from './useDragOverlay'
 import type { useDragOverlay } from './useDragOverlay'
+import { useMissingClips } from '../missingClips'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, withEnabledItemTracks } from '../timeline/timeline-model'
 
 // Mount video items this many seconds before item.start so the frame is ready.
@@ -509,6 +510,9 @@ export default function OverlayItemsLayer({
   muted = false,
   audioInMix,
 }: OverlayItemsLayerProps) {
+  // Footage the host says is absent: such a video or image item draws nothing
+  // and sets no src, so nothing 404s.
+  const { ids: missingIds } = useMissingClips()
   const [RENDER_W, RENDER_H] = getOverlayDesignCanvas(project.settings?.resolution)
   // An overlay `src` may be relative to the project (`overlays/x.jsx`). Bound
   // here, once per project, so the children keep a stable function and do not
@@ -605,6 +609,7 @@ export default function OverlayItemsLayer({
       {/* tracks[0] non-video items (background images) — rendered with drag support at base z-level */}
       {!isCanvasProject && tracks0NonVideo.map((item) => {
         if (item.type !== 'image' || !item.src) return null
+        if (missingIds.has(item.id)) return null
         const visible = containsTime(item.start, item.end, currentTime)
         if (!visible) return null
         const isSel    = selectedOverlayId === item.id
@@ -704,6 +709,7 @@ export default function OverlayItemsLayer({
       {/* All interactive tracks — in canvas mode this includes track 0; otherwise overlays only */}
       {interactiveTracks.map((trackItems, trackIdx) =>
         trackItems.map((item) => {
+          if ((item.type === 'video' || item.type === 'image') && missingIds.has(item.id)) return null
           // Activation: the shared half-open `start <= t < end` predicate.
           const visible  = containsTime(item.start, item.end, currentTime)
           // Presentation-only pre-mount window — see VIDEO_PRELOAD_S above for
