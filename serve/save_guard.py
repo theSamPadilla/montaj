@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import threading
+from collections import OrderedDict
 
 from fastapi import HTTPException
 
@@ -135,13 +136,15 @@ NOT_FIELDS = frozenset({"id", "copied", "warnings"})
 OWNED_FIELDS = frozenset({"hubTemplate"})
 
 READ_HEADER = "x-montaj-read-revisions"
+UNREAD_HEADER = "x-montaj-unread"
 
 
 class Verdict:
     """What the guard decided for one PUT that it let through."""
-    __slots__ = ("writer", "advisory", "changed", "overrode", "base_text")
+    __slots__ = ("writer", "advisory", "changed", "overrode", "base_text", "project", "before",
+                 "unread_marks", "unread")
 
-    def __init__(self, writer, advisory, changed, base_text=None):
+    def __init__(self, writer, advisory, changed, base_text=None, project=None):
         self.writer = writer
         self.advisory = advisory
         self.changed = changed
@@ -149,6 +152,69 @@ class Verdict:
         # The text the save read, when its revisions are cached under it (the file already in
         # the reader's shape): the answer reuses them for every field the save left alone.
         self.base_text = base_text
+        # The key of the project's marks (below); None keeps them out of it.
+        self.project = project
+        # The revisions of the body's fields in the file the save read, when the check took them.
+        self.before = {}
+        # Fields sent with no read whose value in the file is still another writer's: {field: mark}.
+        self.unread_marks = {}
+        self.unread = []
+
+
+# ── marks: what the last guarded writes of another writer left (§482 G-2) ────────
+#
+# Per project and per serve process: {field: revision} for every top-level field a guarded PUT
+# from a writer other than the window's editor (tool, ai) changed the value of, as that write
+# left it. An advisory editor write that sends no revision for such a field, while the file
+# still holds that value, and changes it, overwrote a value it may never have seen; the answer
+# names the field in x-montaj-unread (reported, never refused). Any editor write that writes the
+# field takes it over (the mark goes), unless it sent no read and left the value as it was.
+# Built only from revisions the check and the answer compute anyway: nothing more is hashed.
+# Settled as the answer is built, just after the lock (the app's write queue runs one write per
+# project at a time), and lost when serve restarts: a report, best effort, never a refusal.
+_MARKS_PROJECTS = 64
+_marks: "OrderedDict[str, dict]" = OrderedDict()
+_marks_lock = threading.Lock()
+
+
+def _unread_candidates(project, missing, now) -> dict:
+    """{field: mark} for each field in missing whose value in the file is still the marked one."""
+    if project is None or not missing:
+        return {}
+    with _marks_lock:
+        marks = _marks.get(project)
+        if not marks:
+            return {}
+        return {f: marks[f] for f in missing
+                if f not in OWNED_FIELDS and f in marks and now.get(f) == marks[f]}
+
+
+def _note_write(verdict, revs) -> None:
+    """After a PUT, from revs (the revisions of every field it wrote): mark what another writer
+    changed, or settle the editor's write against the marks and say what it overwrote unread."""
+    if verdict.project is None:
+        return
+    if verdict.writer == "editor":
+        verdict.unread = [f for f, mark in verdict.unread_marks.items() if revs.get(f) != mark]
+        kept = {f for f, mark in verdict.unread_marks.items() if revs.get(f) == mark}
+        with _marks_lock:
+            marks = _marks.get(verdict.project)
+            if marks:
+                for f in verdict.changed:
+                    if f not in kept:
+                        marks.pop(f, None)
+                if not marks:
+                    _marks.pop(verdict.project, None)
+        return
+    moved = {f: revs[f] for f in verdict.changed
+             if f not in OWNED_FIELDS and f in revs and f in verdict.before and verdict.before[f] != revs[f]}
+    if not moved:
+        return
+    with _marks_lock:
+        _marks[verdict.project] = {**_marks.get(verdict.project, {}), **moved}
+        _marks.move_to_end(verdict.project)
+        while len(_marks) > _MARKS_PROJECTS:
+            _marks.popitem(last=False)
 
 
 def changed_fields(body: dict) -> list:
@@ -205,10 +271,11 @@ def writer_of(headers) -> "tuple[str, bool]":
     return (writer if writer in WRITERS else "ai"), trusted
 
 
-def check_save(headers, body: dict, raw_text, existing: dict):
+def check_save(headers, body: dict, raw_text, existing: dict, project=None):
     """Run under the project lock, after the project is read and before anything is merged.
     None when the guard is off. Raises the refusal (nothing written yet) or returns the
-    Verdict the answer's headers are built from."""
+    Verdict the answer's headers are built from. project keys the project's marks (any
+    stable string, the project.json path); None leaves them out."""
     if not enabled():
         return None
     headers = headers if headers is not None else {}
@@ -216,18 +283,21 @@ def check_save(headers, body: dict, raw_text, existing: dict):
     advisory = trusted and writer == "editor" and headers.get("x-montaj-guard") == "advisory"
     changed = changed_fields(body)
     base_text = raw_text if normalize_tracks(existing) is existing else None
-    verdict = Verdict(writer, advisory, changed, base_text)
+    verdict = Verdict(writer, advisory, changed, base_text, project)
     if all(f in OWNED_FIELDS for f in changed):
         return verdict
     now = current_revisions(raw_text, existing, changed)
+    verdict.before = now
     found = project_revisions.stale_fields(None, changed, _read_header(headers), revisions=now)
     stale, missing = found["stale"], found["missing"]
     if not stale and not missing:
         return verdict
     if advisory:
         # An override is a field whose revision differs. A field the editor sent no
-        # revision for was never read, which is not an override.
+        # revision for was never read, which is not an override; the answer still names it
+        # in x-montaj-unread when it changes another writer's value (_note_write).
         verdict.overrode = stale
+        verdict.unread_marks = _unread_candidates(project, missing, now)
         return verdict
     if stale:
         raise HTTPException(409, detail={"error": "project_changed", "stale": stale, "missing": missing,
@@ -323,10 +393,17 @@ def answer_headers(response, verdict, existing: dict, current: dict, text, final
         revs = project_revisions.revisions_of(current, written)
     response.headers["x-montaj-revisions"] = json.dumps(revs, separators=(",", ":"))
     response.headers["x-montaj-revisions-final"] = "1" if final else "0"
+    _note_write(verdict, revs)
     if verdict.overrode:
         response.headers["x-montaj-overrode"] = _header_value(verdict.overrode)
         # Field names only, never values: this line reaches us through crash-report log tails.
         print(f"save-guard: advisory override {verdict.writer} fields={_header_value(verdict.overrode)}",
+              file=sys.stderr, flush=True)
+    if verdict.unread:
+        # Its own header: x-montaj-overrode means "applied over a newer revision" to every reader
+        # of it, and a field with no read may have been seen; the app treats both the same.
+        response.headers[UNREAD_HEADER] = _header_value(verdict.unread)
+        print(f"save-guard: advisory unread {verdict.writer} fields={_header_value(verdict.unread)}",
               file=sys.stderr, flush=True)
 
 

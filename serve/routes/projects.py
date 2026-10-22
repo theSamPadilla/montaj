@@ -4091,7 +4091,8 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
         existing = json.loads(raw)
         # §477: a stale or unread field refuses the whole save here, before anything is
         # merged or written. None (and no answer headers) unless the app switched it on.
-        verdict = save_guard.check_save(getattr(request, "headers", None), body, raw, existing)
+        verdict = save_guard.check_save(getattr(request, "headers", None), body, raw, existing,
+                                        project=str(project_path))
         prev_status = existing.get("status")
         # Top-level shallow merge: preserve fields not present in the body. Agents
         # (per skills/native/SKILL.md) routinely PUT a partial body like
