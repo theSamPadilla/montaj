@@ -11,6 +11,7 @@ import {
   setClipSpeed,
 } from '../cuts'
 import type { EditorProject as Project, VisualItem, VisualTrack } from '../../schema'
+import { sampleTrack } from '@bycrux/timeline-core'
 import { audioTrackSourceWindow } from '../timeline/canvas/waveforms'
 
 /** Object-shape visual tracks, carrying the ids `normalizeTracks` would hand
@@ -506,13 +507,14 @@ describe('splitAtTime — overlay keyframes', () => {
     const p = makeProject({ tracks: vtracks([], [keyframedOverlay()]) })
     const [left, right] = splitAtTime(p, 5, 'o0').tracks![1].items
 
-    // Left is now [0,5): keeps t=0,3 (<=5); drops t=7,10.
+    // Left is now [0,5): keeps t=0,3 (<=5), plus the edge key at 5; drops t=7,10.
     const leftOffsetX = left.keyframes!.find(t => t.prop === 'offsetX')!
-    expect(leftOffsetX.points.map(pt => pt.t)).toEqual([0, 3])
+    expect(leftOffsetX.points.map(pt => pt.t)).toEqual([0, 3, 5])
 
     // Right is now [5,10): keeps t=7,10 (>=5), re-anchored by -5; drops t=0,3.
     const rightOffsetX = right.keyframes!.find(t => t.prop === 'offsetX')!
-    expect(rightOffsetX.points.map(pt => pt.t)).toEqual([2, 5])
+    // plus the edge key at 0 (the cut itself).
+    expect(rightOffsetX.points.map(pt => pt.t)).toEqual([0, 2, 5])
   })
 
   it("re-anchors the right fragment's remaining points so the animation lands at the same wall-clock instants as before the split", () => {
@@ -591,7 +593,7 @@ describe('applyCutToItem — overlay keyframes', () => {
     expect(right.keyframes).not.toBe(overlay.keyframes)
 
     const leftX = left.keyframes!.find(t => t.prop === 'offsetX')!
-    expect(leftX.points.map(pt => pt.t)).toEqual([0, 3])
+    expect(leftX.points.map(pt => pt.t)).toEqual([0, 3, 4])
     // opacity's only point is t=3, which survives on the left only.
     expect(left.keyframes!.some(t => t.prop === 'opacity')).toBe(true)
     expect(right.keyframes!.some(t => t.prop === 'opacity')).toBe(false)
@@ -608,8 +610,9 @@ describe('applyCutToItem — overlay keyframes', () => {
     // content they always had, now that 2s were removed.
     const rightX = right.keyframes!.find(t => t.prop === 'offsetX')!
     expect(right.start).toBe(4)
-    expect(rightX.points.map(pt => pt.t)).toEqual([1, 4])
-    expect(rightX.points.map(pt => pt.value)).toEqual([70, 100])
+    // Edge key at 0 carries the ramp's value at the cut end (t=6 -> 60).
+    expect(rightX.points.map(pt => pt.t)).toEqual([0, 1, 4])
+    expect(rightX.points.map(pt => pt.value)).toEqual([60, 70, 100])
   })
 
   it('leaves a keyframe-less overlay and a non-overlay item untouched', () => {
@@ -620,6 +623,70 @@ describe('applyCutToItem — overlay keyframes', () => {
     for (const it of out.tracks![1].items) expect(it.keyframes).toBeUndefined()
     const outVid = applyCutToItem(p, 'a', { start: 4, end: 6 })
     for (const it of outVid.tracks![0].items) expect(it.keyframes).toBeUndefined()
+  })
+})
+
+// §521: a split or trim between two keys used to leave each half holding flat
+// (one neighbour kept, the ramp through the edge lost).
+describe('keyframe edge keys (§521)', () => {
+  const ramp = (extra: Record<string, unknown> = {}): VisualItem => ({
+    id: 'z', type: 'overlay', start: 0, end: 10,
+    keyframes: [{ prop: 'scale', points: [
+      { t: 0, value: 1, ...extra }, { t: 4, value: 2 },
+    ] }],
+  } as VisualItem)
+  const pts = (it: VisualItem) => it.keyframes!.find(k => k.prop === 'scale')!.points
+  const split = (item: VisualItem, at: number) =>
+    splitAtTime(makeProject({ tracks: vtracks([], [item]) }), at, 'z').tracks![1].items
+
+  it('split mid-ramp: each half ramps, edge value = interpolated midpoint', () => {
+    const [left, right] = split(ramp(), 2)
+    expect(pts(left)).toEqual([{ t: 0, value: 1 }, { t: 2, value: 1.5 }])
+    expect(pts(right)).toEqual([{ t: 0, value: 1.5 }, { t: 2, value: 2 }])
+    expect(sampleTrack(pts(left), 2)).toBe(sampleTrack(ramp().keyframes![0], 2))
+  })
+
+  it('uses the track easing, not a straight lerp', () => {
+    const item = ramp({ easing: 'ease-in' })
+    const expected = sampleTrack(item.keyframes![0], 2)!
+    expect(expected).not.toBeCloseTo(1.5, 3)
+    const [left, right] = split(item, 2)
+    expect(pts(left)[1].value).toBe(expected)
+    expect(pts(right)[0].value).toBe(expected)
+    expect(pts(right)[0].easing).toBe('ease-in')
+  })
+
+  it('hold: the edge value is the held value', () => {
+    const [left, right] = split(ramp({ easing: 'hold' }), 2)
+    expect(pts(left)[1].value).toBe(1)
+    expect(pts(right)[0].value).toBe(1)
+  })
+
+  it('trim end between keys inserts the edge key', () => {
+    const p = makeProject({ tracks: vtracks([], [ramp()]) })
+    const out = applyCutToItem(p, 'z', { start: 2, end: 10 }).tracks![1].items
+    expect(out).toHaveLength(1)
+    expect(pts(out[0])).toEqual([{ t: 0, value: 1 }, { t: 2, value: 1.5 }])
+  })
+
+  it('trim start between keys re-anchors and inserts the edge key', () => {
+    const out = applyCutToItem(makeProject({ tracks: vtracks([], [ramp()]) }), 'z', { start: 0, end: 2 }).tracks![1].items
+    expect(out).toHaveLength(1)
+    expect(out[0].start).toBe(0)
+    expect(pts(out[0])).toEqual([{ t: 0, value: 1.5 }, { t: 2, value: 2 }])
+  })
+
+  it('no-ops: edge on a key (no duplicate), outside the keys, single key', () => {
+    const [l, r] = split(ramp(), 4)
+    expect(pts(l).map(p => p.t)).toEqual([0, 4])
+    expect(pts(r).map(p => p.t)).toEqual([0])
+    const [l2, r2] = split(ramp(), 6)
+    expect(pts(l2)).toEqual([{ t: 0, value: 1 }, { t: 4, value: 2 }])
+    expect(r2.keyframes).toBeUndefined()
+    const one = { id: 'z', type: 'overlay', start: 0, end: 10, keyframes: [{ prop: 'scale', points: [{ t: 2, value: 3 }] }] } as VisualItem
+    const [l3, r3] = split(one, 5)
+    expect(pts(l3)).toEqual([{ t: 2, value: 3 }])
+    expect(r3.keyframes).toBeUndefined()
   })
 })
 

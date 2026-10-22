@@ -1,7 +1,7 @@
 import type { Project } from '../types'
 import type { VisualItem, AudioTrack, CaptionSegment, Word, VisualTrack, KeyframeTrack } from '../schema'
 import { mapTrackItems, trackItems, normalizeTracks } from './timeline/timeline-model'
-import { normalizeTrack } from '@bycrux/timeline-core'
+import { normalizeTrack, sampleTrack } from '@bycrux/timeline-core'
 import { canKeyframe } from './keyframeOps'
 import { isScene3dItem, scene3dInPoint, shiftScene3dInPoint } from './scene3d'
 
@@ -32,11 +32,17 @@ function trimClipEnd(item: VisualItem, at: number): VisualItem {
   // so a clip at S=1/absent is byte-identical to the pre-speed op.
   const s = item.speed ?? 1
   const trimmedDur = at - item.start
-  return {
+  const out: VisualItem = {
     ...item,
     end: at,
     ...(item.outPoint !== undefined ? { outPoint: (item.inPoint ?? 0) + trimmedDur * s } : {}),
   }
+  if (canKeyframe(item) && item.keyframes && item.keyframes.length > 0) {
+    const { left } = splitKeyframeTracks(item, { start: at, end: item.end })
+    if (left) out.keyframes = left
+    else delete out.keyframes
+  }
+  return out
 }
 
 function trimClipStart(item: VisualItem, at: number): VisualItem {
@@ -45,11 +51,38 @@ function trimClipStart(item: VisualItem, at: number): VisualItem {
   // The resulting gap before the clip's new start position is intentional.
   const sourceOffset = (at - item.start) * (item.speed ?? 1)
   // A 3D item's in point advances the same way (scene3d.ts).
-  return shiftScene3dInPoint({
+  const out = shiftScene3dInPoint({
     ...item,
     start: at,
     ...(item.inPoint !== undefined ? { inPoint: (item.inPoint ?? 0) + sourceOffset } : {}),
   }, at - item.start)
+  if (canKeyframe(item) && item.keyframes && item.keyframes.length > 0) {
+    // Keyframe `t` is relative to the item's own start, which just moved.
+    const { right } = splitKeyframeTracks(item, { start: item.start, end: at })
+    if (right) out.keyframes = right
+    else delete out.keyframes
+  }
+  return out
+}
+
+/**
+ * A new edge (split/trim) that falls strictly BETWEEN two keys of a track
+ * needs a key of its own, else the half that keeps only one neighbour holds
+ * flat and loses the ramp through the edge. The value is `sampleTrack`'s, so
+ * the track's own easing (and `hold` step semantics) decide it; the key
+ * carries the easing of the segment it lands in. Returns [] when the edge sits
+ * on a key, before the first or after the last (clamped as before).
+ */
+function edgeKey(track: KeyframeTrack, t: number): KeyframeTrack['points'] {
+  const pts = track.points
+  if (pts.length < 2) return []
+  if (!(t > pts[0].t && t < pts[pts.length - 1].t)) return []
+  if (pts.some(p => p.t === t)) return []
+  const value = sampleTrack(track, t)
+  if (value === undefined) return []
+  let prev = pts[0]
+  for (const p of pts) { if (p.t < t) prev = p }
+  return [{ t, value, ...(prev.easing !== undefined ? { easing: prev.easing } : {}) }]
 }
 
 /**
@@ -93,12 +126,16 @@ function splitKeyframeTracks(item: VisualItem, cut: Cut): { left?: KeyframeTrack
   const rightOffset = cut.end   - item.start
 
   const left = tracks
-    .map(track => normalizeTrack({ prop: track.prop, points: track.points.filter(p => p.t <= leftDur) }))
+    .map(track => normalizeTrack({
+      ...track,
+      points: [...track.points.filter(p => p.t <= leftDur), ...edgeKey(track, leftDur)],
+    }))
     .filter((track): track is KeyframeTrack => !!track && track.points.length > 0)
   const right = tracks
     .map(track => normalizeTrack({
-      prop: track.prop,
-      points: track.points.filter(p => p.t >= rightOffset).map(p => ({ ...p, t: p.t - rightOffset })),
+      ...track,
+      points: [...edgeKey(track, rightOffset), ...track.points.filter(p => p.t >= rightOffset)]
+        .map(p => ({ ...p, t: p.t - rightOffset })),
     }))
     .filter((track): track is KeyframeTrack => !!track && track.points.length > 0)
 
