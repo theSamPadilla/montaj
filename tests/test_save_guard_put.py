@@ -600,3 +600,178 @@ def test_a_save_reuses_the_revisions_of_the_fields_it_did_not_change(proj, monke
     pr.clear_cache()
     assert final == revisions_of(disk) and again["tracks"] == revision_of(big) == final["tracks"]
     assert again == revisions_of({**_base(), "tracks": big, "name": "second"}, ["tracks", "name", "status"])
+
+
+# ── G-2: an advisory editor write with no read reports what it changed of another writer's (§482) ──
+
+EDITOR = {"x-montaj-shell": SECRET, "x-montaj-writer": "editor", "x-montaj-guard": "advisory"}
+TOOL = {"x-montaj-shell": SECRET, "x-montaj-writer": "tool"}
+UNREAD = "x-montaj-unread"
+OVERRODE = "x-montaj-overrode"
+
+
+def _tool_put(proj, body, client=None):
+    resp = _put(body, read=_revs(proj, *body), headers=TOOL, client=client)
+    assert resp.status_code == 200, resp.text
+    return resp
+
+
+def test_a_readless_editor_write_that_changes_a_field_the_tool_wrote_reports_it_and_applies(proj, monkeypatch, capsys):
+    _start(monkeypatch)
+    tool = _tool_put(proj, {"name": "pulled"})
+    assert UNREAD not in tool.headers
+    capsys.readouterr()
+    resp = _put({"name": "stale view"}, headers=EDITOR)
+    assert resp.status_code == 200, resp.text
+    assert resp.headers[UNREAD] == "name"
+    assert OVERRODE not in resp.headers
+    assert _disk(proj)["name"] == "stale view"
+    assert json.loads(resp.headers["x-montaj-revisions"]) == {"name": revision_of("stale view")}
+    out = capsys.readouterr()
+    lines = [l for l in (out.out + out.err).splitlines() if l.startswith("save-guard:")]
+    assert lines == ["save-guard: advisory unread editor fields=name"]
+
+
+def test_a_readless_editor_write_that_leaves_the_tools_value_reports_nothing_for_it(proj, monkeypatch):
+    """A whole-document writer sends every field: a field merely present, with the tool's value, is not named."""
+    _start(monkeypatch)
+    _tool_put(proj, {"name": "pulled", "status": "final"})
+    resp = _put({**_disk(proj), "status": "draft"}, headers=EDITOR)
+    assert resp.status_code == 200, resp.text
+    assert resp.headers[UNREAD] == "status"
+    assert _disk(proj)["name"] == "pulled" and _disk(proj)["status"] == "draft"
+
+
+def test_a_readless_editor_write_that_changes_only_fields_the_tool_left_alone_reports_nothing(proj, monkeypatch):
+    _start(monkeypatch)
+    _tool_put(proj, {"name": "pulled", "status": "draft"})   # status sent with its own value: not changed
+    resp = _put({**_disk(proj), "status": "final", "notes": []}, headers=EDITOR)
+    assert resp.status_code == 200, resp.text
+    assert UNREAD not in resp.headers and OVERRODE not in resp.headers
+
+
+def test_with_no_prior_guarded_write_a_readless_editor_write_reports_nothing(proj, monkeypatch):
+    _start(monkeypatch)
+    resp = _put({"name": "x", "status": "final"}, headers=EDITOR)
+    assert resp.status_code == 200, resp.text
+    assert UNREAD not in resp.headers
+
+
+def test_a_change_written_outside_the_guard_is_not_a_guarded_write(proj, monkeypatch):
+    _start(monkeypatch)
+    doc = _disk(proj)
+    doc["name"] = "by a step"
+    write_json_atomic(proj / "project.json", doc)
+    resp = _put({"name": "x"}, headers=EDITOR)
+    assert resp.status_code == 200, resp.text
+    assert UNREAD not in resp.headers
+
+
+def test_once_the_file_no_longer_holds_the_tools_value_nothing_is_reported(proj, monkeypatch):
+    """A step rewrote the field after the tool: the tool's value is gone, so the editor overwrote the step's."""
+    _start(monkeypatch)
+    _tool_put(proj, {"name": "pulled"})
+    doc = _disk(proj)
+    doc["name"] = "by a step"
+    write_json_atomic(proj / "project.json", doc)
+    resp = _put({"name": "x"}, headers=EDITOR)
+    assert resp.status_code == 200, resp.text
+    assert UNREAD not in resp.headers
+
+
+def test_a_field_is_reported_once_then_the_editors_own_value_is_its_to_change(proj, monkeypatch):
+    _start(monkeypatch)
+    _tool_put(proj, {"name": "pulled"})
+    assert _put({"name": "a"}, headers=EDITOR).headers[UNREAD] == "name"
+    again = _put({"name": "b"}, headers=EDITOR)
+    assert again.status_code == 200 and UNREAD not in again.headers
+    _tool_put(proj, {"name": "pulled again"})
+    assert _put({"name": "c"}, headers=EDITOR).headers[UNREAD] == "name"
+
+
+def test_a_tracks_change_is_reported_as_tracks(proj, monkeypatch):
+    _start(monkeypatch)
+    pulled = [{"id": "trk-0", "items": [{"id": "c1", "type": "image", "src": "/a.png", "start": 0, "end": 1},
+                                        {"id": "c2", "type": "image", "src": "/b.png", "start": 1, "end": 2}]}]
+    _tool_put(proj, {"tracks": pulled})
+    mine = [{"id": "trk-0", "items": [{**pulled[0]["items"][0], "end": 0.5}, pulled[0]["items"][1]]}]
+    resp = _put({"tracks": mine}, headers=EDITOR)
+    assert resp.status_code == 200, resp.text
+    assert resp.headers[UNREAD] == "tracks"
+    assert normalize_tracks(_disk(proj))["tracks"] == mine
+
+
+def test_a_field_sent_with_a_read_beside_an_unread_one_is_judged_by_its_read(proj, monkeypatch):
+    _start(monkeypatch)
+    _tool_put(proj, {"name": "pulled", "status": "final"})
+    resp = _put({"name": "x", "status": "draft"}, read=_revs(proj, "name"), headers=EDITOR)
+    assert resp.status_code == 200, resp.text
+    assert resp.headers[UNREAD] == "status"
+    assert OVERRODE not in resp.headers
+
+
+def test_editor_writes_with_a_read_behave_as_before_and_take_the_field_over(proj, monkeypatch):
+    _start(monkeypatch)
+    _tool_put(proj, {"name": "pulled", "status": "final"})
+    fresh = _put({"name": "x"}, read=_revs(proj, "name"), headers=EDITOR)
+    assert fresh.status_code == 200 and UNREAD not in fresh.headers and OVERRODE not in fresh.headers
+    stale = _put({"status": "draft"}, read={"status": "000000000000"}, headers=EDITOR)
+    assert stale.status_code == 200 and stale.headers[OVERRODE] == "status" and UNREAD not in stale.headers
+    # Both fields were the editor's to write from then on: a later write with no read names neither.
+    later = _put({"name": "y", "status": "pending"}, headers=EDITOR)
+    assert later.status_code == 200 and UNREAD not in later.headers
+
+
+def test_non_editor_writers_never_answer_unread(proj, monkeypatch):
+    _start(monkeypatch)
+    _tool_put(proj, {"name": "pulled"})
+    ai = _put({"name": "by the ai"}, read=_revs(proj, "name"))
+    assert ai.status_code == 200 and UNREAD not in ai.headers
+    assert _put({"name": "x"}, headers=TOOL).status_code == 400
+    assert _put({"name": "x"}).status_code == 400
+
+
+def test_an_ai_write_is_a_guarded_write_too(proj, monkeypatch):
+    _start(monkeypatch)
+    assert _put({"name": "by the ai"}, read=_revs(proj, "name")).status_code == 200
+    assert _put({"name": "x"}, headers=EDITOR).headers[UNREAD] == "name"
+
+
+def test_a_refused_tool_write_records_nothing(proj, monkeypatch):
+    _start(monkeypatch)
+    assert _put({"name": "pulled"}, read={"name": "000000000000"}, headers=TOOL).status_code == 409
+    resp = _put({"name": "x"}, headers=EDITOR)
+    assert resp.status_code == 200 and UNREAD not in resp.headers
+
+
+def test_a_hub_template_change_is_never_reported(proj, monkeypatch):
+    _start(monkeypatch)
+    assert _put({"hubTemplate": {"id": "t1"}}, headers=TOOL).status_code == 200
+    resp = _put({"hubTemplate": {"id": "t2"}, "name": "x"}, headers=EDITOR)
+    assert resp.status_code == 200 and UNREAD not in resp.headers
+
+
+def test_without_the_guard_nothing_is_recorded_or_reported(proj, monkeypatch):
+    _start(monkeypatch, guard=False)
+    _put({"name": "pulled"}, headers=TOOL)
+    resp = _put({"name": "x"}, headers=EDITOR)
+    assert resp.status_code == 200 and _guard_headers(resp) == {}
+
+
+def test_reporting_an_unread_field_hashes_nothing_more(proj, monkeypatch):
+    """The report compares the revisions the guard already computes: tracks is hashed once per write
+    that carries it (the body's value, for the answer), never for the comparison."""
+    _start(monkeypatch)
+    from lib import project_revisions as pr
+    big = [{"id": "trk-0", "items": [{"id": f"c{i}", "type": "image", "src": f"/x{i}.png", "start": i, "end": i + 1}
+                                     for i in range(200)]}]
+    mine = [{"id": "trk-0", "items": big[0]["items"][:-1]}]
+    pr.clear_cache()
+    calls = _counting(monkeypatch)
+    c = _client()
+    _tool_put(proj, {"tracks": big}, client=c)
+    assert sum(1 for v in calls if v == big) == 1
+    resp = _put({"tracks": mine}, headers=EDITOR, client=c)
+    assert resp.status_code == 200 and resp.headers[UNREAD] == "tracks"
+    assert sum(1 for v in calls if v == big) == 1
+    assert sum(1 for v in calls if v == mine) == 1
