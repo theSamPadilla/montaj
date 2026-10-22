@@ -504,7 +504,6 @@ function PreviewSurface({
   const {
     showVideo,
     isPlaying,
-    togglePlay,
     isCanvasProject,
     clips,
     tracks0NonVideo,
