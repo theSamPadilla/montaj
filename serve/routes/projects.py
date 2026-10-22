@@ -4176,7 +4176,8 @@ async def save_project(project_id: str, response: Response, body: dict = Body(..
     # Broadcast immediately — before the git commit so the UI update is instant.
     # Don't rely on the file watcher which can miss updates during SSE reconnect windows.
     broadcaster: SSEBroadcaster = request.app.state.broadcaster
-    broadcaster.publish(project_id, _sse_data_frame(text))
+    # One publish, so the stamp (a trusted Studio sync pull only) and its frame stay adjacent.
+    broadcaster.publish(project_id, save_guard.writer_stamp(verdict) + _sse_data_frame(text))
     # Only relevant when this body could have touched a video item's (id, src),
     # or a copy tried again may repoint one.
     follow_ups = "tracks" in body or "sources" in body or bool(retrying)

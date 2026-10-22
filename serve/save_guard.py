@@ -136,13 +136,15 @@ NOT_FIELDS = frozenset({"id", "copied", "warnings"})
 OWNED_FIELDS = frozenset({"hubTemplate"})
 
 READ_HEADER = "x-montaj-read-revisions"
+ORIGIN_HEADER = "x-montaj-write-origin"
+SYNC_ORIGIN = "sync"
 UNREAD_HEADER = "x-montaj-unread"
 
 
 class Verdict:
     """What the guard decided for one PUT that it let through."""
     __slots__ = ("writer", "advisory", "changed", "overrode", "base_text", "project", "before",
-                 "unread_marks", "unread")
+                 "unread_marks", "unread", "origin")
 
     def __init__(self, writer, advisory, changed, base_text=None, project=None):
         self.writer = writer
@@ -159,12 +161,15 @@ class Verdict:
         # Fields sent with no read whose value in the file is still another writer's: {field: mark}.
         self.unread_marks = {}
         self.unread = []
+        # "sync" only for a trusted tool write carrying x-montaj-write-origin: sync (the app's
+        # Studio sync pull); None for every other write. Marks and the writer stamp need it.
+        self.origin = None
 
 
 # ── marks: what the last guarded writes of another writer left (§482 G-2) ────────
 #
 # Per project and per serve process: {field: revision} for every top-level field a guarded PUT
-# from a writer other than the window's editor (tool, ai) changed the value of, as that write
+# from a trusted Studio sync pull (a tool write with origin sync, and no other) changed the value of, as that write
 # left it. An advisory editor write that sends no revision for such a field, while the file
 # still holds that value, and changes it, overwrote a value it may never have seen; the answer
 # names the field in x-montaj-unread (reported, never refused). Any editor write that writes the
@@ -205,6 +210,8 @@ def _note_write(verdict, revs) -> None:
                         marks.pop(f, None)
                 if not marks:
                     _marks.pop(verdict.project, None)
+        return
+    if verdict.origin != SYNC_ORIGIN:
         return
     moved = {f: revs[f] for f in verdict.changed
              if f not in OWNED_FIELDS and f in revs and f in verdict.before and verdict.before[f] != revs[f]}
@@ -271,6 +278,26 @@ def writer_of(headers) -> "tuple[str, bool]":
     return (writer if writer in WRITERS else "ai"), trusted
 
 
+def sync_origin_of(headers) -> "str | None":
+    """"sync" for a request that is trusted (the launch secret), writes as `tool` and names
+    origin sync; None for everything else, so a forged header, an `ai` write and a plain
+    `tool` write are all inert."""
+    headers = headers if headers is not None else {}
+    writer, trusted = writer_of(headers)
+    if trusted and writer == "tool" and headers.get(ORIGIN_HEADER) == SYNC_ORIGIN:
+        return SYNC_ORIGIN
+    return None
+
+
+WRITER_STAMP = "event: writer\ndata: tool;origin=sync\n\n"
+
+
+def writer_stamp(verdict) -> str:
+    """The named SSE frame published just before a guarded PUT's data frame: only for a
+    trusted sync pull, else empty."""
+    return WRITER_STAMP if verdict is not None and verdict.origin == SYNC_ORIGIN else ""
+
+
 def check_save(headers, body: dict, raw_text, existing: dict, project=None):
     """Run under the project lock, after the project is read and before anything is merged.
     None when the guard is off. Raises the refusal (nothing written yet) or returns the
@@ -284,6 +311,7 @@ def check_save(headers, body: dict, raw_text, existing: dict, project=None):
     changed = changed_fields(body)
     base_text = raw_text if normalize_tracks(existing) is existing else None
     verdict = Verdict(writer, advisory, changed, base_text, project)
+    verdict.origin = sync_origin_of(headers)
     if all(f in OWNED_FIELDS for f in changed):
         return verdict
     now = current_revisions(raw_text, existing, changed)
