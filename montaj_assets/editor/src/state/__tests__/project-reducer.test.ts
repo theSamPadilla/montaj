@@ -263,6 +263,25 @@ describe('createMutationQueue', () => {
   })
 })
 
+describe('createMutationQueue onChange', () => {
+  it('a throwing onChange neither throws from enqueue nor wedges the queue (§482)', async () => {
+    const queue = createMutationQueue(() => { throw new Error('host') })
+    let ran = 0
+    let p: Promise<number> = Promise.resolve(0)
+    expect(() => { p = queue.enqueue(async () => { ran++; return 1 }) }).not.toThrow()
+    await expect(p).resolves.toBe(1)
+    await Promise.resolve()
+    expect(ran).toBe(1)
+    expect(queue.isPending()).toBe(false)
+    let drained = false
+    queue.onceDrained(() => { drained = true })
+    await expect(queue.enqueue(async () => 2)).resolves.toBe(2)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(drained).toBe(true)
+    expect(queue.isPending()).toBe(false)
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Image crop tests
 // ---------------------------------------------------------------------------

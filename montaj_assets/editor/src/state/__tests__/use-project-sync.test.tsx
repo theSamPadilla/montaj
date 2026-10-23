@@ -1931,6 +1931,26 @@ describe('useProjectSync onBusyChange', () => {
     expect(renders2 - before2).toBe(without)
   })
 
+  it('a throwing onBusyChange neither wedges the queue nor stops saves, gestures or undo', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const onBusyChange = vi.fn(() => { throw new Error('host') })
+    const { result } = renderHook(() => useProjectSync(adapter, initial.id, initial, { onBusyChange }))
+    await act(async () => { await result.current.mutate((x) => ({ ...x, name: 'A' })) })
+    expect(adapter.saveProject).toHaveBeenCalledTimes(1)
+    expect(result.current.project.name).toBe('A')
+    act(() => { result.current.mutateTransient((x) => ({ ...x, name: 'D1' })) })
+    await act(async () => { await result.current.commit() })
+    expect(adapter.saveProject).toHaveBeenCalledTimes(2)
+    expect(result.current.project.name).toBe('D1')
+    await act(async () => { result.current.undo() })
+    await waitFor(() => expect(adapter.saveProject).toHaveBeenCalledTimes(3))
+    expect(result.current.project.name).toBe('A')
+    await act(async () => { await result.current.mutate((x) => ({ ...x, name: 'B' })) })
+    expect(adapter.saveProject).toHaveBeenCalledTimes(4)
+    expect(onBusyChange).toHaveBeenCalled()
+  })
+
   it('unmount while busy calls nothing after it (no final false)', async () => {
     const { adapter, onBusyChange, result, unmount } = busySetup({ blockSave: true })
     let p: Promise<void> = Promise.resolve()
