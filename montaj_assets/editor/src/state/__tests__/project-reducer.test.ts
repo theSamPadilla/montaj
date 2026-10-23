@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { projectReducer } from '../project-reducer'
 import { createMutationQueue } from '../mutation-queue'
 import type { Project, Slide, CarouselElement, OverlayElement, ImageElement } from '../../types'
@@ -265,6 +265,7 @@ describe('createMutationQueue', () => {
 
 describe('createMutationQueue onChange', () => {
   it('a throwing onChange neither throws from enqueue nor wedges the queue (§482)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const queue = createMutationQueue(() => { throw new Error('host') })
     let ran = 0
     let p: Promise<number> = Promise.resolve(0)
@@ -279,6 +280,8 @@ describe('createMutationQueue onChange', () => {
     await new Promise((r) => setTimeout(r, 0))
     expect(drained).toBe(true)
     expect(queue.isPending()).toBe(false)
+    expect(warn).toHaveBeenCalled() // logged, not lost
+    warn.mockRestore()
   })
 })
 

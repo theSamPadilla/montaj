@@ -209,7 +209,13 @@ export function useProjectSync<P extends Project = Project>(
     const busy = queue.current.isPending() || transientBaseline.current !== null
     if (busy === reportedBusy.current) return
     reportedBusy.current = busy
-    cb(busy)
+    // A host's throw must never break the save, gesture or undo that called
+    // this: log it and carry on.
+    try {
+      cb(busy)
+    } catch (err) {
+      console.warn('[useProjectSync] onBusyChange threw', err)
+    }
   }, [])
   checkBusyRef.current = checkBusy
   useEffect(() => {
