@@ -77,7 +77,7 @@ Overlays live in `tracks[1+]` — overlay tracks in the unified tracks array. Ea
 }
 ```
 
-For multiple non-overlapping overlays, add them to the same track. For simultaneous overlays at different z-levels, add them to separate tracks.
+For multiple non-overlapping overlays, images or clips, add them to the same existing track of that kind instead of one track each, so the person has nothing to merge by hand. Open a new track only when items overlap in time or must stack at a different z-level.
 
 Follow save discipline: **read the project**, merge the updated `tracks` array into the fresh state, then **save the project (delta)**.
 

@@ -66,7 +66,7 @@ Search returns more than you need. Before committing:
 
 ## Where the image goes
 
-- **As an image clip (the default)** — a sourced photo or B-roll still is a `type: "image"` item on an upper track (`tracks[1+]`), timed to the beat with `start`/`end`. It crops and positions like a clip; overlays cannot be cropped. Never write a JSX overlay for a plain photo.
+- **As an image clip (the default)** — a sourced photo or B-roll still is a `type: "image"` item on an upper track (`tracks[1+]`), timed to the beat with `start`/`end`. Put it on an existing upper track with a free span, and open a new track only when it overlaps something there. It crops and positions like a clip; overlays cannot be cropped. Never write a JSX overlay for a plain photo.
 
 ```json
 { "id": "img-0", "type": "image", "src": "/abs/path/musk.jpg", "start": 4.2, "end": 7.0,
@@ -86,5 +86,5 @@ Always use the **local fetched path** (absolute), never the remote URL.
 2. Eyeball results → pick a clean ≥1500px original
 3. Run step `fetch_image` with {url:"https://…/elon.jpg", out:"<project>/assets/elon_musk.jpg", licence:"unknown", artist:"example-news.com", source:"web", "source-url":"https://example-news.com/…", title:"Elon Musk at …"} (all five from the picked result)
 4. Read the downloaded file → confirm subject + no watermark/chyron
-5. Add it as a `type: "image"` clip on `tracks[1+]` (src = the fetched path, start/end on the beat)
+5. Add it as a `type: "image"` clip on an existing `tracks[1+]` track with a free span (new track only if it overlaps; src = the fetched path, start/end on the beat)
 ```
