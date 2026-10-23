@@ -1101,7 +1101,8 @@ def test_a_failed_write_leaves_the_old_project_json(this, other, monkeypatch, co
     resp = _put(pid, **body)
     monkeypatch.undo()
 
-    assert resp.status_code == 500
+    # §541: a full disk is the 507 disk_full, never a bare 500.
+    assert resp.status_code == 507 and resp.json()["detail"]["error"] == "disk_full"
     assert (folder / "project.json").read_text() == before
 
 
