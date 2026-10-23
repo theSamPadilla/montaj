@@ -113,14 +113,9 @@ _VIDEO_IMAGE_MIME_BY_EXT = {
 # Shared fail() message for ConnectorError(reason="invalid_api_key"). One
 # constant so every Gemini-calling step (analyze_media, generate_image,
 # generate_voiceover, generate_music) shows the operator identical wording
-# instead of four hand-written copies drifting apart. Montaj also runs with
-# no app installed at all, so this names both the app's own settings page
-# and the bare-CLI path rather than assuming either is the current surface.
-INVALID_API_KEY_MESSAGE = (
-    "Your Gemini API key was rejected. Update it in the Montaj app under "
-    "Connectors, or on the CLI: montaj credentials --provider gemini "
-    "--key api_key --value <new key>."
-)
+# instead of four hand-written copies drifting apart. It names only the app's
+# Connectors page: app users have no CLI (§549).
+INVALID_API_KEY_MESSAGE = "Your Gemini API key was rejected. Update it in Montaj under Connectors."
 
 _IMAGE_MIME_BY_EXT = {
     ".png":  "image/png",

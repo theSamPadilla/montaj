@@ -76,7 +76,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from connectors import (ConnectorError, _http, CONTENT_REFUSED, INSUFFICIENT_CREDIT,
                         INVALID_API_KEY, MODEL_RETIRED, UNREACHABLE)
-from lib.credentials import get_credential, CredentialError
+from lib.credentials import get_credential
 from lib.glb_textures import GlbTextureError, ensure_supported_textures
 
 API = "https://openapi.tripo3d.ai/v3"
@@ -260,10 +260,7 @@ def _warn(message: str) -> None:
 
 
 def _key() -> str:
-    try:
-        return get_credential("tripo", "api_key").strip()
-    except CredentialError as e:
-        raise CredentialError(f"Tripo needs an API key. {e}") from e
+    return get_credential("tripo", "api_key").strip()
 
 
 def _headers() -> dict:

@@ -6,7 +6,9 @@ from connectors import ConnectorError
 from lib.credentials import (
     CREDENTIALS_PATH,
     KNOWN_PROVIDERS,
+    PROVIDER_NAMES,
     CredentialError,
+    MissingCredentialError,
     _env_var_name,
     get_credential,
     list_providers,
@@ -51,46 +53,53 @@ def test_get_credential_prefers_env_over_file(monkeypatch, creds_path):
 
 
 def test_get_credential_raises_when_missing():
-    with pytest.raises(CredentialError, match="No kling.access_key credential found"):
+    with pytest.raises(MissingCredentialError) as ei:
         get_credential("kling", "access_key")
+    assert isinstance(ei.value, CredentialError)
+    assert (ei.value.provider, ei.value.key) == ("kling", "access_key")
 
 
-def test_missing_credential_message_leads_with_the_app_fix():
-    """PV29 review item 18: the message used to tell the user only to run
-    `montaj credentials` — it must lead with where a non-CLI user actually
-    looks (the app's Connectors page), like Gemini's
-    INVALID_API_KEY_MESSAGE does for a rejected key."""
-    with pytest.raises(CredentialError) as ei:
-        get_credential("kling", "access_key")
-    assert "Add your kling key in Montaj under Connectors" in str(ei.value)
+@pytest.mark.parametrize("provider", sorted(KNOWN_PROVIDERS))
+def test_missing_key_message_is_sams_copy_with_no_cli(provider):
+    """§549: an app user has no CLI and no shell, so the message names only the app's
+    Connectors page. Sam's copy: "No Gemini key. Add one in Montaj under Connectors."."""
+    key = KNOWN_PROVIDERS[provider][0]
+    with pytest.raises(MissingCredentialError) as ei:
+        get_credential(provider, key)
+    msg = str(ei.value)
+    assert msg == f"No {PROVIDER_NAMES[provider]} key. Add one in Montaj under Connectors."
+    for cli in ("montaj ", "--provider", "on the CLI", "_KEY", "credential found"):
+        assert cli not in msg
 
 
-def test_get_credential_missing_hint_is_a_real_cli_command():
-    """`montaj install credentials` isn't a real command (the CLI verb is
-    `montaj credentials`, cli/commands/credentials.py) — the fix-it hint must
-    name a command that actually runs."""
-    with pytest.raises(CredentialError) as ei:
-        get_credential("kling", "access_key")
-    assert "montaj credentials --provider kling --key access_key --value <value>" in str(ei.value)
-    assert "install credentials" not in str(ei.value)
+def test_gemini_missing_key_reads_exactly_as_sam_wrote_it():
+    with pytest.raises(MissingCredentialError) as ei:
+        get_credential("gemini", "api_key")
+    assert str(ei.value) == "No Gemini key. Add one in Montaj under Connectors."
+
+
+def test_every_known_provider_has_a_connectors_name():
+    assert set(PROVIDER_NAMES) == set(KNOWN_PROVIDERS)
+    assert PROVIDER_NAMES["fal"] == "Seedance"  # the Connectors tile that holds the fal.ai key
 
 
 def test_get_credential_raises_on_malformed_json(creds_path):
     os.makedirs(os.path.dirname(creds_path), exist_ok=True)
     with open(creds_path, "w") as f:
         f.write("{not valid}")
-    with pytest.raises(CredentialError, match="not valid JSON"):
+    with pytest.raises(CredentialError, match="not valid JSON") as ei:
         get_credential("kling", "access_key")
+    assert not isinstance(ei.value, MissingCredentialError)
 
 
-def test_malformed_json_hint_is_a_real_cli_command(creds_path):
+def test_malformed_json_message_names_no_cli_command(creds_path):
     os.makedirs(os.path.dirname(creds_path), exist_ok=True)
     with open(creds_path, "w") as f:
         f.write("{not valid}")
     with pytest.raises(CredentialError) as ei:
         get_credential("kling", "access_key")
-    assert "montaj credentials --provider <name> --key <key> --value <value>" in str(ei.value)
-    assert "install credentials" not in str(ei.value)
+    assert "montaj " not in str(ei.value) and "--provider" not in str(ei.value)
+    assert str(ei.value).endswith("Fix the file or delete it.")
 
 
 # ── CredentialError hierarchy ───────────────────────────────────────

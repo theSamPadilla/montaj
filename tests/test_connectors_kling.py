@@ -803,3 +803,42 @@ def test_step_project_mode_never_switches_model(step, monkeypatch):
     step.main()
     assert seen["model"] == "kling-v3-omni"
     assert seen["mode"] == "pro"
+
+
+class TestMissingKeyMessages:
+    """§549: no CLI hint, and a half-set legacy pair names the missing half in plain words.
+    The conftest guard clears every KLING_* variable and points credentials.json at nothing."""
+
+    def test_no_kling_key_at_all(self):
+        from connectors import kling
+        from lib.credentials import MissingCredentialError
+        with pytest.raises(MissingCredentialError) as ei:
+            kling._bearer()
+        assert str(ei.value) == "No Kling key. Add one in Montaj under Connectors."
+
+    @pytest.mark.parametrize("have_env, have, missing", [
+        ("KLING_ACCESS_KEY", "access key", "secret key"),
+        ("KLING_SECRET_KEY", "secret key", "access key"),
+    ])
+    def test_half_a_legacy_pair_names_the_missing_half(self, monkeypatch, have_env, have, missing):
+        from connectors import kling
+        from lib.credentials import MissingCredentialError
+        monkeypatch.setenv(have_env, "test-half-0000000000000000")
+        with pytest.raises(MissingCredentialError) as ei:
+            kling._bearer()
+        assert str(ei.value) == (
+            f"Your Kling {have} has no {missing}. Add a Kling API key in Montaj under Connectors."
+        )
+        assert ei.value.key == missing.replace(" ", "_")
+        assert "montaj " not in str(ei.value) and "KLING_" not in str(ei.value)
+
+    def test_api_key_alone_is_the_bearer(self, monkeypatch):
+        from connectors import kling
+        monkeypatch.setenv("KLING_API_KEY", "test-api-key-0000000000000000")
+        assert kling._bearer() == "test-api-key-0000000000000000"
+
+    def test_the_full_legacy_pair_still_signs(self, monkeypatch):
+        from connectors import kling
+        monkeypatch.setenv("KLING_ACCESS_KEY", "test-access-key-0000000000000000")
+        monkeypatch.setenv("KLING_SECRET_KEY", "test-secret-key-0000000000000000")
+        assert kling._bearer().count(".") == 2  # a JWT

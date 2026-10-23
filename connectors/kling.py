@@ -19,7 +19,7 @@ from connectors import (
     ConnectorError, _http, classify_http_error,
     INVALID_API_KEY, INSUFFICIENT_CREDIT, MODEL_RETIRED, UNREACHABLE,
 )
-from lib.credentials import get_credential, CredentialError
+from lib.credentials import get_credential, CredentialError, MissingCredentialError, missing_key_message
 
 # api.klingai.com answers identically (verified 2026-09-28); keep Singapore.
 BASE_URL = "https://api-singapore.klingai.com"
@@ -146,10 +146,35 @@ def _require_jwt():
         raise ConnectorError("Missing connector dependencies. Run: montaj install connectors")
 
 
+def _legacy_pair() -> tuple[str, str]:
+    """The legacy access/secret pair, or the error a user can act on.
+
+    With neither half stored the user simply has no Kling key. With one half,
+    the message names the missing half in plain words, and points at the API
+    key: the Connectors page offers only that (§549).
+    """
+    def stored(key: str) -> str | None:
+        try:
+            return get_credential("kling", key)
+        except MissingCredentialError:
+            return None
+
+    access_key, secret_key = stored("access_key"), stored("secret_key")
+    if access_key and secret_key:
+        return access_key, secret_key
+    if not access_key and not secret_key:
+        raise MissingCredentialError(missing_key_message("kling"), "kling", "api_key")
+    have, missing = ("access key", "secret_key") if access_key else ("secret key", "access_key")
+    raise MissingCredentialError(
+        f"Your Kling {have} has no {missing.replace('_', ' ')}. "
+        f"Add a Kling API key in Montaj under Connectors.",
+        "kling", missing,
+    )
+
+
 def _make_token() -> str:
+    access_key, secret_key = _legacy_pair()
     jwt = _require_jwt()
-    access_key = get_credential("kling", "access_key")
-    secret_key = get_credential("kling", "secret_key")
     now = time.time()
     payload = {"iss": access_key, "exp": int(now) + 1800, "nbf": int(now) - 5}
     headers = {"alg": "HS256", "typ": "JWT"}

@@ -34,7 +34,7 @@ Step scripts catch ConnectorError and translate to fail().
 """
 import base64, io, json, re, sys, time
 from connectors import ConnectorError, _http, classify_http_error, MODEL_RETIRED, UNREACHABLE
-from lib.credentials import get_credential, CredentialError
+from lib.credentials import get_credential
 
 QUEUE = "https://queue.fal.run"
 MODELS_API = "https://api.fal.ai/v1/models"
@@ -113,10 +113,7 @@ def _request_id_from_url(url: str) -> str:
 
 
 def _headers() -> dict:
-    try:
-        key = get_credential("fal", "api_key").strip()
-    except CredentialError as e:
-        raise CredentialError(f"Seedance needs a fal.ai key. {e}") from e
+    key = get_credential("fal", "api_key").strip()
     return {"Authorization": f"Key {key}", "Content-Type": "application/json"}
 
 

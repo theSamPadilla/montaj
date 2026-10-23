@@ -84,6 +84,45 @@ class CredentialError(ConnectorError):
     """
 
 
+class MissingCredentialError(CredentialError):
+    """No value for `provider`.`key` anywhere (env var or credentials.json).
+
+    `provider` and `key` name what is missing, never a value, so a caller can
+    tell a missing key from a corrupt file without matching the message.
+    """
+
+    def __init__(self, message: str, provider: str, key: str):
+        super().__init__(message)
+        self.provider = provider
+        self.key = key
+
+
+# The name each provider has on the app's Connectors page (desktop/ui
+# src/app/connectors/providers.ts, `label`), so a missing-key message names the
+# tile the user opens. Seedance is the tile for the fal key. The CLI's own
+# wizard has its own names (cli/commands/credentials.py).
+PROVIDER_NAMES: dict[str, str] = {
+    "kling":      "Kling",
+    "gemini":     "Gemini",
+    "openai":     "OpenAI",
+    "serpapi":    "SerpApi",
+    "fal":        "Seedance",
+    "elevenlabs": "ElevenLabs",
+    "kinovi":     "Kinovi",
+    "tripo":      "Tripo",
+}
+
+
+def provider_name(provider: str) -> str:
+    return PROVIDER_NAMES.get(provider, provider)
+
+
+def missing_key_message(provider: str) -> str:
+    """What a user without `provider`'s key reads. App users have no CLI, so
+    it names only the app's Connectors page (§549, Sam's copy)."""
+    return f"No {provider_name(provider)} key. Add one in Montaj under Connectors."
+
+
 def _env_var_name(provider: str, key: str) -> str:
     # "kling", "access_key" -> "KLING_ACCESS_KEY"
     return f"{provider.upper()}_{key.upper()}"
@@ -134,8 +173,7 @@ def _read_file() -> dict:
     except json.JSONDecodeError as e:
         raise CredentialError(
             f"{credentials_path()} is not valid JSON ({e.msg} at line {e.lineno}). "
-            f"Fix the file or delete it, then run: "
-            f"montaj credentials --provider <name> --key <key> --value <value>"
+            f"Fix the file or delete it."
         ) from e
     except OSError as e:
         raise CredentialError(f"Could not read {credentials_path()}: {e}") from e
@@ -155,12 +193,7 @@ def get_credential(provider: str, key: str) -> str:
     if val:
         return val
 
-    raise CredentialError(
-        f"No {provider}.{key} credential found. Add your {provider} key in "
-        f"Montaj under Connectors, or on the CLI: "
-        f"montaj credentials --provider {provider} --key {key} --value <value> "
-        f"(or set {_env_var_name(provider, key)})."
-    )
+    raise MissingCredentialError(missing_key_message(provider), provider, key)
 
 
 def set_credential(provider: str, key: str, value: str) -> None:

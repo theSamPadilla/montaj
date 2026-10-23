@@ -197,9 +197,9 @@ def test_tripo_is_a_registered_provider():
 def test_a_missing_key_fails_before_any_call(fake, monkeypatch, tmp_path):
     monkeypatch.delenv("TRIPO_API_KEY")
     monkeypatch.setattr("lib.credentials.CREDENTIALS_PATH", str(tmp_path / "no-credentials.json"))
-    with pytest.raises(CredentialError, match="Tripo needs an API key") as e:
+    with pytest.raises(CredentialError) as e:
         tripo.check_key()
-    assert "TRIPO_API_KEY" in str(e.value)
+    assert str(e.value) == "No Tripo key. Add one in Montaj under Connectors."  # §549: no env var or CLI hint
     assert fake.calls == []
 
 

@@ -475,8 +475,10 @@ def test_submit_does_not_retry_5xx_or_network(fake):
 def test_missing_key_raises_before_http(fake, monkeypatch, tmp_path):
     monkeypatch.delenv("FAL_API_KEY", raising=False)
     monkeypatch.setattr("lib.credentials.CREDENTIALS_PATH", str(tmp_path / "none.json"))
-    with pytest.raises(ConnectorError, match="fal"):
+    with pytest.raises(ConnectorError) as ei:
         fal.submit("m/a/b", {"prompt": "x"})
+    # §549: the Connectors tile that holds the fal.ai key is Seedance
+    assert str(ei.value) == "No Seedance key. Add one in Montaj under Connectors."
     assert fake.calls == []
 
 

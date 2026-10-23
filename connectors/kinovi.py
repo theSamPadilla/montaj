@@ -35,7 +35,7 @@ Step scripts catch ConnectorError and translate to fail().
 import io, json, mimetypes, os, sys, time
 from connectors import (ConnectorError, _http, classify_http_error, retarget_extension,
                         CONTENT_REFUSED, INSUFFICIENT_CREDIT, UNREACHABLE)
-from lib.credentials import get_credential, CredentialError
+from lib.credentials import get_credential
 
 API = "https://kinovi.ai/api/v1"
 
@@ -133,10 +133,7 @@ def _warn(message: str) -> None:
 
 
 def _key() -> str:
-    try:
-        return get_credential("kinovi", "api_key").strip()
-    except CredentialError as e:
-        raise CredentialError(f"Kinovi needs an API key. {e}") from e
+    return get_credential("kinovi", "api_key").strip()
 
 
 def _headers() -> dict:

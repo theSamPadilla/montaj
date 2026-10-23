@@ -171,10 +171,10 @@ class TestErrorMapping:
         """A missing credential raises CredentialError (a ConnectorError
         subclass with reason=None) through get_credential — surfaces as
         check_failed with the connector's own message, per the task spec."""
-        from lib.credentials import CredentialError
+        from lib.credentials import get_credential
 
         def boom():
-            raise CredentialError("No gemini.api_key credential found.")
+            get_credential("gemini", "api_key")
         monkeypatch.setattr(gemini_mod, "check_key", boom)
         monkeypatch.setattr(sys, "argv", ["check_key.py", "--provider", "gemini"])
 
@@ -182,4 +182,5 @@ class TestErrorMapping:
             step_module.main()
         err = json.loads(capsys.readouterr().err)
         assert err["error"] == "check_failed"
-        assert "credential" in err["message"]
+        assert "No Gemini key. Add one in Montaj under Connectors." in err["message"]
+        assert "montaj credentials" not in err["message"]

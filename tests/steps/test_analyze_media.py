@@ -82,8 +82,8 @@ class TestAnalyzeMediaConnectorErrorMapping:
             step_module.main()
         err = json.loads(capsys.readouterr().err)
         assert err["error"] == "invalid_api_key"
-        assert "Connectors" in err["message"]
-        assert "montaj credentials" in err["message"]
+        assert err["message"] == "Your Gemini API key was rejected. Update it in Montaj under Connectors."
+        assert "montaj credentials" not in err["message"]
 
     def test_invalid_api_key_appends_google_detail(
         self, step_module, monkeypatch, capsys, media_path
