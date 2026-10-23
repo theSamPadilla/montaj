@@ -114,13 +114,12 @@ class TestRequest:
         url, kw = fake.posts[0]
         assert url == URL
         assert kw["headers"]["x-goog-api-key"] == "test-key-0000000000"
-        assert kw["timeout"] == gemini.VIDEO_REQUEST_TIMEOUT_S
+        assert kw["timeout"] == (15, gemini.VIDEO_REQUEST_TIMEOUT_S)
         assert kw["json"] == {
             "model": "gemini-omni-1.1-flash",
             "input": "a red ball rolls",
             "response_format": {"type": "video", "aspect_ratio": "9:16", "resolution": "720p",
                                 "duration": "4s", "delivery": "uri"},
-            "generation_config": {"video_config": {"task": "text_to_video"}},
             "background": False, "store": False, "stream": False,
         }
 
@@ -132,7 +131,7 @@ class TestRequest:
         assert [i["type"] for i in body["input"]] == ["image", "text"]
         assert body["input"][0] == {"type": "image", "mime_type": "image/png",
                                     "data": base64.b64encode(open(first, "rb").read()).decode()}
-        assert body["generation_config"]["video_config"]["task"] == "image_to_video"
+        assert "generation_config" not in body  # the guide's image-to-video example sets no task
 
     def test_first_and_last_frame_in_order(self, fake, tmp_path):
         fake.post_script = [_done(_inline())]
@@ -141,7 +140,7 @@ class TestRequest:
         body = fake.posts[0][1]["json"]
         datas = [i.get("data") for i in body["input"][:2]]
         assert datas == [base64.b64encode(open(p, "rb").read()).decode() for p in (first, last)]
-        assert body["generation_config"]["video_config"]["task"] == "image_to_video"
+        assert "generation_config" not in body
 
     def test_reference_images_say_so(self, fake, tmp_path):
         fake.post_script = [_done(_inline())]
@@ -208,15 +207,45 @@ class TestDelivery:
 
     def test_a_failed_download_says_it_was_charged(self, fake, tmp_path):
         fake.post_script = [_done({"type": "video", "uri": "https://x/v1beta/files/f1:download?alt=media"})]
-        fake.get_script = [_Resp(200, {"state": "ACTIVE"})] + [_Resp(500, None)] * (gemini.VIDEO_DOWNLOAD_ATTEMPTS * _http.RETRY_ATTEMPTS)
+        fake.get_script = [_Resp(200, {"state": "ACTIVE"})] + [_Resp(500, None)] * gemini.VIDEO_DOWNLOAD_ATTEMPTS
         with pytest.raises(ConnectorError, match="charged, so don't regenerate"):
             _gen(tmp_path)
         assert not (tmp_path / "o.mp4").exists()
 
     def test_no_video_in_the_answer(self, fake, tmp_path):
         fake.post_script = [_Resp(200, {"status": "completed", "steps": [{"type": "model_output", "content": []}]})]
-        with pytest.raises(ConnectorError, match="no video"):
+        with pytest.raises(ConnectorError, match="no video. It may have been charged"):
             _gen(tmp_path)
+
+    def test_the_short_file_uri_form(self, fake, tmp_path):
+        """The guide's own example names the file "files/<id>"; both URLs are built from the id."""
+        fake.post_script = [_done({"type": "video", "uri": "files/abc-123"})]
+        fake.get_script = [_Resp(200, {"state": "ACTIVE"}), _Resp(200, None, content=MP4)]
+        assert open(_gen(tmp_path), "rb").read() == MP4
+        assert [u for u, _ in fake.gets] == [
+            "https://generativelanguage.googleapis.com/v1beta/files/abc-123",
+            "https://generativelanguage.googleapis.com/v1beta/files/abc-123:download?alt=media",
+        ]
+
+    def test_the_key_never_goes_to_another_host(self, fake, tmp_path):
+        fake.post_script = [_done({"type": "video", "uri": "https://evil.example/v1beta/files/x1:download?alt=media"})]
+        fake.get_script = [_Resp(200, {"state": "ACTIVE"}), _Resp(200, None, content=MP4)]
+        _gen(tmp_path)
+        assert all(u.startswith("https://generativelanguage.googleapis.com/") for u, _ in fake.gets)
+
+    def test_a_file_check_that_keeps_failing_says_it_was_charged(self, fake, tmp_path):
+        fake.post_script = [_done({"type": "video", "uri": "files/f1"})]
+        fake.get_script = [_Exc.ConnectionError("reset")] * _http.RETRY_ATTEMPTS
+        with pytest.raises(ConnectorError, match="could not be checked.*It may have been charged"):
+            _gen(tmp_path)
+
+    def test_the_deadline_stops_the_wait(self, fake, tmp_path, monkeypatch):
+        clock = iter([0.0] + [gemini.VIDEO_DEADLINE_S + 1.0] * 50)
+        monkeypatch.setattr(gemini.time, "monotonic", lambda: next(clock))
+        fake.post_script = [_done({"type": "video", "uri": "files/f1"})]
+        with pytest.raises(ConnectorError, match="not ready in time.*It may have been charged"):
+            _gen(tmp_path)
+        assert fake.gets == []
 
 
 class TestErrors:
@@ -253,6 +282,32 @@ class TestErrors:
         e = self._err(fake, tmp_path, 400, "safety", "Safety violations blocked the request")
         assert e.reason == CONTENT_REFUSED and "safety" in str(e)
 
+    @pytest.mark.parametrize("code", ["content_blocked", "image_safety", "prohibited_content", "spii"])
+    def test_a_blocked_code_is_a_refusal_whatever_the_message(self, fake, tmp_path, code):
+        assert self._err(fake, tmp_path, 400, code, "Request could not be completed").reason == CONTENT_REFUSED
+
+    def test_a_failed_interaction_with_a_uri_code_is_a_refusal(self, fake, tmp_path):
+        fake.post_script = [_Resp(200, {"status": "failed", "errors": [
+            {"code": "https://generativelanguage.googleapis.com/errors/image_other", "message": "Could not be completed"}]})]
+        with pytest.raises(ConnectorError) as ei:
+            _gen(tmp_path)
+        assert ei.value.reason == CONTENT_REFUSED
+
+    def test_a_failed_interaction_otherwise_says_it_was_charged(self, fake, tmp_path):
+        fake.post_script = [_Resp(200, {"status": "failed", "errors": [{"code": "api_error", "message": "internal"}]})]
+        with pytest.raises(ConnectorError, match="failed on Google's side.*It may have been charged"):
+            _gen(tmp_path)
+
+    def test_a_5xx_says_it_may_be_charged_and_a_4xx_does_not(self, fake, tmp_path):
+        assert "may have been charged" in str(self._err(fake, tmp_path, 504, "deadline_exceeded", "late"))
+        assert "charged" not in str(self._err(fake, tmp_path, 400, "invalid_request", "bad field"))
+
+    def test_a_dropped_connection_says_it_may_be_charged(self, fake, tmp_path):
+        fake.post_script = [_Exc.ConnectionError("('Connection aborted.', RemoteDisconnected())")]
+        with pytest.raises(ConnectorError) as ei:
+            _gen(tmp_path)
+        assert ei.value.reason is None and "may have been charged" in str(ei.value)
+
     def test_a_failed_interaction_on_safety(self, fake, tmp_path):
         fake.post_script = [_Resp(200, {"status": "failed", "errors": [
             {"code": "safety", "message": "The prompt was blocked by the usage policy"}]})]
@@ -268,7 +323,7 @@ class TestErrors:
         fake.post_script = [_Exc.ReadTimeout("read timed out")]
         with pytest.raises(ConnectorError) as ei:
             _gen(tmp_path)
-        assert ei.value.reason is None and "don't regenerate" in str(ei.value)
+        assert ei.value.reason is None and "may have been charged" in str(ei.value)
         assert len(fake.posts) == 1
 
     def test_a_connect_timeout_is_unreachable(self, fake, tmp_path):

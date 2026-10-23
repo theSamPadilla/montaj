@@ -152,8 +152,10 @@ def main():
     p.add_argument("--aspect-ratio", dest="aspect_ratio", choices=list(gemini.VIDEO_ASPECT_RATIOS),
                    help="Default: 16:9 for a landscape --image, 9:16 otherwise. "
                         "Ignored in project-aware mode (read from the storyboard).")
-    p.add_argument("--resolution", default="720p", choices=list(gemini.VIDEO_RESOLUTIONS))
-    p.add_argument("--model", default=gemini.DEFAULT_VIDEO_MODEL, choices=list(gemini.VIDEO_MODELS),
+    # No argparse choices: video_request_problem() names what is offered (a Veo id
+    # or 1080p now fails with its invalid_args message, not a usage error).
+    p.add_argument("--resolution", default="720p", help="720p, the one resolution Google prices.")
+    p.add_argument("--model", default=gemini.DEFAULT_VIDEO_MODEL,
                    help=f"{gemini.DEFAULT_VIDEO_MODEL} is the only model.")
     p.add_argument("--negative-prompt", dest="negative_prompt", help="Things to avoid")
     p.add_argument("--project-id", dest="project_id",

@@ -19,12 +19,12 @@ Current functions:
     generate_video(prompt, out_path, image_path, last_frame_path,
                    reference_image_paths, duration, aspect_ratio, resolution,
                    negative_prompt, model) -> str
-        Veo video (with sound) on the Gemini API: submit, poll, download.
-        Billed per second once submitted, so every input is checked by
-        video_request_problem() before any network call, and a failure after
-        submission never invites a blind re-run.
+        Video with sound via Gemini Omni Flash (Interactions API): one request,
+        never retried, then the clip's file. Billed per second once sent, so
+        every input is checked by video_request_problem() before any network
+        call, and a failure after sending never invites a blind re-run.
     video_request_problem(...) -> str | None
-        Pure check of a Veo request; a short message for the first invalid
+        Pure check of a video request; a short message for the first invalid
         combination, None when the request is valid.
     check_key() -> dict
         One free call (models.list) to validate a key and confirm each of the
@@ -109,7 +109,9 @@ VIDEO_RESOLUTIONS = ("720p",)
 VIDEO_MAX_REFERENCE_IMAGES = 3
 VIDEO_PRICE_PER_SECOND_USD = {"720p": 0.10}
 VIDEO_API = "https://generativelanguage.googleapis.com/v1beta"
-# serve kills a step at 900 s, so the one blocking request gives up before that.
+# serve kills a step at 900 s. Everything from the request to the last byte of
+# the download shares one deadline under that; the request itself waits 600 s.
+VIDEO_DEADLINE_S = 840
 VIDEO_REQUEST_TIMEOUT_S = 600
 # A URI delivery is polled until the file is ACTIVE, as the guide's loop does.
 VIDEO_FILE_POLL_INTERVAL_S = 5
@@ -947,25 +949,42 @@ def _video_body(prompt, image_path, last_frame_path, refs, seconds, aspect_ratio
     Text alone is a plain `input` string; with images, `input` is the image
     items then the text, the order of the guide's image-to-video, first and
     last frame, and subject reference examples. Those last two send the same
-    shape, so `generation_config.video_config.task` says which is meant.
+    shape, and the guide's examples set no task, so only references name one
+    (`generation_config.video_config.task`, the guide's tasks parameter).
     """
     text = prompt.strip()
     if negative_prompt and negative_prompt.strip():
         text += f"\n\nAvoid: {negative_prompt.strip()}"
     images = [p for p in (image_path, last_frame_path) if p] or list(refs or [])
-    task = "reference_to_video" if refs else "image_to_video" if image_path else "text_to_video"
-    return {
+    body = {
         "model": model,
         "input": [*(_video_image_part(p) for p in images), {"type": "text", "text": text}] if images else text,
         "response_format": {"type": "video", "aspect_ratio": aspect_ratio, "resolution": resolution,
                             "duration": f"{seconds}s", "delivery": "uri"},
-        "generation_config": {"video_config": {"task": task}},
         "background": False, "store": False, "stream": False,
     }
+    if refs:
+        body["generation_config"] = {"video_config": {"task": "reference_to_video"}}
+    return body
 
 
 def _video_headers(key: str) -> dict:
     return {"x-goog-api-key": key, "Content-Type": "application/json"}
+
+
+# Google's "generation blocked" codes (ai.google.dev/gemini-api/docs/api-errors, read 2026-10-23).
+_VIDEO_BLOCKED_CODES = frozenset({
+    "safety", "recitation", "language", "prohibited_content", "spii", "blocklist", "content_blocked",
+    "image_safety", "image_prohibited_content", "image_recitation", "image_other",
+})
+# Said of every failure once Google may have taken the request: billing is on output
+# tokens (ai.google.dev/gemini-api/docs/pricing), and no doc says a failed run is free.
+_VIDEO_CHARGED = " It may have been charged, so don't regenerate right away."
+
+
+def _error_code(code) -> str:
+    """An error code's last segment, lower case: `errors[].code` may be a URI."""
+    return str(code or "").rstrip("/").rsplit("/", 1)[-1].strip().lower()
 
 
 def _video_safety_text(text: str) -> bool:
@@ -1021,9 +1040,11 @@ def _video_http_error(status: int, text: str, model: str) -> ConnectorError:
     if status == 404 or "model_not_found" in code:
         return ConnectorError(f"Gemini video model {model} is not available to your Gemini key." + google,
                               reason=MODEL_RETIRED)
-    if status == 400 and ("safety" in code or _video_safety_text(lowered)):
+    if _error_code(code) in _VIDEO_BLOCKED_CODES or (status == 400 and _video_safety_text(lowered)):
         return _video_refusal(detail)
-    return ConnectorError(f"Gemini video request failed (HTTP {status}).{google}")
+    # A 5xx or a timeout status may come after Google took the request.
+    charged = _VIDEO_CHARGED if status >= 500 or status in (408, 499) else ""
+    return ConnectorError(f"Gemini video request failed (HTTP {status}).{google}{charged}")
 
 
 def _video_content(body: dict) -> dict | None:
@@ -1042,25 +1063,41 @@ def _video_content(body: dict) -> dict | None:
     return None
 
 
-_FILE_ID_RE = re.compile(r"/files/([A-Za-z0-9_-]+)")
+# The full form (https://.../v1beta/files/<id>:download?alt=media) or the short one
+# ("files/<id>", the guide's own example). Both URLs are built from the id, so the
+# key header only ever goes to the Gemini API.
+_FILE_ID_RE = re.compile(r"(?:^|/)files/([A-Za-z0-9_-]+)")
 
 
-def _video_bytes(item: dict, key: str) -> bytes:
-    """The clip's bytes: inline data, or the URI once its file is ACTIVE."""
+def _video_bytes(item: dict, key: str, deadline: float) -> bytes:
+    """The clip's bytes: inline data, or the URI once its file is ACTIVE.
+
+    Every failure here comes after Google made the video, so each says it may
+    have been charged.
+    """
     if item.get("data"):
         try:
             return base64.b64decode(item["data"])
         except (ValueError, TypeError) as e:
-            raise ConnectorError(f"Gemini video came back unreadable: {e}") from e
-    uri = item.get("uri") or ""
-    m = _FILE_ID_RE.search(uri)
+            raise ConnectorError(f"Gemini video came back unreadable: {e}.{_VIDEO_CHARGED}") from e
+    m = _FILE_ID_RE.search(str(item.get("uri") or ""))
     if not m:
-        raise ConnectorError("Gemini video finished with no video.")
+        raise ConnectorError(f"Gemini video finished with no video.{_VIDEO_CHARGED}")
     file_url = f"{VIDEO_API}/files/{m.group(1)}"
     headers = {"x-goog-api-key": key}
+
+    def left() -> float:
+        return deadline - time.monotonic()
+
     waited = 0
     while True:
-        r = _http.request_with_retry("GET", file_url, headers=headers, timeout=30)
+        if left() <= 0:
+            raise ConnectorError(f"Gemini video finished but its file was not ready in time.{_VIDEO_CHARGED}")
+        try:
+            r = _http.request_with_retry("GET", file_url, headers=headers, timeout=min(30, max(1, left())))
+        except ConnectorError as e:
+            raise ConnectorError(f"Gemini video finished but its file could not be checked: "
+                                 f"{_sanitize_sdk_detail(str(e))}.{_VIDEO_CHARGED}") from e
         state = ""
         if r.status_code == 200:
             try:
@@ -1070,18 +1107,21 @@ def _video_bytes(item: dict, key: str) -> bytes:
         if state == "ACTIVE":
             break
         if state == "FAILED":
-            raise ConnectorError("Gemini video finished but its file failed on Google's side.")
+            raise ConnectorError(f"Gemini video finished but its file failed on Google's side.{_VIDEO_CHARGED}")
         if waited >= VIDEO_FILE_MAX_WAIT_S:
             raise ConnectorError(
-                f"Gemini video finished but its file was not ready within {VIDEO_FILE_MAX_WAIT_S}s. "
-                f"It was charged, so don't regenerate yet.")
+                f"Gemini video finished but its file was not ready within {VIDEO_FILE_MAX_WAIT_S}s.{_VIDEO_CHARGED}")
         time.sleep(VIDEO_FILE_POLL_INTERVAL_S)
         waited += VIDEO_FILE_POLL_INTERVAL_S
-    download = uri if ":download" in uri else f"{file_url}:download?alt=media"
+    download = f"{file_url}:download?alt=media"
     last = "no data came back"
     for attempt in range(VIDEO_DOWNLOAD_ATTEMPTS):
+        if left() <= 0:
+            last = "out of time"
+            break
         try:
-            r = _http.request_with_retry("GET", download, headers=headers, timeout=120)
+            r = _http.request_with_retry("GET", download, headers=headers, attempts=1,
+                                         timeout=min(120, max(1, left())))
             if r.status_code == 200 and r.content:
                 return r.content
             last = f"HTTP {r.status_code}"
@@ -1089,8 +1129,7 @@ def _video_bytes(item: dict, key: str) -> bytes:
             last = _sanitize_sdk_detail(str(e))
         if attempt < VIDEO_DOWNLOAD_ATTEMPTS - 1:
             time.sleep(VIDEO_DOWNLOAD_RETRY_S)
-    raise ConnectorError(
-        f"Gemini video finished but the download failed: {last}. It was charged, so don't regenerate yet.")
+    raise ConnectorError(f"Gemini video finished but the download failed: {last}.{_VIDEO_CHARGED}")
 
 
 def generate_video(
@@ -1113,9 +1152,11 @@ def generate_video(
     network call.
 
     One request, sent once and never retried: it is billed per second of video,
-    and a retry after a request Google already took would pay twice. A failure
-    once it may have been taken (a timeout, a dropped connection, a failed
-    download) says the video may have been charged and not to regenerate yet.
+    and a retry after a request Google already took would pay twice. Every
+    failure once it may have been taken (a timeout, a dropped connection, a 5xx,
+    a failed or empty answer, a failed download) says the video may have been
+    charged. The request, the file checks and the download share one deadline
+    (VIDEO_DEADLINE_S) under serve's 900 s kill.
     """
     if not out_path:
         raise ConnectorError("out_path is required")
@@ -1133,13 +1174,14 @@ def generate_video(
                        negative_prompt, model)
 
     requests = _http._require_requests()
+    deadline = time.monotonic() + VIDEO_DEADLINE_S
     cost = video_cost_usd(seconds, resolution)
     _video_progress(f"Gemini video ({model}, {seconds}s, {resolution}) sent"
                     + (f", about ${cost:.2f}" if cost is not None else "")
                     + "; it usually takes a few minutes")
     try:
         r = requests.post(f"{VIDEO_API}/interactions", headers=_video_headers(key), json=body,
-                          timeout=VIDEO_REQUEST_TIMEOUT_S)
+                          timeout=(15, VIDEO_REQUEST_TIMEOUT_S))
     except requests.exceptions.ConnectTimeout as e:
         raise ConnectorError(
             f"Gemini video request failed: could not reach the Gemini API: {_sanitize_sdk_detail(str(e))}",
@@ -1150,32 +1192,30 @@ def generate_video(
                 and any(w in str(e) for w in ("NewConnectionError", "NameResolutionError", "Failed to resolve")):
             raise ConnectorError(f"Gemini video request failed: could not reach the Gemini API: {detail}",
                                  reason=UNREACHABLE) from e
-        raise ConnectorError(
-            f"Gemini video request failed: {detail}. Google may still have made the video and "
-            f"charged for it, so don't regenerate right away.") from e
+        raise ConnectorError(f"Gemini video request failed: {detail}.{_VIDEO_CHARGED}") from e
 
     if r.status_code != 200:
         raise _video_http_error(r.status_code, r.text, model)
     try:
         answer = r.json()
     except ValueError as e:
-        raise ConnectorError("Gemini video answered with something that is not JSON. It may have "
-                             "been charged, so don't regenerate right away.") from e
+        raise ConnectorError(f"Gemini video answered with something that is not JSON.{_VIDEO_CHARGED}") from e
     if not isinstance(answer, dict):
-        answer = {}
+        raise ConnectorError(f"Gemini video answered with no interaction.{_VIDEO_CHARGED}")
     status = str(answer.get("status") or "")
     if status == "failed":
-        detail = _sanitize_sdk_detail("; ".join(
-            str(e.get("message") or e.get("code") or e) for e in (answer.get("errors") or []) if e) or "")
-        if _video_safety_text(detail):
+        errors = [e for e in (answer.get("errors") or []) if isinstance(e, dict)]
+        detail = _sanitize_sdk_detail("; ".join(str(e.get("message") or e.get("code") or "") for e in errors))
+        if any(_error_code(e.get("code")) in _VIDEO_BLOCKED_CODES for e in errors) or _video_safety_text(detail):
             raise _video_refusal(detail)
-        raise ConnectorError(f"Gemini video failed on Google's side." + (f" Google said: {detail}" if detail else ""))
+        raise ConnectorError("Gemini video failed on Google's side."
+                             + (f" Google said: {detail}." if detail else "") + _VIDEO_CHARGED)
     item = _video_content(answer)
     if item is None:
         if status and status != "completed":
-            raise ConnectorError(f"Gemini video ended as {status} with no video.")
-        raise ConnectorError("Gemini video finished with no video.")
-    data = _video_bytes(item, key)
+            raise ConnectorError(f"Gemini video ended as {status} with no video.{_VIDEO_CHARGED}")
+        raise ConnectorError(f"Gemini video finished with no video.{_VIDEO_CHARGED}")
+    data = _video_bytes(item, key, deadline)
 
     usage = answer.get("usage") if isinstance(answer.get("usage"), dict) else {}
     tokens = usage.get("total_output_tokens")

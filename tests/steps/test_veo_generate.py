@@ -187,11 +187,10 @@ class TestInvalidCombinations:
     @pytest.mark.parametrize("flag, value", [
         ("--resolution", "1080p"), ("--resolution", "4k"), ("--model", "veo-3.1-generate-preview"),
     ])
-    def test_unpriced_resolutions_and_retired_models_are_refused(self, step_module, monkeypatch, tmp_path, flag, value):
-        """§550: only 720p has a Google price, and every Veo 3.1 id is shut down."""
-        with pytest.raises(SystemExit) as ei:
-            _run(step_module, monkeypatch, "--prompt", "x", "--out", str(tmp_path / "o.mp4"), flag, value)
-        assert ei.value.code == 2  # argparse: not one of the choices
+    def test_unpriced_resolutions_and_retired_models_are_refused(self, step_module, monkeypatch, capsys, tmp_path, flag, value):
+        """§550: only 720p has a Google price, and every Veo 3.1 id is shut down; the message says so."""
+        _fails(step_module, monkeypatch, capsys, "invalid_args", "--prompt", "x",
+               "--out", str(tmp_path / "o.mp4"), flag, value)
 
     def test_unsupported_image_type(self, step_module, monkeypatch, capsys, tmp_path):
         gif = tmp_path / "a.gif"

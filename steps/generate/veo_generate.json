@@ -14,8 +14,8 @@
     {"name": "ref-image", "type": "path", "required": false, "repeatable": true, "description": "Subject reference image (repeatable, up to 3). Mutually exclusive with --image. Ignored in project-aware mode."},
     {"name": "duration", "type": "int", "required": false, "default": 8, "min": 3, "max": 10, "description": "Clip length in whole seconds, 3 to 10. Ignored in project-aware mode (read from the scene)."},
     {"name": "aspect-ratio", "type": "enum", "required": false, "options": ["16:9", "9:16"], "description": "16:9|9:16. Default: 16:9 for a landscape --image, 9:16 otherwise. Ignored in project-aware mode (read from the storyboard)."},
-    {"name": "resolution", "type": "enum", "required": false, "default": "720p", "options": ["720p"], "description": "720p, the one resolution Google prices."},
-    {"name": "model", "type": "enum", "required": false, "default": "gemini-omni-1.1-flash", "options": ["gemini-omni-1.1-flash"], "description": "gemini-omni-1.1-flash, the only model."},
+    {"name": "resolution", "type": "string", "required": false, "default": "720p", "description": "720p, the one resolution Google prices."},
+    {"name": "model", "type": "string", "required": false, "default": "gemini-omni-1.1-flash", "description": "gemini-omni-1.1-flash, the only model."},
     {"name": "negative-prompt", "type": "string", "required": false, "description": "Things to avoid. Added to the prompt: Gemini takes no separate negative prompt."},
     {"name": "project-id", "type": "string", "required": false, "description": "Project ID. With --scene-id, enables project-aware mode."},
     {"name": "scene-id", "type": "string", "required": false, "description": "Scene ID within the storyboard. Requires --project-id."}
