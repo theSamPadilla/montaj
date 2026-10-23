@@ -21,6 +21,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 from lib.common import fail  # noqa: E402
+from lib.credentials import MissingCredentialError  # noqa: E402
 from connectors import (  # noqa: E402
     ConnectorError, INVALID_API_KEY, INSUFFICIENT_CREDIT, MODEL_RETIRED, UNREACHABLE, CONTENT_REFUSED,
 )
@@ -52,6 +53,7 @@ def fail_for(e: ConnectorError, vendor_label: str) -> None:
     """
     code = _FAIL_CODES.get(e.reason, "api_error")
     message = str(e)
-    if vendor_label and vendor_label.lower() not in message.lower():
+    # A missing key's message already names its Connectors tile (§549).
+    if vendor_label and not isinstance(e, MissingCredentialError) and vendor_label.lower() not in message.lower():
         message = f"{vendor_label}: {message}"
     fail(code, message)

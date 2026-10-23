@@ -842,3 +842,15 @@ class TestMissingKeyMessages:
         monkeypatch.setenv("KLING_ACCESS_KEY", "test-access-key-0000000000000000")
         monkeypatch.setenv("KLING_SECRET_KEY", "test-secret-key-0000000000000000")
         assert kling._bearer().count(".") == 2  # a JWT
+
+    def test_a_corrupt_credentials_file_surfaces_as_itself(self, monkeypatch):
+        """Half a pair plus a corrupt credentials.json must say the file is bad, never "No Kling key"."""
+        from connectors import kling
+        from lib.credentials import CredentialError, MissingCredentialError, credentials_path
+        with open(credentials_path(), "w") as f:
+            f.write("{bad")
+        monkeypatch.setenv("KLING_ACCESS_KEY", "test-access-key-0000000000000000")
+        with pytest.raises(CredentialError) as ei:
+            kling._bearer()
+        assert not isinstance(ei.value, MissingCredentialError)
+        assert "not valid JSON" in str(ei.value)

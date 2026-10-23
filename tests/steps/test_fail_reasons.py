@@ -84,3 +84,11 @@ class TestMessageGetsVendorPrefixWhenMissing:
         error = ConnectorError("seedance rejected the request: boom")
         err = _fail_for(fail_reasons, None, capsys, error, "Seedance")
         assert err["message"] == "seedance rejected the request: boom"
+
+
+def test_a_missing_key_message_gets_no_vendor_prefix(fail_reasons, capsys):
+    """§549: "Veo: No Gemini key. ..." read twice; the message already names the Connectors tile."""
+    from lib.credentials import MissingCredentialError, missing_key_message
+    error = MissingCredentialError(missing_key_message("gemini"), "gemini", "api_key")
+    err = _fail_for(fail_reasons, None, capsys, error, "Veo")
+    assert err["message"] == "No Gemini key. Add one in Montaj under Connectors."

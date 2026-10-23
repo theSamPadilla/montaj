@@ -125,3 +125,13 @@ class TestSearchImagesBehavior:
         err = json.loads(capsys.readouterr().err)
         assert err["error"] == "search_failed"
         assert "api down" in err["message"]
+
+
+def test_web_search_with_no_serpapi_key_says_where_to_add_one(step_module, monkeypatch, capsys):
+    """§549: the conftest guard clears SERPAPI_API_KEY. No developer hint, no em dash."""
+    monkeypatch.setattr(sys, "argv", ["search_images.py", "--query", "t", "--provider", "web"])
+    with pytest.raises(SystemExit):
+        step_module.main()
+    err = json.loads(capsys.readouterr().err)
+    assert err == {**err, "error": "missing_credentials",
+                   "message": "No SerpApi key. Add one in Montaj under Connectors."}

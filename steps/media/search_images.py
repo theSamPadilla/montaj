@@ -6,8 +6,10 @@ import sys
 import argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail
 from image_sources import commons_search, sportsdb_badge, serpapi_image_search
+from lib.credentials import missing_key_message
 
 
 def main():
@@ -34,9 +36,7 @@ def main():
             # SERPAPI_API_KEY) — never read from a file on the multi-tenant box.
             api_key = os.environ.get("SERPAPI_API_KEY", "").strip()
             if not api_key:
-                fail("missing_credentials",
-                     "provider 'web' needs SerpApi credentials — pass "
-                     "credentials.serpapi.api_key in the step body")
+                fail("missing_credentials", missing_key_message("serpapi"))
             results = serpapi_image_search(args.query, api_key, limit=limit)
         else:
             fail("bad_provider", f"Unknown provider: {args.provider}")
