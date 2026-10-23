@@ -16,7 +16,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { Project } from '../../../types'
-import { applyMoveDeltaToSelection, deleteSelection } from '../multiSelectOps'
+import { applyMoveDeltaToSelection, deleteSelection, moveSelectionToTrack } from '../multiSelectOps'
 import { trackItems } from '../timeline-model'
 
 const TOTAL_DURATION = 20
@@ -443,5 +443,202 @@ describe('deleteSelection', () => {
     // ahead of it, even though trk-mixed came first in the raw array.
     expect(next.tracks!.map(t => t.id)).toEqual(['trk-video', 'trk-mixed', 'trk-overlay'])
     expect(next.tracks!.find(t => t.id === 'trk-mixed')!.items.map(i => i.id)).toEqual(['o-mixed'])
+  })
+})
+
+// ── moveSelectionToTrack ─────────────────────────────────────────────────
+//
+// The vertical half of a group drag: every selected VISUAL clip lands on one
+// track, at the times it already has. Refused (null) whenever any clip would
+// overlap a clip already on that track, two clips from different source
+// tracks would overlap each other there, or the kind gate a single-item move
+// applies would refuse one of them.
+
+describe('moveSelectionToTrack', () => {
+  type It = { id: string; type: string; start: number; end: number }
+  function tp(tracks: Array<{ id: string; items: It[] }>, extra: Partial<Project> = {}): Project {
+    return { id: 'p', tracks, ...extra } as unknown as Project
+  }
+  const ov = (id: string, start: number, end: number): It => ({ id, type: 'overlay', start, end })
+  const vid = (id: string, start: number, end: number): It => ({ id, type: 'video', start, end })
+  const trackOf = (p: Project, id: string) => p.tracks!.find(t => t.items.some(i => i.id === id))!.id
+
+  function threeSources(target: It[] = [ov('o4', 10, 12)]): Project {
+    return tp([
+      { id: 'trk-0', items: [vid('v0', 0, 5)] },
+      { id: 'trk-1', items: [ov('o1', 0, 2)] },
+      { id: 'trk-2', items: [ov('o2', 3, 5)] },
+      { id: 'trk-3', items: [ov('o3', 6, 8)] },
+      { id: 'trk-4', items: target },
+    ])
+  }
+
+  it('consolidates clips from three source tracks onto one track and prunes the emptied ones', () => {
+    const next = moveSelectionToTrack(threeSources(), ['o1', 'o2', 'o3'], 4)!
+    expect(next).not.toBeNull()
+    expect(next.tracks!.map(t => t.id)).toEqual(['trk-0', 'trk-4'])
+    expect(next.tracks![1].items.map(i => [i.id, i.start, i.end]).sort()).toEqual([
+      ['o1', 0, 2], ['o2', 3, 5], ['o3', 6, 8], ['o4', 10, 12],
+    ])
+  })
+
+  it('consolidates onto a NEW track when the target index is past the end', () => {
+    const p = tp([
+      { id: 'trk-0', items: [vid('v0', 0, 5)] },
+      { id: 'trk-1', items: [ov('o1', 0, 2)] },
+      { id: 'trk-2', items: [ov('o2', 3, 5)] },
+      { id: 'trk-3', items: [ov('o3', 6, 8)] },
+    ])
+    const next = moveSelectionToTrack(p, ['o1', 'o2', 'o3'], 4)!
+    expect(next.tracks).toHaveLength(2)
+    expect(next.tracks![0].id).toBe('trk-0')
+    const minted = next.tracks![1]
+    expect(['trk-1', 'trk-2', 'trk-3']).not.toContain(minted.id)
+    expect(minted.items.map(i => i.id).sort()).toEqual(['o1', 'o2', 'o3'])
+  })
+
+  it('refuses when any clip would overlap a clip already on the target', () => {
+    // o4 2.5-3.5 overlaps o2 (3-5) only; the whole move is refused.
+    expect(moveSelectionToTrack(threeSources([ov('o4', 2.5, 3.5)]), ['o1', 'o2', 'o3'], 4)).toBeNull()
+  })
+
+  it('refuses when two clips from different source tracks would overlap each other', () => {
+    const p = tp([
+      { id: 'trk-0', items: [vid('v0', 0, 5)] },
+      { id: 'trk-1', items: [ov('o1', 0, 2)] },
+      { id: 'trk-2', items: [ov('o2', 1, 3)] },
+    ])
+    expect(moveSelectionToTrack(p, ['o1', 'o2'], 3)).toBeNull()
+  })
+
+  it('keeps an overlap two selected clips already had on one source track', () => {
+    const p = tp([
+      { id: 'trk-0', items: [vid('v0', 0, 5)] },
+      { id: 'trk-1', items: [ov('o1', 0, 2), ov('o2', 1.5, 3)] },
+      { id: 'trk-2', items: [ov('o3', 4, 5)] },
+    ])
+    const next = moveSelectionToTrack(p, ['o1', 'o2'], 2)!
+    expect(next).not.toBeNull()
+    expect(trackOf(next, 'o1')).toBe('trk-2')
+    expect(trackOf(next, 'o2')).toBe('trk-2')
+  })
+
+  it('refuses a video clip onto an overlay track, as the single-item kind gate does', () => {
+    const p = tp([
+      { id: 'trk-0', items: [vid('v0', 0, 5)] },
+      { id: 'trk-1', items: [vid('v1', 6, 8)] },
+      { id: 'trk-2', items: [ov('o1', 10, 12)] },
+    ])
+    expect(moveSelectionToTrack(p, ['v1'], 2)).toBeNull()
+  })
+
+  it('refuses a group that mixes video and overlay clips onto one track', () => {
+    const p = tp([
+      { id: 'trk-0', items: [vid('v0', 0, 5)] },
+      { id: 'trk-1', items: [vid('v1', 6, 8)] },
+      { id: 'trk-2', items: [ov('o1', 10, 12)] },
+    ])
+    expect(moveSelectionToTrack(p, ['v1', 'o1'], 3)).toBeNull()
+  })
+
+  it('moves video clips onto another video track and keeps the video block below the overlays', () => {
+    const p = tp([
+      { id: 'trk-0', items: [vid('v0', 0, 5)] },
+      { id: 'trk-1', items: [vid('v1', 6, 8)] },
+      { id: 'trk-2', items: [ov('o1', 10, 12)] },
+    ])
+    const next = moveSelectionToTrack(p, ['v1'], 0)!
+    expect(next.tracks!.map(t => t.id)).toEqual(['trk-0', 'trk-2'])
+    expect(trackOf(next, 'v1')).toBe('trk-0')
+  })
+
+  it('leaves audio tracks and caption segments in the selection where they are', () => {
+    const p = tp(
+      [
+        { id: 'trk-0', items: [vid('v0', 0, 5)] },
+        { id: 'trk-1', items: [ov('o1', 0, 2)] },
+        { id: 'trk-2', items: [ov('o2', 3, 5)] },
+      ],
+      {
+        audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 1, end: 6, lane: 1 }] },
+        captions: { style: 'pop', segments: [{ id: 's0', text: 'x', start: 1, end: 2, lane: 1 }] },
+      } as unknown as Partial<Project>,
+    )
+    const next = moveSelectionToTrack(p, ['o1', 'o2', 'a0', 's0'], 2)!
+    expect(trackOf(next, 'o1')).toBe('trk-2')
+    expect(next.audio).toBe(p.audio)
+    expect(next.captions).toBe(p.captions)
+  })
+
+  it('returns the same project when every selected clip is already on the target', () => {
+    const p = threeSources()
+    expect(moveSelectionToTrack(p, ['o4'], 4)).toBe(p)
+  })
+
+  // engine/validate.py: tracks[0] may hold one clip inside another; every
+  // other track may not, and no track may have three clips live at once. The
+  // rule is read on the FINAL track list, after pruning and re-grouping.
+  describe('the validator rules on the final target track', () => {
+    // tracks[0] holds v0 with v1 inside it (legal there).
+    const containing = (keepBase: boolean) => tp([
+      { id: 'trk-0', items: [vid('v0', 0, 10), vid('v1', 2, 4), ...(keepBase ? [vid('k0', 20, 25)] : [])] },
+      { id: 'trk-1', items: [vid('u0', 30, 35)] },
+      { id: 'trk-2', items: [vid('x0', 12, 14)] },
+    ])
+
+    it('refuses carrying a contained pair off tracks[0] onto another track', () => {
+      // k0 keeps trk-0 alive, so trk-1 stays tracks[1], where containment is illegal.
+      expect(moveSelectionToTrack(containing(true), ['v0', 'v1', 'x0'], 1)).toBeNull()
+    })
+
+    it('allows it when pruning makes the target tracks[0]', () => {
+      // trk-0 is emptied and pruned, so trk-1 becomes tracks[0].
+      const next = moveSelectionToTrack(containing(false), ['v0', 'v1', 'x0'], 1)!
+      expect(next).not.toBeNull()
+      expect(next.tracks![0].id).toBe('trk-1')
+      expect(next.tracks![0].items.map(i => i.id).sort()).toEqual(['u0', 'v0', 'v1', 'x0'])
+    })
+
+    it('refuses when pruning promotes a DIFFERENT track to tracks[0] and the target lands above it', () => {
+      // trk-0 is emptied; trk-1 (untouched) becomes tracks[0] and the minted
+      // track lands at tracks[1], where the pair would be a containment.
+      expect(moveSelectionToTrack(containing(false), ['v0', 'v1'], 3)).toBeNull()
+    })
+
+    it('refuses three clips live at once, on tracks[0] too', () => {
+      const p = tp([
+        { id: 'trk-0', items: [vid('v0', 0, 10)] },
+        { id: 'trk-1', items: [vid('a', 0, 4), vid('b', 3, 6)] },
+        { id: 'trk-2', items: [vid('c', 20, 22)] },
+      ])
+      // a and b overlap (a pair, legal); landing on tracks[0] over v0 is an
+      // overlap with a staying clip, refused already. Off tracks[0] with a
+      // third same-source clip live at once:
+      const q = tp([
+        { id: 'trk-0', items: [vid('v0', 0, 10), vid('a', 12, 16), vid('b', 13, 17), vid('c', 14, 18)] },
+        { id: 'trk-1', items: [vid('u0', 30, 35)] },
+      ])
+      expect(moveSelectionToTrack(p, ['a', 'b'], 0)).toBeNull()
+      expect(moveSelectionToTrack(q, ['a', 'b', 'c'], 1)).toBeNull()
+    })
+  })
+
+  it('keeps the base track id and settings when the whole base track is gathered onto a new track', () => {
+    const p = tp([
+      { id: 'trk-0', items: [vid('v0', 0, 5), vid('v1', 6, 8)] },
+      { id: 'trk-1', items: [ov('o1', 0, 2)] },
+    ])
+    ;(p.tracks![0] as unknown as { volume: number }).volume = 0.5
+    const next = moveSelectionToTrack(p, ['v0', 'v1'], 2)!
+    expect(next.tracks!.map(t => t.id)).toEqual(['trk-0', 'trk-1'])
+    expect((next.tracks![0] as unknown as { volume: number }).volume).toBe(0.5)
+    expect(next.tracks![0].items.map(i => i.id).sort()).toEqual(['v0', 'v1'])
+  })
+
+  it('returns the same project when nothing selected is a visual clip', () => {
+    const p = tp([{ id: 'trk-0', items: [vid('v0', 0, 5)] }], {
+      audio: { tracks: [{ id: 'a0', src: 'v.mp3', start: 1, end: 6, lane: 0 }] },
+    } as unknown as Partial<Project>)
+    expect(moveSelectionToTrack(p, ['a0'], 0)).toBe(p)
   })
 })

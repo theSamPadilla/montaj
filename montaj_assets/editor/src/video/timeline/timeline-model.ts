@@ -317,6 +317,16 @@ export function hasVerticalIntent(dy: number): boolean {
   return Math.round(dy / VISUAL_ROW_HEIGHT_PX) !== 0
 }
 
+/** An item's coarse kind for the cross-track KIND GATE: 'video' for a video
+ *  item, 'overlay' for everything else (overlay and image items). A track may
+ *  only receive a moved item when every other item already on it shares the
+ *  moved item's coarse kind (or it holds none). `resolveTargetTrackIdx` gates a
+ *  single-item move with it, and `moveSelectionToTrack` (multiSelectOps.ts) a
+ *  group move, so the two cannot disagree on what may land where. */
+export function coarseItemKind(type?: string): 'video' | 'overlay' {
+  return type === 'video' ? 'video' : 'overlay'
+}
+
 /**
  * WHICH track a cross-track move lands on — the outward search `moveItemAcross
  * Tracks` performs, and nothing else. Extracted from it (it now calls this) so
@@ -361,7 +371,7 @@ export function resolveTargetTrackIdx(
   // deliberately narrow — just "don't let a video item land on an overlay
   // track or vice versa" — NOT the fuller "video tracks form their own block
   // below overlays" reorganization, which is separate follow-up work.
-  const coarse = (type?: string) => (type === 'video' ? 'video' : 'overlay')
+  const coarse = coarseItemKind
   const itemKind = coarse(item.type)
   const kindOk = (items: VisualItem[]) => {
     const others = items.filter(o => o.id !== item.id)

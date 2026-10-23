@@ -11,7 +11,8 @@
 import type { VisualItem, AudioTrack, CaptionSegment, Captions } from '../../schema'
 import type { Project } from '../../types'
 import { laneOf } from '../captionLanes'
-import { mapTrackItems, normalizeTrackOrder, trackItems } from './timeline-model'
+import { overlapsAny } from '../cuts'
+import { coarseItemKind, mapTrackItems, nextVisualTrackId, normalizeTrackOrder, normalizeTracks, trackItems } from './timeline-model'
 import { computeResizedItem, resizeWindowedItem, type Draggable } from './useItemDragDrop'
 
 
@@ -137,9 +138,10 @@ function captionNeighbourBounds(
  * The delta is clamped ONCE, against the group as a body: the leftmost selected
  * start cannot cross t=0 and the rightmost selected end cannot cross
  * `totalDuration`, so the selection keeps its shape at the edges instead of
- * bunching up when one member hits a wall. Cross-track (vertical) movement is
- * deliberately not part of a group move — every item stays on its own
- * track/lane, which is the predictable behaviour when several move at once.
+ * bunching up when one member hits a wall. Every item stays on its own
+ * track/lane here: the vertical half of a group drag, carrying the selected
+ * CLIPS onto one other track, is `moveSelectionToTrack` below, applied by the
+ * pointer machine on top of this function's result.
  *
  * The SAME clamp also folds in `captionNeighbourBounds`: a selected caption may
  * not cross a non-selected one SHARING ITS LANE, so a group that includes
@@ -222,6 +224,134 @@ export function applyMoveDeltaToSelection(
     // `undefined` on a project that has none.
     captions,
   }
+}
+
+/**
+ * The vertical half of a group drag: every selected VISUAL clip lands on the
+ * track at `targetTrackIdx`, at the start/end it already has (the caller
+ * applies the horizontal half first, with `applyMoveDeltaToSelection`, and
+ * hands the result in). `targetTrackIdx` indexes the NORMALIZED track order
+ * (`normalizeTracks(project).tracks`); one at or past the end mints a new
+ * track, the same as a single-item move dragged past the top of the stack.
+ *
+ * Audio tracks and caption segments in the selection are never touched: only
+ * clips change tracks. A selection with no clip off the target track (none at
+ * all, or every one already on it) returns `project` itself.
+ *
+ * REFUSED, returning null, when the move cannot land whole:
+ * - a moving clip would overlap a clip already on the target (`overlapsAny`,
+ *   cuts.ts, the EPSILON test the drop placement uses);
+ * - two moving clips from DIFFERENT source tracks would overlap each other on
+ *   it. Two from the SAME source track keep the relationship they already had
+ *   there (a group move shifts them by one delta), so an overlap between them
+ *   was legal before the move and stays so;
+ * - the kind gate a single-item move applies (`coarseItemKind`) would refuse
+ *   one of them: every clip that ends up on the target must share one coarse
+ *   kind, so a video clip never lands on an overlay track or the reverse, and
+ *   a group mixing the two kinds cannot consolidate onto one track at all.
+ * - the target track, as it stands AFTER the prune and re-grouping, would break
+ *   a rule `engine/validate.py` enforces: containment on any track but
+ *   tracks[0], or three clips live at once on any track (`landsLegally`).
+ *   This is what catches a pair that was legally nested on tracks[0] being
+ *   carried onto a track where nesting is not allowed.
+ * There is no fan-out to another track, unlike `moveItemAcrossTracks`: a group
+ * goes where it was pointed or nowhere.
+ *
+ * Tracks left empty are pruned and the stack is re-grouped into the canonical
+ * video-block/overlay-block order (`normalizeTrackOrder`), exactly as
+ * `moveItemAcrossTracks` leaves a single-item move. Surviving track objects
+ * keep their own id and settings. One difference: when the whole base track is
+ * gathered onto a NEW track that then becomes tracks[0], that track keeps the
+ * old base track's id and settings rather than a fresh random id.
+ */
+export function moveSelectionToTrack(
+  project: Project,
+  selectedIds: readonly string[],
+  targetTrackIdx: number,
+): Project | null {
+  const targets = new Set(selectedIds)
+  if (targets.size === 0) return project
+  const normalized = normalizeTracks(project)
+  const tracks = normalized.tracks ?? []
+  const idx = Math.max(0, targetTrackIdx)
+  const target = idx < tracks.length ? tracks[idx] : undefined
+
+  // The clips that change track, each with the index of the track it leaves.
+  const moving: Array<{ item: VisualItem; from: number }> = []
+  tracks.forEach((track, i) => {
+    if (track === target) return
+    for (const item of track.items) if (targets.has(item.id)) moving.push({ item, from: i })
+  })
+  if (moving.length === 0) return project
+
+  const staying = target?.items ?? []
+  const kind = coarseItemKind(moving[0].item.type)
+  if (moving.some(m => coarseItemKind(m.item.type) !== kind)) return null
+  if (staying.some(other => coarseItemKind(other.type) !== kind)) return null
+  if (moving.some(m => overlapsAny(m.item.start, m.item.end, staying))) return null
+  for (let i = 0; i < moving.length; i++) {
+    for (let j = i + 1; j < moving.length; j++) {
+      const a = moving[i], b = moving[j]
+      if (a.from !== b.from && overlapsAny(a.item.start, a.item.end, [b.item])) return null
+    }
+  }
+
+  const movingIds = new Set(moving.map(m => m.item.id))
+  const arrived = moving.map(m => m.item)
+  const stripped = tracks.map(track =>
+    track !== target && track.items.some(item => movingIds.has(item.id))
+      ? { ...track, items: track.items.filter(item => !movingIds.has(item.id)) }
+      : track,
+  )
+  const mintedId = target ? undefined : nextVisualTrackId(tracks)
+  const placed = target
+    ? stripped.map(track => (track === target ? { ...track, items: [...track.items, ...arrived] } : track))
+    : [...stripped, { id: mintedId!, items: arrived }]
+  let finalTracks = normalizeTrackOrder({ ...normalized, tracks: placed.filter(track => track.items.length > 0) }).tracks ?? []
+
+  // Gathering the whole base track onto a new track: when the minted track
+  // ends up as tracks[0] and the old tracks[0] is gone, it IS the base track
+  // under a random id, so it takes the old base track's id and settings back.
+  const oldBase = tracks[0]
+  if (mintedId !== undefined && oldBase && finalTracks[0]?.id === mintedId
+      && !finalTracks.some(track => track.id === oldBase.id)) {
+    finalTracks = [{ ...oldBase, items: finalTracks[0].items }, ...finalTracks.slice(1)]
+  }
+
+  // engine/validate.py's track rules, read on the FINAL list (after the prune
+  // and the re-grouping), so a track that becomes tracks[0] is judged by the
+  // tracks[0] rules. Only pairs or instants involving a moved clip are judged:
+  // what was already on the target was not put there by this move.
+  const landedIdx = finalTracks.findIndex(track => track.items.some(item => movingIds.has(item.id)))
+  if (!landsLegally(finalTracks[landedIdx].items, movingIds, landedIdx === 0)) return null
+
+  return { ...normalized, tracks: finalTracks }
+}
+
+/**
+ * Mirrors the two visual-track rules in `engine/validate.py`: no item may
+ * contain another (both ways round, ends included, identical spans too) on any
+ * track but tracks[0], and no three items may be live at one instant on any
+ * track (an instant is a start, live is `start <= t < end`). Judged only where
+ * a `moved` item is involved.
+ */
+function landsLegally(items: readonly VisualItem[], moved: ReadonlySet<string>, isBase: boolean): boolean {
+  if (!isBase) {
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const a = items[i], b = items[j]
+        if (!moved.has(a.id) && !moved.has(b.id)) continue
+        const contains = (a.start <= b.start && a.end >= b.end) || (b.start <= a.start && b.end >= a.end)
+        // Touching end to start is not containment (zero-length overlap).
+        if (contains && Math.min(a.end, b.end) > Math.max(a.start, b.start)) return false
+      }
+    }
+  }
+  for (const probe of items) {
+    const live = items.filter(x => x.start <= probe.start && probe.start < x.end)
+    if (live.length > 2 && live.some(x => moved.has(x.id))) return false
+  }
+  return true
 }
 
 /** The caption half of a group move. Word timings are ABSOLUTE seconds, so
