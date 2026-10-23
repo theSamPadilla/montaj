@@ -2,17 +2,22 @@
 """montaj serve — FastAPI HTTP + SSE server."""
 import asyncio
 import os
+import re
+import threading
 import subprocess
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from serve import lockfile, save_guard
+from lib import disk_space
+from serve import disk_full, lockfile, save_guard
 from lib.project_lock import ProjectLockTimeout, ProjectReadOnly
 from serve.common import DuplicateProjectId, PROJECT_LOCKED_DETAIL, PROJECT_READ_ONLY_DETAIL, resolve_workspace
 from serve.sse import SSEBroadcaster
@@ -126,8 +131,183 @@ class _TrustedHostsFromEnv:
         await TrustedHostMiddleware(self.app, allowed_hosts=hosts, www_redirect=False)(scope, receive, send)
 
 
+# §541: the writes whose whole size is known before the body is read (a browser
+# upload's Content-Length), checked against the free space before anything,
+# Starlette's own spool of the body included, is written.
+_PREFLIGHT_UPLOADS = re.compile(r"^/api/(upload|projects/[^/]+/upload-asset)$")
+
+
+class _DiskFullGuard:
+    """§541: a full disk is one 507 `disk_full`, never a bare 500.
+
+    - An upload (`_PREFLIGHT_UPLOADS`) that would not fit with its headroom is
+      refused before its body is read (lib/disk_space.preflight; a free-space
+      read that fails lets it through). The body is drained, not read into
+      anything, so the client gets the answer instead of a reset connection.
+    - A disk-full OSError no route caught, raised before the answer started,
+      becomes the 507 (serve/disk_full.py). Every other error passes through
+      exactly as before."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        upload = scope.get("method") == "POST" and _PREFLIGHT_UPLOADS.match(scope.get("path") or "")
+        # An upload being received holds the part of its declared size not yet
+        # arrived, so a drop of many files at once is checked against the space
+        # they will take together, and bytes already on disk are never counted
+        # twice. Held before its own check (so two checks at once each see the
+        # other) and released however the request ends.
+        hold = _Reservation(_declared_length(scope) if upload else 0)
+        try:
+            await self._guarded(scope, receive, send, upload, hold)
+        finally:
+            # However the request ends: a refusal, an error, a cancel during the check.
+            hold.release_all()
+
+    async def _guarded(self, scope, receive, send, upload, hold):
+        if upload:
+            refusal = await _upload_preflight_off_loop(scope, own=hold.left)
+            if refusal is not None:
+                hold.release_all()
+                await _drain(receive)
+                await disk_full.response(refusal)(scope, receive, send)
+                return
+        started = False
+
+        async def counting_receive():
+            message = await receive()
+            if message.get("type") == "http.request":
+                hold.release(len(message.get("body") or b""))
+                if not message.get("more_body"):
+                    hold.release_all()
+            else:
+                hold.release_all()        # a disconnect
+            return message
+
+        async def tracking_send(message):
+            nonlocal started
+            if message.get("type") == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive if upload else receive, tracking_send)
+        except Exception as exc:
+            if started or not disk_full.is_disk_full(exc):
+                raise
+            await disk_full.response(exc)(scope, receive, send)
+
+
+# §541: bytes declared by the uploads now being received and not yet arrived.
+_reserved_uploads = [0]
+_reserved_lock = threading.Lock()
+
+
+class _Reservation:
+    """`n` bytes held in `_reserved_uploads`, given back as they arrive
+    (`release`) and all at once when the body is in or the request ends."""
+
+    def __init__(self, n: int):
+        self.left = max(0, int(n or 0))
+        with _reserved_lock:
+            _reserved_uploads[0] += self.left
+
+    def release(self, k: int) -> None:
+        with _reserved_lock:
+            k = min(self.left, max(0, int(k)))
+            self.left -= k
+            _reserved_uploads[0] -= k
+
+    def release_all(self) -> None:
+        self.release(self.left)
+
+
+@contextmanager
+def upload_reservation(n: int):
+    hold = _Reservation(n)
+    try:
+        yield hold
+    finally:
+        hold.release_all()
+
+
+def reserved_upload_bytes() -> int:
+    return _reserved_uploads[0]
+
+
+_PREFLIGHT_TIMEOUT_S = 2.0
+
+
+async def _upload_preflight_off_loop(scope, own: int = 0):
+    """`_upload_preflight` in a worker thread (statvfs can block on a slow or
+    network volume), at most `_PREFLIGHT_TIMEOUT_S`; a check that fails or is
+    slow lets the upload through (fail open)."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, _upload_preflight, scope, own), _PREFLIGHT_TIMEOUT_S)
+    except Exception:
+        return None
+
+
+def _declared_length(scope) -> int:
+    try:
+        return max(0, int(dict(scope.get("headers") or []).get(b"content-length", b"") or 0))
+    except ValueError:
+        return 0
+
+
+def _upload_preflight(scope, own: int = 0):
+    """The DiskFull an upload of this request's declared length would hit,
+    counting the uploads already being received, or None. An upload with no
+    Content-Length is not checked here; a full disk while it is received is
+    still the 507 (`_http_exception_handler`, `_DiskFullGuard`)."""
+    length = _declared_length(scope)
+    if length <= 0:
+        return None
+    try:
+        disk_space.preflight(resolve_workspace(), length, reserved=max(0, reserved_upload_bytes() - own))
+    except disk_space.DiskFull as refusal:
+        return refusal
+    except Exception:
+        return None
+    return None
+
+
+async def _drain(receive):
+    while True:
+        message = await receive()
+        if message.get("type") != "http.request" or not message.get("more_body"):
+            return
+
+
 app = FastAPI(lifespan=lifespan)
+# Added first, so it sits inside the host check (the last added is outermost).
+app.add_middleware(_DiskFullGuard)
 app.add_middleware(_TrustedHostsFromEnv)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """§541 review: FastAPI turns ANY failure while it reads a request body
+    into a 400 "There was an error parsing the body", a full disk under
+    Starlette's spool of a multipart upload included. One whose cause is a
+    full disk is the 507; every other HTTPException is answered exactly as
+    FastAPI's own handler answers it."""
+    if exc.status_code != disk_full.STATUS and disk_full.is_disk_full(exc):
+        # The body's spool is the temp folder, which may be another disk.
+        return JSONResponse(status_code=disk_full.STATUS, content={"detail": disk_full.spool_detail()})
+    return await http_exception_handler(request, exc)
+
+
+@app.exception_handler(disk_space.DiskFull)
+async def _disk_full_handler(request: Request, exc: disk_space.DiskFull):
+    """§541: a route's own DiskFull (a preflight, or a full disk it cleaned up
+    after) is the 507 with the shared shape."""
+    return disk_full.response(exc)
 
 
 @app.exception_handler(ProjectLockTimeout)

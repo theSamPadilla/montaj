@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from lib.color_provenance import ProbeError, is_probe_retryable
 from lib.credentials import CredentialError, build_env_overlay
+from serve.disk_full import STATUS as disk_full_status, child_disk_full, workspace_root as disk_full_root
 from serve.common import (
     MONTAJ_ROOT,
     find_project_dir,
@@ -593,6 +594,10 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
             # §482: the step's write refused under the lock, answered in the binding shape.
             raise HTTPException(409, detail=sync_clash.refusal(
                 [f for f in err["fields"] if isinstance(f, str)]))
+        # §541: a step that ran out of disk is the 507 with one plain sentence.
+        full = child_disk_full(err, stderr_text, disk_full_root())
+        if full is not None:
+            raise HTTPException(disk_full_status, detail=full)
         # Passthrough credential values must never leave the server, even when
         # an upstream provider echoes the caller's own key in its error body
         # (OpenAI does: "Incorrect API key provided: <key>"). The error detail

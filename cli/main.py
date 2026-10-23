@@ -151,6 +151,9 @@ def register_command(name, subparsers):
 
 
 def main():
+    # §541: a full disk in the CLI itself is its one JSON error line, not a traceback.
+    from lib.disk_space import install_excepthook
+    install_excepthook()
     from importlib.metadata import version as pkg_version
     try:
         __version__ = pkg_version("montaj")

@@ -39,6 +39,8 @@ from serve import save_guard
 from lib import project_revisions
 from serve.jobs import create_job, set_done, set_error, get_job
 from serve.routes.files import save_upload, upload_name
+from serve.disk_full import STATUS as disk_full_status, child_disk_full, detail_for as disk_full_detail, workspace_root as disk_full_root
+from lib.disk_space import DiskFull, is_disk_full
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, canvas_for_footage, fps_from_rate, modal_dims
 from lib.ingest import ingest_source
 from lib.project_versions import GIT_SAFE_FLAGS, commit_version
@@ -369,13 +371,17 @@ class _IngestJob:
     connection — a dropped request must NOT abort it. Keyed by job_id, not
     project_id: unlike captions/renders, multiple imports may legitimately run
     concurrently for the same project (e.g. importing several files at once)."""
-    __slots__ = ("status", "phase", "result", "error")
+    __slots__ = ("status", "phase", "result", "error", "code", "needed", "free")
 
     def __init__(self) -> None:
         self.status: str = "running"     # running | done | error
         self.phase: str = "staging"      # staging | normalizing | building proxy | done
         self.result: dict | None = None  # appended clip dict (done)
         self.error: str | None = None    # error message (error)
+        # §541: "disk_full" (with the numbers) when the error is a full disk; else None.
+        self.code: str | None = None
+        self.needed: int | None = None
+        self.free: int | None = None
 
 
 _ingest_jobs: dict[str, _IngestJob] = {}
@@ -517,6 +523,13 @@ async def _run_ingest_detached(
         job.status, job.result, job.phase = "done", clip, "done"
         log(f"[ingest] added {clip['id']}")
     except Exception as e:
+        if isinstance(e, DiskFull) or is_disk_full(e):
+            # §541: one plain sentence and the numbers, never the errno text.
+            full = disk_full_detail(e)
+            job.status, job.error, job.code = "error", full["message"], full["error"]
+            job.needed, job.free = full["needed"], full["free"]
+            log(f"[ingest] failed: {full['message']}")
+            return
         job.status, job.error = "error", str(e)
         log(f"[ingest] failed: {e}")
 
@@ -1159,6 +1172,19 @@ _TIMING_PREFIX = "MONTAJ_TIMING "
 _TIMING_PHASES = ("git_init", "copy", "probe", "git_commit", "write")
 
 
+def _last_json_error(text: str) -> dict | None:
+    """The last `{"error": ...}` line in a child's stderr (progress lines
+    come before it), or None."""
+    for line in reversed((text or "").strip().splitlines()):
+        try:
+            parsed = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(parsed, dict) and "error" in parsed:
+            return parsed
+    return None
+
+
 def _set_server_timing(response: Response, value: str | None) -> None:
     if value:
         response.headers["Server-Timing"] = value
@@ -1306,7 +1332,12 @@ async def _run_init_subprocess(
         try:
             err = json.loads(stderr)
         except Exception:
-            err = {"error": "init_failed", "message": stderr.strip()}
+            err = _last_json_error(stderr) or {"error": "init_failed", "message": stderr.strip()}
+        # §541: a full disk is the 507 with one plain sentence: init's own
+        # disk_full, or an older init's traceback that says so. Never the text.
+        full = child_disk_full(err, stderr, disk_full_root())
+        if full is not None:
+            raise HTTPException(disk_full_status, detail=full)
         # --project-path validation errors map to 400 per the workspace-paths
         # plan's HTTP contract (see docs/plans/2026-05-02-workspace-paths.md).
         # Hub's idempotent-retry logic pattern-matches on 400 + error code, so
@@ -5113,6 +5144,8 @@ async def ingest_source_status(
         out["result"] = job.result
     elif job.status == "error":
         out["error"] = job.error
+        if job.code:
+            out.update({"code": job.code, "needed": job.needed, "free": job.free})
     return out
 
 

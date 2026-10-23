@@ -28,6 +28,7 @@ from common import get_duration, progress
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types...` works
 from lib.color_provenance import ProbeError, proxy_source_for
+from lib.disk_space import create_new, file_sizes, preflight, remove_partial
 from lib.normalize import probe_video, is_normalized, normalized_output_path, normalize
 from lib.proxy import proxy_path_for, is_proxy_fresh, make_proxy
 from lib.types.colorspace import detect_from_transfer, is_hdr, require_valid_key
@@ -64,14 +65,19 @@ def _stage_into_project(src: str, project_dir: str, prefix: str) -> str:
     if _is_inside(src, project_dir):
         return src
     name = os.path.basename(src)
-    dest = os.path.join(project_dir, name)
-    if os.path.exists(dest):
-        base, ext = os.path.splitext(name)
-        counter = 2
-        while os.path.exists(os.path.join(project_dir, f"{base}_{prefix}{counter}{ext}")):
-            counter += 1
-        dest = os.path.join(project_dir, f"{base}_{prefix}{counter}{ext}")
-    shutil.copy2(src, dest)
+    # §541: refuse before copying when the source will not fit (with headroom;
+    # an unreadable size or free space never blocks).
+    preflight(project_dir, file_sizes([src]))
+    # The name is reserved by creating the file exclusively, so two imports of
+    # one name at once (GX010001.MP4 repeats across cards) never pick the same
+    # file, and a failed copy removes only the file this import created.
+    base, ext = os.path.splitext(name)
+    dest = create_new(project_dir, name, lambda _n, i: f"{base}_{prefix}{i}{ext}")
+    try:
+        shutil.copy2(src, dest)
+    except BaseException:
+        remove_partial(dest)
+        raise
     return dest
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, fps_from_rate, modal_dims
 from lib.common import SAFE_NAME, fail, ffprobe_bin, progress
+from lib import disk_space
 from lib.fs_remove import rmtree_force
 from lib.fs_safe import open_write_no_follow
 from lib.remote_io import fetch_to_disk, parse_allowed_hosts
@@ -241,6 +242,14 @@ def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = Fals
     dest = os.path.join(dest_dir, name)
     if os.path.abspath(src) == os.path.abspath(dest):
         return dest  # already in workspace
+    if not link:
+        # §541 review: the name is reserved by creating the file exclusively, so
+        # two copies at once never pick one name, and a failed copy removes
+        # only the file it created. Same names as `_free_name`: <base>_<prefix>N.
+        base, ext = os.path.splitext(name)
+        dest = disk_space.create_new(dest_dir, name, lambda _n, i: f"{base}_{prefix}{i}{ext}")
+        _copy_or_remove(src, dest)
+        return dest
     dest = _free_name(dest_dir, name, prefix)
     if link:
         try:
@@ -256,10 +265,22 @@ def _copy_into_workspace(src: str, dest_dir: str, prefix: str, link: bool = Fals
             # process (winerror 1314, "a required privilege is not held").
             # Fall back to a real copy rather than failing the whole init.
             print(f"warning: symlink failed ({exc}); copied instead", file=sys.stderr)
-            shutil.copy2(src, dest)
-    else:
-        shutil.copy2(src, dest)
+            # A fresh name made exclusively (the link's name was never made).
+            base, ext = os.path.splitext(name)
+            dest = disk_space.create_new(dest_dir, os.path.basename(dest), lambda _n, i: f"{base}_{prefix}{i}{ext}")
+            _copy_or_remove(src, dest)
     return dest
+
+
+def _copy_or_remove(src: str, dest: str) -> None:
+    """shutil.copy2, and on any failure part way (a full disk, §541) the half
+    copy at *dest* is removed. *dest* is a file this copy created for itself
+    (`disk_space.create_new`), so what is removed is only ever its own."""
+    try:
+        shutil.copy2(src, dest)
+    except BaseException:
+        disk_space.remove_partial(dest)
+        raise
 
 
 _copy_into_workspace = _timed("copy", _copy_into_workspace)
@@ -329,11 +350,16 @@ def _git(args, cwd):
     from lib.project_versions import GIT_SAFE_FLAGS
     result = subprocess.run(
         ["git", *GIT_SAFE_FLAGS] + args, cwd=cwd, capture_output=True, text=True,
-        env={**os.environ,
+        # §541: the C locale, so git's errors (a full disk among them) are in the
+        # words the engine reads, whatever the user's language. Only git: ffmpeg
+        # and the other tools keep the user's locale (their paths and output).
+        env={**os.environ, "LC_ALL": "C", "LANG": "C",
              "GIT_AUTHOR_NAME": "montaj", "GIT_AUTHOR_EMAIL": "montaj@local",
              "GIT_COMMITTER_NAME": "montaj", "GIT_COMMITTER_EMAIL": "montaj@local"}
     )
     if result.returncode != 0:
+        if disk_space.tool_reported_disk_full(result.stderr):
+            raise disk_space.DiskFull()  # §541: main() removes the half-made project and says so
         fail("git_error", result.stderr.strip())
     return result
 
@@ -634,7 +660,25 @@ def _main():
             counter += 1
         workspace_dir = os.path.join(workspace_root, workspace_name)
 
+    # §541: refuse before anything is written when the files this init copies
+    # in will not fit (with headroom). Symlinked clips take no space; a size or
+    # a free space that can't be read never blocks (fail open).
+    disk_space.preflight(workspace_root, _bytes_to_copy(args, all_remote_items))
+
+    # The folders makedirs will make on the way to it (a nested --project-path),
+    # deepest last, below the workspace root: a failed create removes those too.
+    made_parents = []
+    parent = os.path.dirname(os.path.abspath(workspace_dir))
+    root_abs = os.path.abspath(workspace_root)
+    while parent.startswith(root_abs + os.sep) and not os.path.exists(parent):
+        made_parents.insert(0, parent)
+        parent = os.path.dirname(parent)
     os.makedirs(workspace_dir)
+    _CREATED["parents"] = made_parents
+    # From here a failure on a full disk removes this folder (main()); nothing
+    # before this line wrote anything.
+    _CREATED["dir"] = workspace_dir
+    _CREATED["root"] = workspace_root
 
     # --- Fetch remote items into workspace (all-or-nothing) ---
     if all_remote_items:
@@ -1321,10 +1365,66 @@ def _emit_timing(t0: float) -> None:
         pass
 
 
+# §541: the project folder this run made (and the workspace root), so a full
+# disk part way can remove exactly it and say so. Set only once makedirs made it.
+_CREATED: dict = {}
+
+
+def _ref_path(raw: str) -> str | None:
+    try:
+        entry = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    path = entry.get("path") if isinstance(entry, dict) else None
+    return path if isinstance(path, str) and path else None
+
+
+def _bytes_to_copy(args, remote_items: list) -> int:
+    """What this init will copy into the new project folder, in bytes: the
+    local files it copies (not symlinked clips) and the remote items' declared
+    sizes. Unreadable sizes count 0."""
+    paths = [] if args.symlink_clips else list(args.clips)
+    paths += list(args.assets) + list(args.voiceover_asset or [])
+    if args.music_upload:
+        paths.append(args.music_upload)
+    paths += [p for p in map(_ref_path, list(args.image_refs) + list(args.style_refs)) if p]
+    total = disk_space.file_sizes(paths)
+    for item in remote_items:
+        size = item.get("sizeBytes") if isinstance(item, dict) else None
+        if isinstance(size, int) and size > 0:
+            total += size
+    return total
+
+
+def _disk_full_exit(exc: BaseException) -> None:
+    """A full disk: remove the folder this run made (only it: it was created
+    new, `os.makedirs` without exist_ok), then the one JSON error line, exit 1.
+    The staged uploads it copied from are untouched (removed only on success)."""
+    created = _CREATED.get("dir")
+    root = _CREATED.get("root") or (exc.path if isinstance(exc, disk_space.DiskFull) else None)
+    if created:
+        rmtree_force(created, ignore_errors=True)
+        for folder in reversed(_CREATED.get("parents") or []):
+            try:
+                os.rmdir(folder)          # only if empty: never another project's folder
+            except OSError:
+                break
+    if isinstance(exc, disk_space.DiskFull):
+        err = disk_space.DiskFull(needed=exc.needed, free=exc.free if exc.free is not None else disk_space.free_bytes(root),
+                                  path=exc.path or root)
+    else:
+        err = disk_space.from_os_error(exc, root)
+    disk_space.print_and_exit(err)
+
+
 def main():
     t0 = time.perf_counter()
     try:
         _main()
+    except Exception as exc:
+        if isinstance(exc, disk_space.DiskFull) or disk_space.is_disk_full(exc):
+            _disk_full_exit(exc)
+        raise
     finally:
         _emit_timing(t0)
 

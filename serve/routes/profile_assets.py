@@ -21,6 +21,8 @@ from lib.profile_assets import (
     load_assets_manifest,
     save_assets_manifest,
 )
+from lib.disk_space import is_disk_full, remove_partial
+from serve import disk_full
 from serve.common import bad_request, forbidden, not_found
 
 router = APIRouter(prefix="/api")
@@ -128,44 +130,73 @@ async def upload_profile_asset(name: str, file: UploadFile):
     assets_dir = _assets_dir(name)
     assets_dir.mkdir(parents=True, exist_ok=True)
 
-    # Resolve collisions with the same _1, _2 suffix pattern as files.py:30–35.
-    dest = assets_dir / base
-    stem, suffix = dest.stem, dest.suffix
-    counter = 1
-    while dest.exists():
-        dest = assets_dir / f"{stem}_{counter}{suffix}"
-        counter += 1
-
-    # Post-resolution traversal check on the final dest (in case base sneaks
-    # past FILENAME_RE somehow — defense in depth).
+    # The name is reserved by creating the file new (`xb`, O_EXCL: never an
+    # existing entry, a dangling symlink included, never through a link), with
+    # the _1, _2 suffixes on a collision, so two uploads of one name at once
+    # never share a file and a failed upload removes only its own (§541).
+    stem, suffix = Path(base).stem, Path(base).suffix
+    # Traversal check on the name (defense in depth past FILENAME_RE): it must
+    # name an entry directly in assets/. A link already there is a taken name
+    # (the exclusive create below skips it), never followed.
     try:
-        dest.resolve().relative_to(assets_dir.resolve())
+        if (assets_dir / base).parent.resolve() != assets_dir.resolve() or base in ("", ".", ".."):
+            raise ValueError(base)
     except (ValueError, OSError):
         raise forbidden("traversal", "Path escapes assets dir")
+    dest, counter = assets_dir / base, 1
+    while True:
+        try:
+            fh = open(dest, "xb")
+            break
+        except FileExistsError:
+            dest = assets_dir / _numbered(stem, suffix, counter)
+            counter += 1
 
-    written = 0
-    fh = open(dest, "wb")
     try:
-        while True:
-            chunk = await file.read(1024 * 1024)  # 1 MB chunks
-            if not chunk:
-                break
-            written += len(chunk)
-            if written > MAX_ASSET_BYTES:
-                fh.close()
-                try:
-                    dest.unlink()
-                except FileNotFoundError:
-                    pass
-                raise HTTPException(413, detail={
-                    "error":   "payload_too_large",
-                    "message": f"File exceeds {MAX_ASSET_BYTES} bytes",
-                })
-            fh.write(chunk)
-    finally:
-        if not fh.closed:
+        return await _write_upload(file, fh, dest)
+    except BaseException:
+        # Any failure (a full disk, the size cap, an error, a cancel): the file
+        # this upload created is removed, and only it.
+        try:
             fh.close()
+        except OSError:
+            pass                          # a close that fails too must not keep the half file
+        remove_partial(dest)
+        raise
 
+
+# The longest file name most filesystems take, in bytes.
+_NAME_MAX = 255
+
+
+def _numbered(stem: str, suffix: str, n: int) -> str:
+    """`<stem>_<n><suffix>`, the stem cut so the name still fits _NAME_MAX."""
+    tag = f"_{n}{suffix}"
+    room = _NAME_MAX - len(tag.encode())
+    cut = stem.encode()[:max(1, room)].decode("utf-8", "ignore")
+    return f"{cut}{tag}"
+
+
+async def _write_upload(file, fh, dest: Path) -> dict:
+    """The body into `fh` (the new file at `dest`); the caller removes it on any failure."""
+    written = 0
+    while True:
+        chunk = await file.read(1024 * 1024)  # 1 MB chunks
+        if not chunk:
+            break
+        written += len(chunk)
+        if written > MAX_ASSET_BYTES:
+            raise HTTPException(413, detail={
+                "error":   "payload_too_large",
+                "message": f"File exceeds {MAX_ASSET_BYTES} bytes",
+            })
+        try:
+            fh.write(chunk)
+        except OSError as e:
+            if is_disk_full(e):
+                raise disk_full.http_error(e) from e   # §541
+            raise
+    fh.close()
     return {"filename": dest.name}
 
 

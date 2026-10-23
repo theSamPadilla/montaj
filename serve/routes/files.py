@@ -2,12 +2,16 @@
 import mimetypes
 import os
 import re
+import stat
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
-from lib.fs_safe import open_write_no_follow
+from lib.disk_space import is_disk_full, remove_partial
+from lib.fs_safe import _is_link, open_write_no_follow
+from serve import disk_full
 from serve.common import (
     resolve_workspace, find_project_dir, _is_under, _allowed_file_roots,
     not_found, bad_request, forbidden, lands_on_project_file,
@@ -59,9 +63,17 @@ async def save_upload(file: UploadFile, dest_dir: Path) -> Path:
         except FileExistsError:
             dest = dest_dir / f"{stem}_{counter}{suffix}"
             counter += 1
-    with f:
-        while chunk := await file.read(1024 * 1024):  # 1 MB chunks
-            f.write(chunk)
+    try:
+        with f:
+            while chunk := await file.read(1024 * 1024):  # 1 MB chunks
+                f.write(chunk)
+    except OSError as e:
+        # §541: the file was made new above (O_EXCL), so a half-written one is
+        # only ever this upload's own: removed, never left to look complete.
+        remove_partial(dest)
+        if is_disk_full(e):
+            raise disk_full.http_error(e) from e
+        raise
     return dest
 
 
@@ -156,18 +168,41 @@ async def write_file(request: Request):
 
     # §482: a file in an open Studio sync clash, as its relpath in the topmost project folder holding it, checked
     # and written under that project's lock (review 40: no clash recorded under the lock can fall between the
-    # check and the write). Sync off, the window and the pull: no lock, as before.
+    # check and the write). Sync off, the window and the pull: no lock, as before. The check runs on entry,
+    # before any folder, temp file or byte is written (§541 composes inside it).
     async with save_guard.sync_paths_locked(getattr(request, "headers", None), [(str(resolved), False)]):
         # Create parent dirs (a spec may be the first file in a subdir)
         resolved.parent.mkdir(parents=True, exist_ok=True)
         encoded = content.encode("utf-8")
-        try:
-            fd = open_write_no_follow(str(resolved))
-        except OSError:
-            # ELOOP (a symlink or reparse point sits at the target) or any other open failure: refuse, never follow it.
+        # A symlink or reparse point at the target is refused, never written through (H3);
+        # so are a folder and a file that can't be written, as the open used to refuse them.
+        if _is_link(str(resolved)) or os.path.isdir(resolved) or (
+                os.path.lexists(resolved) and not os.access(resolved, os.W_OK)):
             raise forbidden("forbidden", "Path is outside the workspace root")
-        with os.fdopen(fd, "wb") as f:
-            f.write(encoded)
+        # §541 review: written to a temp file beside it and moved into place only
+        # once whole, so a full disk part way leaves an existing file as it was
+        # (an O_TRUNC open had already emptied it) and removes only the temp.
+        tmp = str(resolved.parent / f".{resolved.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            fd = open_write_no_follow(tmp)
+        except OSError as e:
+            # §541: no room even to create the file is a full disk, not a refusal.
+            if is_disk_full(e):
+                raise disk_full.http_error(e) from e
+            raise forbidden("forbidden", "Path is outside the workspace root")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(encoded)
+            try:
+                os.chmod(tmp, stat.S_IMODE(os.lstat(resolved).st_mode))   # an overwrite keeps its mode
+            except OSError:
+                pass
+            os.replace(tmp, resolved)
+        except BaseException as e:
+            remove_partial(tmp)
+            if isinstance(e, OSError) and is_disk_full(e):
+                raise disk_full.http_error(e, needed=len(encoded)) from e
+            raise
     return {"path": str(resolved), "bytes": len(encoded)}
 
 

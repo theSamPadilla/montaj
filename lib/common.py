@@ -3,6 +3,16 @@
 import contextlib, json, math, os, re, shutil, subprocess, sys, tempfile
 from decimal import Decimal
 
+try:
+    from lib import disk_space as _disk_space
+except ImportError:  # imported as `common`, with only lib/ on sys.path (some steps)
+    import disk_space as _disk_space
+_install_disk_full_hook = _disk_space.install_excepthook
+
+# §541: every step and script imports this module, so a full disk anywhere in
+# one prints its one JSON error line ({"error": "disk_full", ...}), not a traceback.
+_install_disk_full_hook()
+
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 """Filesystem-safe single-segment name. No spaces, no special chars, no
@@ -83,6 +93,11 @@ def run(cmd: list[str], timeout: int = 300, check: bool = True, cwd: str = None)
     caller's own (unchanged)."""
     r = subprocess.run(cmd, shell=False, capture_output=True, text=True, timeout=timeout, cwd=cwd)
     if check and r.returncode != 0:
+        # §541: a tool that reports a full disk in its own words (ffmpeg's
+        # "Error writing trailer: No space left on device") is disk_full.
+        if _disk_space.tool_reported_disk_full(r.stderr):
+            root = _disk_space.workspace_root()
+            _disk_space.print_and_exit(_disk_space.DiskFull(free=_disk_space.free_bytes(root), path=root))
         fail("unexpected_error", f"Command failed: {' '.join(cmd)}\n{ffmpeg_error_tail(r.stderr, 20)}")
     return r
 
