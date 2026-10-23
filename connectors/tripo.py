@@ -318,7 +318,7 @@ def _error(status: int, body: dict, text: str, what: str, *, repeatable: bool = 
     if status == 401 or code in _KEY_CODES:
         return ConnectorError(
             f"Tripo rejected the API key ({msg}). Create the key on tripo3d.ai, the "
-            f"international site, not the China site, then save it again.",
+            f"international site, not the China site, then save it in Montaj under Connectors.",
             reason=INVALID_API_KEY)
     if code == 2010:
         return ConnectorError("Tripo: not enough credits. Add credit at platform.tripo3d.ai.",

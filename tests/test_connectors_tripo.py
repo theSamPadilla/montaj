@@ -280,6 +280,7 @@ def test_a_rejected_key_says_where_keys_come_from(fake, status, body):
     assert e.value.reason == INVALID_API_KEY
     message = str(e.value)
     assert "Tripo rejected the API key" in message and "tripo3d.ai" in message and "China" in message
+    assert message.endswith("then save it in Montaj under Connectors.")  # §549: says where, so the app adds nothing
 
 
 @pytest.mark.parametrize("status", [ERR_INSUFFICIENT_STATUS, 400, 200])
