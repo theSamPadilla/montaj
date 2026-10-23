@@ -2509,5 +2509,5 @@ export function drawTimelineOverlay(ctx: DrawContext, scene: OverlayScene): void
 export function audioLabel(track: AudioTrack): string {
   if (track.type === 'voiceover') return 'Voiceover'
   if (track.type === 'music') return 'Music'
-  return track.label ?? track.src.split('/').pop() ?? 'audio'
+  return track.label ?? track.src?.split('/').pop() ?? 'audio'
 }

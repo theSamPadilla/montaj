@@ -12,6 +12,7 @@ import type { AudioTrack, CaptionSegment, VisualItem } from '../../../../schema'
 import type { Project } from '../../../../types'
 import {
   AUDIO_HANDLE_WIDTH_PX,
+  audioLabel,
   AUDIO_ITEM_INSET_PX,
   AUDIO_ITEM_RADIUS_PX,
   CAPTION_PALETTE,
@@ -2267,5 +2268,17 @@ describe('drawMarkers', () => {
     const r = recordingContext()
     drawMarkers(r.ctx, [{ id: 'a', t: 0, label: 'a'.repeat(400) }], viewport({ pxPerSecond: 10 }), strip, 800, [])
     expect((r.of('fillText')[0].args[0] as string).length).toBeLessThan(400)
+  })
+})
+
+describe('audioLabel', () => {
+  it('uses the type name, the label, then the source filename', () => {
+    expect(audioLabel({ id: 'a', type: 'music', src: '/x/a.mp3' } as AudioTrack)).toBe('Music')
+    expect(audioLabel({ id: 'a', label: 'Bed', src: '/x/a.mp3' } as AudioTrack)).toBe('Bed')
+    expect(audioLabel({ id: 'a', src: '/x/a.mp3' } as AudioTrack)).toBe('a.mp3')
+  })
+
+  it('falls back to "audio" when the track has no src (an AI-saved {id, items} entry)', () => {
+    expect(audioLabel({ id: 'a', items: [] } as unknown as AudioTrack)).toBe('audio')
   })
 })

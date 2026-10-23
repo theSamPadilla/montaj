@@ -2270,10 +2270,25 @@ function resolveProjectPaths(projectJson, projectDir) {
   }
 
   for (const track of projectJson.audio?.tracks ?? []) {
-    if (track.src) track.src = resolveProjectSrc(track.src, projectDir)
+    // A track without a string src is reported by validateProjectFiles, by name.
+    if (!hasAudioSrc(track)) continue
+    track.src = resolveProjectSrc(track.src, projectDir)
     const actual = resolveFilePath(track.src)
     if (actual) track.src = actual
   }
+}
+
+function hasAudioSrc(track) {
+  return typeof track?.src === 'string' && track.src !== ''
+}
+
+/** The clear failure for an audio.tracks entry written in the video-track shape. */
+function audioTrackNoSrcMessage(track, index) {
+  const id = typeof track?.id === 'string' && track.id ? ` (id "${track.id}")` : ''
+  const head = `audio.tracks[${index}]${id}`
+  return Array.isArray(track?.items)
+    ? `${head} has items instead of src. An audio track is one file: set src to its path.`
+    : `${head} has no src. Set src to the audio file's path.`
 }
 
 function validateProjectFiles(projectJson) {
@@ -2287,9 +2302,11 @@ function validateProjectFiles(projectJson) {
     }
   }
 
-  for (const track of projectJson.audio?.tracks ?? []) {
-    if (track.src && !resolveFilePath(track.src)) missing.push(track.src)
-  }
+  const audioTracks = projectJson.audio?.tracks ?? []
+  audioTracks.forEach((track, i) => {
+    if (!hasAudioSrc(track)) fail('missing_files', audioTrackNoSrcMessage(track, i))
+    if (!resolveFilePath(track.src)) missing.push(track.src)
+  })
 
   if (missing.length > 0) {
     fail('missing_files', `Referenced files not found:\n  ${missing.join('\n  ')}`)
@@ -2731,7 +2748,7 @@ export { normalizeIfNeeded, killNormalizeTree, failLine, stampSourceProbes, getT
          resolveEstimateOverrides, planVideoItemWrites, isConformant, normalizedMasterCache, estimateMain, planSlicing,
          UNTAGGED_MASTER_MARKER, originalOfSdrMaster,
          // glass-plate.js renders the base composite through the export's own item preparation.
-         resolveProjectPaths, validateProjectFiles, repointStaleUntaggedMasters, prepareVideoItems, prepareSdrPass, outputSize,
+         resolveProjectPaths, validateProjectFiles, audioTrackNoSrcMessage, repointStaleUntaggedMasters, prepareVideoItems, prepareSdrPass, outputSize,
          stripExtraAudioStreams,
          // The editor export (nle/graphics.js) builds its segments the render's way.
          designCanvasFor, bundleSegmentSpec }

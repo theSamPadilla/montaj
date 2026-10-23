@@ -72,8 +72,8 @@ export interface ClipPropertiesPanelProps {
 const SECTION_CLASS = 'shrink-0 border-b border-[var(--editor-border)] flex flex-col overflow-hidden'
 const ROW_LABEL_CLASS = 'w-16 shrink-0 text-[11px] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]'
 
-function basename(path: string): string {
-  return path.split('/').pop() ?? path
+function basename(path: string | undefined): string {
+  return path?.split('/').pop() ?? path ?? 'audio'
 }
 
 /** One collapsible section frame, shared by the Audio track section and its
