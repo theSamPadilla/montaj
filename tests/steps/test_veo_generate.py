@@ -119,10 +119,10 @@ class TestStandaloneModes:
 
     def test_passes_resolution_model_and_negative_prompt(self, step_module, monkeypatch, tmp_path, seen):
         _run(step_module, monkeypatch, "--prompt", "x", "--out", str(tmp_path / "o.mp4"),
-             "--resolution", "1080p", "--model", "veo-3.1-fast-generate-preview",
+             "--resolution", "720p", "--model", "gemini-omni-1.1-flash",
              "--negative-prompt", "blur", "--aspect-ratio", "16:9")
-        assert seen["resolution"] == "1080p"
-        assert seen["model"] == "veo-3.1-fast-generate-preview"
+        assert seen["resolution"] == "720p"
+        assert seen["model"] == "gemini-omni-1.1-flash"
         assert seen["negative_prompt"] == "blur"
         assert seen["aspect_ratio"] == "16:9"
 
@@ -151,7 +151,7 @@ class TestDefaultAspect:
 
 
 class TestInvalidCombinations:
-    """Each fails with invalid_args and never reaches the connector (a Veo job bills per second)."""
+    """Each fails before the connector (Gemini video bills per second once sent)."""
 
     @pytest.fixture(autouse=True)
     def _no_connector(self, monkeypatch):
@@ -179,28 +179,19 @@ class TestInvalidCombinations:
         _fails(step_module, monkeypatch, capsys, "invalid_args", "--prompt", "x",
                "--out", str(tmp_path / "o.mp4"), *refs)
 
-    def test_refs_need_8_seconds(self, step_module, monkeypatch, capsys, tmp_path):
+    @pytest.mark.parametrize("seconds", ["2", "11"])
+    def test_duration_outside_3_to_10(self, step_module, monkeypatch, capsys, tmp_path, seconds):
         _fails(step_module, monkeypatch, capsys, "invalid_args", "--prompt", "x",
-               "--out", str(tmp_path / "o.mp4"), "--ref-image", _png(tmp_path / "r.png"),
-               "--duration", "6")
+               "--out", str(tmp_path / "o.mp4"), "--duration", seconds)
 
-    def test_refs_not_on_lite(self, step_module, monkeypatch, capsys, tmp_path):
-        _fails(step_module, monkeypatch, capsys, "invalid_args", "--prompt", "x",
-               "--out", str(tmp_path / "o.mp4"), "--ref-image", _png(tmp_path / "r.png"),
-               "--model", "veo-3.1-lite-generate-preview")
-
-    def test_1080p_needs_8_seconds(self, step_module, monkeypatch, capsys, tmp_path):
-        _fails(step_module, monkeypatch, capsys, "invalid_args", "--prompt", "x",
-               "--out", str(tmp_path / "o.mp4"), "--resolution", "1080p", "--duration", "4")
-
-    def test_4k_not_on_lite(self, step_module, monkeypatch, capsys, tmp_path):
-        _fails(step_module, monkeypatch, capsys, "invalid_args", "--prompt", "x",
-               "--out", str(tmp_path / "o.mp4"), "--resolution", "4k",
-               "--model", "veo-3.1-lite-generate-preview")
-
-    def test_duration_not_4_6_8(self, step_module, monkeypatch, capsys, tmp_path):
-        _fails(step_module, monkeypatch, capsys, "invalid_args", "--prompt", "x",
-               "--out", str(tmp_path / "o.mp4"), "--duration", "5")
+    @pytest.mark.parametrize("flag, value", [
+        ("--resolution", "1080p"), ("--resolution", "4k"), ("--model", "veo-3.1-generate-preview"),
+    ])
+    def test_unpriced_resolutions_and_retired_models_are_refused(self, step_module, monkeypatch, tmp_path, flag, value):
+        """§550: only 720p has a Google price, and every Veo 3.1 id is shut down."""
+        with pytest.raises(SystemExit) as ei:
+            _run(step_module, monkeypatch, "--prompt", "x", "--out", str(tmp_path / "o.mp4"), flag, value)
+        assert ei.value.code == 2  # argparse: not one of the choices
 
     def test_unsupported_image_type(self, step_module, monkeypatch, capsys, tmp_path):
         gif = tmp_path / "a.gif"
@@ -260,14 +251,14 @@ def _pargs(tmp_path, *extra):
 
 
 class TestProjectMode:
-    @pytest.mark.parametrize("scene_s,veo_s", [(1, 4), (4, 4), (4.5, 6), (6, 6), (7, 8), (8, 8)])
-    def test_duration_rounds_up(self, step_module, monkeypatch, tmp_path, seen, scene_s, veo_s):
+    @pytest.mark.parametrize("scene_s,clip_s", [(1, 3), (3, 3), (4.5, 5), (7, 7), (8, 8), (9.2, 10), (10, 10)])
+    def test_duration_rounds_up(self, step_module, monkeypatch, tmp_path, seen, scene_s, clip_s):
         _project(tmp_path, monkeypatch, duration=scene_s)
         _run(step_module, monkeypatch, *_pargs(tmp_path))
-        assert seen["duration"] == veo_s
+        assert seen["duration"] == clip_s
 
-    def test_over_8_fails_before_connector(self, step_module, monkeypatch, capsys, tmp_path, seen):
-        _project(tmp_path, monkeypatch, duration=9)
+    def test_over_10_fails_before_connector(self, step_module, monkeypatch, capsys, tmp_path, seen):
+        _project(tmp_path, monkeypatch, duration=10.5)
         _fails(step_module, monkeypatch, capsys, "invalid_args", *_pargs(tmp_path))
         assert seen == {}
 
@@ -298,24 +289,12 @@ class TestProjectMode:
         _fails(step_module, monkeypatch, capsys, "invalid_args", *_pargs(tmp_path))
         assert seen == {}
 
-    def test_refs_force_8s_and_have_no_tokens(self, step_module, monkeypatch, tmp_path, seen):
+    def test_refs_keep_the_scene_length_and_have_no_tokens(self, step_module, monkeypatch, tmp_path, seen):
         _project(tmp_path, monkeypatch, duration=4, ref_count=2)
         _run(step_module, monkeypatch, *_pargs(tmp_path))
-        assert seen["duration"] == 8
+        assert seen["duration"] == 4
         assert len(seen["reference_image_paths"]) == 2
         assert "<<<image_" not in seen["prompt"]
-
-    def test_1080p_forces_8s(self, step_module, monkeypatch, tmp_path, seen):
-        _project(tmp_path, monkeypatch, duration=4)
-        _run(step_module, monkeypatch, *_pargs(tmp_path, "--resolution", "1080p"))
-        assert seen["duration"] == 8
-        assert seen["resolution"] == "1080p"
-
-    def test_refs_on_lite_fail(self, step_module, monkeypatch, capsys, tmp_path, seen):
-        _project(tmp_path, monkeypatch, ref_count=1)
-        _fails(step_module, monkeypatch, capsys, "invalid_args",
-               *_pargs(tmp_path, "--model", "veo-3.1-lite-generate-preview"))
-        assert seen == {}
 
     def test_prompt_is_composed_from_project_not_the_flag(self, step_module, monkeypatch, tmp_path, seen):
         _project(tmp_path, monkeypatch)

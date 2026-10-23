@@ -40,9 +40,9 @@ Library code — raises ConnectorError, never calls fail() or sys.exit.
 Step scripts catch ConnectorError and translate to fail().
 """
 import json as _json
-import os, re, sys, time, wave
+import base64, os, re, sys, time, wave
 from connectors import (
-    ConnectorError, UNREACHABLE, INSUFFICIENT_CREDIT, MODEL_RETIRED, CONTENT_REFUSED,
+    ConnectorError, UNREACHABLE, INSUFFICIENT_CREDIT, MODEL_RETIRED, CONTENT_REFUSED, _http,
     retarget_extension as _retarget_extension,
 )
 from lib.credentials import get_credential
@@ -77,36 +77,43 @@ DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts"
 DEFAULT_TTS_VOICE = "Kore"  # default for generate_speech when caller omits voice
 DEFAULT_MUSIC_MODEL = "lyria-3.5"
 
-# Veo on the Gemini API (facts read from ai.google.dev/gemini-api/docs/veo and
-# /pricing on 2026-10-14). There is no GA Veo 3.1: the GA veo-3.0-*-001 models
-# are deprecated and so are not offered. PV29 allows a -preview default when
-# no GA model exists; replace this one when a GA Veo 3.1 appears.
-# There is no free tier: a key without billing cannot generate video.
-DEFAULT_VIDEO_MODEL = "veo-3.1-generate-preview"
-# §550: Google shut down every Veo 3.1 preview id on the Gemini API on
-# 2026-10-22 (ai.google.dev/gemini-api/docs/deprecations, read 2026-10-23).
-# VIDEO_ON is the one switch for Gemini video: off, veo_generate fails at once
-# with VIDEO_OFF_MESSAGE before any call, and check_key stops counting the
-# video default toward default_model_ok.
-VIDEO_ON = False
+# Video on the Gemini API is Gemini Omni Flash, through the Interactions API
+# (§550). Google shut down every Veo 3.1 preview id on 2026-10-22 and names
+# gemini-omni-1.1-flash (GA 2026-08-27) as their replacement
+# (ai.google.dev/gemini-api/docs/deprecations). Facts read 2026-10-23 from
+# ai.google.dev/gemini-api/docs/omni, /docs/models/gemini-omni-flash,
+# /docs/pricing and /api/interactions-api, and from google-genai 2.33.0's own
+# request types (VideoResponseFormat, VideoConfig):
+# - One blocking POST /v1beta/interactions makes the video: the guide's
+#   "background=false, store=false, stream=false" unary form. There is no
+#   operation to poll, and with store false nothing can be fetched later.
+# - Video with sound at 24 fps, 3 to 10 seconds, 16:9 or 9:16. No negative
+#   prompt ("negative prompts are not supported"), so one goes in the prompt.
+# - $17.50 per 1M output tokens at 5,792 tokens a second of 720p: about $0.10
+#   a second. Paid tier only. 1080p and 4k are upscaled and Google gives them
+#   no price, so only 720p is offered.
+# - `duration` is in VideoResponseFormat but the guide never sets it; the
+#   "Ns" form here is the protobuf Duration a str field takes, not measured.
+VIDEO_ON = True
 VIDEO_OFF_MESSAGE = "Gemini video is off in this version of Montaj. Use Kling, Seedance or Kinovi."
+DEFAULT_VIDEO_MODEL = "gemini-omni-1.1-flash"
 # What each model takes. "reference_images" is whether it accepts up to
-# VIDEO_MAX_REFERENCE_IMAGES asset images; 1080p and 4k need an 8 s clip on all.
+# VIDEO_MAX_REFERENCE_IMAGES subject images.
 VIDEO_MODELS = {
-    "veo-3.1-generate-preview":      {"resolutions": ("720p", "1080p", "4k"), "reference_images": True},
-    "veo-3.1-fast-generate-preview": {"resolutions": ("720p", "1080p", "4k"), "reference_images": True},
-    "veo-3.1-lite-generate-preview": {"resolutions": ("720p", "1080p"),      "reference_images": False},
+    "gemini-omni-1.1-flash": {"resolutions": ("720p",), "reference_images": True},
 }
-VIDEO_DURATIONS = (4, 6, 8)
+VIDEO_DURATIONS = tuple(range(3, 11))
 VIDEO_ASPECT_RATIOS = ("16:9", "9:16")
-VIDEO_RESOLUTIONS = ("720p", "1080p", "4k")
+VIDEO_RESOLUTIONS = ("720p",)
+# The guide sets no limit; three keeps a request, and its upload, bounded.
 VIDEO_MAX_REFERENCE_IMAGES = 3
-# Veo takes 11 s to 6 min; serve kills a step at 900 s, so give up before that.
-VIDEO_POLL_INTERVAL_S = 10
-VIDEO_MAX_WAIT_S = 600
-VIDEO_PROGRESS_EVERY_S = 30
-# A job is billed once submitted, so a flaky status check must not abandon it.
-VIDEO_MAX_POLL_FAILURES = 3
+VIDEO_PRICE_PER_SECOND_USD = {"720p": 0.10}
+VIDEO_API = "https://generativelanguage.googleapis.com/v1beta"
+# serve kills a step at 900 s, so the one blocking request gives up before that.
+VIDEO_REQUEST_TIMEOUT_S = 600
+# A URI delivery is polled until the file is ACTIVE, as the guide's loop does.
+VIDEO_FILE_POLL_INTERVAL_S = 5
+VIDEO_FILE_MAX_WAIT_S = 180
 VIDEO_DOWNLOAD_ATTEMPTS = 3
 VIDEO_DOWNLOAD_RETRY_S = 3
 
@@ -847,8 +854,12 @@ def generate_music(
 
 
 # ---------------------------------------------------------------------------
-# Veo video
+# Video: Gemini Omni Flash through the Interactions API (§550)
 # ---------------------------------------------------------------------------
+
+# $17.50 per 1M output tokens (ai.google.dev/gemini-api/docs/pricing, read 2026-10-23).
+_VIDEO_OUTPUT_USD_PER_TOKEN = 17.50 / 1_000_000
+
 
 def _video_duration(duration) -> int | None:
     """`duration` as an int when it is a whole number of seconds, else None."""
@@ -873,10 +884,10 @@ def video_request_problem(
     resolution: str = "720p",
     model: str = DEFAULT_VIDEO_MODEL,
 ) -> str | None:
-    """A short message for the first invalid Veo request, None when it is valid.
+    """A short message for the first invalid video request, None when it is valid.
 
     Pure: looks at the values and the file extensions, never at the disk or the
-    network. Veo is billed per second once a job is submitted, so
+    network. Gemini video is billed per second once the request is sent, so
     generate_video() and the step call this first and send nothing on a problem.
     """
     if not VIDEO_ON:
@@ -886,115 +897,200 @@ def video_request_problem(
         return "Prompt must not be empty."
     spec = VIDEO_MODELS.get(model)
     if spec is None:
-        return f"Unknown Veo model {model}. Use one of: {', '.join(VIDEO_MODELS)}."
-    seconds = _video_duration(duration)
-    if seconds not in VIDEO_DURATIONS:
-        return "Veo clips are 4, 6 or 8 seconds."
+        return f"Unknown Gemini video model {model}. Use {', '.join(VIDEO_MODELS)}."
+    if _video_duration(duration) not in VIDEO_DURATIONS:
+        return f"Gemini video clips are {VIDEO_DURATIONS[0]} to {VIDEO_DURATIONS[-1]} seconds."
     if aspect_ratio not in VIDEO_ASPECT_RATIOS:
-        return "Veo makes 16:9 or 9:16 video."
-    if resolution not in VIDEO_RESOLUTIONS:
-        return "Resolution must be 720p, 1080p or 4k."
+        return "Gemini makes 16:9 or 9:16 video."
     if resolution not in spec["resolutions"]:
-        return f"{model} does not make {resolution}. Use {' or '.join(spec['resolutions'])}."
-    if resolution != "720p" and seconds != 8:
-        return f"{resolution} needs an 8 second clip."
+        return f"Gemini video is {' or '.join(spec['resolutions'])} only."
     for label, path in (("first frame", image_path), ("last frame", last_frame_path),
                         *(("reference image", r) for r in refs)):
         if path and os.path.splitext(path)[1].lower() not in _VIDEO_IMAGE_MIME_BY_EXT:
-            return f"Veo takes PNG, JPEG or WebP images; the {label} is {os.path.basename(path)}."
+            return f"Gemini video takes PNG, JPEG or WebP images; the {label} is {os.path.basename(path)}."
     if last_frame_path and not image_path:
         return "A last frame needs a first frame."
     if refs and image_path:
         return "Use either a first frame or reference images, not both."
     if len(refs) > VIDEO_MAX_REFERENCE_IMAGES:
-        return f"Veo takes up to {VIDEO_MAX_REFERENCE_IMAGES} reference images."
+        return f"Gemini video takes up to {VIDEO_MAX_REFERENCE_IMAGES} reference images."
     if refs and not spec["reference_images"]:
-        return (f"{model} takes no reference images. Use veo-3.1-generate-preview "
-                f"or veo-3.1-fast-generate-preview.")
-    if refs and seconds != 8:
-        return "Reference images need an 8 second clip."
+        return f"{model} takes no reference images."
     return None
+
+
+def video_cost_usd(duration, resolution: str = "720p") -> float | None:
+    """Google's price for a clip of `duration` seconds, None when it has none."""
+    rate, seconds = VIDEO_PRICE_PER_SECOND_USD.get(resolution), _video_duration(duration)
+    return None if rate is None or seconds is None else round(rate * seconds, 2)
 
 
 def _video_progress(message: str) -> None:
     print(_json.dumps({"progress": message}), file=sys.stderr, flush=True)
 
 
-def _video_image(types, path: str):
-    """A Veo image input read from `path` (extension already validated)."""
+def _video_image_part(path: str) -> dict:
+    """An input image item (extension already validated), as in the guide's examples."""
     mime = _VIDEO_IMAGE_MIME_BY_EXT[os.path.splitext(path)[1].lower()]
     try:
         with open(path, "rb") as f:
             data = f.read()
     except OSError as e:
         raise ConnectorError(f"Could not read image {path}: {e}") from e
-    return types.Image(image_bytes=data, mime_type=mime)
+    return {"type": "image", "data": base64.b64encode(data).decode("ascii"), "mime_type": mime}
 
 
-def _veo_safety_text(text: str) -> bool:
+def _video_body(prompt, image_path, last_frame_path, refs, seconds, aspect_ratio, resolution,
+                negative_prompt, model) -> dict:
+    """The POST /v1beta/interactions body.
+
+    Text alone is a plain `input` string; with images, `input` is the image
+    items then the text, the order of the guide's image-to-video, first and
+    last frame, and subject reference examples. Those last two send the same
+    shape, so `generation_config.video_config.task` says which is meant.
+    """
+    text = prompt.strip()
+    if negative_prompt and negative_prompt.strip():
+        text += f"\n\nAvoid: {negative_prompt.strip()}"
+    images = [p for p in (image_path, last_frame_path) if p] or list(refs or [])
+    task = "reference_to_video" if refs else "image_to_video" if image_path else "text_to_video"
+    return {
+        "model": model,
+        "input": [*(_video_image_part(p) for p in images), {"type": "text", "text": text}] if images else text,
+        "response_format": {"type": "video", "aspect_ratio": aspect_ratio, "resolution": resolution,
+                            "duration": f"{seconds}s", "delivery": "uri"},
+        "generation_config": {"video_config": {"task": task}},
+        "background": False, "store": False, "stream": False,
+    }
+
+
+def _video_headers(key: str) -> dict:
+    return {"x-goog-api-key": key, "Content-Type": "application/json"}
+
+
+def _video_safety_text(text: str) -> bool:
     lowered = text.lower()
     return any(w in lowered for w in (
-        "safety", "policy", "guideline", "responsible ai", "prohibited", "sensitive",
+        "safety", "policy", "policies", "guideline", "responsible ai", "prohibited", "sensitive", "blocked",
     ))
 
 
-def _veo_refusal(detail: str, reasons=None) -> ConnectorError:
-    message = "Veo blocked this video on safety grounds. Change the prompt or the images and try again."
-    if reasons:
-        message += f" Reasons: {_sanitize_sdk_detail('; '.join(str(r) for r in reasons))}."
-    message += " Blocked videos are not charged."
+def _video_refusal(detail: str) -> ConnectorError:
+    message = "Gemini blocked this video on safety grounds. Change the prompt or the images and try again."
     if detail:
         message += f" Google said: {detail}"
     return ConnectorError(message, reason=CONTENT_REFUSED)
 
 
-def _veo_error(e: Exception, model: str) -> ConnectorError:
-    """The ConnectorError for an SDK failure on the submit call.
+def _video_http_error(status: int, text: str, model: str) -> ConnectorError:
+    """The ConnectorError for a non-200 answer to the video request.
 
-    Matched against the shape google-genai raises (errors.APIError: .code the
-    HTTP status, .status Google's string status, .message its text). Inferred
-    from Google's wording, not measured against a live Veo call: the billing
-    split below is the part most likely to need adjusting.
+    Google's error body is {"error": {"code", "message"}}, with the statuses on
+    ai.google.dev/gemini-api/docs/api-errors: 401 a bad key, 402 or a 400
+    failed_precondition no billing, 429 a quota, 404 model_not_found.
     """
-    if _is_invalid_api_key_error(e):
-        return _wrap_sdk_error(e, "Veo request failed")
     try:
-        from google.genai import errors
-    except ImportError:
-        errors = None
-    if errors is None or not isinstance(e, errors.APIError):
-        return ConnectorError(f"Veo request failed: {_sanitize_sdk_detail(str(e))}")
-
-    code = getattr(e, "code", None)
-    status = (getattr(e, "status", None) or "").upper()
-    raw = getattr(e, "message", None) or str(e)
+        err = (_json.loads(text) or {}).get("error") or {}
+    except (ValueError, AttributeError):
+        err = {}
+    raw = str(err.get("message") or text or "")
+    code = str(err.get("code") or err.get("status") or "").lower()
     lowered = raw.lower()
     detail = _sanitize_sdk_detail(raw)
     google = f" Google said: {detail}" if detail else ""
 
-    if code == 429 or status == "RESOURCE_EXHAUSTED":
-        # Google's ordinary quota 429 says "check your plan and billing
-        # details" even on a paid key, so the word billing proves nothing
-        # here. A zero limit, or a free-tier metric, means the key has no
-        # billing at all.
+    if status == 401 or code in ("authentication", "unauthenticated") or (
+            status in (400, 403) and ("api key" in lowered or "api_key" in lowered)):
+        e = ConnectorError(f"{INVALID_API_KEY_MESSAGE}{google}", reason="invalid_api_key")
+        e.google_detail = detail
+        return e
+    if status == 429 or "quota" in code or "rate_limit" in code:
+        # Google's quota 429 says "check your plan and billing details" even on a
+        # paid key; a zero limit or a free-tier metric means no billing at all.
         if re.search(r"limit:\s*0\b", lowered) or "free_tier" in lowered or "free tier" in lowered:
             return ConnectorError(
-                "Veo needs billing on your Gemini key. Turn it on in Google AI Studio, "
+                "Gemini video needs billing on your Gemini key. Turn it on in Google AI Studio, "
                 "then try again." + google, reason=INSUFFICIENT_CREDIT)
         return ConnectorError(
             "Your Gemini video quota was reached. Wait a few minutes and try again, "
             "or raise the limit in Google AI Studio." + google)
-    if any(w in lowered for w in ("billing", "paid", "free tier", "free_tier")):
+    if status == 402 or "payment" in code or "billing" in lowered or "failed_precondition" in code:
         return ConnectorError(
-            "Veo needs billing on your Gemini key. Turn it on in Google AI Studio, "
+            "Gemini video needs billing on your Gemini key. Turn it on in Google AI Studio, "
             "then try again." + google, reason=INSUFFICIENT_CREDIT)
-    if (code == 404 or status == "NOT_FOUND") and ("model" in lowered or model in lowered):
-        return ConnectorError(
-            f"Veo model {model} is not available to your Gemini key." + google,
-            reason=MODEL_RETIRED)
-    if code == 400 and _veo_safety_text(lowered):
-        return _veo_refusal(detail)
-    return ConnectorError(f"Veo request failed: {detail}")
+    if status == 404 or "model_not_found" in code:
+        return ConnectorError(f"Gemini video model {model} is not available to your Gemini key." + google,
+                              reason=MODEL_RETIRED)
+    if status == 400 and ("safety" in code or _video_safety_text(lowered)):
+        return _video_refusal(detail)
+    return ConnectorError(f"Gemini video request failed (HTTP {status}).{google}")
+
+
+def _video_content(body: dict) -> dict | None:
+    """The video item of the last model_output step: the SDK's own `output_video`
+    walk (google-genai 2.33.0, types/interactions/interaction.py)."""
+    for step in reversed(body.get("steps") or []):
+        if not isinstance(step, dict):
+            continue
+        if step.get("type") == "user_input":
+            break
+        if step.get("type") != "model_output":
+            continue
+        for item in reversed(step.get("content") or []):
+            if isinstance(item, dict) and item.get("type") == "video":
+                return item
+    return None
+
+
+_FILE_ID_RE = re.compile(r"/files/([A-Za-z0-9_-]+)")
+
+
+def _video_bytes(item: dict, key: str) -> bytes:
+    """The clip's bytes: inline data, or the URI once its file is ACTIVE."""
+    if item.get("data"):
+        try:
+            return base64.b64decode(item["data"])
+        except (ValueError, TypeError) as e:
+            raise ConnectorError(f"Gemini video came back unreadable: {e}") from e
+    uri = item.get("uri") or ""
+    m = _FILE_ID_RE.search(uri)
+    if not m:
+        raise ConnectorError("Gemini video finished with no video.")
+    file_url = f"{VIDEO_API}/files/{m.group(1)}"
+    headers = {"x-goog-api-key": key}
+    waited = 0
+    while True:
+        r = _http.request_with_retry("GET", file_url, headers=headers, timeout=30)
+        state = ""
+        if r.status_code == 200:
+            try:
+                state = str((r.json() or {}).get("state") or "").upper()
+            except ValueError:
+                state = ""
+        if state == "ACTIVE":
+            break
+        if state == "FAILED":
+            raise ConnectorError("Gemini video finished but its file failed on Google's side.")
+        if waited >= VIDEO_FILE_MAX_WAIT_S:
+            raise ConnectorError(
+                f"Gemini video finished but its file was not ready within {VIDEO_FILE_MAX_WAIT_S}s. "
+                f"It was charged, so don't regenerate yet.")
+        time.sleep(VIDEO_FILE_POLL_INTERVAL_S)
+        waited += VIDEO_FILE_POLL_INTERVAL_S
+    download = uri if ":download" in uri else f"{file_url}:download?alt=media"
+    last = "no data came back"
+    for attempt in range(VIDEO_DOWNLOAD_ATTEMPTS):
+        try:
+            r = _http.request_with_retry("GET", download, headers=headers, timeout=120)
+            if r.status_code == 200 and r.content:
+                return r.content
+            last = f"HTTP {r.status_code}"
+        except ConnectorError as e:
+            last = _sanitize_sdk_detail(str(e))
+        if attempt < VIDEO_DOWNLOAD_ATTEMPTS - 1:
+            time.sleep(VIDEO_DOWNLOAD_RETRY_S)
+    raise ConnectorError(
+        f"Gemini video finished but the download failed: {last}. It was charged, so don't regenerate yet.")
 
 
 def generate_video(
@@ -1009,139 +1105,83 @@ def generate_video(
     negative_prompt: str | None = None,
     model: str = DEFAULT_VIDEO_MODEL,
 ) -> str:
-    """Generate a video with sound via Veo. Writes an .mp4 and returns out_path.
+    """Generate a video with sound via Gemini Omni Flash. Writes an .mp4 and returns out_path.
 
     Mode follows the inputs: text only, image_path (first frame, with an
-    optional last_frame_path), or reference_image_paths (up to 3 asset images,
-    veo-3.1 and -fast only). Every input is checked by video_request_problem()
-    before any network call.
+    optional last_frame_path), or reference_image_paths (up to 3 subject
+    images). Every input is checked by video_request_problem() before any
+    network call.
 
-    Billed per second of video once the job is submitted (a video blocked by
-    safety is not charged). From then on a failure that does not prove the job
-    failed (a status check that keeps failing, a timeout, a download error)
-    says the job may still finish and not to regenerate. Google keeps a
-    finished video 2 days.
-
-    Only the config fields the Gemini API accepts are set: it raises for seed,
-    generate_audio, fps and output_gcs_uri, and person_generation is left out so
-    the API picks the value its mode and region allow.
+    One request, sent once and never retried: it is billed per second of video,
+    and a retry after a request Google already took would pay twice. A failure
+    once it may have been taken (a timeout, a dropped connection, a failed
+    download) says the video may have been charged and not to regenerate yet.
     """
     if not out_path:
         raise ConnectorError("out_path is required")
+    refs = list(reference_image_paths or [])
     problem = video_request_problem(
         prompt, image_path=image_path, last_frame_path=last_frame_path,
-        reference_image_paths=reference_image_paths, duration=duration,
+        reference_image_paths=refs, duration=duration,
         aspect_ratio=aspect_ratio, resolution=resolution, model=model,
     )
     if problem:
         raise ConnectorError(problem)
+    seconds = _video_duration(duration)
+    key = get_credential("gemini", "api_key")
+    body = _video_body(prompt, image_path, last_frame_path, refs, seconds, aspect_ratio, resolution,
+                       negative_prompt, model)
 
-    client = _client()
+    requests = _http._require_requests()
+    cost = video_cost_usd(seconds, resolution)
+    _video_progress(f"Gemini video ({model}, {seconds}s, {resolution}) sent"
+                    + (f", about ${cost:.2f}" if cost is not None else "")
+                    + "; it usually takes a few minutes")
     try:
-        import httpx
-        from google.genai import types
-    except ImportError:
-        raise ConnectorError("Missing connector dependencies. Run: montaj install connectors")
-
-    config_kwargs = {
-        "duration_seconds": _video_duration(duration),
-        "aspect_ratio": aspect_ratio,
-        "resolution": resolution,
-    }
-    if negative_prompt:
-        config_kwargs["negative_prompt"] = negative_prompt
-    if last_frame_path:
-        config_kwargs["last_frame"] = _video_image(types, last_frame_path)
-    if reference_image_paths:
-        config_kwargs["reference_images"] = [
-            types.VideoGenerationReferenceImage(
-                image=_video_image(types, r),
-                reference_type=types.VideoGenerationReferenceType.ASSET,
-            )
-            for r in reference_image_paths
-        ]
-    call = {"model": model, "prompt": prompt, "config": types.GenerateVideosConfig(**config_kwargs)}
-    if image_path:
-        call["image"] = _video_image(types, image_path)
-
-    try:
-        op = client.models.generate_videos(**call)
-    except httpx.TransportError as e:
+        r = requests.post(f"{VIDEO_API}/interactions", headers=_video_headers(key), json=body,
+                          timeout=VIDEO_REQUEST_TIMEOUT_S)
+    except requests.exceptions.ConnectTimeout as e:
+        raise ConnectorError(
+            f"Gemini video request failed: could not reach the Gemini API: {_sanitize_sdk_detail(str(e))}",
+            reason=UNREACHABLE) from e
+    except requests.exceptions.RequestException as e:
         detail = _sanitize_sdk_detail(str(e))
-        if isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout,
-                          httpx.ProxyError, httpx.UnsupportedProtocol)):
-            raise ConnectorError(
-                f"Veo request failed: could not reach the Gemini API: {detail}",
-                reason=UNREACHABLE) from e
-        # The request may have gone out before the connection failed, so the
-        # job may exist and be billed. UNREACHABLE would read as "nothing
-        # happened" and invite a second paid run.
+        if isinstance(e, requests.exceptions.ConnectionError) and not isinstance(e, requests.exceptions.ReadTimeout) \
+                and any(w in str(e) for w in ("NewConnectionError", "NameResolutionError", "Failed to resolve")):
+            raise ConnectorError(f"Gemini video request failed: could not reach the Gemini API: {detail}",
+                                 reason=UNREACHABLE) from e
         raise ConnectorError(
-            f"Veo request failed: {detail}. The job may have started on Google's "
-            f"side, so don't regenerate right away.") from e
-    except Exception as e:
-        raise _veo_error(e, model) from e
+            f"Gemini video request failed: {detail}. Google may still have made the video and "
+            f"charged for it, so don't regenerate right away.") from e
 
-    name = getattr(op, "name", None) or "(unnamed)"
-    _video_progress(f"Veo job {name} submitted; it usually takes 1 to 6 minutes")
+    if r.status_code != 200:
+        raise _video_http_error(r.status_code, r.text, model)
+    try:
+        answer = r.json()
+    except ValueError as e:
+        raise ConnectorError("Gemini video answered with something that is not JSON. It may have "
+                             "been charged, so don't regenerate right away.") from e
+    if not isinstance(answer, dict):
+        answer = {}
+    status = str(answer.get("status") or "")
+    if status == "failed":
+        detail = _sanitize_sdk_detail("; ".join(
+            str(e.get("message") or e.get("code") or e) for e in (answer.get("errors") or []) if e) or "")
+        if _video_safety_text(detail):
+            raise _video_refusal(detail)
+        raise ConnectorError(f"Gemini video failed on Google's side." + (f" Google said: {detail}" if detail else ""))
+    item = _video_content(answer)
+    if item is None:
+        if status and status != "completed":
+            raise ConnectorError(f"Gemini video ended as {status} with no video.")
+        raise ConnectorError("Gemini video finished with no video.")
+    data = _video_bytes(item, key)
 
-    elapsed, failures, last_report = 0.0, 0, 0.0
-    while not op.done:
-        if elapsed >= VIDEO_MAX_WAIT_S:
-            raise ConnectorError(
-                f"Veo job {name} did not finish within {VIDEO_MAX_WAIT_S}s. It may still "
-                f"finish on Google's side, so don't regenerate yet.")
-        time.sleep(VIDEO_POLL_INTERVAL_S)
-        elapsed += VIDEO_POLL_INTERVAL_S
-        try:
-            op = client.operations.get(op)
-            failures = 0
-        except Exception as e:
-            if _is_invalid_api_key_error(e):
-                raise _wrap_sdk_error(e, "Veo status check failed") from e
-            failures += 1
-            if failures >= VIDEO_MAX_POLL_FAILURES:
-                raise ConnectorError(
-                    f"Veo job {name}: {failures} status checks failed in a row, giving up. "
-                    f"It may still finish on Google's side, so don't regenerate yet. "
-                    f"Last error: {_sanitize_sdk_detail(str(e))}") from e
-            continue
-        if elapsed - last_report >= VIDEO_PROGRESS_EVERY_S and not op.done:
-            last_report = elapsed
-            _video_progress(f"Veo job {name} still working ({int(elapsed)}s)")
-
-    error = getattr(op, "error", None)
-    if error:
-        raw = error.get("message") if isinstance(error, dict) else str(error)
-        detail = _sanitize_sdk_detail(raw or str(error))
-        if _veo_safety_text(detail):
-            raise _veo_refusal(detail)
-        raise ConnectorError(f"Veo job {name} failed on Google's side: {detail}")
-
-    response = getattr(op, "response", None)
-    videos = getattr(response, "generated_videos", None) or []
-    if not videos:
-        reasons = getattr(response, "rai_media_filtered_reasons", None)
-        if getattr(response, "rai_media_filtered_count", None) or reasons:
-            raise _veo_refusal("", reasons)
-        raise ConnectorError(f"Veo job {name} finished with no video.")
-
-    video = videos[0].video
-    data, last_error = None, None
-    for attempt in range(VIDEO_DOWNLOAD_ATTEMPTS):
-        try:
-            data = client.files.download(file=video) or getattr(video, "video_bytes", None)
-        except Exception as e:
-            last_error = e
-        if data:
-            break
-        if attempt < VIDEO_DOWNLOAD_ATTEMPTS - 1:
-            time.sleep(VIDEO_DOWNLOAD_RETRY_S)
-    if not data:
-        why = _sanitize_sdk_detail(str(last_error)) if last_error else "no data came back"
-        raise ConnectorError(
-            f"Veo job {name} finished but the download failed: {why}. Google keeps the "
-            f"video for 2 days, so don't regenerate yet.")
+    usage = answer.get("usage") if isinstance(answer.get("usage"), dict) else {}
+    tokens = usage.get("total_output_tokens")
+    if isinstance(tokens, int) and tokens > 0:
+        _video_progress(f"Gemini video done: {tokens} output tokens, about "
+                        f"${tokens * _VIDEO_OUTPUT_USD_PER_TOKEN:.2f}")
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "wb") as f:

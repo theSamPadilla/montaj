@@ -1,7 +1,7 @@
 {
   "name": "veo_generate",
   "provenance": {"provider": "gemini"},
-  "description": "Off in this version of Montaj: Google shut down Veo 3.1 on 2026-10-22, so the step fails with video_off. Use kling_generate, seedance_generate or kinovi_generate. Generate video with sound via Veo (Google) on the user's own Gemini key. Clips always have sound and are 4, 6 or 8 s. Mode follows the inputs: text only (t2v), --image for image-to-video (i2v), --image with --last-frame for first and last frame, --ref-image for up to 3 reference images (r2v). Project-aware mode: pass --project-id and --scene-id and the step reads the project, composes the prompt, generates, and saves the clip to tracks[0].",
+  "description": "Generate video with sound via Gemini Omni Flash (Google) on the user's own Gemini key. About $0.10 a second at 720p, billed once sent; the key needs billing on. Clips always have sound and are 3 to 10 s. Mode follows the inputs: text only (t2v), --image for image-to-video (i2v), --image with --last-frame for first and last frame, --ref-image for up to 3 subject reference images (r2v). Project-aware mode: pass --project-id and --scene-id and the step reads the project, composes the prompt, generates, and saves the clip to tracks[0].",
   "output": {
     "type": "video",
     "description": "Path to the generated .mp4 file"
@@ -11,12 +11,12 @@
     {"name": "out", "type": "path", "required": true, "description": "Output .mp4 path. Optional with _project: saved in the project's assets folder."},
     {"name": "image", "type": "path", "required": false, "description": "Starting image (first frame). PNG, JPEG or WebP. Mutually exclusive with --ref-image."},
     {"name": "last-frame", "type": "path", "required": false, "description": "Ending image. Requires --image."},
-    {"name": "ref-image", "type": "path", "required": false, "repeatable": true, "description": "Reference image (repeatable, up to 3). Needs an 8 s clip. Not on the lite model. Mutually exclusive with --image. Ignored in project-aware mode."},
-    {"name": "duration", "type": "int", "required": false, "default": 8, "min": 4, "max": 8, "description": "Clip length in seconds: 4, 6 or 8. 1080p, 4k and reference images need 8. Ignored in project-aware mode (read from the scene)."},
+    {"name": "ref-image", "type": "path", "required": false, "repeatable": true, "description": "Subject reference image (repeatable, up to 3). Mutually exclusive with --image. Ignored in project-aware mode."},
+    {"name": "duration", "type": "int", "required": false, "default": 8, "min": 3, "max": 10, "description": "Clip length in whole seconds, 3 to 10. Ignored in project-aware mode (read from the scene)."},
     {"name": "aspect-ratio", "type": "enum", "required": false, "options": ["16:9", "9:16"], "description": "16:9|9:16. Default: 16:9 for a landscape --image, 9:16 otherwise. Ignored in project-aware mode (read from the storyboard)."},
-    {"name": "resolution", "type": "enum", "required": false, "default": "720p", "options": ["720p", "1080p", "4k"], "description": "720p|1080p|4k. 1080p and 4k need an 8 s clip. The lite model has no 4k."},
-    {"name": "model", "type": "enum", "required": false, "default": "veo-3.1-generate-preview", "options": ["veo-3.1-generate-preview", "veo-3.1-fast-generate-preview", "veo-3.1-lite-generate-preview"], "description": "veo-3.1-generate-preview is the default and best model. fast and lite cost less per second."},
-    {"name": "negative-prompt", "type": "string", "required": false, "description": "Things to avoid"},
+    {"name": "resolution", "type": "enum", "required": false, "default": "720p", "options": ["720p"], "description": "720p, the one resolution Google prices."},
+    {"name": "model", "type": "enum", "required": false, "default": "gemini-omni-1.1-flash", "options": ["gemini-omni-1.1-flash"], "description": "gemini-omni-1.1-flash, the only model."},
+    {"name": "negative-prompt", "type": "string", "required": false, "description": "Things to avoid. Added to the prompt: Gemini takes no separate negative prompt."},
     {"name": "project-id", "type": "string", "required": false, "description": "Project ID. With --scene-id, enables project-aware mode."},
     {"name": "scene-id", "type": "string", "required": false, "description": "Scene ID within the storyboard. Requires --project-id."}
   ]

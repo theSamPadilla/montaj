@@ -1,6 +1,6 @@
 ---
 name: ai-video-generate
-description: "Generation orchestration for approved ai_video storyboards: dispatch mode selection, scene generation via kling_generate (or Seedance, Kinovi or Veo when chosen), audio assembly, regenQueue processing. Load after storyboard approval."
+description: "Generation orchestration for approved ai_video storyboards: dispatch mode selection, scene generation via kling_generate (or Seedance, Kinovi or Gemini video when chosen), audio assembly, regenQueue processing. Load after storyboard approval."
 step: true
 ---
 
@@ -36,11 +36,9 @@ pending → storyboard_ready → draft → final
 
 ## Vendor
 
-Each scene generates through one of four vendors: **Kling** (`kling_generate`, default), **Seedance** (`seedance_generate`, on fal.ai), **Kinovi** (`kinovi_generate`: Seedance and Wan models on one Kinovi key) or **Veo** (`veo_generate`: Google's Veo on the user's Gemini key). Kling is project-aware (Steps B/C/D below), and so is Veo in its own way; Seedance and Kinovi are not, so the mechanics differ enough to cover separately.
+Each scene generates through one of four vendors: **Kling** (`kling_generate`, default), **Seedance** (`seedance_generate`, on fal.ai), **Kinovi** (`kinovi_generate`: Seedance and Wan models on one Kinovi key) or **Gemini video** (`veo_generate`: Google's Gemini Omni Flash on the user's Gemini key; the step keeps the name it had when it ran Veo). Kling is project-aware (Steps B/C/D below), and so is Gemini video in its own way; Seedance and Kinovi are not, so the mechanics differ enough to cover separately.
 
-**Veo is off in this version of Montaj.** Google shut down Veo 3.1 on 2026-10-22, so `veo_generate` fails with `video_off` before any call. When a storyboard or the user asks for Veo or Google video, say it is unavailable and ask which of Kling, Seedance or Kinovi to use.
-
-**Picking the vendor.** Kling is the default for every scene. Generate a scene with Seedance instead when the storyboard or that scene sets `vendor: "seedance"`, with Kinovi when it sets `vendor: "kinovi"`, with Veo when it sets `vendor: "veo"`, or with any of them when the user asks for it by name ("use Kinovi for the drone shot", "make this one with Veo" or "with Google"). Never pick a vendor the user didn't ask for, and use one video vendor for the whole video unless the storyboard says otherwise.
+**Picking the vendor.** Kling is the default for every scene. Generate a scene with Seedance instead when the storyboard or that scene sets `vendor: "seedance"`, with Kinovi when it sets `vendor: "kinovi"`, with Gemini video when it sets `vendor: "veo"`, or with any of them when the user asks for it by name ("use Kinovi for the drone shot", "make this one with Gemini", "with Veo" or "with Google"). Never pick a vendor the user didn't ask for, and use one video vendor for the whole video unless the storyboard says otherwise.
 
 **Calling Seedance.** `seedance_generate` is standalone only, with no `--project-id`/`--scene-id` mode. Compose the prompt yourself first (same composition as Step C: styleAnchor prefix + scene prose + camera tags), then call:
 
@@ -74,21 +72,21 @@ kinovi_generate --prompt <composed> --out <path> [--model seedance2-5] \
 - **A run that times out** prints the task id. Rerun with `--task-id <id> --out <path>` to collect it: never generate the scene again, which would pay twice.
 - Save the clip like a Seedance one, with `generation.provider: "kinovi"` and `generation.model` the model used.
 
-**Calling Veo.** `veo_generate` runs on the user's own Gemini key. It has a project-aware mode like Kling's (`--project-id <id> --scene-id <scene-id>`: it composes the prompt, generates, and saves the clip to `tracks[0]` itself, with `generation.provider: "gemini"`) and a standalone one:
+**Calling Gemini video.** `veo_generate` runs Gemini Omni Flash (`gemini-omni-1.1-flash`) on the user's own Gemini key. It has a project-aware mode like Kling's (`--project-id <id> --scene-id <scene-id>`: it composes the prompt, generates, and saves the clip to `tracks[0]` itself, with `generation.provider: "gemini"`) and a standalone one:
 
 ```
 veo_generate --prompt <composed> --out <path> \
   [--image <first_frame> [--last-frame <last_frame>]] [--ref-image <path> ...] \
-  [--duration 4|6|8] [--aspect-ratio 16:9|9:16] [--resolution 720p|1080p|4k] [--model <id>]
+  [--duration 3..10] [--aspect-ratio 16:9|9:16]
 ```
 
-- **Length:** 4, 6 or 8 seconds only. 1080p, 4k and reference images need 8. Project-aware mode rounds the scene's duration up to 4, 6 or 8 (the clip is trimmed to the scene on the track) and fails on a scene over 8 seconds: split it.
-- **Modes**, picked by the image flags: text only; `--image` (optionally `--last-frame`) for first and last frame; `--ref-image` (repeatable, up to 3, not on lite) for reference images, which cannot be combined with `--image`. The prompt does not name references the way Kling's `<<<image_N>>>` tokens do.
-- **Aspect ratio** is 16:9 or 9:16. With `--image` and no `--aspect-ratio`, it follows the picture's orientation.
-- **Sound is always on.**
-- **Models**, per second of video: `veo-3.1-generate-preview` (default, best) $0.40 at 720p and 1080p, $0.60 at 4k; `veo-3.1-fast-generate-preview` $0.10, $0.12 and $0.30; `veo-3.1-lite-generate-preview` $0.05 and $0.08, no 4k and no reference images. An 8 s clip on the default model costs $3.20. A cheap look first: `--model veo-3.1-lite-generate-preview`. Prices are Google's, read 2026-10-14. A video blocked by safety is not charged.
-- **The Gemini key needs billing turned on**: there is no free tier, and `insufficient_credit` from Veo means billing is off.
-- **A run that fails after it started** (status checks that keep failing, a timeout, a failed download) names the job and says it may still finish: never generate the scene again, which would pay twice.
+- **Length:** whole seconds from 3 to 10. Project-aware mode rounds the scene's duration up to the next whole second (the clip is trimmed to the scene on the track) and fails on a scene over 10 seconds: split it.
+- **Modes**, picked by the image flags: text only; `--image` (optionally `--last-frame`) for first and last frame; `--ref-image` (repeatable, up to 3) for subject reference images, which cannot be combined with `--image`. The prompt does not name references the way Kling's `<<<image_N>>>` tokens do.
+- **Aspect ratio** is 16:9 or 9:16. With `--image` and no `--aspect-ratio`, it follows the picture's orientation. Resolution is 720p.
+- **Sound is always on.** There is no separate negative prompt: `--negative-prompt` is added to the prompt as "Avoid: ...".
+- **Price:** about $0.10 a second (Google's, read 2026-10-23), so an 8 s clip is about $0.80. It is billed once the request is sent.
+- **The Gemini key needs billing turned on**: there is no free tier, and `insufficient_credit` means billing is off.
+- **A run that fails after the request went out** (a timeout, a dropped connection, a failed download) says the video may have been charged: never generate the scene again right away, which could pay twice.
 - Standalone, save the clip like a Seedance one, with `generation.provider: "gemini"` and `generation.model` the model used.
 
 **On failure:** a `ConnectorError` with reason `invalid_api_key` or `insufficient_credit`, from any vendor, means the integration itself needs fixing, not the prompt. Stop, tell the user which one to fix in Connectors (Kling, Seedance/fal.ai, Kinovi or Gemini), and **never fall back to another vendor silently**. A scene the user asked to generate with Seedance failing over to Kling (or any other swap) changes what they asked for without telling them. A `content_refused` failure (moderation, a real person's face, a copyrighted reference) is the prompt or the reference, not the key: change it and tell the user what you changed.

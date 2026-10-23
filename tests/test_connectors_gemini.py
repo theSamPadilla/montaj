@@ -1153,9 +1153,9 @@ class TestBestModelDefaults:
         assert mod.DEFAULT_IMAGE_MODEL == "gemini-3-pro-image"
         assert mod.DEFAULT_TTS_MODEL == "gemini-3.8-flash-tts"
         assert mod.DEFAULT_MUSIC_MODEL == "lyria-3.5"
-        # Hand-copied from ai.google.dev/gemini-api/docs/veo (2026-10-14): there
-        # is no GA Veo 3.1, so the default is a -preview id.
-        assert mod.DEFAULT_VIDEO_MODEL == "veo-3.1-generate-preview"
+        # §550: Google shut down every Veo 3.1 preview id on 2026-10-22 and names
+        # this as the replacement (ai.google.dev/gemini-api/docs/deprecations).
+        assert mod.DEFAULT_VIDEO_MODEL == "gemini-omni-1.1-flash"
 
     def test_default_image_model_reaches_request_without_refs(self, monkeypatch, tmp_path):
         """The new default must actually flow through to generate_content,
@@ -1344,13 +1344,13 @@ class TestCheckKeyCapabilityDefaults:
 
 
 class TestCheckKeyVideoOff:
-    """§550: with Gemini video off a key whose models.list has no Veo id is still fully
+    """§550: VIDEO_ON is the cut-off for a release without Gemini video. Off, a key whose models.list has no Veo id is still fully
     working: the Connectors tile must not say "Default model retired" for a video
     capability this build does not offer."""
 
-    def test_this_build_ships_with_gemini_video_off(self):
+    def test_this_build_ships_with_gemini_video_on(self):
         import connectors.gemini as mod
-        assert mod.VIDEO_ON is False
+        assert mod.VIDEO_ON is True
 
     def test_no_video_default_is_checked(self, monkeypatch):
         import connectors.gemini as mod

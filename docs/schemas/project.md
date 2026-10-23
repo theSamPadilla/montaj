@@ -1145,7 +1145,7 @@ This block is a **frozen snapshot** of what was sent to the provider when the cl
 | Field | Type | Description |
 |-------|------|-------------|
 | `generation.sceneId` | string | Optional pointer back to the `storyboard.scenes[i].id` this clip was generated from. Convenience for UI grouping when one scene is cut into multiple pieces. |
-| `generation.provider` | string | The connector id of the provider that made the clip: `"kling"`, or `"gemini"` for Veo clips (`lib/ai_video.py`). |
+| `generation.provider` | string | The connector id of the provider that made the clip: `"kling"`, or `"gemini"` for Gemini video clips (Veo before §550, Gemini Omni Flash since) (`lib/ai_video.py`). |
 | `generation.model` | string | Model used (e.g. `"kling-v3-omni"`). Recorded for reproducibility. |
 | `generation.prompt` | string | The exact combined prompt that was sent to the provider (includes `styleAnchor` and `<<<image_N>>>` tokens for reference images). Useful for "why did this clip look weird" debugging — one field, one answer. |
 | `generation.refImages` | string[] | IDs into `storyboard.imageRefs[]`. Regeneration resolves these to current paths (`imageRefs[i].refImages[0]`), so if the user regenerates a reference image, subsequent regens of this clip pick up the new visual. |

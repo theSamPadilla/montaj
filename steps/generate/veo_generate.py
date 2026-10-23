@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate video (with sound) via Veo on the Gemini API.
+"""Generate video (with sound) via Gemini Omni Flash on the Gemini API (§550: Veo 3.1 is shut down).
 
 Standalone mode: mode follows the inputs, same rule as connectors.gemini.generate_video:
     t2v     prompt only
@@ -9,9 +9,9 @@ Standalone mode: mode follows the inputs, same rule as connectors.gemini.generat
 
 Project-aware mode (like kling_generate): --project-id and --scene-id. The step
 reads the project, composes the prompt, generates, and saves the clip to
-tracks[0] with generation.provider "gemini". Veo clips are 4, 6 or 8 s, so the
-scene's duration is rounded up to the next one (the clip is trimmed to the
-scene on the track).
+tracks[0] with generation.provider "gemini". Clips are whole seconds from 3 to
+10, so the scene's duration is rounded up to the next one (the clip is trimmed
+to the scene on the track).
 """
 import sys, os, argparse, json
 
@@ -46,8 +46,8 @@ def _default_aspect(image_path) -> str:
     return "9:16"
 
 
-def _veo_seconds(seconds) -> int | None:
-    """The shortest Veo clip length that holds `seconds`, None when over 8."""
+def _clip_seconds(seconds) -> int | None:
+    """The shortest clip length that holds `seconds`, None when over the longest."""
     return next((d for d in gemini.VIDEO_DURATIONS if d >= seconds), None)
 
 
@@ -68,32 +68,29 @@ def _project_mode(args):
     scene_seconds = scene.get("duration")
     if isinstance(scene_seconds, bool) or not isinstance(scene_seconds, (int, float)) or scene_seconds <= 0:
         fail("invalid_args", f"Scene {args.scene_id} has no duration to generate for")
-    veo_seconds = _veo_seconds(scene_seconds)
-    if veo_seconds is None:
-        fail("invalid_args", f"Scene {args.scene_id} is {scene_seconds:g}s and Veo clips are 8s at most. "
-                             f"Split the scene.")
+    clip_seconds = _clip_seconds(scene_seconds)
+    if clip_seconds is None:
+        fail("invalid_args", f"Scene {args.scene_id} is {scene_seconds:g}s and Gemini video clips are "
+                             f"{gemini.VIDEO_DURATIONS[-1]}s at most. Split the scene.")
 
-    # No <<<image_N>>> tokens: Veo gets its references as plain asset images.
+    # No <<<image_N>>> tokens: Gemini gets its references as plain subject images.
     composed_prompt = compose_prompt(project, scene, ref_tokens=False)
     ref_paths = resolve_ref_paths(project, scene)
     if len(ref_paths) > gemini.VIDEO_MAX_REFERENCE_IMAGES:
         fail("invalid_args", f"Scene {args.scene_id} has {len(ref_paths)} reference images and "
-                             f"Veo takes up to {gemini.VIDEO_MAX_REFERENCE_IMAGES}.")
+                             f"Gemini video takes up to {gemini.VIDEO_MAX_REFERENCE_IMAGES}.")
     for rp in ref_paths:
         require_file(rp)
 
     # kling_generate's project default, so a storyboard without one reads the same.
     aspect_ratio = project.get("storyboard", {}).get("aspectRatio", "16:9")
     if aspect_ratio not in gemini.VIDEO_ASPECT_RATIOS:
-        fail("invalid_args", f"Storyboard aspect ratio {aspect_ratio} is not one Veo makes "
+        fail("invalid_args", f"Storyboard aspect ratio {aspect_ratio} is not one Gemini makes "
                              f"(16:9 or 9:16).")
-    # Reference images, 1080p and 4k all need an 8 s clip; the track trims it.
-    if ref_paths or args.resolution != "720p":
-        veo_seconds = 8
 
     problem = gemini.video_request_problem(
         composed_prompt, image_path=args.image, last_frame_path=args.last_frame,
-        reference_image_paths=ref_paths, duration=veo_seconds, aspect_ratio=aspect_ratio,
+        reference_image_paths=ref_paths, duration=clip_seconds, aspect_ratio=aspect_ratio,
         resolution=args.resolution, model=args.model,
     )
     if problem:
@@ -104,8 +101,8 @@ def _project_mode(args):
         require_file(args.last_frame)
 
     progress(f"Composing prompt for {args.scene_id}: {len(composed_prompt)} chars, "
-             f"{len(ref_paths)} refs, {veo_seconds}s clip for a {scene_seconds:g}s scene")
-    progress(f"Generating {args.scene_id} via Veo ({args.model})...")
+             f"{len(ref_paths)} refs, {clip_seconds}s clip for a {scene_seconds:g}s scene")
+    progress(f"Generating {args.scene_id} via Gemini ({args.model})...")
 
     try:
         out_path = gemini.generate_video(
@@ -114,7 +111,7 @@ def _project_mode(args):
             image_path=args.image,
             last_frame_path=args.last_frame,
             reference_image_paths=ref_paths or None,
-            duration=veo_seconds,
+            duration=clip_seconds,
             aspect_ratio=aspect_ratio,
             resolution=args.resolution,
             negative_prompt=args.negative_prompt,
@@ -125,7 +122,7 @@ def _project_mode(args):
         # Re-read project in case another scene wrote concurrently
         project_path, project = find_project(args.project_id)
         save_error_to_project(project_path, project, args.scene_id, str(e))
-        fail_for(e, "Veo")
+        fail_for(e, "Gemini video")
 
     progress(f"Done {args.scene_id} -> {out_path}")
 
@@ -139,7 +136,7 @@ def _project_mode(args):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Generate video (with sound) via Veo on the Gemini API")
+    p = argparse.ArgumentParser(description="Generate video (with sound) via Gemini Omni Flash")
     p.add_argument("--prompt",
                    help="Scene description. Required in standalone mode. "
                         "Ignored in project-aware mode (composed from project context).")
@@ -147,18 +144,17 @@ def main():
     p.add_argument("--image", help="Starting image (first frame). Mutually exclusive with --ref-image.")
     p.add_argument("--last-frame", dest="last_frame", help="Ending image; requires --image")
     p.add_argument("--ref-image", dest="ref_image", action="append", default=[],
-                   help="Reference image (repeatable, up to 3, needs an 8 s clip, not on lite). "
+                   help="Reference image (repeatable, up to 3). "
                         "Mutually exclusive with --image. Ignored in project-aware mode.")
     p.add_argument("--duration", type=int, default=8,
-                   help="Clip length in seconds: 4, 6 or 8. 1080p, 4k and reference images need 8. "
+                   help="Clip length in whole seconds, 3 to 10. "
                         "Ignored in project-aware mode (read from the scene).")
     p.add_argument("--aspect-ratio", dest="aspect_ratio", choices=list(gemini.VIDEO_ASPECT_RATIOS),
                    help="Default: 16:9 for a landscape --image, 9:16 otherwise. "
                         "Ignored in project-aware mode (read from the storyboard).")
     p.add_argument("--resolution", default="720p", choices=list(gemini.VIDEO_RESOLUTIONS))
     p.add_argument("--model", default=gemini.DEFAULT_VIDEO_MODEL, choices=list(gemini.VIDEO_MODELS),
-                   help=f"{gemini.DEFAULT_VIDEO_MODEL} is the default and best model; "
-                        f"fast and lite are cheaper.")
+                   help=f"{gemini.DEFAULT_VIDEO_MODEL} is the only model.")
     p.add_argument("--negative-prompt", dest="negative_prompt", help="Things to avoid")
     p.add_argument("--project-id", dest="project_id",
                    help="Project ID. With --scene-id, the step reads the project, composes the "
@@ -207,7 +203,7 @@ def main():
             model=args.model,
         )
     except ConnectorError as e:
-        fail_for(e, "Veo")
+        fail_for(e, "Gemini video")
 
     _emit(args, out_path, mode)
 
