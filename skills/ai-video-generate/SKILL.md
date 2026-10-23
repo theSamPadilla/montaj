@@ -38,6 +38,8 @@ pending → storyboard_ready → draft → final
 
 Each scene generates through one of four vendors: **Kling** (`kling_generate`, default), **Seedance** (`seedance_generate`, on fal.ai), **Kinovi** (`kinovi_generate`: Seedance and Wan models on one Kinovi key) or **Veo** (`veo_generate`: Google's Veo on the user's Gemini key). Kling is project-aware (Steps B/C/D below), and so is Veo in its own way; Seedance and Kinovi are not, so the mechanics differ enough to cover separately.
 
+**Veo is off in this version of Montaj.** Google shut down Veo 3.1 on 2026-10-22, so `veo_generate` fails with `video_off` before any call. When a storyboard or the user asks for Veo or Google video, say it is unavailable and ask which of Kling, Seedance or Kinovi to use.
+
 **Picking the vendor.** Kling is the default for every scene. Generate a scene with Seedance instead when the storyboard or that scene sets `vendor: "seedance"`, with Kinovi when it sets `vendor: "kinovi"`, with Veo when it sets `vendor: "veo"`, or with any of them when the user asks for it by name ("use Kinovi for the drone shot", "make this one with Veo" or "with Google"). Never pick a vendor the user didn't ask for, and use one video vendor for the whole video unless the storyboard says otherwise.
 
 **Calling Seedance.** `seedance_generate` is standalone only, with no `--project-id`/`--scene-id` mode. Compose the prompt yourself first (same composition as Step C: styleAnchor prefix + scene prose + camera tags), then call:
@@ -89,7 +91,7 @@ veo_generate --prompt <composed> --out <path> \
 - **A run that fails after it started** (status checks that keep failing, a timeout, a failed download) names the job and says it may still finish: never generate the scene again, which would pay twice.
 - Standalone, save the clip like a Seedance one, with `generation.provider: "gemini"` and `generation.model` the model used.
 
-**On failure:** a `ConnectorError` with reason `invalid_api_key` or `insufficient_credit`, from any vendor, means the integration itself needs fixing, not the prompt. Stop, tell the user which one to fix in Integrations (Kling, Seedance/fal.ai, Kinovi or Gemini), and **never fall back to another vendor silently**. A scene the user asked to generate with Seedance failing over to Kling (or any other swap) changes what they asked for without telling them. A `content_refused` failure (moderation, a real person's face, a copyrighted reference) is the prompt or the reference, not the key: change it and tell the user what you changed.
+**On failure:** a `ConnectorError` with reason `invalid_api_key` or `insufficient_credit`, from any vendor, means the integration itself needs fixing, not the prompt. Stop, tell the user which one to fix in Connectors (Kling, Seedance/fal.ai, Kinovi or Gemini), and **never fall back to another vendor silently**. A scene the user asked to generate with Seedance failing over to Kling (or any other swap) changes what they asked for without telling them. A `content_refused` failure (moderation, a real person's face, a copyrighted reference) is the prompt or the reference, not the key: change it and tell the user what you changed.
 
 ---
 

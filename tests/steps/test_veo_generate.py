@@ -21,6 +21,12 @@ import lib.ai_video as av
 _STEP_PATH = REPO_ROOT / "steps" / "generate" / "veo_generate.py"
 
 
+@pytest.fixture(autouse=True)
+def _video_on(monkeypatch):
+    """These pin the step with Gemini video on; TestVideoOff turns it off (§550)."""
+    monkeypatch.setattr(gemini_mod, "VIDEO_ON", True)
+
+
 @pytest.fixture
 def step_module():
     spec = importlib.util.spec_from_file_location("veo_generate_step", _STEP_PATH)
@@ -353,3 +359,33 @@ class TestProjectMode:
         saved = json.loads(path.read_text())
         assert "blocked" in saved["storyboard"]["scenes"][0]["lastError"]["message"]
         assert saved["tracks"] == []
+
+
+class TestVideoOff:
+    """§550: with Gemini video off the step fails at once, before any read, write or call."""
+
+    @pytest.fixture(autouse=True)
+    def _video_on(self, monkeypatch):
+        monkeypatch.setattr(gemini_mod, "VIDEO_ON", False)
+
+    def test_standalone_fails_before_any_call(self, step_module, monkeypatch, capsys, seen, tmp_path):
+        with pytest.raises(SystemExit) as ei:
+            _run(step_module, monkeypatch, "--prompt", "a cat", "--out", str(tmp_path / "o.mp4"))
+        assert ei.value.code == 1
+        err = _last_stderr_json(capsys)
+        assert (err["error"], err["message"]) == ("video_off", gemini_mod.VIDEO_OFF_MESSAGE)
+        assert seen == {}
+
+    def test_project_mode_fails_before_reading_the_project(self, step_module, monkeypatch, capsys, seen, tmp_path):
+        _fails(step_module, monkeypatch, capsys, "video_off",
+               "--project-id", "no-such-project", "--scene-id", "s1", "--out", str(tmp_path / "o.mp4"))
+        assert seen == {}
+
+    def test_the_connector_refuses_before_making_a_client(self, monkeypatch, tmp_path):
+        def no_client():
+            raise AssertionError("no client may be made with video off")
+        monkeypatch.setattr(gemini_mod, "_client", no_client)
+        assert gemini_mod.video_request_problem("a cat") == gemini_mod.VIDEO_OFF_MESSAGE
+        with pytest.raises(ConnectorError) as ei:
+            gemini_mod.generate_video(prompt="a cat", out_path=str(tmp_path / "o.mp4"))
+        assert str(ei.value) == gemini_mod.VIDEO_OFF_MESSAGE

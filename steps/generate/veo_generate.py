@@ -168,6 +168,8 @@ def main():
     p.add_argument("--json", action="store_true", help="Emit full JSON envelope")
     args = p.parse_args()
 
+    if not gemini.VIDEO_ON:
+        fail("video_off", gemini.VIDEO_OFF_MESSAGE)  # §550: before any read, write or call
     if args.project_id and args.scene_id:
         return _project_mode(args)
     if args.project_id or args.scene_id:

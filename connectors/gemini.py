@@ -83,6 +83,13 @@ DEFAULT_MUSIC_MODEL = "lyria-3.5"
 # no GA model exists; replace this one when a GA Veo 3.1 appears.
 # There is no free tier: a key without billing cannot generate video.
 DEFAULT_VIDEO_MODEL = "veo-3.1-generate-preview"
+# §550: Google shut down every Veo 3.1 preview id on the Gemini API on
+# 2026-10-22 (ai.google.dev/gemini-api/docs/deprecations, read 2026-10-23).
+# VIDEO_ON is the one switch for Gemini video: off, veo_generate fails at once
+# with VIDEO_OFF_MESSAGE before any call, and check_key stops counting the
+# video default toward default_model_ok.
+VIDEO_ON = False
+VIDEO_OFF_MESSAGE = "Gemini video is off in this version of Montaj. Use Kling, Seedance or Kinovi."
 # What each model takes. "reference_images" is whether it accepts up to
 # VIDEO_MAX_REFERENCE_IMAGES asset images; 1080p and 4k need an 8 s clip on all.
 VIDEO_MODELS = {
@@ -365,7 +372,8 @@ def check_key() -> dict:
         ("image_model_ok", DEFAULT_IMAGE_MODEL),
         ("tts_model_ok", DEFAULT_TTS_MODEL),
         ("music_model_ok", DEFAULT_MUSIC_MODEL),
-        ("video_model_ok", DEFAULT_VIDEO_MODEL),
+        # With Gemini video off there is no video default to check (None below).
+        *((("video_model_ok", DEFAULT_VIDEO_MODEL),) if VIDEO_ON else ()),
     )
     text_ok = DEFAULT_MODEL in model_names
     missing = [] if text_ok else [DEFAULT_MODEL]
@@ -388,7 +396,7 @@ def check_key() -> dict:
         "image_model_ok": availability["image_model_ok"],
         "tts_model_ok": availability["tts_model_ok"],
         "music_model_ok": availability["music_model_ok"],
-        "video_model_ok": availability["video_model_ok"],
+        "video_model_ok": availability.get("video_model_ok"),
         "detail": detail,
     }
 
@@ -871,6 +879,8 @@ def video_request_problem(
     network. Veo is billed per second once a job is submitted, so
     generate_video() and the step call this first and send nothing on a problem.
     """
+    if not VIDEO_ON:
+        return VIDEO_OFF_MESSAGE
     refs = list(reference_image_paths or [])
     if not prompt or not prompt.strip():
         return "Prompt must not be empty."

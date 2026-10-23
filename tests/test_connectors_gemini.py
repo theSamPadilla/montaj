@@ -1210,6 +1210,12 @@ class TestCheckKeyCapabilityDefaults:
     music_model_ok / video_model_ok stay as the per-capability breakdown for a
     caller that wants to know which capability, specifically, is affected."""
 
+    @pytest.fixture(autouse=True)
+    def _video_on(self, monkeypatch):
+        """These pin check_key with Gemini video on (§550: TestCheckKeyVideoOff below)."""
+        import connectors.gemini as mod
+        monkeypatch.setattr(mod, "VIDEO_ON", True)
+
     def test_all_five_present(self, monkeypatch):
         import connectors.gemini as mod
         client = MagicMock()
@@ -1335,3 +1341,30 @@ class TestCheckKeyCapabilityDefaults:
         assert result["tts_model_ok"] is False
         assert result["music_model_ok"] is False
         assert result["video_model_ok"] is False
+
+
+class TestCheckKeyVideoOff:
+    """§550: with Gemini video off a key whose models.list has no Veo id is still fully
+    working: the Connectors tile must not say "Default model retired" for a video
+    capability this build does not offer."""
+
+    def test_this_build_ships_with_gemini_video_off(self):
+        import connectors.gemini as mod
+        assert mod.VIDEO_ON is False
+
+    def test_no_video_default_is_checked(self, monkeypatch):
+        import connectors.gemini as mod
+        monkeypatch.setattr(mod, "VIDEO_ON", False)
+        client = MagicMock()
+        client.models.list.return_value = [
+            _make_model(f"models/{mod.DEFAULT_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_IMAGE_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_TTS_MODEL}"),
+            _make_model(f"models/{mod.DEFAULT_MUSIC_MODEL}"),
+        ]
+        monkeypatch.setattr(mod, "_client", lambda: client)
+        result = mod.check_key()
+        assert result["default_model_ok"] is True
+        assert result["default_model"] == mod.DEFAULT_MODEL
+        assert result["video_model_ok"] is None
+        assert "missing" not in result["detail"]
