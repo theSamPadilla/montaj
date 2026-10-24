@@ -152,6 +152,8 @@ def build_cli_args(schema: dict, body: dict) -> list[str]:
 
     for param in schema.get("params", []):
         name = param["name"]
+        if name == "out":
+            continue  # emitted once, last, below (a declared `out` used to go in twice, the last one winning)
         # Accept both hyphenated (schema canonical) and underscored (JSON convenience).
         val = body.get(name)
         if val is None:
@@ -180,7 +182,10 @@ def build_cli_args(schema: dict, body: dict) -> list[str]:
             flags += flag_value(flag, val, numeric)
 
     if "out" in body:
-        flags += ["--out", str(body["out"])]
+        # The step's cwd is the workspace, so a relative `out` is that workspace file: it goes absolute, the path
+        # the out-guard checked, never text a tool could read as a protocol (§563 review).
+        out = str(body["out"])
+        flags += ["--out", out if os.path.isabs(out) else os.path.join(str(resolve_workspace()), out)]
 
     return flags
 

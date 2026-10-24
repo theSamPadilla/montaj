@@ -153,9 +153,10 @@ def _fold(path: str) -> str:
 
 # `file:`, `http:`, `pipe:`, `concat:`, `subfile,` ...: ffmpeg opens such an output as a protocol URL
 # (`file:/abs` writes there, `pipe:1` is a fd, `subfile,,start,..:...` wraps another path), so it is never the
-# workspace-relative path it looks like. The `scheme:` form needs two letters at least (`C:` is a Windows
-# drive); `subfile,` uses a comma, not a colon, so it is matched explicitly.
-_SCHEME = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]+:|subfile,)")
+# workspace-relative path it looks like. The `scheme:` form is ffmpeg's own: two or more of [A-Za-z0-9+.-]
+# (a digit or a `.` first too, §563 review) before a `:` (`C:` is a Windows drive); `subfile,` uses a comma,
+# not a colon, so it is matched explicitly.
+_SCHEME = re.compile(r"^([A-Za-z0-9+.\-]{2,}:|subfile,)")
 
 
 def _candidates(value: str) -> list[str] | None:

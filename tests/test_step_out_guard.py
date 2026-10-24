@@ -565,3 +565,28 @@ def test_normalize_and_proxy_accept_an_out_in_the_workspace_or_none(places, clie
         assert r.status_code == 200, (out, r.text)
     body = {"input": str(media), "colorSpace": "sdr_bt709", "tonemap": False}   # no out: the route's default
     assert client.post(f"/api/{route}", json=body).status_code != 403
+
+
+# ── an out is a workspace file, never a protocol (§563 review) ──────────────
+
+def test_every_ffmpeg_scheme_form_is_refused(places):
+    """ffmpeg reads any run of [A-Za-z0-9+.-] (two or more) before a ':' as a protocol, a digit or '.' first too."""
+    for out in ("http://host/x.wav", "HTTP://host/x.wav", "tee:a.wav|b.wav", "fd:3", "crypto+http://h/x",
+                "1a:x.wav", ".x:y.wav", "-x:y.wav", "+x:y.wav"):
+        refused(PLAIN, {"out": out})
+    allowed(PLAIN, {"out": "a/http/x.wav"})
+
+
+def test_a_relative_out_reaches_the_step_as_the_workspace_file(places, client, monkeypatch, tmp_path):
+    """The step gets `--out <workspace>/<out>`: the file the guard checked, and an absolute path no ffmpeg reads
+    as a protocol. The stub step only echoes its argv; nothing runs ffmpeg or touches the network."""
+    py = tmp_path / "plain.py"
+    py.write_text(ECHO)
+    monkeypatch.setattr(steps_mod, "scan_steps", lambda: {"plain": (PLAIN, py)})
+    for out in ("clips/x.wav", " http://host/x.wav", "./http://host/x.wav"):
+        r = client.post("/api/steps/plain", json={"out": out})
+        assert r.status_code == 200, r.text
+        argv = r.json()["argv"]
+        assert argv[argv.index("--out") + 1] == os.path.join(str(places["ws"]), out)
+    r = client.post("/api/steps/plain", json={"out": "http://host/x.wav"})
+    assert r.status_code == 403

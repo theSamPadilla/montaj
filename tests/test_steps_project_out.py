@@ -89,10 +89,12 @@ def test_a_dangling_symlink_at_the_auto_name_is_skipped(env):
 
 @pytest.mark.parametrize("odd", ["sub/x.png", "a\\b"])
 def test_non_plain_out_passes_through_unchanged(env, odd):
+    """Not a plain asset name, so not resolved into the project; it reaches the step as the workspace file it
+    names, absolute (§563 review)."""
     pid, pdir, calls = env
     r = _post(_project=pid, out=odd)
     assert r.status_code == 200, r.text
-    assert calls[-1][calls[-1].index("--out") + 1] == odd
+    assert calls[-1][calls[-1].index("--out") + 1] == str(Path(steps_mod.resolve_workspace()) / odd)
     assert not (pdir / "assets").exists()
 
 
