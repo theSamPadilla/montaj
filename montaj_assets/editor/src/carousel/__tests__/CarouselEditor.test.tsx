@@ -2826,3 +2826,94 @@ describe('CarouselEditor: where the element keys do not act (§556 M2)', () => {
     expect(e.defaultPrevented).toBe(false)
   })
 })
+
+// ── Resize handles and clicks (§556 M3) ─────────────────────────────────────
+//
+// Corner handles keep the box ratio unless Shift is held, a release never
+// changes the selection, and a press and release in place records nothing.
+
+describe('CarouselEditor: resize handles and clicks (§556 M3)', () => {
+  function handleOf(id: string, testId: string): HTMLElement {
+    return findInteractiveWrapper(id).querySelector(`[data-testid="${testId}"]`) as HTMLElement
+  }
+
+  it('a press and release in place, on the element, a handle or the rotate handle, records nothing: undo then takes back the edit before', async () => {
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align left' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+
+    // Twice on the element, as a double-click does.
+    const targets = [
+      () => findInteractiveWrapper('el-img'),
+      () => findInteractiveWrapper('el-img'),
+      () => handleOf('el-img', 'resize-handle-se'),
+      () => handleOf('el-img', 'rotate-handle'),
+    ]
+    for (const target of targets) {
+      const el = target()
+      await act(async () => {
+        pointer(el, 'pointerdown', { clientX: 200, clientY: 200 })
+        pointer(window, 'pointerup', { clientX: 200, clientY: 200 })
+        fireEvent.click(el)
+      })
+    }
+    await act(async () => { await new Promise((res) => setTimeout(res, 20)) })
+    expect(adapter.saveCalls).toHaveLength(1)
+    expect(handlesOn('el-img')).toBe(true)
+
+    await key('z', { metaKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 100, y: 100 })
+    expect((r.getByLabelText('Undo') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('letting go of a resize or rotate handle off the element keeps it selected', async () => {
+    const adapter = makeFakeAdapter()
+    render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    const canvas = document.querySelector('[data-interactive]') as HTMLElement
+
+    for (const testId of ['resize-handle-se', 'rotate-handle']) {
+      await act(async () => {
+        pointer(handleOf('el-img', testId), 'pointerdown', { clientX: 0, clientY: -20 })
+        pointer(window, 'pointermove', { clientX: 60, clientY: 40 })
+        pointer(window, 'pointerup', { clientX: 60, clientY: 40 })
+        // The browser sends the click to the nearest box holding both the
+        // press and the release: here, the canvas.
+        fireEvent.click(canvas)
+      })
+      expect(handlesOn('el-img')).toBe(true)
+    }
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+  })
+
+  it('a corner drag keeps the ratio; Shift held during the move frees it', async () => {
+    const adapter = makeFakeAdapter()
+    render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    const scale = parseFloat((document.querySelector('[data-interactive]') as HTMLElement).style.width) / 1080
+
+    // 60, 10 on the slide. The 200 x 200 square grows by its diagonal's share:
+    // 1 + (200 * 60 + 200 * 10) / (2 * 200²) = 1.175, so 235 x 235.
+    await act(async () => {
+      pointer(handleOf('el-img', 'resize-handle-se'), 'pointerdown', { clientX: 0, clientY: 0 })
+      pointer(window, 'pointermove', { clientX: 60 * scale, clientY: 10 * scale })
+      pointer(window, 'pointerup')
+    })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 100, y: 100, w: 235, h: 235 })
+
+    await act(async () => {
+      pointer(handleOf('el-img', 'resize-handle-se'), 'pointerdown', { clientX: 0, clientY: 0 })
+      pointer(window, 'pointermove', { clientX: 60 * scale, clientY: 10 * scale, shiftKey: true })
+      pointer(window, 'pointerup')
+    })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 100, y: 100, w: 295, h: 245 })
+  })
+})

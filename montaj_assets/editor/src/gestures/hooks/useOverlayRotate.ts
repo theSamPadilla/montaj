@@ -6,7 +6,8 @@ export type UseOverlayRotateArgs = {
   // Use for cheap, side-effect-only previews (e.g. direct DOM mutation) — do NOT
   // trigger React state updates here.
   onPreview: (elementId: string, rotation: number, x: number, y: number) => void;
-  // Called once on pointer up with the final rotation. Commit React state here.
+  // Called once on pointer up with the final rotation, only when it changed: a
+  // press and release in place commits nothing. Commit React state here.
   onCommit?: (elementId: string, rotation: number) => void | Promise<void>;
 };
 
@@ -37,7 +38,8 @@ export function useOverlayRotate({ onPreview, onCommit }: UseOverlayRotateArgs):
     ) => {
       stateRef.current = startRotate(elementId, center, cursor, currentRotation);
       positionRef.current = position;
-      latestRef.current = { id: elementId, rotation: currentRotation };
+      // Nothing to commit until the pointer moves.
+      latestRef.current = null;
     },
     [],
   );
@@ -54,10 +56,12 @@ export function useOverlayRotate({ onPreview, onCommit }: UseOverlayRotateArgs):
   );
 
   const onPointerUp = useCallback(() => {
+    const s = stateRef.current;
     const final = latestRef.current;
     stateRef.current = null;
     latestRef.current = null;
-    if (final) void onCommit?.(final.id, final.rotation);
+    if (!s || !final || final.rotation === s.startRotation) return;
+    void onCommit?.(final.id, final.rotation);
   }, [onCommit]);
 
   return { onPointerDown, onPointerMove, onPointerUp };

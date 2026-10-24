@@ -6,6 +6,7 @@ import {
   useOverlayResize,
   useOverlayRotate,
   buildElementTransform,
+  roundResizedBox,
   type ResizeHandle as ResizeHandleId,
   type SnapGuide,
 } from '../gestures'
@@ -266,12 +267,24 @@ export default function SlideCanvas({
   }
 
   // ── Gesture hooks ──
+  // Each commit rounds to whole pixels and draws exactly that, since the
+  // preview drew the unrounded value. A gesture that rounds back to where the
+  // element already is, or whose element is gone, records nothing: no edit,
+  // no commit, no undo step.
+  const elementById = (id: string) => slide.elements.find((e) => e.id === id)
+
   const drag = useOverlayDrag({
     scale,
     slide: { w: width, h: height },
     onPreview: applyPreviewTransform,
     onCommit: async (id, x, y) => {
-      await moveElement?.(sid, id, Math.round(x), Math.round(y))
+      const el = elementById(id)
+      if (!el) return
+      const nx = Math.round(x)
+      const ny = Math.round(y)
+      applyPreviewTransform(id, nx, ny, el.rotation)
+      if (nx === el.x && ny === el.y) return
+      await moveElement?.(sid, id, nx, ny)
       await commit?.()
     },
   })
@@ -279,13 +292,15 @@ export default function SlideCanvas({
   const resize = useOverlayResize({
     scale,
     onPreview: applyPreviewBox,
-    onCommit: async (id, box) => {
-      await resizeElement?.(sid, id, {
-        x: Math.round(box.x),
-        y: Math.round(box.y),
-        w: Math.round(box.w),
-        h: Math.round(box.h),
-      })
+    onCommit: async (id, box, gesture) => {
+      const el = elementById(id)
+      if (!el) return
+      const rotation = gesture.startBox.rotation ?? 0
+      // w and h first, then x and y from the point the handle pins.
+      const next = roundResizedBox(box, gesture.handle, rotation)
+      applyPreviewBox(id, next, rotation)
+      if (next.x === el.x && next.y === el.y && next.w === el.w && next.h === el.h) return
+      await resizeElement?.(sid, id, next)
       await commit?.()
     },
   })
@@ -293,7 +308,14 @@ export default function SlideCanvas({
   const rotate = useOverlayRotate({
     onPreview: (id, rotation, x, y) => applyPreviewTransform(id, x, y, rotation),
     onCommit: async (id, rotation) => {
-      await rotateElement?.(sid, id, Math.round(rotation))
+      const el = elementById(id)
+      if (!el) return
+      const next = Math.round(rotation)
+      // A whole turn away is the same angle: put back the element's own.
+      const same = ((next - (el.rotation ?? 0)) % 360 + 360) % 360 === 0
+      applyPreviewTransform(id, el.x, el.y, same ? el.rotation : next)
+      if (same) return
+      await rotateElement?.(sid, id, next)
       await commit?.()
     },
   })
@@ -380,12 +402,17 @@ export default function SlideCanvas({
   // gesture keeps tracking outside the element bounds.
   const activeGesture = useRef<'drag' | 'resize' | 'rotate' | 'group' | null>(null)
 
+  // Set when a gesture ends (a resize, a rotate, a drag, or a group drag that
+  // moved), so the click the browser sends after its release changes nothing:
+  // not a deselect when the pointer was let go off the element (that click
+  // lands on the canvas), not a collapse of the selection to the element under
+  // the pointer. The next press on the canvas clears it, so a release off the
+  // canvas, whose click never comes here, cannot swallow a later click.
+  const swallowClickRef = useRef(false)
+
   // ── Group drag (§156): every selected element moves by one delta, one undo step ──
   const groupRef = useRef<{ start: { x: number; y: number }; members: GroupMember[]; latest: GroupDragResult | null } | null>(null)
   const [groupGuides, setGroupGuides] = useState<SnapGuide[]>([])
-  // Set when a group drag moved something, so the click that ends it does not
-  // collapse the selection to the element under the pointer.
-  const groupMovedRef = useRef(false)
   const groupHandlers = useRef({ move: (_c: { x: number; y: number }) => {}, up: () => {} })
   groupHandlers.current = {
     move: (cursor) => {
@@ -404,10 +431,20 @@ export default function SlideCanvas({
       groupRef.current = null
       setGroupGuides([])
       const result = g?.latest
-      if (!result || (result.dx === 0 && result.dy === 0)) return
-      groupMovedRef.current = true
+      if (!g || !result || (result.dx === 0 && result.dy === 0)) return
+      swallowClickRef.current = true
+      const moves = result.positions.map((p) => ({ id: p.id, x: Math.round(p.x), y: Math.round(p.y) }))
+      const moved = moves.some((p) => {
+        const m = g.members.find((mm) => mm.id === p.id)
+        return !m || m.x !== p.x || m.y !== p.y
+      })
+      if (!moved) {
+        // Rounded back to where they are: draw them there, record nothing.
+        for (const m of g.members) applyPreviewTransform(m.id, m.x, m.y, m.rotation ?? 0)
+        return
+      }
       void (async () => {
-        for (const p of result.positions) await moveElement?.(sid, p.id, Math.round(p.x), Math.round(p.y))
+        for (const p of moves) await moveElement?.(sid, p.id, p.x, p.y)
         await commit?.()
       })()
     },
@@ -417,16 +454,20 @@ export default function SlideCanvas({
     const onMove = (e: PointerEvent) => {
       const cursor = { x: e.clientX, y: e.clientY }
       if (activeGesture.current === 'drag') drag.onPointerMove(cursor)
-      else if (activeGesture.current === 'resize') resize.onPointerMove(cursor)
+      else if (activeGesture.current === 'resize') resize.onPointerMove(cursor, { shiftKey: e.shiftKey })
       else if (activeGesture.current === 'rotate') rotate.onPointerMove(cursor)
       else if (activeGesture.current === 'group') groupHandlers.current.move(cursor)
     }
     const onUp = () => {
-      if (activeGesture.current === 'drag') drag.onPointerUp()
-      else if (activeGesture.current === 'resize') resize.onPointerUp()
-      else if (activeGesture.current === 'rotate') rotate.onPointerUp()
-      else if (activeGesture.current === 'group') groupHandlers.current.up()
+      const gesture = activeGesture.current
       activeGesture.current = null
+      if (gesture === 'drag') drag.onPointerUp()
+      else if (gesture === 'resize') resize.onPointerUp()
+      else if (gesture === 'rotate') rotate.onPointerUp()
+      else if (gesture === 'group') groupHandlers.current.up()
+      // A group drag decides for itself: a press on a member that did not move
+      // is a click, and collapses the selection to that member.
+      if (gesture === 'drag' || gesture === 'resize' || gesture === 'rotate') swallowClickRef.current = true
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
@@ -451,8 +492,9 @@ export default function SlideCanvas({
         position: 'relative',
         flexShrink: 0,
       }}
+      onPointerDownCapture={interactive ? () => { swallowClickRef.current = false } : undefined}
       onClick={interactive ? () => {
-        if (groupMovedRef.current) { groupMovedRef.current = false; return }
+        if (swallowClickRef.current) { swallowClickRef.current = false; return }
         onSelect?.(null)
       } : undefined}
     >
@@ -533,7 +575,6 @@ export default function SlideCanvas({
             if (!interactive || inCrop || editingId === element.id) return
             e.preventDefault()
             e.stopPropagation()
-            groupMovedRef.current = false
             // Shift toggles membership and drags nothing. Crop mode ignores shift.
             if (e.shiftKey && onToggleSelect && !cropState) {
               onToggleSelect(element.id)
@@ -643,8 +684,8 @@ export default function SlideCanvas({
                 e.stopPropagation()
                 // The press already toggled it.
                 if (e.shiftKey && onToggleSelect && !cropState) return
-                // A group drag just ended here: keep the selection.
-                if (groupMovedRef.current) { groupMovedRef.current = false; return }
+                // A gesture just ended here: keep the selection.
+                if (swallowClickRef.current) { swallowClickRef.current = false; return }
                 onSelect?.(element.id)
               } : undefined}
               onPointerDown={handlePointerDownDrag}
@@ -671,49 +712,50 @@ export default function SlideCanvas({
                 />
               )}
 
-              {/* Selection handles (hidden while cropping or rotated-crop guard). */}
+              {/* Selection handles (hidden while cropping or rotated-crop guard).
+                  Placed in percentages of the box, so they follow the size a
+                  resize preview writes straight to the wrapper. */}
               {isSelected && !inCrop && editingId !== element.id && interactive && (
                 <>
-                  {HANDLES.map((h) => {
-                    const left = h.xPct * element.w * scale - HANDLE_SIZE / 2
-                    const top = h.yPct * element.h * scale - HANDLE_SIZE / 2
-                    return (
-                      <div
-                        key={h.id}
-                        data-testid={`resize-handle-${h.id}`}
-                        onPointerDown={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          activeGesture.current = 'resize'
-                          resize.onPointerDown(
-                            element.id,
-                            h.id,
-                            { x: e.clientX, y: e.clientY },
-                            { x: element.x, y: element.y, w: element.w, h: element.h, rotation: element.rotation },
-                          )
-                        }}
-                        style={{
-                          position: 'absolute',
-                          left,
-                          top,
-                          width: HANDLE_SIZE,
-                          height: HANDLE_SIZE,
-                          background: 'var(--editor-selection)',
-                          border: '1px solid #fff',
-                          borderRadius: 1,
-                          cursor: h.cursor,
-                          zIndex: 10,
-                          boxSizing: 'border-box',
-                          touchAction: 'none',
-                        }}
-                      />
-                    )
-                  })}
+                  {HANDLES.map((h) => (
+                    <div
+                      key={h.id}
+                      data-testid={`resize-handle-${h.id}`}
+                      onPointerDown={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        activeGesture.current = 'resize'
+                        resize.onPointerDown(
+                          element.id,
+                          h.id,
+                          { x: e.clientX, y: e.clientY },
+                          { x: element.x, y: element.y, w: element.w, h: element.h, rotation: element.rotation },
+                        )
+                      }}
+                      style={{
+                        position: 'absolute',
+                        left: `${h.xPct * 100}%`,
+                        top: `${h.yPct * 100}%`,
+                        marginLeft: -HANDLE_SIZE / 2,
+                        marginTop: -HANDLE_SIZE / 2,
+                        width: HANDLE_SIZE,
+                        height: HANDLE_SIZE,
+                        background: 'var(--editor-selection)',
+                        border: '1px solid #fff',
+                        borderRadius: 1,
+                        cursor: h.cursor,
+                        zIndex: 10,
+                        boxSizing: 'border-box',
+                        touchAction: 'none',
+                      }}
+                    />
+                  ))}
                   {/* Rotate handle */}
                   <div
                     style={{
                       position: 'absolute',
-                      left: (element.w * scale) / 2 - 0.5,
+                      left: '50%',
+                      marginLeft: -0.5,
                       top: -ROTATE_OFFSET,
                       width: 1,
                       height: ROTATE_OFFSET,
@@ -743,7 +785,8 @@ export default function SlideCanvas({
                     }}
                     style={{
                       position: 'absolute',
-                      left: (element.w * scale) / 2 - 7,
+                      left: '50%',
+                      marginLeft: -7,
                       top: -ROTATE_OFFSET - 14,
                       width: 14,
                       height: 14,

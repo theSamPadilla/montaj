@@ -22,8 +22,9 @@ export type UseOverlayDragArgs = {
   // DOM style) — do NOT trigger React state updates, since this fires at
   // pointer-event rate.
   onPreview: (elementId: string, x: number, y: number, rotation: number) => void;
-  // Called once on pointer up with the final position. This is where React
-  // state should be committed and persistence should be triggered.
+  // Called once on pointer up with the final position, only when it moved: a
+  // press and release in place commits nothing. This is where React state
+  // should be committed and persistence should be triggered.
   onCommit?: (elementId: string, x: number, y: number) => void | Promise<void>;
 };
 
@@ -54,7 +55,8 @@ export function useOverlayDrag({ scale, slide, onPreview, onCommit }: UseOverlay
       stateRef.current = startDrag(elementId, cursor, element);
       sizeRef.current = { w: element.w, h: element.h };
       rotationRef.current = element.rotation ?? 0;
-      latestRef.current = { id: elementId, x: element.x, y: element.y };
+      // Nothing to commit until the pointer moves.
+      latestRef.current = null;
     },
     [],
   );
@@ -90,15 +92,18 @@ export function useOverlayDrag({ scale, slide, onPreview, onCommit }: UseOverlay
   );
 
   const onPointerUp = useCallback(() => {
+    const s = stateRef.current;
     const final = latestRef.current;
     // Idempotent — `pointercancel` and `pointerup` can both fire for the same
     // gesture (especially after `setPointerCapture`); the second arrival sees
     // null state and exits before re-committing.
-    if (!final) return;
+    if (!s) return;
     stateRef.current = null;
     sizeRef.current = null;
     latestRef.current = null;
+    if (!final) return;
     setGuides([]);
+    if (final.x === s.startElement.x && final.y === s.startElement.y) return;
     void onCommit?.(final.id, final.x, final.y);
   }, [onCommit]);
 
