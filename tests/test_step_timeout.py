@@ -90,3 +90,15 @@ def test_the_probe_gets_an_absolute_path_never_a_protocol_string(duration, tmp_p
     spec.write_text(json.dumps({"input": "concat:/source.mp4", "keeps": [[0, 5]]}))
     steps._step_timeout(WHISPER, {"input": str(spec)})
     assert duration["path"].startswith("/") and duration["path"] != "concat:/source.mp4"
+
+
+def test_a_relative_input_is_the_workspace_s_not_serve_s_cwd(duration, tmp_path, monkeypatch):
+    """The step runs with the workspace as its cwd, so serve sizes a relative input (and a relative spec and
+    its input) from the workspace too (§563 review)."""
+    monkeypatch.setattr(steps, "resolve_workspace", lambda: tmp_path)
+    duration["value"] = 10
+    steps._step_timeout(WHISPER, {"input": "clips/a.mp4"})
+    assert duration["path"] == str(tmp_path / "clips" / "a.mp4")
+    (tmp_path / "spec.json").write_text(json.dumps({"input": "clips/b.mp4", "keeps": [[0, 5]]}))
+    steps._step_timeout(WHISPER, {"input": "spec.json"})
+    assert duration["path"] == str(tmp_path / "clips" / "b.mp4")

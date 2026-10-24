@@ -75,10 +75,13 @@ def _step_timeout(schema: dict, body: dict) -> int:
     duration = None
     try:
         if isinstance(path, str) and path:
+            # The step runs with the workspace as its cwd, so a relative path is the workspace's, and absolute,
+            # so ffprobe never reads caller text like `concat:...` as a protocol (§563).
+            workspace = str(resolve_workspace())
+            path = os.path.join(workspace, path)
             if is_trim_spec(path):
-                path = load_spec(path)["input"]
-            # Absolute, so ffprobe never reads caller text like `concat:...` as a protocol (§563).
-            duration = get_duration(os.path.abspath(path))
+                path = os.path.join(workspace, load_spec(path)["input"])
+            duration = get_duration(path)
     except (Exception, SystemExit):  # get_duration exits through fail()
         duration = None
     if duration is None:
