@@ -15,11 +15,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail, get_duration, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
 from ai_video import save_project_changes
-from lib import speech_text, write_places
+from lib import project_revisions, speech_apply, speech_text, sync_clash, write_places
 from lib.project_tracks import normalize_tracks
-from lib.project_versions import commit_version
+from lib.project_versions import commit_version, is_own_repo
 from lib.speech_apply import apply
-from lib.speech_build import DEFAULT_FEEL
+from lib.speech_build import DEFAULT_FEEL, FEELS
+from lib.speech_carry import TimeMap, carry
 from lib.speech_lines import _ends_sentence, load_words, norm, sidecar_for
 from lib.take_select import Unit, select
 from steps.audio import waveform_trim
@@ -210,10 +211,19 @@ def _in_window(keeps, lo, hi):
     return [[max(s, lo), min(e, hi)] for s, e in keeps if min(e, hi) - max(s, lo) > 0]
 
 
-def _mechanical(work, project_path, ti, project_dir, fillers):
-    # fillers: rm_fillers' compiled pattern for the language
+def _cut(work, project_path, ti, cid, src, keeps, lineage):
+    """jump_cut one clip in memory; each new piece's lineage is the clip it came from (as on disk)."""
+    before = {x["id"] for x in work["tracks"][ti]["items"]}
+    jump_cut.cut_clip(work, project_path, cid, spec={"input": src, "keeps": keeps}, track_index=ti)
+    origin = lineage.get(cid, cid)
+    for x in work["tracks"][ti]["items"]:
+        if x["id"] not in before:
+            lineage[x["id"]] = origin
+
+
+def _mechanical(work, project_path, ti, project_dir, fillers, lineage):
     """rm_nonspeech then rm_fillers keeps per clip, from the clip's one transcript, put on the timeline with
-    jump_cut, in memory. (filler words removed, warnings)."""
+    jump_cut, in memory. fillers: rm_fillers' compiled pattern. (filler words removed, warnings)."""
     removed, warnings = 0, []
     ids = [it["id"] for it in _media(work["tracks"][ti])]
     for cid in ids:
@@ -223,7 +233,7 @@ def _mechanical(work, project_path, ti, project_dir, fillers):
         if not sidecar:
             continue
         if not _cuttable(it):
-            warnings.append(f"kept {cid} whole: it has keyframes, a speed change or a loop")
+            warnings.append(f"no filler or pause cut on {cid}: it has keyframes, a speed change or a loop")
             continue
         words = [{"text": w.text, "start": w.start, "end": w.end} for w in load_words(sidecar)]
         if not words:
@@ -235,29 +245,62 @@ def _mechanical(work, project_path, ti, project_dir, fillers):
         if not _window_has(keeps, lo, hi):
             continue
         removed += sum(1 for c in cuts if lo <= (c["start"] + c["end"]) / 2 < hi)
-        jump_cut.cut_clip(work, project_path, cid, spec={"input": it["src"], "keeps": _in_window(keeps, lo, hi)},
-                          track_index=ti)
+        _cut(work, project_path, ti, cid, it["src"], _in_window(keeps, lo, hi), lineage)
     return removed, warnings
 
 
-def _silence_cut(work, project_path, ti, project_dir):
-    """waveform_trim keeps per clip through jump_cut, in memory. Returns warnings."""
+def _silence_cut(work, project_path, ti, project_dir, lineage, untranscribed_only=False):
+    """waveform_trim keeps per clip through jump_cut, in memory (every clip, or only those with no transcript).
+    Returns warnings."""
     warnings = []
     for cid in [it["id"] for it in _media(work["tracks"][ti])]:
         it = next(x for x in work["tracks"][ti]["items"] if x["id"] == cid)
+        if untranscribed_only and sidecar_for(_resolved(it, project_dir)):
+            continue
         if not _cuttable(it):
-            warnings.append(f"kept {cid} whole: it has keyframes, a speed change or a loop")
+            warnings.append(f"no silence cut on {cid}: it has keyframes, a speed change or a loop")
             continue
         src = _resolve(it["src"], project_dir)
         ok, spec = _quiet(waveform_trim.process_one, src, SILENCE_THRESHOLD_DB, SILENCE_MIN_S)
         if not ok:
+            warnings.append(f"no silence cut on {cid}: {spec.get('message', spec.get('error', ''))}"[:300])
             continue
         lo, hi = _window(it, src)
         if not _window_has(spec["keeps"], lo, hi):
             continue
-        jump_cut.cut_clip(work, project_path, cid, spec={"input": it["src"], "keeps": _in_window(spec["keeps"], lo, hi)},
-                          track_index=ti)
+        _cut(work, project_path, ti, cid, it["src"], _in_window(spec["keeps"], lo, hi), lineage)
     return warnings
+
+
+def _origin(disk, track_id, project_dir):
+    """The disk project with the speech track's fresh clips (no inPoint/outPoint yet, as project creation
+    leaves them) laid end to end over their whole source, the timeline jump_cut cuts them from. The project
+    the other layers are carried from; never written."""
+    origin = normalize_tracks(copy.deepcopy(disk))
+    _, track = _track(origin, track_id)
+    shift = 0.0
+    for it in sorted(track["items"], key=lambda x: float(x.get("start", 0))):
+        if "start" in it:
+            it["start"] = round(float(it["start"]) + shift, 6)
+        if "end" in it:
+            it["end"] = round(float(it["end"]) + shift, 6)
+        if it in _media(track) and not ("inPoint" in it and "outPoint" in it):
+            dur = float(it.get("sourceDuration") or get_duration(_resolve(it["src"], project_dir)))
+            it["inPoint"], it["outPoint"] = 0.0, dur
+            it["end"] = round(float(it["start"]) + dur, 6)
+            shift += dur
+    return origin
+
+
+def _carried(origin, work, ti, lineage, project_dir):
+    """`origin` with the speech track replaced by work's, every other layer carried through speech_carry by
+    the one map from origin's speech track to work's (the silence path; speech mode carries inside apply)."""
+    items = work["tracks"][ti]["items"]
+    prov = {it["id"]: {"old_id": lineage.get(it["id"], it["id"])} for it in items}
+    fps = (origin.get("settings") or {}).get("fps") or 30
+    tmap = TimeMap(origin["tracks"][ti]["items"], items, prov, project_dir=project_dir)
+    candidate, report = carry(origin, ti, items, tmap, fps)
+    return candidate, report.as_dict()
 
 
 # ── units: one spoken sentence each ──────────────────────────────────────────
@@ -418,17 +461,27 @@ def _answer(project_id, mode, final, track_id, project_dir, before_s, phrases, t
     return out
 
 
-def _marker(answer, max_pause):
+def _tracks_rev(project):
+    return project_revisions.revision_of(normalize_tracks(copy.deepcopy(project)).get("tracks"))
+
+
+def _marker(answer, max_pause, written):
+    """The record of a cut. tracksRev: the revision of the tracks it wrote, to tell a later change."""
     return {"at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "maxPause": max_pause,
             "stepVersion": STEP_VERSION, "mode": answer["mode"], "kept": answer["kept"],
-            "removed": answer["removed"], "duration": answer["duration"]}
+            "removed": {k: v for k, v in answer["removed"].items() if k != "lines"},
+            "duration": answer["duration"], "tracksRev": _tracks_rev(written)}
 
 
 def _already_cut(project):
     m = project[MARKER_KEY]
-    return {"project": project.get("id"), "mode": "already-cut", "cutAt": m.get("at"),
-            "kept": m.get("kept"), "removed": m.get("removed"), "duration": m.get("duration"),
-            "note": "Already cut. Pass recut to cut it again."}
+    out = {"project": project.get("id"), "mode": "already-cut", "cutAt": m.get("at"),
+           "kept": m.get("kept"), "removed": m.get("removed"), "duration": m.get("duration"),
+           "note": "Already cut. Pass recut to cut it again."}
+    if m.get("tracksRev") and m["tracksRev"] != _tracks_rev(project):
+        out["changedSince"] = True
+        out["note"] = "Already cut, and the timeline changed since. Pass recut to cut it again."
+    return out
 
 
 def main():
@@ -460,34 +513,33 @@ def main():
 
     # Read again after the long part: every write below is guarded against this read.
     disk = _load(project_path)
+    if isinstance(disk.get(MARKER_KEY), dict) and not args.recut:     # another run cut it meanwhile
+        print(json.dumps(_already_cut(disk), ensure_ascii=False))
+        return
     project_id = disk.get("id")
     work = normalize_tracks(copy.deepcopy(disk))
     ti, track = _track(work, track_id)
     before_s = _seconds(track, project_dir)
+    origin = _origin(disk, track_id, project_dir)
+    max_pause = args.max_pause if args.max_pause is not None else FEELS[DEFAULT_FEEL].max_pause
     has_words = any((sc := sidecar_for(_resolved(it, project_dir))) and load_words(sc) for it in _media(track))
 
-    d = None
+    lineage, d = {}, None
     if has_words:
-        fillers, mech_warn = _mechanical(work, project_path, ti, project_dir, rm_fillers.filler_matcher(args.language))
+        fillers, mech_warn = _mechanical(work, project_path, ti, project_dir,
+                                         rm_fillers.filler_matcher(args.language), lineage)
         warnings += mech_warn
+        warnings += _silence_cut(work, project_path, ti, project_dir, lineage, untranscribed_only=True)
         d = speech_text.derive(work, project_dir, track_id)
         units, trailing = _units(d, is_filler)
         if not units:
-            d = None
+            d, lineage = None, {}
             work = normalize_tracks(copy.deepcopy(disk))
             ti, _ = _track(work, track_id)
 
     if d is None:
-        warnings += _silence_cut(work, project_path, ti, project_dir)
-        changed = json.dumps(work, sort_keys=True) != json.dumps(normalize_tracks(copy.deepcopy(disk)), sort_keys=True)
-        note = "No usable speech: removed silences only."
-        answer = _answer(project_id, "silence", work, track_id, project_dir, before_s, [], 0, 0,
-                         transcribed, warnings, note)
-        if not args.preview:
-            work[MARKER_KEY] = _marker(answer, args.max_pause)
-            commit_version(project_dir, VERSION_MESSAGE)
-            save_project_changes(Path(project_path), disk, work, keys=("tracks", MARKER_KEY))
-        print(json.dumps(answer, ensure_ascii=False))
+        _silence_mode(args, project_path, project_dir, disk, origin, work, ti, track_id, project_id, before_s,
+                      lineage, max_pause, transcribed, failed, warnings)
         return
 
     sel = select([u for u, _, _ in units], is_filler)
@@ -500,10 +552,11 @@ def main():
         phrases = _phrases(candidate, project_dir, track_id, is_filler, sils=d.silences)
         answer.update(_answer(project_id, "speech", candidate, track_id, project_dir, before_s, phrases,
                               len(sel.losers) + len(sel.abandoned), fillers, transcribed, warnings))
-        candidate[MARKER_KEY] = _marker(answer, args.max_pause)
+        candidate[MARKER_KEY] = _marker(answer, max_pause, candidate)
 
     result = apply(project_path, text, preview=args.preview, max_pause=args.max_pause, feel=DEFAULT_FEEL,
-                   base=work, base_of=disk, version_message=VERSION_MESSAGE, want_project=True, amend=record)
+                   base=work, base_of=disk, version_message=VERSION_MESSAGE, want_project=True, amend=record,
+                   carry_from=origin, lineage=lineage, guard_keys=(MARKER_KEY,))
     if not answer:      # nothing to write at all (cannot happen with a marker to add; kept for safety)
         record(copy.deepcopy(result["_project"]))
     for w in result.get("warnings", []):
@@ -511,6 +564,44 @@ def main():
             answer["warnings"].append(w)
     if not answer.get("warnings"):
         answer.pop("warnings", None)
+    print(json.dumps(answer, ensure_ascii=False))
+
+
+def _silence_mode(args, project_path, project_dir, disk, origin, work, ti, track_id, project_id, before_s,
+                  lineage, max_pause, transcribed, failed, warnings):
+    """No usable speech: waveform_trim keeps through jump_cut, the other layers carried by the one map, and
+    the same guards as the speech path (sync check, validation, version, the locked stale check)."""
+    warnings += _silence_cut(work, project_path, ti, project_dir, lineage)
+    candidate, _ = _carried(origin, work, ti, lineage, project_dir)
+    def windows(project):
+        return sorted((it["src"], round(float(it.get("inPoint", 0)), 3), round(float(it.get("outPoint", 0)), 3))
+                      for it in _media(project["tracks"][ti]))
+    changed = windows(candidate) != windows(origin)
+    if not changed:
+        note = "Nothing to cut."
+    elif failed:
+        note = "Transcription failed: removed silences only."
+    else:
+        note = "No usable speech: removed silences only."
+    answer = _answer(project_id, "silence", candidate if changed else normalize_tracks(copy.deepcopy(disk)),
+                     track_id, project_dir, before_s, [], 0, 0, transcribed, warnings, note)
+    if args.preview or not changed:
+        print(json.dumps(answer, ensure_ascii=False))
+        return
+    if not failed:
+        # A cut after a failed transcription leaves no marker, so the real cut can still run once it works.
+        candidate[MARKER_KEY] = _marker(answer, max_pause, candidate)
+    try:
+        sync_clash.check_step_document(disk, candidate, files=[])
+    except sync_clash.SyncConflict as e:
+        sync_clash.exit_refused(e.body)
+    speech_apply._validate(candidate)
+    version = commit_version(project_dir, VERSION_MESSAGE)
+    if not version and not is_own_repo(project_dir):
+        answer.setdefault("warnings", []).append("no version saved: the project folder is not its own git repository")
+    keys = ("tracks", "captions", "audio", "markers", "notes", MARKER_KEY)
+    save_project_changes(Path(project_path), disk, candidate, keys=keys, guard=keys)
+    answer["version"] = version
     print(json.dumps(answer, ensure_ascii=False))
 
 

@@ -312,8 +312,8 @@ def test_a_second_run_is_a_no_op_answer(tmp_path, stub_transcribe, monkeypatch):
     first, _ = run(d, monkeypatch=monkeypatch)
     project = json.loads((d / "project.json").read_text())
     marker = project["cleanCut"]
-    assert set(marker) == {"at", "maxPause", "stepVersion", "mode", "kept", "removed", "duration"}
-    assert marker["stepVersion"] == cc.STEP_VERSION and marker["maxPause"] is None
+    assert set(marker) == {"at", "maxPause", "stepVersion", "mode", "kept", "removed", "duration", "tracksRev"}
+    assert marker["stepVersion"] == cc.STEP_VERSION and marker["maxPause"] == 0.45   # the effective cap
     assert (marker["kept"], marker["removed"], marker["duration"]) == (first["kept"], first["removed"], first["duration"])
     assert "cleanCut" not in json.loads(git(d, "show", "HEAD:project.json"))   # the version is the project before
     # a human edit afterwards does not clear it
@@ -323,12 +323,40 @@ def test_a_second_run_is_a_no_op_answer(tmp_path, stub_transcribe, monkeypatch):
     commits = git(d, "rev-list", "--count", "HEAD")
     again, raw = run(d, monkeypatch=monkeypatch)
     assert again == {"project": "clean-cut-fixture", "mode": "already-cut", "cutAt": marker["at"],
-                     "kept": first["kept"], "removed": first["removed"], "duration": first["duration"],
-                     "note": "Already cut. Pass recut to cut it again."}
+                     "kept": first["kept"], "removed": marker["removed"], "duration": first["duration"],
+                     "changedSince": True,
+                     "note": "Already cut, and the timeline changed since. Pass recut to cut it again."}
     assert (d / "project.json").read_bytes() == after
     assert git(d, "rev-list", "--count", "HEAD") == commits
     preview, _ = run(d, "--preview", monkeypatch=monkeypatch)
     assert preview["mode"] == "already-cut"
+
+
+def test_already_cut_without_a_later_change_says_so_plainly(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    run(d, monkeypatch=monkeypatch)
+    again, _ = run(d, monkeypatch=monkeypatch)
+    assert again["mode"] == "already-cut" and "changedSince" not in again
+
+
+def test_a_run_that_finds_the_project_cut_after_transcribing_does_nothing(tmp_path, stub_transcribe, monkeypatch):
+    """Two runs at once: the second re-reads after its transcription and finds the first's marker."""
+    calls = stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    real = cc.transcribe_file
+
+    def transcribe_while_another_run_cuts(*a, **k):
+        r = real(*a, **k)
+        p = json.loads((d / "project.json").read_text())
+        p["cleanCut"] = {"at": "2026-10-24T00:00:00Z", "kept": {"lines": 1, "seconds": 1.0},
+                         "removed": {"takes": 0, "fillers": 0, "seconds": 0.0}, "duration": 1.0}
+        (d / "project.json").write_text(json.dumps(p, indent=2))
+        return r
+    monkeypatch.setattr(cc, "transcribe_file", transcribe_while_another_run_cuts)
+    out, _ = run(d, monkeypatch=monkeypatch)
+    assert out["mode"] == "already-cut" and calls
+    assert json.loads((d / "project.json").read_text())["tracks"][0]["items"][0]["id"] == "clip-0"
 
 
 def test_recut_cuts_again(tmp_path, stub_transcribe, monkeypatch):
@@ -416,3 +444,123 @@ def test_two_clips_sharing_a_transcript_name_fail(tmp_path, stub_transcribe, mon
         cc.main()
     assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == "transcript_name_clash"
     assert not (d / "speech.json").exists()
+
+
+# ── layers follow the speech they sat on (review B2) ────────────────────────
+
+def _layered_project(tmp_path):
+    """The retake project with an overlay and a note at every word, and captions, timed to the original
+    timeline (a fresh clip: timeline time is source time)."""
+    d = make_project(tmp_path, transcript=retake_transcript())
+    words = [w for w in retake_transcript()["transcription"]]
+    p = json.loads((d / "project.json").read_text())
+    (d / "x.jsx").write_text("export default function X(){return null}")
+    p["tracks"].append({"id": "trk-ov", "items": [
+        {"id": f"ov-{i}", "type": "overlay", "src": str(d / "x.jsx"),
+         "start": w["offsets"]["from"] / 1000, "end": w["offsets"]["from"] / 1000 + 0.2} for i, w in enumerate(words)]})
+    p["notes"] = [{"id": f"n{i}", "t": w["offsets"]["from"] / 1000, "text": w["text"].strip()} for i, w in enumerate(words)]
+    segs, cur = [], []
+    for w in words:
+        cur.append({"word": w["text"].strip(), "start": w["offsets"]["from"] / 1000, "end": w["offsets"]["to"] / 1000})
+        if cur[-1]["word"].endswith((".", "?", "!")) or len(cur) == 6:
+            segs.append({"id": f"cap-{len(segs)}", "text": " ".join(x["word"] for x in cur),
+                         "start": cur[0]["start"], "end": cur[-1]["end"], "words": cur})
+            cur = []
+    if cur:
+        segs.append({"id": f"cap-{len(segs)}", "text": " ".join(x["word"] for x in cur),
+                     "start": cur[0]["start"], "end": cur[-1]["end"], "words": cur})
+    p["captions"] = {"style": "subtitle", "segments": segs}
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    return d, words
+
+
+def _new_time(items, s):
+    """Where source second s plays in the cut, or None when it was cut."""
+    for it in items:
+        if it["inPoint"] - 1e-6 <= s < it["outPoint"]:
+            return it["start"] + (s - it["inPoint"])
+    return None
+
+
+@pytest.mark.parametrize("preview", [False, True])
+def test_overlays_notes_and_captions_follow_the_kept_speech(tmp_path, stub_transcribe, monkeypatch, preview):
+    d, words = _layered_project(tmp_path)
+    seen = {}
+    real = cc.apply
+
+    def spy(*a, **k):
+        seen["result"] = real(*a, **k)
+        return seen["result"]
+    monkeypatch.setattr(cc, "apply", spy)
+    run(d, *(["--preview"] if preview else []), monkeypatch=monkeypatch)
+    after = seen["result"]["_project"] if preview else json.loads((d / "project.json").read_text())
+    items = after["tracks"][0]["items"]
+    overlays = {it["id"]: it for t in after["tracks"] if t["id"] == "trk-ov" for it in t["items"]}
+    notes = {n["id"]: n for n in after.get("notes") or []}
+    played = 0
+    for i, w in enumerate(words):
+        src_mid = (w["offsets"]["from"] + w["offsets"]["to"]) / 2000
+        t = _new_time(items, src_mid)
+        if t is None:
+            continue
+        played += 1
+        start = _new_time(items, w["offsets"]["from"] / 1000)
+        if start is not None:          # the word's own start plays: its overlay and note sit there now
+            assert overlays[f"ov-{i}"]["start"] == pytest.approx(start, abs=0.01), (i, w["text"])
+            assert notes[f"n{i}"]["t"] == pytest.approx(start, abs=0.01), (i, w["text"])
+    assert played >= len(" ".join(KEPT).split()) - 2
+    # nothing piles up at the head: overlays keep distinct times, in the kept speech's order
+    starts = [overlays[k]["start"] for k in sorted(overlays, key=lambda k: int(k.split("-")[1]))]
+    assert len(set(round(x, 3) for x in starts)) >= played - 2
+    # captions now read the kept speech, in order
+    cap_words = [x["word"] for seg in after["captions"]["segments"] for x in seg.get("words", [])]
+    assert cap_words == " ".join(KEPT).split()
+
+
+def test_a_marker_written_during_the_run_refuses_the_write(tmp_path, stub_transcribe, monkeypatch, capsys):
+    """S1: cleanCut is a guarded key of the write: another run's marker landing meanwhile refuses this one."""
+    stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    real = cc.select
+
+    def select_while_another_run_cuts(*a, **k):
+        p = json.loads((d / "project.json").read_text())
+        p["cleanCut"] = {"at": "2026-10-24T00:00:00Z"}
+        (d / "project.json").write_text(json.dumps(p, indent=2))
+        return real(*a, **k)
+    monkeypatch.setattr(cc, "select", select_while_another_run_cuts)
+    monkeypatch.setattr(sys, "argv", ["clean_cut.py", "--project", str(d / "project.json")])
+    with pytest.raises(SystemExit), contextlib.redirect_stdout(io.StringIO()):
+        cc.main()
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == "project_changed"
+    assert json.loads((d / "project.json").read_text())["cleanCut"] == {"at": "2026-10-24T00:00:00Z"}
+
+
+def test_silence_mode_with_nothing_to_cut_writes_nothing(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe({**retake_transcript(), "transcription": []})
+    d = make_project(tmp_path)
+    monkeypatch.setattr(cc.waveform_trim, "process_one",
+                        lambda src, thr, ms: {"input": src, "keeps": [[0.0, SOURCE_S]]})
+    unsaved = touch_unsaved(d)
+    commits = git(d, "rev-list", "--count", "HEAD")
+    out, _ = run(d, monkeypatch=monkeypatch)
+    assert out["mode"] == "silence" and out["note"] == "Nothing to cut."
+    assert (d / "project.json").read_text() == unsaved
+    assert git(d, "rev-list", "--count", "HEAD") == commits
+
+
+def test_a_silence_cut_after_a_failed_transcription_leaves_no_marker(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe(None, fail="transcription_timeout")
+    d = make_project(tmp_path)
+    out, _ = run(d, monkeypatch=monkeypatch)
+    assert out["mode"] == "silence" and "failed" in out["note"]
+    project = json.loads((d / "project.json").read_text())
+    assert "cleanCut" not in project and len(project["tracks"][0]["items"]) > 1
+
+
+def test_a_waveform_failure_is_reported(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe({**retake_transcript(), "transcription": []})
+    d = make_project(tmp_path)
+    monkeypatch.setattr(cc.waveform_trim, "process_one", lambda *a: cc.fail("no_speech", "No speech detected"))
+    out, _ = run(d, "--preview", monkeypatch=monkeypatch)
+    assert any("no silence cut on clip-0" in w for w in out["warnings"])

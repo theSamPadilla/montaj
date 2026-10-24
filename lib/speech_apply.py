@@ -34,17 +34,17 @@ from engine.validate import validate_project  # noqa: E402
 _READ_KEYS = ("tracks", "captions", "audio", "markers", "notes", "sources")
 
 
-def _read_view(project: dict) -> str:
+def _read_view(project: dict, keys=_READ_KEYS) -> str:
     """The part of a document this edit depends on, comparable across two reads."""
-    view = {k: project.get(k) for k in _READ_KEYS}
+    view = {k: project.get(k) for k in keys}
     view["fps"] = (project.get("settings") or {}).get("fps")
     return json.dumps(view, sort_keys=True)
 
 
-def _read_revisions(project: dict) -> dict:
+def _read_revisions(project: dict, keys=_READ_KEYS) -> dict:
     """The same view as revisions (§477): one per read key, plus settings.fps on its own so
     another setting changing does not refuse the edit."""
-    revs = project_revisions.revisions_of(project, _READ_KEYS)
+    revs = project_revisions.revisions_of(project, keys)
     revs["settings.fps"] = project_revisions.revision_of((project.get("settings") or {}).get("fps"))
     return revs
 
@@ -111,7 +111,8 @@ def _check_sync(before: dict, after: dict) -> None:
 def apply(project_path: str, text: str, *, preview: bool, max_pause: float | None,
           feel: str = DEFAULT_FEEL, base: dict | None = None, base_of: dict | None = None,
           version_message: str = "version: before speech edit", want_project: bool = False,
-          amend=None) -> dict:
+          amend=None, carry_from: dict | None = None, lineage: dict | None = None,
+          guard_keys: tuple = ()) -> dict:
     """Apply `text` to the project at `project_path`.
 
     base (clean_cut): the project as an in-memory step already changed it, and the one the text was read
@@ -123,6 +124,12 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     want_project: also return the resulting project (as written, or as it would be) under `_project`.
     amend: called with the candidate project before it is validated and written, to change it in place
     (clean_cut records its marker there, so the marker lands in this same guarded write).
+    carry_from, lineage (with base): every other layer (linked layers, overlays, captions, audio, markers,
+    notes) is still timed to the project before the base's change, so it is carried from `carry_from` (that
+    project; default base_of) through ONE map, from its speech track to the result. lineage maps a base item
+    id to the carry_from item it was cut from (`<clip>-seg-*` -> clip), so the result's provenance names the
+    items the layers were timed to.
+    guard_keys: more top-level keys the stale check compares under the lock (clean_cut: its marker).
     """
     project_path = os.path.abspath(project_path)
     project_dir = os.path.dirname(project_path)
@@ -138,7 +145,8 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     # §482: the sync check compares with the file as it is on disk (a legacy `tracks` the write converts is a write
     # of tracks); everything else works on the reader's shape. The same document unless the file is legacy.
     on_disk_as_read = as_read if project is on_disk else copy.deepcopy(on_disk)
-    read = _read_revisions(project) if project_revisions.engine_guard_enabled() else None
+    read_keys = _READ_KEYS + tuple(k for k in guard_keys if k not in _READ_KEYS)
+    read = _read_revisions(project, read_keys) if project_revisions.engine_guard_enabled() else None
     disk = project
     if base is not None:
         project = normalize_tracks(copy.deepcopy(base))
@@ -171,10 +179,22 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
             out["_project"] = disk
         return out
 
-    if canon(items) == canon(old_items):
-        # Nothing on the speech track changed, so nothing is carried: an unedited text is a no-op
-        # (unless a base already changed the project: then the base is the result).
-        if amend is None and (base is None or dump(project) == dump(disk)):
+    if base is not None:
+        # The layers are timed to carry_from, not to the base: one map from its speech track to the result.
+        origin = normalize_tracks(copy.deepcopy(carry_from if carry_from is not None else disk))
+        lineage = lineage or {}
+        prov2 = {}
+        for it in items:
+            p = dict(prov.get(it["id"]) or {})
+            old = p.get("old_id") or it["id"]
+            p["old_id"] = lineage.get(old, old)
+            prov2[it["id"]] = p
+        tmap = TimeMap(origin["tracks"][ti]["items"], items, prov2, words=words_by_src(derived),
+                       project_dir=project_dir)
+        candidate, report = carry(origin, ti, items, tmap, fps, report=report)
+    elif canon(items) == canon(old_items):
+        # Nothing on the speech track changed, so nothing is carried: an unedited text is a no-op.
+        if amend is None:
             return noop()
         candidate = project
     else:
@@ -224,10 +244,10 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
             fresh_on_disk = json.load(f)
         fresh = normalize_tracks(fresh_on_disk)   # pure: fresh_on_disk stays the file as read
         if read is not None:
-            stale = project_revisions.stale_fields(None, list(read), read, revisions=_read_revisions(fresh))["stale"]
+            stale = project_revisions.stale_fields(None, list(read), read, revisions=_read_revisions(fresh, read_keys))["stale"]
             if stale:
                 fail("project_changed", project_revisions.step_stale_message(stale))
-        elif _read_view(fresh) != _read_view(as_read):
+        elif _read_view(fresh, read_keys) != _read_view(as_read, read_keys):
             fail("project_changed", "The project changed while the edit was applied: read the text again and redo it.")
         merged = dict(fresh)
         for key in set(candidate) | set(as_read):

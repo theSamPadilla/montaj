@@ -52,7 +52,7 @@ The agent writes project.json as it works — every write pushes to the browser 
 | `notes` | array | Optional. Private operator notes. A video project holds time notes added with `N` in the editor, `{id, t, tEnd?, text, done?}`, kept sorted by `t`; a carousel project holds slide notes, `{id, slideId, x?, y?, text, done?}`. Never rendered into output and never shown to reviewers. See [notes](#notes). |
 | `audio` | object | Music and ducking config |
 | `derivedFrom` | string | Optional. Set on clip projects fanned out from a source by the `clips` workflow; the source project's id. |
-| `cleanCut` | object | Optional. Written by the `clean_cut` step in the same write as its cut: `{at, maxPause, stepVersion, mode, kept, removed, duration}`. While it is there, `clean_cut` changes nothing unless `recut` is passed. A later edit leaves it in place. |
+| `cleanCut` | object | Optional. Written by the `clean_cut` step in the same write as its cut: `{at, maxPause, stepVersion, mode, kept, removed, duration, tracksRev}`. While it is there, `clean_cut` changes nothing unless `recut` is passed. A later edit leaves it in place, so it can then be out of date: `tracksRev` (the revision of the tracks it wrote) tells, and `clean_cut` reports `changedSince`. |
 
 ---
 
