@@ -14,8 +14,7 @@ options:
   -h, --help            show this help message and exit
   --input INPUT         Optional background video to loop. If omitted, a solid
                         color background is used.
-  --captions CAPTIONS   Path to caption track JSON from lyrics_sync or caption
-                        step
+  --captions CAPTIONS   Path to caption track JSON from the caption step
   --audio AUDIO         Song audio file path
   --bg-color BG_COLOR   Background color when no input video is provided
                         (default: black)

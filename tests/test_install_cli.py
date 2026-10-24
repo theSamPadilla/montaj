@@ -101,44 +101,40 @@ def mock_ensure(monkeypatch):
     """Patch the _ensure_* helpers and return their mocks."""
     whisper    = MagicMock(return_value=True)
     rvm        = MagicMock(return_value=True)
-    demucs     = MagicMock(return_value=True)
     connectors = MagicMock(return_value=True)
     ui         = MagicMock(return_value=True)
     monkeypatch.setattr(install_cmd, "_ensure_whisper",    whisper)
     monkeypatch.setattr(install_cmd, "_ensure_rvm",        rvm)
-    monkeypatch.setattr(install_cmd, "_ensure_demucs",     demucs)
     monkeypatch.setattr(install_cmd, "_ensure_connectors", connectors)
     monkeypatch.setattr(install_cmd, "_ensure_ui",         ui)
-    return whisper, rvm, demucs, connectors, ui
+    return whisper, rvm, connectors, ui
 
 
 def test_handle_rvm_only(mock_ensure, capsys):
-    whisper, rvm, demucs, connectors, ui = mock_ensure
+    whisper, rvm, connectors, ui = mock_ensure
     install_cmd.handle(_make_args(component="rvm"))
     whisper.assert_not_called()
     rvm.assert_called_once()
-    demucs.assert_not_called()
 
 
 def test_handle_whisper_only(mock_ensure, capsys):
-    whisper, rvm, demucs, connectors, ui = mock_ensure
+    whisper, rvm, connectors, ui = mock_ensure
     install_cmd.handle(_make_args(component="whisper"))
     whisper.assert_called_once()
     rvm.assert_not_called()
 
 
 def test_handle_all_calls_all(mock_ensure, capsys):
-    whisper, rvm, demucs, connectors, ui = mock_ensure
+    whisper, rvm, connectors, ui = mock_ensure
     install_cmd.handle(_make_args(component="all"))
     whisper.assert_called_once()
     rvm.assert_called_once()
-    demucs.assert_called_once()
     connectors.assert_called_once()
     ui.assert_called_once()
 
 
 def test_handle_no_component_does_nothing(mock_ensure, monkeypatch):
-    whisper, rvm, demucs, connectors, ui = mock_ensure
+    whisper, rvm, connectors, ui = mock_ensure
     # _parser is None in test context; patch it so print_help doesn't crash
     monkeypatch.setattr(install_cmd, "_parser", MagicMock())
     install_cmd.handle(_make_args())
@@ -157,7 +153,7 @@ def test_ffmpeg_dispatch_calls_managed_download(monkeypatch):
 
 def test_all_includes_ffmpeg(monkeypatch):
     called = []
-    for name in ("_ensure_whisper", "_ensure_rvm", "_ensure_demucs",
+    for name in ("_ensure_whisper", "_ensure_rvm",
                  "_ensure_connectors", "_ensure_ui"):
         monkeypatch.setattr(install_cmd, name, lambda *a, name=name: called.append(name) or True)
     monkeypatch.setattr(install_cmd, "_ensure_ffmpeg_managed", lambda: called.append("ffmpeg") or True)

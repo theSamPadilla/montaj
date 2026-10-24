@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render a lyrics video by burning caption track text onto a background using ffmpeg drawtext.
 
-Takes a caption track JSON (from lyrics_sync / caption) and an audio file, and produces
+Takes a caption track JSON (from caption) and an audio file, and produces
 an MP4 with word-by-word accumulated text overlaid on a solid-color or video background.
 """
 import json, ntpath, os, sys, argparse, subprocess
@@ -365,7 +365,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Render a lyrics video with word-by-word accumulated captions.")
     parser.add_argument("--captions",     required=True,
-                        help="Caption track JSON from lyrics_sync / caption step")
+                        help="Caption track JSON from the caption step")
     parser.add_argument("--audio",        required=True,
                         help="Song audio file")
     parser.add_argument("--input",        default=None,

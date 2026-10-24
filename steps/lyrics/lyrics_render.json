@@ -15,7 +15,7 @@
       "name": "captions",
       "type": "string",
       "required": true,
-      "description": "Path to caption track JSON from lyrics_sync or caption step"
+      "description": "Path to caption track JSON from the caption step"
     },
     {
       "name": "audio",

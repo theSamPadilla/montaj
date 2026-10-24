@@ -468,15 +468,6 @@ montaj generate-image --prompt "..." --provider gemini --aspect-ratio 9:16 --out
 ### Lyrics video
 
 ```bash
-montaj stem-separation --input song.mp3 --stems vocals --out-dir /tmp/stems
-# Isolate clean vocals via Demucs before running lyrics-sync.
-# Output JSON: { "vocals": "/tmp/stems/htdemucs/song/vocals.wav", ... }
-
-montaj lyrics-sync --input vocals.wav --lyrics lyrics.txt --model medium.en --out captions.json
-# Align lyrics.txt to the audio using Whisper. Pass clean vocals, not the full mix.
-# Output JSON: { segments: [...], audioInPoint: <seconds> }
-# audioInPoint → set as audio.tracks[0].inPoint in project.json
-
 montaj lyrics-render \
   --captions captions.json \
   --audio song.mp3 \
@@ -561,11 +552,11 @@ exact flags. Full per-step parameter docs: https://docs.montaj.ag/steps
 
 | Directory | Steps |
 |-----------|-------|
-| `steps/audio/` | `extract_audio`, `mix_timeline`, `stem_separation`, `waveform_image`, `waveform_peaks`, `waveform_trim` |
-| `steps/edit/` | `cross_cut`, `jump_cut`, `montage` |
+| `steps/audio/` | `extract_audio`, `mix_timeline`, `waveform_image`, `waveform_peaks`, `waveform_trim` |
+| `steps/edit/` | `jump_cut` |
 | `steps/generate/` | `generate_image`, `generate_music`, `generate_voiceover`, `kling_generate` |
-| `steps/lyrics/` | `caption`, `lyrics_render`, `lyrics_sync` |
-| `steps/media/` | `analyze_media`, `detect_shots`, `fetch`, `fetch_image`, `filmstrip`, `normalize`, `paper_cutout`, `probe`, `search_images`, `search_news`, `shot_sheet`, `snapshot`, `track_camera`, `track_points`, `track_pose` |
+| `steps/lyrics/` | `caption`, `lyrics_render` |
+| `steps/media/` | `analyze_media`, `detect_shots`, `fetch`, `fetch_image`, `filmstrip`, `normalize`, `paper_cutout`, `probe`, `search_images`, `shot_sheet`, `snapshot`, `track_camera`, `track_points`, `track_pose` |
 | `steps/render/` | `glass_plate`, `sample_frame`, `sample_overlay` |
 | `steps/speech/` | `rm_fillers`, `rm_nonspeech`, `speech_edit`, `speech_text`, `transcribe` |
 | `steps/transform/` | `crop_spec`, `generate_captions`, `materialize_cut`, `normalize_window`, `proxy`, `reframe`, `remove_bg`, `resize`, `virtual_to_original` |

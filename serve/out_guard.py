@@ -39,8 +39,8 @@ plus the rest, so a symlink anywhere counts as its target. A `..` component, a N
 workspace's (the step's cwd), and a `~` or `$VAR` in it is checked as what it may expand to as well.
 
 Inventory (2026-10-21): the params a native step WRITES to (or deletes in), checked here.
-  out, file, overwritten: detect_beats, extract_audio, mix_timeline, stem_separation (index), synth_audio,
-      waveform_trim, caption, lyrics_sync, lyrics_render, detect_shots, shot_sheet (index), snapshot (a file, or
+  out, file, overwritten: detect_beats, extract_audio, mix_timeline, synth_audio,
+      waveform_trim, caption, lyrics_render, detect_shots, shot_sheet (index), snapshot (a file, or
       a frames folder), normalize, paper_cutout, track_camera, track_pose, analyze_media (the model's reply
       text), fetch_image (refuses an existing file since this change), contact_sheet, sample_frame (+
       `<out>.clamped.json`), sample_overlay, sample_diff, transcribe (a prefix: `<out>.json`, `<out>.srt`),
@@ -52,11 +52,11 @@ Inventory (2026-10-21): the params a native step WRITES to (or deletes in), chec
   out, folder: creator_diagnostic (stills/, diagnostic.json), glass_plate (its own NNNN.jpg frames).
   out, export folder (`"outKind": "export"`): export_editor, export_overlay_pages, export_carousel_pages; each
       makes a new folder inside it and changes nothing already there.
-  out-dir, folder, files overwritten: stem_separation, waveform_image, capture_site, filmstrip, shot_sheet.
+  out-dir, folder, files overwritten: waveform_image, capture_site, filmstrip, shot_sheet.
   frames-dir (contact_sheet, frames kept) and inbox (creator_diagnostic DELETES each measured video directly
       in it): `"outKind": "write"`.
   beside the input when `out` is omitted (BESIDE_INPUT_STEPS, M9): extract_audio, normalize, resize, snapshot,
-      stem_separation, waveform_image, caption, lyrics_sync, lyrics_render, crop_spec, paper_cutout, remove_bg,
+      waveform_image, caption, lyrics_render, crop_spec, paper_cutout, remove_bg,
       mix_timeline, materialize_cut, transcribe. The input's folder (and each spec `segments[].src` folder) is
       then checked as a DENY location (`_check_beside_input`), not against the allowlist: a normal outside
       folder is allowed, a hidden/system/package/home-config folder is refused.
@@ -103,8 +103,8 @@ _DIR_WRITE_PARAMS = ("out-dir", "frames-dir", "inbox")
 # folder holds a decodable input, which may be anywhere on disk. When such a step runs with no write param,
 # the parent folder of each input (and of each spec `segments[].src`) is checked instead.
 BESIDE_INPUT_STEPS = frozenset({
-    "extract_audio", "normalize", "resize", "snapshot", "stem_separation", "waveform_image", "caption",
-    "lyrics_sync", "lyrics_render", "crop_spec", "paper_cutout", "remove_bg", "mix_timeline",
+    "extract_audio", "normalize", "resize", "snapshot", "waveform_image", "caption",
+    "lyrics_render", "crop_spec", "paper_cutout", "remove_bg", "mix_timeline",
     "materialize_cut", "transcribe",
 })
 
@@ -352,7 +352,7 @@ def _check_beside_input(name: str, body: dict) -> None:
     This restores writing beside an input that sits in a normal outside folder (e.g. `~/Desktop/clip.mov` with
     no project and no `out`), which an earlier security round (M9) had refused, while still keeping the sidecar
     out of the deny roots. A `.git` folder is never a write target (H5), and a `..`/NUL/URL-scheme path is
-    refused outright. A folder of outputs written beside the input (snapshot `--frames all`, stem_separation,
+    refused outright. A folder of outputs written beside the input (snapshot `--frames all`,
     waveform_image) lands in this same checked folder, so this one check covers it. An explicit `out` does not
     reach here: it is the allowlist via `check_write_paths`."""
     ws = None

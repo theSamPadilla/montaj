@@ -99,7 +99,7 @@ def test_project_lock_or_fail_ends_the_step(tmp_path, read_only, capsys):
 
 
 def test_cut_steps_save_helper_ends_with_project_read_only(tmp_path, read_only, capsys):
-    """jump_cut, cross_cut and montage save through save_project_changes."""
+    """jump_cut saves through save_project_changes."""
     from lib import ai_video
     pj = tmp_path / "project.json"
     pj.write_text(json.dumps({"tracks": []}))

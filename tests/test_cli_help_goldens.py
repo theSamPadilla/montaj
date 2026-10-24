@@ -12,7 +12,7 @@ GOLDENS_DIR = REPO_ROOT / "tests" / "goldens" / "cli_help"
 # Exact hyphenation as it appears in cli.main._COMMANDS.
 COMMANDS = (
     "probe", "transcribe", "caption", "extract-audio", "resize",
-    "rm-nonspeech", "stem-separation", "lyrics-sync", "lyrics-render",
+    "rm-nonspeech", "lyrics-render",
     "generate-image", "generate-music", "generate-voiceover",
     "kling-generate", "analyze-media", "snapshot", "filler",
 )

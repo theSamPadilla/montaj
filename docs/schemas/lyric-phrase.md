@@ -4,7 +4,7 @@
 
 The standard overlay template for lyrics video projects. One instance per lyric segment in `tracks[1]`. The render engine injects `frame` and `fps`; all other props come from the overlay item's `props` field in project.json.
 
-Word timestamps in `props.words` must be **relative to the overlay's own `start`** — subtract `segment.start` from every word timestamp when converting from `lyrics_sync` output.
+Word timestamps in `props.words` must be **relative to the overlay's own `start`** — subtract `segment.start` from every word timestamp when converting from word-timed caption segments.
 
 ---
 
@@ -147,9 +147,9 @@ Word timestamps in `props.words` must be **relative to the overlay's own `start`
 
 ---
 
-## Converting lyrics_sync output
+## Converting caption segments
 
-`lyrics_sync` segments have absolute timestamps. Subtract `segment.start` from every word's `start` and `end` before writing into `props.words`:
+Caption segments have absolute timestamps. Subtract `segment.start` from every word's `start` and `end` before writing into `props.words`:
 
 ```js
 segment.words.map(w => ({
@@ -160,5 +160,3 @@ segment.words.map(w => ({
 ```
 
 Set the overlay item's `start` to `segment.start` and `end` to `segment.end`.
-
-Set `audio.tracks[0].inPoint` to the `audioInPoint` value from the `lyrics_sync` output.

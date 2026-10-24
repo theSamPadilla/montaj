@@ -756,7 +756,7 @@ entry and no mount.
 
 **Four independent pieces**, each a step call behind the adapter: `silence`
 (`rm_nonspeech`), `fillers` (`rm_fillers`), `loudness` (`normalize
---measure-only`), `voice` (`stem_separation`). A fifth call, `silence-check`
+--measure-only`), `voice` (isolate voice). A fifth call, `silence-check`
 (`waveform_trim`), is an internal cross-check and is not a user toggle.
 Whole-source pieces (`voice`, `silence-check`) are cached per `src`; the
 windowed per-clip pieces are not.

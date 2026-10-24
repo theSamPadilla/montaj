@@ -26,7 +26,7 @@ the schema must match it exactly, modulo:
     as a param.
 
 Scope note: only the commands in ``MIGRATED_STEPS`` are asserted. Other
-built-in steps (cross_cut, montage, materialize_cut, remove_bg, waveform_*,
+built-in steps (materialize_cut, remove_bg, waveform_*,
 sample_*, …) have their own, currently-unreconciled schema drift and a wider
 type vocabulary (``array``/``integer``/``number``, input types
 ``project``/``jsx``/``none``); folding them in is a separate reconciliation,
@@ -49,7 +49,7 @@ from tests.conftest import REPO_ROOT, STEPS_DIR
 # command maps to the ``rm_fillers`` step.
 MIGRATED_STEPS = (
     "probe", "transcribe", "caption", "extract_audio", "resize",
-    "rm_nonspeech", "stem_separation", "lyrics_sync", "lyrics_render",
+    "rm_nonspeech", "lyrics_render",
     "generate_image", "generate_music", "generate_voiceover",
     "kling_generate", "analyze_media", "snapshot", "rm_fillers",
     "normalize", "detect_beats", "seedance_generate", "generate_sfx", "kinovi_generate",

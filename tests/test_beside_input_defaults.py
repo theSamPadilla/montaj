@@ -43,17 +43,10 @@ DEFAULTS = {
         ("clip_frames", "dir", (".jpg",)),
         ("clip_at_1.50.jpg", "file", ()),
     ]),
-    # steps/audio/stem_separation.py:112-114  out_dir=<base>_stems/, out_json=<base>_stems.json
-    "stem_separation": ("song.wav", [
-        ("song_stems.json", "file", ()),
-        ("song_stems", "dir", (".wav",)),
-    ]),
     # steps/audio/waveform_image.py:22-23  <dir>/<stem>_waveforms/ of chunk_NN.png
     "waveform_image": ("clip.mp4", [("clip_waveforms", "dir", (".png",))]),
     # steps/lyrics/caption.py:23  out = f"{splitext(input)[0]}_captions.json"  (input is a transcript JSON)
     "caption": ("clip.json", [("clip_captions.json", "file", ())]),
-    # steps/lyrics/lyrics_sync.py:429  out = f"{splitext(input)[0]}_lyrics.json"
-    "lyrics_sync": ("song.mp3", [("song_lyrics.json", "file", ())]),
     # steps/lyrics/lyrics_render.py:407-408  default is beside --captions: <captions_stem>_render.mp4
     "lyrics_render": ("captions.json", [("captions_render.mp4", "file", ())]),
     # steps/transform/crop_spec.py:108-111  <dir(input)>/<stem>_cropped.json
