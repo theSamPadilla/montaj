@@ -102,3 +102,17 @@ def test_a_relative_input_is_the_workspace_s_not_serve_s_cwd(duration, tmp_path,
     (tmp_path / "spec.json").write_text(json.dumps({"input": "clips/b.mp4", "keeps": [[0, 5]]}))
     steps._step_timeout(WHISPER, {"input": "spec.json"})
     assert duration["path"] == str(tmp_path / "clips" / "b.mp4")
+
+
+def test_an_absolute_input_never_asks_for_the_workspace(duration, tmp_path, monkeypatch):
+    """resolve_workspace() only for a relative path (§563 review): an absolute input or spec input is used as is."""
+    def no_workspace():
+        raise AssertionError("resolve_workspace() called for an absolute path")
+    monkeypatch.setattr(steps, "resolve_workspace", no_workspace)
+    duration["value"] = 10
+    steps._step_timeout(WHISPER, {"input": "/clips/a.mp4"})
+    assert duration["path"] == "/clips/a.mp4"
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({"input": "/clips/b.mp4", "keeps": [[0, 5]]}))
+    steps._step_timeout(WHISPER, {"input": str(spec)})
+    assert duration["path"] == "/clips/b.mp4"
