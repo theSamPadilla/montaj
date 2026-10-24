@@ -52,6 +52,7 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--cuts", help="JSON array of [start, end] ranges to REMOVE (clip-local time)")
     group.add_argument("--keeps", help="JSON array of [start, end] ranges to KEEP (clip-local time)")
+    group.add_argument("--spec", help="Trim spec JSON file (e.g. from rm_fillers): its `keeps` are source time")
     args = parser.parse_args()
 
     project_path, project = find_project(args.project_id)
@@ -79,7 +80,19 @@ def main():
     clip_duration = clip["outPoint"] - clip["inPoint"]
 
     # Parse ranges
-    if args.cuts:
+    if args.spec:
+        try:
+            with open(args.spec) as f:
+                spec_keeps = json.load(f)["keeps"]
+        except Exception as e:
+            fail("invalid_params", f"Could not read keeps from --spec: {e}")
+        # A spec's keeps are source time; the clip's window starts at inPoint. null is open-ended.
+        lo, hi = clip["inPoint"], clip["outPoint"]
+        try:
+            keeps = [[(lo if s is None else s) - lo, (hi if e is None else e) - lo] for s, e in spec_keeps]
+        except Exception as e:
+            fail("invalid_params", f"Bad keeps in --spec: {e}")
+    elif args.cuts:
         try:
             cuts = json.loads(args.cuts)
         except Exception as e:
@@ -117,9 +130,12 @@ def main():
             "inPoint": round(clip["inPoint"] + ks, 6),
             "outPoint": round(clip["inPoint"] + ke, 6),
         }
-        # Inherit generation metadata
-        if "generation" in clip:
-            new_clip["generation"] = clip["generation"]
+        # Inherit generation metadata and the fields that keep preview and render on the same source.
+        # A normalized cache covers the whole clip window, so any sub-window of it stays valid.
+        for key in ("generation", "proxySrc", "sourceWidth", "sourceHeight", "sourceDuration",
+                    "normalizedSrc", "normalizedInPoint"):
+            if key in clip:
+                new_clip[key] = clip[key]
         cursor += seg_duration
         new_clips.append(new_clip)
 

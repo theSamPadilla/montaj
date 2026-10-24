@@ -411,7 +411,9 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
     output type's. Any other
     `out` passes through unchanged here; the route has already refused one that
     leaves the allowed places (serve/out_guard.py). A name already taken gets -2, -3, ... The
-    result never leaves `<project>/assets/` (a symlinked assets is a 422).
+    result never leaves its folder, `<project>/assets/` by default (a symlinked folder is a 422).
+    An `out` param with `"projectDir": "render/samples"` saves into that folder of
+    the project instead of `assets/` (check images, which are not the user's assets).
     An `out` param marked `"projectDefault": "step"` is left off when it is
     left off: that step keeps its own stable place in the project, replaced on
     a re-run (glass_plate's `plates/<item>/`), where a timestamped name would
@@ -442,11 +444,17 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
         stem, suffix = os.path.splitext(out)
         if not suffix:
             stem, suffix = out, ext
-    assets = pdir / "assets"
-    if assets.is_symlink():
-        raise HTTPException(422, detail={
-            "error": "invalid_params", "message": 'The project\'s "assets" folder is a symlink; "_project" will not write through it.'})
-    assets.mkdir(exist_ok=True)
+    sub = out_param.get("projectDir") or "assets"
+    parts = Path(sub).parts
+    if Path(sub).is_absolute() or ".." in parts or not parts:
+        raise HTTPException(422, detail={"error": "invalid_params", "message": f'Step "{name}" declares a bad projectDir.'})
+    assets = pdir
+    for part in parts:
+        assets = assets / part
+        if assets.is_symlink():
+            raise HTTPException(422, detail={
+                "error": "invalid_params", "message": f'The project\'s "{sub}" folder is a symlink; "_project" will not write through it.'})
+    assets.mkdir(parents=True, exist_ok=True)
     n = 1
     while True:
         cand = assets / (f"{stem}{suffix}" if n == 1 else f"{stem}-{n}{suffix}")
@@ -456,7 +464,7 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
             break
         n += 1
     if Path(os.path.realpath(cand.parent)) != Path(os.path.realpath(assets)) or cand.parent != assets:
-        raise HTTPException(422, detail={"error": "invalid_params", "message": "resolved output left the project's assets folder"})
+        raise HTTPException(422, detail={"error": "invalid_params", "message": f"resolved output left the project's {sub} folder"})
     _refuse_record_out(str(cand), name=name)
     _RESERVED_OUTS.add(str(cand))
     body["out"] = str(cand)

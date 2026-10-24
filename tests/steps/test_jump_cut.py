@@ -138,3 +138,49 @@ def test_montage_still_works_on_probed_clips(monkeypatch, tmp_path, capsys):
 
     items = out["tracks"][0]["items"]
     assert len(items) > 0
+
+
+# ── jump_cut --spec and carried fields (§558 U1) ───────────────────────────
+
+def rich_clip():
+    c = probed_clip("clip-a", 0.0, dur=10.0)
+    c.update({"proxySrc": "./clip-a_proxy.mp4", "sourceWidth": 1080, "sourceHeight": 1920,
+              "sourceDuration": 10.0, "normalizedSrc": "./clip-a_n.mp4", "normalizedInPoint": 0})
+    return c
+
+
+def test_jump_cut_segments_carry_the_clip_preview_and_source_fields(monkeypatch, tmp_path):
+    project = project_with(rich_clip())
+    argv = ["jump_cut.py", "--project-id", "p1", "--clip-id", "clip-a", "--keeps", "[[1,2],[4,6]]"]
+    out = run_step(jump_cut, argv, project, monkeypatch, tmp_path)
+    for seg in out["tracks"][0]["items"]:
+        assert seg["proxySrc"] == "./clip-a_proxy.mp4"
+        assert (seg["sourceWidth"], seg["sourceHeight"], seg["sourceDuration"]) == (1080, 1920, 10.0)
+        assert seg["normalizedSrc"] == "./clip-a_n.mp4" and seg["normalizedInPoint"] == 0
+
+
+def test_jump_cut_spec_reads_keeps_from_a_trim_spec_in_source_time(monkeypatch, tmp_path):
+    clip = rich_clip()
+    clip["inPoint"], clip["outPoint"] = 2.0, 12.0
+    spec = tmp_path / "clip-a_spec.json"
+    spec.write_text(json.dumps({"input": "./clip-a.mp4", "keeps": [[3.0, 4.0], [6.0, 8.0]]}))
+    argv = ["jump_cut.py", "--project-id", "p1", "--clip-id", "clip-a", "--spec", str(spec)]
+    out = run_step(jump_cut, argv, project_with(clip), monkeypatch, tmp_path)
+    segs = out["tracks"][0]["items"]
+    assert [(s["inPoint"], s["outPoint"]) for s in segs] == [(3.0, 4.0), (6.0, 8.0)]
+    assert [(s["start"], s["end"]) for s in segs] == [(0.0, 1.0), (1.0, 3.0)]
+
+
+def test_jump_cut_spec_with_open_ended_keeps(monkeypatch, tmp_path):
+    spec = tmp_path / "s.json"
+    spec.write_text(json.dumps({"keeps": [[None, 1.0], [9.0, None]]}))
+    argv = ["jump_cut.py", "--project-id", "p1", "--clip-id", "clip-a", "--spec", str(spec)]
+    out = run_step(jump_cut, argv, project_with(probed_clip("clip-a", 0.0, dur=10.0)), monkeypatch, tmp_path)
+    assert [(s["inPoint"], s["outPoint"]) for s in out["tracks"][0]["items"]] == [(0.0, 1.0), (9.0, 10.0)]
+
+
+def test_jump_cut_spec_is_exclusive_with_keeps_and_cuts(monkeypatch, tmp_path):
+    argv = ["jump_cut.py", "--project-id", "p1", "--clip-id", "clip-a", "--spec", "x.json", "--keeps", "[[0,1]]"]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit):
+        jump_cut.main()
