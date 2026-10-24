@@ -20,9 +20,12 @@ the luminance of the topmost image under the headline's box, through its crop (`
 A carousel the app makes has no slides yet, only its images in `assets`: then one slide is made per image asset, in
 asset order, each a full-bleed image element the way the editor fills a box (its coverCrop), before the headlines.
 
-headlines: one per slide in its current order (None skips one). edit: one slide (1-based number or id): headline,
-color, size (px, bigger, smaller), align, position (top, middle, bottom), style. order: every slide once, by number
-or id. Headlines and the edit name slides as they are before the call; the order applies last.
+headlines: one per slide in its current order (None skips one), or {slide number or id: text}. edit: a slide
+(1-based number or id), a list of them or "all": headline (one slide only), color, size (px, bigger, smaller), align,
+position (top, middle, bottom), style. style alone restyles every headline the step made, and is an edit's style
+when the edit names none. order: every slide once, by number or id. Headlines and the edit name slides as they are
+before the call; the order applies last. A tall 9:16 slide gets narrower boxes clear of the apps' caption area and
+right-side buttons (TALL_BOX_Y).
 """
 import copy
 import json
@@ -52,6 +55,11 @@ SIZE_BY_LENGTH = ((40, 72, 64), (80, 50, 44), (10_000, 38, 32))
 # The box, as shares of the slide: x and width, then y and height for each position.
 BOX_X, BOX_W = 0.08, 0.84
 BOX_Y = {"top": (0.07, 0.30), "middle": (0.35, 0.30), "bottom": (0.63, 0.30)}
+# A tall 9:16 slide (h/w >= TALL) posts as a story or a reel, where the apps draw their caption and buttons over the
+# bottom and down the right: a narrower box, a top box lower and shorter, a bottom box above the caption area.
+TALL = 1.7
+TALL_BOX_W = 0.76
+TALL_BOX_Y = {"top": (0.10, 0.25), "middle": (0.35, 0.30), "bottom": (0.56, 0.20)}
 MAX_HEADLINE_CHARS = 280
 MIN_PX, MAX_PX = 12, 400
 STEPS = {"bigger": 1.25, "smaller": 0.8}
@@ -90,8 +98,10 @@ def _sizes(text):
 
 
 def _box(position, width, height):
-    y, h = BOX_Y[position]
-    return {"x": round(width * BOX_X), "y": round(height * y), "w": round(width * BOX_W), "h": round(height * h)}
+    tall = height >= TALL * width
+    y, h = (TALL_BOX_Y if tall else BOX_Y)[position]
+    bw = TALL_BOX_W if tall else BOX_W
+    return {"x": round(width * (1 - bw) / 2), "y": round(height * y), "w": round(width * bw), "h": round(height * h)}
 
 
 def _is_headline(el):
@@ -403,7 +413,7 @@ def parse_edit(raw):
     if edit is None:
         return None
     if not isinstance(edit, dict) or "slide" not in edit:
-        raise SlideError('edit is {"slide": 3, "headline": "...", "color": "red", ...}.')
+        raise SlideError('edit is {"slide": 3, "headline": "...", "color": "red", ...}; slide may be "all" or a list.')
     unknown = set(edit) - {"slide", "headline", "color", "size", "align", "position", "style"}
     if unknown:
         raise SlideError(f"edit takes slide, headline, color, size, align, position, style; not {', '.join(sorted(unknown))}.")
@@ -420,16 +430,36 @@ def parse_edit(raw):
     return edit
 
 
+def headline_texts(slides):
+    """{slide number: its headline's text, or None}: what a call with nothing to do answers."""
+    out = {}
+    for n, s in enumerate(slides or [], start=1):
+        marked = _headlines(s) if isinstance(s, dict) else []
+        out[n] = s["elements"][marked[0]]["overlay"]["props"].get("text") if marked else None
+    return out
+
+
+def _edit_targets(slides, ref):
+    if isinstance(ref, str) and ref.strip().lower() == "all":
+        return list(range(len(slides)))
+    if isinstance(ref, list):
+        if not ref:
+            raise SlideError("edit: slide lists at least one slide.")
+        return list(dict.fromkeys(_slide_index(slides, r, "edit") for r in ref))
+    return [_slide_index(slides, ref, "edit")]
+
+
 def apply(slides, *, headlines=None, edit=None, order=None, style=None, width=1080, height=1350, runtime_dir,
           assets=None, project_dir=None):
-    """(new slides, report): {changed: [slide ids], headlines: {added, replaced}, order: bool, made: n, kept: [issue]}."""
+    """(new slides, report): {changed: [slide ids], headlines: {added, replaced, restyled}, order: bool, made: n,
+    kept: [issue]}. headlines is a list (one per slide, null skips) or {slide number or id: text}."""
     if style is not None and style not in STYLES:
         raise SlideError(f"style is one of {', '.join(STYLES)}.")
     heads = parse_list(headlines, "headlines")
     edit = parse_edit(edit)
     new_order = parse_list(order, "order", numbers=True)
-    if heads is None and edit is None and new_order is None:
-        raise SlideError("Nothing to do: pass headlines, edit or order.")
+    if heads is None and edit is None and new_order is None and style is None:
+        raise SlideError("Nothing to do: pass headlines, edit, order or style.")
     made = 0
     if isinstance(slides, list) and not slides:
         slides = slides_from_assets(assets, width, height, project_dir)
@@ -437,10 +467,16 @@ def apply(slides, *, headlines=None, edit=None, order=None, style=None, width=10
     if not isinstance(slides, list) or not slides:
         raise SlideError("The project has no slides and no images. Add images to the carousel in Montaj first.")
     out = copy.deepcopy(slides)
-    changed, counts, kept = [s.get("id") for s in out] if made else [], {"added": 0, "replaced": 0}, []
+    changed, counts, kept = [s.get("id") for s in out] if made else [], {"added": 0, "replaced": 0, "restyled": 0}, []
+    if isinstance(heads, dict):
+        by_slide = [None] * len(out)
+        for ref, h in heads.items():
+            by_slide[_slide_index(slides, ref, "headlines")] = h
+        heads = by_slide
     if heads is not None:
         if not isinstance(heads, list) or len(heads) > len(out):
-            raise SlideError(f"headlines is a list of at most {len(out)} (one per slide; null skips one).")
+            raise SlideError(f"headlines is a list of at most {len(out)} (one per slide; null skips one), or "
+                             "{slide: text}.")
         texts = [None if h is None else _text(h, f"headline {i + 1}") for i, h in enumerate(heads)]
         for i, t in enumerate(texts):
             if t is None:
@@ -455,12 +491,32 @@ def apply(slides, *, headlines=None, edit=None, order=None, style=None, width=10
                 counts[what] += 1
                 if out[i].get("id") not in changed:
                     changed.append(out[i].get("id"))
+    elif style is not None and edit is None:
+        # a style alone restyles every headline the step made
+        for i, sl in enumerate(out):
+            marked = _headlines(sl)
+            if len(marked) != 1:
+                continue
+            el = copy.deepcopy(sl["elements"][marked[0]])
+            el["overlay"]["props"].update(PRESETS[_style_for(style, sl, _box_of(el), project_dir)])
+            if el != sl["elements"][marked[0]]:
+                sl["elements"][marked[0]] = el
+                counts["restyled"] += 1
+                if sl.get("id") not in changed:
+                    changed.append(sl.get("id"))
     if edit is not None:
-        i = _slide_index(out, edit["slide"], "edit")
-        before = copy.deepcopy(out[i])
-        _edit(out[i], edit, width=width, height=height, runtime_dir=runtime_dir, project_dir=project_dir, n=i + 1)
-        if out[i] != before and out[i].get("id") not in changed:
-            changed.append(out[i].get("id"))
+        if edit.get("style") is None and style is not None:
+            edit = {**edit, "style": style}
+        targets = _edit_targets(out, edit["slide"])
+        if len(targets) > 1 and edit.get("headline") is not None:
+            raise SlideError("edit: one headline text goes on one slide; use headlines for several.")
+        for i in targets:
+            if len(targets) > 1 and not _headlines(out[i]):
+                continue   # "all" restyles the headlines there are
+            before = copy.deepcopy(out[i])
+            _edit(out[i], edit, width=width, height=height, runtime_dir=runtime_dir, project_dir=project_dir, n=i + 1)
+            if out[i] != before and out[i].get("id") not in changed:
+                changed.append(out[i].get("id"))
     moved = False
     if new_order is not None:
         if not isinstance(new_order, list) or len(new_order) != len(out):

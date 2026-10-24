@@ -30,6 +30,8 @@ VERSION_MESSAGE = "version: before slides"
 STEP_LOCK_TIMEOUT = 30.0
 OFF_PX = 1.0
 MIN_CONTRAST = 3.0
+CHAR_EM = 0.6           # about this many em per character at a headline's heavy weight
+ANSWER_CAP = 300
 
 
 def _resolution(project):
@@ -66,6 +68,11 @@ def _check(slides, changed_ids, project_dir, measure_fn):
         for el in s.get("elements", []):
             if slide_text._is_headline(el):
                 todo.append((n, el))
+                props = el["overlay"]["props"]
+                longest = max((len(w) for w in str(props.get("text") or "").split()), default=0)
+                floor = slide_text._px(props.get("minFontSize"), slide_text._px(props.get("fontSize"), 32))
+                if longest * CHAR_EM * floor > float(el.get("w") or 0):
+                    issues.append(f"slide {n}: a word is too long for the box: shorten it")
                 if _hard_to_read(s, el, project_dir):
                     issues.append(f"slide {n}: the headline is hard to read on its image: style label")
     if not todo:
@@ -92,6 +99,19 @@ def _check(slides, changed_ids, project_dir, measure_fn):
         return [i for found in pool.map(one, todo) for i in found] + issues
 
 
+def _listing(slides):
+    """A call with nothing to change answers each slide's headline (null: none), within the answer's cap."""
+    texts = slide_text.headline_texts(slides if isinstance(slides, list) else [])
+    out = {"slides": {}}
+    for k, (n, t) in enumerate(texts.items()):
+        trial = {"slides": {**out["slides"], str(n): t}}
+        if len(json.dumps(trial, ensure_ascii=False)) > ANSWER_CAP - 12 and out["slides"]:
+            out["more"] = len(texts) - k
+            break
+        out = trial
+    return out
+
+
 def run(project_path, *, headlines=None, edit=None, order=None, style=None, detail=False,
         measure_fn=look_step.measure, runtime_dir=None):
     project_path = os.path.abspath(project_path)
@@ -105,6 +125,8 @@ def run(project_path, *, headlines=None, edit=None, order=None, style=None, deta
         fail("not_a_carousel", "slides works on a carousel project.")
     read_rev = project_revisions.revision_of(project.get("slides"))
     width, height = _resolution(project)
+    if all(v in (None, "", []) for v in (headlines, edit, order, style)):
+        return _listing(project.get("slides"))
     try:
         new, report = slide_text.apply(project.get("slides"), headlines=headlines, edit=edit, order=order, style=style,
                                        width=width, height=height, runtime_dir=runtime_dir or render_runtime_dir(),
@@ -134,7 +156,7 @@ def run(project_path, *, headlines=None, edit=None, order=None, style=None, deta
     out = {"changed": numbers}
     if report["made"]:
         out["made"] = report["made"]
-    if report["headlines"]["added"] or report["headlines"]["replaced"]:
+    if any(report["headlines"].values()):
         out["headlines"] = {k: v for k, v in report["headlines"].items() if v}
     if report["order"]:
         out["order"] = True

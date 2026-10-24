@@ -390,3 +390,66 @@ def test_a_headline_hard_to_read_on_its_image_is_said_and_its_colour_kept(tmp_pa
     assert headline(proj(d)["slides"][0])["overlay"]["props"]["color"] == "#ffffff"
     out = run(d, edit=json.dumps({"slide": 1, "style": "label"}))
     assert "issues" not in out, "the card is its own background"
+
+
+# ── review 2 should-fixes ─────────────────────────────────────────────────────────────────────────────────────────
+
+def test_a_call_with_nothing_to_change_answers_each_slides_headline(tmp_path):
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS[:2]))
+    before = proj(d)
+    assert run(d) == {"slides": {"1": HEADS[0], "2": HEADS[1], "3": None, "4": None, "5": None}}
+    assert proj(d) == before
+
+
+def test_a_style_alone_restyles_every_headline_and_edit_takes_all_or_a_list(tmp_path):
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS[:3]))
+    out = run(d, style="label")
+    assert out["changed"] == [1, 2, 3] and out["headlines"] == {"restyled": 3}
+    assert all(headline(s)["overlay"]["props"]["bgColor"] == "#ffffff" for s in proj(d)["slides"][:3])
+    out = run(d, edit=json.dumps({"slide": "all", "color": "#00ffff"}))
+    assert out["changed"] == [1, 2, 3] and headline(proj(d)["slides"][3]) is None, "all edits the headlines there are"
+    out = run(d, edit=json.dumps({"slide": [1, 3], "align": "left"}), style="clean")
+    s = proj(d)["slides"]
+    assert out["changed"] == [1, 3] and headline(s[0])["overlay"]["props"]["textAlign"] == "left"
+    assert headline(s[2])["overlay"]["props"]["color"] == slide_text.PRESETS["clean"]["color"], "the call's style, for the edit"
+    assert headline(s[1])["overlay"]["props"]["color"] == "#00ffff", "slide 2 is not in the list"
+
+
+def test_headlines_by_slide_id_land_on_that_slide_whatever_the_order(tmp_path):
+    d = make_carousel(tmp_path)
+    ids = [s["id"] for s in proj(d)["slides"]]
+    out = run(d, headlines=json.dumps({ids[3]: "Fourth", "1": "First"}))
+    s = proj(d)["slides"]
+    assert out["changed"] == [1, 4] and headline(s[3])["overlay"]["props"]["text"] == "Fourth"
+    assert headline(s[0])["overlay"]["props"]["text"] == "First"
+
+
+def test_a_tall_slide_keeps_its_headline_clear_of_the_apps_caption_and_buttons(tmp_path):
+    d = make_carousel(tmp_path)
+    p = proj(d)
+    p["settings"]["resolution"] = [1080, 1920]
+    (d / "project.json").write_text(json.dumps(p))
+    run(d, headlines=json.dumps(["A hook"]))
+    run(d, edit=json.dumps({"slide": 1, "position": "bottom"}))
+    el = headline(proj(d)["slides"][0])
+    assert (el["x"], el["w"]) == (round(1080 * 0.12), round(1080 * 0.76))
+    assert (el["y"], el["h"]) == (round(1920 * 0.56), round(1920 * 0.20)), "bottom ends at 76%, above the caption area"
+
+
+def test_a_word_too_long_for_the_box_is_said(tmp_path):
+    d = make_carousel(tmp_path)
+    out = run(d, headlines=json.dumps(["Supercalifragilisticexpialidocious"]))
+    assert out["issues"] == ["slide 1: a word is too long for the box: shorten it"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="needs node and the render bundle")
+def test_a_headline_too_long_for_a_square_slide_does_not_fit_through_the_real_measurer(tmp_path):
+    d = make_carousel(tmp_path)
+    p = proj(d)
+    p["settings"]["resolution"] = [1080, 1080]
+    (d / "project.json").write_text(json.dumps(p))
+    long = " ".join(["WMWM MWMW"] * 27)    # 269 wide capitals: past the box even at the table's floor size
+    out = run(d, headlines=json.dumps([long]), measure_fn=look.measure)
+    assert "slide 1: the headline does not fit its box at its smallest size: shorten it" in out["issues"], out
