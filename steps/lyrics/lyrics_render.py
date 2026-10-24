@@ -4,7 +4,7 @@
 Takes a caption track JSON (from lyrics_sync / caption) and an audio file, and produces
 an MP4 with word-by-word accumulated text overlaid on a solid-color or video background.
 """
-import json, ntpath, os, sys, argparse, subprocess
+import json, ntpath, os, re, sys, argparse, subprocess
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
@@ -44,6 +44,23 @@ def _find_fontfile():
         if _isfile(path):
             return path
     return None
+
+
+# ---------------------------------------------------------------------------
+# Colour arguments
+# ---------------------------------------------------------------------------
+
+# An ffmpeg colour: a name or hex (#RRGGBB[AA], 0xRRGGBB[AA]), optionally @alpha. Both colour flags are spliced
+# unquoted into the filter graph (fontcolor=, color=c=), where a `,` `:` `;` or `[` would start another option or
+# filter, so nothing else gets through (§563).
+_COLOR = re.compile(r"(?:#|0x)?[A-Za-z0-9]+(?:@[0-9]*\.?[0-9]+)?")
+
+
+def _ffmpeg_color(value: str) -> str:
+    if not _COLOR.fullmatch(value):
+        raise argparse.ArgumentTypeError(
+            f"invalid colour {value!r}: use a colour name or #RRGGBB, optionally with @alpha")
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +356,7 @@ def main():
                         help="Song audio file")
     parser.add_argument("--input",        default=None,
                         help="Background video to loop. If omitted, uses a solid color.")
-    parser.add_argument("--bg-color",     default="black",
+    parser.add_argument("--bg-color",     type=_ffmpeg_color, default="black",
                         help="Background color when --input is omitted (default: black)")
     parser.add_argument("--width",        type=int, default=720,
                         help="Output width in pixels (default: 720)")
@@ -349,7 +366,7 @@ def main():
                         help="Output frame rate (default: 30)")
     parser.add_argument("--fontsize",     type=int, default=72,
                         help="Caption font size (default: 72)")
-    parser.add_argument("--color",        default="auto",
+    parser.add_argument("--color",        type=_ffmpeg_color, default="auto",
                         help="Caption text color, or 'auto' to detect from video (default: auto)")
     parser.add_argument("--position",     default="center",
                         choices=list(_POSITIONS.keys()),

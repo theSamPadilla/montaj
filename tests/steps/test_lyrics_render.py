@@ -277,3 +277,31 @@ def test_find_fontfile_windows_arial(monkeypatch):
         ["hi"], 0, 1, 40, "white", "(w-text_w)/2", "center", 1080, 48, arial, False)
     expected = ffmpeg_filter_path(arial)
     assert lines[0].startswith(f"drawtext=fontfile={expected}:")
+
+
+# --- colours are colour names, never filter text (§563) ---------------------
+
+@pytest.mark.parametrize("value", ["white", "black", "#FFCC00", "0xFFCC00", "white@0.5", "#00000080"])
+def test_ffmpeg_color_accepts_colour_syntax(value):
+    assert _mod._ffmpeg_color(value) == value
+
+
+@pytest.mark.parametrize("value", ["white,null", "white:x=1", "white;null", "[a]", "white'", "", "white dim"])
+def test_ffmpeg_color_refuses_filter_syntax(value):
+    import argparse
+    with pytest.raises(argparse.ArgumentTypeError):
+        _mod._ffmpeg_color(value)
+
+
+@pytest.mark.parametrize("flag", ["--color", "--bg-color"])
+def test_a_colour_with_filter_syntax_fails_in_argparse(captions_json, tmp_path, flag):
+    proc = run_step(
+        "lyrics_render.py",
+        "--captions", str(captions_json),
+        "--audio",    str(captions_json),
+        flag,         "white,null",
+        "--out",      str(tmp_path / "never.mp4"),
+    )
+    assert proc.returncode == 2
+    assert "invalid colour" in proc.stderr
+    assert not (tmp_path / "never.mp4").exists()
