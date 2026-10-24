@@ -25,14 +25,14 @@ def _filler_matcher(language: str):
     return re.compile(_FILLERS_BY_LANG.get(lang, _FILLERS_BY_LANG["en"]), re.IGNORECASE)
 
 
-filler_matcher = _filler_matcher   # public name: clean_cut matches fillers with the same sets
+filler_matcher = _filler_matcher   # public name: cut matches fillers with the same sets
 
 
 def spec_keeps(keeps, words, fillers):
     """A trim spec's keeps with filler words cut and the head snapped to the first other word.
 
     words: {text, start, end} in source time; fillers: a compiled pattern (filler_matcher).
-    Returns (keeps, filler cuts with their text, head trim [old, new] or None). clean_cut calls
+    Returns (keeps, filler cuts with their text, head trim [old, new] or None). cut calls
     this with a clip's transcript words."""
     # Identify filler cuts in original timeline. filler_cuts stays a bare
     # [[start, end], ...] list — trim_spec.merge destructures plain pairs —

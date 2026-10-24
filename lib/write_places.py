@@ -1,7 +1,7 @@
 """Where a step may write a file it names itself, outside any `out` the caller gave.
 
 The deny predicate behind serve's export and beside-input checks (serve/out_guard.py), here so a step can use
-it too: clean_cut writes a clip's transcript beside the clip, which can sit anywhere on disk. serve/out_guard.py
+it too: cut writes a clip's transcript beside the clip, which can sit anywhere on disk. serve/out_guard.py
 keeps its own `_real_home`, `_serve_home` and `_is_darwin` (its tests patch them) and passes them in.
 """
 import json

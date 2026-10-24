@@ -30,7 +30,7 @@ def speech_regions(words, max_word_gap=0.10, sentence_edge=0.05):
 
 def source_keeps(words, duration, max_word_gap=0.10, sentence_edge=0.05):
     """The raw-file keeps: speech regions of source-time words, clamped to [0, duration]. No speech
-    keeps the whole file. clean_cut calls this with a clip's transcript words."""
+    keeps the whole file. cut calls this with a clip's transcript words."""
     seg_regions = speech_regions(words, max_word_gap, sentence_edge)
     if not seg_regions:
         return [[0.0, duration]]

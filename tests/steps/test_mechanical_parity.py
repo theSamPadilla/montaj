@@ -1,5 +1,5 @@
 """§558 E2: rm_nonspeech, rm_fillers and jump_cut give the same output after their logic moved into pure
-functions clean_cut reuses.
+functions the cut step reuses.
 
 Each step's real main() runs in process with only its I/O stubbed (whisper, ffmpeg, the project file). The
 expected outputs in tests/fixtures/mechanical_parity.json were captured from the code BEFORE the refactor

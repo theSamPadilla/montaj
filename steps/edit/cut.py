@@ -1,0 +1,868 @@
+#!/usr/bin/env python3
+"""Cut a talking-head project in two calls (§558): a plan, then its apply.
+
+Without `plan`: transcribes any clip on the speech track that has no transcript (the only file it may write
+beside a clip), runs the mechanical pass (rm_nonspeech then rm_fillers keeps, put on the timeline with
+jump_cut) in memory, chooses one take per section by the select-takes rules (lib/take_select.py), and writes
+the result as an editable plan, cut-plan.md in the project folder, in speech_edit's text format: the kept
+rows under `## Cut`, every removed row under `## Unused` tagged with why. Nothing in project.json changes.
+
+With `plan` (that file, edited or not, or its text): rebuilds the same in-memory base from the same project
+and transcripts (refusing a plan made from a speech track or transcripts that have changed since: the plan
+carries speech_text's stamp of the base), and applies the plan through speech_edit's save path
+(lib/speech_apply.apply): one guarded write, a version first, every other layer carried from the project as it
+was. The write records the cut (`cleanCut`). With no usable speech, the plan removes silences only (waveform_trim
+keeps through jump_cut). Each call prints one short JSON answer.
+"""
+import argparse, contextlib, copy, hashlib, io, json, os, re, shutil, sys, tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from common import fail, get_duration, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
+from ai_video import save_project_changes
+from lib import project_revisions, speech_apply, speech_text, sync_clash, write_places
+from lib.project_lock import project_lock_or_fail
+from lib.project_tracks import normalize_tracks
+from lib.project_versions import commit_version, is_own_repo
+from lib.speech_apply import apply
+from lib.speech_build import DEFAULT_FEEL, FEELS
+from lib.speech_carry import TimeMap, carry
+from lib.speech_lines import _ends_sentence, load_words, norm, sidecar_for
+from lib.take_select import BREAK_GAP_S, Selection, Unit, select
+from steps.audio import waveform_trim
+from steps.edit import jump_cut
+from steps.speech import rm_fillers, rm_nonspeech
+from steps.speech.transcribe import transcribe as transcribe_file
+
+VERSION_MESSAGE = "version: before cut"
+PLAN_FILE = "cut-plan.md"
+PLAN_HELP = ("Edit, then run cut with plan: move a row from ## Unused into ## Cut to keep it, delete a row "
+             "from ## Cut to drop it, move rows to reorder. A * row is the whole of a trimmed row: put it in "
+             "place of that row.")
+# Why a row is in a plan's ## Unused.
+WHYS = ("retake", "false-start", "repeat", "restart", "abandoned", "filler-only", "pause", "earlier")
+# Languages written without spaces between words: take selection would compare characters, so it is off.
+NON_SPACED = {"ja", "zh", "yue", "th", "lo", "km", "my", "bo", "ko"}
+REMOVED_CAP_BYTES = 1500
+# The marker a cut leaves on the project, written in the same guarded write as the cut. A project carrying it
+# is not cut again unless `recut` is passed: a second pass would cut the first pass's output.
+MARKER_KEY = "cleanCut"
+STEP_VERSION = 1
+TEXT_CAP_BYTES = 3000
+HESITATION_S = 0.5          # a pause this long inside a take counts against it (select-takes: less dead air)
+UNIT_MAX_TOKENS = 40        # a sentence the transcript did not punctuate stops growing here
+SILENCE_THRESHOLD_DB = -30.0  # waveform_trim's defaults
+SILENCE_MIN_S = 0.3
+_NON_MEDIA = ("overlay", "image", "text", "caption")
+# A transcription that ran and failed falls back to silence removal; any other error (no model yet, a missing
+# file) fails the step with that error.
+FALLBACK_ERRORS = ("transcription_failed", "transcription_timeout")
+
+
+def _resolve(path, project_dir):
+    return path if os.path.isabs(path) else os.path.join(project_dir, path)
+
+
+def _resolved(item, project_dir):
+    out = dict(item)
+    for k in ("src", "normalizedSrc"):
+        if isinstance(out.get(k), str) and out[k]:
+            out[k] = _resolve(out[k], project_dir)
+    return out
+
+
+def _media(track):
+    return [it for it in track["items"] if it.get("src") and it.get("type") not in _NON_MEDIA]
+
+
+def _load(project_path):
+    with open(project_path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _quiet(fn, *a, **k):
+    """Run fn with its stderr held back. (ok, result): a fail() inside it is (False, its error)."""
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            return True, fn(*a, **k)
+    except SystemExit:
+        lines = err.getvalue().strip().splitlines()
+        try:
+            return False, json.loads(lines[-1])
+        except (ValueError, IndexError):
+            return False, {"error": "failed", "message": err.getvalue().strip()[-300:]}
+
+
+def _speech_track_id(project, project_dir):
+    """The track with the most seconds of transcribed clips (a fresh clip counts its source length), else
+    the first track."""
+    tracks = normalize_tracks(project).get("tracks", [])
+    if not tracks:
+        fail("no_tracks", "The project has no tracks to cut")
+    best, best_s = None, -1.0
+    for t in tracks:
+        clips = [it for it in _media(t) if sidecar_for(_resolved(it, project_dir))]
+        if not clips:
+            continue
+        secs = sum(max(0.0, float(it.get("outPoint", 0)) - float(it.get("inPoint", 0)))
+                   if "inPoint" in it and "outPoint" in it else float(it.get("sourceDuration") or 0) for it in clips)
+        if secs > best_s:
+            best, best_s = t["id"], secs
+    return best if best is not None else tracks[0]["id"]
+
+
+def _track(project, track_id):
+    for i, t in enumerate(project["tracks"]):
+        if t["id"] == track_id:
+            return i, t
+    fail("project_changed", f"Track {track_id} is gone from the project: run cut again")
+
+
+def _stem_clash(track, project_dir):
+    """Fail when two clips of the track share a transcript name (`clip.mov` and `clip.mp4` both read
+    `clip.json`): one would be cut with the other's words."""
+    by_stem = {}
+    for it in _media(track):
+        src = os.path.abspath(_resolve(it["src"], project_dir))
+        by_stem.setdefault(os.path.normcase(os.path.splitext(src)[0]), set()).add(src)
+    for stem, srcs in by_stem.items():
+        if len(srcs) > 1:
+            names = ", ".join(sorted(os.path.basename(x) for x in srcs))
+            fail("transcript_name_clash", f"Clips {names} would share the transcript {os.path.basename(stem)}.json. "
+                                          "Rename one so each clip has its own name, then run cut again.")
+
+
+def _sidecar_refusal(src, project_path, project_dir):
+    """Why the transcript of `src` may not be written at `<stem>.json`, or None."""
+    dest = os.path.splitext(src)[0] + ".json"
+    if write_places.real(dest) == write_places.real(project_path):
+        return "its transcript would replace project.json"
+    if os.path.lexists(dest):
+        return f"{os.path.basename(dest)} already exists and is not a transcript"
+    if not write_places.sidecar_folder_ok(os.path.dirname(dest) or ".", project_dir):
+        return "its folder is not a place a transcript may be written"
+    return None
+
+
+def _install_sidecar(tmp_json, dest):
+    """Put the transcript at dest, never over a file there (O_EXCL). False when one appeared meanwhile."""
+    data = Path(tmp_json).read_bytes()
+    try:
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    return True
+
+
+def _transcribe_missing(project, track_id, project_path, project_dir, model, language):
+    """Transcribe every clip of the track with no transcript. Whisper writes into a temp folder; only the
+    `.json` is installed, as `<stem>.json` beside the clip's src as the project holds it (where speech_text
+    looks), and never over an existing file. The `.srt` is never written. A clip whose transcript may not be
+    written there is left untranscribed, with a warning. (transcribed clip ids, failed clip ids, warnings)."""
+    _, track = _track(normalize_tracks(project), track_id)
+    done, failed, warnings, seen, failed_srcs = [], [], [], {}, set()
+    for it in _media(track):
+        r = _resolved(it, project_dir)
+        if sidecar_for(r):
+            continue
+        src = r["src"]
+        if src not in seen:
+            why = _sidecar_refusal(src, project_path, project_dir)
+            if why:
+                seen[src] = False
+                warnings.append(f"not transcribed {os.path.basename(src)}: {why}")
+            else:
+                tmp = tempfile.mkdtemp(prefix="montaj-cut-")
+                try:
+                    prefix = os.path.join(tmp, "transcript")
+                    ok, res = _quiet(transcribe_file, src, prefix, model, language)
+                    if not ok and res.get("error") not in FALLBACK_ERRORS:
+                        # no model yet, a missing file, a full disk: the step fails as transcribe would
+                        fail(res.get("error", "transcription_failed"), res.get("message", ""))
+                    if not ok:
+                        warnings.append(f"transcription failed for {os.path.basename(src)}: {res.get('message', '')}"[:300])
+                    elif not _install_sidecar(prefix + ".json", os.path.splitext(src)[0] + ".json"):
+                        ok = False
+                        warnings.append(f"not transcribed {os.path.basename(src)}: its transcript file appeared meanwhile")
+                    seen[src] = ok
+                    if not ok and res.get("error") in FALLBACK_ERRORS:
+                        failed_srcs.add(src)
+                finally:
+                    shutil.rmtree(tmp, ignore_errors=True)
+        if seen[src]:
+            done.append(it["id"])
+        elif src in failed_srcs:
+            failed.append(it["id"])
+    return done, failed, warnings
+
+
+def _window(item, src):
+    if "inPoint" in item and "outPoint" in item:
+        return float(item["inPoint"]), float(item["outPoint"])
+    return 0.0, float(item.get("sourceDuration") or get_duration(src))
+
+
+def _seconds(track, project_dir):
+    total = 0.0
+    for it in _media(track):
+        lo, hi = _window(it, _resolve(it["src"], project_dir))
+        total += max(0.0, hi - lo) / float(it.get("speed") or 1)
+    return total
+
+
+def _cuttable(item):
+    return item.get("speed", 1) == 1 and not item.get("keyframes") and not item.get("loop")
+
+
+def _window_has(keeps, lo, hi):
+    return any(min(e, hi) - max(s, lo) >= 0.05 for s, e in keeps)
+
+
+def _in_window(keeps, lo, hi):
+    """The keeps clipped to the clip's window: jump_cut refuses a keep wholly outside it (a clip already cut)."""
+    return [[max(s, lo), min(e, hi)] for s, e in keeps if min(e, hi) - max(s, lo) > 0]
+
+
+def _cut(work, project_path, ti, cid, src, keeps, lineage):
+    """jump_cut one clip in memory; each new piece's lineage is the clip it came from (as on disk)."""
+    before = {x["id"] for x in work["tracks"][ti]["items"]}
+    jump_cut.cut_clip(work, project_path, cid, spec={"input": src, "keeps": keeps}, track_index=ti)
+    origin = lineage.get(cid, cid)
+    for x in work["tracks"][ti]["items"]:
+        if x["id"] not in before:
+            lineage[x["id"]] = origin
+
+
+def _mechanical(work, project_path, ti, project_dir, fillers, lineage):
+    """rm_nonspeech then rm_fillers keeps per clip, from the clip's one transcript, put on the timeline with
+    jump_cut, in memory. fillers: rm_fillers' compiled pattern. (filler words removed, warnings)."""
+    removed, warnings = 0, []
+    ids = [it["id"] for it in _media(work["tracks"][ti])]
+    for cid in ids:
+        it = next(x for x in work["tracks"][ti]["items"] if x["id"] == cid)
+        r = _resolved(it, project_dir)
+        sidecar = sidecar_for(r)
+        if not sidecar:
+            continue
+        if not _cuttable(it):
+            warnings.append(f"no filler or pause cut on {cid}: it has keyframes, a speed change or a loop")
+            continue
+        words = [{"text": w.text, "start": w.start, "end": w.end} for w in load_words(sidecar)]
+        if not words:
+            continue
+        duration = float(it.get("sourceDuration") or get_duration(r["src"]))
+        keeps = rm_nonspeech.source_keeps(words, duration)
+        keeps, cuts, _ = rm_fillers.spec_keeps(keeps, words, fillers)
+        lo, hi = _window(it, r["src"])
+        if not _window_has(keeps, lo, hi):
+            continue
+        removed += sum(1 for c in cuts if lo <= (c["start"] + c["end"]) / 2 < hi)
+        _cut(work, project_path, ti, cid, it["src"], _in_window(keeps, lo, hi), lineage)
+    return removed, warnings
+
+
+def _silence_cut(work, project_path, ti, project_dir, lineage, untranscribed_only=False):
+    """waveform_trim keeps per clip through jump_cut, in memory (every clip, or only those with no transcript).
+    Returns warnings."""
+    warnings = []
+    for cid in [it["id"] for it in _media(work["tracks"][ti])]:
+        it = next(x for x in work["tracks"][ti]["items"] if x["id"] == cid)
+        if untranscribed_only and sidecar_for(_resolved(it, project_dir)):
+            continue
+        if not _cuttable(it):
+            warnings.append(f"no silence cut on {cid}: it has keyframes, a speed change or a loop")
+            continue
+        src = _resolve(it["src"], project_dir)
+        ok, spec = _quiet(waveform_trim.process_one, src, SILENCE_THRESHOLD_DB, SILENCE_MIN_S)
+        if not ok:
+            warnings.append(f"no silence cut on {cid}: {spec.get('message', spec.get('error', ''))}"[:300])
+            continue
+        lo, hi = _window(it, src)
+        if not _window_has(spec["keeps"], lo, hi):
+            continue
+        _cut(work, project_path, ti, cid, it["src"], _in_window(spec["keeps"], lo, hi), lineage)
+    return warnings
+
+
+def _origin(disk, track_id, project_dir):
+    """The disk project with the speech track's fresh clips (no inPoint/outPoint yet, as project creation
+    leaves them) laid end to end over their whole source, the timeline jump_cut cuts them from. The project
+    the other layers are carried from; never written."""
+    origin = normalize_tracks(copy.deepcopy(disk))
+    _, track = _track(origin, track_id)
+    shift = 0.0
+    for it in sorted(track["items"], key=lambda x: float(x.get("start", 0))):
+        if "start" in it:
+            it["start"] = round(float(it["start"]) + shift, 6)
+        if "end" in it:
+            it["end"] = round(float(it["end"]) + shift, 6)
+        if it in _media(track) and not ("inPoint" in it and "outPoint" in it):
+            dur = float(it.get("sourceDuration") or get_duration(_resolve(it["src"], project_dir)))
+            it["inPoint"], it["outPoint"] = 0.0, dur
+            it["end"] = round(float(it["start"]) + dur, 6)
+            shift += dur
+    return origin
+
+
+def _carried(origin, work, ti, lineage, project_dir):
+    """`origin` with the speech track replaced by work's, every other layer carried through speech_carry by
+    the one map from origin's speech track to work's (the silence path; speech mode carries inside apply)."""
+    items = work["tracks"][ti]["items"]
+    prov = {it["id"]: {"old_id": lineage.get(it["id"], it["id"])} for it in items}
+    fps = (origin.get("settings") or {}).get("fps") or 30
+    tmap = TimeMap(origin["tracks"][ti]["items"], items, prov, project_dir=project_dir)
+    candidate, report = carry(origin, ti, items, tmap, fps)
+    return candidate, report.as_dict()
+
+
+# ── units: one spoken sentence each ──────────────────────────────────────────
+
+def _line_key(line_id):
+    letters = line_id.rstrip("0123456789")
+    return letters, int(line_id[len(letters):])
+
+
+def _units(d, is_filler):
+    """[(Unit, rows, attached)] in cut order. rows: (cut index, Row) whose words make the unit, in order;
+    attached: the non-speech rows right before it. A unit is a run of consecutive rows of one source line,
+    joined with the next line of the same source while the sentence has not ended. Plus the trailing rows."""
+    occs, pending = [], []
+    for i, r in enumerate(d.cut):
+        if r.kind != "speech":
+            pending.append(r)
+            continue
+        if occs and occs[-1]["line"] == r.line and not pending:
+            occs[-1]["rows"].append((i, r))
+            continue
+        occs.append({"line": r.line, "rows": [(i, r)], "attached": pending})
+        pending = []
+    units = []
+    for oc in occs:
+        if units:
+            last = units[-1]
+            lw = last["rows"][-1][1].words
+            pl, pn = _line_key(last["line"])
+            cl, cn = _line_key(oc["line"])
+            if (lw and not _ends_sentence(lw[-1].text) and not oc["attached"] and cl == pl and cn == pn + 1
+                    and sum(len(r.words) for _, r in last["rows"]) < UNIT_MAX_TOKENS):
+                last["rows"] += oc["rows"]
+                last["line"] = oc["line"]
+                last["lines"].append(oc["line"])
+                continue
+        units.append({"line": oc["line"], "lines": [oc["line"]], "rows": list(oc["rows"]), "attached": oc["attached"]})
+    out = []
+    for u in units:
+        words = [w for _, r in u["rows"] for w in r.words]
+        fillers = 0
+        for lid in dict.fromkeys(u["lines"]):
+            played = [w.idx for _, r in u["rows"] if r.line == lid for w in r.words]
+            ln = d.lines.get(lid)
+            if ln and played:
+                lo, hi = min(played), max(played)
+                fillers += sum(1 for w in ln.words if lo <= w.idx <= hi and w.norm and is_filler(w.norm))
+        hes = sum(1 for a, b in zip(words, words[1:]) if b.start - a.end >= HESITATION_S)
+        # a timing break before a word: it opens another source line, or follows a pause in the source
+        breaks, pos, prev_line = set(), 0, None
+        for _, r in u["rows"]:
+            for k, w in enumerate(r.words):
+                if pos and ((k == 0 and r.line != prev_line) or w.start - words[pos - 1].end >= BREAK_GAP_S):
+                    breaks.add(pos)
+                pos += 1
+            prev_line = r.line
+        clip = _line_key(u["line"])[0]
+        out.append((Unit([w.text for w in words], fillers=fillers, hesitations=hes, clip=clip, breaks=breaks),
+                    u["rows"], u["attached"]))
+    return out, pending
+
+
+def _filler_test(language):
+    rx = rm_fillers.filler_matcher(language)
+    return lambda tok: bool(rx.match(tok))
+
+
+# ── the edited text ──────────────────────────────────────────────────────────
+
+def _other_row(r):
+    if r.kind == "gap":
+        return f"-- gap {r.dur:.2f}"
+    if r.kind in ("nospeech", "notranscript"):
+        what = "no speech" if r.kind == "nospeech" else "no transcript"
+        return f"-- {r.label} {r.t0:.2f}-{r.t1:.2f} {what}"
+    return f"-- image {r.label} {r.dur:.2f}"
+
+
+def _trimmed(row, drop):
+    """The row without the word positions in `drop` (its own positions), pause markers kept where their
+    words are."""
+    keep = [k for k in range(len(row.words)) if k not in drop]
+    if not keep:
+        return None
+    new_pos = {k: n for n, k in enumerate(keep)}
+    pauses = {}
+    for p, v in row.pauses.items():
+        if p == len(row.words):
+            pauses[len(keep)] = v
+        elif p in new_pos:
+            pauses[new_pos[p]] = v
+    return speech_text.Row("speech", line=row.line, words=[row.words[k] for k in keep], pauses=pauses,
+                           item_ids=row.item_ids, folded=row.folded)
+
+
+# ── the plan ─────────────────────────────────────────────────────────────────
+
+def _row_line(row, star=False):
+    body = speech_text._row_text(row)
+    return f"{'*' if star else ''}{row.line}{' ' + body if body else ''}"
+
+
+def _timer(origin, work, ti, lineage):
+    """Seconds on the timeline as it is now (before the cut) of a base row's first word."""
+    by_id = {it["id"]: it for it in origin["tracks"][ti]["items"]}
+    base = {it["id"]: it for it in work["tracks"][ti]["items"]}
+
+    def at(item_id, s):
+        it = by_id.get(lineage.get(item_id, item_id)) or base.get(item_id)
+        if it is None:
+            return 0.0
+        return max(0.0, float(it.get("start", 0)) + (s - float(it.get("inPoint", 0))) / float(it.get("speed") or 1))
+
+    def of_source(src, s):
+        for it in by_id.values():
+            if it.get("src") == src and float(it.get("inPoint", 0)) <= s < float(it.get("outPoint", 0)):
+                return at(it["id"], s)
+        return None
+    return at, of_source
+
+
+def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, project_dir, is_filler):
+    """The plan: speech_edit's text format. `## Cut` holds the kept rows in narrative order (each kept take at
+    its section's first appearance, its repeated or restarted words deleted), each tagged [time]; `## Unused`
+    every removed take, one group of rows per take (a blank line between), each row tagged [time why]. A row
+    of a kept take that keeps some words is listed whole, marked `*`. Times are of the timeline as it is now.
+    Line ids are the source's (lib/speech_lines), so the same transcript gives the same ids.
+    Returns (text, kept rows [(id, t, words)], removed takes [(id, t, words, why)])."""
+    home = {ui: s_i for s_i, section in enumerate(sel.sections) for ui in section}
+    for ui in range(len(units) - 1, -1, -1):
+        if ui not in home:
+            home[ui] = home.get(ui + 1, len(sel.sections) - 1)
+    head = speech_text.render(d, title, "none").split("\n")
+    cut_at = head.index("## Cut")
+    out = [head[0], f"<!-- montaj cut plan v1 · language {language} · max-pause {max_pause:.2f} -->",
+           f"<!-- {PLAN_HELP} -->"] + head[1:cut_at + 1] + [""]
+    kept, groups = [], []          # groups: (t, why, [plan rows], answer words or None)
+
+    def t_of(row):
+        return round(at(row.item_ids[0], row.words[0].start), 1) if row.item_ids and row.words else 0.0
+
+    def words(rows):
+        return " ".join(w.text for r in rows for w in r.words)
+
+    for s_i in range(len(sel.sections)):
+        for ui in range(len(units)):
+            if home[ui] == s_i:
+                out += [_other_row(r) for r in units[ui][2]]
+        ui = sel.kept[s_i]
+        drop, pos, lost = sel.drop.get(ui, set()), 0, []
+        for _, row in units[ui][1]:
+            mine = {k - pos for k in drop if pos <= k < pos + len(row.words)}
+            pos += len(row.words)
+            trimmed = _trimmed(row, mine) if mine else row
+            if mine:
+                lost.append(f"{_row_line(row, star=trimmed is not None)} [{t_of(row):.1f} {sel.why.get(ui, 'repeat')}]")
+            if trimmed is not None:
+                out.append(f"{_row_line(trimmed)} [{t_of(row):.1f}]")
+                kept.append((row.line, t_of(row), " ".join(w.text for w in trimmed.words)))
+        if lost:
+            gone = [w for k, w in enumerate(units[ui][0].words) if k in drop]
+            groups.append((t_of(units[ui][1][0][1]), sel.why.get(ui, "repeat"), lost,
+                           (units[ui][1][0][1].line, " ".join(gone))))
+    out += [_other_row(r) for r in trailing]
+
+    for ui in sel.losers:
+        rows = [r for _, r in units[ui][1]]
+        why = sel.why.get(ui, "retake")
+        groups.append((t_of(rows[0]), why, [f"{_row_line(r)} [{t_of(r):.1f} {why}]" for r in rows],
+                       (rows[0].line, words(rows))))
+    for ln in d.unused:
+        if ln.id in d.partly or not ln.words:
+            continue        # a line partly in the cut lost only fillers, which the counts carry
+        src = next((s for s, letter in d.letters.items() if ln.id[:len(letter)] == letter
+                    and ln.id[len(letter):].isdigit()), None)
+        src = src if src is None or os.path.isabs(src) else os.path.join(project_dir, src)
+        t = of_source(src, ln.words[0].start) if src else None
+        text = " ".join(w.text for w in ln.words)
+        if t is None:
+            # not on the timeline before this cut either (an earlier cut took it): listed to restore, not counted
+            groups.append((float("inf"), "earlier", [f"{ln.id} {text} [earlier]"], None))
+            continue
+        why = "filler-only" if all(is_filler(w.norm) for w in ln.words if w.norm) else "pause"
+        groups.append((round(t, 1), why, [f"{ln.id} {text} [{t:.1f} {why}]"], (ln.id, text)))
+    groups.sort(key=lambda g: (g[0], g[2][0]))
+    out += ["", "## Unused"]
+    for _, _, rows, _ in groups:
+        out += [""] + rows
+    removed = [(ans[0], t, ans[1], why) for t, why, _, ans in groups if ans is not None]
+    return "\n".join(out) + "\n", kept, removed
+
+
+_TAG = re.compile(r"\s\[(\d+(?:\.\d+)?)?(?:\s?(" + "|".join(WHYS) + r"))?\]\s*$")
+
+
+def _plan_meta(text):
+    """(language, max-pause) from a plan's second comment, or (None, None)."""
+    for raw in text.splitlines()[:4]:
+        m = re.match(r"^<!--\s*montaj cut plan v1 · language (\S+) · max-pause (\d+(?:\.\d+)?)\s*-->\s*$", raw.strip())
+        if m:
+            return m.group(1), float(m.group(2))
+    return None, None
+
+
+def _untagged(text):
+    """The plan as speech_edit reads it: the [time why] tags gone. Returns (text, {why: takes left in Unused}),
+    a take being a group of rows between blank lines."""
+    out, section, why_left, group = [], None, {}, set()
+
+    def close():
+        for why in group:
+            if why != "earlier":
+                why_left[why] = why_left.get(why, 0) + 1
+        group.clear()
+    for raw in text.splitlines():
+        s = raw.strip()
+        if s.startswith("## "):
+            close()
+            section = s[3:].strip().lower()
+        elif not s:
+            close()
+        m = _TAG.search(raw) if (s and not s.startswith(("<!--", "#", "--"))) else None
+        if m:
+            if section == "unused" and m.group(2):
+                group.add(m.group(2))
+            raw = raw[:m.start()]
+        out.append(raw)
+    close()
+    return "\n".join(out) + "\n", why_left
+
+
+def _read_plan(value, project_dir):
+    """The plan text: the path of a plan file inside the project folder, or the plan itself."""
+    if value.lstrip().startswith("<!--"):
+        return value
+    path = os.path.abspath(_resolve(value, project_dir))
+    if not write_places.within(write_places.real(path), write_places.real(project_dir)) or not os.path.isfile(path):
+        fail("invalid_params", "plan must be the plan's text, or the path of a plan file in the project folder")
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _write_plan(project_path, project_id, text):
+    """Write cut-plan.md in the project folder; with Studio sync on, checked against the open clashes under
+    the project lock and written in the same hold (as speech_text writes speech-text.md)."""
+    out_path = os.path.join(os.path.dirname(project_path), PLAN_FILE)
+
+    def write():
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(text)
+    if not sync_clash.state_dir():
+        write()
+        return out_path
+    with project_lock_or_fail(project_path, fail):
+        try:
+            sync_clash.check_step_write(project_id, files=[PLAN_FILE])
+        except sync_clash.SyncConflict as e:
+            sync_clash.exit_refused(e.body)
+        write()
+    return out_path
+
+
+# ── the answer ───────────────────────────────────────────────────────────────
+
+def _capped(lines, cap):
+    out, size = [], 0
+    for n, line in enumerate(lines):
+        if size + len(line.encode()) + 1 > cap:
+            out.append(f"... {len(lines) - n} more")
+            break
+        out.append(line)
+        size += len(line.encode()) + 1
+    return "\n".join(out)
+
+
+def _sums(final, track_id):
+    _, track = _track(normalize_tracks(final), track_id)
+    kept_s = sum(max(0.0, float(it.get("end", 0)) - float(it.get("start", 0))) for it in _media(track))
+    duration = max((float(it.get("end", 0)) for it in track["items"]), default=0.0)
+    return round(kept_s, 2), round(duration, 2)
+
+
+def _tracks_rev(project):
+    return project_revisions.revision_of(normalize_tracks(copy.deepcopy(project)).get("tracks"))
+
+
+def _marker(mode, kept, removed, duration, max_pause, written):
+    """The record of a cut. tracksRev: the revision of the tracks it wrote, to tell a later change."""
+    return {"at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "maxPause": max_pause,
+            "stepVersion": STEP_VERSION, "mode": mode, "kept": kept, "removed": removed,
+            "duration": duration, "tracksRev": _tracks_rev(written)}
+
+
+def _already_cut(project):
+    m = project[MARKER_KEY]
+    out = {"project": project.get("id"), "mode": "already-cut", "cutAt": m.get("at"),
+           "kept": m.get("kept"), "removed": m.get("removed"), "duration": m.get("duration"),
+           "note": "Already cut. Pass recut to cut it again."}
+    if m.get("tracksRev") and m["tracksRev"] != _tracks_rev(project):
+        out["changedSince"] = True
+        out["note"] = "Already cut, and the timeline changed since. Pass recut to cut it again."
+    return out
+
+
+def _language(arg, track, project_dir):
+    """The speech language: the param, else (auto or none) what whisper detected in a transcript."""
+    if arg and arg != "auto":
+        return arg
+    for it in _media(track):
+        sc = sidecar_for(_resolved(it, project_dir))
+        if sc:
+            try:
+                with open(sc, encoding="utf-8") as f:
+                    lang = ((json.load(f).get("result") or {}).get("language") or "").strip()
+                if lang:
+                    return lang
+            except (OSError, ValueError):
+                pass
+    return arg or "en"
+
+
+# ── the run ──────────────────────────────────────────────────────────────────
+
+def _build(project_path, project_dir, disk, track_id, language, warnings):
+    """The base: the disk project with the mechanical pass on its speech track, in memory, and everything the
+    plan and its apply need. Deterministic for the same project and transcripts, so an apply rebuilds the base
+    the plan was made from."""
+    work = normalize_tracks(copy.deepcopy(disk))
+    ti, track = _track(work, track_id)
+    b = {"work": work, "ti": ti, "before_s": _seconds(track, project_dir),
+         "origin": _origin(disk, track_id, project_dir), "lineage": {}, "d": None, "fillers": 0}
+    has_words = any((sc := sidecar_for(_resolved(it, project_dir))) and load_words(sc) for it in _media(track))
+    if has_words:
+        is_filler = _filler_test(language)
+        b["fillers"], w = _mechanical(work, project_path, ti, project_dir, rm_fillers.filler_matcher(language),
+                                      b["lineage"])
+        warnings += w
+        warnings += _silence_cut(work, project_path, ti, project_dir, b["lineage"], untranscribed_only=True)
+        d = speech_text.derive(work, project_dir, track_id)
+        units, trailing = _units(d, is_filler)
+        if units:
+            b.update(d=d, units=units, trailing=trailing)
+            if language.split("-")[0].lower() in NON_SPACED:
+                b["sel"] = Selection(kept=list(range(len(units))), sections=[[i] for i in range(len(units))])
+                warnings.append(f"takes are not chosen for {language}: only silences and fillers are cut")
+            else:
+                b["sel"] = select([u for u, _, _ in units], is_filler)
+            return b
+    # no usable speech: waveform_trim keeps on a fresh copy
+    work = normalize_tracks(copy.deepcopy(disk))
+    b.update(work=work, lineage={}, fillers=0)
+    warnings += _silence_cut(work, project_path, b["ti"], project_dir, b["lineage"])
+    return b
+
+
+def _silence_stamp(b, track_id):
+    items = b["work"]["tracks"][b["ti"]]["items"]
+    rows = [[os.path.basename(it.get("src") or ""), it.get("inPoint"), it.get("outPoint"), it.get("start"), it.get("end")]
+            for it in sorted(items, key=lambda x: float(x.get("start", 0)))]
+    blob = json.dumps([track_id, rows], sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode()).hexdigest()[:12]
+
+
+def _silence_plan(b, track_id, title, marker):
+    _, track = _track(b["work"], track_id)
+    rows = [f"-- {it['id']} {float(it.get('inPoint', 0)):.2f}-{float(it.get('outPoint', 0)):.2f} keep" for it in _media(track)]
+    return "\n".join([f"<!-- montaj cut plan v1 · silence · track {track_id} · stamp {_silence_stamp(b, track_id)} · "
+                      f"marker {'yes' if marker else 'no'} -->", f"# {title}", "",
+                      "No usable speech: this plan removes silences only. Apply it as it is.", "", "## Cut", "", *rows]) + "\n"
+
+
+_SILENCE_HEADER = re.compile(r"^<!--\s*montaj cut plan v1 · silence · track (\S+) · stamp (\S+) · marker (yes|no)\s*-->\s*$")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Plan, then apply, a clean cut of a talking-head project")
+    parser.add_argument("--project", required=True, help="Absolute path to project.json")
+    parser.add_argument("--plan", default=None, help="Apply this plan: its text, or the path of the plan file")
+    parser.add_argument("--max-pause", type=float, default=None, help="Cap unchanged pauses, in seconds")
+    parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL, choices=list(WHISPER_MODEL_CHOICES),
+                        help="Whisper model for clips with no transcript")
+    parser.add_argument("--language", default=None, help="The speaker's language (e.g. es), or 'auto'. Default en")
+    parser.add_argument("--recut", action="store_true", help="Plan again a project cut already cut")
+    parser.add_argument("--detail", action="store_true", help="Also answer with the kept lines")
+    args = parser.parse_args()
+
+    project_path = os.path.abspath(args.project)
+    if not os.path.isfile(project_path):
+        fail("not_found", f"Project not found: {project_path}")
+    project_dir = os.path.dirname(project_path)
+    if args.plan is not None:
+        _apply_plan(args, project_path, project_dir)
+    else:
+        _make_plan(args, project_path, project_dir)
+
+
+def _make_plan(args, project_path, project_dir):
+    first = _load(project_path)
+    if isinstance(first.get(MARKER_KEY), dict) and not args.recut:
+        print(json.dumps(_already_cut(first), ensure_ascii=False))
+        return
+    track_id = _speech_track_id(first, project_dir)
+    _stem_clash(_track(normalize_tracks(first), track_id)[1], project_dir)
+    transcribed, failed, warnings = _transcribe_missing(first, track_id, project_path, project_dir,
+                                                        args.model, args.language or "en")
+    disk = _load(project_path)        # read again after the long part
+    if isinstance(disk.get(MARKER_KEY), dict) and not args.recut:     # another run cut it meanwhile
+        print(json.dumps(_already_cut(disk), ensure_ascii=False))
+        return
+    language = _language(args.language, _track(normalize_tracks(disk), track_id)[1], project_dir)
+    max_pause = args.max_pause if args.max_pause is not None else FEELS[DEFAULT_FEEL].max_pause
+    title = disk.get("name") or disk.get("id") or os.path.basename(project_dir)
+    b = _build(project_path, project_dir, disk, track_id, language, warnings)
+    answer = {"project": disk.get("id"), "mode": "plan"}
+
+    if b["d"] is None:
+        candidate, _ = _carried(b["origin"], b["work"], b["ti"], b["lineage"], project_dir)
+        kept_s, duration = _sums(candidate, track_id)
+        path = _write_plan(project_path, disk.get("id"), _silence_plan(b, track_id, title, marker=not failed))
+        answer.update(plan=path, silence=True,
+                      kept={"lines": 0, "seconds": kept_s},
+                      removed={"seconds": round(max(0.0, b["before_s"] - kept_s), 2)}, duration=duration,
+                      note=("Transcription failed: the plan removes silences only." if failed else
+                            "No usable speech: the plan removes silences only."))
+    else:
+        at, of_source = _timer(b["origin"], b["work"], b["ti"], b["lineage"])
+        text, kept, removed = _plan(b["d"], title, b["units"], b["trailing"], b["sel"], at, of_source,
+                                    language, max_pause, project_dir, _filler_test(language))
+        res = apply(project_path, _untagged(text)[0], preview=True, max_pause=max_pause, feel=DEFAULT_FEEL,
+                    base=b["work"], base_of=disk, want_project=True, carry_from=b["origin"], lineage=b["lineage"],
+                    guard_keys=(MARKER_KEY,))
+        kept_s, duration = _sums(res["_project"], track_id)
+        path = _write_plan(project_path, disk.get("id"), text)
+        by = {}
+        for *_, why in removed:
+            by[why] = by.get(why, 0) + 1
+        answer.update(plan=path, kept={"lines": len(kept), "seconds": kept_s},
+                      removed={"lines": by, "fillers": b["fillers"],
+                               "seconds": round(max(0.0, b["before_s"] - kept_s), 2)},
+                      duration=duration,
+                      cut=_capped([f"{i} {t:.1f} {txt} [{why}]" for i, t, txt, why in removed], REMOVED_CAP_BYTES))
+        if args.detail:
+            answer["keep"] = _capped([f"{i} {t:.1f} {txt}" for i, t, txt in kept], TEXT_CAP_BYTES)
+        warnings += [w for w in res.get("warnings", []) if w not in warnings]
+    answer["transcribed"] = transcribed
+    if warnings:
+        answer["warnings"] = warnings[:5]
+    print(json.dumps(answer, ensure_ascii=False))
+
+
+def _apply_plan(args, project_path, project_dir):
+    text = _read_plan(args.plan, project_dir)
+    disk = _load(project_path)
+    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    sil = _SILENCE_HEADER.match(first)
+    if sil:
+        track_id = sil.group(1)
+    else:
+        try:
+            header, _ = speech_text.parse(text)
+        except SystemExit:
+            raise
+        track_id = header["track"]
+    _track(normalize_tracks(copy.deepcopy(disk)), track_id)
+    plan_lang, plan_pause = _plan_meta(text)
+    language = args.language or plan_lang or "en"
+    max_pause = args.max_pause if args.max_pause is not None else (
+        plan_pause if plan_pause is not None else FEELS[DEFAULT_FEEL].max_pause)
+    warnings = []
+    b = _build(project_path, project_dir, disk, track_id, language, warnings)
+    stale = ("The project's speech or its transcripts changed since this plan was made. "
+             "Run cut again for a new plan.")
+    answer = {"project": disk.get("id"), "mode": "applied"}
+
+    if sil:
+        if b["d"] is not None or _silence_stamp(b, track_id) != sil.group(2):
+            fail("stale_plan", stale)
+        version = _write_silence(project_path, project_dir, disk, b, track_id, max_pause,
+                                 marker=sil.group(3) == "yes", warnings=warnings)
+        wrote = "Nothing to cut." not in warnings
+        final = _load(project_path)
+    else:
+        if b["d"] is None or b["d"].stamp != header["stamp"]:
+            fail("stale_plan", stale)
+        plain, why_left = _untagged(text)
+        record = {}
+
+        def mark(candidate):
+            kept_s, duration = _sums(candidate, track_id)
+            candidate[MARKER_KEY] = _marker(
+                "speech", {"seconds": kept_s},
+                {"lines": why_left, "fillers": b["fillers"], "seconds": round(max(0.0, b["before_s"] - kept_s), 2)},
+                duration, max_pause, candidate)
+            record["duration"] = duration
+        res = apply(project_path, plain, preview=False, max_pause=max_pause, feel=DEFAULT_FEEL,
+                    base=b["work"], base_of=disk, version_message=VERSION_MESSAGE, want_project=True, amend=mark,
+                    carry_from=b["origin"], lineage=b["lineage"], guard_keys=(MARKER_KEY,))
+        version = res.get("version")
+        wrote = bool(res.get("applied"))
+        final = res["_project"]
+        warnings += [w for w in res.get("warnings", []) if w not in warnings]
+    _, duration = _sums(final, track_id)
+    if version:
+        answer.update(version=VERSION_MESSAGE, duration=duration, undo=f'Restore the version "{VERSION_MESSAGE}".')
+    elif is_own_repo(project_dir) and wrote:
+        # nothing unsaved before the cut: the latest version already holds the project as it was
+        answer.update(version="latest", duration=duration,
+                      undo="Restore the latest version from before this cut: it holds the project as it was.")
+    else:
+        answer.update(version=None, duration=duration,
+                      undo="No version was saved: undo in the editor." if wrote else "Nothing was written.")
+    if warnings:
+        answer["warnings"] = warnings[:5]
+    print(json.dumps(answer, ensure_ascii=False))
+
+
+def _write_silence(project_path, project_dir, disk, b, track_id, max_pause, marker, warnings):
+    """The silence cut's write, with the speech path's guards: the other layers carried by the one map, the
+    sync check, validation, a version, and the locked stale check over every key it writes."""
+    candidate, _ = _carried(b["origin"], b["work"], b["ti"], b["lineage"], project_dir)
+
+    def windows(project):
+        return sorted((it["src"], round(float(it.get("inPoint", 0)), 3), round(float(it.get("outPoint", 0)), 3))
+                      for it in _media(project["tracks"][b["ti"]]))
+    if windows(candidate) == windows(b["origin"]):
+        warnings.append("Nothing to cut.")
+        return False
+    kept_s, duration = _sums(candidate, track_id)
+    if marker:
+        # A cut after a failed transcription leaves no marker, so the real cut can still run once it works.
+        candidate[MARKER_KEY] = _marker("silence", {"seconds": kept_s},
+                                        {"seconds": round(max(0.0, b["before_s"] - kept_s), 2)},
+                                        duration, max_pause, candidate)
+    try:
+        sync_clash.check_step_document(disk, candidate, files=[])
+    except sync_clash.SyncConflict as e:
+        sync_clash.exit_refused(e.body)
+    speech_apply._validate(candidate)
+    version = commit_version(project_dir, VERSION_MESSAGE)
+    if not version and not is_own_repo(project_dir):
+        warnings.append("no version saved: the project folder is not its own git repository")
+    keys = ("tracks", "captions", "audio", "markers", "notes", MARKER_KEY)
+    save_project_changes(Path(project_path), disk, candidate, keys=keys, guard=keys)
+    return version
+
+
+if __name__ == "__main__":
+    main()

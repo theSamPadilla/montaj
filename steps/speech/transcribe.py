@@ -40,7 +40,7 @@ def _write_srt(entries, path):
 
 def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en", max_context=None, fit_pauses=False):
     """Transcribe one file (or trim spec) and write `<out>.srt` and `<out>.json` (default: beside the
-    input). Returns {srt, words} plus the speech stats. clean_cut calls this for an untranscribed clip."""
+    input). Returns {srt, words} plus the speech stats. cut calls this for an untranscribed clip."""
 
     require_file(input_path)
 

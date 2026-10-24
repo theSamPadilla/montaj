@@ -1,4 +1,4 @@
-"""Deterministic take selection over speech units (§558, clean_cut).
+"""Deterministic take selection over speech units (§558, cut).
 
 The rules are the select-takes skill's (skills/select-takes/SKILL.md, steps 2 to 5), made mechanical, and
 built to cut less when unsure: a sentence that only LOOKS like a retake (a list, a parallel clause, a refrain)

@@ -190,7 +190,7 @@ def _validate_clip_extensions(data, project_dir=None):
         fail("invalid_field", "derivedFrom must be a string")
     cc = data.get("cleanCut")
     if cc is not None and not isinstance(cc, dict):
-        fail("invalid_field", "cleanCut must be an object (the record clean_cut writes)")
+        fail("invalid_field", "cleanCut must be an object (the record cut writes)")
     probe_cache = {}
     # The remediation command below is an instruction the agent will follow, so
     # it must name THIS project's canvas, not a hardcoded 9:16.

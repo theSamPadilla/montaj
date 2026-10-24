@@ -115,7 +115,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
           guard_keys: tuple = ()) -> dict:
     """Apply `text` to the project at `project_path`.
 
-    base (clean_cut): the project as an in-memory step already changed it, and the one the text was read
+    base (cut): the project as an in-memory step already changed it, and the one the text was read
     from. base_of: the disk project as the caller read it, before it made `base`. The text is derived,
     built and carried on `base`; everything that guards the write (the sync check, the version, the lock,
     the stale check and the merge) compares against `base_of`, so the write is refused, never merged over,
@@ -123,13 +123,13 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     even when the text changes nothing.
     want_project: also return the resulting project (as written, or as it would be) under `_project`.
     amend: called with the candidate project before it is validated and written, to change it in place
-    (clean_cut records its marker there, so the marker lands in this same guarded write).
+    (cut records its marker there, so the marker lands in this same guarded write).
     carry_from, lineage (with base): every other layer (linked layers, overlays, captions, audio, markers,
     notes) is still timed to the project before the base's change, so it is carried from `carry_from` (that
     project; default base_of) through ONE map, from its speech track to the result. lineage maps a base item
     id to the carry_from item it was cut from (`<clip>-seg-*` -> clip), so the result's provenance names the
     items the layers were timed to.
-    guard_keys: more top-level keys the stale check compares under the lock (clean_cut: its marker).
+    guard_keys: more top-level keys the stale check compares under the lock (cut: its marker).
     """
     project_path = os.path.abspath(project_path)
     project_dir = os.path.dirname(project_path)

@@ -54,7 +54,7 @@ def cut_clip(project, project_path, clip_id, *, spec_path=None, spec=None, cuts=
     and ripple the rest of that track. Mutates `project["tracks"]` in memory and writes nothing; main() saves.
 
     Exactly one of spec_path (a trim spec file), spec (the same, already read), cuts or keeps (JSON
-    strings of clip-local [start, end] ranges). Returns {clips, removed, duration}. clean_cut calls it
+    strings of clip-local [start, end] ranges). Returns {clips, removed, duration}. cut calls it
     with a spec dict, in memory, before its one write."""
     items = track_items(project)
     tracks0 = items[track_index] if len(items) > track_index else []
