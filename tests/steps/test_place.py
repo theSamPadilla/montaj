@@ -157,6 +157,37 @@ def test_update_by_id_moves_only_that_item(tmp_path):
     assert out["id"] == "ov-a" and out["track"] == "ovl-1"
 
 
+GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@local"]
+
+
+def _git(d, *args):
+    import subprocess
+    return subprocess.run([*GIT, *args], cwd=d, capture_output=True, text=True, check=True).stdout
+
+
+def test_an_update_by_id_takes_a_version_first_and_an_add_takes_none(tmp_path):
+    d = make_project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 3}])
+    _git(d, "init", "-q")
+    _git(d, "add", "project.json")
+    _git(d, "commit", "-q", "-m", "init")
+    p = json.loads((d / "project.json").read_text())
+    p["tracks"][1]["items"][0]["props"] = {"text": "the person's"}   # the person's edit, not in any version yet
+    (d / "project.json").write_text(json.dumps(p))
+    added = run(d, at="20", preset="callout")
+    assert "version" not in added and _git(d, "log", "--format=%s").split("\n")[0] == "init"
+    out = run(d, item_id="ov-a", at="12")
+    assert out["version"] is True
+    assert _git(d, "log", "-1", "--format=%s").strip() == place.VERSION_MESSAGE
+    kept = json.loads(_git(d, "show", "HEAD:project.json"))
+    assert kept["tracks"][1]["items"][0]["props"] == {"text": "the person's"} and kept["tracks"][1]["items"][0]["start"] == 1
+
+
+def test_an_update_by_id_outside_a_git_folder_says_no_version(tmp_path):
+    d = make_project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 3}])
+    out = run(d, item_id="ov-a", at="12")
+    assert "version" not in out and any("no version saved" in i for i in out["issues"])
+
+
 def test_update_of_an_unknown_or_non_overlay_item_is_refused(tmp_path, capsys):
     d = make_project(tmp_path)
     assert refused(capsys, run, d, item_id="ov-zzz", at="1")["error"] == "item_not_found"

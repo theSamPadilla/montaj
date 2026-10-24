@@ -10,7 +10,8 @@
   checks a Studio sync clash). The tracks as read are compared under the lock (project_revisions.revision_of): any
   change since, a human edit or another step's, refuses `project_changed` and writes nothing. A new item goes on
   the given track, else the first overlay track free over its span, else a new track; `id` moves or updates that
-  item alone, on its own track unless `track` names another.
+  item alone, on its own track unless `track` names another, with a version of the project first (it changes an
+  overlay a person may have made; an add takes none).
 - Self-check: the placed overlay measured once (look's sample_overlay --measure) at the middle of its span, for
   text off the frame and the safe areas (lib/look_check.py), plus a span past the footage.
 Prints one short JSON: {id, start, end, track, take?, issues?}.
@@ -23,12 +24,14 @@ from lib import look_check as lc, phrase_at, project_revisions, speech_units, sy
 from lib.common import fail, DEFAULT_WHISPER_MODEL  # noqa: E402
 from lib.project_lock import update_project_or_fail  # noqa: E402
 from lib.project_tracks import normalize_tracks  # noqa: E402
+from lib.project_versions import commit_version, is_own_repo  # noqa: E402
 from steps.render import look as look_step  # noqa: E402
 from steps.speech.transcribe import transcribe as transcribe_file  # noqa: E402
 
 PRESETS_DIR = os.path.join(MONTAJ_ROOT, "montaj_assets", "render", "templates", "presets")
 PRESETS = {"lower_third": "lower-third.jsx", "callout": "callout.jsx"}
 DEFAULT_FOR_S = 3.0
+VERSION_MESSAGE = "version: before place"
 STEP_LOCK_TIMEOUT = 30.0
 
 
@@ -233,6 +236,13 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
     elif overlay:
         src = overlay_src(project_dir, overlay)
 
+    version = None
+    if existing:
+        # an update changes an overlay a person may have made: a version first, as speech_edit takes one
+        version = commit_version(project_dir, VERSION_MESSAGE)
+        if not version and not is_own_repo(project_dir):
+            issues.append({"t": lc.r2(start), "id": item_id, "text": "no version saved: the project folder is not its own git repository"})
+
     written = {}
 
     def apply(fresh):
@@ -303,6 +313,8 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
     out = {"id": item["id"], "start": item["start"], "end": item["end"], "track": written["track"]}
     if take_used:
         out["take"] = take_used
+    if version:
+        out["version"] = True
     if issues:
         short = lc.answer(issues, 0, 0, extra=out)
         out["issues"] = short["issues"]
