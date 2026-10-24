@@ -76,7 +76,8 @@ def _step_timeout(schema: dict, body: dict) -> int:
         if isinstance(path, str) and path:
             if is_trim_spec(path):
                 path = load_spec(path)["input"]
-            duration = get_duration(path)
+            # Absolute, so ffprobe never reads caller text like `concat:...` as a protocol (§563).
+            duration = get_duration(os.path.abspath(path))
     except (Exception, SystemExit):  # get_duration exits through fail()
         duration = None
     if duration is None:

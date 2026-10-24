@@ -49,3 +49,22 @@ def test_audio_extract_graph_single_segment():
     assert audio_extract_graph([[1.0, 3.0]]) == (
         "[0:a]atrim=start=1.000:end=3.000,asetpts=PTS-STARTPTS[a0];[a0]anull[aout]"
     )
+
+
+# --- the spec's input reaches ffmpeg only as a real file (§563) --------------
+
+def test_extract_audio_at_keeps_refuses_an_input_that_is_not_a_file(monkeypatch, tmp_path):
+    """A spec's `input` is caller JSON. ffmpeg reads a string like `concat:...` as a protocol, so the
+    input must be a file on disk, and goes to ffmpeg as an absolute path."""
+    import trim_spec
+    calls = []
+    monkeypatch.setattr(trim_spec, "run", lambda cmd, timeout=300: calls.append(cmd))
+    with pytest.raises(SystemExit):
+        trim_spec.extract_audio_at_keeps("concat:/nonexistent.mp4", [[0, 1]], str(tmp_path / "o.wav"))
+    assert calls == []
+
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"x")
+    monkeypatch.chdir(tmp_path)
+    trim_spec.extract_audio_at_keeps("clip.mp4", [[0, 1]], str(tmp_path / "o.wav"))
+    assert calls[0][calls[0].index("-i") + 1] == str(clip)

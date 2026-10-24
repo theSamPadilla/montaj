@@ -79,3 +79,14 @@ def test_a_non_finite_or_non_positive_declared_timeout_is_ignored(declared):
 
 def test_a_declared_timeout_raises_the_ceiling():
     assert steps._step_timeout({**PLAIN, "timeout_s": steps.STEP_TIMEOUT_S + 600}, {}) == steps.STEP_TIMEOUT_S + 600
+
+
+def test_the_probe_gets_an_absolute_path_never_a_protocol_string(duration, tmp_path):
+    """ffprobe reads `concat:...` or `http://...` as a protocol; serve probes the path as a file (§563)."""
+    duration["value"] = 10
+    steps._step_timeout(WHISPER, {"input": "concat:/a.mp4|/b.mp4"})
+    assert duration["path"].startswith("/") and duration["path"].endswith("concat:/a.mp4|/b.mp4")
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({"input": "concat:/source.mp4", "keeps": [[0, 5]]}))
+    steps._step_timeout(WHISPER, {"input": str(spec)})
+    assert duration["path"].startswith("/") and duration["path"] != "concat:/source.mp4"

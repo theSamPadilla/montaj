@@ -1,6 +1,7 @@
 import json
+import os
 
-from common import ffmpeg_bin, filter_script, run
+from common import ffmpeg_bin, filter_script, require_file, run
 
 
 def load(src) -> dict:
@@ -122,12 +123,15 @@ def extract_audio_at_keeps(input_path: str, keeps: list, out_wav: str, timeout: 
     """Extract and concatenate audio at keep ranges into a 16 kHz mono wav.
 
     The graph is ~70 chars per range, so it goes through a file
-    (``-/filter_complex``), never argv.
+    (``-/filter_complex``), never argv. ``input_path`` is usually a spec's
+    ``input``, caller JSON: it must be a file, and goes to ffmpeg absolute, so a
+    string like ``concat:...`` is never read as a protocol (§563).
     """
+    require_file(input_path)
     with filter_script(audio_extract_graph(keeps)) as fc_path:
         return run([
             ffmpeg_bin(), "-y",
-            "-i", input_path,
+            "-i", os.path.abspath(input_path),
             "-/filter_complex", fc_path,
             "-map", "[aout]",
             "-ar", "16000",
