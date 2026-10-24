@@ -1121,6 +1121,24 @@ def test_a_status_the_person_changes_during_a_silence_apply_is_not_overwritten(t
     assert (d / "project.json").read_bytes() == human["bytes"]
 
 
+def test_a_status_the_person_changes_during_a_speech_apply_is_not_overwritten(tmp_path, stub_transcribe, monkeypatch, capsys):
+    """The speech path guards status the same way when it starts a pending project."""
+    d = make_project(tmp_path, transcript=retake_transcript())
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    real = cc.select
+    human = {}
+
+    def select_then_person_sets_status(*a, **k):
+        p = json.loads((d / "project.json").read_text())
+        p["status"] = "final"
+        (d / "project.json").write_text(json.dumps(p, indent=2))
+        human["bytes"] = (d / "project.json").read_bytes()
+        return real(*a, **k)
+    monkeypatch.setattr(cc, "select", select_then_person_sets_status)
+    assert refused(d, "--plan", plan["plan"], monkeypatch=monkeypatch, capsys=capsys) == "project_changed"
+    assert (d / "project.json").read_bytes() == human["bytes"]
+
+
 def test_a_silence_apply_on_a_pending_project_sets_draft_too(tmp_path, stub_transcribe, monkeypatch):
     stub_transcribe({"transcription": []})
     d = make_project(tmp_path)

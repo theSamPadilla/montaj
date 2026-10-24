@@ -773,7 +773,10 @@ def _apply_plan(args, project_path, project_dir):
             _start(candidate)
         res = apply(project_path, plain, preview=False, max_pause=max_pause, feel=DEFAULT_FEEL,
                     base=b["work"], base_of=disk, version_message=VERSION_MESSAGE, want_project=True, amend=mark,
-                    carry_from=b["origin"], lineage=b["lineage"], guard_keys=(MARKER_KEY,))
+                    carry_from=b["origin"], lineage=b["lineage"],
+                    # status is guarded when this write starts a pending project, so a status the person set
+                    # meanwhile refuses the apply rather than being overwritten with draft.
+                    guard_keys=(MARKER_KEY,) + (("status",) if disk.get("status") == "pending" else ()))
         version = res.get("version")
         wrote = bool(res.get("applied"))
         final = res["_project"]
