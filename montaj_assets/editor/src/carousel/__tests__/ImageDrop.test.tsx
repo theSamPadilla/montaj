@@ -1177,6 +1177,46 @@ describe('Images on the canvas: the Add menu', () => {
     expect(elementsOf(lastSave(adapter)).map((e) => e.id)).toEqual(['el-img'])
   })
 
+  it('+ Upload Image that lands after the person went to another slide is added to its own slide and leaves their selection alone (§556 review)', async () => {
+    const gate = deferred<string>()
+    const adapter = makeFakeAdapter()
+    ;(adapter.uploadFile as ReturnType<typeof vi.fn>).mockImplementation(() => gate.promise)
+    const r = await mount(adapter)
+    await pick(r, png('up.png'))
+
+    // While it uploads, the person goes to the second slide and selects its image.
+    await selectSlide('slide-1')
+    await plainClick('el-s1')
+    expect(outlined('el-s1')).toBe(true)
+
+    await act(async () => { gate.resolve('/proj/assets/up.png') })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const saved = lastSave(adapter)
+    expect(elementsOf(saved, 0).map((e) => (e as ImageElement).src)).toEqual(['a.png', '/proj/assets/up.png'])
+    expect(elementsOf(saved, 1).map((e) => e.id)).toEqual(['el-s1'])
+    // Their selection stays.
+    expect(outlined('el-s1')).toBe(true)
+    expect(handlesOn('el-s1')).toBe(true)
+  })
+
+  it('and a crop the person has open on that other slide is left open', async () => {
+    const gate = deferred<string>()
+    const adapter = makeFakeAdapter()
+    ;(adapter.uploadFile as ReturnType<typeof vi.fn>).mockImplementation(() => gate.promise)
+    const r = await mount(adapter)
+    await pick(r, png('up.png'))
+    await selectSlide('slide-1')
+    await plainClick('el-s1')
+    await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+    expect(inCrop('el-s1')).toBe(true)
+
+    await act(async () => { gate.resolve('/proj/assets/up.png') })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter), 0)).toHaveLength(2)
+    expect(inCrop('el-s1')).toBe(true)
+    expect(outlined('el-s1')).toBe(true)
+  })
+
   it('+ Upload Image with an unreadable size keeps the old square', async () => {
     loadSize.mockResolvedValue(null)
     const adapter = makeFakeAdapter()

@@ -1052,11 +1052,14 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
 
   // ── Element handlers ──
   // Each new element is selected, so a crop in progress is applied first, as
-  // its own undo step (§556 M4).
+  // its own undo step (§556 M4). An add that took time (an upload, an AI image)
+  // may land after the person has gone to another slide: it is added to its own
+  // slide, and their selection and crop there are theirs.
   function handleAddElement(slideId: string, element: CarouselElement) {
-    applyCrop()
+    const onShow = selectedSlideIdRef.current === slideId
+    if (onShow) applyCrop()
     void state.addElement(slideId, element)
-    setSelectedElementId(element.id)
+    if (onShow) setSelectedElementId(element.id)
   }
   function handleDeleteElement(slideId: string, elementId: string) {
     void state.removeElement(slideId, elementId)
