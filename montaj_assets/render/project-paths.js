@@ -22,6 +22,22 @@ export function resolveProjectSrc(src, projectDir) {
   return src && !src.startsWith('/') ? resolve(projectDir, src) : src
 }
 
+// What ffmpeg opens as something other than a file: `concat:`, `subfile,`, `http:`, any `scheme:` of two or more
+// characters (a Windows drive, `C:`, is a path).
+const PROTOCOL = /^(?:[A-Za-z][A-Za-z0-9+.-]+:|subfile,)/
+
+/**
+ * `nobg_src` and `normalizedSrc`, which the render reads in place of `src`. montaj writes them as absolute
+ * paths, but they are project.json text that reaches ffmpeg's -i, so a URL or protocol form is refused, naming
+ * the field (§563), and a relative one resolves like `src`. An absolute path is returned unchanged.
+ */
+export function resolveDerivedSrc(value, projectDir, field) {
+  if (typeof value !== 'string' || PROTOCOL.test(value)) {
+    throw new Error(`${field} must be a file path, not ${JSON.stringify(value)}`)
+  }
+  return resolveProjectSrc(value, projectDir)
+}
+
 /** Resolve a path that may contain a macOS narrow no-break space (\u202f) instead
  *  of a regular space — e.g. screenshot filenames like "Screenshot … 12.44.47 PM.png".
  *  Returns the actual path on disk, or null if not found. */

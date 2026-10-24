@@ -69,3 +69,14 @@ test('a sampled frame refuses a canvas size or frame rate that is not a number, 
   await assert.rejects(sampleFrame({ projectJson: project({ resolution: [64, 48], fps: '10:x' }), atSeconds: 0, outPath: out }),
     /settings\.fps/)
 })
+
+test('a sampled frame refuses a URL or protocol form of normalizedSrc or nobg_src, naming the field (§563)', async () => {
+  const out = join(mkdtempSync(join(tmpdir(), 'derived-')), 'f.png')
+  for (const field of ['normalizedSrc', 'nobg_src']) {
+    const project = { settings: { resolution: [64, 48], fps: 10 }, tracks: [[
+      { id: 'a', type: 'video', src: '/abs/a.mp4', start: 0, end: 1, [field]: 'concat:/a.mp4|/b.mp4' },
+    ]] }
+    await assert.rejects(sampleRawFrame({ projectJson: project, projectDir: '/proj', atSeconds: 0, outPath: out }),
+      new RegExp(field))
+  }
+})

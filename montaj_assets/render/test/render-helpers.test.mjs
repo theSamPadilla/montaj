@@ -790,3 +790,28 @@ test('collectPuppeteerSegments: an id that is not a plain file name never steers
   assert.deepEqual(specs.map(s => basename(s.outputPath)),
     ['overlay-0-0.mkv', 'overlay-0-1.mkv', 'overlay-0-2.mkv', 'overlay-0--ov1.mkv'])
 })
+
+// §563: nobg_src and normalizedSrc are read in place of src, so they are paths like src, never URLs or protocols.
+test('resolveProjectPaths: nobg_src and normalizedSrc stay as written when absolute, resolve when relative (§563)', async () => {
+  const { resolveProjectPaths } = await import('../render.js')
+  const project = { tracks: [[
+    { id: 'a', type: 'video', src: '/abs/a.mp4', nobg_src: '/abs/a_nobg.mov', normalizedSrc: '/abs/a_norm.mp4' },
+    { id: 'b', type: 'video', src: '/abs/b.mp4', nobg_src: 'cache/b_nobg.mov', normalizedSrc: 'cache/b_norm.mp4' },
+    { id: 'c', type: 'video', src: '/abs/c.mp4' },
+  ]] }
+  resolveProjectPaths(project, '/proj')
+  const [a, b, c] = project.tracks[0]
+  assert.deepEqual([a.nobg_src, a.normalizedSrc], ['/abs/a_nobg.mov', '/abs/a_norm.mp4'])
+  assert.deepEqual([b.nobg_src, b.normalizedSrc], ['/proj/cache/b_nobg.mov', '/proj/cache/b_norm.mp4'])
+  assert.equal('nobg_src' in c || 'normalizedSrc' in c, false)
+})
+
+test('resolveProjectPaths: a URL or protocol form of nobg_src or normalizedSrc is refused, naming the field (§563)', async () => {
+  const { resolveProjectPaths } = await import('../render.js')
+  for (const field of ['nobg_src', 'normalizedSrc']) {
+    for (const value of ['concat:/a.mp4|/b.mp4', 'subfile,,start,0,end,1,,:/a.mp4', 'http://example.invalid/a.mp4', 'file:/a.mp4', 42]) {
+      const project = { tracks: [[{ id: 'a', type: 'video', src: '/abs/a.mp4', [field]: value }]] }
+      assert.throws(() => resolveProjectPaths(project, '/proj'), new RegExp(field))
+    }
+  }
+})

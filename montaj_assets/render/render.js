@@ -64,7 +64,7 @@ import { loudnessFilter }                 from './mix-audio.js'
 import { effectiveItemAudio, enabledTrackItems, enabledTracks, trackItems } from './project-tracks.js'
 import { captionOverlayFields }           from './caption-spec.js'
 import { materializeScene3d, Scene3dError, isThreeStageOverlay } from './scene3d.js'
-import { resolveProjectSrc, resolveFilePath } from './project-paths.js'
+import { resolveProjectSrc, resolveDerivedSrc, resolveFilePath } from './project-paths.js'
 
 const __dirname  = dirname(fileURLToPath(import.meta.url))
 // §128: where this render writes and what it is estimated to need, set by
@@ -2276,7 +2276,10 @@ function resolveProjectPaths(projectJson, projectDir) {
         const actual = resolveFilePath(item.src)
         if (actual) item.src = actual
       }
-      // nobg_src and nobg_preview_src are always absolute (written by remove_bg step)
+      // nobg_src and normalizedSrc are read in place of src (§563); nobg_preview_src is the editor's alone.
+      for (const field of ['nobg_src', 'normalizedSrc']) {
+        if (item[field]) item[field] = resolveDerivedSrc(item[field], projectDir, field)
+      }
     }
   }
 
