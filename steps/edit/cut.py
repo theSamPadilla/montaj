@@ -832,7 +832,10 @@ def _write_silence(project_path, project_dir, disk, b, track_id, max_pause, mark
     keys = ("tracks", "captions", "audio", "markers", "notes", MARKER_KEY)
     guard = keys
     if candidate.get("status") != disk.get("status"):
-        keys = keys + ("status",)   # written in this same guarded write; not guarded, a later status change wins
+        # Written in this same guarded write, and guarded too: a status the person changed since this read
+        # refuses the apply (run cut again) rather than being overwritten with draft.
+        keys = keys + ("status",)
+        guard = guard + ("status",)
     save_project_changes(Path(project_path), disk, candidate, keys=keys, guard=guard)
     return version, _layers(rep.get("flagged"))
 

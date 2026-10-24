@@ -1100,6 +1100,27 @@ def test_a_plan_on_a_pending_project_leaves_it_pending(tmp_path, stub_transcribe
     assert _status(d) == "pending"
 
 
+def test_a_status_the_person_changes_during_a_silence_apply_is_not_overwritten(tmp_path, stub_transcribe, monkeypatch, capsys):
+    """cut sets a pending project to draft in its write, so status is guarded: a status the person set meanwhile
+    refuses the apply instead of being overwritten with draft."""
+    stub_transcribe({"transcription": []})
+    d = make_project(tmp_path)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    real = cc.commit_version
+    human = {}
+
+    def version_then_person_sets_status(*a, **k):
+        out = real(*a, **k)
+        p = json.loads((d / "project.json").read_text())
+        p["status"] = "final"
+        (d / "project.json").write_text(json.dumps(p, indent=2))
+        human["bytes"] = (d / "project.json").read_bytes()
+        return out
+    monkeypatch.setattr(cc, "commit_version", version_then_person_sets_status)
+    assert refused(d, "--plan", plan["plan"], monkeypatch=monkeypatch, capsys=capsys) == "project_changed"
+    assert (d / "project.json").read_bytes() == human["bytes"]
+
+
 def test_a_silence_apply_on_a_pending_project_sets_draft_too(tmp_path, stub_transcribe, monkeypatch):
     stub_transcribe({"transcription": []})
     d = make_project(tmp_path)
