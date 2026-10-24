@@ -322,8 +322,8 @@ function hostImageSrc(data: DataTransfer): string | null {
   }
 }
 
-/** The image types a browser can draw. HEIC, TIFF and PSD are images too, but
- *  the canvas cannot show them: they would land as empty squares. */
+/** The image types a browser can draw. PSD is an image too, but the canvas
+ *  cannot show it: it would land as an empty square. */
 const DRAWABLE_IMAGE_TYPES = new Set([
   'image/png',
   'image/jpeg',
@@ -333,7 +333,14 @@ const DRAWABLE_IMAGE_TYPES = new Set([
   'image/svg+xml',
   'image/bmp',
 ])
-const isImageFile = (file: File) => DRAWABLE_IMAGE_TYPES.has(file.type)
+/** §568: HEIC, HEIF and TIFF the canvas cannot draw either, but the upload
+ *  stores them as a JPEG (a PNG when not fully opaque) with their colour
+ *  profile (serve's upload-asset), and answers that. A browser that does not
+ *  know the type gives an empty one, so the name decides then. */
+const CONVERTED_IMAGE_TYPES = new Set(['image/heic', 'image/heif', 'image/heic-sequence', 'image/heif-sequence', 'image/tiff'])
+const CONVERTED_IMAGE_NAME = /\.(heic|heif|tiff?)$/i
+const isImageFile = (file: File) =>
+  DRAWABLE_IMAGE_TYPES.has(file.type) || CONVERTED_IMAGE_TYPES.has(file.type) || (file.type === '' && CONVERTED_IMAGE_NAME.test(file.name))
 
 /** How long Render waits for the save as final (`renderSaveTimeoutMs`). */
 const RENDER_SAVE_TIMEOUT_MS = 30_000
