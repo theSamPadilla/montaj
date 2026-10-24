@@ -282,8 +282,13 @@ def validate_params(schema: dict, body: dict) -> None:
             for item in values:
                 try:
                     num = float(item) if ptype == "float" else int(item)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     errors.append(f"'{name}' must be a {ptype}, got {item!r}")
+                    continue
+                # §558: NaN and infinity (as numbers or as "nan", "inf" strings, which float() takes) pass every min
+                # and max check, and a step would write them into project.json, which then does not open
+                if not math.isfinite(num):
+                    errors.append(f"'{name}' must be a finite {ptype}, got {item!r}")
                     continue
                 if "min" in param and num < param["min"]:
                     errors.append(f"'{name}' must be >= {param['min']}, got {num}")

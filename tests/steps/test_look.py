@@ -209,3 +209,21 @@ def test_look_through_the_real_measurer_finds_the_text_off_the_frame(tmp_path):
     wide_issues = [i for i in out["issues"] if "ov-wide" in i]
     assert any("runs off the frame" in i for i in wide_issues), out
     assert not any("ov-fits" in i for i in out["issues"]), out
+
+
+# ── review 1: a measure that times out ends its whole process group ──────────────────────────────────────────────
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups; Windows ends the tree with taskkill")
+def test_a_timed_out_run_ends_the_wrapper_and_its_children(tmp_path):
+    import subprocess as sp, time
+    pidfile = tmp_path / "child.pid"
+    # the wrapper starts a long child (as sample_overlay starts node and Chromium) and waits on it
+    script = ("import subprocess, sys, time; p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+              f"open({str(pidfile)!r}, 'w').write(str(p.pid)); p.wait()")
+    t0 = time.monotonic()
+    assert look._run_group([sys.executable, "-c", script], timeout=2) is None
+    assert time.monotonic() - t0 < 20
+    child = int(pidfile.read_text())
+    time.sleep(0.3)
+    alive = sp.run(["ps", "-p", str(child), "-o", "stat="], capture_output=True, text=True).stdout.strip()
+    assert alive == "" or alive.startswith("Z"), f"the child is still running: {alive!r}"

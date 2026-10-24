@@ -335,3 +335,30 @@ def test_a_number_param_is_validated_as_one(rel, name, good, bad):
     with pytest.raises(HTTPException) as e:
         validate_params(schema, {**required, name: bad})
     assert e.value.status_code == 422
+
+
+# ── §558: non-finite numbers ──────────────────────────────────────────────────────────────────────────────────────
+# NaN and infinity pass every min and max check (nan < 0.1 is False) and float() takes "nan" and "inf", so a step
+# got them and wrote them into project.json, which then would not open (found in place's review). Refused for every
+# float and int param, as numbers and as strings, alone and in a repeatable list.
+
+@pytest.mark.parametrize("ptype", ["float", "int"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), "nan", "NaN", "inf", "-Infinity", "+inf"])
+def test_a_non_finite_number_is_refused(ptype, value):
+    schema = _schema([{"name": "for", "type": ptype, "min": 0.1}])
+    with pytest.raises(HTTPException) as exc_info:
+        validate_params(schema, {"for": value})
+    assert exc_info.value.status_code == 422
+    assert "'for' must be" in exc_info.value.detail["message"]
+
+
+def test_a_non_finite_number_in_a_repeatable_list_is_refused():
+    schema = _schema([{"name": "at", "type": "float", "repeatable": True}])
+    with pytest.raises(HTTPException):
+        validate_params(schema, {"at": [1.0, "nan", 2.0]})
+    validate_params(schema, {"at": [1.0, "2.5", 3]})   # finite values still pass
+
+
+@pytest.mark.parametrize("value", [0, -2.5, "3", "1e3", 1e300])
+def test_finite_numbers_still_pass(value):
+    validate_params(_schema([{"name": "x", "type": "float"}]), {"x": value})

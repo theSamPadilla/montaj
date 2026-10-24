@@ -16,13 +16,14 @@
   text off the frame and the safe areas (lib/look_check.py), plus a span past the footage.
 Prints one short JSON: {id, start, end, track, take?, issues?}.
 """
-import argparse, json, os, secrets, shutil, sys
+import argparse, bisect, json, math, os, secrets, shutil, sys
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
 from lib import look_check as lc, phrase_at, project_revisions, speech_units, sync_clash, write_places  # noqa: E402
 from lib.common import fail, DEFAULT_WHISPER_MODEL  # noqa: E402
 from lib.project_lock import update_project_or_fail  # noqa: E402
+from lib import project_tracks  # noqa: E402
 from lib.project_tracks import normalize_tracks  # noqa: E402
 from lib.project_versions import commit_version, is_own_repo  # noqa: E402
 from steps.render import look as look_step  # noqa: E402
@@ -44,18 +45,27 @@ def parse_at(raw):
     """seconds (float), or {phrase, take}: (seconds or None, phrase or None, take)."""
     if raw is None:
         return None, None, None
+    bad = 'at is timeline seconds or {"phrase": "...", "take": "clean"}.'
     if isinstance(raw, (int, float)):
+        if not math.isfinite(float(raw)):
+            fail("invalid_at", bad)
         return float(raw), None, None
     text = str(raw).strip()
     try:
-        return float(text), None, None
+        secs = float(text)
     except ValueError:
-        pass
+        secs = None
+    if secs is not None:
+        if not math.isfinite(secs):   # "nan", "inf": float() takes them
+            fail("invalid_at", bad)
+        return secs, None, None
     try:
         v = json.loads(text)
     except ValueError:
         fail("invalid_at", 'at is timeline seconds or {"phrase": "...", "take": "clean"}.')
     if isinstance(v, (int, float)):
+        if not math.isfinite(float(v)):
+            fail("invalid_at", bad)
         return float(v), None, None
     if not isinstance(v, dict) or not isinstance(v.get("phrase"), str) or not v["phrase"].strip():
         fail("invalid_at", 'at is timeline seconds or {"phrase": "...", "take": "clean"}.')
@@ -70,8 +80,10 @@ def parse_props(raw):
         return {}
     try:
         v = json.loads(raw) if isinstance(raw, str) else raw
+        # NaN and Infinity (Python's json takes them) would be written into project.json, which then will not open
+        json.dumps(v, allow_nan=False)
     except ValueError:
-        fail("invalid_props", "props is a JSON object.")
+        fail("invalid_props", "props is a JSON object of finite values.")
     if not isinstance(v, dict):
         fail("invalid_props", "props is a JSON object.")
     return v
@@ -106,28 +118,41 @@ def choose_track(project, s, e, want=None, skip=None):
         if ti == 0:
             continue
         items = t.get("items", [])
-        if all(it.get("type") == "overlay" for it in items) and not _overlaps(items, s, e, skip):
+        if items and all(it.get("type") == "overlay" for it in items) and not _overlaps(items, s, e, skip):
             return ti, None
     return None, None
 
 
-def preset_file(project_dir, preset):
-    """The preset copied into the project's overlays/: its project-relative path. Never over a different file."""
+def preset_file(project_dir, preset, referenced, check=None):
+    """The preset copied into the project's overlays/: (project-relative path, made by this call). An identical file
+    is reused only when an item in the tracks as read already points at it (one this call made and another reuses
+    could otherwise be removed by this call's refusal); otherwise the first free name, `-2`, `-3`... Never over a
+    different file, never through a link, never outside the project folder. `check(rel)` (the Studio sync file check)
+    is asked of the name chosen, before the file is made."""
     src = os.path.join(PRESETS_DIR, PRESETS[preset])
     with open(src, "rb") as f:
         body = f.read()
     stem, ext = os.path.splitext(PRESETS[preset])
     overlays = os.path.join(project_dir, "overlays")
     os.makedirs(overlays, exist_ok=True)
+    if not write_places.within(write_places.real(overlays), write_places.real(project_dir)):
+        fail("overlay_outside_project", "The project's overlays folder leads outside the project folder.")
     n = 1
     while True:
         name = f"{stem}{ext}" if n == 1 else f"{stem}-{n}{ext}"
+        rel = f"overlays/{name}"
         dest = os.path.join(overlays, name)
+        if os.path.islink(dest):
+            n += 1
+            continue
         if os.path.isfile(dest):
-            with open(dest, "rb") as f:
-                if f.read() == body:
-                    return f"overlays/{name}", False
+            if "./" + rel in referenced:
+                with open(dest, "rb") as f:
+                    if f.read() == body:
+                        return rel, False
         elif not os.path.lexists(dest):
+            if check:
+                check(rel)
             try:
                 fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
             except FileExistsError:
@@ -135,7 +160,7 @@ def preset_file(project_dir, preset):
                 continue
             with os.fdopen(fd, "wb") as f:
                 f.write(body)
-            return f"overlays/{name}", True
+            return rel, True
         n += 1
 
 
@@ -163,6 +188,8 @@ def resolve_time(project, project_path, project_dir, at_s, phrase, take, languag
     if phrase is None:
         return at_s, None, [], {}
     track_id = speech_units.speech_track_id(project, project_dir)
+    # two clips of the speech track sharing one transcript name (clip.mov, clip.mp4) would time the phrase wrong
+    speech_units.stem_clash(speech_units.find_track(normalize_tracks(project), track_id)[1], project_dir)
     _, _, warnings = speech_units.transcribe_missing(project, track_id, project_path, project_dir, model, language, transcribe)
     try:
         found = phrase_at.find(project, project_dir, phrase, take, language, track_id)
@@ -214,6 +241,8 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
         end = start + (lc._num(old.get("end")) - lc._num(old.get("start")))
     else:
         end = start + DEFAULT_FOR_S
+    if not (math.isfinite(start) and math.isfinite(end)):
+        fail("invalid_span", "at, for and until are finite seconds.")
     if end <= start:
         fail("invalid_span", "The overlay ends before it starts.")
     footage = lc.base_end(project)
@@ -226,12 +255,13 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
     width, height = lc.design_size(project)
     src, made = None, False
     if preset:
-        src_rel = PRESETS[preset]
-        try:
-            sync_clash.check_step_document(on_disk, on_disk, files=[f"overlays/{src_rel}"])
-        except sync_clash.SyncConflict as e:
-            sync_clash.exit_refused(e.body)
-        rel, made = preset_file(project_dir, preset)
+        def sync_check(rel):
+            try:
+                sync_clash.check_step_write(on_disk.get("id"), (), [rel])
+            except sync_clash.SyncConflict as e:
+                sync_clash.exit_refused(e.body)
+        referenced = {it.get("src") for t in project["tracks"] for it in t.get("items", []) if isinstance(it.get("src"), str)}
+        rel, made = preset_file(project_dir, preset, referenced, sync_check)
         src = "./" + rel
     elif overlay:
         src = overlay_src(project_dir, overlay)
@@ -276,13 +306,13 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
         if existing and dest != ti:
             tracks[ti]["items"] = [it for it in tracks[ti]["items"] if it is not skip]
         if dest is None:
-            taken = {t.get("id") for t in tracks}
-            tid = next(f"ovl-{n}" for n in range(1, 1000) if f"ovl-{n}" not in taken)
+            tid = project_tracks._new_track_id({t.get("id") for t in tracks})
             tracks.append({"id": tid, "items": []})
             dest = len(tracks) - 1
         items = [it for it in tracks[dest]["items"] if it is not skip]
-        items.append(item)
-        items.sort(key=lambda it: lc._num(it.get("start")))
+        # after every item that starts at or before it, the others' own order kept
+        at = bisect.bisect_right([lc._num(it.get("start")) for it in items], lc._num(item.get("start")))
+        items.insert(at, item)
         tracks[dest]["items"] = items
         written.update(item=item, track=tracks[dest]["id"])
         fresh["tracks"] = tracks

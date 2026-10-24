@@ -5,7 +5,7 @@ Measures each overlay once (sample_overlay --measure, the existing Puppeteer pat
 most MAX_MEASURES overlays, those on screen at the looked-at times first; with --image, one contact_sheet of the
 times. Writes nothing in project.json; the measure PNGs and the sheet go under render/samples.
 """
-import argparse, hashlib, json, os, subprocess, sys, time
+import argparse, hashlib, json, os, signal, subprocess, sys, time
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
@@ -17,6 +17,7 @@ SAMPLE_OVERLAY_PY = os.path.join(MONTAJ_ROOT, "steps", "render", "sample_overlay
 CONTACT_SHEET_PY = os.path.join(MONTAJ_ROOT, "steps", "render", "contact_sheet.py")
 SHEET_WIDTH = 768
 MEASURE_TIMEOUT_S = 90
+SHEET_TIMEOUT_S = 300
 
 
 def _fps(project):
@@ -27,6 +28,32 @@ def _fps(project):
     return f if f > 0 else 30
 
 
+def _run_group(cmd, timeout):
+    """(returncode, stdout, stderr) of `cmd` in its own process group; on a timeout the whole group (the wrapper,
+    node, Chromium) is ended, SIGTERM then SIGKILL (Windows: taskkill of the tree), and None is returned."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return proc.returncode, out, err
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":   # no process groups: end the tree by its root
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+            proc.communicate()
+            return None
+        for sig, wait in ((signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+            try:
+                os.killpg(proc.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                break
+            try:
+                proc.wait(timeout=wait)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        proc.communicate()
+        return None
+
+
 def measure(item, path, frame, duration, fps, width, height, out):
     """sample_overlay --measure for one overlay frame: its measurements, or None with why."""
     cmd = [sys.executable, SAMPLE_OVERLAY_PY, "--overlay", path, "--frame", str(frame), "--duration", str(duration),
@@ -35,18 +62,18 @@ def measure(item, path, frame, duration, fps, width, height, out):
     for font in item.get("googleFonts") or []:
         if isinstance(font, str) and font:
             cmd += ["--google-fonts", font]
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=MEASURE_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
+    r = _run_group(cmd, MEASURE_TIMEOUT_S)
+    if r is None:
         return None, "measure timed out"
-    if r.returncode != 0:
+    code, stdout, stderr = r
+    if code != 0:
         try:
-            err = json.loads(r.stderr.strip().splitlines()[-1])
+            err = json.loads(stderr.strip().splitlines()[-1])
             return None, str(err.get("message") or err.get("error") or "measure failed")[:120]
         except (ValueError, IndexError):
             return None, "measure failed"
     try:
-        return json.loads(r.stdout.strip().splitlines()[-1]).get("measurements") or {}, None
+        return json.loads(stdout.strip().splitlines()[-1]).get("measurements") or {}, None
     except (ValueError, IndexError, AttributeError):
         return None, "measure answered no JSON"
 
@@ -80,8 +107,10 @@ def sheet(project_path, project_dir, times):
            "--tile-width", str(SHEET_WIDTH // cols), "--out", out]
     for t in times:
         cmd += ["--at", str(t)]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
+    r = _run_group(cmd, SHEET_TIMEOUT_S)
+    if r is None:
+        return None, "the contact sheet timed out"
+    if r[0] != 0:
         return None, "the contact sheet failed"
     return out, None
 

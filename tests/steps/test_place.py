@@ -7,6 +7,7 @@ measurer is faked except in the last tests, which render the two presets through
 """
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -49,8 +50,9 @@ def make_project(tmp_path, overlays=(), with_transcript=True, script=SCRIPT):
         items.append({"type": "overlay", "src": f"./overlays/{ov['id']}.jsx", **ov})
     project = {"id": "place-fixture", "name": "Place", "settings": {"fps": 30, "resolution": [1080, 1920]},
                "tracks": [{"id": "trk-0", "items": [{"id": "clip-0", "type": "video", "src": str(d / "speech.mp4"),
-                                                     "start": 0, "end": 30, "inPoint": 0, "outPoint": 30, "sourceDuration": 30}]},
-                          {"id": "ovl-1", "items": items}]}
+                                                     "start": 0, "end": 30, "inPoint": 0, "outPoint": 30, "sourceDuration": 30}]}]}
+    if items:
+        project["tracks"].append({"id": "ovl-1", "items": items})
     (d / "project.json").write_text(json.dumps(project, indent=2))
     return d
 
@@ -91,7 +93,8 @@ def test_a_preset_at_seconds_is_added_on_the_free_overlay_track_with_its_file_an
     d = make_project(tmp_path)
     m = fake_measure()
     out = run(d, at="2.5", for_s=4, preset="lower_third", props=json.dumps({"text": "Maya Chen", "subtitle": "Video Editor"}), measure_fn=m)
-    assert out == {"id": out["id"], "start": 2.5, "end": 6.5, "track": "ovl-1"}
+    assert out == {"id": out["id"], "start": 2.5, "end": 6.5, "track": out["track"]}
+    assert re.fullmatch(r"trk-[0-9a-f]{6}", out["track"]), "a new track gets a trk-<6 hex> id (§482)"
     item = tracks(d)[1]["items"][0]
     assert item == {"id": out["id"], "type": "overlay", "start": 2.5, "end": 6.5, "src": "./overlays/lower-third.jsx",
                     "props": {"text": "Maya Chen", "subtitle": "Video Editor", "canvasW": "1080", "canvasH": "1920"}}
@@ -108,7 +111,7 @@ def test_a_preset_never_goes_over_a_different_file_of_its_name(tmp_path):
     assert (d / "overlays" / "callout.jsx").read_text() == "// the person's own callout"
     run(d, at="10", preset="callout")
     assert tracks(d)[1]["items"][1]["src"] == "./overlays/callout-2.jsx", "the same preset file is reused"
-    assert out["track"] == "ovl-1"
+    assert out["track"] == tracks(d)[1]["id"]
 
 
 def test_an_overlay_file_in_the_project_is_placed_by_its_path(tmp_path):
@@ -124,7 +127,7 @@ def test_an_overlay_outside_the_project_or_missing_is_refused(tmp_path, capsys):
     outside.write_text("x")
     assert refused(capsys, run, d, at="1", overlay=str(outside))["error"] == "overlay_outside_project"
     assert refused(capsys, run, d, at="1", overlay="overlays/nope.jsx")["error"] == "overlay_not_found"
-    assert tracks(d)[1]["items"] == []
+    assert len(tracks(d)) == 1, "nothing placed"
 
 
 def test_a_span_past_the_footage_is_shortened_and_said(tmp_path, capsys):
@@ -139,7 +142,7 @@ def test_a_span_past_the_footage_is_shortened_and_said(tmp_path, capsys):
 def test_a_busy_track_gets_a_new_one_and_a_named_busy_track_is_refused(tmp_path, capsys):
     d = make_project(tmp_path, overlays=[{"id": "ov-a", "start": 0, "end": 5}])
     out = run(d, at="2", preset="callout")
-    assert out["track"] == "ovl-2" and [t["id"] for t in tracks(d)] == ["trk-0", "ovl-1", "ovl-2"]
+    assert [t["id"] for t in tracks(d)] == ["trk-0", "ovl-1", out["track"]] and out["track"].startswith("trk-")
     err = refused(capsys, run, d, at="3", preset="callout", track="ovl-1")
     assert err["error"] == "track_busy" and "ov-a" in err["message"]
 
@@ -305,3 +308,74 @@ def test_each_preset_renders_its_props_inside_the_frame_and_the_safe_areas(tmp_p
     shown = " ".join(out["text"])
     for word in props["text"].split()[:2]:
         assert word in shown, out
+
+
+# ── review 1 (write safety) ───────────────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("kw,err", [
+    ({"at": "nan"}, "invalid_at"), ({"at": "inf"}, "invalid_at"), ({"at": "NaN"}, "invalid_at"),
+    ({"at": "1", "for_s": float("nan")}, "invalid_span"), ({"at": "1", "until": float("nan")}, "invalid_span"),
+    ({"at": "1", "until": float("inf")}, "invalid_span"),
+    ({"at": "1", "props": '{"fontSize": NaN}'}, "invalid_props"), ({"at": "1", "props": '{"x": Infinity}'}, "invalid_props"),
+])
+def test_a_non_finite_number_is_refused_and_nothing_is_written(tmp_path, capsys, kw, err):
+    d = make_project(tmp_path)
+    before = (d / "project.json").read_bytes()
+    assert refused(capsys, run, d, preset="callout", **kw)["error"] == err
+    assert (d / "project.json").read_bytes() == before
+    json.loads((d / "project.json").read_text())   # still strict JSON
+
+
+def test_an_identical_preset_no_item_points_at_is_not_reused(tmp_path):
+    # a call that made overlays/callout.jsx and was then refused removes it: another call must not have reused it
+    d = make_project(tmp_path)
+    (d / "overlays" / "callout.jsx").write_bytes((Path(place.PRESETS_DIR) / "callout.jsx").read_bytes())
+    run(d, at="1", preset="callout")
+    assert tracks(d)[1]["items"][0]["src"] == "./overlays/callout-2.jsx"
+    run(d, at="10", preset="callout")
+    assert tracks(d)[1]["items"][1]["src"] == "./overlays/callout-2.jsx", "the file an item points at is reused"
+
+
+def test_an_overlays_folder_leading_outside_the_project_is_refused(tmp_path, capsys):
+    d = make_project(tmp_path)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    shutil.rmtree(d / "overlays")
+    os.symlink(outside, d / "overlays")
+    assert refused(capsys, run, d, at="1", preset="callout")["error"] == "overlay_outside_project"
+    assert list(outside.iterdir()) == []
+
+
+def test_the_sync_file_check_is_asked_of_the_name_written(tmp_path, monkeypatch):
+    d = make_project(tmp_path)
+    (d / "overlays" / "callout.jsx").write_text("// the person's own")
+    asked = []
+    monkeypatch.setattr(place.sync_clash, "check_step_write", lambda pid, fields, files: asked.append(list(files)))
+    run(d, at="1", preset="callout")
+    assert asked == [["overlays/callout-2.jsx"]]
+
+
+def test_two_clips_sharing_one_transcript_name_are_refused_before_a_phrase_lookup(tmp_path, capsys):
+    d = make_project(tmp_path)
+    shutil.copy(d / "speech.mp4", d / "speech.mov")
+    p = json.loads((d / "project.json").read_text())
+    p["tracks"][0]["items"].append({"id": "clip-1", "type": "video", "src": str(d / "speech.mov"), "start": 30, "end": 40,
+                                    "inPoint": 0, "outPoint": 10, "sourceDuration": 30})
+    (d / "project.json").write_text(json.dumps(p))
+    assert refused(capsys, run, d, at='{"phrase": "three times faster"}', preset="callout")["error"] == "transcript_name_clash"
+
+
+def test_an_empty_track_is_not_taken_for_an_overlay_track(tmp_path):
+    d = make_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    p["tracks"].append({"id": "b-roll", "items": []})
+    (d / "project.json").write_text(json.dumps(p))
+    out = run(d, at="1", preset="callout")
+    assert out["track"] != "b-roll" and tracks(d)[1]["items"] == []
+
+
+def test_an_insert_keeps_the_other_items_order(tmp_path):
+    d = make_project(tmp_path, overlays=[{"id": "ov-a", "start": 5, "end": 6}, {"id": "ov-b", "start": 1, "end": 2}])
+    run(d, at="3", for_s=1, preset="callout", track="ovl-1")
+    ids = [it["id"] for it in tracks(d)[1]["items"]]
+    assert [i for i in ids if i in ("ov-a", "ov-b")] == ["ov-a", "ov-b"] and len(ids) == 3, "the other two keep their order"
