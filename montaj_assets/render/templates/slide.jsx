@@ -58,17 +58,21 @@ export function Slide({ slide, width, height, overlayRegistry, resolveAsset }) {
 
           if (crop) {
             const { x: cx, y: cy, w: cw, h: ch } = crop
+            // The oversized image is moved by a translate, whose percentages
+            // are of the image's own size, so the box shows the crop rect on a
+            // box of any shape (§562). A percentage margin-top is a share of
+            // the box's WIDTH: it showed another region on any box that is not
+            // square.
             return (
               <div key={element.id} style={{ ...baseStyle, overflow: 'hidden' }}>
                 <img
                   src={resolveAsset(element.src)}
                   style={{
-                    display:    'block',
-                    width:      `${100 / cw}%`,
-                    height:     `${100 / ch}%`,
-                    marginLeft: `${-cx * 100 / cw}%`,
-                    marginTop:  `${-cy * 100 / ch}%`,
-                    objectFit:  'cover',
+                    display:   'block',
+                    width:     `${100 / cw}%`,
+                    height:    `${100 / ch}%`,
+                    transform: `translate(${-cx * 100}%, ${-cy * 100}%)`,
+                    objectFit: 'cover',
                   }}
                 />
               </div>

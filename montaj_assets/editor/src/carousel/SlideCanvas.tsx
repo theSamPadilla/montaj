@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from 'react'
 import type { Slide, OverlayElement, ImageElement, OverlayFactory } from '../types'
 import OverlayErrorBoundary from './OverlayErrorBoundary'
 import {
@@ -78,7 +78,43 @@ function OverlayElementView({
 
 // ── SlideCanvas ───────────────────────────────────────────────────────────────
 
-type CropMode = { elementId: string; localCrop: { x: number; y: number; w: number; h: number } } | null
+type Crop = { x: number; y: number; w: number; h: number }
+
+/** The whole source: what an image with no crop shows. */
+const FULL_FRAME: Crop = { x: 0, y: 0, w: 1, h: 1 }
+
+/** Crops this close on every side are the same crop: a window dragged back to
+ *  where it was comes back through float math. */
+const SAME_CROP_EPSILON = 1e-6
+
+function sameCrop(a: Crop, b: Crop): boolean {
+  return (
+    Math.abs(a.x - b.x) < SAME_CROP_EPSILON &&
+    Math.abs(a.y - b.y) < SAME_CROP_EPSILON &&
+    Math.abs(a.w - b.w) < SAME_CROP_EPSILON &&
+    Math.abs(a.h - b.h) < SAME_CROP_EPSILON
+  )
+}
+
+/** A crop in progress (§556 M4): the image, the slide it is on, the file it was
+ *  started on, and the window picked so far (source fractions). */
+type CropSession = { slideId: string; elementId: string; src: string; localCrop: Crop }
+
+/** The window starts as the crop the image has: the whole source when none. */
+function startCrop(slideId: string, el: ImageElement): CropSession {
+  return { slideId, elementId: el.id, src: el.src, localCrop: el.crop ?? FULL_FRAME }
+}
+
+/** How crop mode ends: `apply` writes the window picked, as one undo step, and
+ *  nothing when it is the crop the image has; `discard` writes nothing. */
+export type CropExit = 'apply' | 'discard'
+
+/** The host's hold on crop mode (§556 M4): every way out of it but Esc, which
+ *  this canvas handles itself, goes through `leave`. */
+export interface SlideCanvasCropControl {
+  /** Ends crop mode, if it is on. Resolves once what it wrote is saved. */
+  leave: (how: CropExit) => Promise<void>
+}
 
 interface Props {
   slide: Slide
@@ -121,9 +157,14 @@ interface Props {
   updateOverlayProp?: (slideId: string, elementId: string, key: string, value: string) => Promise<void>
   updateImageCrop?: (slideId: string, elementId: string, crop: { x: number; y: number; w: number; h: number } | undefined) => Promise<void>
 
-  // Crop mode is owned here but the entry trigger lives in the property panel.
+  // Crop mode is owned here; the host enters it (the panel's Crop button, or a
+  // double-click on an image) and is told when it ends.
   cropElementId?: string | null
   onExitCrop?: () => void
+  /** Double-click on an unrotated image asks the host to crop it. Absent → double-click on an image does nothing. */
+  onEnterCrop?: (elementId: string) => void
+  /** Set to the control that ends crop mode from the host (§556 M4). */
+  cropControlRef?: Ref<SlideCanvasCropControl>
 
   /**
    * Editor-only element ids to omit from this canvas (non-persisted). Used by
@@ -235,6 +276,8 @@ export default function SlideCanvas({
   updateImageCrop,
   cropElementId,
   onExitCrop,
+  onEnterCrop,
+  cropControlRef,
   hiddenElementIds,
   onDragEnter,
   onDragOver,
@@ -258,9 +301,23 @@ export default function SlideCanvas({
   const [editRect, setEditRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
   const [editStyle, setEditStyle] = useState<Partial<CSSStyleDeclaration> | null>(null)
 
-  // Crop mode local state — source fraction window + loaded natural dims.
-  const [cropState, setCropState] = useState<CropMode>(null)
-  const [cropSrcDims, setCropSrcDims] = useState<{ width: number; height: number } | undefined>(undefined)
+  // Crop mode (§556 M4): the crop in progress. The ref is what handlers read,
+  // current within one tick; the state draws it.
+  const cropRef = useRef<CropSession | null>(null)
+  const [cropSession, setCropSessionState] = useState<CropSession | null>(null)
+  const setCropSession = (next: CropSession | null) => {
+    cropRef.current = next
+    setCropSessionState(next)
+  }
+  const changeCropSession = (change: (open: CropSession) => CropSession) => {
+    if (cropRef.current) setCropSession(change(cropRef.current))
+  }
+  // The natural size of the file the crop preview last loaded. It belongs to
+  // that file alone, so it outlives slide changes and goes stale only when the
+  // image gets another file.
+  const [cropSrcDims, setCropSrcDims] = useState<{ src: string; width: number; height: number } | null>(null)
+  const dimsOf = (open: CropSession | null) =>
+    open && cropSrcDims?.src === open.src ? { width: cropSrcDims.width, height: cropSrcDims.height } : undefined
 
   // ── Gesture preview helper: write transform/size directly to the wrapper ──
   const applyPreviewTransform = (id: string, x: number, y: number, rotation: number) => {
@@ -333,55 +390,85 @@ export default function SlideCanvas({
     },
   })
 
-  // ── Enter / exit crop mode when cropElementId changes ──
-  useEffect(() => {
-    if (!cropElementId) {
-      setCropState(null)
-      setCropSrcDims(undefined)
-      return
+  // ── Crop mode (§556 M4) ──
+  // Writes the window picked onto the image it was picked on: the box takes
+  // the window's shape at its width, then the crop, which `updateImageCrop`
+  // folds into one undo step with the box, then a commit. Every call is made
+  // in this tick, so nothing the caller does next lands between them. Writes
+  // nothing when the image is not on this slide, its size is not known yet,
+  // or the window is the crop the image already has.
+  function writeCrop(open: CropSession): Promise<void> {
+    const el = open.slideId === sid ? slide.elements.find((e) => e.id === open.elementId) : undefined
+    const dims = dimsOf(open)
+    if (el?.type !== 'image' || !dims) return Promise.resolve()
+    if (sameCrop(open.localCrop, el.crop ?? FULL_FRAME)) return Promise.resolve()
+    const writes: Array<Promise<void> | undefined> = []
+    // The window's pixel aspect, as a box height for the box's width.
+    const aspect = (open.localCrop.w * dims.width) / (open.localCrop.h * dims.height)
+    if (Number.isFinite(aspect) && aspect > 0) {
+      const h = Math.round(el.w / aspect)
+      if (h !== el.h) writes.push(resizeElement?.(open.slideId, el.id, { x: el.x, y: el.y, w: el.w, h }))
     }
-    const el = slide.elements.find((e) => e.id === cropElementId)
-    if (!el || el.type !== 'image') {
-      setCropState(null)
-      return
-    }
-    setCropState({ elementId: cropElementId, localCrop: el.crop ?? { x: 0, y: 0, w: 1, h: 1 } })
-    setCropSrcDims(undefined)
-  }, [cropElementId, slide.elements])
-
-  // Commit crop (also resizes the element box to match the crop's aspect) and exit.
-  const commitCrop = async () => {
-    const cs = cropState
-    if (!cs) return
-    const el = slide.elements.find((e) => e.id === cs.elementId)
-    if (el && el.type === 'image' && cropSrcDims) {
-      // Resize the element box so the cropped pixel aspect matches the box aspect.
-      // The crop window is a sub-rect of the source in fractions; convert its
-      // pixel aspect into a new box height for the current box width.
-      const croppedAspect =
-        (cs.localCrop.w * cropSrcDims.width) / (cs.localCrop.h * cropSrcDims.height)
-      if (Number.isFinite(croppedAspect) && croppedAspect > 0) {
-        const newH = Math.round(el.w / croppedAspect)
-        await resizeElement?.(sid, cs.elementId, { x: el.x, y: el.y, w: el.w, h: newH })
-      }
-      await updateImageCrop?.(sid, cs.elementId, cs.localCrop)
-      await commit?.()
-    }
-    onExitCrop?.()
+    writes.push(updateImageCrop?.(open.slideId, el.id, open.localCrop))
+    writes.push(commit?.())
+    return Promise.all(writes).then(() => undefined)
   }
 
-  // Escape / click-outside commits the crop.
+  // The one way crop mode ends: Esc here, the host's control for every other
+  // way out, and the image going away. Resolves once the write is saved.
+  function leaveCrop(how: CropExit): Promise<void> {
+    const open = cropRef.current
+    if (!open) return Promise.resolve()
+    setCropSession(null)
+    const written = how === 'apply' ? writeCrop(open) : Promise.resolve()
+    onExitCrop?.()
+    return written
+  }
+  // The latest render's, for the handle, Esc and the effects below.
+  const leaveCropRef = useRef(leaveCrop)
+  leaveCropRef.current = leaveCrop
+  useImperativeHandle(cropControlRef, () => ({ leave: (how) => leaveCropRef.current(how) }), [])
+
+  // The host enters crop mode, moves it to another image, or ends it without
+  // the control (the image deleted): the window starts as the image's own
+  // crop, or what was picked is dropped, writing nothing.
   useEffect(() => {
-    if (!cropState) return
+    const open = cropRef.current
+    if (open?.elementId === cropElementId) return
+    if (open) setCropSession(null)
+    if (!cropElementId) return
+    const el = slide.elements.find((e) => e.id === cropElementId)
+    if (el?.type !== 'image') {
+      onExitCrop?.()
+      return
+    }
+    setCropSession(startCrop(sid, el))
+  }, [cropElementId])
+
+  // Any other change to the slide keeps the window picked. A new file for the
+  // image (a Replace landing) starts it again from that file's crop; the image
+  // going away ends crop mode, writing nothing.
+  useEffect(() => {
+    const open = cropRef.current
+    if (!open) return
+    const el = open.slideId === sid ? slide.elements.find((e) => e.id === open.elementId) : undefined
+    if (el?.type !== 'image') void leaveCropRef.current('discard')
+    else if (el.src !== open.src) setCropSession(startCrop(sid, el))
+  }, [slide, sid])
+
+  // Esc applies the crop. The editor's own keys leave Esc alone in crop mode.
+  const cropOpen = cropSession !== null
+  useEffect(() => {
+    if (!cropOpen) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        void commitCrop()
-      }
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      // A save that fails is rolled back and shown by the host.
+      leaveCropRef.current('apply').catch(() => {})
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [cropState, cropSrcDims])
+  }, [cropOpen])
 
   // ── Inline text edit ──
   function beginTextEdit(element: OverlayElement) {
@@ -570,7 +657,7 @@ export default function SlideCanvas({
           // Outlined when selected at all; handles only for the one selected element.
           const isOutlined = selectedIds.includes(element.id)
           const isSelected = selectedElementId === element.id
-          const inCrop = cropState?.elementId === element.id
+          const inCrop = cropSession?.elementId === element.id
           const isRotated = (element.rotation ?? 0) !== 0
 
           const wrapperStyle: React.CSSProperties = {
@@ -592,7 +679,7 @@ export default function SlideCanvas({
             e.preventDefault()
             e.stopPropagation()
             // Shift toggles membership and drags nothing. Crop mode ignores shift.
-            if (e.shiftKey && onToggleSelect && !cropState) {
+            if (e.shiftKey && onToggleSelect && !cropSession) {
               onToggleSelect(element.id)
               return
             }
@@ -625,10 +712,13 @@ export default function SlideCanvas({
                 // Cropped display: render the crop sub-rect [cx,cx+cw]×[cy,cy+ch]
                 // (fractions of the source) scaled to cover the element box. This
                 // mirrors Montaj's renderer (render/templates/slide.jsx): an
-                // overflow-hidden wrapper + an oversized cover image positioned by
-                // the crop rect. `maxWidth/maxHeight: 'none'` defeats Tailwind
-                // preflight's `img { max-width: 100% }`, which would otherwise
-                // clamp the oversized image and collapse offset crops to a sliver.
+                // overflow-hidden wrapper + an oversized cover image moved by
+                // the crop rect. It is moved by a translate, whose percentages
+                // are of the image's own size, so the box shows the crop rect
+                // on a box of any shape (§562); a percentage margin-top would be
+                // a share of the box's width. `maxWidth/maxHeight: 'none'`
+                // defeats Tailwind preflight's `img { max-width: 100% }`, which
+                // would otherwise clamp the oversized image.
                 <div style={{ width: '100%', height: '100%', overflow: 'hidden' }}>
                   <img
                     src={resolveSrc(element)}
@@ -639,8 +729,7 @@ export default function SlideCanvas({
                       height: `${100 / element.crop.h}%`,
                       maxWidth: 'none',
                       maxHeight: 'none',
-                      marginLeft: `${(-element.crop.x * 100) / element.crop.w}%`,
-                      marginTop: `${(-element.crop.y * 100) / element.crop.h}%`,
+                      transform: `translate(${-element.crop.x * 100}%, ${-element.crop.y * 100}%)`,
                       objectFit: 'cover',
                     }}
                     alt=""
@@ -699,32 +788,39 @@ export default function SlideCanvas({
               onClick={interactive ? (e) => {
                 e.stopPropagation()
                 // The press already toggled it.
-                if (e.shiftKey && onToggleSelect && !cropState) return
+                if (e.shiftKey && onToggleSelect && !cropSession) return
                 // A gesture just ended here: keep the selection.
                 if (swallowClickRef.current) { swallowClickRef.current = false; return }
                 onSelect?.(element.id)
               } : undefined}
               onPointerDown={handlePointerDownDrag}
               onDoubleClick={
-                interactive && element.type === 'overlay'
-                  ? (e) => { e.stopPropagation(); beginTextEdit(element) }
-                  : undefined
+                !interactive
+                  ? undefined
+                  : element.type === 'overlay'
+                    ? (e) => { e.stopPropagation(); beginTextEdit(element) }
+                    : onEnterCrop
+                      // An image crops, as its Crop button does: not while turned
+                      // (the crop math is for an upright box), nor again in crop.
+                      ? (e) => { e.stopPropagation(); if (!inCrop && (element.rotation ?? 0) === 0) onEnterCrop(element.id) }
+                      : undefined
               }
             >
               {innerContent}
 
               {/* In-canvas crop overlay for the image being cropped. */}
-              {inCrop && element.type === 'image' && cropState && (
+              {inCrop && element.type === 'image' && cropSession && (
                 <CanvasCropOverlay
                   element={element}
                   resolveImageSrc={resolveSrc}
                   scale={scale}
-                  localCrop={cropState.localCrop}
-                  onLocalCropChange={(next) =>
-                    setCropState((cs) => (cs ? { ...cs, localCrop: next } : cs))
-                  }
-                  onSrcDimsLoaded={setCropSrcDims}
-                  srcDims={cropSrcDims}
+                  localCrop={cropSession.localCrop}
+                  onLocalCropChange={(next) => changeCropSession((open) => ({ ...open, localCrop: next }))}
+                  onSrcDimsLoaded={(dims) => setCropSrcDims({ src: element.src, ...dims })}
+                  srcDims={dimsOf(cropSession)}
+                  // The click the browser sends after a window or handle drag
+                  // changes nothing, even when let go off the image.
+                  onDragEnd={() => { swallowClickRef.current = true }}
                 />
               )}
 

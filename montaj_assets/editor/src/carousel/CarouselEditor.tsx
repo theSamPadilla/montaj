@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { RefreshCw, AlertCircle, Download, Info, Undo2, Redo2 } from 'lucide-react'
 import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory, SlideNotesApi, CarouselApi, ImageDropPayload } from '../types'
 import { IMAGE_DND_MIME } from '../types'
 import type { SlideNote } from '../schema'
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
-import SlideCanvas from './SlideCanvas'
+import SlideCanvas, { type CropExit, type SlideCanvasCropControl } from './SlideCanvas'
 import SlidePropertyPanel from './SlidePropertyPanel'
 import AddElementMenu from './AddElementMenu'
 import CarouselRenderModal from './CarouselRenderModal'
@@ -377,6 +378,27 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   }, [setSelectedElementIds])
   const [cropElementId, setCropElementId] = useState<string | null>(null)
 
+  // ── Crop mode (§556 M4) ──
+  // The canvas holds the window being picked. Every way out of crop mode but
+  // Esc (the canvas's own) comes through here: `apply` writes the window as
+  // one undo step, or nothing when it changes nothing; `discard` writes
+  // nothing. The promise settles once the write is saved.
+  const cropControlRef = useRef<SlideCanvasCropControl | null>(null)
+  const leaveCrop = useCallback((how: CropExit): Promise<void> => {
+    const left = cropControlRef.current?.leave(how) ?? Promise.resolve()
+    setCropElementId(null)
+    return left
+  }, [])
+  /** Leaves crop mode keeping what was picked. A save that fails is rolled back and shown by `state.lastError`. */
+  const applyCrop = useCallback(() => {
+    leaveCrop('apply').catch(() => {})
+  }, [leaveCrop])
+  /** Crop mode for an image: its panel button, or a double-click on it. */
+  const enterCrop = useCallback((elementId: string) => {
+    setSelectedElementId(elementId)
+    setCropElementId(elementId)
+  }, [setSelectedElementId])
+
   const selectedSlide = slides.find(s => s.id === selectedSlideId)
   // Only ids still on the selected slide count: a removed element leaves the set.
   const liveSelectedIds = useMemo(
@@ -456,9 +478,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
 
   const selectSlide = useCallback((slideId: string) => {
     if (!slidesRef.current.some((s) => s.id === slideId)) return
+    applyCrop()
     setSelectedSlideId(slideId)
     setSelectedElementId(null)
-    setCropElementId(null)
   }, [])
 
   // Host notes api: handed up once (it is stable) and withdrawn with null on
@@ -634,6 +656,17 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // N is not claimed at all; Esc only when something is selected, so a host's
   // own Esc handlers still run.
   const modalOpen = showControls || renderOpen || overlayPickerOpen
+
+  // Undo and redo, from the keys and the toolbar. In crop mode undo cancels
+  // the crop (crop mode ends, nothing is written) and redo does nothing.
+  function undo() {
+    if (cropElementId) void leaveCrop('discard')
+    else state.undo()
+  }
+  function redo() {
+    if (!cropElementId) state.redo()
+  }
+
   const bindings: KeyBinding[] = [
     {
       // Esc adds the armed note about the whole slide.
@@ -659,14 +692,14 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       description: 'Undo',
       keyHint: ['⌘', 'Z'],
       matches: matchesUndo,
-      action: () => state.undo(),
+      action: () => undo(),
     },
     {
       id: 'carousel.redo',
       description: 'Redo',
       keyHint: ['⌘', '⇧', 'Z'],
       matches: matchesRedo,
-      action: () => state.redo(),
+      action: () => redo(),
     },
     {
       // Removes the selected elements, never in crop mode (Backspace there
@@ -836,11 +869,12 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   }
 
   // Render saves the project as final, then opens. A save that fails or never
-  // answers ends here: the host is told (`onError`) and Render is back.
+  // answers ends here: the host is told (`onError`) and Render is back. A crop
+  // in progress is applied first, so the render has it (§556 M4).
   async function handleRender() {
     setRendering(true)
     try {
-      await withTimeout(state.setStatus('final'), renderSaveTimeoutMs)
+      await withTimeout(leaveCrop('apply').then(() => state.setStatus('final')), renderSaveTimeoutMs)
       setRenderOpen(true)
     } catch (e) {
       reportError("Couldn't start the render", e)
@@ -886,9 +920,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (slides.length === 0) return
     const stillExists = selectedSlideId && slides.some(s => s.id === selectedSlideId)
     if (!stillExists) {
+      // A crop on the slide that is gone went with its image: nothing is written.
+      applyCrop()
       setSelectedSlideId(slides[0].id)
       setSelectedElementId(null)
-      setCropElementId(null)
     }
   }, [slides, selectedSlideId])
 
@@ -918,14 +953,19 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   }, [project.status, slides.length])
 
   // ── Slide handlers (via project-state mutators) ──
+  // A crop in progress is applied first (§556 M4): its own undo step, before
+  // the one these add.
   function handleAddSlide() {
+    applyCrop()
     const slide = makeSlide()
     void state.addSlide(slide, selectedSlideId ?? undefined)
     setSelectedSlideId(slide.id)
     setSelectedElementId(null)
   }
   function handleDuplicateSlide(id: string) {
-    const src = slides.find(s => s.id === id)
+    // The crop lands before the copy is made, so the copy has it too.
+    if (cropElementId) flushSync(applyCrop)
+    const src = slidesRef.current.find(s => s.id === id)
     if (!src) return
     const clone: Slide = { ...src, id: crypto.randomUUID(), elements: src.elements.map(cloneElement) }
     void state.duplicateSlide(id, clone)
@@ -936,7 +976,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     void state.removeSlide(id)
     if (selectedSlideId === id) {
       setSelectedElementId(null)
-      setCropElementId(null)
+      // A crop on it goes with it, unwritten.
+      void leaveCrop('discard')
     }
   }
   function handleReorderSlides(fromIdx: number, toIdx: number) {
@@ -944,17 +985,23 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   }
 
   // ── Element handlers ──
+  // Each new element is selected, so a crop in progress is applied first, as
+  // its own undo step (§556 M4).
   function handleAddElement(slideId: string, element: CarouselElement) {
+    applyCrop()
     void state.addElement(slideId, element)
     setSelectedElementId(element.id)
   }
   function handleDeleteElement(slideId: string, elementId: string) {
     void state.removeElement(slideId, elementId)
     setSelectedElementId(null)
-    if (cropElementId === elementId) setCropElementId(null)
+    // A crop on it goes with it, unwritten.
+    if (cropElementId === elementId) void leaveCrop('discard')
   }
   function handleDuplicateElement(slideId: string, elementId: string) {
-    const slide = slides.find(s => s.id === slideId)
+    // The crop lands before the copy is made, so the copy has it too.
+    if (cropElementId) flushSync(applyCrop)
+    const slide = slidesRef.current.find(s => s.id === slideId)
     const src = slide?.elements.find(el => el.id === elementId)
     if (!src) return
     const clone = { ...cloneElement(src), x: src.x + COPY_OFFSET, y: src.y + COPY_OFFSET }
@@ -1203,7 +1250,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         project={project}
         slides={slides}
         selectedSlideId={selectedSlideId}
-        onSelect={id => { setSelectedSlideId(id); setSelectedElementId(null); setCropElementId(null) }}
+        onSelect={id => { applyCrop(); setSelectedSlideId(id); setSelectedElementId(null) }}
         onAdd={handleAddSlide}
         onDuplicate={handleDuplicateSlide}
         onDelete={handleDeleteSlide}
@@ -1235,8 +1282,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
               <span className="text-xs font-medium">Refresh</span>
             </button>
             <button
-              onClick={() => state.undo()}
-              disabled={!state.canUndo}
+              onClick={() => undo()}
+              disabled={!state.canUndo && !cropElementId}
               className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-surface)_80%,transparent)] text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
               title={`Undo (${shortcutText(['⌘', 'Z'])})`}
               aria-label="Undo"
@@ -1244,8 +1291,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
               <Undo2 size={18} />
             </button>
             <button
-              onClick={() => state.redo()}
-              disabled={!state.canRedo}
+              onClick={() => redo()}
+              disabled={!state.canRedo || !!cropElementId}
               className="flex items-center justify-center p-2 rounded-md border border-[var(--editor-border)] bg-[color-mix(in_srgb,var(--editor-surface)_80%,transparent)] text-[var(--editor-text)] transition-colors hover:border-[var(--editor-accent)] hover:bg-[var(--editor-surface)] disabled:opacity-40 disabled:cursor-not-allowed"
               title={`Redo (${shortcutText(['⌘', '⇧', 'Z'])})`}
               aria-label="Redo"
@@ -1349,7 +1396,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 height={h}
                 interactive
                 selectedElementId={selectedElementId}
-                onSelect={id => { setSelectedElementId(id); if (id !== cropElementId) setCropElementId(null) }}
+                onSelect={id => { if (cropElementId && id !== cropElementId) applyCrop(); setSelectedElementId(id) }}
                 selectedElementIds={liveSelectedIds}
                 onToggleSelect={toggleSelect}
                 scale={canvasScale}
@@ -1364,6 +1411,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 updateImageCrop={state.updateImageCrop}
                 cropElementId={cropElementId}
                 onExitCrop={() => setCropElementId(null)}
+                onEnterCrop={enterCrop}
+                cropControlRef={cropControlRef}
                 hiddenElementIds={hiddenElementIds}
                 onDragEnter={handleCanvasDragOver}
                 onDragOver={handleCanvasDragOver}
@@ -1431,7 +1480,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             onDeleteElement={handleDeleteElement}
             onDuplicateElement={handleDuplicateElement}
             onReorderElement={handleReorderElement}
-            onEnterCrop={(_slideId, elementId) => { setSelectedElementId(elementId); setCropElementId(elementId) }}
+            onEnterCrop={(_slideId, elementId) => enterCrop(elementId)}
             onReplaceImage={state.isEditingAllowed ? handleReplaceImage : undefined}
             updateOverlayProp={state.updateOverlayProp}
             hiddenElementIds={hiddenElementIds}

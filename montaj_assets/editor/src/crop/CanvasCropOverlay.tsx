@@ -4,6 +4,8 @@ import {
   renderedSourceRect,
   fractionToWrapperPx,
   applyCropHandleDrag,
+  translateCropPx,
+  type CropFraction,
   type CropHandle,
 } from './crop-math'
 
@@ -35,12 +37,17 @@ export type CanvasCropOverlayProps = {
   scale: number
   /** Current crop as source fractions. Controlled — caller owns the state. */
   localCrop: { x: number; y: number; w: number; h: number }
-  /** Called on every pointer-move while a handle is held. */
+  /** Called on every pointer-move while a handle, or the window itself, is held. */
   onLocalCropChange: (next: { x: number; y: number; w: number; h: number }) => void
   /** Called once when the <img> fires onLoad with the source's natural dims. */
   onSrcDimsLoaded: (dims: { width: number; height: number }) => void
   /** Natural dimensions of the source image, if already known. */
   srcDims?: { width: number; height: number }
+  /**
+   * Called when a press on a handle or on the window is let go, so the host
+   * can ignore the click the browser sends after it (§556 M4).
+   */
+  onDragEnd?: () => void
 }
 
 export function CanvasCropOverlay({
@@ -51,6 +58,7 @@ export function CanvasCropOverlay({
   onLocalCropChange,
   onSrcDimsLoaded,
   srcDims,
+  onDragEnd,
 }: CanvasCropOverlayProps) {
   const srcUrl = resolveImageSrc(element)
 
@@ -62,13 +70,16 @@ export function CanvasCropOverlay({
     : null
   const windowPx = rendered ? fractionToWrapperPx({ crop: localCrop, rendered }) : null
 
+  // What is held: a handle (resizes the window) or the window itself ('move',
+  // §556 M4: pans it at its size, kept inside the image). Every move is
+  // measured from where the press began.
   const dragStateRef = React.useRef<{
-    handle: CropHandle
+    handle: CropHandle | 'move'
     startClient: { x: number; y: number }
-    startCrop: { x: number; y: number; w: number; h: number }
+    startCrop: CropFraction
   } | null>(null)
 
-  const onHandlePointerDown = (handle: CropHandle, e: React.PointerEvent<HTMLDivElement>) => {
+  const onPointerDown = (handle: CropHandle | 'move', e: React.PointerEvent<HTMLDivElement>) => {
     e.stopPropagation()
     e.currentTarget.setPointerCapture(e.pointerId)
     dragStateRef.current = {
@@ -78,25 +89,22 @@ export function CanvasCropOverlay({
     }
   }
 
-  const onHandlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragStateRef.current
     if (!drag || !srcDims) return
-    const dx = e.clientX - drag.startClient.x
-    const dy = e.clientY - drag.startClient.y
-    const next = applyCropHandleDrag({
-      handle: drag.handle,
-      initialCrop: drag.startCrop,
-      deltaPx: { x: dx, y: dy },
-      wrapperW,
-      wrapperH,
-      srcWidth: srcDims.width,
-      srcHeight: srcDims.height,
-    })
-    onLocalCropChange(next)
+    const deltaPx = { x: e.clientX - drag.startClient.x, y: e.clientY - drag.startClient.y }
+    const geometry = { wrapperW, wrapperH, srcWidth: srcDims.width, srcHeight: srcDims.height }
+    onLocalCropChange(
+      drag.handle === 'move'
+        ? translateCropPx({ crop: drag.startCrop, deltaPx, ...geometry })
+        : applyCropHandleDrag({ handle: drag.handle, initialCrop: drag.startCrop, deltaPx, ...geometry }),
+    )
   }
 
-  const onHandlePointerUp = () => {
+  const onPointerUp = () => {
+    if (!dragStateRef.current) return
     dragStateRef.current = null
+    onDragEnd?.()
   }
 
   return (
@@ -159,6 +167,25 @@ export function CanvasCropOverlay({
             }}
           />
 
+          {/* The window itself: drag it to move it. Under the handles. */}
+          <div
+            data-testid="crop-move"
+            onPointerDown={(e) => onPointerDown('move', e)}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            style={{
+              position: 'absolute',
+              left: windowPx.x,
+              top: windowPx.y,
+              width: windowPx.w,
+              height: windowPx.h,
+              cursor: 'move',
+              zIndex: 5,
+              pointerEvents: 'auto',
+              touchAction: 'none',
+            }}
+          />
+
           {/* 8 resize handles */}
           {CROP_HANDLES.map((handle) => {
             const o = HANDLE_OFFSET[handle]
@@ -166,9 +193,9 @@ export function CanvasCropOverlay({
               <div
                 key={handle}
                 data-testid={`crop-handle-${handle}`}
-                onPointerDown={(e) => onHandlePointerDown(handle, e)}
-                onPointerMove={onHandlePointerMove}
-                onPointerUp={onHandlePointerUp}
+                onPointerDown={(e) => onPointerDown(handle, e)}
+                onPointerMove={onPointerMove}
+                onPointerUp={onPointerUp}
                 style={{
                   position: 'absolute',
                   left: windowPx.x + o.dx * windowPx.w - 6,

@@ -79,6 +79,16 @@ beforeEach(() => {
 })
 afterEach(() => vi.restoreAllMocks())
 
+// jsdom has no pointer capture; the crop window and its handles take the pointer.
+const pointerCapture = Object.getOwnPropertyDescriptor(Element.prototype, 'setPointerCapture')
+beforeEach(() => {
+  Element.prototype.setPointerCapture = vi.fn()
+})
+afterEach(() => {
+  if (pointerCapture) Object.defineProperty(Element.prototype, 'setPointerCapture', pointerCapture)
+  else delete (Element.prototype as { setPointerCapture?: unknown }).setPointerCapture
+})
+
 // The element id appears twice in the DOM: once in the left-rail thumbnail
 // (non-interactive SlideCanvas) and once in the main interactive canvas. The
 // interactive canvas renders last, so take the final match.
@@ -1735,14 +1745,14 @@ describe('CarouselEditor: one keymap (§556)', () => {
     await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
     const source = findInteractiveWrapper('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
     expect(source).not.toBeNull()
-    // A 2:1 source in the 200 x 200 box.
+    // A 2:1 source in the 200 x 200 box, its right quarter cropped off (§556 M4:
+    // an untouched crop writes nothing).
     await act(async () => { loadImage(source!, 400, 200) })
+    await dragCropRightEdgeIn()
 
     await key('Escape')
-    // The crop applied: the whole source, and the box takes its 2:1 shape.
-    await waitFor(() =>
-      expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ crop: { x: 0, y: 0, w: 1, h: 1 }, w: 200, h: 100 }),
-    )
+    // The crop applied, and the box takes its 3:2 shape.
+    await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0]))
     // Crop mode is over, and the image is still the one selected.
     expect(findInteractiveWrapper('el-img').querySelector('img[alt="Crop source"]')).toBeNull()
     expect(handlesOn('el-img')).toBe(true)
@@ -2656,9 +2666,10 @@ describe('CarouselEditor: Esc deselects (§556 M2)', () => {
     await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
     const source = findInteractiveWrapper('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
     await act(async () => { loadImage(source!, 400, 200) })
+    await dragCropRightEdgeIn()
 
     await key('Escape')
-    await waitFor(() => expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ crop: { x: 0, y: 0, w: 1, h: 1 } }))
+    await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0]))
     expect(handlesOn('el-img')).toBe(true)
     expect(outlined('el-img')).toBe(true)
   })
@@ -2915,5 +2926,509 @@ describe('CarouselEditor: resize handles and clicks (§556 M3)', () => {
     })
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
     expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 100, y: 100, w: 295, h: 245 })
+  })
+})
+
+// ── A crop that keeps what you picked (§556 M4) ─────────────────────────────
+//
+// Esc and every way away from crop mode apply the window picked, once, as one
+// undo step: a click on the empty canvas or on another element, another slide
+// (its thumbnail or the notes api), a new or duplicated slide, a new or
+// duplicated element, and Render. Cmd+Z in crop mode cancels: it leaves crop
+// mode and writes nothing, and redo does nothing there. A crop that changes
+// nothing writes nothing. Double-click on an image enters crop mode.
+
+function cropProject(): Project {
+  return makeProject({
+    slides: [
+      {
+        id: 'slide-0',
+        base_color: '#ffffff',
+        elements: [
+          { id: 'el-img', type: 'image', src: 'a.png', x: 100, y: 100, w: 200, h: 200, rotation: 0 },
+          { id: 'el-b', type: 'image', src: 'b.png', x: 500, y: 500, w: 100, h: 100, rotation: 0 },
+        ],
+      },
+      {
+        id: 'slide-1',
+        base_color: '#000000',
+        elements: [{ id: 'el-c', type: 'image', src: 'c.png', x: 0, y: 0, w: 100, h: 100, rotation: 0 }],
+      },
+    ],
+  })
+}
+
+function canvasRoot(): HTMLElement {
+  return document.querySelector('[data-interactive]') as HTMLElement
+}
+
+function inCrop(id = 'el-img'): boolean {
+  return findInteractiveWrapper(id).querySelector('img[alt="Crop source"]') !== null
+}
+
+/** The crop source of `id`, loaded as a 400 x 200 image. */
+async function loadCropSource(id = 'el-img') {
+  const source = findInteractiveWrapper(id).querySelector<HTMLImageElement>('img[alt="Crop source"]')
+  if (!source) throw new Error(`${id} is not in crop mode`)
+  await act(async () => { loadImage(source, 400, 200) })
+}
+
+/** Drags the crop window's right edge in by 50 px of the slide: a quarter of
+ *  the 200 wide el-img, so its window becomes {0, 0, 0.75, 1}. */
+async function dragCropRightEdgeIn(id = 'el-img') {
+  const handle = findInteractiveWrapper(id).querySelector('[data-testid="crop-handle-e"]') as HTMLElement
+  const d = 50 * (parseFloat(canvasRoot().style.width) / 1080)
+  await act(async () => {
+    pointer(handle, 'pointerdown', { clientX: 0, clientY: 0 })
+    pointer(handle, 'pointermove', { clientX: -d, clientY: 0 })
+    pointer(handle, 'pointerup', { clientX: -d, clientY: 0 })
+    // The click the browser sends after the release, to the handle that took the pointer.
+    fireEvent.click(handle)
+  })
+}
+
+/** Crop mode on the selected el-img by its panel button, its source loaded, and its window picked. */
+async function pickCrop(r: { getByTitle: (title: string) => HTMLElement }) {
+  await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+  await loadCropSource()
+  await dragCropRightEdgeIn()
+}
+
+/** The window picked, applied: 0.75 of a 400 x 200 image is 3:2, so the 200 wide box is 133 tall. */
+function expectCropApplied(el: unknown, at = { x: 100, y: 100 }) {
+  expect(el).toMatchObject({ ...at, w: 200, h: 133 })
+  const crop = (el as ImageElement).crop
+  expect(crop).toBeDefined()
+  expect(crop!.x).toBeCloseTo(0, 9)
+  expect(crop!.y).toBeCloseTo(0, 9)
+  expect(crop!.w).toBeCloseTo(0.75, 9)
+  expect(crop!.h).toBeCloseTo(1, 9)
+}
+
+function expectUncropped(el: unknown) {
+  expect(el).toMatchObject({ id: 'el-img', x: 100, y: 100, w: 200, h: 200 })
+  expect((el as ImageElement).crop).toBeUndefined()
+}
+
+async function settle() {
+  await act(async () => { await new Promise((res) => setTimeout(res, 20)) })
+}
+
+describe('CarouselEditor: a crop that keeps what you picked (§556 M4)', () => {
+  async function mount(extra: Partial<React.ComponentProps<typeof CarouselEditor>> = {}) {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    const r = render(<CarouselEditor project={cropProject()} adapter={adapter} onProjectChange={onProjectChange} {...extra} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    return { adapter, onProjectChange, r }
+  }
+
+  /** One Cmd+Z puts el-img back as it was before the crop, and nothing is left to undo. */
+  async function expectOneUndoStep(adapter: FakeAdapter, r: { getByLabelText: (label: string) => HTMLElement }) {
+    const saves = adapter.saveCalls.length
+    await key('z', { metaKey: true })
+    await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThan(saves))
+    expectUncropped(elementsOf(lastSave(adapter))[0])
+    expect(r.getByLabelText('Undo')).toBeDisabled()
+  }
+
+  it('picking writes nothing; a click on the empty canvas applies it, as one undo step, and selects nothing', async () => {
+    const { adapter, r } = await mount()
+    await pickCrop(r)
+    expect(inCrop()).toBe(true)
+    expect(adapter.saveCalls).toHaveLength(0)
+
+    await act(async () => { fireEvent.click(canvasRoot()) })
+    await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0]))
+    expect(inCrop()).toBe(false)
+    expect(outlined('el-img')).toBe(false)
+    await expectOneUndoStep(adapter, r)
+  })
+
+  it('a press on another element applies the crop and selects that element', async () => {
+    const { adapter, r } = await mount()
+    await pickCrop(r)
+    const b = findInteractiveWrapper('el-b')
+    await act(async () => {
+      pointer(b, 'pointerdown', { clientX: 10, clientY: 10 })
+      pointer(window, 'pointerup', { clientX: 10, clientY: 10 })
+      fireEvent.click(b)
+    })
+    await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0]))
+    expect(inCrop()).toBe(false)
+    expect(outlined('el-b')).toBe(true)
+    expect(handlesOn('el-b')).toBe(true)
+    await expectOneUndoStep(adapter, r)
+  })
+
+  it('another slide picked by its thumbnail applies the crop on the slide it was made on', async () => {
+    const { adapter, r } = await mount()
+    await pickCrop(r)
+    await pickSlide('slide-1')
+    await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0]))
+    expect(interactiveHas('el-c')).toBe(true)
+    await expectOneUndoStep(adapter, r)
+  })
+
+  it('another slide picked through the notes api applies the crop', async () => {
+    const provided: Array<SlideNotesApi | null> = []
+    const { adapter, r } = await mount({ onProvideNotesApi: (api) => { provided.push(api) } })
+    await pickCrop(r)
+    await act(async () => { provided[provided.length - 1]!.selectSlide('slide-1') })
+    await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0]))
+    expect(interactiveHas('el-c')).toBe(true)
+    await expectOneUndoStep(adapter, r)
+  })
+
+  it('the slide going away during crop ends crop mode, writing nothing, and leaves no crop mode behind', async () => {
+    const adapter = makeFakeAdapter()
+    let push: ((p: Project) => void) | undefined
+    adapter.subscribe = (_id, onFrame) => {
+      push = onFrame
+      return () => {}
+    }
+    const r = render(<CarouselEditor project={cropProject()} adapter={adapter} onProjectChange={vi.fn()} notes={{ enabled: true }} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await pickSlide('slide-1')
+    await plainClick('el-c')
+    await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+    await loadCropSource('el-c')
+    await dragCropRightEdgeIn('el-c')
+
+    // Another writer removes the slide.
+    const frame = cropProject()
+    await act(async () => { push!({ ...frame, slides: [frame.slides![0]] }) })
+    expect(interactiveHas('el-img')).toBe(true)
+    expect(adapter.saveCalls).toHaveLength(0)
+
+    // N arms and Delete deletes: nothing of crop mode is left.
+    await key('n')
+    expect(armLayer()).not.toBeNull()
+    await act(async () => { fireEvent.pointerDown(document.body) })
+    await plainClick('el-img')
+    await key('Delete')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b'])
+  })
+
+  it('a new slide applies the crop first: one undo step for the crop, one for the slide', async () => {
+    const { adapter, r, onProjectChange } = await mount()
+    await pickCrop(r)
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: '+ Add Slide' })) })
+    await waitFor(() => expect(lastSave(adapter).slides).toHaveLength(3))
+    expectCropApplied(elementsOf(lastSave(adapter))[0])
+    expect(inCrop()).toBe(false)
+
+    await key('z', { metaKey: true })
+    expect(liveProject(onProjectChange).slides).toHaveLength(2)
+    expectCropApplied(elementsOf(liveProject(onProjectChange))[0])
+    await key('z', { metaKey: true })
+    expectUncropped(elementsOf(liveProject(onProjectChange))[0])
+    expect(r.getByLabelText('Undo')).toBeDisabled()
+  })
+
+  it('after a new slide nothing of crop mode is left: N arms, and paste and Delete work', async () => {
+    const { adapter, r, onProjectChange } = await mount({ notes: { enabled: true } })
+    // Something to paste, copied before the crop.
+    await plainClick('el-b')
+    await key('c', CMD)
+    await plainClick('el-img')
+    await pickCrop(r)
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: '+ Add Slide' })) })
+    await waitFor(() => expect(lastSave(adapter).slides).toHaveLength(3))
+
+    await key('n')
+    expect(armLayer()).not.toBeNull()
+    await act(async () => { fireEvent.pointerDown(document.body) })
+    const paste = await key('v', CMD)
+    expect(paste.defaultPrevented).toBe(true)
+    expect(liveProject(onProjectChange).slides![1].elements).toHaveLength(1)
+    const del = await key('Delete')
+    expect(del.defaultPrevented).toBe(true)
+    expect(liveProject(onProjectChange).slides![1].elements).toEqual([])
+  })
+
+  it('a duplicated slide applies the crop first, and the copy has it too', async () => {
+    const { adapter, r, onProjectChange } = await mount({ notes: { enabled: true } })
+    await pickCrop(r)
+    await act(async () => { fireEvent.click(r.getAllByTitle('Duplicate slide')[0]) })
+    await waitFor(() => expect(lastSave(adapter).slides).toHaveLength(3))
+    const saved = lastSave(adapter)
+    expectCropApplied(saved.slides![0].elements[0])
+    const copy = saved.slides![1]
+    expect(copy.id).not.toBe('slide-0')
+    expect(copy.elements[0].id).not.toBe('el-img')
+    expectCropApplied(copy.elements[0])
+    expect(inCrop(copy.elements[0].id)).toBe(false)
+
+    // The copy is on show and nothing of crop mode is left: N arms, Delete deletes.
+    await key('n')
+    expect(armLayer()).not.toBeNull()
+    await act(async () => { fireEvent.pointerDown(document.body) })
+    await plainClick(copy.elements[0].id)
+    await key('Delete')
+    expect(liveProject(onProjectChange).slides![1].elements.map((e) => e.id)).toEqual([copy.elements[1].id])
+
+    // Undo: the delete, the copy, then the crop.
+    await key('z', { metaKey: true })
+    await key('z', { metaKey: true })
+    expect(liveProject(onProjectChange).slides).toHaveLength(2)
+    expectCropApplied(elementsOf(liveProject(onProjectChange))[0])
+    await key('z', { metaKey: true })
+    expectUncropped(elementsOf(liveProject(onProjectChange))[0])
+    expect(r.getByLabelText('Undo')).toBeDisabled()
+  })
+
+  it('adding an element applies the crop first, then adds and selects the new one', async () => {
+    const { r, onProjectChange } = await mount()
+    await pickCrop(r)
+    const upload = document.querySelector<HTMLInputElement>('input[type="file"]:not([data-testid])')!
+    await act(async () => { fireEvent.change(upload, { target: { files: [new File(['x'], 'n.png', { type: 'image/png' })] } }) })
+    await waitFor(() => expect(elementsOf(liveProject(onProjectChange))).toHaveLength(3))
+    const [img, , added] = elementsOf(liveProject(onProjectChange))
+    expectCropApplied(img)
+    expect(inCrop()).toBe(false)
+    expect(outlined(added.id)).toBe(true)
+
+    await key('z', { metaKey: true })
+    expect(elementsOf(liveProject(onProjectChange))).toHaveLength(2)
+    expectCropApplied(elementsOf(liveProject(onProjectChange))[0])
+    await key('z', { metaKey: true })
+    expectUncropped(elementsOf(liveProject(onProjectChange))[0])
+  })
+
+  it('duplicating the image applies the crop first, and the copy has it too', async () => {
+    const { r, onProjectChange } = await mount()
+    await pickCrop(r)
+    const duplicates = r.getAllByRole('button', { name: 'Duplicate' })
+    // The slide's Duplicate comes first in the panel; the element's after it.
+    await act(async () => { fireEvent.click(duplicates[duplicates.length - 1]) })
+    await waitFor(() => expect(elementsOf(liveProject(onProjectChange))).toHaveLength(3))
+    const [img, copy] = elementsOf(liveProject(onProjectChange))
+    expectCropApplied(img)
+    expect(copy.id).not.toBe('el-img')
+    expectCropApplied(copy, { x: 120, y: 120 })
+    expect(inCrop()).toBe(false)
+    expect(outlined(copy.id)).toBe(true)
+  })
+
+  it('deleting the image being cropped drops the crop with it: one undo brings the image back as it was', async () => {
+    const { r, onProjectChange } = await mount()
+    await pickCrop(r)
+    const deletes = r.getAllByRole('button', { name: 'Delete' })
+    // The slide's Delete comes first in the panel; the element's after it.
+    await act(async () => { fireEvent.click(deletes[deletes.length - 1]) })
+    expect(idsOf(liveProject(onProjectChange))).toEqual(['el-b'])
+
+    await key('z', { metaKey: true })
+    expectUncropped(elementsOf(liveProject(onProjectChange))[0])
+    expect(r.getByLabelText('Undo')).toBeDisabled()
+  })
+
+  it('deleting the slide being cropped drops the crop with it', async () => {
+    const { r, onProjectChange } = await mount()
+    await pickCrop(r)
+    await act(async () => { fireEvent.click(r.getAllByTitle('Delete slide')[0]) })
+    expect(liveProject(onProjectChange).slides!.map((s) => s.id)).toEqual(['slide-1'])
+    expect(interactiveHas('el-c')).toBe(true)
+
+    await key('z', { metaKey: true })
+    expectUncropped(elementsOf(liveProject(onProjectChange))[0])
+    expect(r.getByLabelText('Undo')).toBeDisabled()
+  })
+
+  it('Render applies the crop before it saves the project as final', async () => {
+    const { adapter, r } = await mount({
+      renderModal: (ctx) => (ctx.open ? <div data-testid="host-render-window" /> : null),
+    })
+    await pickCrop(r)
+    await act(async () => { fireEvent.click(r.getByTitle('Render all slides as PNGs')) })
+    await r.findByTestId('host-render-window')
+    const finals = adapter.saveCalls.filter((c) => c.project.status === 'final')
+    expect(finals.length).toBeGreaterThan(0)
+    expectCropApplied(elementsOf(finals[0].project)[0])
+    expect(inCrop()).toBe(false)
+  })
+
+  it("the host's render trigger applies the crop first too", async () => {
+    let trigger: (() => void) | undefined
+    const { adapter, r } = await mount({
+      onProvideRenderTrigger: (fn) => { trigger = fn },
+      renderModal: (ctx) => (ctx.open ? <div data-testid="host-render-window" /> : null),
+    })
+    await pickCrop(r)
+    await act(async () => { trigger!() })
+    await r.findByTestId('host-render-window')
+    const finals = adapter.saveCalls.filter((c) => c.project.status === 'final')
+    expect(finals.length).toBeGreaterThan(0)
+    expectCropApplied(elementsOf(finals[0].project)[0])
+    expect(inCrop()).toBe(false)
+  })
+
+  it('Cmd+Z in crop mode cancels: crop mode ends, nothing is written, and the step before is still the one to undo', async () => {
+    const { adapter, r, onProjectChange } = await mount()
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align top' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    await pickCrop(r)
+
+    const undo = await key('z', { metaKey: true })
+    expect(undo.defaultPrevented).toBe(true)
+    expect(inCrop()).toBe(false)
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(1)
+    const img = elementsOf(liveProject(onProjectChange))[0] as ImageElement
+    expect(img).toMatchObject({ x: 100, y: 0, w: 200, h: 200 })
+    expect(img.crop).toBeUndefined()
+    expect(handlesOn('el-img')).toBe(true)
+
+    await key('z', { ctrlKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 100, y: 100 })
+  })
+
+  it('redo does nothing in crop mode, and is back once crop mode ends', async () => {
+    const { adapter, r } = await mount()
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align top' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    await key('z', { metaKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+
+    await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+    await loadCropSource()
+    expect(r.getByLabelText('Redo')).toBeDisabled()
+    for (const init of [{ metaKey: true, shiftKey: true }, { ctrlKey: true, shiftKey: true }]) {
+      const redo = await key('z', init)
+      expect(redo.defaultPrevented).toBe(true)
+    }
+    await key('y', { ctrlKey: true })
+    await settle()
+    expect(inCrop()).toBe(true)
+    expect(adapter.saveCalls).toHaveLength(2)
+
+    // Untouched, Esc leaves writing nothing, and redo is back.
+    await key('Escape')
+    expect(inCrop()).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(2)
+    expect(r.getByLabelText('Redo')).not.toBeDisabled()
+    await key('z', { metaKey: true, shiftKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ y: 0 })
+  })
+
+  it('the Undo button in crop mode cancels as Cmd+Z does', async () => {
+    const { adapter, r } = await mount()
+    await pickCrop(r)
+    const undo = r.getByLabelText('Undo')
+    // Nothing to undo yet, but a crop to cancel.
+    expect(undo).not.toBeDisabled()
+    await act(async () => { fireEvent.click(undo) })
+    expect(inCrop()).toBe(false)
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(0)
+    expect(undo).toBeDisabled()
+  })
+
+  it('an untouched crop writes nothing and adds no undo step, however crop mode ends', async () => {
+    const { adapter, r } = await mount()
+    const ends: Array<() => Promise<unknown>> = [
+      () => key('Escape'),
+      () => act(async () => { fireEvent.click(canvasRoot()) }),
+      () => pickSlide('slide-1'),
+    ]
+    for (const end of ends) {
+      await pickSlide('slide-0')
+      await plainClick('el-img')
+      await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+      await loadCropSource()
+      expect(inCrop()).toBe(true)
+      await end()
+      await settle()
+      expect(adapter.saveCalls).toHaveLength(0)
+    }
+    expect(r.getByLabelText('Undo')).toBeDisabled()
+  })
+
+  it('an edit from the panel during crop keeps the window picked, and Esc then applies it', async () => {
+    const { adapter, r } = await mount()
+    await pickCrop(r)
+    const windowBox = () => {
+      const w = findInteractiveWrapper('el-img').querySelector('[data-testid="crop-window"]') as HTMLElement | null
+      return w && [w.style.left, w.style.top, w.style.width, w.style.height]
+    }
+    const before = windowBox()
+    expect(before).not.toBeNull()
+
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align left' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(inCrop()).toBe(true)
+    expect(windowBox()).toEqual(before)
+
+    await key('Escape')
+    await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0], { x: 0, y: 100 }))
+    // Two steps: the crop, then the move.
+    await key('z', { metaKey: true })
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 0, w: 200, h: 200 })
+  })
+
+  it('another writer changing the slide during crop keeps the window picked', async () => {
+    const adapter = makeFakeAdapter()
+    let push: ((p: Project) => void) | undefined
+    adapter.subscribe = (_id, onFrame) => {
+      push = onFrame
+      return () => {}
+    }
+    const r = render(<CarouselEditor project={cropProject()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    await pickCrop(r)
+
+    const frame = cropProject()
+    frame.slides![0].elements[1] = { ...frame.slides![0].elements[1], x: 700 }
+    await act(async () => { push!(frame) })
+    expect(inCrop()).toBe(true)
+    expect(findInteractiveWrapper('el-img').querySelector('[data-testid="crop-window"]')).not.toBeNull()
+
+    await key('Escape')
+    await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0]))
+    expect(elementsOf(lastSave(adapter))[1]).toMatchObject({ x: 700 })
+  })
+
+  it('double-click on an image enters crop mode and selects it, recording nothing', async () => {
+    const { adapter } = await mount()
+    const b = findInteractiveWrapper('el-b')
+    await act(async () => {
+      for (let i = 0; i < 2; i++) {
+        pointer(b, 'pointerdown', { clientX: 10, clientY: 10 })
+        pointer(window, 'pointerup', { clientX: 10, clientY: 10 })
+        fireEvent.click(b)
+      }
+      fireEvent.doubleClick(b)
+    })
+    expect(inCrop('el-b')).toBe(true)
+    expect(outlined('el-b')).toBe(true)
+    expect(outlined('el-img')).toBe(false)
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('double-click on a rotated image does nothing', async () => {
+    const project = cropProject()
+    project.slides![0].elements[1] = { ...project.slides![0].elements[1], rotation: 15 }
+    const adapter = makeFakeAdapter()
+    render(<CarouselEditor project={project} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-b'))
+    await act(async () => { fireEvent.doubleClick(findInteractiveWrapper('el-b')) })
+    expect(inCrop('el-b')).toBe(false)
+    await settle()
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('double-click on text still opens the text editor', async () => {
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={textOverlaySlide()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-ov'))
+    await act(async () => { fireEvent.doubleClick(findInteractiveWrapper('el-ov')) })
+    expect(r.getByRole('textbox', { name: 'Edit text' })).toBeTruthy()
   })
 })
