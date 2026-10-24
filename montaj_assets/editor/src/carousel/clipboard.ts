@@ -23,27 +23,37 @@ export interface ElementClipboard {
   elements: CarouselElement[]
   /** Pastes so far onto each slide, to place the next one. */
   pastes: Map<string, number>
+  /** Set by a Cut: the elements left their slide, so the first paste back onto it
+   *  lands where they were, and only the pastes after that step. */
+  cut?: boolean
 }
 
 /** The selected elements of `slide`, in slide order, as a fresh clipboard (no
- *  pastes counted). Null when none of them is on the slide. */
-export function copyElements(slide: Slide, selectedIds: Iterable<string>): ElementClipboard | null {
+ *  pastes counted), marked as a Cut by `{ cut: true }`. Null when none of them
+ *  is on the slide. */
+export function copyElements(
+  slide: Slide,
+  selectedIds: Iterable<string>,
+  { cut = false }: { cut?: boolean } = {},
+): ElementClipboard | null {
   const selected = new Set(selectedIds)
   const elements = slide.elements.filter((el) => selected.has(el.id)).map((el) => structuredClone(el))
-  return elements.length > 0 ? { slideId: slide.id, elements, pastes: new Map() } : null
+  return elements.length > 0 ? { slideId: slide.id, elements, pastes: new Map(), cut } : null
 }
 
 /**
  * New elements for pasting the clipboard onto `slideId`, and counts the paste.
- * On the slide they came from each paste steps 20 px further down and right
- * (+20, +40, ...), so it never lands on the originals. On any other slide the
- * first paste keeps the copied position, and each further paste onto that slide
- * steps 20 px from the last. Every paste has fresh ids and shares nothing.
+ * On the slide they were copied from each paste steps 20 px further down and
+ * right (+20, +40, ...), so it never lands on the originals. After a Cut that
+ * slide has no originals left, so its first paste lands where the elements were
+ * and each one after it steps 20 px. On any other slide the first paste keeps
+ * the copied position, and each further paste onto that slide steps 20 px from
+ * the last. Every paste has fresh ids and shares nothing.
  */
 export function pasteElements(clipboard: ElementClipboard, slideId: string): CarouselElement[] {
   const pasted = clipboard.pastes.get(slideId) ?? 0
   clipboard.pastes.set(slideId, pasted + 1)
-  const steps = slideId === clipboard.slideId ? pasted + 1 : pasted
+  const steps = slideId === clipboard.slideId && !clipboard.cut ? pasted + 1 : pasted
   return clipboard.elements.map((el) => stepped(cloneElement(el), steps * COPY_OFFSET))
 }
 

@@ -171,6 +171,25 @@ describe('pasteElements', () => {
     const c = clip()
     expect(at(pasteElements(c, 'deleted-slide'))[0]).toEqual([100, 100])
   })
+
+  it('after a cut, the first paste onto the slide it was cut from lands where the elements were, then each one steps 20 px', () => {
+    const c = copyElements(slide('s0', [image('a', 100, 100), overlay('o', 50, 60)]), ['a', 'o'], { cut: true })!
+    expect(at(pasteElements(c, 's0'))).toEqual([[100, 100], [50, 60]])
+    expect(at(pasteElements(c, 's0'))).toEqual([[120, 120], [70, 80]])
+    expect(at(pasteElements(c, 's0'))).toEqual([[140, 140], [90, 100]])
+  })
+
+  it('after a cut, a paste onto another slide is counted as it is after a copy', () => {
+    const c = copyElements(slide('s0', [image('a', 100, 100), overlay('o', 50, 60)]), ['a', 'o'], { cut: true })!
+    expect(at(pasteElements(c, 's1'))).toEqual([[100, 100], [50, 60]])
+    expect(at(pasteElements(c, 's1'))).toEqual([[120, 120], [70, 80]])
+  })
+
+  it('after a copy, the first paste onto the slide it was copied from is still +20, then +40', () => {
+    const c = copyElements(slide('s0', [image('a', 100, 100), overlay('o', 50, 60)]), ['a', 'o'])!
+    expect(at(pasteElements(c, 's0'))).toEqual([[120, 120], [70, 80]])
+    expect(at(pasteElements(c, 's0'))).toEqual([[140, 140], [90, 100]])
+  })
 })
 
 describe('duplicateElements', () => {
