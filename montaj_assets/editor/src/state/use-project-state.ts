@@ -13,7 +13,7 @@
  * unchanged from when the machinery lived here inline.
  */
 import { useCallback } from 'react'
-import { projectReducer, type Action, type ProjectStatus } from './project-reducer'
+import { projectReducer, type Action, type ProjectStatus, type ReorderDirection } from './project-reducer'
 import { useProjectSync } from './use-project-sync'
 import type { Project, Slide, CarouselElement, EditorAdapter } from '../types'
 
@@ -51,7 +51,7 @@ export interface UseProjectState<P extends Project = Project> {
   addElement: (slideId: string, element: CarouselElement) => Promise<void>
   removeElement: (slideId: string, elementId: string) => Promise<void>
   duplicateElement: (slideId: string, elementId: string, newElement: CarouselElement) => Promise<void>
-  reorderElement: (slideId: string, elementId: string, direction: 'forward' | 'backward') => Promise<void>
+  reorderElement: (slideId: string, elementId: string, direction: ReorderDirection) => Promise<void>
   addSlide: (slide: Slide, afterSlideId?: string) => Promise<void>
   removeSlide: (slideId: string) => Promise<void>
   duplicateSlide: (slideId: string, newSlide: Slide) => Promise<void>
@@ -200,7 +200,7 @@ export function useProjectState<P extends Project = Project>(
   )
 
   const reorderElement = useCallback(
-    (slideId: string, elementId: string, direction: 'forward' | 'backward') =>
+    (slideId: string, elementId: string, direction: ReorderDirection) =>
       mutate({ type: 'reorderElement', slideId, elementId, direction }),
     [mutate],
   )

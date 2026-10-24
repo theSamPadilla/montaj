@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, act, waitFor, fireEvent } from '@testing-library/react'
 import { Keyboard, MousePointer2 } from 'lucide-react'
-import type { CarouselRenderModalContext, ControlsWindowContext, EditorAdapter, ImageElement, Project, RenderEvent, SlideNotesApi, SlidePin } from '../../types'
+import type { CarouselRenderModalContext, ControlsWindowContext, EditorAdapter, ImageElement, OverlayElement, Project, RenderEvent, SlideNotesApi, SlidePin } from '../../types'
 import type { SlideNote } from '../../schema'
 import CarouselEditor from '../CarouselEditor'
 import { CAROUSEL_CONTROLS } from '../../ControlsInfoModal'
@@ -516,7 +516,24 @@ describe('CarouselEditor — editor-core integration', () => {
         CAROUSEL_CONTROLS.map((s) => s.entries.map((e) => e.label)),
       )
       const keyboard = ctx.sections.find((s) => s.heading === 'Keyboard')!
-      expect(keyboard.entries.map((e) => e.keys)).toEqual([['Ctrl', 'Z'], ['Ctrl', 'Shift', 'Z'], ['Delete'], ['N']])
+      expect(keyboard.entries.map((e) => e.keys)).toEqual([
+        ['Ctrl', 'Z'],
+        ['Ctrl', 'Shift', 'Z'],
+        ['Delete'],
+        ['N'],
+        ['Ctrl', 'C'],
+        ['Ctrl', 'X'],
+        ['Ctrl', 'V'],
+        ['Ctrl', 'D'],
+        ['Ctrl', 'A'],
+        ['←', '↑', '↓', '→'],
+        ['Shift', '←', '↑', '↓', '→'],
+        ['Ctrl', ']'],
+        ['Ctrl', '['],
+        ['Ctrl', 'Alt', ']'],
+        ['Ctrl', 'Alt', '['],
+        ['Esc'],
+      ])
 
       const calls = seen.length
       await act(async () => { ctx.onClose() })
@@ -1732,5 +1749,1050 @@ describe('CarouselEditor: one keymap (§556)', () => {
     const calls = onSelectionChange.mock.calls
     expect(calls[calls.length - 1][0]?.id).toBe('el-img')
     expect(armLayer()).toBeNull()
+  })
+})
+
+// ── Clipboard and element keys (§556 M2) ─────────────────────────────────────
+//
+// Cmd+C, Cmd+X, Cmd+V, Cmd+D, Cmd+A, the arrows, Cmd+[ and Cmd+] (with Option
+// for the ends) and Esc are bindings in the same registry. None acts in crop
+// mode, without a selected slide, or while typing.
+
+const CMD = { metaKey: true }
+// Option changes `key` on a Mac (Opt+] types U+2018), so these match on `code`.
+const RIGHT_BRACKET = { code: 'BracketRight' }
+const LEFT_BRACKET = { code: 'BracketLeft' }
+
+async function keyUp(k: string, init: KeyboardEventInit = {}, target: EventTarget = document): Promise<KeyboardEvent> {
+  const e = new KeyboardEvent('keyup', { key: k, cancelable: true, bubbles: true, ...init })
+  await act(async () => { target.dispatchEvent(e) })
+  return e
+}
+
+async function pickSlide(id: string) {
+  await act(async () => { fireEvent.click(document.querySelector(`[data-slide-thumb="${id}"]`) as HTMLElement) })
+}
+
+const idsOf = (p: Project, slide = 0) => p.slides![slide].elements.map((e) => e.id)
+const posOf = (p: Project, slide = 0) => p.slides![slide].elements.map((e) => [e.x, e.y])
+
+// What the editor holds right now, saved or not: the last project it reported.
+function liveProject(onProjectChange: ReturnType<typeof vi.fn>): Project {
+  const calls = onProjectChange.mock.calls
+  return calls[calls.length - 1][0] as Project
+}
+
+async function mountThree(extra: Partial<React.ComponentProps<typeof CarouselEditor>> = {}) {
+  const adapter = makeFakeAdapter()
+  const onProjectChange = vi.fn()
+  const r = render(<CarouselEditor project={threeElements()} adapter={adapter} onProjectChange={onProjectChange} {...extra} />)
+  await waitFor(() => findInteractiveWrapper('el-a'))
+  return { adapter, onProjectChange, r }
+}
+
+describe('CarouselEditor: copy, cut and paste (§556 M2)', () => {
+  it('Cmd+C then Cmd+V pastes copies 20 px down and right, on top, as new elements, and selects them', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    await shiftClick('el-c')
+
+    const copy = await key('c', CMD)
+    // Copy leaves the browser's own text copy alone, and writes nothing.
+    expect(copy.defaultPrevented).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(0)
+
+    const paste = await key('v', CMD)
+    expect(paste.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const saved = lastSave(adapter)
+    expect(idsOf(saved).slice(0, 3)).toEqual(['el-a', 'el-b', 'el-c'])
+    expect(posOf(saved).slice(0, 3)).toEqual([[100, 100], [500, 400], [700, 700]])
+    const [pa, pc] = elementsOf(saved).slice(3)
+    expect(elementsOf(saved)).toHaveLength(5)
+    expect(pa).toMatchObject({ type: 'image', src: 'a.png', x: 120, y: 120, w: 200, h: 100 })
+    expect(pc).toMatchObject({ type: 'image', src: 'c.png', x: 720, y: 720, w: 100, h: 100 })
+    expect(new Set(['el-a', 'el-b', 'el-c', pa.id, pc.id]).size).toBe(5)
+
+    // The pasted ones are the selection now.
+    expect(outlined(pa.id)).toBe(true)
+    expect(outlined(pc.id)).toBe(true)
+    expect(outlined('el-a')).toBe(false)
+    expect(outlined('el-c')).toBe(false)
+  })
+
+  it('pasting twice on the slide they came from moves each paste 20 px further: +20, then +40', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-b')
+    await key('c', CMD)
+    await key('v', CMD)
+    await key('v', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    const saved = lastSave(adapter)
+    expect(posOf(saved)).toEqual([[100, 100], [500, 400], [700, 700], [520, 420], [540, 440]])
+    expect(new Set(idsOf(saved)).size).toBe(5)
+  })
+
+  it('on another slide the first paste keeps the copied position, and each further one moves 20 px', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-b')
+    await key('c', CMD)
+    await pickSlide('slide-1')
+    await key('v', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(posOf(lastSave(adapter), 1)).toEqual([[500, 400]])
+    await key('v', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(posOf(lastSave(adapter), 1)).toEqual([[500, 400], [520, 420]])
+    // The slide they came from is untouched.
+    expect(idsOf(lastSave(adapter))).toEqual(['el-a', 'el-b', 'el-c'])
+  })
+
+  it('the clipboard survives switching slides, and a new copy starts the counts again', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    await key('c', CMD)
+    await key('v', CMD)
+    await key('v', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(posOf(lastSave(adapter)).slice(3)).toEqual([[120, 120], [140, 140]])
+
+    // Another slide and back; then copy something else: its first paste is +20 again.
+    await pickSlide('slide-1')
+    await pickSlide('slide-0')
+    await plainClick('el-c')
+    await key('c', CMD)
+    await key('v', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(posOf(lastSave(adapter)).slice(5)).toEqual([[720, 720]])
+  })
+
+  it('the clipboard does not follow the editor onto another project', async () => {
+    const adapter = makeFakeAdapter()
+    let push: ((p: Project) => void) | undefined
+    adapter.subscribe = (_id, onFrame) => {
+      push = onFrame
+      return () => {}
+    }
+    const onProjectChange = vi.fn()
+    render(<CarouselEditor project={threeElements()} adapter={adapter} onProjectChange={onProjectChange} />)
+    await waitFor(() => findInteractiveWrapper('el-a'))
+    await plainClick('el-a')
+    await key('c', CMD)
+
+    // The host puts another project in the editor.
+    await act(async () => { push!({ ...threeElements(), id: 'proj-2' }) })
+    expect(liveProject(onProjectChange).id).toBe('proj-2')
+
+    await plainClick('el-a')
+    const paste = await key('v', CMD)
+    expect(paste.defaultPrevented).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('each paste is one undo step', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    await shiftClick('el-b')
+    await key('c', CMD)
+    await key('v', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter))).toHaveLength(5)
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-a', 'el-b', 'el-c'])
+  })
+
+  it('Cmd+X removes the selection in one undo step, and Cmd+V brings it back', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    await shiftClick('el-c')
+
+    const cut = await key('x', CMD)
+    expect(cut.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b'])
+    expect(outlined('el-b')).toBe(false)
+
+    // One undo puts both back where they were.
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-a', 'el-b', 'el-c'])
+    await key('z', { ...CMD, shiftKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b'])
+
+    // The cut elements paste back, as new elements, on top.
+    await key('v', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(4))
+    const saved = lastSave(adapter)
+    expect(elementsOf(saved).map((e) => (e as ImageElement).src)).toEqual(['b.png', 'a.png', 'c.png'])
+    expect(idsOf(saved)).not.toContain('el-a')
+    expect(idsOf(saved)).not.toContain('el-c')
+  })
+
+  it('a cut pasted onto another slide lands where it was', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    await shiftClick('el-c')
+    await key('x', CMD)
+    await pickSlide('slide-1')
+    await key('v', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b'])
+    expect(elementsOf({ ...lastSave(adapter), slides: [lastSave(adapter).slides![1]] }).map((e) => (e as ImageElement).src)).toEqual(['a.png', 'c.png'])
+    expect(posOf(lastSave(adapter), 1)).toEqual([[100, 100], [700, 700]])
+  })
+
+  it('Cmd+V with an empty clipboard does nothing, and leaves the browser\'s paste alone', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    const paste = await key('v', CMD)
+    expect(paste.defaultPrevented).toBe(false)
+    // Nothing selected: Cut is not claimed either, and Copy never blocks the browser's.
+    await key('Escape')
+    const cut = await key('x', CMD)
+    expect(cut.defaultPrevented).toBe(false)
+    const copy = await key('c', CMD)
+    expect(copy.defaultPrevented).toBe(false)
+    const pasteAfter = await key('v', CMD)
+    expect(pasteAfter.defaultPrevented).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('Ctrl does what Cmd does', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    await key('c', { ctrlKey: true })
+    const paste = await key('v', { ctrlKey: true })
+    expect(paste.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter))).toHaveLength(4)
+  })
+
+  it('Shift or Option with the letter is not claimed', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    for (const init of [{ ...CMD, shiftKey: true }, { ...CMD, altKey: true }]) {
+      for (const k of ['c', 'x', 'd']) {
+        const e = await key(k, init)
+        expect(e.defaultPrevented).toBe(false)
+      }
+    }
+    // Nothing was copied, so a plain Cmd+V finds an empty clipboard.
+    const paste = await key('v', CMD)
+    expect(paste.defaultPrevented).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('pasted clones share nothing with the source or with each other', async () => {
+    const project = makeProject({
+      slides: [
+        {
+          id: 'slide-0',
+          base_color: '#ffffff',
+          elements: [
+            { id: 'el-crop', type: 'image', src: 'a.png', x: 100, y: 100, w: 200, h: 200, rotation: 0, crop: { x: 0, y: 0, w: 0.5, h: 0.5 } },
+            {
+              id: 'el-ov',
+              type: 'overlay',
+              overlay: { template: '/overlays/text.jsx', props: { text: 'Hi', style: { color: 'red' } } },
+              frame: 0,
+              x: 300, y: 300, w: 300, h: 100, rotation: 0,
+              googleFonts: ['Syne:wght@800'],
+            },
+          ],
+        },
+      ],
+    })
+    const adapter = makeFakeAdapter()
+    render(<CarouselEditor project={project} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-crop'))
+    await plainClick('el-crop')
+    await shiftClick('el-ov')
+    await key('c', CMD)
+    await key('v', CMD)
+    await key('v', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+
+    const [src, srcOv, p1, p1Ov, p2, p2Ov] = elementsOf(lastSave(adapter)) as [ImageElement, OverlayElement, ImageElement, OverlayElement, ImageElement, OverlayElement]
+    expect(p1.crop).toEqual({ x: 0, y: 0, w: 0.5, h: 0.5 })
+    expect(p1.crop).not.toBe(src.crop)
+    expect(p2.crop).not.toBe(p1.crop)
+    p1.crop!.x = 0.9
+    expect(src.crop!.x).toBe(0)
+    expect(p2.crop!.x).toBe(0)
+
+    expect(p1Ov.overlay.props).not.toBe(srcOv.overlay.props)
+    expect(p1Ov.overlay.props.style).not.toBe(srcOv.overlay.props.style)
+    expect(p1Ov.googleFonts).not.toBe(srcOv.googleFonts)
+    ;(p1Ov.overlay.props.style as { color: string }).color = 'blue'
+    p1Ov.googleFonts!.push('Inter')
+    expect((srcOv.overlay.props.style as { color: string }).color).toBe('red')
+    expect((p2Ov.overlay.props.style as { color: string }).color).toBe('red')
+    expect(srcOv.googleFonts).toEqual(['Syne:wght@800'])
+    expect(p2Ov.googleFonts).toEqual(['Syne:wght@800'])
+  })
+})
+
+describe('CarouselEditor: duplicate (§556 M2)', () => {
+  it('Cmd+D copies every selected element 20 px down and right, each directly above its source, in one undo step', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    await shiftClick('el-b')
+
+    const e = await key('d', CMD)
+    expect(e.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const els = elementsOf(lastSave(adapter))
+    expect(els).toHaveLength(5)
+    expect([els[0].id, els[2].id, els[4].id]).toEqual(['el-a', 'el-b', 'el-c'])
+    expect(els[1]).toMatchObject({ src: 'a.png', x: 120, y: 120, w: 200, h: 100 })
+    expect(els[3]).toMatchObject({ src: 'b.png', x: 520, y: 420, w: 100, h: 300 })
+    expect(new Set(els.map((x) => x.id)).size).toBe(5)
+    // The sources stay where they were.
+    expect([els[0], els[2], els[4]].map((x) => [x.x, x.y])).toEqual([[100, 100], [500, 400], [700, 700]])
+
+    // The copies are the selection.
+    expect(outlined(els[1].id)).toBe(true)
+    expect(outlined(els[3].id)).toBe(true)
+    expect(outlined('el-a')).toBe(false)
+    expect(outlined('el-b')).toBe(false)
+
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-a', 'el-b', 'el-c'])
+  })
+
+  it('Cmd+D on one element does what the panel Duplicate button does', async () => {
+    const { adapter, r } = await mountThree()
+    await plainClick('el-b')
+    // The panel: the slide has a Duplicate button too; the element\'s is the last.
+    const buttons = r.getAllByRole('button', { name: 'Duplicate' })
+    await act(async () => { fireEvent.click(buttons[buttons.length - 1]) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const viaButton = elementsOf(lastSave(adapter))
+    expect(viaButton.map((e) => e.id).filter((id) => id.startsWith('el-'))).toEqual(['el-a', 'el-b', 'el-c'])
+    // a, b, the copy of b, c
+    expect(viaButton).toHaveLength(4)
+    expect(viaButton[2]).toMatchObject({ src: 'b.png', x: 520, y: 420, w: 100, h: 300 })
+    expect(outlined(viaButton[2].id)).toBe(true)
+
+    // Undo it, then the key: the same result.
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    await plainClick('el-b')
+    await key('d', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    const viaKey = elementsOf(lastSave(adapter))
+    expect(viaKey.map((e) => e.id).filter((id) => id.startsWith('el-'))).toEqual(['el-a', 'el-b', 'el-c'])
+    expect(viaKey).toHaveLength(4)
+    expect(viaKey[2]).toMatchObject({ src: 'b.png', x: 520, y: 420, w: 100, h: 300 })
+    expect(outlined(viaKey[2].id)).toBe(true)
+  })
+
+  it('the panel Duplicate button copies share nothing with the source', async () => {
+    const crop = { x: 0.1, y: 0.1, w: 0.5, h: 0.5 }
+    const project = makeProject({
+      slides: [
+        {
+          id: 'slide-0',
+          base_color: '#ffffff',
+          elements: [{ id: 'el-crop', type: 'image', src: 'a.png', x: 100, y: 100, w: 200, h: 200, rotation: 0, crop }],
+        },
+      ],
+    })
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={project} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-crop'))
+    await plainClick('el-crop')
+    const buttons = r.getAllByRole('button', { name: 'Duplicate' })
+    await act(async () => { fireEvent.click(buttons[buttons.length - 1]) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const [src, copy] = elementsOf(lastSave(adapter)) as [ImageElement, ImageElement]
+    expect(copy).toMatchObject({ x: 120, y: 120, crop })
+    expect(copy.crop).not.toBe(src.crop)
+  })
+
+  it('a duplicated slide holds clones that share nothing with the original', async () => {
+    const crop = { x: 0.1, y: 0.1, w: 0.5, h: 0.5 }
+    const project = makeProject({
+      slides: [
+        {
+          id: 'slide-0',
+          base_color: '#ffffff',
+          elements: [
+            { id: 'el-crop', type: 'image', src: 'a.png', x: 0, y: 0, w: 100, h: 100, rotation: 0, crop },
+            {
+              id: 'el-ov',
+              type: 'overlay',
+              overlay: { template: '/overlays/text.jsx', props: { text: 'Hi', style: { color: 'red' } } },
+              frame: 0,
+              x: 0, y: 0, w: 100, h: 100, rotation: 0,
+              googleFonts: ['Syne:wght@800'],
+            },
+          ],
+        },
+      ],
+    })
+    const adapter = makeFakeAdapter()
+    const { getByTitle } = render(<CarouselEditor project={project} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-crop'))
+    await act(async () => { fireEvent.click(getByTitle('Duplicate slide')) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const [orig, clone] = lastSave(adapter).slides!
+    const [oImg, oOv] = orig.elements as [ImageElement, OverlayElement]
+    const [cImg, cOv] = clone.elements as [ImageElement, OverlayElement]
+    expect(cImg.crop).toEqual(oImg.crop)
+    expect(cImg.crop).not.toBe(oImg.crop)
+    expect(cOv.overlay.props.style).toEqual(oOv.overlay.props.style)
+    expect(cOv.overlay.props.style).not.toBe(oOv.overlay.props.style)
+    expect(cOv.googleFonts).not.toBe(oOv.googleFonts)
+    expect(cImg.id).not.toBe(oImg.id)
+  })
+})
+
+describe('CarouselEditor: select all (§556 M2)', () => {
+  it('Cmd+A selects every element on the slide, and Delete then empties it in one undo step', async () => {
+    const { adapter } = await mountThree()
+    const e = await key('a', CMD)
+    expect(e.defaultPrevented).toBe(true)
+    for (const id of ['el-a', 'el-b', 'el-c']) expect(outlined(id)).toBe(true)
+
+    await key('Delete')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter))).toEqual([])
+
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-a', 'el-b', 'el-c'])
+  })
+
+  it('on an empty slide it still takes the key, so the page does not select its text', async () => {
+    const { adapter } = await mountThree()
+    await pickSlide('slide-1')
+    const e = await key('a', CMD)
+    expect(e.defaultPrevented).toBe(true)
+    // Nothing to select, nothing to delete: the first slide\'s elements are not in the selection.
+    await key('Delete')
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('leaves out the elements the host hides', async () => {
+    const { adapter } = await mountThree({ hiddenElementIds: ['el-b'] })
+    await key('a', CMD)
+    expect(outlined('el-a')).toBe(true)
+    expect(outlined('el-c')).toBe(true)
+    await key('Delete')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b'])
+  })
+
+  it('Cmd+Shift+A is not Select all', async () => {
+    await mountThree()
+    const e = await key('a', { ...CMD, shiftKey: true })
+    expect(e.defaultPrevented).toBe(false)
+    expect(outlined('el-a')).toBe(false)
+  })
+})
+
+describe('CarouselEditor: nudge (§556 M2)', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  // The element at (100, 100), selected.
+  async function mountOne() {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    const r = render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={onProjectChange} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    return { adapter, onProjectChange, r }
+  }
+  const xyOf = (p: Project) => [elementsOf(p)[0].x, elementsOf(p)[0].y]
+
+  it('three presses of ArrowRight move 3 px at once, and 500 ms after the last one it is one save and one undo step', async () => {
+    const { adapter, onProjectChange, r } = await mountOne()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+
+    for (let i = 0; i < 3; i++) {
+      const e = await key('ArrowRight', { repeat: i > 0 })
+      // No scrolling.
+      expect(e.defaultPrevented).toBe(true)
+    }
+    // On screen already; nothing saved yet.
+    expect(xyOf(liveProject(onProjectChange))).toEqual([103, 100])
+    expect(adapter.saveCalls).toHaveLength(0)
+
+    await act(async () => { vi.advanceTimersByTime(499) })
+    expect(adapter.saveCalls).toHaveLength(0)
+    await act(async () => { vi.advanceTimersByTime(1) })
+    vi.useRealTimers()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(xyOf(lastSave(adapter))).toEqual([103, 100])
+
+    // One undo brings back the start, and there is nothing left to undo.
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(xyOf(lastSave(adapter))).toEqual([100, 100])
+    expect((r.getByLabelText('Undo') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('the 500 ms are counted from the last press', async () => {
+    const { adapter, onProjectChange } = await mountOne()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await key('ArrowDown')
+    await act(async () => { vi.advanceTimersByTime(400) })
+    await key('ArrowDown', { repeat: true })
+    await act(async () => { vi.advanceTimersByTime(400) })
+    expect(adapter.saveCalls).toHaveLength(0)
+    await act(async () => { vi.advanceTimersByTime(100) })
+    vi.useRealTimers()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(xyOf(lastSave(adapter))).toEqual([100, 102])
+    expect(xyOf(liveProject(onProjectChange))).toEqual([100, 102])
+  })
+
+  it.each([
+    ['ArrowLeft', {}, [99, 100]],
+    ['ArrowRight', {}, [101, 100]],
+    ['ArrowUp', {}, [100, 99]],
+    ['ArrowDown', {}, [100, 101]],
+    ['ArrowLeft', { shiftKey: true }, [90, 100]],
+    ['ArrowRight', { shiftKey: true }, [110, 100]],
+    ['ArrowUp', { shiftKey: true }, [100, 90]],
+    ['ArrowDown', { shiftKey: true }, [100, 110]],
+  ] as const)('%s %j moves the element to %j', async (k, init, to) => {
+    const { adapter } = await mountOne()
+    await key(k, init)
+    // Releasing the key ends the burst.
+    await keyUp(k, init)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(xyOf(lastSave(adapter))).toEqual(to)
+  })
+
+  it('every selected element moves, in the same one undo step', async () => {
+    const { adapter, onProjectChange } = await mountThree()
+    await plainClick('el-a')
+    await shiftClick('el-b')
+    await key('ArrowLeft', { shiftKey: true })
+    expect(posOf(liveProject(onProjectChange))).toEqual([[90, 100], [490, 400], [700, 700]])
+    await keyUp('ArrowLeft', { shiftKey: true })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(posOf(lastSave(adapter))).toEqual([[90, 100], [490, 400], [700, 700]])
+
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(posOf(lastSave(adapter))).toEqual([[100, 100], [500, 400], [700, 700]])
+  })
+
+  it('Cmd+Z right after a nudge undoes the nudge', async () => {
+    const { adapter } = await mountOne()
+    await key('ArrowRight')
+    await key('z', CMD)
+    // The nudge was saved first, then taken back.
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(xyOf(adapter.saveCalls[0].project)).toEqual([101, 100])
+    expect(xyOf(lastSave(adapter))).toEqual([100, 100])
+  })
+
+  it('Cmd+Z right after a burst undoes the burst, not an earlier edit', async () => {
+    const { adapter, onProjectChange, r } = await mountOne()
+    // An earlier edit, so there is something else to undo.
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align left' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(xyOf(lastSave(adapter))).toEqual([0, 100])
+
+    await key('ArrowDown')
+    await key('ArrowDown', { repeat: true })
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(xyOf(liveProject(onProjectChange))).toEqual([0, 100])
+  })
+
+  it('releasing the arrow commits the burst at once, not 500 ms later', async () => {
+    const { adapter } = await mountOne()
+    // The 500 ms timer is frozen, then dropped: only the release can save.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await key('ArrowRight')
+    await key('ArrowRight', { repeat: true })
+    expect(adapter.saveCalls).toHaveLength(0)
+    await keyUp('ArrowRight')
+    vi.useRealTimers()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(xyOf(lastSave(adapter))).toEqual([102, 100])
+  })
+
+  it('after a release the timer has nothing left to save', async () => {
+    const { adapter } = await mountOne()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await key('ArrowRight')
+    await keyUp('ArrowRight')
+    // Past the 500 ms: a second commit would save a second time.
+    await act(async () => { vi.advanceTimersByTime(1000) })
+    vi.useRealTimers()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+    expect(adapter.saveCalls).toHaveLength(1)
+  })
+
+  it('a key release of a key that is not an arrow commits nothing', async () => {
+    const { adapter } = await mountOne()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await key('ArrowRight')
+    await keyUp('Shift')
+    await keyUp('a')
+    expect(adapter.saveCalls).toHaveLength(0)
+    await act(async () => { vi.advanceTimersByTime(500) })
+    vi.useRealTimers()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+  })
+
+  it('the window losing focus commits the burst', async () => {
+    const { adapter } = await mountOne()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await key('ArrowDown')
+    expect(adapter.saveCalls).toHaveLength(0)
+    await act(async () => { window.dispatchEvent(new Event('blur')) })
+    vi.useRealTimers()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(xyOf(lastSave(adapter))).toEqual([100, 101])
+  })
+
+  it('selecting another element commits the burst first, as its own undo step', async () => {
+    const { adapter, onProjectChange } = await mountThree()
+    await plainClick('el-a')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await key('ArrowRight', { shiftKey: true })
+    expect(adapter.saveCalls).toHaveLength(0)
+
+    await plainClick('el-b')
+    vi.useRealTimers()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(posOf(lastSave(adapter))).toEqual([[110, 100], [500, 400], [700, 700]])
+
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(posOf(lastSave(adapter))).toEqual([[100, 100], [500, 400], [700, 700]])
+    expect(posOf(liveProject(onProjectChange))).toEqual([[100, 100], [500, 400], [700, 700]])
+  })
+
+  it('switching slide commits the burst', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-c')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await key('ArrowUp')
+    await pickSlide('slide-1')
+    vi.useRealTimers()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(posOf(lastSave(adapter))).toEqual([[100, 100], [500, 400], [700, 699]])
+  })
+
+  it('any other shortcut commits the burst before it acts, so the burst is its own undo step', async () => {
+    const { adapter } = await mountOne()
+    await key('ArrowRight')
+    await key('d', CMD)
+    // The nudge saved, then the duplicate.
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(xyOf(adapter.saveCalls[0].project)).toEqual([101, 100])
+    expect(elementsOf(lastSave(adapter)).map((e) => [e.x, e.y])).toEqual([[101, 100], [121, 120]])
+
+    // The first undo takes the duplicate away and keeps the nudge.
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(elementsOf(lastSave(adapter)).map((e) => [e.x, e.y])).toEqual([[101, 100]])
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(4))
+    expect(elementsOf(lastSave(adapter)).map((e) => [e.x, e.y])).toEqual([[100, 100]])
+  })
+
+  it('unmounting commits a burst that is still open', async () => {
+    const { adapter, r } = await mountOne()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await key('ArrowLeft')
+    expect(adapter.saveCalls).toHaveLength(0)
+    r.unmount()
+    vi.useRealTimers()
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(xyOf(lastSave(adapter))).toEqual([99, 100])
+  })
+
+  it('Cmd, Ctrl or Alt with an arrow is not a nudge', async () => {
+    const { adapter, onProjectChange } = await mountOne()
+    for (const init of [{ metaKey: true }, { ctrlKey: true }, { altKey: true }]) {
+      const e = await key('ArrowRight', init)
+      expect(e.defaultPrevented).toBe(false)
+    }
+    await keyUp('ArrowRight')
+    expect(xyOf(liveProject(onProjectChange))).toEqual([100, 100])
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('with nothing selected, the arrows are left alone', async () => {
+    const { adapter } = await mountThree()
+    const e = await key('ArrowDown')
+    expect(e.defaultPrevented).toBe(false)
+    await keyUp('ArrowDown')
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('a project that cannot be edited does not move, and saves nothing', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(<CarouselEditor project={makeProject({ status: 'storyboard_ready' })} adapter={adapter} onProjectChange={onProjectChange} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    await key('ArrowRight')
+    await keyUp('ArrowRight')
+    expect(xyOf(liveProject(onProjectChange))).toEqual([100, 100])
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+})
+
+describe('CarouselEditor: layer order (§556 M2)', () => {
+  const FRONT = { ...CMD, altKey: true }
+
+  it('Opt+Cmd+] puts the selected element in front of all the others, in one undo step', async () => {
+    const { adapter, r } = await mountThree()
+    await plainClick('el-a')
+    const e = await key(']', { ...FRONT, ...RIGHT_BRACKET })
+    expect(e.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b', 'el-c', 'el-a'])
+
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-a', 'el-b', 'el-c'])
+    expect((r.getByLabelText('Undo') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('Opt+Cmd+[ puts it behind all the others', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-c')
+    await key('[', { ...FRONT, ...LEFT_BRACKET })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-c', 'el-a', 'el-b'])
+  })
+
+  it('goes by the physical key: Option changes what a Mac types for ] and [', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    // Opt+] types U+2018 on a Mac; Opt+[ types U+201C.
+    await key('‘', { ...FRONT, ...RIGHT_BRACKET })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b', 'el-c', 'el-a'])
+    await key('“', { ...FRONT, ...LEFT_BRACKET })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-a', 'el-b', 'el-c'])
+  })
+
+  it('Cmd+] brings it forward one step and Cmd+[ sends it backward one step', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-b')
+    await key(']', { ...CMD, ...RIGHT_BRACKET })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-a', 'el-c', 'el-b'])
+    await key('[', { ...CMD, ...LEFT_BRACKET })
+    await key('[', { ...CMD, ...LEFT_BRACKET })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b', 'el-a', 'el-c'])
+  })
+
+  it('the Option shortcut is the end, not one step: it comes before the plain one', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    await key(']', { ...FRONT, ...RIGHT_BRACKET })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    // One step forward would have given b, a, c.
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b', 'el-c', 'el-a'])
+  })
+
+  it('Ctrl works as Cmd does', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    await key(']', { ctrlKey: true, ...RIGHT_BRACKET })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b', 'el-a', 'el-c'])
+    await key('[', { ctrlKey: true, altKey: true, ...LEFT_BRACKET })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-a', 'el-b', 'el-c'])
+  })
+
+  it('several selected keep their own relative order, in one undo step', async () => {
+    const { adapter } = await mountThree()
+    // Picked in the opposite order to the slide.
+    await plainClick('el-c')
+    await shiftClick('el-b')
+    await key('[', { ...CMD, ...LEFT_BRACKET })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b', 'el-c', 'el-a'])
+
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-a', 'el-b', 'el-c'])
+  })
+
+  it('a selection apart: each passes its own neighbour, and Opt+Cmd+] sends them to the front in their order', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    await shiftClick('el-c')
+    await key(']', { ...CMD, ...RIGHT_BRACKET })
+    // c is in front already; a passes b.
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b', 'el-a', 'el-c'])
+    await key('[', { ...FRONT, ...LEFT_BRACKET })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-a', 'el-c', 'el-b'])
+  })
+
+  it('an order that would not change makes no undo step and no save, but still keeps the browser from going back', async () => {
+    const { adapter, r } = await mountThree()
+    await plainClick('el-c')
+    for (const [k, init] of [
+      [']', { ...CMD, ...RIGHT_BRACKET }],
+      [']', { ...FRONT, ...RIGHT_BRACKET }],
+    ] as const) {
+      const e = await key(k, init)
+      // Cmd+[ and Cmd+] are history navigation in a browser.
+      expect(e.defaultPrevented).toBe(true)
+    }
+    await plainClick('el-a')
+    await key('[', { ...CMD, ...LEFT_BRACKET })
+    await key('[', { ...FRONT, ...LEFT_BRACKET })
+    expect(adapter.saveCalls).toHaveLength(0)
+    expect((r.getByLabelText('Undo') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('nothing happens with nothing selected', async () => {
+    const { adapter } = await mountThree()
+    const e = await key(']', { ...CMD, ...RIGHT_BRACKET })
+    expect(e.defaultPrevented).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('Shift with the bracket is not claimed', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    const e = await key('}', { ...CMD, shiftKey: true, ...RIGHT_BRACKET })
+    expect(e.defaultPrevented).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+})
+
+describe('CarouselEditor: Esc deselects (§556 M2)', () => {
+  it('Esc clears the selection', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-a')
+    await shiftClick('el-b')
+    const e = await key('Escape')
+    expect(e.defaultPrevented).toBe(true)
+    expect(outlined('el-a')).toBe(false)
+    expect(outlined('el-b')).toBe(false)
+    expect(handlesOn('el-a')).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('Esc with nothing selected is not claimed, so a host\'s own Esc still works', async () => {
+    await mountThree()
+    const e = await key('Escape')
+    expect(e.defaultPrevented).toBe(false)
+    await plainClick('el-a')
+    await key('Escape')
+    const again = await key('Escape')
+    expect(again.defaultPrevented).toBe(false)
+  })
+
+  it('an armed note takes the first Esc, and the next one deselects', async () => {
+    const adapter = makeFakeAdapter()
+    render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} notes={{ enabled: true }} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    await key('n')
+    expect(armLayer()).not.toBeNull()
+
+    await key('Escape')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect((lastSave(adapter).notes as SlideNote[])).toHaveLength(1)
+    expect(armLayer()).toBeNull()
+    expect(outlined('el-img')).toBe(true)
+
+    await key('Escape')
+    expect(outlined('el-img')).toBe(false)
+  })
+
+  it('in crop mode Esc is the crop\'s: it applies the crop and the image stays selected', async () => {
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+    const source = findInteractiveWrapper('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
+    await act(async () => { loadImage(source!, 400, 200) })
+
+    await key('Escape')
+    await waitFor(() => expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ crop: { x: 0, y: 0, w: 1, h: 1 } }))
+    expect(handlesOn('el-img')).toBe(true)
+    expect(outlined('el-img')).toBe(true)
+  })
+})
+
+describe('CarouselEditor: where the element keys do not act (§556 M2)', () => {
+  // Every key of this batch, as a user would press it.
+  const KEYS: Array<[string, KeyboardEventInit]> = [
+    ['c', CMD],
+    ['x', CMD],
+    ['v', CMD],
+    ['d', CMD],
+    ['a', CMD],
+    ['ArrowRight', {}],
+    ['ArrowDown', { shiftKey: true }],
+    [']', { ...CMD, ...RIGHT_BRACKET }],
+    ['[', { ...CMD, altKey: true, ...LEFT_BRACKET }],
+    ['Escape', {}],
+  ]
+
+  it('while typing in an input, nothing happens: no default prevented, no save, selection kept', async () => {
+    const { adapter, onProjectChange } = await mountThree()
+    await plainClick('el-a')
+    // A copy first, so Cmd+V has something to paste if it were let through.
+    await key('c', CMD)
+
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    try {
+      input.focus()
+      for (const [k, init] of KEYS) {
+        const e = await key(k, init, input)
+        expect([k, e.defaultPrevented]).toEqual([k, false])
+      }
+      await keyUp('ArrowRight', {}, input)
+      expect(adapter.saveCalls).toHaveLength(0)
+      expect(posOf(liveProject(onProjectChange))).toEqual([[100, 100], [500, 400], [700, 700]])
+      expect(outlined('el-a')).toBe(true)
+    } finally {
+      input.remove()
+    }
+  })
+
+  it('in the inline text editor, nothing happens either', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    const r = render(<CarouselEditor project={textOverlaySlide()} adapter={adapter} onProjectChange={onProjectChange} />)
+    await waitFor(() => findInteractiveWrapper('el-ov'))
+    await plainClick('el-ov')
+    await key('c', CMD)
+    await act(async () => { fireEvent.doubleClick(findInteractiveWrapper('el-ov')) })
+    const editor = r.getByRole('textbox', { name: 'Edit text' })
+    expect(document.activeElement).toBe(editor)
+
+    // Not Esc: the editor takes that one itself, and cancels.
+    for (const [k, init] of KEYS.filter(([k]) => k !== 'Escape')) {
+      const e = await key(k, init, editor)
+      expect([k, e.defaultPrevented]).toEqual([k, false])
+    }
+    expect(adapter.saveCalls).toHaveLength(0)
+    expect(interactiveHas('el-ov')).toBe(true)
+    expect(elementsOf(liveProject(onProjectChange))).toHaveLength(1)
+    expect(outlined('el-ov')).toBe(true)
+  })
+
+  it('in crop mode, none of them acts', async () => {
+    const { adapter, onProjectChange, r } = await mountThree()
+    await plainClick('el-a')
+    await key('c', CMD)
+    await act(async () => { fireEvent.click(await r.findByTitle('Crop image')) })
+    expect(findInteractiveWrapper('el-a').querySelector('img[alt="Crop source"]')).not.toBeNull()
+
+    for (const [k, init] of KEYS.filter(([k]) => k !== 'Escape')) {
+      const e = await key(k, init)
+      expect([k, e.defaultPrevented]).toEqual([k, false])
+    }
+    await keyUp('ArrowRight')
+    expect(adapter.saveCalls).toHaveLength(0)
+    expect(posOf(liveProject(onProjectChange))).toEqual([[100, 100], [500, 400], [700, 700]])
+    // Still in crop mode, and still the one image selected.
+    expect(findInteractiveWrapper('el-a').querySelector('img[alt="Crop source"]')).not.toBeNull()
+    expect(outlined('el-a')).toBe(true)
+  })
+
+  it('with no slide selected, none of them acts', async () => {
+    const adapter = makeFakeAdapter()
+    render(<CarouselEditor project={makeProject({ status: 'pending', slides: [] })} adapter={adapter} onProjectChange={vi.fn()} />)
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+    for (const [k, init] of KEYS) {
+      const e = await key(k, init)
+      expect([k, e.defaultPrevented]).toEqual([k, false])
+    }
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('in a project that cannot be edited, only the keys that leave it alone act', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(<CarouselEditor project={{ ...threeElements(), status: 'storyboard_ready' }} adapter={adapter} onProjectChange={onProjectChange} />)
+    await waitFor(() => findInteractiveWrapper('el-a'))
+    await plainClick('el-a')
+
+    // Copying changes nothing, so it still works: Paste then has something, and still does not act.
+    await key('c', CMD)
+    for (const [k, init] of KEYS.filter(([k]) => ['x', 'v', 'd', 'ArrowRight', ']', '['].includes(k))) {
+      const e = await key(k, init)
+      expect([k, e.defaultPrevented]).toEqual([k, false])
+    }
+    const front = await key(']', { ...CMD, altKey: true, ...RIGHT_BRACKET })
+    expect(front.defaultPrevented).toBe(false)
+    await keyUp('ArrowRight')
+    expect(adapter.saveCalls).toHaveLength(0)
+    expect(idsOf(liveProject(onProjectChange))).toEqual(['el-a', 'el-b', 'el-c'])
+    expect(posOf(liveProject(onProjectChange))).toEqual([[100, 100], [500, 400], [700, 700]])
+
+    // Selecting is not editing.
+    const all = await key('a', CMD)
+    expect(all.defaultPrevented).toBe(true)
+    for (const id of ['el-a', 'el-b', 'el-c']) expect(outlined(id)).toBe(true)
+    const esc = await key('Escape')
+    expect(esc.defaultPrevented).toBe(true)
+    expect(outlined('el-a')).toBe(false)
+  })
+
+  it('Copy still works in a project that cannot be edited yet: what was copied is there once it can', async () => {
+    const adapter = makeFakeAdapter()
+    let push: ((p: Project) => void) | undefined
+    adapter.subscribe = (_id, onFrame) => {
+      push = onFrame
+      return () => {}
+    }
+    render(<CarouselEditor project={{ ...threeElements(), status: 'storyboard_ready' }} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-a'))
+    await plainClick('el-a')
+    await key('c', CMD)
+    const early = await key('v', CMD)
+    expect(early.defaultPrevented).toBe(false)
+
+    await act(async () => { push!({ ...threeElements(), status: 'draft' }) })
+    const paste = await key('v', CMD)
+    expect(paste.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter)).map((e) => (e as ImageElement).src)).toEqual(['a.png', 'b.png', 'c.png', 'a.png'])
+  })
+
+  it('while the Controls window is open, they are held', async () => {
+    const { adapter, r } = await mountThree()
+    await plainClick('el-a')
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Editor controls & shortcuts' })) })
+    await r.findByRole('dialog', { name: 'Editor controls' })
+
+    for (const [k, init] of KEYS.filter(([k]) => k !== 'Escape')) {
+      const e = await key(k, init)
+      expect([k, e.defaultPrevented]).toEqual([k, false])
+    }
+    expect(adapter.saveCalls).toHaveLength(0)
+    expect(outlined('el-a')).toBe(true)
+  })
+
+  it('the pending view keeps Cmd+A for the page', async () => {
+    const adapter = makeFakeAdapter()
+    render(<CarouselEditor project={makeProject({ status: 'pending' })} adapter={adapter} onProjectChange={vi.fn()} />)
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+    const e = await key('a', CMD)
+    expect(e.defaultPrevented).toBe(false)
   })
 })

@@ -29,6 +29,10 @@ import { deepEqual } from './deep-equal'
 // the hook can gate edits without importing the host's project types directly.
 export type ProjectStatus = Project['status']
 
+/** How `reorderElement` moves an element in the stacking order (index 0 is the
+ *  back, the last index the front): one step, or all the way. */
+export type ReorderDirection = 'forward' | 'backward' | 'front' | 'back'
+
 // ---------------------------------------------------------------------------
 // Action discriminated union
 // ---------------------------------------------------------------------------
@@ -54,7 +58,7 @@ export type Action<P extends Project = Project> =
   | { type: 'updateSlide'; slideId: string; patch: Partial<Slide> }
   // Element structural actions the editor needs beyond add/remove.
   | { type: 'duplicateElement'; slideId: string; elementId: string; newElement: CarouselElement }
-  | { type: 'reorderElement'; slideId: string; elementId: string; direction: 'forward' | 'backward' }
+  | { type: 'reorderElement'; slideId: string; elementId: string; direction: ReorderDirection }
   | { type: 'setOverlayFrame'; slideId: string; elementId: string; frame: number }
   // The user's own notes (PL70). Replaces `project.notes` wholesale; `null` is
   // the explicit clear serve needs. Never edit-gated (see use-project-state).
@@ -278,6 +282,14 @@ export function projectReducer<P extends Project>(state: P, action: Action<P>): 
         const elements = [...slide.elements]
         const idx = elements.findIndex((el) => el.id === action.elementId)
         if (idx < 0) return slide
+        if (action.direction === 'front' || action.direction === 'back') {
+          // All the way: to the end or the start, the others keeping their order.
+          const to = action.direction === 'front' ? elements.length - 1 : 0
+          if (idx === to) return slide
+          const [moved] = elements.splice(idx, 1)
+          elements.splice(to, 0, moved)
+          return { ...slide, elements }
+        }
         const swapIdx = action.direction === 'forward' ? idx + 1 : idx - 1
         if (swapIdx < 0 || swapIdx >= elements.length) return slide
         ;[elements[idx], elements[swapIdx]] = [elements[swapIdx], elements[idx]]

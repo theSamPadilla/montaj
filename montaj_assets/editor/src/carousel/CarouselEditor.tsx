@@ -12,7 +12,10 @@ import ControlsInfoModal, { CAROUSEL_CONTROLS, platformSections } from '../Contr
 import { DARK_TEXT, NoteArmLayer, NotePinLayer, badgeColor, hasPoint } from './NoteLayers'
 import { addSlideNote, setSlideNoteText, setSlideNoteDone, setSlideNotePoint, removeSlideNotes } from './notes'
 import { noteId } from '../video/timeline/notes'
-import { useKeymap, matchesDelete, matchesEscape, matchesPlainKey, matchesRedo, matchesUndo } from '../video/keymap'
+import { useKeymap, matchesDelete, matchesEscape, matchesPlainKey, matchesRedo, matchesUndo, type KeyBinding } from '../video/keymap'
+import type { ReorderDirection } from '../state/project-reducer'
+import { COPY_OFFSET, cloneElement, copyElements, duplicateElements, pasteElements, type ElementClipboard } from './clipboard'
+import { reorderSelection } from './layerOrder'
 import { Button } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
 
@@ -233,23 +236,63 @@ function SlideGrid({
 
 // ── helpers ──
 
-function deepCloneElement(el: CarouselElement): CarouselElement {
-  if (el.type === 'overlay') {
-    return {
-      ...el,
-      id: crypto.randomUUID(),
-      overlay: { template: el.overlay.template, props: { ...el.overlay.props } },
-    }
-  }
-  return { ...el, id: crypto.randomUUID() }
-}
-
 function makeSlide(): Slide {
   return { id: crypto.randomUUID(), base_color: '#ffffff', elements: [] }
 }
 
 /** N with no Cmd, Ctrl or Alt held; Shift is allowed. */
 const matchesNoteKey = matchesPlainKey('n')
+
+/** Cmd or Ctrl with the letter `key`, and no Shift or Alt: those are other
+ *  shortcuts (Cmd+Shift+V pastes as plain text, Cmd+Opt+V pastes attributes). */
+const matchesCmdKey = (key: string) => (e: KeyboardEvent) =>
+  (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === key
+
+/** Cmd or Ctrl with a bracket key, with Option (`alt`) or without. Matched on
+ *  `code`, the physical key: Option changes what a Mac types for it. Shift is
+ *  left to the browser (it switches tabs). */
+const matchesLayerKey = (code: 'BracketLeft' | 'BracketRight', alt: boolean) => (e: KeyboardEvent) =>
+  (e.metaKey || e.ctrlKey) && !e.shiftKey && e.altKey === alt && e.code === code
+
+/** The arrows and the way each one nudges. */
+const ARROWS = new Map<string, [dx: number, dy: number]>([
+  ['ArrowLeft', [-1, 0]],
+  ['ArrowRight', [1, 0]],
+  ['ArrowUp', [0, -1]],
+  ['ArrowDown', [0, 1]],
+])
+const NUDGE_PX = 1
+const NUDGE_PX_SHIFT = 10
+/** A nudge burst commits this long after its last arrow press, if the key was not released first. */
+const NUDGE_COMMIT_MS = 500
+
+/** The move an arrow key asks for: 1 px, or 10 with Shift. Null for any other
+ *  key, and for an arrow with Cmd, Ctrl or Alt held. */
+function nudgeOf(e: KeyboardEvent): { dx: number; dy: number } | null {
+  const arrow = ARROWS.get(e.key)
+  if (!arrow || e.metaKey || e.ctrlKey || e.altKey) return null
+  const px = e.shiftKey ? NUDGE_PX_SHIFT : NUDGE_PX
+  return { dx: arrow[0] * px, dy: arrow[1] * px }
+}
+
+/** A burst of arrow-key moves that is still open: the moves are on screen
+ *  already (transient), and one commit saves them as one undo step. */
+interface PendingNudge {
+  slideId: string
+  /** Where each moved element stood when the burst began. */
+  start: Map<string, { x: number; y: number }>
+  /** How far the burst has moved them, in px. */
+  dx: number
+  dy: number
+  /** The 500 ms commit; set once the first press has moved something. */
+  timer: ReturnType<typeof setTimeout> | undefined
+}
+
+/** Whether `burst` is the one for this slide and exactly this selection: a
+ *  burst belongs to the elements it began on. */
+function isBurstOf(burst: PendingNudge, slideId: string, selectedIds: string[]): boolean {
+  return burst.slideId === slideId && burst.start.size === selectedIds.length && selectedIds.every((id) => burst.start.has(id))
+}
 
 /** How long Render waits for the save as final (`renderSaveTimeoutMs`). */
 const RENDER_SAVE_TIMEOUT_MS = 30_000
@@ -276,15 +319,43 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     onProjectChange?.(project)
   }, [project, onProjectChange])
 
-  const [selectedSlideId, setSelectedSlideId] = useState<string | null>(slides[0]?.id ?? null)
+  // ── Arrow-key nudge (§556) ──
+  // A burst of arrow presses moves the selection with the transient
+  // `state.moveElement` (on screen, no undo step, no save), and one
+  // `state.commit()` closes it: 500 ms after the last press, on the arrow's
+  // release, on the window losing focus, or before anything else acts. The
+  // last one matters: `mutate` folds an open gesture into its own undo step, and
+  // `undo` drops it, so every other key and every change of selection or slide
+  // ends the burst first.
+  const nudgeRef = useRef<PendingNudge | null>(null)
+  const commitRef = useRef(state.commit)
+  commitRef.current = state.commit
+  const flushNudge = useCallback(() => {
+    const open = nudgeRef.current
+    if (!open) return
+    nudgeRef.current = null
+    clearTimeout(open.timer)
+    // A save that fails is reported through `state.lastError`.
+    commitRef.current().catch(() => {})
+  }, [])
+
+  const [selectedSlideId, setSelectedSlideIdNow] = useState<string | null>(slides[0]?.id ?? null)
+  const setSelectedSlideId = useCallback((id: string | null) => {
+    flushNudge()
+    setSelectedSlideIdNow(id)
+  }, [flushNudge])
   // The selected elements, in click order (§156). `selectedElementId` is the
   // one selected element, null when none or several are: the handles, the
   // element panel and crop all key off it, so a single selection behaves as
   // it always has.
-  const [selectedElementIds, setSelectedElementIds] = useState<string[]>([])
+  const [selectedElementIds, setSelectedElementIdsNow] = useState<string[]>([])
+  const setSelectedElementIds = useCallback((ids: React.SetStateAction<string[]>) => {
+    flushNudge()
+    setSelectedElementIdsNow(ids)
+  }, [flushNudge])
   const setSelectedElementId = useCallback((id: string | null) => {
     setSelectedElementIds(id ? [id] : [])
-  }, [])
+  }, [setSelectedElementIds])
   const [cropElementId, setCropElementId] = useState<string | null>(null)
 
   const selectedSlide = slides.find(s => s.id === selectedSlideId)
@@ -420,6 +491,112 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     return () => window.removeEventListener('pointerdown', onDown, true)
   }, [armedSlideId, setArmed])
 
+  // `pendingSurface="host"`: the host draws the pending UI, so a pending
+  // project shows the slides as they arrive. Render and note arming stay off.
+  const showPendingSurface = project.status === 'pending' && pendingSurface !== 'host'
+
+  // ── Element keys (§556): copy, cut, paste, duplicate, select all, nudge,
+  // layer order, deselect. Each acts on the slide on show, never in crop mode
+  // (those keys belong to the crop UI), and the ones that change the project
+  // only when it can be edited.
+  const clipboardRef = useRef<ElementClipboard | null>(null)
+  // It survives a change of slide, but not of project: the host may put another
+  // project in this editor without remounting it.
+  useEffect(() => {
+    clipboardRef.current = null
+  }, [project.id])
+  const slideLive = !!selectedSlide && !showPendingSurface && !cropElementId
+  const hasSelection = slideLive && liveSelectedIds.length > 0
+  const canEdit = state.isEditingAllowed
+
+  /** Removes the selected elements. Several go in one slide write, so one undo
+   *  brings them all back. */
+  function removeSelection() {
+    if (!selectedSlide) return
+    if (liveSelectedIds.length === 1) {
+      void state.removeElement(selectedSlide.id, liveSelectedIds[0])
+    } else {
+      const gone = new Set(liveSelectedIds)
+      void state.updateSlide(selectedSlide.id, { elements: selectedSlide.elements.filter(el => !gone.has(el.id)) })
+    }
+    setSelectedElementId(null)
+  }
+
+  /** Copy: the selection, in slide order, replaces the clipboard. */
+  function copySelection() {
+    if (!selectedSlide) return
+    clipboardRef.current = copyElements(selectedSlide, liveSelectedIds) ?? clipboardRef.current
+  }
+
+  /** Paste: fresh clones on top of the slide, selected; one slide write. */
+  function pasteClipboard() {
+    const clipboard = clipboardRef.current
+    if (!clipboard || !selectedSlide) return
+    const pasted = pasteElements(clipboard, selectedSlide.id)
+    void state.updateSlide(selectedSlide.id, { elements: [...selectedSlide.elements, ...pasted] })
+    setSelectedElementIds(pasted.map(el => el.id))
+  }
+
+  /** Duplicate: a copy of each selected element directly above it, selected; one slide write. */
+  function duplicateSelection() {
+    if (!selectedSlide) return
+    const { elements, copyIds } = duplicateElements(selectedSlide.elements, liveSelectedIds)
+    if (copyIds.length === 0) return
+    void state.updateSlide(selectedSlide.id, { elements })
+    setSelectedElementIds(copyIds)
+  }
+
+  /** Select all: every element on the slide the host is not hiding. */
+  function selectAll() {
+    if (!selectedSlide) return
+    const hidden = new Set(hiddenElementIds)
+    setSelectedElementIds(selectedSlide.elements.filter(el => !hidden.has(el.id)).map(el => el.id))
+  }
+
+  /** Layer order for the whole selection, in one slide write; nothing is
+   *  written when the order would not change. */
+  function moveSelectionInStack(direction: ReorderDirection) {
+    if (!selectedSlide) return
+    const elements = reorderSelection(selectedSlide.elements, liveSelectedIds, direction)
+    if (elements !== selectedSlide.elements) void state.updateSlide(selectedSlide.id, { elements })
+  }
+
+  /** One arrow press: every selected element moves, on screen only. Positions
+   *  are the burst's start plus what it has moved so far, so presses that come
+   *  faster than a render still add up. */
+  function nudgeSelection(dx: number, dy: number) {
+    if (!selectedSlide) return
+    let burst = nudgeRef.current
+    if (burst && !isBurstOf(burst, selectedSlide.id, liveSelectedIds)) {
+      flushNudge()
+      burst = null
+    }
+    if (!burst) {
+      const start = new Map(selectedElements.map(el => [el.id, { x: el.x, y: el.y }] as const))
+      burst = { slideId: selectedSlide.id, start, dx: 0, dy: 0, timer: undefined }
+    }
+    clearTimeout(burst.timer)
+    burst.dx += dx
+    burst.dy += dy
+    for (const [id, from] of burst.start) void state.moveElement(burst.slideId, id, from.x + burst.dx, from.y + burst.dy)
+    burst.timer = setTimeout(flushNudge, NUDGE_COMMIT_MS)
+    nudgeRef.current = burst
+  }
+
+  // An arrow's release, the window losing focus and unmounting all end an open burst.
+  useEffect(() => {
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (ARROWS.has(e.key)) flushNudge()
+    }
+    document.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', flushNudge)
+    return () => {
+      document.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', flushNudge)
+      flushNudge()
+    }
+  }, [flushNudge])
+
   // ── Keyboard shortcuts: every one in ONE registry (the video editor's
   // `useKeymap`). One `document` listener reads this list fresh on each key,
   // so the bindings see this render's state, and the first binding that
@@ -428,9 +605,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // text editor, contentEditable) and holds every key while a dialog is up.
   // Nothing here may match Esc in crop mode: that Esc falls through to
   // SlideCanvas's window listener, which applies the crop. Without `notes`,
-  // N and Esc are not claimed at all.
+  // N is not claimed at all; Esc only when something is selected, so a host's
+  // own Esc handlers still run.
   const modalOpen = showControls || renderOpen || overlayPickerOpen
-  useKeymap([
+  const bindings: KeyBinding[] = [
     {
       // Esc adds the armed note about the whole slide.
       id: 'carousel.place-note',
@@ -438,6 +616,16 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       matches: matchesEscape,
       guard: () => !!notesRef.current && !!armedRef.current && !cropElementId,
       action: () => placeArmedNote(),
+      paletteHidden: true,
+    },
+    {
+      // After the armed note, which takes the first Esc.
+      id: 'carousel.deselect',
+      description: 'Clear the selection',
+      keyHint: ['Esc'],
+      matches: matchesEscape,
+      guard: () => hasSelection,
+      action: () => setSelectedElementId(null),
       paletteHidden: true,
     },
     {
@@ -456,23 +644,13 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     },
     {
       // Removes the selected elements, never in crop mode (Backspace there
-      // belongs to the crop UI). Several go in one slide write, so one undo
-      // brings them all back. Shift+Delete is not this, as on video.
+      // belongs to the crop UI). Shift+Delete is not this, as on video.
       id: 'carousel.delete',
       description: 'Remove the selected elements',
       keyHint: ['Delete'],
       matches: matchesDelete,
-      guard: () => !cropElementId && !!selectedSlide && liveSelectedIds.length > 0,
-      action: () => {
-        if (!selectedSlide) return
-        if (liveSelectedIds.length === 1) {
-          void state.removeElement(selectedSlide.id, liveSelectedIds[0])
-        } else {
-          const gone = new Set(liveSelectedIds)
-          void state.updateSlide(selectedSlide.id, { elements: selectedSlide.elements.filter(el => !gone.has(el.id)) })
-        }
-        setSelectedElementId(null)
-      },
+      guard: () => hasSelection,
+      action: () => removeSelection(),
     },
     {
       // N arms a pin on the selected slide; with one armed, N adds it about
@@ -498,6 +676,113 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
         setArmed(selectedSlideId)
       },
     },
+    {
+      // `preventDefault: false` so the browser's own text copy is untouched:
+      // this only adds a copy of the elements on top, as on video.
+      id: 'carousel.copy',
+      description: 'Copy the selection',
+      keyHint: ['⌘', 'C'],
+      matches: matchesCmdKey('c'),
+      guard: () => hasSelection,
+      preventDefault: false,
+      action: () => copySelection(),
+    },
+    {
+      id: 'carousel.cut',
+      description: 'Cut the selection',
+      keyHint: ['⌘', 'X'],
+      matches: matchesCmdKey('x'),
+      guard: () => hasSelection && canEdit,
+      action: () => {
+        copySelection()
+        removeSelection()
+      },
+    },
+    {
+      // Only with something to paste, so the browser's own paste is otherwise untouched.
+      id: 'carousel.paste',
+      description: 'Paste',
+      keyHint: ['⌘', 'V'],
+      matches: matchesCmdKey('v'),
+      guard: () => slideLive && canEdit && !!clipboardRef.current?.elements.length,
+      action: () => pasteClipboard(),
+    },
+    {
+      id: 'carousel.duplicate',
+      description: 'Duplicate the selection',
+      keyHint: ['⌘', 'D'],
+      matches: matchesCmdKey('d'),
+      guard: () => hasSelection && canEdit,
+      action: () => duplicateSelection(),
+    },
+    {
+      // Claimed on an empty slide too: the page must not select its own text.
+      id: 'carousel.select-all',
+      description: 'Select all',
+      keyHint: ['⌘', 'A'],
+      matches: matchesCmdKey('a'),
+      guard: () => slideLive,
+      action: () => selectAll(),
+    },
+    // Layer order. Cmd+[ and Cmd+] are history navigation in a browser, so
+    // they are taken even when the order would not change. The Option ones
+    // come first: they also pass the plain ones' Cmd test, but not !alt.
+    {
+      id: 'carousel.layer-front',
+      description: 'Bring to front',
+      keyHint: ['⌘', '⌥', ']'],
+      matches: matchesLayerKey('BracketRight', true),
+      guard: () => hasSelection && canEdit,
+      action: () => moveSelectionInStack('front'),
+    },
+    {
+      id: 'carousel.layer-back',
+      description: 'Send to back',
+      keyHint: ['⌘', '⌥', '['],
+      matches: matchesLayerKey('BracketLeft', true),
+      guard: () => hasSelection && canEdit,
+      action: () => moveSelectionInStack('back'),
+    },
+    {
+      id: 'carousel.layer-forward',
+      description: 'Bring forward',
+      keyHint: ['⌘', ']'],
+      matches: matchesLayerKey('BracketRight', false),
+      guard: () => hasSelection && canEdit,
+      action: () => moveSelectionInStack('forward'),
+    },
+    {
+      id: 'carousel.layer-backward',
+      description: 'Send backward',
+      keyHint: ['⌘', '['],
+      matches: matchesLayerKey('BracketLeft', false),
+      guard: () => hasSelection && canEdit,
+      action: () => moveSelectionInStack('backward'),
+    },
+  ]
+  useKeymap([
+    // Every binding but the nudge ends an open nudge burst before it acts, so
+    // the burst is its own undo step and Cmd+Z right after it undoes it.
+    ...bindings.map((binding): KeyBinding => ({
+      ...binding,
+      action: (e) => {
+        flushNudge()
+        binding.action(e)
+      },
+    })),
+    {
+      // Arrows move the selection 1 px, Shift+arrow 10; a held key repeats.
+      id: 'carousel.nudge',
+      description: 'Nudge the selection',
+      keyHint: ['←', '↑', '↓', '→'],
+      matches: (e) => nudgeOf(e) !== null,
+      guard: () => hasSelection && canEdit,
+      action: (e) => {
+        const step = nudgeOf(e)
+        if (step) nudgeSelection(step.dx, step.dy)
+      },
+      paletteHidden: true,
+    },
   ], { modalOpen })
 
   // Host pins: the selected slide's pins with a point go on the canvas; every
@@ -515,10 +800,6 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     }
     return bySlide
   }, [pins])
-
-  // `pendingSurface="host"`: the host draws the pending UI, so a pending
-  // project shows the slides as they arrive. Render and note arming stay off.
-  const showPendingSurface = project.status === 'pending' && pendingSurface !== 'host'
 
   // Render saves the project as final, then opens. A save that fails or never
   // answers ends here: the host is told (`onError`) and Render is back.
@@ -614,7 +895,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   function handleDuplicateSlide(id: string) {
     const src = slides.find(s => s.id === id)
     if (!src) return
-    const clone: Slide = { ...src, id: crypto.randomUUID(), elements: src.elements.map(deepCloneElement) }
+    const clone: Slide = { ...src, id: crypto.randomUUID(), elements: src.elements.map(cloneElement) }
     void state.duplicateSlide(id, clone)
     setSelectedSlideId(clone.id)
     setSelectedElementId(null)
@@ -644,7 +925,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const slide = slides.find(s => s.id === slideId)
     const src = slide?.elements.find(el => el.id === elementId)
     if (!src) return
-    const clone = { ...deepCloneElement(src), x: src.x + 20, y: src.y + 20 }
+    const clone = { ...cloneElement(src), x: src.x + COPY_OFFSET, y: src.y + COPY_OFFSET }
     void state.duplicateElement(slideId, elementId, clone)
     setSelectedElementId(clone.id)
   }

@@ -328,7 +328,8 @@ export const VIDEO_CONTROLS: ControlSection[] = [
 ]
 
 /** Controls reference for the carousel editor. Sourced from CarouselEditor's key
- *  handlers (undo/redo, Delete, the N note key) and the canvas gesture hints. */
+ *  bindings (undo/redo, Delete, the N note key, the clipboard, nudge, layer and
+ *  Esc keys) and the canvas gesture hints. */
 export const CAROUSEL_CONTROLS: ControlSection[] = [
   {
     heading: 'Canvas',
@@ -346,6 +347,18 @@ export const CAROUSEL_CONTROLS: ControlSection[] = [
       { keys: ['⌘', '⇧', 'Z'], label: 'Redo' },
       { keys: ['Delete'], label: 'Remove the selected element' },
       { keys: ['N'], label: 'Add a note' },
+      { keys: ['⌘', 'C'], label: 'Copy' },
+      { keys: ['⌘', 'X'], label: 'Cut' },
+      { keys: ['⌘', 'V'], label: 'Paste' },
+      { keys: ['⌘', 'D'], label: 'Duplicate' },
+      { keys: ['⌘', 'A'], label: 'Select all' },
+      { keys: ['←', '↑', '↓', '→'], label: 'Nudge' },
+      { keys: ['⇧', '←', '↑', '↓', '→'], label: 'Nudge further' },
+      { keys: ['⌘', ']'], label: 'Bring forward' },
+      { keys: ['⌘', '['], label: 'Send backward' },
+      { keys: ['⌘', '⌥', ']'], label: 'Bring to front' },
+      { keys: ['⌘', '⌥', '['], label: 'Send to back' },
+      { keys: ['Esc'], label: 'Deselect' },
     ],
   },
 ]

@@ -62,6 +62,19 @@ describe('platformSections', () => {
     ])
   })
 
+  it('spells the carousel layer and clipboard keys out off Apple, and keeps the glyphs on Apple (§556)', () => {
+    const entry = (apple: boolean, label: string) =>
+      platformSections(CAROUSEL_CONTROLS, apple)
+        .find((s) => s.heading === 'Keyboard')!
+        .entries.find((e) => e.label === label)!
+    expect(entry(false, 'Bring to front').keys).toEqual(['Ctrl', 'Alt', ']'])
+    expect(entry(false, 'Send backward').keys).toEqual(['Ctrl', '['])
+    expect(entry(false, 'Nudge further').keys).toEqual(['Shift', '←', '↑', '↓', '→'])
+    expect(entry(false, 'Copy').keys).toEqual(['Ctrl', 'C'])
+    expect(entry(true, 'Send to back').keys).toEqual(['⌘', '⌥', '['])
+    expect(entry(true, 'Nudge further').keys).toEqual(['⇧', '←', '↑', '↓', '→'])
+  })
+
   it('keeps every other field and leaves its input alone', () => {
     const before = JSON.stringify(SECTIONS)
     const out = platformSections(SECTIONS, false)

@@ -836,6 +836,47 @@ describe('reorderElement', () => {
     })
     expect(prev.slides![0].elements[0].id).toBe(originalFirst)
   })
+
+  describe("'front' and 'back' (§556)", () => {
+    // Index 0 is the back of the slide, the last index the front.
+    function fourElements(): Project {
+      return makeProject({
+        slides: [makeSlide('slide-0', { elements: ['a', 'b', 'c', 'd'].map(makeImageEl) }), makeSlide('slide-1')],
+      })
+    }
+    const order = (p: Project, slide = 0) => p.slides![slide].elements.map((el) => el.id)
+
+    it('front moves the element to the end, the others keeping their order', () => {
+      const result = projectReducer(fourElements(), { type: 'reorderElement', slideId: 'slide-0', elementId: 'b', direction: 'front' })
+      expect(order(result)).toEqual(['a', 'c', 'd', 'b'])
+    })
+
+    it('back moves the element to the start, the others keeping their order', () => {
+      const result = projectReducer(fourElements(), { type: 'reorderElement', slideId: 'slide-0', elementId: 'c', direction: 'back' })
+      expect(order(result)).toEqual(['c', 'a', 'b', 'd'])
+    })
+
+    it('front on the element already in front, and back on the one already at the back, change nothing', () => {
+      const prev = fourElements()
+      const front = projectReducer(prev, { type: 'reorderElement', slideId: 'slide-0', elementId: 'd', direction: 'front' })
+      const back = projectReducer(prev, { type: 'reorderElement', slideId: 'slide-0', elementId: 'a', direction: 'back' })
+      expect(front.slides![0]).toBe(prev.slides![0])
+      expect(back.slides![0]).toBe(prev.slides![0])
+    })
+
+    it('an element that is not there changes nothing', () => {
+      const prev = fourElements()
+      const result = projectReducer(prev, { type: 'reorderElement', slideId: 'slide-0', elementId: 'ghost', direction: 'front' })
+      expect(result.slides![0]).toBe(prev.slides![0])
+    })
+
+    it('touches only the slide it names, and not the original', () => {
+      const prev = fourElements()
+      const result = projectReducer(prev, { type: 'reorderElement', slideId: 'slide-0', elementId: 'a', direction: 'front' })
+      expect(order(prev)).toEqual(['a', 'b', 'c', 'd'])
+      expect(result.slides![1]).toBe(prev.slides![1])
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------

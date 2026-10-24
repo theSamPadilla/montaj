@@ -113,6 +113,42 @@ describe('ControlsInfoModal', () => {
     )
   })
 
+  it('lists the carousel clipboard, nudge, layer and deselect keys under Keyboard (§556)', () => {
+    const keyboard = CAROUSEL_CONTROLS.find((s) => s.heading === 'Keyboard')!
+    // What was there stays, in its place.
+    expect(keyboard.entries.slice(0, 4).map((e) => e.label)).toEqual(['Undo', 'Redo', 'Remove the selected element', 'Add a note'])
+    expect(keyboard.entries.slice(4)).toEqual([
+      { keys: ['⌘', 'C'], label: 'Copy' },
+      { keys: ['⌘', 'X'], label: 'Cut' },
+      { keys: ['⌘', 'V'], label: 'Paste' },
+      { keys: ['⌘', 'D'], label: 'Duplicate' },
+      { keys: ['⌘', 'A'], label: 'Select all' },
+      { keys: ['←', '↑', '↓', '→'], label: 'Nudge' },
+      { keys: ['⇧', '←', '↑', '↓', '→'], label: 'Nudge further' },
+      { keys: ['⌘', ']'], label: 'Bring forward' },
+      { keys: ['⌘', '['], label: 'Send backward' },
+      { keys: ['⌘', '⌥', ']'], label: 'Bring to front' },
+      { keys: ['⌘', '⌥', '['], label: 'Send to back' },
+      { keys: ['Esc'], label: 'Deselect' },
+    ])
+  })
+
+  it('shows the carousel keys in the window: a row each, the modifiers as chips', () => {
+    const restore = stubPlatform('MacIntel')
+    try {
+      render(<ControlsInfoModal title="Editor controls" sections={CAROUSEL_CONTROLS} onClose={vi.fn()} />)
+      for (const label of ['Copy', 'Cut', 'Paste', 'Duplicate', 'Select all', 'Nudge', 'Nudge further', 'Bring forward', 'Send backward', 'Bring to front', 'Send to back', 'Deselect']) {
+        expect(screen.getByText(label)).toBeTruthy()
+      }
+      const row = screen.getByText('Bring to front').closest('li')!
+      expect([...row.querySelectorAll('kbd')].map((k) => k.textContent)).toEqual(['⌘', '⌥', ']'])
+      const nudge = screen.getByText('Nudge further').closest('li')!
+      expect([...nudge.querySelectorAll('kbd')].map((k) => k.textContent)).toEqual(['⇧', '←', '↑', '↓', '→'])
+    } finally {
+      restore()
+    }
+  })
+
   it('lists N as "Add a note" under Keyboard (PL39)', () => {
     // Static like M: the row is always listed, the binding is the host's opt-in.
     const keyboard = VIDEO_CONTROLS.find((s) => s.heading === 'Keyboard')!
