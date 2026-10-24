@@ -27,8 +27,14 @@ names-only sidecar per synced project, `<dir>/<projectId>/clash-set.json`:
 Read fresh on every write (a few hundred bytes, no cache): a cache keyed on the file's stat can miss an in-place
 rewrite, and the shell's atomic rename is the common case.
 
-A step run through serve gets MONTAJ_WRITE_ORIGIN (`human` for the window, `ai` for anything else) and checks the
-fields it changes under the project lock (`check_step_write`); with the variable unset that check is off too."""
+A step run through serve gets MONTAJ_WRITE_ORIGIN (`human` for the window, `drive` for the window while the person's
+AI drives it, `ai` for anything else) and checks the fields it changes under the project lock (`check_step_write`);
+with the variable unset that check is off too.
+
+HELD CLASHES (Sam, 2026-10-24: an AI write from the window to a clashed name is allowed). Before it forwards a driven
+window write, the app copies the person's version of each clash that write may touch and marks that clash `held: true`
+in the sidecar. A `drive` write passes on a name only while every clash naming it is held (`unheld_touched`); a name no
+clash entry holds, or an unsure set, refuses it as before."""
 import json
 import os
 import re
@@ -39,6 +45,7 @@ import unicodedata
 STATE_ENV = "MONTAJ_SYNC_STATE_DIR"
 ORIGIN_ENV = "MONTAJ_WRITE_ORIGIN"
 HUMAN_ORIGIN = "human"
+DRIVE_ORIGIN = "drive"
 SIDECAR = "clash-set.json"
 EVERYTHING = "*"
 
@@ -90,15 +97,17 @@ def file_key(relpath: str) -> str:
 
 class ClashSet:
     """What one sidecar says. `files` maps file_key to the sidecar's own spelling; `unsure` refuses everything.
-    `by_id` holds each clash's own names, {id: (fields, {file_key: spelling})}, for a resolve of that id."""
-    __slots__ = ("fields", "files", "ids", "unsure", "by_id")
+    `by_id` holds each clash's own names, {id: (fields, {file_key: spelling})}, for a resolve of that id; `held` the ids
+    the app marked held (every entry of that id says `held: true`)."""
+    __slots__ = ("fields", "files", "ids", "unsure", "by_id", "held")
 
-    def __init__(self, fields=frozenset(), files=None, ids=frozenset(), unsure=False, by_id=None):
+    def __init__(self, fields=frozenset(), files=None, ids=frozenset(), unsure=False, by_id=None, held=frozenset()):
         self.fields = frozenset(fields)
         self.files = dict(files or {})
         self.ids = frozenset(ids)
         self.unsure = unsure
         self.by_id = dict(by_id or {})
+        self.held = frozenset(held)
 
 
 NO_CLASH = ClashSet()
@@ -122,7 +131,7 @@ def _parse(raw: bytes, project_id: str) -> ClashSet:
     fields, files, clashes = _names(doc.get("fields")), _names(doc.get("files")), doc.get("clashes")
     if fields is None or files is None or not isinstance(clashes, list):
         return UNSURE
-    ids, by_id = set(), {}
+    ids, by_id, held, unheld = set(), {}, set(), set()
     for clash in clashes:
         if not isinstance(clash, dict) or not isinstance(clash.get("id"), str) or not clash["id"]:
             return UNSURE
@@ -130,12 +139,13 @@ def _parse(raw: bytes, project_id: str) -> ClashSet:
         if more_fields is None or more_files is None:
             return UNSURE
         ids.add(clash["id"])
+        (held if clash.get("held") is True else unheld).add(clash["id"])
         own_fields, own_files = by_id.get(clash["id"], (frozenset(), {}))
         by_id[clash["id"]] = (own_fields | frozenset(more_fields),
                               {**own_files, **{file_key(f): f for f in more_files}})
         fields = fields + more_fields
         files = files + more_files
-    return ClashSet(fields=fields, files={file_key(f): f for f in files}, ids=ids, by_id=by_id)
+    return ClashSet(fields=fields, files={file_key(f): f for f in files}, ids=ids, by_id=by_id, held=held - unheld)
 
 
 def _nothing_at(path) -> bool:
@@ -285,6 +295,22 @@ def touched(clashes: ClashSet, fields=(), files=(), everything: bool = False) ->
     return list(dict.fromkeys(hit))
 
 
+def unheld_touched(clashes: ClashSet, fields=(), files=(), everything: bool = False) -> list:
+    """The clashed names a DRIVE write touches that are not held: those `touched` names that no clash entry names, or
+    that some clash not held names. An unsure set is `touched`'s answer (everything the write names)."""
+    names = touched(clashes, fields, files, everything)
+    if clashes.unsure or not names:
+        return names
+
+    def held_only(name):
+        key = file_key(name)
+        owners = [cid for cid, (own_fields, own_files) in clashes.by_id.items()
+                  if name in own_fields or key in own_files]
+        return bool(owners) and all(cid in clashes.held for cid in owners)
+
+    return [n for n in names if not held_only(n)]
+
+
 def outside_clash(clashes: ClashSet, clash_id: str, fields=(), files=(), derived=(), everything: bool = False) -> list:
     """For a person's resolve of the open clash `clash_id` (review 40, 4): the names it may not write. Every field
     and file it names outside that clash's own names (a file is inside when it is one of them or under one of its
@@ -398,12 +424,15 @@ class SyncConflict(RuntimeError):
 
 def check_step_write(project_id, fields=(), files=()) -> None:
     """For a step's own write, under the project lock: raise SyncConflict when it touches a clashed name. Off with
-    the variable unset; a step the window ran (MONTAJ_WRITE_ORIGIN=human, set only by serve) passes."""
-    if not state_dir() or os.environ.get(ORIGIN_ENV) == HUMAN_ORIGIN:
+    the variable unset; a step the window ran (MONTAJ_WRITE_ORIGIN=human, set only by serve) passes, and one it ran
+    while the person's AI drove it (`drive`) passes on held names only."""
+    origin = os.environ.get(ORIGIN_ENV)
+    if not state_dir() or origin == HUMAN_ORIGIN:
         return
     if not fields and not files:
         return
-    names = touched(load(project_id), fields, files)
+    clashes = load(project_id)
+    names = unheld_touched(clashes, fields, files) if origin == DRIVE_ORIGIN else touched(clashes, fields, files)
     if names:
         raise SyncConflict(refusal(names))
 

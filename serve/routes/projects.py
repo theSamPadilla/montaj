@@ -1425,8 +1425,12 @@ async def run_project(request: Request, response: Response, body: dict = Body(..
     project_id_arg = _validate_optional_id(body)
     if project_id_arg:
         # §482: a second folder under a synced project's id shares its clash set (A-17), so the AI may not make
-        # one while a clash is open.
-        save_guard.check_sync(getattr(request, "headers", None), project_id_arg, everything=True)
+        # one while a clash is open. Not even from the window it drives with the clash held (B1 allows writing a held
+        # clash's names, never a second copy of the project): a driven run is checked as the AI's.
+        who = getattr(request, "headers", None)
+        if save_guard.sync_who(who).kind == "drive":
+            who = save_guard.MAINTENANCE
+        save_guard.check_sync(who, project_id_arg, everything=True)
 
     # --- Carousel fast path — branch before clip/asset/intake validation ---
     wf_data = read_workflow(workflow)

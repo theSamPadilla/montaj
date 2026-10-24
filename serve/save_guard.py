@@ -485,9 +485,10 @@ def get_headers(response, project, fields, raw_text=None, raw_project=None) -> N
 #             tells the person to restart Montaj instead of offering the resolve again.
 #   drive     trusted `editor` + origin `drive`: the window while the person's AI drives it. An AI write from the
 #             window to a clashed name is allowed (Sam, 2026-10-24): the app holds the person's version of the clash
-#             before it forwards the write, and the clash stays open for a person to resolve. Passes while the clash
-#             set is sure; an unsure one refuses it (the app could not have held a version it cannot read either).
-#             A step it runs carries MONTAJ_WRITE_ORIGIN=human, as the window's own.
+#             before it forwards the write and marks that clash `held` in the sidecar, and the clash stays open for a
+#             person to resolve. Passes on held names only (sync_clash.unheld_touched): a name the app did not hold,
+#             or an unsure set, refuses it as before. A step it runs carries MONTAJ_WRITE_ORIGIN=drive, checked the
+#             same way under the lock.
 #   other     everything else: `ai`, no or a wrong secret, plain `tool`, `tool` + `app`, `editor` + any other
 #             origin, a step run by any of these, and serve's own maintenance heals. Refused on a clashed name.
 #
@@ -542,9 +543,10 @@ def sync_who(headers) -> SyncWho:
 
 
 def step_origin(headers) -> str:
-    """MONTAJ_WRITE_ORIGIN for a step serve runs: `human` for the window (with or without the AI driving it), else
-    `ai`."""
-    return sync_clash.HUMAN_ORIGIN if sync_who(headers).kind in ("human", "drive") else "ai"
+    """MONTAJ_WRITE_ORIGIN for a step serve runs: `human` for the window, `drive` for the window while the AI drives
+    it, else `ai`."""
+    kind = sync_who(headers).kind
+    return sync_clash.HUMAN_ORIGIN if kind == "human" else sync_clash.DRIVE_ORIGIN if kind == "drive" else "ai"
 
 
 def sync_refusal(project_id, who, fields=(), files=(), *, everything: bool = False, derived=()) -> "dict | None":
@@ -561,8 +563,9 @@ def sync_refusal(project_id, who, fields=(), files=(), *, everything: bool = Fal
     if not everything and not fields and not files and not derived:
         return None
     clashes = sync_clash.load(project_id)
-    if who.kind == "drive" and not clashes.unsure:
-        return None
+    if who.kind == "drive":
+        names = sync_clash.unheld_touched(clashes, [*fields, *derived], files, everything)
+        return sync_clash.refusal(names) if names else None
     if who.kind == "resolve" and clashes.unsure:
         return None
     if who.kind == "resolve" and who.clash_id in clashes.ids:

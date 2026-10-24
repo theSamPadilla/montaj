@@ -30,6 +30,7 @@ from starlette.testclient import TestClient
 import serve.common as common_mod
 import serve.routes.projects as projects_mod
 import serve.routes.steps as steps_mod
+from lib import sync_clash
 from lib.project_lock import project_lock, write_json_atomic
 from lib.project_revisions import revisions_of
 from lib.project_tracks import normalize_tracks
@@ -146,6 +147,11 @@ def _sidecar(state, pid=PID, fields=(), files=(), clashes=None, **extra):
     path = folder / "clash-set.json"
     path.write_text(json.dumps(doc))
     return path
+
+
+def _held(state, pid=PID, fields=(), files=()):
+    """A sidecar whose one clash the app marked held (B1: it copied the person's version before a driven write)."""
+    return _sidecar(state, pid, fields, files, clashes=[{"id": "c1", "fields": list(fields), "files": list(files), "held": True}])
 
 
 def _project(ws, pid=PID, folder=None, **fields):
@@ -392,16 +398,41 @@ def test_case5_the_window_with_any_origin_but_drive_is_not_the_human(ws, state, 
 
 @pytest.mark.parametrize("body", [{"tracks": []}, {"notes": [], "tracks": [{"id": "trk-9", "items": []}]}],
                          ids=["the-clashed-field", "with-another"])
-def test_case5_the_window_while_the_ai_drives_it_writes_a_clashed_field(ws, state, body):
+def test_case5_the_window_while_the_ai_drives_it_writes_a_held_clashed_field(ws, state, body):
     """Sam, 2026-10-24: an AI write from the window to a clashed field is allowed. The app holds the person's version
-    of the clash before it forwards the write; the clash stays open (the sidecar is untouched)."""
+    of the clash before it forwards the write and marks the clash held; the clash stays open (the sidecar is
+    untouched)."""
     d = _project(ws)
-    _sidecar(state, fields=["tracks"])
+    _held(state, fields=["tracks"])
     side = (state / PID / "clash-set.json").read_text()
     resp = _put(ws, body, DRIVE, read=False)
     assert resp.status_code == 200, resp.text
     assert json.loads(_disk(d))["tracks"] == body["tracks"]
     assert (state / PID / "clash-set.json").read_text() == side
+
+
+@pytest.mark.parametrize("clashes", [
+    [{"id": "c1", "fields": ["tracks"], "files": []}],
+    [{"id": "c1", "fields": ["tracks"], "files": [], "held": True}, {"id": "c2", "fields": ["tracks"], "files": []}],
+    [{"id": "c1", "fields": ["tracks"], "files": [], "held": True}, {"id": "c1", "fields": ["tracks"], "files": []}],
+    [{"id": "c1", "fields": ["tracks"], "files": [], "held": "yes"}],
+], ids=["not-held", "another-clash-on-it-not-held", "one-entry-of-the-id-not-held", "held-not-true"])
+def test_case5_the_window_while_the_ai_drives_it_is_refused_on_a_name_not_held(ws, state, clashes):
+    """serve's backstop: a driven write passes only on names the app held (a step writing a name the shell did not
+    predict, so never held, is still caught)."""
+    d = _project(ws)
+    _sidecar(state, fields=["tracks"], clashes=clashes)
+    before = _disk(d)
+    _refused(_put(ws, {"tracks": []}, DRIVE, read=False), ["tracks"])
+    assert _disk(d) == before
+
+
+def test_case5_a_held_name_lets_a_driven_write_through_but_not_its_unheld_neighbour(ws, state):
+    d = _project(ws)
+    _sidecar(state, fields=["tracks", "notes"], clashes=[{"id": "c1", "fields": ["tracks"], "files": [], "held": True},
+                                                         {"id": "c2", "fields": ["notes"], "files": []}])
+    _refused(_put(ws, {"tracks": [], "notes": []}, DRIVE, read=False), ["notes"])
+    assert _put(ws, {"tracks": []}, DRIVE, read=False).status_code == 200
 
 
 def test_case5_the_window_while_the_ai_drives_it_is_refused_on_an_unsure_clash_set(ws, state):
@@ -647,13 +678,29 @@ def test_case8_a_step_run_by_the_window_runs_with_origin_human(ws, state, ran):
     assert ran[0]["env"]["MONTAJ_WRITE_ORIGIN"] == "human"
 
 
-def test_case8_a_step_the_window_runs_while_the_ai_drives_it_carries_origin_human(ws, state, ran):
-    """Sam, 2026-10-24: the window's writes while the AI drives it are allowed (the app holds the person's version)."""
+def test_case8_a_step_the_window_runs_while_the_ai_drives_it_carries_origin_drive(ws, state, ran):
+    """Sam, 2026-10-24: the window's writes while the AI drives it are allowed on the names the app held; the step's
+    own writes are checked that way under the lock (test_case8_a_driven_step_write_*)."""
     _project(ws)
-    _sidecar(state, fields=["tracks"])
+    _held(state, fields=["tracks"])
     resp = _step("jump_cut", {"project-id": PID, "clip-id": "clip-0", "cuts": "[]"}, DRIVE)
     assert resp.status_code == 200, resp.text
-    assert ran[0]["env"]["MONTAJ_WRITE_ORIGIN"] == "human"
+    assert ran[0]["env"]["MONTAJ_WRITE_ORIGIN"] == "drive"
+
+
+def test_case8_a_driven_step_write_passes_on_a_held_name_only(ws, state, monkeypatch):
+    _project(ws)
+    monkeypatch.setenv("MONTAJ_WRITE_ORIGIN", "drive")
+    _held(state, fields=["tracks"])
+    sync_clash.check_step_write(PID, ["tracks"])
+    _sidecar(state, fields=["tracks", "notes"], clashes=[{"id": "c1", "fields": ["tracks"], "files": [], "held": True},
+                                                         {"id": "c2", "fields": ["notes"], "files": []}])
+    with pytest.raises(sync_clash.SyncConflict) as e:
+        sync_clash.check_step_write(PID, ["tracks", "notes"])
+    assert e.value.body["fields"] == ["notes"]
+    _sidecar(state, fields=["tracks"])
+    with pytest.raises(sync_clash.SyncConflict):
+        sync_clash.check_step_write(PID, ["tracks"])
 
 
 @pytest.mark.parametrize("headers", [AI, TOOL, SYNC], ids=["ai", "tool", "sync"])
@@ -914,7 +961,7 @@ def test_case10_restore_by_the_window_passes_driven_or_not_and_driven_on_an_unsu
     sha = _commit(d)
     _unsure(state)
     _refused(_client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=DRIVE), ["*"])
-    _sidecar(state, fields=["notes"])
+    _held(state, fields=["notes"])
     assert _client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=DRIVE).status_code == 200
     assert _client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=EDITOR).status_code == 200
 
@@ -933,7 +980,7 @@ def test_case10_rerun_by_the_window_passes_driven_or_not_and_driven_on_an_unsure
     before = _disk(d)
     _refused_unsure(_client().post(f"/api/projects/{PID}/rerun", json={}, headers=DRIVE))
     assert _disk(d) == before
-    _sidecar(state, fields=["tracks"])
+    _held(state, fields=["tracks"])
     assert _client().post(f"/api/projects/{PID}/rerun", json={}, headers=DRIVE).status_code == 200
     assert _client().post(f"/api/projects/{PID}/rerun", json={}, headers=EDITOR).status_code == 200
 
@@ -948,7 +995,7 @@ def test_case10_include_asset_by_the_window_passes_driven_or_not_and_driven_on_a
     body = {"from": {"profile": "brand", "filename": "logo.png"}}
     _refused_unsure(_client().post(f"/api/projects/{PID}/assets", json=body, headers=DRIVE))
     assert not any(p.name.startswith("logo") for p in d.rglob("*"))
-    _sidecar(state, fields=["assets"])
+    _held(state, fields=["assets"])
     assert _client().post(f"/api/projects/{PID}/assets", json=body, headers=DRIVE).status_code == 200
     for p in d.rglob("logo*"):
         p.unlink()
@@ -1199,6 +1246,15 @@ def test_case15_run_with_an_explicit_synced_id_is_refused(ws, state):
     _project(ws, pid=pid)
     _sidecar(state, pid=pid, fields=["tracks"])
     resp = _client().post("/api/run", json={"id": pid, "workflow": "overlays", "prompt": "x"}, headers=AI)
+    _refused(resp, ["tracks"])
+
+
+def test_case15_a_driven_run_with_a_synced_id_is_refused_even_with_the_clash_held(ws, state):
+    """B1 lets a driven window write a held clash's names, never make a second folder under the clashed id (A-17)."""
+    pid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    _project(ws, pid=pid)
+    _held(state, pid=pid, fields=["tracks"])
+    resp = _client().post("/api/run", json={"id": pid, "workflow": "overlays", "prompt": "x"}, headers=DRIVE)
     _refused(resp, ["tracks"])
 
 
