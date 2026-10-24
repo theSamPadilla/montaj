@@ -401,6 +401,12 @@ def _is_plain_name(out) -> bool:
             and "/" not in out and "\\" not in out and not Path(out).is_absolute())
 
 
+def _project_out_dir(schema: dict) -> str:
+    """The project folder a `_project` out lands in: the `out` param's `projectDir`, else `assets`."""
+    out_param = next((p for p in schema.get("params") or [] if p.get("name") == "out"), None)
+    return (out_param or {}).get("projectDir") or "assets"
+
+
 def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
     """`_project` (reserved, popped here): a step that declares `out` saves into
     the project's assets folder when `out` is left off or is a plain file name
@@ -444,7 +450,7 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
         stem, suffix = os.path.splitext(out)
         if not suffix:
             stem, suffix = out, ext
-    sub = out_param.get("projectDir") or "assets"
+    sub = _project_out_dir(schema)
     parts = Path(sub).parts
     if Path(sub).is_absolute() or ".." in parts or not parts:
         raise HTTPException(422, detail={"error": "invalid_params", "message": f'Step "{name}" declares a bad projectDir.'})
@@ -454,7 +460,10 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
         if assets.is_symlink():
             raise HTTPException(422, detail={
                 "error": "invalid_params", "message": f'The project\'s "{sub}" folder is a symlink; "_project" will not write through it.'})
-    assets.mkdir(parents=True, exist_ok=True)
+    try:
+        assets.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        raise HTTPException(422, detail={"error": "invalid_params", "message": f'The project\'s "{sub}" is not a folder.'})
     n = 1
     while True:
         cand = assets / (f"{stem}{suffix}" if n == 1 else f"{stem}-{n}{suffix}")
@@ -463,7 +472,7 @@ def resolve_project_out(name: str, schema: dict, body: dict) -> str | None:
         if not os.path.lexists(cand) and str(cand) not in _RESERVED_OUTS:
             break
         n += 1
-    if Path(os.path.realpath(cand.parent)) != Path(os.path.realpath(assets)) or cand.parent != assets:
+    if Path(os.path.realpath(assets)) != pdir.joinpath(*parts) or cand.parent != assets:
         raise HTTPException(422, detail={"error": "invalid_params", "message": f"resolved output left the project's {sub} folder"})
     _refuse_record_out(str(cand), name=name)
     _RESERVED_OUTS.add(str(cand))
@@ -707,7 +716,7 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 # docs/plans/s482-m4-design.md §3). For a project the body names (`project`, `project-id`, `projectId`,
 # `project_id`): a step here is checked on its fields and files; a step in STEP_WRITES_NOTHING runs; any other
 # step is refused while ANY clash is open in that project (fail closed: a new step that writes the project must
-# get a row). `_project` (the out folder) is `assets/`. Every write path (out, out-dir, an outKind param) inside a
+# get a row). `_project` (the out folder) is the out param's `projectDir`, `assets/` by default. Every write path (out, out-dir, an outKind param) inside a
 # project folder is checked as its relpath, and a beside-input step with no write path as its input's folder.
 # The step checks again itself, under the project lock, on the fields it really changes (lib/sync_clash.py).
 STEP_WRITES = {
@@ -782,7 +791,7 @@ def check_step_sync(name: str, schema: dict, body: dict, headers) -> None:
             add(named[0], files=[STEP_DEFAULT_OUT[name]])
     named = _named_project(body.get("_project"))
     if named is not None:
-        add(named[0], files=["assets/"])
+        add(named[0], files=[_project_out_dir(schema).rstrip("/") + "/"])
     writes = []
     for param, export, value in _write_values(schema, body):
         for cand in _candidates(value) or []:

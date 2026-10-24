@@ -49,3 +49,43 @@ def test_other_steps_still_use_assets(tmp_path, monkeypatch):
     schema = {"output": {"type": "image"}, "params": [{"name": "out", "type": "path"}]}
     out = steps_mod.resolve_project_out("thing", schema, {"_project": str(pdir)})
     assert out.startswith(str(pdir.resolve() / "assets") + "/")
+
+
+def _schema_with(sub):
+    return {"output": {"type": "image"}, "params": [{"name": "out", "type": "path", "projectDir": sub}]}
+
+
+@pytest.mark.parametrize("sub", ["../elsewhere", "render/../../x", "/etc", ""])
+def test_a_bad_project_dir_is_a_422(sub, tmp_path, monkeypatch):
+    pdir = _project(tmp_path, monkeypatch)
+    schema = _schema_with(sub)
+    if sub == "":
+        schema["params"][0]["projectDir"] = "."
+    with pytest.raises(HTTPException) as e:
+        steps_mod.resolve_project_out("thing", schema, {"_project": str(pdir)})
+    assert e.value.status_code == 422
+
+
+def test_a_symlinked_render_parent_is_a_422(tmp_path, monkeypatch):
+    pdir = _project(tmp_path, monkeypatch)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (pdir / "render").symlink_to(elsewhere)
+    with pytest.raises(HTTPException) as e:
+        steps_mod.resolve_project_out("thing", _schema_with("render/samples"), {"_project": str(pdir)})
+    assert e.value.status_code == 422
+    assert not (elsewhere / "samples").exists()
+
+
+def test_a_plain_file_where_the_folder_goes_is_a_422_not_a_500(tmp_path, monkeypatch):
+    pdir = _project(tmp_path, monkeypatch)
+    (pdir / "render").write_text("x")
+    with pytest.raises(HTTPException) as e:
+        steps_mod.resolve_project_out("thing", _schema_with("render/samples"), {"_project": str(pdir)})
+    assert e.value.status_code == 422
+
+
+def test_the_sync_check_folder_is_the_declared_one():
+    assert steps_mod._project_out_dir(_schema_with("render/samples")) == "render/samples"
+    assert steps_mod._project_out_dir({"params": [{"name": "out"}]}) == "assets"
+    assert steps_mod._project_out_dir({"params": []}) == "assets"
