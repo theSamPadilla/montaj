@@ -17,7 +17,7 @@ def _require_workflow_name(name: str) -> None:
     or a `\\` would read or write any *.json on disk."""
     if not is_valid_workflow_name(name):
         raise HTTPException(status_code=400, detail={"error": "invalid_name",
-                                                     "message": "workflow name must match [A-Za-z0-9_-]{1,64}. list_workflows gives the names."})
+                                                     "message": "workflow name must match [A-Za-z0-9_-]{1,64}"})
 
 
 def _in_dir(path: Path, directory: Path) -> bool:

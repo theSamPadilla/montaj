@@ -290,7 +290,9 @@ def check_write_paths(name: str, items, body: dict, *, native: bool) -> None:
                      "inside the workspace or the project's folder")
             raise HTTPException(403, detail={
                 "error": "out_not_allowed",
-                "message": f"'{param}' of {name} must be {where}. Choose a path there, or leave '{param}' out.",
+                # §558: only `out` may be left out (a project's run then saves into its assets).
+                "message": f"'{param}' of {name} must be {where}. Choose a path there"
+                           + (", or leave 'out' out." if param == "out" else "."),
             })
 
 

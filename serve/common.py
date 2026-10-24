@@ -308,7 +308,7 @@ def get_project_dir(project_id: str) -> Path:
     if project_dir is None:
         raise HTTPException(404, detail={
             "error": "not_found",
-            "message": f"Project '{project_id}' not found. list_projects gives the ids.",
+            "message": f"Project '{project_id}' not found",
         })
     return project_dir
 

@@ -397,7 +397,7 @@ def _project_dir_for(value) -> Path:
             return real
     raise HTTPException(422, detail={
         "error": "invalid_params",
-        "message": f'No project "{value}" in the workspace. list_projects gives the ids.',
+        "message": f'No project "{value}" in the workspace. "_project" takes the project id or its folder.',
     })
 
 
@@ -888,7 +888,7 @@ async def run_step(name: str, body: dict = Body(default={}), request: Request = 
 async def get_step_job(job_id: str):
     job = get_job(job_id)
     if job is None:
-        raise not_found("job_not_found", f"Job '{job_id}' not found. Montaj may have restarted: check for the step's output before you run it again.")
+        raise not_found("job_not_found", f"Job '{job_id}' not found. Montaj may have restarted: check whether the step's output is there before running it again.")
     return job
 
 

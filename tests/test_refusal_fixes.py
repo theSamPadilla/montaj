@@ -36,16 +36,14 @@ def detail(r, status, error):
     return d["message"]
 
 
-def test_an_unknown_project_names_list_projects(client):
-    assert "list_projects" in detail(client.get("/api/projects/no-such-project"), 404, "not_found")
+def test_serve_words_carry_no_tool_names(client):
+    """The app's UI shows serve's message to a person; the app's AI layer adds the tool to call (§558 review)."""
+    assert "list_" not in detail(client.get("/api/projects/no-such-project"), 404, "not_found")
+    assert "list_" not in detail(client.get("/api/workflows/bad.name"), 400, "invalid_name")
 
 
 def test_an_unknown_job_says_to_check_for_its_output(client):
-    assert "check for the step's output" in detail(client.get("/api/steps/jobs/no-such-job"), 404, "job_not_found")
-
-
-def test_a_bad_workflow_name_names_list_workflows(client):
-    assert "list_workflows" in detail(client.get("/api/workflows/bad.name"), 400, "invalid_name")
+    assert "check whether the step's output is there" in detail(client.get("/api/steps/jobs/no-such-job"), 404, "job_not_found")
 
 
 def test_a_write_outside_the_workspace_says_where_to_write(client, tmp_path):
@@ -77,6 +75,10 @@ def test_a_step_write_outside_says_what_to_do(ws, tmp_path):
         guard.check_step_out("plain", schema, {"out": str(elsewhere / "x.mp4")}, native=True)
     assert e.value.detail["error"] == "out_not_allowed"
     assert "leave 'out' out" in e.value.detail["message"]
+    with pytest.raises(HTTPException) as e:
+        guard.check_step_out("plain", {"name": "plain", "params": [{"name": "out-dir", "type": "string"}]},
+                             {"out-dir": str(elsewhere)}, native=True)
+    assert "leave" not in e.value.detail["message"] and "Choose a path there." in e.value.detail["message"]
     (ws / "proj" / ".git").mkdir(parents=True)
     with pytest.raises(HTTPException) as e:
         guard.check_step_out("plain", schema, {"out": str(ws / "proj" / ".git" / "x")}, native=True)
