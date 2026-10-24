@@ -109,17 +109,39 @@ def _check_sync(before: dict, after: dict) -> None:
 
 
 def apply(project_path: str, text: str, *, preview: bool, max_pause: float | None,
-          feel: str = DEFAULT_FEEL) -> dict:
+          feel: str = DEFAULT_FEEL, base: dict | None = None, base_of: dict | None = None,
+          version_message: str = "version: before speech edit", want_project: bool = False,
+          amend=None) -> dict:
+    """Apply `text` to the project at `project_path`.
+
+    base (clean_cut): the project as an in-memory step already changed it, and the one the text was read
+    from. base_of: the disk project as the caller read it, before it made `base`. The text is derived,
+    built and carried on `base`; everything that guards the write (the sync check, the version, the lock,
+    the stale check and the merge) compares against `base_of`, so the write is refused, never merged over,
+    when the disk changed at any time since the caller's read. A base that differs from the disk is written
+    even when the text changes nothing.
+    want_project: also return the resulting project (as written, or as it would be) under `_project`.
+    amend: called with the candidate project before it is validated and written, to change it in place
+    (clean_cut records its marker there, so the marker lands in this same guarded write).
+    """
     project_path = os.path.abspath(project_path)
     project_dir = os.path.dirname(project_path)
-    with open(project_path, encoding="utf-8") as f:
-        on_disk = json.load(f)
+    if base is not None and base_of is None:
+        raise ValueError("apply: base needs base_of, the disk project it was made from")
+    if base_of is not None:
+        on_disk = copy.deepcopy(base_of)
+    else:
+        with open(project_path, encoding="utf-8") as f:
+            on_disk = json.load(f)
     project = normalize_tracks(on_disk)
     as_read = copy.deepcopy(project)   # as read, before anything mutates it
     # §482: the sync check compares with the file as it is on disk (a legacy `tracks` the write converts is a write
     # of tracks); everything else works on the reader's shape. The same document unless the file is legacy.
     on_disk_as_read = as_read if project is on_disk else copy.deepcopy(on_disk)
     read = _read_revisions(project) if project_revisions.engine_guard_enabled() else None
+    disk = project
+    if base is not None:
+        project = normalize_tracks(copy.deepcopy(base))
 
     header, rows = speech_text.parse(text)
     derived = speech_text.derive(project, project_dir, track=header["track"])   # the track the text was read from
@@ -140,32 +162,50 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     def canon(its):
         return sorted(json.dumps(it, sort_keys=True) for it in its)
 
-    if canon(items) == canon(old_items):
-        # Nothing on the speech track changed, so nothing is carried: an unedited text is a no-op.
-        return _noop(report, derived.warnings)
-    tmap = TimeMap(old_items, items, prov, words=words_by_src(derived), project_dir=project_dir)
-    candidate, report = carry(project, ti, items, tmap, fps, report=report)
-
     def dump(p):
         return json.dumps(p, sort_keys=True)
 
-    if dump(candidate) == dump(project):
-        return _noop(report, derived.warnings)
+    def noop():
+        out = _noop(report, derived.warnings)
+        if want_project:
+            out["_project"] = disk
+        return out
+
+    if canon(items) == canon(old_items):
+        # Nothing on the speech track changed, so nothing is carried: an unedited text is a no-op
+        # (unless a base already changed the project: then the base is the result).
+        if amend is None and (base is None or dump(project) == dump(disk)):
+            return noop()
+        candidate = project
+    else:
+        tmap = TimeMap(old_items, items, prov, words=words_by_src(derived), project_dir=project_dir)
+        candidate, report = carry(project, ti, items, tmap, fps, report=report)
+
+    if amend is not None:
+        if candidate is project:
+            candidate = copy.deepcopy(project)
+        amend(candidate)
+
+    if dump(candidate) == dump(disk):
+        return noop()
 
     _validate(candidate)
 
-    before, after = _summary(project, ti), _summary(candidate, ti)
+    before, after = _summary(disk, ti), _summary(candidate, ti)
     if preview:
         new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id, sils=derived.silences), _title(candidate))
-        return _result(applied=False, preview=True, version=False, before=before, after=after,
-                       report=report, warnings=derived.warnings, text=new_text)
+        out = _result(applied=False, preview=True, version=False, before=before, after=after,
+                      report=report, warnings=derived.warnings, text=new_text)
+        if want_project:
+            out["_project"] = candidate
+        return out
 
     # §482: a field this edit changes, or its text file, in an open Studio sync clash refuses it before the
     # version commit; the check runs again under the lock, on the fresh document.
     _check_sync(on_disk_as_read, candidate)
     # Everything that can fail runs before the write, so nothing fails after it.
     new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id, sils=derived.silences), _title(candidate))
-    version = commit_version(project_dir, "version: before speech edit")
+    version = commit_version(project_dir, version_message)
     warnings = list(derived.warnings)
     if not version and not is_own_repo(project_dir):
         warnings.append("no version saved: the project folder is not its own git repository")
@@ -207,5 +247,8 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
                 os.remove(tmp)
     with open(os.path.join(project_dir, SPEECH_TEXT_FILE), "w", encoding="utf-8") as f:
         f.write(new_text)
-    return _result(applied=True, preview=False, version=version, before=before, after=after,
-                   report=report, warnings=warnings, text=new_text)
+    out = _result(applied=True, preview=False, version=version, before=before, after=after,
+                  report=report, warnings=warnings, text=new_text)
+    if want_project:
+        out["_project"] = merged
+    return out

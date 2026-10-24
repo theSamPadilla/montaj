@@ -686,6 +686,14 @@ def test_validate_project_rejects_non_string_derived_from(tmp_path):
         v.validate_project(path)
 
 
+def test_validate_project_accepts_a_clean_cut_record_and_rejects_a_non_object(tmp_path):
+    ok = {**VALID_PROJECT, "tracks": [[{**VALID_PRIMARY_CLIP}]], "cleanCut": {"at": "2026-10-24T00:00:00Z", "stepVersion": 1}}
+    assert v.validate_project(_write_project(tmp_path, "project.json", ok))["valid"] is True
+    bad = {**ok, "cleanCut": "yes"}
+    with pytest.raises(SystemExit):
+        v.validate_project(_write_project(tmp_path, "project.json", bad))
+
+
 def test_validate_project_accepts_valid_source_crop(tmp_path):
     clip = {**VALID_PRIMARY_CLIP, "sourceCrop": {"x": 0.25, "y": 0.0, "w": 0.5, "h": 1.0},
             "sourceWidth": 1920, "sourceHeight": 1080}

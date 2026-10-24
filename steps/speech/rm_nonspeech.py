@@ -6,6 +6,40 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 from common import fail, require_file, require_whisper_model, get_duration, transcribe_words, DEFAULT_WHISPER_MODEL
 from trim_spec import is_trim_spec, load as load_spec, merge as merge_keeps, extract_audio_at_keeps, remap_timestamp, from_window
 
+
+def speech_regions(words, max_word_gap=0.10, sentence_edge=0.05):
+    """[{start, end}] speech regions from words ({text, start, end}, seconds): words closer than
+    max_word_gap are bridged, each region edge gets half the gap, the outer edges sentence_edge."""
+    seg_regions = []
+    for w in words:
+        start, end = w["start"], w["end"]
+        if not seg_regions:
+            seg_regions.append({"start": start, "end": end})
+        else:
+            gap = start - seg_regions[-1]["end"]
+            if gap <= max_word_gap:
+                seg_regions[-1]["end"] = end
+            else:
+                seg_regions[-1]["end"] += max_word_gap / 2
+                seg_regions.append({"start": start - max_word_gap / 2, "end": end})
+    if seg_regions:
+        seg_regions[0]["start"] = max(0, seg_regions[0]["start"] - sentence_edge)
+        seg_regions[-1]["end"] += sentence_edge
+    return seg_regions
+
+
+def source_keeps(words, duration, max_word_gap=0.10, sentence_edge=0.05):
+    """The raw-file keeps: speech regions of source-time words, clamped to [0, duration]. No speech
+    keeps the whole file. clean_cut calls this with a clip's transcript words."""
+    seg_regions = speech_regions(words, max_word_gap, sentence_edge)
+    if not seg_regions:
+        return [[0.0, duration]]
+    # Whisper word offsets (plus sentence-edge padding) can land at or past true
+    # EOF, which would emit an outpoint > source duration (physically impossible
+    # downstream). Clamp every keep to [0, duration] and drop any that collapse.
+    keeps = [[max(0.0, r["start"]), min(r["end"], duration)] for r in seg_regions]
+    return [[s, e] for s, e in keeps if e > s]
+
 def main():
     parser = argparse.ArgumentParser(description="Remove non-speech regions from a video")
     parser.add_argument("--input", required=True, help="Source video file or trim spec JSON")
@@ -58,21 +92,7 @@ def main():
             words = transcribe_words(tmp_wav, args.model, work_dir=work, language=args.language)
 
             # Build speech regions in the extracted-audio timeline, then remap
-            seg_regions = []
-            for w in words:
-                start, end = w["start"], w["end"]
-                if not seg_regions:
-                    seg_regions.append({"start": start, "end": end})
-                else:
-                    gap = start - seg_regions[-1]["end"]
-                    if gap <= args.max_word_gap:
-                        seg_regions[-1]["end"] = end
-                    else:
-                        seg_regions[-1]["end"] += args.max_word_gap / 2
-                        seg_regions.append({"start": start - args.max_word_gap / 2, "end": end})
-            if seg_regions:
-                seg_regions[0]["start"] = max(0, seg_regions[0]["start"] - args.sentence_edge)
-                seg_regions[-1]["end"] += args.sentence_edge
+            seg_regions = speech_regions(words, args.max_word_gap, args.sentence_edge)
 
             if not seg_regions:
                 # No speech detected — keep everything as-is
@@ -115,37 +135,11 @@ def main():
     work = tempfile.mkdtemp(prefix="nonspeech_")
     try:
         words = transcribe_words(args.input, args.model, work_dir=work, language=args.language)
-
-        seg_regions = []
-        for w in words:
-            start, end = w["start"], w["end"]
-            if not seg_regions:
-                seg_regions.append({"start": start, "end": end})
-            else:
-                gap = start - seg_regions[-1]["end"]
-                if gap <= args.max_word_gap:
-                    seg_regions[-1]["end"] = end
-                else:
-                    seg_regions[-1]["end"] += args.max_word_gap / 2
-                    seg_regions.append({"start": start - args.max_word_gap / 2, "end": end})
-        if seg_regions:
-            seg_regions[0]["start"] = max(0, seg_regions[0]["start"] - args.sentence_edge)
-            seg_regions[-1]["end"] += args.sentence_edge
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
     duration = get_duration(args.input)
-
-    if not seg_regions:
-        print(json.dumps({"input": args.input, "keeps": [[0.0, duration]]}))
-        return
-
-    # Whisper word offsets (plus sentence-edge padding) can land at or past true
-    # EOF, which would emit an outpoint > source duration (physically impossible
-    # downstream). Clamp every keep to [0, duration] and drop any that collapse.
-    keeps = [[max(0.0, r["start"]), min(r["end"], duration)] for r in seg_regions]
-    keeps = [[s, e] for s, e in keeps if e > s]
-    print(json.dumps({"input": args.input, "keeps": keeps}))
+    print(json.dumps({"input": args.input, "keeps": source_keeps(words, duration, args.max_word_gap, args.sentence_edge)}))
 
 if __name__ == "__main__":
     main()

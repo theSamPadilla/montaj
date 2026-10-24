@@ -38,37 +38,21 @@ def _write_srt(entries, path):
         for n, e in enumerate(cues, 1)))
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Transcribe audio or video using whisper.cpp")
-    parser.add_argument("--input", required=True, help="Audio or video file to transcribe")
-    parser.add_argument("--out", help="Output file prefix (default: input without extension)")
-    parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL,
-                        choices=list(WHISPER_MODEL_CHOICES),
-                        help="Whisper model. Larger = slower + more accurate. "
-                             "English-only (*.en) models are auto-upgraded to a multilingual "
-                             "sibling when --language is non-English.")
-    parser.add_argument("--language", default="en", help="Language code (e.g. en, fr, de), or 'auto' for whisper-cli language auto-detection")
-    parser.add_argument("--max-context", type=int, default=None,
-                        help="Cap on prior-text tokens carried between windows (whisper.cpp -mc). "
-                             "Set to 0 to disable cross-window context — the reliable fix for the "
-                             "repetition-loop hallucination (one phrase repeated to EOF) that whisper "
-                             "can fall into on long audio, especially non-English. Unset = whisper default.")
-    parser.add_argument("--fit-pauses", action="store_true",
-                        help="For captions: fit word times to the pauses measured in the audio, so a word "
-                             "after a pause starts on the voice. Leave it off for anything that cuts on word times.")
-    args = parser.parse_args()
+def transcribe(input_path, out=None, model=DEFAULT_WHISPER_MODEL, language="en", max_context=None, fit_pauses=False):
+    """Transcribe one file (or trim spec) and write `<out>.srt` and `<out>.json` (default: beside the
+    input). Returns {srt, words} plus the speech stats. clean_cut calls this for an untranscribed clip."""
 
-    require_file(args.input)
+    require_file(input_path)
 
     # Managed dir first, then the legacy whisper.cpp dir for older installs —
     # same chain as lib/common.transcribe_words(). No weight: whisper_model_missing.
-    _, model_path = require_whisper_model(args.model, args.language)
+    _, model_path = require_whisper_model(model, language)
 
     whisper_bin = find_whisper_bin()
 
     trim_spec_data = None
-    if is_trim_spec(args.input):
-        trim_spec_data = load_spec(args.input)
+    if is_trim_spec(input_path):
+        trim_spec_data = load_spec(input_path)
         source_path = trim_spec_data["input"]
         keeps = trim_spec_data["keeps"]
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
@@ -76,33 +60,33 @@ def main():
         tmp_audio = tmp.name
         extract_audio_at_keeps(source_path, keeps, tmp_audio)
         audio_input = tmp_audio
-        output_prefix = args.out or os.path.splitext(source_path)[0]
+        output_prefix = out or os.path.splitext(source_path)[0]
     else:
-        source_path = args.input
+        source_path = input_path
         keeps = None
         tmp_audio = None
-        audio_input = args.input
-        mime = mimetypes.guess_type(args.input)[0] or ""
+        audio_input = input_path
+        mime = mimetypes.guess_type(input_path)[0] or ""
         if mime.startswith("video/"):
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             tmp.close()
             tmp_audio = tmp.name
-            run([ffmpeg_bin(), "-y", "-i", ff_input(args.input), "-vn", "-acodec", "pcm_s16le",
+            run([ffmpeg_bin(), "-y", "-i", ff_input(input_path), "-vn", "-acodec", "pcm_s16le",
                  "-ar", "16000", "-ac", "1", tmp_audio])
             audio_input = tmp_audio
-        output_prefix = args.out or os.path.splitext(args.input)[0]
+        output_prefix = out or os.path.splitext(input_path)[0]
 
     pauses = heard_s = None
     try:
         # Single pass: word-level JSON + SRT in one decode
-        whisper_cmd = [whisper_bin, "-m", model_path, "-f", audio_input, "-l", args.language,
+        whisper_cmd = [whisper_bin, "-m", model_path, "-f", audio_input, "-l", language,
                        "--split-on-word", "--max-len", "1", "--output-srt", "--output-json",
                        "--output-file", output_prefix]
-        if args.max_context is not None:
-            whisper_cmd += ["-mc", str(args.max_context)]
+        if max_context is not None:
+            whisper_cmd += ["-mc", str(max_context)]
         run_whisper(whisper_cmd, audio_input, check=True)
         # Measured on the audio whisper heard, so in its time base (the spec's, for a trim spec).
-        if args.fit_pauses:
+        if fit_pauses:
             from lib.caption_timing import caption_pauses
             from lib.speech_pauses import silences
             heard_s = get_duration(audio_input)
@@ -128,7 +112,7 @@ def main():
                 if "from" in offsets and "to" in offsets:
                     word["timestamps"] = {"from": _srt_ts(offsets["from"]), "to": _srt_ts(offsets["to"])}
             # The .srt is left in the spec's own time (keeps back to back).
-            data["montaj"] = {"input": "spec", "spec": os.path.abspath(args.input), "keeps": keeps,
+            data["montaj"] = {"input": "spec", "spec": os.path.abspath(input_path), "keeps": keeps,
                               "offsets": "source", "timestamps": "source", "srt": "spec"}
         else:
             data["montaj"] = {"input": "file", "offsets": "source",
@@ -150,6 +134,29 @@ def main():
         result.update(speech_stats(json.loads(Path(words_path).read_text())))
     except Exception:
         pass  # an unreadable words file leaves the stats out; it never fails the step
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Transcribe audio or video using whisper.cpp")
+    parser.add_argument("--input", required=True, help="Audio or video file to transcribe")
+    parser.add_argument("--out", help="Output file prefix (default: input without extension)")
+    parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL,
+                        choices=list(WHISPER_MODEL_CHOICES),
+                        help="Whisper model. Larger = slower + more accurate. "
+                             "English-only (*.en) models are auto-upgraded to a multilingual "
+                             "sibling when --language is non-English.")
+    parser.add_argument("--language", default="en", help="Language code (e.g. en, fr, de), or 'auto' for whisper-cli language auto-detection")
+    parser.add_argument("--max-context", type=int, default=None,
+                        help="Cap on prior-text tokens carried between windows (whisper.cpp -mc). "
+                             "Set to 0 to disable cross-window context — the reliable fix for the "
+                             "repetition-loop hallucination (one phrase repeated to EOF) that whisper "
+                             "can fall into on long audio, especially non-English. Unset = whisper default.")
+    parser.add_argument("--fit-pauses", action="store_true",
+                        help="For captions: fit word times to the pauses measured in the audio, so a word "
+                             "after a pause starts on the voice. Leave it off for anything that cuts on word times.")
+    args = parser.parse_args()
+    result = transcribe(args.input, args.out, args.model, args.language, args.max_context, args.fit_pauses)
     print(json.dumps(result))
 
 if __name__ == "__main__":

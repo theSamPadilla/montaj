@@ -165,7 +165,7 @@ def _validate_crop_key_bounds(ti, item, tracks, sc):
 def _validate_clip_extensions(data, project_dir=None):
     """Optional clips-workflow fields plus per-item speed/rotation checks.
 
-    Validates derivedFrom (top-level) and sourceCrop on video items.
+    Validates derivedFrom and cleanCut (top-level) and sourceCrop on video items.
 
     `project_dir` is the directory holding the project.json, used to resolve a
     relative item `src` for the source-dimension check below. Omit it to skip
@@ -188,6 +188,9 @@ def _validate_clip_extensions(data, project_dir=None):
     df = data.get("derivedFrom")
     if df is not None and not isinstance(df, str):
         fail("invalid_field", "derivedFrom must be a string")
+    cc = data.get("cleanCut")
+    if cc is not None and not isinstance(cc, dict):
+        fail("invalid_field", "cleanCut must be an object (the record clean_cut writes)")
     probe_cache = {}
     # The remediation command below is an instruction the agent will follow, so
     # it must name THIS project's canvas, not a hardcoded 9:16.

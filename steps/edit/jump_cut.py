@@ -49,38 +49,30 @@ def ripple_tracks(tracks0, insert_index, old_count, new_clips):
     return before + new_clips + after
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Jump-cut a clip: remove time ranges, keep the rest")
-    parser.add_argument("--project-id", dest="project_id", required=True)
-    parser.add_argument("--clip-id", dest="clip_id", required=True,
-                        help="ID of the clip on tracks[0] to jump-cut")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--cuts", help="JSON array of [start, end] ranges to REMOVE (clip-local time)")
-    group.add_argument("--keeps", help="JSON array of [start, end] ranges to KEEP (clip-local time)")
-    group.add_argument("--spec", help="Trim spec JSON file (e.g. from rm_fillers): its `keeps` are source time")
-    args = parser.parse_args()
+def cut_clip(project, project_path, clip_id, *, spec_path=None, spec=None, cuts=None, keeps=None, track_index=0):
+    """Split clip `clip_id` of the project's track `track_index` into one item per keep, packed end to end,
+    and ripple the rest of that track. Mutates `project["tracks"]` in memory and writes nothing; main() saves.
 
-    project_path, project = find_project(args.project_id)
-    # The step rewrites only `tracks`, onto a fresh read under the project lock;
-    # this copy is what it read, to notice tracks edited meanwhile.
-    original = copy.deepcopy(project)
+    Exactly one of spec_path (a trim spec file), spec (the same, already read), cuts or keeps (JSON
+    strings of clip-local [start, end] ranges). Returns {clips, removed, duration}. clean_cut calls it
+    with a spec dict, in memory, before its one write."""
     items = track_items(project)
-    tracks0 = items[0] if items else []
+    tracks0 = items[track_index] if len(items) > track_index else []
 
     # Find the clip
     clip_index = None
     clip = None
     for i, c in enumerate(tracks0):
-        if c["id"] == args.clip_id:
+        if c["id"] == clip_id:
             clip_index = i
             clip = c
             break
     if clip is None:
-        fail("not_found", f"Clip {args.clip_id} not found on tracks[0]")
+        fail("not_found", f"Clip {clip_id} not found on tracks[{track_index}]")
 
     if clip.get("speed", 1) != 1 or clip.get("keyframes"):
         fail("unsupported_clip",
-             f"Clip {args.clip_id} has a speed change or keyframes; jump_cut would drop them. Cut it in the editor.")
+             f"Clip {clip_id} has a speed change or keyframes; jump_cut would drop them. Cut it in the editor.")
 
     base_dir = os.path.dirname(os.path.abspath(project_path))
 
@@ -88,10 +80,12 @@ def main():
         return os.path.realpath(path if os.path.isabs(path) else os.path.join(base_dir, path))
 
     spec_keeps = None
-    if args.spec:
+    use_spec = bool(spec_path) or spec is not None
+    if use_spec:
         try:
-            with open(args.spec) as f:
-                spec = json.load(f)
+            if spec is None:
+                with open(spec_path) as f:
+                    spec = json.load(f)
             spec_keeps = spec["keeps"]
         except Exception as e:
             fail("invalid_params", f"Could not read keeps from --spec: {e}")
@@ -99,22 +93,22 @@ def main():
         if spec_input:
             owners = {resolve(clip[k]) for k in ("src", "proxySrc") if clip.get(k)}
             if resolve(spec_input) not in owners:
-                fail("invalid_params", f"--spec is for {spec_input}, not clip {args.clip_id}'s {clip.get('src')}")
+                fail("invalid_params", f"--spec is for {spec_input}, not clip {clip_id}'s {clip.get('src')}")
 
     if "inPoint" in clip and "outPoint" in clip:
         lo, hi = clip["inPoint"], clip["outPoint"]
-    elif args.spec:
+    elif use_spec:
         # A clip project/init.py just created is a placeholder: the whole source, in source time.
         lo = 0.0
         hi = clip.get("sourceDuration") or get_duration(resolve(clip["src"]))
     else:
         fail("missing_fields",
-             f"Clip {args.clip_id} has no inPoint/outPoint yet. Run probe and set them before jump_cut.")
+             f"Clip {clip_id} has no inPoint/outPoint yet. Run probe and set them before jump_cut.")
 
     clip_duration = hi - lo
 
     # Parse ranges
-    if args.spec:
+    if use_spec:
         # A spec's keeps are source time; the clip's window starts at lo. null is open-ended.
         try:
             keeps = []
@@ -124,15 +118,15 @@ def main():
                 keeps.append([ks, ke])
         except Exception as e:
             fail("invalid_params", f"Bad keeps in --spec: {e}")
-    elif args.cuts:
+    elif cuts:
         try:
-            cuts = json.loads(args.cuts)
+            cuts = json.loads(cuts)
         except Exception as e:
             fail("invalid_params", f"Could not parse --cuts: {e}")
         keeps = cuts_to_keeps(cuts, clip_duration)
     else:
         try:
-            keeps = json.loads(args.keeps)
+            keeps = json.loads(keeps)
         except Exception as e:
             fail("invalid_params", f"Could not parse --keeps: {e}")
 
@@ -178,15 +172,33 @@ def main():
     # Only track 0 is rewritten — overlay tracks and their settings survive.
     # Overlay item times are deliberately left where they are; they do not
     # ripple with the primary track's retiming.
-    project["tracks"] = replace_track_items(project, 0, tracks0)
-    save_project_changes(project_path, original, project)
+    project["tracks"] = replace_track_items(project, track_index, tracks0)
 
     total_kept = sum(c["outPoint"] - c["inPoint"] for c in new_clips)
-    result = {
+    return {
         "clips": len(new_clips),
         "removed": round(clip_duration - total_kept, 3),
         "duration": round(total_kept, 3),
     }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Jump-cut a clip: remove time ranges, keep the rest")
+    parser.add_argument("--project-id", dest="project_id", required=True)
+    parser.add_argument("--clip-id", dest="clip_id", required=True,
+                        help="ID of the clip on tracks[0] to jump-cut")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--cuts", help="JSON array of [start, end] ranges to REMOVE (clip-local time)")
+    group.add_argument("--keeps", help="JSON array of [start, end] ranges to KEEP (clip-local time)")
+    group.add_argument("--spec", help="Trim spec JSON file (e.g. from rm_fillers): its `keeps` are source time")
+    args = parser.parse_args()
+
+    project_path, project = find_project(args.project_id)
+    # The step rewrites only `tracks`, onto a fresh read under the project lock;
+    # this copy is what it read, to notice tracks edited meanwhile.
+    original = copy.deepcopy(project)
+    result = cut_clip(project, project_path, args.clip_id, spec_path=args.spec, cuts=args.cuts, keeps=args.keeps)
+    save_project_changes(project_path, original, project)
     print(json.dumps(result))
 
 

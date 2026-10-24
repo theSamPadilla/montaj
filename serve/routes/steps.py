@@ -724,6 +724,7 @@ STEP_WRITES = {
     "montage": (("tracks",), ()),
     "cross_cut": (("tracks",), ()),
     "speech_edit": (("tracks", "captions", "audio", "markers", "notes"), ("speech-text.md",)),
+    "clean_cut": (("tracks", "captions", "audio", "markers", "notes", "cleanCut"), ("speech-text.md",)),
     "generate_captions": (("captions",), ()),
     "kling_generate": (("tracks", "storyboard", "status"), ()),
     "veo_generate": (("tracks", "storyboard", "status"), ()),
