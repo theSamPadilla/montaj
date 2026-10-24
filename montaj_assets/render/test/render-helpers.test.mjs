@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname, basename } from 'node:path'
 import { tmpdir } from 'node:os'
 import { getTotalDurationSeconds, collectAllItems, collectPuppeteerSegments, resolveFilePath, shouldSkipNormalize, buildNormalizedOutputPath, planExport, stampSourceProbes } from '../render.js'
 import { MASTER_LOOK } from '../look.js'
@@ -766,4 +766,27 @@ test('stampSourceProbes: drops gradeFrom/alphaGrade so a stray project field can
   assert.equal(item.colorTransfer, 'arib-std-b67')
   assert.equal('gradeFrom' in item, false)
   assert.equal('alphaGrade' in item, false)
+})
+
+// §563: an overlay's id is project.json text, and it names the segment file.
+function overlaySpecs(ids) {
+  const project = {
+    tracks: [ids.map((id, i) => ({ id, type: 'overlay', src: '/abs/ov.jsx', start: i, end: i + 1 }))],
+    settings: { fps: 30 },
+  }
+  return collectPuppeteerSegments(project, 30, 1080, 1920, '/tmp/seg')
+}
+
+test('collectPuppeteerSegments: a plain overlay id keeps its segment file name exactly (§563)', () => {
+  const ids = ['ov1', 'clip-3-seg-1-a1b2c3', 'ov_2.final', 7, '0b0f3c2e-1d4f-4a51-9d0e-3c1a8f2b7e64']
+  const specs = overlaySpecs(ids)
+  assert.deepEqual(specs.map(s => s.outputPath), ids.map(id => join('/tmp/seg', `overlay-0--${id}.mkv`)))
+  assert.deepEqual(specs.map(s => s.id), ids.map(id => `overlay-0--${id}`))
+})
+
+test('collectPuppeteerSegments: an id that is not a plain file name never steers the segment path (§563)', () => {
+  const specs = overlaySpecs(['a/../../../../elsewhere/x', 'a\\..\\..\\x', 'title card', 'ov1'])
+  for (const s of specs) assert.equal(dirname(s.outputPath), '/tmp/seg')
+  assert.deepEqual(specs.map(s => basename(s.outputPath)),
+    ['overlay-0-0.mkv', 'overlay-0-1.mkv', 'overlay-0-2.mkv', 'overlay-0--ov1.mkv'])
 })
