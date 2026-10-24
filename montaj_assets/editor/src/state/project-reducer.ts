@@ -49,6 +49,9 @@ export type Action<P extends Project = Project> =
   | { type: 'addElement'; slideId: string; element: CarouselElement }
   | { type: 'removeElement'; slideId: string; elementId: string }
   | { type: 'updateImageCrop'; slideId: string; elementId: string; crop: ImageElement['crop'] }
+  // A new source in the same box (§556 M5): sets `src` and `crop` (absent when
+  // `crop` is undefined), drops `mediaId`; x, y, w, h and rotation stay.
+  | { type: 'replaceImage'; slideId: string; elementId: string; src: string; crop: ImageElement['crop'] }
   // Slide-level structural actions. Added for the Montaj-native editor, which —
   // unlike mission-control's element-only inspector — owns full slide CRUD.
   | { type: 'addSlide'; slide: Slide; afterSlideId?: string }
@@ -210,6 +213,23 @@ export function projectReducer<P extends Project>(state: P, action: Action<P>): 
           if (el.id !== action.elementId) return el
           if (el.type !== 'image') return el
           return { ...el, crop: action.crop }
+        })
+        return { ...slide, elements }
+      })
+      return { ...state, slides }
+    }
+
+    case 'replaceImage': {
+      const slides = (state.slides ?? []).map((slide): Slide => {
+        if (slide.id !== action.slideId) return slide
+        const elements = slide.elements.map((el): CarouselElement => {
+          if (el.id !== action.elementId) return el
+          if (el.type !== 'image') return el
+          // The old crop and `mediaId` described the old file: neither is kept.
+          const { crop: _crop, mediaId: _mediaId, ...kept } = el
+          return action.crop
+            ? { ...kept, src: action.src, crop: action.crop }
+            : { ...kept, src: action.src }
         })
         return { ...slide, elements }
       })

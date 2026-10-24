@@ -1409,9 +1409,10 @@ export interface CarouselEditorProps<P extends Project = Project> {
 
   /**
    * A failure the user should see, which the editor does not show itself. Today
-   * one: Render could not start, because saving the project as `final` failed
-   * or did not answer within `renderSaveTimeoutMs`. Render is enabled again
-   * when this is called. The host shows `title` and `detail` its own way.
+   * two: Render could not start, because saving the project as `final` failed
+   * or did not answer within `renderSaveTimeoutMs` (Render is enabled again
+   * when this is called); and Replace image could not upload the file (the
+   * image is left as it was). The host shows `title` and `detail` its own way.
    * Absent: logged to the console. The editor never uses a system alert.
    */
   onError?: (notice: { title: string; detail: string }) => void

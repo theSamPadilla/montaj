@@ -1018,3 +1018,105 @@ describe('ImageElement mediaId passthrough', () => {
     expect(result).toBe(proj)
   })
 })
+
+// ---------------------------------------------------------------------------
+// replaceImage (§556 M5): a new source in the same box
+// ---------------------------------------------------------------------------
+
+describe('replaceImage', () => {
+  const OLD_CROP = { x: 0.1, y: 0.2, w: 0.5, h: 0.6 }
+  const NEW_CROP = { x: 0.25, y: 0, w: 0.5, h: 1 }
+
+  // el-1-1 is an image at (5, 5), 50 x 50, rotated 10, with a crop and a media id.
+  function withCroppedImage(): Project {
+    const base = makeProject()
+    return {
+      ...base,
+      slides: base.slides!.map((s) => ({
+        ...s,
+        elements: s.elements.map((el) =>
+          el.id === 'el-1-1' ? ({ ...el, crop: OLD_CROP, mediaId: 'media-old' } as CarouselElement) : el,
+        ),
+      })),
+    }
+  }
+
+  const replace = (prev: Project, src: string, crop: ImageElement['crop']) =>
+    projectReducer(prev, { type: 'replaceImage', slideId: 'slide-1', elementId: 'el-1-1', src, crop })
+
+  it('swaps the src and keeps x, y, w, h and rotation', () => {
+    const prev = withCroppedImage()
+    const result = replace(prev, '/proj/new.png', NEW_CROP)
+
+    expect(result).not.toBe(prev)
+    const el = result.slides![1].elements[1] as ImageElement
+    expect(el.src).toBe('/proj/new.png')
+    expect([el.x, el.y, el.w, el.h, el.rotation]).toEqual([5, 5, 50, 50, 10])
+    expect(el.id).toBe('el-1-1')
+    expect(el.type).toBe('image')
+  })
+
+  it('sets the crop it is given', () => {
+    const el = replace(withCroppedImage(), '/proj/new.png', NEW_CROP).slides![1].elements[1] as ImageElement
+    expect(el.crop).toEqual(NEW_CROP)
+  })
+
+  it('removes the crop when given undefined, the key and not just the value', () => {
+    const el = replace(withCroppedImage(), '/proj/new.png', undefined).slides![1].elements[1] as ImageElement
+    expect(el.crop).toBeUndefined()
+    expect('crop' in el).toBe(false)
+  })
+
+  it('removes the media id, the key and not just the value', () => {
+    const el = replace(withCroppedImage(), '/proj/new.png', NEW_CROP).slides![1].elements[1] as ImageElement
+    expect(el.mediaId).toBeUndefined()
+    expect('mediaId' in el).toBe(false)
+  })
+
+  it('works on an image with no crop and no media id', () => {
+    const prev = makeProject()
+    const el = replace(prev, '/proj/new.png', NEW_CROP).slides![1].elements[1] as ImageElement
+    expect(el).toEqual({
+      id: 'el-1-1', type: 'image', src: '/proj/new.png', x: 5, y: 5, w: 50, h: 50, rotation: 10, crop: NEW_CROP,
+    })
+  })
+
+  it('leaves every other element, slide and project field untouched (same refs)', () => {
+    const prev = withCroppedImage()
+    const result = replace(prev, '/proj/new.png', NEW_CROP)
+
+    // Same slide, the sibling element.
+    expect(result.slides![1].elements[0]).toBe(prev.slides![1].elements[0])
+    // The other slide, whole.
+    expect(result.slides![0]).toBe(prev.slides![0])
+    // The old element is not mutated.
+    const old = prev.slides![1].elements[1] as ImageElement
+    expect(old.src).toBe('https://example.com/img1.png')
+    expect(old.crop).toEqual(OLD_CROP)
+    expect(old.mediaId).toBe('media-old')
+    // Everything else on the project.
+    expect(result.name).toBe(prev.name)
+    expect(result.status).toBe(prev.status)
+    expect(result.settings).toBe(prev.settings)
+  })
+
+  it('is a no-op on an overlay element', () => {
+    const prev = makeProject()
+    const result = projectReducer(prev, {
+      type: 'replaceImage', slideId: 'slide-1', elementId: 'el-1-0', src: '/proj/new.png', crop: NEW_CROP,
+    })
+    expect(result.slides![1].elements[0]).toBe(prev.slides![1].elements[0])
+  })
+
+  it('is a no-op for an element or slide that does not exist', () => {
+    const prev = makeProject()
+    const noElement = projectReducer(prev, {
+      type: 'replaceImage', slideId: 'slide-1', elementId: 'gone', src: '/proj/new.png', crop: undefined,
+    })
+    expect(noElement.slides![1].elements).toEqual(prev.slides![1].elements)
+    const noSlide = projectReducer(prev, {
+      type: 'replaceImage', slideId: 'gone', elementId: 'el-1-1', src: '/proj/new.png', crop: undefined,
+    })
+    expect(noSlide.slides).toEqual(prev.slides)
+  })
+})

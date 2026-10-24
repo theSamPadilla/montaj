@@ -11,6 +11,7 @@ import CarouselRenderModal from './CarouselRenderModal'
 import ControlsInfoModal, { CAROUSEL_CONTROLS, platformSections } from '../ControlsInfoModal'
 import { DARK_TEXT, NoteArmLayer, NotePinLayer, badgeColor, hasPoint } from './NoteLayers'
 import { addSlideNote, setSlideNoteText, setSlideNoteDone, setSlideNotePoint, removeSlideNotes } from './notes'
+import { coverCrop, loadImageNaturalSize, type ImageSize } from './imageGeometry'
 import { noteId } from '../video/timeline/notes'
 import { useKeymap, matchesDelete, matchesEscape, matchesPlainKey, matchesRedo, matchesUndo, type KeyBinding } from '../video/keymap'
 import type { ReorderDirection } from '../state/project-reducer'
@@ -409,6 +410,13 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   notesRef.current = notes
   const slidesRef = useRef(slides)
   slidesRef.current = slides
+  // False once the editor is gone, so a write that waited on an upload (Replace
+  // image) does not land on a project this editor no longer owns.
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   /** Adds an empty note on `slideId` (at `point`, or about the whole slide)
    *  and returns it as stored: the core of the N flow and `api.add`. */
@@ -801,6 +809,14 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     return bySlide
   }, [pins])
 
+  /** A failure the editor does not draw itself: told to the host's `onError`,
+   *  else logged. Never a system alert. */
+  function reportError(title: string, e: unknown) {
+    const notice = { title, detail: e instanceof Error ? e.message : String(e) }
+    if (onError) onError(notice)
+    else console.error(`[CarouselEditor] ${notice.title}: ${notice.detail}`)
+  }
+
   // Render saves the project as final, then opens. A save that fails or never
   // answers ends here: the host is told (`onError`) and Render is back.
   async function handleRender() {
@@ -809,9 +825,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       await withTimeout(state.setStatus('final'), renderSaveTimeoutMs)
       setRenderOpen(true)
     } catch (e) {
-      const notice = { title: "Couldn't start the render", detail: e instanceof Error ? e.message : String(e) }
-      if (onError) onError(notice)
-      else console.error(`[CarouselEditor] ${notice.title}: ${notice.detail}`)
+      reportError("Couldn't start the render", e)
     } finally {
       setRendering(false)
     }
@@ -931,6 +945,45 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   }
   function handleReorderElement(slideId: string, elementId: string, direction: 'forward' | 'backward') {
     void state.reorderElement(slideId, elementId, direction)
+  }
+
+  // Replace image (§556 M5): the file goes into the project, the new image's
+  // size is read, and the source is swapped in ONE write (one save, one undo
+  // step) that keeps the box: x, y, w, h and rotation stay, `mediaId` goes, and
+  // the crop is the centred region of the new image with the box's aspect, so
+  // the box stays filled. No crop when the size cannot be read or the shapes
+  // already match.
+  async function handleReplaceImage(slideId: string, elementId: string, file: File) {
+    const imageNow = () => {
+      const el = slidesRef.current.find(s => s.id === slideId)?.elements.find(e => e.id === elementId)
+      return el?.type === 'image' ? el : undefined
+    }
+    const start = imageNow()
+    if (!start) return
+    let src: string
+    try {
+      src = await adapter.uploadFile(file, project.id)
+    } catch (e) {
+      reportError("Couldn't replace the image", e)
+      return
+    }
+    // Read through the adapter's own URL for the new source. The element built
+    // here has no `mediaId`: that named the old file.
+    let size: ImageSize | null = null
+    try {
+      size = await loadImageNaturalSize(adapter.resolveImageSrc({
+        id: start.id, type: 'image', src, x: start.x, y: start.y, w: start.w, h: start.h, rotation: start.rotation,
+      }))
+    } catch {
+      // A resolver that throws: the size cannot be read.
+    }
+    // The upload and the load took time. Write only if the editor is still up
+    // and the image still there, cropped for the box it has now.
+    const live = imageNow()
+    if (!mountedRef.current || !live) return
+    const crop = size ? coverCrop(live.w, live.h, size.width, size.height) : undefined
+    // A save that fails is rolled back and shown by `state.lastError`.
+    await state.replaceImage(slideId, elementId, { src, crop }).catch(() => {})
   }
 
   // Property-panel transform/frame edits → committed mutators.
@@ -1260,6 +1313,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             onDuplicateElement={handleDuplicateElement}
             onReorderElement={handleReorderElement}
             onEnterCrop={(_slideId, elementId) => { setSelectedElementId(elementId); setCropElementId(elementId) }}
+            onReplaceImage={state.isEditingAllowed ? handleReplaceImage : undefined}
             updateOverlayProp={state.updateOverlayProp}
             hiddenElementIds={hiddenElementIds}
             onToggleElementVisibility={onToggleElementVisibility}

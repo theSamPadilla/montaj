@@ -43,6 +43,13 @@ export interface UseProjectState<P extends Project = Project> {
   clearError: () => void
   updateOverlayProp: (slideId: string, elementId: string, key: string, value: string) => Promise<void>
   updateImageCrop: (slideId: string, elementId: string, crop: { x: number; y: number; w: number; h: number } | undefined) => Promise<void>
+  /**
+   * Swaps an image element's file for `src` and keeps its box (§556 M5):
+   * x, y, w, h and rotation stay, `crop` becomes the given crop (removed when
+   * undefined) and `mediaId` goes. One save and one undo step, gated like
+   * every slide edit; dropped when the target is gone or is not an image.
+   */
+  replaceImage: (slideId: string, elementId: string, image: { src: string; crop: { x: number; y: number; w: number; h: number } | undefined }) => Promise<void>
   setStatus: (status: ProjectStatus) => Promise<void>
   setName: (name: string) => Promise<void>
   moveElement: (slideId: string, elementId: string, x: number, y: number) => Promise<void>
@@ -98,12 +105,12 @@ export function useProjectState<P extends Project = Project>(
   const mutate = useCallback(
     (action: Action<P>): Promise<void> => {
       const base = projectRef.current
-      const editGated = new Set(['updateOverlayProp', 'updateImageCrop', 'setStatus', 'setName', 'moveElement', 'resizeElement', 'rotateElement', 'addElement', 'removeElement', 'addSlide', 'removeSlide', 'duplicateSlide', 'reorderSlides', 'updateSlide', 'duplicateElement', 'reorderElement', 'setOverlayFrame'])
+      const editGated = new Set(['updateOverlayProp', 'updateImageCrop', 'replaceImage', 'setStatus', 'setName', 'moveElement', 'resizeElement', 'rotateElement', 'addElement', 'removeElement', 'addSlide', 'removeSlide', 'duplicateSlide', 'reorderSlides', 'updateSlide', 'duplicateElement', 'reorderElement', 'setOverlayFrame'])
       if (editGated.has(action.type) && !isEditable(base.status)) {
         console.warn(`[useProjectState] dropped ${action.type}: status="${base.status}" not editable`)
         return Promise.resolve()
       }
-      if (action.type === 'updateOverlayProp' || action.type === 'updateImageCrop') {
+      if (action.type === 'updateOverlayProp' || action.type === 'updateImageCrop' || action.type === 'replaceImage') {
         const found = findElementType(base, action.slideId, action.elementId)
         const expected = action.type === 'updateOverlayProp' ? 'overlay' : 'image'
         if (found !== expected) {
@@ -142,6 +149,12 @@ export function useProjectState<P extends Project = Project>(
   const updateImageCrop = useCallback(
     (slideId: string, elementId: string, crop: { x: number; y: number; w: number; h: number } | undefined) =>
       mutate({ type: 'updateImageCrop', slideId, elementId, crop }),
+    [mutate],
+  )
+
+  const replaceImage = useCallback(
+    (slideId: string, elementId: string, image: { src: string; crop: { x: number; y: number; w: number; h: number } | undefined }) =>
+      mutate({ type: 'replaceImage', slideId, elementId, src: image.src, crop: image.crop }),
     [mutate],
   )
 
@@ -262,6 +275,7 @@ export function useProjectState<P extends Project = Project>(
     clearError: sync.clearError,
     updateOverlayProp,
     updateImageCrop,
+    replaceImage,
     setStatus,
     setName,
     moveElement,

@@ -299,3 +299,117 @@ describe('useProjectState — editNotes (PL70)', () => {
     expect(adapter.saveCalls[adapter.saveCalls.length - 1].project.notes?.map((n) => n.id)).toEqual(['a', 'b'])
   })
 })
+
+// ---------------------------------------------------------------------------
+// replaceImage (§556 M5): one save and one undo step, gated like every slide edit
+// ---------------------------------------------------------------------------
+
+describe('useProjectState: replaceImage', () => {
+  const OLD_CROP = { x: 0, y: 0, w: 0.5, h: 0.5 }
+  const NEW_CROP = { x: 0.25, y: 0, w: 0.5, h: 1 }
+
+  function withImage(overrides: Partial<Project> = {}): Project {
+    const base = makeProject(overrides)
+    return {
+      ...base,
+      slides: base.slides!.map((s) => ({
+        ...s,
+        elements: s.elements.map((el) =>
+          el.id === 'el-0'
+            ? ({ ...el, x: 7, y: 8, w: 120, h: 90, rotation: 12, crop: OLD_CROP, mediaId: 'm-old' } as typeof el)
+            : el,
+        ),
+      })),
+    }
+  }
+
+  it('swaps the source in one save and one undo step, and the undo brings it all back', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = withImage()
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.replaceImage('slide-0', 'el-0', { src: '/proj/new.png', crop: NEW_CROP })
+    })
+
+    const el = result.current.project.slides![0].elements[0]
+    expect(el).toEqual({
+      id: 'el-0', type: 'image', src: '/proj/new.png', x: 7, y: 8, w: 120, h: 90, rotation: 12, crop: NEW_CROP,
+    })
+    expect(adapter.saveCalls).toHaveLength(1)
+    expect(adapter.saveCalls[0].project.slides![0].elements[0]).toEqual(el)
+
+    // One undo step: the old source, crop and media id are all back.
+    await act(async () => { result.current.undo() })
+    expect(result.current.project.slides![0].elements[0]).toEqual(initial.slides![0].elements[0])
+    expect(result.current.canUndo).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(2)
+  })
+
+  it('clears the crop when given none', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = withImage()
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.replaceImage('slide-0', 'el-0', { src: '/proj/new.png', crop: undefined })
+    })
+    expect('crop' in result.current.project.slides![0].elements[0]).toBe(false)
+    expect('crop' in adapter.saveCalls[0].project.slides![0].elements[0]).toBe(false)
+  })
+
+  it.each(['pending', 'storyboard_ready'] as const)('is dropped, saving nothing, while the status is "%s"', async (status) => {
+    const adapter = makeFakeAdapter()
+    const initial = withImage({ status })
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.replaceImage('slide-0', 'el-0', { src: '/proj/new.png', crop: NEW_CROP })
+    })
+    expect(result.current.project.slides![0].elements[0]).toEqual(initial.slides![0].elements[0])
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(result.current.canUndo).toBe(false)
+  })
+
+  it('is allowed when the status is "final"', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = withImage({ status: 'final' })
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.replaceImage('slide-0', 'el-0', { src: '/proj/new.png', crop: NEW_CROP })
+    })
+    expect((result.current.project.slides![0].elements[0] as ImageElement).src).toBe('/proj/new.png')
+    expect(adapter.saveProject).toHaveBeenCalledTimes(1)
+  })
+
+  it('is dropped, saving nothing and leaving no undo step, when the target is gone or is not an image', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = withImage()
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      // el-1 is an overlay; 'gone' does not exist; 'no-slide' is no slide.
+      await result.current.replaceImage('slide-0', 'el-1', { src: '/proj/new.png', crop: NEW_CROP })
+      await result.current.replaceImage('slide-0', 'gone', { src: '/proj/new.png', crop: NEW_CROP })
+      await result.current.replaceImage('no-slide', 'el-0', { src: '/proj/new.png', crop: NEW_CROP })
+    })
+    expect(result.current.project).toBe(initial)
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(result.current.canUndo).toBe(false)
+  })
+
+  it('rolls back and surfaces lastError when the save fails', async () => {
+    const adapter = makeFakeAdapter({ failSave: true })
+    const initial = withImage()
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current
+        .replaceImage('slide-0', 'el-0', { src: '/proj/new.png', crop: NEW_CROP })
+        .catch(() => {})
+    })
+    expect(result.current.project.slides![0].elements[0]).toEqual(initial.slides![0].elements[0])
+    expect(result.current.lastError).toMatch(/save boom/)
+  })
+})

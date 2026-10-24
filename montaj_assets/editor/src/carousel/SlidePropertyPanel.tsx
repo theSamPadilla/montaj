@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Crop, Eye, EyeOff } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Crop, Eye, EyeOff, Replace } from 'lucide-react'
 import type {
   Project,
   Slide,
@@ -42,6 +42,14 @@ interface Props {
   onReorderElement: (slideId: string, elementId: string, direction: 'forward' | 'backward') => void
   // Crop entry: enabled only for unrotated image elements.
   onEnterCrop?: (slideId: string, elementId: string) => void
+  /**
+   * Replace the selected image's file, keeping its box (§556 M5). The panel
+   * owns the file picker and hands the picked file here; the host uploads it
+   * and writes the element. The panel's Replace button is off until the
+   * returned promise settles, and off for good when this is absent. The host
+   * reports its own failures: a rejection is not caught here.
+   */
+  onReplaceImage?: (slideId: string, elementId: string, file: File) => void | Promise<void>
   // editor-core text mutator for the formatting toolbar.
   updateOverlayProp?: (slideId: string, elementId: string, key: string, value: string) => Promise<void>
   // Adapter supplies overlay-schema listing (global + profile-scoped).
@@ -216,6 +224,7 @@ export default function SlidePropertyPanel({
   onDuplicateElement,
   onReorderElement,
   onEnterCrop,
+  onReplaceImage,
   updateOverlayProp,
   adapter,
   hiddenElementIds,
@@ -226,6 +235,10 @@ export default function SlidePropertyPanel({
   // Map of jsxPath → GlobalOverlay for overlay prop schemas
   const [overlaySchemas, setOverlaySchemas] = useState<Map<string, GlobalOverlay>>(new Map())
   const [schemasLoading, setSchemasLoading] = useState(false)
+  // Replace image: the hidden file input its button opens, and whether a
+  // replace is in flight (the button is off until it settles).
+  const replaceInputRef = useRef<HTMLInputElement>(null)
+  const [replacing, setReplacing] = useState(false)
 
   useEffect(() => {
     setSchemasLoading(true)
@@ -257,6 +270,21 @@ export default function SlidePropertyPanel({
 
   const overlayEl = element?.type === 'overlay' ? (element as OverlayElement) : null
   const overlaySchema = overlayEl ? overlaySchemas.get(overlayEl.overlay.template) : null
+
+  const slideId = slide.id
+  async function handleReplacePicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const input = e.target
+    const file = input.files?.[0]
+    // Cleared so the same file can be picked again.
+    input.value = ''
+    if (!file || !element || !onReplaceImage) return
+    setReplacing(true)
+    try {
+      await onReplaceImage(slideId, element.id, file)
+    } finally {
+      setReplacing(false)
+    }
+  }
 
   return (
     <div className={cn('w-80 flex-shrink-0 border-l border-[var(--editor-border)] flex flex-col overflow-y-auto bg-[var(--editor-bg)]', className)}>
@@ -360,21 +388,42 @@ export default function SlidePropertyPanel({
                   {element.src.split('/').pop() || element.src}
                 </span>
               </div>
-              <Button
-                size="sm"
-                variant="secondary"
-                className="flex items-center gap-1.5"
-                disabled={(element.rotation ?? 0) !== 0 || !onEnterCrop}
-                title={
-                  (element.rotation ?? 0) !== 0
-                    ? 'Reset rotation to 0 before cropping'
-                    : 'Crop image'
-                }
-                onClick={() => onEnterCrop?.(slide.id, element.id)}
-              >
-                <Crop className="h-3.5 w-3.5" />
-                Crop
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="flex flex-1 items-center gap-1.5"
+                  disabled={(element.rotation ?? 0) !== 0 || !onEnterCrop}
+                  title={
+                    (element.rotation ?? 0) !== 0
+                      ? 'Reset rotation to 0 before cropping'
+                      : 'Crop image'
+                  }
+                  onClick={() => onEnterCrop?.(slide.id, element.id)}
+                >
+                  <Crop className="h-3.5 w-3.5" />
+                  Crop
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="flex flex-1 items-center gap-1.5"
+                  disabled={!onReplaceImage || replacing}
+                  title="Replace image"
+                  onClick={() => replaceInputRef.current?.click()}
+                >
+                  <Replace className="h-3.5 w-3.5" />
+                  Replace
+                </Button>
+              </div>
+              <input
+                ref={replaceInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                data-testid="replace-image-input"
+                onChange={handleReplacePicked}
+              />
             </div>
           )}
 
