@@ -87,13 +87,14 @@ def _summary(project: dict, track_index: int) -> dict:
 
 def _result(*, applied, preview, version, before, after, report, warnings, text) -> dict:
     return {"applied": applied, "preview": preview, "noop": False, "version": version,
-            "before": before, "after": after, **report.as_dict(), "warnings": warnings, "text": text}
+            "before": before, "after": after, **report.as_dict(), "hardCutAt": report.hard_cuts_at(),
+            "warnings": warnings, "text": text}
 
 
 def _noop(report, warnings) -> dict:
     """Nothing to write. The report stays: it says what the build did (a kept gap, a clamp) even when
     that left the project as it was."""
-    return {"applied": False, "noop": True, **report.as_dict(), "warnings": warnings}
+    return {"applied": False, "noop": True, **report.as_dict(), "hardCutAt": report.hard_cuts_at(), "warnings": warnings}
 
 
 SPEECH_TEXT_FILE = "speech-text.md"

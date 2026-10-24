@@ -246,7 +246,7 @@ def test_the_plan_writes_nothing_to_the_project(tmp_path, stub_transcribe, monke
     assert calls == [{"input": str(d / "speech.mp4"), "model": "large-v3-turbo-q5_0", "language": "auto"}]
     assert (d / "speech.json").is_file() and not (d / "speech.srt").exists()
 
-    assert set(out) == {"project", "mode", "plan", "kept", "removed", "suggested", "duration", "layers", "cut",
+    assert set(out) == {"project", "mode", "plan", "kept", "removed", "suggested", "hardCuts", "hardCutAt", "duration", "layers", "cut",
                         "next", "transcribed"}
     assert out["layers"] == {} and out["next"].startswith(f'Apply: cut with plan "{d / "cut-plan.md"}".')
     assert out["mode"] == "plan" and out["transcribed"] == ["clip-0"]
@@ -316,12 +316,24 @@ def test_the_apply_cuts_through_the_speech_edit_save(tmp_path, stub_transcribe, 
     assert (d / "speech-text.md").is_file()
     assert out == {"project": "cut-fixture", "mode": "applied", "version": "version: before cut",
                    "duration": plan["duration"], "undo": 'Restore the version "version: before cut".',
-                   "layers": {}}
+                   "hardCuts": out["hardCuts"], "hardCutAt": out["hardCutAt"], "layers": {}}
     marker = json.loads((d / "project.json").read_text())["cleanCut"]
     assert marker["removed"]["lines"] == {"retake": 2, "false-start": 1}
     assert marker["maxPause"] == 0.45 and marker["kept"]["seconds"] == plan["kept"]["seconds"]
-    assert len(raw) < 300
+    assert len(raw) < 330   # 300, plus §558's hardCuts and hardCutAt (three times here)
     assert marker["planStamp"] == speech_text.parse(cc._untagged((d / "cut-plan.md").read_text())[0])[0]["stamp"]
+
+
+def test_both_answers_say_where_the_hard_cuts_are(tmp_path, stub_transcribe, monkeypatch):
+    """speech_edit's `hardCuts` and `hardCutAt` (§558): the plan previews them, the apply gives them as written."""
+    stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    plan, applied = plan_and_apply(d, monkeypatch)
+    for answer in (plan, applied):
+        assert isinstance(answer["hardCuts"], int) and len(answer["hardCutAt"]) == answer["hardCuts"]
+    edges = {round(float(it[k]), 3) for it in json.loads((d / "project.json").read_text())["tracks"][0]["items"]
+             for k in ("start", "end")}
+    assert set(applied["hardCutAt"]) <= edges and applied["hardCutAt"] == sorted(applied["hardCutAt"])
 
 
 def test_plan_text_inline_applies_too(tmp_path, stub_transcribe, monkeypatch):

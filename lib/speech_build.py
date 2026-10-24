@@ -168,8 +168,11 @@ class Report:
     more than exists, or less where the gap is uncertain (kept whole).
     flagged: [{"kind", "id", ...}] kinds keyframes_merged, state_merged, fields_dropped, short_piece; and
     [{"kind": "no_gap", "line", "words"}] deleted words the new cut still plays (they are not in `cut`).
+    hard_cut_at: the seconds on the new timeline of each hard cut `hard_cuts` counts, one per hard edge (an edge into
+    an item is its start, one out of it its end), so a check can look at each one (§558).
     """
     hard_cuts: int = 0
+    hard_cut_at: list = field(default_factory=list)
     cut: list = field(default_factory=list)
     moved: list = field(default_factory=list)
     pauses: list = field(default_factory=list)
@@ -179,6 +182,10 @@ class Report:
     def as_dict(self) -> dict:
         return {"cut": self.cut, "moved": self.moved, "pauses": self.pauses, "clamped": self.clamped,
                 "hardCuts": self.hard_cuts, "flagged": self.flagged}
+
+    def hard_cuts_at(self) -> list:
+        """`hard_cut_at` in time order."""
+        return sorted(self.hard_cut_at)
 
 
 # ------------------------------------------------------------------ sources and gaps
@@ -1047,6 +1054,10 @@ def items_from_runs(runs, old_items, fps, *, report: Report | None = None, sourc
                      "piece": pieces.get(anchor["id"]) if anchor is not None else None, "src": run.src,
                      "s_in": run.s_in, "s_out": run.s_out, "speed": speed, "line": run.line,
                      "row_index": run.row_index, "repeat": repeat, "words": list(run.words)}
+        if run.hard_in:
+            report.hard_cut_at.append(round(float(start), 3))
+        if run.hard_out:
+            report.hard_cut_at.append(round(float(end), 3))
         items.append(item)
         cursor = float(end)
         prev = (run.old_out, float(end), float(start))

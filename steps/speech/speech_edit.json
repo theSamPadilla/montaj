@@ -2,7 +2,7 @@
   "name": "speech_edit",
   "description": "Apply an edited speech text to the project in one write: cut words or lines, shorten pauses, move or repeat lines, bring back unused lines. Captions, overlays and synced layers follow the speech. Saves a version first. preview shows the result without changing anything.",
   "input": {"type": "project", "description": "The project id, its folder, or the absolute path of its project.json"},
-  "output": {"type": "json", "description": "{applied, preview, noop, version, before, after, cut, moved, pauses, clamped, hardCuts, carried, flagged, text}"},
+  "output": {"type": "json", "description": "{applied, preview, noop, version, before, after, cut, moved, pauses, clamped, hardCuts, hardCutAt, carried, flagged, text}. hardCutAt: the seconds on the new timeline of each hard cut hardCuts counts, in order, to look at each one."},
   "params": [
     {"name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json"},
     {"name": "text", "type": "path", "required": true, "description": "Absolute path of the edited speech text (speech-text.md from speech_text)."},

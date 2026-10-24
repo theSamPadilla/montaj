@@ -1242,6 +1242,7 @@ def _make_plan(args, project_path, project_dir):
                       duration=duration)
         if maybe:
             answer["suggested"] = maybe
+        answer["hardCuts"], answer["hardCutAt"] = res.get("hardCuts", 0), res.get("hardCutAt", [])
         answer["layers"] = _layers(res.get("flagged"))
         warnings[:0] = _audio_warnings(res.get("flagged"))
         answer["cut"] = _capped([f"{i} {t:.1f} {txt} [{why}]" for i, t, txt, why in removed + suggested],
@@ -1335,6 +1336,7 @@ def _apply_plan(args, project_path, project_dir):
                     guard_keys=(MARKER_KEY,) + (("status",) if disk.get("status") == "pending" else ()))
         version = res.get("version")
         wrote = bool(res.get("applied"))
+        answer["hardCuts"], answer["hardCutAt"] = res.get("hardCuts", 0), res.get("hardCutAt", [])
         final = res["_project"]
         layers = _layers(res.get("flagged"))
         warnings[:0] = _audio_warnings(res.get("flagged"))
