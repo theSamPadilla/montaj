@@ -1822,11 +1822,10 @@ function probeVideoDimensions(filePath) {
 
 // An overlay's id is project.json text, and it names the overlay's segment file: `a/../../x` wrote that file
 // (and its chunks) outside the segments dir (§563). A plain file-name id keeps the name it always had; any other
-// takes the item's index, a name a plain id cannot produce (one dash, not two).
-const PLAIN_ID = /^[A-Za-z0-9._-]+$/
-
+// takes the item's index, a name a plain id cannot produce (one dash, not two). The pattern lives in the
+// function, not a module const: the CLI block near the top runs a render before this line is ever reached.
 function overlaySegmentPath(segDir, trackIdx, itemIdx, id) {
-  const name = PLAIN_ID.test(String(id)) ? `overlay-${trackIdx}--${id}` : `overlay-${trackIdx}-${itemIdx}`
+  const name = /^[A-Za-z0-9._-]+$/.test(String(id)) ? `overlay-${trackIdx}--${id}` : `overlay-${trackIdx}-${itemIdx}`
   const path = join(segDir, `${name}.mkv`)
   if (resolve(dirname(path)) !== resolve(segDir)) throw new Error(`overlay segment path left the segments dir: ${path}`)
   return path
