@@ -367,3 +367,17 @@ def test_an_editor_colour_render_keeps_its_ffmpeg_argv_byte_identical(monkeypatc
     args = [a.replace(str(tmp_path), "<tmp>") for a in seen["args"]]
     args[args.index("-/vf") + 1] = "<vf>"
     assert {"args": args, "vf": seen["vf"]} == EDITOR_COLOUR_GOLDEN
+
+
+@pytest.mark.parametrize("value", ["rgb(0,0,0)", "#000", "hsl(0, 0%, 20%)", "0x000000", "0x222222FF"])
+def test_a_dark_converted_colour_gets_a_white_border(value):
+    """A CSS black arrives converted to 0xRRGGBBAA; it is as dark as the named blacks (§563 review)."""
+    assert _mod._contrast_color(_mod._text_color(value)) == "white"
+
+
+@pytest.mark.parametrize("value, border", [
+    ("black", "white"), ("#000000", "white"), ("#444444", "white"), ("white", "black"), ("#555555", "black"),
+    ("navy", "black"), ("0xFFFFFFFF", "black"), ("0x0000FF", "black"),
+])
+def test_the_border_of_any_other_colour_is_unchanged(value, border):
+    assert _mod._contrast_color(value) == border

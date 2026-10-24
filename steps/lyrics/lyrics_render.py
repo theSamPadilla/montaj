@@ -195,7 +195,17 @@ def _make_accumulated_lines(words: list, up_to_idx: int, wrap_points: set) -> li
 def _contrast_color(color: str) -> str:
     """Return white or black, whichever contrasts with the given color."""
     dark = {"black", "#000000", "#111111", "#222222", "#333333", "#444444"}
-    return "white" if color.lower() in dark else "black"
+    if color.lower() in dark:
+        return "white"
+    # A CSS black (rgb(0,0,0), #000, a dark hsl) arrives converted to 0xRRGGBB[AA]: dark the same way the greys
+    # above are, every channel at most 0x44 (§563 review).
+    if color.startswith("0x") and len(color) in (8, 10):
+        try:
+            if max(bytes.fromhex(color[2:8])) <= 0x44:
+                return "white"
+        except ValueError:
+            pass
+    return "black"
 
 
 def _make_line_filters(lines, t_start, t_end, fontsize, color, x_expr,
