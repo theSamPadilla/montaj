@@ -1970,3 +1970,16 @@ test('dry-run: an opacity only ever reaches the graph as a number; a bad volume 
   await assert.rejects(run(withItem(0, { volume: '0.8,x' })), /volume/)
   await assert.rejects(run(withItem(0, { volume: -1 })), /volume/)
 })
+
+test('dry-run: numeric strings (an older project\'s fps, size, speed, opacity, volume) build the same arguments as their numbers (§563)', async () => {
+  const str = (v) => (typeof v === 'number' ? String(v) : v)
+  const { segment, expected } = VALID_SEGMENT
+  const s = { ...segment, vw: str(segment.vw), vh: str(segment.vh), fps: str(segment.fps),
+    items: segment.items.map(it => ({ ...it, ...(it.speed != null ? { speed: str(it.speed) } : {}) })) }
+  assert.deepEqual(JSON.parse(JSON.stringify(await encodeSegment(s, '/out/seg.mp4', { _dryRun: true }))), expected)
+  const ov = VALID_SEGMENT.opacityVolume
+  const s2 = { ...ov.segment,
+    items: ov.segment.items.map(it => ({ ...it, opacity: str(it.opacity), ...(it.volume != null ? { volume: str(it.volume) } : {}) })),
+    overlays: ov.segment.overlays.map(o => ({ ...o, opacity: str(o.opacity) })) }
+  assert.deepEqual(JSON.parse(JSON.stringify(await encodeSegment(s2, '/out/seg2.mp4', { _dryRun: true }))), ov.expected)
+})

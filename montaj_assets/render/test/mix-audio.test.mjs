@@ -223,3 +223,13 @@ test('buildAudioTrackFilters: a numeric-string volume is cast; a volume below ze
     '[1:a]adelay=0:all=1,volume=0.5[atrack0]')
   assert.throws(() => buildAudioTrackFilters([{ src: '/a.wav', volume: -0.5 }], 1, '[0:a]'), /volume/)
 })
+
+test('buildAudioTrackFilters: numeric-string volume and start build the same graph as their numbers (§563)', () => {
+  const plain = { src: '/a.wav', start: 2.5, end: 10, volume: 0.8, fadeIn: 1, fadeOut: 2 }
+  const ducked = { src: '/b.wav', start: 0, end: 6, volume: 0.35, fadeIn: 0.5, ducking: { enabled: true, depth: -12, attack: 0.3, release: 0.5 } }
+  const asText = (t) => ({ ...t, start: String(t.start), volume: String(t.volume) })
+  assert.deepEqual(buildAudioTrackFilters([asText(plain), asText(ducked)], 1, '[0:a]'),
+    buildAudioTrackFilters([plain, ducked], 1, '[0:a]'))
+  assert.throws(() => buildAudioTrackFilters([{ src: '/a.wav', volume: '' }], 1, '[0:a]'), /volume/)
+  assert.throws(() => buildAudioTrackFilters([{ src: '/a.wav', volume: '0x10' }], 1, '[0:a]'), /volume/)
+})

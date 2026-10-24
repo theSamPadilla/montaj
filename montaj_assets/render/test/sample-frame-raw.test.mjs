@@ -80,3 +80,12 @@ test('a sampled frame refuses a URL or protocol form of normalizedSrc or nobg_sr
       new RegExp(field))
   }
 })
+
+test('a sampled frame takes a numeric-string canvas size and frame rate, as older projects hold them (§563)', { skip: !hasFfmpeg }, async () => {
+  const { sampleFrame } = await import('../sample-frame.js')
+  const out = join(mkdtempSync(join(tmpdir(), 'canvas-str-')), 'f.png')
+  const project = (settings) => ({ settings, tracks: [] })
+  await sampleRawFrame({ projectJson: project({ resolution: ['64', '48'], fps: '10' }), atSeconds: 0, outPath: out })
+  await sampleFrame({ projectJson: project({ resolution: ['64', '48'], fps: '10' }), atSeconds: 0, outPath: out })
+  await sampleFrame({ projectJson: project({ resolution: [64, 48], fps: '29.97' }), atSeconds: 0, outPath: out })
+})

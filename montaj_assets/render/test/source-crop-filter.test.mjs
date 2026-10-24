@@ -24,3 +24,10 @@ test('a crop value that is not a finite number is refused on the proxy path, nam
   }
   assert.throws(() => sourceCropFilter(geometry({ x: 0, y: 0, w: Infinity, h: 1 }), true), /sourceCrop\.w/)
 })
+
+test('numeric-string crop fractions build the same filter as their numbers', () => {
+  const num = geometry({ x: 0.2, y: 0, w: 0.316, h: 1 })
+  const str = geometry({ x: '0.2', y: '0', w: '0.316', h: '1' })
+  assert.equal(sourceCropFilter(str, true), sourceCropFilter(num, true))
+  assert.equal(sourceCropFilter(str, false), sourceCropFilter(num, false))
+})
