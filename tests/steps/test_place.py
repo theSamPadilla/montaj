@@ -265,6 +265,7 @@ def _has_render():
     ("lower_third", {"text": "Maya Chen", "subtitle": "Video Editor"}),
     ("callout", {"text": "3x faster"}),
     ("callout", {"text": "Every clip, captioned and cut in one go"}),
+    ("lower_third", {"text": "Dr. Alexandra Montgomery-Fitzwilliam", "subtitle": "Head of Post-Production and Color"}),
 ])
 def test_each_preset_renders_its_props_inside_the_frame_and_the_safe_areas(tmp_path, preset, props):
     d = make_project(tmp_path)

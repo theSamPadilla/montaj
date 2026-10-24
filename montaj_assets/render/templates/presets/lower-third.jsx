@@ -2,13 +2,14 @@
  * lower-third.jsx: a name card (§558, place's `lower_third` preset). Name on top, a smaller second line under it,
  * an accent bar on the left, on a soft dark plate. Placed bottom-left above the bottom 420px (portrait captions and
  * the apps' controls live in the bottom ~350px) and clear of the right 200px (the apps' buttons); in a landscape or
- * square frame it sits 8% up from the bottom. Slides in over ~0.35 s and fades out over the last ~0.3 s, both done
+ * square frame it sits 8% up from the bottom. Each line shrinks to fit the card's width (never cut off). Slides in over ~0.35 s and fades out over the last ~0.3 s, both done
  * before the item ends (its last frame is held).
  *
  * Props (strings, as the editor's properties panel writes them):
  *   text        the name (default 'Name Surname')
  *   subtitle    the second line, '' for none (default 'Title')
- *   fontSize    the name's px size at the 1080 design canvas (default '64'; the second line is 0.55 of it)
+ *   fontSize    the name's largest px size at the 1080 design canvas (default '64'; shrunk to fit; the second line
+ *               is 0.55 of it at most)
  *   fontFamily  default 'Inter, system-ui, sans-serif'
  *   fontWeight  the name's weight (default '800')
  *   fontStyle   default 'normal'
@@ -25,7 +26,7 @@ export default function LowerThird() {
   // the design canvas (1080 on the short edge): place writes it as canvasW / canvasH; no global carries it
   const W = Number(p.canvasW) > 0 ? Number(p.canvasW) : 1080
   const H = Number(p.canvasH) > 0 ? Number(p.canvasH) : 1920
-  const size = Number(p.fontSize) > 0 ? Number(p.fontSize) : 64
+  const want = Number(p.fontSize) > 0 ? Number(p.fontSize) : 64
   const anim = ['slide', 'fade', 'pop'].includes(p.anim) ? p.anim : 'slide'
   const inF = Math.max(1, Math.round(fps * 0.35))
   const outF = Math.max(1, Math.round(fps * 0.3))
@@ -38,6 +39,13 @@ export default function LowerThird() {
   const portrait = H > W
   const bottom = portrait ? 420 : Math.round(H * 0.08)
   const subtitle = p.subtitle === undefined ? 'Title' : String(p.subtitle)
+  const name = String(p.text || 'Name Surname')
+  // the card's text width: the frame less the left margin, the right app zone, the bar and the padding
+  const textW = W - 64 - 220 - 8 - 20 - 52
+  // about 0.58 em per character at a heavy weight: each line on one line, inside the card
+  const fit = (max, n) => Math.max(24, Math.min(max, Math.floor(textW / Math.max(1, n * 0.58))))
+  const size = fit(want, name.length)
+  const subSize = fit(Math.round(want * 0.55), subtitle.length)
   const text = {
     fontFamily: p.fontFamily || 'Inter, system-ui, sans-serif',
     fontStyle: p.fontStyle || 'normal',
@@ -45,20 +53,18 @@ export default function LowerThird() {
     textAlign: p.textAlign || 'left',
     textTransform: p.textTransform || 'none',
     whiteSpace: 'nowrap',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
   }
   return (
     <div style={{
-      position: 'absolute', left: 64, bottom, maxWidth: W - 64 - 220,
+      position: 'absolute', left: 64, bottom,
       display: 'flex', alignItems: 'stretch', gap: 20, padding: '22px 30px 22px 22px', borderRadius: 18,
       background: p.bgColor || 'rgba(0, 0, 0, 0.55)', opacity: fadeIn * fadeOut,
       transform: `translateX(${x}px) scale(${scale})`, transformOrigin: 'left bottom',
     }}>
       <div style={{ width: 8, borderRadius: 4, background: p.accent || '#00b4d8', flex: '0 0 auto' }} />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
-        <div style={{ ...text, fontSize: size, fontWeight: p.fontWeight || '800', lineHeight: 1.05 }}>{p.text || 'Name Surname'}</div>
-        {subtitle ? <div style={{ ...text, fontSize: Math.round(size * 0.55), fontWeight: 500, opacity: 0.85, lineHeight: 1.15 }}>{subtitle}</div> : null}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ ...text, fontSize: size, fontWeight: p.fontWeight || '800', lineHeight: 1.05 }}>{name}</div>
+        {subtitle ? <div style={{ ...text, fontSize: Math.min(subSize, size), fontWeight: 500, opacity: 0.85, lineHeight: 1.15 }}>{subtitle}</div> : null}
       </div>
     </div>
   )
