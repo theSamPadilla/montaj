@@ -40,6 +40,17 @@ def units(*texts):
     return [Unit(t.split()) for t in texts]
 
 
+def suggested(texts, sel):
+    """(unit, the text the suggestion would leave, why) per suggestion."""
+    us = units(*texts) if isinstance(texts[0], str) else texts
+    out = []
+    for i, drop, why in sel.suggest:
+        gone = set(sel.drop.get(i, set())) | set(drop or ())
+        out.append((i, " ".join(w for k, w in enumerate(us[i].words) if k not in gone) if drop else
+                    " ".join(us[i].words), why))
+    return out
+
+
 def kept_text(texts, sel):
     us = units(*texts) if isinstance(texts[0], str) else texts
     out = []
@@ -81,9 +92,23 @@ def test_a_take_ending_in_an_ellipsis_is_truncated():
 
 
 def test_last_attempt_wins_a_tie():
+    """A B A across two clips: a retake of A in the second clip; the last attempt wins."""
+    us = [Unit(LINES[0].split(), clip="A"), Unit(LINES[1].split(), clip="A"), Unit(LINES[0].split(), clip="B")]
+    sel = select(us, is_filler)
+    assert sel.kept == [2, 1]     # narrative order: the section of LINES[0] came first
+
+
+def test_the_same_sentence_twice_in_one_clip_is_not_a_retake():
     texts = [LINES[0], LINES[1], LINES[0]]
     sel = select(units(*texts), is_filler)
-    assert sel.kept == [2, 1]     # narrative order: the section of LINES[0] came first
+    assert kept_text(texts, sel) == texts and sel.losers == []
+
+
+def test_a_block_retake_keeps_only_the_second_block():
+    texts = ["Start by picking the clip you want.", "Then drag it onto the timeline.",
+             "Start by picking the clip you want.", "Then drag it onto the timeline below."]
+    sel = select(units(*texts), is_filler)
+    assert kept_text(texts, sel) == texts[2:]
 
 
 def test_fewer_flaws_beat_recency():
@@ -96,7 +121,9 @@ def test_within_take_repeat_keeps_the_final_occurrence():
     text = ("and always on mode, and always on mode called Kyros that basically lets "
             "and always on mode called Kyros")
     sel = select(units(text), is_filler)
-    assert kept_text([text], sel) == ["and always on mode called Kyros"]
+    # the opening said again whole is cut; the partial repeat after it is only a suggestion
+    assert kept_text([text], sel) == ["and always on mode called Kyros that basically lets and always on mode called Kyros"]
+    assert suggested([text], sel) == [(0, "and always on mode called Kyros", "repeat?")]
 
 
 def test_within_take_restart_from_the_opening_is_cut():
@@ -173,6 +200,60 @@ NEVER_CUT = {
     "short then longer": ["I built an app.", "It took a year.", "I built an app that edits videos for you."],
     "question grows": ["What if you could edit faster?", "What if you could edit faster and cheaper?"],
     "first and best": ["The first one is the simplest.", "The first one is the easiest."],
+    # re-review: parallel clauses (rule B), questions and echoes, the same sentence in two places
+    "parallel easy/fast": ["We want to make it easy, and we want to make it fast."],
+    "parallel edit fast/well": ["You need to be able to edit fast and you need to be able to edit well."],
+    "list first/second": ["I'm going to show you the first one then I'm going to show you the second one."],
+    "store today/tomorrow": ["Let's go to the store and then let's go to the store again tomorrow."],
+    "es vamos a ver": ["Vamos a ver cómo se hace y vamos a ver cómo se usa."],
+    "es quiero que": ["Quiero que sea fácil de usar y quiero que sea fácil de vender."],
+    "fr on va voir": ["On va voir comment ça marche et on va voir comment ça se vend."],
+    "de wir wollen": ["Wir wollen es einfach machen und wir wollen es schnell machen."],
+    "pt e": ["Eu quero que seja fácil de usar e eu quero que seja fácil de vender."],
+    "it e": ["Voglio che sia facile da usare e voglio che sia facile da vendere."],
+    "long anaphora no commas": ["I want you to try it today and I want you to try it tomorrow and I want you to tell a friend."],
+    "q then echo": ["Can you do it on your phone?", "You can do it on your phone."],
+    "q echo 2": ["Is it really that easy?", "It really is that easy."],
+    "de frage": ["Ist es schwer zu lernen?", "Es ist schwer zu lernen."],
+    "es same q": ["¿Lo puedes hacer en el móvil?", "Lo puedes hacer en el móvil."],
+    "yes no": ["Should you buy it?", "Yes, you should buy it."],
+    "some say / not": ["Some say you should post every day.", "You should not post every day."],
+    "people ask": ["People ask if it works on Windows.", "It works on Windows."],
+    "think/dont": ["You think you need a studio.", "You don't need a studio."],
+    "used to": ["I used to spend hours on every video.", "Now I spend minutes on every video."],
+    "before after": ["Before, it took me an hour to cut a video.", "Now it takes me a minute to cut a video."],
+    "quote then answer": ["My friend said this will never work.", "This will work."],
+    "not only": ["It is not only fast.", "It is fast and cheap."],
+    "es contraste": ["Dicen que es difícil de usar.", "No es difícil de usar."],
+    "instruction twice": ["Pick your clip.", "Then click export.", "Choose the format.", "Then click export."],
+    "instruction twice 2": ["Open the settings menu.", "Turn on captions.", "Go back.", "Open the settings menu.",
+                            "Turn on music."],
+    "refrain 3 apart": ["Make it short.", "That's the whole point.", "Nobody watches long videos.", "Keep it tight.",
+                        "That's the whole point."],
+    "tutorial repeat click": ["Click the plus button.", "Pick a song.", "Click the plus button again.", "Pick a font."],
+    "dup short far": ["Let's go.", "First open the app.", "Let's go."],
+    "emphasis really": ["It's really, really good."],
+    "emphasis very": ["It is very, very, very fast."],
+    "it works x2": ["It works.", "It works!"],
+    "negation drop": ["This is not a toy.", "This is a toy for adults."],
+    "not hard": ["Editing is not hard.", "Editing is hard if you do it the old way."],
+    "correction drop": ["You can export to TikTok and YouTube today.", "You can export to YouTube today."],
+    "counting": ["One, two, three, four, five, six, seven, eight, nine, ten."],
+    "date": ["On the first of May and the first of June we ship."],
+    "abc": ["A B C D E A B C D F."],
+    "same sentence diff context": ["My first video got ten views.", "I kept posting.",
+                                   "My first video got ten views, and now I get millions."],
+    "steps same template": ["Step one, open the app.", "Step two, open the editor.", "Step three, open the export menu."],
+    "build up": ["This changes everything.", "This changes everything about how we edit."],
+    "dialogue": ["He said, I'm leaving.", "She said, I'm leaving too."],
+    "contrast pair": ["Some people edit for hours.", "Some people edit for minutes."],
+    "repeat with insert": ["I love this app.", "I really love this app."],
+    "names list": ["Thanks to John and Mary and John's mom and Mary's mom."],
+    "es lists": ["Primero abres la app y luego abres el editor y luego abres la exportación."],
+    "es correction": ["Cuesta diez dólares.", "Perdón, cuesta veinte dólares."],
+    "if then": ["If it works for me it works for you."],
+    "rule of three": ["Faster to cut faster to caption faster to post."],
+    "two numbers": ["We grew to ten thousand users in May.", "We grew to twenty thousand users in June."],
 }
 
 
@@ -218,10 +299,34 @@ def test_a_later_longer_take_wins_over_fewer_flaws():
     us = [Unit("It costs twenty dollars.".split()),
           Unit("It costs twenty dollars a month.".split(), fillers=1, hesitations=1)]
     sel = select(us, is_filler)
-    assert sel.kept == [1]
+    assert sel.kept == [0, 1] and sel.losers == []
+    assert [(i, why) for i, _, why in sel.suggest] == [(0, "false-start?")]
 
 
-def test_an_immediate_longer_retake_of_a_period_sentence_replaces_it():
+def test_an_immediate_longer_retake_of_a_period_sentence_is_only_suggested():
     texts = ["I built an app.", "I built an app that edits videos for you."]
     sel = select(units(*texts), is_filler)
-    assert kept_text(texts, sel) == texts[1:]
+    assert kept_text(texts, sel) == texts
+    assert suggested(texts, sel) == [(0, "I built an app.", "false-start?")]
+
+
+def test_a_reworded_retake_is_only_suggested():
+    texts = ["I love this app.", "I really love this app."]
+    sel = select(units(*texts), is_filler)
+    assert kept_text(texts, sel) == texts and sel.losers == []
+    assert suggested(texts, sel) == [(0, "I love this app.", "retake?")]
+
+
+# Doubles said word for word: a stutter, cut, and listed as removed (the caller shows sel.why).
+STUTTER_CUT = {
+    "come on": ("Come on, come on, let's go.", "come on, let's go."),
+    "i love it": ("I love it, I love it so much.", "I love it so much."),
+    "the thing is": ("The thing is the thing is hard to explain.", "the thing is hard to explain."),
+}
+
+
+@pytest.mark.parametrize("name", sorted(STUTTER_CUT))
+def test_a_word_for_word_double_is_cut_and_listed(name):
+    text, kept = STUTTER_CUT[name]
+    sel = select(units(text), is_filler)
+    assert kept_text([text], sel) == [kept] and sel.why[0] == "restart"
