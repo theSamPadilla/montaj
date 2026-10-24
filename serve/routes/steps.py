@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from lib.color_provenance import ProbeError, is_probe_retryable
 from lib.credentials import CredentialError, build_env_overlay
+from lib.step_schema import flag_value
 from serve.disk_full import STATUS as disk_full_status, child_disk_full, workspace_root as disk_full_root
 from serve.common import (
     MONTAJ_ROOT,
@@ -169,25 +170,16 @@ def build_cli_args(schema: dict, body: dict) -> list[str]:
             # repeat the flag once per element. No step declares type "list"; `array` is the
             # only JSON type that means nargs, so the type separates the two shapes.
             for item in val:
-                flags += _flag_value(flag, item, numeric)
+                flags += flag_value(flag, item, numeric)
         elif isinstance(val, dict):
             flags += [flag, json.dumps(val)]
         else:
-            flags += _flag_value(flag, val, numeric)
+            flags += flag_value(flag, val, numeric)
 
     if "out" in body:
         flags += ["--out", str(body["out"])]
 
     return flags
-
-
-def _flag_value(flag: str, val, numeric: bool) -> list[str]:
-    """`[flag, value]`, or one `flag=value` token for a negative number on an int/float param: argparse reads
-    `-3e1` or `-inf` standing alone as a flag of its own, but always reads what follows `=` as the value (§563)."""
-    text = str(val)
-    if numeric and text.startswith("-"):
-        return [f"{flag}={text}"]
-    return [flag, text]
 
 
 def _is_plain_number(value: str) -> bool:

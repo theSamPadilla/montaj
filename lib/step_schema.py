@@ -12,6 +12,16 @@ import os
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 
+def flag_value(flag: str, val, numeric: bool) -> list[str]:
+    """`[flag, value]`, or one `flag=value` token for a negative number on an int/float param: argparse reads
+    `-3e1` or `-inf` standing alone as a flag of its own, but always reads what follows `=` as the value (§563).
+    Shared by serve's build_cli_args and the CLI's _build_step_flags."""
+    text = str(val)
+    if numeric and text.startswith("-"):
+        return [f"{flag}={text}"]
+    return [flag, text]
+
+
 def load_step_schema(step_name: str) -> dict:
     """Return the parsed schema for a built-in step, with an injected ``category``.
 

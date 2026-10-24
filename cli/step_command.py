@@ -19,7 +19,7 @@ import sys
 
 from cli.main import add_global_flags, find_step
 from cli.output import emit, emit_error
-from lib.step_schema import load_step_schema
+from lib.step_schema import flag_value, load_step_schema
 
 
 def _require_file(path, label):
@@ -90,16 +90,17 @@ def _build_step_flags(args, schema, quirks):
         if val is None:
             continue
         flag = "--" + name
+        numeric = param.get("type") in ("int", "float")
         if param.get("type") in ("bool", "boolean"):
             if val:
                 flags.append(flag)
         elif param.get("repeatable") or isinstance(val, list):
             for item in val:
-                flags += [flag, str(item)]
+                flags += flag_value(flag, item, numeric)
         elif isinstance(val, dict):
             flags += [flag, json.dumps(val)]
         else:
-            flags += [flag, str(val)]
+            flags += flag_value(flag, val, numeric)
 
     # Optionally forward the CLI's own --json to the child (envelope-emitting steps).
     if quirks.get("forward_json") and getattr(args, "json", False):

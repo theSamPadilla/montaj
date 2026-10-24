@@ -432,3 +432,13 @@ def test_new_step_commands_are_hidden_from_top_level_help(cmd):
 def test_new_steps_are_not_exported_to_mcp(cmd):
     from cli.mcp_schema import _EXPORTED_COMMANDS
     assert cmd not in _EXPORTED_COMMANDS
+
+
+def test_build_flags_joins_a_negative_number_to_its_flag():
+    """Same rule as serve's build_cli_args (§563): the step's argparse reads `-1e-05` standing alone as a flag."""
+    schema = {"params": [{"name": "offset", "type": "float"}, {"name": "at", "type": "float", "repeatable": True},
+                         {"name": "label", "type": "string"}]}
+    assert _flags(schema, offset=-1e-05) == ["--offset=-1e-05"]
+    assert _flags(schema, offset=1.5) == ["--offset", "1.5"]
+    assert _flags(schema, at=[-1.0, 2.0]) == ["--at=-1.0", "--at", "2.0"]
+    assert _flags(schema, label="x") == ["--label", "x"]
