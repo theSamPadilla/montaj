@@ -686,7 +686,7 @@ def test_a_partly_kept_row_is_listed_whole_and_marked(tmp_path):
     """A kept take's row that loses some words (a restart) is listed whole under ## Unused, marked *."""
     from lib.take_select import Unit, select
     from lib.speech_lines import Word
-    words = "Start by pick- start by picking the clip you want.".split()     # a cut-off word: a sure restart
+    words = "Start by p- start by picking the clip you want.".split()     # a cut-off word: a sure restart
     ws = [Word(i, w, w.lower().strip(",."), i * 0.5, i * 0.5 + 0.4) for i, w in enumerate(words)]
     row = speech_text.Row("speech", line="A1", words=ws, pauses={}, item_ids=["it"])
     units = [(Unit(words), [(0, row)], [])]
@@ -701,8 +701,8 @@ def test_a_partly_kept_row_is_listed_whole_and_marked(tmp_path):
         speech_text.render = monkey_render
     cut, unused = sections(text)
     assert cut == ["A1 start by picking the clip you want. [0.0]"]
-    assert unused == ["*A1 Start by pick- start by picking the clip you want. [0.0 restart]"]
-    assert removed == [("A1", 0.0, "Start by pick-", "restart")]
+    assert unused == ["*A1 Start by p- start by picking the clip you want. [0.0 restart]"]
+    assert removed == [("A1", 0.0, "Start by p-", "restart")]
 
 
 # ── re-review: suggestions, layers, the plan file, b-roll ───────────────────
@@ -781,7 +781,7 @@ def test_a_clip_that_is_not_speech_is_kept_whole(tmp_path, stub_transcribe, monk
     stub_transcribe({**real, "transcription": [{**w[0], "text": " Thank"}, {**w[1], "text": " you."}]})
     d = make_project(tmp_path)
     plan, _ = run(d, monkeypatch=monkeypatch)
-    assert any("too few words to be speech" in x for x in plan["warnings"])
+    assert any("do not look like speech" in x for x in plan["warnings"])
     assert plan["kept"]["seconds"] == pytest.approx(SOURCE_S, abs=0.05)
 
 
@@ -830,7 +830,7 @@ def test_b_roll_words_never_take_part(tmp_path, monkeypatch, order):
     d = clips_project(tmp_path, clips if order == "after" else clips[::-1])
     plan, _ = run(d, monkeypatch=monkeypatch)
     assert plan["removed"]["lines"] == {} and "suggested" not in plan
-    assert any("too few words" in w for w in plan["warnings"])
+    assert any("do not look like speech" in w for w in plan["warnings"])
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
     items = json.loads((d / "project.json").read_text())["tracks"][0]["items"]
     broll = [it for it in items if it["src"].endswith("broll.mp4")]
@@ -841,13 +841,11 @@ def test_b_roll_words_never_take_part(tmp_path, monkeypatch, order):
 
 
 def test_a_short_real_line_is_still_cut(tmp_path, stub_transcribe, monkeypatch):
-    """Six real words, then the camera left running in a quiet room: dense enough to be speech, and the
-    waveform agrees the rest is silent, so it is cut."""
+    """Six real words, then the camera left running: dense enough to be speech, so the rest is cut."""
     stub_transcribe(synthetic("Hey everyone, today we cook pasta."))
-    monkeypatch.setattr(cc.waveform_trim, "process_one", lambda src, thr, ms: {"input": src, "keeps": [[0.1, 2.9]]})
     d = make_project(tmp_path)
     plan, _ = run(d, monkeypatch=monkeypatch)
-    assert not any("too few words" in w for w in plan.get("warnings", []))
+    assert not any("do not look like speech" in w for w in plan.get("warnings", []))
     assert plan["kept"]["seconds"] < 10
 
 
@@ -895,32 +893,84 @@ def test_next_says_how_to_take_a_suggestion(tmp_path, stub_transcribe, monkeypat
     assert out["next"] == f'Apply: cut with plan "{silent / "cut-plan.md"}".'
 
 
+# ── made-up words: real whisper output on music and sound effects (pass 5) ───
+
+CAPTURES = json.loads((REPO_ROOT / "tests" / "fixtures" / "whisper_no_speech_captures.json").read_text())
+
+
+def captured(name):
+    real = json.loads((FIX / "speech.json").read_text())
+    return {**real, **CAPTURES[name]}
+
+
+@pytest.mark.parametrize("broll, outro", [("h2", "Thank you so much for joining us."),
+                                          ("h3", "I'll see you next time.")])
+@pytest.mark.parametrize("order", ["after", "before"])
+def test_a_real_line_is_never_removed_for_a_made_up_copy_on_b_roll(tmp_path, monkeypatch, broll, outro, order):
+    """Whisper over music or sound effects writes a line with no gaps that fills the clip: words of median length
+    4 s and more, or zero length. That clip is b-roll, kept whole; the speaker's own line stays."""
+    speech = "Hey everyone, welcome back. Today we're making pasta from scratch. "
+    speech = speech + outro if order == "after" else outro + " " + speech
+    clips = [("speech", synthetic(speech)), ("broll", captured(broll))]
+    d = clips_project(tmp_path, clips if order == "after" else clips[::-1])
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["removed"]["lines"] == {} and any("do not look like speech" in w for w in plan["warnings"])
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    items = json.loads((d / "project.json").read_text())["tracks"][0]["items"]
+    speech_items = [it for it in items if it["src"].endswith("speech.mp4")]
+    broll_items = [it for it in items if it["src"].endswith("broll.mp4")]
+    said = " ".join(phrases(d))
+    assert outro.split()[0] in said and speech_items
+    # kept whole means the whole window (review: it lost its last 2.5 s)
+    assert len(broll_items) == 1
+    assert (broll_items[0]["inPoint"], broll_items[0]["outPoint"]) == (0.0, pytest.approx(SOURCE_S, abs=0.01))
+
+
+@pytest.mark.parametrize("name", ["h1", "h2", "h3", "h4", "h6"])
+def test_whisper_on_music_and_sound_effects_is_made_up(name):
+    words = [{"text": w["text"].strip(), "start": w["offsets"]["from"] / 1000, "end": w["offsets"]["to"] / 1000}
+             for w in CAPTURES[name]["transcription"] if w["text"].strip()]
+    assert cc._made_up(words)
+
+
+def test_a_real_line_with_a_noise_tail_is_cut_to_the_line(tmp_path, monkeypatch):
+    """d_line_noisy: a real 2.4 s line, then 28 s of noise whisper heard as "." at the end."""
+    d = clips_project(tmp_path, [("speech", captured("d_line_noisy"))])
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["kept"]["seconds"] < 4
+    assert not any("do not look like speech" in w for w in plan.get("warnings", []))
+
+
+def test_made_up_words_on_a_quiet_end_are_dropped_as_a_pause():
+    """c_line_quiet: a real line, then "Thank you." at 30 s, inside the measured silence of a quiet room."""
+    from lib.take_select import Unit
+    from lib.speech_lines import Word
+    line = [Word(i, t, t.lower(), i * 0.4, i * 0.4 + 0.35) for i, t in enumerate("results of what they".split())]
+    tail = [Word(4, "Thank", "thank", 30.0, 30.52), Word(5, "you.", "you", 30.52, 31.0)]
+    rows = lambda ws: [(0, speech_text.Row("speech", line="A1", words=ws, pauses={}, item_ids=["i"]))]
+    units = [(Unit([w.text for w in line], clip="A"), rows(line), []), (Unit([w.text for w in tail], clip="A"), rows(tail), [])]
+    cc._mark_made_up_tails(units, inside={("A", 4), ("A", 5)})
+    assert [u.madeup for u, _, _ in units] == [False, True]
+    cc._mark_made_up_tails(units[:1] + [(Unit(["Thank", "you."], clip="A"), rows(tail), [])], inside=set())
+    from lib.take_select import select
+    sel = select([u for u, _, _ in units], cc._filler_test("en"))
+    assert sel.losers == [1] and sel.why[1] == "pause"
+
+
 # ── pass 4: made-up words that pass for speech ───────────────────────────────
 
 OUTRO = "Thanks for watching and see you next time."
 
 
-def test_a_real_line_is_never_removed_for_a_made_up_copy_on_b_roll(tmp_path, monkeypatch):
-    """B1: eight invented words on b-roll pass the words-per-second test, but fill little of the clip: its takes
-    are only offered, so the speaker's real outro stays; and only what the waveform finds silent is cut from it
-    (music is not silent)."""
-    speech = "Hey everyone, welcome back. Today we're making pasta from scratch. It only takes twenty minutes. " + OUTRO
-    d = clips_project(tmp_path, [("speech", synthetic(speech)), ("broll", synthetic(OUTRO, start=12.0))])
-    plan, _ = run(d, monkeypatch=monkeypatch)
-    assert plan["removed"]["lines"] == {}
-    assert plan.get("suggested", {}).get("retake?", 0) >= 1
-    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
-    items = json.loads((d / "project.json").read_text())["tracks"][0]["items"]
-    assert any(it["src"].endswith("speech.mp4") for it in items)
-    said = " ".join(phrases(d))
-    assert said.count(OUTRO) == 2                       # the speaker's and the b-roll's, both kept
-    broll = sum(it["outPoint"] - it["inPoint"] for it in items if it["src"].endswith("broll.mp4"))
-    assert broll > 0.5 * SOURCE_S                       # the fixture audio is never silent: kept, not a sliver
-
-
-def test_a_clip_that_keeps_little_of_itself_is_reported(tmp_path, stub_transcribe, monkeypatch):
-    stub_transcribe(synthetic("Hey everyone, today we cook pasta."))
-    monkeypatch.setattr(cc.waveform_trim, "process_one", lambda src, thr, ms: {"input": src, "keeps": [[0.1, 2.9]]})
+def test_a_clip_that_keeps_almost_nothing_of_itself_is_reported(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe(synthetic("Hey everyone, good morning friends."))
     d = make_project(tmp_path)
     plan, _ = run(d, monkeypatch=monkeypatch)
     assert any("clip-0 keeps only" in w for w in plan["warnings"])
+
+
+def test_a_correct_cut_of_a_long_quiet_tail_is_not_reported(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe(synthetic("Hey everyone, today we cook pasta from scratch in my kitchen."))
+    d = make_project(tmp_path)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert not any("keeps only" in w for w in plan.get("warnings", []))

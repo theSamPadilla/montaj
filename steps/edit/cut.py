@@ -53,10 +53,14 @@ PREV_PLAN_FILE = "cut-plan.prev.md"
 MIN_WORDS_PER_S = 0.2
 DENSE_WINDOW_S = 10.0       # ... unless some DENSE_WINDOW_S of it holds DENSE_WORDS words: a real short line
 DENSE_WORDS = 5
-# A clip whose words fill under this share of it has little speech: its words may be made up (b-roll), so no
-# take of it is removed for sure, and its pauses are cut only where the waveform is silent too.
-MIN_SPEECH_SHARE = 0.15
-LOSES_MOST = 0.5            # warn when a clip keeps under this share of its length
+# Words whisper makes up over music or sound effects have no gaps and stretch to fill the clip: a median word
+# length over MADE_UP_MEDIAN_S, or ZERO_SHARE or more words of zero length, is made up, never speech. Measured
+# 2026-10-24: 172 real transcripts have a longest median word length of 1.42 s and a largest zero-length share
+# of 0.30; whisper on music and sound-effect slices gave medians of 4.4 to 15 s, or 71% zero-length words.
+MADE_UP_MEDIAN_S = 2.5
+ZERO_SHARE = 0.5
+ZERO_LENGTH_S = 0.02
+LOSES_MOST = 0.1            # warn when a clip keeps under this share of its length
 # What the carry report flags about the other layers, by kind, in the answers.
 LAYER_FLAGS = ("overlay_", "linked_", "caption_", "audio_", "marker_", "bed_check_timing")
 # The marker a cut leaves on the project, written in the same guarded write as the cut. A project carrying it
@@ -241,6 +245,16 @@ def _in_window(keeps, lo, hi):
     return [[max(s, lo), min(e, hi)] for s, e in keeps if min(e, hi) - max(s, lo) > 0]
 
 
+def _made_up(words):
+    """Words whisper made up (over music, sound effects or noise): too long, or too many of zero length."""
+    lens = sorted(w["end"] - w["start"] for w in words if any(c.isalnum() for c in w.get("text", "x")))
+    if not lens:
+        return False
+    median = lens[len(lens) // 2] if len(lens) % 2 else (lens[len(lens) // 2 - 1] + lens[len(lens) // 2]) / 2
+    zero = sum(1 for x in lens if x < ZERO_LENGTH_S) / len(lens)
+    return median > MADE_UP_MEDIAN_S or zero >= ZERO_SHARE
+
+
 def _hardly_speech(words, span):
     """A clip whose words are too few and too spread out to be speech: b-roll, with words whisper made up
     ("Thank you." over music). Fewer than MIN_WORDS_PER_S over the clip, and no DENSE_WINDOW_S of it with
@@ -261,21 +275,10 @@ def _cut(work, project_path, ti, cid, src, keeps, lineage):
             lineage[x["id"]] = origin
 
 
-def _union(a, b):
-    out = []
-    for s0, e0 in sorted([list(x) for x in a] + [list(x) for x in b]):
-        if out and s0 <= out[-1][1]:
-            out[-1][1] = max(out[-1][1], e0)
-        else:
-            out.append([s0, e0])
-    return out
-
-
-def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=None, sparse=None):
+def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=None):
     """rm_nonspeech then rm_fillers keeps per clip, from the clip's one transcript, put on the timeline with
-    jump_cut, in memory. fillers: rm_fillers' compiled pattern. A clip with little speech (sparse) keeps every
-    stretch the waveform does not measure silent too (music under made-up words is not silent). (filler words
-    removed, warnings)."""
+    jump_cut, in memory. fillers: rm_fillers' compiled pattern. A clip whose words are made up or too few to be
+    speech (b-roll) is left whole and added to `whole`. (filler words removed, warnings)."""
     removed, warnings = 0, []
     ids = [it["id"] for it in _media(work["tracks"][ti])]
     for cid in ids:
@@ -293,8 +296,8 @@ def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=Non
         lo, hi = _window(it, r["src"])
         inside = [w for w in words if lo <= (w["start"] + w["end"]) / 2 < hi]
         span = max(hi - lo, 1e-6)
-        if _hardly_speech(inside, span):
-            warnings.append(f"kept {cid} whole: it has too few words to be speech (b-roll?)")
+        if _made_up(inside) or _hardly_speech(inside, span):
+            warnings.append(f"kept {cid} whole: its words do not look like speech (b-roll?)")
             if whole is not None:
                 whole.add(cid)
             continue
@@ -302,12 +305,6 @@ def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=Non
         keeps = rm_nonspeech.source_keeps(words, duration)
         keeps, cuts, _ = rm_fillers.spec_keeps(keeps, words, fillers)
         lo, hi = _window(it, r["src"])
-        if sum(w["end"] - w["start"] for w in inside) < MIN_SPEECH_SHARE * span:
-            if sparse is not None:
-                sparse.add(cid)
-            ok, spec = _quiet(waveform_trim.process_one, r["src"], SILENCE_THRESHOLD_DB, SILENCE_MIN_S)
-            if ok:
-                keeps = _union(keeps, spec["keeps"])
         if not _window_has(keeps, lo, hi):
             continue
         removed += sum(1 for c in cuts if lo <= (c["start"] + c["end"]) / 2 < hi)
@@ -431,6 +428,23 @@ def _units(d, is_filler):
         out.append((Unit([w.text for w in words], fillers=fillers, hesitations=hes, clip=clip, breaks=breaks),
                     u["rows"], u["attached"]))
     return out, pending
+
+
+def _mark_made_up_tails(units, inside=frozenset()):
+    """The last sentence of each clip, three words or fewer, whose own words look made up: stretched or of zero
+    length, or every one inside a measured silence (`inside`: (letter, word index) pairs speech_text found there),
+    like "Thank you." over a quiet end. Marked, so the selection drops it as a pause."""
+    last = {}
+    for n, (u, rows, _) in enumerate(units):
+        last[u.clip] = n
+    for n in last.values():
+        u, rows, _ = units[n]
+        ws = [w for _, r in rows for w in r.words]
+        words = [{"text": w.text, "start": w.start, "end": w.end} for w in ws]
+        if u.fixed or not 0 < len(words) <= 3:
+            continue
+        if _made_up(words) or all((u.clip, w.idx) in inside for w in ws):
+            u.madeup = True
 
 
 def _filler_test(language):
@@ -791,7 +805,8 @@ def _language(arg, track, project_dir):
             continue
         words = [{"start": w.start} for w in load_words(sc)]
         span = max(float(it.get("outPoint", 0)) - float(it.get("inPoint", 0)), float(it.get("sourceDuration") or 0), 1e-6)
-        if lang and not _hardly_speech(words, span) and len(words) > best_n:
+        if lang and not _hardly_speech(words, span) and not _made_up(
+                [{"text": w.text, "start": w.start, "end": w.end} for w in load_words(sc)]) and len(words) > best_n:
             best, best_n = lang, len(words)
     return best or "en"
 
@@ -812,9 +827,9 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
     has_words = any((sc := sidecar_for(_resolved(it, project_dir))) and load_words(sc) for it in _media(track))
     if has_words:
         is_filler = _filler_test(language)
-        b["whole"], b["sparse"] = set(), set()
+        b["whole"] = set()
         b["fillers"], w = _mechanical(work, project_path, ti, project_dir, rm_fillers.filler_matcher(language),
-                                      b["lineage"], b["whole"], b["sparse"])
+                                      b["lineage"], b["whole"])
         warnings += w
         warnings += _silence_cut(work, project_path, ti, project_dir, b["lineage"], untranscribed_only=True)
         d = speech_text.derive(work, project_dir, track_id)
@@ -822,9 +837,7 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
         for u, rows, _ in units:
             # a clip kept whole (b-roll): its made-up words are never a take, a loser or a suggestion
             u.fixed = bool(rows) and all(r.item_ids and r.item_ids[0] in b["whole"] for _, r in rows)
-            # a clip with little speech: its takes are only ever offered, never removed for sure
-            u.sparse = any(r.item_ids and b["lineage"].get(r.item_ids[0], r.item_ids[0]) in b["sparse"]
-                           for _, r in rows)
+        _mark_made_up_tails(units, d.inside_words)
         if units:
             b.update(d=d, units=units, trailing=trailing)
             if language.split("-")[0].lower() in NON_SPACED:

@@ -1,0 +1,664 @@
+{
+ "_capture": "Captured 2026-10-24 by running the vendored whisper.cpp (ggml-large-v3-turbo-q5_0, language en, --split-on-word --max-len 1: the transcribe step's flags) on audio with no speech of anyone: h1-h6 are generated music and sound-effect slices (31 s; h5 2 s, h6 22 s); c_line_quiet and d_line_noisy are this repo's speech fixture line (tests/fixtures/speech_text, public domain) followed by a quiet or a -39 dB noise tail. Only 'transcription' and 'result' are kept.",
+ "h1": {
+  "result": {
+   "language": "en"
+  },
+  "transcription": [
+   {
+    "timestamps": {
+     "from": "00:00:00,000",
+     "to": "00:00:00,000"
+    },
+    "offsets": {
+     "from": 0,
+     "to": 0
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:00,000",
+     "to": "00:00:18,720"
+    },
+    "offsets": {
+     "from": 0,
+     "to": 18720
+    },
+    "text": " Thank"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:18,720",
+     "to": "00:00:29,980"
+    },
+    "offsets": {
+     "from": 18720,
+     "to": 29980
+    },
+    "text": " you."
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,000",
+     "to": "00:00:30,000"
+    },
+    "offsets": {
+     "from": 30000,
+     "to": 30000
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,000",
+     "to": "00:00:31,000"
+    },
+    "offsets": {
+     "from": 30000,
+     "to": 31000
+    },
+    "text": " ¶¶"
+   }
+  ]
+ },
+ "h2": {
+  "result": {
+   "language": "en"
+  },
+  "transcription": [
+   {
+    "timestamps": {
+     "from": "00:00:00,000",
+     "to": "00:00:00,400"
+    },
+    "offsets": {
+     "from": 0,
+     "to": 400
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:00,400",
+     "to": "00:00:18,720"
+    },
+    "offsets": {
+     "from": 400,
+     "to": 18720
+    },
+    "text": " Thank"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:18,720",
+     "to": "00:00:29,980"
+    },
+    "offsets": {
+     "from": 18720,
+     "to": 29980
+    },
+    "text": " you"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:29,980",
+     "to": "00:00:29,980"
+    },
+    "offsets": {
+     "from": 29980,
+     "to": 29980
+    },
+    "text": " so"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:29,980",
+     "to": "00:00:29,980"
+    },
+    "offsets": {
+     "from": 29980,
+     "to": 29980
+    },
+    "text": " much"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:29,980",
+     "to": "00:00:29,980"
+    },
+    "offsets": {
+     "from": 29980,
+     "to": 29980
+    },
+    "text": " for"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:29,980",
+     "to": "00:00:29,980"
+    },
+    "offsets": {
+     "from": 29980,
+     "to": 29980
+    },
+    "text": " joining"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:29,980",
+     "to": "00:00:29,980"
+    },
+    "offsets": {
+     "from": 29980,
+     "to": 29980
+    },
+    "text": " us."
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,000",
+     "to": "00:00:30,070"
+    },
+    "offsets": {
+     "from": 30000,
+     "to": 30070
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,070",
+     "to": "00:00:31,000"
+    },
+    "offsets": {
+     "from": 30070,
+     "to": 31000
+    },
+    "text": " ¶¶"
+   }
+  ]
+ },
+ "h3": {
+  "result": {
+   "language": "en"
+  },
+  "transcription": [
+   {
+    "timestamps": {
+     "from": "00:00:00,000",
+     "to": "00:00:00,120"
+    },
+    "offsets": {
+     "from": 0,
+     "to": 120
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:00,120",
+     "to": "00:00:06,940"
+    },
+    "offsets": {
+     "from": 120,
+     "to": 6940
+    },
+    "text": " I'll"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:06,940",
+     "to": "00:00:13,250"
+    },
+    "offsets": {
+     "from": 6940,
+     "to": 13250
+    },
+    "text": " see"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:13,250",
+     "to": "00:00:16,890"
+    },
+    "offsets": {
+     "from": 13250,
+     "to": 16890
+    },
+    "text": " you"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:16,890",
+     "to": "00:00:23,350"
+    },
+    "offsets": {
+     "from": 16890,
+     "to": 23350
+    },
+    "text": " next"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:23,350",
+     "to": "00:00:29,980"
+    },
+    "offsets": {
+     "from": 23350,
+     "to": 29980
+    },
+    "text": " time."
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,000",
+     "to": "00:00:30,120"
+    },
+    "offsets": {
+     "from": 30000,
+     "to": 30120
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,120",
+     "to": "00:00:30,400"
+    },
+    "offsets": {
+     "from": 30120,
+     "to": 30400
+    },
+    "text": " Thank"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,400",
+     "to": "00:00:31,000"
+    },
+    "offsets": {
+     "from": 30400,
+     "to": 31000
+    },
+    "text": " you."
+   }
+  ]
+ },
+ "h4": {
+  "result": {
+   "language": "en"
+  },
+  "transcription": [
+   {
+    "timestamps": {
+     "from": "00:00:00,000",
+     "to": "00:00:00,090"
+    },
+    "offsets": {
+     "from": 0,
+     "to": 90
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:00,090",
+     "to": "00:00:16,970"
+    },
+    "offsets": {
+     "from": 90,
+     "to": 16970
+    },
+    "text": " *outro"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:16,970",
+     "to": "00:00:29,980"
+    },
+    "offsets": {
+     "from": 16970,
+     "to": 29980
+    },
+    "text": " music*"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,000",
+     "to": "00:00:30,090"
+    },
+    "offsets": {
+     "from": 30000,
+     "to": 30090
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,090",
+     "to": "00:00:46,970"
+    },
+    "offsets": {
+     "from": 30090,
+     "to": 46970
+    },
+    "text": " Thank"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:46,970",
+     "to": "00:00:59,980"
+    },
+    "offsets": {
+     "from": 46970,
+     "to": 59980
+    },
+    "text": " you."
+   }
+  ]
+ },
+ "h5": {
+  "result": {
+   "language": "en"
+  },
+  "transcription": [
+   {
+    "timestamps": {
+     "from": "00:00:00,000",
+     "to": "00:00:00,100"
+    },
+    "offsets": {
+     "from": 0,
+     "to": 100
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:00,100",
+     "to": "00:00:02,000"
+    },
+    "offsets": {
+     "from": 100,
+     "to": 2000
+    },
+    "text": " *BEEP*"
+   }
+  ]
+ },
+ "h6": {
+  "result": {
+   "language": "en"
+  },
+  "transcription": [
+   {
+    "timestamps": {
+     "from": "00:00:00,000",
+     "to": "00:00:00,000"
+    },
+    "offsets": {
+     "from": 0,
+     "to": 0
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:00,000",
+     "to": "00:00:10,000"
+    },
+    "offsets": {
+     "from": 0,
+     "to": 10000
+    },
+    "text": " Thank"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:10,000",
+     "to": "00:00:22,000"
+    },
+    "offsets": {
+     "from": 10000,
+     "to": 22000
+    },
+    "text": " you."
+   }
+  ]
+ },
+ "c_line_quiet": {
+  "result": {
+   "language": "en"
+  },
+  "transcription": [
+   {
+    "timestamps": {
+     "from": "00:00:00,000",
+     "to": "00:00:00,000"
+    },
+    "offsets": {
+     "from": 0,
+     "to": 0
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:00,000",
+     "to": "00:00:00,570"
+    },
+    "offsets": {
+     "from": 0,
+     "to": 570
+    },
+    "text": " results"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:00,570",
+     "to": "00:00:00,730"
+    },
+    "offsets": {
+     "from": 570,
+     "to": 730
+    },
+    "text": " of"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:00,730",
+     "to": "00:00:01,050"
+    },
+    "offsets": {
+     "from": 730,
+     "to": 1050
+    },
+    "text": " what"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:01,050",
+     "to": "00:00:01,370"
+    },
+    "offsets": {
+     "from": 1050,
+     "to": 1370
+    },
+    "text": " they"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:01,370",
+     "to": "00:00:01,690"
+    },
+    "offsets": {
+     "from": 1370,
+     "to": 1690
+    },
+    "text": " once"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:01,690",
+     "to": "00:00:02,010"
+    },
+    "offsets": {
+     "from": 1690,
+     "to": 2010
+    },
+    "text": " were"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:02,010",
+     "to": "00:00:03,100"
+    },
+    "offsets": {
+     "from": 2010,
+     "to": 3100
+    },
+    "text": " themselves."
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,000",
+     "to": "00:00:30,000"
+    },
+    "offsets": {
+     "from": 30000,
+     "to": 30000
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,000",
+     "to": "00:00:30,520"
+    },
+    "offsets": {
+     "from": 30000,
+     "to": 30520
+    },
+    "text": " Thank"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,520",
+     "to": "00:00:31,000"
+    },
+    "offsets": {
+     "from": 30520,
+     "to": 31000
+    },
+    "text": " you."
+   }
+  ]
+ },
+ "d_line_noisy": {
+  "result": {
+   "language": "en"
+  },
+  "transcription": [
+   {
+    "timestamps": {
+     "from": "00:00:00,000",
+     "to": "00:00:00,000"
+    },
+    "offsets": {
+     "from": 0,
+     "to": 0
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:00,000",
+     "to": "00:00:00,200"
+    },
+    "offsets": {
+     "from": 0,
+     "to": 200
+    },
+    "text": " of"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:00,200",
+     "to": "00:00:00,570"
+    },
+    "offsets": {
+     "from": 200,
+     "to": 570
+    },
+    "text": " what"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:00,570",
+     "to": "00:00:00,950"
+    },
+    "offsets": {
+     "from": 570,
+     "to": 950
+    },
+    "text": " they"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:00,950",
+     "to": "00:00:01,330"
+    },
+    "offsets": {
+     "from": 950,
+     "to": 1330
+    },
+    "text": " once"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:01,330",
+     "to": "00:00:01,740"
+    },
+    "offsets": {
+     "from": 1330,
+     "to": 1740
+    },
+    "text": " were"
+   },
+   {
+    "timestamps": {
+     "from": "00:00:01,740",
+     "to": "00:00:02,400"
+    },
+    "offsets": {
+     "from": 1740,
+     "to": 2400
+    },
+    "text": " themselves."
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,000",
+     "to": "00:00:30,000"
+    },
+    "offsets": {
+     "from": 30000,
+     "to": 30000
+    },
+    "text": ""
+   },
+   {
+    "timestamps": {
+     "from": "00:00:30,000",
+     "to": "00:00:31,000"
+    },
+    "offsets": {
+     "from": 30000,
+     "to": 31000
+    },
+    "text": " ."
+   }
+  ]
+ }
+}

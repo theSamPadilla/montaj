@@ -7,8 +7,9 @@ agent and the person review. The engine REMOVES only what is certain:
   saying, a cut-off word, or a pause of BREAK_GAP_S or more): rule A and the restart below. With no signal it
   may be a chant or an emphasis ("one more song, one more song"; "I love it, I love it so much"): suggested;
 - a cut-off take: one that broke off (no closing punctuation, an ellipsis or a dash) whose every word the
-  next take says again, in order (its last word may be a bare fragment: "cl" before "clip"; a word with a comma
-  or a period after it is whole, so "art," before "artist" is two words). "Tokyo..." then "Kyoto" is offered.
+  next take says again, in order (its last word may be a cut-off fragment: bare, with no comma or period after
+  it, and FRAGMENT_MAX letters at most, "cl" before "clip"; "art" before "artist" or "Dan" before "Daniel" is a
+  whole word). "Tokyo..." then "Kyoto" is offered; so is a broken-off take the next one rewords (false-start?).
 Every other call is KEPT and offered as a suggestion (`Selection.suggest`, a why ending in "?") for the agent
 to judge: a reworded take, a block told again with a change, an abandoned opening, a complete sentence the
 next one extends, a short restart, a partial repeat, a line said again with a remark between.
@@ -43,6 +44,8 @@ next one extends, a short restart, a partial repeat, a line said again with a re
   whole after it are offered (retake?). Any other take stays where it was said and is suggested (retake?), as are: a matching take out
   of reach because a remark sits between, a neighbour reworded in REWORD_SWAPS places or fewer (ratio
   REWORD_RATIO), and the next line of a block that only grew (ratio GROWN_RATIO).
+- A unit the caller marks `madeup` (the last line of a clip, words whisper made up over a quiet end) goes as
+  a pause.
 - Which take is kept: complete over truncated, then no restart, then the last; fewer flaws (fillers plus
   hesitations) decide only between takes that say the same words. Narrative order: a section whose earlier
   takes all go sits at its first take; a section with a suggested take keeps every take where it was said.
@@ -68,7 +71,10 @@ ABANDON_MIN = 3
 ABANDON_COVER = 0.5
 NEAR_UNITS = 4
 BREAK_GAP_S = 0.3
-FRAGMENT_SHARE = 0.6        # a bare word this short against the next one is a cut-off fragment ("cl" / "clip")
+# A bare word of at most FRAGMENT_MAX letters that begins the next word is a cut-off fragment ("cl" / "clip"); a
+# longer one is a whole word ("Dan" / "Daniel", "car" / "cart"). 172 real transcripts hold no cut-off fragment
+# before a restart at all (every real restart repeats its words exactly).
+FRAGMENT_MAX = 2
 REWORD_RATIO = 0.7         # a line reworded in one or two places, said again right after: suggested
 REWORD_SWAPS = 2
 GROWN_RATIO = 0.6           # the next line of a block retake that only grew: suggested
@@ -106,7 +112,8 @@ class Unit:
     clip: object = None
     breaks: set = field(default_factory=set)
     fixed: bool = False      # never a take, a loser or a suggestion (a clip kept whole: b-roll); still a sentence between
-    sparse: bool = False     # from a clip with little speech (made-up words?): never removed as a take, only offered
+    sparse: bool = False     # never removed as a take, only offered (the caller's call: a clip it doubts)
+    madeup: bool = False     # words whisper made up over a quiet end (the caller measures it): removed as a pause
 
 
 @dataclass
@@ -169,7 +176,7 @@ def _signal(seq, i, j, cutoff, breaks, bare):
     if cutoff is not None and cutoff[j - 1]:
         return "mark"
     if j + span - 1 < len(seq) and seq[j - 1] != seq[j + span - 1]:
-        if (bare is None or bare[j - 1]) and len(seq[j - 1]) <= FRAGMENT_SHARE * len(seq[j + span - 1]):
+        if (bare is None or bare[j - 1]) and len(seq[j - 1]) <= FRAGMENT_MAX:
             return "fragment"
     if breaks is not None and breaks[j]:
         return "pause"
@@ -180,15 +187,24 @@ def _signalled(seq, i, j, cutoff, breaks, bare=None):
     return _signal(seq, i, j, cutoff, breaks, bare) is not None
 
 
+def _frag_ok(seq, n, bare):
+    """Token n may be a cut-off fragment: bare (no comma or period after it) and at most FRAGMENT_MAX letters."""
+    return (bare is None or bare[n]) and len(seq[n]) <= FRAGMENT_MAX
+
+
 def restart_at(seq, cutoff=None, breaks=None, bare=None):
     """(j, signal): the last j where the unit says its whole opening seq[:j] again right after it, word for word
-    (its last word may be a bare fragment), and the break signal that marks it (None for none); (0, None) when
-    there is no restart. Numbers said twice are a number, not a restart."""
+    (its last word may be a short bare fragment), and the break signal that marks it (None for none); (0, None)
+    when there is no restart. A restart whose last word is a longer word that only begins the next one ("the
+    car | the cart") is found with no signal: only a suggestion. Numbers said twice are a number, not a restart."""
     found = (0, None)
     for j in range(RESTART_MIN, min(len(seq) // 2, RESTART_WITHIN) + 1):
-        frag_ok = bare is None or bare[j - 1]
-        if _said_again(seq[:j], seq[j:], frag_ok) == j and not _numbers_only(seq[:j]):
+        if _numbers_only(seq[:j]):
+            continue
+        if _said_again(seq[:j], seq[j:], _frag_ok(seq, j - 1, bare)) == j:
             found = (j, _signal(seq, 0, j, cutoff, breaks, bare))
+        elif (bare is None or bare[j - 1]) and _said_again(seq[:j], seq[j:], True) == j:
+            found = (j, None)
     return found
 
 
@@ -223,7 +239,7 @@ def repeat_cuts(seq, ends, cutoff=None, breaks=None, bare=None):
             phrase = seq[i:i + REPEAT_MIN]
             best = None
             for j in range(i + REPEAT_MIN, min(len(seq) - REPEAT_MIN, i + REPEAT_WITHIN) + 1):
-                if (seq[j:j + REPEAT_MIN] == phrase and _said_again(seq[i:j], seq[j:], bare[j - 1]) == j - i
+                if (seq[j:j + REPEAT_MIN] == phrase and _said_again(seq[i:j], seq[j:], _frag_ok(seq, j - 1, bare)) == j - i
                         and not _numbers_only(seq[i:j])):
                     best = j
             if best is None:
@@ -248,7 +264,7 @@ def repeat_cuts(seq, ends, cutoff=None, breaks=None, bare=None):
         for j in range(i + 1, min(len(seq) - REPEAT_MIN, i + REPEAT_WITHIN) + 1):
             if seq[j:j + REPEAT_MIN] != phrase:
                 continue
-            span, k = j - i, _said_again(seq[i:j], seq[j:], bare[j - 1])
+            span, k = j - i, _said_again(seq[i:j], seq[j:], _frag_ok(seq, j - 1, bare))
             if (k >= REPEAT_PARTIAL_MIN and k >= REPEAT_PARTIAL_COVER * span and not any(ends[i + k:j])
                     and not _JOINERS.intersection(seq[i + k:j])):
                 cuts.append((i, j, False))
@@ -285,6 +301,8 @@ def _clean(unit, is_filler):
             word = unit.words[toks[j][0]].lstrip("\"'(“‘¿¡")
             if word[:1].isupper() and toks[j][1] not in _I_FORMS:
                 sig = None      # a name said twice after a pause ("New York, | New York"): only offered
+        if not j and restarted and len(seq) > 1 and seq[0] == seq[1] and (cutoff[0] or breaks[1]):
+            j, sig = 1, "pause"     # what a longer restart leaves: "we, | we did it" after "we, | we, | we,"
         if j and sig:
             deleted.update(range(toks[0][0], toks[j][0]))
             toks = toks[j:]
@@ -370,8 +388,9 @@ def select(units, is_filler):
     sparse = [bool(getattr(u, "sparse", False)) for u in units]
 
     def last_bare(a):
+        """a's last word may be a cut-off fragment: no comma or period after it, at most FRAGMENT_MAX letters."""
         w = units[a].words[cleaned[a][0][-1][0]].rstrip(_QUOTES) if cleaned[a][0] else ""
-        return not w.endswith(_CLAUSE_END)
+        return not w.endswith(_CLAUSE_END) and len(seqs[a][-1]) <= FRAGMENT_MAX
 
     def said_in_full(a, b):
         """b says every word of a again, in order, from its start (a's last word may be a bare fragment)."""
@@ -418,6 +437,9 @@ def select(units, is_filler):
         if not seqs[i] and not fixed[i]:
             losers.add(i)
             why[i] = "filler-only"
+        elif getattr(units[i], "madeup", False) and not fixed[i]:
+            losers.add(i)              # words whisper made up over a quiet end: a pause
+            why[i] = "pause"
 
     sections, section_of, joins, near_misses, block_pairs = [], {}, {}, [], {}
 
@@ -551,6 +573,15 @@ def select(units, is_filler):
         if (sm.ratio() >= REWORD_RATIO and swaps and len(swaps) <= REWORD_SWAPS
                 and all(c[0] in ("equal", "replace") for c in codes) and not changed & _NEGATIONS):
             offer(t, "retake?")
+    # a take that broke off, then reworded: the next one opens close to it
+    for t in range(n - 1):
+        i = t + 1
+        if ending[t] != "open" or t in losers or i in losers or fixed[t] or fixed[i] or not seqs[t] or not seqs[i]:
+            continue
+        if section_of.get(t) == section_of.get(i):
+            continue
+        if SequenceMatcher(None, seqs[t], seqs[i][:len(seqs[t])], autojunk=False).ratio() >= REWORD_RATIO:
+            offer(t, "false-start?")
     # a block whose next line grew: after a matched pair, the pair after it at a lower bar
     pairs = [(t, i) for i, (t, _) in joins.items()] + near_misses
     for t, i in pairs:

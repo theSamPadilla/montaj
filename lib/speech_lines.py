@@ -61,13 +61,23 @@ def sidecar_for(item: dict) -> str | None:
     return None
 
 
+# A token with no letter or digit that is not a dash or an ellipsis is a sound whisper wrote down, not a word
+# ("¶¶" or "♪" over music, a lone "." over noise): left out, so its time reads as a pause. speech_edit could never
+# keep one anyway: a token that normalises to nothing is dropped from the text (lib/speech_align.py).
+_MARKS = ("-", "\u2013", "\u2014", "...", "\u2026")
+
+
+def _is_word(text: str) -> bool:
+    return any(c.isalnum() for c in text) or text.strip("\"'").endswith(_MARKS)
+
+
 def load_words(sidecar: str) -> list[Word]:
     with open(sidecar, encoding="utf-8") as f:
         d = json.load(f)
     words: list[Word] = []
     for seg in d.get("transcription", []):
         text = (seg.get("text") or "").strip()
-        if not text:
+        if not text or not _is_word(text):
             continue
         off = seg["offsets"]
         words.append(Word(len(words), text, norm(text), off["from"] / 1000.0, off["to"] / 1000.0))
