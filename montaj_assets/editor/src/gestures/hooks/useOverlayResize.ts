@@ -33,8 +33,9 @@ export type UseOverlayResizeReturn = {
     cursor: { x: number; y: number },
     box: { x: number; y: number; w: number; h: number; rotation?: number },
   ) => void;
-  // Corner handles keep the box's aspect ratio; Shift held frees it. Side
-  // handles always move one side.
+  // With `modifiers` (the keys held), corner handles keep the box's aspect ratio
+  // and Shift held frees it. Without them the resize is free, as it was before
+  // modifiers existed. Side handles always move one side.
   onPointerMove: (cursor: { x: number; y: number }, modifiers?: ResizeModifiers) => void;
   onPointerUp: () => void;
 };
@@ -63,7 +64,9 @@ export function useOverlayResize({ scale, onPreview, onCommit }: UseOverlayResiz
     (cursor: { x: number; y: number }, modifiers?: ResizeModifiers) => {
       const s = stateRef.current;
       if (!s) return;
-      const box = nextResizeBox(s, cursor, scale, { keepRatio: !modifiers?.shiftKey });
+      // A caller that passes no modifiers gets the free resize it always had; one
+      // that passes them keeps the corner's ratio unless Shift is held.
+      const box = nextResizeBox(s, cursor, scale, { keepRatio: modifiers ? !modifiers.shiftKey : false });
       latestRef.current = box;
       onPreview(s.elementId, box, rotationRef.current);
     },

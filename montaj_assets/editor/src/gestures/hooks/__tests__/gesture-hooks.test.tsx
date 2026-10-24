@@ -37,17 +37,28 @@ describe('useOverlayResize', () => {
     expect(onCommit).not.toHaveBeenCalled()
   })
 
-  it('a corner keeps the box ratio; Shift held frees it', () => {
+  it('a corner keeps the box ratio when the caller passes modifiers without Shift; Shift held frees it', () => {
     const { gesture, onPreview } = setup()
     act(() => {
       gesture().onPointerDown('el', 'se', { x: 10, y: 10 }, BOX)
-      gesture().onPointerMove({ x: 130, y: 20 })
+      gesture().onPointerMove({ x: 130, y: 20 }, { shiftKey: false })
     })
     // The corner goes to the cursor's projection onto the diagonal:
     // 1 + (200 * 120 + 100 * 10) / (200² + 100²) = 1.5 times the box.
     expect(onPreview).toHaveBeenLastCalledWith('el', { x: 100, y: 100, w: 300, h: 150 }, 0)
     act(() => { gesture().onPointerMove({ x: 130, y: 20 }, { shiftKey: true }) })
     expect(onPreview).toHaveBeenLastCalledWith('el', { x: 100, y: 100, w: 320, h: 110 }, 0)
+  })
+
+  it('a caller that passes no modifiers still resizes a corner freely, as before (§556 review: the hook\'s API stays additive)', () => {
+    const { gesture, onPreview, onCommit } = setup()
+    act(() => {
+      gesture().onPointerDown('el', 'se', { x: 10, y: 10 }, BOX)
+      gesture().onPointerMove({ x: 130, y: 20 })
+    })
+    expect(onPreview).toHaveBeenLastCalledWith('el', { x: 100, y: 100, w: 320, h: 110 }, 0)
+    act(() => { gesture().onPointerUp() })
+    expect(onCommit.mock.calls[0][1]).toEqual({ x: 100, y: 100, w: 320, h: 110 })
   })
 
   it('commits once, with the final box and the gesture it came from', () => {
