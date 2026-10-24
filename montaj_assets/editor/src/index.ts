@@ -179,7 +179,7 @@ export { defaultMontajTheme, lightMontajTheme, applyTheme, isLightTheme } from '
 export { useProjectState } from './state/use-project-state'
 export type { Connection, UseProjectState } from './state/use-project-state'
 export { projectReducer } from './state/project-reducer'
-export type { Action, ProjectStatus } from './state/project-reducer'
+export type { Action, ProjectStatus, ReorderDirection } from './state/project-reducer'
 export { createMutationQueue } from './state/mutation-queue'
 export type { MutationQueue } from './state/mutation-queue'
 
@@ -296,6 +296,7 @@ export { default as VideoEditor } from './video/VideoEditor'
 // Hosts consume these beyond the assembled editor — Montaj's preview/caption
 // components render SlideCanvas thumbnails and wrap overlays in the boundary.
 export { default as SlideCanvas, resolveAsset } from './carousel/SlideCanvas'
+export type { SlideCanvasCropControl, CropExit } from './carousel/SlideCanvas'
 export { default as OverlayErrorBoundary } from './carousel/OverlayErrorBoundary'
 export { default as ReadOnlySlide } from './carousel/ReadOnlySlide'
 export type { ReadOnlySlideProps } from './carousel/ReadOnlySlide'
