@@ -3,7 +3,9 @@
 The select-takes skill's rules (skills/select-takes/SKILL.md, steps 2 to 5), made mechanical for a PLAN the
 agent and the person review. The engine REMOVES only what is certain:
 - the same words said again: a whole sentence said again word for word (REPEAT_MIN tokens or more), or a
-  clause inside one said again word for word (rule A below);
+  clause inside one said again word for word after a break signal (an ellipsis or a dash before the second
+  saying, a cut-off word, or a pause of BREAK_GAP_S or more): rule A and the restart below. With no signal it
+  may be a chant or an emphasis ("one more song, one more song"; "I love it, I love it so much"): suggested;
 - a cut-off take: one that broke off (no closing punctuation, an ellipsis or a dash) and that the next take
   says again in full.
 Every other call is KEPT and offered as a suggestion (`Selection.suggest`, a why ending in "?") for the agent
@@ -17,12 +19,11 @@ next one extends, a short restart, a partial repeat, a line said again with a re
   covering PREFIX_COVER of it). Removed when it broke off; when it ends in a period it is kept and suggested
   (false-start?): "Hold on." / "Hold on to your seat.". Never a question or an exclamation.
 - Restart inside a unit: the unit's whole opening said again right after it, word for word (its last word may
-  be cut off). Removed for an opening of REPEAT_MIN tokens or more, or a shorter one that broke off ("Start
-  by... start by picking"); a shorter one is suggested (restart?), since "New York, New York" and "tick tock,
-  tick tock" have its shape. Numbers said twice ("five five five") are a number, never a restart.
+  be cut off). Removed after a break signal ("Start by... start by picking"; "You can drag the cl- you can
+  drag the clip"; a pause); with none, suggested: restart? for an opening shorter than REPEAT_MIN ("New York,
+  New York", "tick tock, tick tock"), repeat? for a longer one. Numbers said twice are a number, never one.
 - Repeated phrase inside a unit (skill step 5): (A) a span of REPEAT_MIN tokens or more, not only numbers,
-  said again word for word: removed ("and always on mode, and always on mode called Kyros"; accepted residual,
-  a clause chanted word for word). (B) part of the span said again (REPEAT_PARTIAL_MIN tokens and
+  said again word for word: removed after a break signal, otherwise suggested (repeat?). (B) part of the span said again (REPEAT_PARTIAL_MIN tokens and
   REPEAT_PARTIAL_COVER of it, no clause punctuation and no joining word after the repeated part): suggested
   (repeat?), since parallel clauses have that shape.
 - Abandoned opening: a unit opening with ABANDON_MIN+ tokens of the unit before it that breaks off where a
@@ -151,49 +152,77 @@ def _numbers_only(span):
     return bool(span) and all(t.isdigit() or t in _NUMBER_WORDS for t in span)
 
 
-def restart_cut(seq, cutoff=None):
-    """Index in seq where the unit restarts its whole opening word for word (the last may be cut off), or 0 for
-    none. A sure cut: an opening of REPEAT_MIN tokens or more, or a shorter one broken off (cutoff[j - 1]: the
-    word before the restart ends in an ellipsis or a dash, "Start by... start by picking")."""
-    cut = 0
+def _signalled(seq, i, j, cutoff, breaks):
+    """The second saying of seq[i:j] (at j) follows a break: an ellipsis or a dash before it, a cut-off word
+    (the span's last word only opens the retake's), or a timing break (a pause of BREAK_GAP_S or more)."""
+    span = j - i
+    if cutoff is not None and cutoff[j - 1]:
+        return True
+    if j + span - 1 < len(seq) and seq[j - 1] != seq[j + span - 1]:
+        return True
+    return breaks is not None and bool(breaks[j])
+
+
+def restart_at(seq, cutoff=None, breaks=None):
+    """(j, signalled): the last j where the unit says its whole opening seq[:j] again right after it, word for
+    word (the last word may be cut off), and whether a break signal marks it; (0, False) for none. Numbers said
+    twice are a number, not a restart."""
+    found = (0, False)
     for j in range(RESTART_MIN, min(len(seq) // 2, RESTART_WITHIN) + 1):
-        if _said_again(seq[:j], seq[j:]) == j and not _numbers_only(seq[:j]) and (
-                j >= REPEAT_MIN or (cutoff is not None and cutoff[j - 1])):
-            cut = j
-    return cut
-
-
-def restart_hint(seq):
-    """Index of a restart of a shorter opening (RESTART_MIN tokens up to REPEAT_MIN), or 0: only a suggestion,
-    since "New York, New York" and "tick tock, tick tock" have the same shape."""
-    cut = 0
-    for j in range(RESTART_MIN, min(REPEAT_MIN, len(seq) // 2 + 1)):
         if _said_again(seq[:j], seq[j:]) == j and not _numbers_only(seq[:j]):
-            cut = j
-    return cut
+            found = (j, _signalled(seq, 0, j, cutoff, breaks))
+    return found
 
 
-def repeat_cuts(seq, ends):
-    """[(i, j, sure)]: for each restarted clause, seq[i:j] said before its retake. sure (rule A: the whole span,
-    REPEAT_MIN tokens or more and not only numbers, said again word for word) is deleted, applied in order: each
-    pair indexes the sequence left by the sure cuts before it. An unsure one (rule B) is only a suggestion, found
-    on the sequence the sure cuts leave, and deletes nothing. ends[n]: token n ends at clause punctuation."""
-    seq, ends, cuts = list(seq), list(ends), []
+def restart_cut(seq, cutoff=None, breaks=None):
+    """Index where the unit restarts its opening, for sure (a break signal marks it), or 0."""
+    j, sure = restart_at(seq, cutoff, breaks)
+    return j if sure else 0
+
+
+def restart_hint(seq, cutoff=None, breaks=None):
+    """Index of a restart with no break signal, or 0: only a suggestion ("New York, New York"; "I love it, I
+    love it so much")."""
+    j, sure = restart_at(seq, cutoff, breaks)
+    return j if j and not sure else 0
+
+
+def repeat_cuts(seq, ends, cutoff=None, breaks=None):
+    """[(i, j, sure)]: each clause seq[i:j] said before its retake at j. sure (rule A: the whole span, REPEAT_MIN
+    tokens or more and not only numbers, said again word for word, after a break signal) is deleted, applied in
+    order: each pair indexes the sequence left by the sure cuts before it. An unsure one (rule A with no break
+    signal, a chant or an emphasis; or rule B, part of the span said again) is only a suggestion, indexed in the
+    sequence the sure cuts leave, and deletes nothing. ends / cutoff / breaks: per token, it ends at clause
+    punctuation / ends in an ellipsis or a dash / follows a timing break."""
+    seq, ends = list(seq), list(ends)
+    cutoff = list(cutoff) if cutoff is not None else [False] * len(seq)
+    breaks = list(breaks) if breaks is not None else [False] * len(seq)
+    cuts, unsure_a = [], []
     while True:
-        hit = None
+        hit, start = None, 0
         for i in range(len(seq) - REPEAT_MIN + 1):
             phrase = seq[i:i + REPEAT_MIN]
+            best = None
             for j in range(i + REPEAT_MIN, min(len(seq) - REPEAT_MIN, i + REPEAT_WITHIN) + 1):
                 if (seq[j:j + REPEAT_MIN] == phrase and _said_again(seq[i:j], seq[j:]) == j - i
                         and not _numbers_only(seq[i:j])):
-                    hit = (i, j)
-            if hit:
+                    best = j
+            if best is None:
+                continue
+            if _signalled(seq, i, best, cutoff, breaks):
+                hit = (i, best)
                 break
+            if (i, best) not in unsure_a:
+                unsure_a.append((i, best))
         if not hit:
             break
         cuts.append((hit[0], hit[1], True))
-        seq = seq[:hit[0]] + seq[hit[1]:]
-        ends = ends[:hit[0]] + ends[hit[1]:]
+        a, b = hit
+        seq, ends, cutoff, breaks = seq[:a] + seq[b:], ends[:a] + ends[b:], cutoff[:a] + cutoff[b:], breaks[:a] + breaks[b:]
+        unsure_a = []
+    if unsure_a:
+        cuts += [(i, j, False) for i, j in unsure_a[:1]]
+        return cuts
     for i in range(len(seq) - REPEAT_MIN + 1):
         phrase = seq[i:i + REPEAT_MIN]
         for j in range(i + 1, min(len(seq) - REPEAT_MIN, i + REPEAT_WITHIN) + 1):
@@ -212,18 +241,22 @@ def _clean(unit, is_filler):
     [(word indices a suggestion would delete, why)])."""
     toks = _tokens(unit.words, is_filler)
     deleted, restarted, suggest = set(), None, []
+    brk = unit.breaks or ()
+
+    def flags(ts):
+        return ([unit.words[k].rstrip(_QUOTES).endswith(_TRAILING_CUT) for k, _, _ in ts],
+                [k in brk for k, _, _ in ts])
     seq = [t for _, t, _ in toks]
-    cutoff = [unit.words[k].rstrip(_QUOTES).endswith(_TRAILING_CUT) for k, _, _ in toks]
-    cut = restart_cut(seq, cutoff)
-    if cut:
-        deleted.update(range(toks[cut][0]))
-        toks = toks[cut:]
+    cutoff, breaks = flags(toks)
+    j, sure = restart_at(seq, cutoff, breaks)
+    if j and sure:
+        deleted.update(range(toks[j][0]))
+        toks = toks[j:]
         restarted = "restart"
-    else:
-        hint = restart_hint(seq)
-        if hint:
-            suggest.append((set(range(toks[hint][0])), "restart?"))
-    for i, j, sure in repeat_cuts([t for _, t, _ in toks], [e for _, _, e in toks]):
+    elif j:
+        suggest.append((set(range(toks[j][0])), "restart?" if j < REPEAT_MIN else "repeat?"))
+    cutoff, breaks = flags(toks)
+    for i, j, sure in repeat_cuts([t for _, t, _ in toks], [e for _, _, e in toks], cutoff, breaks):
         span = set(range(toks[i][0], toks[j][0]))
         if not sure:
             suggest.append((span, "repeat?"))

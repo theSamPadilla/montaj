@@ -155,9 +155,17 @@ def test_within_take_repeat_keeps_the_final_occurrence():
     text = ("and always on mode, and always on mode called Kyros that basically lets "
             "and always on mode called Kyros")
     sel = select(units(text), is_filler)
-    # the opening said again whole is cut; the partial repeat after it is only a suggestion
-    assert kept_text([text], sel) == ["and always on mode called Kyros that basically lets and always on mode called Kyros"]
-    assert suggested([text], sel) == [(0, "and always on mode called Kyros", "repeat?")]
+    # no break signal between the two sayings: kept, only suggested
+    assert kept_text([text], sel) == [text] and sel.drop == {}
+    assert ("and always on mode called Kyros that basically lets and always on mode called Kyros", "repeat?") in \
+        [(t, w) for _, t, w in suggested([text], sel)]
+    # a pause before the second saying: the opening said again is cut; the partial repeat stays a suggestion
+    paused = ("and always on mode, | and always on mode called Kyros that basically lets "
+              "and always on mode called Kyros")
+    us = units(paused)
+    sel = select(us, is_filler)
+    assert kept_text(us, sel) == ["and always on mode called Kyros that basically lets and always on mode called Kyros"]
+    assert suggested(us, sel) == [(0, "and always on mode called Kyros", "repeat?")]
 
 
 def test_a_short_restart_is_only_suggested():
@@ -430,6 +438,11 @@ NEVER_CUT = {
     "dash aside": ["This is the -", "Actually, let me show you the settings first."],
     "dash list": ["You get speed —", "you get quality —", "and you get it all for free."],
     "come on": ["Come on, come on, let's go."],
+    # word for word with no break signal: a chant, an emphasis, a restart said straight through
+    "quoted chant": ["The crowd kept chanting one more song, one more song, one more song."],
+    "i love it": ["I love it, I love it so much."],
+    "the thing is": ["The thing is the thing is hard to explain."],
+    "fr restart": ["Donc on va, donc on va ouvrir le projet."],
 }
 
 # Real retakes among NEVER_CUT: kept, and offered as (unit, why).
@@ -471,6 +484,10 @@ SUGGESTED = {
     "block tutorial two songs": [(0, "retake?"), (1, "retake?")],
     "block reworded B' (insert)": [(0, "retake?"), (1, "retake?")],
     "come on": [(0, "restart?")],
+    "quoted chant": [(0, "repeat?")],
+    "i love it": [(0, "repeat?")],
+    "the thing is": [(0, "repeat?")],
+    "fr restart": [(0, "repeat?")],
 }
 SUGGESTED = {k: v for k, v in SUGGESTED.items() if v}
 
@@ -482,7 +499,8 @@ SURE_CUT = {
     "restart mid-word": (["You can drag the cl- you can drag the clip onto the timeline."],
                          ["you can drag the clip onto the timeline."]),
     "restart mid-word 2": (["This is the be- this is the best tool I've used."], ["this is the best tool I've used."]),
-    "fr restart": (["Donc on va, donc on va ouvrir le projet."], ["donc on va ouvrir le projet."]),
+    "fr restart after a pause": (["Donc on va, | donc on va ouvrir le projet."], ["donc on va ouvrir le projet."]),
+    "a stutter after a pause": (["The thing is | the thing is hard to explain."], ["the thing is hard to explain."]),
     "truncated take": (["Montaj is the fastest way to |", "Montaj is the fastest way to edit any video."],
                        ["Montaj is the fastest way to edit any video."]),
     "full re-record across clips": (["##", "Hi, I'm Sam.", "This is my studio.", "I make videos here every", "##",
@@ -490,9 +508,6 @@ SURE_CUT = {
                                     ["Hi, I'm Sam.", "This is my studio.", "I make videos here every single day."]),
     "ellipsis then in full": (["And then...", "And then the lights went out."], ["And then the lights went out."]),
     "ellipsis trail": (["I waited...", "I waited for hours."], ["I waited for hours."]),
-    # accepted residual: a chant said word for word is cut like a stutter
-    "quoted chant": (["The crowd kept chanting one more song, one more song, one more song."],
-                     ["The crowd kept chanting one more song."]),
 }
 
 
@@ -522,11 +537,15 @@ def test_only_what_is_certain_is_cut(name):
     assert kept_text(us, sel) == kept, name
 
 
-def test_a_stutter_of_a_whole_clause_is_cut_by_design():
-    """The accepted residual: a clause said whole twice in a row reads as a stutter and keeps the last."""
+def test_a_clause_said_again_is_cut_only_after_a_break():
+    """Word for word with no break signal is emphasis (kept, suggested); after a pause it is a stutter (cut)."""
     text = "never give up, never give up, never give up on your dream"
     sel = select(units(text), is_filler)
-    assert kept_text([text], sel) == ["never give up on your dream"]
+    assert kept_text([text], sel) == [text] and [w for _, _, w in sel.suggest] == ["repeat?"]
+    paused = "never give up, | never give up, | never give up on your dream"
+    us = units(paused)
+    sel = select(us, is_filler)
+    assert kept_text(us, sel) == ["never give up on your dream"]
 
 
 def test_a_cut_off_word_retake_is_cut():
@@ -586,16 +605,3 @@ def test_a_reworded_retake_is_only_suggested():
     assert kept_text(texts, sel) == texts and sel.losers == []
     assert suggested(texts, sel) == [(0, "I love this app.", "retake?")]
 
-
-# Doubles said word for word: a stutter, cut, and listed as removed (the caller shows sel.why).
-STUTTER_CUT = {
-    "i love it": ("I love it, I love it so much.", "I love it so much."),
-    "the thing is": ("The thing is the thing is hard to explain.", "the thing is hard to explain."),
-}
-
-
-@pytest.mark.parametrize("name", sorted(STUTTER_CUT))
-def test_a_word_for_word_double_is_cut_and_listed(name):
-    text, kept = STUTTER_CUT[name]
-    sel = select(units(text), is_filler)
-    assert kept_text([text], sel) == [kept] and sel.why[0] == "restart"

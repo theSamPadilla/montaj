@@ -686,7 +686,7 @@ def test_a_partly_kept_row_is_listed_whole_and_marked(tmp_path):
     """A kept take's row that loses some words (a restart) is listed whole under ## Unused, marked *."""
     from lib.take_select import Unit, select
     from lib.speech_lines import Word
-    words = "Start by picking, start by picking the clip you want.".split()
+    words = "Start by pick- start by picking the clip you want.".split()     # a cut-off word: a sure restart
     ws = [Word(i, w, w.lower().strip(",."), i * 0.5, i * 0.5 + 0.4) for i, w in enumerate(words)]
     row = speech_text.Row("speech", line="A1", words=ws, pauses={}, item_ids=["it"])
     units = [(Unit(words), [(0, row)], [])]
@@ -701,8 +701,8 @@ def test_a_partly_kept_row_is_listed_whole_and_marked(tmp_path):
         speech_text.render = monkey_render
     cut, unused = sections(text)
     assert cut == ["A1 start by picking the clip you want. [0.0]"]
-    assert unused == ["*A1 Start by picking, start by picking the clip you want. [0.0 restart]"]
-    assert removed == [("A1", 0.0, "Start by picking,", "restart")]
+    assert unused == ["*A1 Start by pick- start by picking the clip you want. [0.0 restart]"]
+    assert removed == [("A1", 0.0, "Start by pick-", "restart")]
 
 
 # ── re-review: suggestions, layers, the plan file, b-roll ───────────────────
