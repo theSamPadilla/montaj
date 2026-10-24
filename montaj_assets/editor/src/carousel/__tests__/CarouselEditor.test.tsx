@@ -2333,6 +2333,52 @@ describe('CarouselEditor: nudge (§556 M2)', () => {
     expect((r.getByLabelText('Undo') as HTMLButtonElement).disabled).toBe(true)
   })
 
+  it('the toolbar Undo ends an open burst first, so it takes the nudge back and not the edit before it (§556 review)', async () => {
+    const { adapter, onProjectChange, r } = await mountOne()
+    // An earlier edit, so the Undo button is on.
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align left' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(xyOf(liveProject(onProjectChange))).toEqual([0, 100])
+
+    // The burst is open: on screen, not yet committed (the 500 ms never run out here).
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await key('ArrowRight')
+    expect(xyOf(liveProject(onProjectChange))).toEqual([1, 100])
+    expect(adapter.saveCalls).toHaveLength(1)
+
+    await act(async () => { fireEvent.click(r.getByLabelText('Undo')) })
+    vi.useRealTimers()
+    expect(xyOf(liveProject(onProjectChange))).toEqual([0, 100])
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    // The nudge was saved as its own step and then taken back; the earlier edit is still there to undo.
+    expect(adapter.saveCalls.map((c) => xyOf(c.project))).toEqual([[0, 100], [1, 100], [0, 100]])
+    expect((r.getByLabelText('Undo') as HTMLButtonElement).disabled).toBe(false)
+    await act(async () => { fireEvent.click(r.getByLabelText('Undo')) })
+    expect(xyOf(liveProject(onProjectChange))).toEqual([100, 100])
+    expect((r.getByLabelText('Undo') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('the toolbar Redo ends an open burst first: the nudge is saved, and a new edit ends redo', async () => {
+    const { adapter, onProjectChange, r } = await mountOne()
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align left' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    await act(async () => { fireEvent.click(r.getByLabelText('Undo')) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect((r.getByLabelText('Redo') as HTMLButtonElement).disabled).toBe(false)
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await key('ArrowRight')
+    expect(xyOf(liveProject(onProjectChange))).toEqual([101, 100])
+
+    await act(async () => { fireEvent.click(r.getByLabelText('Redo')) })
+    vi.useRealTimers()
+    // The nudge is the edit that counts: saved, still on screen, and there is nothing to redo.
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    expect(xyOf(lastSave(adapter))).toEqual([101, 100])
+    expect(xyOf(liveProject(onProjectChange))).toEqual([101, 100])
+    expect((r.getByLabelText('Redo') as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('the 500 ms are counted from the last press', async () => {
     const { adapter, onProjectChange } = await mountOne()
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })

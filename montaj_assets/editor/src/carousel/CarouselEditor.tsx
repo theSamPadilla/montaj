@@ -699,13 +699,17 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // own Esc handlers still run.
   const modalOpen = showControls || renderOpen || overlayPickerOpen
 
-  // Undo and redo, from the keys and the toolbar. In crop mode undo cancels
-  // the crop (crop mode ends, nothing is written) and redo does nothing.
+  // Undo and redo, from the keys and the toolbar. An open nudge burst is
+  // committed first, so Undo takes the nudge back (it is its own step) and Redo
+  // finds a new edit that has ended redo. In crop mode undo cancels the crop
+  // (crop mode ends, nothing is written) and redo does nothing.
   function undo() {
+    flushNudge()
     if (cropElementId) void leaveCrop('discard')
     else state.undo()
   }
   function redo() {
+    flushNudge()
     if (!cropElementId) state.redo()
   }
 
