@@ -1051,3 +1051,57 @@ def test_a_pending_project_with_placeholders_still_plans(tmp_path, stub_transcri
     _set_track(d, status="pending")
     plan, _ = run(d, monkeypatch=monkeypatch)
     assert plan["mode"] == "plan" and (d / "cut-plan.md").exists()
+
+
+# ── a pending project is started by the apply (same write) ───────────────────
+
+def _status(d):
+    return json.loads((d / "project.json").read_text())["status"]
+
+
+def test_apply_on_a_pending_project_sets_draft_in_the_same_write(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    assert _status(d) == "pending"
+    before = json.loads((d / "project.json").read_text())
+    touch_unsaved(d)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert _status(d) != "draft"                      # a plan writes nothing
+    commits = git(d, "rev-list", "--count", "HEAD").strip()
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    after = json.loads((d / "project.json").read_text())
+    assert after["status"] == "draft"
+    log = git(d, "log", "--format=%s", "--", "project.json").splitlines()
+    print("GIT LOG", log)
+    assert log[0] == "version: before cut" and int(commits) + 1 == len(git(d, "rev-list", "HEAD").split())
+    # the version holds the project as it was: still pending
+    assert json.loads(git(d, "show", "HEAD:project.json"))["status"] == "pending"
+    # nothing else moved beyond today's apply
+    assert {k for k in after if after[k] != before.get(k)} <= {"status", "name", "tracks", "cleanCut", "captions",
+                                                              "audio", "markers", "notes"}
+
+
+def test_apply_on_a_draft_project_leaves_the_status(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    p["status"] = "draft"
+    p["tracks"][0]["items"][0]["end"] = SOURCE_S   # a draft counts only a clip with length
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    git(d, "commit", "-qam", "draft")
+    plan_and_apply(d, monkeypatch)
+    assert _status(d) == "draft"
+
+
+def test_a_plan_on_a_pending_project_leaves_it_pending(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    run(d, monkeypatch=monkeypatch)
+    assert _status(d) == "pending"
+
+
+def test_a_silence_apply_on_a_pending_project_sets_draft_too(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe({"transcription": []})
+    d = make_project(tmp_path)
+    plan, applied = plan_and_apply(d, monkeypatch)
+    assert plan.get("silence") and _status(d) == "draft"

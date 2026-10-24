@@ -781,7 +781,7 @@ STEP_WRITES = {
     # cut also writes a transcript `<stem>.json` beside each untranscribed clip (often outside the project, so
     # not a project file here). out_guard does not see it: the step checks the place itself
     # (lib/write_places.sidecar_folder_ok) and never replaces a file there.
-    "cut": (("tracks", "captions", "audio", "markers", "notes", "cleanCut"), ("speech-text.md", "cut-plan.md", "cut-plan.prev.md", "cut-plan.prev-")),
+    "cut": (("tracks", "captions", "audio", "markers", "notes", "cleanCut", "status"), ("speech-text.md", "cut-plan.md", "cut-plan.prev.md", "cut-plan.prev-")),
     # §558: place adds an overlay (and its preset file), captions styles the captions, slides edits the slides
     "place": (("tracks",), ("overlays/",)),
     "captions": (("captions",), ()),

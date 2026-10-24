@@ -770,6 +770,7 @@ def _apply_plan(args, project_path, project_dir):
                 "speech", {"seconds": kept_s},
                 {"lines": why_left, "fillers": b["fillers"], "seconds": (round(b["before_s"] - kept_s, 2) + 0.0)},
                 duration, max_pause, candidate, plan_stamp, plan_hash)
+            _start(candidate)
         res = apply(project_path, plain, preview=False, max_pause=max_pause, feel=DEFAULT_FEEL,
                     base=b["work"], base_of=disk, version_message=VERSION_MESSAGE, want_project=True, amend=mark,
                     carry_from=b["origin"], lineage=b["lineage"], guard_keys=(MARKER_KEY,))
@@ -794,6 +795,12 @@ def _apply_plan(args, project_path, project_dir):
     print(json.dumps(answer, ensure_ascii=False))
 
 
+def _start(project):
+    """A pending project is started by the cut that applies: the same write sets it to draft."""
+    if project.get("status") == "pending":
+        project["status"] = "draft"
+
+
 def _write_silence(project_path, project_dir, disk, b, track_id, max_pause, marker, warnings, plan_stamp,
                    plan_hash=None):
     """The silence cut's write, with the speech path's guards: the other layers carried by the one map, the
@@ -813,6 +820,7 @@ def _write_silence(project_path, project_dir, disk, b, track_id, max_pause, mark
         candidate[MARKER_KEY] = _marker("silence", {"seconds": kept_s},
                                         {"seconds": (round(b["before_s"] - kept_s, 2) + 0.0)},
                                         duration, max_pause, candidate, plan_stamp, plan_hash)
+    _start(candidate)
     try:
         sync_clash.check_step_document(disk, candidate, files=[])
     except sync_clash.SyncConflict as e:
@@ -822,7 +830,10 @@ def _write_silence(project_path, project_dir, disk, b, track_id, max_pause, mark
     if not version and not is_own_repo(project_dir):
         warnings.append("no version saved: the project folder is not its own git repository")
     keys = ("tracks", "captions", "audio", "markers", "notes", MARKER_KEY)
-    save_project_changes(Path(project_path), disk, candidate, keys=keys, guard=keys)
+    guard = keys
+    if candidate.get("status") != disk.get("status"):
+        keys = keys + ("status",)   # written in this same guarded write; not guarded, a later status change wins
+    save_project_changes(Path(project_path), disk, candidate, keys=keys, guard=guard)
     return version, _layers(rep.get("flagged"))
 
 
