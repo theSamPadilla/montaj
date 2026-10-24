@@ -119,9 +119,22 @@ class TestRequest:
             "model": "gemini-omni-1.1-flash",
             "input": "a red ball rolls",
             "response_format": {"type": "video", "aspect_ratio": "9:16", "resolution": "720p",
-                                "duration": "4s", "delivery": "uri"},
+                                "duration": "4s", "delivery": "inline"},
             "background": False, "store": False, "stream": False,
         }
+
+    @pytest.mark.parametrize("mode", ["text", "image", "refs"])
+    def test_inline_delivery_goes_with_store_false(self, fake, tmp_path, mode):
+        """§564: Google answers HTTP 400 "store=true is required when response format
+        has video delivery set to URI" (app 1.4.3, 2026-10-24). The clip comes back inline
+        so the interaction is not stored; a URI would need store true."""
+        fake.post_script = [_done(_inline())]
+        kw = {"image": {"image_path": _png(tmp_path, "first.png")},
+              "refs": {"reference_image_paths": [_png(tmp_path, "r1.png")]}}.get(mode, {})
+        _gen(tmp_path, **kw)
+        body = fake.posts[0][1]["json"]
+        assert body["store"] is False
+        assert body["response_format"]["delivery"] == "inline"
 
     def test_first_frame_then_text(self, fake, tmp_path):
         fake.post_script = [_done(_inline())]
@@ -185,6 +198,7 @@ class TestRequest:
 
 class TestDelivery:
     def test_uri_delivery_waits_for_active_then_downloads(self, fake, tmp_path):
+        """Never asked for (inline is, §564), but a URI answer is still collected."""
         uri = "https://generativelanguage.googleapis.com/v1beta/files/abc123:download?alt=media"
         fake.post_script = [_done({"type": "video", "mime_type": "video/mp4", "uri": uri})]
         fake.get_script = [_Resp(200, {"name": "files/abc123", "state": "PROCESSING"}),

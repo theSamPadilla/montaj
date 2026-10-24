@@ -92,8 +92,14 @@ DEFAULT_MUSIC_MODEL = "lyria-3.5"
 # - $17.50 per 1M output tokens at 5,792 tokens a second of 720p: about $0.10
 #   a second. Paid tier only. 1080p and 4k are upscaled and Google gives them
 #   no price, so only 720p is offered.
-# - `duration` is in VideoResponseFormat but the guide never sets it; the
-#   "Ns" form here is the protobuf Duration a str field takes, not measured.
+# - `duration` is in VideoResponseFormat but the guide never sets it. The API
+#   spec types it `google-duration`, the protobuf Duration JSON form ("4s")
+#   (ai.google.dev/static/api/interactions.openapi.json, read 2026-10-24); a
+#   clip's real length is not yet measured live.
+# - The clip comes back inline (§564), so the interaction is not stored for
+#   retrieval: URI delivery needs a stored one, which Google keeps 55 days on
+#   the paid tier (ai.google.dev/gemini-api/docs/interactions, read
+#   2026-10-24). See _video_body.
 VIDEO_ON = True
 VIDEO_OFF_MESSAGE = "Gemini video is off in this version of Montaj. Use Kling, Seedance or Kinovi."
 DEFAULT_VIDEO_MODEL = "gemini-omni-1.1-flash"
@@ -113,7 +119,8 @@ VIDEO_API = "https://generativelanguage.googleapis.com/v1beta"
 # the download shares one deadline under that; the request itself waits 600 s.
 VIDEO_DEADLINE_S = 840
 VIDEO_REQUEST_TIMEOUT_S = 600
-# A URI delivery is polled until the file is ACTIVE, as the guide's loop does.
+# A URI answer (never asked for: _video_body asks for inline) is polled until
+# the file is ACTIVE, as the guide's loop does.
 VIDEO_FILE_POLL_INTERVAL_S = 5
 VIDEO_FILE_MAX_WAIT_S = 180
 VIDEO_DOWNLOAD_ATTEMPTS = 3
@@ -966,8 +973,17 @@ def _video_body(prompt, image_path, last_frame_path, refs, seconds, aspect_ratio
     body = {
         "model": model,
         "input": [*(_video_image_part(p) for p in images), {"type": "text", "text": text}] if images else text,
+        # Inline goes with store false (§564). Google refuses URI delivery without
+        # a stored interaction: "store=true is required when response format has
+        # video delivery set to URI" (its HTTP 400, app 1.4.3, 2026-10-24). The
+        # guide asks for URI only "For videos larger than 4MB (>720p when
+        # available)", and only 720p is offered (ai.google.dev/gemini-api/docs/omni,
+        # read 2026-10-24); it documents no inline size limit, so a long clip's
+        # size is unmeasured. The API spec's VideoResponseFormat lists "inline",
+        # "Video data is returned inline in the response.", and its example uses
+        # it (ai.google.dev/static/api/interactions.openapi.json, read 2026-10-24).
         "response_format": {"type": "video", "aspect_ratio": aspect_ratio, "resolution": resolution,
-                            "duration": f"{seconds}s", "delivery": "uri"},
+                            "duration": f"{seconds}s", "delivery": "inline"},
         "background": False, "store": False, "stream": False,
     }
     if refs:
