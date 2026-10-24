@@ -28,6 +28,7 @@ import { tmpdir }                                         from 'os'
 import { randomBytes }                                    from 'crypto'
 import { toFileHref, fontsCssHref, assetResolverSource } from './file-url.js'
 import { overlayEsbuildOptions, overlayReadBoundary }     from './overlay-build.js'
+import { resolveTemplatePath }                            from './shipped-template.js'
 import { overlayPageLaunchOptions, installPageGuard, prefetchPropsUrls, overlayPageCspMeta, pageNeedsGoogleFonts } from './page-guard.js'
 import { parseGoogleFonts } from './google-fonts.js'
 import { pngsToPdf } from './carousel-pdf.js'
@@ -380,7 +381,7 @@ async function bundleSlide({ slide, width, height, projectDir, fontsBaseDir = ''
     .map(el => join(projectDir, el.src))
   const boundary = overlayReadBoundary({
     projectDir, workDir, fontsDir: fontsBaseDir, props: slide,
-    files: [...uniqueTemplates.map(tpl => resolve(tpl)), ...relativeImages],
+    files: [...uniqueTemplates.map(tpl => resolveTemplatePath(tpl, __dirname)), ...relativeImages],
   })
 
   // Collect the Google Fonts every element on this slide declares. Mirrors the
@@ -393,7 +394,8 @@ async function bundleSlide({ slide, width, height, projectDir, fontsBaseDir = ''
 
   // Build import lines + registry entries for each unique overlay
   const overlayImports  = uniqueTemplates.map((tpl, idx) =>
-    `import __overlay_${idx}__ from ${JSON.stringify(resolve(tpl))}`
+    // §569: a shipped overlay named by another Mac's absolute path reads this runtime's copy (shipped-template.js)
+    `import __overlay_${idx}__ from ${JSON.stringify(resolveTemplatePath(tpl, __dirname))}`
   ).join('\n')
 
   const registryEntries = uniqueTemplates.map((tpl, idx) =>

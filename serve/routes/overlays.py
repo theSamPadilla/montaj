@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from cli.deps import render_runtime_dir
 from lib.common import node_child_env
 from lib.profile_assets import NAME_RE
+from lib.shipped_template import resolve_template_path
 from serve.common import (
     MONTAJ_ROOT,
     _allowed_file_roots,
@@ -208,6 +209,9 @@ def _watcher_spelling(real: Path) -> str:
     return str(real)
 
 
+# §569: absolute on either platform (POSIX, a drive letter, a UNC share), whichever this one is.
+_ANY_ABSOLUTE = re.compile(r"^(?:/|[A-Za-z]:[\\/]|\\\\)")
+
 _ABS_PATH = re.compile(r"(?<![\w.@-])(?:[A-Za-z]:[\\/]|/)[^\s\"'`<>|*?]+")
 
 
@@ -257,6 +261,10 @@ async def bundle_overlay(path: str = Query(default=""), project: str = Query(def
         scene3d_stage = Path(host_stage)
         path = str(scene3d_stage)
     entry = Path(path)
+    if scene3d_stage is None and _ANY_ABSOLUTE.match(path) and not entry.is_file():
+        # §569: a shipped overlay named by another computer's absolute path (a carousel text overlay made there, POSIX
+        # or Windows spelling) is this runtime's copy; anything else missing goes on as before
+        entry = resolve_template_path(path, render_runtime_dir()) or entry
     project_base: Path | None = None
     if project:
         try:

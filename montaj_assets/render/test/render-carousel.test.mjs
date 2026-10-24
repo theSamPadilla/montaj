@@ -410,3 +410,30 @@ test('a PDF write error is a warning: exit 0, PNGs kept, manifest pdf null', () 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// §569: a text overlay made on another Mac names the shipped static-text by that Mac's absolute path, which is not here.
+// It draws from this runtime's copy (shipped-template.js) instead of failing the slide.
+test('an overlay template naming another Mac\'s shipped static-text draws with this runtime\'s copy', () => {
+  const other = '/Users/someone-else-569/Library/Application Support/Montaj/runtime-home/.cache/montaj/render/templates/overlays/static-text/static-text.jsx'
+  assert.equal(existsSync(other), false)
+  const withText = buildFixtureProject(1)
+  withText.slides[0].elements = [{
+    type: 'overlay', id: 't', x: 0.1, y: 0.4, width: 0.8, height: 0.2,
+    overlay: { template: other, props: { text: 'HELLO 569', fontSize: 160, color: '#ff2d55', fontWeight: 900 } },
+  }]
+  const dir = writeTempProject(withText)
+  const blank = writeTempProject(buildFixtureProject(1))
+  try {
+    const { status, stderr } = runRenderer(['--project-json', join(dir, 'project.json'), '--scale', '1'])
+    assert.equal(status, 0, stderr)
+    const manifest = JSON.parse(readFileSync(join(dir, 'render', 'manifest.json'), 'utf8'))
+    assert.deepEqual(manifest.failures, [])
+    assert.equal(runRenderer(['--project-json', join(blank, 'project.json'), '--scale', '1']).status, 0)
+    // the text is drawn: the slide's PNG holds much more than the plain colour slide's
+    const size = (d) => readFileSync(join(d, 'render', 'slide_01.png')).length
+    assert.ok(size(dir) > size(blank) * 2, `with text ${size(dir)} B, plain ${size(blank)} B`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(blank, { recursive: true, force: true })
+  }
+})
