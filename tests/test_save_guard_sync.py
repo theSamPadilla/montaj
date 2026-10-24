@@ -673,6 +673,45 @@ def test_case8_sample_frame_runs_on_a_clashed_project(ws, state, ran):
     assert len(ran) == 1
 
 
+@pytest.mark.parametrize("name,body,field", [
+    ("place", {"at": "1", "preset": "callout"}, "tracks"),
+    ("captions", {"look": "pop"}, "captions"),
+    ("slides", {"headlines": "[]"}, "slides"),
+])
+def test_case8_the_s558_steps_are_checked_on_their_fields_not_refused_for_any_clash(ws, state, ran, name, body, field):
+    """§558 land review: place, captions and slides have rows. An unrelated open clash lets them run; theirs refuses."""
+    _project(ws)
+    _sidecar(state, fields=["markers"])
+    resp = _step(name, {"project": PID, **body})
+    assert resp.status_code == 200, resp.text
+    assert len(ran) == 1
+    _sidecar(state, fields=[field])
+    _refused(_step(name, {"project": PID, **body}), [field])
+    assert len(ran) == 1
+
+
+def test_case8_look_runs_on_a_clashed_project(ws, state, ran):
+    _project(ws)
+    _sidecar(state, fields=["tracks", "settings"])
+    resp = _step("look", {"project": PID})
+    assert resp.status_code == 200, resp.text
+    assert len(ran) == 1
+
+
+def test_case8_look_checks_its_default_samples_folder(ws, state, ran):
+    _project(ws)
+    _sidecar(state, files=["render/samples/"])
+    _refused(_step("look", {"project": PID}), ["render/samples/"])
+    assert ran == []
+
+
+def test_case8_cut_checks_its_kept_old_plans(ws, state, ran):
+    d = _project(ws)
+    _sidecar(state, files=["cut-plan.prev-"])
+    _refused(_step("cut", {"project": str(d)}), ["cut-plan.prev-"])
+    assert ran == []
+
+
 def test_case8_a_step_the_table_does_not_know_is_refused_while_any_clash_is_open(ws, state, ran):
     _project(ws)
     _sidecar(state, fields=["markers"])

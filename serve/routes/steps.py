@@ -537,6 +537,14 @@ async def list_steps():
 _NO_PROXY_QUEUE_STEPS = frozenset({"proxy"})
 
 
+def _writes_tracks(name: str) -> bool:
+    """Whether a step can add a clip to the tracks (so its project may need proxies). A step that writes no tracks
+    queues none: its proxy write-backs would change the tracks inside the next guarded write's window."""
+    if name in STEP_WRITES_NOTHING:
+        return False
+    return name not in STEP_WRITES or "tracks" in STEP_WRITES[name][0]
+
+
 async def _queue_proxies_after_step(name: str, refs: list, broadcaster) -> None:
     """After a step that ran against a project: queue that project's editing proxies, the way
     POST /projects/{id}/proxies does. An AI video step writes its clip onto the first track with no
@@ -679,10 +687,13 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
         result.setdefault("out", resolved_out)
     # In a thread: the record is written under the project lock, which blocks.
     await asyncio.to_thread(_note_provenance, name, schema, body, result, project_ref)
-    if queue_proxies:
+    if queue_proxies and _writes_tracks(name):
         # The one completion point of both the synchronous run and the async job. `project` is read
-        # again here: resolve_project_param rewrote it to the project's project.json.
-        await _queue_proxies_after_step(name, named_refs + [body.get("project")], broadcaster)
+        # again here: resolve_project_param rewrote it to the project's project.json. In the background: the
+        # queue probes every video source and may wait on the project lock, which must not delay the answer.
+        task = asyncio.create_task(_queue_proxies_after_step(name, named_refs + [body.get("project")], broadcaster))
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
     return result
 
 
@@ -770,7 +781,11 @@ STEP_WRITES = {
     # cut also writes a transcript `<stem>.json` beside each untranscribed clip (often outside the project, so
     # not a project file here). out_guard does not see it: the step checks the place itself
     # (lib/write_places.sidecar_folder_ok) and never replaces a file there.
-    "cut": (("tracks", "captions", "audio", "markers", "notes", "cleanCut"), ("speech-text.md", "cut-plan.md")),
+    "cut": (("tracks", "captions", "audio", "markers", "notes", "cleanCut"), ("speech-text.md", "cut-plan.md", "cut-plan.prev-")),
+    # §558: place adds an overlay (and its preset file), captions styles the captions, slides edits the slides
+    "place": (("tracks",), ("overlays/",)),
+    "captions": (("captions",), ()),
+    "slides": (("slides",), ()),
     "generate_captions": (("captions",), ()),
     "kling_generate": (("tracks", "storyboard", "status"), ()),
     "veo_generate": (("tracks", "storyboard", "status"), ()),
@@ -779,13 +794,14 @@ STEP_WRITES = {
 }
 STEP_WRITES_NOTHING = frozenset({
     "sample_frame", "contact_sheet", "export_editor", "export_overlay_pages", "export_carousel_pages",
-    "track_points", "probe", "transcribe",
+    "track_points", "probe", "transcribe", "look",
 })
 # Where a step writes inside the project it names when no `out` is given (review 40): checked as that folder. Neither
 # is a folder Studio sync carries today (the uploader skips render/, and export/ holds nothing a project references),
 # so these refuse only if a later sync scope names a file there; guarded rather than assumed.
 STEP_DEFAULT_OUT = {
     "sample_frame": "render/samples/",   # steps/render/sample_frame.py: <project>/render/samples/frame-<at>s.png
+    "look": "render/samples/",           # steps/render/look.py: <project>/render/samples/ (its check pictures)
     "export_editor": "export/",          # montaj_assets/render/export-editor.js: <project>/export/<package>/
 }
 _STEP_PROJECT_FIELDS = ("project", "project-id", "project_id", "projectId")
