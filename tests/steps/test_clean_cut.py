@@ -53,7 +53,10 @@ def retake_transcript():
     assert len(words) == len(SCRIPT)
     out = []
     for w, text in zip(words, SCRIPT):
-        out.append({**w, "text": " " + text})
+        out.append({**w, "text": " " + text, "offsets": dict(w["offsets"])})
+    # the truncated take breaks off: a pause before "Trim", where the next sentence starts
+    trim = SCRIPT.index("Trim")
+    out[trim]["offsets"]["from"] = out[trim - 1]["offsets"]["to"] + 350
     return {**real, "transcription": out}
 
 
@@ -564,3 +567,21 @@ def test_a_waveform_failure_is_reported(tmp_path, stub_transcribe, monkeypatch):
     monkeypatch.setattr(cc.waveform_trim, "process_one", lambda *a: cc.fail("no_speech", "No speech detected"))
     out, _ = run(d, "--preview", monkeypatch=monkeypatch)
     assert any("no silence cut on clip-0" in w for w in out["warnings"])
+
+
+def test_parallel_sentences_are_never_cut_end_to_end(tmp_path, stub_transcribe, monkeypatch):
+    """Review 2, blocker 3: sentences built the same way are not retakes; every one stays."""
+    sentences = ["You can cut your clips in one click.", "You can cut your audio in one click.",
+                 "You can cut your captions in one click.", "The best part is the price.",
+                 "The best part is the speed.", "This is the way we do it.", "Never, never, never give up today.",
+                 "Thanks so much."]
+    script = " ".join(sentences).split()
+    real = json.loads((FIX / "speech.json").read_text())
+    words = [w for w in real["transcription"] if w["text"].strip()]
+    assert len(words) == len(script)
+    stub_transcribe({**real, "transcription": [{**w, "text": " " + t} for w, t in zip(words, script)]})
+    d = make_project(tmp_path)
+    out, _ = run(d, monkeypatch=monkeypatch)
+    assert out["removed"]["takes"] == 0
+    assert [ln.split(" ", 1)[1] for ln in out["text"].splitlines()] == sentences
+    assert phrases(d) == sentences

@@ -22,7 +22,7 @@ from lib.speech_apply import apply
 from lib.speech_build import DEFAULT_FEEL, FEELS
 from lib.speech_carry import TimeMap, carry
 from lib.speech_lines import _ends_sentence, load_words, norm, sidecar_for
-from lib.take_select import Unit, select
+from lib.take_select import BREAK_GAP_S, Unit, select
 from steps.audio import waveform_trim
 from steps.edit import jump_cut
 from steps.speech import rm_fillers, rm_nonspeech
@@ -349,7 +349,17 @@ def _units(d, is_filler):
                 lo, hi = min(played), max(played)
                 fillers += sum(1 for w in ln.words if lo <= w.idx <= hi and w.norm and is_filler(w.norm))
         hes = sum(1 for a, b in zip(words, words[1:]) if b.start - a.end >= HESITATION_S)
-        out.append((Unit([w.text for w in words], fillers=fillers, hesitations=hes), u["rows"], u["attached"]))
+        # a timing break before a word: it opens another source line, or follows a pause in the source
+        breaks, pos, prev_line = set(), 0, None
+        for _, r in u["rows"]:
+            for k, w in enumerate(r.words):
+                if pos and ((k == 0 and r.line != prev_line) or w.start - words[pos - 1].end >= BREAK_GAP_S):
+                    breaks.add(pos)
+                pos += 1
+            prev_line = r.line
+        clip = _line_key(u["line"])[0]
+        out.append((Unit([w.text for w in words], fillers=fillers, hesitations=hes, clip=clip, breaks=breaks),
+                    u["rows"], u["attached"]))
     return out, pending
 
 
