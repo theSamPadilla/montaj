@@ -15,6 +15,7 @@ import { tmpdir } from 'os'
 import { audioSourceWindow } from '@bycrux/timeline-core'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { ffSeconds } from './ff-seconds.js'
+import { castNumber } from './filter-number.js'
 import { externalizeFilterGraph } from './filter-script.js'
 import { ffmpegErrorTail, assertInputsExist } from './ffmpeg-error.js'
 import { syncResultError } from './child-killed.js'
@@ -41,13 +42,6 @@ const FFMPEG_CURVE_BY_SHAPE = { linear: 'tri', log: 'log', exp: 'exp' }
  *  it always has. */
 function ffmpegFadeCurve(shape) {
   return FFMPEG_CURVE_BY_SHAPE[shape] ?? FFMPEG_CURVE_BY_SHAPE.exp
-}
-
-// A track's volume and start are project.json values that go into the filter graph as text, where anything but
-// a number could add a filter (§563). A finite number passes unchanged; anything else is refused, naming the field.
-function finiteNumber(value, field) {
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  throw new Error(`audio.tracks[].${field} must be a finite number, got ${JSON.stringify(value)}`)
 }
 
 /**
@@ -88,7 +82,7 @@ function finiteNumber(value, field) {
  *                         leading-comma fragment to append to the delay chain
  */
 function buildFadeFilters(track) {
-  const start   = finiteNumber(track.start ?? 0, 'start')
+  const start   = castNumber(track.start ?? 0, 'audio.tracks[].start')  // §563: text in the graph
   const fadeIn  = track.fadeIn  ?? 0
   const fadeOut = track.fadeOut ?? 0
   // NOT `?? 0`. A track with no `end` is legal and common — `_validate_audio_tracks`
@@ -163,7 +157,7 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
     if (track.muted) continue
 
     const inputIdx = baseInputIdx + offset
-    const vol      = finiteNumber(track.volume ?? 1.0, 'volume')
+    const vol      = castNumber(track.volume ?? 1.0, 'audio.tracks[].volume', 0)  // §563: text in the graph
     const delayMs  = Math.round((track.start ?? 0) * 1000)
     const audioIn  = audioLabel.startsWith('[') ? audioLabel : `[${audioLabel}]`
 

@@ -38,7 +38,7 @@ import { mkdirSync, rmSync } from 'fs'
 import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { ffSeconds } from './ff-seconds.js'
-import { positiveNumber, frameSize } from './filter-number.js'
+import { positiveNumber, frameSize, castNumber } from './filter-number.js'
 import { describeFfmpegExit, assertInputsExist, fileInputsOf } from './ffmpeg-error.js'
 import { childKilledError } from './child-killed.js'
 import { specFor, encoderArgsFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
@@ -1269,7 +1269,7 @@ export function buildImageItemFilterParts(item, vw, vh, idx, videoLabel, duratio
   )
   let src = `[img${idx}]`
   if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
-    filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[imgop${idx}]`)
+    filterParts.push(`${src}colorchannelmixer=aa=${castNumber(item.opacity, 'opacity')}[imgop${idx}]`)
     src = `[imgop${idx}]`
   }
   // box.x/box.y, not the unrotated x/y: a rotated frame arrives here at
@@ -1625,7 +1625,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   }
   let src = `[vid${idx}]`
   if (Math.abs((item.opacity ?? 1) - 1) > 0.001) {
-    filterParts.push(`${src}colorchannelmixer=aa=${item.opacity}[vidop${idx}]`)
+    filterParts.push(`${src}colorchannelmixer=aa=${castNumber(item.opacity, 'opacity')}[vidop${idx}]`)
     src = `[vidop${idx}]`
   }
   // box.x/box.y, not the unrotated x/y — see the image path.
@@ -1801,7 +1801,7 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   // by construction, and the alpha is definitely present either way because the
   // `format=${inputFormatFlag}` step above pinned this chain to yuva420p/rgba.
   if (!keyframed && Math.abs((ov.opacity ?? 1) - 1) > 0.001) {
-    filterParts.push(`${ovSrc}colorchannelmixer=aa=${ov.opacity}[ovop${ovIdx}]`)
+    filterParts.push(`${ovSrc}colorchannelmixer=aa=${castNumber(ov.opacity, 'overlay opacity')}[ovop${ovIdx}]`)
     ovSrc = `[ovop${ovIdx}]`
   }
 
@@ -2243,7 +2243,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // Otherwise: in dry-run mode, skip the ffprobe check (file may not
       // exist) and assume audio present.
       if (!item.muted && (item.hasAudio ?? (opts._dryRun || fileHasAudio(item.src)))) {
-        const vol = item.volume ?? 1.0
+        const vol = castNumber(item.volume ?? 1.0, 'volume', 0)  // §563: text in the graph
         const aLabel = `a${idx}`
         // atrim=0:${duration} makes the per-segment sample count exact and
         // explicit in the filter chain, rather than implicit in ffmpeg's

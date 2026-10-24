@@ -1946,3 +1946,27 @@ test('dry-run: a canvas size, frame rate or speed that is not a number is refuse
   await assert.rejects(run({ ...segment, fps: '30:x' }), /settings\.fps/)
   await assert.rejects(run({ ...segment, items: segment.items.map((it, i) => (i ? it : { ...it, speed: '1.5,x' })) }), /speed/)
 })
+
+test('dry-run: opacity and volume build exactly the arguments they did before the §563 casts', async () => {
+  // Captured before the casts: a 0.5-opacity, 0.8-volume clip, a 0.25-opacity image, a 0.6-opacity overlay.
+  const { segment, expected } = VALID_SEGMENT.opacityVolume
+  const result = await encodeSegment(segment, '/out/seg2.mp4', { _dryRun: true })
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), expected)
+})
+
+test('dry-run: an opacity only ever reaches the graph as a number; a bad volume is refused (§563)', async () => {
+  const { segment } = VALID_SEGMENT.opacityVolume
+  const run = (seg) => encodeSegment(seg, '/out/seg2.mp4', { _dryRun: true })
+  const withItem = (i, extra) => ({ ...segment, items: segment.items.map((it, j) => (j === i ? { ...it, ...extra } : it)) })
+  // An opacity that is not a number was, and stays, no opacity step at all (the item draws opaque).
+  const graphs = [
+    await run(withItem(0, { opacity: '0.5:x' })),
+    await run(withItem(1, { opacity: '0.25[x]' })),
+    await run({ ...segment, overlays: [{ ...segment.overlays[0], opacity: '0.6,x' }] }),
+  ].map(r => r.filterParts.join(';'))
+  for (const g of graphs) assert.ok(!['0.5:x', '0.25[x]', '0.6,x'].some(t => g.includes(t)) && !g.includes('aa=NaN'), g)
+  // A numeric string casts to the same number.
+  assert.match((await run(withItem(0, { opacity: '0.5' }))).filterParts.join(';'), /colorchannelmixer=aa=0\.5\[vidop/)
+  await assert.rejects(run(withItem(0, { volume: '0.8,x' })), /volume/)
+  await assert.rejects(run(withItem(0, { volume: -1 })), /volume/)
+})

@@ -30,3 +30,12 @@ export function pixelCount(value, field) {
 export function frameSize(width, height) {
   return `${pixelCount(width, 'settings.resolution[0]')}x${pixelCount(height, 'settings.resolution[1]')}`
 }
+
+/** `value` cast with Number(): a number of at least `min`, unchanged when it already was one. For fields an older
+ *  project may hold as a numeric string (an opacity, a volume), which have always worked and must keep working. */
+export function castNumber(value, field, min = -Infinity) {
+  const n = typeof value === 'number' ? value : Number(value)
+  if (Number.isFinite(n) && n >= min) return n
+  const want = min === 0 ? 'a number of zero or more' : 'a finite number'
+  throw new Error(`${field} must be ${want}, got ${JSON.stringify(value)}`)
+}
