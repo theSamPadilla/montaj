@@ -1,0 +1,15 @@
+{
+  "name": "slides",
+  "category": "edit",
+  "description": "A carousel's headlines, one slide's edit and a new slide order, in one call. headlines: one per slide, each made (or replaced) as the editor's own text element, restyleable in its text panel. edit: one slide's headline, color, size, align, position or style. order: every slide once. Writes the slides only, a version first; a person's edit since it read them is refused, and slides it does not touch stay as they are. Never renders.",
+  "input": {"type": "project", "description": "The project id, its folder, or the absolute path of its project.json"},
+  "output": {"type": "json", "description": "{changed: [slide numbers, after any new order], headlines?: {added, replaced}, order?: true, issues?}. detail adds each changed slide's headline text and size."},
+  "params": [
+    {"name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json"},
+    {"name": "headlines", "type": "string", "required": false, "description": "A JSON list of headline texts, one per slide in order; null skips a slide."},
+    {"name": "edit", "type": "string", "required": false, "description": "One slide: {\"slide\": 3, \"headline\": \"...\", \"color\": \"red\", \"size\": \"smaller\", \"align\": \"left\", \"position\": \"top\"|\"middle\"|\"bottom\", \"style\": \"bold\"}. slide is its number (1-based) or id."},
+    {"name": "order", "type": "string", "required": false, "description": "The new order: a JSON list of every slide once, by number (1-based) or id, e.g. [1, 4, 3, 2, 5]. Applied after headlines and edit."},
+    {"name": "style", "type": "enum", "options": ["bold", "clean", "label"], "required": false, "description": "The headlines' look: bold (white, heavy, shadow), clean (dark on light), label (a white pill). Default bold."},
+    {"name": "detail", "type": "bool", "default": false, "description": "Also answer each changed slide's headline."}
+  ]
+}
