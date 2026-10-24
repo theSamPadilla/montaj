@@ -587,6 +587,7 @@ def test_a_relative_out_reaches_the_step_as_the_workspace_file(places, client, m
         r = client.post("/api/steps/plain", json={"out": out})
         assert r.status_code == 200, r.text
         argv = r.json()["argv"]
+        assert argv.count("--out") == 1  # a declared `out` used to go in twice
         assert argv[argv.index("--out") + 1] == os.path.join(str(places["ws"]), out)
     r = client.post("/api/steps/plain", json={"out": "http://host/x.wav"})
     assert r.status_code == 403
