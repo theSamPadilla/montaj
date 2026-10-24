@@ -347,6 +347,7 @@ describe('TextFormattingToolbar — adaptive rendering by element prop schema', 
     expect(screen.getByRole('button', { name: /italic/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /text case/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/text color/i)).toBeInTheDocument();
+    expect(screen.getByLabelText('Text background')).toBeInTheDocument();
     expect(screen.getByLabelText('Font size')).toBeInTheDocument();
     expect(screen.getByLabelText(/font family/i)).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /align left/i })).toBeInTheDocument();
@@ -365,6 +366,7 @@ describe('TextFormattingToolbar — adaptive rendering by element prop schema', 
     expect(screen.queryByRole('button', { name: /italic/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /text case/i })).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/text color/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Text background')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Font size')).toBeInTheDocument();
     expect(screen.queryByLabelText(/font family/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('radio', { name: /align left/i })).not.toBeInTheDocument();
@@ -414,3 +416,143 @@ describe('TextFormattingToolbar — adaptive rendering by element prop schema', 
     expect(screen.getByRole('button', { name: /delete text overlay/i })).toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Text background (bgColor)
+// ---------------------------------------------------------------------------
+
+describe('TextFormattingToolbar — text background', () => {
+  const CLEAR = 'No text background'
+
+  function renderBg(bgColor: unknown, update = vi.fn().mockResolvedValue(undefined)) {
+    render(
+      <TextFormattingToolbar
+        slideId={SLIDE_ID}
+        element={makeOverlay({ text: 'hi', color: '#000000', bgColor })}
+        updateOverlayProp={update}
+      />,
+    )
+    return update
+  }
+  const swatch = () => screen.getByLabelText('Text background') as HTMLInputElement
+  // What the swatch paints: its own fill, not the (invisible) native input.
+  const fill = () => swatch().closest('label')!.querySelector('span')!.style.backgroundColor
+
+  it('sits right after the text color: the swatch, then the clear button', () => {
+    renderBg('#ff0000')
+    const toolbar = screen.getByRole('toolbar', { name: /text formatting/i })
+    const labels = Array.from(toolbar.querySelectorAll('[aria-label]')).map((el) => el.getAttribute('aria-label'))
+    const at = labels.indexOf('Text color')
+    expect(at).toBeGreaterThan(-1)
+    expect(labels.slice(at, at + 3)).toEqual(['Text color', 'Text background', CLEAR])
+  })
+
+  it('shows the saved color in the picker and the swatch', () => {
+    renderBg('#336699')
+    expect(swatch().value).toBe('#336699')
+    expect(fill()).toBe('rgb(51, 102, 153)')
+  })
+
+  it.each(['transparent', 'rgba(0, 0, 0, 0.5)', 'red', '#fff', ''])(
+    'gives the picker a plain hex when bgColor is %j, and writes nothing',
+    (bg) => {
+      const update = renderBg(bg)
+      // Never the raw CSS string: the native picker cannot show it, and (in a
+      // browser as in jsdom) turns anything it cannot show into #000000.
+      expect(fill()).toMatch(/^rgb\(\d+, \d+, \d+\)$/)
+      expect(swatch().value).toMatch(/^#[0-9a-f]{6}$/)
+      expect(swatch().value).not.toBe('#000000')
+      fireEvent.blur(swatch())
+      expect(update).not.toHaveBeenCalled()
+    },
+  )
+
+  it('a pick previews in the swatch and writes bgColor once, on commit', () => {
+    const update = renderBg('transparent')
+    fireEvent.change(swatch(), { target: { value: '#00ff00' } })
+    fireEvent.change(swatch(), { target: { value: '#ff0000' } })
+    expect(fill()).toBe('rgb(255, 0, 0)')
+    expect(update).not.toHaveBeenCalled()
+
+    fireEvent.blur(swatch(), { target: { value: '#ff0000' } })
+    expect(update.mock.calls).toEqual([[SLIDE_ID, 'el-1', 'bgColor', '#ff0000']])
+  })
+
+  it.each(['#ffffff', '#000000'])('a box with no background can be given %s in one pick', (hex) => {
+    // The native picker fires nothing for the color it already shows, so what
+    // it shows for a transparent box must not be a color people want.
+    const update = renderBg('transparent')
+    fireEvent.change(swatch(), { target: { value: hex } })
+    fireEvent.blur(swatch(), { target: { value: hex } })
+    expect(update.mock.calls).toEqual([[SLIDE_ID, 'el-1', 'bgColor', hex]])
+  })
+
+  it('a blur with no pick, or a pick that ends on the starting color, writes nothing', () => {
+    const update = renderBg('#336699')
+    fireEvent.blur(swatch(), { target: { value: '#336699' } })
+    fireEvent.change(swatch(), { target: { value: '#112233' } })
+    fireEvent.change(swatch(), { target: { value: '#336699' } })
+    fireEvent.blur(swatch(), { target: { value: '#336699' } })
+    expect(update).not.toHaveBeenCalled()
+    expect(fill()).toBe('rgb(51, 102, 153)')
+  })
+
+  it('follows the saved color when the element or its value changes underneath', () => {
+    const update = vi.fn().mockResolvedValue(undefined)
+    const at = (id: string, bgColor: string) => ({ ...makeOverlay({ text: 'hi', bgColor }), id })
+    const { rerender } = render(
+      <TextFormattingToolbar slideId={SLIDE_ID} element={at('el-1', '#111111')} updateOverlayProp={update} />,
+    )
+    fireEvent.change(swatch(), { target: { value: '#999999' } })
+    expect(swatch().value).toBe('#999999')
+
+    rerender(<TextFormattingToolbar slideId={SLIDE_ID} element={at('el-2', '#222222')} updateOverlayProp={update} />)
+    expect(swatch().value).toBe('#222222')
+    rerender(<TextFormattingToolbar slideId={SLIDE_ID} element={at('el-2', '#333333')} updateOverlayProp={update} />)
+    expect(swatch().value).toBe('#333333')
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('the clear button writes "transparent" once', () => {
+    const update = renderBg('#ff0000')
+    fireEvent.click(screen.getByRole('button', { name: CLEAR }))
+    expect(update.mock.calls).toEqual([[SLIDE_ID, 'el-1', 'bgColor', 'transparent']])
+  })
+
+  it.each(['#ff0000', 'rgba(0, 0, 0, 0.5)', 'red'])('shows the clear button while bgColor is %j', (bg) => {
+    renderBg(bg)
+    expect(screen.getByRole('button', { name: CLEAR })).toBeInTheDocument()
+  })
+
+  it.each(['transparent', 'Transparent', ''])('hides the clear button when bgColor is already %j', (bg) => {
+    renderBg(bg)
+    expect(screen.getByLabelText('Text background')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: CLEAR })).not.toBeInTheDocument()
+  })
+
+  it.each([{ fontSize: '64' }, { bgColor: null }])('an overlay without bgColor (%j) shows neither control', (extra) => {
+    render(
+      <TextFormattingToolbar
+        slideId={SLIDE_ID}
+        element={makeOverlay({ text: 'hi', color: '#000000', ...extra })}
+        updateOverlayProp={vi.fn()}
+      />,
+    )
+    expect(screen.getByLabelText(/text color/i)).toBeInTheDocument()
+    expect(screen.queryByLabelText('Text background')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: CLEAR })).not.toBeInTheDocument()
+  })
+
+  it('an overlay whose only contract prop is bgColor still gets the control, not the fallback hint', () => {
+    render(
+      <TextFormattingToolbar
+        slideId={SLIDE_ID}
+        element={makeOverlay({ text: 'hi', bgColor: '#ff0000' })}
+        updateOverlayProp={vi.fn()}
+      />,
+    )
+    expect(screen.getByLabelText('Text background')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: CLEAR })).toBeInTheDocument()
+    expect(screen.queryByText(/property panel/i)).not.toBeInTheDocument()
+  })
+})

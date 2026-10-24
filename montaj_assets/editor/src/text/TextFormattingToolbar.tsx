@@ -1,7 +1,9 @@
-import { Bold, Italic, AlignLeft, AlignCenter, AlignRight, Trash2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Ban, Bold, Italic, AlignLeft, AlignCenter, AlignRight, Trash2 } from 'lucide-react'
 import type { OverlayElement } from '../types'
 import { FontFamilyPicker, FontSizePicker } from './FontPicker'
 import { getSupportedProps, readPropAsString } from '../overlays/contract'
+import { Button, SwatchInput } from '../ui'
 
 export const HEX_PATTERN = /^#[0-9a-fA-F]{3,8}$/
 
@@ -66,6 +68,64 @@ export type TextFormattingToolbarProps = {
   mode?: 'light' | 'dark'
 }
 
+// What the background picker shows while the box has no solid color: bgColor
+// is `transparent`, empty, or a CSS color the native picker cannot show. Mid
+// grey on purpose, not white or black: the native picker fires nothing when a
+// pick equals the color it already shows, so a white (or black) start would
+// make that color impossible to choose in one go.
+const NEUTRAL_BG = '#808080'
+
+/** An empty or `transparent` background draws nothing, so there is nothing to clear. */
+function isTransparentBackground(raw: string): boolean {
+  const v = raw.trim().toLowerCase()
+  return v === '' || v === 'transparent'
+}
+
+/** The text box's background: a swatch, and a button that clears it. Written
+ *  as hex from the picker and as the literal `transparent` from the button. */
+function TextBackgroundControl({
+  slideId,
+  element,
+  updateOverlayProp,
+}: Pick<TextFormattingToolbarProps, 'slideId' | 'element' | 'updateOverlayProp'>) {
+  const raw = readPropAsString(element, 'bgColor')
+  const saved = HEX_PATTERN.test(raw) && raw.length === 7 ? raw : NEUTRAL_BG
+
+  // Like the text effect color: the swatch previews a pick locally and the
+  // overlay is written once, when the picker closes, so one pick is one undo step.
+  const [color, setColor] = useState(saved)
+  useEffect(() => setColor(saved), [element.id, saved])
+
+  const write = (value: string) => void updateOverlayProp(slideId, element.id, 'bgColor', value)
+
+  return (
+    <>
+      <SwatchInput
+        value={color}
+        onChange={setColor}
+        onCommit={write}
+        ariaLabel="Text background"
+        title="Text background"
+        showValue={false}
+        size="sm"
+      />
+      {!isTransparentBackground(raw) && (
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-7 w-7"
+          aria-label="No text background"
+          title="No text background"
+          onClick={() => write('transparent')}
+        >
+          <Ban className="h-3.5 w-3.5" aria-hidden="true" />
+        </Button>
+      )}
+    </>
+  )
+}
+
 export function TextFormattingToolbar({
   slideId,
   element,
@@ -109,7 +169,7 @@ export function TextFormattingToolbar({
   const toolbarBtnInactive = 'border-[var(--editor-border)] bg-[var(--editor-surface)] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)] hover:text-[var(--editor-text)] hover:border-[var(--editor-accent)]'
 
   // Segment visibility helpers — group toggles vs size/font vs alignment.
-  const hasLeftGroup = supported.has('fontWeight') || supported.has('fontStyle') || supported.has('textTransform') || supported.has('color')
+  const hasLeftGroup = supported.has('fontWeight') || supported.has('fontStyle') || supported.has('textTransform') || supported.has('color') || supported.has('bgColor')
   const hasMidGroup = supported.has('fontSize') || supported.has('fontFamily')
 
   return (
@@ -125,7 +185,7 @@ export function TextFormattingToolbar({
         aria-label="Text formatting"
         className="flex flex-wrap items-center gap-x-3 gap-y-2 p-2"
       >
-        {/* Segment 1: B / I / case / color toggles */}
+        {/* Segment 1: B / I / case / text color / text background */}
         {hasLeftGroup && (
           <div className="flex items-center gap-1">
             {supported.has('fontWeight') && (
@@ -181,6 +241,14 @@ export function TextFormattingToolbar({
                   aria-label="Text color"
                 />
               </label>
+            )}
+
+            {supported.has('bgColor') && (
+              <TextBackgroundControl
+                slideId={slideId}
+                element={element}
+                updateOverlayProp={updateOverlayProp}
+              />
             )}
           </div>
         )}
