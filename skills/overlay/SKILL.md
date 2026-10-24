@@ -37,8 +37,8 @@ If the prompt says "no overlays" — write nothing.
 ### Placement and timing constraints
 
 - **Never hardcode frame counts**; projects can be 24, 30 or 60fps. Derive durations from `fps` (for example `Math.round(fps * 0.2)`).
-- **Avoid the bottom ~350px** — that's where captions render and where platform UI lives (TikTok progress bar, Instagram controls). Keep `bottom` values above 350px, or use `top`-anchored placement instead.
-- **Avoid the right ~200px** — TikTok and Instagram stack action buttons (like, comment, share, follow) down the right edge. Don't push text or icons into that zone.
+- **Keep clear of the captions and the bottom controls.** Montaj's captions draw between about 56% and 76% of the frame height in every style and aspect (their block sits 24-26% up from the bottom; `accent` higher), not in the bottom few hundred pixels. On a tall phone frame the apps' progress bar and controls also take the bottom ~350px. Put an overlay that shares the screen with captions above 64% of the height (`bottom` of 36% or more), or anchor it from the top. `look` reports text that crosses the captions.
+- **Avoid the right ~200px between 45% and 85% of a tall phone frame's height:** TikTok and Instagram stack action buttons (like, comment, share, follow) down the right edge there. Don't push text or icons into that zone. On every aspect, keep text inside the 5% title-safe margin.
 
 ### 3. Tie overlays to the transcript
 

@@ -1,8 +1,9 @@
 /**
  * lower-third.jsx: a name card (§558, place's `lower_third` preset). Name on top, a smaller second line under it,
- * an accent bar on the left, on a soft dark plate. Placed bottom-left above the bottom 420px (portrait captions and
- * the apps' controls live in the bottom ~350px) and clear of the right 200px (the apps' buttons); in a landscape or
- * square frame it sits 8% up from the bottom. Each line shrinks to fit the card's width (never cut off). Slides in over ~0.35 s and fades out over the last ~0.3 s, both done
+ * an accent bar on the left, on a soft dark plate. Placed bottom-left with its bottom 36% up the frame, above
+ * montaj's own captions (which draw between 56% and 76% of the height), clear of the apps' right-side buttons on a
+ * tall phone frame and inside the 5% title-safe margin. Each line shrinks to fit the card's width, or wraps to two
+ * lines (never cut off). Slides in over ~0.35 s and fades out over the last ~0.3 s, both done
  * before the item ends (its last frame is held).
  *
  * Props (strings, as the editor's properties panel writes them):
@@ -36,14 +37,20 @@ export default function LowerThird() {
   const fadeOut = interpolate(frame, [last - outF, last], [1, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' })
   const x = anim === 'slide' ? (1 - enter) * -80 : 0
   const scale = anim === 'pop' ? 0.85 + 0.15 * enter : 1
-  const portrait = H > W
-  const bottom = portrait ? 420 : Math.round(H * 0.08)
+  // above montaj's own captions: every caption style draws between 56% and 76% of the height (measured on renders
+  // at 9:16, 1:1 and 16:9, lib/look_check.py CAPTION_BAND), so the card's bottom sits 36% up from the bottom
+  const bottom = Math.round(H * 0.36)
+  // clear of the apps' right-side buttons on a tall phone frame, else the 5% title-safe margin
+  const right = H >= W * 1.7 ? 220 : Math.round(W * 0.05)
   const subtitle = p.subtitle === undefined ? 'Title' : String(p.subtitle)
   const name = String(p.text || 'Name Surname')
-  // the card's text width: the frame less the left margin, the right app zone, the bar and the padding
-  const textW = W - 64 - 220 - 8 - 20 - 52
-  // about 0.58 em per character at a heavy weight: each line on one line, inside the card
-  const fit = (max, n) => Math.max(24, Math.min(max, Math.floor(textW / Math.max(1, n * 0.58))))
+  // the card's text width: the frame less the left margin, the right margin, the bar and the padding
+  const textW = W - 64 - right - 8 - 20 - 52
+  // about 0.58 em per character at a heavy weight: each line on one line inside the card, or, when that would go
+  // below 28 px, on two lines at 24 px or more
+  const oneLine = (n) => Math.floor(textW / Math.max(1, n * 0.58))
+  const fit = (max, n) => (oneLine(n) >= 28 ? Math.min(max, oneLine(n)) : Math.max(24, Math.min(max, oneLine(n) * 2)))
+  const wraps = (n) => oneLine(n) < 28
   const size = fit(want, name.length)
   const subSize = fit(Math.round(want * 0.55), subtitle.length)
   const text = {
@@ -52,8 +59,8 @@ export default function LowerThird() {
     color: p.color || '#ffffff',
     textAlign: p.textAlign || 'left',
     textTransform: p.textTransform || 'none',
-    whiteSpace: 'nowrap',
   }
+  const line = (n) => (wraps(n) ? { whiteSpace: 'normal', maxWidth: textW } : { whiteSpace: 'nowrap' })
   return (
     <div style={{
       position: 'absolute', left: 64, bottom,
@@ -63,8 +70,8 @@ export default function LowerThird() {
     }}>
       <div style={{ width: 8, borderRadius: 4, background: p.accent || '#00b4d8', flex: '0 0 auto' }} />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <div style={{ ...text, fontSize: size, fontWeight: p.fontWeight || '800', lineHeight: 1.05 }}>{name}</div>
-        {subtitle ? <div style={{ ...text, fontSize: Math.min(subSize, size), fontWeight: 500, opacity: 0.85, lineHeight: 1.15 }}>{subtitle}</div> : null}
+        <div style={{ ...text, ...line(name.length), fontSize: size, fontWeight: p.fontWeight || '800', lineHeight: 1.05 }}>{name}</div>
+        {subtitle ? <div style={{ ...text, ...line(subtitle.length), fontSize: Math.min(subSize, size), fontWeight: 500, opacity: 0.85, lineHeight: 1.15 }}>{subtitle}</div> : null}
       </div>
     </div>
   )

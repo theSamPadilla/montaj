@@ -166,6 +166,13 @@ const SHORT_EDGE_TARGET = 1080
  * 16: §308 P3, clips and overlays stack by track in the editor's order, and an
  *    opaque overlay hides only what is below it. A frame cached before holds
  *    every overlay over every image, and black under an image above a cover.
+ * 17: §558, an overlay's measurement holds each text's own extent (a Range
+ *    over its contents, with its element box) and `spills` (it overflows its
+ *    own box). A measurement cached before holds the element box only, which
+ *    hides text running out of it.
+ * 18: §558, `spills` allows a glyph rising 30% of the font size past a tight
+ *    line-height. 17 was never released, but its entries were cached on the
+ *    machine that built it, and they call such a heading spilled.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -173,7 +180,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 16
+const SAMPLE_CACHE_VERSION = 18
 
 // ---------------------------------------------------------------------------
 // Input manifests
@@ -638,11 +645,26 @@ export async function sampleOverlay({
 
             if (hasDirectText) {
               const style = window.getComputedStyle(el)
-              const rect = el.getBoundingClientRect()
-              const bboxX = rect.x
-              const bboxY = rect.y
-              const bboxW = rect.width
-              const bboxH = rect.height
+              // §558: the text's own extent, not only its element's box: text that spills out of a fixed-width
+              // or nowrap box (or is cut by overflow:hidden on its own element) lies outside the element's rect.
+              // The box measured is the union of the two; `spills` says the text overflows its own box.
+              const elRect = el.getBoundingClientRect()
+              const range = document.createRange()
+              range.selectNodeContents(el)
+              const textRect = range.getBoundingClientRect()
+              const hasText = textRect.width > 0 || textRect.height > 0
+              const left   = hasText ? Math.min(elRect.left, textRect.left) : elRect.left
+              const top    = hasText ? Math.min(elRect.top, textRect.top) : elRect.top
+              const right  = hasText ? Math.max(elRect.right, textRect.right) : elRect.right
+              const bottom = hasText ? Math.max(elRect.bottom, textRect.bottom) : elRect.bottom
+              const bboxX = left
+              const bboxY = top
+              const bboxW = right - left
+              const bboxH = bottom - top
+              // a glyph rising a little past a tight line-height (1.05 on a big heading) is not text lost: the
+              // height test allows 30% of the font size, the width test 1 px
+              const fontPx = parseFloat(window.getComputedStyle(el).fontSize) || 16
+              const spills = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + Math.max(2, fontPx * 0.3)
 
               const overflowLeft   = Math.max(0, -bboxX)
               const overflowRight  = Math.max(0, bboxX + bboxW - canvasW)
@@ -693,6 +715,7 @@ export async function sampleOverlay({
                 position: style.position,
                 transform: style.transform,
                 bbox: { x: bboxX, y: bboxY, w: bboxW, h: bboxH },
+                spills,
                 overflow: {
                   left:   overflowLeft,
                   right:  overflowRight,

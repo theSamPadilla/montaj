@@ -2,31 +2,58 @@
 
 The pure half (the step, steps/render/look.py, runs the renderers):
 - `pick_times`: the times worth looking at when none are given: cut seams on the base track, each overlay and
-  image item's in and out (just inside them), caption changes, then even samples; merged within MERGE_S, at most
-  MAX_TIMES, in that priority.
-- `data_issues`: what the project data alone says: an item that starts before 0 or ends after the timeline, one
-  that ends before it starts, an overlay whose file is missing, stretches where nothing visual plays (black), and an
-  item a full-frame one above it hides.
+  image item's in and out (inset past its fades), caption changes, and even samples, taken round-robin from those
+  four so no kind crowds out the others; merged within MERGE_S, at most MAX_TIMES.
+- `data_issues`: what the project data alone says: an item that starts before 0 or ends after the footage, one
+  that ends before it starts, an overlay whose file is missing, stretches with no footage (black, or overlay only),
+  and an item that a full-frame one stacked above it hides. Tracks switched off (`enabled: false`) draw nothing
+  and are left out, as the render leaves them out (lib/project_tracks.enabled_track_items).
 - `measured_issues`: what an overlay's measurements (sample_overlay --measure, in the overlay's own 1080-design
-  canvas) say once placed on the frame by the item's geometry (timeline-core toCssBoxPct): text off the frame,
-  text its own box clips, and, in a portrait frame, text in the bottom BOTTOM_UI_PX (captions, the apps' controls)
-  or the right RIGHT_UI_PX (the apps' buttons), from the overlay skill's placement rules.
+  canvas) say once placed on the frame by the item's geometry (timeline-core toCssBoxPct): text off the frame, text
+  that spills out of or is cut by its own box, text inside the 5% title-safe margin, text across montaj's own
+  captions while a caption is on screen (CAPTION_BAND, measured), and, on a tall phone frame (h/w >= 1.7), text over
+  the apps' bottom controls or right-side buttons.
 - `text_overlaps`: two overlays on screen at once whose text boxes cross.
 
 Times are timeline seconds. Keyframed geometry is read at its base values (said in the detail).
 """
 import os
 
+from lib.project_tracks import enabled_track_items
+
 MAX_TIMES = 12
 MAX_MEASURES = 12
 MERGE_S = 0.25
-EDGE_S = 0.1            # an in or out point is looked at this far inside the item
+EDGE_MAX_S = 0.5        # an in or out point is looked at min(this, a quarter of the item) inside it: past the fades
 GAP_MIN_S = 0.2         # a stretch with nothing visual shorter than this is not reported
-BOTTOM_UI_PX = 350      # portrait: captions and the apps' progress bars and controls
-RIGHT_UI_PX = 200       # portrait: the apps' like, comment and share buttons
+TALL = 1.7              # h/w at or above: a phone feed, where the apps draw their controls over the video
+BOTTOM_UI_PX = 350      # tall frames: the apps' progress bars and controls
+RIGHT_UI_PX = 200       # tall frames: the apps' like, comment and share buttons...
+RIGHT_UI_Y = (0.45, 0.85)   # ...which stack down the right edge between these shares of the height
+SAFE_MARGIN = 0.05      # title-safe: text this share of the frame from any edge, every aspect
 OVERFLOW_PX = 1.0       # a box past the frame by more than this is off it
 EVEN_SAMPLES = 4
 VISUAL = ("video", "image")
+
+# Where montaj's own captions draw: (top, bottom) as shares of the frame height, at the style's default size, with
+# no offset. MEASURED 2026-10-24 on real sample_frame renders (a 7-word caption, "Keep the best part of every take",
+# its first, middle and last word, over a flat frame) at 1080x1920, 1080x1080 and 1920x1080; the band is the
+# extent over those three frames. A taller or shorter caption (its size) grows or shrinks the band from its bottom;
+# a segment's offsetY moves it.
+CAPTION_BAND = {
+    "portrait": {"word-by-word": (0.725, 0.760), "pop": (0.726, 0.760), "karaoke": (0.724, 0.750),
+                 "subtitle": (0.708, 0.749), "highlight-box": (0.656, 0.751), "outline": (0.673, 0.746),
+                 "clean": (0.710, 0.740), "accent": (0.559, 0.644), "plate": (0.663, 0.749)},
+    "square": {"word-by-word": (0.698, 0.759), "pop": (0.700, 0.759), "karaoke": (0.704, 0.750),
+               "subtitle": (0.676, 0.748), "highlight-box": (0.583, 0.752), "outline": (0.611, 0.743),
+               "clean": (0.687, 0.737), "accent": (0.531, 0.681), "plate": (0.594, 0.748)},
+    "landscape": {"word-by-word": (0.698, 0.759), "pop": (0.700, 0.759), "karaoke": (0.704, 0.750),
+                  "subtitle": (0.676, 0.748), "highlight-box": (0.670, 0.752), "outline": (0.687, 0.743),
+                  "clean": (0.687, 0.737), "accent": (0.531, 0.681), "plate": (0.659, 0.748)},
+}
+# Each caption style's default font size (the templates' own defaults), which the band was measured at.
+CAPTION_DEFAULT_SIZE = {"word-by-word": 72, "pop": 68, "karaoke": 52, "subtitle": 46, "highlight-box": 60,
+                        "outline": 70, "clean": 54, "accent": 168, "plate": 56}
 
 
 def _num(v, default=0.0):
@@ -34,7 +61,7 @@ def _num(v, default=0.0):
         f = float(v)
     except (TypeError, ValueError):
         return default
-    return f if f == f else default   # NaN reads as the default
+    return f if f == f and f not in (float("inf"), float("-inf")) else default
 
 
 def r2(x):
@@ -48,7 +75,7 @@ def design_size(project):
         w, h = float(res[0]), float(res[1])
     except (TypeError, ValueError, IndexError):
         w, h = 1080.0, 1920.0
-    if w <= 0 or h <= 0:
+    if not (w > 0 and h > 0):
         w, h = 1080.0, 1920.0
     k = 1080.0 / min(w, h)
     return round(w * k), round(h * k)
@@ -62,6 +89,28 @@ def items_of(track):
     return [it for it in (track.get("items") or []) if isinstance(it, dict)]
 
 
+def drawn_tracks(project):
+    """[items] per track, in track order, a switched-off track's slot empty (it draws nothing)."""
+    try:
+        rows = enabled_track_items(project)
+    except Exception:  # noqa: BLE001 — an odd shape reads as every track on
+        rows = [items_of(t) for t in tracks_of(project)]
+    return [[it for it in (row or []) if isinstance(it, dict)] for row in rows]
+
+
+def layer_positions(rows):
+    """timeline-core trackLayerPositions: every track holding a video item stacks below every other, each group in
+    track order (a higher position draws on top)."""
+    holds = [any(it.get("type") == "video" for it in row) for row in rows]
+    pos, nxt = [0] * len(rows), 0
+    for want in (True, False):
+        for i, h in enumerate(holds):
+            if h == want:
+                pos[i] = nxt
+                nxt += 1
+    return pos
+
+
 def caption_segments(project):
     caps = project.get("captions") or {}
     segs = caps.get("segments") if isinstance(caps, dict) else None
@@ -69,56 +118,79 @@ def caption_segments(project):
 
 
 def timeline_end(project):
-    ends = [_num(it.get("end")) for t in tracks_of(project) for it in items_of(t)]
+    ends = [_num(it.get("end")) for row in drawn_tracks(project) for it in row]
     ends += [_num(s.get("end")) for s in caption_segments(project)]
     return max(ends, default=0.0)
 
 
 def base_end(project):
-    tracks = tracks_of(project)
-    return max((_num(it.get("end")) for it in items_of(tracks[0])), default=0.0) if tracks else 0.0
+    rows = drawn_tracks(project)
+    return max((_num(it.get("end")) for it in rows[0]), default=0.0) if rows else 0.0
 
 
 def _label(item, ti):
     return str(item.get("id") or f"track {ti} item")
 
 
-def pick_times(project, at=None):
-    """[seconds] to look at: `at` (clipped to the timeline, merged), else the automatic ones."""
+def _inset(s, e):
+    return min(EDGE_MAX_S, (e - s) / 4)
+
+
+def _spread(times):
+    """`times` in an order that covers the span early: first, last, middle, then the halves' middles..."""
+    ts = sorted(times)
+    if len(ts) <= 2:
+        return ts
+    out, queue = [ts[0], ts[-1]], [(1, len(ts) - 2)]
+    while queue:
+        lo, hi = queue.pop(0)
+        if lo > hi:
+            continue
+        mid = (lo + hi) // 2
+        out.append(ts[mid])
+        queue += [(lo, mid - 1), (mid + 1, hi)]
+    return out
+
+
+def pick_times(project, at=None, cap=MAX_TIMES):
+    """[seconds] to look at: `at` (clipped to the timeline, merged), else the automatic ones, round-robin over the
+    four kinds (seams, overlay edges, caption changes, even samples), each kind spread over its span."""
     end = timeline_end(project)
     if end <= 0:
         return []
     if at:
-        return _merge(sorted(min(max(0.0, _num(t)), end) for t in at), MAX_TIMES)
-    tracks = tracks_of(project)
+        return _merge(sorted(min(max(0.0, _num(t)), end) for t in at), cap)
+    rows = drawn_tracks(project)
     seams, edges, caps = [], [], []
-    if tracks:
-        base = sorted(items_of(tracks[0]), key=lambda it: _num(it.get("start")))
+    if rows:
+        base = sorted(rows[0], key=lambda it: _num(it.get("start")))
         for it in base[1:]:
             s = _num(it.get("start"))
             if 0 < s < end:
-                seams.append(min(end, s + EDGE_S))
-    for ti, t in enumerate(tracks[1:], start=1):
-        for it in items_of(t):
+                seams.append(min(end, s + _inset(s, _num(it.get("end"), s + 0.4))))
+    for row in rows[1:]:
+        for it in row:
             s, e = _num(it.get("start")), _num(it.get("end"))
-            if e <= s:
-                continue
-            inset = min(EDGE_S, (e - s) / 2)
-            edges += [s + inset, e - inset]
+            if e > s:
+                edges += [s + _inset(s, e), e - _inset(s, e)]
     prev = None
     for seg in sorted(caption_segments(project), key=lambda x: _num(x.get("start"))):
         s, e = _num(seg.get("start")), _num(seg.get("end"))
         if e > s and (prev is None or abs(s - prev) > MERGE_S):
-            caps.append(s + min(EDGE_S, (e - s) / 2))
+            caps.append(s + _inset(s, e))
         prev = e
     even = [end * (k + 0.5) / EVEN_SAMPLES for k in range(EVEN_SAMPLES)]
+    kinds = [_spread(g) for g in (seams, edges, caps, even)]
     chosen = []
-    for group in (seams, edges, caps, even):
-        for t in sorted(group):
-            if len(chosen) >= MAX_TIMES:
+    while len(chosen) < cap and any(kinds):
+        for g in kinds:
+            while g:
+                t = g.pop(0)
+                if 0 <= t <= end and all(abs(t - c) > MERGE_S for c in chosen):
+                    chosen.append(t)
+                    break
+            if len(chosen) >= cap:
                 break
-            if 0 <= t <= end and all(abs(t - c) > MERGE_S for c in chosen):
-                chosen.append(t)
     return [r2(t) for t in sorted(chosen)]
 
 
@@ -154,61 +226,110 @@ def data_issues(project, project_dir):
     """[{t, id, text}] from the project data alone."""
     out = []
     end = timeline_end(project)
-    tracks = tracks_of(project)
-    for ti, t in enumerate(tracks):
-        for it in items_of(t):
+    footage = base_end(project)
+    rows = drawn_tracks(project)
+    for ti, row in enumerate(rows):
+        for it in row:
             s, e, lab = _num(it.get("start")), _num(it.get("end")), _label(it, ti)
             if e <= s:
                 out.append({"t": r2(s), "id": lab, "text": "ends before it starts"})
                 continue
             if s < 0:
                 out.append({"t": r2(s), "id": lab, "text": "starts before 0"})
-            if ti > 0 and e > base_end(project) + 0.05 and base_end(project) > 0:
-                out.append({"t": r2(e), "id": lab, "text": f"runs past the footage ({r2(base_end(project))}s)"})
+            if ti > 0 and footage > 0 and e > footage + 0.05:
+                out.append({"t": r2(e), "id": lab, "text": f"runs past the footage ({r2(footage)}s)"})
             if it.get("type") == "overlay":
                 p = overlay_path(it, project_dir)
                 if not p or not os.path.isfile(p):
                     out.append({"t": r2(s), "id": lab, "text": "overlay file missing"})
+    limit = footage if footage > 0 else end
     for seg in caption_segments(project):
         s, e = _num(seg.get("start")), _num(seg.get("end"))
-        if e <= s or s < 0 or (end > 0 and e > end + 0.05):
-            out.append({"t": r2(s), "id": str(seg.get("id") or "caption"), "text": "caption outside the timeline"})
-    out += _black(project, end)
-    out += _hidden(tracks)
+        if e <= s or s < 0 or (limit > 0 and e > limit + 0.05):
+            where = "past the footage" if footage > 0 and e > footage + 0.05 else "outside the timeline"
+            out.append({"t": r2(s), "id": str(seg.get("id") or "caption"), "text": f"caption {where}"})
+    out += _black(rows, end)
+    out += _hidden(rows)
     return out
 
 
-def _black(project, end):
-    spans = []
-    for t in tracks_of(project):
-        for it in items_of(t):
-            if it.get("type") in VISUAL or (it.get("type") == "overlay" and it.get("opaque") is True):
+def _spans(rows, end, keep):
+    out = []
+    for row in rows:
+        for it in row:
+            if keep(it):
                 s, e = max(0.0, _num(it.get("start"))), min(end, _num(it.get("end")))
                 if e > s:
-                    spans.append((s, e))
-    if not any(it.get("type") in VISUAL for t in tracks_of(project) for it in items_of(t)):
-        return []   # an animation-only project: no footage to miss
-    spans.sort()
+                    out.append((s, e))
+    return sorted(out)
+
+
+def _gaps(spans, end):
     out, cur = [], 0.0
     for s, e in spans + [(end, end)]:
         if s - cur >= GAP_MIN_S:
-            out.append({"t": r2(cur), "id": "frame", "text": f"black {r2(cur)}-{r2(s)}s"})
+            out.append((cur, s))
         cur = max(cur, e)
     return out
 
 
-def _hidden(tracks):
-    """A full-frame item on a higher track hides what plays under it on a lower one (overlay tracks only)."""
+def _covered(spans, a, b):
+    return any(s <= a + 1e-6 and e >= b - 1e-6 for s, e in spans)
+
+
+def _black(rows, end):
+    """Stretches with no footage: black, or drawn by overlays alone (not opaque, so the frame shows through)."""
+    if not any(it.get("type") in VISUAL for row in rows for it in row):
+        return []   # an animation-only project: no footage to miss
+    pictures = _spans(rows, end, lambda it: it.get("type") in VISUAL or (it.get("type") == "overlay" and it.get("opaque") is True))
+    overlays = _spans(rows, end, lambda it: it.get("type") == "overlay")
     out = []
-    layered = [(ti, it) for ti, t in enumerate(tracks) if ti > 0 for it in items_of(t)]
+    for a, b in _gaps(pictures, end):
+        if any(s < b and a < e for s, e in overlays):
+            out.append({"t": r2(a), "id": "frame", "text": f"no footage {r2(a)}-{r2(b)}s (overlay only)"})
+        else:
+            out.append({"t": r2(a), "id": "frame", "text": f"black {r2(a)}-{r2(b)}s"})
+    return out
+
+
+def _hidden(rows):
+    """An item that a full-frame one stacked above it hides (the render's stacking: video tracks below the rest)."""
+    pos = layer_positions(rows)
+    out = []
+    layered = [(ti, it) for ti, row in enumerate(rows) if ti > 0 for it in row]
     for ti, low in layered:
         for tj, high in layered:
-            if tj <= ti or not _full_frame(high):
+            if tj == ti or pos[tj] <= pos[ti] or not _full_frame(high):
                 continue
             s = max(_num(low.get("start")), _num(high.get("start")))
             e = min(_num(low.get("end")), _num(high.get("end")))
             if e - s > MERGE_S:
                 out.append({"t": r2(s), "id": _label(low, ti), "text": f"hidden by {_label(high, tj)} {r2(s)}-{r2(e)}s"})
+    return out
+
+
+def caption_bands(project, start, end, frame_w, frame_h):
+    """[(top px, bottom px, segment start, segment end)] where montaj's captions draw while [start, end) plays."""
+    caps = project.get("captions") if isinstance(project.get("captions"), dict) else {}
+    style = caps.get("style") or "pop"
+    shape = "portrait" if frame_h > frame_w * 1.2 else "landscape" if frame_w > frame_h * 1.2 else "square"
+    band = CAPTION_BAND[shape].get(style)
+    if band is None:
+        return []
+    default = CAPTION_DEFAULT_SIZE.get(style, 60)
+    out = []
+    for seg in caption_segments(project):
+        if seg.get("lang") and isinstance(seg.get("translationOf"), list):
+            continue   # drawn under its source caption, inside its block
+        s, e = _num(seg.get("start")), _num(seg.get("end"))
+        if not (s < end and start < e):
+            continue
+        size = _num(seg.get("fontSize"), 0) or _num(caps.get("fontsize", caps.get("fontSize")), 0) or default
+        scale = size / default * _num(seg.get("scale", 1), 1)
+        top, bottom = band[0] * frame_h, band[1] * frame_h
+        top = bottom - (bottom - top) * scale
+        shift = _num(seg.get("offsetY")) / 100 * frame_h
+        out.append((top + shift, bottom + shift, s, e))
     return out
 
 
@@ -223,7 +344,7 @@ def placed_box(bbox, item, frame_w, frame_h):
 
 
 def text_boxes(measurement, item, frame_w, frame_h):
-    """[(text, box on the frame, clipped by its own box)] of the measured texts."""
+    """[(text, box on the frame, cut by its box's clipping ancestor, spills out of its own box)]."""
     texts = (measurement or {}).get("texts") or []
     out = []
     for t in texts:
@@ -240,31 +361,42 @@ def text_boxes(measurement, item, frame_w, frame_h):
             clipped = (_num(bb.get("x")) < _num(a.get("x")) - OVERFLOW_PX or _num(bb.get("y")) < _num(a.get("y")) - OVERFLOW_PX
                        or _num(bb.get("x")) + _num(bb.get("w")) > _num(a.get("x")) + _num(a.get("w")) + OVERFLOW_PX
                        or _num(bb.get("y")) + _num(bb.get("h")) > _num(a.get("y")) + _num(a.get("h")) + OVERFLOW_PX)
-        out.append((str(t.get("text") or "")[:24], b, clipped))
+        out.append((str(t.get("text") or "")[:24], b, clipped, t.get("spills") is True))
     return out
 
 
-def measured_issues(item, measurement, frame_w, frame_h, t, label):
-    """[{t, id, text}] from one overlay's measurements: at most one issue of each kind per item."""
+def measured_issues(item, measurement, frame_w, frame_h, t, label, bands=()):
+    """[{t, id, text}] from one overlay's measurements: at most one issue of each kind per item. `bands`:
+    caption_bands for the item's span."""
     out, seen = [], set()
-    portrait = frame_h > frame_w
+    tall = frame_h >= frame_w * TALL
+    mx, my = frame_w * SAFE_MARGIN, frame_h * SAFE_MARGIN
 
     def add(kind, text):
         if kind not in seen:
             seen.add(kind)
             out.append({"t": r2(t), "id": label, "text": text})
 
-    for text, b, clipped in text_boxes(measurement, item, frame_w, frame_h):
+    for text, b, clipped, spills in text_boxes(measurement, item, frame_w, frame_h):
         quote = f' "{text}"' if text else ""
-        if b["x"] < -OVERFLOW_PX or b["y"] < -OVERFLOW_PX or b["x"] + b["w"] > frame_w + OVERFLOW_PX or b["y"] + b["h"] > frame_h + OVERFLOW_PX:
+        x0, y0, x1, y1 = b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"]
+        if x0 < -OVERFLOW_PX or y0 < -OVERFLOW_PX or x1 > frame_w + OVERFLOW_PX or y1 > frame_h + OVERFLOW_PX:
             add("off", f"text{quote} runs off the frame")
-            continue   # off the frame says it all: not also "in the app zones"
-        if clipped:
+            continue   # off the frame says it all
+        if spills:
+            add("spill", f"text{quote} spills out of its box")
+        elif clipped:
             add("clip", f"text{quote} is cut off by its box")
-        if portrait and b["y"] + b["h"] > frame_h - BOTTOM_UI_PX and b["y"] < frame_h:
-            add("bottom", f"text{quote} in the bottom {BOTTOM_UI_PX}px (captions, app controls)")
-        if portrait and b["x"] + b["w"] > frame_w - RIGHT_UI_PX and b["x"] < frame_w:
-            add("right", f"text{quote} under the right-side app buttons")
+        if x0 < mx or y0 < my or x1 > frame_w - mx or y1 > frame_h - my:
+            add("margin", f"text{quote} inside the 5% title-safe margin")
+        for top, bottom, s, e in bands:
+            if y0 < bottom and top < y1:
+                add("captions", f"text{quote} crosses the captions ({r2(s)}-{r2(e)}s)")
+                break
+        if tall and y1 > frame_h - BOTTOM_UI_PX:
+            add("bottom", f"text{quote} over the apps' bottom controls")
+        if tall and x1 > frame_w - RIGHT_UI_PX and y0 < frame_h * RIGHT_UI_Y[1] and y1 > frame_h * RIGHT_UI_Y[0]:
+            add("right", f"text{quote} under the apps' right-side buttons")
     return out
 
 
@@ -285,10 +417,10 @@ def text_overlaps(placed):
     return out
 
 
-def answer(issues, looked, measured, *, extra=None, cap=300):
-    """The short JSON answer: ok and counts, or the issues in time order while it stays within `cap` characters."""
+def answer(issues, *, extra=None, cap=300):
+    """The short JSON answer: ok and the extra counts, or the issues in time order while it stays within `cap`."""
     import json
-    base = {"ok": not issues, "looked": looked, "measured": measured, **(extra or {})}
+    base = {"ok": not issues, **(extra or {})}
     if not issues:
         return base
     lines = [f'{i["t"]}s {i["id"]}: {i["text"]}' for i in sorted(issues, key=lambda x: (x["t"], x["id"]))]

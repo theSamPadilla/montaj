@@ -115,7 +115,7 @@ def choose_track(project, s, e, want=None, skip=None):
                 return ti, None
         return None, f"no track {want}"
     for ti, t in enumerate(tracks):
-        if ti == 0:
+        if ti == 0 or t.get("enabled") is False:   # a switched-off track draws nothing
             continue
         items = t.get("items", [])
         if items and all(it.get("type") == "overlay" for it in items) and not _overlaps(items, s, e, skip):
@@ -184,24 +184,34 @@ def _new_id(project):
 
 
 def resolve_time(project, project_path, project_dir, at_s, phrase, take, language, model, transcribe):
-    """(start seconds, the take used or None, issues, detail)."""
+    """(start seconds, the take used or None, issues, extra answer fields, detail)."""
     if phrase is None:
-        return at_s, None, [], {}
+        return at_s, None, [], {}, {}
     track_id = speech_units.speech_track_id(project, project_dir)
+    track = speech_units.find_track(normalize_tracks(project), track_id)[1]
     # two clips of the speech track sharing one transcript name (clip.mov, clip.mp4) would time the phrase wrong
-    speech_units.stem_clash(speech_units.find_track(normalize_tracks(project), track_id)[1], project_dir)
-    _, _, warnings = speech_units.transcribe_missing(project, track_id, project_path, project_dir, model, language, transcribe)
+    speech_units.stem_clash(track, project_dir)
+    # unknown: whisper detects it, and the fillers follow what it heard (cut's rule, lib/speech_units.language_of)
+    _, _, warnings = speech_units.transcribe_missing(project, track_id, project_path, project_dir, model, language or "auto", transcribe)
+    spoken = speech_units.language_of(language, track, project_dir)
     try:
-        found = phrase_at.find(project, project_dir, phrase, take, language, track_id)
+        found = phrase_at.find(project, project_dir, phrase, take, spoken, track_id)
     except phrase_at.PhraseNotFound as e:
         fail("phrase_not_found", str(e))
     issues = [{"t": lc.r2(found.start), "id": "phrase", "text": found.fallback}] if found.fallback else []
     issues += [{"t": 0.0, "id": "speech", "text": w} for w in (warnings + found.warnings)[:3]]
-    return found.start, found.take, issues, {"said": found.text, "sayings": found.said}
+    extra = {}
+    if found.also:
+        extra["also"] = found.also
+        issues.append({"t": lc.r2(found.start), "id": "phrase",
+                       "text": f"said in {len(found.also) + 1} sentences: used {lc.r2(found.start)}s, also {', '.join(f'{t}s' for t in found.also)}"})
+    if found.note:
+        extra["note"] = found.note
+    return found.start, found.take, issues, extra, {"said": found.text, "sayings": found.said, "language": spoken}
 
 
 def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=None, props=None, track=None,
-        item_id=None, language="en", model=DEFAULT_WHISPER_MODEL, detail=False,
+        item_id=None, language=None, model=DEFAULT_WHISPER_MODEL, detail=False,
         measure_fn=look_step.measure, transcribe=None):
     project_path = os.path.abspath(project_path)
     project_dir = os.path.dirname(project_path)
@@ -209,6 +219,8 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
         transcribe = transcribe_file
     if overlay and preset:
         fail("invalid_params", "Pass overlay or preset, not both.")
+    if for_s is not None and until is not None:
+        fail("invalid_params", "Pass for or until, not both.")
     if preset and preset not in PRESETS:
         fail("invalid_params", f"preset is one of {', '.join(PRESETS)}.")
     at_s, phrase, take = parse_at(at)
@@ -226,9 +238,9 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
     if not existing and not overlay and not preset:
         fail("invalid_params", "Pass overlay (a JSX file in the project) or preset.")
 
-    start, take_used, issues, more = (None, None, [], {})
+    start, take_used, issues, said_extra, more = (None, None, [], {}, {})
     if at is not None:
-        start, take_used, issues, more = resolve_time(project, project_path, project_dir, at_s, phrase, take, language, model, transcribe)
+        start, take_used, issues, said_extra, more = resolve_time(project, project_path, project_dir, at_s, phrase, take, language, model, transcribe)
     old = existing[2] if existing else None
     if start is None:
         start = lc._num(old.get("start"))
@@ -339,21 +351,22 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
     if m is None:
         issues.append({"t": lc.r2(mid), "id": item["id"], "text": why})
     else:
-        issues += lc.measured_issues(item, m, width, height, mid, item["id"])
+        issues += lc.measured_issues(item, m, width, height, mid, item["id"], lc.caption_bands(project, item["start"], item["end"], width, height))
     out = {"id": item["id"], "start": item["start"], "end": item["end"], "track": written["track"]}
     if take_used:
         out["take"] = take_used
+    out.update(said_extra)
     if version:
         out["version"] = True
     if issues:
-        short = lc.answer(issues, 0, 0, extra=out)
+        short = lc.answer(issues, extra=out)
         out["issues"] = short["issues"]
         if short.get("more"):
             out["more"] = short["more"]
     if detail:
         out.update({"src": item.get("src"), **more,
                     "issues": [f'{i["t"]}s {i["id"]}: {i["text"]}' for i in issues],
-                    "text": [t for t, _, _ in lc.text_boxes(m, item, width, height)] if m else []})
+                    "text": [t for t, _, _, _ in lc.text_boxes(m, item, width, height)] if m else []})
         out.pop("more", None)
     return out
 
@@ -369,7 +382,8 @@ def main():
     parser.add_argument("--props", default=None, help="Props as a JSON object")
     parser.add_argument("--track", default=None, help="The overlay track id")
     parser.add_argument("--id", dest="item_id", default=None, help="Move or update this overlay item")
-    parser.add_argument("--language", default="en", help="The speaker's language code")
+    parser.add_argument("--language", default=None, help="The speaker's language code; default: as detected")
+    parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL, help="Whisper model for clips with no transcript")
     parser.add_argument("--detail", action="store_true", help="Also answer every fact")
     args = parser.parse_args()
     project_path = os.path.abspath(args.project)
@@ -377,7 +391,7 @@ def main():
         fail("not_found", f"Project not found: {project_path}")
     print(json.dumps(run(project_path, at=args.at, for_s=args.for_s, until=args.until, overlay=args.overlay,
                          preset=args.preset, props=args.props, track=args.track, item_id=args.item_id,
-                         language=args.language or "en", detail=args.detail)))
+                         language=args.language, model=args.model, detail=args.detail)))
 
 
 if __name__ == "__main__":

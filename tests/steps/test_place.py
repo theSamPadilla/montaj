@@ -379,3 +379,100 @@ def test_an_insert_keeps_the_other_items_order(tmp_path):
     run(d, at="3", for_s=1, preset="callout", track="ovl-1")
     ids = [it["id"] for it in tracks(d)[1]["items"]]
     assert [i for i in ids if i in ("ov-a", "ov-b")] == ["ov-a", "ov-b"] and len(ids) == 3, "the other two keep their order"
+
+
+# ── review 2 ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def test_a_phrase_said_in_two_sentences_uses_the_first_and_names_the_other(tmp_path):
+    # "every" is said in "for every clip." and in "on every phone you own."
+    d = make_project(tmp_path)
+    out = run(d, at='{"phrase": "every"}', preset="callout", detail=True)
+    found = phrase_at.find(json.loads((d / "project.json").read_text()), str(d), "every")
+    assert out["start"] == pytest.approx(found.start, abs=0.01) and len(out["also"]) == 1 and out["also"][0] > out["start"]
+    assert any("said in 2 sentences" in i for i in out["issues"])
+
+
+def test_takes_of_one_line_that_select_keeps_apart_are_still_one_line(tmp_path):
+    script = list(SCRIPT)
+    script[22] = "um,"   # "Our new editor um, three times faster.": select keeps all three takes
+    d = make_project(tmp_path, script=script)
+    out = run(d, at='{"phrase": "times faster"}', preset="callout")
+    assert "also" not in out, out
+
+
+def test_clean_says_when_cut_keeps_another_take(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, at='{"phrase": "three times faster"}', preset="callout")
+    assert out["take"] == "clean" and out["note"] == "cut keeps the take at 6.54s"
+
+
+def test_a_phrase_said_once_never_carries_a_fallback(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, at='{"phrase": "thanks for watching"}', preset="callout")
+    assert "issues" not in out or not any("no clean take" in i for i in out["issues"])
+
+
+def test_accents_and_fillers_are_left_out_of_the_comparison(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, at='{"phrase": "Thrée, um, times fäster", "take": "first"}', preset="callout")
+    assert out["start"] == pytest.approx(UM_TAKE_S, abs=0.01)
+
+
+def test_a_language_written_without_spaces_matches_by_characters():
+    seq = [(0, "三"), (1, "倍"), (2, "速い"), (3, "です")]
+    assert phrase_at._matches(seq, ["三倍速い"], True) == [(0, 2)]
+    assert phrase_at._matches(seq, ["倍速"], True) == [(1, 2)]
+    assert phrase_at._matches(seq, ["三倍速い"], False) == []
+
+
+def test_the_language_is_detected_unless_given(tmp_path):
+    seen = []
+
+    def stub(src, prefix, model, language):
+        seen.append((model, language))
+        Path(prefix + ".json").write_text(json.dumps(transcript()))
+    d = make_project(tmp_path, with_transcript=False)
+    run(d, at='{"phrase": "three times faster"}', preset="callout", transcribe=stub)
+    assert seen == [(place.DEFAULT_WHISPER_MODEL, "auto")]
+    (tmp_path / "second").mkdir()
+    d2 = make_project(tmp_path / "second", with_transcript=False)
+    run(d2, at='{"phrase": "three times faster"}', preset="callout", transcribe=stub, language="en", model="base.en")
+    assert seen[-1] == ("base.en", "en")
+
+
+def test_place_declares_whisper_s_model_param_so_serve_gives_it_the_long_ceiling():
+    from serve.routes.steps import _runs_whisper
+    schema = json.loads((REPO_ROOT / "steps" / "edit" / "place.json").read_text())
+    assert _runs_whisper(schema)
+
+
+def test_for_and_until_together_are_refused(tmp_path, capsys):
+    d = make_project(tmp_path)
+    assert refused(capsys, run, d, at="1", for_s=2, until=5, preset="callout")["error"] == "invalid_params"
+
+
+def test_a_phrase_not_found_says_how_phrases_match(tmp_path, capsys):
+    d = make_project(tmp_path)
+    err = refused(capsys, run, d, at='{"phrase": "3 times faster"}', preset="callout")
+    assert err["error"] == "phrase_not_found" and "within one sentence, as transcribed" in err["message"]
+
+
+def test_a_switched_off_track_is_never_chosen(tmp_path):
+    d = make_project(tmp_path, overlays=[{"id": "ov-a", "start": 10, "end": 11}])
+    p = json.loads((d / "project.json").read_text())
+    p["tracks"][1]["enabled"] = False
+    (d / "project.json").write_text(json.dumps(p))
+    out = run(d, at="1", preset="callout")
+    assert out["track"] != "ovl-1"
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+@pytest.mark.parametrize("style", ["pop", "outline", "highlight-box", "plate"])
+def test_the_lower_third_sits_above_the_captions_of_every_bottom_style(tmp_path, style):
+    d = make_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    p["captions"] = {"style": style, "segments": [{"id": "cap-1", "text": "Keep the best part of every take", "start": 0, "end": 8,
+                                                   "words": [{"word": "Keep", "start": 0, "end": 0.5}]}]}
+    (d / "project.json").write_text(json.dumps(p))
+    out = run(d, at="2", for_s=4, preset="lower_third", props='{"text": "Maya Chen", "subtitle": "Video Editor"}', measure_fn=look.measure)
+    assert "issues" not in out, out

@@ -52,9 +52,9 @@ def _texts(*boxes):
 def test_auto_times_take_seams_overlay_edges_and_caption_changes_first(tmp_path):
     _, p = _project(tmp_path, overlays=[{"id": "ov-a", "start": 2, "end": 4}], captions=[(1, 2), (2, 3), (6, 7)])
     times = lc.pick_times(p)
-    assert 5.1 in times, "the cut seam, just after it"
-    assert 2.1 in times and 3.9 in times, "the overlay's in and out, just inside"
-    assert 6.1 in times, "a caption change after a gap"
+    assert 5.5 in times, "the cut seam, past its fade (min(0.5 s, a quarter))"
+    assert 2.5 in times and 3.5 in times, "the overlay's in and out, past their fades"
+    assert 6.25 in times, "a caption change after a gap"
     assert times == sorted(times) and len(times) <= lc.MAX_TIMES
     assert all(b - a > lc.MERGE_S for a, b in zip(times, times[1:])), "merged"
 
@@ -104,8 +104,8 @@ def test_a_box_is_placed_on_the_frame_by_the_items_scale_and_offset():
 
 @pytest.mark.parametrize("box,want", [
     (("Title", 900, 100, 400, 80), "runs off the frame"),
-    (("Name", 100, 1700, 400, 80), "in the bottom 350px"),
-    (("Tag", 800, 600, 200, 80), "under the right-side app buttons"),
+    (("Name", 100, 1700, 400, 80), "over the apps' bottom controls"),
+    (("Tag", 800, 1000, 200, 80), "under the apps' right-side buttons"),
     (("Cut", 100, 600, 400, 80, {"tag": "DIV", "bbox": {"x": 100, "y": 600, "w": 200, "h": 80}}), "cut off by its box"),
 ])
 def test_measured_issues_name_the_problem(box, want):
@@ -116,7 +116,7 @@ def test_measured_issues_name_the_problem(box, want):
 
 def test_text_that_fits_has_no_measured_issue_and_landscape_has_no_app_zones():
     assert lc.measured_issues({}, _texts(("Fits", 200, 600, 500, 90)), 1080, 1920, 1, "ov") == []
-    assert lc.measured_issues({}, _texts(("Low", 200, 950, 500, 90)), 1920, 1080, 1, "ov") == []
+    assert lc.measured_issues({}, _texts(("Low", 200, 900, 500, 90)), 1920, 1080, 1, "ov") == []
 
 
 def test_two_overlays_on_screen_at_once_whose_text_crosses_are_reported():
@@ -128,9 +128,9 @@ def test_two_overlays_on_screen_at_once_whose_text_crosses_are_reported():
 
 def test_the_answer_stays_within_300_characters_and_counts_the_rest():
     issues = [{"t": k, "id": f"ov-{k}", "text": "text \"A long headline\" runs off the frame"} for k in range(30)]
-    out = lc.answer(issues, 12, 12)
+    out = lc.answer(issues, extra={"overlays": 12})
     assert len(json.dumps(out)) <= 300 and out["ok"] is False and out["more"] == 30 - len(out["issues"])
-    assert lc.answer([], 9, 2) == {"ok": True, "looked": 9, "measured": 2}
+    assert lc.answer([], extra={"overlays": 2}) == {"ok": True, "overlays": 2}
 
 
 # ── the step ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ def test_look_reports_the_overflowing_overlay_and_not_the_clean_one_and_writes_n
     before = hashlib.sha256(path.read_bytes()).hexdigest()
     fake = _fake_measure({"ov-wide": [("A very long headline", 600, 400, 900, 120)]})
     out = look.run(str(path), measure_fn=fake)
-    assert out["ok"] is False and out["measured"] == 2
+    assert out["ok"] is False and out["overlays"] == 2 and "looked" not in out, "text mode renders no frame"
     assert out["issues"] == ['2.0s ov-wide: text "A very long headline" runs off the frame']
     assert sorted(c[0] for c in fake.calls) == ["ov-clean", "ov-wide"]
     assert ("ov-wide", 30, 60, 1080, 1920) in fake.calls, "the middle of its span, its whole length, the design canvas"
@@ -162,7 +162,7 @@ def test_look_measures_at_most_12_overlays_and_says_how_many_it_left(tmp_path):
     path, _ = _project(tmp_path, base=((0, 20),), overlays=[{"id": f"ov-{k}", "start": k, "end": k + 1} for k in range(15)])
     fake = _fake_measure({})
     out = look.run(str(path), measure_fn=fake)
-    assert out == {"ok": True, "looked": out["looked"], "measured": 12, "unmeasured": 3}
+    assert out == {"ok": True, "overlays": 12, "unmeasured": 3}
     assert len(fake.calls) == 12
 
 
@@ -187,7 +187,7 @@ def test_look_image_adds_one_sheet_of_the_times_and_detail_adds_the_facts(tmp_pa
 def test_look_at_given_times(tmp_path):
     path, _ = _project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 3}])
     out = look.run(str(path), at=[2.0, 7.5], detail=True, measure_fn=_fake_measure({}))
-    assert out["times"] == [2.0, 7.5] and out["looked"] == 2
+    assert out["times"] == [2.0, 7.5]
 
 
 # ── a real measure ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -205,7 +205,7 @@ def test_look_through_the_real_measurer_finds_the_text_off_the_frame(tmp_path):
     path, _ = _project(tmp_path, overlays=[{"id": "ov-wide", "start": 1, "end": 3, "jsx": wide},
                                            {"id": "ov-fits", "start": 4, "end": 6, "jsx": fits}])
     out = look.run(str(path), detail=True)
-    assert out["measured"] == 2, out
+    assert out["overlays"] == 2, out
     wide_issues = [i for i in out["issues"] if "ov-wide" in i]
     assert any("runs off the frame" in i for i in wide_issues), out
     assert not any("ov-fits" in i for i in out["issues"]), out
@@ -227,3 +227,117 @@ def test_a_timed_out_run_ends_the_wrapper_and_its_children(tmp_path):
     time.sleep(0.3)
     alive = sp.run(["ps", "-p", str(child), "-o", "stat="], capture_output=True, text=True).stdout.strip()
     assert alive == "" or alive.startswith("Z"), f"the child is still running: {alive!r}"
+
+
+# ── review 2 ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def _with_captions(tmp_path, overlays, segs=((1, 3),), style="pop", **kw):
+    path, p = _project(tmp_path, overlays=overlays, **kw)
+    p["captions"] = {"style": style, "segments": [{"id": f"cap-{i}", "text": "a b", "start": s, "end": e,
+                                                   "words": [{"word": "a", "start": s, "end": s + 0.2}]} for i, (s, e) in enumerate(segs)]}
+    path.write_text(json.dumps(p))
+    return path, p
+
+
+def test_text_across_the_captions_while_a_caption_shows_is_reported(tmp_path):
+    # pop draws at 72.6-76.0% of a 1920 frame: y 1394-1459 (measured)
+    path, _ = _with_captions(tmp_path, overlays=[{"id": "ov-low", "start": 2, "end": 4}, {"id": "ov-late", "start": 5, "end": 7}])
+    out = look.run(str(path), measure_fn=_fake_measure({"ov-low": [("Name", 100, 1380, 400, 60)], "ov-late": [("Name", 100, 1380, 400, 60)]}))
+    assert out["issues"] == ['3.0s ov-low: text "Name" crosses the captions (1.0-3.0s)'], out
+
+
+def test_a_bigger_or_moved_caption_moves_its_band(tmp_path):
+    _, p = _with_captions(tmp_path, overlays=[])
+    p["captions"]["segments"][0]["offsetY"] = -20
+    band = lc.caption_bands(p, 0, 5, 1080, 1920)[0]
+    assert round(band[1]) == round(0.760 * 1920 - 384)
+    p["captions"]["fontsize"] = 136   # twice pop's 68: the band twice as tall, from its bottom
+    top, bottom, _, _ = lc.caption_bands(p, 0, 5, 1080, 1920)[0]
+    assert round(bottom - top) == round(2 * (0.760 - 0.726) * 1920)
+
+
+def test_text_that_spills_out_of_its_own_box_is_reported_not_ok():
+    t = {"texts": [{"text": "Three times faster", "bbox": {"x": 100, "y": 300, "w": 700, "h": 90}, "spills": True}]}
+    assert [i["text"] for i in lc.measured_issues({}, t, 1080, 1920, 1, "ov")] == ['text "Three times faster" spills out of its box']
+
+
+@pytest.mark.parametrize("box,frame,want", [
+    (("Title", 200, 300, 600, 90), (1080, 1920), []),                     # a centred title high up: no app zone
+    (("Tag", 800, 1000, 200, 80), (1080, 1350), []),                      # a 4:5 feed post: no app zones
+    (("Edge", 20, 600, 400, 80), (1080, 1350), ["inside the 5% title-safe margin"]),
+    (("Edge", 600, 1270, 400, 60), (1080, 1350), ["inside the 5% title-safe margin"]),
+])
+def test_app_zones_apply_to_tall_frames_and_the_title_safe_margin_to_every_frame(box, frame, want):
+    got = [i["text"] for i in lc.measured_issues({}, _texts(box), *frame, 1, "ov")]
+    assert [w for w in want if not any(w in g for g in got)] == [] and len(got) == len(want), got
+
+
+def test_a_switched_off_track_draws_nothing(tmp_path):
+    full = {"id": "img-off", "type": "image", "src": "/x/f.png", "start": 1, "end": 3}
+    path, p = _project(tmp_path, base=((0, 5), (6, 10)), overlays=[{"id": "ov-a", "start": 1, "end": 2}],
+                       extra_tracks=[{"id": "off", "enabled": False, "items": [full]}])
+    texts = [i["text"] for i in lc.data_issues(p, str(path.parent))]
+    assert not any("hidden by" in t for t in texts), texts
+    p["tracks"][0]["enabled"] = False
+    assert lc.base_end(p) == 0 and lc.pick_times(p) != []
+
+
+def test_hidden_follows_the_renders_stacking_video_tracks_below_the_rest(tmp_path):
+    img = {"id": "img-full", "type": "image", "src": "/x/f.png", "start": 1, "end": 3}
+    vid = {"id": "vid-up", "type": "video", "src": "/x/v.mp4", "start": 1, "end": 3}
+    # the video sits on a HIGHER track than the image, but a track holding video stacks below every other
+    path, p = _project(tmp_path, overlays=[], extra_tracks=[{"id": "imgs", "items": [img]}, {"id": "vids", "items": [vid]}])
+    found = {(i["id"], i["text"]) for i in lc.data_issues(p, str(path.parent))}
+    assert ("vid-up", "hidden by img-full 1.0-3.0s") in found
+    assert not any(i[0] == "img-full" and "hidden" in i[1] for i in found)
+
+
+def test_a_footage_gap_under_an_overlay_is_overlay_only_not_black(tmp_path):
+    path, p = _project(tmp_path, base=((0, 2), (4, 6)), overlays=[{"id": "ov-title", "start": 2, "end": 4}])
+    assert ("frame", "no footage 2.0-4.0s (overlay only)") in {(i["id"], i["text"]) for i in lc.data_issues(p, str(path.parent))}
+
+
+def test_auto_times_take_every_kind_round_robin(tmp_path):
+    seams = [(k * 2.4, k * 2.4 + 2.4) for k in range(25)]   # a cut project: 24 seams in the first minute
+    _, p = _project(tmp_path, base=seams, overlays=[{"id": "ov-late", "start": 40, "end": 53}])
+    times = lc.pick_times(p)
+    assert len(times) == lc.MAX_TIMES and any(40 <= t <= 53 for t in times), times
+    assert max(times) > 30 and min(times) < 10, "spread over the whole project"
+
+
+def test_image_mode_takes_at_most_8_times_and_a_3_by_360_sheet(tmp_path, monkeypatch):
+    many = [{"id": f"ov-{k}", "start": k * 2, "end": k * 2 + 1.5} for k in range(10)]
+    path, _ = _project(tmp_path, base=((0, 20),), overlays=many)
+    got = []
+    out = look.run(str(path), image=True, measure_fn=_fake_measure({}), sheet_fn=lambda pp, pd, times: (got.append(times), (pd + "/s.png", None))[1])
+    assert len(got[0]) <= look.IMAGE_TIMES and out["times"] == got[0]
+    cmds = []
+    monkeypatch.setattr(look, "_run_group", lambda cmd, timeout: (cmds.append(cmd), (0, "", ""))[1])
+    look.sheet(str(path), str(path.parent), [1.0, 2.0, 3.0, 4.0])
+    assert cmds[0][cmds[0].index("--cols") + 1] == "3" and cmds[0][cmds[0].index("--tile-width") + 1] == "360"
+
+
+def test_overlays_are_measured_three_at_a_time(tmp_path):
+    import threading, time
+    path, _ = _project(tmp_path, base=((0, 20),), overlays=[{"id": f"ov-{k}", "start": k, "end": k + 1} for k in range(6)])
+    live, peak, lock = [0], [0], threading.Lock()
+
+    def slow(*a):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        time.sleep(0.2)
+        with lock:
+            live[0] -= 1
+        return _texts(("ok", 200, 600, 400, 80)), None
+    out = look.run(str(path), measure_fn=slow)
+    assert out["overlays"] == 6 and peak[0] == look.MEASURE_WORKERS
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_the_real_measurer_sees_text_spill_out_of_its_box(tmp_path):
+    spill = ("export default function O() { return <div style={{position: 'absolute', left: 120, top: 500, width: 300, "
+             "whiteSpace: 'nowrap', fontSize: 70, color: 'white'}}>Spills out here</div> }")
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-spill", "start": 1, "end": 3, "jsx": spill}])
+    out = look.run(str(path), detail=True)
+    assert any("ov-spill" in i and "spills out of its box" in i for i in out["issues"]), out

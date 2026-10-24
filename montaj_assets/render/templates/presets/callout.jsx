@@ -1,7 +1,8 @@
 /**
  * callout.jsx: a short punchy line (§558, place's `callout` preset), e.g. "3x faster". Centred across the frame in
- * the upper third (clear of the bottom captions and the apps' right-side buttons in portrait), on an accent plate.
- * The text shrinks to fit one line inside the safe width. Enters over ~0.3 s ('pop' springs in, 'slide' rises,
+ * the upper third (clear of the captions and of the apps' right-side buttons, which start at 45% of a tall frame's
+ * height), on an accent plate. The text shrinks to fit one line inside the 5% title-safe width, or wraps to two
+ * lines when one would be smaller than 48 px. Enters over ~0.3 s ('pop' springs in, 'slide' rises,
  * 'fade' fades) and fades out over the last ~0.25 s, done before the item ends (its last frame is held).
  *
  * Props (strings, as the editor's properties panel writes them):
@@ -23,13 +24,17 @@ export default function Callout() {
   // the design canvas (1080 on the short edge): place writes it as canvasW / canvasH; no global carries it
   const W = Number(p.canvasW) > 0 ? Number(p.canvasW) : 1080
   const H = Number(p.canvasH) > 0 ? Number(p.canvasH) : 1920
-    const text = String(p.text || '3x faster')
+  const text = String(p.text || '3x faster')
   const anim = ['pop', 'slide', 'fade'].includes(p.anim) ? p.anim : 'pop'
-  const portrait = H > W
-  const safeW = W - (portrait ? 2 * 220 : 2 * 96)
+  // inside the 5% title-safe margins (it sits above the apps' right-side buttons, which start at 45% of the height)
+  const safeW = Math.round(W * 0.9)
   const want = Number(p.fontSize) > 0 ? Number(p.fontSize) : 120
-  // about 0.6 em per character at a heavy weight, plus the plate's padding: one line inside the safe width
-  const size = Math.max(36, Math.min(want, Math.floor((safeW - 80) / Math.max(1, text.length * 0.6))))
+  // about 0.6 em per character at a heavy weight, plus the plate's padding: one line inside the safe width, or,
+  // when that would go below MIN_ONE_LINE px, two lines at the size they fit
+  const MIN_ONE_LINE = 48
+  const perLine = (lines) => Math.floor((safeW - 80) * lines / Math.max(1, text.length * 0.6))
+  const wraps = perLine(1) < MIN_ONE_LINE
+  const size = Math.max(36, Math.min(want, perLine(wraps ? 2 : 1)))
   const inF = Math.max(1, Math.round(fps * 0.3))
   const outF = Math.max(1, Math.round(fps * 0.25))
   const last = Math.max(inF + outF, (duration || fps * 3) - 1)
@@ -46,7 +51,7 @@ export default function Callout() {
         opacity: fadeIn * fadeOut, transform: `translateY(${y}px) scale(${scale})`,
         fontFamily: p.fontFamily || 'Inter, system-ui, sans-serif', fontSize: size, fontWeight: p.fontWeight || '900',
         fontStyle: p.fontStyle || 'normal', color: p.color || '#1c1c1e', textAlign: p.textAlign || 'center',
-        textTransform: p.textTransform || 'none', whiteSpace: 'nowrap', lineHeight: 1.1,
+        textTransform: p.textTransform || 'none', whiteSpace: wraps ? 'normal' : 'nowrap', lineHeight: 1.1,
       }}>{text}</div>
     </div>
   )

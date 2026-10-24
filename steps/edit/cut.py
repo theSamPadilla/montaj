@@ -38,6 +38,9 @@ from lib.speech_units import (FALLBACK_ERRORS, HESITATION_S, NON_MEDIA as _NON_M
                                sidecar_refusal as _sidecar_refusal, speech_track_id as _speech_track_id,
                                stem_clash as _stem_clash)
 from lib import speech_units
+from lib.speech_units import (DENSE_WINDOW_S, DENSE_WORDS, MADE_UP_MEDIAN_S, MIN_WORDS_PER_S,  # noqa: F401
+                               NON_SPACED, ZERO_LENGTH_S, ZERO_SHARE, hardly_speech as _hardly_speech,
+                               language_of as _language, made_up as _made_up)
 from steps.audio import waveform_trim
 from steps.edit import jump_cut
 from steps.speech import rm_fillers, rm_nonspeech
@@ -52,21 +55,8 @@ PLAN_HELP = ("Edit, then run cut with plan: move a row from ## Unused into ## Cu
              "trimmed (it replaces that take's rows in ## Cut).")
 # Why a row is in a plan's ## Unused.
 WHYS = ("retake", "false-start", "repeat", "restart", "abandoned", "filler-only", "pause", "earlier")
-# Languages written without spaces between words: take selection would compare characters, so it is off.
-NON_SPACED = {"ja", "zh", "yue", "th", "lo", "km", "my", "bo"}
 REMOVED_CAP_BYTES = 1500
 PREV_PLAN_FILE = "cut-plan.prev.md"
-# A clip whose transcript covers this little of it is not speech (b-roll, with a word whisper made up).
-MIN_WORDS_PER_S = 0.2
-DENSE_WINDOW_S = 10.0       # ... unless some DENSE_WINDOW_S of it holds DENSE_WORDS words: a real short line
-DENSE_WORDS = 5
-# Words whisper makes up over music or sound effects have no gaps and stretch to fill the clip: a median word
-# length over MADE_UP_MEDIAN_S, or ZERO_SHARE or more words of zero length, is made up, never speech. Measured
-# 2026-10-24: 172 real transcripts have a longest median word length of 1.42 s and a largest zero-length share
-# of 0.30; whisper on music and sound-effect slices gave medians of 4.4 to 15 s, or 71% zero-length words.
-MADE_UP_MEDIAN_S = 2.5
-ZERO_SHARE = 0.5
-ZERO_LENGTH_S = 0.02
 LOSES_MOST = 0.1            # warn when a clip keeps under this share of its length
 # What the carry report flags about the other layers, by kind, in the answers.
 LAYER_FLAGS = ("overlay_", "linked_", "caption_", "audio_", "marker_", "bed_check_timing")
@@ -115,26 +105,6 @@ def _window_has(keeps, lo, hi):
 def _in_window(keeps, lo, hi):
     """The keeps clipped to the clip's window: jump_cut refuses a keep wholly outside it (a clip already cut)."""
     return [[max(s, lo), min(e, hi)] for s, e in keeps if min(e, hi) - max(s, lo) > 0]
-
-
-def _made_up(words):
-    """Words whisper made up (over music, sound effects or noise): too long, or too many of zero length."""
-    lens = sorted(w["end"] - w["start"] for w in words if any(c.isalnum() for c in w.get("text", "x")))
-    if not lens:
-        return False
-    median = lens[len(lens) // 2] if len(lens) % 2 else (lens[len(lens) // 2 - 1] + lens[len(lens) // 2]) / 2
-    zero = sum(1 for x in lens if x < ZERO_LENGTH_S) / len(lens)
-    return median > MADE_UP_MEDIAN_S or zero >= ZERO_SHARE
-
-
-def _hardly_speech(words, span):
-    """A clip whose words are too few and too spread out to be speech: b-roll, with words whisper made up
-    ("Thank you." over music). Fewer than MIN_WORDS_PER_S over the clip, and no DENSE_WINDOW_S of it with
-    DENSE_WORDS words."""
-    if len(words) >= MIN_WORDS_PER_S * span:
-        return False
-    starts = sorted(w["start"] for w in words)
-    return not any(sum(1 for x in starts if s0 <= x < s0 + DENSE_WINDOW_S) >= DENSE_WORDS for s0 in starts)
 
 
 def _cut(work, project_path, ti, cid, src, keeps, lineage):
@@ -596,28 +566,6 @@ def _already_cut(project):
     return out
 
 
-def _language(arg, track, project_dir):
-    """The speech language: the param, else (auto or none) what whisper detected in the transcript of the clip
-    with the most words, b-roll left out (music is often detected as some other language)."""
-    if arg and arg != "auto":
-        return arg
-    best, best_n = None, -1
-    for it in _media(track):
-        r = _resolved(it, project_dir)
-        sc = sidecar_for(r)
-        if not sc:
-            continue
-        try:
-            with open(sc, encoding="utf-8") as f:
-                lang = ((json.load(f).get("result") or {}).get("language") or "").strip()
-        except (OSError, ValueError):
-            continue
-        words = [{"start": w.start} for w in load_words(sc)]
-        span = max(float(it.get("outPoint", 0)) - float(it.get("inPoint", 0)), float(it.get("sourceDuration") or 0), 1e-6)
-        if lang and not _hardly_speech(words, span) and not _made_up(
-                [{"text": w.text, "start": w.start, "end": w.end} for w in load_words(sc)]) and len(words) > best_n:
-            best, best_n = lang, len(words)
-    return best or "en"
 
 
 # ── the run ──────────────────────────────────────────────────────────────────

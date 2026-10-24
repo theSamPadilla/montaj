@@ -2,10 +2,13 @@
 """look (§558): one read-only check of a project, answered in a short JSON (lib/look_check.py has the rules).
 
 Measures each overlay once (sample_overlay --measure, the existing Puppeteer path) at the middle of its span, at
-most MAX_MEASURES overlays, those on screen at the looked-at times first; with --image, one contact_sheet of the
-times. Writes nothing in project.json; the measure PNGs and the sheet go under render/samples.
+most MAX_MEASURES overlays, MEASURE_WORKERS at a time, those on screen at the picked times first; with --image, one
+contact_sheet of at most IMAGE_TIMES of those times. The text answer checks the project's data and the overlays it
+measured: it renders no frame. Writes nothing in project.json; the measure PNGs and the sheet go under
+render/samples.
 """
 import argparse, hashlib, json, os, signal, subprocess, sys, time
+from concurrent.futures import ThreadPoolExecutor
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
@@ -15,7 +18,10 @@ from lib.project_tracks import normalize_tracks  # noqa: E402
 
 SAMPLE_OVERLAY_PY = os.path.join(MONTAJ_ROOT, "steps", "render", "sample_overlay.py")
 CONTACT_SHEET_PY = os.path.join(MONTAJ_ROOT, "steps", "render", "contact_sheet.py")
-SHEET_WIDTH = 768
+SHEET_COLS = 3
+SHEET_TILE = 360        # px: phone-size tiles, captions readable
+IMAGE_TIMES = 8
+MEASURE_WORKERS = 3
 MEASURE_TIMEOUT_S = 90
 SHEET_TIMEOUT_S = 300
 
@@ -82,10 +88,10 @@ def overlays_to_measure(project, project_dir, times):
     """[(track index, item, path)] of overlays to measure: those on screen at a looked-at time first, then the rest,
     in time order; at most MAX_MEASURES. The count of the rest is returned too."""
     found = []
-    for ti, t in enumerate(lc.tracks_of(project)):
+    for ti, row in enumerate(lc.drawn_tracks(project)):
         if ti == 0:
             continue
-        for it in lc.items_of(t):
+        for it in row:
             if it.get("type") != "overlay" or lc._num(it.get("end")) <= lc._num(it.get("start")):
                 continue
             p = lc.overlay_path(it, project_dir)
@@ -98,13 +104,13 @@ def overlays_to_measure(project, project_dir, times):
 
 
 def sheet(project_path, project_dir, times):
-    """One contact sheet of the times, SHEET_WIDTH wide: its path, or None with why."""
-    cols = min(4, max(1, len(times)))
+    """One contact sheet of the times, SHEET_COLS tiles of SHEET_TILE px across: its path, or None with why."""
+    cols = min(SHEET_COLS, max(1, len(times)))
     digest = hashlib.sha1(json.dumps(times).encode()).hexdigest()[:8]
     out = os.path.join(project_dir, "render", "samples", f"look-{digest}.png")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     cmd = [sys.executable, CONTACT_SHEET_PY, "--project", project_path, "--cols", str(cols),
-           "--tile-width", str(SHEET_WIDTH // cols), "--out", out]
+           "--tile-width", str(SHEET_TILE), "--out", out]
     for t in times:
         cmd += ["--at", str(t)]
     r = _run_group(cmd, SHEET_TIMEOUT_S)
@@ -125,38 +131,47 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sh
         fail("not_found", f"Project not readable: {project_path}")
     width, height = lc.design_size(project)
     fps = _fps(project)
-    times = lc.pick_times(project, at)
+    times = lc.pick_times(project, at, cap=IMAGE_TIMES if image and not at else lc.MAX_TIMES)
     issues = lc.data_issues(project, project_dir)
     to_measure, unmeasured = overlays_to_measure(project, project_dir, times)
-    placed, checked, notes = [], [], []
     samples = os.path.join(project_dir, "render", "samples", "look")
     os.makedirs(samples, exist_ok=True)
-    for ti, it, path in to_measure:
+
+    def one(entry):
+        ti, it, path = entry
         s, e = lc._num(it.get("start")), lc._num(it.get("end"))
         mid = (s + e) / 2
         frame, duration = int(round((mid - s) * fps)), max(1, int(round((e - s) * fps)))
         label = lc._label(it, ti)
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)[:40]
         m, why = measure_fn(it, path, frame, duration, fps, width, height, os.path.join(samples, f"{safe}-f{frame}.png"))
+        return ti, it, label, s, e, mid, m, why
+
+    with ThreadPoolExecutor(max_workers=MEASURE_WORKERS) as pool:
+        results = list(pool.map(one, to_measure))
+    placed, checked, notes = [], [], []
+    for ti, it, label, s, e, mid, m, why in results:
         if m is None:
             issues.append({"t": lc.r2(mid), "id": label, "text": why})
             continue
-        issues += lc.measured_issues(it, m, width, height, mid, label)
-        placed.append((label, s, e, [b for _, b, _ in lc.text_boxes(m, it, width, height)]))
+        bands = lc.caption_bands(project, s, e, width, height)
+        issues += lc.measured_issues(it, m, width, height, mid, label, bands)
+        placed.append((label, s, e, [b for _, b, _, _ in lc.text_boxes(m, it, width, height)]))
         checked.append(label)
         if it.get("keyframes"):
             notes.append(f"{label}: keyframed geometry read at its base values")
     issues += lc.text_overlaps(placed)
-    extra = {}
+    extra = {"overlays": len(checked)}
     if unmeasured:
         extra["unmeasured"] = unmeasured
     if image and times:
         path, why = sheet_fn(project_path, project_dir, times)
         if path:
             extra["sheet"] = path
+            extra["times"] = times
         else:
             issues.append({"t": 0.0, "id": "sheet", "text": why})
-    out = lc.answer(issues, len(times), len(checked), extra=extra)
+    out = lc.answer(issues, extra=extra)
     if detail:
         out.update({"issues": [f'{i["t"]}s {i["id"]}: {i["text"]}' for i in sorted(issues, key=lambda x: (x["t"], x["id"]))],
                     "times": times, "items": checked, "notes": notes, "wallMs": int((clock() - t0) * 1000)})

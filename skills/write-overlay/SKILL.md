@@ -610,8 +610,8 @@ When a workflow calls for several overlays, write them concurrently — each JSX
 ## Authoring guidelines
 
 - **Text size for static formats.** **Do NOT apply video text sizing to carousels, story panels, or other static formats** where the text is being *read* rather than *glanced at*, and where headlines run longer than a punchy hook. For carousels see skill `carousel` §6 (Typography). For other static formats, default to ~32–48px body, ~52–80px headline, and size down further as line length grows.
-- **Avoid the bottom ~350px** — captions render here, and platform UI (TikTok progress bar, Instagram controls) sits in this zone. Use `bottom: 350` or higher, or anchor from the top instead.
-- **Avoid the right ~200px** — TikTok/Instagram action buttons (like, comment, share) occupy the right edge. Keep text and icons within `right: 200` or use `left`-anchored layout.
+- **Keep clear of the captions and the bottom controls:** Montaj's captions draw between about 56% and 76% of the frame height in every style and aspect (their block sits 24-26% up from the bottom; `accent` higher). On a tall phone frame the apps' progress bar and controls also take the bottom ~350px. Keep an overlay that shares the screen with captions above 64% of the height (`bottom` of 36% or more, e.g. `bottom: Math.round(1920 * 0.36)`), or anchor from the top. `look` reports text that crosses the captions.
+- **Avoid the right ~200px between 45% and 85% of a tall phone frame's height:** TikTok/Instagram action buttons (like, comment, share) occupy the right edge there. Keep text and icons within `right: 200` in that band, or use a `left`-anchored layout. On every aspect, keep text inside the 5% title-safe margin.
 - **Don't overlap** — avoid two overlays occupying the same screen region at the same time
 - **Persist after writing** — save the project (delta) with the new overlay items added to the track
 
