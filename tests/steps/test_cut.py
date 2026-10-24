@@ -163,7 +163,7 @@ def test_schema_declares_the_params():
     assert names["project"]["required"] is True and names["project"]["type"] == "path"
     assert {"plan", "language", "max-pause", "recut", "detail", "model"} == set(names) - {"project"}
     assert "preview" not in names
-    assert SCHEMA["input"]["type"] == "project" and "language" in SCHEMA["description"]
+    assert SCHEMA["input"]["type"] == "project" and "language is detected" in SCHEMA["description"]
 
 
 # ── the plan ────────────────────────────────────────────────────────────────
@@ -179,10 +179,12 @@ def test_the_plan_writes_nothing_to_the_project(tmp_path, stub_transcribe, monke
     assert not (d / "speech-text.md").exists()
     assert out["plan"] == str(d / "cut-plan.md") and (d / "cut-plan.md").is_file()
     # the transcript is the one file written beside the clip, where speech_text finds it
-    assert calls == [{"input": str(d / "speech.mp4"), "model": "large-v3-turbo-q5_0", "language": "en"}]
+    assert calls == [{"input": str(d / "speech.mp4"), "model": "large-v3-turbo-q5_0", "language": "auto"}]
     assert (d / "speech.json").is_file() and not (d / "speech.srt").exists()
 
-    assert set(out) == {"project", "mode", "plan", "kept", "removed", "duration", "cut", "transcribed"}
+    assert set(out) == {"project", "mode", "plan", "kept", "removed", "duration", "layers", "cut", "next",
+                        "transcribed"}
+    assert out["layers"] == {} and out["next"].startswith(f'Apply: cut with plan "{d / "cut-plan.md"}".')
     assert out["mode"] == "plan" and out["transcribed"] == ["clip-0"]
     cut_rows, unused_rows = sections((d / "cut-plan.md").read_text())
     assert out["kept"]["lines"] == len(cut_rows)                    # rows of the plan, as removed counts rows
@@ -204,6 +206,7 @@ def test_the_plan_is_speech_edit_text_with_removed_rows_tagged(tmp_path, stub_tr
     text = (d / "cut-plan.md").read_text()
     header, rows = speech_text.parse(cc._untagged(text)[0])
     assert header["track"] == "trk-0"
+    assert "language en" in text           # detected: the step transcribes with auto
     cut, unused = sections(text)
     kept_words = " ".join(" ".join(t for t in r.tokens) for r in rows if r.kind == "speech")
     assert kept_words == " ".join(KEPT)
@@ -242,11 +245,13 @@ def test_the_apply_cuts_through_the_speech_edit_save(tmp_path, stub_transcribe, 
     assert git(d, "show", "HEAD:project.json") == unsaved
     assert (d / "speech-text.md").is_file()
     assert out == {"project": "cut-fixture", "mode": "applied", "version": "version: before cut",
-                   "duration": plan["duration"], "undo": 'Restore the version "version: before cut".'}
+                   "duration": plan["duration"], "undo": 'Restore the version "version: before cut".',
+                   "layers": {}}
     marker = json.loads((d / "project.json").read_text())["cleanCut"]
     assert marker["removed"]["lines"] == {"retake": 2, "false-start": 1, "abandoned": 1}
     assert marker["maxPause"] == 0.45 and marker["kept"]["seconds"] == plan["kept"]["seconds"]
     assert len(raw) < 300
+    assert marker["planStamp"] == speech_text.parse(cc._untagged((d / "cut-plan.md").read_text())[0])[0]["stamp"]
 
 
 def test_plan_text_inline_applies_too(tmp_path, stub_transcribe, monkeypatch):
@@ -313,11 +318,11 @@ def test_a_stale_plan_is_refused_when_the_speech_track_changed(tmp_path, stub_tr
     assert (d / "project.json").read_bytes() == before
 
 
-def test_a_plan_applied_twice_is_stale_the_second_time(tmp_path, stub_transcribe, monkeypatch, capsys):
+def test_a_plan_applied_twice_is_refused_the_second_time(tmp_path, stub_transcribe, monkeypatch, capsys):
     d = make_project(tmp_path, transcript=retake_transcript())
     plan_and_apply(d, monkeypatch)
     after = (d / "project.json").read_bytes()
-    assert refused(d, "--plan", str(d / "cut-plan.md"), monkeypatch=monkeypatch, capsys=capsys) == "stale_plan"
+    assert refused(d, "--plan", str(d / "cut-plan.md"), monkeypatch=monkeypatch, capsys=capsys) == "already_applied"
     assert (d / "project.json").read_bytes() == after
 
 
@@ -391,7 +396,8 @@ def test_planning_a_cut_project_answers_already_cut(tmp_path, stub_transcribe, m
     d = make_project(tmp_path, transcript=retake_transcript())
     plan, _ = plan_and_apply(d, monkeypatch)
     marker = json.loads((d / "project.json").read_text())["cleanCut"]
-    assert set(marker) == {"at", "maxPause", "stepVersion", "mode", "kept", "removed", "duration", "tracksRev"}
+    assert set(marker) == {"at", "maxPause", "stepVersion", "mode", "kept", "removed", "duration", "tracksRev",
+                           "planStamp"}
     plan_file = (d / "cut-plan.md").read_bytes()
     again, _ = run(d, monkeypatch=monkeypatch)
     assert again == {"project": "cut-fixture", "mode": "already-cut", "cutAt": marker["at"], "kept": marker["kept"],
@@ -685,11 +691,91 @@ def test_a_partly_kept_row_is_listed_whole_and_marked(tmp_path):
     monkey_render = speech_text.render
     try:
         speech_text.render = lambda *a, **k: "<!-- montaj speech text v1 · track t · stamp s -->\n# x\n\n## Cut\n"
-        text, kept, removed = cc._plan(d, "x", units, [], sel, lambda i, s: s, lambda src, s: s, "en", 0.45,
-                                       str(tmp_path), cc._filler_test("en"))
+        text, kept, removed, suggested = cc._plan(d, "x", units, [], sel, lambda i, s: s, lambda src, s: s, "en",
+                                                  0.45, str(tmp_path), cc._filler_test("en"))
     finally:
         speech_text.render = monkey_render
     cut, unused = sections(text)
     assert cut == ["A1 start by picking the clip you want. [0.0]"]
     assert unused == ["*A1 Start by, start by picking the clip you want. [0.0 restart]"]
     assert removed == [("A1", 0.0, "Start by,", "restart")]
+
+
+# ── re-review: suggestions, layers, the plan file, b-roll ───────────────────
+
+def _scripted(sentences):
+    script = " ".join(sentences).split()
+    real = json.loads((FIX / "speech.json").read_text())
+    words = [w for w in real["transcription"] if w["text"].strip()]
+    assert len(words) == len(script)
+    return {**real, "transcription": [{**w, "text": " " + t} for w, t in zip(words, script)]}
+
+
+def test_an_uncertain_retake_stays_kept_and_is_offered(tmp_path, stub_transcribe, monkeypatch):
+    sentences = ["I love this app.", "I really love this app.", "You can cut your clips in one click.",
+                 "The best part is the price.", "The best part is the speed.", "This is the way we do it.",
+                 "Never, never, never give up today.", "Thanks so much for watching this video.", "See you soon."]
+    stub_transcribe(_scripted(sentences))
+    d = make_project(tmp_path)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["removed"]["lines"] == {} and plan["suggested"] == {"retake?": 1}
+    assert "I love this app. [retake?]" in plan["cut"]
+    cut, unused = sections((d / "cut-plan.md").read_text())
+    assert unused and all(r.endswith("retake?]") for r in unused)
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    assert phrases(d) == sentences                       # nothing uncertain was cut
+    assert json.loads((d / "project.json").read_text())["cleanCut"]["removed"]["lines"] == {}
+
+
+def test_taking_a_suggestion_is_deleting_its_row(tmp_path, stub_transcribe, monkeypatch):
+    sentences = ["I love this app.", "I really love this app.", "You can cut your clips in one click.",
+                 "The best part is the price.", "The best part is the speed.", "This is the way we do it.",
+                 "Never, never, never give up today.", "Thanks so much for watching this video.", "See you soon."]
+    stub_transcribe(_scripted(sentences))
+    d = make_project(tmp_path)
+    run(d, monkeypatch=monkeypatch)
+    lines = (d / "cut-plan.md").read_text().splitlines()
+    cut_at, unused_at = lines.index("## Cut"), lines.index("## Unused")
+    lines = [ln for i, ln in enumerate(lines) if not (cut_at < i < unused_at and "I love this app." in ln)]
+    (d / "cut-plan.md").write_text("\n".join(lines) + "\n")
+    run(d, "--plan", str(d / "cut-plan.md"), monkeypatch=monkeypatch)
+    assert phrases(d) == sentences[1:]
+
+
+def test_both_answers_say_what_happens_to_the_other_layers(tmp_path, stub_transcribe, monkeypatch):
+    d, _ = _layered_project(tmp_path)
+    plan, applied = plan_and_apply(d, monkeypatch)
+    assert plan["layers"].get("overlay_removed", 0) > 0
+    assert applied["layers"] == plan["layers"]
+
+
+def test_a_new_plan_keeps_an_edited_one(tmp_path, stub_transcribe, monkeypatch):
+    d = make_project(tmp_path, transcript=retake_transcript())
+    run(d, monkeypatch=monkeypatch)
+    edited = (d / "cut-plan.md").read_text().replace("A14 Thanks everyone.", "A14")
+    (d / "cut-plan.md").write_text(edited)
+    out, _ = run(d, monkeypatch=monkeypatch)
+    assert (d / "cut-plan.prev.md").read_text() == edited
+    assert out["previous"] == str(d / "cut-plan.prev.md")
+    again, _ = run(d, monkeypatch=monkeypatch)          # the same plan again: nothing to keep
+    assert "previous" not in again and (d / "cut-plan.prev.md").read_text() == edited
+
+
+def test_the_plan_never_writes_through_a_link(tmp_path, stub_transcribe, monkeypatch):
+    d = make_project(tmp_path, transcript=retake_transcript())
+    target = tmp_path / "outside.md"
+    target.write_text("keep me\n")
+    (d / "cut-plan.md").symlink_to(target)
+    run(d, monkeypatch=monkeypatch)
+    assert target.read_text() == "keep me\n"
+    assert not (d / "cut-plan.md").is_symlink() and (d / "cut-plan.md").read_text().startswith("<!--")
+
+
+def test_a_clip_that_is_not_speech_is_kept_whole(tmp_path, stub_transcribe, monkeypatch):
+    real = json.loads((FIX / "speech.json").read_text())
+    w = [x for x in real["transcription"] if x["text"].strip()][:2]
+    stub_transcribe({**real, "transcription": [{**w[0], "text": " Thank"}, {**w[1], "text": " you."}]})
+    d = make_project(tmp_path)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert any("almost no speech" in x for x in plan["warnings"])
+    assert plan["kept"]["seconds"] == pytest.approx(SOURCE_S, abs=0.05)

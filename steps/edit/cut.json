@@ -1,16 +1,75 @@
 {
   "name": "cut",
   "category": "edit",
-  "description": "Cut a talking head in two calls. Without plan: transcribes clips that have no transcript (the only file it writes beside a clip), cuts silences and fillers, keeps one take of each line, and writes the result as cut-plan.md in the project folder, changing nothing in the project. With plan: applies that plan, edited or not, through speech_edit's save (a version first). Pass the speaker's language.",
-  "input": {"type": "project", "description": "The project id, its folder, or the absolute path of its project.json"},
-  "output": {"type": "json", "description": "Plan: {project, mode: plan, plan, kept {lines, seconds}, removed {lines {why: n}, fillers, seconds}, duration, cut, keep?, transcribed, silence?, note?, warnings?}. Apply: {project, mode: applied, version, duration, undo}. A cut project: {mode: already-cut, ...}."},
+  "description": "Cut a talking head in two calls. Without plan: transcribes clips that have no transcript (the only file it writes beside a clip), cuts silences and fillers, removes only sure retakes, and writes the result as cut-plan.md in the project folder, changing nothing in the project; uncertain cuts stay in and are offered as suggestions. With plan: applies that plan, edited or not, through speech_edit's save (a version first). The language is detected unless you pass it.",
+  "input": {
+    "type": "project",
+    "description": "The project id, its folder, or the absolute path of its project.json"
+  },
+  "output": {
+    "type": "json",
+    "description": "Plan: {project, mode: plan, plan, kept {lines, seconds}, removed {lines {why: n}, fillers, seconds}, suggested?, duration, layers, cut, keep?, next, previous?, transcribed, silence?, note?, warnings?}. Apply: {project, mode: applied, version, duration, undo, layers}. A cut project: {mode: already-cut, ...}."
+  },
   "params": [
-    {"name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json"},
-    {"name": "plan", "type": "string", "required": false, "description": "Apply this plan: the path of the plan file in the project folder (cut-plan.md), or the plan's text. Leave out to make a plan."},
-    {"name": "language", "type": "string", "required": false, "description": "The speaker's language code (e.g. es), or 'auto' to detect. Default en. Picks the transcription language and the filler set."},
-    {"name": "max-pause", "type": "float", "required": false, "min": 0.08, "max": 2.0, "description": "Cap every pause in seconds. Default 0.45, which suits a talking head; 0.5 or more for tutorials."},
-    {"name": "recut", "type": "bool", "default": false, "description": "Plan again a project cut already cut. It cuts the current timeline, so takes the first cut removed stay removed."},
-    {"name": "detail", "type": "bool", "default": false, "description": "Also answer with the kept lines."},
-    {"name": "model", "type": "enum", "default": "large-v3-turbo-q5_0", "options": ["large-v3-turbo-q5_0", "large-v3-turbo", "tiny.en", "base.en", "small.en", "medium.en", "tiny", "base", "small", "medium", "large", "large-v1", "large-v2", "large-v3"], "description": "Whisper model for clips with no transcript."}
+    {
+      "name": "project",
+      "type": "path",
+      "required": true,
+      "description": "The project id, its folder, or the absolute path of its project.json"
+    },
+    {
+      "name": "plan",
+      "type": "string",
+      "required": false,
+      "description": "Apply this plan: the path of the plan file in the project folder (cut-plan.md), or the plan's text. Leave out to make a plan."
+    },
+    {
+      "name": "language",
+      "type": "string",
+      "required": false,
+      "description": "The speaker's language code (e.g. es). Leave out (or 'auto') to detect it. Picks the transcription language and the filler set."
+    },
+    {
+      "name": "max-pause",
+      "type": "float",
+      "required": false,
+      "min": 0.08,
+      "max": 2.0,
+      "description": "Cap every pause in seconds. Default 0.45, which suits a talking head; 0.5 or more for tutorials."
+    },
+    {
+      "name": "recut",
+      "type": "bool",
+      "default": false,
+      "description": "Plan again a project cut already cut. It cuts the current timeline, so takes the first cut removed stay removed."
+    },
+    {
+      "name": "detail",
+      "type": "bool",
+      "default": false,
+      "description": "Also answer with the kept lines."
+    },
+    {
+      "name": "model",
+      "type": "enum",
+      "default": "large-v3-turbo-q5_0",
+      "options": [
+        "large-v3-turbo-q5_0",
+        "large-v3-turbo",
+        "tiny.en",
+        "base.en",
+        "small.en",
+        "medium.en",
+        "tiny",
+        "base",
+        "small",
+        "medium",
+        "large",
+        "large-v1",
+        "large-v2",
+        "large-v3"
+      ],
+      "description": "Whisper model for clips with no transcript."
+    }
   ]
 }
