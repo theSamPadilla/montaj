@@ -34,7 +34,7 @@ CONVERTED = {
 }
 
 NOT_COLOURS = ["foo", "", "  ", "white,null", "white:x=1", "white;null", "[a]", "white'", "white dim", "rgb(1,2)",
-               "rgb(1,2,3,4,5)", "rgb(1deg,2,3)", "rgb(1, 2, 3 / 4)", "#12345", "12ab9f", "white@x", "white@0.5@1",
+               "rgb(1,2,3,4,5)", "rgb(1deg,2,3)", "rgb(1, 2, 3 / 4)", "#12345", "12ab9", "white@x", "white@0.5@1",
                "rgb(1e999, 0, 0)", "hsl(1e999, 50%, 50%)", None, 5]
 
 
@@ -74,3 +74,22 @@ def test_ffmpeg_reads_each_converted_value_as_that_colour():
             continue
         assert _pixel(ffmpeg_color(value)) == tuple(bytes.fromhex(expected[2:])), value
     assert _pixel(ffmpeg_color("#abc@0.5"))[:3] == (0xAA, 0xBB, 0xCC)
+
+
+# --- the hex forms exactly as ffmpeg reads them (§563 review) ----------------
+
+@pytest.mark.parametrize("value", ["ffffff", "FF0000", "ff0000aa", "#ABCDEF", "0xABCDEF", "0xabcdef80", "white@0x80"])
+def test_hex_ffmpeg_reads_passes_unchanged_bare_too(value):
+    assert ffmpeg_color(value) == value
+
+
+@pytest.mark.parametrize("value", ["0Xff0000", "0XFF0000AA", "fff", "ffff", "white@0X80"])
+def test_hex_ffmpeg_refuses_is_refused(value):
+    with pytest.raises(ValueError):
+        ffmpeg_color(value)
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_ffmpeg_reads_bare_hex_as_that_colour():
+    assert _pixel(ffmpeg_color("ff0000aa")) == (0xFF, 0x00, 0x00, 0xAA)
+    assert _pixel(ffmpeg_color("abcdef")) == (0xAB, 0xCD, 0xEF, 0xFF)

@@ -4,8 +4,8 @@ A colour goes into the graph unquoted (drawtext ``fontcolor=``, the lavfi ``colo
 ``;`` or ``[`` would start another option or filter, so free text never gets there. And captions in a project carry
 whatever CSS an author or an AI wrote, so a CSS colour is converted, not refused:
 
-- a form ffmpeg already reads (``#RRGGBB[AA]``, ``0xRRGGBB[AA]``, a colour name in ffmpeg's own table, any of those
-  with ``@alpha``) passes UNCHANGED, so a render that worked keeps exactly its arguments;
+- a form ffmpeg already reads (``#RRGGBB[AA]``, ``0xRRGGBB[AA]``, bare ``RRGGBB[AA]``, a colour name in ffmpeg's own
+  table, any of those with ``@alpha``) passes UNCHANGED, so a render that worked keeps exactly its arguments;
 - any other CSS colour (``#RGB``, ``#RGBA``, ``rgb()``/``rgba()`` and ``hsl()``/``hsla()`` in comma or space syntax,
   ``transparent``, a CSS name ffmpeg lacks) becomes ``0xRRGGBBAA``;
 - anything else raises ValueError.
@@ -76,9 +76,10 @@ FFMPEG_NAMES = frozenset({
 
 EXAMPLE = "#ffffff or white"
 
-_HEX_FFMPEG = re.compile(r"(?:#|0x)(?:[0-9a-f]{6}|[0-9a-f]{8})", re.I)
+# ffmpeg's own hex: `#`, `0x` (lower case: it refuses `0X`) or no prefix at all, then 6 or 8 digits of either case.
+_HEX_FFMPEG = re.compile(r"(?:#|0x)?(?i:[0-9a-f]{6}|[0-9a-f]{8})")
 _HEX_SHORT = re.compile(r"#([0-9a-f]{3,4})", re.I)
-_ALPHA_SUFFIX = re.compile(r"(?:0x[0-9a-f]{2}|[0-9]*\.?[0-9]+)", re.I)
+_ALPHA_SUFFIX = re.compile(r"(?:0x(?i:[0-9a-f]{2})|[0-9]*\.?[0-9]+)")
 _FUNC = re.compile(r"(rgba?|hsla?)\(\s*(.*?)\s*\)", re.I | re.S)
 _NUM = r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:e[+-]?[0-9]+)?"
 _ARG = re.compile(rf"({_NUM})(%|deg|grad|rad|turn)?", re.I)
