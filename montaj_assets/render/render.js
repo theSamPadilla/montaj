@@ -2286,8 +2286,8 @@ function hasAudioSrc(track) {
 function audioTrackNoSrcMessage(track, index) {
   const id = typeof track?.id === 'string' && track.id ? ` (id "${track.id}")` : ''
   const head = `audio.tracks[${index}]${id}`
-  return Array.isArray(track?.items)
-    ? `${head} has items instead of src. An audio track is one file: set src to its path.`
+  return Array.isArray(track?.items) && track.items.length > 0
+    ? `${head} has items instead of src. An audio track is one file: give each file its own entry with src.`
     : `${head} has no src. Set src to the audio file's path.`
 }
 
@@ -2304,7 +2304,7 @@ function validateProjectFiles(projectJson) {
 
   const audioTracks = projectJson.audio?.tracks ?? []
   audioTracks.forEach((track, i) => {
-    if (!hasAudioSrc(track)) fail('missing_files', audioTrackNoSrcMessage(track, i))
+    if (!hasAudioSrc(track)) fail('invalid_audio_track', audioTrackNoSrcMessage(track, i))
     if (!resolveFilePath(track.src)) missing.push(track.src)
   })
 

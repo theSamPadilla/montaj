@@ -568,6 +568,7 @@ export class WaveformPeaksStore {
    * is either data we don't have or off screen, neither worth drawing.
    */
   audioColumns(track: AudioTrack, rect: Rect, ctx: WaveformQueryContext): { rect: Rect; columns: WaveformColumn[] } | null {
+    if (!track.src) return null
     if (!ctx.getWaveformPeaks || rect.width <= 0) return null
     const window = audioTrackSourceWindow(track)
     if (window.duration <= 0) return null

@@ -271,6 +271,11 @@ describe('ClipPropertiesPanel — audio selection', () => {
     expect(screen.getByLabelText('Track label')).toHaveValue('final-track.mp3')
   })
 
+  it('a track with no src renders (no basename crash) and falls back to "audio"', () => {
+    renderPanel({ kind: 'audio', track: { ...audioTrack(), src: undefined } as unknown as AudioTrack })
+    expect(screen.getByLabelText('Track label')).toHaveValue('audio')
+  })
+
   it('label falls back to the source basename on commit if cleared to blank', () => {
     const { onPreviewAudio, onCommitAudio } = renderPanel({
       kind: 'audio',

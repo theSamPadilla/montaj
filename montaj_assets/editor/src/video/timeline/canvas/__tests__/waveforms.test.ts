@@ -732,6 +732,14 @@ describe('WaveformPeaksStore.audioColumns', () => {
     expect(result).toBeNull()
   })
 
+  it('never fetches for a track with no src (an AI-saved {id, items} entry)', () => {
+    const store = new WaveformPeaksStore()
+    const fetcher = vi.fn()
+    const result = store.audioColumns({ id: 'a', items: [] } as unknown as AudioTrack, rect(), queryCtx({ getWaveformPeaks: fetcher }))
+    expect(result).toBeNull()
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
   it('skips a fully collapsed/inverted trim without fetching (DOM PlainFallback case)', () => {
     const store = new WaveformPeaksStore()
     const fetcher = vi.fn()
