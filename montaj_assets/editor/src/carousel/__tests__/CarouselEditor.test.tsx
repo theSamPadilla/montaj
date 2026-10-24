@@ -3315,6 +3315,35 @@ describe('CarouselEditor: a crop that keeps what you picked (§556 M4)', () => {
     expect(idsOf(lastSave(adapter))).toEqual(['el-b'])
   })
 
+  it('every slide going away during crop ends crop mode, writing nothing, and it does not come back with the slides (§556 review)', async () => {
+    const adapter = makeFakeAdapter()
+    let push: ((p: Project) => void) | undefined
+    adapter.subscribe = (_id, onFrame) => {
+      push = onFrame
+      return () => {}
+    }
+    // An empty project gets its one starter slide at mount, and only ever that one.
+    const r = render(<CarouselEditor project={{ ...cropProject(), slides: [] }} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    await act(async () => { push!(cropProject()) })
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    await pickCrop(r)
+    expect(inCrop()).toBe(true)
+    const saves = adapter.saveCalls.length
+
+    // Another writer removes every slide: no canvas, and no crop mode left behind.
+    await act(async () => { push!({ ...cropProject(), slides: [] }) })
+    expect(canvasRoot()).toBeNull()
+    expect(adapter.saveCalls).toHaveLength(saves)
+
+    // A slide comes back with the image: it is not in crop mode.
+    await act(async () => { push!(cropProject()) })
+    expect(interactiveHas('el-img')).toBe(true)
+    expect(inCrop()).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(saves)
+  })
+
   it('a new slide applies the crop first: one undo step for the crop, one for the slide', async () => {
     const { adapter, r, onProjectChange } = await mount()
     await pickCrop(r)

@@ -962,7 +962,12 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
 
   // Auto-select first slide, or re-select when the current one disappears.
   useEffect(() => {
-    if (slides.length === 0) return
+    if (slides.length === 0) {
+      // Every slide went, and a crop on one of them with its image: nothing is
+      // written, and the canvas that would end it is gone too.
+      if (cropElementIdRef.current) void leaveCrop('discard')
+      return
+    }
     const stillExists = selectedSlideId && slides.some(s => s.id === selectedSlideId)
     if (!stillExists) {
       // A crop on the slide that is gone went with its image: nothing is written.
