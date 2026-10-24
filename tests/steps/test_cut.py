@@ -841,8 +841,10 @@ def test_b_roll_words_never_take_part(tmp_path, monkeypatch, order):
 
 
 def test_a_short_real_line_is_still_cut(tmp_path, stub_transcribe, monkeypatch):
-    """Should-fix 5: six real words, then the camera left running: dense enough to be speech."""
+    """Six real words, then the camera left running in a quiet room: dense enough to be speech, and the
+    waveform agrees the rest is silent, so it is cut."""
     stub_transcribe(synthetic("Hey everyone, today we cook pasta."))
+    monkeypatch.setattr(cc.waveform_trim, "process_one", lambda src, thr, ms: {"input": src, "keeps": [[0.1, 2.9]]})
     d = make_project(tmp_path)
     plan, _ = run(d, monkeypatch=monkeypatch)
     assert not any("too few words" in w for w in plan.get("warnings", []))
@@ -886,8 +888,39 @@ def test_already_applied_needs_the_same_plan_not_only_the_same_stamp(tmp_path, s
 def test_next_says_how_to_take_a_suggestion(tmp_path, stub_transcribe, monkeypatch):
     d = make_project(tmp_path, transcript=retake_transcript())
     out, _ = run(d, monkeypatch=monkeypatch)
-    assert "To take a ? suggestion, delete its row from ## Cut" in out["next"]
+    assert "To take a ? suggestion: delete a retake? or false-start? row from ## Cut" in out["next"]
     (tmp_path / "s").mkdir()
     silent = clips_project(tmp_path / "s", [("speech", {**retake_transcript(), "transcription": []})])
     out, _ = run(silent, monkeypatch=monkeypatch)
     assert out["next"] == f'Apply: cut with plan "{silent / "cut-plan.md"}".'
+
+
+# ── pass 4: made-up words that pass for speech ───────────────────────────────
+
+OUTRO = "Thanks for watching and see you next time."
+
+
+def test_a_real_line_is_never_removed_for_a_made_up_copy_on_b_roll(tmp_path, monkeypatch):
+    """B1: eight invented words on b-roll pass the words-per-second test, but fill little of the clip: its takes
+    are only offered, so the speaker's real outro stays; and only what the waveform finds silent is cut from it
+    (music is not silent)."""
+    speech = "Hey everyone, welcome back. Today we're making pasta from scratch. It only takes twenty minutes. " + OUTRO
+    d = clips_project(tmp_path, [("speech", synthetic(speech)), ("broll", synthetic(OUTRO, start=12.0))])
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["removed"]["lines"] == {}
+    assert plan.get("suggested", {}).get("retake?", 0) >= 1
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    items = json.loads((d / "project.json").read_text())["tracks"][0]["items"]
+    assert any(it["src"].endswith("speech.mp4") for it in items)
+    said = " ".join(phrases(d))
+    assert said.count(OUTRO) == 2                       # the speaker's and the b-roll's, both kept
+    broll = sum(it["outPoint"] - it["inPoint"] for it in items if it["src"].endswith("broll.mp4"))
+    assert broll > 0.5 * SOURCE_S                       # the fixture audio is never silent: kept, not a sliver
+
+
+def test_a_clip_that_keeps_little_of_itself_is_reported(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe(synthetic("Hey everyone, today we cook pasta."))
+    monkeypatch.setattr(cc.waveform_trim, "process_one", lambda src, thr, ms: {"input": src, "keeps": [[0.1, 2.9]]})
+    d = make_project(tmp_path)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert any("clip-0 keeps only" in w for w in plan["warnings"])

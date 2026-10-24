@@ -6,22 +6,26 @@ agent and the person review. The engine REMOVES only what is certain:
   clause inside one said again word for word after a break signal (an ellipsis or a dash before the second
   saying, a cut-off word, or a pause of BREAK_GAP_S or more): rule A and the restart below. With no signal it
   may be a chant or an emphasis ("one more song, one more song"; "I love it, I love it so much"): suggested;
-- a cut-off take: one that broke off (no closing punctuation, an ellipsis or a dash) and that the next take
-  says again in full.
+- a cut-off take: one that broke off (no closing punctuation, an ellipsis or a dash) whose every word the
+  next take says again, in order (its last word may be a bare fragment: "cl" before "clip"; a word with a comma
+  or a period after it is whole, so "art," before "artist" is two words). "Tokyo..." then "Kyoto" is offered.
 Every other call is KEPT and offered as a suggestion (`Selection.suggest`, a why ending in "?") for the agent
 to judge: a reworded take, a block told again with a change, an abandoned opening, a complete sentence the
 next one extends, a short restart, a partial repeat, a line said again with a remark between.
 
 - A unit is one spoken sentence (the caller joins source lines a pause split). Its tokens are its words,
   normalized (lib/speech_lines.norm), with fillers left out. A unit carries its clip, the word positions that
-  follow a timing break, and `fixed` (a clip kept whole, b-roll: never a take, a loser or a suggestion).
+  follow a measured pause, `fixed` (a clip kept whole, b-roll: never a take, a loser or a suggestion) and
+  `sparse` (a clip with little speech, whose words may be made up: its takes are never removed, only offered).
 - False start: a unit whose tokens open the next unit's (a common prefix of at least PREFIX_MIN tokens
   covering PREFIX_COVER of it). Removed when it broke off; when it ends in a period it is kept and suggested
   (false-start?): "Hold on." / "Hold on to your seat.". Never a question or an exclamation.
 - Restart inside a unit: the unit's whole opening said again right after it, word for word (its last word may
-  be cut off). Removed after a break signal ("Start by... start by picking"; "You can drag the cl- you can
-  drag the clip"; a pause); with none, suggested: restart? for an opening shorter than REPEAT_MIN ("New York,
-  New York", "tick tock, tick tock"), repeat? for a longer one. Numbers said twice are a number, never one.
+  be a fragment). Removed after a break signal ("Start by... start by picking"; "Click the — click the";
+  "You can drag the cl you can drag the clip"; a pause), and again for a third saying; with none, suggested:
+  restart? for an opening shorter than REPEAT_MIN ("tick tock, tick tock"), repeat? for a longer one. A short
+  opening said again after only a pause, starting with a capital, is a name ("New York, | New York"): offered.
+  Numbers said twice are a number, never one.
 - Repeated phrase inside a unit (skill step 5): (A) a span of REPEAT_MIN tokens or more, not only numbers,
   said again word for word: removed after a break signal, otherwise suggested (repeat?). (B) part of the span said again (REPEAT_PARTIAL_MIN tokens and
   REPEAT_PARTIAL_COVER of it, no clause punctuation and no joining word after the repeated part): suggested
@@ -34,8 +38,9 @@ next one extends, a short restart, a partial repeat, a line said again with a re
   in track order across clip boundaries: at most NEAR_UNITS back, and with other kept sentences between only
   as a BLOCK retake (the unit before pairs with the unit before, or the unit after with the unit after).
 - What goes: an earlier take of a section is removed when it says the same words (REPEAT_MIN tokens or more)
-  or broke off and is said again in full; a block's earlier takes only when every pair of the block would go
-  on its own. Any other take stays where it was said and is suggested (retake?), as are: a matching take out
+  or broke off and is said again in full; a block's earlier takes only when every pair of the block, the
+  pair it was found by included, would go on its own. A longer take that broke off and a shorter one said
+  whole after it are offered (retake?). Any other take stays where it was said and is suggested (retake?), as are: a matching take out
   of reach because a remark sits between, a neighbour reworded in REWORD_SWAPS places or fewer (ratio
   REWORD_RATIO), and the next line of a block that only grew (ratio GROWN_RATIO).
 - Which take is kept: complete over truncated, then no restart, then the last; fewer flaws (fillers plus
@@ -63,7 +68,8 @@ ABANDON_MIN = 3
 ABANDON_COVER = 0.5
 NEAR_UNITS = 4
 BREAK_GAP_S = 0.3
-REWORD_RATIO = 0.75         # a line reworded in one or two places, said again right after: suggested
+FRAGMENT_SHARE = 0.6        # a bare word this short against the next one is a cut-off fragment ("cl" / "clip")
+REWORD_RATIO = 0.7         # a line reworded in one or two places, said again right after: suggested
 REWORD_SWAPS = 2
 GROWN_RATIO = 0.6           # the next line of a block retake that only grew: suggested
 _I_FORMS = {"i", "i'm", "i've", "i'll", "i'd"}
@@ -100,6 +106,7 @@ class Unit:
     clip: object = None
     breaks: set = field(default_factory=set)
     fixed: bool = False      # never a take, a loser or a suggestion (a clip kept whole: b-roll); still a sentence between
+    sparse: bool = False     # from a clip with little speech (made-up words?): never removed as a take, only offered
 
 
 @dataclass
@@ -134,13 +141,15 @@ def _common_prefix(a, b):
     return n
 
 
-def _said_again(span, rest):
-    """How many tokens of `span` open `rest`; the span's last token may be cut off (a prefix of rest's)."""
+def _said_again(span, rest, frag_ok=True):
+    """How many tokens of `span` open `rest`. With frag_ok the span's last token may be cut off (a prefix of
+    rest's): only a bare word, with no punctuation after it, can be a fragment ("cl" before "clip"); "art,"
+    before "artist" is a whole word."""
     k = 0
     for t, tok in enumerate(span):
         if t >= len(rest):
             break
-        if tok == rest[t] or (t == len(span) - 1 and tok and rest[t].startswith(tok)):
+        if tok == rest[t] or (frag_ok and t == len(span) - 1 and tok and rest[t].startswith(tok)):
             k += 1
         else:
             break
@@ -152,64 +161,74 @@ def _numbers_only(span):
     return bool(span) and all(t.isdigit() or t in _NUMBER_WORDS for t in span)
 
 
-def _signalled(seq, i, j, cutoff, breaks):
-    """The second saying of seq[i:j] (at j) follows a break: an ellipsis or a dash before it, a cut-off word
-    (the span's last word only opens the retake's), or a timing break (a pause of BREAK_GAP_S or more)."""
+def _signal(seq, i, j, cutoff, breaks, bare):
+    """What marks the second saying of seq[i:j] (at j) as a retake: "mark" (an ellipsis or a dash before it,
+    written on the word or as its own), "fragment" (the span's last word is a bare cut-off of the retake's, short
+    against it), "pause" (a timing break of BREAK_GAP_S or more), or None."""
     span = j - i
     if cutoff is not None and cutoff[j - 1]:
-        return True
+        return "mark"
     if j + span - 1 < len(seq) and seq[j - 1] != seq[j + span - 1]:
-        return True
-    return breaks is not None and bool(breaks[j])
+        if (bare is None or bare[j - 1]) and len(seq[j - 1]) <= FRAGMENT_SHARE * len(seq[j + span - 1]):
+            return "fragment"
+    if breaks is not None and breaks[j]:
+        return "pause"
+    return None
 
 
-def restart_at(seq, cutoff=None, breaks=None):
-    """(j, signalled): the last j where the unit says its whole opening seq[:j] again right after it, word for
-    word (the last word may be cut off), and whether a break signal marks it; (0, False) for none. Numbers said
-    twice are a number, not a restart."""
-    found = (0, False)
+def _signalled(seq, i, j, cutoff, breaks, bare=None):
+    return _signal(seq, i, j, cutoff, breaks, bare) is not None
+
+
+def restart_at(seq, cutoff=None, breaks=None, bare=None):
+    """(j, signal): the last j where the unit says its whole opening seq[:j] again right after it, word for word
+    (its last word may be a bare fragment), and the break signal that marks it (None for none); (0, None) when
+    there is no restart. Numbers said twice are a number, not a restart."""
+    found = (0, None)
     for j in range(RESTART_MIN, min(len(seq) // 2, RESTART_WITHIN) + 1):
-        if _said_again(seq[:j], seq[j:]) == j and not _numbers_only(seq[:j]):
-            found = (j, _signalled(seq, 0, j, cutoff, breaks))
+        frag_ok = bare is None or bare[j - 1]
+        if _said_again(seq[:j], seq[j:], frag_ok) == j and not _numbers_only(seq[:j]):
+            found = (j, _signal(seq, 0, j, cutoff, breaks, bare))
     return found
 
 
-def restart_cut(seq, cutoff=None, breaks=None):
+def restart_cut(seq, cutoff=None, breaks=None, bare=None):
     """Index where the unit restarts its opening, for sure (a break signal marks it), or 0."""
-    j, sure = restart_at(seq, cutoff, breaks)
-    return j if sure else 0
+    j, sig = restart_at(seq, cutoff, breaks, bare)
+    return j if sig else 0
 
 
-def restart_hint(seq, cutoff=None, breaks=None):
+def restart_hint(seq, cutoff=None, breaks=None, bare=None):
     """Index of a restart with no break signal, or 0: only a suggestion ("New York, New York"; "I love it, I
     love it so much")."""
-    j, sure = restart_at(seq, cutoff, breaks)
-    return j if j and not sure else 0
+    j, sig = restart_at(seq, cutoff, breaks, bare)
+    return j if j and not sig else 0
 
 
-def repeat_cuts(seq, ends, cutoff=None, breaks=None):
+def repeat_cuts(seq, ends, cutoff=None, breaks=None, bare=None):
     """[(i, j, sure)]: each clause seq[i:j] said before its retake at j. sure (rule A: the whole span, REPEAT_MIN
     tokens or more and not only numbers, said again word for word, after a break signal) is deleted, applied in
     order: each pair indexes the sequence left by the sure cuts before it. An unsure one (rule A with no break
     signal, a chant or an emphasis; or rule B, part of the span said again) is only a suggestion, indexed in the
-    sequence the sure cuts leave, and deletes nothing. ends / cutoff / breaks: per token, it ends at clause
-    punctuation / ends in an ellipsis or a dash / follows a timing break."""
+    sequence the sure cuts leave, and deletes nothing. ends / cutoff / breaks / bare: per token, it ends at clause
+    punctuation / is marked cut off / follows a timing break / has no punctuation after it."""
     seq, ends = list(seq), list(ends)
     cutoff = list(cutoff) if cutoff is not None else [False] * len(seq)
     breaks = list(breaks) if breaks is not None else [False] * len(seq)
+    bare = list(bare) if bare is not None else [True] * len(seq)
     cuts, unsure_a = [], []
     while True:
-        hit, start = None, 0
+        hit = None
         for i in range(len(seq) - REPEAT_MIN + 1):
             phrase = seq[i:i + REPEAT_MIN]
             best = None
             for j in range(i + REPEAT_MIN, min(len(seq) - REPEAT_MIN, i + REPEAT_WITHIN) + 1):
-                if (seq[j:j + REPEAT_MIN] == phrase and _said_again(seq[i:j], seq[j:]) == j - i
+                if (seq[j:j + REPEAT_MIN] == phrase and _said_again(seq[i:j], seq[j:], bare[j - 1]) == j - i
                         and not _numbers_only(seq[i:j])):
                     best = j
             if best is None:
                 continue
-            if _signalled(seq, i, best, cutoff, breaks):
+            if _signalled(seq, i, best, cutoff, breaks, bare):
                 hit = (i, best)
                 break
             if (i, best) not in unsure_a:
@@ -218,7 +237,8 @@ def repeat_cuts(seq, ends, cutoff=None, breaks=None):
             break
         cuts.append((hit[0], hit[1], True))
         a, b = hit
-        seq, ends, cutoff, breaks = seq[:a] + seq[b:], ends[:a] + ends[b:], cutoff[:a] + cutoff[b:], breaks[:a] + breaks[b:]
+        seq, ends = seq[:a] + seq[b:], ends[:a] + ends[b:]
+        cutoff, breaks, bare = cutoff[:a] + cutoff[b:], breaks[:a] + breaks[b:], bare[:a] + bare[b:]
         unsure_a = []
     if unsure_a:
         cuts += [(i, j, False) for i, j in unsure_a[:1]]
@@ -228,7 +248,7 @@ def repeat_cuts(seq, ends, cutoff=None, breaks=None):
         for j in range(i + 1, min(len(seq) - REPEAT_MIN, i + REPEAT_WITHIN) + 1):
             if seq[j:j + REPEAT_MIN] != phrase:
                 continue
-            span, k = j - i, _said_again(seq[i:j], seq[j:])
+            span, k = j - i, _said_again(seq[i:j], seq[j:], bare[j - 1])
             if (k >= REPEAT_PARTIAL_MIN and k >= REPEAT_PARTIAL_COVER * span and not any(ends[i + k:j])
                     and not _JOINERS.intersection(seq[i + k:j])):
                 cuts.append((i, j, False))
@@ -236,27 +256,45 @@ def repeat_cuts(seq, ends, cutoff=None, breaks=None):
     return cuts
 
 
+def _flags(unit, toks):
+    """Per token: (cut off: an ellipsis or a dash ends the word or stands as the next word; follows a timing
+    break; bare: no comma or period after the word, so it may be a fragment)."""
+    words, brk = unit.words, unit.breaks or ()
+    cutoff, breaks, bare = [], [], []
+    for n, (k, _, _) in enumerate(toks):
+        w = words[k].rstrip(_QUOTES)
+        nxt = toks[n + 1][0] if n + 1 < len(toks) else len(words)
+        marks = [words[x].strip() for x in range(k + 1, nxt)]
+        cutoff.append(w.endswith(_TRAILING_CUT) or any(m and not norm(m) and m.strip(_QUOTES).endswith(_TRAILING_CUT)
+                                                       for m in marks))
+        breaks.append(k in brk)
+        bare.append(not w.endswith(_CLAUSE_END))     # "cl" and "cl-" may be fragments; "art," never
+    return cutoff, breaks, bare
+
+
 def _clean(unit, is_filler):
     """(tokens left, word indices deleted, how it restarted: None, "restart" or "repeat", suggestions
     [(word indices a suggestion would delete, why)])."""
     toks = _tokens(unit.words, is_filler)
     deleted, restarted, suggest = set(), None, []
-    brk = unit.breaks or ()
-
-    def flags(ts):
-        return ([unit.words[k].rstrip(_QUOTES).endswith(_TRAILING_CUT) for k, _, _ in ts],
-                [k in brk for k, _, _ in ts])
-    seq = [t for _, t, _ in toks]
-    cutoff, breaks = flags(toks)
-    j, sure = restart_at(seq, cutoff, breaks)
-    if j and sure:
-        deleted.update(range(toks[j][0]))
-        toks = toks[j:]
-        restarted = "restart"
-    elif j:
-        suggest.append((set(range(toks[j][0])), "restart?" if j < REPEAT_MIN else "repeat?"))
-    cutoff, breaks = flags(toks)
-    for i, j, sure in repeat_cuts([t for _, t, _ in toks], [e for _, _, e in toks], cutoff, breaks):
+    while True:
+        seq = [t for _, t, _ in toks]
+        cutoff, breaks, bare = _flags(unit, toks)
+        j, sig = restart_at(seq, cutoff, breaks, bare)
+        if j and sig == "pause" and j < REPEAT_MIN:
+            word = unit.words[toks[j][0]].lstrip("\"'(“‘¿¡")
+            if word[:1].isupper() and toks[j][1] not in _I_FORMS:
+                sig = None      # a name said twice after a pause ("New York, | New York"): only offered
+        if j and sig:
+            deleted.update(range(toks[0][0], toks[j][0]))
+            toks = toks[j:]
+            restarted = "restart"
+            continue            # a third saying: "he ran, | he ran, | he ran as fast"
+        if j:
+            suggest.append((set(range(toks[0][0], toks[j][0])), "restart?" if j < REPEAT_MIN else "repeat?"))
+        break
+    cutoff, breaks, bare = _flags(unit, toks)
+    for i, j, sure in repeat_cuts([t for _, t, _ in toks], [e for _, _, e in toks], cutoff, breaks, bare):
         span = set(range(toks[i][0], toks[j][0]))
         if not sure:
             suggest.append((span, "repeat?"))
@@ -329,6 +367,15 @@ def select(units, is_filler):
         return True
 
     unsure_start = set()      # a complete sentence the next one opens with: kept, suggested as a false start
+    sparse = [bool(getattr(u, "sparse", False)) for u in units]
+
+    def last_bare(a):
+        w = units[a].words[cleaned[a][0][-1][0]].rstrip(_QUOTES) if cleaned[a][0] else ""
+        return not w.endswith(_CLAUSE_END)
+
+    def said_in_full(a, b):
+        """b says every word of a again, in order, from its start (a's last word may be a bare fragment)."""
+        return len(seqs[a]) < len(seqs[b]) and _said_again(seqs[a], seqs[b], last_bare(a)) == len(seqs[a])
 
     def match(a, b, block=False):
         """How much units a and b are takes of one section: 0 when they are not. A retake differs from the
@@ -348,6 +395,9 @@ def select(units, is_filler):
         if changed & _NEGATIONS:
             return 0.0
         short, long_ = (a, b) if len(sa) <= len(sb) else (b, a)
+        if short > long_ and ending[long_] == "open":
+            # a longer take that broke off, then a shorter one said whole: a retake, never a sure one
+            return max(sm.ratio(), SAME_RATIO)
         if _common_prefix(seqs[short], seqs[long_]) == len(seqs[short]) and len(seqs[short]) < len(seqs[long_]):
             # one opens the other: only the prefix relation can join them
             return max(sm.ratio(), SAME_RATIO) if prefix_rel(short, long_, block) else 0.0
@@ -358,7 +408,7 @@ def select(units, is_filler):
     for i in range(n - 1):
         if fixed[i] or fixed[i + 1] or not seqs[i] or not prefix_rel(i, i + 1):
             continue
-        if ending[i] == "open":
+        if ending[i] == "open" and said_in_full(i, i + 1) and not (sparse[i] or sparse[i + 1]):
             losers.add(i)              # a take broken off and said again in full: sure
             why[i] = "false-start"
         else:
@@ -369,7 +419,7 @@ def select(units, is_filler):
             losers.add(i)
             why[i] = "filler-only"
 
-    sections, section_of, joins, near_misses = [], {}, {}, []
+    sections, section_of, joins, near_misses, block_pairs = [], {}, {}, [], {}
 
     def reach(i, t):
         """(may i join t's section, through a block retake). Units are counted in track order across clip
@@ -384,6 +434,7 @@ def select(units, is_filler):
             return True, True
         nb, nt = i + 1, t + 1
         if nb < n and nt < i and nb not in losers and match(nt, nb, block=True) > 0:
+            block_pairs[i] = (nt, nb)     # the pair this block rests on: it must go for sure too
             return True, True
         return False, False
 
@@ -429,17 +480,20 @@ def select(units, is_filler):
 
     def sure_pair(a, b):
         """a, an earlier take of b's line, may go for sure: the same words (REPEAT_MIN tokens or more), or a take
-        that broke off (open ending) and b says all of it again."""
+        that broke off (open ending) whose every word b says again, in order. Never a unit from a clip with little
+        speech (its words may be made up)."""
+        if sparse[a] or sparse[b]:
+            return False
         if seqs[a] == seqs[b]:
             return len(seqs[a]) >= REPEAT_MIN
-        return ending[a] == "open" and prefix_rel(a, b, block=True)
+        return ending[a] == "open" and said_in_full(a, b)
 
     # A block retake goes only when every pair of the block would go on its own.
     unsure_block = set()
     for i, (t, via) in joins.items():
         if not via:
             continue
-        pairs, k = [(t, i)], 1
+        pairs, k = [(t, i)] + ([block_pairs[i]] if i in block_pairs else []), 1
         while t - k >= 0 and i - k > t and section_of.get(t - k) is not None and section_of.get(t - k) == section_of.get(i - k):
             pairs.append((t - k, i - k))
             k += 1
@@ -460,8 +514,7 @@ def select(units, is_filler):
         last = max(cands)
         same = [i for i in cands if seqs[i] == seqs[last]]
         best = min(same, key=lambda i: (flaws(i), -i))
-        sure = [i for i in section if i != best and i not in unsure_block
-                and (sure_pair(i, best) or (ending[i] == "open" and truncated(i, section)))]
+        sure = [i for i in section if i != best and i not in unsure_block and sure_pair(i, best)]
         unsure = [i for i in section if i != best and i not in sure]
         for i in sure:
             losers.add(i)

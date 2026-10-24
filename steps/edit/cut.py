@@ -41,8 +41,8 @@ PLAN_FILE = "cut-plan.md"
 PLAN_HELP = ("Edit, then run cut with plan: move a row from ## Unused into ## Cut to keep it, delete a row "
              "from ## Cut to drop it, move rows to reorder. A * row is the whole of a trimmed row: put it in "
              "place of that row. A tag ending in ? is a suggestion, not made: retake? and false-start? rows are "
-             "still in ## Cut (delete them there to take it); a repeat? row is a trimmed row (put it in place of "
-             "the one in ## Cut).")
+             "still in ## Cut (delete them there to take it); a repeat?, restart? or abandoned? group is the take "
+             "trimmed (it replaces that take's rows in ## Cut).")
 # Why a row is in a plan's ## Unused.
 WHYS = ("retake", "false-start", "repeat", "restart", "abandoned", "filler-only", "pause", "earlier")
 # Languages written without spaces between words: take selection would compare characters, so it is off.
@@ -53,6 +53,10 @@ PREV_PLAN_FILE = "cut-plan.prev.md"
 MIN_WORDS_PER_S = 0.2
 DENSE_WINDOW_S = 10.0       # ... unless some DENSE_WINDOW_S of it holds DENSE_WORDS words: a real short line
 DENSE_WORDS = 5
+# A clip whose words fill under this share of it has little speech: its words may be made up (b-roll), so no
+# take of it is removed for sure, and its pauses are cut only where the waveform is silent too.
+MIN_SPEECH_SHARE = 0.15
+LOSES_MOST = 0.5            # warn when a clip keeps under this share of its length
 # What the carry report flags about the other layers, by kind, in the answers.
 LAYER_FLAGS = ("overlay_", "linked_", "caption_", "audio_", "marker_", "bed_check_timing")
 # The marker a cut leaves on the project, written in the same guarded write as the cut. A project carrying it
@@ -257,9 +261,21 @@ def _cut(work, project_path, ti, cid, src, keeps, lineage):
             lineage[x["id"]] = origin
 
 
-def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=None):
+def _union(a, b):
+    out = []
+    for s0, e0 in sorted([list(x) for x in a] + [list(x) for x in b]):
+        if out and s0 <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], e0)
+        else:
+            out.append([s0, e0])
+    return out
+
+
+def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=None, sparse=None):
     """rm_nonspeech then rm_fillers keeps per clip, from the clip's one transcript, put on the timeline with
-    jump_cut, in memory. fillers: rm_fillers' compiled pattern. (filler words removed, warnings)."""
+    jump_cut, in memory. fillers: rm_fillers' compiled pattern. A clip with little speech (sparse) keeps every
+    stretch the waveform does not measure silent too (music under made-up words is not silent). (filler words
+    removed, warnings)."""
     removed, warnings = 0, []
     ids = [it["id"] for it in _media(work["tracks"][ti])]
     for cid in ids:
@@ -286,10 +302,20 @@ def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=Non
         keeps = rm_nonspeech.source_keeps(words, duration)
         keeps, cuts, _ = rm_fillers.spec_keeps(keeps, words, fillers)
         lo, hi = _window(it, r["src"])
+        if sum(w["end"] - w["start"] for w in inside) < MIN_SPEECH_SHARE * span:
+            if sparse is not None:
+                sparse.add(cid)
+            ok, spec = _quiet(waveform_trim.process_one, r["src"], SILENCE_THRESHOLD_DB, SILENCE_MIN_S)
+            if ok:
+                keeps = _union(keeps, spec["keeps"])
         if not _window_has(keeps, lo, hi):
             continue
         removed += sum(1 for c in cuts if lo <= (c["start"] + c["end"]) / 2 < hi)
-        _cut(work, project_path, ti, cid, it["src"], _in_window(keeps, lo, hi), lineage)
+        clipped = _in_window(keeps, lo, hi)
+        if sum(e - s0 for s0, e in clipped) < LOSES_MOST * span:
+            kept_share = round(100 * sum(e - s0 for s0, e in clipped) / span)
+            warnings.append(f"{cid} keeps only {kept_share}% of its length")
+        _cut(work, project_path, ti, cid, it["src"], clipped, lineage)
     return removed, warnings
 
 
@@ -397,7 +423,7 @@ def _units(d, is_filler):
         breaks, pos, prev_line = set(), 0, None
         for _, r in u["rows"]:
             for k, w in enumerate(r.words):
-                if pos and ((k == 0 and r.line != prev_line) or w.start - words[pos - 1].end >= BREAK_GAP_S):
+                if pos and w.start - words[pos - 1].end >= BREAK_GAP_S:      # a measured pause only
                     breaks.add(pos)
                 pos += 1
             prev_line = r.line
@@ -786,9 +812,9 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
     has_words = any((sc := sidecar_for(_resolved(it, project_dir))) and load_words(sc) for it in _media(track))
     if has_words:
         is_filler = _filler_test(language)
-        b["whole"] = set()
+        b["whole"], b["sparse"] = set(), set()
         b["fillers"], w = _mechanical(work, project_path, ti, project_dir, rm_fillers.filler_matcher(language),
-                                      b["lineage"], b["whole"])
+                                      b["lineage"], b["whole"], b["sparse"])
         warnings += w
         warnings += _silence_cut(work, project_path, ti, project_dir, b["lineage"], untranscribed_only=True)
         d = speech_text.derive(work, project_dir, track_id)
@@ -796,6 +822,9 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
         for u, rows, _ in units:
             # a clip kept whole (b-roll): its made-up words are never a take, a loser or a suggestion
             u.fixed = bool(rows) and all(r.item_ids and r.item_ids[0] in b["whole"] for _, r in rows)
+            # a clip with little speech: its takes are only ever offered, never removed for sure
+            u.sparse = any(r.item_ids and b["lineage"].get(r.item_ids[0], r.item_ids[0]) in b["sparse"]
+                           for _, r in rows)
         if units:
             b.update(d=d, units=units, trailing=trailing)
             if language.split("-")[0].lower() in NON_SPACED:
@@ -913,8 +942,8 @@ def _make_plan(args, project_path, project_dir):
         answer["next"] = f'Apply: cut with plan "{path}".'
     else:
         answer["next"] = (f'Apply: cut with plan "{path}". To keep a removed line, move its row from ## Unused '
-                          "into ## Cut. To take a ? suggestion, delete its row from ## Cut (a repeat? row replaces "
-                          "its row there).")
+                          "into ## Cut. To take a ? suggestion: delete a retake? or false-start? row from ## Cut; "
+                          "a repeat?, restart? or abandoned? group replaces that take's rows in ## Cut.")
     if prev:
         answer["previous"] = prev
     answer["transcribed"] = transcribed
@@ -936,7 +965,8 @@ def _apply_plan(args, project_path, project_dir):
     marker = disk.get(MARKER_KEY)
     plan_hash = _plan_hash(text)
     if isinstance(marker, dict) and marker.get("planStamp") == plan_stamp and marker.get("planHash") == plan_hash:
-        fail("already_applied", "This plan is already applied. Run cut with recut for a new plan.")
+        fail("already_applied", "This plan is already applied: there is nothing new in it to apply. "
+                                "Edit it to change the cut.")
     _track(normalize_tracks(copy.deepcopy(disk)), track_id)
     plan_lang, plan_pause = _plan_meta(text)
     language = args.language or plan_lang or "en"
