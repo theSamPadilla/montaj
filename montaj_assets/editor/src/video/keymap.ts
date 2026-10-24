@@ -23,15 +23,16 @@ import { useEffect, useRef } from 'react'
  *     editing-only bindings that only ever lived in the review surface.
  */
 
-/** INPUT / TEXTAREA / any contentEditable host — every migrated binding's
- *  typing-surface guard, ported verbatim from the handlers it replaces.
+/** INPUT / TEXTAREA / SELECT / any contentEditable host — every migrated
+ *  binding's typing-surface guard, ported from the handlers it replaces. A
+ *  SELECT counts: its arrows pick an option and must not move anything else.
  *  `!!(...)` coerces to a real boolean: `el.isContentEditable` is a plain
  *  DOM boolean in every real browser, but partial event objects in tests
  *  (and jsdom's incomplete `isContentEditable` support) can leave it
  *  `undefined` — this keeps the guard's return type honest either way. */
 export function isTypingTarget(e: KeyboardEvent): boolean {
   const el = e.target as HTMLElement
-  return !!(el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
+  return !!(el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
 }
 
 export interface KeyBinding {

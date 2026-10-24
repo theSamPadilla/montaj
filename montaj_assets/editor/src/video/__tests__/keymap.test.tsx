@@ -21,6 +21,7 @@ function Harness({ bindings, modalOpen }: { bindings: KeyBinding[]; modalOpen?: 
     <div>
       <input data-testid="input" />
       <textarea data-testid="textarea" />
+      <select data-testid="select"><option>one</option><option>two</option></select>
       <div data-testid="editable" contentEditable suppressContentEditableWarning>text</div>
       <div data-testid="plain">plain</div>
     </div>
@@ -46,6 +47,13 @@ describe('useKeymap — the shared base guard', () => {
     const action = vi.fn()
     const { getByTestId } = render(<Harness bindings={[{ id: 'a', description: 'A', matches: matchesKey('s'), action }]} />)
     fireEvent.keyDown(getByTestId('textarea'), { key: 's' })
+    expect(action).not.toHaveBeenCalled()
+  })
+
+  it('never fires while a SELECT is the target: its arrows pick an option (§556 review)', () => {
+    const action = vi.fn()
+    const { getByTestId } = render(<Harness bindings={[{ id: 'a', description: 'A', matches: matchesKey('ArrowDown'), action }]} />)
+    fireEvent.keyDown(getByTestId('select'), { key: 'ArrowDown' })
     expect(action).not.toHaveBeenCalled()
   })
 
@@ -128,16 +136,17 @@ describe('useKeymap — the shared base guard', () => {
 })
 
 describe('isTypingTarget', () => {
-  it('is true for INPUT/TEXTAREA/contentEditable, false otherwise', () => {
+  it('is true for INPUT/TEXTAREA/SELECT/contentEditable, false otherwise', () => {
     const input = document.createElement('input')
     const textarea = document.createElement('textarea')
+    const select = document.createElement('select')
     // jsdom doesn't implement `isContentEditable` — force it (see the guard
     // test above for the same workaround, with the full explanation).
     const editable = document.createElement('div')
     Object.defineProperty(editable, 'isContentEditable', { value: true, configurable: true })
     const plain = document.createElement('div')
     Object.defineProperty(plain, 'isContentEditable', { value: false, configurable: true })
-    for (const [el, expected] of [[input, true], [textarea, true], [editable, true], [plain, false]] as const) {
+    for (const [el, expected] of [[input, true], [textarea, true], [select, true], [editable, true], [plain, false]] as const) {
       const ev = { target: el } as unknown as KeyboardEvent
       expect(isTypingTarget(ev)).toBe(expected)
     }

@@ -2816,6 +2816,29 @@ describe('CarouselEditor: where the element keys do not act (§556 M2)', () => {
     }
   })
 
+  it('while a native select has focus, nothing happens either: its arrows pick an option, they do not nudge (§556 review)', async () => {
+    const { adapter, onProjectChange } = await mountThree()
+    await plainClick('el-a')
+    await key('c', CMD)
+
+    const select = document.createElement('select')
+    select.innerHTML = '<option>one</option><option>two</option>'
+    document.body.appendChild(select)
+    try {
+      select.focus()
+      for (const [k, init] of KEYS) {
+        const e = await key(k, init, select)
+        expect([k, e.defaultPrevented]).toEqual([k, false])
+      }
+      await keyUp('ArrowRight', {}, select)
+      expect(adapter.saveCalls).toHaveLength(0)
+      expect(posOf(liveProject(onProjectChange))).toEqual([[100, 100], [500, 400], [700, 700]])
+      expect(outlined('el-a')).toBe(true)
+    } finally {
+      select.remove()
+    }
+  })
+
   it('in the inline text editor, nothing happens either', async () => {
     const adapter = makeFakeAdapter()
     const onProjectChange = vi.fn()
