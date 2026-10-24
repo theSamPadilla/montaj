@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Project, CarouselElement, OverlayElement, EditorAdapter } from '../types'
 import { Button } from '../ui'
 import OverlayPicker from './OverlayPicker'
@@ -13,9 +13,12 @@ interface Props {
    *  the light side panel). Absent -> dark, matching every existing
    *  caller. */
   mode?: 'light' | 'dark'
+  /** Told when the overlay picker opens and when it closes (closing includes
+   *  this menu unmounting with it open), so the editor can hold its keys. */
+  onOverlayPickerOpenChange?: (open: boolean) => void
 }
 
-export default function AddElementMenu({ project, selectedSlideId, adapter, onAddElement, mode = 'dark' }: Props) {
+export default function AddElementMenu({ project, selectedSlideId, adapter, onAddElement, mode = 'dark', onOverlayPickerOpenChange }: Props) {
   const [showPrompt, setShowPrompt] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [generating, setGenerating] = useState(false)
@@ -27,6 +30,12 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
   const [textError, setTextError] = useState<string | null>(null)
 
   const disabled = selectedSlideId === null
+
+  useEffect(() => {
+    if (!showOverlayPicker || !onOverlayPickerOpenChange) return
+    onOverlayPickerOpenChange(true)
+    return () => onOverlayPickerOpenChange(false)
+  }, [showOverlayPicker, onOverlayPickerOpenChange])
 
   // Add a static-text overlay at parity with mission-control's "add text".
   // Resolves the host's default text overlay via the adapter (the package does

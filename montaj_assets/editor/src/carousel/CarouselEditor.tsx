@@ -12,6 +12,7 @@ import ControlsInfoModal, { CAROUSEL_CONTROLS, platformSections } from '../Contr
 import { DARK_TEXT, NoteArmLayer, NotePinLayer, badgeColor, hasPoint } from './NoteLayers'
 import { addSlideNote, setSlideNoteText, setSlideNoteDone, setSlideNotePoint, removeSlideNotes } from './notes'
 import { noteId } from '../video/timeline/notes'
+import { useKeymap, matchesDelete, matchesEscape, matchesPlainKey, matchesRedo, matchesUndo } from '../video/keymap'
 import { Button } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
 
@@ -247,12 +248,8 @@ function makeSlide(): Slide {
   return { id: crypto.randomUUID(), base_color: '#ffffff', elements: [] }
 }
 
-function isTypingTarget(t: EventTarget | null): boolean {
-  const el = t as HTMLElement | null
-  if (!el) return false
-  const tag = el.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable
-}
+/** N with no Cmd, Ctrl or Alt held; Shift is allowed. */
+const matchesNoteKey = matchesPlainKey('n')
 
 /** How long Render waits for the save as final (`renderSaveTimeoutMs`). */
 const RENDER_SAVE_TIMEOUT_MS = 30_000
@@ -315,6 +312,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const [refreshState, setRefreshState] = useState<'idle' | 'err'>('idle')
   const [rendering, setRendering] = useState(false)
   const [renderOpen, setRenderOpen] = useState(false)
+  // AddElementMenu owns the overlay picker and reports it open or closed.
+  const [overlayPickerOpen, setOverlayPickerOpen] = useState(false)
 
   // ── Theme: apply tokens onto the editor container. ──
   const containerRef = useRef<HTMLDivElement>(null)
@@ -329,49 +328,6 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     () => (isLightTheme(theme ?? defaultMontajTheme) ? 'light' : 'dark'),
     [theme],
   )
-
-  // ── Keyboard shortcuts: undo / redo. Guarded against text inputs. ──
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target)) return
-      const mod = e.metaKey || e.ctrlKey
-      if (!mod) return
-      const key = e.key.toLowerCase()
-      if (key === 'z' && !e.shiftKey) {
-        e.preventDefault()
-        state.undo()
-      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
-        e.preventDefault()
-        state.redo()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [state])
-
-  // ── Keyboard shortcut: Delete / Backspace removes the selected elements. ──
-  // Guarded against text inputs (so editing an overlay's text or a panel field
-  // never deletes the element) and against crop mode (Backspace there belongs to
-  // the crop UI). Deleting mutates project state, so the canvas + thumbnails
-  // re-render without the element immediately. Several selected go in one
-  // slide write, so one undo brings them all back.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target)) return
-      if (e.key !== 'Delete' && e.key !== 'Backspace') return
-      if (!selectedSlide || liveSelectedIds.length === 0 || cropElementId) return
-      e.preventDefault()
-      if (liveSelectedIds.length === 1) {
-        void state.removeElement(selectedSlide.id, liveSelectedIds[0])
-      } else {
-        const gone = new Set(liveSelectedIds)
-        void state.updateSlide(selectedSlide.id, { elements: selectedSlide.elements.filter(el => !gone.has(el.id)) })
-      }
-      setSelectedElementId(null)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [state, selectedSlide, liveSelectedIds, cropElementId, setSelectedElementId])
 
   // ── Project notes (PL70) ───────────────────────────────────────────────
   // The editor is the ONLY writer of `project.notes`. The N flow and the
@@ -464,44 +420,85 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     return () => window.removeEventListener('pointerdown', onDown, true)
   }, [armedSlideId, setArmed])
 
-  // The key handler is read through a ref so the listener, bound only while
-  // the host passes `notes`, always sees this render's state. Without
-  // `notes`, N and Esc are not claimed at all.
-  const noteKeyRef = useRef<(e: KeyboardEvent) => void>(() => {})
-  noteKeyRef.current = (e: KeyboardEvent) => {
-    if (isTypingTarget(e.target)) return
-    if (e.key === 'Escape') {
-      if (!armedRef.current) return
-      e.preventDefault()
-      placeArmedNote()
-      return
-    }
-    // Cmd, Ctrl and Alt leave N alone; Shift does not, as on video
-    // (`matchesPlainKey`).
-    if (e.key.toLowerCase() !== 'n' || e.metaKey || e.ctrlKey || e.altKey) return
-    // Repeats are dropped: a held N must not arm and place in turn.
-    if (e.repeat || cropElementId) return
-    const opts = notesRef.current
-    if (!opts) return
-    e.preventDefault()
-    if (!opts.enabled) {
-      opts.onLocked?.()
-      return
-    }
-    if (armedRef.current) {
-      placeArmedNote()
-      return
-    }
-    if (!selectedSlideId || project.status === 'pending') return
-    setArmed(selectedSlideId)
-  }
-  const hasNotes = !!notes
-  useEffect(() => {
-    if (!hasNotes) return
-    const onKey = (e: KeyboardEvent) => noteKeyRef.current(e)
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [hasNotes])
+  // ── Keyboard shortcuts: every one in ONE registry (the video editor's
+  // `useKeymap`). One `document` listener reads this list fresh on each key,
+  // so the bindings see this render's state, and the first binding that
+  // matches wins: a new shortcut goes in the list where its priority belongs.
+  // `useKeymap` skips typing surfaces (inputs, textareas such as the inline
+  // text editor, contentEditable) and holds every key while a dialog is up.
+  // Nothing here may match Esc in crop mode: that Esc falls through to
+  // SlideCanvas's window listener, which applies the crop. Without `notes`,
+  // N and Esc are not claimed at all.
+  const modalOpen = showControls || renderOpen || overlayPickerOpen
+  useKeymap([
+    {
+      // Esc adds the armed note about the whole slide.
+      id: 'carousel.place-note',
+      description: 'Add the armed note about the whole slide',
+      matches: matchesEscape,
+      guard: () => !!notesRef.current && !!armedRef.current && !cropElementId,
+      action: () => placeArmedNote(),
+      paletteHidden: true,
+    },
+    {
+      id: 'carousel.undo',
+      description: 'Undo',
+      keyHint: ['⌘', 'Z'],
+      matches: matchesUndo,
+      action: () => state.undo(),
+    },
+    {
+      id: 'carousel.redo',
+      description: 'Redo',
+      keyHint: ['⌘', '⇧', 'Z'],
+      matches: matchesRedo,
+      action: () => state.redo(),
+    },
+    {
+      // Removes the selected elements, never in crop mode (Backspace there
+      // belongs to the crop UI). Several go in one slide write, so one undo
+      // brings them all back. Shift+Delete is not this, as on video.
+      id: 'carousel.delete',
+      description: 'Remove the selected elements',
+      keyHint: ['Delete'],
+      matches: matchesDelete,
+      guard: () => !cropElementId && !!selectedSlide && liveSelectedIds.length > 0,
+      action: () => {
+        if (!selectedSlide) return
+        if (liveSelectedIds.length === 1) {
+          void state.removeElement(selectedSlide.id, liveSelectedIds[0])
+        } else {
+          const gone = new Set(liveSelectedIds)
+          void state.updateSlide(selectedSlide.id, { elements: selectedSlide.elements.filter(el => !gone.has(el.id)) })
+        }
+        setSelectedElementId(null)
+      },
+    },
+    {
+      // N arms a pin on the selected slide; with one armed, N adds it about
+      // the whole slide. Cmd, Ctrl and Alt leave N alone; Shift does not, as
+      // on video. Repeats are dropped: a held N must not arm and place in turn.
+      id: 'carousel.add-note',
+      description: 'Add a note',
+      keyHint: ['N'],
+      matches: (e) => matchesNoteKey(e) && !e.repeat,
+      guard: () => !!notesRef.current && !cropElementId,
+      action: () => {
+        const opts = notesRef.current
+        if (!opts) return
+        if (!opts.enabled) {
+          opts.onLocked?.()
+          return
+        }
+        if (armedRef.current) {
+          placeArmedNote()
+          return
+        }
+        if (!selectedSlideId || project.status === 'pending') return
+        setArmed(selectedSlideId)
+      },
+    },
+  ], { modalOpen })
 
   // Host pins: the selected slide's pins with a point go on the canvas; every
   // slide's pins, with a point or without, are bubbles on its thumbnail.
@@ -963,6 +960,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 adapter={adapter}
                 onAddElement={handleAddElement}
                 mode={mode}
+                onOverlayPickerOpenChange={setOverlayPickerOpen}
               />
             </div>
           )}

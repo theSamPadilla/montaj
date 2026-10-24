@@ -219,10 +219,10 @@ describe('CarouselEditor — editor-core integration', () => {
 
     const savesBeforeUndo = adapter.saveCalls.length
 
-    // Undo via keyboard shortcut (Cmd/Ctrl+Z). Guarded paths require the target
-    // not be a text input — fire on document.body.
+    // Undo via keyboard shortcut (Cmd/Ctrl+Z). The editor's keymap listens on
+    // the document and skips text inputs, so fire on the document itself.
     await act(async () => {
-      fireEvent.keyDown(window, { key: 'z', ctrlKey: true })
+      fireEvent.keyDown(document, { key: 'z', ctrlKey: true })
     })
 
     // Undo enqueues a save that restores the original position.
@@ -316,7 +316,7 @@ describe('CarouselEditor — editor-core integration', () => {
     const wrapper = await waitFor(() => findInteractiveWrapper('el-img'))
     await act(async () => { fireEvent.click(wrapper) })
 
-    await act(async () => { fireEvent.keyDown(window, { key: 'Delete' }) })
+    await act(async () => { fireEvent.keyDown(document, { key: 'Delete' }) })
 
     // The removal is persisted: the latest saved project has no elements.
     await waitFor(() => {
@@ -601,7 +601,9 @@ function lastSave(adapter: FakeAdapter): Project {
   return adapter.saveCalls[adapter.saveCalls.length - 1].project
 }
 
-async function key(k: string, init: KeyboardEventInit = {}, target: EventTarget = window): Promise<KeyboardEvent> {
+// On the document by default, where the editor's keymap listens; it bubbles on
+// to the window, where SlideCanvas's crop Esc and the Controls window listen.
+async function key(k: string, init: KeyboardEventInit = {}, target: EventTarget = document): Promise<KeyboardEvent> {
   const e = new KeyboardEvent('keydown', { key: k, cancelable: true, bubbles: true, ...init })
   await act(async () => { target.dispatchEvent(e) })
   return e
@@ -1540,5 +1542,195 @@ describe('CarouselEditor: multi-select (§156)', () => {
     expect(outlined('el-a')).toBe(false)
     expect(outlined('el-b')).toBe(true)
     expect(handlesOn('el-b')).toBe(true)
+  })
+})
+
+// ── One keymap (§556) ────────────────────────────────────────────────────────
+//
+// Every carousel shortcut is one registry (the video editor's `useKeymap`): one
+// `document` listener, first match wins. It skips typing surfaces, holds every
+// key while a dialog is up, and leaves Esc in crop mode to SlideCanvas.
+
+function textOverlaySlide(): Project {
+  return makeProject({
+    slides: [
+      {
+        id: 'slide-0',
+        base_color: '#ffffff',
+        elements: [
+          {
+            id: 'el-ov',
+            type: 'overlay',
+            overlay: { template: '/overlays/text.jsx', props: { text: 'Hello' } },
+            frame: 0,
+            x: 100, y: 100, w: 600, h: 200, rotation: 0,
+          },
+        ],
+      },
+    ],
+  })
+}
+
+// jsdom never loads an image: give it a size and fire its load.
+function loadImage(img: HTMLImageElement, w: number, h: number) {
+  Object.defineProperty(img, 'naturalWidth', { configurable: true, value: w })
+  Object.defineProperty(img, 'naturalHeight', { configurable: true, value: h })
+  fireEvent.load(img)
+}
+
+describe('CarouselEditor: one keymap (§556)', () => {
+  it('one Cmd+Z is one undo and one Cmd+Shift+Z is one redo', async () => {
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    const at = () => ['X', 'Y'].map((name) => (r.getByRole('spinbutton', { name }) as HTMLInputElement).value)
+
+    // Two edits, two undo steps.
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align left' })) })
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align top' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(at()).toEqual(['0', '0'])
+
+    const undo = await key('z', { metaKey: true })
+    expect(undo.defaultPrevented).toBe(true)
+    expect(at()).toEqual(['0', '100'])
+    await key('z', { metaKey: true })
+    expect(at()).toEqual(['100', '100'])
+    const redo = await key('z', { metaKey: true, shiftKey: true })
+    expect(redo.defaultPrevented).toBe(true)
+    expect(at()).toEqual(['0', '100'])
+
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(5))
+    expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ x: 0, y: 100 })
+  })
+
+  it('Delete in the inline text editor stays in the text', async () => {
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={textOverlaySlide()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-ov'))
+    await plainClick('el-ov')
+    await act(async () => { fireEvent.doubleClick(findInteractiveWrapper('el-ov')) })
+    const editor = r.getByRole('textbox', { name: 'Edit text' })
+    expect(document.activeElement).toBe(editor)
+
+    for (const k of ['Delete', 'Backspace']) {
+      const e = await key(k, {}, editor)
+      expect(e.defaultPrevented).toBe(false)
+    }
+    expect(interactiveHas('el-ov')).toBe(true)
+    expect(adapter.saveCalls).toHaveLength(0)
+  })
+
+  it('keys typed in a panel field stay in the field', async () => {
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} notes={{ enabled: true }} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    // An edit, so an undo would have something to take back.
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Align left' })) })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+
+    const x = r.getByRole('spinbutton', { name: 'X' }) as HTMLInputElement
+    x.focus()
+    const typed = [
+      await key('Delete', {}, x),
+      await key('Backspace', {}, x),
+      await key('z', { metaKey: true }, x),
+      await key('n', {}, x),
+    ]
+    expect(typed.map((e) => e.defaultPrevented)).toEqual([false, false, false, false])
+    expect(interactiveHas('el-img')).toBe(true)
+    expect(x.value).toBe('0')
+    expect(armLayer()).toBeNull()
+    expect(adapter.saveCalls).toHaveLength(1)
+  })
+
+  it('while the overlay picker is open, Delete leaves the selection alone', async () => {
+    const adapter = makeFakeAdapter()
+    const r = render(<CarouselEditor project={makeProject()} adapter={adapter} onProjectChange={vi.fn()} />)
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+
+    await act(async () => { fireEvent.click(r.getByRole('button', { name: '+ Overlay' })) })
+    await r.findByRole('dialog', { name: 'Add overlay' })
+    const held = await key('Delete')
+    expect(held.defaultPrevented).toBe(false)
+    expect(interactiveHas('el-img')).toBe(true)
+    expect(adapter.saveCalls).toHaveLength(0)
+
+    // Esc closes the picker (its own key), and Delete is back.
+    await key('Escape')
+    expect(r.queryByRole('dialog', { name: 'Add overlay' })).toBeNull()
+    await key('Delete')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter))).toEqual([])
+  })
+
+  it.each([['Controls'], ['Render']])('while the %s window is open, Delete leaves the selection alone', async (which) => {
+    const adapter = makeFakeAdapter()
+    const r = render(
+      <CarouselEditor
+        project={makeProject()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        renderModal={(ctx) => (ctx.open ? <button type="button" onClick={ctx.onClose}>Close render</button> : null)}
+      />,
+    )
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    if (which === 'Controls') {
+      await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Editor controls & shortcuts' })) })
+      await r.findByRole('dialog', { name: 'Editor controls' })
+    } else {
+      await act(async () => { fireEvent.click(r.getByTitle('Render all slides as PNGs')) })
+      await r.findByRole('button', { name: 'Close render' })
+    }
+    const saves = adapter.saveCalls.length
+
+    const held = await key('Delete')
+    expect(held.defaultPrevented).toBe(false)
+    expect(interactiveHas('el-img')).toBe(true)
+    expect(adapter.saveCalls).toHaveLength(saves)
+
+    // Closed, Delete is back.
+    if (which === 'Controls') await key('Escape')
+    else await act(async () => { fireEvent.click(r.getByRole('button', { name: 'Close render' })) })
+    await key('Delete')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(saves + 1))
+    expect(elementsOf(lastSave(adapter))).toEqual([])
+  })
+
+  it('in crop mode Esc applies the crop and keeps the image selected', async () => {
+    const adapter = makeFakeAdapter()
+    const onSelectionChange = vi.fn()
+    const r = render(
+      <CarouselEditor
+        project={makeProject()}
+        adapter={adapter}
+        onProjectChange={vi.fn()}
+        notes={{ enabled: true }}
+        onSelectionChange={onSelectionChange}
+      />,
+    )
+    await waitFor(() => findInteractiveWrapper('el-img'))
+    await plainClick('el-img')
+    await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+    const source = findInteractiveWrapper('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
+    expect(source).not.toBeNull()
+    // A 2:1 source in the 200 x 200 box.
+    await act(async () => { loadImage(source!, 400, 200) })
+
+    await key('Escape')
+    // The crop applied: the whole source, and the box takes its 2:1 shape.
+    await waitFor(() =>
+      expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ crop: { x: 0, y: 0, w: 1, h: 1 }, w: 200, h: 100 }),
+    )
+    // Crop mode is over, and the image is still the one selected.
+    expect(findInteractiveWrapper('el-img').querySelector('img[alt="Crop source"]')).toBeNull()
+    expect(handlesOn('el-img')).toBe(true)
+    const calls = onSelectionChange.mock.calls
+    expect(calls[calls.length - 1][0]?.id).toBe('el-img')
+    expect(armLayer()).toBeNull()
   })
 })
