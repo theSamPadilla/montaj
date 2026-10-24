@@ -31,7 +31,7 @@
     },
     {
       "name": "segment-duration",
-      "type": "number",
+      "type": "float",
       "required": false,
       "description": "Duration of each alternating segment in seconds (default: 1.5)"
     }

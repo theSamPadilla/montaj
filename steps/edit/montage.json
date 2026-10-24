@@ -25,13 +25,13 @@
     },
     {
       "name": "beat-duration",
-      "type": "number",
+      "type": "float",
       "required": false,
       "description": "Duration of each beat in seconds (default: 1.0)"
     },
     {
       "name": "offset",
-      "type": "number",
+      "type": "float",
       "required": false,
       "description": "Start offset within each clip in clip-local seconds (default: 0.0)"
     }

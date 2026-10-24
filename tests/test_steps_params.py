@@ -316,3 +316,22 @@ class TestWaveformTrimThreshold:
     def test_a_threshold_out_of_range_is_refused(self, value):
         with pytest.raises(HTTPException):
             validate_params(self.SCHEMA, {"input": "/a.mp4", "threshold": value})
+
+
+# ── number params are typed so serve checks them (§563) ──────────────────────
+
+@pytest.mark.parametrize("rel, name, good, bad", [
+    ("edit/cross_cut.json", "segment-duration", 1.5, "1.5,x"),
+    ("edit/montage.json", "beat-duration", 0.5, "0.5;x"),
+    ("edit/montage.json", "offset", -0.25, "0[x]"),
+    ("transform/materialize_cut.json", "workers", 3, "3:x"),
+])
+def test_a_number_param_is_validated_as_one(rel, name, good, bad):
+    schema = _real_schema(rel)
+    param = next(p for p in schema["params"] if p["name"] == name)
+    assert param["type"] in ("float", "int")
+    required = {p["name"]: "x" for p in schema["params"] if p.get("required")}
+    validate_params(schema, {**required, name: good})
+    with pytest.raises(HTTPException) as e:
+        validate_params(schema, {**required, name: bad})
+    assert e.value.status_code == 422

@@ -42,7 +42,7 @@
     },
     {
       "name": "workers",
-      "type": "integer",
+      "type": "int",
       "required": false,
       "default": 2,
       "description": "Max concurrent encodes in batch mode. Default 2. Do not raise above 3 for 4K footage — each encode holds multiple decoded frame buffers in memory."
