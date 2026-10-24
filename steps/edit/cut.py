@@ -62,7 +62,7 @@ REMOVED_CAP_BYTES = 1500
 PREV_PLAN_FILE = "cut-plan.prev.md"
 LOSES_MOST = 0.1            # warn when a clip keeps under this share of its length
 # What the carry report flags about the other layers, by kind, in the answers.
-LAYER_FLAGS = ("overlay_", "linked_", "caption_", "audio_", "marker_", "bed_check_timing")
+LAYER_FLAGS = ("overlay_", "linked_", "caption_", "audio_", "marker_", "bed_check_timing", "scene3d_")
 # The marker a cut leaves on the project, written in the same guarded write as the cut. A project carrying it
 # is not cut again unless `recut` is passed: a second pass would cut the first pass's output.
 MARKER_KEY = "cleanCut"
@@ -615,6 +615,11 @@ def _audio_warnings(flagged):
         elif kind == "audio_clipped":
             out.append(f"Audio track {iid} was clipped by the cut. Check it still fits.")
     return out
+
+
+def _scene3d(flagged):
+    """Each 3D item a cut fell inside: {id, removed: [[from, to] scene seconds]}, to retime its keys by one warp."""
+    return [{"id": f.get("id"), "removed": f.get("removed")} for f in flagged or [] if f.get("kind") == "scene3d_timing"]
 
 
 def _tracks_rev(project):
@@ -1245,6 +1250,8 @@ def _make_plan(args, project_path, project_dir):
         answer["hardCuts"], answer["hardCutAt"] = res.get("hardCuts", 0), res.get("hardCutAt", [])
         answer["layers"] = _layers(res.get("flagged"))
         warnings[:0] = _audio_warnings(res.get("flagged"))
+        if _scene3d(res.get("flagged")):
+            answer["scene3d"] = _scene3d(res.get("flagged"))
         answer["cut"] = _capped([f"{i} {t:.1f} {txt} [{why}]" for i, t, txt, why in removed + suggested],
                                 REMOVED_CAP_BYTES)
         if args.detail:
@@ -1341,6 +1348,8 @@ def _apply_plan(args, project_path, project_dir):
         layers = _layers(res.get("flagged"))
         warnings[:0] = _audio_warnings(res.get("flagged"))
         warnings += _piece_warnings(b["d"], res.get("flagged")) + _layer1_warnings(b)
+        if _scene3d(res.get("flagged")):
+            answer["scene3d"] = _scene3d(res.get("flagged"))
         warnings += [w for w in res.get("warnings", []) if w not in warnings]
     _, duration = _sums(final, track_id)
     if version:

@@ -545,6 +545,12 @@ class TimeMap:
 # ------------------------------------------------------------------ rule 2: a timed span
 
 
+# A 3D item (render/scene3d.js): an overlay whose `src` is this reserved name.
+SCENE3D_SRC = "engine:scene3d"
+# A kept stretch closer than this to the next is one stretch for a 3D item (rounding, not a cut).
+_SCENE3D_MIN_GAP_S = 0.001
+
+
 @dataclass
 class _Span:
     start: float
@@ -651,6 +657,9 @@ class _Carry:
             if partners:
                 out.extend(self.pieces(it, partners))
                 continue
+            if it.get("src") == SCENE3D_SRC and self.scene3d(it):
+                out.append(it)
+                continue
             a, b = float(it["start"]), float(it["end"])
             sp = _carry_span(self.tm, a, b)
             if sp is None and it.get("type") == "audio":
@@ -674,6 +683,42 @@ class _Carry:
             self.counts["overlays"] += 1
             out.append(it)
         return self.fix_overlaps(ti, t.get("id"), out)
+
+    def scene3d(self, it):
+        """A 3D item a cut falls inside is never cut up or cut short (§558): its scene would jump, and 3D beats join
+        by camera moves. It stays one item, from its first kept moment, as long as its kept speech, and is flagged
+        `scene3d_timing` with the removed spans in scene seconds (`props.inPoint` plus item time), so its keys
+        can be retimed by one warp. False when no cut falls inside it (it is carried like any overlay)."""
+        a, b = float(it["start"]), float(it["end"])
+        kept = sorted((max(a, t0), min(b, t1)) for t0, t1, *_ in self.tm._stretches if min(b, t1) - max(a, t0) > _EPS)
+        merged = []
+        for lo, hi in kept:
+            if merged and lo <= merged[-1][1] + _EPS:
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi])
+        if not merged:
+            return False                      # nothing of it survives: removed and listed, as an overlay
+        removed, at = [], a
+        for lo, hi in merged:
+            if lo - at > _SCENE3D_MIN_GAP_S:
+                removed.append((at, lo))
+            at = hi
+        if b - at > _SCENE3D_MIN_GAP_S:
+            removed.append((at, b))
+        if not removed:
+            return False
+        ns = self.tm.forward(merged[0][0])
+        if ns is None:
+            return False
+        length = sum(hi - lo for lo, hi in merged)
+        it["start"], it["end"] = _r6(ns, it["start"]), _r6(ns + length, it["end"])
+        offset = float((it.get("props") or {}).get("inPoint") or 0)
+        self.flag("scene3d_timing", it.get("id"), removed=[[round(offset + lo - a, 3), round(offset + hi - a, 3)]
+                                                            for lo, hi in removed],
+                  **{"from": round(a, 2), "to": round(it["start"], 2)})
+        self.counts["overlays"] += 1
+        return True
 
     @staticmethod
     def _layer_range(layer):

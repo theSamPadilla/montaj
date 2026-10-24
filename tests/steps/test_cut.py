@@ -336,6 +336,25 @@ def test_both_answers_say_where_the_hard_cuts_are(tmp_path, stub_transcribe, mon
     assert set(applied["hardCutAt"]) <= edges and applied["hardCutAt"] == sorted(applied["hardCutAt"])
 
 
+def test_a_3d_item_over_the_cut_stays_whole_and_the_answers_give_its_removed_spans(tmp_path, stub_transcribe,
+                                                                                  monkeypatch):
+    """§558: a 3D scene is never cut up (Sam: 3D beats join by camera moves); both answers give the scene seconds
+    removed inside it, for one warp of its keys."""
+    stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    p["tracks"].append({"id": "trk-3d", "items": [{"id": "s3d", "type": "overlay", "src": "engine:scene3d",
+                                                   "start": 0.5, "end": SOURCE_S - 0.5, "props": {"scene": "main"}}]})
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    git(d, "commit", "-qam", "3d")
+    plan, applied = plan_and_apply(d, monkeypatch)
+    for answer in (plan, applied):
+        (s3d,) = answer["scene3d"]
+        assert s3d["id"] == "s3d" and s3d["removed"] and answer["layers"]["scene3d_timing"] == 1
+    items = next(t for t in json.loads((d / "project.json").read_text())["tracks"] if t["id"] == "trk-3d")["items"]
+    assert [it["id"] for it in items] == ["s3d"]
+
+
 def test_plan_text_inline_applies_too(tmp_path, stub_transcribe, monkeypatch):
     d = make_project(tmp_path, transcript=retake_transcript())
     run(d, monkeypatch=monkeypatch)

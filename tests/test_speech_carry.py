@@ -620,3 +620,39 @@ def test_report_shape(fx):
     assert d["cut"] == [{"line": "A4", "words": "Hartford,", "seconds": 1.6}]
     assert d["carried"] == {"linked": 1, "overlays": 2, "captionWords": 50, "audio": 2, "markers": 1, "notes": 1}
     assert [f["kind"] for f in d["flagged"]] == ["bed_check_timing", "marker_moved", "marker_moved"]
+
+
+# ---------------------------------------------------------------- 3D items (§558)
+
+
+def _with_scene3d(fx, a, b, in_point=0.0):
+    project = copy.deepcopy(fx.project)
+    project["tracks"].append({"id": "trk-3d", "items": [
+        {"id": "s3d", "type": "overlay", "src": "engine:scene3d", "start": a, "end": b,
+         "props": {"scene": "main", "inPoint": in_point}}]})
+    return project
+
+
+def test_a_3d_item_over_a_cut_is_never_cut_up_and_says_what_was_removed(fx, tmp_path):
+    """A 3D scene cut into pieces jumps (Sam: 3D beats join by camera moves). It stays one item, as long as its
+    kept speech, and the flag gives the removed spans in scene seconds, for one warp of its keys."""
+    r = run(fx, fx.text.replace(A1_CUT_FROM, A1_CUT_TO), project=_with_scene3d(fx, 2.0, 9.0, in_point=1.5))
+    s = item(r.project, "s3d")
+    assert [it["id"] for it in track(r.project, "trk-3d")["items"]] == ["s3d"]
+    (f,) = flags(r.report, "scene3d_timing")
+    removed = f["removed"]
+    assert f["id"] == "s3d" and removed and all(1.5 <= lo < hi <= 8.5 for lo, hi in removed)
+    for lo, hi in removed:      # every removed span was cut, in the old timeline
+        assert r.tmap.forward(2.0 + (lo + hi) / 2 - 1.5) is None
+    assert s["start"] == pytest.approx(r.tmap.forward(r.tmap.first_kept(2.0)), abs=1e-5)
+    assert s["end"] - s["start"] == pytest.approx(7.0 - sum(hi - lo for lo, hi in removed), abs=1e-3)
+    assert s["props"] == {"scene": "main", "inPoint": 1.5}
+    assert not [x for x in r.report.flagged if x["id"] == "s3d" and x["kind"] != "scene3d_timing"]
+    assert_valid(tmp_path, r.project)
+
+
+def test_a_3d_item_with_nothing_cut_inside_only_moves(fx):
+    r = run(fx, fx.text.replace(A1_CUT_FROM, A1_CUT_TO), project=_with_scene3d(fx, 12.0, 14.0))
+    s = item(r.project, "s3d")
+    assert s["end"] - s["start"] == pytest.approx(2.0) and s["start"] == pytest.approx(r.tmap.forward(12.0), abs=1e-5)
+    assert flags(r.report, "scene3d_timing") == []
