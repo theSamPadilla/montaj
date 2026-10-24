@@ -27,7 +27,7 @@ from serve.server import app
 from tests.conftest import assert_error, run_step_env
 
 REPO_ROOT = Path(__file__).parent.parent
-WHISPER_STEPS = {"transcribe", "rm_nonspeech", "rm_fillers", "lyrics_sync", "generate_captions", "cut"}
+WHISPER_STEPS = {"transcribe", "rm_nonspeech", "rm_fillers", "lyrics_sync", "generate_captions", "cut", "place"}
 PID = "66666666-6666-4666-8666-666666666666"
 
 
