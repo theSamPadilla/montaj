@@ -233,7 +233,8 @@ def test_a_step_that_prints_json_but_writes_a_file_names_it_by_its_out_ext(env, 
     assert schema["output"]["type"] == "json"
     monkeypatch.setattr(steps_mod, "scan_steps", lambda: {"generate_image": (schema, Path("x.py"))})
     assert _post(_project=pid).status_code == 200
+    out_dir = pdir / (schema["params"][-1].get("projectDir") or "assets")
     out = calls[-1][calls[-1].index("--out") + 1]
-    assert re.fullmatch(re.escape(str(pdir / "assets")) + r"/generate_image-\d{8}-\d{6}" + re.escape(ext), out)
+    assert re.fullmatch(re.escape(str(out_dir)) + r"/generate_image-\d{8}-\d{6}" + re.escape(ext), out)
     assert _post(_project=pid, out="beat").status_code == 200
-    assert calls[-1][calls[-1].index("--out") + 1] == str(pdir / "assets" / f"beat{ext}")
+    assert calls[-1][calls[-1].index("--out") + 1] == str(out_dir / f"beat{ext}")

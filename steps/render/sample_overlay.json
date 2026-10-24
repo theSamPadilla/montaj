@@ -68,6 +68,7 @@
       "name": "out",
       "type": "path",
       "required": true,
+      "projectDir": "render/samples",
       "description": "Output PNG file path"
     }
   ]

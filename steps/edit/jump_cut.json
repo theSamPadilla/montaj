@@ -27,13 +27,19 @@
       "name": "cuts",
       "type": "string",
       "required": false,
-      "description": "JSON array of [start, end] ranges to REMOVE in clip-local time (0 = clip start). Mutually exclusive with keeps."
+      "description": "JSON array of [start, end] ranges to REMOVE in clip-local time (0 = clip start). Mutually exclusive with keeps and spec."
     },
     {
       "name": "keeps",
       "type": "string",
       "required": false,
-      "description": "JSON array of [start, end] ranges to KEEP in clip-local time. Mutually exclusive with cuts."
+      "description": "JSON array of [start, end] ranges to KEEP in clip-local time. Mutually exclusive with cuts and spec."
+    },
+    {
+      "name": "spec",
+      "type": "path",
+      "required": false,
+      "description": "Path to a trim spec JSON (e.g. the rm_fillers output); its `keeps` (source time) become the kept segments. Mutually exclusive with cuts and keeps."
     }
   ]
 }

@@ -75,7 +75,7 @@ step scripts directly, so this guard does not see them):
   export_overlay_pages, export_carousel_pages out  `<picked folder>/overlays|slides` (a user-picked folder,
                          default `<Movies>/Montaj/<project>`): the export branch
   run_step (MCP)         whatever the agent passes; the app's mcp.md tells it to leave `out` off and pass
-                         `project`, which lands in the project's assets folder
+                         `project`, which lands in the project's assets folder (or the `projectDir` the step's `out` declares)
 """
 import json
 import os

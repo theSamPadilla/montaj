@@ -5,10 +5,15 @@ import copy, json, os, sys, argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from common import fail
+from common import fail, get_duration
 from ai_video import find_project, save_project_changes
 from lib.project_tracks import track_items, replace_track_items
 from lib.item_ids import id_suffix
+
+
+CARRIED = ("generation", "sourceCrop", "scale", "scaleX", "scaleY", "offsetX", "offsetY", "rotation", "opacity",
+           "volume", "muted", "proxySrc", "sourceDuration", "sourceWidth", "sourceHeight", "sourceCreatedAt",
+           "normalizedSrc", "normalizedInPoint")
 
 
 def cuts_to_keeps(cuts, clip_duration):
@@ -52,6 +57,7 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--cuts", help="JSON array of [start, end] ranges to REMOVE (clip-local time)")
     group.add_argument("--keeps", help="JSON array of [start, end] ranges to KEEP (clip-local time)")
+    group.add_argument("--spec", help="Trim spec JSON file (e.g. from rm_fillers): its `keeps` are source time")
     args = parser.parse_args()
 
     project_path, project = find_project(args.project_id)
@@ -72,14 +78,53 @@ def main():
     if clip is None:
         fail("not_found", f"Clip {args.clip_id} not found on tracks[0]")
 
-    if "inPoint" not in clip or "outPoint" not in clip:
+    if clip.get("speed", 1) != 1 or clip.get("keyframes"):
+        fail("unsupported_clip",
+             f"Clip {args.clip_id} has a speed change or keyframes; jump_cut would drop them. Cut it in the editor.")
+
+    base_dir = os.path.dirname(os.path.abspath(project_path))
+
+    def resolve(path):
+        return os.path.realpath(path if os.path.isabs(path) else os.path.join(base_dir, path))
+
+    spec_keeps = None
+    if args.spec:
+        try:
+            with open(args.spec) as f:
+                spec = json.load(f)
+            spec_keeps = spec["keeps"]
+        except Exception as e:
+            fail("invalid_params", f"Could not read keeps from --spec: {e}")
+        spec_input = spec.get("input") if isinstance(spec, dict) else None
+        if spec_input:
+            owners = {resolve(clip[k]) for k in ("src", "proxySrc") if clip.get(k)}
+            if resolve(spec_input) not in owners:
+                fail("invalid_params", f"--spec is for {spec_input}, not clip {args.clip_id}'s {clip.get('src')}")
+
+    if "inPoint" in clip and "outPoint" in clip:
+        lo, hi = clip["inPoint"], clip["outPoint"]
+    elif args.spec:
+        # A clip project/init.py just created is a placeholder: the whole source, in source time.
+        lo = 0.0
+        hi = clip.get("sourceDuration") or get_duration(resolve(clip["src"]))
+    else:
         fail("missing_fields",
              f"Clip {args.clip_id} has no inPoint/outPoint yet. Run probe and set them before jump_cut.")
 
-    clip_duration = clip["outPoint"] - clip["inPoint"]
+    clip_duration = hi - lo
 
     # Parse ranges
-    if args.cuts:
+    if args.spec:
+        # A spec's keeps are source time; the clip's window starts at lo. null is open-ended.
+        try:
+            keeps = []
+            for ks, ke in spec_keeps:
+                ks = 0.0 if ks is None else min(max(ks - lo, 0.0), clip_duration)
+                ke = clip_duration if ke is None else min(max(ke - lo, 0.0), clip_duration)
+                keeps.append([ks, ke])
+        except Exception as e:
+            fail("invalid_params", f"Bad keeps in --spec: {e}")
+    elif args.cuts:
         try:
             cuts = json.loads(args.cuts)
         except Exception as e:
@@ -114,12 +159,17 @@ def main():
             "src": clip["src"],
             "start": round(cursor, 6),
             "end": round(cursor + seg_duration, 6),
-            "inPoint": round(clip["inPoint"] + ks, 6),
-            "outPoint": round(clip["inPoint"] + ke, 6),
+            "inPoint": round(lo + ks, 6),
+            "outPoint": round(lo + ke, 6),
         }
-        # Inherit generation metadata
-        if "generation" in clip:
-            new_clip["generation"] = clip["generation"]
+        # Inherit what the human set and what keeps preview and render on the same source. A normalized
+        # cache covers the whole clip window, so any sub-window of it stays valid.
+        for key in CARRIED:
+            if key in clip:
+                new_clip[key] = clip[key]
+        if "normalizedSrc" in clip and "normalizedInPoint" not in clip:
+            # A legacy cache starts at the clip's inPoint, not at 0 of the source.
+            new_clip["normalizedInPoint"] = lo
         cursor += seg_duration
         new_clips.append(new_clip)
 

@@ -24,7 +24,7 @@ subskills: "write-overlay"
 
 ### 1. Read the editing prompt and transcripts
 
-The prompt tells you the tone and intent. The transcript tells you the moments worth annotating. Read both before deciding what to write.
+The prompt tells you the tone and intent. The transcript tells you the moments worth annotating. Read both before deciding what to write. Read the speech with the `speech_text` step (one line per phrase), not the transcribe words JSON.
 
 ### 2. Decide what overlays to write
 
@@ -42,7 +42,7 @@ If the prompt says "no overlays" — write nothing.
 
 ### 3. Tie overlays to the transcript
 
-Use word-level timings from the transcript JSON to sync overlays to speech.
+Use word-level timings from the transcript JSON to sync overlays to speech (only here: `speech_text` carries no times).
 
 ### 4. Write the JSX files
 
