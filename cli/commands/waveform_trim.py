@@ -8,8 +8,8 @@ from cli.output import emit, emit_error
 def register(subparsers):
     p = subparsers.add_parser("waveform-trim", help="Remove silence using waveform amplitude analysis")
     p.add_argument("input", nargs="+", help="Source video file(s) — multiple files run in parallel")
-    p.add_argument("--threshold", default="-30", help="Silence threshold in dB (default: -30)")
-    p.add_argument("--min-silence", default="0.3",
+    p.add_argument("--threshold", type=float, default=-30.0, help="Silence threshold in dB (default: -30)")
+    p.add_argument("--min-silence", type=float, default=0.3,
                    help="Minimum silence duration in seconds (default: 0.3)")
     p.add_argument("-P", "--parallel", type=int, default=0,
                    help="Max parallel workers when processing multiple files (default: number of files)")
@@ -28,8 +28,8 @@ def handle(args):
         cmd = [
             sys.executable, step,
             "--input", args.input[0],
-            "--threshold", args.threshold,
-            "--min-silence", args.min_silence,
+            f"--threshold={args.threshold}",
+            f"--min-silence={args.min_silence}",
         ]
         if args.out:
             cmd += ["--out", args.out]
@@ -37,8 +37,8 @@ def handle(args):
         cmd = [
             sys.executable, step,
             "--inputs", *args.input,
-            "--threshold", args.threshold,
-            "--min-silence", args.min_silence,
+            f"--threshold={args.threshold}",
+            f"--min-silence={args.min_silence}",
         ]
         if args.parallel:
             cmd += ["-P", str(args.parallel)]

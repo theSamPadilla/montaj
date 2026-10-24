@@ -105,3 +105,38 @@ def test_waveform_trim_out_rejected_with_inputs(test_video, tmp_path):
                     "--out", str(out))
     assert_error(proc, "invalid_args")
     assert not out.exists()
+
+
+# --- threshold is a number (§563) --------------------------------------------
+
+def test_waveform_trim_refuses_a_filter_graph_injection(test_video, tmp_path):
+    """A threshold that would splice a file-writing filter into the -af graph fails in argparse,
+    before ffmpeg runs, and the file it names is never created."""
+    target = tmp_path / "written-by-ffmpeg.txt"
+    proc = run_step("waveform_trim.py", "--input", str(test_video),
+                    "--threshold", f"1,ametadata=mode=print:file={target},silencedetect=noise=1")
+    assert proc.returncode == 2
+    assert "invalid float value" in proc.stderr
+    assert not target.exists()
+
+
+def test_waveform_trim_takes_serve_argv_for_a_negative_threshold(test_video):
+    """What serve builds for a negative threshold (one `--threshold=<n>` token) parses and runs."""
+    from serve.routes.steps import build_cli_args
+    schema = json.loads((REPO_ROOT / "steps" / "audio" / "waveform_trim.json").read_text())
+    for value in (-30, "-3e1"):
+        proc = run_step("waveform_trim.py", *build_cli_args(schema, {"input": str(test_video), "threshold": value}))
+        assert proc.returncode == 0, f"{value!r}: {proc.stderr}"
+        assert json.loads(proc.stdout)["keeps"]
+
+
+def test_cli_waveform_trim_threshold_is_a_number():
+    """`montaj waveform-trim` (and the MCP tool built from its parser) types --threshold as a number too."""
+    import argparse
+    import pytest
+    from cli.commands import waveform_trim as cmd
+    parser = argparse.ArgumentParser()
+    cmd.register(parser.add_subparsers())
+    assert parser.parse_args(["waveform-trim", "a.mp4", "--threshold", "-30"]).threshold == -30.0
+    with pytest.raises(SystemExit):
+        parser.parse_args(["waveform-trim", "a.mp4", "--threshold", "1,ametadata=mode=print:file=/x"])

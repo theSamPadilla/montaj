@@ -13,8 +13,10 @@
   "params": [
     {
       "name": "threshold",
-      "type": "string",
-      "default": "-30",
+      "type": "float",
+      "default": -30,
+      "min": -120,
+      "max": 0,
       "description": "Silence threshold in dB (e.g. -30)"
     },
     {

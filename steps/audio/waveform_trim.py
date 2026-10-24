@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Waveform-based silence detection — reports keep ranges as a trim spec, no video encode."""
-import json, os, re, sys, argparse
+import json, math, os, re, sys, argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
@@ -8,14 +8,15 @@ from common import fail, require_file, run, get_duration, ffmpeg_bin, ff_seconds
 from parallelism import batch_workers
 
 
-def process_one(input_path: str, threshold: str, min_silence: str) -> dict:
+def process_one(input_path: str, threshold: float, min_silence: float) -> dict:
     require_file(input_path)
     dur = get_duration(input_path)
 
-    # Detect silences
+    # Detect silences. Both values are floats, never caller text: text here is spliced into the
+    # filter graph, where a `,` adds a filter that can write any file ffmpeg reaches (§563).
     r = run(
         [ffmpeg_bin(), "-i", input_path,
-         "-af", f"silencedetect=noise={threshold}dB:d={ff_seconds(min_silence)}",
+         "-af", f"silencedetect=noise={float(threshold)}dB:d={ff_seconds(float(min_silence))}",
          "-f", "null", "-"],
         check=False,
     )
@@ -62,8 +63,8 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--input",        help="Single source video file")
     group.add_argument("--inputs",       nargs="+", metavar="FILE", help="Multiple source files (processed in parallel)")
-    parser.add_argument("--threshold",   default="-30", help="Silence threshold in dB (default: -30)")
-    parser.add_argument("--min-silence", default="0.3", help="Minimum silence duration to remove in seconds (default: 0.3)")
+    parser.add_argument("--threshold",   type=float, default=-30.0, help="Silence threshold in dB (default: -30)")
+    parser.add_argument("--min-silence", type=float, default=0.3, help="Minimum silence duration to remove in seconds (default: 0.3)")
     parser.add_argument("-P", "--parallel", type=int, default=0, help="Max parallel workers (default and ceiling: what the machine can hold, at most 4)")
     parser.add_argument("--out",
                         help="Write the trim spec JSON to this file (single --input only) instead of "
@@ -71,6 +72,8 @@ def main():
                              "as --input to a downstream step (e.g. rm_nonspeech) to chain without an "
                              "intermediate write_file.")
     args = parser.parse_args()
+    if not (math.isfinite(args.threshold) and math.isfinite(args.min_silence)):
+        fail("invalid_args", "--threshold and --min-silence must be finite numbers")
 
     if args.input:
         spec = process_one(args.input, args.threshold, args.min_silence)

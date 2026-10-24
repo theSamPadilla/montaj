@@ -257,3 +257,62 @@ class TestRejectFlagValues:
     def test_a_dash_elsewhere_in_a_path_is_allowed(self):
         validate_params(_schema([{"name": "p", "type": "path"}]), {"p": "/a/-b/c"})
         validate_params(_schema([]), {"input": "/a/-b/c.mp4"})
+
+
+# ── a negative number is one argv token (§563) ───────────────────────────────
+
+class TestBuildCliArgsNegativeNumbers:
+    """argparse reads `-3e1` or `-inf` after a flag as a flag of its own, so a negative number on an
+    int/float param goes in as `--flag=value`, which argparse always reads as the value."""
+
+    def test_a_negative_number_is_joined_to_its_flag(self):
+        schema = _schema([{"name": "offset", "type": "float"}])
+        assert build_cli_args(schema, {"offset": -1.5}) == ["--offset=-1.5"]
+        assert build_cli_args(schema, {"offset": "-3e1"}) == ["--offset=-3e1"]
+
+    def test_a_positive_number_keeps_its_own_token(self):
+        schema = _schema([{"name": "offset", "type": "float"}])
+        assert build_cli_args(schema, {"offset": 1.5}) == ["--offset", "1.5"]
+
+    def test_each_negative_item_of_a_repeated_param_is_joined(self):
+        schema = _schema([{"name": "at", "type": "float"}])
+        assert build_cli_args(schema, {"at": [-1, 2]}) == ["--at=-1", "--at", "2"]
+
+
+# ── waveform_trim's threshold is a number (§563) ─────────────────────────────
+
+def _real_schema(rel: str) -> dict:
+    import json
+    from pathlib import Path
+    return json.loads((Path(__file__).resolve().parent.parent / "steps" / rel).read_text())
+
+
+class TestWaveformTrimThreshold:
+    """`threshold` went into ffmpeg's `-af silencedetect=noise={threshold}dB` as free text, so a value
+    like `1,ametadata=mode=print:file=/x,silencedetect=noise=1` added a filter that created or truncated
+    any file ffmpeg could reach, past the out-guard. It is a float now."""
+
+    SCHEMA = _real_schema("audio/waveform_trim.json")
+    INJECTION = "1,ametadata=mode=print:file=/tmp/s563-x,silencedetect=noise=1"
+
+    def test_threshold_is_declared_a_float(self):
+        param = next(p for p in self.SCHEMA["params"] if p["name"] == "threshold")
+        assert param["type"] == "float" and param["default"] == -30
+
+    def test_a_filter_graph_injection_is_refused(self):
+        with pytest.raises(HTTPException) as e:
+            validate_params(self.SCHEMA, {"input": "/a.mp4", "threshold": self.INJECTION})
+        assert e.value.status_code == 422
+        assert "'threshold' must be a float" in e.value.detail["message"]
+
+    @pytest.mark.parametrize("value", [-30, -30.5, "-30", "-3e1"])
+    def test_a_negative_threshold_validates_and_reaches_argv_whole(self, value):
+        body = {"input": "/a.mp4", "threshold": value}
+        validate_params(self.SCHEMA, body)
+        args = build_cli_args(self.SCHEMA, body)
+        assert args == ["--input", "/a.mp4", f"--threshold={value}"]
+
+    @pytest.mark.parametrize("value", [-500, 6])
+    def test_a_threshold_out_of_range_is_refused(self, value):
+        with pytest.raises(HTTPException):
+            validate_params(self.SCHEMA, {"input": "/a.mp4", "threshold": value})

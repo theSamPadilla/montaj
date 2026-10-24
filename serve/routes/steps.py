@@ -154,6 +154,7 @@ def build_cli_args(schema: dict, body: dict) -> list[str]:
         if val is None:
             continue
         flag = "--" + name
+        numeric = param.get("type") in ("int", "float")
         if param.get("type") in ("bool", "boolean"):
             if val:
                 flags.append(flag)
@@ -167,16 +168,25 @@ def build_cli_args(schema: dict, body: dict) -> list[str]:
             # repeat the flag once per element. No step declares type "list"; `array` is the
             # only JSON type that means nargs, so the type separates the two shapes.
             for item in val:
-                flags += [flag, str(item)]
+                flags += _flag_value(flag, item, numeric)
         elif isinstance(val, dict):
             flags += [flag, json.dumps(val)]
         else:
-            flags += [flag, str(val)]
+            flags += _flag_value(flag, val, numeric)
 
     if "out" in body:
         flags += ["--out", str(body["out"])]
 
     return flags
+
+
+def _flag_value(flag: str, val, numeric: bool) -> list[str]:
+    """`[flag, value]`, or one `flag=value` token for a negative number on an int/float param: argparse reads
+    `-3e1` or `-inf` standing alone as a flag of its own, but always reads what follows `=` as the value (§563)."""
+    text = str(val)
+    if numeric and text.startswith("-"):
+        return [f"{flag}={text}"]
+    return [flag, text]
 
 
 def _is_plain_number(value: str) -> bool:
