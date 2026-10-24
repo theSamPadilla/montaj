@@ -1,7 +1,7 @@
 import type { CarouselElement, Slide } from '../types'
 
-/** Pixels a copy steps down and right: Duplicate, and each paste onto the slide
- *  the elements were copied from. */
+/** Pixels a copy steps down and right: Duplicate, and each paste past the one
+ *  before it on the same slide. */
 export const COPY_OFFSET = 20
 
 /** `el` as a new, independent element: a deep copy (no crop, overlay props or
@@ -19,42 +19,44 @@ function stepped(el: CarouselElement, by: number): CarouselElement {
 export interface ElementClipboard {
   /** The slide the elements were copied from. */
   slideId: string
-  /** Independent copies, in slide order, as they were when copied. */
+  /** Independent copies, in slide order, as they were when copied. They keep the
+   *  originals' ids, so a paste can see whether the originals are still on a slide. */
   elements: CarouselElement[]
-  /** Pastes so far onto each slide, to place the next one. */
-  pastes: Map<string, number>
-  /** Set by a Cut: the elements left their slide, so the first paste back onto it
-   *  lands where they were, and only the pastes after that step. */
-  cut?: boolean
+  /** Where the last paste onto each slide landed, in COPY_OFFSET steps. A slide
+   *  with no entry has had no paste yet. */
+  lastSteps: Map<string, number>
 }
 
 /** The selected elements of `slide`, in slide order, as a fresh clipboard (no
- *  pastes counted), marked as a Cut by `{ cut: true }`. Null when none of them
- *  is on the slide. */
-export function copyElements(
-  slide: Slide,
-  selectedIds: Iterable<string>,
-  { cut = false }: { cut?: boolean } = {},
-): ElementClipboard | null {
+ *  pastes counted). Null when none of them is on the slide. */
+export function copyElements(slide: Slide, selectedIds: Iterable<string>): ElementClipboard | null {
   const selected = new Set(selectedIds)
   const elements = slide.elements.filter((el) => selected.has(el.id)).map((el) => structuredClone(el))
-  return elements.length > 0 ? { slideId: slide.id, elements, pastes: new Map(), cut } : null
+  return elements.length > 0 ? { slideId: slide.id, elements, lastSteps: new Map() } : null
 }
 
 /**
- * New elements for pasting the clipboard onto `slideId`, and counts the paste.
- * On the slide they were copied from each paste steps 20 px further down and
- * right (+20, +40, ...), so it never lands on the originals. After a Cut that
- * slide has no originals left, so its first paste lands where the elements were
- * and each one after it steps 20 px. On any other slide the first paste keeps
- * the copied position, and each further paste onto that slide steps 20 px from
- * the last. Every paste has fresh ids and shares nothing.
+ * New elements for pasting the clipboard onto `slide`, and records where they
+ * land. Pastes onto a slide step 20 px down and right each time, so they fan out
+ * and never stack. The first one lands where the elements were copied from,
+ * unless it is the slide they came from and one of them is still on it: then it
+ * steps past them, so it does not land on top. A Cut takes them away, so the
+ * first paste back lands where they were. Every paste has fresh ids and shares
+ * nothing.
  */
-export function pasteElements(clipboard: ElementClipboard, slideId: string): CarouselElement[] {
-  const pasted = clipboard.pastes.get(slideId) ?? 0
-  clipboard.pastes.set(slideId, pasted + 1)
-  const steps = slideId === clipboard.slideId && !clipboard.cut ? pasted + 1 : pasted
+export function pasteElements(clipboard: ElementClipboard, slide: Slide): CarouselElement[] {
+  const last = clipboard.lastSteps.get(slide.id)
+  const steps = last !== undefined ? last + 1 : firstPasteSteps(clipboard, slide)
+  clipboard.lastSteps.set(slide.id, steps)
   return clipboard.elements.map((el) => stepped(cloneElement(el), steps * COPY_OFFSET))
+}
+
+/** Steps for the first paste onto `slide`: one when it is the slide the elements
+ *  were copied from and one of their originals (same ids) is still on it, else none. */
+function firstPasteSteps(clipboard: ElementClipboard, slide: Slide): number {
+  if (slide.id !== clipboard.slideId) return 0
+  const originals = new Set(clipboard.elements.map((el) => el.id))
+  return slide.elements.some((el) => originals.has(el.id)) ? 1 : 0
 }
 
 /**

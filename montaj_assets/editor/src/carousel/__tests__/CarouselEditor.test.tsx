@@ -1955,6 +1955,24 @@ describe('CarouselEditor: copy, cut and paste (§556 M2)', () => {
     expect(pasted.id).not.toBe('el-b')
   })
 
+  it('Cmd+X, Cmd+Z, then Cmd+V on the same slide: the originals are back, so the paste steps 20 px', async () => {
+    const { adapter } = await mountThree()
+    await plainClick('el-b')
+    await key('x', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(posOf(lastSave(adapter))).toEqual([[100, 100], [500, 400], [700, 700]])
+    await key('v', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(3))
+    // The restored el-b is still there, in place; the paste is the fourth element.
+    const elements = elementsOf(lastSave(adapter))
+    expect(elements).toHaveLength(4)
+    const [pasted] = elements.slice(3)
+    expect(pasted).toMatchObject({ type: 'image', src: 'b.png', x: 520, y: 420 })
+    expect(pasted.id).not.toBe('el-b')
+  })
+
   it('Cmd+V with an empty clipboard does nothing, and leaves the browser\'s paste alone', async () => {
     const { adapter } = await mountThree()
     await plainClick('el-a')

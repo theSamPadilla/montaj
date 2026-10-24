@@ -530,18 +530,17 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     setSelectedElementId(null)
   }
 
-  /** Copy: the selection, in slide order, replaces the clipboard. Cut passes
-   *  `{ cut: true }`, so the first paste back onto this slide lands where they were. */
-  function copySelection(opts?: { cut?: boolean }) {
+  /** Copy: the selection, in slide order, replaces the clipboard. */
+  function copySelection() {
     if (!selectedSlide) return
-    clipboardRef.current = copyElements(selectedSlide, liveSelectedIds, opts) ?? clipboardRef.current
+    clipboardRef.current = copyElements(selectedSlide, liveSelectedIds) ?? clipboardRef.current
   }
 
   /** Paste: fresh clones on top of the slide, selected; one slide write. */
   function pasteClipboard() {
     const clipboard = clipboardRef.current
     if (!clipboard || !selectedSlide) return
-    const pasted = pasteElements(clipboard, selectedSlide.id)
+    const pasted = pasteElements(clipboard, selectedSlide)
     void state.updateSlide(selectedSlide.id, { elements: [...selectedSlide.elements, ...pasted] })
     setSelectedElementIds(pasted.map(el => el.id))
   }
@@ -703,7 +702,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       matches: matchesCmdKey('x'),
       guard: () => hasSelection && canEdit,
       action: () => {
-        copySelection({ cut: true })
+        copySelection()
         removeSelection()
       },
     },

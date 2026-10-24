@@ -107,44 +107,48 @@ describe('copyElements', () => {
 })
 
 describe('pasteElements', () => {
-  const clip = () => copyElements(slide('s0', [image('a', 100, 100), overlay('o', 50, 60)]), ['a', 'o'])!
+  // The two elements copied from slide s0, and s0 with both still on it.
+  const originals = () => [image('a', 100, 100), overlay('o', 50, 60)]
+  const clip = () => copyElements(slide('s0', originals()), ['a', 'o'])!
+  const onSource = () => slide('s0', originals())
+  const elsewhere = (id: string) => slide(id, [])
 
   it('on the slide they came from, each paste moves 20 px further down and right', () => {
     const c = clip()
     expect(COPY_OFFSET).toBe(20)
-    expect(at(pasteElements(c, 's0'))).toEqual([[120, 120], [70, 80]])
-    expect(at(pasteElements(c, 's0'))).toEqual([[140, 140], [90, 100]])
-    expect(at(pasteElements(c, 's0'))).toEqual([[160, 160], [110, 120]])
+    expect(at(pasteElements(c, onSource()))).toEqual([[120, 120], [70, 80]])
+    expect(at(pasteElements(c, onSource()))).toEqual([[140, 140], [90, 100]])
+    expect(at(pasteElements(c, onSource()))).toEqual([[160, 160], [110, 120]])
   })
 
   it('on another slide, the first paste keeps the copied position and each further one moves 20 px from the last', () => {
     const c = clip()
-    expect(at(pasteElements(c, 's1'))).toEqual([[100, 100], [50, 60]])
-    expect(at(pasteElements(c, 's1'))).toEqual([[120, 120], [70, 80]])
-    expect(at(pasteElements(c, 's1'))).toEqual([[140, 140], [90, 100]])
+    expect(at(pasteElements(c, elsewhere('s1')))).toEqual([[100, 100], [50, 60]])
+    expect(at(pasteElements(c, elsewhere('s1')))).toEqual([[120, 120], [70, 80]])
+    expect(at(pasteElements(c, elsewhere('s1')))).toEqual([[140, 140], [90, 100]])
   })
 
   it('counts each slide on its own', () => {
     const c = clip()
-    pasteElements(c, 's0')
-    expect(at(pasteElements(c, 's1'))[0]).toEqual([100, 100])
-    expect(at(pasteElements(c, 's2'))[0]).toEqual([100, 100])
-    expect(at(pasteElements(c, 's0'))[0]).toEqual([140, 140])
-    expect(at(pasteElements(c, 's1'))[0]).toEqual([120, 120])
+    pasteElements(c, onSource())
+    expect(at(pasteElements(c, elsewhere('s1')))[0]).toEqual([100, 100])
+    expect(at(pasteElements(c, elsewhere('s2')))[0]).toEqual([100, 100])
+    expect(at(pasteElements(c, onSource()))[0]).toEqual([140, 140])
+    expect(at(pasteElements(c, elsewhere('s1')))[0]).toEqual([120, 120])
   })
 
   it('a new copy starts the counts again', () => {
     const c = clip()
-    pasteElements(c, 's0')
-    pasteElements(c, 's0')
+    pasteElements(c, onSource())
+    pasteElements(c, onSource())
     const again = clip()
-    expect(at(pasteElements(again, 's0'))[0]).toEqual([120, 120])
+    expect(at(pasteElements(again, onSource()))[0]).toEqual([120, 120])
   })
 
   it('gives fresh ids, in the copied order, and never the clipboard\'s own objects', () => {
     const c = clip()
-    const first = pasteElements(c, 's1')
-    const second = pasteElements(c, 's1')
+    const first = pasteElements(c, elsewhere('s1'))
+    const second = pasteElements(c, elsewhere('s1'))
     expect(first.map((e) => e.type)).toEqual(['image', 'overlay'])
     // New ids: not the source's (the clipboard still holds those), not each other's.
     expect(ids(c.elements)).toEqual(['a', 'o'])
@@ -158,8 +162,8 @@ describe('pasteElements', () => {
 
   it('pasted elements are independent of each other and of the clipboard', () => {
     const c = clip()
-    const [, o1] = pasteElements(c, 's1') as [CarouselElement, OverlayElement]
-    const [, o2] = pasteElements(c, 's1') as [CarouselElement, OverlayElement]
+    const [, o1] = pasteElements(c, elsewhere('s1')) as [CarouselElement, OverlayElement]
+    const [, o2] = pasteElements(c, elsewhere('s1')) as [CarouselElement, OverlayElement]
     ;(o1.overlay.props.style as { color: string }).color = 'green'
     o1.googleFonts!.length = 0
     expect((o2.overlay.props.style as { color: string }).color).toBe('red')
@@ -169,26 +173,43 @@ describe('pasteElements', () => {
 
   it('a slide that is not the source counts as another slide, also when the source is gone', () => {
     const c = clip()
-    expect(at(pasteElements(c, 'deleted-slide'))[0]).toEqual([100, 100])
+    expect(at(pasteElements(c, elsewhere('deleted-slide')))[0]).toEqual([100, 100])
   })
 
-  it('after a cut, the first paste onto the slide it was cut from lands where the elements were, then each one steps 20 px', () => {
-    const c = copyElements(slide('s0', [image('a', 100, 100), overlay('o', 50, 60)]), ['a', 'o'], { cut: true })!
-    expect(at(pasteElements(c, 's0'))).toEqual([[100, 100], [50, 60]])
-    expect(at(pasteElements(c, 's0'))).toEqual([[120, 120], [70, 80]])
-    expect(at(pasteElements(c, 's0'))).toEqual([[140, 140], [90, 100]])
+  it('while an original is still on the slide it was copied from, the first paste steps 20 px', () => {
+    expect(at(pasteElements(clip(), onSource()))).toEqual([[120, 120], [70, 80]])
+    // One of them is enough.
+    expect(at(pasteElements(clip(), slide('s0', [image('a', 100, 100)])))).toEqual([[120, 120], [70, 80]])
+  })
+
+  it('once the originals are gone, the first paste lands where they were', () => {
+    expect(at(pasteElements(clip(), slide('s0', [image('x', 0, 0)])))).toEqual([[100, 100], [50, 60]])
+  })
+
+  it('originals deleted between two pastes: the second steps past the first, not onto it', () => {
+    const c = clip()
+    expect(at(pasteElements(c, onSource()))).toEqual([[120, 120], [70, 80]])
+    expect(at(pasteElements(c, slide('s0', [])))).toEqual([[140, 140], [90, 100]])
+  })
+
+  it('after a cut, the first paste lands where the elements were, then each one steps 20 px', () => {
+    const c = clip()
+    const afterCut = slide('s0', [])
+    expect(at(pasteElements(c, afterCut))).toEqual([[100, 100], [50, 60]])
+    expect(at(pasteElements(c, afterCut))).toEqual([[120, 120], [70, 80]])
+    expect(at(pasteElements(c, afterCut))).toEqual([[140, 140], [90, 100]])
   })
 
   it('after a cut, a paste onto another slide is counted as it is after a copy', () => {
-    const c = copyElements(slide('s0', [image('a', 100, 100), overlay('o', 50, 60)]), ['a', 'o'], { cut: true })!
-    expect(at(pasteElements(c, 's1'))).toEqual([[100, 100], [50, 60]])
-    expect(at(pasteElements(c, 's1'))).toEqual([[120, 120], [70, 80]])
+    const c = clip()
+    expect(at(pasteElements(c, elsewhere('s1')))).toEqual([[100, 100], [50, 60]])
+    expect(at(pasteElements(c, elsewhere('s1')))).toEqual([[120, 120], [70, 80]])
   })
 
   it('after a copy, the first paste onto the slide it was copied from is still +20, then +40', () => {
-    const c = copyElements(slide('s0', [image('a', 100, 100), overlay('o', 50, 60)]), ['a', 'o'])!
-    expect(at(pasteElements(c, 's0'))).toEqual([[120, 120], [70, 80]])
-    expect(at(pasteElements(c, 's0'))).toEqual([[140, 140], [90, 100]])
+    const c = clip()
+    expect(at(pasteElements(c, onSource()))).toEqual([[120, 120], [70, 80]])
+    expect(at(pasteElements(c, onSource()))).toEqual([[140, 140], [90, 100]])
   })
 })
 
