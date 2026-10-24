@@ -331,5 +331,138 @@
     "/out/seg2.mp4"
    ]
   }
+ },
+ "keyframed": {
+  "image": {
+   "item": {
+    "id": "i",
+    "type": "image",
+    "src": "/abs/a.png",
+    "start": 0,
+    "end": 2,
+    "offsetX": 10,
+    "offsetY": -5,
+    "scaleX": 0.8,
+    "rotation": 15,
+    "keyframes": [
+     {
+      "prop": "scale",
+      "points": [
+       {
+        "t": 0,
+        "value": 1
+       },
+       {
+        "t": 2,
+        "value": 1.5
+       }
+      ]
+     }
+    ]
+   },
+   "expected": {
+    "inputArgs": [
+     "-loop",
+     "1",
+     "-t",
+     "2",
+     "-i",
+     "/abs/a.png"
+    ],
+    "filterParts": [
+     "[1:v]scale=864:2880:force_original_aspect_ratio=increase,crop=864:2880,format=rgba,scale=w='round(round(1080*(0.8))/2)*2':h='round(round(1920*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.5*(t-0)/2,1.5))))/2)*2':eval=frame,pad=864:2880:(ow-iw)/2:(oh-ih)/2:color=black@0.0:eval=frame,rotate='15*PI/180':ow=1580:oh=3006:c=black@0.0,setpts=PTS-STARTPTS[img1]",
+     "[canvas][img1]overlay=x='round(round(1080*(0.5*(1-(0.8))+(10)/100))+(round(round(1080*(0.8))/2)*2)/2-1580/2)':y='round(round(1920*(0.5*(1-(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.5*(t-0)/2,1.5))))+(-5)/100))+(round(round(1920*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.5*(t-0)/2,1.5))))/2)*2)/2-3006/2)':shortest=0[iv1]"
+    ],
+    "newVideoLabel": "[iv1]"
+   }
+  },
+  "video": {
+   "item": {
+    "id": "v",
+    "type": "video",
+    "src": "/abs/a.mp4",
+    "start": 0,
+    "end": 2,
+    "inPoint": 0,
+    "hasAudio": false,
+    "scale": 0.5,
+    "rotation": 5,
+    "keyframes": [
+     {
+      "prop": "offsetX",
+      "points": [
+       {
+        "t": 0,
+        "value": 0
+       },
+       {
+        "t": 2,
+        "value": 20
+       }
+      ]
+     }
+    ]
+   },
+   "expected": {
+    "inputArgs": [
+     "-err_detect",
+     "ignore_err",
+     "-max_error_rate",
+     "1.0",
+     "-t",
+     "2",
+     "-i",
+     "/abs/a.mp4"
+    ],
+    "filterParts": [
+     "[1:v]setpts=PTS-STARTPTS,scale=540:960:force_original_aspect_ratio=decrease,pad=540:960:(ow-iw)/2:(oh-ih)/2,format=yuva420p,rotate=5*PI/180:ow=622:oh=1004:c=black@0.0[vid1]",
+     "[canvas][vid1]overlay=x='round(round(1080*(0.5*(1-(0.5))+(if(between(t,-1000000000,0),0,if(between(t,0,2),0+20*(t-0)/2,20)))/100))+-41)':y='round(round(1920*(0.5*(1-(0.5))+(0)/100))+-22)':format=yuv420:shortest=0[iv1]"
+    ],
+    "newVideoLabel": "[iv1]",
+    "audioTrim": "atrim=0:2"
+   }
+  },
+  "spin": {
+   "item": {
+    "id": "s",
+    "type": "image",
+    "src": "/abs/a.png",
+    "start": 0,
+    "end": 2,
+    "offsetX": 10,
+    "offsetY": -5,
+    "rotation": 15,
+    "keyframes": [
+     {
+      "prop": "scale",
+      "points": [
+       {
+        "t": 0,
+        "value": 1
+       },
+       {
+        "t": 2,
+        "value": 1.2
+       }
+      ]
+     }
+    ]
+   },
+   "expected": {
+    "inputArgs": [
+     "-loop",
+     "1",
+     "-t",
+     "2",
+     "-i",
+     "/abs/a.png"
+    ],
+    "filterParts": [
+     "[2:v]scale=1296:2304:force_original_aspect_ratio=increase,crop=1296:2304,format=rgba,scale=w='round(round(1080*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))/2)*2':h='round(round(1920*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))/2)*2':eval=frame,pad=1296:2304:(ow-iw)/2:(oh-ih)/2:color=black@0.0:eval=frame,rotate='15*PI/180':ow=1848:oh=2560:c=black@0.0,setpts=PTS-STARTPTS[img2]",
+     "[canvas][img2]overlay=x='round(round(1080*(0.5*(1-(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))+(10)/100))+(round(round(1080*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))/2)*2)/2-1848/2)':y='round(round(1920*(0.5*(1-(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))+(-5)/100))+(round(round(1920*(if(between(t,-1000000000,0),1,if(between(t,0,2),1+0.19999999999999996*(t-0)/2,1.2))))/2)*2)/2-2560/2)':shortest=0[iv2]"
+    ],
+    "newVideoLabel": "[iv2]"
+   }
+  }
  }
 }

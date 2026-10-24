@@ -1983,3 +1983,37 @@ test('dry-run: numeric strings (an older project\'s fps, size, speed, opacity, v
     overlays: ov.segment.overlays.map(o => ({ ...o, opacity: str(o.opacity) })) }
   assert.deepEqual(JSON.parse(JSON.stringify(await encodeSegment(s2, '/out/seg2.mp4', { _dryRun: true }))), ov.expected)
 })
+
+// §563 review: a keyframed item's STATIC geometry went into its quoted x='…' / w='…' / rotate='…' expressions as
+// project.json text.
+test('keyframed items build exactly the arguments they did before the §563 expression checks', () => {
+  const { image, video, spin } = VALID_SEGMENT.keyframed
+  const opts = { segStart: 0, duration: 2, zscaleAvailable: true, lutAvailable: true, lut3dAvailable: true }
+  assert.deepEqual(JSON.parse(JSON.stringify(buildImageItemFilterParts(image.item, 1080, 1920, 1, '[canvas]', 2, 0, {}))), image.expected)
+  assert.deepEqual(JSON.parse(JSON.stringify(buildVideoItemFilterParts(video.item, 1080, 1920, 1, '[canvas]', opts))), video.expected)
+  assert.deepEqual(JSON.parse(JSON.stringify(buildImageItemFilterParts(spin.item, 1080, 1920, 2, '[canvas]', 2, 0, {}))), spin.expected)
+  // A numeric string builds the same arguments as its number.
+  const asText = { ...image.item, offsetX: '10', offsetY: '-5', scaleX: '0.8' }
+  assert.deepEqual(JSON.parse(JSON.stringify(buildImageItemFilterParts(asText, 1080, 1920, 1, '[canvas]', 2, 0, {}))), image.expected)
+})
+
+test('a keyframed item\'s static geometry that is not a number never reaches its expressions (§563)', () => {
+  const { image, video } = VALID_SEGMENT.keyframed
+  const text = "0'[q];nullsrc[m];[q][m]overlay=x='0"
+  const opts = { segStart: 0, duration: 2, zscaleAvailable: true, lut3dAvailable: true }
+  // Each field is either refused, naming it, or (a scale or rotation that is not a number, which the geometry already
+  // reads as NaN or 0) never written at all; the text never reaches the graph.
+  for (const field of ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation']) {
+    for (const build of [
+      () => buildImageItemFilterParts({ ...image.item, [field]: text }, 1080, 1920, 1, '[canvas]', 2, 0, {}),
+      () => buildVideoItemFilterParts({ ...video.item, [field]: text }, 1080, 1920, 1, '[canvas]', opts),
+    ]) {
+      let graph = ''
+      try { graph = build().filterParts.join(';') } catch (e) { assert.match(e.message, new RegExp(field)); continue }
+      assert.ok(!graph.includes('nullsrc'), `${field}: ${graph}`)
+    }
+  }
+  // The static offsets are the ones that were spliced verbatim: they are refused.
+  assert.throws(() => buildImageItemFilterParts({ ...image.item, offsetX: text }, 1080, 1920, 1, '[canvas]', 2, 0, {}), /offsetX/)
+  assert.throws(() => buildVideoItemFilterParts({ ...video.item, offsetY: text }, 1080, 1920, 1, '[canvas]', opts), /offsetY/)
+})

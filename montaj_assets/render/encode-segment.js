@@ -745,16 +745,17 @@ function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
    * shifting the BREAKPOINTS rather than rewriting the emitted string keeps
    * this exact and avoids surgery on an expression we just built.
    */
+  // A static value is project.json text going into a quoted x='…' / w='…' / rotate='…' expression, where a `'`
+  // ends the quote: only a number gets there (§563).
+  const lit = (v, field) => String(finiteNumber(v, field))
   const exprFor = (prop, staticValue, unitsPerPixel) => {
     const tr = animatedProps.find((x) => x.prop === prop)
     if (!tr) return null
     const shifted = { prop, points: tr.points.map((p) => ({ ...p, t: p.t - timeOffset })) }
     const info = compileTrackExprInfo(shifted, { pixelTolerance: 0.25, unitsPerPixel })
     if (info.capped) onCap(prop, info)
-    return info.expr ?? String(staticValue)
+    return info.expr ?? lit(staticValue, prop)
   }
-
-  const lit = (v) => String(v)
   // scaleX/scaleY in geometryAt's own order: the per-axis track, then the
   // AUTHORED static per-axis value, then the (animated) uniform `scale`. An
   // authored scaleX/scaleY therefore wins over a `scale` track, exactly as the
@@ -764,11 +765,11 @@ function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
   // `scaleX`/`scaleY` onto the item, which would make every value look authored.
   const sExpr = exprFor('scale', staticGeom.scale, 1 / vw)
   const sxExpr = exprFor('scaleX', staticGeom.scaleX, 1 / vw)
-    ?? (item.scaleX != null ? lit(item.scaleX) : sExpr) ?? lit(staticGeom.scaleX)
+    ?? (item.scaleX != null ? lit(item.scaleX, 'scaleX') : sExpr) ?? lit(staticGeom.scaleX, 'scaleX')
   const syExpr = exprFor('scaleY', staticGeom.scaleY, 1 / vh)
-    ?? (item.scaleY != null ? lit(item.scaleY) : sExpr) ?? lit(staticGeom.scaleY)
-  const oxExpr = exprFor('offsetX', staticGeom.offsetX, 100 / vw) ?? lit(staticGeom.offsetX)
-  const oyExpr = exprFor('offsetY', staticGeom.offsetY, 100 / vh) ?? lit(staticGeom.offsetY)
+    ?? (item.scaleY != null ? lit(item.scaleY, 'scaleY') : sExpr) ?? lit(staticGeom.scaleY, 'scaleY')
+  const oxExpr = exprFor('offsetX', staticGeom.offsetX, 100 / vw) ?? lit(staticGeom.offsetX, 'offsetX')
+  const oyExpr = exprFor('offsetY', staticGeom.offsetY, 100 / vh) ?? lit(staticGeom.offsetY, 'offsetY')
   // Rotation's tolerance is converted against the item's PEAK size, per the
   // plan: the pixel error an angle error produces scales with the box's current
   // size, so referencing a fixed or first-frame size under-subdivides exactly
@@ -821,7 +822,7 @@ function animatedGeometry(item, kind, vw, vh, timeOffset, duration, onCap) {
     peakW, peakH, needsAnimatedChain, emitRotate, rotOutW, rotOutH,
     boxWExpr, boxHExpr, xExpr, yExpr, xPxExpr, yPxExpr,
     angleExpr: emitRotate
-      ? (rotExpr ? `(${rotExpr})*PI/180` : `${staticGeom.rotation ?? 0}*PI/180`)
+      ? (rotExpr ? `(${rotExpr})*PI/180` : `${lit(staticGeom.rotation ?? 0, 'rotation')}*PI/180`)
       : null,
   }
 }
