@@ -7,6 +7,14 @@ import CarouselEditor from '../CarouselEditor'
 import { CAROUSEL_CONTROLS } from '../../ControlsInfoModal'
 import { stubPlatform } from '../../ui/__tests__/platform'
 
+// jsdom never loads an image, so a real size read would wait out its 5 s
+// timeout while these tests wait 1 s. Answer at once with no size: the square
+// placement images started in before. The other exports stay real.
+vi.mock('../imageGeometry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../imageGeometry')>()
+  return { ...actual, loadImageNaturalSize: vi.fn(async () => null) }
+})
+
 // ── Fake adapter (mirrors editor-core's use-project-state test pattern) ───────
 // The package owns the assembled editor now: no host (`@/`) modules are mocked.
 // A full fake `EditorAdapter` drives load/save/render and the overlay-list /
