@@ -298,6 +298,13 @@ function isBurstOf(burst: PendingNudge, slideId: string, selectedIds: string[]):
   return burst.slideId === slideId && burst.start.size === selectedIds.length && selectedIds.every((id) => burst.start.has(id))
 }
 
+/** Whether a dialog of the host's is open over the editor: any element marked
+ *  `aria-modal="true"` (the Library picker, the image preview). The editor's own
+ *  windows are tracked by `modalOpen`; this holds the keys for the host's too. */
+function hostDialogOpen(): boolean {
+  return document.querySelector('[aria-modal="true"]') !== null
+}
+
 /** The host path in a drag from the host (`IMAGE_DND_MIME`), or null when the
  *  drag carries none or it is not an `ImageDropPayload`: not JSON, or no
  *  `src` that is a non-empty string. */
@@ -837,6 +844,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     // the burst is its own undo step and Cmd+Z right after it undoes it.
     ...bindings.map((binding): KeyBinding => ({
       ...binding,
+      // A dialog of the host's holds the key as the editor's own windows do:
+      // not claimed, so the page keeps it.
+      guard: () => !hostDialogOpen() && (binding.guard?.() ?? true),
       action: (e) => {
         flushNudge()
         binding.action(e)
@@ -848,7 +858,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       description: 'Nudge the selection',
       keyHint: ['←', '↑', '↓', '→'],
       matches: (e) => nudgeOf(e) !== null,
-      guard: () => hasSelection && canEdit,
+      guard: () => !hostDialogOpen() && hasSelection && canEdit,
       action: (e) => {
         const step = nudgeOf(e)
         if (step) nudgeSelection(step.dx, step.dy)

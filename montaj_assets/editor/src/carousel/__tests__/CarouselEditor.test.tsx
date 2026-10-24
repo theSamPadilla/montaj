@@ -2849,6 +2849,43 @@ describe('CarouselEditor: where the element keys do not act (§556 M2)', () => {
     expect(outlined('el-a')).toBe(true)
   })
 
+  it('while a dialog of the host\'s (aria-modal) is open, every key is held: nothing is claimed, saved or deselected; closed, they are back', async () => {
+    const { adapter, onProjectChange } = await mountThree({ notes: { enabled: true } })
+    await plainClick('el-a')
+    await key('c', CMD)
+
+    // The Library picker or the image preview, drawn by the host over the editor.
+    const dialog = document.createElement('div')
+    dialog.setAttribute('role', 'dialog')
+    dialog.setAttribute('aria-modal', 'true')
+    document.body.appendChild(dialog)
+    try {
+      for (const [k, init] of [['Delete', {}], ['Backspace', {}], ['z', CMD], ['n', {}], ...KEYS] as Array<[string, KeyboardEventInit]>) {
+        const e = await key(k, init)
+        expect([k, e.defaultPrevented]).toEqual([k, false])
+      }
+      await keyUp('ArrowRight')
+      expect(adapter.saveCalls).toHaveLength(0)
+      expect(idsOf(liveProject(onProjectChange))).toEqual(['el-a', 'el-b', 'el-c'])
+      expect(posOf(liveProject(onProjectChange))).toEqual([[100, 100], [500, 400], [700, 700]])
+      expect(outlined('el-a')).toBe(true)
+      expect(armLayer()).toBeNull()
+    } finally {
+      dialog.remove()
+    }
+
+    // The dialog is gone: the arrow nudges, and Delete deletes.
+    const right = await key('ArrowRight')
+    expect(right.defaultPrevented).toBe(true)
+    await keyUp('ArrowRight')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(posOf(lastSave(adapter))[0]).toEqual([101, 100])
+    const del = await key('Delete')
+    expect(del.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b', 'el-c'])
+  })
+
   it('the pending view keeps Cmd+A for the page', async () => {
     const adapter = makeFakeAdapter()
     render(<CarouselEditor project={makeProject({ status: 'pending' })} adapter={adapter} onProjectChange={vi.fn()} />)
