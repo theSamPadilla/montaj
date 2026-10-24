@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
 from cli.deps import render_runtime_dir  # noqa: E402
-from lib import look_check as lc, project_revisions, slide_text  # noqa: E402
+from lib import project_revisions, slide_check, slide_text  # noqa: E402
 from lib.common import fail  # noqa: E402
 from lib.project_lock import update_project_or_fail  # noqa: E402
 from lib.project_versions import commit_version, is_own_repo  # noqa: E402
@@ -28,35 +28,7 @@ from steps.render import look as look_step  # noqa: E402
 
 VERSION_MESSAGE = "version: before slides"
 STEP_LOCK_TIMEOUT = 30.0
-OFF_PX = 1.0
-MIN_CONTRAST = 3.0
-CHAR_EM = 0.6           # about this many em per character at a headline's heavy weight
 ANSWER_CAP = 300
-
-
-def _resolution(project):
-    res = (project.get("settings") or {}).get("resolution") or [1080, 1350]
-    try:
-        return int(res[0]), int(res[1])
-    except (TypeError, ValueError, IndexError, OverflowError):
-        return 1080, 1350
-
-
-def _hard_to_read(slide, el, project_dir):
-    """The headline's text colour against what is under its box (its own card when it has one) is below 3:1."""
-    props = el["overlay"]["props"]
-    text = slide_text.color_rgb(props.get("color") or "#ffffff")
-    if text is None:
-        return False
-    bg = slide_text.color_rgb(props.get("bgColor")) if props.get("bgColor") not in (None, "", "transparent") else None
-    if bg is not None and (len(bg) < 4 or bg[3] > 200):
-        under = slide_text.luminance(bg)
-    else:
-        seen = slide_text.under_box(slide, slide_text._box_of(el), project_dir)
-        if seen is None:
-            return False
-        under = seen[0]
-    return slide_text.contrast(slide_text.luminance(text), under) < MIN_CONTRAST
 
 
 def _check(slides, changed_ids, project_dir, measure_fn):
@@ -68,12 +40,9 @@ def _check(slides, changed_ids, project_dir, measure_fn):
         for el in s.get("elements", []):
             if slide_text._is_headline(el):
                 todo.append((n, el))
-                props = el["overlay"]["props"]
-                longest = max((len(w) for w in str(props.get("text") or "").split()), default=0)
-                floor = slide_text._px(props.get("minFontSize"), slide_text._px(props.get("fontSize"), 32))
-                if longest * CHAR_EM * floor > float(el.get("w") or 0):
+                if slide_check.word_too_long(el):
                     issues.append(f"slide {n}: a word is too long for the box: shorten it")
-                if _hard_to_read(s, el, project_dir):
+                if slide_check.hard_to_read(s, el, project_dir):
                     issues.append(f"slide {n}: the headline is hard to read on its image: style label")
     if not todo:
         return issues
@@ -83,17 +52,12 @@ def _check(slides, changed_ids, project_dir, measure_fn):
     def one(entry):
         n, el = entry
         w, h = int(el["w"]), int(el["h"])
-        item = {"id": el["id"], "props": el["overlay"]["props"]}
-        m, why = measure_fn(item, el["overlay"]["template"], int(el.get("frame") or 0), 1, 30, w, h,
-                            os.path.join(samples, f"slide-{n}-{el['id'][:8]}.png"))
+        m, why = slide_check.measure_element(measure_fn, el, os.path.join(samples, f"slide-{n}-{el['id'][:8]}.png"))
         if m is None:
             return [f"slide {n}: {why}"]
-        out = []
-        for text, b, clipped, spills in lc.text_boxes(m, {}, w, h):
-            if b["x"] < -OFF_PX or b["y"] < -OFF_PX or b["x"] + b["w"] > w + OFF_PX or b["y"] + b["h"] > h + OFF_PX or spills or clipped:
-                out.append(f"slide {n}: the headline does not fit its box at its smallest size: shorten it")
-                break
-        return out
+        if any(outside or clipped for _, _, outside, clipped in slide_check.text_in_box(m, w, h)):
+            return [f"slide {n}: the headline does not fit its box at its smallest size: shorten it"]
+        return []
 
     with ThreadPoolExecutor(max_workers=look_step.MEASURE_WORKERS) as pool:
         return [i for found in pool.map(one, todo) for i in found] + issues
@@ -124,7 +88,7 @@ def run(project_path, *, headlines=None, edit=None, order=None, style=None, deta
     if project.get("projectType") != "carousel":
         fail("not_a_carousel", "slides works on a carousel project.")
     read_rev = project_revisions.revision_of(project.get("slides"))
-    width, height = _resolution(project)
+    width, height = slide_check.slide_size(project)
     if all(v in (None, "", []) for v in (headlines, edit, order, style)):
         return _listing(project.get("slides"))
     try:

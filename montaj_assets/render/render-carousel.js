@@ -92,7 +92,7 @@ let scaleArg       = DEFAULT_SCALE
 let pdfArg         = false
 let htmlDirArg     = null   // also write each slide as a web page here (carousel-pages.js)
 let htmlOnlyArg    = false  // with --html-dir: no PNGs, no PDF
-let onlyArg        = null   // with --html-dir: only these slide numbers (1-based)
+let onlyArg        = null   // only these slide numbers (1-based)
 
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--project-json') { projectJsonArg = argv[++i]; continue }
@@ -198,7 +198,7 @@ async function main(projectJsonPath, { out, clean, scale = DEFAULT_SCALE, pdf = 
   try {
     for (let i = 0; i < slides.length; i++) {
       const slide    = slides[i]
-      if (htmlDir && only && only.length && !only.includes(i + 1)) continue
+      if (only && only.length && !only.includes(i + 1)) continue
       const padded   = String(i + 1).padStart(2, '0')
       const fileName = `slide_${padded}.png`
       const outFile  = join(outDir, fileName)

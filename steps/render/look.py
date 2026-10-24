@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """look (§558): one read-only check of a project, answered in a short JSON (lib/look_check.py has the rules).
 
-Measures each overlay once (sample_overlay --measure, the existing Puppeteer path) at the middle of its span, at
+On a carousel (projectType "carousel") it checks the slides instead (carousel_run below). Measures each overlay once (sample_overlay --measure, the existing Puppeteer path) at the middle of its span, at
 most MAX_MEASURES overlays, MEASURE_WORKERS at a time, those on screen at the picked times first; with --image, one
 contact_sheet of at most IMAGE_TIMES of those times. The text answer checks the project's data and the overlays it
 measured: it renders no frame. Writes nothing in project.json; the measure PNGs and the sheet go under
 render/samples.
 """
-import argparse, hashlib, json, os, signal, subprocess, sys, time
+import argparse, hashlib, json, os, re, shutil, signal, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, MONTAJ_ROOT)
-from lib import look_check as lc  # noqa: E402
+from lib import look_check as lc, slide_check, slide_text  # noqa: E402
 from lib.common import fail  # noqa: E402
 from lib.project_tracks import normalize_tracks  # noqa: E402
 
@@ -121,14 +121,19 @@ def sheet(project_path, project_dir, times):
     return out, None
 
 
-def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sheet_fn=sheet, clock=time.monotonic):
+def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sheet_fn=sheet, clock=time.monotonic,
+        render_fn=None):
     t0 = clock()
     project_dir = os.path.dirname(project_path)
     try:
         with open(project_path, encoding="utf-8") as f:
-            project = normalize_tracks(json.load(f))
+            raw = json.load(f)
+        project = normalize_tracks(raw)
     except (OSError, ValueError):
         fail("not_found", f"Project not readable: {project_path}")
+    if isinstance(raw, dict) and raw.get("projectType") == "carousel":
+        return carousel_run(project_path, raw, at=at, image=image, detail=detail, measure_fn=measure_fn,
+                            render_fn=render_fn or render_slides, clock=clock)
     width, height = lc.design_size(project)
     fps = _fps(project)
     times = lc.pick_times(project, at, cap=IMAGE_TIMES if image else lc.MAX_TIMES)
@@ -177,6 +182,215 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sh
                     "times": times, "items": checked, "notes": notes, "wallMs": int((clock() - t0) * 1000)})
         out.pop("more", None)
     return out
+
+
+# ── carousels ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+CAROUSEL_RENDER_JS = os.path.join(MONTAJ_ROOT, "montaj_assets", "render", "render-carousel.js")
+CAROUSEL_RENDER_TIMEOUT_S = 300
+MAX_SLIDES = 12         # slides looked at (and tiles in the composite) per call
+MAX_SLIDE_MEASURES = 20
+COMPOSITE_W = 768
+COMPOSITE_GUTTER = 4
+COMPOSITE_LABEL_H = 18
+
+
+def render_slides(project_path, numbers, out_dir):
+    """Render the slides `numbers` (1-based) as the app's export does (render-carousel.js, 1x): ([(n, png)], [why])."""
+    from cli.deps import render_runtime_dir
+    from lib.common import node_child_env
+    runtime = render_runtime_dir()
+    cmd = ["node", os.path.join(runtime, "render-carousel.js"), "--project-json", project_path, "--out", out_dir,
+           "--scale", "1", "--only", ",".join(str(n) for n in numbers)]
+    r = _run_group_env(cmd, CAROUSEL_RENDER_TIMEOUT_S, node_child_env())
+    if r is None:
+        return [], ["the slides timed out"]
+    made, why = [], []
+    try:
+        with open(os.path.join(out_dir, "manifest.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+    except (OSError, ValueError):
+        return [], ["the slides could not be rendered"]
+    for s in manifest.get("slides") or []:
+        p = os.path.join(out_dir, str(s.get("file")))
+        if os.path.isfile(p):
+            made.append((int(s["index"]), p))
+    for f in manifest.get("failures") or []:
+        why.append(f'slide {f.get("index")}: could not be rendered')
+    return made, why
+
+
+def _run_group_env(cmd, timeout, env):
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True, env=env)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return proc.returncode, out, err
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        proc.communicate()
+        return None
+
+
+def composite(pngs, out):
+    """One grid of the slide images, COMPOSITE_W px wide in all, each tile labelled with its slide number."""
+    from PIL import Image, ImageDraw
+    n = len(pngs)
+    cols = n if n <= 3 else 3 if n <= 6 else 4
+    tile_w = (COMPOSITE_W - COMPOSITE_GUTTER * (cols + 1)) // cols
+    tiles = []
+    for num, p in pngs:
+        with Image.open(p) as im:
+            im = im.convert("RGB")
+            tiles.append((num, im.resize((tile_w, max(1, round(im.height * tile_w / im.width))), Image.LANCZOS)))
+    tile_h = max(t.height for _, t in tiles)
+    rows = (n + cols - 1) // cols
+    sheet_h = COMPOSITE_GUTTER + rows * (tile_h + COMPOSITE_LABEL_H + COMPOSITE_GUTTER)
+    canvas = Image.new("RGB", (COMPOSITE_W, sheet_h), (24, 24, 24))
+    draw = ImageDraw.Draw(canvas)
+    for k, (num, t) in enumerate(tiles):
+        r, c = divmod(k, cols)
+        x = COMPOSITE_GUTTER + c * (tile_w + COMPOSITE_GUTTER) + (COMPOSITE_W - COMPOSITE_GUTTER - cols * (tile_w + COMPOSITE_GUTTER)) // 2
+        y = COMPOSITE_GUTTER + r * (tile_h + COMPOSITE_LABEL_H + COMPOSITE_GUTTER)
+        canvas.paste(t, (x, y))
+        draw.text((x + 2, y + tile_h + 3), str(num), fill=(235, 235, 235))
+    canvas.save(out)
+
+
+def _slide_numbers(at, total):
+    """The slides to look at: 1-based `at` numbers (sorted, no repeats), else every slide, at most MAX_SLIDES."""
+    if not at:
+        return list(range(1, min(total, MAX_SLIDES) + 1))
+    nums = []
+    for a in at:
+        if float(a) != int(a) or not 1 <= int(a) <= total:
+            fail("invalid_params", f"There is no slide {a:g}: this carousel has {total}.")
+        if int(a) not in nums:
+            nums.append(int(a))
+    if len(nums) > MAX_SLIDES:
+        fail("invalid_params", f"Look at {MAX_SLIDES} slides at most.")
+    return sorted(nums)
+
+
+def _text_overlays(slide):
+    return [el for el in slide.get("elements") or []
+            if isinstance(el, dict) and el.get("type") == "overlay" and isinstance(el.get("overlay"), dict)
+            and isinstance(el["overlay"].get("props"), dict) and isinstance(el["overlay"].get("template"), str)]
+
+
+def _quote(el):
+    text = str(el["overlay"]["props"].get("text") or "")
+    return f' "{text[:24]}"' if text else ""
+
+
+def carousel_run(project_path, project, *, at, image, detail, measure_fn, render_fn, clock):
+    """look on a carousel: each slide's text overlays measured once at their own box, checked for text off the slide,
+    cut off or spilling out of its box, crossing other text, a slide with no image and a headline hard to read on its
+    image. With image, one composite of the slides."""
+    t0 = clock()
+    project_dir = os.path.dirname(project_path)
+    slides = [s for s in project.get("slides") or [] if isinstance(s, dict)]
+    if not slides:
+        fail("no_slides", "This carousel has no slides.")
+    width, height = slide_check.slide_size(project)
+    numbers = _slide_numbers(at, len(slides))
+    samples = os.path.join(project_dir, "render", "samples")
+    work = os.path.join(samples, "look")
+    os.makedirs(work, exist_ok=True)
+    issues = []
+
+    def add(n, text):
+        issues.append({"t": n, "id": "", "text": text})
+
+    todo = []
+    for n in numbers:
+        s = slides[n - 1]
+        if not any(isinstance(el, dict) and el.get("type") == "image" for el in s.get("elements") or []):
+            add(n, "no image")
+        for el in _text_overlays(s):
+            try:
+                float(el["x"]), float(el["y"]), float(el["w"]), float(el["h"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            todo.append((n, s, el))
+    skipped = max(0, len(todo) - MAX_SLIDE_MEASURES)
+    todo = todo[:MAX_SLIDE_MEASURES]
+
+    def one(entry):
+        n, s, el = entry
+        m, why = slide_check.measure_element(measure_fn, el, os.path.join(work, f"slide-{n}-{el['id'][:8]}.png"))
+        return n, s, el, m, why
+
+    with ThreadPoolExecutor(max_workers=MEASURE_WORKERS) as pool:
+        results = list(pool.map(one, todo))
+    placed, checked = {}, 0
+    for n, s, el, m, why in results:
+        if m is None:
+            add(n, f"text{_quote(el)}: {why}")
+            continue
+        checked += 1
+        w, h = int(el["w"]), int(el["h"])
+        ex, ey = float(el["x"]), float(el["y"])
+        kinds = set()
+        for text, b, outside, clipped in slide_check.text_in_box(m, w, h):
+            quote = f' "{text}"' if text else ""
+            on = {"x": ex + b["x"], "y": ey + b["y"], "w": b["w"], "h": b["h"]}
+            placed.setdefault(n, []).append((_quote(el).strip(), on))
+            if (on["x"] < -slide_check.OFF_PX or on["y"] < -slide_check.OFF_PX or on["x"] + on["w"] > width + slide_check.OFF_PX
+                    or on["y"] + on["h"] > height + slide_check.OFF_PX):
+                if "off" not in kinds:
+                    kinds.add("off")
+                    add(n, f"text{quote} runs off the slide")
+            elif outside:
+                if "box" not in kinds:
+                    kinds.add("box")
+                    add(n, f"text{quote} spills out of its box")
+            elif clipped and "clip" not in kinds:
+                kinds.add("clip")
+                add(n, f"text{quote} is cut off by its box")
+        if slide_text._is_headline(el) and slide_check.hard_to_read(s, el, project_dir):
+            add(n, f"the headline{_quote(el)} is hard to read on its image")
+    for n, boxes in placed.items():
+        seen = set()
+        for i, (la, a) in enumerate(boxes):
+            for lb, b in boxes[i + 1:]:
+                if lc._cross(a, b) and (la, lb) not in seen:
+                    seen.add((la, lb))
+                    add(n, f"text {la} overlaps {lb}")
+
+    extra = {"slides": len(numbers), "overlays": checked}
+    if skipped:
+        extra["unmeasured"] = skipped
+    if image:
+        out = os.path.join(samples, f"look-slides-{hashlib.sha1(json.dumps([numbers, slides], sort_keys=True).encode()).hexdigest()[:8]}.png")
+        render_dir = os.path.join(samples, "look-slides")
+        shutil.rmtree(render_dir, ignore_errors=True)
+        try:
+            made, why = render_fn(project_path, numbers, render_dir)
+            if made:
+                for f in os.listdir(samples):
+                    if f.startswith("look-slides-") and f.endswith(".png"):
+                        os.remove(os.path.join(samples, f))
+                composite(sorted(made), out)
+                extra["sheet"] = out
+            for w_ in why:
+                issues.append({"t": int(re.match(r"slide (\d+)", w_).group(1)) if re.match(r"slide (\d+)", w_) else 0, "id": "",
+                               "text": re.sub(r"^slide \d+: ", "", w_)})
+            if not made and not why:
+                add(0, "no slide could be rendered")
+        finally:
+            shutil.rmtree(render_dir, ignore_errors=True)
+    answer = lc.answer(issues, extra=extra, line=lambda i: (f'slide {i["t"]}: ' if i["t"] else "") + i["text"])
+    if detail:
+        answer.update({"issues": [(f'slide {i["t"]}: ' if i["t"] else "") + i["text"] for i in sorted(issues, key=lambda x: x["t"])],
+                       "shown": numbers, "wallMs": int((clock() - t0) * 1000)})
+        answer.pop("more", None)
+    return answer
 
 
 def main():

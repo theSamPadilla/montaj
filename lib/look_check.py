@@ -443,13 +443,14 @@ def text_overlaps(placed):
     return out
 
 
-def answer(issues, *, extra=None, cap=300):
+def answer(issues, *, extra=None, cap=300, line=None):
     """The short JSON answer: ok and the extra counts, or the issues in time order while it stays within `cap`."""
     import json
     base = {"ok": not issues, **(extra or {})}
     if not issues:
         return base
-    lines = [f'{i["t"]}s {i["id"]}: {i["text"]}' for i in sorted(issues, key=lambda x: (x["t"], x["id"]))]
+    line = line or (lambda i: f'{i["t"]}s {i["id"]}: {i["text"]}')
+    lines = [line(i) for i in sorted(issues, key=lambda x: (x["t"], x["id"]))]
     kept = []
     for k, line in enumerate(lines):
         trial = {**base, "issues": kept + [line]}
