@@ -381,3 +381,12 @@ def test_a_dark_converted_colour_gets_a_white_border(value):
 ])
 def test_the_border_of_any_other_colour_is_unchanged(value, border):
     assert _mod._contrast_color(value) == border
+
+
+@pytest.mark.parametrize("value, border", [
+    ("000000", "white"), ("222222ff", "white"), ("black@0.5", "white"), ("0x000000@0.5", "white"),
+    ("#000000@0x80", "white"), ("white@0.5", "black"), ("abcdef", "black"), ("#101010", "black"),
+])
+def test_the_border_reads_bare_hex_and_ignores_an_alpha(value, border):
+    """Bare hex is read like 0x hex, and an @alpha does not change how dark the colour is (§563 final review)."""
+    assert _mod._contrast_color(value) == border

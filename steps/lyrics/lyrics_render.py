@@ -195,13 +195,15 @@ def _make_accumulated_lines(words: list, up_to_idx: int, wrap_points: set) -> li
 def _contrast_color(color: str) -> str:
     """Return white or black, whichever contrasts with the given color."""
     dark = {"black", "#000000", "#111111", "#222222", "#333333", "#444444"}
-    if color.lower() in dark:
+    base = color.split("@", 1)[0]  # an @alpha does not make a colour lighter or darker
+    if base.lower() in dark:
         return "white"
-    # A CSS black (rgb(0,0,0), #000, a dark hsl) arrives converted to 0xRRGGBB[AA]: dark the same way the greys
-    # above are, every channel at most 0x44 (§563 review).
-    if color.startswith("0x") and len(color) in (8, 10):
+    # A CSS black (rgb(0,0,0), #000, a dark hsl) arrives converted to 0xRRGGBB[AA], and ffmpeg also reads bare
+    # RRGGBB[AA]: dark the same way the greys above are, every channel at most 0x44 (§563 review).
+    digits = base[2:] if base.startswith("0x") else base
+    if not base.startswith("#") and len(digits) in (6, 8):
         try:
-            if max(bytes.fromhex(color[2:8])) <= 0x44:
+            if max(bytes.fromhex(digits[:6])) <= 0x44:
                 return "white"
         except ValueError:
             pass
