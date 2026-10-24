@@ -56,9 +56,10 @@ def test_every_style_with_todays_caption_shapes_is_valid(tmp_path, style):
     assert v.validate_project(_project(tmp_path, caps))["valid"] is True
 
 
-def test_a_null_word_colour_reads_as_none(tmp_path):
+@pytest.mark.parametrize("none", [None, ""])
+def test_a_null_or_empty_word_colour_reads_as_none(tmp_path, none):
     words = _words(None, None)
-    words[1]["color"] = None
+    words[1]["color"] = none
     caps = {"style": "pop", "segments": [{"text": "a b", "start": 0, "end": 1, "words": words}]}
     assert v.validate_project(_project(tmp_path, caps))["valid"] is True
 
@@ -71,17 +72,18 @@ def test_the_repos_caption_fixtures_stay_valid(tmp_path, fixture, capsys):
     assert capsys.readouterr().err == ""
 
 
-@pytest.mark.parametrize("color", ["#fff", "#ffff", "#00ffff", "#00FFFF80", "cyan", "White", "rebeccapurple", "transparent"])
+@pytest.mark.parametrize("color", ["#fff", "#ffff", "#00ffff", "#00FFFF80", "cyan", "White", "rebeccapurple", "transparent",
+                                   "currentColor", "rgba(255,255,255,0.55)", "rgb(0 0 0 / 50%)", "hsl(200 50% 50%)", "oklch(70% 0.1 200)"])
 def test_a_hex_or_named_colour_is_accepted(color):
     assert is_css_color(color)
 
 
-@pytest.mark.parametrize("color", ["", "ff0000", "#ggg", "#12345", "rgb(0,0,0)", "cyanish", 12, None, ["#fff"]])
+@pytest.mark.parametrize("color", ["", "ff0000", "#ggg", "#12345", "rgb(0,0,0);x", "rgb(0,0,0)}", "url(x)", "cyanish", 12, None, ["#fff"]])
 def test_anything_else_is_not_a_colour(color):
     assert not is_css_color(color)
 
 
-@pytest.mark.parametrize("bad", ["ff0000", "rgb(0,0,0)", 7, "", ["#fff"]])
+@pytest.mark.parametrize("bad", ["ff0000", "rgb(0,0,0);x", 7, ["#fff"]])
 def test_a_word_colour_that_is_not_a_colour_is_refused_naming_it(tmp_path, capsys, bad):
     caps = {"style": "pop", "segments": [{"text": "a b", "start": 0, "end": 1, "words": _words(None, bad)}]}
     with pytest.raises(SystemExit):

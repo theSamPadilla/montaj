@@ -395,8 +395,8 @@ def _validate_audio_tracks(data):
 
 
 def _validate_caption_word_colors(data):
-    """§558: a caption word's own `color` (words[].color, read by the per-word caption styles) is optional (absent or
-    null), and when present a hex or a named CSS colour (lib/css_color.py). Nothing else of the captions is checked
+    """§558: a caption word's own `color` (words[].color, read by the per-word caption styles) is optional (absent, null or
+    ""), and when present a CSS colour (lib/css_color.py). Nothing else of the captions is checked
     here: no caption rule existed before, and validate runs on saves."""
     caps = data.get("captions")
     if not isinstance(caps, dict) or not isinstance(caps.get("segments"), list):
@@ -405,7 +405,7 @@ def _validate_caption_word_colors(data):
         if not isinstance(seg, dict) or not isinstance(seg.get("words"), list):
             continue
         for wi, w in enumerate(seg["words"]):
-            if isinstance(w, dict) and w.get("color") is not None and not is_css_color(w["color"]):
+            if isinstance(w, dict) and w.get("color") not in (None, "") and not is_css_color(w["color"]):
                 fail("invalid_field", f"captions.segments[{si}].words[{wi}].color must be a hex or a named CSS colour, got {w['color']!r}")
 
 

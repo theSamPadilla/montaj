@@ -1,17 +1,80 @@
 {
   "name": "captions",
   "category": "transform",
-  "description": "Restyle a project's captions in one call: look (highlight = white with the spoken word in colour, or a caption style), color, highlight (the spoken word's colour), accent ({\"words\": [...], \"color\": \"cyan\"}: those words in their own colour; \"none\" removes it), position (top, middle, bottom) and size (px, small, medium, large, bigger, smaller). Writes the captions only, a version first; a caption edit since it read them is refused. Needs captions: generate_captions makes them.",
-  "input": {"type": "project", "description": "The project id, its folder, or the absolute path of its project.json"},
-  "output": {"type": "json", "description": "{style, segments, accent?: {found, missed}, position?, size?, issues?}. detail adds the track's styling fields."},
+  "description": "Restyle a project's captions in one call: look (highlight = white text with the spoken word in colour, or a caption style), color (the text colour), highlight (the spoken word's colour), accent ({\"words\": [...], \"color\": \"cyan\"}: those words or phrases in their own colour wherever said; \"none\" removes it), position (top, middle, bottom: written on each caption, so a caption added later sits at the bottom) and size (px, small, medium, large, N%, Nx, bigger, smaller). A colour or size set for all clears each caption's own, and the answer counts them. Writes the captions only, a version first; a caption edit since it read them is refused. Needs captions: generate_captions makes them.",
+  "input": {
+    "type": "project",
+    "description": "The project id, its folder, or the absolute path of its project.json"
+  },
+  "output": {
+    "type": "json",
+    "description": "{style, segments, color?, highlight? (the spoken-word colour in force), position?, size?, cleared? ({field: captions whose own value it replaced}), accent?: {found: {word: sayings}, missed: {word: [near misses]}}, issues?}. detail adds the track's styling fields."
+  },
   "params": [
-    {"name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json"},
-    {"name": "look", "type": "enum", "options": ["highlight", "word-by-word", "pop", "karaoke", "subtitle", "highlight-box", "outline", "clean", "accent", "plate"], "required": false, "description": "highlight: white text, the spoken word in colour. Or a caption style."},
-    {"name": "color", "type": "string", "required": false, "description": "The text colour: a hex or a CSS colour name."},
-    {"name": "highlight", "type": "string", "required": false, "description": "The spoken word's colour."},
-    {"name": "accent", "type": "string", "required": false, "description": "{\"words\": [\"pauses\", \"best\"], \"color\": \"cyan\"}: those words (or phrases) in their own colour wherever said. color none removes it."},
-    {"name": "position", "type": "enum", "options": ["top", "middle", "bottom"], "required": false, "description": "Where the captions sit."},
-    {"name": "size", "type": "string", "required": false, "description": "Text size: px, small, medium, large, or bigger / smaller than now."},
-    {"name": "detail", "type": "bool", "default": false, "description": "Also answer the track's styling fields."}
+    {
+      "name": "project",
+      "type": "path",
+      "required": true,
+      "description": "The project id, its folder, or the absolute path of its project.json"
+    },
+    {
+      "name": "look",
+      "type": "enum",
+      "options": [
+        "highlight",
+        "word-by-word",
+        "pop",
+        "karaoke",
+        "subtitle",
+        "highlight-box",
+        "outline",
+        "clean",
+        "accent",
+        "plate"
+      ],
+      "required": false,
+      "description": "highlight: white text, the spoken word in colour. Or a caption style."
+    },
+    {
+      "name": "color",
+      "type": "string",
+      "required": false,
+      "description": "The text colour: a hex, a CSS colour name or rgb()/hsl()."
+    },
+    {
+      "name": "highlight",
+      "type": "string",
+      "required": false,
+      "description": "The spoken word's colour."
+    },
+    {
+      "name": "accent",
+      "type": "string",
+      "required": false,
+      "description": "{\"words\": [\"pauses\", \"best\"], \"color\": \"cyan\"}: those words (or phrases) in their own colour wherever said. color none removes it."
+    },
+    {
+      "name": "position",
+      "type": "enum",
+      "options": [
+        "top",
+        "middle",
+        "bottom"
+      ],
+      "required": false,
+      "description": "Where the captions sit."
+    },
+    {
+      "name": "size",
+      "type": "string",
+      "required": false,
+      "description": "Text size: px, small, medium, large, N% or Nx, or bigger / smaller than now."
+    },
+    {
+      "name": "detail",
+      "type": "bool",
+      "default": false,
+      "description": "Also answer the track's styling fields."
+    }
   ]
 }

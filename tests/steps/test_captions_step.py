@@ -80,7 +80,8 @@ def test_n2_white_with_the_spoken_word_highlighted(tmp_path):
     c = caps(d)
     assert (c["style"], c["color"], c["accentColor"]) == ("outline", "white", "cyan")
     assert "color" not in c["segments"][1], "the track colour applies to every caption, as Apply to all does"
-    assert out == {"style": "outline", "segments": 3}, "nothing unversioned yet: no version needed"
+    assert out == {"style": "outline", "segments": 3, "color": "white", "highlight": "cyan", "cleared": {"color": 1}}, \
+        "nothing unversioned yet: no version needed; cap-2's own red is named as cleared"
 
 
 def test_a_restyle_takes_a_version_holding_the_persons_unversioned_edit(tmp_path):
@@ -101,7 +102,7 @@ def test_n2_make_pauses_best_and_export_cyan(tmp_path):
     colors = word_colors(caps(d))
     assert colors["pauses"] == colors["best"] == colors["export."] == "cyan"
     assert colors["Cut"] is None and colors["keep"] is None
-    assert out["accent"] == {"found": ["pauses", "best", "export"], "missed": []}
+    assert out["accent"] == {"found": {"pauses": 1, "best": 1, "export": 1}, "missed": {}}
     assert v.validate_project(str(d / "project.json"))["valid"] is True
 
 
@@ -110,8 +111,9 @@ def test_n2_move_them_up_to_the_middle_and_bigger(tmp_path):
     run(d, look="highlight", color="white", highlight="cyan")
     out = run(d, position="middle", size="bigger")
     c = caps(d)
-    assert [s.get("offsetY") for s in c["segments"]] == [-19.0, -19.0, -19.0, None], "every caption, not the translation"
-    assert c["fontsize"] == round(caption_style.DEFAULT_SIZE["outline"] * 1.25) and "fontSize" not in c["segments"][1]
+    assert [s.get("offsetY") for s in c["segments"]] == [-19.0, -19.0, -19.0, -19.0], "every caption and its translation"
+    assert c["fontsize"] == round(caption_style.DEFAULT_SIZE["outline"] * 1.25)
+    assert c["segments"][1]["fontSize"] == round(90 * 1.25), "bigger scales a caption's own size, never drops it"
     assert out["position"] == "middle" and out["size"] == c["fontsize"]
     # the first restyle was not in any version: the second takes one holding it
     assert git(d, "log", "--format=%s").strip().split("\n") == [cs.VERSION_MESSAGE, "init"]
@@ -126,7 +128,7 @@ def test_accent_names_the_words_it_did_not_find_and_takes_phrases(tmp_path):
     out = run(d, accent='{"words": ["best part", "export", "magic"], "color": "#00ffff"}')
     colors = word_colors(caps(d))
     assert colors["best"] == colors["part"] == colors["export."] == "#00ffff"
-    assert out["accent"] == {"found": ["best part", "export"], "missed": ["magic"]}
+    assert out["accent"] == {"found": {"best part": 1, "export": 1}, "missed": {"magic": []}}
 
 
 def test_accent_none_removes_a_words_colour(tmp_path):
@@ -146,21 +148,23 @@ def test_accent_on_a_phrase_only_look_says_it_needs_a_per_word_look(tmp_path):
 def test_a_highlight_on_a_style_without_one_says_so(tmp_path):
     d = make_project(tmp_path)
     out = run(d, look="word-by-word", highlight="cyan")
-    assert out["issues"] == ["word-by-word has no spoken-word highlight: use look highlight, karaoke or pop"]
+    assert out["issues"] == ["word-by-word has no spoken-word highlight: use look highlight, highlight-box, karaoke, outline, plate"]
 
 
-def test_the_translated_row_takes_no_accent_and_no_offset(tmp_path):
+def test_the_translated_row_takes_no_accent_but_moves_with_its_caption(tmp_path):
     d = make_project(tmp_path)
-    run(d, accent='{"words": ["luego"]}', position="top")
+    out = run(d, accent='{"words": ["luego"]}', position="top")
     tr = caps(d)["segments"][3]
-    assert "offsetY" not in tr and "words" not in tr
+    assert "words" not in tr and out["accent"]["missed"] == {"luego": []}
+    assert tr["offsetY"] == caps(d)["segments"][0]["offsetY"], "a translation drawn alone sits where its caption does"
 
 
 # ── refusals and the guarded write ────────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("kw,err", [
     ({}, "invalid_params"),
-    ({"color": "rgb(0,0,0)"}, "invalid_params"),
+    ({"color": "rgb(0,0,0); x"}, "invalid_params"),
+    ({"size": "+20"}, "invalid_params"),
     ({"size": "huge"}, "invalid_params"),
     ({"size": "4000"}, "invalid_params"),
     ({"accent": "pauses"}, "invalid_params"),
@@ -230,3 +234,125 @@ def test_the_answer_stays_within_300_characters(tmp_path):
     d = make_project(tmp_path)
     out = run(d, accent=json.dumps({"words": many + ["pauses"], "color": "cyan"}))
     assert len(json.dumps(out)) <= 300 and out["accent"]["found"] == ["pauses"] or "more" in out["accent"]
+
+
+# ── the gate reviews ──────────────────────────────────────────────────────────────────────────────────────────────
+
+def test_cleared_counts_only_captions_whose_own_value_changed(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, color="#ff0000", size="80", position="middle")
+    assert out["cleared"] == {"fontSize": 1}, "cap-2's own red equals the new colour: not counted; its 90 px is"
+    c = caps(d)
+    assert "color" not in c["segments"][1] and "fontSize" not in c["segments"][1] and c["fontsize"] == 80
+
+
+def test_highlight_clears_a_captions_own_spoken_colour(tmp_path):
+    d = make_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    p["captions"]["style"] = "outline"
+    p["captions"]["segments"][0]["accentColor"] = "pink"
+    (d / "project.json").write_text(json.dumps(p))
+    out = run(d, highlight="yellow")
+    assert "accentColor" not in caps(d)["segments"][0] and out["cleared"] == {"accentColor": 1}
+
+
+def test_no_style_is_styled_as_the_renderer_draws_it_subtitle(tmp_path):
+    d = make_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    del p["captions"]["style"]
+    (d / "project.json").write_text(json.dumps(p))
+    out = run(d, highlight="cyan", size="large")
+    assert out["style"] == "subtitle" and out["size"] == round(caption_style.DEFAULT_SIZE["subtitle"] * 1.3)
+    assert any("has no spoken-word highlight" in i for i in out["issues"])
+
+
+def test_pop_takes_its_text_colour_on_activecolor_and_has_no_spoken_highlight(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, color="white", highlight="cyan")
+    c = caps(d)
+    assert c["activeColor"] == "white" and "highlight" not in out
+    assert out["issues"][0].startswith("pop has no spoken-word highlight")
+
+
+def test_the_accent_look_has_no_spoken_word_highlight_and_moves_by_its_centre(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, look="accent", highlight="cyan", position="middle")
+    assert "accentColor" not in caps(d) and out["issues"][0].startswith("accent has no spoken-word highlight")
+    assert caps(d)["segments"][0]["offsetY"] == round(50.0 - 59.5, 1)
+    assert "offsetY" not in caps(d)["segments"][3], "accent stacks translations inside its block"
+
+
+def test_the_highlight_look_makes_text_white_unless_told(tmp_path):
+    d = make_project(tmp_path)
+    run(d, look="highlight")
+    assert caps(d)["color"] == "#ffffff" and "color" not in caps(d)["segments"][1]
+    d2 = make_project(tmp_path / "x") if (tmp_path / "x").mkdir() is None else None
+    run(d2, look="highlight", color="yellow")
+    assert caps(d2)["color"] == "yellow"
+
+
+def test_bigger_never_makes_captions_smaller(tmp_path):
+    d = make_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    p["captions"]["style"] = "outline"
+    for seg in p["captions"]["segments"]:
+        seg["fontSize"] = 120
+    (d / "project.json").write_text(json.dumps(p))
+    out = run(d, size="bigger")
+    assert all(s["fontSize"] == 150 for s in caps(d)["segments"]) and out["size"] == 150
+
+
+@pytest.mark.parametrize("size,want", [("150%", 105), ("1.5x", 105), ("80px", 80), (" 64 ", 64)])
+def test_size_takes_relative_and_px_forms(tmp_path, size, want):
+    d = make_project(tmp_path)
+    run(d, look="outline")
+    run(d, size=size)
+    assert caps(d)["fontsize"] == want
+
+
+def test_a_phrase_across_two_captions_is_found_and_coloured(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, accent='{"words": ["pauses keep"]}')
+    c = caps(d)
+    assert out["accent"]["found"] == {"pauses keep": 1}
+    assert c["segments"][0]["words"][2]["color"] == "cyan" and c["segments"][1]["words"][0]["color"] == "cyan"
+
+
+def test_a_near_miss_is_named_and_not_coloured(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, accent='{"words": ["pause", "exporting"]}')
+    assert out["accent"]["missed"] == {"pause": ["pauses"], "exporting": ["export"]}
+    assert all("color" not in w for s in caps(d)["segments"] for w in s.get("words", []))
+
+
+def test_an_accent_the_colour_of_the_spoken_word_is_flagged(tmp_path):
+    d = make_project(tmp_path)
+    run(d, look="highlight", highlight="cyan")
+    out = run(d, accent='{"words": ["best"], "color": "#00FFFF"}')
+    assert "accent matches the spoken-word colour: the accent words look spoken" in out["issues"]
+
+
+def test_odd_word_entries_and_spellings_do_not_break_it(tmp_path):
+    d = make_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    p["captions"]["segments"][0]["words"][0]["word"] = None
+    p["captions"]["segments"][2]["words"][0]["word"] = "it\u2019s"
+    p["captions"]["segments"][3]["lang"] = ""     # a translation all the same: lang is a string
+    (d / "project.json").write_text(json.dumps(p))
+    out = run(d, accent='{"words": ["it\'s", "pauses"], "color": "NONE"}')
+    assert out["accent"]["found"] == {"it's": 1, "pauses": 1}
+
+
+def test_the_longest_word_is_checked_against_the_frame(tmp_path):
+    d = make_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    p["captions"]["segments"][0]["words"][2]["word"] = "supercalifragilistic"
+    (d / "project.json").write_text(json.dumps(p))
+    out = run(d, look="outline", size="120")
+    assert any("the longest word may not fit the frame at 120px" in i for i in out["issues"])
+
+
+def test_the_answer_stays_within_300_characters_with_many_misses(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, accent=json.dumps({"words": [f"missing{i}" for i in range(40)], "color": "cyan"}))
+    assert len(json.dumps(out)) <= 300 and out["accent"]["more"] > 0

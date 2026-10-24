@@ -317,3 +317,37 @@ describe('makeCaptionEdit keeps word colours across a text edit', () => {
     expect((onProjectChange.mock.calls[0][0] as Project).captions!.segments[0].words).toEqual(coloured().words)
   })
 })
+
+describe('makeCaptionEdit pairs words case and punctuation aside, and keeps accents too', () => {
+  const seg2 = () =>
+    seg({
+      text: 'cut the pauses best',
+      start: 0,
+      end: 4,
+      words: [
+        { word: 'cut', start: 0, end: 1, accent: 'serif' },
+        { word: 'the', start: 1, end: 2 },
+        { word: 'pauses', start: 2, end: 3, color: '#00ffff' },
+        { word: 'best', start: 3, end: 4 },
+      ],
+    })
+  const edited = (text: string, words = seg2().words) => {
+    const onProjectChange = vi.fn()
+    makeCaptionEdit(0, project([{ ...seg2(), words }]), onProjectChange)(text)
+    return (onProjectChange.mock.calls[0][0] as Project).captions!.segments[0].words!
+  }
+
+  it('"pauses" retyped as "Pauses," keeps its colour, and an accent is carried like a colour', () => {
+    const words = edited('Cut the Pauses, best')
+    expect(words.map((w) => [w.word, w.color, w.accent])).toEqual([
+      ['Cut', undefined, 'serif'], ['the', undefined, undefined], ['Pauses,', '#00ffff', undefined], ['best', undefined, undefined],
+    ])
+  })
+
+  it('a null word entry does not throw', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const words = edited('cut the pauses best', [null as any, ...seg2().words!.slice(1)])
+    expect(words.map((w) => w.color)).toEqual([undefined, undefined, '#00ffff', undefined])
+  })
+})
+

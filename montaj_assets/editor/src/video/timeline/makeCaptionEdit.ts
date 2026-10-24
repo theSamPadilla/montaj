@@ -5,10 +5,15 @@ import { isCaptionTranslation } from '../captionTranslation'
 
 /**
  * §558: the words of an edited text that are the old words, unchanged, paired by a longest common subsequence of
- * their text: `[old index, new index]`. A word's own `color` is carried over these pairs, so retyping one word of a
- * caption never drops the colour another word carries.
+ * their text: `[old index, new index]`. Compared case and punctuation aside (captionRepair's key), so "pauses" typed
+ * as "pauses," is the same word. A word's own `color` and `accent` are carried over these pairs, so retyping one word
+ * of a caption never drops what another word carries.
  */
-export function unchangedWords(oldWords: readonly string[], newWords: readonly string[]): Array<[number, number]> {
+const wordKey = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+
+export function unchangedWords(oldRaw: readonly string[], newRaw: readonly string[]): Array<[number, number]> {
+  const oldWords = oldRaw.map(wordKey)
+  const newWords = newRaw.map(wordKey)
   const n = oldWords.length
   const m = newWords.length
   const len: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0))
@@ -82,11 +87,13 @@ export function makeCaptionEdit(
           // Uniform spread has no minimum of its own — floor it so a short
           // word never falls below a frame at any fps. See captionWordFloor.ts.
           const floored = floorWordDurations(spreadWords, next.end)
-          // §558: a word whose text is unchanged keeps its own colour.
+          // §558: a word whose text is unchanged keeps its own colour and accent.
           const oldWords = Array.isArray(s.words) ? s.words : []
-          for (const [oi, ni] of unchangedWords(oldWords.map((w) => w.word), newWords)) {
+          for (const [oi, ni] of unchangedWords(oldWords.map((w) => w?.word ?? ''), newWords)) {
             const color = oldWords[oi]?.color
+            const accent = oldWords[oi]?.accent
             if (typeof color === 'string' && color) floored[ni] = { ...floored[ni], color }
+            if (accent) floored[ni] = { ...floored[ni], accent }
           }
           next.words = floored
           return next
