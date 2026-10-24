@@ -533,8 +533,40 @@ async def list_steps():
     return [{**schema, "runsWhisper": _runs_whisper(schema)} for schema, _ in scan_steps().values()]
 
 
+# Steps whose run must never queue proxies after it: `proxy` makes them (a loop otherwise).
+_NO_PROXY_QUEUE_STEPS = frozenset({"proxy"})
+
+
+async def _queue_proxies_after_step(name: str, refs: list, broadcaster) -> None:
+    """After a step that ran against a project: queue that project's editing proxies, the way
+    POST /projects/{id}/proxies does. An AI video step writes its clip onto the first track with no
+    `proxySrc`, and without proxies the editor's player refuses the project. Reuses
+    `_ensure_current_proxies`' de-dupe and freshness check, so a step that wrote no clip, or a project
+    whose proxies are current, queues nothing. Queue only (never awaits an encode) and best effort: it
+    never raises, so it can never fail, slow or change the step's answer."""
+    if name in _NO_PROXY_QUEUE_STEPS:
+        return
+    try:
+        from serve.routes import projects as projects_routes
+        folders: dict = {}
+        for ref in refs:
+            named = _named_project(ref)
+            if named is not None and named[1] is not None:
+                folders.setdefault(Path(named[1]).resolve(), named[0])
+        for folder in folders:
+            pj = folder / "project.json"
+            if not pj.is_file():
+                continue
+            project = json.loads(await asyncio.to_thread(pj.read_text))
+            await projects_routes._warm_proxy_inputs(projects_routes._video_srcs(project))
+            await projects_routes._ensure_current_proxies_async(
+                project.get("id") or folders[folder], folder, project, broadcaster)
+    except Exception as e:
+        print(f"[montaj] step {name}: could not queue proxies: {e}")
+
+
 async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, timeout: int | None = None,
-                        origin: str | None = None) -> dict:
+                        origin: str | None = None, queue_proxies: bool = False, broadcaster=None) -> dict:
     """Run one step subprocess and return its wrap_output payload.
 
     Raises HTTPException on credential/validation/subprocess error exactly as
@@ -574,6 +606,7 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
         env = {**(env if env is not None else os.environ), sync_clash.ORIGIN_ENV: origin}
 
     project_ref = body.get("_project")
+    named_refs = [body.get(k) for k in _STEP_PROJECT_FIELDS] + [project_ref]
     resolved_out = resolve_project_out(name, schema, body)
     resolve_project_param(schema, body)
     # Re-run the write guard: `_project` naming and the `project` param resolve `out`/`project` to new paths
@@ -646,6 +679,10 @@ async def _execute_step(name: str, schema: dict, py_path: Path, body: dict, *, t
         result.setdefault("out", resolved_out)
     # In a thread: the record is written under the project lock, which blocks.
     await asyncio.to_thread(_note_provenance, name, schema, body, result, project_ref)
+    if queue_proxies:
+        # The one completion point of both the synchronous run and the async job. `project` is read
+        # again here: resolve_project_param rewrote it to the project's project.json.
+        await _queue_proxies_after_step(name, named_refs + [body.get("project")], broadcaster)
     return result
 
 
@@ -697,10 +734,11 @@ def job_step_name(name: str, py_path: Path) -> str:
 
 
 async def _run_to_job(job_id: str, name: str, schema: dict, py_path: Path, body: dict,
-                      origin: str | None = None) -> None:
+                      origin: str | None = None, broadcaster=None) -> None:
     """Background driver: run a step and record its result/error on the job."""
     try:
-        result = await _execute_step(name, schema, py_path, body, origin=origin)
+        result = await _execute_step(name, schema, py_path, body, origin=origin,
+                                     queue_proxies=True, broadcaster=broadcaster)
         set_done(job_id, result)
     except HTTPException as e:
         set_error(job_id, e.detail)
@@ -832,13 +870,15 @@ async def run_step(name: str, body: dict = Body(default={}), request: Request = 
     origin = save_guard.step_origin(headers)
 
     is_async = bool(body.pop("_async", False))
+    broadcaster = getattr(request.app.state, "broadcaster", None) if request is not None else None
     if not is_async:
-        return await _execute_step(name, schema, py_path, body, origin=origin)
+        return await _execute_step(name, schema, py_path, body, origin=origin,
+                                   queue_proxies=True, broadcaster=broadcaster)
 
     # The job records the step by the route's own name, never anything in the
     # body, and only as itself when it is the native step (job_step_name).
     job_id = create_job(job_step_name(name, py_path))
-    task = asyncio.create_task(_run_to_job(job_id, name, schema, py_path, body, origin))
+    task = asyncio.create_task(_run_to_job(job_id, name, schema, py_path, body, origin, broadcaster))
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
     return JSONResponse({"job_id": job_id, "status": "running"}, status_code=202)
