@@ -551,14 +551,10 @@ export default function SlideCanvas({
   }
 
   useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      const cursor = { x: e.clientX, y: e.clientY }
-      if (activeGesture.current === 'drag') drag.onPointerMove(cursor)
-      else if (activeGesture.current === 'resize') resize.onPointerMove(cursor, { shiftKey: e.shiftKey })
-      else if (activeGesture.current === 'rotate') rotate.onPointerMove(cursor)
-      else if (activeGesture.current === 'group') groupHandlers.current.move(cursor)
-    }
-    const onUp = () => {
+    // Ends the gesture in progress where it is, committing what it previewed.
+    // A release is followed by a click, which `swallowClick` keeps from
+    // changing the selection; a gesture ended any other way has no click coming.
+    const end = (swallowClick: boolean) => {
       const gesture = activeGesture.current
       activeGesture.current = null
       if (gesture === 'drag') drag.onPointerUp()
@@ -567,13 +563,32 @@ export default function SlideCanvas({
       else if (gesture === 'group') groupHandlers.current.up()
       // A group drag decides for itself: a press on a member that did not move
       // is a click, and collapses the selection to that member.
-      if (gesture === 'drag' || gesture === 'resize' || gesture === 'rotate') swallowClickRef.current = true
+      if (swallowClick && (gesture === 'drag' || gesture === 'resize' || gesture === 'rotate')) swallowClickRef.current = true
     }
+    const onMove = (e: PointerEvent) => {
+      // A mouse that moves with no button held has lost its release (the window
+      // lost the mouse mid-gesture, as when the person switches apps). The
+      // gesture ends where it is, as a release would end it, and no click
+      // follows, so nothing is swallowed.
+      if (activeGesture.current && e.pointerType === 'mouse' && e.buttons === 0) {
+        end(false)
+        return
+      }
+      const cursor = { x: e.clientX, y: e.clientY }
+      if (activeGesture.current === 'drag') drag.onPointerMove(cursor)
+      else if (activeGesture.current === 'resize') resize.onPointerMove(cursor, { shiftKey: e.shiftKey })
+      else if (activeGesture.current === 'rotate') rotate.onPointerMove(cursor)
+      else if (activeGesture.current === 'group') groupHandlers.current.move(cursor)
+    }
+    const onUp = () => end(true)
+    const onCancel = () => end(false)
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
     return () => {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
     }
   }, [drag, resize, rotate])
 

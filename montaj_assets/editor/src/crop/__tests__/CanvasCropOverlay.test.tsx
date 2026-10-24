@@ -22,9 +22,18 @@ afterEach(() => {
 })
 
 // This jsdom has no PointerEvent: a MouseEvent named for the pointer event
-// carries clientX/Y, and React handles it by its name.
-function pointer(target: EventTarget, type: 'pointerdown' | 'pointermove' | 'pointerup', init: MouseEventInit = {}) {
-  target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, ...init }))
+// carries clientX/Y and buttons, and React handles it by its name. A MouseEvent
+// has no pointerType, so one asked for is set on the event itself.
+type PointerInit = MouseEventInit & { pointerType?: 'mouse' | 'pen' | 'touch' }
+function pointer(
+  target: EventTarget,
+  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel' | 'lostpointercapture',
+  init: PointerInit = {},
+) {
+  const { pointerType, ...mouse } = init
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, ...mouse })
+  if (pointerType) Object.defineProperty(event, 'pointerType', { value: pointerType })
+  target.dispatchEvent(event)
 }
 
 // A 400 x 200 source in a 200 x 200 box at scale 1: drawn 200 x 100, 50 px down.
@@ -137,5 +146,116 @@ describe('CanvasCropOverlay: the window moves as a whole (§556 M4)', () => {
       pointer(handle, 'pointerup', { clientX: 150, clientY: 150 })
     })
     expect(onDragEnd).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ── A drag whose release never arrives (§556) ────────────────────────────────
+//
+// The window can lose the mouse mid-drag (the person switches apps with the
+// button held), and the release then never reaches it. The drag must not wait
+// for a click to end: the next move with no button down, a cancelled pointer or
+// a lost capture ends it where it is.
+
+describe('CanvasCropOverlay: a drag whose release never arrives ends where it is (§556)', () => {
+  const held = { buttons: 1, pointerType: 'mouse' } as const
+  const lost = { buttons: 0, pointerType: 'mouse' } as const
+
+  it('a mouse move with no button held ends a window drag: the window stays put and a later move does nothing', () => {
+    const onDragEnd = vi.fn()
+    const { move, onLocalCropChange } = mount({ x: 0.25, y: 0, w: 0.5, h: 1 }, { onDragEnd })
+    act(() => {
+      pointer(move, 'pointerdown', { clientX: 100, clientY: 100, ...held })
+      pointer(move, 'pointermove', { clientX: 70, clientY: 100, ...held })
+    })
+    expectCrop(lastCrop(onLocalCropChange), { x: 0.1, y: 0, w: 0.5, h: 1 })
+    expect(onDragEnd).not.toHaveBeenCalled()
+    const calls = onLocalCropChange.mock.calls.length
+
+    // The release was lost: this move arrives with no button down.
+    act(() => { pointer(move, 'pointermove', { clientX: 20, clientY: 100, ...lost }) })
+    expect(onDragEnd).toHaveBeenCalledTimes(1)
+    expect(onLocalCropChange.mock.calls.length).toBe(calls)
+
+    // Nothing follows the pointer any more, button down or not.
+    act(() => {
+      pointer(move, 'pointermove', { clientX: 10, clientY: 100, ...lost })
+      pointer(move, 'pointermove', { clientX: 10, clientY: 100, ...held })
+    })
+    expect(onLocalCropChange.mock.calls.length).toBe(calls)
+    expect(onDragEnd).toHaveBeenCalledTimes(1)
+  })
+
+  it('a mouse move with no button held ends a handle drag the same way', () => {
+    const onDragEnd = vi.fn()
+    const { r, onLocalCropChange } = mount({ x: 0.25, y: 0, w: 0.5, h: 1 }, { onDragEnd })
+    const e = r.getByTestId('crop-handle-e')
+    act(() => {
+      pointer(e, 'pointerdown', { clientX: 150, clientY: 100, ...held })
+      pointer(e, 'pointermove', { clientX: 170, clientY: 100, ...held })
+    })
+    const calls = onLocalCropChange.mock.calls.length
+    act(() => { pointer(e, 'pointermove', { clientX: 190, clientY: 100, ...lost }) })
+    expect(onDragEnd).toHaveBeenCalledTimes(1)
+    expect(onLocalCropChange.mock.calls.length).toBe(calls)
+  })
+
+  it('pointercancel ends a handle drag the same way', () => {
+    const onDragEnd = vi.fn()
+    const { r, onLocalCropChange } = mount({ x: 0.25, y: 0, w: 0.5, h: 1 }, { onDragEnd })
+    const e = r.getByTestId('crop-handle-e')
+    act(() => {
+      pointer(e, 'pointerdown', { clientX: 150, clientY: 100, ...held })
+      pointer(e, 'pointermove', { clientX: 170, clientY: 100, ...held })
+    })
+    expectCrop(lastCrop(onLocalCropChange), { x: 0.25, y: 0, w: 0.6, h: 1 })
+    const calls = onLocalCropChange.mock.calls.length
+
+    act(() => { pointer(e, 'pointercancel') })
+    expect(onDragEnd).toHaveBeenCalledTimes(1)
+
+    act(() => { pointer(e, 'pointermove', { clientX: 190, clientY: 100, ...held }) })
+    expect(onLocalCropChange.mock.calls.length).toBe(calls)
+    expect(onDragEnd).toHaveBeenCalledTimes(1)
+  })
+
+  it('pointercancel ends a window drag, and so does the pointer capture being lost', () => {
+    for (const type of ['pointercancel', 'lostpointercapture'] as const) {
+      const onDragEnd = vi.fn()
+      const { r, move, onLocalCropChange } = mount({ x: 0.25, y: 0, w: 0.5, h: 1 }, { onDragEnd })
+      act(() => {
+        pointer(move, 'pointerdown', { clientX: 100, clientY: 100, ...held })
+        pointer(move, 'pointermove', { clientX: 70, clientY: 100, ...held })
+        pointer(move, type)
+      })
+      expect(onDragEnd).toHaveBeenCalledTimes(1)
+      const calls = onLocalCropChange.mock.calls.length
+      act(() => { pointer(move, 'pointermove', { clientX: 20, clientY: 100, ...held }) })
+      expect(onLocalCropChange.mock.calls.length).toBe(calls)
+      r.unmount()
+    }
+  })
+
+  it('a release followed by the browser letting go of the capture tells once', () => {
+    const onDragEnd = vi.fn()
+    const { move } = mount({ x: 0.25, y: 0, w: 0.5, h: 1 }, { onDragEnd })
+    act(() => {
+      pointer(move, 'pointerdown', { clientX: 100, clientY: 100, ...held })
+      pointer(move, 'pointerup', { clientX: 100, clientY: 100, pointerType: 'mouse' })
+      pointer(move, 'lostpointercapture')
+    })
+    expect(onDragEnd).toHaveBeenCalledTimes(1)
+  })
+
+  it('only a mouse is read this way: a pen with no button reported keeps dragging', () => {
+    const onDragEnd = vi.fn()
+    const { move, onLocalCropChange } = mount({ x: 0.25, y: 0, w: 0.5, h: 1 }, { onDragEnd })
+    act(() => {
+      pointer(move, 'pointerdown', { clientX: 100, clientY: 100, buttons: 1, pointerType: 'pen' })
+      pointer(move, 'pointermove', { clientX: 70, clientY: 100, buttons: 0, pointerType: 'pen' })
+    })
+    expect(onDragEnd).not.toHaveBeenCalled()
+    expectCrop(lastCrop(onLocalCropChange), { x: 0.1, y: 0, w: 0.5, h: 1 })
+    act(() => { pointer(move, 'pointerup', { clientX: 70, clientY: 100, pointerType: 'pen' }) })
+    expect(onDragEnd).toHaveBeenCalledTimes(1)
   })
 })

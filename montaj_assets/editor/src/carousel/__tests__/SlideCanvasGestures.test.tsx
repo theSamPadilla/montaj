@@ -16,7 +16,7 @@ function image(over: Partial<ImageElement> = {}): ImageElement {
   return { id: 'el', type: 'image', src: 'a.png', x: 100, y: 100, w: 200, h: 100, rotation: 0, ...over }
 }
 
-function setup(el: ImageElement) {
+function setup(el: ImageElement, others: ImageElement[] = []) {
   const spies = {
     onSelect: vi.fn(),
     moveElement: vi.fn(async () => {}),
@@ -26,7 +26,7 @@ function setup(el: ImageElement) {
   }
   const r = render(
     <SlideCanvas
-      slide={{ id: 's', base_color: '#ffffff', elements: [el] }}
+      slide={{ id: 's', base_color: '#ffffff', elements: [el, ...others] }}
       width={1080}
       height={1080}
       interactive
@@ -42,15 +42,25 @@ function setup(el: ImageElement) {
     r,
     root: q('[data-interactive]'),
     wrapper: q(`[data-element-id="${el.id}"]`),
+    element: (id: string) => q(`[data-element-id="${id}"]`),
     handle: (id: Handle) => q(`[data-testid="resize-handle-${id}"]`),
     rotateHandle: q('[data-testid="rotate-handle"]'),
   }
 }
 
-// This jsdom has no PointerEvent, and fireEvent.pointer* drops clientX/Y and
-// shiftKey. A MouseEvent named for the pointer event carries them.
-function pointer(target: EventTarget, type: 'pointerdown' | 'pointermove' | 'pointerup', init: MouseEventInit = {}) {
-  target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, ...init }))
+// This jsdom has no PointerEvent, and fireEvent.pointer* drops clientX/Y,
+// shiftKey and buttons. A MouseEvent named for the pointer event carries them.
+// It has no pointerType, so one asked for is set on the event itself.
+type PointerInit = MouseEventInit & { pointerType?: 'mouse' | 'pen' | 'touch' }
+function pointer(
+  target: EventTarget,
+  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel',
+  init: PointerInit = {},
+) {
+  const { pointerType, ...mouse } = init
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, ...mouse })
+  if (pointerType) Object.defineProperty(event, 'pointerType', { value: pointerType })
+  target.dispatchEvent(event)
 }
 
 async function dragFrom(target: HTMLElement, from: { x: number; y: number }, to: { x: number; y: number }, move: MouseEventInit = {}) {
@@ -245,5 +255,78 @@ describe('SlideCanvas: a press and release in place records nothing (§556 M3)',
     expect(moveElement).not.toHaveBeenCalled()
     expect(commit).not.toHaveBeenCalled()
     expect(a.style.transform).toBe('translate(50px, 50px)')
+  })
+})
+
+// ── A gesture whose release never arrives (§556) ─────────────────────────────
+//
+// The window can lose the mouse mid-gesture (the person switches apps with the
+// button held), and the release then never reaches it. The gesture ends where
+// it is at the next move with no button down, or on a cancelled pointer, and
+// since no click follows either, the next real click is not swallowed.
+
+describe('SlideCanvas: a gesture whose release never arrives ends where it is (§556)', () => {
+  const held = { buttons: 1, pointerType: 'mouse' } as const
+  const lost = { buttons: 0, pointerType: 'mouse' } as const
+
+  // 40, 20 screen px at half scale: 80, 40 on the slide, so the element at
+  // 100, 100 is previewed at 180, 140 (screen 90, 70).
+  const PREVIEWED = 'translate(90px, 70px)'
+
+  const ways: Array<[string, () => void]> = [
+    ['a mouse move with no button held', () => pointer(window, 'pointermove', { clientX: 300, clientY: 300, ...lost })],
+    ['pointercancel', () => pointer(window, 'pointercancel')],
+  ]
+
+  it.each(ways)('%s commits the drag once at its last preview, then nothing follows the pointer and the next click is not swallowed', async (_way, end) => {
+    const c = setup(image({ id: 'a' }), [image({ id: 'b', x: 500 })])
+    await act(async () => {
+      pointer(c.wrapper, 'pointerdown', { clientX: 0, clientY: 0, ...held })
+      pointer(window, 'pointermove', { clientX: 40, clientY: 20, ...held })
+    })
+    expect(c.wrapper.style.transform).toBe(PREVIEWED)
+    expect(c.moveElement).not.toHaveBeenCalled()
+
+    await act(async () => { end() })
+    expect(c.moveElement).toHaveBeenCalledTimes(1)
+    expect(c.moveElement).toHaveBeenCalledWith('s', 'a', 180, 140)
+    expect(c.commit).toHaveBeenCalledTimes(1)
+    // The move that ended it did not carry the element along.
+    expect(c.wrapper.style.transform).toBe(PREVIEWED)
+
+    // Later moves, button down or not, change nothing.
+    await act(async () => {
+      pointer(window, 'pointermove', { clientX: 500, clientY: 500, ...lost })
+      pointer(window, 'pointermove', { clientX: 600, clientY: 600, ...held })
+    })
+    expect(c.wrapper.style.transform).toBe(PREVIEWED)
+    expect(c.moveElement).toHaveBeenCalledTimes(1)
+    expect(c.commit).toHaveBeenCalledTimes(1)
+
+    // No click follows a release that never came, so the next click is a real one.
+    await act(async () => { fireEvent.click(c.element('b')) })
+    expect(c.onSelect).toHaveBeenLastCalledWith('b')
+  })
+
+  it('a release that does arrive still swallows the click that follows it', async () => {
+    const c = setup(image({ id: 'a' }), [image({ id: 'b', x: 500 })])
+    await dragFrom(c.wrapper, { x: 0, y: 0 }, { x: 40, y: 20 }, held)
+    await act(async () => { fireEvent.click(c.element('b')) })
+    expect(c.moveElement).toHaveBeenCalledTimes(1)
+    // The press on 'a' selected it; the click after the release changes nothing.
+    expect(c.onSelect).toHaveBeenLastCalledWith('a')
+  })
+
+  it('only a mouse is read this way: a pen with no button reported keeps dragging', async () => {
+    const c = setup(image({ id: 'a' }))
+    await act(async () => {
+      pointer(c.wrapper, 'pointerdown', { clientX: 0, clientY: 0, buttons: 1, pointerType: 'pen' })
+      pointer(window, 'pointermove', { clientX: 40, clientY: 20, buttons: 0, pointerType: 'pen' })
+    })
+    expect(c.moveElement).not.toHaveBeenCalled()
+    expect(c.wrapper.style.transform).toBe(PREVIEWED)
+    await act(async () => { pointer(window, 'pointerup', { clientX: 40, clientY: 20, pointerType: 'pen' }) })
+    expect(c.moveElement).toHaveBeenCalledTimes(1)
+    expect(c.moveElement).toHaveBeenCalledWith('s', 'a', 180, 140)
   })
 })

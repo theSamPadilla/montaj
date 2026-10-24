@@ -91,7 +91,15 @@ export function CanvasCropOverlay({
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragStateRef.current
-    if (!drag || !srcDims) return
+    if (!drag) return
+    // A mouse that moves with no button held has lost its release (the window
+    // lost the mouse mid-drag, as when the person switches apps). The drag ends
+    // where it is, as a release would end it.
+    if (e.pointerType === 'mouse' && e.buttons === 0) {
+      onPointerUp()
+      return
+    }
+    if (!srcDims) return
     const deltaPx = { x: e.clientX - drag.startClient.x, y: e.clientY - drag.startClient.y }
     const geometry = { wrapperW, wrapperH, srcWidth: srcDims.width, srcHeight: srcDims.height }
     onLocalCropChange(
@@ -173,6 +181,8 @@ export function CanvasCropOverlay({
             onPointerDown={(e) => onPointerDown('move', e)}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+            onLostPointerCapture={onPointerUp}
             style={{
               position: 'absolute',
               left: windowPx.x,
@@ -196,6 +206,8 @@ export function CanvasCropOverlay({
                 onPointerDown={(e) => onPointerDown(handle, e)}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
+                onPointerCancel={onPointerUp}
+                onLostPointerCapture={onPointerUp}
                 style={{
                   position: 'absolute',
                   left: windowPx.x + o.dx * windowPx.w - 6,
