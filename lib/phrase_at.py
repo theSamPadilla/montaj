@@ -8,9 +8,12 @@ tokens with their accents folded (lib/speech_lines.norm); in a language written 
 the sentence's characters.
 
 Sayings are grouped by the line they are takes of: select's sections (a false start or an abandoned opening goes
-with the take after it), and also any two sentences whose words, fillers left out, are near the same (take_select's
-SAME_RATIO): select keeps takes it is not sure of apart, and they are still takes of one line here. The earliest line is the one used; the others are answered as `also`, so a phrase said in
-two different sentences is never picked silently. Within that line, take:
+with the take after it), and also two sentences whose words, fillers left out, are near the same (take_select's
+SAME_RATIO), since select keeps takes it is not sure of apart, under take_select's own rule for a retake: in
+different clips, or within NEAR_UNITS sentences of each other in one clip with no kept sentence of another line
+between them. So a refrain (a line said at the start and again at the end of a clip) stays two lines. The earliest
+line is the one used; the others are answered as `also`, so a phrase said in two different sentences is never
+picked silently. Within that line, take:
 - "first" / "last": its earliest or latest take.
 - "clean": a take with no filler and no restart, never a false start, an abandoned opening or a restarted or
   repeated clause (select's whys), and never the take said right after its own false start or abandoned opening in
@@ -26,7 +29,7 @@ from lib import speech_text, speech_units
 from lib.project_tracks import normalize_tracks
 from lib.speech_lines import norm
 from lib.speech_words_at import _speed
-from lib.take_select import SAME_RATIO, select
+from lib.take_select import NEAR_UNITS, SAME_RATIO, select
 
 TAKES = ("clean", "first", "last")
 FLAWED = ("restart", "repeat", "abandoned", "false-start", "filler-only")
@@ -55,8 +58,8 @@ def fold(token):
     return "".join(c for c in unicodedata.normalize("NFKD", token) if not unicodedata.combining(c))
 
 
-def tokens(text, is_filler=lambda t: False):
-    return [fold(t) for t in (norm(w) for w in str(text).split()) if t and not is_filler(t)]
+def tokens(text, is_filler=lambda t: False, folded=True):
+    return [(fold(t) if folded else t) for t in (norm(w) for w in str(text).split()) if t and not is_filler(t)]
 
 
 def _unit_words(rows):
@@ -106,10 +109,12 @@ def _matches(seq, want, spaceless):
 def sayings(project, project_dir, phrase, language="en", track_id=None):
     """[(unit index, start, end, text)] of every saying of `phrase`, plus the units, the selection and warnings."""
     is_filler = speech_units.filler_test(language or "en")
-    want = tokens(phrase, is_filler)
+    spaceless = (language or "").split("-")[0].lower() in speech_units.NON_SPACED
+    # accents fold in spaced languages only: in Japanese a voiced mark is a different letter (が is not か)
+    fk = (lambda t: t) if spaceless else fold
+    want = tokens(phrase, is_filler, folded=not spaceless)
     if not want:
         raise PhraseNotFound("The phrase has no words.")
-    spaceless = (language or "").split("-")[0].lower() in speech_units.NON_SPACED
     if track_id is None:
         track_id = speech_units.speech_track_id(project, project_dir)
     d = speech_text.derive(project, project_dir, track=track_id)
@@ -120,7 +125,7 @@ def sayings(project, project_dir, phrase, language="en", track_id=None):
     found = []
     for k, (_, rows, _) in enumerate(built):
         words = _unit_words(rows)
-        seq = [(i, fold(t)) for i, (w, _) in enumerate(words) for t in [norm(w.text)] if t and not is_filler(t)]
+        seq = [(i, fk(t)) for i, (w, _) in enumerate(words) for t in [norm(w.text)] if t and not is_filler(t)]
         for a, b in _matches(seq, want, spaceless):
             first, last = words[seq[a][0]], words[seq[b][0]]
             t0 = _on_timeline(items, *first)
@@ -171,9 +176,18 @@ def find(project, project_dir, phrase, take="clean", language="en", track_id=Non
             k = root[k]
         return k
     ks = sorted(toks)
+
+    def retake(a, b):
+        """take_select's rule for two takes of one line (a < b): another clip, or near in one clip with no kept
+        sentence of another line between them."""
+        if units[a].clip != units[b].clip:
+            return True
+        if b - a > NEAR_UNITS:
+            return False
+        return not any(k in kept and line[k] not in (line[a], line[b]) for k in range(a + 1, b))
     for i, a in enumerate(ks):
         for b in ks[i + 1:]:
-            if line[a] == line[b] or SequenceMatcher(None, toks[a], toks[b]).ratio() >= SAME_RATIO:
+            if line[a] == line[b] or (SequenceMatcher(None, toks[a], toks[b]).ratio() >= SAME_RATIO and retake(a, b)):
                 root[top(b)] = top(a)
     groups = {}
     for f in found:

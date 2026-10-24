@@ -400,6 +400,16 @@ def test_takes_of_one_line_that_select_keeps_apart_are_still_one_line(tmp_path):
     assert "also" not in out, out
 
 
+def test_a_refrain_said_at_the_start_and_the_end_of_a_clip_is_two_lines(tmp_path):
+    # take_select's rule: the same sentence in two places of one clip, other kept lines between, is two sentences
+    script = list(SCRIPT)
+    script[0:8] = "Subscribe for more tips. Our editor is fast.".split()
+    script[-6:] = "Subscribe for more tips. Bye now.".split()
+    d = make_project(tmp_path, script=script)
+    out = run(d, at='{"phrase": "subscribe for more tips"}', preset="callout")
+    assert out["start"] < 1 and len(out["also"]) == 1 and out["also"][0] > 10, out
+
+
 def test_clean_says_when_cut_keeps_another_take(tmp_path):
     d = make_project(tmp_path)
     out = run(d, at='{"phrase": "three times faster"}', preset="callout")
