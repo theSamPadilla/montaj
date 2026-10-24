@@ -5,7 +5,7 @@ description: "Author carousel text overlays whose font/size/color/etc. the opera
 
 # Editable Text
 
-Carousel text overlays must accept a fixed set of editor-facing props so the floating toolbar (bold / italic / case / align / font-size / font-family / color) works uniformly. This skill spells out the 9-prop contract.
+Carousel text overlays must accept a fixed set of editor-facing props so the floating toolbar (bold / italic / case / align / font-size / font-family / color / background color) works uniformly. This skill spells out the 9-prop contract.
 
 ## When this applies
 
