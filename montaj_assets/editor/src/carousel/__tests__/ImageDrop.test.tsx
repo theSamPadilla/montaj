@@ -1124,9 +1124,9 @@ describe('Images on the canvas: the Add menu', () => {
 
     await pick(r, file)
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
-    // The upload call is as it was: the file alone, no project, no source.
+    // No project (a shared upload, as it was), and the host is told it came from a file picker.
     expect(adapter.uploadFile).toHaveBeenCalledTimes(1)
-    expect(adapter.uploadFile).toHaveBeenCalledWith(file)
+    expect(adapter.uploadFile).toHaveBeenCalledWith(file, undefined, 'picker')
     expect(loadSize).toHaveBeenCalledWith('/proj/assets/up.png')
     const els = elementsOf(lastSave(adapter))
     expect(els[1]).toEqual({ id: expect.any(String), type: 'image', src: '/proj/assets/up.png', x: 108, y: 459, w: 864, h: 432, rotation: 0 })

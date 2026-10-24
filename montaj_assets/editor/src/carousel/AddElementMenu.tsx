@@ -100,7 +100,8 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
     try {
       // Shared upload (no projectId) — matches the pre-extraction carousel
       // behavior. The adapter stores it in a shared location, not project-local.
-      const uploadedPath = await adapter.uploadFile(file)
+      // 'picker' says it was chosen in a file picker (the host's provenance only).
+      const uploadedPath = await adapter.uploadFile(file, undefined, 'picker')
       // Shaped like the uploaded image, centred on the slide.
       const element = await newImageElement(adapter, project.settings.resolution, uploadedPath)
       onAddElement(selectedSlideId, element)

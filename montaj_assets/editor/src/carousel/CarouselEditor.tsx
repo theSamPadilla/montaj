@@ -1082,7 +1082,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     if (!start) return
     let src: string
     try {
-      src = await adapter.uploadFile(file, project.id)
+      src = await adapter.uploadFile(file, project.id, 'picker')
     } catch (e) {
       reportError("Couldn't replace the image", e)
       return

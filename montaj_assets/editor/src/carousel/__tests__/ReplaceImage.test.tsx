@@ -157,9 +157,9 @@ describe('Replace image: the editor', () => {
     await pickFile(file)
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
 
-    // The file goes into the project folder.
+    // The file goes into the project folder, and the host is told it came from a file picker.
     expect(adapter.uploadFile).toHaveBeenCalledTimes(1)
-    expect(adapter.uploadFile).toHaveBeenCalledWith(file, 'proj-1')
+    expect(adapter.uploadFile).toHaveBeenCalledWith(file, 'proj-1', 'picker')
     // Its size was read from the URL the adapter resolves for the new source.
     expect(loadSize).toHaveBeenCalledWith(NEW_SRC)
 
