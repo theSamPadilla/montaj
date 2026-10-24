@@ -127,9 +127,11 @@ def test_a_save_the_guard_lets_through_on_a_full_disk_is_507_and_project_json_is
 
 def test_a_clashed_asset_include_is_refused_as_before_on_a_full_disk(ws, state, brand_logo, monkeypatch):
     d = _project(ws, profile="brand", assets=[])
-    _sidecar(state, files=["logo.png"])
+    (state / PID).mkdir(exist_ok=True)
+    (state / PID / "clash-set.json").write_text("nope")  # B1: the window is the only writer here, refused when unsure
     _fill(monkeypatch)
-    _refused(_client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=DRIVE), ["logo.png"])
+    resp = _client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=DRIVE)
+    assert resp.status_code == 409 and resp.json()["detail"]["error"] == "sync_conflict", resp.text
     assert not any(p.name.startswith("logo") for p in d.rglob("*"))
 
 

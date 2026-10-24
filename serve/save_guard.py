@@ -483,13 +483,19 @@ def get_headers(response, project, fields, raw_text=None, raw_project=None) -> N
 #   untrusted the same resolve headers while serve has NO launch secret (it never arrived, review 40 3b): nothing can
 #             be believed, so it is refused like `other`, sure sidecar or not, but as 403 `untrusted`, so the app
 #             tells the person to restart Montaj instead of offering the resolve again.
-#   other     everything else: `ai`, no or a wrong secret, plain `tool`, `tool` + `app`, `editor` + any origin
-#             (`drive`), a step run by any of these, and serve's own maintenance heals. Refused on a clashed name.
+#   drive     trusted `editor` + origin `drive`: the window while the person's AI drives it. An AI write from the
+#             window to a clashed name is allowed (Sam, 2026-10-24): the app holds the person's version of the clash
+#             before it forwards the write, and the clash stays open for a person to resolve. Passes while the clash
+#             set is sure; an unsure one refuses it (the app could not have held a version it cannot read either).
+#             A step it runs carries MONTAJ_WRITE_ORIGIN=human, as the window's own.
+#   other     everything else: `ai`, no or a wrong secret, plain `tool`, `tool` + `app`, `editor` + any other
+#             origin, a step run by any of these, and serve's own maintenance heals. Refused on a clashed name.
 #
 # A write names its fields and files (`fields`, `files`); a write of a whole document also passes `derived`, the
 # fields it changes without naming them (check_sync_document): for everyone but a resolve they count the same.
 
 RESOLVE_ORIGIN = "resolve"
+DRIVE_ORIGIN = "drive"
 RESOLVE_HEADER = "x-montaj-sync-resolve"
 _RESOLVE_ID_MAX = 256
 UNTRUSTED_MESSAGE = "Montaj could not confirm this resolve, so nothing was saved. Restart Montaj and try again."
@@ -524,6 +530,8 @@ def sync_who(headers) -> SyncWho:
     origin = headers.get(ORIGIN_HEADER)
     if writer == "editor" and not origin:
         return SyncWho("human")
+    if writer == "editor" and origin == DRIVE_ORIGIN:
+        return SyncWho("drive")
     if writer == "tool" and origin == SYNC_ORIGIN:
         return SyncWho("sync")
     if writer == "tool" and origin == RESOLVE_ORIGIN:
@@ -534,8 +542,9 @@ def sync_who(headers) -> SyncWho:
 
 
 def step_origin(headers) -> str:
-    """MONTAJ_WRITE_ORIGIN for a step serve runs: `human` for the window only, else `ai`."""
-    return sync_clash.HUMAN_ORIGIN if sync_who(headers).kind == "human" else "ai"
+    """MONTAJ_WRITE_ORIGIN for a step serve runs: `human` for the window (with or without the AI driving it), else
+    `ai`."""
+    return sync_clash.HUMAN_ORIGIN if sync_who(headers).kind in ("human", "drive") else "ai"
 
 
 def sync_refusal(project_id, who, fields=(), files=(), *, everything: bool = False, derived=()) -> "dict | None":
@@ -552,6 +561,8 @@ def sync_refusal(project_id, who, fields=(), files=(), *, everything: bool = Fal
     if not everything and not fields and not files and not derived:
         return None
     clashes = sync_clash.load(project_id)
+    if who.kind == "drive" and not clashes.unsure:
+        return None
     if who.kind == "resolve" and clashes.unsure:
         return None
     if who.kind == "resolve" and who.clash_id in clashes.ids:

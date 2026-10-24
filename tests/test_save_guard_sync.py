@@ -382,12 +382,36 @@ def test_case5_the_window_passes_advisory_as_today(ws, state):
     assert json.loads(_disk(d))["tracks"][0]["id"] == "trk-9"
 
 
-@pytest.mark.parametrize("origin", ["drive", "sync", "resolve", "app", "human"])
-def test_case5_the_window_with_any_origin_is_not_the_human(ws, state, origin):
+@pytest.mark.parametrize("origin", ["sync", "resolve", "app", "human"])
+def test_case5_the_window_with_any_origin_but_drive_is_not_the_human(ws, state, origin):
     _project(ws)
     _sidecar(state, fields=["tracks"])
     headers = {**EDITOR, "x-montaj-write-origin": origin, "x-montaj-sync-resolve": "c1"}
     _refused(_put(ws, {"tracks": []}, headers, read=False), ["tracks"])
+
+
+@pytest.mark.parametrize("body", [{"tracks": []}, {"notes": [], "tracks": [{"id": "trk-9", "items": []}]}],
+                         ids=["the-clashed-field", "with-another"])
+def test_case5_the_window_while_the_ai_drives_it_writes_a_clashed_field(ws, state, body):
+    """Sam, 2026-10-24: an AI write from the window to a clashed field is allowed. The app holds the person's version
+    of the clash before it forwards the write; the clash stays open (the sidecar is untouched)."""
+    d = _project(ws)
+    _sidecar(state, fields=["tracks"])
+    side = (state / PID / "clash-set.json").read_text()
+    resp = _put(ws, body, DRIVE, read=False)
+    assert resp.status_code == 200, resp.text
+    assert json.loads(_disk(d))["tracks"] == body["tracks"]
+    assert (state / PID / "clash-set.json").read_text() == side
+
+
+def test_case5_the_window_while_the_ai_drives_it_is_refused_on_an_unsure_clash_set(ws, state):
+    """The app could not have held a version it cannot read either: fail closed, as for the AI."""
+    d = _project(ws)
+    (state / PID).mkdir()
+    (state / PID / "clash-set.json").write_text("nope")
+    before = _disk(d)
+    _refused(_put(ws, {"tracks": []}, DRIVE, read=False), ["tracks"])
+    assert _disk(d) == before
 
 
 @pytest.mark.parametrize("headers", [
@@ -623,7 +647,16 @@ def test_case8_a_step_run_by_the_window_runs_with_origin_human(ws, state, ran):
     assert ran[0]["env"]["MONTAJ_WRITE_ORIGIN"] == "human"
 
 
-@pytest.mark.parametrize("headers", [AI, TOOL, SYNC, DRIVE], ids=["ai", "tool", "sync", "drive"])
+def test_case8_a_step_the_window_runs_while_the_ai_drives_it_carries_origin_human(ws, state, ran):
+    """Sam, 2026-10-24: the window's writes while the AI drives it are allowed (the app holds the person's version)."""
+    _project(ws)
+    _sidecar(state, fields=["tracks"])
+    resp = _step("jump_cut", {"project-id": PID, "clip-id": "clip-0", "cuts": "[]"}, DRIVE)
+    assert resp.status_code == 200, resp.text
+    assert ran[0]["env"]["MONTAJ_WRITE_ORIGIN"] == "human"
+
+
+@pytest.mark.parametrize("headers", [AI, TOOL, SYNC], ids=["ai", "tool", "sync"])
 def test_case8_any_other_step_run_carries_origin_ai(ws, state, ran, headers):
     _project(ws)
     _sidecar(state, fields=["settings"])
@@ -865,11 +898,24 @@ def _commit(d):
     return out.stdout.strip()
 
 
-def test_case10_restore_by_the_window_passes_and_under_drive_is_refused(ws, state):
+def _unsure(state):
+    (state / PID).mkdir(exist_ok=True)
+    (state / PID / "clash-set.json").write_text("nope")
+
+
+def _refused_unsure(resp):
+    """An unsure set names the write's own names (sync_clash.touched): only the refusal itself is asserted."""
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["error"] == "sync_conflict"
+
+
+def test_case10_restore_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_is_refused(ws, state):
     d = _project(ws)
     sha = _commit(d)
+    _unsure(state)
+    _refused(_client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=DRIVE), ["*"])
     _sidecar(state, fields=["notes"])
-    _refused(_client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=DRIVE), ["notes"])
+    assert _client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=DRIVE).status_code == 200
     assert _client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=EDITOR).status_code == 200
 
 
@@ -881,25 +927,31 @@ def test_case10_restore_with_the_guard_off_still_refuses_the_ai(ws, state, monke
     _refused(_client().post(f"/api/projects/{PID}/versions/{sha}/restore", headers=AI), ["overlays/a.jsx"])
 
 
-def test_case10_rerun_by_the_window_passes_and_under_drive_is_refused(ws, state):
+def test_case10_rerun_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_is_refused(ws, state):
     d = _project(ws, sources=[{"id": "clip-0", "src": "/x.mp4"}])
-    _sidecar(state, fields=["tracks"])
+    _unsure(state)
     before = _disk(d)
-    _refused(_client().post(f"/api/projects/{PID}/rerun", json={}, headers=DRIVE), ["tracks"])
+    _refused_unsure(_client().post(f"/api/projects/{PID}/rerun", json={}, headers=DRIVE))
     assert _disk(d) == before
+    _sidecar(state, fields=["tracks"])
+    assert _client().post(f"/api/projects/{PID}/rerun", json={}, headers=DRIVE).status_code == 200
     assert _client().post(f"/api/projects/{PID}/rerun", json={}, headers=EDITOR).status_code == 200
 
 
-def test_case10_include_asset_by_the_window_passes_and_under_drive_is_refused(ws, state, tmp_path, monkeypatch):
+def test_case10_include_asset_by_the_window_passes_driven_or_not_and_driven_on_an_unsure_set_is_refused(ws, state, tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".montaj" / "profiles" / "brand" / "assets").mkdir(parents=True)
     (home / ".montaj" / "profiles" / "brand" / "assets" / "logo.png").write_bytes(b"png")
     monkeypatch.setenv("HOME", str(home))
     d = _project(ws, profile="brand", assets=[])
-    _sidecar(state, fields=["assets"])
+    _unsure(state)
     body = {"from": {"profile": "brand", "filename": "logo.png"}}
-    _refused(_client().post(f"/api/projects/{PID}/assets", json=body, headers=DRIVE), ["assets"])
+    _refused_unsure(_client().post(f"/api/projects/{PID}/assets", json=body, headers=DRIVE))
     assert not any(p.name.startswith("logo") for p in d.rglob("*"))
+    _sidecar(state, fields=["assets"])
+    assert _client().post(f"/api/projects/{PID}/assets", json=body, headers=DRIVE).status_code == 200
+    for p in d.rglob("logo*"):
+        p.unlink()
     assert _client().post(f"/api/projects/{PID}/assets", json=body, headers=EDITOR).status_code == 200
 
 
@@ -1327,8 +1379,12 @@ def test_models_deleting_a_folder_holding_a_clashed_file_is_refused(ws, state):
     (d / "models" / "robot").mkdir(parents=True)
     (d / "models" / "robot" / "rig.json").write_text("{}")
     _sidecar(state, files=["models/robot/rig.json"])
-    _refused(_client().request("DELETE", f"/api/projects/{PID}/files", json={"paths": ["models/robot"]},
-                               headers=DRIVE), ["models/robot/rig.json"])
+    # B1: the window is the only writer here; driven, it passes on a sure set and is refused on an unsure one
+    side = (state / PID / "clash-set.json").read_text()
+    _unsure(state)
+    _refused_unsure(_client().request("DELETE", f"/api/projects/{PID}/files", json={"paths": ["models/robot"]},
+                                      headers=DRIVE))
+    (state / PID / "clash-set.json").write_text(side)
     assert (d / "models" / "robot" / "rig.json").exists()
     resp = _client().request("DELETE", f"/api/projects/{PID}/files", json={"paths": ["models/robot"]}, headers=EDITOR)
     assert resp.status_code == 200
@@ -1451,8 +1507,7 @@ def _tracks(d):
 # ── 1: the fields a save really changes ───────────────────────────────────────
 
 
-@pytest.mark.parametrize("headers", [AI, TRUSTED_AI, TOOL, APP, DRIVE], ids=["ai", "trusted-ai", "tool", "tool-app",
-                                                                          "drive"])
+@pytest.mark.parametrize("headers", [AI, TRUSTED_AI, TOOL, APP], ids=["ai", "trusted-ai", "tool", "tool-app"])
 @pytest.mark.parametrize("body", [{"name": "second"}, {"notes": []}, {"status": "final"}],
                          ids=["name", "notes", "status"])
 def test_r1_a_save_that_normalises_a_clashed_tracks_it_did_not_name_is_refused(ws, state, recorder, headers, body):
@@ -1461,7 +1516,7 @@ def test_r1_a_save_that_normalises_a_clashed_tracks_it_did_not_name_is_refused(w
     d = _legacy(ws)
     _sidecar(state, fields=["tracks"])
     before = _disk(d)
-    _refused(_put(ws, body, headers, read=headers is not DRIVE), ["tracks"])
+    _refused(_put(ws, body, headers), ["tracks"])
     assert _disk(d) == before
     assert recorder.published == []
 
@@ -1983,19 +2038,20 @@ def brand_logo(tmp_path, monkeypatch):
 def test_r1_audit_include_asset_is_checked_on_the_file_it_lands(ws, state, brand_logo):
     """A clashed file that does not exist here yet (theirs only) could be created by an asset include."""
     d = _project(ws, profile="brand", assets=[])
-    _sidecar(state, files=["logo.png"])
+    _unsure(state)
     before = _disk(d)
-    _refused(_client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=DRIVE), ["logo.png"])
+    _refused_unsure(_client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=DRIVE))
     assert not (d / "logo.png").exists() and _disk(d) == before
+    _sidecar(state, files=["logo.png"])
     assert _client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=EDITOR).status_code == 200
 
 
 def test_r1_audit_include_asset_is_checked_on_the_name_it_really_lands_on(ws, state, brand_logo, monkeypatch):
     d = _project(ws, profile="brand", assets=[])
     (d / "logo.png").write_bytes(b"mine")
-    _sidecar(state, files=["logo_asset2.png"])
+    _unsure(state)
     before = _disk(d)
-    _refused(_client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=DRIVE), ["logo_asset2.png"])
+    _refused_unsure(_client().post(f"/api/projects/{PID}/assets", json=brand_logo, headers=DRIVE))
     assert sorted(p.name for p in d.iterdir() if not p.name.startswith(".")) == ["logo.png", "project.json"]
     assert _disk(d) == before
 
