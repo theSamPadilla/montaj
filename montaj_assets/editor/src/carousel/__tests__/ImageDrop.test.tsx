@@ -364,6 +364,42 @@ describe('Images on the canvas: which drags it claims', () => {
   })
 })
 
+describe('Images on the canvas: the slide rail', () => {
+  const thumbOf = (id: string) => document.querySelector(`[data-slide-thumb="${id}"]`) as HTMLElement
+  const lit = (el: HTMLElement) => el.className.includes('opacity-70')
+
+  it('a host image or files crossing the rail are left alone: not claimed, and no thumbnail lights up (§556 review)', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    await startHostDrag()
+    const thumb = thumbOf('slide-1')
+    for (const dt of [payload('/media/pic.png'), transfer({ types: ['Files'] })]) {
+      const e = await fire(thumb, dragEvent('dragover', { clientX: 10, clientY: 10 }, dt))
+      expect(e.defaultPrevented).toBe(false)
+    }
+    expect(lit(thumb)).toBe(false)
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+  })
+
+  it('a slide being dragged still lights up the thumbnail it is over, and the drop reorders and is kept from the browser', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const from = thumbOf('slide-0')
+    const to = thumbOf('slide-1')
+
+    await act(async () => { fireEvent.dragStart(from) })
+    const over = await fire(to, new Event('dragover', { bubbles: true, cancelable: true }))
+    expect(over.defaultPrevented).toBe(true)
+    expect(lit(to)).toBe(true)
+
+    const drop = await fire(to, new Event('drop', { bubbles: true, cancelable: true }))
+    expect(drop.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(lastSave(adapter).slides!.map((s) => s.id)).toEqual(['slide-1', 'slide-0'])
+    expect(lit(thumbOf('slide-1'))).toBe(false)
+  })
+})
+
 describe('Images on the canvas: SlideCanvas', () => {
   const slide = { id: 's', base_color: '#ffffff', elements: [] }
 

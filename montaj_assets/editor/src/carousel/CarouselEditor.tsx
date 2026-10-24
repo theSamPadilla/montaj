@@ -136,6 +136,9 @@ function SlideGrid({
     dragIdx.current = idx
   }
   function handleDragOver(e: React.DragEvent, idx: number) {
+    // Only a slide being reordered is the rail's to take. A Media card or a file
+    // crossing it is left alone, and lights nothing up: no dragend would clear it.
+    if (dragIdx.current === null) return
     e.preventDefault()
     setDragOverIdx(idx)
   }
@@ -166,7 +169,7 @@ function SlideGrid({
               draggable
               onDragStart={() => handleDragStart(idx)}
               onDragOver={e => handleDragOver(e, idx)}
-              onDrop={() => handleDrop(idx)}
+              onDrop={(e) => { e.preventDefault(); handleDrop(idx) }}
               onDragEnd={handleDragEnd}
               onClick={() => onSelect(slide.id)}
               role="button"
