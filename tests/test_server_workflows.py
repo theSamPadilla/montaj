@@ -60,14 +60,14 @@ def test_get_workflow_preserves_existing_fields():
 
     apply = steps["cut_apply"]
     assert apply["uses"] == "montaj/cut"
-    assert apply["needs"] == ["cut_plan"]
+    assert apply["needs"] == ["select-takes"]
     assert apply["params"] == {"plan": "cut-plan.md"}
     assert apply["kind"] == "step"
     assert steps["look_footage"]["foreach"] == "clips"
 
     select_takes = steps["select-takes"]
     assert select_takes["uses"] == "montaj/select-takes"
-    assert select_takes["needs"] == ["cut_apply"]
+    assert select_takes["needs"] == ["cut_plan"]
 
 
 def test_get_workflow_unknown_scope_prefix_does_not_500(tmp_path, monkeypatch):

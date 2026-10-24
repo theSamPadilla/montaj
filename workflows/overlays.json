@@ -6,8 +6,8 @@
     { "id": "look_footage",     "uses": "montaj/probe",          "foreach": "clips", "note": "Look at the footage." },
     { "id": "snapshot",         "uses": "montaj/snapshot",       "foreach": "clips", "needs": ["look_footage"], "note": "Look at the footage." },
     { "id": "cut_plan",         "uses": "montaj/cut",            "needs": ["snapshot"], "note": "Makes a plan of what to remove; read it and adjust it if needed." },
-    { "id": "cut_apply",        "uses": "montaj/cut",            "needs": ["cut_plan"], "params": { "plan": "cut-plan.md" }, "note": "Applies the plan." },
-    { "id": "select-takes",     "uses": "montaj/select-takes",   "needs": ["cut_apply"], "note": "With several clips: pick one take per line across clips before applying." },
-    { "id": "overlays",         "uses": "montaj/overlay",        "needs": ["select-takes"], "params": { "style": "auto" } }
+    { "id": "select-takes",     "uses": "montaj/select-takes",   "needs": ["cut_plan"], "note": "With several clips: pick one take per line across clips and adjust the plan before applying." },
+    { "id": "cut_apply",        "uses": "montaj/cut",            "needs": ["select-takes"], "params": { "plan": "cut-plan.md" }, "note": "Applies the plan." },
+    { "id": "overlays",         "uses": "montaj/overlay",        "needs": ["cut_apply"], "params": { "style": "auto" } }
   ]
 }
