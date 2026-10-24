@@ -196,6 +196,31 @@ describe('repairCaptionWords', () => {
   })
 })
 
+describe('repairCaptionWords — §558 word colours', () => {
+  const coloured: CaptionSegment = {
+    id: 's', text: 'cut the pauses best', start: 0, end: 4,
+    words: [
+      { word: 'cut', start: 0, end: 1 },
+      { word: 'the', start: 1, end: 2 },
+      { word: 'pauses', start: 2, end: 3, color: '#00ffff' },
+      { word: 'best', start: 3, end: 4, color: 'cyan' },
+    ],
+  }
+
+  it('keeps a word colour on every surviving word, by its occurrence', () => {
+    const out = repairCaptionWords(makeCaptions([{ ...coloured, text: 'cut all the pauses, best' }]))!.segments[0]
+    expect(out.words!.map(w => [w.word, w.color])).toEqual([
+      ['cut', undefined], ['all', undefined], ['the', undefined], ['pauses,', '#00ffff'], ['best', 'cyan'],
+    ])
+  })
+
+  it('drops the colour when its word is removed, and a consistent caption is left alone', () => {
+    const out = repairCaptionWords(makeCaptions([{ ...coloured, text: 'cut the best' }]))!.segments[0]
+    expect(out.words!.map(w => w.color)).toEqual([undefined, undefined, 'cyan'])
+    expect(repairCaptionWords(makeCaptions([coloured]))).toBeNull()
+  })
+})
+
 describe('repairCaptionWords — §244 translations', () => {
   it('never invents words for a translation (it draws as a plain line)', () => {
     const captions = makeCaptions([
