@@ -157,7 +157,7 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
     if (track.muted) continue
 
     const inputIdx = baseInputIdx + offset
-    const vol      = finiteNumber(track.volume ?? 1.0, 'audio.tracks[].volume', 0)  // §563: text in the graph
+    const vol      = finiteNumber(track.volume ?? 1.0, 'audio.tracks[].volume')  // §563: text in the graph
     const delayMs  = Math.round((track.start ?? 0) * 1000)
     const audioIn  = audioLabel.startsWith('[') ? audioLabel : `[${audioLabel}]`
 

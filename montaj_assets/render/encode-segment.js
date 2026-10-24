@@ -2244,7 +2244,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
       // Otherwise: in dry-run mode, skip the ffprobe check (file may not
       // exist) and assume audio present.
       if (!item.muted && (item.hasAudio ?? (opts._dryRun || fileHasAudio(item.src)))) {
-        const vol = finiteNumber(item.volume ?? 1.0, 'volume', 0)  // §563: text in the graph
+        const vol = finiteNumber(item.volume ?? 1.0, 'volume')  // §563: text in the graph
         const aLabel = `a${idx}`
         // atrim=0:${duration} makes the per-segment sample count exact and
         // explicit in the filter chain, rather than implicit in ffmpeg's

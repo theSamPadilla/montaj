@@ -1954,7 +1954,7 @@ test('dry-run: opacity and volume build exactly the arguments they did before th
   assert.deepEqual(JSON.parse(JSON.stringify(result)), expected)
 })
 
-test('dry-run: an opacity only ever reaches the graph as a number; a bad volume is refused (§563)', async () => {
+test('dry-run: an opacity only ever reaches the graph as a number; a volume that is not one is refused (§563)', async () => {
   const { segment } = VALID_SEGMENT.opacityVolume
   const run = (seg) => encodeSegment(seg, '/out/seg2.mp4', { _dryRun: true })
   const withItem = (i, extra) => ({ ...segment, items: segment.items.map((it, j) => (j === i ? { ...it, ...extra } : it)) })
@@ -1968,7 +1968,8 @@ test('dry-run: an opacity only ever reaches the graph as a number; a bad volume 
   // A numeric string casts to the same number.
   assert.match((await run(withItem(0, { opacity: '0.5' }))).filterParts.join(';'), /colorchannelmixer=aa=0\.5\[vidop/)
   await assert.rejects(run(withItem(0, { volume: '0.8,x' })), /volume/)
-  await assert.rejects(run(withItem(0, { volume: -1 })), /volume/)
+  // A negative volume is a number and rendered before §563; it still does.
+  assert.match((await run(withItem(0, { volume: -1 }))).filterParts.join(';'), /volume=-1,/)
 })
 
 test('dry-run: numeric strings (an older project\'s fps, size, speed, opacity, volume) build the same arguments as their numbers (§563)', async () => {

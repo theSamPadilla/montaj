@@ -218,10 +218,11 @@ test('buildAudioTrackFilters: a volume or start that is not a number is refused,
   assert.throws(() => buildAudioTrackFilters([{ src: '/a.wav', start: '0,anull', fadeIn: 1 }], 1, '[0:a]'), /start/)
 })
 
-test('buildAudioTrackFilters: a numeric-string volume is cast; a volume below zero is refused (§563)', () => {
+test('buildAudioTrackFilters: a numeric-string volume is cast; a negative volume renders as it did (§563)', () => {
   assert.equal(buildAudioTrackFilters([{ src: '/a.wav', volume: '0.5' }], 1, '[0:a]').filterParts[0],
     '[1:a]adelay=0:all=1,volume=0.5[atrack0]')
-  assert.throws(() => buildAudioTrackFilters([{ src: '/a.wav', volume: -0.5 }], 1, '[0:a]'), /volume/)
+  assert.equal(buildAudioTrackFilters([{ src: '/a.wav', volume: -0.5 }], 1, '[0:a]').filterParts[0],
+    '[1:a]adelay=0:all=1,volume=-0.5[atrack0]')
 })
 
 test('buildAudioTrackFilters: numeric-string volume and start build the same graph as their numbers (§563)', () => {
