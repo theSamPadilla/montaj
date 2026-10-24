@@ -89,7 +89,7 @@ The editor is host-agnostic. You supply an `EditorAdapter` that wires up your tr
 | `compileOverlay(template)` | Compile a JSX overlay template → `OverlayFactory`; host-supplied (editor carries no overlay runtime / Three.js) |
 | `listGlobalOverlays()` | List workspace-wide overlay templates |
 | `listSystemOverlays()` | List built-in/system overlay templates |
-| `uploadFile(file, projectId?)` | Upload a file; returns a host-resolvable path |
+| `uploadFile(file, projectId?, via?)` | Upload a file; returns a host-resolvable path. `via` (`'drop'` or `'picker'`) says where the file came from, for provenance |
 | `fileUrl(path)` | Map a raw host path to a fetchable URL (synchronous) |
 
 **Optional methods:**

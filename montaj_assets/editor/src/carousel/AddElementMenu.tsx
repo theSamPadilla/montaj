@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Project, CarouselElement, OverlayElement, EditorAdapter } from '../types'
 import { Button } from '../ui'
 import OverlayPicker from './OverlayPicker'
+import { newImageElement } from './newImage'
 
 interface Props {
   project: Project
@@ -79,21 +80,9 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
     setGenerating(true)
     setGenError(null)
     try {
-      const [w] = project.settings.resolution
       const result = await adapter.generateImage(prompt.trim(), project.id)
-      const elementW = Math.round(w * 0.8)
-      const elementH = elementW
-      const [fullW, fullH] = project.settings.resolution
-      const element: CarouselElement = {
-        id: crypto.randomUUID(),
-        type: 'image',
-        src: result.path,
-        x: Math.round(fullW / 2 - elementW / 2),
-        y: Math.round(fullH / 2 - elementH / 2),
-        w: elementW,
-        h: elementH,
-        rotation: 0,
-      }
+      // Shaped like the generated image, centred on the slide.
+      const element = await newImageElement(adapter, project.settings.resolution, result.path)
       onAddElement(selectedSlideId, element)
       setShowPrompt(false)
       setPrompt('')
@@ -112,19 +101,8 @@ export default function AddElementMenu({ project, selectedSlideId, adapter, onAd
       // Shared upload (no projectId) — matches the pre-extraction carousel
       // behavior. The adapter stores it in a shared location, not project-local.
       const uploadedPath = await adapter.uploadFile(file)
-      const [fullW, fullH] = project.settings.resolution
-      const elementW = Math.round(fullW * 0.8)
-      const elementH = elementW
-      const element: CarouselElement = {
-        id: crypto.randomUUID(),
-        type: 'image',
-        src: uploadedPath,
-        x: Math.round(fullW / 2 - elementW / 2),
-        y: Math.round(fullH / 2 - elementH / 2),
-        w: elementW,
-        h: elementH,
-        rotation: 0,
-      }
+      // Shaped like the uploaded image, centred on the slide.
+      const element = await newImageElement(adapter, project.settings.resolution, uploadedPath)
       onAddElement(selectedSlideId, element)
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : String(err))

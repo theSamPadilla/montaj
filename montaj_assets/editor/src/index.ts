@@ -53,12 +53,14 @@ export type {
   AnalyzeAudioPolishArgs,
   AudioPolishAnalysis,
   FootageDropPayload,
+  ImageDropPayload,
   PendingDrop,
   TimelineDropPlacement,
   TimelinePin,
   NotesOptions,
   NotesApi,
   SlideNotesApi,
+  CarouselApi,
   SlidePin,
   SlidePinDisplay,
   EditorAdapter,
@@ -78,9 +80,10 @@ export type {
   ControlSection,
   ControlEntry,
 } from './types'
-// `FOOTAGE_DND_MIME` is a value (const), not a type — exported separately so
-// hosts can compare against it when reading a drag event's MIME data.
-export { FOOTAGE_DND_MIME } from './types'
+// `FOOTAGE_DND_MIME` and `IMAGE_DND_MIME` are values (consts), not types —
+// exported separately so hosts can compare against them when reading a drag
+// event's MIME data (and set them when starting a drag).
+export { FOOTAGE_DND_MIME, IMAGE_DND_MIME } from './types'
 
 // ── Video editor pure helpers ─────────────────────────────────────────────────
 export {

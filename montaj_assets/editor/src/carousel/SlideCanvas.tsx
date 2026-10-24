@@ -133,6 +133,16 @@ interface Props {
   hiddenElementIds?: string[]
 
   /**
+   * Drag-and-drop on the canvas root (§556 M7), for the editor to take images
+   * dropped on the slide. Forwarded to an interactive canvas only (a thumbnail
+   * takes no drops); the editor turns a drop's client point into slide units
+   * with the root's rect and `scale`. Absent → the canvas takes no drags.
+   */
+  onDragEnter?: React.DragEventHandler<HTMLDivElement>
+  onDragOver?: React.DragEventHandler<HTMLDivElement>
+  onDrop?: React.DragEventHandler<HTMLDivElement>
+
+  /**
    * Layers drawn over the slide (the editor's note pins and armed-note layer,
    * PL70): rendered last inside the outer box, above the elements, so they
    * can position themselves in percentages of the slide. Absent → nothing.
@@ -226,6 +236,9 @@ export default function SlideCanvas({
   cropElementId,
   onExitCrop,
   hiddenElementIds,
+  onDragEnter,
+  onDragOver,
+  onDrop,
   children,
 }: Props) {
   const sid = slideId ?? slide.id
@@ -497,6 +510,9 @@ export default function SlideCanvas({
         if (swallowClickRef.current) { swallowClickRef.current = false; return }
         onSelect?.(null)
       } : undefined}
+      onDragEnter={interactive ? onDragEnter : undefined}
+      onDragOver={interactive ? onDragOver : undefined}
+      onDrop={interactive ? onDrop : undefined}
     >
       {/* Inner native-resolution layer. Elements are positioned at native coords
           and the wrapper transform applies translate(...*scale) so gesture

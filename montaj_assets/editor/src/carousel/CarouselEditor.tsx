@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw, AlertCircle, Download, Info, Undo2, Redo2 } from 'lucide-react'
-import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory, SlideNotesApi } from '../types'
+import type { Project, Slide, CarouselElement, ImageElement, CarouselEditorProps, OverlayFactory, SlideNotesApi, CarouselApi, ImageDropPayload } from '../types'
+import { IMAGE_DND_MIME } from '../types'
 import type { SlideNote } from '../schema'
 import { applyTheme, defaultMontajTheme, isLightTheme } from '../theme'
 import { useProjectState } from '../state/use-project-state'
@@ -12,6 +13,7 @@ import ControlsInfoModal, { CAROUSEL_CONTROLS, platformSections } from '../Contr
 import { DARK_TEXT, NoteArmLayer, NotePinLayer, badgeColor, hasPoint } from './NoteLayers'
 import { addSlideNote, setSlideNoteText, setSlideNoteDone, setSlideNotePoint, removeSlideNotes } from './notes'
 import { coverCrop, loadImageNaturalSize, type ImageSize } from './imageGeometry'
+import { newImageElement } from './newImage'
 import { noteId } from '../video/timeline/notes'
 import { useKeymap, matchesDelete, matchesEscape, matchesPlainKey, matchesRedo, matchesUndo, type KeyBinding } from '../video/keymap'
 import type { ReorderDirection } from '../state/project-reducer'
@@ -295,6 +297,22 @@ function isBurstOf(burst: PendingNudge, slideId: string, selectedIds: string[]):
   return burst.slideId === slideId && burst.start.size === selectedIds.length && selectedIds.every((id) => burst.start.has(id))
 }
 
+/** The host path in a drag from the host (`IMAGE_DND_MIME`), or null when the
+ *  drag carries none or it is not an `ImageDropPayload`: not JSON, or no
+ *  `src` that is a non-empty string. */
+function hostImageSrc(data: DataTransfer): string | null {
+  const raw = data.getData(IMAGE_DND_MIME)
+  if (!raw) return null
+  try {
+    const payload = JSON.parse(raw) as Partial<ImageDropPayload> | null
+    return typeof payload?.src === 'string' && payload.src.trim() !== '' ? payload.src : null
+  } catch {
+    return null
+  }
+}
+
+const isImageFile = (file: File) => file.type.startsWith('image/')
+
 /** How long Render waits for the save as final (`renderSaveTimeoutMs`). */
 const RENDER_SAVE_TIMEOUT_MS = 30_000
 
@@ -310,7 +328,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 // ── CarouselEditor ────────────────────────────────────────────────────────────
 
-export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS }: Props<P>) {
+export default function CarouselEditor<P extends Project = Project>({ project: initialProject, adapter, onProjectChange, theme, slots, hiddenElementIds, onToggleElementVisibility, onSelectionChange, renderModal, renderControls, onProvideRenderTrigger, onProvideCarouselApi, notes, onProvideNotesApi, pins, pinDisplay = 'badge', onPinClick, onSelectedSlideChange, pendingSurface = 'default', onError, renderSaveTimeoutMs = RENDER_SAVE_TIMEOUT_MS }: Props<P>) {
   const state = useProjectState(adapter, initialProject.id, initialProject)
   const project = state.project
   const slides = project.slides ?? []
@@ -986,6 +1004,104 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     await state.replaceImage(slideId, elementId, { src, crop }).catch(() => {})
   }
 
+  // ── Images onto the canvas (§556 M7) ──
+  // An image dropped on the canvas (from the host's Media panel, or files from
+  // the OS) and the host's `addImage` each put images on a slide, shaped like
+  // themselves (`newImageElement`). Several go in ONE slide write, so one undo
+  // step takes them all back. Only a slide on show, in a project that can be
+  // edited, and not in crop mode: a write there would reset the crop in progress.
+  const canAddImages = slideLive && canEdit
+  const selectedSlideIdRef = useRef(selectedSlideId)
+  selectedSlideIdRef.current = selectedSlideId
+
+  /** Adds an image to `slideId` for each source, a function that gives the
+   *  image's host path (an upload, or a path the host already named), centred
+   *  on `at` (slide units) or on the slide. Each one after the first sits 20 px
+   *  further down and right. The new images become the selection. One that
+   *  cannot be uploaded is reported once and the rest are still added. */
+  async function addImages(slideId: string, sources: Array<() => Promise<string>>, at?: { x: number; y: number }) {
+    const resolution = project.settings.resolution as [number, number]
+    const settled = await Promise.allSettled(
+      sources.map(async (source) => newImageElement(adapter, resolution, await source(), at)),
+    )
+    const failed = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+    if (failed) reportError("Couldn't add the image", failed.reason)
+    const added = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
+
+    // The uploads and size reads took time. Write only if the editor is still
+    // up and the slide still there, onto the elements it has now.
+    const slide = slidesRef.current.find((s) => s.id === slideId)
+    if (!mountedRef.current || !slide || added.length === 0) return
+    // An arrow-key nudge still open would fold into this edit's undo step.
+    flushNudge()
+    const placed = added.map((el, i) => ({ ...el, x: el.x + i * COPY_OFFSET, y: el.y + i * COPY_OFFSET }))
+    const saved = placed.length === 1
+      ? state.addElement(slideId, placed[0])
+      : state.updateSlide(slideId, { elements: [...slide.elements, ...placed] })
+    // Selected, unless the user has gone to another slide meanwhile: their
+    // selection there is theirs.
+    if (selectedSlideIdRef.current === slideId) setSelectedElementIds(placed.map((el) => el.id))
+    // A save that fails is rolled back and shown by `state.lastError`.
+    await saved.catch(() => {})
+  }
+
+  /** The host's `addImage`: the image goes to the slide selected now, at its centre. */
+  async function addImage(src: string) {
+    if (!selectedSlide || !canAddImages) return
+    await addImages(selectedSlide.id, [() => Promise.resolve(src)])
+  }
+
+  // Host api: handed up once (it is stable, and always runs the latest
+  // `addImage`) and withdrawn with null on unmount, like the notes api.
+  const addImageRef = useRef(addImage)
+  addImageRef.current = addImage
+  const carouselApi = useMemo<CarouselApi>(() => ({ addImage: (src) => addImageRef.current(src) }), [])
+  useEffect(() => {
+    if (!onProvideCarouselApi) return
+    onProvideCarouselApi(carouselApi)
+    return () => onProvideCarouselApi(null)
+  }, [onProvideCarouselApi, carouselApi])
+
+  /** Whether a drag with these `types` is of the canvas's kind: a host image,
+   *  or files, which it uploads. `getData` is unreadable until the drop, so
+   *  only `types` can say. */
+  function isImageDrag(types: ArrayLike<string> | undefined): boolean {
+    if (!types) return false
+    const list = Array.from(types)
+    return list.includes(IMAGE_DND_MIME) || (list.includes('Files') && typeof adapter.uploadFile === 'function')
+  }
+
+  /** dragenter and dragover: an image drag the canvas can take now gets a copy
+   *  cursor, and the browser a drop; any other drag is left alone. */
+  function handleCanvasDragOver(e: React.DragEvent<HTMLDivElement>) {
+    if (!canAddImages || !isImageDrag(e.dataTransfer?.types)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+
+  /** A drop on the canvas: the host's image (`IMAGE_DND_MIME`) if it carries
+   *  one, else the image files in it, centred on where it fell. */
+  function handleCanvasDrop(e: React.DragEvent<HTMLDivElement>) {
+    const data = e.dataTransfer
+    if (!data || !isImageDrag(data.types)) return
+    // Whatever happens next, the browser must not also open what was dropped.
+    e.preventDefault()
+    if (!selectedSlide || !canAddImages) return
+    // A DataTransfer can only be read during its event.
+    const src = hostImageSrc(data)
+    const sources = src !== null
+      ? [() => Promise.resolve(src)]
+      : Array.from(data.files ?? []).filter(isImageFile).map((file) => () => adapter.uploadFile(file, project.id, 'drop'))
+    if (sources.length === 0) return
+
+    // Where it fell, in slide units: the canvas draws the slide at `canvasScale`.
+    const rect = e.currentTarget.getBoundingClientRect()
+    const at = canvasScale > 0
+      ? { x: (e.clientX - rect.left) / canvasScale, y: (e.clientY - rect.top) / canvasScale }
+      : undefined
+    void addImages(selectedSlide.id, sources, at)
+  }
+
   // Property-panel transform/frame edits → committed mutators.
   function handlePanelElementChange(patch: Partial<CarouselElement>) {
     if (!selectedSlideId || !selectedElementId) return
@@ -1249,6 +1365,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
                 cropElementId={cropElementId}
                 onExitCrop={() => setCropElementId(null)}
                 hiddenElementIds={hiddenElementIds}
+                onDragEnter={handleCanvasDragOver}
+                onDragOver={handleCanvasDragOver}
+                onDrop={handleCanvasDrop}
               >
                 {canvasPins.length > 0 && <NotePinLayer pins={canvasPins} pinDisplay={pinDisplay} onPinClick={onPinClick} />}
                 {armedSlideId === selectedSlide.id && <NoteArmLayer layerRef={armLayerRef} onPlace={placeArmedNote} />}

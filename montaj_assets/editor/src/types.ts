@@ -550,6 +550,28 @@ export interface PendingDrop {
   label?: string
 }
 
+// ── Image drag-and-drop onto the carousel canvas (optional capability) ────────
+
+/**
+ * The drag payload for dropping a host image (its Media panel) onto the
+ * carousel canvas. `src` is a host path, the same kind an `ImageElement`
+ * holds, so the canvas can place the image without round-tripping through the
+ * host; `name` is its display name, for the host's own use.
+ */
+export interface ImageDropPayload {
+  src: string
+  name?: string
+}
+
+/**
+ * The custom drag-and-drop MIME type carrying an `ImageDropPayload` JSON
+ * string from the host to the carousel canvas, which takes the drop with a
+ * copy cursor (start the drag with `effectAllowed = 'copy'`). Real files from
+ * the OS need no MIME of their own: the canvas takes a `Files` drag too and
+ * uploads its images (`EditorAdapter.uploadFile`, `via: 'drop'`).
+ */
+export const IMAGE_DND_MIME = 'application/x-montaj-image'
+
 // ── Host pins in the marker strip (optional capability) ───────────────────────
 //
 // A pin is a HOST annotation on the timeline: a time the host wants flagged on
@@ -684,6 +706,23 @@ export interface SlidePin {
 /** How a carousel pin rests (`CarouselEditorProps.pinDisplay`): a badge with
  *  its `label`, or a chip with the note's first words beside it. */
 export type SlidePinDisplay = 'badge' | 'chip'
+
+/**
+ * What the carousel editor lets its host do (§556 M7), handed up by
+ * `CarouselEditorProps.onProvideCarouselApi`. Each action is one save and one
+ * undo step, like the editor's own.
+ */
+export interface CarouselApi {
+  /**
+   * Adds the image at `src` (a host path, as in `ImageDropPayload`) to the
+   * selected slide, centred and shaped like the image (fitted inside 80% of
+   * the slide; the old centred square when its size cannot be read), and
+   * selects it. Resolves when its save settles; a save that fails is shown by
+   * the editor, not rejected. Does nothing when no slide is selected, when the
+   * project cannot be edited, and in crop mode.
+   */
+  addImage(src: string): Promise<void>
+}
 
 // ── Adapter ────────────────────────────────────────────────────────────────
 
@@ -855,10 +894,13 @@ export interface EditorAdapter<P extends Project = Project> {
   /**
    * Upload a file and return a host-resolvable path/ref. When `projectId` is
    * given, the host should store it inside the project (so it stays
-   * self-contained); otherwise a shared/upload location is used. Maps to
-   * Montaj's `POST /api/projects/:id/upload-asset` (or `POST /api/upload`).
+   * self-contained); otherwise a shared/upload location is used. `via` says
+   * where the file came from, for the host's provenance: `'drop'` (dropped on
+   * the editor) or `'picker'` (chosen in a file picker). Absent when the caller
+   * does not say. It never changes where the file is stored. Maps to Montaj's
+   * `POST /api/projects/:id/upload-asset` (or `POST /api/upload`).
    */
-  uploadFile(file: File, projectId?: string): Promise<string>
+  uploadFile(file: File, projectId?: string, via?: 'drop' | 'picker'): Promise<string>
 
   /**
    * Map a host path to a directly fetchable URL. Synchronous because hosts
@@ -1354,6 +1396,13 @@ export interface CarouselEditorProps<P extends Project = Project> {
    */
   onProvideRenderTrigger?: (openRender: () => void) => void
 
+  /**
+   * Hands the host the editor's own actions (`CarouselApi`), such as adding an
+   * image to the slide on show. Called with a stable api on mount and with
+   * `null` on unmount, as `onProvideNotesApi` is. Absent: no api.
+   */
+  onProvideCarouselApi?: (api: CarouselApi | null) => void
+
   // ── Project notes (opt-in, PL70) ──────────────────────────────────────────
 
   /**
@@ -1409,11 +1458,13 @@ export interface CarouselEditorProps<P extends Project = Project> {
 
   /**
    * A failure the user should see, which the editor does not show itself. Today
-   * two: Render could not start, because saving the project as `final` failed
+   * three: Render could not start, because saving the project as `final` failed
    * or did not answer within `renderSaveTimeoutMs` (Render is enabled again
-   * when this is called); and Replace image could not upload the file (the
-   * image is left as it was). The host shows `title` and `detail` its own way.
-   * Absent: logged to the console. The editor never uses a system alert.
+   * when this is called); Replace image could not upload the file (the image is
+   * left as it was); and an image file dropped on the canvas could not be
+   * uploaded (the others dropped with it are still added). The host shows
+   * `title` and `detail` its own way. Absent: logged to the console. The editor
+   * never uses a system alert.
    */
   onError?: (notice: { title: string; detail: string }) => void
 

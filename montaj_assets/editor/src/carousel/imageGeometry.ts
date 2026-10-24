@@ -1,6 +1,7 @@
 /**
  * Image geometry shared by the carousel's image edits: reading an image's
- * natural size, and the crop that makes a source fill a box.
+ * natural size, the crop that makes a source fill a box, and the box a new
+ * image starts in.
  */
 
 /** An image's natural size in pixels (EXIF orientation applied, as the browser
@@ -74,4 +75,41 @@ export function coverCrop(
   // Taller than the box: all of the width, the middle of the height.
   const h = img / box
   return { x: 0, y: (1 - h) / 2, w: 1, h }
+}
+
+/** How much of the slide a new image may cover, across and down. */
+const NEW_IMAGE_FILL = 0.8
+
+/**
+ * The box a new image starts in (§556 M7): the image's own shape, fitted
+ * inside 80% of the slide both ways (the largest such box, so a small image
+ * grows to it), centred on `at` or, with no point, on the slide. The box is
+ * not pulled back inside the slide: it is centred where the image was dropped.
+ *
+ * With no usable size (null, or not a positive finite number) it is the box
+ * images started in before this: a square 80% of the slide's width, centred.
+ *
+ * Whole pixels, and never empty: a very thin image is one pixel at least.
+ */
+export function placeImageBox(
+  size: ImageSize | null,
+  resolution: readonly [number, number],
+  at?: { x: number; y: number },
+): { x: number; y: number; w: number; h: number } {
+  const [slideW, slideH] = resolution
+  const maxW = slideW * NEW_IMAGE_FILL
+  const maxH = slideH * NEW_IMAGE_FILL
+
+  let w = maxW
+  let h = maxW
+  if (size && Number.isFinite(size.width) && Number.isFinite(size.height) && size.width > 0 && size.height > 0) {
+    const fit = Math.min(maxW / size.width, maxH / size.height)
+    w = size.width * fit
+    h = size.height * fit
+  }
+  w = Math.max(1, Math.round(w))
+  h = Math.max(1, Math.round(h))
+
+  const centre = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? at : { x: slideW / 2, y: slideH / 2 }
+  return { x: Math.round(centre.x - w / 2), y: Math.round(centre.y - h / 2), w, h }
 }
