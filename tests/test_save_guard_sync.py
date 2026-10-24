@@ -427,6 +427,16 @@ def test_case5_the_window_while_the_ai_drives_it_is_refused_on_a_name_not_held(w
     assert _disk(d) == before
 
 
+def test_case5_an_unheld_whole_project_clash_refuses_a_driven_write_of_a_held_name(ws, state):
+    """A `*` clash owns every name (the fresh review's finding 4): the app never holds one, so serve refuses."""
+    d = _project(ws)
+    _sidecar(state, fields=["tracks", "*"], clashes=[{"id": "c1", "fields": ["tracks"], "files": [], "held": True},
+                                                     {"id": "c2", "fields": ["*"], "files": ["*"]}])
+    before = _disk(d)
+    _refused(_put(ws, {"tracks": []}, DRIVE, read=False), ["tracks"])
+    assert _disk(d) == before
+
+
 def test_case5_a_held_name_lets_a_driven_write_through_but_not_its_unheld_neighbour(ws, state):
     d = _project(ws)
     _sidecar(state, fields=["tracks", "notes"], clashes=[{"id": "c1", "fields": ["tracks"], "files": [], "held": True},

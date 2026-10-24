@@ -303,9 +303,10 @@ def unheld_touched(clashes: ClashSet, fields=(), files=(), everything: bool = Fa
         return names
 
     def held_only(name):
+        # a whole-project clash (`*` among its own names) owns every name: unheld, it refuses them all
         key = file_key(name)
         owners = [cid for cid, (own_fields, own_files) in clashes.by_id.items()
-                  if name in own_fields or key in own_files]
+                  if name in own_fields or key in own_files or EVERYTHING in own_fields or file_key(EVERYTHING) in own_files]
         return bool(owners) and all(cid in clashes.held for cid in owners)
 
     return [n for n in names if not held_only(n)]
