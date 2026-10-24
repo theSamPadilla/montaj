@@ -47,6 +47,14 @@
       "description": "Seconds of silence kept on each side of the sound where a silence longer than max-pause is cut (and at the video's start and end); at a sentence end such a silence keeps up to 0.18 s in all. Used between 0.02 and half of max-pause. Default 0.04; raise it for a slower read."
     },
     {
+      "name": "silence-threshold",
+      "type": "float",
+      "required": false,
+      "min": -60,
+      "max": -10,
+      "description": "The level in dB below which the silence pass cuts (clips with no usable speech). Default -30; -42 or lower for a quiet speaker, who loses whole phrases at -30. The plan records it, and its apply uses the plan's."
+    },
+    {
       "name": "recut",
       "type": "bool",
       "default": false,

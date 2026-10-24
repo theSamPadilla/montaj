@@ -68,7 +68,8 @@ LAYER_FLAGS = ("overlay_", "linked_", "caption_", "audio_", "marker_", "bed_chec
 MARKER_KEY = "cleanCut"
 STEP_VERSION = 1
 TEXT_CAP_BYTES = 3000
-SILENCE_THRESHOLD_DB = -30.0  # waveform_trim's defaults
+SILENCE_THRESHOLD_DB = -30.0  # waveform_trim's defaults; `silence-threshold` overrides the level
+SILENCE_THRESHOLD_RANGE = (-60.0, -10.0)
 SILENCE_MIN_S = 0.3
 
 
@@ -187,9 +188,9 @@ def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=Non
     return removed, warnings
 
 
-def _silence_cut(work, project_path, ti, project_dir, lineage, untranscribed_only=False):
-    """waveform_trim keeps per clip through jump_cut, in memory (every clip, or only those with no transcript).
-    Returns warnings."""
+def _silence_cut(work, project_path, ti, project_dir, lineage, untranscribed_only=False, threshold=SILENCE_THRESHOLD_DB):
+    """waveform_trim keeps per clip through jump_cut, in memory (every clip, or only those with no transcript),
+    at `threshold` dB. Returns warnings."""
     warnings = []
     for cid in [it["id"] for it in _media(work["tracks"][ti])]:
         it = next(x for x in work["tracks"][ti]["items"] if x["id"] == cid)
@@ -199,7 +200,7 @@ def _silence_cut(work, project_path, ti, project_dir, lineage, untranscribed_onl
             warnings.append(f"no silence cut on {cid}: it has keyframes, a speed change or a loop")
             continue
         src = _resolve(it["src"], project_dir)
-        ok, spec = _quiet(waveform_trim.process_one, src, SILENCE_THRESHOLD_DB, SILENCE_MIN_S)
+        ok, spec = _quiet(waveform_trim.process_one, src, threshold, SILENCE_MIN_S)
         if not ok:
             warnings.append(f"no silence cut on {cid}: {spec.get('message', spec.get('error', ''))}"[:300])
             continue
@@ -317,7 +318,7 @@ def _kept_whole(row):
 
 
 def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, project_dir, is_filler,
-          whole=frozenset(), why_at=None, notes=None, breath=None):
+          whole=frozenset(), why_at=None, notes=None, breath=None, threshold=SILENCE_THRESHOLD_DB):
     """The plan: speech_edit's text format. `## Cut` holds the kept rows in narrative order (each kept take at
     its section's first appearance, its repeated or restarted words deleted), each tagged [time]; `## Unused`
     every removed take, one group of rows per take (a blank line between), each row tagged [time why]. A row
@@ -336,7 +337,8 @@ def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, pr
             home[ui] = home.get(ui + 1, len(sel.sections) - 1)
     head = speech_text.render(d, title, "none").split("\n")
     cut_at = head.index("## Cut")
-    meta = f"language {language} · max-pause {max_pause:.2f}" + (f" · breath {breath:.3f}" if breath is not None else "")
+    meta = (f"language {language} · max-pause {max_pause:.2f}" + (f" · breath {breath:.3f}" if breath is not None else "")
+            + f" · silence {threshold:.1f}")
     out = [head[0], f"<!-- montaj cut plan v1 · {meta} -->",
            PLAN_HASH_LINE, f"<!-- {PLAN_HELP} -->"] + head[1:cut_at + 1] + [""]
     kept, groups = [], []          # groups: (t, why, [plan rows], answer words or None)
@@ -469,13 +471,15 @@ def _plan_hash(text):
 
 
 def _plan_meta(text):
-    """(language, max-pause, breath) from a plan's second comment, or Nones (breath: None in a plan without it)."""
+    """(language, max-pause, breath, silence threshold) from a plan's second comment, or Nones (breath: None in a
+    plan without it; a plan made before the threshold was recorded was made at the default)."""
     for raw in text.splitlines()[:4]:
         m = re.match(r"^<!--\s*montaj cut plan v1 · language (\S+) · max-pause (\d+(?:\.\d+)?)"
-                     r"(?: · breath (\d+(?:\.\d+)?))?\s*-->\s*$", raw.strip())
+                     r"(?: · breath (\d+(?:\.\d+)?))?(?: · silence (-?\d+(?:\.\d+)?))?\s*-->\s*$", raw.strip())
         if m:
-            return m.group(1), float(m.group(2)), (float(m.group(3)) if m.group(3) else None)
-    return None, None, None
+            return (m.group(1), float(m.group(2)), (float(m.group(3)) if m.group(3) else None),
+                    float(m.group(4)) if m.group(4) else SILENCE_THRESHOLD_DB)
+    return None, None, None, None
 
 
 def _untagged(text):
@@ -654,7 +658,8 @@ def _already_cut(project):
 
 # ── the run ──────────────────────────────────────────────────────────────────
 
-def _build(project_path, project_dir, disk, track_id, language, warnings, max_pause=None, breath=speech_energy.BREATH_S):
+def _build(project_path, project_dir, disk, track_id, language, warnings, max_pause=None, breath=speech_energy.BREATH_S,
+           threshold=SILENCE_THRESHOLD_DB):
     """The base: the disk project with the mechanical pass on its speech track, in memory, and everything the
     plan and its apply need. Deterministic for the same project, transcripts, max-pause and breath, so an apply
     rebuilds the base the plan was made from. b["held"]: the silences kept whole for the overlays (D2)."""
@@ -676,7 +681,8 @@ def _build(project_path, project_dir, disk, track_id, language, warnings, max_pa
                                       _layer_guard(b, at), b["held"])
         b["refiner"].whole = b["whole"]          # clips kept whole: tidy leaves their pieces as they are
         warnings += w
-        warnings += _silence_cut(work, project_path, ti, project_dir, b["lineage"], untranscribed_only=True)
+        warnings += _silence_cut(work, project_path, ti, project_dir, b["lineage"], untranscribed_only=True,
+                                 threshold=threshold)
         d = speech_text.derive(work, project_dir, track_id, refiner=b["refiner"])   # words where the audio is
         units, trailing = _units(d, is_filler)
         for u, rows, _ in units:
@@ -707,7 +713,7 @@ def _build(project_path, project_dir, disk, track_id, language, warnings, max_pa
     # no usable speech: waveform_trim keeps on a fresh copy
     work = copy.deepcopy(origin)
     b.update(work=work, lineage={}, fillers=0)
-    warnings += _silence_cut(work, project_path, b["ti"], project_dir, b["lineage"])
+    warnings += _silence_cut(work, project_path, b["ti"], project_dir, b["lineage"], threshold=threshold)
     return b
 
 
@@ -1116,17 +1122,18 @@ def _silence_stamp(b, track_id):
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 
-def _silence_plan(b, track_id, title, marker):
+def _silence_plan(b, track_id, title, marker, threshold=SILENCE_THRESHOLD_DB):
     _, track = _track(b["work"], track_id)
     rows = [f"-- {os.path.basename(it['src'])} {float(it.get('inPoint', 0)):.2f}-{float(it.get('outPoint', 0)):.2f} keep"
             for it in _media(track)]
     return _seal("\n".join([f"<!-- montaj cut plan v1 · silence · track {track_id} · stamp {_silence_stamp(b, track_id)} · "
-                            f"marker {'yes' if marker else 'no'} -->", PLAN_HASH_LINE, f"# {title}", "",
+                            f"marker {'yes' if marker else 'no'} · silence {threshold:.1f} -->", PLAN_HASH_LINE, f"# {title}", "",
                             "No usable speech: this plan removes silences only. Apply it as it is.", "", "## Cut", "",
                             *rows]) + "\n")
 
 
-_SILENCE_HEADER = re.compile(r"^<!--\s*montaj cut plan v1 · silence · track (\S+) · stamp (\S+) · marker (yes|no)\s*-->\s*$")
+_SILENCE_HEADER = re.compile(r"^<!--\s*montaj cut plan v1 · silence · track (\S+) · stamp (\S+) · marker (yes|no)"
+                             r"(?: · silence (-?\d+(?:\.\d+)?))?\s*-->\s*$")
 
 
 def main():
@@ -1137,6 +1144,8 @@ def main():
                         help="The longest pause kept as it is, in seconds; a longer silence is cut to its breaths")
     parser.add_argument("--breath", type=float, default=speech_energy.BREATH_S,
                         help="Seconds of a silence over max-pause kept on each side of the sound")
+    parser.add_argument("--silence-threshold", type=float, default=None,
+                        help="The silence pass's level in dB (default -30); lower for a quiet speaker")
     parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL, choices=list(WHISPER_MODEL_CHOICES),
                         help="Whisper model for clips with no transcript")
     parser.add_argument("--language", default=None, help="The speaker's language (e.g. es), or 'auto' (the default)")
@@ -1150,6 +1159,9 @@ def main():
     project_dir = os.path.dirname(project_path)
     if not speech_units.valid_language(args.language):
         fail("invalid_params", "language is a code such as en, es, pt-BR, or auto.")
+    lo, hi = SILENCE_THRESHOLD_RANGE
+    if args.silence_threshold is not None and not lo <= args.silence_threshold <= hi:
+        fail("invalid_params", f"silence-threshold is a level in dB from {lo:.0f} to {hi:.0f}.")
     if args.plan is not None:
         _apply_plan(args, project_path, project_dir)
     else:
@@ -1176,13 +1188,14 @@ def _make_plan(args, project_path, project_dir):
     max_pause = args.max_pause if args.max_pause is not None else FEELS[DEFAULT_FEEL].max_pause
     breath = min(max(args.breath, BREATH_MIN_S), max_pause / 2)       # R2-Q3
     title = disk.get("name") or disk.get("id") or os.path.basename(project_dir)
-    b = _build(project_path, project_dir, disk, track_id, language, warnings, max_pause, breath)
+    threshold = args.silence_threshold if args.silence_threshold is not None else SILENCE_THRESHOLD_DB
+    b = _build(project_path, project_dir, disk, track_id, language, warnings, max_pause, breath, threshold)
     answer = {"project": disk.get("id"), "mode": "plan"}
 
     if b["d"] is None:
         candidate, rep = _carried(b["origin"], b["work"], b["ti"], b["lineage"], project_dir)
         kept_s, duration = _sums(candidate, track_id)
-        path, prev = _write_plan(project_path, disk.get("id"), _silence_plan(b, track_id, title, marker=not failed))
+        path, prev = _write_plan(project_path, disk.get("id"), _silence_plan(b, track_id, title, marker=not failed, threshold=threshold))
         warnings[:0] = _audio_warnings(rep.get("flagged"))
         answer.update(plan=path, silence=True,
                       kept={"lines": 0, "seconds": kept_s},
@@ -1197,7 +1210,7 @@ def _make_plan(args, project_path, project_dir):
             text, kept, removed, suggested = _plan(b["d"], title, b["units"], b["trailing"], b["sel"], at, of_source,
                                                    language, max_pause, project_dir, _filler_test(language),
                                                    b.get("whole", frozenset()), b.get("why_at"), b.get("notes"),
-                                                   breath)
+                                                   breath, threshold)
             res = apply(project_path, _untagged(text)[0], preview=True, max_pause=max_pause, feel=DEFAULT_FEEL,
                         base=b["work"], base_of=disk, want_project=True, carry_from=b["origin"], lineage=b["lineage"],
                         guard_keys=(MARKER_KEY,), refiner=b["refiner"])
@@ -1267,7 +1280,7 @@ def _apply_plan(args, project_path, project_dir):
         fail("already_applied", "This plan is already applied: there is nothing new in it to apply. "
                                 "Edit it to change the cut.")
     _track(normalize_tracks(copy.deepcopy(disk)), track_id)
-    plan_lang, plan_pause, plan_breath = _plan_meta(text)
+    plan_lang, plan_pause, plan_breath, plan_threshold = _plan_meta(text)
     language = args.language or plan_lang or "en"
     asked_pause = plan_pause if args.max_pause is None else args.max_pause
     pause_off = plan_pause is not None and abs(asked_pause - plan_pause) > 1e-6
@@ -1280,8 +1293,14 @@ def _apply_plan(args, project_path, project_dir):
     max_pause = plan_pause if plan_pause is not None else (
         args.max_pause if args.max_pause is not None else FEELS[DEFAULT_FEEL].max_pause)
     breath = plan_breath if plan_breath is not None else min(max(args.breath, BREATH_MIN_S), max_pause / 2)
+    # The base is rebuilt as the plan was made: at the plan's own silence level (a plan made before the level was
+    # recorded, at the default), never at a level passed now.
+    if sil:
+        threshold = float(sil.group(4)) if sil.group(4) else SILENCE_THRESHOLD_DB
+    else:
+        threshold = plan_threshold if plan_threshold is not None else SILENCE_THRESHOLD_DB
     warnings = []
-    b = _build(project_path, project_dir, disk, track_id, language, warnings, max_pause, breath)
+    b = _build(project_path, project_dir, disk, track_id, language, warnings, max_pause, breath, threshold)
     stale = ("This plan was made before cut was updated, or the timeline changed. Run cut again (your edited plan "
              "is kept).")
     if not _has_clips(disk, track_id):

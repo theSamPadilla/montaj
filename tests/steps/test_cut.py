@@ -224,7 +224,8 @@ def test_schema_declares_the_params():
     names = {p["name"]: p for p in SCHEMA["params"]}
     assert SCHEMA["name"] == "cut"
     assert names["project"]["required"] is True and names["project"]["type"] == "path"
-    assert {"plan", "language", "max-pause", "breath", "recut", "detail", "model"} == set(names) - {"project"}
+    assert {"plan", "language", "max-pause", "breath", "silence-threshold", "recut", "detail", "model"} == set(names) - {"project"}
+    assert names["silence-threshold"]["type"] == "float" and names["silence-threshold"]["min"] == -60
     assert "preview" not in names
     assert SCHEMA["input"]["type"] == "project" and "language is detected" in SCHEMA["description"]
 
@@ -553,6 +554,36 @@ def test_a_silence_cut_after_a_failed_transcription_leaves_no_marker(tmp_path, s
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
     project = json.loads((d / "project.json").read_text())
     assert "cleanCut" not in project and len(project["tracks"][0]["items"]) > 1
+
+
+def test_the_silence_threshold_reaches_the_waveform_pass_and_the_plan_keeps_it(tmp_path, stub_transcribe, monkeypatch):
+    """A quiet speaker (product walkthrough): -42 dB. The apply rebuilds the base with the plan's threshold, not the
+    default, so the plan it applies is the one it made."""
+    stub_transcribe({**retake_transcript(), "transcription": []})
+    d = make_project(tmp_path)
+    seen, real = [], cc.waveform_trim.process_one
+    monkeypatch.setattr(cc.waveform_trim, "process_one", lambda src, thr, ms: seen.append(thr) or real(src, thr, ms))
+    plan, _ = run(d, "--silence-threshold", "-42", monkeypatch=monkeypatch)
+    assert seen == [-42.0] and "silence -42" in Path(plan["plan"]).read_text().splitlines()[0]
+    out, _ = run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    assert out["mode"] == "applied" and seen == [-42.0, -42.0]
+
+
+def test_the_default_silence_threshold_is_minus_30(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe({**retake_transcript(), "transcription": []})
+    d = make_project(tmp_path)
+    seen, real = [], cc.waveform_trim.process_one
+    monkeypatch.setattr(cc.waveform_trim, "process_one", lambda src, thr, ms: seen.append(thr) or real(src, thr, ms))
+    run(d, monkeypatch=monkeypatch)
+    assert seen == [-30.0]
+
+
+@pytest.mark.parametrize("bad", ["-70", "-5", "nan"])
+def test_a_silence_threshold_out_of_range_is_refused(tmp_path, stub_transcribe, monkeypatch, capsys, bad):
+    stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    assert refused(d, "--silence-threshold", bad, monkeypatch=monkeypatch, capsys=capsys) == "invalid_params"
+    assert not (d / "cut-plan.md").exists()
 
 
 def test_a_waveform_failure_is_reported(tmp_path, stub_transcribe, monkeypatch):
