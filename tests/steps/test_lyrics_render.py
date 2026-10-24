@@ -338,3 +338,32 @@ def test_renders_with_css_colours(captions_json, test_audio, tmp_path):
     )
     assert proc.returncode == 0, f"stderr: {proc.stderr}"
     assert out.exists() and out.stat().st_size > 0
+
+
+# The ffmpeg argv and -/vf graph lyrics_render built BEFORE §563 for an editor colour, captured from fef9cb18
+# with ffmpeg stubbed out (paths normalised to <tmp> / <vf>, the font pinned to /fonts/f.ttf).
+EDITOR_COLOUR_GOLDEN = json.loads(r'''{"args": ["-y", "-f", "lavfi", "-i", "color=c=#202020:s=720x1280:r=30", "-ss", "0", "-i", "<tmp>/a.mp3", "-t", "2.0", "-/vf", "<vf>", "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-c:a", "aac", "-b:a", "192k", "-map", "0:v", "-map", "1:a", "-shortest", "<tmp>/o.mp4"], "vf": "drawtext=fontfile='/fonts/f.ttf':text='hi there':enable='between(t,0.5,1.5)':x=(w-tw)/2:y=595:fontsize=72:fontcolor=#12ab9f:borderw=4:bordercolor=black:shadowx=2:shadowy=2:shadowcolor=black@0.9:box=1:boxcolor=black@0.45:boxborderw=14"}''')
+
+
+def test_an_editor_colour_render_keeps_its_ffmpeg_argv_byte_identical(monkeypatch, tmp_path):
+    """render.js's drawtext mode hands captions.color/bgColor here; an editor #rrggbb must not change a byte."""
+    mod = _load_step()
+    seen = {}
+
+    def fake_ffmpeg(args, timeout=300):
+        seen["args"] = list(args)
+        seen["vf"] = Path(args[args.index("-/vf") + 1]).read_text()
+
+    monkeypatch.setattr(mod, "run_ffmpeg", fake_ffmpeg)
+    monkeypatch.setattr(mod, "_find_fontfile", lambda: "/fonts/f.ttf")
+    (tmp_path / "c.json").write_text(json.dumps({"segments": [{"text": "hi there", "start": 0.5, "end": 1.5, "words": [
+        {"word": "hi", "start": 0.5, "end": 1.0}, {"word": "there", "start": 1.0, "end": 1.5}]}]}))
+    (tmp_path / "a.mp3").write_bytes(b"x")
+    monkeypatch.setattr(sys, "argv", [
+        "lyrics_render.py", "--captions", str(tmp_path / "c.json"), "--audio", str(tmp_path / "a.mp3"),
+        "--duration", "2", "--out", str(tmp_path / "o.mp4"), "--color", "#12ab9f", "--bg-color", "#202020", "--box"])
+    with pytest.raises(SystemExit):  # check_output: the stubbed ffmpeg wrote no file
+        mod.main()
+    args = [a.replace(str(tmp_path), "<tmp>") for a in seen["args"]]
+    args[args.index("-/vf") + 1] = "<vf>"
+    assert {"args": args, "vf": seen["vf"]} == EDITOR_COLOUR_GOLDEN
