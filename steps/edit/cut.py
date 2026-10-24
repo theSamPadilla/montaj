@@ -539,6 +539,19 @@ def _marker(mode, kept, removed, duration, max_pause, written, plan_stamp, plan_
             "planHash": plan_hash}
 
 
+def _has_clips(project, track_id):
+    """Whether the speech track has footage to cut. A pending project's 0/0 placeholders (project creation's
+    clips, before anyone opened it) count, since an AI plans on a project the person has not opened. After the
+    status leaves pending, a clip counts only if it has length: "Edit it yourself" drops the placeholders."""
+    track = next((t for t in normalize_tracks(copy.deepcopy(project)).get("tracks", []) if t.get("id") == track_id), None)
+    if track is None:
+        return False
+    items = _media(track)
+    if project.get("status") == "pending":
+        return bool(items)
+    return any(float(it.get("end", 0)) > float(it.get("start", 0)) for it in items)
+
+
 def _already_cut(project):
     m = project[MARKER_KEY]
     out = {"project": project.get("id"), "mode": "already-cut", "cutAt": m.get("at"),
@@ -645,6 +658,9 @@ def _make_plan(args, project_path, project_dir):
         print(json.dumps(_already_cut(first), ensure_ascii=False))
         return
     track_id = _speech_track_id(first, project_dir)
+    if not _has_clips(first, track_id):
+        fail("no_clips", "No clips on the timeline. Place clips first (the footage is in the project's media), "
+                         "then run cut.")
     _stem_clash(_track(normalize_tracks(first), track_id)[1], project_dir)
     transcribed, failed, warnings = _transcribe_missing(first, track_id, project_path, project_dir,
                                                         args.model, args.language or "auto")
@@ -730,8 +746,9 @@ def _apply_plan(args, project_path, project_dir):
         plan_pause if plan_pause is not None else FEELS[DEFAULT_FEEL].max_pause)
     warnings = []
     b = _build(project_path, project_dir, disk, track_id, language, warnings)
-    stale = ("The project's speech or its transcripts changed since this plan was made. "
-             "Run cut again for a new plan.")
+    stale = "The timeline changed since this plan was made. Run cut again for a new plan."
+    if not _has_clips(disk, track_id):
+        stale += " There are no clips on the timeline now; place clips first."
     answer = {"project": disk.get("id"), "mode": "applied"}
 
     if sil:

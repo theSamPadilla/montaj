@@ -64,7 +64,7 @@ def make_project(tmp_path, transcript=None):
     shutil.copy(FIX / "speech.mp4", d / "speech.mp4")
     base = json.loads((FIX / "project.json").read_text())
     project = {k: base[k] for k in ("version", "settings", "status", "workflow", "editingPrompt")}
-    project.update({"id": "cut-fixture", "name": "Cut",
+    project.update({"id": "cut-fixture", "name": "Cut", "status": "pending",   # as project creation leaves it
                     "tracks": [{"id": "trk-0", "items": [
                         {"id": "clip-0", "type": "video", "src": str(d / "speech.mp4"), "start": 0.0, "end": 0.0,
                          "sourceDuration": SOURCE_S, "sourceWidth": 64, "sourceHeight": 64}]}]})
@@ -819,7 +819,7 @@ def clips_project(tmp_path, clips):
         (d / f"{name}.json").write_text(json.dumps(tr))
         items.append({"id": f"clip-{n}", "type": "video", "src": str(d / f"{name}.mp4"), "start": 0.0, "end": 0.0,
                       "sourceDuration": SOURCE_S, "sourceWidth": 64, "sourceHeight": 64})
-    p.update({"id": "cut-fixture", "name": "Cut", "tracks": [{"id": "trk-0", "items": items}]})
+    p.update({"id": "cut-fixture", "name": "Cut", "status": "pending", "tracks": [{"id": "trk-0", "items": items}]})
     (d / "project.json").write_text(json.dumps(p, indent=2))
     git(d, "init", "-q")
     git(d, "add", "project.json")
@@ -982,3 +982,72 @@ def test_a_correct_cut_of_a_long_quiet_tail_is_not_reported(tmp_path, stub_trans
     d = make_project(tmp_path)
     plan, _ = run(d, monkeypatch=monkeypatch)
     assert not any("keeps only" in w for w in plan.get("warnings", []))
+
+
+def _set_track(d, items=None, status=None):
+    p = json.loads((d / "project.json").read_text())
+    if items is not None:
+        p["tracks"][0]["items"] = items
+    if status:
+        p["status"] = status
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+
+
+def _items(d):
+    return json.loads((d / "project.json").read_text())["tracks"][0]["items"]
+
+
+def _error(d, *extra, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["cut.py", "--project", str(d / "project.json"), *extra])
+    with pytest.raises(SystemExit), contextlib.redirect_stdout(io.StringIO()):
+        cc.main()
+    return json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+
+
+def test_apply_after_the_timeline_was_emptied_says_so(tmp_path, stub_transcribe, monkeypatch, capsys):
+    d = make_project(tmp_path, transcript=retake_transcript())
+    _set_track(d, status="pending")
+    plan, _ = run(d, monkeypatch=monkeypatch)          # planned on the pending placeholder
+    _set_track(d, [], status="draft")                  # "Edit it yourself" drops it
+    before = (d / "project.json").read_bytes()
+    e = _error(d, "--plan", plan["plan"], monkeypatch=monkeypatch, capsys=capsys)
+    assert e["error"] == "stale_plan"
+    assert e["message"] == ("The timeline changed since this plan was made. Run cut again for a new plan. "
+                            "There are no clips on the timeline now; place clips first.")
+    assert (d / "project.json").read_bytes() == before
+
+
+def test_a_stale_plan_with_clips_has_no_clips_line(tmp_path, stub_transcribe, monkeypatch, capsys):
+    d = make_project(tmp_path, transcript=retake_transcript())
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    tr = retake_transcript()
+    tr["transcription"][-1]["text"] = " everybody."
+    (d / "speech.json").write_text(json.dumps(tr))
+    e = _error(d, "--plan", plan["plan"], monkeypatch=monkeypatch, capsys=capsys)
+    assert e["error"] == "stale_plan"
+    assert e["message"] == "The timeline changed since this plan was made. Run cut again for a new plan."
+
+
+def test_cut_on_a_draft_with_an_empty_timeline_is_refused(tmp_path, stub_transcribe, monkeypatch, capsys):
+    d = make_project(tmp_path, transcript=retake_transcript())
+    _set_track(d, [], status="draft")
+    before = (d / "project.json").read_bytes()
+    e = _error(d, monkeypatch=monkeypatch, capsys=capsys)
+    assert e["error"] == "no_clips"
+    assert e["message"] == ("No clips on the timeline. Place clips first (the footage is in the project's media), "
+                            "then run cut.")
+    assert (d / "project.json").read_bytes() == before
+    assert not (d / "cut-plan.md").exists()
+
+
+def test_a_draft_with_only_zero_placeholders_is_refused(tmp_path, stub_transcribe, monkeypatch, capsys):
+    d = make_project(tmp_path, transcript=retake_transcript())
+    _set_track(d, status="draft")
+    assert _error(d, monkeypatch=monkeypatch, capsys=capsys)["error"] == "no_clips"
+
+
+def test_a_pending_project_with_placeholders_still_plans(tmp_path, stub_transcribe, monkeypatch):
+    d = make_project(tmp_path, transcript=retake_transcript())
+    _set_track(d, status="pending")
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["mode"] == "plan" and (d / "cut-plan.md").exists()
