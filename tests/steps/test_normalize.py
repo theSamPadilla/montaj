@@ -242,3 +242,35 @@ def test_normalize_silent_input_is_left_alone_not_an_ffmpeg_error(tmp_path):
         capture_output=True, text=True,
     ).stdout.split()
     assert sorted(streams) == ["audio", "video"], streams
+
+
+# --- pass 2 splices only numbers (§563) --------------------------------------
+
+def _load_normalize_step():
+    import importlib.util
+    path = REPO_ROOT / "steps" / "media" / "normalize.py"
+    spec = importlib.util.spec_from_file_location("normalize_step_under_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_normalize_pass_two_refuses_a_measurement_that_is_not_a_number(monkeypatch, capsys):
+    """Pass 2 splices pass 1's measurements into the loudnorm filter, so each must parse as a number;
+    text there could add a filter. A reading that is not one fails before pass 2 runs."""
+    mod = _load_normalize_step()
+    stats = {"input_i": "-20.0", "input_tp": "-1.0", "input_lra": "5.0",
+             "input_thresh": "-30.0,null", "target_offset": "0.5"}
+    calls = []
+
+    def fake_run(cmd, check=True):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "loudnorm\n" + json.dumps(stats))
+
+    monkeypatch.setattr(mod, "run", fake_run)
+    monkeypatch.setattr(mod, "require_file", lambda p: None)
+    monkeypatch.setattr(sys, "argv", ["normalize.py", "--input", "/clips/a.mp4", "--out", "/clips/b.mp4"])
+    with pytest.raises(SystemExit):
+        mod.main()
+    assert len(calls) == 1
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == "loudnorm_error"

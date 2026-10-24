@@ -116,12 +116,18 @@ def main():
         print(out)
         return
 
-    # Second pass: apply with measured values for accurate linear normalization
+    # Second pass: apply with measured values for accurate linear normalization. Each one goes into the
+    # filter graph, so it must be a number: text read back from stderr could add a filter (§563).
+    try:
+        measured = {k: float(stats[k]) for k in
+                    ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")}
+    except (KeyError, TypeError, ValueError):
+        fail("loudnorm_error", "loudnorm measurement is not a number")
     loudnorm_filter = (
-        f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11"
-        f":measured_I={stats['input_i']}:measured_TP={stats['input_tp']}"
-        f":measured_LRA={stats['input_lra']}:measured_thresh={stats['input_thresh']}"
-        f":offset={stats['target_offset']}:linear=true:print_format=summary"
+        f"loudnorm=I={float(target_lufs)}:TP=-1.5:LRA=11"
+        f":measured_I={measured['input_i']}:measured_TP={measured['input_tp']}"
+        f":measured_LRA={measured['input_lra']}:measured_thresh={measured['input_thresh']}"
+        f":offset={measured['target_offset']}:linear=true:print_format=summary"
     )
     video_flag = [] if is_audio_only else ["-c:v", "copy"]
     run([ffmpeg_bin(), "-y", "-i", args.input, "-af", loudnorm_filter, *video_flag, out])
