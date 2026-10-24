@@ -760,6 +760,46 @@ describe('Images on the canvas: files from the OS', () => {
     expect(adapter.saveProject).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ['HEIC', 'image/heic'],
+    ['HEIF', 'image/heif'],
+    ['TIFF', 'image/tiff'],
+    ['PSD', 'image/vnd.adobe.photoshop'],
+  ])('a %s file is ignored: the canvas cannot draw it, and it would land as an empty square (§556 review)', async (_name, type) => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    const drop = await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [new File(['x'], 'photo.bin', { type })] })))
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+    // Still kept from the browser, which would open it.
+    expect(drop.defaultPrevented).toBe(true)
+    expect(adapter.uploadFile).not.toHaveBeenCalled()
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+  })
+
+  it.each(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/svg+xml', 'image/bmp'])('a %s file is taken', async (type) => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    const file = new File(['x'], 'pic.bin', { type })
+    await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [file] })))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(adapter.uploadFile).toHaveBeenCalledWith(file, 'proj-1', 'drop')
+  })
+
+  it('among several files only the ones it can draw are uploaded', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    const heic = new File(['x'], 'a.heic', { type: 'image/heic' })
+    const jpg = new File(['x'], 'b.jpg', { type: 'image/jpeg' })
+    await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [heic, jpg] })))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(adapter.uploadFile).toHaveBeenCalledTimes(1)
+    expect(adapter.uploadFile).toHaveBeenCalledWith(jpg, 'proj-1', 'drop')
+    expect(elementsOf(lastSave(adapter)).map((e) => (e as ImageElement).src)).toEqual(['a.png', '/proj/assets/b.jpg'])
+  })
+
   it('an upload that fails goes to onError, never alert, and adds nothing', async () => {
     const alertSpy = vi.fn()
     vi.stubGlobal('alert', alertSpy)

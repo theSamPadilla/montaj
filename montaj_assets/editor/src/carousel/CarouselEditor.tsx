@@ -322,7 +322,18 @@ function hostImageSrc(data: DataTransfer): string | null {
   }
 }
 
-const isImageFile = (file: File) => file.type.startsWith('image/')
+/** The image types a browser can draw. HEIC, TIFF and PSD are images too, but
+ *  the canvas cannot show them: they would land as empty squares. */
+const DRAWABLE_IMAGE_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'image/svg+xml',
+  'image/bmp',
+])
+const isImageFile = (file: File) => DRAWABLE_IMAGE_TYPES.has(file.type)
 
 /** How long Render waits for the save as final (`renderSaveTimeoutMs`). */
 const RENDER_SAVE_TIMEOUT_MS = 30_000
