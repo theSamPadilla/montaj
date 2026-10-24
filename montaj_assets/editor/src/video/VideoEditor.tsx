@@ -501,7 +501,9 @@ export default function VideoEditor<P extends Project = Project>({
 
 // ── Version-history hook (shared by both surfaces) ───────────────────────────
 
-function useVersionHistory<P extends Project>(adapter: VideoEditorProps<P>['adapter'], project: P) {
+const VERSION_REFETCH_MS = 500
+
+export function useVersionHistory<P extends Project>(adapter: VideoEditorProps<P>['adapter'], project: P) {
   const [versions, setVersions]   = useState<{ hash: string; message: string; timestamp: string }[]>([])
   const [restoring, setRestoring] = useState<string | null>(null)
   const [saving, setSaving]       = useState(false)
@@ -516,6 +518,20 @@ function useVersionHistory<P extends Project>(adapter: VideoEditorProps<P>['adap
   useEffect(() => {
     void fetchVersions()
   }, [fetchVersions, project.status])
+
+  // The server commits a version in the background after it broadcasts a save
+  // (an engine step's "before <step>", the late status commit), so a fetch can
+  // land before the commit exists. Refetch ~500 ms after the last frame: a
+  // burst of frames gives one fetch.
+  useEffect(() => {
+    if (!adapter.listVersionHistory) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const unsub = adapter.subscribe(project.id, () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => { timer = undefined; void fetchVersions() }, VERSION_REFETCH_MS)
+    })
+    return () => { if (timer) clearTimeout(timer); unsub() }
+  }, [adapter, project.id, fetchVersions])
 
   return { versions, restoring, setRestoring, saving, setSaving, refresh: fetchVersions }
 }
@@ -783,7 +799,7 @@ function PendingSurface<P extends Project>({
       {/* Right sidebar — version history (hidden when the capability is absent) */}
       {adapter.listVersionHistory && (
         <div className="w-48 shrink-0 border-l border-[var(--editor-border)] bg-[var(--editor-surface)] flex flex-col overflow-hidden">
-          <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} mode={timelineMode} />
+          <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} mode={timelineMode} onOpen={refreshVersions} />
         </div>
       )}
 
@@ -2788,7 +2804,7 @@ function ReviewSurface<P extends Project>({
     />
   )
   const versionPanel = adapter.listVersionHistory && (
-    <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} mode={timelineMode} />
+    <VersionPanel versions={versions} restoring={restoring} onRestore={handleRestoreVersion} onSaveVersion={handleSaveVersion} saving={saving} onCompareVersion={adapter.versionFrameUrl ? handleCompareVersion : undefined} mode={timelineMode} onOpen={refreshVersions} />
   )
 
   /**

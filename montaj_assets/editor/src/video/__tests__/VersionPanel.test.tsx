@@ -277,3 +277,43 @@ describe('listVersions', () => {
   })
 
 })
+
+describe('engine step versions', () => {
+  const t = (n: number) => `2026-01-0${n}T12:00:00Z`
+
+  it('lists "version: before cut" as "Before cut", with run versions, hiding init', () => {
+    const versions: VersionEntry[] = [
+      { hash: 'a', message: 'version: before cut', timestamp: t(3) },
+      { hash: 'b', message: 'version: run 1 — draft', timestamp: t(2) },
+      { hash: 'i', message: 'init: new project', timestamp: t(1) },
+    ]
+    expect(listVersions(versions).map(v => v.hash)).toEqual(['a', 'b'])
+    const { container } = render(<VersionPanel versions={versions} restoring={null} onRestore={vi.fn()} />)
+    expect(container.textContent).toContain('Before cut')
+    expect(container.textContent).toContain('Draft')
+    expect(container.textContent).not.toContain('init: new project')
+  })
+
+  it.each([
+    ['place', 'Before place'], ['slides', 'Before slides'], ['captions', 'Before captions'],
+    ['speech edit', 'Before speech edit'], ['trim', 'Before trim'],
+  ])('labels before %s', (step, label) => {
+    const { container } = render(
+      <VersionPanel versions={[{ hash: 'x', message: `version: before ${step}`, timestamp: t(1) }]} restoring={null} onRestore={vi.fn()} />,
+    )
+    expect(container.textContent).toContain(label)
+  })
+
+  it('restores a step version by hash', () => {
+    const onRestore = vi.fn()
+    render(<VersionPanel versions={[{ hash: 'x', message: 'version: before cut', timestamp: t(1) }]} restoring={null} onRestore={onRestore} />)
+    fireEvent.click(screen.getByText('Restore →'))
+    expect(onRestore).toHaveBeenCalledWith('x')
+  })
+
+  it('calls onOpen once on open', () => {
+    const onOpen = vi.fn()
+    render(<VersionPanel versions={[]} restoring={null} onRestore={vi.fn()} onOpen={onOpen} />)
+    expect(onOpen).toHaveBeenCalledTimes(1)
+  })
+})

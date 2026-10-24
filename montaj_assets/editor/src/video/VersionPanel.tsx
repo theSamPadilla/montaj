@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Save } from 'lucide-react'
 import type { VersionEntry } from '../types'
 
@@ -12,9 +12,19 @@ function formatTime(iso: string): string {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-function parseVersion(v: ProjectVersion): { run: number; label: string } {
+// An engine step (cut, place, slides, captions, speech edit) commits the project
+// as `version: before <step>` just before it writes, so a person can step back.
+const STEP_VERSION = /^version: before (.+)$/
+
+function parseVersion(v: ProjectVersion): { run: number; label: string; step: boolean } {
   const m = v.message.match(/run (\d+) — (.+)/)
-  return m ? { run: parseInt(m[1]), label: m[2] } : { run: 0, label: v.message }
+  if (m) return { run: parseInt(m[1]), label: m[2], step: false }
+  const s = v.message.trim().match(STEP_VERSION)
+  if (s) {
+    const what = s[1].trim()
+    return { run: 0, label: `Before ${what}`, step: true }
+  }
+  return { run: 0, label: v.message, step: false }
 }
 
 const KNOWN_LABELS: Record<string, string> = {
@@ -45,11 +55,12 @@ function timestampMs(v: ProjectVersion): number {
 }
 
 /** Every saved version gets its own row — no collapsing by backend "run".
- *  Only the run-0 init baseline is filtered out. Sorted newest first by
+ *  Run versions and engine step versions ("Before cut") are listed; the run-0
+ *  init baseline is filtered out. Sorted newest first by
  *  timestamp; the sort is stable so same-timestamp entries keep their input
  *  order, and it never mutates the caller's array. */
 export function listVersions(versions: ProjectVersion[]): ProjectVersion[] {
-  const nonInit = versions.filter(v => parseVersion(v).run > 0)
+  const nonInit = versions.filter(v => { const p = parseVersion(v); return p.run > 0 || p.step })
   return [...nonInit].sort((a, b) => timestampMs(b) - timestampMs(a))
 }
 
@@ -70,11 +81,15 @@ interface VersionPanelProps {
    *  (indigo-300 is sub-AA on a light `--editor-surface` card). Absent ->
    *  dark, matching every existing caller. */
   mode?: 'light' | 'dark'
+  /** Called once when the panel opens (mounts), so the host can refetch the
+   *  list: a step's version commit can land after the last fetch. */
+  onOpen?: () => void
 }
 
-export default function VersionPanel({ versions, restoring, onRestore, onSaveVersion, saving, onCompareVersion, mode = 'dark' }: VersionPanelProps) {
+export default function VersionPanel({ versions, restoring, onRestore, onSaveVersion, saving, onCompareVersion, mode = 'dark', onOpen }: VersionPanelProps) {
   const [nameInput, setNameInput] = useState('')
   const rows = listVersions(versions)
+  useEffect(() => { onOpen?.() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleSaveClick() {
     onSaveVersion?.(nameInput.trim() || undefined)
