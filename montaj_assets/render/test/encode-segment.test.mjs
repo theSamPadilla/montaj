@@ -1926,3 +1926,23 @@ test('two-stage seek: a remove_bg cutout (.mov, graded or not) carries the trim 
     assert.equal(graph.audioTrim, 'atrim=start=2.5:duration=3')
   }
 })
+
+// §563: the canvas size, the frame rate and a clip's speed are project.json values that go into the graph as text.
+const VALID_SEGMENT = JSON.parse(
+  (await import('node:fs')).readFileSync(path.join(__dirname, 'fixtures', 'valid-segment-args.json'), 'utf8'))
+
+test('dry-run: a valid segment builds exactly the arguments it did before the §563 checks', async () => {
+  // Captured from encode-segment.js before the checks: 29.97 fps, a 1.5x clip (setpts and atempo), an overlay.
+  const { segment, expected } = VALID_SEGMENT
+  const result = await encodeSegment(segment, '/out/seg.mp4', { _dryRun: true })
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), expected)
+})
+
+test('dry-run: a canvas size, frame rate or speed that is not a number is refused, naming the field (§563)', async () => {
+  const { segment } = VALID_SEGMENT
+  const run = (seg) => encodeSegment(seg, '/out/seg.mp4', { _dryRun: true })
+  await assert.rejects(run({ ...segment, vw: '1920:x' }), /settings\.resolution\[0\]/)
+  await assert.rejects(run({ ...segment, vh: 1080.5 }), /settings\.resolution\[1\]/)
+  await assert.rejects(run({ ...segment, fps: '30:x' }), /settings\.fps/)
+  await assert.rejects(run({ ...segment, items: segment.items.map((it, i) => (i ? it : { ...it, speed: '1.5,x' })) }), /speed/)
+})

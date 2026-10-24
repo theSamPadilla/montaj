@@ -38,6 +38,7 @@ import { mkdirSync, rmSync } from 'fs'
 import { dirname } from 'path'
 import { FFMPEG, FFPROBE } from './ffmpeg-bin.js'
 import { ffSeconds } from './ff-seconds.js'
+import { positiveNumber, frameSize } from './filter-number.js'
 import { describeFfmpegExit, assertInputsExist, fileInputsOf } from './ffmpeg-error.js'
 import { childKilledError } from './child-killed.js'
 import { specFor, encoderArgsFor, detectFromTransfer, isHdr, DEFAULT_COLOR_SPACE } from './color-space.js'
@@ -1331,7 +1332,7 @@ export function buildVideoItemFilterParts(item, vw, vh, idx, videoLabel, opts) {
   // string below must stay byte-identical to the pre-speed pipeline (two
   // frozen encode-args goldens depend on it), so the `*speed` arithmetic only
   // runs when hasSpeed is true.
-  const speed = item.speed
+  const speed = item.speed == null ? item.speed : positiveNumber(item.speed, 'speed')  // §563: text in the graph
   const hasSpeed = speed != null && speed !== 1
   const actualIn = hasSpeed ? inPt + seekOffset * speed : inPt + seekOffset
 
@@ -1743,7 +1744,7 @@ export function buildOverlayFilterParts(ov, vw, vh, ovIdx, videoLabel, segStart,
   // Force yuva420p (or caller-specified format) — VP9 decoders may silently drop
   // the alpha plane on the production path; PNG-based callers pass 'rgba' to
   // avoid an unnecessary colorspace bounce.
-  const ptsPin = loopedInput ? '' : `,setpts=N/(${opts.fps}*TB)`
+  const ptsPin = loopedInput ? '' : `,setpts=N/(${positiveNumber(opts.fps, 'settings.fps')}*TB)`
   filterParts.push(`[${ovIdx}:v]format=${inputFormatFlag}${ptsPin}[ovfmt${ovIdx}]`)
   let ovSrc = `[ovfmt${ovIdx}]`
 
@@ -2099,7 +2100,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
   // Its RANGE is still also pinned at the encoder (Step 6).
   // Pinned by hdr-overlay-color.integration.test.mjs.
   inputs.push('-f', 'lavfi', '-i',
-    `color=black:size=${vw}x${vh}:rate=${fps}:duration=${ffSeconds(duration)}`)
+    `color=black:size=${frameSize(vw, vh)}:rate=${positiveNumber(fps, 'settings.fps')}:duration=${ffSeconds(duration)}`)
   const canvasTag = `,${spec.setparams}:range=tv`
   filterParts.push(`[0:v]format=${spec.outputPixFmt}${canvasTag}[canvas]`)
   videoLabel = '[canvas]'
@@ -2263,7 +2264,7 @@ export async function encodeSegment(segment, outputPath, opts = {}) {
         // `atrim=0:<window>` after a seek of 0, and after a two-stage seek
         // (PV48) `atrim=start=<fine>:duration=<window>`, the same source
         // window as the video's trim.
-        const speed = item.speed
+        const speed = item.speed == null ? item.speed : positiveNumber(item.speed, 'speed')  // §563
         const hasSpeed = speed != null && speed !== 1
         // The picture crossfades; the sound must too, or the overlap plays both
         // clips at full level. Same shape as mix-audio.js's per-track fade, and

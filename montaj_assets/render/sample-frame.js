@@ -42,7 +42,7 @@ import { toFileHref, propFilePath } from './file-url.js'
 import { pMap } from './p-map.js'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { ffSeconds } from './ff-seconds.js'
-import { finiteNumber } from './filter-number.js'
+import { finiteNumber, positiveNumber, frameSize } from './filter-number.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { externalizeFilterGraph } from './filter-script.js'
 import { isHdr } from './color-space.js'
@@ -1204,7 +1204,7 @@ export async function sampleFrame({
 
   // Black canvas base
   inputs.push('-f', 'lavfi', '-i',
-    `color=black:size=${actualWidth}x${actualHeight}:rate=${fps}:duration=${ffSeconds(duration)}`)
+    `color=black:size=${frameSize(actualWidth, actualHeight)}:rate=${positiveNumber(fps, 'settings.fps')}:duration=${ffSeconds(duration)}`)
   filterParts.push(`[0:v]format=rgba[canvas]`)
   videoLabel = '[canvas]'
   inputIdx++
@@ -1834,7 +1834,7 @@ export async function sampleRawFrame({ projectJson, atSeconds, outPath, clampToE
   } else {
     const [w, h] = resolved.settings?.resolution ?? [1080, 1920]
     log('raw: no video under this time, writing a black frame')
-    args = ['-y', '-v', 'error', '-f', 'lavfi', '-i', `color=c=black:s=${w}x${h}`, '-frames:v', '1', '-update', '1', outPath]
+    args = ['-y', '-v', 'error', '-f', 'lavfi', '-i', `color=c=black:s=${frameSize(w, h)}`, '-frames:v', '1', '-update', '1', outPath]
   }
   const r = spawnSync(FFMPEG, args, { encoding: 'utf8', timeout: 60_000 })
   if (r.status !== 0) throw new Error(`ffmpeg raw frame extract failed: ${ffmpegErrorTail(r.stderr)}`)

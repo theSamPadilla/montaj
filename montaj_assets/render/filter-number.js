@@ -25,3 +25,8 @@ export function pixelCount(value, field) {
   if (Number.isInteger(value) && value > 0) return value
   throw new Error(`${field} must be a whole number above zero, got ${JSON.stringify(value)}`)
 }
+
+/** `<width>x<height>` for an ffmpeg size option: settings.resolution's two whole numbers, unchanged. */
+export function frameSize(width, height) {
+  return `${pixelCount(width, 'settings.resolution[0]')}x${pixelCount(height, 'settings.resolution[1]')}`
+}

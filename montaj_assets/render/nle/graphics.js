@@ -84,6 +84,7 @@ import { namedPropsUrls } from '../overlay-build.js'
 import { buildOverlayFilterParts } from '../encode-segment.js'
 import { FFMPEG } from '../ffmpeg-bin.js'
 import { externalizeFilterGraph } from '../filter-script.js'
+import { frameSize } from '../filter-number.js'
 import { isHdr } from '../color-space.js'
 import { trackItems } from '../project-tracks.js'
 
@@ -319,7 +320,7 @@ async function encodeMovie(ov, { fps, width, height, frameCount, duration, outPa
     '-y', '-v', 'error',
     // The format stays INSIDE the lavfi input: the input stream otherwise
     // leaves the device as yuv420p, and the canvas comes out opaque black.
-    '-f', 'lavfi', '-i', `color=c=black@0.0:size=${width}x${height}:rate=${fps}:duration=${canvasSeconds},format=yuva420p`,
+    '-f', 'lavfi', '-i', `color=c=black@0.0:size=${frameSize(width, height)}:rate=${fps}:duration=${canvasSeconds},format=yuva420p`,
     ...inputArgs,
     '-filter_complex', filterParts.join(';'),
     '-map', '[vout]',

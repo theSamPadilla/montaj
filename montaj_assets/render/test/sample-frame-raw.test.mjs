@@ -54,3 +54,18 @@ test('full: raw frame at t in clip 2 is clip 2 source, uncropped, no overlay', {
   const size = spawnSync(FFMPEG, ['-v', 'info', '-i', out, '-vf', 'showinfo', '-f', 'null', '-'], { encoding: 'utf8' })
   assert.match(size.stderr, /s:64x48/, 'source resolution, not project canvas')
 })
+
+// §563: settings.resolution and settings.fps go into a lavfi canvas source as text.
+test('a sampled frame refuses a canvas size or frame rate that is not a number, naming the field', { skip: !hasFfmpeg }, async () => {
+  const { sampleFrame } = await import('../sample-frame.js')
+  const out = join(mkdtempSync(join(tmpdir(), 'canvas-')), 'f.png')
+  const project = (settings) => ({ settings, tracks: [] })
+  await sampleRawFrame({ projectJson: project({ resolution: [64, 48], fps: 10 }), atSeconds: 0, outPath: out })
+  await sampleFrame({ projectJson: project({ resolution: [64, 48], fps: 10 }), atSeconds: 0, outPath: out })
+  await assert.rejects(sampleRawFrame({ projectJson: project({ resolution: ['64:x', 48] }), atSeconds: 0, outPath: out }),
+    /settings\.resolution\[0\]/)
+  await assert.rejects(sampleFrame({ projectJson: project({ resolution: [64, '48:x'], fps: 10 }), atSeconds: 0, outPath: out }),
+    /settings\.resolution\[1\]/)
+  await assert.rejects(sampleFrame({ projectJson: project({ resolution: [64, 48], fps: '10:x' }), atSeconds: 0, outPath: out }),
+    /settings\.fps/)
+})
