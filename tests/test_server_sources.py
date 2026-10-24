@@ -64,13 +64,18 @@ def _clean_look_migration_state():
     GET /api/proxies/status reads it directly. Reset to the empty baseline
     before and after every test so nothing here leaks into unrelated tests
     (mirrors tests/test_look_migration.py and test_render_name_cover.py)."""
-    projects_mod._look_migration_queue.clear()
-    projects_mod._look_migration_current = None
-    projects_mod._look_migration_worker = None
+    def reset():
+        # A test may have patched the queue to None (monkeypatch). conftest's
+        # autouse guard sets monkeypatch up first, so this teardown runs before
+        # monkeypatch puts the list back.
+        if projects_mod._look_migration_queue is not None:
+            projects_mod._look_migration_queue.clear()
+        projects_mod._look_migration_current = None
+        projects_mod._look_migration_worker = None
+
+    reset()
     yield
-    projects_mod._look_migration_queue.clear()
-    projects_mod._look_migration_current = None
-    projects_mod._look_migration_worker = None
+    reset()
 
 
 def _write_project(project_dir: Path, sources=None, tracks=None, project_id=PID) -> None:
