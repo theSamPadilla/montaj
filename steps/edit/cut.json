@@ -21,7 +21,7 @@
       "name": "plan",
       "type": "string",
       "required": false,
-      "description": "Apply this plan: the path of the plan file in the project folder (cut-plan.md), or the plan's text. Leave out to make a plan."
+      "description": "Apply this plan: the path of the plan file in the project folder (cut-plan.md) is the normal way to pass it (a plan's text can pass the command line's size limit, 32K on Windows); the plan's text also works. Leave out to make a plan."
     },
     {
       "name": "language",

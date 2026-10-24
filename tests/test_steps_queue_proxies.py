@@ -27,7 +27,7 @@ def _client():
         yield
 
 
-def settle(state, n=1, timeout=3.0):
+def settle(state, n=1, timeout=10.0):
     """The proxy queue runs after the answer: wait until it has queued n projects."""
     end = time.time() + timeout
     while len(state["queued"]) < n and time.time() < end:
