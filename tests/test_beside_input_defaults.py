@@ -47,8 +47,6 @@ DEFAULTS = {
     "waveform_image": ("clip.mp4", [("clip_waveforms", "dir", (".png",))]),
     # steps/lyrics/caption.py:23  out = f"{splitext(input)[0]}_captions.json"  (input is a transcript JSON)
     "caption": ("clip.json", [("clip_captions.json", "file", ())]),
-    # steps/lyrics/lyrics_render.py:407-408  default is beside --captions: <captions_stem>_render.mp4
-    "lyrics_render": ("captions.json", [("captions_render.mp4", "file", ())]),
     # steps/transform/crop_spec.py:108-111  <dir(input)>/<stem>_cropped.json
     "crop_spec": ("cut.json", [("cut_cropped.json", "file", ())]),
     # steps/media/paper_cutout.py:263-265  <stem>_paper.png (enforced .png)

@@ -40,7 +40,7 @@ workspace's (the step's cwd), and a `~` or `$VAR` in it is checked as what it ma
 
 Inventory (2026-10-21): the params a native step WRITES to (or deletes in), checked here.
   out, file, overwritten: detect_beats, extract_audio, mix_timeline, synth_audio,
-      waveform_trim, caption, lyrics_render, detect_shots, shot_sheet (index), snapshot (a file, or
+      waveform_trim, caption, detect_shots, shot_sheet (index), snapshot (a file, or
       a frames folder), normalize, paper_cutout, track_camera, track_pose, analyze_media (the model's reply
       text), fetch_image (refuses an existing file since this change), contact_sheet, sample_frame (+
       `<out>.clamped.json`), sample_overlay, sample_diff, transcribe (a prefix: `<out>.json`, `<out>.srt`),
@@ -56,7 +56,7 @@ Inventory (2026-10-21): the params a native step WRITES to (or deletes in), chec
   frames-dir (contact_sheet, frames kept) and inbox (creator_diagnostic DELETES each measured video directly
       in it): `"outKind": "write"`.
   beside the input when `out` is omitted (BESIDE_INPUT_STEPS, M9): extract_audio, normalize, resize, snapshot,
-      waveform_image, caption, lyrics_render, crop_spec, paper_cutout, remove_bg,
+      waveform_image, caption, crop_spec, paper_cutout, remove_bg,
       mix_timeline, materialize_cut, transcribe. The input's folder (and each spec `segments[].src` folder) is
       then checked as a DENY location (`_check_beside_input`), not against the allowlist: a normal outside
       folder is allowed, a hidden/system/package/home-config folder is refused.
@@ -104,7 +104,7 @@ _DIR_WRITE_PARAMS = ("out-dir", "frames-dir", "inbox")
 # the parent folder of each input (and of each spec `segments[].src`) is checked instead.
 BESIDE_INPUT_STEPS = frozenset({
     "extract_audio", "normalize", "resize", "snapshot", "waveform_image", "caption",
-    "lyrics_render", "crop_spec", "paper_cutout", "remove_bg", "mix_timeline",
+    "crop_spec", "paper_cutout", "remove_bg", "mix_timeline",
     "materialize_cut", "transcribe",
 })
 

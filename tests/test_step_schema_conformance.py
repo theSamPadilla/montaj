@@ -49,7 +49,7 @@ from tests.conftest import REPO_ROOT, STEPS_DIR
 # command maps to the ``rm_fillers`` step.
 MIGRATED_STEPS = (
     "probe", "transcribe", "caption", "extract_audio", "resize",
-    "rm_nonspeech", "lyrics_render",
+    "rm_nonspeech",
     "generate_image", "generate_music", "generate_voiceover",
     "kling_generate", "analyze_media", "snapshot", "rm_fillers",
     "normalize", "detect_beats", "seedance_generate", "generate_sfx", "kinovi_generate",

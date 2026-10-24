@@ -78,7 +78,7 @@ Word timestamps in `props.words` must be **relative to the overlay's own `start`
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `wordsPerLine` | number | `0` | Wrap every N words onto a new line. `0` = no wrap (all words on one line). Used with `variant: 'static'` to match `lyrics_render.py`'s `words_per_line` output. |
+| `wordsPerLine` | number | `0` | Wrap every N words onto a new line. `0` = no wrap (all words on one line). Used with `variant: 'static'`. |
 
 ---
 

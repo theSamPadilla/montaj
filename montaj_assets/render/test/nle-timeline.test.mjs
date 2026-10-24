@@ -487,20 +487,18 @@ describe('audio', () => {
 })
 
 describe('left out of the editor', () => {
-  test('renderMode ffmpeg-drawtext: no graphics and no caption layer, as the render draws none', () => {
+  test('an old lyric project renders the normal way: the retired renderMode ffmpeg-drawtext changes nothing', () => {
     const project = load('layers')
     project.captions = load('captions').captions
-    const normal = build(project)
-    assert.ok(clips(normal).some((c) => c.kind === 'graphic'), 'the project has graphics')
-    assert.ok(normal.captionsTrack)
+    project.audio = { tracks: [{ id: 'song', src: '/abs/song.mp3', start: 0, end: 2 }] }
+    const plain = build(project)
+    assert.ok(clips(plain).some((c) => c.kind === 'graphic'), 'the project has graphics')
+    assert.ok(plain.captionsTrack, 'the captions are in the plan')
+    assert.ok(plain.audioTracks.some((t) => t.clips.some((c) => c.id === 'song')), 'the audio track is in the plan')
 
-    const tl = build({ ...project, renderMode: 'ffmpeg-drawtext' })
-    assert.equal(clips(tl).filter((c) => c.kind === 'graphic').length, 0)
-    assert.equal(tl.captionsTrack, null)
-    assert.ok(clips(tl).length > 0, 'the footage stays')
-    assert.ok(tl.warnings.some((w) => /^renderMode ffmpeg-drawtext draws no overlays; \d+ graphics? not exported/.test(w)), tl.warnings.join(' | '))
-    assert.ok(tl.warnings.some((w) => /^renderMode ffmpeg-drawtext draws captions/.test(w)), tl.warnings.join(' | '))
-    tl.videoTracks.forEach((t, i) => assert.equal(t.index, i))
+    const old = build({ ...project, renderMode: 'ffmpeg-drawtext' })
+    assert.deepEqual(old, plain)
+    assert.ok(old.warnings.every((w) => !/drawtext/.test(w)), old.warnings.join(' | '))
   })
 
   test('keyframes, loop, background removal and motion blur are marked; HDR and loudness warn', () => {

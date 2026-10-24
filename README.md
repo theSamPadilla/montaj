@@ -111,7 +111,7 @@ See the [CLI Reference](https://docs.montaj.ag/cli) for the full documentation.
 | **Inspect** | `probe`, `snapshot`, `analyze_media` |
 | **Clean** | `waveform_trim`, `rm_fillers`, `rm_nonspeech`, `speech_text`, `speech_edit` |
 | **Edit** | `materialize_cut`, `resize`, `extract_audio`, `crop_spec` |
-| **Enrich** | `transcribe`, `caption`, `normalize` (full-source, eager default), `normalize_window` (per clip-window, lazy), `lyrics_render` |
+| **Enrich** | `transcribe`, `caption`, `normalize` (full-source, eager default), `normalize_window` (per clip-window, lazy) |
 | **Generate** | `kling_generate`, `generate_image`, `eval_scene` |
 | **VFX** | `remove_bg` |
 | **Acquire** | `fetch` — download from any URL via yt-dlp |

@@ -51,12 +51,6 @@
  * (hdr-graphics.js); the editor movie does not, and a warning says the editor
  * has to place it in its HDR timeline itself.
  *
- * ── LEFT OUT ────────────────────────────────────────────────────────────────
- *
- * `renderMode: 'ffmpeg-drawtext'` draws captions with ffmpeg drawtext
- * (lyrics_render.py), which cannot write alpha, so that caption layer is not
- * rendered: a warning says so and `captions` is null.
- *
  * Scratch (bundles, frame PNGs, capture chunks) goes to the OS temp dir, never
  * the project, and each movie's is removed as soon as the movie is written.
  * While a movie is in progress its scratch folder is in a module-level set
@@ -213,24 +207,19 @@ export async function renderNleGraphics(project, timeline, { projectDir, outDir,
 
   const captionsClip = timeline.captionsTrack?.clips?.[0] ?? null
   if (captionsClip) {
-    if (work.renderMode === 'ffmpeg-drawtext') {
-      warnings.push('captions: renderMode ffmpeg-drawtext draws them with ffmpeg, which writes no alpha; '
-        + 'the caption layer is not rendered for the editor')
+    const spec = specs.find((s) => s.id === 'captions')
+    if (!spec) {
+      warnings.push('captions: the render draws no caption layer; not rendered')
     } else {
-      const spec = specs.find((s) => s.id === 'captions')
-      if (!spec) {
-        warnings.push('captions: the render draws no caption layer; not rendered')
-      } else {
-        jobs.push({
-          label: 'captions',
-          key: null,
-          spec,
-          // The caption page runs on timeline time from 0.
-          frameOffset: captionsClip.startFrame,
-          frameCount: captionsClip.endFrame - captionsClip.startFrame,
-          outPath: join(absOutDir, 'captions.mov'),
-        })
-      }
+      jobs.push({
+        label: 'captions',
+        key: null,
+        spec,
+        // The caption page runs on timeline time from 0.
+        frameOffset: captionsClip.startFrame,
+        frameCount: captionsClip.endFrame - captionsClip.startFrame,
+        outPath: join(absOutDir, 'captions.mov'),
+      })
     }
   }
 

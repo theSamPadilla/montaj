@@ -479,7 +479,7 @@ def test_save_project_writes_utf8_explicitly_and_round_trips_non_ascii(tmp_path,
 # ---------------------------------------------------------------------------
 # lib/common.py's ffmpeg_filter_path — filtergraph-safe path escaping, used at
 # lut3d=file= (lib/normalize.py, montaj_assets/render/encode-segment.js) and
-# drawtext fontfile= (steps/lyrics/lyrics_render.py). ':' is ffmpeg's own
+# drawtext fontfile= (montaj_assets/render/ffmpeg-filter-path.js). ':' is ffmpeg's own
 # key=value separator within a filter's args and '\' is its escape character,
 # so a raw Windows path like C:\Users\a\x.cube breaks a filter description
 # twice: `file=C` ends at the drive colon, and the backslashes are read as
@@ -541,50 +541,3 @@ def test_tonemap_hlg_arm_still_uses_manifest_default_lut_unescaped(monkeypatch):
     assert f"lut3d=file={plain_lut_path}:interp=tetrahedral" in vf
 
 
-# ---------------------------------------------------------------------------
-# steps/lyrics/lyrics_render.py — drawtext's fontfile= goes through the same
-# ffmpeg_filter_path seam. Today's code always wraps fontfile in a literal
-# single quote (`fontfile='<path>'`); that must stay byte-for-byte identical
-# for a plain path, and a path ffmpeg_filter_path itself quotes (Windows drive
-# path, or a filtergraph-special character) must be spliced in as-is rather
-# than double-quoted.
-# ---------------------------------------------------------------------------
-
-def _load_lyrics_render():
-    import importlib.util
-    path = Path(__file__).parent.parent / "steps" / "lyrics" / "lyrics_render.py"
-    spec = importlib.util.spec_from_file_location("lyrics_render_wp", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_lyrics_render_mod = _load_lyrics_render()
-
-
-def test_drawtext_fontfile_plain_path_quoting_is_unchanged():
-    filters = _lyrics_render_mod._make_line_filters(
-        ["hi"], 0.0, 1.0, 48, "white", "(w-tw)/2", "center", 1280, 60,
-        "/System/Library/Fonts/HelveticaNeue.ttc", False,
-    )
-    assert "fontfile='/System/Library/Fonts/HelveticaNeue.ttc'" in filters[0]
-
-
-def test_drawtext_fontfile_windows_path_is_escaped_not_double_quoted():
-    filters = _lyrics_render_mod._make_line_filters(
-        ["hi"], 0.0, 1.0, 48, "white", "(w-tw)/2", "center", 1280, 60,
-        r"C:\Windows\Fonts\arial.ttf", False,
-    )
-    assert "fontfile='C\\:/Windows/Fonts/arial.ttf'" in filters[0]
-    assert "fontfile=''" not in filters[0]
-
-
-def test_drawtext_fontfile_apostrophe_path_uses_two_level_escaping():
-    """A fontfile path containing an apostrophe must go through
-    ffmpeg_filter_path's own (already-quoted) output rather than being
-    wrapped a second time in fontfile='...'."""
-    filters = _lyrics_render_mod._make_line_filters(
-        ["hi"], 0.0, 1.0, 48, "white", "(w-tw)/2", "center", 1280, 60,
-        "/Users/sam/Fonts/it's/arial.ttf", False,
-    )
-    assert "fontfile='/Users/sam/Fonts/it\\'\\''s/arial.ttf'" in filters[0]
