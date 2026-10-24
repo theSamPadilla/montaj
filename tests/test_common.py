@@ -614,12 +614,21 @@ def test_ff_input_requires_a_file_then_makes_it_absolute(tmp_path, monkeypatch):
 
 
 def test_a_planted_protocol_named_file_is_read_as_that_file(test_video, tmp_path):
-    """A relative `concat:...` input that exists as a file reaches ffprobe and ffmpeg as its absolute path,
-    so the step reads that file instead of opening the concat protocol."""
+    """A relative `concat:clip.mp4` input that exists as a file reaches ffprobe and ffmpeg -i as its absolute
+    path, so the step reads THAT file, not `clip.mp4` through the concat protocol. The two differ: the planted
+    file has a second of silence in the middle (two keeps), `clip.mp4` is a tone throughout (one keep)."""
     import shutil
-    shutil.copy(test_video, tmp_path / "concat:clip.mp4")
+    shutil.copy(test_video, tmp_path / "clip.mp4")
+    r = subprocess.run([common.ffmpeg_bin(), "-y", "-v", "error",
+                        "-f", "lavfi", "-i", "color=c=black:s=64x48:r=30:d=3",
+                        "-f", "lavfi", "-i", "aevalsrc=if(between(t\\,1\\,2)\\,0\\,0.5*sin(2*PI*440*t)):s=44100:d=3",
+                        "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                        str(tmp_path / "concat:clip.mp4")], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
     step = Path(__file__).resolve().parent.parent / "steps" / "audio" / "waveform_trim.py"
     proc = subprocess.run([sys.executable, str(step), "--input", "concat:clip.mp4"],
                           capture_output=True, text=True, cwd=str(tmp_path))
     assert proc.returncode == 0, proc.stderr
-    assert json.loads(proc.stdout)["input"] == "concat:clip.mp4"
+    spec = json.loads(proc.stdout)
+    assert spec["input"] == "concat:clip.mp4"
+    assert len(spec["keeps"]) == 2, spec["keeps"]
