@@ -149,6 +149,28 @@ describe('ControlsInfoModal', () => {
     }
   })
 
+  it('lists the carousel crop and ratio gestures under Canvas (§556)', () => {
+    const canvas = CAROUSEL_CONTROLS.find((s) => s.heading === 'Canvas')!
+    // Every row is a mouse gesture: a glyph, no key chips.
+    expect(canvas.entries.every((e) => e.icon && !e.keys)).toBe(true)
+    expect(canvas.entries.map((e) => e.label)).toEqual([
+      'Drag an element to reposition it',
+      'Resize or rotate it via the handles',
+      'Shift-drag a corner to free the ratio',
+      'Double-click text to edit it',
+      'Double-click an image to crop it',
+      'Shift-click to select several',
+    ])
+  })
+
+  it('shows the carousel crop and ratio gestures in the window', () => {
+    render(<ControlsInfoModal title="Editor controls" sections={CAROUSEL_CONTROLS} onClose={vi.fn()} />)
+    for (const label of ['Double-click an image to crop it', 'Shift-drag a corner to free the ratio']) {
+      // "Shift" in the label is a word, so it reads the same off Apple and has no chip of its own.
+      expect(screen.getByText(label).closest('li')!.querySelectorAll('kbd')).toHaveLength(0)
+    }
+  })
+
   it('lists N as "Add a note" under Keyboard (PL39)', () => {
     // Static like M: the row is always listed, the binding is the host's opt-in.
     const keyboard = VIDEO_CONTROLS.find((s) => s.heading === 'Keyboard')!

@@ -205,7 +205,7 @@ describe('CarouselEditor — editor-core integration', () => {
     const adapter = makeFakeAdapter()
     const initial = makeProject()
 
-    render(
+    const { container } = render(
       <CarouselEditor
         project={initial}
         adapter={adapter}
@@ -220,22 +220,28 @@ describe('CarouselEditor — editor-core integration', () => {
     // Select the element (click).
     await act(async () => { fireEvent.click(wrapper) })
 
-    // Perform a drag: pointer-down on the wrapper, move on window, up on window.
+    // The slide is drawn at one scale: a pointer travel of N px is N / scale
+    // slide px. Read it off the drawn box (a 1080 px wide slide).
+    const box = container.querySelector('[data-interactive]') as HTMLElement
+    const scale = parseFloat(box.style.width) / 1080
+    expect(scale).toBeGreaterThan(0)
+
+    // Drag it 100 px right and 60 px down: pointer-down on the wrapper, move on
+    // window, up on window. pointer() (further down) dispatches MouseEvents named
+    // for the pointer events because this jsdom has no PointerEvent, so
+    // fireEvent.pointer* would drop the coordinates and "move" the element to NaN.
     await act(async () => {
-      fireEvent.pointerDown(wrapper, { clientX: 150, clientY: 150 })
-      fireEvent.pointerMove(window, { clientX: 250, clientY: 250 })
-      fireEvent.pointerUp(window)
+      pointer(wrapper, 'pointerdown', { clientX: 150, clientY: 150 })
+      pointer(window, 'pointermove', { clientX: 250, clientY: 210 })
+      pointer(window, 'pointerup', { clientX: 250, clientY: 210 })
     })
 
-    // The move + commit persisted a new position via the adapter.
-    await waitFor(() => {
-      expect(adapter.saveCalls.length).toBeGreaterThan(0)
-    })
-    const movedSave = adapter.saveCalls[adapter.saveCalls.length - 1].project
-    const movedEl = movedSave.slides![0].elements[0]
-    expect(movedEl.x).not.toBe(100)
-
-    const savesBeforeUndo = adapter.saveCalls.length
+    // The move + commit persisted one new position via the adapter: where the
+    // travel took the element, in whole slide px.
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const movedEl = adapter.saveCalls[0].project.slides![0].elements[0]
+    expect(movedEl.x).toBe(Math.round(100 + 100 / scale))
+    expect(movedEl.y).toBe(Math.round(100 + 60 / scale))
 
     // Undo via keyboard shortcut (Cmd/Ctrl+Z). The editor's keymap listens on
     // the document and skips text inputs, so fire on the document itself.
@@ -244,11 +250,8 @@ describe('CarouselEditor — editor-core integration', () => {
     })
 
     // Undo enqueues a save that restores the original position.
-    await waitFor(() => {
-      expect(adapter.saveCalls.length).toBeGreaterThan(savesBeforeUndo)
-    })
-    const undoneSave = adapter.saveCalls[adapter.saveCalls.length - 1].project
-    const undoneEl = undoneSave.slides![0].elements[0]
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    const undoneEl = adapter.saveCalls[1].project.slides![0].elements[0]
     expect(undoneEl.x).toBe(100)
     expect(undoneEl.y).toBe(100)
   })
@@ -492,6 +495,15 @@ describe('CarouselEditor — editor-core integration', () => {
     await waitFor(() => expect((renderBtn as HTMLButtonElement).disabled).toBe(false))
     expect(renderBtn.textContent).toContain('Render')
     vi.unstubAllGlobals()
+  })
+
+  // The hint under the canvas: a double-click edits text and, since §556,
+  // crops an image.
+  it('the hint under the canvas names the double-click for an image as well as for text', async () => {
+    const { findByText } = render(
+      <CarouselEditor project={makeProject()} adapter={makeFakeAdapter()} onProjectChange={vi.fn()} />,
+    )
+    await findByText(/double-click text to edit or an image to crop/)
   })
 
   // PL14: a host can draw the carousel's Controls window too, with the

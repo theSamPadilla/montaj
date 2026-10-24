@@ -1424,7 +1424,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
             </div>
             <div className="flex-shrink-0 flex items-center justify-center gap-1.5 text-xs text-[color-mix(in_srgb,var(--editor-text)_60%,transparent)] max-w-md">
               <span className="text-center">
-                Drag to reposition, resize/rotate via handles, double-click text to edit. {shortcutText(['⌘', 'Z'])} to undo.
+                Drag to reposition, resize/rotate via handles, double-click text to edit or an image to crop. {shortcutText(['⌘', 'Z'])} to undo.
               </span>
               <button
                 type="button"

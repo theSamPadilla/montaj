@@ -336,7 +336,9 @@ export const CAROUSEL_CONTROLS: ControlSection[] = [
     entries: [
       { icon: Move, label: 'Drag an element to reposition it' },
       { icon: Maximize2, label: 'Resize or rotate it via the handles' },
+      { icon: Maximize2, label: 'Shift-drag a corner to free the ratio' },
       { icon: MousePointerClick, label: 'Double-click text to edit it' },
+      { icon: MousePointerClick, label: 'Double-click an image to crop it' },
       { icon: MousePointerClick, label: 'Shift-click to select several' },
     ],
   },
