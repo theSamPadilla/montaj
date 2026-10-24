@@ -221,7 +221,8 @@ function renderRunning(seg, key, th, lines = []) {
   const windows = words.length ? runWindows(words, th.fontSize * caseWidth(th)) : []
   const win = [...windows].reverse().find(w => th.t >= w[0].start)
   return renderBlock(seg, key, th, win ? win.map((w, i) => (
-    <span key={i} style={{ ...wordStyle(w, th.fontSize, th, { running: true }), color: ACCENTS.has(w.accent) ? th.accentColor : (seg.color ?? th.color) }}>
+    // §558: a word's own colour (words[].color) beats its accent colour and the base
+    <span key={i} style={{ ...wordStyle(w, th.fontSize, th, { running: true }), color: w.color ?? (ACCENTS.has(w.accent) ? th.accentColor : (seg.color ?? th.color)) }}>
       {(i ? ' ' : '') + w.word}
     </span>
   )) : null, lines)
@@ -247,7 +248,7 @@ function renderHero(seg, key, th, translations = []) {
     if (run.length) {
       lineDivs.push(
         <div key={`s${li}`} style={{ marginBottom: -size * SCRIPT_GAP }}>
-          {run.map((w, i) => <span key={i} style={{ ...wordStyle(w, size, th, { running: false }), color: seg.color ?? th.color, ...vis(w) }}>{(i ? ' ' : '') + w.word}</span>)}
+          {run.map((w, i) => <span key={i} style={{ ...wordStyle(w, size, th, { running: false }), color: w.color ?? seg.color ?? th.color, ...vis(w) }}>{(i ? ' ' : '') + w.word}</span>)}
         </div>,
       )
     }
@@ -257,7 +258,7 @@ function renderHero(seg, key, th, translations = []) {
     lineDivs.push(
       <div key={`l${li}`} style={{ paddingLeft: size * indent }}>
         {mains.map((u, i) => (
-          <span key={i} style={{ ...wordStyle(u.main, size, th, { running: false }), ...(ACCENTS.has(u.main.accent) ? null : { color: seg.color ?? th.color }), ...vis(u.main) }}>
+          <span key={i} style={{ ...wordStyle(u.main, size, th, { running: false }), ...(u.main.color ? { color: u.main.color } : ACCENTS.has(u.main.accent) ? null : { color: seg.color ?? th.color }), ...vis(u.main) }}>
             {(i ? ' ' : '') + u.main.word}
           </span>
         ))}

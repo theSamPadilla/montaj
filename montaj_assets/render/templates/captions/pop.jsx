@@ -184,7 +184,8 @@ function renderWord(seg, { fps, t, activeColor, fontSize, fontFamily, fontWeight
       fontSize,
       fontWeight,
       fontFamily,
-      color: activeColor,
+      // §558: a word's own colour (words[].color) beats the pop colour
+      color: activeWord.color ?? activeColor,
       textShadow: '0 0 30px rgba(255,230,0,0.4), 0 2px 12px rgba(0,0,0,0.85)',
       letterSpacing,
       lineHeight,

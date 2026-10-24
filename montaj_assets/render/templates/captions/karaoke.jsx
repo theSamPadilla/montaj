@@ -172,7 +172,8 @@ function renderSegment(seg, key, { frame, fps, t, color, highlightColor, fontSiz
             const progress = active
               ? interpolate(frame, [wordStartFrame, wordEndFrame], [0, 1])
               : spoken ? 1 : 0
-            const wordColor = spoken || active ? highlightColor : (seg.color ?? color)
+            // §558: a word's own colour (words[].color) shows except while it is spoken
+            const wordColor = active ? highlightColor : (w.color ?? (spoken ? highlightColor : (seg.color ?? color)))
             return (
               <span
                 key={i}

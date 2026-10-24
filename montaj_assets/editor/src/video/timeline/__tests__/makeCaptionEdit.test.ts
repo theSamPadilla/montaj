@@ -272,3 +272,48 @@ describe('makeCaptionEdit — §244 translations', () => {
     expect(out.translationOf).toEqual(['cap-0'])
   })
 })
+
+// §558: a word's own colour (words[].color) is the AI's or the person's choice; retyping a caption must keep it on
+// every word whose text did not change.
+describe('makeCaptionEdit keeps word colours across a text edit', () => {
+  const coloured = () =>
+    seg({
+      text: 'cut the pauses best',
+      start: 0,
+      end: 4,
+      words: [
+        { word: 'cut', start: 0, end: 1 },
+        { word: 'the', start: 1, end: 2 },
+        { word: 'pauses', start: 2, end: 3, color: '#00ffff' },
+        { word: 'best', start: 3, end: 4, color: 'cyan' },
+      ],
+    })
+  const edited = (text: string) => {
+    const onProjectChange = vi.fn()
+    makeCaptionEdit(0, project([coloured()]), onProjectChange)(text)
+    return (onProjectChange.mock.calls[0][0] as Project).captions!.segments[0].words!
+  }
+
+  it('retyping another word keeps the colours of the unchanged ones', () => {
+    const words = edited('cut all pauses best')
+    expect(words.map((w) => [w.word, w.color])).toEqual([['cut', undefined], ['all', undefined], ['pauses', '#00ffff'], ['best', 'cyan']])
+  })
+
+  it('a word that is itself retyped loses its colour (it is a different word now)', () => {
+    const words = edited('cut the pause best')
+    expect(words.map((w) => w.color)).toEqual([undefined, undefined, undefined, 'cyan'])
+  })
+
+  it('inserted and removed words shift nothing: colours follow their own words', () => {
+    expect(edited('now cut the very pauses best').map((w) => [w.word, w.color])).toEqual([
+      ['now', undefined], ['cut', undefined], ['the', undefined], ['very', undefined], ['pauses', '#00ffff'], ['best', 'cyan'],
+    ])
+    expect(edited('pauses best').map((w) => [w.word, w.color])).toEqual([['pauses', '#00ffff'], ['best', 'cyan']])
+  })
+
+  it('a time edit with no text keeps every word as it was, colours and all', () => {
+    const onProjectChange = vi.fn()
+    makeCaptionEdit(0, project([coloured()]), onProjectChange)({ start: 0.5 })
+    expect((onProjectChange.mock.calls[0][0] as Project).captions!.segments[0].words).toEqual(coloured().words)
+  })
+})

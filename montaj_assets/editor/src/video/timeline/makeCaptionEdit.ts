@@ -3,6 +3,37 @@ import type { CaptionSegment } from '../../schema'
 import { floorWordDurations } from '../captionWordFloor'
 import { isCaptionTranslation } from '../captionTranslation'
 
+/**
+ * §558: the words of an edited text that are the old words, unchanged, paired by a longest common subsequence of
+ * their text: `[old index, new index]`. A word's own `color` is carried over these pairs, so retyping one word of a
+ * caption never drops the colour another word carries.
+ */
+export function unchangedWords(oldWords: readonly string[], newWords: readonly string[]): Array<[number, number]> {
+  const n = oldWords.length
+  const m = newWords.length
+  const len: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0))
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      len[i][j] = oldWords[i] === newWords[j] ? len[i + 1][j + 1] + 1 : Math.max(len[i + 1][j], len[i][j + 1])
+    }
+  }
+  const pairs: Array<[number, number]> = []
+  let i = 0
+  let j = 0
+  while (i < n && j < m) {
+    if (oldWords[i] === newWords[j]) {
+      pairs.push([i, j])
+      i++
+      j++
+    } else if (len[i + 1][j] >= len[i][j + 1]) {
+      i++
+    } else {
+      j++
+    }
+  }
+  return pairs
+}
+
 /** Fields `makeCaptionEdit` can patch onto a single caption segment. */
 export type CaptionEditPatch = Partial<CaptionSegment>
 
@@ -50,7 +81,14 @@ export function makeCaptionEdit(
           }))
           // Uniform spread has no minimum of its own — floor it so a short
           // word never falls below a frame at any fps. See captionWordFloor.ts.
-          next.words = floorWordDurations(spreadWords, next.end)
+          const floored = floorWordDurations(spreadWords, next.end)
+          // §558: a word whose text is unchanged keeps its own colour.
+          const oldWords = Array.isArray(s.words) ? s.words : []
+          for (const [oi, ni] of unchangedWords(oldWords.map((w) => w.word), newWords)) {
+            const color = oldWords[oi]?.color
+            if (typeof color === 'string' && color) floored[ni] = { ...floored[ni], color }
+          }
+          next.words = floored
           return next
         }),
       },

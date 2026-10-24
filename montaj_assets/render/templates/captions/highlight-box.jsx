@@ -189,7 +189,8 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize, 
                   padding: '4px 18px',
                   transform: 'scale(1.08)',
                 } : {
-                  color: seg.color ?? color,
+                  // §558: a word's own colour (words[].color) beats the segment's and the track's
+                  color: w.color ?? seg.color ?? color,
                   textShadow: '0 2px 12px rgba(0,0,0,0.85)',
                 }}
               >

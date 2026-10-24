@@ -8,6 +8,7 @@ from common import fail
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.types.carousel import CAROUSEL_ASPECTS, CAROUSEL_RESOLUTIONS
 from lib.project_tracks import track_items
+from lib.css_color import is_css_color
 
 # Re-export existing step validation so tests can import from validate
 from validate_step import validate as validate_step  # noqa: F401
@@ -393,6 +394,21 @@ def _validate_audio_tracks(data):
                  f"omit 'end' to play the source's natural length")
 
 
+def _validate_caption_word_colors(data):
+    """§558: a caption word's own `color` (words[].color, read by the per-word caption styles) is optional (absent or
+    null), and when present a hex or a named CSS colour (lib/css_color.py). Nothing else of the captions is checked
+    here: no caption rule existed before, and validate runs on saves."""
+    caps = data.get("captions")
+    if not isinstance(caps, dict) or not isinstance(caps.get("segments"), list):
+        return
+    for si, seg in enumerate(caps["segments"]):
+        if not isinstance(seg, dict) or not isinstance(seg.get("words"), list):
+            continue
+        for wi, w in enumerate(seg["words"]):
+            if isinstance(w, dict) and w.get("color") is not None and not is_css_color(w["color"]):
+                fail("invalid_field", f"captions.segments[{si}].words[{wi}].color must be a hex or a named CSS colour, got {w['color']!r}")
+
+
 def validate_project(path):
     if not os.path.isfile(path):
         fail("file_not_found", f"File not found: {path}")
@@ -638,6 +654,7 @@ def validate_project(path):
 
         _validate_clip_extensions(data, os.path.dirname(os.path.abspath(path)))
         _validate_audio_tracks(data)
+        _validate_caption_word_colors(data)
 
     return {"valid": True}
 

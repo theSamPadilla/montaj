@@ -11,6 +11,8 @@ export interface Word {
   end: number
   // PL41: the Accent style's accent treatment; other styles ignore it
   accent?: 'serif' | 'sans' | 'script'
+  // §558: the word's own colour (hex or a named CSS colour), drawn by every per-word caption style
+  color?: string
 }
 
 export interface AudioTrack {

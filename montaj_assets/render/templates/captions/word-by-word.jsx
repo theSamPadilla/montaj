@@ -197,7 +197,8 @@ function renderWord(seg, { fps, t, color, fontSize, fontFamily, fontWeight, text
       fontSize,
       fontWeight,
       fontFamily,
-      color: seg.color ?? color,
+      // §558: a word's own colour (words[].color) beats the segment's and the track's
+      color: activeWord.color ?? seg.color ?? color,
       textShadow: '0 2px 12px rgba(0,0,0,0.85)',
       letterSpacing,
       lineHeight,

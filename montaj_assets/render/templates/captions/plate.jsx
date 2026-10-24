@@ -211,13 +211,14 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, background
     }
   }
 
+  // §558: a word's own colour (words[].color) shows except while it is spoken
   const captionText = words.length ? words.flatMap((w, i) => [
     // A real space between words, outside the spans: an inline-block (the lit word, which lifts) swallows a
     // leading space, and a margin would leave a gap at the end of a wrapped line.
     i > 0 ? ' ' : null,
     <span
       key={i}
-      style={i === activeIndex ? { display: 'inline-block', color: accentColor, transform: 'scale(1.06)' } : undefined}
+      style={i === activeIndex ? { display: 'inline-block', color: accentColor, transform: 'scale(1.06)' } : (w.color ? { color: w.color } : undefined)}
     >
       {w.word}
     </span>,

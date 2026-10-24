@@ -179,7 +179,8 @@ function renderSegment(seg, key, { frame, fps, t, color, accentColor, fontSize, 
               style={{
                 display: 'inline-block',
                 marginRight: i === words.length - 1 ? 0 : '0.35em',
-                color: i === activeIndex ? accentColor : (seg.color ?? color),
+                // §558: a word's own colour (words[].color) shows except while it is spoken
+                color: i === activeIndex ? accentColor : (w.color ?? seg.color ?? color),
               }}
             >
               {w.word}
