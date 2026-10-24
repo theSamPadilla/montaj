@@ -518,3 +518,37 @@ describe('useProjectState: editElements', () => {
     expect(result.current.lastError).toMatch(/save boom/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// discardTransient (§556 review): a gesture given up, not committed
+// ---------------------------------------------------------------------------
+
+describe('useProjectState: discardTransient', () => {
+  it('puts back the project as it was before the transient moves: nothing saved, no undo step', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.moveElement('slide-0', 'el-0', 5, 6)
+      await result.current.moveElement('slide-0', 'el-0', 0, 0)
+    })
+    expect(result.current.project).not.toBe(initial)
+    act(() => { result.current.discardTransient() })
+    expect(result.current.project).toBe(initial)
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(result.current.canUndo).toBe(false)
+  })
+
+  it('leaves nothing behind: the next commit with no moves is not an undo step either', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => { await result.current.moveElement('slide-0', 'el-0', 5, 6) })
+    act(() => { result.current.discardTransient() })
+    await act(async () => { await result.current.commit() })
+    expect(result.current.canUndo).toBe(false)
+    expect(result.current.project).toBe(initial)
+  })
+})

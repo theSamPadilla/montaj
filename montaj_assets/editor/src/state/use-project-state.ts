@@ -87,6 +87,13 @@ export interface UseProjectState<P extends Project = Project> {
    */
   editNotes: (edit: (notes: Project['notes']) => Project['notes']) => Promise<void>
   commit: () => Promise<void>
+  /**
+   * Gives up the gesture in progress (a run of `moveElement`, `resizeElement`
+   * or `rotateElement`): the project goes back to how it was before the first
+   * of them, with no save and no undo step. Nothing happens when no gesture is
+   * open. Use it instead of `commit` for a gesture that ended where it began.
+   */
+  discardTransient: () => void
   refetch: () => Promise<void>
   undo: () => void
   redo: () => void
@@ -319,6 +326,7 @@ export function useProjectState<P extends Project = Project>(
     setOverlayFrame,
     editNotes,
     commit: sync.commit,
+    discardTransient: sync.discardTransient,
     refetch: sync.refetch,
     undo: sync.undo,
     redo: sync.redo,

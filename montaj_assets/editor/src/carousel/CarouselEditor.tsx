@@ -360,11 +360,19 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const nudgeRef = useRef<PendingNudge | null>(null)
   const commitRef = useRef(state.commit)
   commitRef.current = state.commit
+  const discardRef = useRef(state.discardTransient)
+  discardRef.current = state.discardTransient
   const flushNudge = useCallback(() => {
     const open = nudgeRef.current
     if (!open) return
     nudgeRef.current = null
     clearTimeout(open.timer)
+    // A burst that netted to zero (Right then Left) changed nothing: it is given
+    // up, with no undo step and no save.
+    if (open.dx === 0 && open.dy === 0) {
+      discardRef.current()
+      return
+    }
     // A save that fails is reported through `state.lastError`.
     commitRef.current().catch(() => {})
   }, [])

@@ -2296,6 +2296,43 @@ describe('CarouselEditor: nudge (§556 M2)', () => {
     expect((r.getByLabelText('Undo') as HTMLButtonElement).disabled).toBe(true)
   })
 
+  it('a burst that nets to zero (Right then Left) saves nothing and leaves no undo step', async () => {
+    const { adapter, onProjectChange, r } = await mountOne()
+    // Right is still held when Left goes down; both are let go.
+    await key('ArrowRight')
+    await key('ArrowLeft')
+    expect(xyOf(liveProject(onProjectChange))).toEqual([100, 100])
+    await keyUp('ArrowLeft')
+    await keyUp('ArrowRight')
+    await act(async () => { await new Promise((res) => setTimeout(res, 20)) })
+
+    expect(adapter.saveCalls).toHaveLength(0)
+    expect((r.getByLabelText('Undo') as HTMLButtonElement).disabled).toBe(true)
+    expect(xyOf(liveProject(onProjectChange))).toEqual([100, 100])
+
+    // The editor is as it was: the next burst is its own undo step.
+    await key('ArrowDown')
+    await keyUp('ArrowDown')
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(xyOf(lastSave(adapter))).toEqual([100, 101])
+    await key('z', CMD)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(2))
+    expect(xyOf(lastSave(adapter))).toEqual([100, 100])
+    expect((r.getByLabelText('Undo') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('a zero-net burst that ends on the 500 ms timer writes nothing either', async () => {
+    const { adapter, r } = await mountOne()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await key('ArrowUp', { shiftKey: true })
+    await key('ArrowDown', { shiftKey: true })
+    await act(async () => { vi.advanceTimersByTime(500) })
+    vi.useRealTimers()
+    await act(async () => { await new Promise((res) => setTimeout(res, 20)) })
+    expect(adapter.saveCalls).toHaveLength(0)
+    expect((r.getByLabelText('Undo') as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('the 500 ms are counted from the last press', async () => {
     const { adapter, onProjectChange } = await mountOne()
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
