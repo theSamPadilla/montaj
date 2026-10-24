@@ -410,6 +410,33 @@ def test_a_refrain_said_at_the_start_and_the_end_of_a_clip_is_two_lines(tmp_path
     assert out["start"] < 1 and len(out["also"]) == 1 and out["also"][0] > 10, out
 
 
+def _zero_length(d, last=None):
+    """The transcript's words (the last `last`, or all) at zero length, as whisper makes them up."""
+    t = json.loads((d / "speech.json").read_text())
+    ws = [w for w in t["transcription"] if w["text"].strip()]
+    for w in ws[-last:] if last else ws:
+        w["offsets"]["to"] = w["offsets"]["from"]
+    (d / "speech.json").write_text(json.dumps(t))
+
+
+def test_a_made_up_last_sentence_never_anchors_a_graphic(tmp_path, capsys):
+    script = list(SCRIPT)
+    script[-3] = "everyone."            # ... "Thanks for watching everyone. See you." : a two-word last sentence
+    d = make_project(tmp_path, script=script)
+    assert run(d, at='{"phrase": "see you"}', preset="callout")["start"] > 20, "real words: found"
+    (tmp_path / "made-up").mkdir()
+    d2 = make_project(tmp_path / "made-up", script=script)
+    _zero_length(d2, last=2)
+    assert refused(capsys, run, d2, at='{"phrase": "see you"}', preset="callout")["error"] == "phrase_not_found"
+    assert run(d2, at='{"phrase": "thanks for watching"}', preset="callout")["start"] > 20, "the rest is speech"
+
+
+def test_words_on_a_b_roll_clip_never_anchor_a_graphic(tmp_path, capsys):
+    d = make_project(tmp_path)
+    _zero_length(d)
+    assert refused(capsys, run, d, at='{"phrase": "three times faster"}', preset="callout")["error"] == "phrase_not_found"
+
+
 def test_clean_says_when_cut_keeps_another_take(tmp_path):
     d = make_project(tmp_path)
     out = run(d, at='{"phrase": "three times faster"}', preset="callout")

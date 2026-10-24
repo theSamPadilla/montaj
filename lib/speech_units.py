@@ -252,6 +252,41 @@ def hardly_speech(words, span):
     return not any(sum(1 for x in starts if s0 <= x < s0 + DENSE_WINDOW_S) >= DENSE_WORDS for s0 in starts)
 
 
+def mark_made_up_tails(units, inside=frozenset()):
+    """The last sentence of each clip, three words or fewer, whose own words look made up: stretched or of zero
+    length, or every one inside a measured silence (`inside`: (letter, word index) pairs speech_text found there),
+    like "Thank you." over a quiet end. Marked, so the selection drops it as a pause."""
+    last = {}
+    for n, (u, rows, _) in enumerate(units):
+        last[u.clip] = n
+    for n in last.values():
+        u, rows, _ = units[n]
+        ws = [w for _, r in rows for w in r.words]
+        words = [{"text": w.text, "start": w.start, "end": w.end} for w in ws]
+        if u.fixed or not 0 < len(words) <= 3:
+            continue
+        if made_up(words) or all((u.clip, w.idx) in inside for w in ws):
+            u.madeup = True
+
+
+def broll_items(project, project_dir):
+    """The ids of the media items whose source's transcript is b-roll: made up, or too few words to be speech
+    (cut's own tests, over the whole source as language_of reads it, so a piece of a cut clip is judged by its
+    clip)."""
+    out = set()
+    for t in normalize_tracks(project).get("tracks", []):
+        for it in media_items(t):
+            sc = sidecar_for(resolved_item(it, project_dir))
+            if not sc:
+                continue
+            ws = load_words(sc)
+            words = [{"text": w.text, "start": w.start, "end": w.end} for w in ws]
+            span = max(float(it.get("outPoint", 0)) - float(it.get("inPoint", 0)), float(it.get("sourceDuration") or 0), 1e-6)
+            if words and (made_up(words) or hardly_speech(words, span)):
+                out.add(it.get("id"))
+    return out
+
+
 def language_of(arg, track, project_dir):
     """The speech language: the param, else (auto or none) what whisper detected in the transcript of the clip
     with the most words, b-roll left out (music is often detected as some other language)."""

@@ -5,7 +5,8 @@ sentences (lib/speech_units.build_units), judged by the take rules (lib/take_sel
 timeline through the project's current cut (each word through the item that plays it, by words_at's own rule:
 lib/speech_words_at). A phrase matches a run of a sentence's words, fillers left out of both, compared as normalized
 tokens with their accents folded (lib/speech_lines.norm); in a language written without spaces (NON_SPACED) it matches
-the sentence's characters.
+the sentence's characters. Words whisper made up are never matched, by cut's own tests: a b-roll clip's
+(speech_units.broll_items) and a clip's made-up last sentence (speech_units.mark_made_up_tails).
 
 Sayings are grouped by the line they are takes of: select's sections (a false start or an abandoned opening goes
 with the take after it), and also two sentences whose words, fillers left out, are near the same (take_select's
@@ -119,11 +120,19 @@ def sayings(project, project_dir, phrase, language="en", track_id=None):
         track_id = speech_units.speech_track_id(project, project_dir)
     d = speech_text.derive(project, project_dir, track=track_id)
     built, _ = speech_units.build_units(d, is_filler)
+    # as cut reads them: a b-roll clip's sentences, and a made-up last sentence of a clip ("Thank you." over a quiet
+    # end), are words whisper made up, never a place to anchor anything
+    broll = speech_units.broll_items(project, project_dir)
+    for u, rows, _ in built:
+        u.fixed = bool(rows) and all(r.item_ids and r.item_ids[0] in broll for _, r in rows)
+    speech_units.mark_made_up_tails(built, d.inside_words)
     units = [u for u, _, _ in built]
     sel = select(units, is_filler) if units else None
     items = _items(project)
     found = []
-    for k, (_, rows, _) in enumerate(built):
+    for k, (u, rows, _) in enumerate(built):
+        if u.fixed or u.madeup:
+            continue
         words = _unit_words(rows)
         seq = [(i, fk(t)) for i, (w, _) in enumerate(words) for t in [norm(w.text)] if t and not is_filler(t)]
         for a, b in _matches(seq, want, spaceless):

@@ -40,7 +40,8 @@ from lib.speech_units import (FALLBACK_ERRORS, HESITATION_S, NON_MEDIA as _NON_M
 from lib import speech_units
 from lib.speech_units import (DENSE_WINDOW_S, DENSE_WORDS, MADE_UP_MEDIAN_S, MIN_WORDS_PER_S,  # noqa: F401
                                NON_SPACED, ZERO_LENGTH_S, ZERO_SHARE, hardly_speech as _hardly_speech,
-                               language_of as _language, made_up as _made_up)
+                               language_of as _language, made_up as _made_up,
+                               mark_made_up_tails as _mark_made_up_tails)
 from steps.audio import waveform_trim
 from steps.edit import jump_cut
 from steps.speech import rm_fillers, rm_nonspeech
@@ -213,23 +214,6 @@ def _carried(origin, work, ti, lineage, project_dir):
 
 
 # ── units: one spoken sentence each ──────────────────────────────────────────
-
-def _mark_made_up_tails(units, inside=frozenset()):
-    """The last sentence of each clip, three words or fewer, whose own words look made up: stretched or of zero
-    length, or every one inside a measured silence (`inside`: (letter, word index) pairs speech_text found there),
-    like "Thank you." over a quiet end. Marked, so the selection drops it as a pause."""
-    last = {}
-    for n, (u, rows, _) in enumerate(units):
-        last[u.clip] = n
-    for n in last.values():
-        u, rows, _ = units[n]
-        ws = [w for _, r in rows for w in r.words]
-        words = [{"text": w.text, "start": w.start, "end": w.end} for w in ws]
-        if u.fixed or not 0 < len(words) <= 3:
-            continue
-        if _made_up(words) or all((u.clip, w.idx) in inside for w in ws):
-            u.madeup = True
-
 
 # ── the edited text ──────────────────────────────────────────────────────────
 
