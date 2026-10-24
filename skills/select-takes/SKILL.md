@@ -22,7 +22,7 @@ This is the only step with full cross-clip awareness. Use it.
 
 ### 0. Put every take on the speech track
 
-`speech_text` reads the timeline, so the mechanical pass's keeps must be items first. If `tracks[0]` still holds whole clips, run `jump_cut` once per clip, in order: `{"project-id": ..., "clip-id": ..., "spec": "<the clip's rm_fillers output>"}`. It writes one item per keep into the project, packed end to end, and carries each clip's `proxySrc`, source size and `normalizedSrc`. Do not copy keeps into the call or save `tracks` yourself. Then run `speech_text`.
+`speech_text` reads the timeline, so the mechanical pass's keeps must be items first. If `tracks[0]` still holds whole clips, run `jump_cut` once per clip, in order: `{"project-id": ..., "clip-id": ..., "spec": "<path>"}`, where `<path>` is the clip's `rm_fillers` spec saved with `write_file` in the project folder (the step prints it inline). It works on a clip straight from project creation too. It writes one item per keep into the project, packed end to end, and carries each clip's `proxySrc`, source size and `normalizedSrc`. Do not copy keeps into the call or save `tracks` yourself. Then run `speech_text`.
 
 ### 1. Read the whole track
 
