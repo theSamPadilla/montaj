@@ -43,6 +43,13 @@ function ffmpegFadeCurve(shape) {
   return FFMPEG_CURVE_BY_SHAPE[shape] ?? FFMPEG_CURVE_BY_SHAPE.exp
 }
 
+// A track's volume and start are project.json values that go into the filter graph as text, where anything but
+// a number could add a filter (§563). A finite number passes unchanged; anything else is refused, naming the field.
+function finiteNumber(value, field) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  throw new Error(`audio.tracks[].${field} must be a finite number, got ${JSON.stringify(value)}`)
+}
+
 /**
  * Build the `afade` chain for one track. Both `st=` values are in DELAYED-STREAM
  * time — absolute timeline position — NOT track-local time.
@@ -81,7 +88,7 @@ function ffmpegFadeCurve(shape) {
  *                         leading-comma fragment to append to the delay chain
  */
 function buildFadeFilters(track) {
-  const start   = track.start   ?? 0
+  const start   = finiteNumber(track.start ?? 0, 'start')
   const fadeIn  = track.fadeIn  ?? 0
   const fadeOut = track.fadeOut ?? 0
   // NOT `?? 0`. A track with no `end` is legal and common — `_validate_audio_tracks`
@@ -156,7 +163,7 @@ export function buildAudioTrackFilters(audioTracks = [], baseInputIdx, currentAu
     if (track.muted) continue
 
     const inputIdx = baseInputIdx + offset
-    const vol      = track.volume ?? 1.0
+    const vol      = finiteNumber(track.volume ?? 1.0, 'volume')
     const delayMs  = Math.round((track.start ?? 0) * 1000)
     const audioIn  = audioLabel.startsWith('[') ? audioLabel : `[${audioLabel}]`
 

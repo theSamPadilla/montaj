@@ -191,3 +191,29 @@ test('ducking ratio: zero, positive and non-finite depths stay at or above the m
   assert.equal(duckRatio(6), 1)
   assert.equal(duckRatio(NaN), 4)
 })
+
+// §563: a track's volume and start are project.json values spliced into the filter graph.
+test('buildAudioTrackFilters: valid numeric tracks build exactly the graph they did before (§563)', () => {
+  const plain = { src: '/a.wav', start: 2.5, end: 10, volume: 0.8, fadeIn: 1, fadeOut: 2 }
+  const ducked = { src: '/b.wav', start: 0, end: 6, volume: 0.35, fadeIn: 0.5, ducking: { enabled: true, depth: -12, attack: 0.3, release: 0.5 } }
+  const bare = { src: '/c.wav' }
+  assert.deepEqual(buildAudioTrackFilters([plain, ducked, bare], 1, '[0:a]'), {
+    filterParts: [
+      '[1:a]adelay=2500:all=1,volume=0.8,afade=t=in:st=2.5:d=1:curve=exp,afade=t=out:st=8:d=2:curve=exp[atrack0]',
+      '[0:a][atrack0]amix=inputs=2:duration=longest:normalize=0[amid0]',
+      '[amid0]asplit=2[speech1][sc1]',
+      '[2:a]adelay=0:all=1,volume=0.35,afade=t=in:st=0:d=0.5:curve=exp[mscaled1]',
+      '[mscaled1][sc1]sidechaincompress=threshold=0.02:ratio=4:attack=300:release=500[ducked1]',
+      '[speech1][ducked1]amix=inputs=2:duration=first:normalize=0[aout1]',
+      '[3:a]adelay=0:all=1,volume=1[atrack2]',
+      '[aout1][atrack2]amix=inputs=2:duration=longest:normalize=0[amid2]',
+    ],
+    audioLabel: '[amid2]',
+  })
+})
+
+test('buildAudioTrackFilters: a volume or start that is not a number is refused, naming the field (§563)', () => {
+  assert.throws(() => buildAudioTrackFilters([{ src: '/a.wav', volume: '1,anull' }], 1, '[0:a]'), /volume/)
+  assert.throws(() => buildAudioTrackFilters([{ src: '/a.wav', volume: '1[x]', ducking: { enabled: true } }], 1, '[0:a]'), /volume/)
+  assert.throws(() => buildAudioTrackFilters([{ src: '/a.wav', start: '0,anull', fadeIn: 1 }], 1, '[0:a]'), /start/)
+})
