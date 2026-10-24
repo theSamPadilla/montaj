@@ -14,7 +14,7 @@ import json, os, sys, argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin, filter_script
+from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin, filter_script, ff_path
 from trim_spec import is_trim_spec, is_cut_spec, load as load_spec, merge as merge_keeps
 from normalize import SEEK_PREROLL_S
 
@@ -112,7 +112,8 @@ def build_ffmpeg_args(spec: dict, audio_only: bool = False) -> tuple:
         # trim: 149/30 cut from frame 150 (near "2.9667" vs 2.966667; k = 2 mod
         # 3 at 30 fps, measured FQ54). With fine == 0, -t is the exact end bound
         # and rounding up admitted one extra frame the same way.
-        input_args += ["-ss", f"{near:.6f}", "-t", f"{t:.6f}", "-i", src]
+        # ff_path, not ff_input: main() require_file'd every src when it read the spec (§563).
+        input_args += ["-ss", f"{near:.6f}", "-t", f"{t:.6f}", "-i", ff_path(src)]
 
     def _vchain(idx):
         parts = []

@@ -21,7 +21,7 @@ Point-in-time (--at <seconds>):
 import math, os, sys, argparse, glob
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin, ff_seconds
+from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin, ff_seconds, ff_input
 
 
 def main():
@@ -67,7 +67,7 @@ def main():
         # fast seek; accuracy is sufficient for our boundary-frame use case.
         run([ffmpeg_bin(), "-y",
              "-ss", ff_seconds(args.at),
-             "-i", args.input,
+             "-i", ff_input(args.input),
              "-frames:v", "1",
              "-q:v", "2",  # high-quality JPEG (scale: 1=best..31=worst)
              out])
@@ -90,7 +90,7 @@ def main():
 
         run([ffmpeg_bin(), "-y",
              "-ss", ff_seconds(window_start), "-to", ff_seconds(window_end),
-             "-i", args.input,
+             "-i", ff_input(args.input),
              "-vf", "scale=320:-1",
              os.path.join(out_dir, "frame_%04d.jpg")])
 
@@ -129,7 +129,7 @@ def main():
 
     run([ffmpeg_bin(), "-y",
          "-ss", ff_seconds(window_start), "-to", ff_seconds(window_end),
-         "-i", args.input,
+         "-i", ff_input(args.input),
          "-vf", f"fps=1/{interval},scale=320:-1,tile={cols}x{rows}",
          "-frames:v", "1", out])
 

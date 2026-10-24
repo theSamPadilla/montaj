@@ -5,7 +5,7 @@ was tuned on, so the threshold is the source's own noise floor plus a margin.
 """
 import re
 
-from lib.common import fail, ffmpeg_bin, ffprobe_bin, require_file, run
+from lib.common import fail, ffmpeg_bin, ffprobe_bin, require_file, run, ff_path
 
 MIN_SILENCE_S = 0.06
 FLOOR_MARGIN_DB = 15
@@ -16,7 +16,7 @@ _MERGE_GAP_S = 0.02
 def _require_audio(path: str):
     require_file(path)
     r = run([ffprobe_bin(), "-v", "error", "-select_streams", "a", "-show_entries",
-             "stream=index", "-of", "csv=p=0", path], check=False)
+             "stream=index", "-of", "csv=p=0", ff_path(path)], check=False)
     if not r.stdout.strip():
         fail("no_audio", f"No audio stream in {path}")
 
@@ -24,7 +24,7 @@ def _require_audio(path: str):
 def noise_floor_db(path: str) -> float:
     """ffmpeg astats overall Noise_floor (dB) of the first audio stream; -60.0 if astats reports -inf."""
     _require_audio(path)
-    r = run([ffmpeg_bin(), "-i", path, "-map", "0:a:0", "-af", "astats=measure_perchannel=none",
+    r = run([ffmpeg_bin(), "-i", ff_path(path), "-map", "0:a:0", "-af", "astats=measure_perchannel=none",
              "-f", "null", "-"], check=False)
     m = re.search(r"Noise floor dB:\s*(-?inf|-?[\d.]+)", r.stderr)
     if not m or m.group(1).endswith("inf"):
@@ -46,7 +46,7 @@ def silences(path: str, start: float = 0.0, end: float | None = None) -> list[tu
         cmd += ["-ss", f"{start:.3f}"]
     if end is not None:
         cmd += ["-t", f"{max(0.0, end - start):.3f}"]
-    cmd += ["-i", path, "-map", "0:a:0", "-af", f"silencedetect=noise={t:.2f}dB:d={MIN_SILENCE_S}",
+    cmd += ["-i", ff_path(path), "-map", "0:a:0", "-af", f"silencedetect=noise={t:.2f}dB:d={MIN_SILENCE_S}",
             "-f", "null", "-"]
     r = run(cmd, check=False)
     found, cur = [], None

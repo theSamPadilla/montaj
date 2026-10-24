@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, ffmpeg_bin, ffprobe_bin, get_duration
+from common import fail, require_file, check_output, run, ffmpeg_bin, ffprobe_bin, get_duration, ff_input
 import models
 import rvm_model
 
@@ -133,7 +133,7 @@ def _probe_source_rotation(input_path: str) -> int:
         r = subprocess.run([
             ffprobe_bin(), "-v", "quiet", "-select_streams", "v:0",
             "-show_entries", "stream_side_data=rotation",
-            "-of", "json", input_path,
+            "-of", "json", ff_input(input_path),
         ], capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             return 0
@@ -307,7 +307,7 @@ def _process_one(
         _run_ffmpeg([
             ffmpeg_bin(), "-y",
             "-i", tmp_video_path,
-            "-i", input_path,
+            "-i", ff_input(input_path),
             *video_args,
             "-c:a", "copy",
             "-map", "0:v:0",

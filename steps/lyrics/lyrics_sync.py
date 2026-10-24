@@ -17,7 +17,7 @@ from math import sqrt
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import (fail, require_file, check_output, run, run_whisper, find_whisper_bin, ffmpeg_bin,
+from common import (fail, require_file, check_output, run, run_whisper, find_whisper_bin, ffmpeg_bin, ff_input,
                     require_whisper_model, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES)
 
 
@@ -178,7 +178,7 @@ def quiet_cuts(rms, n_samples):
 def _decode(audio_in, wav_path):
     """Decode any audio or video input once to 16 kHz mono s16 WAV. Returns
     (raw little-endian bytes, samples)."""
-    run([ffmpeg_bin(), "-y", "-i", audio_in, "-vn", "-acodec", "pcm_s16le",
+    run([ffmpeg_bin(), "-y", "-i", ff_input(audio_in), "-vn", "-acodec", "pcm_s16le",
          "-ar", str(SAMPLE_RATE), "-ac", "1", wav_path])
     with wave.open(wav_path, "rb") as w:
         raw = w.readframes(w.getnframes())

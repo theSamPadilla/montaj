@@ -4,7 +4,7 @@ import json, math, os, re, sys, argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, run, get_duration, ffmpeg_bin, ff_seconds
+from common import fail, require_file, run, get_duration, ffmpeg_bin, ff_seconds, ff_input
 from parallelism import batch_workers
 
 
@@ -15,7 +15,7 @@ def process_one(input_path: str, threshold: float, min_silence: float) -> dict:
     # Detect silences. Both values are floats, never caller text: text here is spliced into the
     # filter graph, where a `,` adds a filter that can write any file ffmpeg reaches (§563).
     r = run(
-        [ffmpeg_bin(), "-i", input_path,
+        [ffmpeg_bin(), "-i", ff_input(input_path),
          "-af", f"silencedetect=noise={float(threshold)}dB:d={ff_seconds(float(min_silence))}",
          "-f", "null", "-"],
         check=False,

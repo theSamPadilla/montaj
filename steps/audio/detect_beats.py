@@ -23,7 +23,7 @@ the downbeat; beats before the downbeat are a pickup.
 import argparse, array, json, math, operator, os, subprocess, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import ffmpeg_error_tail, fail, require_file, ffmpeg_bin, ffprobe_value
+from common import ffmpeg_error_tail, fail, require_file, ffmpeg_bin, ffprobe_value, ff_input
 
 METHOD = "bandflux-autocorr-v1"
 SR = 22050
@@ -55,7 +55,7 @@ def decode_bands(path, timeout=600):
           "[a]lowpass=f=150,lowpass=f=150[l];"
           "[b]highpass=f=150,lowpass=f=4000[m];"
           "[c]highpass=f=4000[h];[l][m][h]amerge=inputs=3[o]") % SR
-    cmd = [ffmpeg_bin(), "-nostdin", "-v", "error", "-i", path, "-vn",
+    cmd = [ffmpeg_bin(), "-nostdin", "-v", "error", "-i", ff_input(path), "-vn",
            "-filter_complex", fc, "-map", "[o]",
            "-f", "f32le", "-acodec", "pcm_f32le", "-"]
     try:

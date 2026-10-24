@@ -269,6 +269,7 @@ def test_normalize_pass_two_refuses_a_measurement_that_is_not_a_number(monkeypat
 
     monkeypatch.setattr(mod, "run", fake_run)
     monkeypatch.setattr(mod, "require_file", lambda p: None)
+    monkeypatch.setattr(mod, "ff_input", lambda p: p)
     monkeypatch.setattr(sys, "argv", ["normalize.py", "--input", "/clips/a.mp4", "--out", "/clips/b.mp4"])
     with pytest.raises(SystemExit):
         mod.main()

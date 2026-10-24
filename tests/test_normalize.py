@@ -957,10 +957,10 @@ def test_silent_source_anullsrc_is_an_input_not_an_output_option(monkeypatch):
     monkeypatch.setattr(nm, "_has_zscale", lambda: True)
     monkeypatch.setattr(nm, "_has_lut3d", lambda: True)
     info = _minimal_info("arib-std-b67", has_audio=False)
-    cmd, _ = nm._build_ffmpeg_cmd("in.mp4", "out.mp4", "sdr_bt709", info)
+    cmd, _ = nm._build_ffmpeg_cmd("/m/in.mp4", "/m/out.mp4", "sdr_bt709", info)
 
     i_primary = cmd.index("-i")
-    assert cmd[i_primary + 1] == "in.mp4"
+    assert cmd[i_primary + 1] == "/m/in.mp4"
     i_lavfi = cmd.index("anullsrc=cl=stereo:r=48000")
     assert cmd[i_lavfi - 1] == "-i" and cmd[i_lavfi - 2] == "lavfi"
     # The lavfi input is declared BEFORE any output option.

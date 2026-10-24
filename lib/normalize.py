@@ -20,7 +20,7 @@ The sys.path.insert below adds lib/ itself so `from common import ...` works in 
 import sys, os, json, subprocess, argparse, glob, re, functools
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
-from common import ffmpeg_error_tail, fail, require_file, progress, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path, ff_seconds
+from common import ffmpeg_error_tail, fail, require_file, progress, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path, ff_seconds, ff_path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types.colorspace` works
 from lib.types.colorspace import (
@@ -132,7 +132,7 @@ def probe_video(path):
         ffprobe_bin(), "-v", "quiet",
         "-show_entries",
         "stream=codec_type,codec_name,width,height,pix_fmt,color_transfer,r_frame_rate,avg_frame_rate,sample_rate:format_tags=creation_time",
-        "-of", "json", path,
+        "-of", "json", ff_path(path),
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
     if r.returncode != 0:
@@ -215,7 +215,7 @@ def _probe_rotation(path):
     cmd = [
         ffprobe_bin(), "-v", "quiet", "-select_streams", "v:0",
         "-show_entries", "stream_side_data=rotation",
-        "-of", "json", path,
+        "-of", "json", ff_path(path),
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
     if r.returncode != 0:
@@ -240,7 +240,7 @@ def _probe_max_keyframe_interval(path):
         ffprobe_bin(), "-v", "quiet", "-select_streams", "v:0",
         "-show_entries", "packet=pts_time,flags",
         "-read_intervals", f"%+{KEYFRAME_PROBE_WINDOW_S}",
-        "-of", "csv=p=0", path,
+        "-of", "csv=p=0", ff_path(path),
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
     if r.returncode != 0:
@@ -591,7 +591,7 @@ def _build_ffmpeg_cmd(
     cmd = [
         ffmpeg_bin(), "-y",
         *pre_input_args,
-        "-i", input_path,
+        "-i", ff_path(input_path),
         *(["-ss", post_input_seek] if post_input_seek else []),
         "-vf", vf,
         # -af only when the source has a real audio track to trim; the
@@ -627,7 +627,7 @@ def _build_ffmpeg_cmd(
         # command ("Option vf ... cannot be applied to input url anullsrc").
         # `-shortest` stays output-side so the silent track ends with the video.
         idx = cmd.index("-i")
-        assert cmd[idx + 1] == input_path
+        assert cmd[idx + 1] == ff_path(input_path)
         cmd[idx + 2:idx + 2] = ["-f", "lavfi", "-i", "anullsrc=cl=stereo:r=48000"]
         idx = cmd.index(out_path)
         cmd[idx:idx] = ["-shortest"]

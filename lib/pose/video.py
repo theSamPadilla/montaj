@@ -10,7 +10,7 @@ from collections import namedtuple
 
 import numpy as np
 
-from lib.common import fail, ffmpeg_bin, ffmpeg_error_tail, ffprobe_bin
+from lib.common import fail, ffmpeg_bin, ffmpeg_error_tail, ffprobe_bin, ff_path
 from lib.frame_sampling import input_args
 from lib.normalize import probe_video
 
@@ -38,7 +38,7 @@ def video_info(path):
 
 
 def _duration(path):
-    r = subprocess.run([ffprobe_bin(), "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+    r = subprocess.run([ffprobe_bin(), "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", ff_path(path)],
                        capture_output=True, text=True, timeout=30)
     try:
         d = float(r.stdout.strip())

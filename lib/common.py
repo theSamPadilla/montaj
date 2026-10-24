@@ -46,6 +46,19 @@ def require_file(path: str):
         fail("file_not_found", f"File not found: {path}")
 
 
+def ff_path(path) -> str:
+    """`path` as ffmpeg or ffprobe must take it: absolute, so text like `concat:...` or `http://...` is opened as a
+    file, never as a protocol, even when a file of that name exists (§563). An absolute path is returned unchanged."""
+    path = os.fspath(path)
+    return path if os.path.isabs(path) else os.path.abspath(path)
+
+
+def ff_input(path) -> str:
+    """A caller-supplied media path for ffmpeg's -i or ffprobe: it must be a file (require_file), then ff_path."""
+    require_file(path)
+    return ff_path(path)
+
+
 def check_output(path: str):
     if not os.path.isfile(path) or os.path.getsize(path) == 0:
         fail("empty_output", f"Output file is empty: {path}")
@@ -275,7 +288,7 @@ def ffprobe_value(path: str, entries: str, stream_select: str = "") -> str:
     cmd = [ffprobe_bin(), "-v", "quiet"]
     if stream_select:
         cmd += ["-select_streams", stream_select]
-    cmd += ["-show_entries", entries, "-of", "csv=p=0", path]
+    cmd += ["-show_entries", entries, "-of", "csv=p=0", ff_path(path)]
     r = run(cmd)
     return r.stdout.strip()
 
@@ -573,7 +586,7 @@ def transcribe_words(input_path: str, model: str = DEFAULT_WHISPER_MODEL, work_d
         mime = mimetypes.guess_type(input_path)[0] or ""
         if mime.startswith("video/") or not mime.startswith("audio/"):
             audio = os.path.join(work_dir, "audio.wav")
-            run([ffmpeg_bin(), "-y", "-i", input_path, "-vn", "-acodec", "pcm_s16le",
+            run([ffmpeg_bin(), "-y", "-i", ff_path(input_path), "-vn", "-acodec", "pcm_s16le",
                  "-ar", "16000", "-ac", "1", audio])
         else:
             audio = input_path

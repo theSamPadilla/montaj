@@ -16,7 +16,7 @@ STEPS_DIR   = os.path.join(MONTAJ_ROOT, "steps")
 PYTHON      = sys.executable
 
 sys.path.insert(0, os.path.join(MONTAJ_ROOT, "lib"))
-from common import ffmpeg_bin
+from common import ffmpeg_bin, ff_path
 
 
 def _step(category, name):
@@ -92,7 +92,7 @@ def count_cuts(video_path: str) -> int:
     tmp_stats.close()
     try:
         subprocess.run(
-            [ffmpeg_bin(), "-y", "-i", video_path,
+            [ffmpeg_bin(), "-y", "-i", ff_path(video_path),
              "-vf", f"select=gt(scene\\,0.3),metadata=mode=print:file={tmp_stats.name}",
              "-vsync", "vfr", "-f", "null", "-"],
             capture_output=True, timeout=120,
@@ -134,7 +134,7 @@ def extract_colors(video_path: str, n: int = 8) -> list[str]:
         # as it looks, not of what changes between frames — the latter biases
         # toward motion edges and under-weights a static dominant background.
         subprocess.run(
-            [ffmpeg_bin(), "-y", "-i", video_path,
+            [ffmpeg_bin(), "-y", "-i", ff_path(video_path),
              "-vf", ("fps=1,scale=320:-1:flags=fast_bilinear,"
                      f"palettegen=max_colors={n}:reserve_transparent=0:stats_mode=full"),
              palette_path],

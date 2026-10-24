@@ -64,7 +64,7 @@ from serve.save_media import (
 )
 from serve.sse import SSEBroadcaster, sse_stream
 
-from lib.common import SAFE_NAME as _SAFE_NAME, DEFAULT_WHISPER_MODEL, ffmpeg_bin, ffprobe_bin, node_child_env, whisper_model_missing
+from lib.common import SAFE_NAME as _SAFE_NAME, DEFAULT_WHISPER_MODEL, ffmpeg_bin, ffprobe_bin, node_child_env, whisper_model_missing, ff_path
 from lib.look import curve_ids
 from lib.profile_assets import FILENAME_RE, NAME_RE
 from lib.types.kling import ASPECT_RATIOS, is_valid_aspect_ratio
@@ -5172,7 +5172,7 @@ def _probe_source_duration(path: str) -> float:
             # ffprobe's actual reason (e.g. "moov atom not found"), not just
             # an exit code. stdout still carries only the duration either way.
             [ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
-             "-of", "csv=p=0", path],
+             "-of", "csv=p=0", ff_path(path)],
             capture_output=True, text=True, timeout=180,
         )
     except subprocess.TimeoutExpired:

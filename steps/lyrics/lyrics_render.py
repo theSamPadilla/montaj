@@ -8,7 +8,7 @@ import json, ntpath, os, sys, argparse, subprocess
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, run_ffmpeg, get_duration, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path, filter_script, ff_seconds
+from common import fail, require_file, check_output, run, run_ffmpeg, get_duration, ffmpeg_bin, ffprobe_bin, ffmpeg_filter_path, filter_script, ff_seconds, ff_input, ff_path
 from ffmpeg_color import ffmpeg_color
 
 try:
@@ -80,7 +80,7 @@ def _detect_text_color(video_path: str) -> str:
         # Get duration
         probe = subprocess.run(
             [ffprobe_bin(), "-v", "quiet", "-show_entries", "format=duration",
-             "-of", "csv=p=0", video_path],
+             "-of", "csv=p=0", ff_path(video_path)],
             capture_output=True, text=True, timeout=10,
         )
         dur = float(probe.stdout.strip() or "10")
@@ -90,7 +90,7 @@ def _detect_text_color(video_path: str) -> str:
         for i in range(5):
             seek = dur * (i + 0.5) / 5
             res = subprocess.run(
-                [ffmpeg_bin(), "-ss", ff_seconds(seek), "-i", video_path,
+                [ffmpeg_bin(), "-ss", ff_seconds(seek), "-i", ff_path(video_path),
                  "-vf", "scale=16:16", "-frames:v", "1",
                  "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"],
                 capture_output=True, timeout=10,
@@ -475,9 +475,9 @@ def main():
             ffmpeg_args = [
                 "-y",
                 "-stream_loop", "-1",
-                "-i", args.input,
+                "-i", ff_input(args.input),
                 "-ss", ff_seconds(audio_seek),
-                "-i", args.audio,
+                "-i", ff_input(args.audio),
                 "-t", ff_seconds(duration),
                 "-/vf", vf_path,
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23",
@@ -492,7 +492,7 @@ def main():
                 "-y",
                 "-f", "lavfi", "-i", lavfi_src,
                 "-ss", ff_seconds(audio_seek),
-                "-i", args.audio,
+                "-i", ff_input(args.audio),
                 "-t", ff_seconds(duration),
                 "-/vf", vf_path,
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23",

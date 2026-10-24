@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Callable, NamedTuple, Optional
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
-from common import ffmpeg_bin, ffprobe_bin, progress
+from common import ffmpeg_bin, ffprobe_bin, progress, ff_path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types...` works
 from lib.normalize import SDR_ORIGIN_MARKER, UNTAGGED_AS_BT709_VF
@@ -180,7 +180,7 @@ def _probe_once(path: str, run: Callable, timeout: float):
     """One ffprobe run: the parsed JSON, or a _Failure."""
     binary = ffprobe_bin()
     cmd = [binary, "-v", "error", "-select_streams", "v:0",
-           "-show_entries", _PROBE_ENTRIES, "-of", "json", path]
+           "-show_entries", _PROBE_ENTRIES, "-of", "json", ff_path(path)]
     try:
         r = run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -538,7 +538,7 @@ def _thumbnails(path: str, times, pre_vf: str = "") -> Optional[list]:
         # exceeds normalize's 1 s GOP. Same pattern as render/sample-frame.js.
         near = max(0.0, t - THUMB_SEEK_PREROLL_S)
         cmd = [ffmpeg_bin(), "-v", "error", "-nostdin",
-               *(["-ss", f"{near:.6f}"] if near > 0 else []), "-i", path,
+               *(["-ss", f"{near:.6f}"] if near > 0 else []), "-i", ff_path(path),
                "-ss", f"{t - near:.6f}", "-frames:v", "1", "-an", "-sn", "-dn", "-vf", vf, "-f", "rawvideo", "-"]
         try:
             r = subprocess.run(cmd, capture_output=True, timeout=120)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from lib.canvas import SOURCE_DEFAULT, SOURCE_EXPLICIT, SOURCE_FOOTAGE, fps_from_rate, modal_dims
-from lib.common import SAFE_NAME, fail, ffprobe_bin, progress
+from lib.common import SAFE_NAME, fail, ffprobe_bin, progress, ff_path
 from lib import disk_space
 from lib.fs_remove import rmtree_force
 from lib.fs_safe import open_write_no_follow
@@ -137,7 +137,7 @@ def _probe_duration(path: str) -> float | None:
     def _attempt(timeout: int) -> float | None:
         r = subprocess.run(
             [ffprobe_bin(), "-v", "quiet", "-show_entries", "format=duration",
-             "-of", "csv=p=0", path],
+             "-of", "csv=p=0", ff_path(path)],
             capture_output=True, text=True, timeout=timeout,
         )
         return float(r.stdout.strip()) if r.returncode == 0 else None

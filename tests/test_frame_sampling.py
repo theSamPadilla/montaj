@@ -9,6 +9,7 @@ Measured on these clips with ffmpeg 8.1.2, for contrast: fps=10 (round=near)
 gives 1, 4, 7, ...; fps=15:round=up on the mkv gives 0, 1, 4, 6, 7, ...;
 fps=30:round=up on the mkv repeats 1, 4, 7, ... and drops 2, 5, 8, ....
 """
+import os
 import subprocess
 
 import pytest
@@ -51,8 +52,10 @@ def test_frame_k_is_the_one_on_screen_at_k_over_fps(clips, container, fps, step)
 
 
 def test_the_filter_reads_the_first_video_stream():
-    args, _ = fs.input_args("in.mov", 10, 30)
-    assert args[:5] == ["-i", "in.mov", "-map", "0:v:0", "-vf"]
+    args, _ = fs.input_args("/clips/in.mov", 10, 30)
+    assert args[:5] == ["-i", "/clips/in.mov", "-map", "0:v:0", "-vf"]
+    # §563: a relative path goes absolute, so it is never read as a protocol.
+    assert fs.input_args("in.mov", 10, 30)[0][1] == os.path.abspath("in.mov")
     assert args[5] == "setpts=PTS-STARTPTS-0.25/(30*TB),fps=10:round=up"
 
 

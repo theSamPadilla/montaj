@@ -3,7 +3,7 @@
 import json, os, sys, argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, require_cmd, run, ffprobe_bin
+from common import fail, require_file, require_cmd, run, ffprobe_bin, ff_input
 from normalize import probe_video, _positive_rate
 
 def main():
@@ -15,7 +15,7 @@ def main():
     require_file(args.input)
 
     r = run([ffprobe_bin(), "-v", "quiet", "-print_format", "json",
-             "-show_format", "-show_streams", args.input])
+             "-show_format", "-show_streams", ff_input(args.input)])
     data = json.loads(r.stdout)
 
     # Single source of truth for rotation/display dims (lib/normalize.probe_video).

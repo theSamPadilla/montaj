@@ -19,7 +19,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
-from common import ffmpeg_bin, ffmpeg_error_tail, ffprobe_bin, fail, run
+from common import ffmpeg_bin, ffmpeg_error_tail, ffprobe_bin, fail, run, ff_path
 
 
 def _has_audio(path: str) -> bool:
@@ -32,7 +32,7 @@ def _has_audio(path: str) -> bool:
     video, which is what it is from the caller's point of view.
     """
     r = run([ffprobe_bin(), "-v", "quiet", "-select_streams", "a:0",
-             "-show_entries", "stream=codec_name", "-of", "csv=p=0", path],
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", ff_path(path)],
             timeout=30, check=False)
     return r.returncode == 0 and bool(r.stdout.strip())
 
@@ -69,7 +69,7 @@ def concat_takes(paths: list, out_path: str) -> str:
 
     cmd = [ffmpeg_bin(), "-y"]
     for p in paths:
-        cmd += ["-i", p]
+        cmd += ["-i", ff_path(p)]
 
     # Conform every take before concat: differing sample rates or channel
     # counts across takes make the concat filter refuse the graph outright.

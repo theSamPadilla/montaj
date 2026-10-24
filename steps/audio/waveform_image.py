@@ -12,7 +12,7 @@ import json, math, os, sys, argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin, ff_seconds
+from common import fail, require_file, check_output, run, get_duration, ffmpeg_bin, ff_seconds, ff_input
 
 
 def process_one(input_path: str, chunk_duration: float, out_dir: str | None) -> list:
@@ -35,7 +35,7 @@ def process_one(input_path: str, chunk_duration: float, out_dir: str | None) -> 
 
         run([ffmpeg_bin(), "-y",
              "-ss", ff_seconds(start), "-t", ff_seconds(actual_dur),
-             "-i", input_path,
+             "-i", ff_input(input_path),
              "-filter_complex", "[0:a]showwavespic=s=1920x240:colors=white[v]",
              "-map", "[v]",
              "-frames:v", "1",

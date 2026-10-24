@@ -13,7 +13,7 @@ on-screen element animating are all invisible in a single frame.
 import json, os, sys, argparse, shutil, tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, run, check_output, ffmpeg_bin
+from common import fail, require_file, run, check_output, ffmpeg_bin, ff_input
 
 
 def sample_offsets(start: float, end: float, n: int) -> list[float]:
@@ -27,7 +27,7 @@ def sample_offsets(start: float, end: float, n: int) -> list[float]:
 
 def extract_frame(src: str, t: float, dest: str, width: int, timeout: int):
     run([ffmpeg_bin(), "-nostdin", "-loglevel", "error", "-ss", f"{t:.4f}",
-         "-i", src, "-frames:v", "1", "-vf", f"scale={width}:-2", dest, "-y"],
+         "-i", ff_input(src), "-frames:v", "1", "-vf", f"scale={width}:-2", dest, "-y"],
         timeout=timeout)
 
 

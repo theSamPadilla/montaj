@@ -14,7 +14,7 @@ Motion is reported two ways because they answer different questions:
 import json, os, re, sys, argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import require_file, run, get_duration, ffmpeg_bin
+from common import require_file, run, get_duration, ffmpeg_bin, ff_input
 
 # ffmpeg's metadata:print emits two lines per frame:
 #   frame:123 pts:... pts_time:4.1
@@ -25,7 +25,7 @@ _SCORE_RE = re.compile(r"pts_time:([0-9.]+)\s*\n\s*lavfi\.scene_score=([0-9.]+)"
 def frame_scores(path: str, timeout: int) -> list[tuple[float, float]]:
     """Per-frame (timestamp, scene_score) for the whole file."""
     r = run([
-        ffmpeg_bin(), "-nostdin", "-i", path,
+        ffmpeg_bin(), "-nostdin", "-i", ff_input(path),
         "-filter:v", "select='gte(scene,0)',metadata=print:file=-",
         "-f", "null", "-",
     ], timeout=timeout)

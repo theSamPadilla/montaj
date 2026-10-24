@@ -19,6 +19,7 @@ HDR sources (HLG or PQ, as phones record by default) are tone-mapped to SDR
 Rec.709 with the default look's chain from lib/normalize, after sampling, so
 only the frames kept are mapped.
 """
+from lib.common import ff_path
 from lib.normalize import _build_tonemap_vf_to_sdr
 from lib.types.colorspace import detect_from_transfer, is_hdr
 
@@ -57,4 +58,4 @@ def video_filter(fps, rate, color_transfer=None, after=None):
 def input_args(path, fps, rate, color_transfer=None, after=None):
     """ffmpeg arguments from -i to the filter chain, and whether it tone-maps."""
     chain, tone_mapped = video_filter(fps, rate, color_transfer, after)
-    return ["-i", path, *MAP_ARGS, "-vf", chain], tone_mapped
+    return ["-i", ff_path(path), *MAP_ARGS, "-vf", chain], tone_mapped

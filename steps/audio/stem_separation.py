@@ -6,7 +6,7 @@ import json, os, subprocess, sys, argparse
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import ffmpeg_error_tail, fail, require_file, check_output, ffmpeg_bin, ffprobe_bin
+from common import ffmpeg_error_tail, fail, require_file, check_output, ffmpeg_bin, ffprobe_bin, ff_input
 
 
 STEM_NAMES = ["vocals", "drums", "bass", "other"]
@@ -15,7 +15,7 @@ DEFAULT_MODEL = "htdemucs"
 
 def _channel_count(path):
     r = subprocess.run([ffprobe_bin(), "-v", "error", "-select_streams", "a:0",
-                        "-show_entries", "stream=channels", "-of", "csv=p=0", path],
+                        "-show_entries", "stream=channels", "-of", "csv=p=0", ff_input(path)],
                        capture_output=True, text=True)
     try:
         return int(r.stdout.strip().split(",")[0])
@@ -30,7 +30,7 @@ def _decode(np, path, sr):
     inputs both decode here."""
     mix = (["-af", "pan=stereo|c0=c0|c1=c0"] if _channel_count(path) == 1
            else ["-ac", "2"])
-    r = subprocess.run([ffmpeg_bin(), "-v", "error", "-i", path, "-map", "0:a:0",
+    r = subprocess.run([ffmpeg_bin(), "-v", "error", "-i", ff_input(path), "-map", "0:a:0",
                         "-f", "f32le", "-ar", str(sr), *mix, "-"], capture_output=True)
     if r.returncode != 0:
         fail("decode_failed", ffmpeg_error_tail(r.stderr))

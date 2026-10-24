@@ -22,7 +22,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from lib.common import ffmpeg_bin, ffprobe_bin
+from lib.common import ffmpeg_bin, ffprobe_bin, ff_path
 from serve.common import resolve_workspace
 
 # Measured 2026-10-09 on a generated 60 s stereo file (pink noise + 2 tones):
@@ -138,7 +138,7 @@ _pool = ThreadPoolExecutor(max_workers=MAX_JOBS, thread_name_prefix="audio-confo
 
 def _probe(src: Path, *args: str) -> str:
     try:
-        r = subprocess.run([ffprobe_bin(), "-v", "error", *args, str(src)],
+        r = subprocess.run([ffprobe_bin(), "-v", "error", *args, ff_path(src)],
                            capture_output=True, text=True, timeout=PROBE_TIMEOUT)
     except subprocess.TimeoutExpired:  # run() kills the child before raising
         raise RuntimeError("timeout") from None
@@ -183,7 +183,7 @@ def _conform(src: Path, key: str, st: os.stat_result) -> None:
     tmp = d / f"{key}.{os.getpid()}.{threading.get_ident()}.pcm.tmp"
     try:
         argv, extra = _low_priority(
-            [ffmpeg_bin(), "-v", "error", "-y", "-i", str(src), "-map", "0:a:0",
+            [ffmpeg_bin(), "-v", "error", "-y", "-i", ff_path(src), "-map", "0:a:0",
              "-af", AUDIO_FILL_BY_TIMESTAMP, "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE),
              "-f", _FFMPEG_FMT[FORMAT], str(tmp)])
         r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, **extra)

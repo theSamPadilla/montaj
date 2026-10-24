@@ -594,3 +594,32 @@ def test_ff_seconds_writes_str_exponents_in_plain_decimals_and_keeps_every_other
         assert common.ff_seconds(x) == str(x)
     for x in [1e-6, 1.5e-6, 5e-05, 9.9e-05, 0.1, 1 / 3]:
         assert "e" not in common.ff_seconds(x).lower(), x
+
+
+# --- ff_path / ff_input: a caller's media path reaches ffmpeg as a file, never a protocol (§563) ---
+
+def test_ff_path_keeps_an_absolute_path_and_makes_a_relative_one_absolute(tmp_path, monkeypatch):
+    assert common.ff_path("/a/b.mp4") == "/a/b.mp4"
+    assert common.ff_path(Path("/a/b.mp4")) == "/a/b.mp4"
+    monkeypatch.chdir(tmp_path)
+    assert common.ff_path("concat:a.mp4|b.mp4") == str(tmp_path / "concat:a.mp4|b.mp4")
+
+
+def test_ff_input_requires_a_file_then_makes_it_absolute(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        common.ff_input("concat:missing.mp4")
+    (tmp_path / "concat:planted.mp4").write_bytes(b"x")
+    assert common.ff_input("concat:planted.mp4") == str(tmp_path / "concat:planted.mp4")
+
+
+def test_a_planted_protocol_named_file_is_read_as_that_file(test_video, tmp_path):
+    """A relative `concat:...` input that exists as a file reaches ffprobe and ffmpeg as its absolute path,
+    so the step reads that file instead of opening the concat protocol."""
+    import shutil
+    shutil.copy(test_video, tmp_path / "concat:clip.mp4")
+    step = Path(__file__).resolve().parent.parent / "steps" / "audio" / "waveform_trim.py"
+    proc = subprocess.run([sys.executable, str(step), "--input", "concat:clip.mp4"],
+                          capture_output=True, text=True, cwd=str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["input"] == "concat:clip.mp4"

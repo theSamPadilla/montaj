@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from common import fail, require_file, check_output, run, run_whisper, find_whisper_bin, require_whisper_model, ffmpeg_bin, get_duration, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
+from common import fail, require_file, check_output, run, run_whisper, find_whisper_bin, require_whisper_model, ffmpeg_bin, get_duration, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES, ff_input
 from trim_spec import is_trim_spec, load as load_spec, extract_audio_at_keeps, remap_timestamp
 
 def speech_stats(data):
@@ -87,7 +87,7 @@ def main():
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             tmp.close()
             tmp_audio = tmp.name
-            run([ffmpeg_bin(), "-y", "-i", args.input, "-vn", "-acodec", "pcm_s16le",
+            run([ffmpeg_bin(), "-y", "-i", ff_input(args.input), "-vn", "-acodec", "pcm_s16le",
                  "-ar", "16000", "-ac", "1", tmp_audio])
             audio_input = tmp_audio
         output_prefix = args.out or os.path.splitext(args.input)[0]

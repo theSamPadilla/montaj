@@ -3,7 +3,7 @@
 import json, math, mimetypes, os, sys, argparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import fail, require_file, check_output, run, ffmpeg_bin, ff_seconds
+from common import fail, require_file, check_output, run, ffmpeg_bin, ff_seconds, ff_input
 
 PRESETS = {
     "youtube":   -14,
@@ -69,7 +69,7 @@ def main():
     seek_flags = ["-ss", ff_seconds(args.window_in), "-t", ff_seconds(args.window_out - args.window_in)] if windowed else []
 
     # First pass: measure loudness
-    r = run([ffmpeg_bin(), *seek_flags, "-i", args.input,
+    r = run([ffmpeg_bin(), *seek_flags, "-i", ff_input(args.input),
              "-af", f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11:print_format=json",
              "-f", "null", "-"], check=False)
 
@@ -111,7 +111,7 @@ def main():
     except (TypeError, ValueError):
         measured_i = None
     if measured_i is not None and not measured_i > -LOUDNORM_BOUND:
-        run([ffmpeg_bin(), "-y", "-i", args.input, "-c", "copy", out])
+        run([ffmpeg_bin(), "-y", "-i", ff_input(args.input), "-c", "copy", out])
         check_output(out)
         print(out)
         return
@@ -130,7 +130,7 @@ def main():
         f":offset={measured['target_offset']}:linear=true:print_format=summary"
     )
     video_flag = [] if is_audio_only else ["-c:v", "copy"]
-    run([ffmpeg_bin(), "-y", "-i", args.input, "-af", loudnorm_filter, *video_flag, out])
+    run([ffmpeg_bin(), "-y", "-i", ff_input(args.input), "-af", loudnorm_filter, *video_flag, out])
 
     check_output(out)
     print(out)

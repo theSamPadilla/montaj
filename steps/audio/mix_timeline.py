@@ -42,7 +42,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
-from common import check_output, fail, ffmpeg_bin, ffprobe_bin, filter_script, progress, require_file, run
+from common import check_output, fail, ffmpeg_bin, ffprobe_bin, filter_script, progress, require_file, run, ff_input
 
 # Max ffmpeg inputs in a single pass (the silent bed plus this many segments).
 # A long b-roll cut can easily carry a couple of hundred audible pieces, and one
@@ -96,7 +96,7 @@ def has_audio_stream(path: str) -> bool:
     """
     r = subprocess.run(
         [ffprobe_bin(), "-v", "quiet", "-select_streams", "a:0",
-         "-show_entries", "stream=codec_type", "-of", "csv=p=0", path],
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", ff_input(path)],
         capture_output=True, text=True, timeout=60,
     )
     return r.returncode == 0 and "audio" in r.stdout
@@ -128,7 +128,7 @@ def _mix_pass(segments: list, duration: float, sample_rate: int, out_path: str):
         volume = float(seg.get("volume", 1.0))
         delay_ms = int(round(seg["start"] * 1000))
 
-        inputs += ["-ss", f"{seg['in']:.4f}", "-t", f"{span:.4f}", "-i", seg["src"]]
+        inputs += ["-ss", f"{seg['in']:.4f}", "-t", f"{span:.4f}", "-i", ff_input(seg["src"])]
 
         # atrim BEFORE asetpts, deliberately: it locks the sample range against
         # the input's own seek-based PTS, not the zero-based PTS asetpts

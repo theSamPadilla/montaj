@@ -29,7 +29,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))  # add lib/ so `from common` works in all invocation modes
-from common import ffmpeg_bin, get_duration, progress
+from common import ffmpeg_bin, get_duration, progress, ff_path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))  # add repo root so `from lib.types.colorspace` works
 from lib.normalize import UNTAGGED_AS_BT709_VF, _build_tonemap_vf_to_sdr, _run_atomic_encode, _sweep_stale_temps, _tmp_for
@@ -216,7 +216,7 @@ def _build_proxy_cmd(input_path: str, out_path: str, *, tonemap: bool, info: dic
     cmd = [
         ffmpeg_bin(), "-y",
         *_decode_args(info),
-        "-i", input_path,
+        "-i", ff_path(input_path),
     ]
     if not info.get("has_audio", True):
         cmd += ["-f", "lavfi", "-i", "anullsrc=cl=stereo:r=48000", "-shortest"]
