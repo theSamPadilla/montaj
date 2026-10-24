@@ -303,5 +303,38 @@ def test_a_colour_with_filter_syntax_fails_in_argparse(captions_json, tmp_path, 
         "--out",      str(tmp_path / "never.mp4"),
     )
     assert proc.returncode == 2
-    assert "invalid colour" in proc.stderr
+    assert f'argument {flag}: "white,null" is not a colour (e.g. #ffffff or white)' in proc.stderr
     assert not (tmp_path / "never.mp4").exists()
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("#12ab9f", "#12ab9f"), ("white", "white"), ("#fff", "0xFFFFFFFF"),
+    ("rgb(255 0 0 / 50%)", "0xFF000080"), ("hsl(120, 100%, 25%)", "0x008000FF"), ("rebeccapurple", "0x663399FF"),
+])
+def test_a_css_colour_converts_and_an_ffmpeg_colour_is_unchanged(value, expected):
+    assert _mod._ffmpeg_color(value) == expected
+    assert _mod._text_color(value) == expected
+    assert _mod._text_color("auto") == "auto"
+
+
+def test_an_editor_colour_reaches_drawtext_unchanged():
+    segments = [{"start": 0.5, "end": 2.0, "words": [{"word": "hi", "start": 0.5, "end": 2.0}]}]
+    filters = build_drawtext_filters(segments, fontsize=72, color=_mod._text_color("#12ab9f"))
+    assert filters and all(":fontcolor=#12ab9f:" in f for f in filters)
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
+def test_renders_with_css_colours(captions_json, test_audio, tmp_path):
+    """drawtext's fontcolor and the lavfi background both take the converted values."""
+    out = tmp_path / "css.mp4"
+    proc = run_step(
+        "lyrics_render.py",
+        "--captions", str(captions_json),
+        "--audio",    str(test_audio),
+        "--color",    "rgb(255 0 0 / 50%)",
+        "--bg-color", "hsl(120, 100%, 25%)",
+        "--preview-duration", "1",
+        "--out", str(out),
+    )
+    assert proc.returncode == 0, f"stderr: {proc.stderr}"
+    assert out.exists() and out.stat().st_size > 0
