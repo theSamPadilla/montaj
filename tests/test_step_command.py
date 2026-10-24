@@ -28,9 +28,6 @@ QUIRKS = {
     "extract-audio":      {},
     "resize":             {},
     "rm-nonspeech":       {},
-    "stem-separation":    {"emit_json": False},
-    "lyrics-sync":        {"emit_json": False, "file_prechecks": ["lyrics"]},
-    "lyrics-render":      {"emit_json": False, "file_prechecks": ["captions", "audio"]},
     "generate-image":     {"required_out": True},
     "generate-music":     {"required_out": True, "forward_json": True},
     "generate-voiceover": {"required_out": True, "forward_json": True, "xor": ("text", "text_file")},
@@ -67,21 +64,6 @@ PARITY = [
     ("rm-nonspeech", "rm-nonspeech",
      ["/in.mp4", "--model", "medium", "--max-word-gap", "0.2", "--sentence-edge", "0.05", "--language", "es"],
      ["--input", "/in.mp4", "--model", "medium", "--max-word-gap", "0.2", "--sentence-edge", "0.05", "--language", "es"], False, False),
-    ("stem-separation", "stem-separation",
-     ["/in.wav", "--stems", "vocals", "--model", "htdemucs_ft", "--out-dir", "/stems"],
-     ["--input", "/in.wav", "--stems", "vocals", "--model", "htdemucs_ft", "--out-dir", "/stems"], False, False),
-    ("lyrics-sync", "lyrics-sync",
-     ["/voc.wav", "--lyrics", "/lyr.txt", "--model", "medium.en", "--language", "es", "--start", "1.5", "--end", "30.5"],
-     ["--input", "/voc.wav", "--lyrics", "/lyr.txt", "--model", "medium.en", "--language", "es", "--start", "1.5", "--end", "30.5"], False, False),
-    ("lyrics-render", "lyrics-render",
-     ["--captions", "/c.json", "--audio", "/a.mp3", "--input", "/bg.mp4", "--bg-color", "blue",
-      "--width", "1080", "--height", "1920", "--fps", "24", "--fontsize", "96", "--color", "yellow",
-      "--position", "top-left", "--duration", "10", "--preview-duration", "5", "--box", "--accumulate",
-      "--window-size", "2", "--words-per-line", "4", "--audio-inpoint", "2.5"],
-     ["--input", "/bg.mp4", "--captions", "/c.json", "--audio", "/a.mp3", "--bg-color", "blue",
-      "--width", "1080", "--height", "1920", "--fps", "24", "--fontsize", "96", "--color", "yellow",
-      "--position", "top-left", "--duration", "10.0", "--preview-duration", "5.0", "--box", "--accumulate",
-      "--window-size", "2", "--words-per-line", "4", "--audio-inpoint", "2.5"], False, False),
     ("generate-image", "generate-image",
      ["--prompt", "a cat", "--out", "/o.png", "--provider", "openai",
       "--ref-image", "/r1.png", "--ref-image", "/r2.png", "--size", "512x512",
@@ -133,17 +115,6 @@ PARITY = [
     ("transcribe+json", "transcribe",
      ["/in.mp4", "--json"],
      ["--input", "/in.mp4", "--model", "large-v3-turbo-q5_0", "--language", "en"], False, False),
-    ("stem-separation+json", "stem-separation",
-     ["/in.wav", "--json"],
-     ["--input", "/in.wav", "--stems", "all", "--model", "htdemucs"], False, False),
-    ("lyrics-sync+json", "lyrics-sync",
-     ["/voc.wav", "--lyrics", "/lyr.txt", "--json"],
-     ["--input", "/voc.wav", "--lyrics", "/lyr.txt", "--model", "large-v3-turbo-q5_0", "--language", "en"], False, False),
-    ("lyrics-render+json", "lyrics-render",
-     ["--captions", "/c.json", "--audio", "/a.mp3", "--json"],
-     ["--captions", "/c.json", "--audio", "/a.mp3", "--bg-color", "black", "--width", "720",
-      "--height", "1280", "--fps", "30", "--fontsize", "72", "--color", "auto", "--position", "center",
-      "--window-size", "1", "--words-per-line", "3"], False, False),
     # FORWARD (pass-through emit as_json=True AND forward --json to child, before --out):
     ("generate-music+json", "generate-music",  # vendor is the only defaulted scalar param
      ["--prompt", "lofi", "--out", "/m.wav", "--json"],
@@ -211,8 +182,7 @@ def test_parity_covers_all_16_commands():
 
 def test_json_variant_rows_present_for_the_six_emit_quirk_commands():
     json_rows = {r[1] for r in PARITY if r[0].endswith("+json")}
-    six = {"transcribe", "stem-separation", "lyrics-sync", "lyrics-render",
-           "generate-music", "generate-voiceover"}
+    six = {"transcribe", "generate-music", "generate-voiceover"}
     assert six <= json_rows
 
 

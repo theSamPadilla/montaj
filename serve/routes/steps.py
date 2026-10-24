@@ -45,7 +45,7 @@ WHISPER_STEP_NO_DURATION_S = 12 * 3600
 
 def _runs_whisper(schema: dict) -> bool:
     """A step that transcribes with whisper: its `model` param defaults to the
-    whisper default (transcribe, rm_fillers, rm_nonspeech, lyrics_sync,
+    whisper default (transcribe, rm_fillers, rm_nonspeech,
     generate_captions)."""
     from lib.common import DEFAULT_WHISPER_MODEL
     return any(p.get("name") == "model" and p.get("default") == DEFAULT_WHISPER_MODEL
@@ -775,8 +775,6 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 # The step checks again itself, under the project lock, on the fields it really changes (lib/sync_clash.py).
 STEP_WRITES = {
     "jump_cut": (("tracks",), ()),
-    "montage": (("tracks",), ()),
-    "cross_cut": (("tracks",), ()),
     "speech_edit": (("tracks", "captions", "audio", "markers", "notes"), ("speech-text.md",)),
     # cut also writes a transcript `<stem>.json` beside each untranscribed clip (often outside the project, so
     # not a project file here). out_guard does not see it: the step checks the place itself

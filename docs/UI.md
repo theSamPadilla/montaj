@@ -754,12 +754,11 @@ opening `video/AudioPolishModal.tsx`. Feature-detected on
 `adapter.analyzeAudioPolish`, so a host that omits it sees no button, no palette
 entry and no mount.
 
-**Four independent pieces**, each a step call behind the adapter: `silence`
+**Three independent pieces**, each a step call behind the adapter: `silence`
 (`rm_nonspeech`), `fillers` (`rm_fillers`), `loudness` (`normalize
---measure-only`), `voice` (`stem_separation`). A fifth call, `silence-check`
-(`waveform_trim`), is an internal cross-check and is not a user toggle.
-Whole-source pieces (`voice`, `silence-check`) are cached per `src`; the
-windowed per-clip pieces are not.
+--measure-only`). A fourth call, `silence-check` (`waveform_trim`), is an
+internal cross-check and is not a user toggle. The whole-source piece
+(`silence-check`) is cached per `src`; the windowed per-clip pieces are not.
 
 **Preview is not a rendering mode.** The draft is pushed with
 `sync.mutateTransient`, so the canvas timeline, preview player and audio all
@@ -769,7 +768,7 @@ discards rather than committing, so Apply never records a no-op undo step.
 
 **All planning is pure and lives in `video/audioPolish.ts`** — coordinate
 mapping both directions, removal pooling and merging, both guards, the gain
-maths, stem-track construction and `buildDraft`. The modal owns step
+maths and `buildDraft`. The modal owns step
 orchestration and approval state only. Deliberately: that logic took several
 review rounds to get right, and a second copy in React would drift from it.
 

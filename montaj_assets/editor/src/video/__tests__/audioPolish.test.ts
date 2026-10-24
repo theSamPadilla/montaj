@@ -9,7 +9,6 @@ import {
   loudnessGainDb,
   itemVolumeFor,
   volumeCeilingClamps,
-  voiceTrackFor,
   pieceSupported,
   buildDraft,
 } from '../audioPolish'
@@ -367,127 +366,41 @@ describe('volumeCeilingClamps', () => {
   })
 })
 
-// ── Voice isolation ──────────────────────────────────────────────────────────
-
-describe('voiceTrackFor', () => {
-  it('builds a stem track spanning the clip with a stable id', () => {
-    const c = clip({ id: 'a', start: 10, end: 20, inPoint: 100, outPoint: 110 })
-    expect(voiceTrackFor(c, '/f/a_stems/vocals.wav')).toEqual({
-      id: 'polish_voice_a',
-      type: 'voiceover',
-      src: '/f/a_stems/vocals.wav',
-      start: 10,
-      end: 20,
-      inPoint: 100,
-      outPoint: 110,
-      label: 'Voice: a.mov',
-    })
-  })
-
-  it('renders no em dash in the track label (UI copy rule)', () => {
-    // `label` is drawn in the timeline gutter (AudioTrackRow, canvas/draw), so
-    // it is a user-facing string like any other.
-    expect(voiceTrackFor(clip(), '/f/v.wav')!.label).not.toMatch(/[—–]/)
-  })
-
-  it('takes an explicit id, so a caller can key a fragment deterministically', () => {
-    expect(voiceTrackFor(clip(), '/f/v.wav', 'polish_voice_a__2')!.id).toBe('polish_voice_a__2')
-  })
-
-  it('treats an absent inPoint as 0, matching what the clip itself plays', () => {
-    const c: VisualItem = { id: 'z', type: 'video', src: '/f/z.mp4', start: 4, end: 9 }
-    expect(voiceTrackFor(c, '/f/v.wav')).toMatchObject({ inPoint: 0, outPoint: 5 })
-  })
-
-  it('falls back to the clip id when the clip has no src to name', () => {
-    const c: VisualItem = { id: 'z', type: 'video', start: 0, end: 1 }
-    expect(voiceTrackFor(c, '/f/v.wav')!.label).toBe('Voice: z')
-  })
-
-  it('refuses a sped-up clip — audio tracks have no tempo', () => {
-    expect(voiceTrackFor(clip({ speed: 2 }), '/f/v.wav')).toBeNull()
-    expect(voiceTrackFor(clip({ speed: 0.5 }), '/f/v.wav')).toBeNull()
-  })
-
-  it('accepts an explicit speed of 1', () => {
-    expect(voiceTrackFor(clip({ speed: 1 }), '/f/v.wav')).not.toBeNull()
-  })
-
-  it('refuses a looping clip — a stem plays its window once, the clip does not', () => {
-    expect(voiceTrackFor(clip({ loop: true }), '/f/v.wav')).toBeNull()
-  })
-
-  it('refuses a clip that is both looping and sped up', () => {
-    expect(voiceTrackFor(clip({ loop: true, speed: 2 }), '/f/v.wav')).toBeNull()
-  })
-
-  it('accepts an explicit loop of false', () => {
-    expect(voiceTrackFor(clip({ loop: false }), '/f/v.wav')).not.toBeNull()
-  })
-})
-
 // ── Piece eligibility ────────────────────────────────────────────────────────
 
 describe('pieceSupported', () => {
-  const PIECES = ['silence', 'silence-check', 'fillers', 'loudness', 'voice'] as const
+  const PIECES = ['silence', 'silence-check', 'fillers', 'loudness'] as const
 
   it('supports every piece on a plain clip, with no reason attached', () => {
     const c = clip()
     for (const piece of PIECES) expect(pieceSupported(c, piece)).toEqual({ available: true })
   })
 
-  it('excludes silence, silence-check, fillers and voice on a looping clip, but not loudness', () => {
+  it('excludes silence, silence-check and fillers on a looping clip, but not loudness', () => {
     const c = clip({ loop: true })
     expect(pieceSupported(c, 'silence').available).toBe(false)
     expect(pieceSupported(c, 'silence-check').available).toBe(false)
     expect(pieceSupported(c, 'fillers').available).toBe(false)
-    expect(pieceSupported(c, 'voice').available).toBe(false)
     expect(pieceSupported(c, 'loudness')).toEqual({ available: true })
   })
 
-  it('excludes only voice on a sped-up clip', () => {
+  it('excludes nothing on a sped-up clip', () => {
     const c = clip({ speed: 2 })
     expect(pieceSupported(c, 'silence')).toEqual({ available: true })
     expect(pieceSupported(c, 'silence-check')).toEqual({ available: true })
     expect(pieceSupported(c, 'fillers')).toEqual({ available: true })
-    expect(pieceSupported(c, 'voice').available).toBe(false)
     expect(pieceSupported(c, 'loudness')).toEqual({ available: true })
   })
 
-  it('excludes silence, silence-check, fillers and voice on a clip that is both looping and sped up', () => {
+  it('excludes silence, silence-check and fillers on a clip that is both looping and sped up', () => {
     const c = clip({ loop: true, speed: 2 })
     expect(pieceSupported(c, 'silence').available).toBe(false)
     expect(pieceSupported(c, 'silence-check').available).toBe(false)
     expect(pieceSupported(c, 'fillers').available).toBe(false)
-    expect(pieceSupported(c, 'voice').available).toBe(false)
     expect(pieceSupported(c, 'loudness')).toEqual({ available: true })
   })
 
   // ── Reasons: rendered verbatim, so the exact text is pinned ──
-  it('gives the exact voice-speed reason on a sped-up clip', () => {
-    expect(pieceSupported(clip({ speed: 2 }), 'voice')).toEqual({
-      available: false,
-      reason: 'Voice isolation unavailable: this clip does not play at normal speed',
-    })
-  })
-
-  // The rule refuses ANY non-1x speed, not just speeding up, so the reason
-  // must not claim a direction. This is the mirror of the case above: a
-  // slowed-down clip gets the exact same reason, not a "slowed down" variant.
-  it('gives the exact voice-speed reason on a slowed-down clip too', () => {
-    expect(pieceSupported(clip({ speed: 0.5 }), 'voice')).toEqual({
-      available: false,
-      reason: 'Voice isolation unavailable: this clip does not play at normal speed',
-    })
-  })
-
-  it('gives the exact voice-loop reason', () => {
-    expect(pieceSupported(clip({ loop: true }), 'voice')).toEqual({
-      available: false,
-      reason: 'Voice isolation unavailable: this clip loops, so the isolated audio would drift out of sync',
-    })
-  })
-
   it('gives the exact silence-loop reason, and the same one for silence-check', () => {
     const c = clip({ loop: true })
     const expected = {
@@ -507,8 +420,6 @@ describe('pieceSupported', () => {
 
   it('renders no em dash in any reason (UI copy rule)', () => {
     const cases: Array<[VisualItem, PolishPiece]> = [
-      [clip({ speed: 2 }), 'voice'],
-      [clip({ loop: true }), 'voice'],
       [clip({ loop: true }), 'silence'],
       [clip({ loop: true }), 'silence-check'],
       [clip({ loop: true }), 'fillers'],
@@ -518,21 +429,6 @@ describe('pieceSupported', () => {
       expect(reason).toBeDefined()
       expect(reason).not.toMatch(/[—–]/)
     }
-  })
-
-  // ── Precedence: a clip that is both looping and sped up ──
-  //
-  // `loop` wins voice's reason over `speed`, decided on the merits (see the
-  // doc comment on `pieceSupported`): `loop` alone already excludes silence,
-  // fillers AND voice on this clip, so it is the one explanation that
-  // actually accounts for everything unavailable here, and the one thing
-  // that has to change before voice can come back regardless of speed.
-  it('reports the loop reason for voice, not the speed reason, when a clip is both', () => {
-    const c = clip({ loop: true, speed: 2 })
-    expect(pieceSupported(c, 'voice')).toEqual({
-      available: false,
-      reason: 'Voice isolation unavailable: this clip loops, so the isolated audio would drift out of sync',
-    })
   })
 })
 
@@ -725,127 +621,15 @@ describe('buildDraft', () => {
     for (const i of items) expect(i.volume).toBeCloseTo(1, 9)
   })
 
-  // ── Voice isolation ──
-  it('adds a stem track for the clip and mutes the clip', () => {
-    const p = makeProject({ tracks: vtracks([clip({ id: 'a', start: 0, end: 20, inPoint: 0, outPoint: 20 })]) })
-    const out = buildDraft(p, { clips: { a: { vocalsPath: '/f/a_stems/vocals.wav' } } })
-    expect(out.audio!.tracks).toEqual([
-      {
-        id: 'polish_voice_a',
-        type: 'voiceover',
-        src: '/f/a_stems/vocals.wav',
-        start: 0,
-        end: 20,
-        inPoint: 0,
-        outPoint: 20,
-        label: 'Voice: a.mov',
-      },
-    ])
-    expect(out.tracks![0].items[0].muted).toBe(true)
-  })
-
-  it('builds the stem track against the POST-cut geometry, one per surviving fragment', () => {
-    const p = makeProject({ tracks: vtracks([clip({ id: 'a', start: 0, end: 20, inPoint: 0, outPoint: 20 })]) })
-    const out = buildDraft(p, {
-      clips: { a: { removals: [{ start: 5, end: 6 }], vocalsPath: '/f/v.wav' } },
-    })
-    const items = out.tracks![0].items
-    expect(items.map(i => [i.start, i.end])).toEqual([[0, 5], [5, 19]])
-    // Both fragments are muted and both are covered by a stem slice whose
-    // source window matches the picture under it.
-    expect(items.every(i => i.muted === true)).toBe(true)
-    const stems = out.audio!.tracks
-    expect(stems).toHaveLength(2)
-    expect(stems.map(t => [t.start, t.end, t.inPoint, t.outPoint])).toEqual([
-      [0, 5, 0, 5],
-      [5, 19, 6, 20],
-    ])
-    expect(stems.every(t => t.src === '/f/v.wav')).toBe(true)
-    // Ids are derived from the BASELINE clip and the fragment's timeline
-    // position, never from the fragment's own `Date.now()`-derived id.
-    expect(stems.map(t => t.id)).toEqual(['polish_voice_a', 'polish_voice_a__2'])
-  })
-
-  it('mints identical fragment stem ids on a rebuild, even though the split ids differ', () => {
-    const p = makeProject({ tracks: vtracks([clip({ id: 'a', start: 0, end: 20, inPoint: 0, outPoint: 20 })]) })
-    const plan: PolishPlan = {
-      clips: { a: { removals: [{ start: 5, end: 6 }, { start: 12, end: 13 }], vocalsPath: '/f/v.wav' } },
-    }
-    const first = buildDraft(p, plan)
-    const second = buildDraft(p, plan)
-    // The clip fragments themselves get fresh random ids each rebuild...
-    expect(first.tracks![0].items.map(i => i.id)).not.toEqual(second.tracks![0].items.map(i => i.id))
-    // ...but the stem tracks, which must REPLACE rather than duplicate on a
-    // re-run, are byte-identical.
-    expect(first.audio).toEqual(second.audio)
-    expect(first.audio!.tracks.map(t => t.id)).toEqual([
-      'polish_voice_a', 'polish_voice_a__2', 'polish_voice_a__3',
-    ])
-  })
-
-  it('never leaves a fragment muted without a stem track under it', () => {
+  it('leaves an audio track an earlier polish made (polish_voice_ id) exactly as it is', () => {
+    const stem = { id: 'polish_voice_a', type: 'voiceover' as const, src: '/f/v.wav', start: 0, end: 5 }
     const p = makeProject({
-      tracks: vtracks([
-        clip({ id: 'a', start: 0, end: 20, inPoint: 0, outPoint: 20 }),
-        clip({ id: 'fast', src: '/f/f.mov', start: 20, end: 25, inPoint: 0, outPoint: 10, speed: 2 }),
-      ]),
-    })
-    const out = buildDraft(p, {
-      clips: {
-        a: { removals: [{ start: 5, end: 6 }], vocalsPath: '/f/a.wav' },
-        fast: { vocalsPath: '/f/f.wav' },
-      },
-    })
-    const muted = out.tracks![0].items.filter(i => i.muted)
-    const stemSpans = out.audio!.tracks.map(t => `${t.start}-${t.end}`)
-    expect(muted).toHaveLength(2)                       // the sped clip is NOT muted
-    for (const i of muted) expect(stemSpans).toContain(`${i.start}-${i.end}`)
-  })
-
-  it('drops a stale higher-ordinal stem when a re-run leaves fewer fragments', () => {
-    // The previous run split `a` in two and left both stems behind. This run
-    // makes no cut, so only `polish_voice_a` is minted and `__2` must not
-    // survive as an orphan pointing at footage that no longer exists.
-    const base = makeProject({
       tracks: vtracks([clip({ id: 'a', start: 0, end: 20, inPoint: 0, outPoint: 20 })]),
-      audio: { tracks: [
-        { id: 'music', src: '/f/bed.mp3', start: 0, end: 20 },
-        { id: 'polish_voice_a', type: 'voiceover', src: '/f/v.wav', start: 0, end: 5 },
-        { id: 'polish_voice_a__2', type: 'voiceover', src: '/f/v.wav', start: 5, end: 19 },
-      ] },
+      audio: { tracks: [stem] },
     })
-    const out = buildDraft(base, { clips: { a: { vocalsPath: '/f/v.wav' } } })
-    expect(out.audio!.tracks.map(t => t.id)).toEqual(['music', 'polish_voice_a'])
-  })
-
-  it('leaves stems belonging to clips outside the plan alone', () => {
-    const base = makeProject({
-      tracks: vtracks([
-        clip({ id: 'a', start: 0, end: 20, inPoint: 0, outPoint: 20 }),
-        clip({ id: 'b', src: '/f/b.mov', start: 20, end: 30, inPoint: 0, outPoint: 10 }),
-      ]),
-      audio: { tracks: [
-        { id: 'polish_voice_b', type: 'voiceover', src: '/f/b.wav', start: 20, end: 30 },
-        { id: 'polish_voice_b__2', type: 'voiceover', src: '/f/b.wav', start: 30, end: 32 },
-      ] },
-    })
-    const out = buildDraft(base, { clips: { a: { vocalsPath: '/f/a.wav' } } })
-    expect(out.audio!.tracks.map(t => t.id)).toEqual([
-      'polish_voice_b', 'polish_voice_b__2', 'polish_voice_a',
-    ])
-  })
-
-  it('replaces an existing stem track rather than duplicating it', () => {
-    const base = makeProject({
-      tracks: vtracks([clip({ id: 'a', start: 0, end: 20, inPoint: 0, outPoint: 20 })]),
-      audio: { tracks: [
-        { id: 'music', src: '/f/bed.mp3', start: 0, end: 20 },
-        { id: 'polish_voice_a', type: 'voiceover', src: '/f/OLD.wav', start: 0, end: 20 },
-      ] },
-    })
-    const out = buildDraft(base, { clips: { a: { vocalsPath: '/f/NEW.wav' } } })
-    expect(out.audio!.tracks.map(t => t.id)).toEqual(['music', 'polish_voice_a'])
-    expect(out.audio!.tracks.find(t => t.id === 'polish_voice_a')!.src).toBe('/f/NEW.wav')
+    const out = buildDraft(p, { clips: { a: { gainDb: 0 } } })
+    expect(out.audio!.tracks).toEqual([stem])
+    expect(out.tracks![0].items[0].muted).toBeUndefined()
   })
 
   it('leaves a music bed that starts before the cuts where it is (§527: a ripple moves only the audio that starts after its point)', () => {
@@ -873,23 +657,13 @@ describe('buildDraft', () => {
     expect(out.audio!.tracks).toEqual([bed, { id: 'sfx', src: '/f/hit.wav', start: 11, end: 12 }])
   })
 
-  it('skips voice isolation on a sped clip and leaves it unmuted', () => {
-    const p = makeProject({
-      tracks: vtracks([clip({ id: 'a', start: 0, end: 5, inPoint: 100, outPoint: 110, speed: 2 })]),
-    })
-    const out = buildDraft(p, { clips: { a: { vocalsPath: '/f/v.wav', gainDb: 0 } } })
-    expect(out.audio).toBeUndefined()
-    expect(out.tracks![0].items[0].muted).toBeUndefined()
-    expect(out.tracks![0].items[0].volume).toBeCloseTo(1, 9)   // the other pieces still apply
-  })
-
   // ── Looping clips ──
   //
   // A looping clip replays its `[inPoint, outPoint)` source window repeatedly
   // across the whole clip span, so `sourceToTimeline` no longer picks out one
   // correct timeline position for a source-time removal. See the LOOPING
   // CLIPS note at the top of `audioPolish.ts`.
-  describe('excludes looping clips from cuts and voice, but not loudness', () => {
+  describe('excludes looping clips from cuts, but not loudness', () => {
     /** A clip that loops a 5s source window across a 20s timeline span. */
     const loopingClip = (over: Partial<VisualItem> = {}) =>
       clip({ loop: true, start: 0, end: 20, inPoint: 0, outPoint: 5, ...over })
@@ -903,28 +677,20 @@ describe('buildDraft', () => {
       expect(out).toBe(p)
     })
 
-    it('mints no stem and does not mute a looping clip', () => {
-      const p = makeProject({ tracks: vtracks([loopingClip({ id: 'a' })]) })
-      const out = buildDraft(p, { clips: { a: { vocalsPath: '/f/v.wav' } } })
-      expect(out.audio).toBeUndefined()
-      expect(out.tracks![0].items[0].muted).toBeUndefined()
-    })
-
     it('still applies loudness to a looping clip: the one exempt piece', () => {
       const p = makeProject({ tracks: vtracks([loopingClip({ id: 'a' })]) })
       const out = buildDraft(p, { clips: { a: { gainDb: -6.0206 } } })
       expect(out.tracks![0].items[0].volume).toBeCloseTo(0.5, 4)
     })
 
-    it('applies loudness while dropping the removal and the stem, all in one draft', () => {
+    it('applies loudness while dropping the removal, all in one draft', () => {
       const p = makeProject({ tracks: vtracks([loopingClip({ id: 'a' })]) })
       const out = buildDraft(p, {
-        clips: { a: { removals: [{ start: 1, end: 2 }], gainDb: 0, vocalsPath: '/f/v.wav' } },
+        clips: { a: { removals: [{ start: 1, end: 2 }], gainDb: 0 } },
       })
       expect(out.tracks![0].items).toHaveLength(1)                // no cut happened
       expect(out.tracks![0].items[0]).toMatchObject({ start: 0, end: 20 })
       expect(out.tracks![0].items[0].volume).toBeCloseTo(1, 9)    // loudness still applied
-      expect(out.tracks![0].items[0].muted).toBeUndefined()       // voice still skipped
       expect(out.audio).toBeUndefined()
     })
 
@@ -955,21 +721,17 @@ describe('buildDraft', () => {
   })
 
   // ── Order and idempotence ──
-  it('applies the pieces in order: cuts, gap close, loudness, voice', () => {
-    // A 6s removal out of the middle. If the stem were minted before the cuts
-    // it would span the whole [0,20]; if before the gap close, the tail slice
-    // would sit at its pre-collapse [8,20] instead of [2,14].
+  it('applies the pieces in order: cuts, gap close, loudness', () => {
+    // A 6s removal out of the middle: the tail slice must sit at its
+    // post-collapse [2,14], and loudness lands on both fragments.
     const p = makeProject({
       tracks: vtracks([clip({ id: 'a', start: 0, end: 20, inPoint: 0, outPoint: 20 })]),
     })
     const out = buildDraft(p, {
-      clips: { a: { removals: [{ start: 2, end: 8 }], gainDb: 0, vocalsPath: '/f/v.wav' } },
+      clips: { a: { removals: [{ start: 2, end: 8 }], gainDb: 0 } },
     })
     expect(out.tracks![0].items.map(i => [i.start, i.end])).toEqual([[0, 2], [2, 14]])
-    expect(out.audio!.tracks.map(t => [t.start, t.end, t.inPoint, t.outPoint])).toEqual([
-      [0, 2, 0, 2],
-      [2, 14, 8, 20],
-    ])
+    for (const i of out.tracks![0].items) expect(i.volume).toBeCloseTo(1, 9)
   })
 
   // ── The leading gap ──
@@ -1207,8 +969,8 @@ describe('buildDraft', () => {
     // the two drafts are comparable field for field.
     const plan: PolishPlan = {
       clips: {
-        a: { removals: [{ start: 18, end: 20 }], gainDb: -3, vocalsPath: '/f/a.wav' },
-        b: { removals: [{ start: 0, end: 1 }], gainDb: 2, vocalsPath: '/f/b.wav' },
+        a: { removals: [{ start: 18, end: 20 }], gainDb: -3 },
+        b: { removals: [{ start: 0, end: 1 }], gainDb: 2 },
       },
     }
     expect(buildDraft(p, plan)).toEqual(buildDraft(p, plan))
@@ -1222,7 +984,7 @@ describe('buildDraft', () => {
     })
     const snapshot = structuredClone(p)
     buildDraft(p, {
-      clips: { a: { removals: [{ start: 5, end: 6 }], gainDb: 1, vocalsPath: '/f/v.wav' } },
+      clips: { a: { removals: [{ start: 5, end: 6 }], gainDb: 1 } },
     })
     expect(p).toEqual(snapshot)
   })

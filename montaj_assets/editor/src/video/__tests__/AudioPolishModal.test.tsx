@@ -47,8 +47,6 @@ const defaultHandler: Handler = async args => {
       return { piece: 'silence-check', keeps: [[0, 1]] }
     case 'loudness':
       return { piece: 'loudness', measuredI: -20, measuredTP: -3, measuredLRA: 5, targetI: -14, gainDb: 6 }
-    case 'voice':
-      return { piece: 'voice', vocalsPath: '/f/a_vocals.wav', url: 'https://host/a_vocals.wav' }
   }
 }
 
@@ -112,7 +110,8 @@ function renderModal(opts: {
 } = {}): Harness {
   const baseline = opts.project ?? makeProject()
   const spy = makeAdapter(opts.handler)
-  if (opts.canIsolateVoice !== undefined) spy.adapter.canIsolateVoice = opts.canIsolateVoice
+  // The field no longer exists on the adapter; an adapter that still sets it is ignored.
+  if (opts.canIsolateVoice !== undefined) (spy.adapter as unknown as Record<string, unknown>).canIsolateVoice = opts.canIsolateVoice
   const drafts: Project[] = []
   // The modal always pushes `() => draft`, so the argument it is applied to is
   // irrelevant; passing the baseline mirrors what useProjectSync would do.
@@ -186,8 +185,6 @@ describe('AudioPolishModal — analysis', () => {
     })
     // The cross check is whole source: no window, no exposed options.
     expect(byPiece('silence-check')[0]).toEqual({ projectId: 'p1', piece: 'silence-check', src: '/f/a.mov' })
-    // Voice is off by default.
-    expect(byPiece('voice')).toHaveLength(0)
   })
 
   it('sends the chosen language through to the speech pieces', async () => {
@@ -199,11 +196,10 @@ describe('AudioPolishModal — analysis', () => {
     }
   })
 
-  it('prefers the proxy for speech detection and the original for loudness and voice', async () => {
+  it('prefers the proxy for speech detection and the original for loudness', async () => {
     const h = renderModal({
       project: makeProject({ tracks: vtracks([clip({ proxySrc: '/f/a_proxy.mp4' })]) }),
     })
-    setPiece('Isolate voice', true)
     await analyse()
 
     for (const c of h.spy.calls) {
@@ -267,7 +263,6 @@ describe('AudioPolishModal — analysis', () => {
         ]),
       }),
     })
-    setPiece('Isolate voice', true)
     await analyse()
 
     expect(h.spy.calls.length).toBeGreaterThan(4)
@@ -283,27 +278,25 @@ describe('AudioPolishModal — analysis', () => {
         ]),
       }),
     })
-    setPiece('Isolate voice', true)
     await analyse()
 
     expect(h.spy.calls.filter(c => c.piece === 'silence-check')).toHaveLength(1)
-    expect(h.spy.calls.filter(c => c.piece === 'voice')).toHaveLength(1)
     expect(h.spy.calls.filter(c => c.piece === 'silence')).toHaveLength(2)
   })
 })
 
-describe('AudioPolishModal — a host without stem separation', () => {
-  it('never offers Isolate voice when the host sets canIsolateVoice to false, and keeps the other three', () => {
-    renderModal({ canIsolateVoice: false })
-    expect(screen.queryByRole('checkbox', { name: 'Isolate voice' })).toBeNull()
-    for (const label of ['Remove silence', 'Remove filler words', 'Match loudness']) {
-      expect(screen.getByRole('checkbox', { name: label })).toBeTruthy()
+describe('AudioPolishModal — the pieces on offer', () => {
+  it('offers exactly Silence, Fillers and Loudness, whatever the adapter says about voice', () => {
+    for (const opts of [{}, { canIsolateVoice: true }, { canIsolateVoice: false }]) {
+      renderModal(opts as Parameters<typeof renderModal>[0])
+      const labels = screen.getAllByRole('checkbox').map(b => b.getAttribute('aria-label') ?? b.parentElement?.textContent)
+      expect(screen.getAllByRole('checkbox')).toHaveLength(3)
+      for (const label of ['Remove silence', 'Remove filler words', 'Match loudness']) {
+        expect(screen.getByRole('checkbox', { name: label })).toBeTruthy()
+      }
+      expect(labels.join(' ')).not.toMatch(/voice/i)
+      cleanup()
     }
-  })
-
-  it('offers Isolate voice when the host leaves canIsolateVoice out', () => {
-    renderModal()
-    expect(screen.getByRole('checkbox', { name: 'Isolate voice' })).toBeTruthy()
   })
 })
 
@@ -448,59 +441,18 @@ describe('AudioPolishModal — the transient preview', () => {
   })
 })
 
-describe('AudioPolishModal — voice isolation', () => {
-  it('mutes the clip and adds one stem track when voice is on', async () => {
-    const h = renderModal()
-    setPiece('Remove silence', false)
-    setPiece('Remove filler words', false)
-    setPiece('Isolate voice', true)
-    await analyse()
-
-    await waitFor(() => expect(h.drafts.length).toBeGreaterThan(0))
-    const d = h.last()
-    expect(firstTrackItems(d)[0].muted).toBe(true)
-    expect(d.audio?.tracks.map(t => t.src)).toEqual(['/f/a_vocals.wav'])
-  })
-
-  it('mints one stem per surviving fragment when cuts split the clip', async () => {
-    const h = renderModal()
-    setPiece('Isolate voice', true)
-    await analyse()
-
-    await waitFor(() => expect(h.drafts.length).toBeGreaterThan(0))
-    const d = h.last()
-    // Two cuts leave three fragments; one audio track cannot follow all three,
-    // so the planner mints one stem each.
-    expect(firstTrackItems(d)).toHaveLength(3)
-    expect(d.audio?.tracks ?? []).toHaveLength(3)
-    expect(firstTrackItems(d).every(i => i.muted)).toBe(true)
-  })
-
-  it('offers an A/B preview of the original and the isolated voice', async () => {
-    renderModal()
-    setPiece('Isolate voice', true)
-    await analyse()
-
-    expect(screen.getByLabelText('Original audio for a.mov').getAttribute('src')).toBe('url:/f/a.mov')
-    expect(screen.getByLabelText('Isolated voice for a.mov').getAttribute('src')).toBe('https://host/a_vocals.wav')
-  })
-
-  it('shows the skip badge on a sped-up clip and still offers the other three pieces', async () => {
+describe('AudioPolishModal — a sped-up clip', () => {
+  it('is not excluded from any piece and gets no badge', async () => {
     const h = renderModal({
       project: makeProject({ tracks: vtracks([clip({ speed: 2, outPoint: 40 })]) }),
     })
-    setPiece('Isolate voice', true)
     await analyse()
 
-    expect(screen.getByText('Voice isolation unavailable: this clip does not play at normal speed')).toBeTruthy()
-    // The other three are still on the table for this clip.
+    expect(screen.queryByText(/unavailable/)).toBeNull()
     expect(screen.getByRole('checkbox', { name: /Remove silence at/ })).toBeTruthy()
     expect(screen.getByRole('checkbox', { name: /Remove filler "um" at/ })).toBeTruthy()
     expect(screen.getByText(/Loudness: measured -20.0 LUFS/)).toBeTruthy()
-
-    // And nothing was muted or stemmed on it.
     await waitFor(() => expect(h.drafts.length).toBeGreaterThan(0))
-    expect(firstTrackItems(h.last()).some(i => i.muted)).toBe(false)
     expect(h.last().audio?.tracks ?? []).toEqual([])
   })
 })
@@ -632,7 +584,6 @@ describe('AudioPolishModal — close paths', () => {
           : defaultHandler(args),
     })
     setPiece('Match loudness', false)
-    setPiece('Isolate voice', false)
     await analyse()
 
     // The preview is the baseline, by reference.
@@ -661,7 +612,6 @@ describe('AudioPolishModal — close paths', () => {
   it('Apply after unticking every removal discards, not commits', async () => {
     const h = renderModal()
     setPiece('Match loudness', false)
-    setPiece('Isolate voice', false)
     await analyse()
 
     fireEvent.click(screen.getByRole('checkbox', { name: /Remove silence at/ }))
@@ -700,7 +650,6 @@ describe('AudioPolishModal — UI copy', () => {
         return defaultHandler(args)
       },
     })
-    setPiece('Isolate voice', true)
     await analyse()
 
     expect(screen.getByText(/could not be analysed/)).toBeTruthy()
@@ -742,11 +691,9 @@ describe('AudioPolishModal — scope', () => {
 })
 
 
-// The four `pieceSupported` reasons, byte-exact. Asserting the literal here and
+// The `pieceSupported` reasons, byte-exact. Asserting the literal here and
 // not importing the constants is deliberate: these are user-visible strings, and
 // a test that imports them would keep passing through a silent reword.
-const VOICE_SPEED = 'Voice isolation unavailable: this clip does not play at normal speed'
-const VOICE_LOOP = 'Voice isolation unavailable: this clip loops, so the isolated audio would drift out of sync'
 const SILENCE_LOOP = 'Silence removal unavailable: this clip loops, so cuts would land in the wrong place'
 const FILLERS_LOOP = 'Filler removal unavailable: this clip loops, so cuts would land in the wrong place'
 
@@ -755,22 +702,19 @@ describe('AudioPolishModal — looping clips', () => {
     tracks: vtracks([clip({ start: 0, end: 30, inPoint: 0, outPoint: 10, loop: true })]),
   })
 
-  it('badges all three excluded pieces and still offers loudness', async () => {
+  it('badges both excluded pieces and still offers loudness', async () => {
     renderModal({ project: looping() })
-    setPiece('Isolate voice', true)
     await analyse()
 
     expect(screen.getByText(SILENCE_LOOP)).toBeTruthy()
     expect(screen.getByText(FILLERS_LOOP)).toBeTruthy()
-    expect(screen.getByText(VOICE_LOOP)).toBeTruthy()
     // Loudness needs no mapping, so it is not denied.
     expect(screen.getByText(/Loudness: measured -20.0 LUFS/)).toBeTruthy()
     expect(document.body.textContent).not.toContain('—')
   })
 
-  it('issues no silence, filler, cross check or voice job for a looping clip', async () => {
+  it('issues no silence, filler or cross check job for a looping clip', async () => {
     const h = renderModal({ project: looping() })
-    setPiece('Isolate voice', true)
     await analyse()
 
     expect(h.spy.calls.map(c => c.piece)).toEqual(['loudness'])
@@ -790,7 +734,6 @@ describe('AudioPolishModal — looping clips', () => {
   it('proposes no removals, so nothing is ticked and Apply discards', async () => {
     const h = renderModal({ project: looping() })
     setPiece('Match loudness', false)
-    setPiece('Isolate voice', false)
     await analyse()
 
     expect(screen.queryByRole('checkbox', { name: /Remove silence at/ })).toBeNull()
@@ -802,25 +745,8 @@ describe('AudioPolishModal — looping clips', () => {
     expect(h.discardTransient).toHaveBeenCalledTimes(1)
   })
 
-  it('reports the LOOP reason on a clip that both loops and is sped up, never the speed one', async () => {
-    renderModal({
-      project: makeProject({
-        tracks: vtracks([clip({ start: 0, end: 30, inPoint: 0, outPoint: 10, loop: true, speed: 2 })]),
-      }),
-    })
-    setPiece('Isolate voice', true)
-    await analyse()
-
-    expect(screen.getByText(VOICE_LOOP)).toBeTruthy()
-    // The whole point of the precedence: the speed wording must not appear at
-    // all. Asserting only that the loop string is present would pass with both
-    // rendered, which is the failure mode being guarded.
-    expect(screen.queryByText(VOICE_SPEED)).toBeNull()
-    expect(document.body.textContent).not.toContain(VOICE_SPEED)
-  })
-
   it('still runs the whole-source jobs when a non-looping clip shares the source', async () => {
-    // Availability is per clip, but `voice` and `silence-check` are whole-source
+    // Availability is per clip, but `silence-check` is whole-source
     // and shared. One looping clip must not suppress the job the other needs.
     const h = renderModal({
       project: makeProject({
@@ -830,11 +756,9 @@ describe('AudioPolishModal — looping clips', () => {
         ]),
       }),
     })
-    setPiece('Isolate voice', true)
     await analyse()
 
     expect(h.spy.calls.filter(c => c.piece === 'silence-check')).toHaveLength(1)
-    expect(h.spy.calls.filter(c => c.piece === 'voice')).toHaveLength(1)
     // ...but only the non-looping clip gets the per-clip speech jobs.
     expect(h.spy.calls.filter(c => c.piece === 'silence')).toHaveLength(1)
     expect(h.spy.calls.filter(c => c.piece === 'fillers')).toHaveLength(1)

@@ -626,7 +626,7 @@ def _step(name, body, headers=AI):
     return _client().post(f"/api/steps/{name}", json=body, headers=headers)
 
 
-@pytest.mark.parametrize("name", ["jump_cut", "montage", "cross_cut"])
+@pytest.mark.parametrize("name", ["jump_cut"])
 def test_case8_cut_steps_are_refused_on_a_tracks_clash_before_they_run(ws, state, ran, name):
     d = _project(ws)
     _sidecar(state, fields=["tracks"])

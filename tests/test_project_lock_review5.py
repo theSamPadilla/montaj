@@ -444,10 +444,6 @@ def _step_locked(monkeypatch, capsys, fn):
 
 @pytest.mark.parametrize("name,argv", [
     ("steps.edit.jump_cut", ["jump_cut.py", "--project-id", "p1", "--clip-id", "a", "--cuts", "[[1,2]]"]),
-    ("steps.edit.cross_cut", ["cross_cut.py", "--project-id", "p1", "--clip-a", "a", "--clip-b", "b",
-                              "--segment-duration", "1.0"]),
-    ("steps.edit.montage", ["montage.py", "--project-id", "p1", "--clips", json.dumps(["a", "b"]),
-                            "--beat-duration", "1.0"]),
 ])
 def test_edit_steps_fail_structured_when_the_project_stays_locked(name, argv, tmp_path, monkeypatch, capsys):
     import importlib

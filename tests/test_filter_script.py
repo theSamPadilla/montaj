@@ -145,31 +145,3 @@ def test_trim_500_ranges_reads_graph_from_file(tmp_path, monkeypatch):
     assert len(graph) > CAP, f"fixture no longer reaches the cap ({len(graph)})"
     _assert_leaf(log, stub, "-/filter_complex", "-filter_complex", graph, out)
 
-
-# ---------------------------------------------------------------------------
-# lyrics: 160 single-word captions through the real step
-# ---------------------------------------------------------------------------
-
-@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg not available")
-def test_lyrics_160_single_words_reads_vf_from_file(tmp_path):
-    audio = tmp_path / "song.wav"
-    subprocess.run(
-        [FFMPEG_BIN, "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
-         "-t", "2", str(audio)],
-        check=True, capture_output=True)
-    stub, log = _make_stub(tmp_path)
-    words = [{"word": f"w{i:03d}" + "x" * 64, "start": i * 0.01, "end": i * 0.01 + 0.01} for i in range(160)]
-    caps = tmp_path / "captions.json"
-    caps.write_text(json.dumps({"segments": [{"text": "x", "start": 0.0, "end": 1.7, "words": words}]}))
-    out = str(tmp_path / "render.mp4")
-    proc = run_step_env(
-        "lyrics_render.py", {"MONTAJ_FFMPEG": str(stub)},
-        "--captions", str(caps), "--audio", str(audio),
-        "--words-per-line", "1", "--out", out)
-    assert proc.returncode == 0, proc.stderr
-    call = _calls(log)[0]
-    argv = call["argv"]
-    graph = call["scripts"].get("-/vf") or argv[argv.index("-vf") + 1]
-    assert graph.count("drawtext=") == 160
-    assert len(graph) > CAP, f"fixture no longer reaches the cap ({len(graph)})"
-    _assert_leaf(log, stub, "-/vf", "-vf", graph, out)

@@ -319,6 +319,16 @@ def test_validate_project_ignores_a_saved_image_tone(tmp_path):
     assert v.validate_project(path)["valid"] is True
 
 
+def test_validate_project_ignores_a_saved_retired_render_mode(tmp_path):
+    """`renderMode: "ffmpeg-drawtext"` was the lyric-video render mode, now gone.
+    A project saved with it still validates (the validator does not look at
+    unknown top-level keys); render.js ignores the key and renders normally
+    (render/test/nle-timeline: an old lyric project renders the normal way)."""
+    data = {**VALID_PROJECT, "renderMode": "ffmpeg-drawtext"}
+    path = _write_project(tmp_path, "project.json", data)
+    assert v.validate_project(path)["valid"] is True
+
+
 def test_validate_project_fails_missing_version(tmp_path):
     data = {**VALID_PROJECT}; del data["version"]
     path = _write_project(tmp_path, "project.json", data)

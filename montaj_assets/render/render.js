@@ -47,7 +47,7 @@ import {
 import { tmpdir }                         from 'os'
 import { prefetchPropsUrls }              from './page-guard.js'
 import { namedPropsUrls }                 from './overlay-build.js'
-import { compose, embedThumbnail, planCompose, startCompose, encodeComposeGroups, finishCompose } from './compose.js'
+import { compose, planCompose, startCompose, encodeComposeGroups, finishCompose } from './compose.js'
 import { FFMPEG, FFPROBE }                from './ffmpeg-bin.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { requireValidKey, detectFromTransfer, smartDetect, isHdr, specFor, DEFAULT_COLOR_SPACE } from './color-space.js'
@@ -617,87 +617,6 @@ async function main(projectPath, { out, workers, clean, exportMode = 'auto', sdr
   rmSync(segDir, { recursive: true, force: true })
   mkdirSync(segDir, { recursive: true })
 
-  // Early exit: ffmpeg drawtext path — bypass Puppeteer, delegate to lyrics_render.py
-  if (projectJson.renderMode === 'ffmpeg-drawtext') {
-    const captions = projectJson.captions
-    if (!captions?.segments?.length) {
-      fail('missing_captions', 'renderMode ffmpeg-drawtext requires project.json captions.segments')
-    }
-    const firstAudioTrack = (projectJson.audio?.tracks ?? []).find(t => !t.muted)
-    if (!firstAudioTrack?.src) fail('missing_audio', 'renderMode ffmpeg-drawtext requires at least one unmuted audio track')
-    const audioSrc = firstAudioTrack.src
-
-    // Caption LANES (rows) have no counterpart on this path. lyrics_render.py
-    // builds one flat drawtext filter chain and derives each word's end time
-    // from the NEXT segment's start, which assumes a single ordered,
-    // non-overlapping stream of captions — there is nowhere to hang a second
-    // row, and no per-row anchor. Every row is therefore drawn at the same
-    // anchor and they will overlap. That is honest; silently dropping the rows
-    // an operator built would be worse, so warn and render. The Puppeteer path
-    // (below) draws rows properly.
-    const laneCount = new Set(captions.segments.map(s => s.lane ?? 0)).size
-    if (laneCount > 1) {
-      log(`captions span ${laneCount} rows, but renderMode ffmpeg-drawtext has no per-row concept: `
-        + `all rows will be drawn at the same anchor and may overlap`)
-    }
-
-    // Write captions to temp file. Captions in project.json are already in project-timeline
-    // coordinates (0-based), so audioInPoint=0 — no timestamp offset needed.
-    // The audio seek is passed separately via --audio-inpoint.
-    const captionsPath = join(renderDir, 'captions_ffmpeg.json')
-    mkdirSync(renderDir, { recursive: true })
-    const captionsWithOffset = { ...captions, audioInPoint: 0 }
-    writeFileSync(captionsPath, JSON.stringify(captionsWithOffset))
-
-    // Optional background video: first video item in tracks[0]
-    const bgItem = (enabledTrackItems(projectJson)[0] ?? []).find(i => i.type === 'video')
-
-    const projectDuration = getTotalDurationSeconds(projectJson)
-    const lyricsRenderArgs = [
-      join(MONTAJ_ROOT, 'steps', 'lyrics', 'lyrics_render.py'),
-      '--captions', captionsPath,
-      '--audio',    audioSrc,
-      '--width',    String(renderWidth),
-      '--height',   String(renderHeight),
-      '--fps',      String(fps),
-      '--duration', String(projectDuration),
-      '--out',      outputPath,
-    ]
-    const audioInPoint = firstAudioTrack.inPoint ?? 0
-    if (bgItem)                    lyricsRenderArgs.push('--input',         bgItem.src)
-    if (audioInPoint)              lyricsRenderArgs.push('--audio-inpoint', String(audioInPoint))
-    if (captions.position)         lyricsRenderArgs.push('--position',      captions.position)
-    // color: 'auto' is the default — only pass explicit colors
-    if (captions.color && captions.color !== 'auto')
-                                   lyricsRenderArgs.push('--color',         captions.color)
-    if (captions.fontsize)         lyricsRenderArgs.push('--fontsize',      String(captions.fontsize))
-    if (captions.bgColor)          lyricsRenderArgs.push('--bg-color',      captions.bgColor)
-    if (captions.windowSize)       lyricsRenderArgs.push('--window-size',   String(captions.windowSize))
-    if (captions.wordsPerLine)     lyricsRenderArgs.push('--words-per-line', String(captions.wordsPerLine))
-    if (captions.accumulate)       lyricsRenderArgs.push('--accumulate')
-    if (captions.box)              lyricsRenderArgs.push('--box')
-
-    // lyrics_render.py emits SDR h264 whatever settings.colorSpace claims, so
-    // there is no HDR master here to derive an SDR rendition from.
-    if (exportMode !== 'auto') {
-      log(`--export ${exportMode} has no effect for renderMode ffmpeg-drawtext — `
-        + `its output is always SDR; emitting one file`)
-    }
-
-    log('rendering via ffmpeg drawtext (skipping Puppeteer)...')
-    const result = spawnSync(PYTHON, lyricsRenderArgs, { encoding: 'utf8', timeout: 600_000 })
-    if (result.status !== 0) {
-      fail('lyrics_render_failed', result.stderr?.trim() || 'lyrics_render.py failed')
-    }
-
-    // lyrics_render.py is pure SDR (drawtext over solid colour or SDR bg video);
-    // pass the project's setting if any, helper treats unset as SDR.
-    embedThumbnail(outputPath, settings.colorSpace ?? null)
-
-    process.stdout.write(outputPath + '\n')
-    return
-  }
-
   // 2. Collect segments and items
   const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
   const { imageItems, videoItems } = collectAllItems(projectJson)
@@ -1098,39 +1017,28 @@ async function estimateMain(projectPath, { out = null, workers = null, exportMod
   let slicing = { sliced: false, slices: 1, budgetMB: Math.round((parseSliceBudget(process.env.MONTAJ_SLICE_BUDGET_MB) ?? SLICE_BUDGET_BYTES) / 1e6), peakBytes: 0 }
   // §378: what the picture needs, for the export window's Format row. null: not worked out.
   let pictureColor = null
-  if (projectJson.renderMode === 'ffmpeg-drawtext') {
-    // lyrics_render.py writes the export and its poster copy, nothing else: no
-    // overlay capture, no masters. Counted as one SDR compose at the design
-    // canvas, which errs high by the segments it does not write.
-    estimate = estimateRenderDisk({
-      segments: [], width: renderWidth, height: renderHeight, workerCount: 0,
-      durationSeconds: getTotalDurationSeconds(projectJson),
-      output: { width: renderWidth, height: renderHeight, fps }, passes: ['sdr_bt709'],
-    })
-    reclaimBytes = 0
-  } else {
-    const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
-    const { imageItems, videoItems } = collectAllItems(projectJson)
-    const captureScale = captureScaleFor(settings.resolution)
-    // As main() does: planChunks' memory plan prices a 2D worker by its capture (memory.js captureWorkerBytes).
-    for (const spec of segmentSpecs) spec.captureScale = captureScale
-    stampSourceProbes(videoItems, new Map())
-    const picture = resolvePictureColorSpace(projectJson, settings, videoItems)
-    const { colorSpace: projectColorSpace } = picture
-    pictureColor = { colorSpace: picture.colorSpace, hdrVisible: picture.hdrVisible }
-    const exportPlan = planExport({ exportMode, projectColorSpace, outputPath })
-    const disk = planDisk({
-      projectJson, pristineProject, settings, workers, motionBlur, segmentSpecs, videoItems, imageItems, captureScale,
-      renderWidth, renderHeight, projectColorSpace, exportPlan, workspaceDir, segDir, renderDir,
-    })
-    estimate = disk.estimate
-    reclaimBytes = disk.reclaimBytes
-    memory = estimateMemory(disk.plan.memory)
-    slicing = {
-      sliced: disk.slicing.sliced, slices: disk.slicing.slices,
-      budgetMB: Math.round(disk.slicing.budgetBytes / 1e6), peakBytes: Math.round(disk.slicing.peakBytes),
-    }
+  const segmentSpecs = collectPuppeteerSegments(projectJson, fps, renderWidth, renderHeight, segDir)
+  const { imageItems, videoItems } = collectAllItems(projectJson)
+  const captureScale = captureScaleFor(settings.resolution)
+  // As main() does: planChunks' memory plan prices a 2D worker by its capture (memory.js captureWorkerBytes).
+  for (const spec of segmentSpecs) spec.captureScale = captureScale
+  stampSourceProbes(videoItems, new Map())
+  const picture = resolvePictureColorSpace(projectJson, settings, videoItems)
+  const { colorSpace: projectColorSpace } = picture
+  pictureColor = { colorSpace: picture.colorSpace, hdrVisible: picture.hdrVisible }
+  const exportPlan = planExport({ exportMode, projectColorSpace, outputPath })
+  const disk = planDisk({
+    projectJson, pristineProject, settings, workers, motionBlur, segmentSpecs, videoItems, imageItems, captureScale,
+    renderWidth, renderHeight, projectColorSpace, exportPlan, workspaceDir, segDir, renderDir,
+  })
+  estimate = disk.estimate
+  reclaimBytes = disk.reclaimBytes
+  memory = estimateMemory(disk.plan.memory)
+  slicing = {
+    sliced: disk.slicing.sliced, slices: disk.slicing.slices,
+    budgetMB: Math.round(disk.slicing.budgetBytes / 1e6), peakBytes: Math.round(disk.slicing.peakBytes),
   }
+
   const check = checkDiskSpace({ tmpDir: tmpdir(), projectDir: renderDir, estimate: estimate.expected, reclaimBytes })
   return { estimate, volumes: check?.volumes ?? [], memory, ...(pictureColor ?? {}), slicing }
 }

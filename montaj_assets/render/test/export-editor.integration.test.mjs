@@ -234,24 +234,6 @@ test('bad arguments: JSON error, non-zero exit', (t) => {
   assert.ok(existsSync(projectPath), 'the project folder is never replaced')
 })
 
-test('renderMode ffmpeg-drawtext: no graphics and no captions movie, the srt still goes', { timeout: 300_000 }, (t) => {
-  if (skip) { t.skip('ffmpeg/ffprobe not available'); return }
-  const dt = join(dir, 'drawtext')
-  mkdirSync(dt)
-  copyFileSync(join(projDir, 'clip.mp4'), join(dt, 'clip.mp4'))
-  copyFileSync(join(projDir, 'cadence-ramp.jsx'), join(dt, 'cadence-ramp.jsx'))
-  writeFileSync(join(dt, 'project.json'), JSON.stringify({ ...project(), renderMode: 'ffmpeg-drawtext' }))
-  const r = runCli(['--project', join(dt, 'project.json'), '--name', 'D'])
-  assert.equal(r.status, 0, r.stderr)
-  const result = JSON.parse(r.stdout)
-  assert.deepEqual(result.files, ['D.xml', 'captions.srt', 'media/clip.mp4'])
-  assert.ok(result.warnings.some((w) => /ffmpeg-drawtext draws no overlays/.test(w)), result.warnings.join(' | '))
-  assert.ok(result.warnings.some((w) => /ffmpeg-drawtext draws captions/.test(w)), result.warnings.join(' | '))
-  assert.ok(!/not rendered yet/.test(result.warnings.join('|')))
-  assert.ok(!readFileSync(result.xml, 'utf8').includes('.mov'), 'the XML links no movie')
-  assert.deepEqual(progressLines(r.stderr).map((p) => p.label), ['Copying clip.mp4'], 'only the media copy reports: no movie is rendered')
-})
-
 /** A project with one video clip and nothing to render, in its own folder; `edit` may change it. */
 function plainProject(name, edit = (p) => p) {
   const d = join(dir, name)

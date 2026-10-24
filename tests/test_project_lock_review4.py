@@ -484,12 +484,6 @@ def test_speech_apply_refuses_changed_tracks(senv, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == "project_changed"
 
 
-# cross_cut and montage: project_changed on tracks, not on anything else
-
-import steps.edit.cross_cut as cross_cut  # noqa: E402
-import steps.edit.montage as montage  # noqa: E402
-
-
 def _two_clip_project(tmp_path):
     def clip(cid, start):
         return {"id": cid, "type": "video", "src": f"./{cid}.mp4", "start": start,
@@ -498,40 +492,6 @@ def _two_clip_project(tmp_path):
     path.write_text(json.dumps({"id": "p1", "name": "orig",
                                 "tracks": [{"id": "trk-0", "items": [clip("a", 0.0), clip("b", 4.0)]}]}))
     return path
-
-
-def _run(monkeypatch, module, path, argv, mutate):
-    def find(pid):
-        got = (path, json.loads(path.read_text()))
-        doc = json.loads(path.read_text())
-        mutate(doc)
-        path.write_text(json.dumps(doc))
-        return got
-    monkeypatch.setattr(module, "find_project", find)
-    monkeypatch.setattr(sys, "argv", argv)
-    module.main()
-
-
-CROSS = ["cross_cut.py", "--project-id", "p1", "--clip-a", "a", "--clip-b", "b", "--segment-duration", "1.0"]
-MONT = ["montage.py", "--project-id", "p1", "--clips", json.dumps(["a", "b"]), "--beat-duration", "1.0"]
-
-
-@pytest.mark.parametrize("module,argv", [(cross_cut, CROSS), (montage, MONT)])
-def test_edit_steps_keep_an_unrelated_change(module, argv, tmp_path, monkeypatch):
-    path = _two_clip_project(tmp_path)
-    _run(monkeypatch, module, path, argv, lambda d: d.update(name="renamed"))
-    doc = json.loads(path.read_text())
-    assert doc["name"] == "renamed"
-    assert len(doc["tracks"][0]["items"]) != 2 or doc["tracks"][0]["items"][0]["id"] != "a"
-
-
-@pytest.mark.parametrize("module,argv", [(cross_cut, CROSS), (montage, MONT)])
-def test_edit_steps_refuse_changed_tracks(module, argv, tmp_path, monkeypatch, capsys):
-    path = _two_clip_project(tmp_path)
-    with pytest.raises(SystemExit):
-        _run(monkeypatch, module, path, argv, lambda d: d["tracks"][0]["items"].pop())
-    err = json.loads(capsys.readouterr().err)
-    assert err["error"] == "project_changed"
 
 
 # approve / regen write through the lock

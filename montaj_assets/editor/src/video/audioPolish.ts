@@ -3,12 +3,11 @@
 // modal can rebuild a whole draft on every checkbox tick and the whole thing is
 // unit-testable without a DOM.
 //
-// The four pieces it plans for, and how each is expressed in the project:
+// The pieces it plans for, and how each is expressed in the project:
 //
 //   silence / fillers  →  `applyCutToTracks` per approved range, then ONE
 //                         `collapseGaps` (see APPLY ORDER below)
 //   loudness           →  `item.volume`
-//   voice isolation    →  a new `project.audio.tracks[]` entry + `item.muted`
 //
 // No new schema field, no render change: every field written here is already
 // honoured by both the preview and the renderer.
@@ -38,15 +37,12 @@
 //   speech cuts (pooled, descending)
 //     → gap close with `remapCaptions: false`
 //     → loudness
-//     → voice isolation
 //
 // `applyCutToTracks` and `collapseGaps` mutate `tracks[0]`, `tracks[1+]`,
 // `captions`, notes and markers, and (§527) the gap close moves an audio track
 // that starts inside a clip with that clip; a music bed that starts before the
-// first gap stays put. A stem track minted before the cuts would still end up
-// misaligned (it spans the cuts, and audio is moved, never trimmed). Cuts and
-// the gap close run first, so clip geometry is final before stem tracks are
-// built against it. Loudness sits in the middle because it is per-clip and
+// first gap stays put. Cuts and the gap close run first, so clip geometry is
+// final before loudness is assigned. Loudness is per-clip and
 // order-insensitive.
 //
 // `remapCaptions: false` is not an optimisation — see the invariant comment
@@ -54,7 +50,7 @@
 // captions; letting `collapseGaps` remap them too shifts every one of them
 // twice.
 //
-// ── LOOPING CLIPS ARE EXCLUDED FROM THE CUT AND VOICE PIECES ────────────────
+// ── LOOPING CLIPS ARE EXCLUDED FROM THE CUT PIECES ────────────────
 //
 // `VisualItem.loop` (`schema.ts`) replays a clip's `[inPoint, outPoint)` source
 // window repeatedly across the whole clip's TIMELINE span (`scheduler.ts`'s
@@ -63,17 +59,14 @@
 // actually recurs at every wrap, and mapping it through either function picks
 // exactly one of those timeline positions and calls it correct — silently, the
 // removal still looks plausible, it just lands on the wrong repetition. Silence
-// and filler removals depend on that one-to-one relation directly; so does the
-// voice stem, because it is attached as a plain `AudioTrack` with a single
-// `inPoint`/`outPoint` window and nothing plays an audio track more than once
-// (see the restriction on `voiceTrackFor` below). `buildDraft` drops removals,
-// and refuses to mint a stem, for a looping clip rather than act on either
+// and filler removals depend on that one-to-one relation directly.
+// `buildDraft` drops removals for a looping clip rather than act on them
 // wrong. Loudness has NO coordinate mapping at all — it only assigns
 // `item.volume` — so it is unaffected and stays available on a looping clip.
 //
 // Making the mapping loop-aware (one source removal fanning out to several
 // timeline removals) is a real feature, not a bug fix: it touches cut
-// ordering, caption ripple and stem windows, and is deliberately left undone
+// ordering and caption ripple, and is deliberately left undone
 // here rather than half-built. See `pieceSupported` for the query surface and
 // the cut-pooling step in `buildDraft` for the enforcement.
 
@@ -116,9 +109,6 @@ const SILENCE_REASON = 'The independent silence check heard sound here. This may
 // `pieceSupported`'s reasons, rendered verbatim as the "why is this greyed
 // out" badge. No em dashes (UI copy rule), and — unlike the flag reasons
 // above — NO TRAILING PERIOD, so the badge family reads as one voice.
-const VOICE_SPEED_REASON = 'Voice isolation unavailable: this clip does not play at normal speed'
-const VOICE_LOOP_REASON =
-  'Voice isolation unavailable: this clip loops, so the isolated audio would drift out of sync'
 const SILENCE_LOOP_REASON =
   'Silence removal unavailable: this clip loops, so cuts would land in the wrong place'
 const FILLERS_LOOP_REASON =
@@ -165,8 +155,6 @@ export interface ClipPlan {
   removals?: readonly Removal[]
   /** Gain in dB from `loudnessGainDb`. `buildDraft` folds in the track volume. */
   gainDb?: number
-  /** Path to the isolated vocals WAV for this clip's source. */
-  vocalsPath?: string
 }
 
 /** Everything the modal has decided, keyed by `VisualItem.id`. Clips absent
@@ -374,91 +362,6 @@ function rawVolumeFor(gainDb: number, trackVolume?: number): number {
   return Math.pow(10, gainDb / 20) / (trackVolume ?? 1)
 }
 
-// ── Voice isolation ─────────────────────────────────────────────────────────
-
-function basename(p: string): string {
-  return p.split('/').pop() ?? p
-}
-
-/**
- * The stem id for the `ordinal`-th surviving fragment of the planned clip
- * `baseId`, counting in timeline order.
- *
- * The whole point of the stable-id rule is that a re-run REPLACES its own tracks
- * instead of stacking duplicates beside them, so the id must depend only on the
- * baseline clip and the fragment's position — never on the fragment's OWN id,
- * which `cuts.ts` mints from `Date.now()` and `Math.random()` and which
- * therefore differs on every rebuild of the same draft.
- *
- * Ordinal 0 is the bare `polish_voice_<id>` the spec names, so the common
- * one-fragment case is unchanged. The `__<n>` suffix on the rest is a shape
- * neither `uniqueId` (`<base>_split_<…>`) nor `newClipId` (`clip_<…>`) nor
- * init's `clip-<n>` can produce, so a suffixed id cannot collide with a stem
- * named after some other real clip.
- */
-function stemIdFor(baseId: string, ordinal: number): string {
-  return ordinal === 0 ? `polish_voice_${baseId}` : `polish_voice_${baseId}__${ordinal + 1}`
-}
-
-/** Whether `trackId` is a stem this run owns on behalf of planned clip `baseId`
- *  — i.e. one `stemIdFor(baseId, …)` could have minted. */
-function ownsStem(trackId: string, baseId: string): boolean {
-  const bare = `polish_voice_${baseId}`
-  if (trackId === bare) return true
-  const suffix = trackId.startsWith(`${bare}__`) ? trackId.slice(bare.length + 2) : ''
-  return suffix.length > 0 && /^\d+$/.test(suffix)
-}
-
-/**
- * The stem track for one clip, or `null` when the clip is not eligible.
- *
- * The vocals WAV is separated from the WHOLE source and stays 1:1 with it, so a
- * clip's slice of it is just the clip's own source window. `id` defaults to the
- * clip's own `polish_voice_<id>`; `buildDraft` passes a `stemIdFor` id instead,
- * because a fragment's id is not stable across rebuilds.
- *
- * RESTRICTION — SPEED 1 ONLY. `AudioTrack` has no tempo field and nothing plays
- * audio tracks at anything but native tempo: the renderer seeks with `-ss`/`-to`
- * and applies only `adelay`/`volume`/`afade`, and neither preview path
- * stretches. A clip's own inline audio does get an `atempo` chain, but that path
- * is not available to an audio track. So on a 2× clip the stem would play at
- * native tempo, overrun its slot and drift against the picture, silently.
- * Returning `null` lets the caller report the clip as skipped WITH the reason
- * instead. This is also why the `outPoint` formula below carries no `* speed`
- * factor: at speed 1 it is exact, and no other speed reaches it.
- *
- * RESTRICTION — NOT LOOPING EITHER, for the same underlying reason: `AudioTrack`
- * has no loop field either, so a stem placed at a single `[inPoint, outPoint)`
- * window plays that window once. A looping clip repeats that same source window
- * across its whole timeline span (`scheduler.ts`'s `placeInSource`), so a stem
- * built for it would track the picture for the first pass only and go silent,
- * or keep replaying the first pass, under every wrap after that. See the
- * LOOPING CLIPS note at the top of this file.
- *
- * Pass the FINAL, post-cut item — a clip that a cut split into fragments needs
- * one stem track per fragment, because the fragments are contiguous on the
- * timeline but discontiguous in the source and one track cannot follow both.
- */
-export function voiceTrackFor(
-  item: VisualItem,
-  vocalsPath: string,
-  id: string = stemIdFor(item.id, 0),
-): AudioTrack | null {
-  if ((item.speed ?? 1) !== 1) return null
-  if (item.loop) return null
-  const inPoint = item.inPoint ?? 0
-  return {
-    id,
-    type: 'voiceover',
-    src: vocalsPath,
-    start: item.start,
-    end: item.end,
-    inPoint,
-    outPoint: inPoint + (item.end - item.start),
-    label: `Voice: ${item.src ? basename(item.src) : item.id}`,
-  }
-}
-
 // ── Piece eligibility ───────────────────────────────────────────────────────
 
 /**
@@ -469,7 +372,7 @@ export function voiceTrackFor(
  * `'silence'` removal piece itself even though the two rise and fall together
  * (see the `'silence-check'` case below).
  */
-export type PolishPiece = 'silence' | 'fillers' | 'loudness' | 'voice' | 'silence-check'
+export type PolishPiece = 'silence' | 'fillers' | 'loudness' | 'silence-check'
 
 /** `pieceSupported`'s answer for one (clip, piece) pair. `reason` is present
  *  exactly when `available` is false, and is the badge string verbatim — the
@@ -483,29 +386,11 @@ export interface PieceSupport {
  * Whether `piece` may run on `clip` at all, and — when it may not — the
  * user-facing reason why, so the modal has one thing to ask instead of
  * hardcoding the visible half of this module's rules itself (as it does
- * today for the speed badge). Every site that needs to know — the
- * voice-eligibility probe, the plan builder's per-piece gates, analysis
- * scheduling, the review-list badge, the per-piece error mapping — asks this,
- * never `clip.loop` or `clip.speed` directly. `buildDraft` enforces the same
- * answer on its own regardless of what a caller asks first.
- *
- * `'voice'` defers its AVAILABILITY to `voiceTrackFor` rather than re-testing
- * `loop` or `speed` here, so each restriction keeps exactly one home — the
- * same pattern the modal already uses for its own `voiceEligible`.
- * `voiceTrackFor` returning `null` says only THAT voice is blocked, not WHY,
- * so the reason is chosen here.
- *
- * PRECEDENCE, when a clip is both looping and sped up: voice reports the LOOP
- * reason, not the speed one. This is decided on the merits, not to match any
- * one caller's wording. `loop` excludes THREE pieces on this clip (silence,
- * fillers, voice); `speed` excludes only voice. Reporting "sped up" would give
- * the operator two different explanations for what reads as one broken clip —
- * and the speed one is individually misleading, since un-sped-up-ing the clip
- * would still leave voice blocked by `loop`. Reporting "loops" names the one
- * thing that actually has to change before ANY of the three pieces come back,
- * and — a weaker, secondary point — `loop` is the more consequential failure
- * of the two: ignored, it cuts the wrong audio outright, where `speed` only
- * desyncs a stem.
+ * today for the loop badge). Every site that needs to know — the plan
+ * builder's per-piece gates, analysis scheduling, the review-list badge, the
+ * per-piece error mapping — asks this, never `clip.loop` directly.
+ * `buildDraft` enforces the same answer on its own regardless of what a caller
+ * asks first.
  */
 export function pieceSupported(clip: VisualItem, piece: PolishPiece): PieceSupport {
   switch (piece) {
@@ -524,10 +409,6 @@ export function pieceSupported(clip: VisualItem, piece: PolishPiece): PieceSuppo
       // looping or not. Deliberately exempt: see the LOOPING CLIPS note at
       // the top of this file.
       return { available: true }
-    case 'voice': {
-      if (voiceTrackFor(clip, '') !== null) return { available: true }
-      return { available: false, reason: clip.loop ? VOICE_LOOP_REASON : VOICE_SPEED_REASON }
-    }
   }
 }
 
@@ -678,7 +559,7 @@ function shiftAudioTrack(track: AudioTrack, delta: number): AudioTrack {
  *    `applyCutToCaptions` ripples later captions left, so a front-to-back pass
  *    would invalidate every not-yet-applied range.
  *  - The gap close runs only when at least one cut was made, so switching on
- *    the loudness or voice piece alone cannot silently close gaps the operator
+ *    the loudness piece alone cannot silently close gaps the operator
  *    placed by hand. It is `collapseGaps`, so it closes pre-existing gaps
  *    between clips too, and it preserves the timeline's leading offset.
  */
@@ -707,72 +588,31 @@ export function buildDraft<P extends Project>(baseline: P, plan: PolishPlan): P 
 
   // 2 — one gap close, then the head. `collapseGaps` compacts from the first
   // clip's start and so cannot close a LEADING gap; `closeLeadGap` finishes the
-  // job. Both run before loudness and voice, so clip geometry is final before
-  // stem tracks are built against it. The cuts have already put the captions
+  // job. Both run before loudness, so clip geometry is final. The cuts have already put the captions
   // where they belong, and neither of these moves them.
   if (cuts.length > 0) {
     draft = collapseGaps(draft, { remapCaptions: false })
     draft = closeLeadGap(draft, baseline, cuts)
   }
 
-  const needsItemPass = plannedIds.some(id => {
-    const cp = plan.clips[id]
-    return byId.has(id) && (cp.gainDb !== undefined || cp.vocalsPath !== undefined)
-  })
+  const needsItemPass = plannedIds.some(id => byId.has(id) && plan.clips[id].gainDb !== undefined)
   if (!needsItemPass) return draft
 
-  // 3 and 4 — loudness, then voice, both against the now-final clip geometry.
+  // 3 — loudness, against the now-final clip geometry.
   const trackVolume = ((normalizeTracks(draft).tracks ?? []) as VisualTrack[])[0]?.volume
   const survivors = trackItems(draft)[0] ?? []
 
-  // Each surviving fragment's ordinal within its planned clip, counted in
-  // TIMELINE order so a stem id depends only on (baseline, plan) and never on
-  // array order or on the fragment's own generated id.
-  const ordinal = new Map<string, number>()
-  const counted = new Map<string, number>()
-  for (const item of [...survivors].sort((a, b) => a.start - b.start)) {
-    const baseId = ancestorOf(item.id, plannedIds)
-    if (baseId === undefined) continue
-    const n = counted.get(baseId) ?? 0
-    ordinal.set(item.id, n)
-    counted.set(baseId, n + 1)
-  }
-
-  const voiceTracks: AudioTrack[] = []
   const newItems = survivors.map(item => {
     const baseId = ancestorOf(item.id, plannedIds)
     if (baseId === undefined) return item
-    const { gainDb, vocalsPath } = plan.clips[baseId]
-
-    let next = item
-    if (gainDb !== undefined) next = { ...next, volume: itemVolumeFor(gainDb, trackVolume) }
-    if (vocalsPath !== undefined) {
-      // Mint and mute together or do neither: a fragment muted without a stem
-      // track under it is a silent clip, which is the one outcome worse than
-      // not isolating at all.
-      const stem = voiceTrackFor(next, vocalsPath, stemIdFor(baseId, ordinal.get(item.id) ?? 0))
-      if (stem) {
-        voiceTracks.push(stem)
-        next = { ...next, muted: true }
-      }
-    }
-    return next
+    const { gainDb } = plan.clips[baseId]
+    return gainDb !== undefined ? { ...item, volume: itemVolumeFor(gainDb, trackVolume) } : item
   })
 
-  const withItems: P = {
+  // Audio tracks are left exactly as they were, including any plain track an
+  // earlier version of this planner made (ids starting `polish_voice_`).
+  return {
     ...draft,
     tracks: mapTrackItems(draft, (items, i) => (i === 0 ? newItems : items)),
   }
-
-  // This run OWNS the stems of every clip it was asked to isolate: drop that
-  // clip's existing ones wholesale, then add the freshly minted set. Replacing
-  // by id alone would strand a `__2` behind whenever a re-run's cuts leave the
-  // clip in fewer fragments than the previous run did. Every audio track this
-  // run does not own is left exactly as it was.
-  const existing = draft.audio?.tracks ?? []
-  const owners = plannedIds.filter(id => plan.clips[id].vocalsPath !== undefined)
-  const kept = existing.filter(t => !owners.some(baseId => ownsStem(t.id, baseId)))
-  if (voiceTracks.length === 0 && kept.length === existing.length) return withItems
-
-  return { ...withItems, audio: { ...draft.audio, tracks: [...kept, ...voiceTracks] } }
 }

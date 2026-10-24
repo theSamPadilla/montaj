@@ -350,7 +350,7 @@ test('parity: the movies stacked over black are the frames render.js writes', { 
   t.diagnostic(`worst frame: mean ${worstMean.toFixed(3)}, p99 ${worstP99}`)
 })
 
-test('an HDR project gets SDR movies and a warning; a drawtext caption layer is not rendered', async (t) => {
+test('an HDR project gets SDR movies and a warning', async (t) => {
   if (skip) { t.skip('ffmpeg/ffprobe not available'); return }
   const projDir = join(dir, 'hdr')
   mkdirSync(projDir)
@@ -358,21 +358,16 @@ test('an HDR project gets SDR movies and a warning; a drawtext caption layer is 
   const hdr = {
     ...makeProject('cadence-ramp.jsx'),
     settings: { resolution: [W, H], fps: FPS, colorSpace: 'hdr_hlg' },
-    renderMode: 'ffmpeg-drawtext',
   }
   hdr.tracks = [{ id: 'trk-0', items: [] }, { id: 'trk-1', items: [
     { id: 'short', type: 'overlay', src: 'cadence-ramp.jsx', props: {}, start: 0, end: 0.2 },
   ] }]
-  hdr.captions = { segments: [{ id: 'c1', text: 'Hi', start: 0, end: 0.2 }] }
-  // The timeline itself drops these layers in drawtext mode; build it without the
-  // mode so renderNleGraphics's own guard is what is under test.
-  const tl = buildNleTimeline({ ...hdr, renderMode: undefined }, { projectDir: projDir })
+  const tl = buildNleTimeline(hdr, { projectDir: projDir })
   const out = join(projDir, 'export')
   const res = await renderNleGraphics(hdr, tl, { projectDir: projDir, outDir: out })
 
   assert.equal(res.captions, null)
   assert.ok(res.warnings.some((w) => /^HDR project \(hdr_hlg\)/.test(w)), res.warnings.join(' | '))
-  assert.ok(res.warnings.some((w) => /^captions: renderMode ffmpeg-drawtext/.test(w)), res.warnings.join(' | '))
   assert.ok(!existsSync(join(out, 'captions.mov')))
   const s = probeStream(res.graphics.short)
   assert.equal(Number(s.nb_read_frames), 6)
