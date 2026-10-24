@@ -590,3 +590,24 @@ def test_a_relative_out_reaches_the_step_as_the_workspace_file(places, client, m
         assert argv[argv.index("--out") + 1] == os.path.join(str(places["ws"]), out)
     r = client.post("/api/steps/plain", json={"out": "http://host/x.wav"})
     assert r.status_code == 403
+
+
+def test_an_empty_out_reaches_the_step_empty(places, client, monkeypatch, tmp_path):
+    """out "" means no out (an export step then refuses or picks its own folder); it must not become the workspace
+    root (§563 final review)."""
+    assert steps_mod.build_cli_args(PLAIN, {"out": ""}) == ["--out", ""]
+    # Through the route, as a native export step (whose export folder the guard lets be ""): the step gets "".
+    native = tmp_path / "montaj" / "steps"
+    (native / "render").mkdir(parents=True)
+    py = native / "render" / "export_editor.py"
+    py.write_text(ECHO)
+    monkeypatch.setattr(steps_mod, "NATIVE_STEPS_DIR", native)
+    schema = native_schema("export_editor")
+    monkeypatch.setattr(steps_mod, "scan_steps", lambda: {"export_editor": (schema, py)})
+    proj = places["ws"] / "proj"
+    proj.mkdir()
+    (proj / "project.json").write_text(json.dumps({"version": "0.2", "id": "p", "tracks": []}))
+    r = client.post("/api/steps/export_editor", json={"project": str(proj / "project.json"), "out": ""})
+    assert r.status_code == 200, r.text
+    argv = r.json()["argv"]
+    assert argv[argv.index("--out") + 1] == ""

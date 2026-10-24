@@ -184,9 +184,10 @@ def build_cli_args(schema: dict, body: dict) -> list[str]:
 
     if "out" in body:
         # The step's cwd is the workspace, so a relative `out` is that workspace file: it goes absolute, the path
-        # the out-guard checked, never text a tool could read as a protocol (§563 review).
+        # the out-guard checked, never text a tool could read as a protocol (§563 review). An empty `out` is no
+        # out at all and stays empty: joined, it would name the workspace root.
         out = str(body["out"])
-        flags += ["--out", out if os.path.isabs(out) else os.path.join(str(resolve_workspace()), out)]
+        flags += ["--out", out if not out or os.path.isabs(out) else os.path.join(str(resolve_workspace()), out)]
 
     return flags
 
