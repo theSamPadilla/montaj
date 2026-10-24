@@ -96,3 +96,10 @@ def test_a_word_colour_that_is_not_a_colour_is_refused_naming_it(tmp_path, capsy
 def test_malformed_caption_shapes_are_not_this_rules_business(caps, capsys):
     v._validate_caption_word_colors({"captions": caps})
     assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("color", ["inherit", "unset", "var(--brand)", "var(--brand, #fff)"])
+def test_a_hand_edited_cascade_value_is_accepted_by_validate_but_not_by_the_steps(tmp_path, color):
+    caps = {"style": "pop", "segments": [{"id": "c", "text": "w0", "start": 0, "end": 1, "words": _words(color)}]}
+    assert v.validate_project(_project(tmp_path, caps))["valid"] is True
+    assert is_css_color(color, cascade=True) and not is_css_color(color)

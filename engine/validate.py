@@ -405,8 +405,8 @@ def _validate_caption_word_colors(data):
         if not isinstance(seg, dict) or not isinstance(seg.get("words"), list):
             continue
         for wi, w in enumerate(seg["words"]):
-            if isinstance(w, dict) and w.get("color") not in (None, "") and not is_css_color(w["color"]):
-                fail("invalid_field", f"captions.segments[{si}].words[{wi}].color must be a hex or a named CSS colour, got {w['color']!r}")
+            if isinstance(w, dict) and w.get("color") not in (None, "") and not is_css_color(w["color"], cascade=True):
+                fail("invalid_field", f"captions.segments[{si}].words[{wi}].color must be a CSS colour (a hex, a name, rgb(), hsl(), var(--x) or inherit), got {w['color']!r}")
 
 
 def validate_project(path):

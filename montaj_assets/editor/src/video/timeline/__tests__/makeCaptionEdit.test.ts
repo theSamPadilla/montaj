@@ -351,3 +351,23 @@ describe('makeCaptionEdit pairs words case and punctuation aside, and keeps acce
   })
 })
 
+
+describe('makeCaptionEdit never pairs two words that have no letters', () => {
+  it('an emoji or a dash typed in does not take another one\'s colour', () => {
+    const onProjectChange = vi.fn()
+    const s = seg({
+      text: 'go 🔥 now',
+      start: 0,
+      end: 3,
+      words: [
+        { word: 'go', start: 0, end: 1 },
+        { word: '🔥', start: 1, end: 2, color: '#ff0000' },
+        { word: 'now', start: 2, end: 3 },
+      ],
+    })
+    makeCaptionEdit(0, project([s]), onProjectChange)('go — now')
+    const words = (onProjectChange.mock.calls[0][0] as Project).captions!.segments[0].words!
+    expect(words.map(w => w.word)).toEqual(['go', '—', 'now'])
+    expect(words.map(w => w.color)).toEqual([undefined, undefined, undefined])
+  })
+})

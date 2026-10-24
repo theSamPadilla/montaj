@@ -10,6 +10,9 @@ import { isCaptionTranslation } from '../captionTranslation'
  * of a caption never drops what another word carries.
  */
 const wordKey = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+// An emoji or a punctuation-only word has an empty key: it is never the same word as another, so two of them never
+// pass each other's colour.
+const same = (a: string, b: string) => a !== '' && a === b
 
 export function unchangedWords(oldRaw: readonly string[], newRaw: readonly string[]): Array<[number, number]> {
   const oldWords = oldRaw.map(wordKey)
@@ -19,14 +22,14 @@ export function unchangedWords(oldRaw: readonly string[], newRaw: readonly strin
   const len: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0))
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
-      len[i][j] = oldWords[i] === newWords[j] ? len[i + 1][j + 1] + 1 : Math.max(len[i + 1][j], len[i][j + 1])
+      len[i][j] = same(oldWords[i], newWords[j]) ? len[i + 1][j + 1] + 1 : Math.max(len[i + 1][j], len[i][j + 1])
     }
   }
   const pairs: Array<[number, number]> = []
   let i = 0
   let j = 0
   while (i < n && j < m) {
-    if (oldWords[i] === newWords[j]) {
+    if (same(oldWords[i], newWords[j])) {
       pairs.push([i, j])
       i++
       j++

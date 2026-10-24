@@ -40,6 +40,8 @@ TEXT_KEY = {"pop": "activeColor"}
 # pop has none (it shows only the spoken word, in its text colour).
 SPOKEN_KEY = {"outline": "accentColor", "highlight-box": "accentColor", "plate": "accentColor", "karaoke": "highlightColor"}
 HIGHLIGHT_WHITE = "#ffffff"
+# Each style's spoken-word colour when the track sets none (the caption templates' own defaults).
+SPOKEN_DEFAULT = {"outline": "#fbbf24", "highlight-box": "#fbbf24", "plate": "#fbbf24", "karaoke": "#ffffff"}
 # Each style's default font size (the templates' defaults), for small / medium / large.
 DEFAULT_SIZE = {"word-by-word": 72, "pop": 68, "karaoke": 52, "subtitle": 46, "highlight-box": 60, "outline": 70,
                 "clean": 54, "accent": 168, "plate": 56}
@@ -52,8 +54,8 @@ ANCHOR = {"word-by-word": 24, "pop": 24, "karaoke": 25, "subtitle": 25, "highlig
           "clean": 26, "plate": 25}
 ACCENT_CENTRE = 59.5
 # The block's bottom edge, % from the top of the frame, for each position: one line then centres at about 22%,
-# 53% and the default 74% (measured on the renders: top 31.7-32.7% read as upper-middle at 34).
-POSITION_BOTTOM = {"top": 25.0, "middle": 56.0, "bottom": None}
+# 50% and the default 74% (measured on the renders: a bottom edge at 56 centred at 52.4-53.9%, so middle is 53).
+POSITION_BOTTOM = {"top": 25.0, "middle": 53.0, "bottom": None}
 # accent: the block's centre, % from the top.
 ACCENT_POSITION = {"top": 25.0, "middle": 50.0, "bottom": None}
 MAX_SIZE = 400
@@ -182,15 +184,22 @@ def _mark(stream, phrase, color):
     return hits
 
 
+def _stem(tok):
+    """A word's stem for a near miss: an ending off (ing, es, ed, s), then a final "e" off, so pause, pauses,
+    paused and pausing share one."""
+    stem = next((tok[: -len(e)] for e in STEM_ENDINGS if e and tok.endswith(e) and len(tok) - len(e) >= 3), tok)
+    return stem[:-1] if stem.endswith("e") and len(stem) > 3 else stem
+
+
 def _near(stream, phrase):
     """The transcript's words with the same stem as a one-word `phrase` that was not found (pause / pauses)."""
     t = _tok(phrase)
     if not t or " " in phrase.strip():
         return []
-    stem = next((t[: -len(e)] for e in STEM_ENDINGS if e and t.endswith(e) and len(t) - len(e) >= 3), t)
+    stem = _stem(t)
     seen = []
     for _, _, tok in stream:
-        if tok and tok != t and tok not in seen and any(tok == stem + e for e in STEM_ENDINGS):
+        if tok and tok != t and tok not in seen and _stem(tok) == stem:
             seen.append(tok)
     return seen[:3]
 
@@ -258,7 +267,7 @@ def restyle(captions, *, look=None, color=None, highlight=None, accent=None, pos
         report["accent"] = {"found": found, "missed": missed}
         if style in PHRASE_ONLY and accent["color"] is not None:
             report["issues"].append(f"accent needs a per-word look: {style} draws phrases")
-        spoken = out.get(SPOKEN_KEY.get(style, ""), None)
+        spoken = out.get(SPOKEN_KEY.get(style, "")) or SPOKEN_DEFAULT.get(style)
         if accent["color"] is not None and spoken and _rgb(spoken) is not None and _rgb(spoken) == _rgb(accent["color"]):
             report["issues"].append("accent matches the spoken-word colour: the accent words look spoken")
     if position is not None:
@@ -280,9 +289,15 @@ def restyle(captions, *, look=None, color=None, highlight=None, accent=None, pos
             track = out.get("fontsize", out.get("fontSize"))
             base = track if isinstance(track, (int, float)) and track > 0 else DEFAULT_SIZE.get(style, 60)
             px = int(round(base * factor))
+            held = 0
             for seg in segs:
                 if isinstance(seg, dict) and isinstance(seg.get("fontSize"), (int, float)):
-                    seg["fontSize"] = int(round(seg["fontSize"] * factor))
+                    own = int(round(seg["fontSize"] * factor))
+                    if not MIN_SIZE <= own <= MAX_SIZE:
+                        own, held = min(max(own, MIN_SIZE), MAX_SIZE), held + 1
+                    seg["fontSize"] = own
+            if held:
+                report["issues"].append(f"{held} caption{'s' if held > 1 else ''}' own size held at {MIN_SIZE} to {MAX_SIZE}px")
         else:
             clear_segment("fontSize", px)
         if not MIN_SIZE <= px <= MAX_SIZE:

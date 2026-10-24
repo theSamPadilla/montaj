@@ -111,7 +111,7 @@ def test_n2_move_them_up_to_the_middle_and_bigger(tmp_path):
     run(d, look="highlight", color="white", highlight="cyan")
     out = run(d, position="middle", size="bigger")
     c = caps(d)
-    assert [s.get("offsetY") for s in c["segments"]] == [-19.0, -19.0, -19.0, -19.0], "every caption and its translation"
+    assert [s.get("offsetY") for s in c["segments"]] == [-22.0, -22.0, -22.0, -22.0], "every caption and its translation"
     assert c["fontsize"] == round(caption_style.DEFAULT_SIZE["outline"] * 1.25)
     assert c["segments"][1]["fontSize"] == round(90 * 1.25), "bigger scales a caption's own size, never drops it"
     assert out["position"] == "middle" and out["size"] == c["fontsize"]
@@ -356,3 +356,27 @@ def test_the_answer_stays_within_300_characters_with_many_misses(tmp_path):
     d = make_project(tmp_path)
     out = run(d, accent=json.dumps({"words": [f"missing{i}" for i in range(40)], "color": "cyan"}))
     assert len(json.dumps(out)) <= 300 and out["accent"]["more"] > 0
+
+
+# ── re-review nits ────────────────────────────────────────────────────────────────────────────────────────────────
+
+def test_bigger_never_takes_a_captions_own_size_past_the_max_and_says_so(tmp_path):
+    d = make_project(tmp_path)
+    p = json.loads((d / "project.json").read_text())
+    p["captions"]["segments"][1]["fontSize"] = 380
+    (d / "project.json").write_text(json.dumps(p))
+    out = run(d, size="bigger")
+    assert caps(d)["segments"][1]["fontSize"] == 400
+    assert any("own size held at 12 to 400px" in i for i in out["issues"]), out
+
+
+def test_a_near_miss_is_found_both_ways_and_past_a_dropped_e(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, accent=json.dumps({"words": ["pause", "parts"], "color": "cyan"}))
+    assert out["accent"]["missed"] == {"pause": ["pauses"], "parts": ["part"]}, out
+
+
+def test_an_accent_the_colour_of_the_styles_own_spoken_default_is_said(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, look="outline", accent=json.dumps({"words": ["best"], "color": "#fbbf24"}))
+    assert any("accent matches the spoken-word colour" in i for i in out["issues"]), out

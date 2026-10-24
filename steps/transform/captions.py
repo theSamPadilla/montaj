@@ -18,8 +18,7 @@ from lib.project_versions import commit_version, is_own_repo  # noqa: E402
 VERSION_MESSAGE = "version: before captions"
 STEP_LOCK_TIMEOUT = 30.0
 STYLE_FIELDS = ("style", "color", "accentColor", "highlightColor", "activeColor", "fontsize")
-# Each style's spoken-word colour when the track sets none (the caption templates' own defaults).
-SPOKEN_DEFAULT = {"outline": "#fbbf24", "highlight-box": "#fbbf24", "plate": "#fbbf24", "karaoke": "#ffffff"}
+SPOKEN_DEFAULT = caption_style.SPOKEN_DEFAULT
 
 
 def _short(report, track, extra=None, cap=300):

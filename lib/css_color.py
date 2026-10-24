@@ -1,10 +1,14 @@
 """A CSS colour as captions take one (§558): a hex (#rgb, #rgba, #rrggbb, #rrggbbaa), a named CSS colour,
 `currentcolor`, or a colour function (rgb(), rgba(), hsl(), hsla(), hwb(), lab(), lch(), oklab(), oklch(), color()),
 as the caption templates draw them (karaoke's own default is rgba(255,255,255,0.55)). A function holds no `;`, `{`
-or `}`, so a value can never close the style it is written into."""
+or `}`, so a value can never close the style it is written into. With `cascade`, also what a hand edit may write
+that only the cascade resolves: inherit, initial, unset, revert and var(--name) (validate takes them, so a project a
+person edited is never refused; the steps' own colour params do not)."""
 import re
 
 _HEX = re.compile(r"^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+_CASCADE = frozenset(("inherit", "initial", "unset", "revert", "revert-layer"))
+_VAR = re.compile(r"^var\(\s*--[A-Za-z0-9_-]{1,60}\s*(?:,[^;{}()]{1,120})?\)$")
 _FUNC = re.compile(r"^(?:rgb|rgba|hsl|hsla|hwb|lab|lch|oklab|oklch|color)\([^;{}()]{1,120}\)$", re.IGNORECASE)
 # CSS Color Module Level 4 named colours, and transparent.
 NAMED = frozenset("""
@@ -25,8 +29,10 @@ whitesmoke yellow yellowgreen transparent currentcolor
 """.split())
 
 
-def is_css_color(value) -> bool:
+def is_css_color(value, cascade=False) -> bool:
     if not isinstance(value, str):
         return False
     v = value.strip()
+    if cascade and (v.lower() in _CASCADE or _VAR.match(v)):
+        return True
     return bool(_HEX.match(v)) or v.lower() in NAMED or bool(_FUNC.match(v))
