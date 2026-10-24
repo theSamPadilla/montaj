@@ -64,6 +64,18 @@ export interface UseProjectState<P extends Project = Project> {
   duplicateSlide: (slideId: string, newSlide: Slide) => Promise<void>
   reorderSlides: (fromIndex: number, toIndex: number) => Promise<void>
   updateSlide: (slideId: string, patch: Partial<Slide>) => Promise<void>
+  /**
+   * Edits one slide's elements (§556 review): `edit` is called once,
+   * synchronously, with the elements the project holds NOW, not as the caller
+   * last saw them (a frame from another writer may have changed them since),
+   * and its result is one save and one undo step, gated like every slide
+   * edit. An edit that returns the same array writes nothing (no save, no undo
+   * step), and for a slide that is gone `edit` is not called. Use it for a
+   * change built from a list (remove several, paste, duplicate, reorder, add
+   * several) instead of `updateSlide({ elements })`, which writes the caller's
+   * copy of the list over whatever arrived since.
+   */
+  editElements: (slideId: string, edit: (elements: CarouselElement[]) => CarouselElement[]) => Promise<void>
   setOverlayFrame: (slideId: string, elementId: string, frame: number) => Promise<void>
   /**
    * Writes `project.notes` (PL70): `edit` is called once, synchronously, with
@@ -105,7 +117,7 @@ export function useProjectState<P extends Project = Project>(
   const mutate = useCallback(
     (action: Action<P>): Promise<void> => {
       const base = projectRef.current
-      const editGated = new Set(['updateOverlayProp', 'updateImageCrop', 'replaceImage', 'setStatus', 'setName', 'moveElement', 'resizeElement', 'rotateElement', 'addElement', 'removeElement', 'addSlide', 'removeSlide', 'duplicateSlide', 'reorderSlides', 'updateSlide', 'duplicateElement', 'reorderElement', 'setOverlayFrame'])
+      const editGated = new Set(['updateOverlayProp', 'updateImageCrop', 'replaceImage', 'setStatus', 'setName', 'moveElement', 'resizeElement', 'rotateElement', 'addElement', 'removeElement', 'addSlide', 'removeSlide', 'duplicateSlide', 'reorderSlides', 'updateSlide', 'editElements', 'duplicateElement', 'reorderElement', 'setOverlayFrame'])
       if (editGated.has(action.type) && !isEditable(base.status)) {
         console.warn(`[useProjectState] dropped ${action.type}: status="${base.status}" not editable`)
         return Promise.resolve()
@@ -119,6 +131,13 @@ export function useProjectState<P extends Project = Project>(
           )
           return Promise.resolve()
         }
+      }
+      if (action.type === 'editElements') {
+        // Applied once, here, to the live project: an edit that changes nothing
+        // writes nothing (no undo step, no save).
+        const next = projectReducer(base, action)
+        if (next === base) return Promise.resolve()
+        return syncMutate(() => next)
       }
       return syncMutate((p) => projectReducer(p, action))
     },
@@ -248,6 +267,12 @@ export function useProjectState<P extends Project = Project>(
     [mutate],
   )
 
+  const editElements = useCallback(
+    (slideId: string, edit: (elements: CarouselElement[]) => CarouselElement[]) =>
+      mutate({ type: 'editElements', slideId, edit }),
+    [mutate],
+  )
+
   const setOverlayFrame = useCallback(
     (slideId: string, elementId: string, frame: number) =>
       mutate({ type: 'setOverlayFrame', slideId, elementId, frame }),
@@ -290,6 +315,7 @@ export function useProjectState<P extends Project = Project>(
     duplicateSlide,
     reorderSlides,
     updateSlide,
+    editElements,
     setOverlayFrame,
     editNotes,
     commit: sync.commit,

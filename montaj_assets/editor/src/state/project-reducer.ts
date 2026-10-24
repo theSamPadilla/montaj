@@ -59,6 +59,11 @@ export type Action<P extends Project = Project> =
   | { type: 'duplicateSlide'; slideId: string; newSlide: Slide }
   | { type: 'reorderSlides'; fromIndex: number; toIndex: number }
   | { type: 'updateSlide'; slideId: string; patch: Partial<Slide> }
+  // One slide's elements edited as a whole (§556 review): `edit` is given the
+  // elements the state holds WHEN THE ACTION IS APPLIED, so a write built from
+  // an older view (a key read the render before it, an upload that took time)
+  // cannot drop an element that arrived since. The same array back changes nothing.
+  | { type: 'editElements'; slideId: string; edit: (elements: CarouselElement[]) => CarouselElement[] }
   // Element structural actions the editor needs beyond add/remove.
   | { type: 'duplicateElement'; slideId: string; elementId: string; newElement: CarouselElement }
   | { type: 'reorderElement'; slideId: string; elementId: string; direction: ReorderDirection }
@@ -278,6 +283,15 @@ export function projectReducer<P extends Project>(state: P, action: Action<P>): 
       const slides = (state.slides ?? []).map((slide): Slide =>
         slide.id === action.slideId ? { ...slide, ...action.patch } : slide,
       )
+      return { ...state, slides }
+    }
+
+    case 'editElements': {
+      const slide = (state.slides ?? []).find((s) => s.id === action.slideId)
+      if (!slide) return state
+      const elements = action.edit(slide.elements)
+      if (elements === slide.elements) return state
+      const slides = (state.slides ?? []).map((s): Slide => (s.id === action.slideId ? { ...s, elements } : s))
       return { ...state, slides }
     }
 

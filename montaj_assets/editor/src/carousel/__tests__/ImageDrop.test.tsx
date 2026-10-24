@@ -625,6 +625,34 @@ describe('Images on the canvas: files from the OS', () => {
     expect(handlesOn('el-s1')).toBe(true)
   })
 
+  it('adds onto the elements the slide has when the uploads land: one an outside writer added meanwhile is kept (§556 review)', async () => {
+    const gates = [deferred<string>(), deferred<string>()]
+    const adapter = makeFakeAdapter()
+    ;(adapter.uploadFile as ReturnType<typeof vi.fn>).mockImplementation((file: File) => gates[file.name === 'a.png' ? 0 : 1].promise)
+    let push: ((p: Project) => void) | undefined
+    adapter.subscribe = (_id, onFrame) => {
+      push = onFrame
+      return () => {}
+    }
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [png('a.png'), png('b.png')] })))
+
+    // The uploads land and an outside writer's element arrives in the same tick,
+    // before the editor has drawn it.
+    const base = makeProject()
+    const ai = { id: 'el-ai', type: 'image', src: 'ai.png', x: 40, y: 40, w: 100, h: 100, rotation: 0 } as const
+    await act(async () => {
+      push!({ ...base, slides: [{ ...base.slides![0], elements: [...base.slides![0].elements, ai] }, base.slides![1]] })
+      gates[0].resolve('/proj/assets/a.png')
+      gates[1].resolve('/proj/assets/b.png')
+      // The whole add is microtasks; the editor draws again when this scope ends.
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(elementsOf(lastSave(adapter)).map((e) => (e as ImageElement).src)).toEqual(['a.png', 'ai.png', '/proj/assets/a.png', '/proj/assets/b.png'])
+  })
+
   it('writes nothing when the slide is deleted meanwhile', async () => {
     const gate = deferred<string>()
     const adapter = makeFakeAdapter()

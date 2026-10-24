@@ -18,7 +18,7 @@ import { newImageElement } from './newImage'
 import { noteId } from '../video/timeline/notes'
 import { useKeymap, matchesDelete, matchesEscape, matchesPlainKey, matchesRedo, matchesUndo, type KeyBinding } from '../video/keymap'
 import type { ReorderDirection } from '../state/project-reducer'
-import { COPY_OFFSET, cloneElement, copyElements, duplicateElements, pasteElements, type ElementClipboard } from './clipboard'
+import { COPY_OFFSET, cloneElement, copyElements, duplicateCopies, insertCopies, pasteElements, type ElementClipboard } from './clipboard'
 import { reorderSelection } from './layerOrder'
 import { Button } from '../ui'
 import { shortcutText } from '../ui/modifierKeys'
@@ -557,6 +557,12 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const hasSelection = slideLive && liveSelectedIds.length > 0
   const canEdit = state.isEditingAllowed
 
+  // The element writes below are built from the render on show, which the
+  // project can be ahead of (a frame from another writer lands before the
+  // editor draws it). Each goes through `state.editElements`, which applies it
+  // to the elements the project holds when it lands, so nothing that arrived
+  // meanwhile is written over.
+
   /** Removes the selected elements. Several go in one slide write, so one undo
    *  brings them all back. */
   function removeSelection() {
@@ -565,7 +571,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
       void state.removeElement(selectedSlide.id, liveSelectedIds[0])
     } else {
       const gone = new Set(liveSelectedIds)
-      void state.updateSlide(selectedSlide.id, { elements: selectedSlide.elements.filter(el => !gone.has(el.id)) })
+      void state.editElements(selectedSlide.id, (els) => {
+        const kept = els.filter(el => !gone.has(el.id))
+        return kept.length === els.length ? els : kept
+      })
     }
     setSelectedElementId(null)
   }
@@ -581,17 +590,19 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const clipboard = clipboardRef.current
     if (!clipboard || !selectedSlide) return
     const pasted = pasteElements(clipboard, selectedSlide)
-    void state.updateSlide(selectedSlide.id, { elements: [...selectedSlide.elements, ...pasted] })
+    void state.editElements(selectedSlide.id, (els) => [...els, ...pasted])
     setSelectedElementIds(pasted.map(el => el.id))
   }
 
   /** Duplicate: a copy of each selected element directly above it, selected; one slide write. */
   function duplicateSelection() {
     if (!selectedSlide) return
-    const { elements, copyIds } = duplicateElements(selectedSlide.elements, liveSelectedIds)
-    if (copyIds.length === 0) return
-    void state.updateSlide(selectedSlide.id, { elements })
-    setSelectedElementIds(copyIds)
+    // The copies are made now, so their ids (the new selection) are known; each
+    // goes above its source in the elements the project has when the write lands.
+    const copies = duplicateCopies(selectedSlide.elements, liveSelectedIds)
+    if (copies.size === 0) return
+    void state.editElements(selectedSlide.id, (els) => insertCopies(els, copies))
+    setSelectedElementIds(Array.from(copies.values(), (copy) => copy.id))
   }
 
   /** Select all: every element on the slide the host is not hiding. */
@@ -605,8 +616,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
    *  written when the order would not change. */
   function moveSelectionInStack(direction: ReorderDirection) {
     if (!selectedSlide) return
-    const elements = reorderSelection(selectedSlide.elements, liveSelectedIds, direction)
-    if (elements !== selectedSlide.elements) void state.updateSlide(selectedSlide.id, { elements })
+    // An order that would not change on show records nothing.
+    if (reorderSelection(selectedSlide.elements, liveSelectedIds, direction) === selectedSlide.elements) return
+    const ids = liveSelectedIds
+    void state.editElements(selectedSlide.id, (els) => reorderSelection(els, ids, direction))
   }
 
   /** One arrow press: every selected element moves, on screen only. Positions
@@ -1082,9 +1095,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     // An arrow-key nudge still open would fold into this edit's undo step.
     flushNudge()
     const placed = added.map((el, i) => ({ ...el, x: el.x + i * COPY_OFFSET, y: el.y + i * COPY_OFFSET }))
-    const saved = placed.length === 1
-      ? state.addElement(slideId, placed[0])
-      : state.updateSlide(slideId, { elements: [...slide.elements, ...placed] })
+    const saved = state.editElements(slideId, (els) => [...els, ...placed])
     // Selected, unless the user has gone to another slide meanwhile: their
     // selection there is theirs.
     if (selectedSlideIdRef.current === slideId) setSelectedElementIds(placed.map((el) => el.id))

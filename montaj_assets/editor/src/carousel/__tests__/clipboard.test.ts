@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { CarouselElement, ImageElement, OverlayElement, Slide } from '../../types'
-import { COPY_OFFSET, cloneElement, copyElements, duplicateElements, pasteElements } from '../clipboard'
+import { COPY_OFFSET, cloneElement, copyElements, duplicateCopies, duplicateElements, insertCopies, pasteElements } from '../clipboard'
 
 function image(id: string, x = 100, y = 100, extra: Partial<ImageElement> = {}): ImageElement {
   return { id, type: 'image', src: `${id}.png`, x, y, w: 200, h: 150, rotation: 0, ...extra }
@@ -246,5 +246,44 @@ describe('duplicateElements', () => {
     const none = duplicateElements(elements, ['ghost'])
     expect(none.elements).toBe(elements)
     expect(none.copyIds).toEqual([])
+  })
+})
+
+describe('duplicateCopies and insertCopies (§556 review)', () => {
+  it('make a copy of each selected element by the id of its source, in list order, 20 px down and right, each under a fresh id', () => {
+    const elements = [image('a', 10, 10), image('b', 200, 200), image('c', 300, 300)]
+    // Picked in the opposite order to the list.
+    const copies = duplicateCopies(elements, ['c', 'a'])
+    expect([...copies.keys()]).toEqual(['a', 'c'])
+    expect(at([copies.get('a')!, copies.get('c')!])).toEqual([[30, 30], [320, 320]])
+    expect((copies.get('a') as ImageElement).src).toBe('a.png')
+    const all = ['a', 'b', 'c', copies.get('a')!.id, copies.get('c')!.id]
+    expect(new Set(all).size).toBe(5)
+  })
+
+  it('make nothing for a selection that is not on the list', () => {
+    expect(duplicateCopies([image('a')], ['ghost']).size).toBe(0)
+    expect(duplicateCopies([image('a')], []).size).toBe(0)
+  })
+
+  it('insertCopies puts each copy directly above its source in the list it is given, not the one the copies were made from', () => {
+    const made = [image('a'), image('b')]
+    const copies = duplicateCopies(made, ['a'])
+    // The list now holds an element the copies were never made from.
+    const now = [image('a'), image('x'), image('b')]
+    const out = insertCopies(now, copies)
+    expect(out.map((e) => e.id)).toEqual(['a', copies.get('a')!.id, 'x', 'b'])
+    expect(out[0]).toBe(now[0])
+    expect(out[2]).toBe(now[1])
+    expect(now.map((e) => e.id)).toEqual(['a', 'x', 'b'])
+  })
+
+  it('insertCopies leaves out a copy whose source is gone, and with no source on the list returns the same array', () => {
+    const copies = duplicateCopies([image('a'), image('b')], ['a', 'b'])
+    const onlyB = [image('b')]
+    expect(insertCopies(onlyB, copies).map((e) => e.id)).toEqual(['b', copies.get('b')!.id])
+    const none = [image('z')]
+    expect(insertCopies(none, copies)).toBe(none)
+    expect(insertCopies(none, new Map())).toBe(none)
   })
 })

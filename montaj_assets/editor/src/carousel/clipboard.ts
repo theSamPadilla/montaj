@@ -60,6 +60,40 @@ function firstPasteSteps(clipboard: ElementClipboard, slide: Slide): number {
 }
 
 /**
+ * A copy of each selected element of `elements`, 20 px down and right under a
+ * fresh id, by the id of the element it copies, in list order. Empty when none
+ * of `selectedIds` is on the list. Making the copies apart from putting them in
+ * lets a caller know their ids before the write that adds them lands.
+ */
+export function duplicateCopies(
+  elements: CarouselElement[],
+  selectedIds: Iterable<string>,
+): Map<string, CarouselElement> {
+  const selected = new Set(selectedIds)
+  const copies = new Map<string, CarouselElement>()
+  for (const el of elements) {
+    if (selected.has(el.id)) copies.set(el.id, stepped(cloneElement(el), COPY_OFFSET))
+  }
+  return copies
+}
+
+/**
+ * `elements` with each copy in `copies` directly above the element it copies
+ * (in front of it, next in the array). A copy whose source is not on the list
+ * is left out; with no source on it, the same array comes back.
+ */
+export function insertCopies(
+  elements: CarouselElement[],
+  copies: ReadonlyMap<string, CarouselElement>,
+): CarouselElement[] {
+  if (!elements.some((el) => copies.has(el.id))) return elements
+  return elements.flatMap((el) => {
+    const copy = copies.get(el.id)
+    return copy ? [el, copy] : [el]
+  })
+}
+
+/**
  * `elements` with a copy of each selected element directly above it (in front
  * of it, next in the array), 20 px down and right, and the ids of those copies.
  * With nothing selected on the list, the same array and no ids.
@@ -68,16 +102,6 @@ export function duplicateElements(
   elements: CarouselElement[],
   selectedIds: Iterable<string>,
 ): { elements: CarouselElement[]; copyIds: string[] } {
-  const selected = new Set(selectedIds)
-  if (!elements.some((el) => selected.has(el.id))) return { elements, copyIds: [] }
-  const out: CarouselElement[] = []
-  const copyIds: string[] = []
-  for (const el of elements) {
-    out.push(el)
-    if (!selected.has(el.id)) continue
-    const copy = stepped(cloneElement(el), COPY_OFFSET)
-    out.push(copy)
-    copyIds.push(copy.id)
-  }
-  return { elements: out, copyIds }
+  const copies = duplicateCopies(elements, selectedIds)
+  return { elements: insertCopies(elements, copies), copyIds: Array.from(copies.values(), (copy) => copy.id) }
 }

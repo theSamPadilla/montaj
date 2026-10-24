@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { useProjectState } from '../use-project-state'
-import type { EditorAdapter, Project, ImageElement, RenderEvent } from '../../types'
+import type { CarouselElement, EditorAdapter, Project, ImageElement, RenderEvent } from '../../types'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -410,6 +410,111 @@ describe('useProjectState: replaceImage', () => {
         .catch(() => {})
     })
     expect(result.current.project.slides![0].elements[0]).toEqual(initial.slides![0].elements[0])
+    expect(result.current.lastError).toMatch(/save boom/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// editElements (§556 review): an edit applied to the slide's elements as they
+// are when it lands, not as the caller last saw them
+// ---------------------------------------------------------------------------
+
+describe('useProjectState: editElements', () => {
+  const extra = { id: 'el-new', type: 'image', src: 'n.png', x: 1, y: 2, w: 30, h: 40, rotation: 0 } as const
+  const ids = (p: Project) => p.slides![0].elements.map((e) => e.id)
+
+  it('writes the edit in one save and one undo step, and undo brings the old elements back', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.editElements('slide-0', (els) => [...els, extra])
+    })
+    expect(ids(result.current.project)).toEqual(['el-0', 'el-1', 'el-new'])
+    expect(adapter.saveCalls).toHaveLength(1)
+    expect(ids(adapter.saveCalls[0].project)).toEqual(['el-0', 'el-1', 'el-new'])
+    expect(result.current.canUndo).toBe(true)
+
+    await act(async () => { result.current.undo() })
+    expect(ids(result.current.project)).toEqual(['el-0', 'el-1'])
+    expect(result.current.canUndo).toBe(false)
+  })
+
+  it('is applied to the elements the project holds now: an element an outside frame added is kept', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    // The caller's view is `initial`; the frame lands, and the edit follows in the same tick.
+    await act(async () => {
+      const base = makeProject()
+      adapter.emit({ ...base, slides: [{ ...base.slides![0], elements: [...base.slides![0].elements, { ...extra, id: 'el-ai' }] }] })
+      await result.current.editElements('slide-0', (els) => els.filter((e) => e.id !== 'el-0'))
+    })
+    expect(ids(result.current.project)).toEqual(['el-1', 'el-ai'])
+    expect(ids(adapter.saveCalls[adapter.saveCalls.length - 1].project)).toEqual(['el-1', 'el-ai'])
+  })
+
+  it('two edits in one tick chain', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      void result.current.editElements('slide-0', (els) => [...els, { ...extra, id: 'a' }])
+      await result.current.editElements('slide-0', (els) => [...els, { ...extra, id: 'b' }])
+    })
+    expect(ids(result.current.project)).toEqual(['el-0', 'el-1', 'a', 'b'])
+    expect(ids(adapter.saveCalls[adapter.saveCalls.length - 1].project)).toEqual(['el-0', 'el-1', 'a', 'b'])
+  })
+
+  it('an edit that returns the same array writes nothing and pushes no undo step', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => { await result.current.editElements('slide-0', (els) => els) })
+    expect(result.current.project).toBe(initial)
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(result.current.canUndo).toBe(false)
+  })
+
+  it('calls the edit once, and not at all for a slide that is not there', async () => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    const edit = vi.fn((els: CarouselElement[]) => [...els, extra])
+    await act(async () => { await result.current.editElements('slide-0', edit) })
+    expect(edit).toHaveBeenCalledTimes(1)
+
+    const missing = vi.fn((els: CarouselElement[]) => [...els, extra])
+    await act(async () => { await result.current.editElements('no-slide', missing) })
+    expect(missing).not.toHaveBeenCalled()
+    expect(adapter.saveCalls).toHaveLength(1)
+  })
+
+  it.each(['pending', 'storyboard_ready'] as const)('is dropped, saving nothing, while the status is "%s"', async (status) => {
+    const adapter = makeFakeAdapter()
+    const initial = makeProject({ status })
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => { await result.current.editElements('slide-0', (els) => [...els, extra]) })
+    expect(result.current.project).toBe(initial)
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(result.current.canUndo).toBe(false)
+  })
+
+  it('rolls back and surfaces lastError when the save fails', async () => {
+    const adapter = makeFakeAdapter({ failSave: true })
+    const initial = makeProject()
+    const { result } = renderHook(() => useProjectState(adapter, initial.id, initial))
+
+    await act(async () => {
+      await result.current.editElements('slide-0', (els) => [...els, extra]).catch(() => {})
+    })
+    expect(ids(result.current.project)).toEqual(['el-0', 'el-1'])
     expect(result.current.lastError).toMatch(/save boom/)
   })
 })

@@ -2858,6 +2858,115 @@ describe('CarouselEditor: where the element keys do not act (§556 M2)', () => {
   })
 })
 
+// ── An edit lands on the elements the project has now (§556 review) ─────────
+//
+// A key reads the render before it, and the project can be ahead of that render:
+// a frame from an outside writer (an AI, another window) is in the project the
+// moment it arrives, and the editor draws it a render later. The multi-element
+// writes (several deleted, a paste, Cmd+D, the layer keys, several images added)
+// must be applied to the elements the project holds when they land, or the
+// element that just arrived is silently dropped and the save writes the loss.
+
+const AI_ELEMENT = { id: 'el-ai', type: 'image', src: 'ai.png', x: 40, y: 40, w: 100, h: 100, rotation: 0 } as const
+
+describe('CarouselEditor: an edit lands on the elements the project has now (§556 review)', () => {
+  /** threeElements() with an element an outside writer added to slide-0. */
+  function withAi(): Project {
+    const base = threeElements()
+    return { ...base, slides: [{ ...base.slides![0], elements: [...base.slides![0].elements, AI_ELEMENT] }, base.slides![1]] }
+  }
+
+  async function mountWithFrames() {
+    const adapter = makeFakeAdapter()
+    let push: ((p: Project) => void) | undefined
+    adapter.subscribe = (_id, onFrame) => {
+      push = onFrame
+      return () => {}
+    }
+    const onProjectChange = vi.fn()
+    const r = render(<CarouselEditor project={threeElements()} adapter={adapter} onProjectChange={onProjectChange} />)
+    await waitFor(() => findInteractiveWrapper('el-a'))
+    return { adapter, onProjectChange, r, frame: () => push!(withAi()) }
+  }
+
+  /** `k` pressed in the same tick as the frame: the project has it, the editor has not drawn it. */
+  async function keyWithFrame(frame: () => void, k: string, init: KeyboardEventInit = {}) {
+    const e = new KeyboardEvent('keydown', { key: k, cancelable: true, bubbles: true, ...init })
+    await act(async () => {
+      frame()
+      document.dispatchEvent(e)
+    })
+    return e
+  }
+
+  it.each([
+    ['Delete', 'Delete', {}],
+    ['Cut', 'x', CMD],
+  ] as const)('%s on several selected elements keeps the element that arrived in the same tick', async (_name, k, init) => {
+    const { adapter, onProjectChange, frame } = await mountWithFrames()
+    await plainClick('el-a')
+    await shiftClick('el-c')
+
+    const e = await keyWithFrame(frame, k, init)
+    expect(e.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(idsOf(lastSave(adapter))).toEqual(['el-b', 'el-ai'])
+    expect(idsOf(liveProject(onProjectChange))).toEqual(['el-b', 'el-ai'])
+  })
+
+  it('Cmd+V keeps the element that arrived in the same tick, and the paste goes on top of it', async () => {
+    const { adapter, onProjectChange, frame } = await mountWithFrames()
+    await plainClick('el-a')
+    await key('c', CMD)
+
+    const e = await keyWithFrame(frame, 'v', CMD)
+    expect(e.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const saved = idsOf(lastSave(adapter))
+    expect(saved).toHaveLength(5)
+    expect(saved.slice(0, 4)).toEqual(['el-a', 'el-b', 'el-c', 'el-ai'])
+    expect(idsOf(liveProject(onProjectChange))).toEqual(saved)
+    // The paste is the selection.
+    expect(outlined(saved[4])).toBe(true)
+  })
+
+  it('Cmd+D keeps the element that arrived in the same tick, and each copy sits above its source', async () => {
+    const { adapter, onProjectChange, frame } = await mountWithFrames()
+    await plainClick('el-a')
+    await shiftClick('el-c')
+
+    const e = await keyWithFrame(frame, 'd', CMD)
+    expect(e.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    const saved = idsOf(lastSave(adapter))
+    // a, copy of a, b, c, copy of c, then the one that arrived.
+    expect(saved).toHaveLength(6)
+    expect([saved[0], saved[2], saved[3], saved[5]]).toEqual(['el-a', 'el-b', 'el-c', 'el-ai'])
+    expect(new Set(saved).size).toBe(6)
+    expect(idsOf(liveProject(onProjectChange))).toEqual(saved)
+    // The copies are the selection.
+    expect(outlined(saved[1])).toBe(true)
+    expect(outlined(saved[4])).toBe(true)
+    expect(outlined('el-ai')).toBe(false)
+  })
+
+  it.each([
+    ['Cmd+] one step forward', 'el-a', ']', { ...CMD, ...RIGHT_BRACKET }, ['el-b', 'el-a', 'el-c', 'el-ai']],
+    ['Cmd+[ one step back', 'el-c', '[', { ...CMD, ...LEFT_BRACKET }, ['el-a', 'el-c', 'el-b', 'el-ai']],
+    ['Opt+Cmd+] to the front', 'el-a', ']', { ...CMD, altKey: true, ...RIGHT_BRACKET }, ['el-b', 'el-c', 'el-ai', 'el-a']],
+    ['Opt+Cmd+[ to the back', 'el-c', '[', { ...CMD, altKey: true, ...LEFT_BRACKET }, ['el-c', 'el-a', 'el-b', 'el-ai']],
+  ] as const)('%s keeps the element that arrived in the same tick', async (_name, selected, k, init, expected) => {
+    const { adapter, onProjectChange, frame } = await mountWithFrames()
+    await plainClick(selected)
+
+    const e = await keyWithFrame(frame, k, init)
+    expect(e.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(idsOf(lastSave(adapter))).toEqual(expected)
+    expect(idsOf(liveProject(onProjectChange))).toEqual(expected)
+  })
+})
+
 // ── Resize handles and clicks (§556 M3) ─────────────────────────────────────
 //
 // Corner handles keep the box ratio unless Shift is held, a release never

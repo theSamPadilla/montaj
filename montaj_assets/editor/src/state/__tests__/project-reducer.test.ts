@@ -1120,3 +1120,62 @@ describe('replaceImage', () => {
     expect(noSlide.slides).toEqual(prev.slides)
   })
 })
+
+// ---------------------------------------------------------------------------
+// editElements (§556 review): an edit applied to the slide's CURRENT elements
+// ---------------------------------------------------------------------------
+
+describe('editElements', () => {
+  const edit = (prev: Project, fn: (els: CarouselElement[]) => CarouselElement[], slideId = 'slide-0') =>
+    projectReducer(prev, { type: 'editElements', slideId, edit: fn })
+
+  it('hands the edit the slide\'s elements as they are in the state it is applied to, and stores what it returns', () => {
+    const prev = makeProject()
+    const seen: CarouselElement[][] = []
+    const result = edit(prev, (els) => {
+      seen.push(els)
+      return [...els, makeImageEl('el-new')]
+    })
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toBe(prev.slides![0].elements)
+    expect(result.slides![0].elements.map((e) => e.id)).toEqual(['el-0-0', 'el-0-1', 'el-new'])
+  })
+
+  it('applies to what the state holds now: an element another writer added is still there', () => {
+    // The state an edit built from an older view would have lacked this element.
+    const older = makeProject()
+    const now = projectReducer(older, { type: 'addElement', slideId: 'slide-0', element: makeImageEl('el-ai') })
+    const result = edit(now, (els) => els.filter((e) => e.id !== 'el-0-0'))
+    expect(result.slides![0].elements.map((e) => e.id)).toEqual(['el-0-1', 'el-ai'])
+  })
+
+  it('an edit that returns the same array returns the same state', () => {
+    const prev = makeProject()
+    expect(edit(prev, (els) => els)).toBe(prev)
+  })
+
+  it('a slide that is not there changes nothing, and the edit is never called', () => {
+    const prev = makeProject()
+    const fn = vi.fn((els: CarouselElement[]) => [...els, makeImageEl('x')])
+    expect(edit(prev, fn, 'no-slide')).toBe(prev)
+    expect(fn).not.toHaveBeenCalled()
+  })
+
+  it('touches only the slide it names, and leaves the input alone', () => {
+    const prev = makeProject()
+    const before = prev.slides![0].elements.slice()
+    const result = edit(prev, (els) => [...els].reverse())
+
+    expect(result).not.toBe(prev)
+    expect(result.slides![0].elements.map((e) => e.id)).toEqual(['el-0-1', 'el-0-0'])
+    // The other slide, whole, and the elements themselves keep their references.
+    expect(result.slides![1]).toBe(prev.slides![1])
+    expect(result.slides![0].elements[0]).toBe(prev.slides![0].elements[1])
+    // Everything else on the slide and the project.
+    expect(result.slides![0].id).toBe('slide-0')
+    expect(result.slides![0].base_color).toBe(prev.slides![0].base_color)
+    expect(result.name).toBe(prev.name)
+    expect(prev.slides![0].elements).toEqual(before)
+  })
+})
