@@ -99,7 +99,7 @@ def stem_clash(track, project_dir):
         if len(srcs) > 1:
             names = ", ".join(sorted(os.path.basename(x) for x in srcs))
             fail("transcript_name_clash", f"Clips {names} would share the transcript {os.path.basename(stem)}.json. "
-                                          "Rename one so each clip has its own name, then run cut again.")
+                                          "Rename one so each clip has its own name, then run the step again.")
 
 
 def sidecar_refusal(src, project_path, project_dir):

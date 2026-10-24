@@ -131,7 +131,7 @@ def run(project_path, at=None, image=False, detail=False, measure_fn=measure, sh
         fail("not_found", f"Project not readable: {project_path}")
     width, height = lc.design_size(project)
     fps = _fps(project)
-    times = lc.pick_times(project, at, cap=IMAGE_TIMES if image and not at else lc.MAX_TIMES)
+    times = lc.pick_times(project, at, cap=IMAGE_TIMES if image else lc.MAX_TIMES)
     issues = lc.data_issues(project, project_dir)
     to_measure, unmeasured = overlays_to_measure(project, project_dir, times)
     samples = os.path.join(project_dir, "render", "samples", "look")

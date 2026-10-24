@@ -256,6 +256,27 @@ def test_a_bigger_or_moved_caption_moves_its_band(tmp_path):
     assert round(bottom - top) == round(2 * (0.760 - 0.726) * 1920)
 
 
+def test_no_or_an_unknown_caption_style_is_the_band_the_renderer_draws_subtitle(tmp_path):
+    for style in (None, "neon"):
+        _, p = _with_captions(tmp_path / str(style), overlays=[], style=style)
+        top, bottom, _, _ = lc.caption_bands(p, 0, 5, 1080, 1920)[0]
+        assert (round(top), round(bottom)) == (round(0.708 * 1920), round(0.749 * 1920))
+
+
+def test_a_long_caption_and_a_shown_translation_grow_the_band_up_from_its_bottom(tmp_path):
+    _, p = _with_captions(tmp_path, overlays=[], style="subtitle")
+    one = lc.caption_bands(p, 0, 5, 1080, 1920)[0]
+    p["captions"]["segments"][0]["text"] = " ".join(["Keep the best part of every take"] * 4)
+    long = lc.caption_bands(p, 0, 5, 1080, 1920)[0]
+    assert long[1] == one[1] and long[0] < one[0] - 40
+    p["captions"]["segments"][0]["text"] = "a b"
+    p["captions"]["segments"].append({"id": "es-0", "lang": "es", "translationOf": ["cap-0"], "text": "a b", "start": 1, "end": 3})
+    two = lc.caption_bands(p, 0, 5, 1080, 1920)
+    assert len(two) == 1 and two[0][1] == one[1] and two[0][0] < one[0] - 20
+    p["captions"]["showLangs"] = ["source"]
+    assert lc.caption_bands(p, 0, 5, 1080, 1920)[0] == one, "a translation not shown adds no row"
+
+
 def test_text_that_spills_out_of_its_own_box_is_reported_not_ok():
     t = {"texts": [{"text": "Three times faster", "bbox": {"x": 100, "y": 300, "w": 700, "h": 90}, "spills": True}]}
     assert [i["text"] for i in lc.measured_issues({}, t, 1080, 1920, 1, "ov")] == ['text "Three times faster" spills out of its box']
@@ -341,3 +362,14 @@ def test_the_real_measurer_sees_text_spill_out_of_its_box(tmp_path):
     path, _ = _project(tmp_path, overlays=[{"id": "ov-spill", "start": 1, "end": 3, "jsx": spill}])
     out = look.run(str(path), detail=True)
     assert any("ov-spill" in i and "spills out of its box" in i for i in out["issues"]), out
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+def test_a_tight_heading_at_the_top_edge_is_not_off_the_frame(tmp_path, monkeypatch):
+    # its glyphs rise ~10 px past a line-height of 1 at 160 px: inside the 30% slack, so the box stays the element's
+    monkeypatch.setenv("TMPDIR", str(tmp_path))   # a fresh sample cache
+    tight = ("export default function O() { return <div style={{position: 'absolute', left: 100, top: 0, width: 880, "
+             "fontSize: 160, lineHeight: 1, fontWeight: 800, color: 'white'}}>Big</div> }")
+    path, _ = _project(tmp_path, overlays=[{"id": "ov-top", "start": 1, "end": 3, "jsx": tight}])
+    out = look.run(str(path), detail=True)
+    assert out["overlays"] == 1 and not any("runs off the frame" in i or "spills" in i for i in out.get("issues", [])), out

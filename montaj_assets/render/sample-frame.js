@@ -173,6 +173,10 @@ const SHORT_EDGE_TARGET = 1080
  * 18: §558, `spills` allows a glyph rising 30% of the font size past a tight
  *    line-height. 17 was never released, but its entries were cached on the
  *    machine that built it, and they call such a heading spilled.
+ * 19: §558, the text extent is the element's own text nodes only (a positioned
+ *    child or a zero-width wrapper is not its text), and it widens the box
+ *    up or down only past that same 30% slack, so a tight heading at top 0 is
+ *    not off the frame. 18's entries call it off by the glyph's rise.
  *
  * PV49 (the `.inputs.json` manifest, see "Input manifests" below) needs no
  * bump of its own: a cached PNG with no manifest is a miss, which already
@@ -180,7 +184,7 @@ const SHORT_EDGE_TARGET = 1080
  * its own, as its note says; the two do not depend on each other. A further
  * bump would only rekey what this build writes, for no pixel change.
  */
-const SAMPLE_CACHE_VERSION = 18
+const SAMPLE_CACHE_VERSION = 19
 
 // ---------------------------------------------------------------------------
 // Input manifests
@@ -649,22 +653,31 @@ export async function sampleOverlay({
               // or nowrap box (or is cut by overflow:hidden on its own element) lies outside the element's rect.
               // The box measured is the union of the two; `spills` says the text overflows its own box.
               const elRect = el.getBoundingClientRect()
-              const range = document.createRange()
-              range.selectNodeContents(el)
-              const textRect = range.getBoundingClientRect()
-              const hasText = textRect.width > 0 || textRect.height > 0
-              const left   = hasText ? Math.min(elRect.left, textRect.left) : elRect.left
-              const top    = hasText ? Math.min(elRect.top, textRect.top) : elRect.top
-              const right  = hasText ? Math.max(elRect.right, textRect.right) : elRect.right
-              const bottom = hasText ? Math.max(elRect.bottom, textRect.bottom) : elRect.bottom
+              // the element's own text nodes only: a positioned child is measured as its own element
+              let tl = Infinity, tt = Infinity, tr = -Infinity, tb = -Infinity
+              for (const child of el.childNodes) {
+                if (child.nodeType !== Node.TEXT_NODE || !child.textContent.trim()) continue
+                const range = document.createRange()
+                range.selectNodeContents(child)
+                for (const r of range.getClientRects()) {
+                  if (r.width <= 0 && r.height <= 0) continue
+                  tl = Math.min(tl, r.left); tt = Math.min(tt, r.top); tr = Math.max(tr, r.right); tb = Math.max(tb, r.bottom)
+                }
+              }
+              const hasText = tl < tr || tt < tb
+              // a glyph rising a little past a tight line-height (1.05 on a big heading) is not text lost: up and
+              // down the text widens the box (and counts as spilling) only past 30% of the font size, across 1 px
+              const fontPx = parseFloat(window.getComputedStyle(el).fontSize) || 16
+              const slackY = Math.max(2, fontPx * 0.3)
+              const left   = hasText && tl < elRect.left - 1 ? tl : elRect.left
+              const right  = hasText && tr > elRect.right + 1 ? tr : elRect.right
+              const top    = hasText && tt < elRect.top - slackY ? tt : elRect.top
+              const bottom = hasText && tb > elRect.bottom + slackY ? tb : elRect.bottom
               const bboxX = left
               const bboxY = top
               const bboxW = right - left
               const bboxH = bottom - top
-              // a glyph rising a little past a tight line-height (1.05 on a big heading) is not text lost: the
-              // height test allows 30% of the font size, the width test 1 px
-              const fontPx = parseFloat(window.getComputedStyle(el).fontSize) || 16
-              const spills = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + Math.max(2, fontPx * 0.3)
+              const spills = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + slackY
 
               const overflowLeft   = Math.max(0, -bboxX)
               const overflowRight  = Math.max(0, bboxX + bboxW - canvasW)

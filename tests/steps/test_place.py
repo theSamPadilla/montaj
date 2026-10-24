@@ -476,6 +476,22 @@ def test_a_switched_off_track_is_never_chosen(tmp_path):
     assert out["track"] != "ovl-1"
 
 
+def test_a_switched_off_track_named_is_refused(tmp_path, capsys):
+    d = make_project(tmp_path, overlays=[{"id": "ov-a", "start": 10, "end": 11}])
+    p = json.loads((d / "project.json").read_text())
+    p["tracks"][1]["enabled"] = False
+    (d / "project.json").write_text(json.dumps(p))
+    err = refused(capsys, run, d, at="1", preset="callout", track="ovl-1")
+    assert "switched off" in err["message"]
+
+
+def test_an_overlays_path_that_is_a_broken_link_is_refused_not_a_traceback(tmp_path, capsys):
+    d = make_project(tmp_path)
+    shutil.rmtree(d / "overlays")
+    os.symlink(tmp_path / "gone", d / "overlays")
+    assert refused(capsys, run, d, at="1", preset="callout")["error"] == "overlays_not_a_folder"
+
+
 @pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
 @pytest.mark.parametrize("style", ["pop", "outline", "highlight-box", "plate"])
 def test_the_lower_third_sits_above_the_captions_of_every_bottom_style(tmp_path, style):

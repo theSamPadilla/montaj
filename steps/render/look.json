@@ -1,13 +1,13 @@
 {
   "name": "look",
   "category": "render",
-  "description": "Check a project in one call instead of sampling frames: overlay text off the frame, cut off, in the bottom 350px or under the right-side app buttons (portrait), overlays whose text crosses, items outside the timeline or past the footage, missing overlay files, black stretches, items a full-frame one hides. Picks the times itself (cut seams, overlay in and out, caption changes, even samples; at most 12) unless at is given. Read-only. image adds one contact sheet of those times.",
+  "description": "Check a project in one call instead of sampling frames: overlay text off the frame, cut off by its box, spilling out of its box, inside the 5% title-safe margin, crossing the captions while one shows (where montaj draws them, measured per style), over the apps' bottom controls or right-side buttons (tall phone frames only), overlays whose text crosses, items outside the timeline or past the footage, missing overlay files, black stretches, overlays with no footage under them (overlay only), items a full-frame one hides. Picks the times itself (cut seams, overlay in and out, caption changes, even samples; at most 12) unless at is given. Read-only, renders no frame. image adds one contact sheet.",
   "input": {"type": "project", "description": "The project id, its folder, or the absolute path of its project.json"},
-  "output": {"type": "json", "description": "{ok, looked, measured, issues?: [\"<t>s <id>: <issue>\"], more?, sheet?}. detail adds times, items, wallMs."},
+  "output": {"type": "json", "description": "{ok, overlays (measured), unmeasured?, issues?: [\"<t>s <id>: <issue>\"], more?, sheet?, times?}. detail adds every issue, times, items, notes, wallMs."},
   "params": [
     {"name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json"},
-    {"name": "at", "type": "float", "repeatable": true, "required": false, "description": "Look at these timeline seconds instead (at most 12)."},
-    {"name": "image", "type": "bool", "default": false, "description": "Also make one contact sheet of the times (768 px wide) in render/samples."},
+    {"name": "at", "type": "float", "repeatable": true, "required": false, "description": "Look at these timeline seconds instead (at most 12; 8 with image)."},
+    {"name": "image", "type": "bool", "default": false, "description": "Also make one contact sheet of at most 8 of the times (3 across, 360 px tiles) in render/samples."},
     {"name": "detail", "type": "bool", "default": false, "description": "Also answer the times, each item checked and the wall time."}
   ]
 }

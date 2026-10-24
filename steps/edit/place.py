@@ -109,6 +109,8 @@ def choose_track(project, s, e, want=None, skip=None):
             if t.get("id") == want:
                 if ti == 0:
                     return None, "track is the footage track: overlays go on tracks[1+]"
+                if t.get("enabled") is False:
+                    return None, f"track {want} is switched off: it draws nothing"
                 clash = _overlaps(t.get("items", []), s, e, skip)
                 if clash:
                     return None, f"overlaps {clash[0].get('id')} on track {want}"
@@ -134,6 +136,8 @@ def preset_file(project_dir, preset, referenced, check=None):
         body = f.read()
     stem, ext = os.path.splitext(PRESETS[preset])
     overlays = os.path.join(project_dir, "overlays")
+    if os.path.lexists(overlays) and not os.path.isdir(overlays):
+        fail("overlays_not_a_folder", "The project's overlays is not a folder (a file or a broken link).")
     os.makedirs(overlays, exist_ok=True)
     if not write_places.within(write_places.real(overlays), write_places.real(project_dir)):
         fail("overlay_outside_project", "The project's overlays folder leads outside the project folder.")

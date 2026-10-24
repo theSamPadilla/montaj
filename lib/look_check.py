@@ -54,6 +54,16 @@ CAPTION_BAND = {
 # Each caption style's default font size (the templates' own defaults), which the band was measured at.
 CAPTION_DEFAULT_SIZE = {"word-by-word": 72, "pop": 68, "karaoke": 52, "subtitle": 46, "highlight-box": 60,
                         "outline": 70, "clean": 54, "accent": 168, "plate": 56}
+# The style the renderer draws for no style or an unknown one (render.js; caption_style.RENDER_DEFAULT_STYLE).
+RENDER_DEFAULT_STYLE = "subtitle"
+# A longer caption wraps to more rows, and each translation shown stacks a row under it, in the block that grows up
+# from its bottom. Rows are ESTIMATED at the style's default size (a character about 0.55 of the font size wide, lines
+# up to 90% of the frame; a bigger size already grows the band by itself), relative to the measured caption's own
+# estimate; a translation row counts 0.8 of a caption row (a line size).
+# accent draws its words in windows of a few, so its band never grows with the text.
+BAND_SAMPLE = "Keep the best part of every take"
+CHAR_W, LINE_W, TRANSLATION_ROW = 0.55, 0.90, 0.8
+WINDOWED = ("accent",)
 
 
 def _num(v, default=0.0):
@@ -311,14 +321,24 @@ def _hidden(rows):
 def caption_bands(project, start, end, frame_w, frame_h):
     """[(top px, bottom px, segment start, segment end)] where montaj's captions draw while [start, end) plays."""
     caps = project.get("captions") if isinstance(project.get("captions"), dict) else {}
-    style = caps.get("style") or "pop"
+    style = caps.get("style")
+    if style not in CAPTION_DEFAULT_SIZE:
+        style = RENDER_DEFAULT_STYLE
     shape = "portrait" if frame_h > frame_w * 1.2 else "landscape" if frame_w > frame_h * 1.2 else "square"
-    band = CAPTION_BAND[shape].get(style)
-    if band is None:
-        return []
-    default = CAPTION_DEFAULT_SIZE.get(style, 60)
+    band = CAPTION_BAND[shape][style]
+    default = CAPTION_DEFAULT_SIZE[style]
+    shown = caps.get("showLangs") if isinstance(caps.get("showLangs"), list) else None
+    segs = caption_segments(project)
+    under = {}
+    for seg in segs:
+        if seg.get("lang") and isinstance(seg.get("translationOf"), list) and (shown is None or seg["lang"] in shown):
+            for sid in seg["translationOf"]:
+                under[sid] = under.get(sid, 0) + 1
+
+    def rows(text, size):
+        return max(1, -(-len(text) * CHAR_W * size // (LINE_W * frame_w)))
     out = []
-    for seg in caption_segments(project):
+    for seg in segs:
         if seg.get("lang") and isinstance(seg.get("translationOf"), list):
             continue   # drawn under its source caption, inside its block
         s, e = _num(seg.get("start")), _num(seg.get("end"))
@@ -326,8 +346,14 @@ def caption_bands(project, start, end, frame_w, frame_h):
             continue
         size = _num(seg.get("fontSize"), 0) or _num(caps.get("fontsize", caps.get("fontSize")), 0) or default
         scale = size / default * _num(seg.get("scale", 1), 1)
+        grow = 1.0
+        if style not in WINDOWED:
+            text = str(seg.get("text") or " ".join(str(w.get("word", w.get("text", ""))) for w in seg.get("words") or []
+                                                   if isinstance(w, dict)))
+            sample = rows(BAND_SAMPLE, default)
+            grow = (max(rows(text, default), sample) + TRANSLATION_ROW * under.get(seg.get("id"), 0)) / sample
         top, bottom = band[0] * frame_h, band[1] * frame_h
-        top = bottom - (bottom - top) * scale
+        top = bottom - (bottom - top) * scale * grow
         shift = _num(seg.get("offsetY")) / 100 * frame_h
         out.append((top + shift, bottom + shift, s, e))
     return out
