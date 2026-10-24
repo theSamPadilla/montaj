@@ -346,6 +346,47 @@ def test_restore_keeps_current_notes(tmp_path):
     assert restored["notes"] == [{"id": "n1", "t": 1.0, "text": "fix this"}]
 
 
+def _restore_pending_version(tmp_path, current_status):
+    """A pending version restored onto a project whose status is current_status, with a changed timeline and notes."""
+    project_dir = tmp_path / "proj"
+    _make_current_project(project_dir)
+    project = _read_project(project_dir)
+    project["status"] = "pending"
+    _write_project(project_dir, project)
+    subprocess.run(["git", "init", "-q"], cwd=str(project_dir), env=_GIT_ENV, check=True)
+    subprocess.run(["git", "add", "project.json"], cwd=str(project_dir), env=_GIT_ENV, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "version: before cut"], cwd=str(project_dir), env=_GIT_ENV, check=True)
+    old_hash = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(project_dir), env=_GIT_ENV,
+                              capture_output=True, text=True, check=True).stdout.strip()
+    project["status"] = current_status
+    project["tracks"] = [{"id": "trk-0", "items": []}]
+    project["notes"] = [{"id": "n1", "t": 1.0, "text": "keep"}]
+    _write_project(project_dir, project)
+    client = TestClient(app, raise_server_exceptions=False)
+    app.state.broadcaster = _StubBroadcaster()
+    app.dependency_overrides[get_project_dir] = lambda: project_dir
+    try:
+        resp = client.post(f"/api/projects/{PID}/versions/{old_hash}/restore")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+    finally:
+        app.dependency_overrides.pop(get_project_dir, None)
+    return body, _read_project(project_dir)
+
+
+def test_restore_of_a_pending_version_keeps_the_current_status(tmp_path):
+    body, disk = _restore_pending_version(tmp_path, "draft")
+    for doc in (body, disk):
+        assert doc["status"] == "draft"
+        assert doc["tracks"][0]["items"][0]["id"] == "clip-0"   # the timeline comes from the version
+        assert doc["notes"] == [{"id": "n1", "t": 1.0, "text": "keep"}]
+
+
+def test_restore_when_the_current_status_is_pending_stays_pending(tmp_path):
+    body, disk = _restore_pending_version(tmp_path, "pending")
+    assert body["status"] == disk["status"] == "pending"
+
+
 def test_restore_no_op_when_no_uncommitted_edit(tmp_path):
     project_dir = tmp_path / "proj"
     old_hash = _git_commit_current_version(project_dir, run_count=1)

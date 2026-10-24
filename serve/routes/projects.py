@@ -4509,6 +4509,11 @@ def _restore_under_lock(project_dir: Path, restored: dict, headers=None, project
             restored["notes"] = current_project["notes"]
         else:
             restored.pop("notes", None)
+        # A restore never takes a project back to pending (the "No AI connected yet" overlay): the
+        # current status stays when the version's is pending and the current one is not.
+        cur = current_project.get("status")
+        if restored.get("status") == "pending" and cur not in (None, "pending"):
+            restored["status"] = cur
         _write_project_json(project_path, restored)
 
 
