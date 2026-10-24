@@ -2897,6 +2897,24 @@ describe('CarouselEditor: where the element keys do not act (§556 M2)', () => {
     expect(outlined('el-a')).toBe(false)
   })
 
+  it('Delete and Backspace in a project that cannot be edited are not claimed, and the selection stays (§556 review)', async () => {
+    const adapter = makeFakeAdapter()
+    const onProjectChange = vi.fn()
+    render(<CarouselEditor project={{ ...threeElements(), status: 'storyboard_ready' }} adapter={adapter} onProjectChange={onProjectChange} />)
+    await waitFor(() => findInteractiveWrapper('el-a'))
+    await plainClick('el-a')
+    await shiftClick('el-c')
+
+    for (const k of ['Delete', 'Backspace']) {
+      const e = await key(k)
+      expect([k, e.defaultPrevented]).toEqual([k, false])
+    }
+    expect(adapter.saveCalls).toHaveLength(0)
+    expect(idsOf(liveProject(onProjectChange))).toEqual(['el-a', 'el-b', 'el-c'])
+    expect(outlined('el-a')).toBe(true)
+    expect(outlined('el-c')).toBe(true)
+  })
+
   it('Copy still works in a project that cannot be edited yet: what was copied is there once it can', async () => {
     const adapter = makeFakeAdapter()
     let push: ((p: Project) => void) | undefined

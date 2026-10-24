@@ -749,12 +749,13 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     },
     {
       // Removes the selected elements, never in crop mode (Backspace there
-      // belongs to the crop UI). Shift+Delete is not this, as on video.
+      // belongs to the crop UI), and only in a project that can be edited, as
+      // the other editing keys. Shift+Delete is not this, as on video.
       id: 'carousel.delete',
       description: 'Remove the selected elements',
       keyHint: ['Delete'],
       matches: matchesDelete,
-      guard: () => hasSelection,
+      guard: () => hasSelection && canEdit,
       action: () => removeSelection(),
     },
     {
