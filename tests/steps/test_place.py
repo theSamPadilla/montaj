@@ -1,0 +1,275 @@
+"""place (§558): one overlay at seconds or at a spoken phrase, written through the guarded path.
+
+The speech fixture is cut's (tests/fixtures/speech_text: real audio, its whisper words relabelled): the line
+"Our new editor is three times faster." said three times, first with an "um", then restarted ("Our new editor
+is... Our new editor is three times faster."), then clean. Transcription is stubbed, so no model runs; the
+measurer is faked except in the last tests, which render the two presets through the real sample_overlay.
+"""
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from lib import look_check as lc, phrase_at  # noqa: E402
+import steps.edit.place as place  # noqa: E402
+import steps.render.look as look  # noqa: E402
+
+FIX = REPO_ROOT / "tests" / "fixtures" / "speech_text"
+SCRIPT = ("Our new editor is, um, three times faster. "
+          "Our new editor is... Our new editor is three times faster. "
+          "Our new editor is three times faster. "
+          "Then we added captions for every clip. It works on every phone you own. "
+          "Try it today and tell us. Thanks for watching everyone, see you.").split()
+UM_TAKE_S, RESTART_TAKE_S, CLEAN_TAKE_S = 1.87, 6.54, 10.705   # "three" in each take, on the timeline
+
+
+def transcript(script=SCRIPT):
+    real = json.loads((FIX / "speech.json").read_text())
+    words = [w for w in real["transcription"] if w["text"].strip()]
+    assert len(words) == len(script)
+    return {**real, "transcription": [{**w, "text": " " + t, "offsets": dict(w["offsets"])} for w, t in zip(words, script)]}
+
+
+def make_project(tmp_path, overlays=(), with_transcript=True, script=SCRIPT):
+    d = tmp_path / "proj"
+    d.mkdir()
+    shutil.copy(FIX / "speech.mp4", d / "speech.mp4")
+    if with_transcript:
+        (d / "speech.json").write_text(json.dumps(transcript(script)))
+    (d / "overlays").mkdir()
+    items = []
+    for ov in overlays:
+        (d / "overlays" / f"{ov['id']}.jsx").write_text("export default function O() { return <div>x</div> }")
+        items.append({"type": "overlay", "src": f"./overlays/{ov['id']}.jsx", **ov})
+    project = {"id": "place-fixture", "name": "Place", "settings": {"fps": 30, "resolution": [1080, 1920]},
+               "tracks": [{"id": "trk-0", "items": [{"id": "clip-0", "type": "video", "src": str(d / "speech.mp4"),
+                                                     "start": 0, "end": 30, "inPoint": 0, "outPoint": 30, "sourceDuration": 30}]},
+                          {"id": "ovl-1", "items": items}]}
+    (d / "project.json").write_text(json.dumps(project, indent=2))
+    return d
+
+
+def fake_measure(boxes=(("ok", 200, 600, 400, 80),)):
+    calls = []
+
+    def fn(item, path, frame, duration, fps, width, height, out):
+        calls.append({"id": item["id"], "path": path, "frame": frame, "duration": duration, "props": item.get("props")})
+        return {"texts": [{"text": t, "bbox": {"x": x, "y": y, "w": w, "h": h}} for t, x, y, w, h in boxes]}, None
+    fn.calls = calls
+    return fn
+
+
+def no_transcribe(*a, **k):
+    raise AssertionError("transcription was not expected")
+
+
+def run(d, **kw):
+    kw.setdefault("measure_fn", fake_measure())
+    kw.setdefault("transcribe", no_transcribe)
+    return place.run(str(d / "project.json"), **kw)
+
+
+def refused(capsys, fn, *a, **k):
+    with pytest.raises(SystemExit):
+        fn(*a, **k)
+    return json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+
+
+def tracks(d):
+    return json.loads((d / "project.json").read_text())["tracks"]
+
+
+# ── by seconds, presets ───────────────────────────────────────────────────────────────────────────────────────────
+
+def test_a_preset_at_seconds_is_added_on_the_free_overlay_track_with_its_file_and_props(tmp_path):
+    d = make_project(tmp_path)
+    m = fake_measure()
+    out = run(d, at="2.5", for_s=4, preset="lower_third", props=json.dumps({"text": "Maya Chen", "subtitle": "Video Editor"}), measure_fn=m)
+    assert out == {"id": out["id"], "start": 2.5, "end": 6.5, "track": "ovl-1"}
+    item = tracks(d)[1]["items"][0]
+    assert item == {"id": out["id"], "type": "overlay", "start": 2.5, "end": 6.5, "src": "./overlays/lower-third.jsx",
+                    "props": {"text": "Maya Chen", "subtitle": "Video Editor", "canvasW": "1080", "canvasH": "1920"}}
+    assert (d / "overlays" / "lower-third.jsx").read_bytes() == (Path(place.PRESETS_DIR) / "lower-third.jsx").read_bytes()
+    assert m.calls[0]["frame"] == 60 and m.calls[0]["duration"] == 120, "measured once, mid-span"
+    assert len(json.dumps(out)) <= 300
+
+
+def test_a_preset_never_goes_over_a_different_file_of_its_name(tmp_path):
+    d = make_project(tmp_path)
+    (d / "overlays" / "callout.jsx").write_text("// the person's own callout")
+    out = run(d, at="1", preset="callout", props='{"text": "3x faster"}')
+    assert tracks(d)[1]["items"][0]["src"] == "./overlays/callout-2.jsx"
+    assert (d / "overlays" / "callout.jsx").read_text() == "// the person's own callout"
+    run(d, at="10", preset="callout")
+    assert tracks(d)[1]["items"][1]["src"] == "./overlays/callout-2.jsx", "the same preset file is reused"
+    assert out["track"] == "ovl-1"
+
+
+def test_an_overlay_file_in_the_project_is_placed_by_its_path(tmp_path):
+    d = make_project(tmp_path)
+    (d / "overlays" / "title.jsx").write_text("export default function T() { return <div>t</div> }")
+    out = run(d, at="0", until=2, overlay="overlays/title.jsx")
+    assert tracks(d)[1]["items"][0]["src"] == "./overlays/title.jsx" and (out["start"], out["end"]) == (0.0, 2.0)
+
+
+def test_an_overlay_outside_the_project_or_missing_is_refused(tmp_path, capsys):
+    d = make_project(tmp_path)
+    outside = tmp_path / "elsewhere.jsx"
+    outside.write_text("x")
+    assert refused(capsys, run, d, at="1", overlay=str(outside))["error"] == "overlay_outside_project"
+    assert refused(capsys, run, d, at="1", overlay="overlays/nope.jsx")["error"] == "overlay_not_found"
+    assert tracks(d)[1]["items"] == []
+
+
+def test_a_span_past_the_footage_is_shortened_and_said(tmp_path, capsys):
+    d = make_project(tmp_path)
+    out = run(d, at="28", for_s=5, preset="callout")
+    assert out["end"] == 30 and any("shortened to the footage end" in i for i in out["issues"])
+    assert refused(capsys, run, d, at="31", preset="callout")["error"] == "invalid_span"
+
+
+# ── tracks ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+def test_a_busy_track_gets_a_new_one_and_a_named_busy_track_is_refused(tmp_path, capsys):
+    d = make_project(tmp_path, overlays=[{"id": "ov-a", "start": 0, "end": 5}])
+    out = run(d, at="2", preset="callout")
+    assert out["track"] == "ovl-2" and [t["id"] for t in tracks(d)] == ["trk-0", "ovl-1", "ovl-2"]
+    err = refused(capsys, run, d, at="3", preset="callout", track="ovl-1")
+    assert err["error"] == "track_busy" and "ov-a" in err["message"]
+
+
+def test_update_by_id_moves_only_that_item(tmp_path):
+    d = make_project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 3, "props": {"text": "A"}},
+                                          {"id": "ov-b", "start": 6, "end": 8, "props": {"text": "B"}}])
+    before_b = tracks(d)[1]["items"][1]
+    out = run(d, item_id="ov-a", at="10", props='{"color": "#ff0000"}')
+    items = tracks(d)[1]["items"]
+    assert [it["id"] for it in items] == ["ov-b", "ov-a"], "no new item; kept in time order"
+    assert items[0] == before_b
+    assert items[1] == {"id": "ov-a", "type": "overlay", "src": "./overlays/ov-a.jsx", "start": 10.0, "end": 12.0,
+                        "props": {"text": "A", "color": "#ff0000"}}
+    assert out["id"] == "ov-a" and out["track"] == "ovl-1"
+
+
+def test_update_of_an_unknown_or_non_overlay_item_is_refused(tmp_path, capsys):
+    d = make_project(tmp_path)
+    assert refused(capsys, run, d, item_id="ov-zzz", at="1")["error"] == "item_not_found"
+    assert refused(capsys, run, d, item_id="clip-0", at="1")["error"] == "not_an_overlay"
+
+
+# ── a phrase ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("take,want", [("clean", CLEAN_TAKE_S), ("first", UM_TAKE_S), ("last", CLEAN_TAKE_S)])
+def test_at_a_phrase_takes_the_saying_the_rule_picks(tmp_path, take, want):
+    d = make_project(tmp_path)
+    out = run(d, at=json.dumps({"phrase": "three times faster", "take": take}), for_s=3, preset="callout")
+    assert out["start"] == pytest.approx(want, abs=0.01) and out["take"] == take
+    assert "issues" not in out
+
+
+def test_clean_is_never_the_um_take_or_the_restart_take(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, at='{"phrase": "Three times, faster!"}', preset="callout", detail=True)
+    assert out["start"] not in (pytest.approx(UM_TAKE_S, abs=0.05), pytest.approx(RESTART_TAKE_S, abs=0.05))
+    assert out["start"] == pytest.approx(CLEAN_TAKE_S, abs=0.01) and out["sayings"] == 3
+
+
+def test_with_no_clean_take_the_fallback_is_said_in_the_issues(tmp_path):
+    # the third take says "um" too ("Our new editor um, three times faster."): no saying of the phrase is clean
+    script = list(SCRIPT)
+    assert script[19:26] == ["Our", "new", "editor", "is", "three", "times", "faster."]
+    script[22] = "um,"
+    d = make_project(tmp_path, script=script)
+    out = run(d, at='{"phrase": "times faster", "take": "clean"}', preset="callout")
+    assert out["take"] in ("kept", "last-said")
+    assert any('no clean take of "times faster"' in i for i in out["issues"]), out
+
+
+def test_a_phrase_not_said_is_refused_and_nothing_is_written(tmp_path, capsys):
+    d = make_project(tmp_path)
+    before = (d / "project.json").read_bytes()
+    err = refused(capsys, run, d, at='{"phrase": "ten times slower"}', preset="callout")
+    assert err["error"] == "phrase_not_found"
+    assert (d / "project.json").read_bytes() == before
+
+
+def test_a_clip_with_no_transcript_is_transcribed_beside_it_first(tmp_path):
+    d = make_project(tmp_path, with_transcript=False)
+    calls = []
+
+    def stub(src, prefix, model, language):
+        calls.append(src)
+        Path(prefix + ".json").write_text(json.dumps(transcript()))
+    out = run(d, at='{"phrase": "three times faster", "take": "first"}', preset="callout", transcribe=stub)
+    assert calls == [str(d / "speech.mp4")] and (d / "speech.json").is_file()
+    assert out["start"] == pytest.approx(UM_TAKE_S, abs=0.01)
+
+
+# ── the guarded write ─────────────────────────────────────────────────────────────────────────────────────────────
+
+def test_a_human_edit_to_the_tracks_since_the_read_is_refused_and_kept(tmp_path, monkeypatch, capsys):
+    d = make_project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 3}])
+    real_find = phrase_at.find
+
+    def find_then_the_person_edits(*a, **k):
+        found = real_find(*a, **k)
+        p = json.loads((d / "project.json").read_text())
+        p["tracks"][1]["items"][0]["start"] = 1.5      # moved in the editor while place worked
+        (d / "project.json").write_text(json.dumps(p))
+        return found
+    monkeypatch.setattr(place.phrase_at, "find", find_then_the_person_edits)
+    err = refused(capsys, run, d, at='{"phrase": "three times faster"}', preset="callout")
+    assert err["error"] == "project_changed"
+    after = tracks(d)
+    assert after[1]["items"] == [{"type": "overlay", "src": "./overlays/ov-a.jsx", "id": "ov-a", "start": 1.5, "end": 3}]
+    assert not (d / "overlays" / "callout.jsx").exists(), "the preset file this call made is not left behind"
+
+
+def test_a_change_outside_the_tracks_is_kept_and_not_refused(tmp_path, monkeypatch):
+    d = make_project(tmp_path)
+    real_find = phrase_at.find
+
+    def find_then_rename(*a, **k):
+        found = real_find(*a, **k)
+        p = json.loads((d / "project.json").read_text())
+        p["name"] = "Renamed meanwhile"
+        (d / "project.json").write_text(json.dumps(p))
+        return found
+    monkeypatch.setattr(place.phrase_at, "find", find_then_rename)
+    run(d, at='{"phrase": "three times faster"}', preset="callout")
+    p = json.loads((d / "project.json").read_text())
+    assert p["name"] == "Renamed meanwhile" and len(p["tracks"][1]["items"]) == 1
+
+
+def test_the_measured_issues_come_back_short(tmp_path):
+    d = make_project(tmp_path)
+    out = run(d, at="2", preset="callout", measure_fn=fake_measure((("3x faster", 900, 500, 400, 120),)))
+    assert out["issues"] == ['3.5s ' + out["id"] + ': text "3x faster" runs off the frame']
+    assert len(json.dumps(out)) <= 300
+
+
+# ── the presets, rendered ─────────────────────────────────────────────────────────────────────────────────────────
+
+def _has_render():
+    return shutil.which("node") is not None and (REPO_ROOT / "montaj_assets" / "render" / "node_modules" / "puppeteer").exists()
+
+
+@pytest.mark.skipif(not _has_render(), reason="needs node and the render bundle's puppeteer")
+@pytest.mark.parametrize("preset,props", [
+    ("lower_third", {"text": "Maya Chen", "subtitle": "Video Editor"}),
+    ("callout", {"text": "3x faster"}),
+    ("callout", {"text": "Every clip, captioned and cut in one go"}),
+])
+def test_each_preset_renders_its_props_inside_the_frame_and_the_safe_areas(tmp_path, preset, props):
+    d = make_project(tmp_path)
+    out = run(d, at="2", for_s=3, preset=preset, props=json.dumps(props), measure_fn=look.measure, detail=True)
+    assert out["issues"] == [], out
+    shown = " ".join(out["text"])
+    for word in props["text"].split()[:2]:
+        assert word in shown, out

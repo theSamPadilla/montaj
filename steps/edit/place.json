@@ -1,0 +1,20 @@
+{
+  "name": "place",
+  "category": "edit",
+  "description": "Place one overlay on the timeline in one call: at seconds, or at a spoken phrase ({phrase, take}: clean, first or last; transcribes clips that have no transcript, beside the clip). The overlay is a JSX file in the project (write it with write_project_overlay) or a preset (lower_third, callout) with props. Adds it on a free overlay track, or with id moves or updates that item only. A human edit to the tracks since it read them is refused. Checks the placed overlay fits the frame and the safe areas.",
+  "input": {"type": "project", "description": "The project id, its folder, or the absolute path of its project.json"},
+  "output": {"type": "json", "description": "{id, start, end, track, take?, issues?}. detail adds src, said (the matched words) and the measured text."},
+  "params": [
+    {"name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json"},
+    {"name": "at", "type": "string", "required": false, "description": "Timeline seconds, or {\"phrase\": \"...\", \"take\": \"clean\"|\"first\"|\"last\"}. Required unless id is given."},
+    {"name": "for", "type": "float", "required": false, "min": 0.1, "description": "Seconds on screen. Default 3, or the item's own length when moving one."},
+    {"name": "until", "type": "float", "required": false, "description": "Timeline seconds it ends at, instead of for."},
+    {"name": "overlay", "type": "string", "required": false, "description": "A JSX file in the project folder (its path), e.g. overlays/title.jsx."},
+    {"name": "preset", "type": "enum", "options": ["lower_third", "callout"], "required": false, "description": "An engine preset instead of overlay. lower_third: props text, subtitle. callout: props text, anim (pop, slide, fade)."},
+    {"name": "props", "type": "string", "required": false, "description": "Props as a JSON object: text, color, bgColor, fontSize, fontFamily, ... Merged into an item's own when updating."},
+    {"name": "track", "type": "string", "required": false, "description": "The overlay track id to place it on. Default: the first overlay track free at that time, else a new one."},
+    {"name": "id", "type": "string", "required": false, "description": "Move or update this existing overlay item instead of adding one."},
+    {"name": "language", "type": "string", "required": false, "description": "The speaker's language code for a phrase (fillers and transcription). Default en."},
+    {"name": "detail", "type": "bool", "default": false, "description": "Also answer the src, the matched words and the measured text."}
+  ]
+}
