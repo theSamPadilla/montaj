@@ -151,7 +151,7 @@ Some vendors bury the real meaning of a response somewhere `classify_http_error`
 Optional fields, added only where a connector needs them:
 - `default_model_verified: False`: the vendor gives no way to check the default live. Kling has no model-list endpoint, so it's always `False`; ElevenLabs sets it when a restricted key's scopes block `GET /v1/models`. Absent means `default_model_ok` was actually verified against a live model list.
 - `music: <bool | None>`: ElevenLabs only, whether the account's plan includes music (`None` when a restricted key can't read the plan).
-- per-capability flags: Gemini only, since one key backs five defaults: `image_model_ok`, `tts_model_ok`, `music_model_ok`, `video_model_ok` alongside the text default's `default_model_ok`.
+- per-capability flags: Gemini only, since one key backs five defaults: `image_model_ok`, `tts_model_ok`, `music_model_ok`, `video_model_ok` alongside the text default's `default_model_ok`. `default_model_ok` counts text, image, TTS and music; the video default is reported in `video_model_ok` only (§550: models.list may not list an Interactions API model).
 
 On failure, `check_key()` raises `ConnectorError` with a reason from the table above, same as every other connector call; there's no separate error shape for key checks.
 

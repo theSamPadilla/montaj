@@ -1203,12 +1203,15 @@ class TestCheckKeyCapabilityDefaults:
     check_key() is new and unreleased (PV29 T4b, controller decision
     2026-09-28) with no backward compatibility to keep, and the app's
     Connectors tile and the release guard read only
-    {default_model, default_model_ok, detail} — so default_model_ok means
-    ALL FIVE defaults are present, not just the text one, and when any are
-    missing, default_model/detail name the missing one(s) instead of always
-    describing the text default. image_model_ok / tts_model_ok /
-    music_model_ok / video_model_ok stay as the per-capability breakdown for a
-    caller that wants to know which capability, specifically, is affected."""
+    {default_model, default_model_ok, detail} — so default_model_ok means the
+    text, image, TTS and music defaults are all present, not just the text one,
+    and when any are missing, default_model/detail name the missing one(s)
+    instead of always describing the text default. The video default is
+    reported (video_model_ok, detail) but never counted (§550): Omni Flash is an
+    Interactions API model that models.list may not list. image_model_ok /
+    tts_model_ok / music_model_ok / video_model_ok stay as the per-capability
+    breakdown for a caller that wants to know which capability, specifically,
+    is affected."""
 
     @pytest.fixture(autouse=True)
     def _video_on(self, monkeypatch):
@@ -1236,10 +1239,11 @@ class TestCheckKeyCapabilityDefaults:
         assert result["music_model_ok"] is True
         assert result["video_model_ok"] is True
 
-    def test_video_default_missing_alone_fails_default_model_ok_and_is_named(self, monkeypatch):
-        """A key whose models.list lacks the Veo default: default_model_ok goes
-        False (it covers all five), default_model names the Veo id, and only
-        video_model_ok is False."""
+    def test_video_default_missing_alone_keeps_default_model_ok(self, monkeypatch):
+        """A key whose models.list lacks the video default (an Interactions API
+        model may not be listed): default_model_ok stays True and default_model
+        is the text one, so the Connectors tile never says "Default model
+        retired"; only video_model_ok is False, and detail names it."""
         import connectors.gemini as mod
         client = MagicMock()
         client.models.list.return_value = [
@@ -1252,8 +1256,9 @@ class TestCheckKeyCapabilityDefaults:
         monkeypatch.setattr(mod, "_client", lambda: client)
 
         result = mod.check_key()
-        assert result["default_model_ok"] is False
-        assert result["default_model"] == mod.DEFAULT_VIDEO_MODEL
+        assert result["default_model_ok"] is True
+        assert result["default_model"] == mod.DEFAULT_MODEL
+        assert "missing" not in result["detail"]
         assert mod.DEFAULT_VIDEO_MODEL in result["detail"]
         assert result["video_model_ok"] is False
         assert result["image_model_ok"] is True
@@ -1341,6 +1346,8 @@ class TestCheckKeyCapabilityDefaults:
         assert result["tts_model_ok"] is False
         assert result["music_model_ok"] is False
         assert result["video_model_ok"] is False
+        missing = result["detail"].split("missing default(s): ", 1)[1].split(";")[0]
+        assert mod.DEFAULT_VIDEO_MODEL not in missing
 
 
 class TestCheckKeyVideoOff:

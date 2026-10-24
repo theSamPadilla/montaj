@@ -335,13 +335,16 @@ def check_key() -> dict:
     be retired independently of the others. check_key() is new and unreleased
     (PV29) with no backward compatibility to keep, and the app's
     Connectors tile and the release guard read only default_model_ok — so
-    that field means ALL FIVE defaults are present in models.list, not just
-    the text one:
+    that field means the text, image, TTS and music defaults are all present
+    in models.list, not just the text one:
       - default_model_ok is True only when DEFAULT_MODEL, DEFAULT_IMAGE_MODEL,
-        DEFAULT_TTS_MODEL, DEFAULT_MUSIC_MODEL and DEFAULT_VIDEO_MODEL are all
-        present.
+        DEFAULT_TTS_MODEL and DEFAULT_MUSIC_MODEL are all present.
+      - The video default is not counted (§550): Omni Flash is an Interactions
+        API model, and no Google doc says models.list lists it (checked
+        2026-10-24). video_model_ok and detail still report it, so a key that
+        works for everything else never shows "Default model retired".
       - When any are missing, default_model is set to the first missing
-        one's id (checked in text, image, TTS, music, video order) instead of
+        one's id (checked in text, image, TTS, music order) instead of
         DEFAULT_MODEL, and detail names every missing one — a caller reading
         only {default_model, default_model_ok, detail} still sees which
         model retired, not just that something did.
@@ -373,7 +376,7 @@ def check_key() -> dict:
     except Exception as e:
         raise _wrap_sdk_error(e, "Gemini key check failed") from e
 
-    # Checked in this order — text, image, TTS, music, video — so that when
+    # Checked in this order — text, image, TTS, music — so that when
     # more than one default is missing, the one surfaced through
     # `default_model` (a single-value field) is deterministic rather than
     # set-iteration order.
@@ -381,8 +384,6 @@ def check_key() -> dict:
         ("image_model_ok", DEFAULT_IMAGE_MODEL),
         ("tts_model_ok", DEFAULT_TTS_MODEL),
         ("music_model_ok", DEFAULT_MUSIC_MODEL),
-        # With Gemini video off there is no video default to check (None below).
-        *((("video_model_ok", DEFAULT_VIDEO_MODEL),) if VIDEO_ON else ()),
     )
     text_ok = DEFAULT_MODEL in model_names
     missing = [] if text_ok else [DEFAULT_MODEL]
@@ -393,10 +394,16 @@ def check_key() -> dict:
         if not ok:
             missing.append(model)
 
+    # Reported, never counted in default_model_ok (docstring). With Gemini
+    # video off there is no video default to check (None).
+    video_model_ok = (DEFAULT_VIDEO_MODEL in model_names) if VIDEO_ON else None
+
     default_model_ok = not missing
     detail = f"{len(model_names)} models available to this key"
     if missing:
         detail += f"; missing default(s): {', '.join(missing)}"
+    if video_model_ok is False:
+        detail += f"; video default {DEFAULT_VIDEO_MODEL} not listed (not counted)"
 
     return {
         "ok": True,
@@ -405,7 +412,7 @@ def check_key() -> dict:
         "image_model_ok": availability["image_model_ok"],
         "tts_model_ok": availability["tts_model_ok"],
         "music_model_ok": availability["music_model_ok"],
-        "video_model_ok": availability.get("video_model_ok"),
+        "video_model_ok": video_model_ok,
         "detail": detail,
     }
 
