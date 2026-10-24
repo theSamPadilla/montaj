@@ -30,6 +30,10 @@ CAPTION_STYLES = {"word-by-word", "pop", "karaoke", "subtitle", "highlight-box",
 # ntpath.isabs, never by patching os.path.isabs or sys.platform globally.
 _is_abs = os.path.isabs
 
+# §558: what a refused write says, with what to do. The first sentence is kept as it was.
+OUTSIDE_WORKSPACE = "Path is outside the workspace root. Write inside a project's folder in the Montaj folder."
+NOT_A_WRITABLE_FILE = "That path is a folder, a link or a file that cannot be written. Choose another file path."
+
 PROJECT_FILE_PROTECTED_MESSAGE = ("project.json, the project's lock file and its provenance records can't be "
                                   "written as files. Change a project with save_project.")
 
@@ -137,10 +141,10 @@ async def write_file(request: Request):
     try:
         resolved_parent = p.parent.resolve()
     except OSError:
-        raise forbidden("forbidden", "Path is outside the workspace root")
+        raise forbidden("forbidden", OUTSIDE_WORKSPACE)
 
     if not _is_under(resolved_parent, workspace_root):
-        raise forbidden("forbidden", "Path is outside the workspace root")
+        raise forbidden("forbidden", OUTSIDE_WORKSPACE)
 
     # Use the canonical absolute path derived from the parent so we don't
     # resolve a non-existent file (which would silently keep the raw path).
@@ -157,14 +161,14 @@ async def write_file(request: Request):
     # H5: a .git component (given, through a symlinked parent, or at the final link) would plant a git
     # hook or config where serve shells git in a project.
     if _has_git_component(raw_path, str(resolved), str(landing)):
-        raise bad_request("project_file_protected", "A file path may not write inside a project's .git folder.")
+        raise bad_request("project_file_protected", "A file path may not write inside a project's .git folder. Choose a path outside it.")
 
     # H3: only the parent was checked before, so a symlink planted AT the destination redirected the write
     # outside the workspace. Require the final file's real path to stay inside the workspace, and open with
     # O_NOFOLLOW so a symlink at the target is refused (ELOOP) rather than written through. The route
     # legitimately overwrites (editing an overlay JSX, a spec), so O_TRUNC, not O_EXCL.
     if not _is_under(Path(os.path.realpath(resolved)), workspace_root):
-        raise forbidden("forbidden", "Path is outside the workspace root")
+        raise forbidden("forbidden", OUTSIDE_WORKSPACE)
 
     # §482: a file in an open Studio sync clash, as its relpath in the topmost project folder holding it, checked
     # and written under that project's lock (review 40: no clash recorded under the lock can fall between the
@@ -178,7 +182,7 @@ async def write_file(request: Request):
         # so are a folder and a file that can't be written, as the open used to refuse them.
         if _is_link(str(resolved)) or os.path.isdir(resolved) or (
                 os.path.lexists(resolved) and not os.access(resolved, os.W_OK)):
-            raise forbidden("forbidden", "Path is outside the workspace root")
+            raise forbidden("forbidden", NOT_A_WRITABLE_FILE)
         # §541 review: written to a temp file beside it and moved into place only
         # once whole, so a full disk part way leaves an existing file as it was
         # (an O_TRUNC open had already emptied it) and removes only the temp.
@@ -189,7 +193,7 @@ async def write_file(request: Request):
             # §541: no room even to create the file is a full disk, not a refusal.
             if is_disk_full(e):
                 raise disk_full.http_error(e) from e
-            raise forbidden("forbidden", "Path is outside the workspace root")
+            raise forbidden("forbidden", NOT_A_WRITABLE_FILE)
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(encoded)

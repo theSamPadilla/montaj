@@ -269,7 +269,7 @@ def check_write_paths(name: str, items, body: dict, *, native: bool) -> None:
             if _has_git_component(cand, real):
                 raise HTTPException(403, detail={
                     "error": "out_not_allowed",
-                    "message": f"'{param}' of {name} may not write inside a project's .git folder.",
+                    "message": f"'{param}' of {name} may not write inside a project's .git folder. Choose a path outside it.",
                 })
             if roots is None:
                 roots = [_real(str(resolve_workspace()))]
@@ -290,7 +290,7 @@ def check_write_paths(name: str, items, body: dict, *, native: bool) -> None:
                      "inside the workspace or the project's folder")
             raise HTTPException(403, detail={
                 "error": "out_not_allowed",
-                "message": f"'{param}' of {name} must be {where}.",
+                "message": f"'{param}' of {name} must be {where}. Choose a path there, or leave '{param}' out.",
             })
 
 

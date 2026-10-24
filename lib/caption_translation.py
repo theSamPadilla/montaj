@@ -163,7 +163,7 @@ def _match_phrases(words: list, phrases: list) -> list:
     for n, phrase in enumerate(phrases, start=1):
         wanted = [t for t in (_token(x) for x in phrase["source"].split()) if t]
         if not wanted:
-            raise TranslationError("bad_phrases", f"Phrase {n} has no source words.")
+            raise TranslationError("bad_phrases", f"Phrase {n} has no source words. Set its source to the caption words it translates.")
         run = []
         for want in wanted:
             while pos < len(tokens) and not tokens[pos][0]:
@@ -228,7 +228,7 @@ def apply_translation(captions, lang, phrases) -> dict:
             raise TranslationError("bad_phrases", f"Phrase {n} needs source and text, both text.")
         text = " ".join(p["text"].split())
         if not text:
-            raise TranslationError("bad_phrases", f"Phrase {n} has an empty translation.")
+            raise TranslationError("bad_phrases", f"Phrase {n} has an empty translation. Give it its text.")
         if len(text) > TRANSLATION_MAX_CHARS:
             raise TranslationError(
                 "text_too_long",
