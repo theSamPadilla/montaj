@@ -161,6 +161,56 @@ def test_a_tiff_with_transparency_becomes_a_png_keeping_its_alpha_and_profile(wo
         assert im.getpixel((w // 4, h // 4)) == (*BLUE, 255)
 
 
+# A profile is kept only when its colour space is the pixels' own (bytes 16:20 of an ICC profile): an RGB JPEG carrying
+# a CMYK profile reads as CMYK and shows wrong (the reviewer's repro: CMYK cyan as (55,255,255) under a 'CMYK' profile).
+# Measured 2026-10-24 with macOS ColorSync (an ImageIO render to sRGB) on these two fixtures: CMYK cyan
+# (1,0,0,0) shows (0,163,218) and red (0,1,1,0) (216,35,42); gray 0.25 and 0.75 show 64 and 191.
+
+def _space(icc):
+    return bytes(icc[16:20]) if icc else None
+
+
+def test_a_cmyk_tiff_is_converted_through_its_profile_to_srgb_and_carries_no_cmyk_profile(work):
+    out = web_image.to_web_image(work("cmyk.tiff"), ffmpeg_bin())
+    with Image.open(out) as im:
+        assert im.format == "JPEG" and im.mode == "RGB"
+        assert _space(im.info.get("icc_profile")) in (None, b"RGB "), _space(im.info.get("icc_profile"))
+        left, right = im.getpixel((60, 90)), im.getpixel((180, 90))
+    assert _close(left, (0, 163, 218), TOL_JPEG), left
+    assert _close(right, (216, 35, 42), TOL_JPEG), right
+
+
+def test_a_gray_tiff_stays_gray_with_its_gray_profile(work):
+    out = web_image.to_web_image(work("gray.tiff"), ffmpeg_bin())
+    with Image.open(out) as im:
+        assert im.format == "JPEG" and im.mode == "L"
+        assert im.info["icc_profile"] == _icc_of_tiff("gray.tiff") and _space(im.info["icc_profile"]) == b"GRAY"
+        assert abs(im.getpixel((60, 90)) - 64) <= TOL_JPEG and abs(im.getpixel((180, 90)) - 191) <= TOL_JPEG
+
+
+def test_a_16_bit_gray_tiff_is_scaled_to_8_bits_never_clipped(work, tmp_path):
+    src = tmp_path / "gray16.tiff"
+    im = Image.new("I;16", (64, 32))
+    im.paste(16448, (0, 0, 32, 32))   # 0x4040: 64 of 255
+    im.paste(49087, (32, 0, 64, 32))  # 0xbfbf: 191 of 255
+    im.save(src)
+    out = web_image.to_web_image(src, ffmpeg_bin())
+    with Image.open(out) as got:
+        assert got.mode == "L"
+        assert abs(got.getpixel((10, 10)) - 64) <= TOL_JPEG and abs(got.getpixel((50, 10)) - 191) <= TOL_JPEG
+
+
+@pytest.mark.parametrize("mode,profile_space", [("RGB", b"GRAY"), ("RGB", b"CMYK"), ("L", b"RGB ")])
+def test_a_profile_whose_colour_space_is_not_the_pixels_is_left_out(work, tmp_path, mode, profile_space):
+    icc = bytearray(_icc_of_tiff("p3.tiff"))
+    icc[16:20] = profile_space
+    src = tmp_path / "odd.tiff"
+    Image.new(mode, (40, 30), (64, 128, 192) if mode == "RGB" else 64).save(src, icc_profile=bytes(icc))
+    out = web_image.to_web_image(src, ffmpeg_bin())
+    with Image.open(out) as im:
+        assert "icc_profile" not in im.info
+
+
 def test_a_converted_name_never_replaces_a_file_that_is_there(work, tmp_path):
     src = work("p3.tiff")
     (tmp_path / "p3.jpg").write_bytes(b"theirs")

@@ -4,7 +4,10 @@ The editor and the render are Chromium, which draws neither format: a dropped on
 upload of one is stored as a JPEG instead, or as a PNG when the image is not fully opaque (a TIFF logo with
 transparency), beside where the upload landed.
 
-Colour: the source's own ICC profile bytes are embedded in what is written, so a Display P3 photo shows as it did. The
+Colour: the source's own ICC profile bytes are embedded in what is written, so a Display P3 photo shows as it did, but
+only when the profile's colour space is the pixels' own (an RGB profile on RGB, a gray one on gray). A CMYK TIFF is
+converted to sRGB through its profile (ImageCms, which matched macOS ColorSync within one level on the test fixture),
+and a gray one stays gray, so an RGB output never carries a CMYK or gray profile. The
 bundled ffmpeg opens an iPhone HEIC (its tile grid, its rotation) but drops the profile: measured 2026-10-24 with
 ffmpeg 8.1.2, a P3 HEIC's mid-blue came out untagged and visibly duller. So a HEIC is decoded by ffmpeg and its
 profile is read here, from the primary item's `colr` box ('prof' or 'rICC'); a HEIC whose colour is only an `nclx`
@@ -21,7 +24,7 @@ import struct
 import subprocess
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageCms, ImageOps
 
 HEIF_SUFFIXES = frozenset({".heic", ".heif"})
 TIFF_SUFFIXES = frozenset({".tif", ".tiff"})
@@ -156,15 +159,53 @@ def _decode(src: Path, ffmpeg: str):
     try:
         with Image.open(src) as im:
             icc = im.info.get("icc_profile")
-            shown = ImageOps.exif_transpose(im)
-            # an associated (premultiplied) alpha is "RGBa": convert() unpremultiplies it
-            out = shown.convert("RGBA" if "A" in shown.getbands() or "a" in shown.getbands() else "RGB")
+            out = _pixels(ImageOps.exif_transpose(im))
             out.load()
             return out, icc
     except Image.DecompressionBombError as e:
         raise WebImageError("too_large", "The image is too large to convert") from e
     except Exception:  # noqa: BLE001 — a TIFF Pillow cannot decode (a compression it lacks): ffmpeg's turn
         return _ffmpeg_frame(ffmpeg, src, alpha=True), icc
+
+
+def _pixels(im: Image.Image) -> Image.Image:
+    """A TIFF's pixels in a mode written as they are: RGB, RGBA, L, LA, or CMYK (converted by _fit). An associated
+    (premultiplied) alpha, "RGBa" or "La", is unpremultiplied by convert(); a 16-bit gray is scaled to 8 bits, never
+    clipped (convert("L") of "I;16" clips every value over 255)."""
+    if im.mode in ("RGB", "RGBA", "L", "LA", "CMYK"):
+        return im
+    if im.mode.startswith("I;16") or im.mode == "I":
+        top = 65535 if im.mode.startswith("I;16") else max(im.convert("I").getextrema()[1], 1)
+        return im.convert("I").point(lambda v: v * 255 / top).convert("L")
+    if im.mode in ("1", "F"):
+        return im.convert("L")
+    if im.mode == "La":
+        return im.convert("LA")
+    bands = im.getbands()
+    return im.convert("RGBA" if "A" in bands or "a" in bands or "transparency" in im.info else "RGB")
+
+
+_SRGB = None
+
+
+def _fit(im: Image.Image, icc):
+    """(image, profile to embed): the profile only when its colour space (ICC bytes 16:20) is the pixels' own. CMYK is
+    converted to sRGB through its own profile when it has one (the result is sRGB, so nothing is embedded), else
+    plainly."""
+    global _SRGB
+    space = bytes(icc[16:20]) if icc and len(icc) >= 20 else None
+    if im.mode == "CMYK":
+        if space == b"CMYK":
+            try:
+                if _SRGB is None:
+                    _SRGB = ImageCms.createProfile("sRGB")
+                return ImageCms.profileToProfile(im, ImageCms.ImageCmsProfile(io.BytesIO(icc)), _SRGB, outputMode="RGB"), None
+            except (ImageCms.PyCMSError, OSError, ValueError):
+                pass
+        return im.convert("RGB"), None
+    if im.mode in ("L", "LA"):
+        return im, (icc if space == b"GRAY" else None)
+    return im, (icc if space == b"RGB " else None)
 
 
 # ── write ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -187,14 +228,14 @@ def to_web_image(src, ffmpeg: str) -> Path:
     that exists (de-duplicated as an upload is). Raises WebImageError, or OSError for a write that fails (a full
     disk): what it wrote is removed first."""
     src = Path(src)
-    im, icc = _decode(src, ffmpeg)
-    opaque = im.mode == "RGB" or im.getchannel("A").getextrema()[0] == 255
+    im, icc = _fit(*_decode(src, ffmpeg))
+    opaque = im.mode in ("RGB", "L") or im.getchannel("A").getextrema()[0] == 255
     kw = {"icc_profile": icc} if icc else {}
     dest, f = _new_file(src.parent, src.stem, ".jpg" if opaque else ".png")
     try:
         with f:
             if opaque:
-                im.convert("RGB").save(f, "JPEG", quality=JPEG_QUALITY, subsampling=0, **kw)
+                im.convert("L" if im.mode in ("L", "LA") else "RGB").save(f, "JPEG", quality=JPEG_QUALITY, subsampling=0, **kw)
             else:
                 im.save(f, "PNG", **kw)
     except BaseException:

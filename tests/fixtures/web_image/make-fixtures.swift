@@ -45,3 +45,20 @@ write(pattern(width: 240, height: 180, space: p3, bits: 8, alpha: false, markerA
 write(pattern(width: 240, height: 180, space: p3, bits: 16, alpha: false, markerAt: (0, 0)), "p3-16bit.tiff", .tiff)
 write(pattern(width: 240, height: 180, space: p3, bits: 8, alpha: true, markerAt: (0, 0)), "p3-alpha.tiff", .tiff)
 write(pattern(width: 240, height: 180, space: p3, bits: 8, alpha: false, markerAt: (0, 0)), "p3-rot6.tiff", .tiff, orientation: 6)
+
+// A CMYK TIFF (Generic CMYK) and a gray one (Generic Gray Gamma 2.2), each with its own profile: an RGB output must
+// never carry a CMYK or gray profile (the profile's colour space has to be the pixels').
+func flat(space: CGColorSpace, comps: Int, fills: [[CGFloat]]) -> CGImage {
+  let ctx = CGContext(data: nil, width: 240, height: 180, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                      bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+  // left half fills[0], right half fills[1]
+  for (i, f) in fills.enumerated() {
+    ctx.setFillColor(CGColor(colorSpace: space, components: f + [1])!)
+    ctx.fill(CGRect(x: CGFloat(i) * 120, y: 0, width: 120, height: 180))
+  }
+  return ctx.makeImage()!
+}
+let cmyk = CGColorSpace(name: CGColorSpace.genericCMYK)!
+let gray = CGColorSpace(name: CGColorSpace.genericGrayGamma2_2)!
+write(flat(space: cmyk, comps: 4, fills: [[1, 0, 0, 0], [0, 1, 1, 0]]), "cmyk.tiff", .tiff)
+write(flat(space: gray, comps: 1, fills: [[0.25], [0.75]]), "gray.tiff", .tiff)
