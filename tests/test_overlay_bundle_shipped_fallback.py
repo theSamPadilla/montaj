@@ -76,10 +76,12 @@ def test_key_and_resolve_match_the_render_side(tmp_path):
     win = "C:\\Users\\B\\AppData\\Roaming\\Montaj\\runtime-home\\.cache\\montaj\\render\\templates\\overlays\\static-text\\static-text.jsx"
     assert shipped_template_key(OTHER_MAC) == "templates/overlays/static-text/static-text.jsx"
     assert shipped_template_key(win) == shipped_template_key(OTHER_MAC)
-    assert shipped_template_key("/x/templates/overlays/lyric-phrase.jsx") == "templates/overlays/lyric-phrase.jsx"
+    assert shipped_template_key("/x/render/templates/overlays/lyric-phrase.jsx") == "templates/overlays/lyric-phrase.jsx"
+    assert shipped_template_key("/Users/x/.montaj/profiles/templates/overlays/static-text/static-text.jsx") is None
+    assert shipped_template_key("/x/templates/overlays/static-text/static-text.jsx") is None
     assert shipped_template_key("/x/.montaj/overlays/static-text/static-text.jsx") is None
-    assert shipped_template_key("/x/templates/overlays/static-text/other.jsx") is None
-    assert shipped_template_key("/x/templates/overlays/../static-text/static-text.jsx") is None
+    assert shipped_template_key("/x/render/templates/overlays/static-text/other.jsx") is None
+    assert shipped_template_key("/x/render/templates/overlays/../static-text/static-text.jsx") is None
     rt = tmp_path / "render"
     (rt / "templates" / "overlays" / "static-text").mkdir(parents=True)
     (rt / "templates" / "overlays" / "static-text" / "static-text.jsx").write_text("export default () => null\n")
@@ -88,4 +90,4 @@ def test_key_and_resolve_match_the_render_side(tmp_path):
     mine.parent.mkdir(parents=True)
     mine.write_text("export default () => 'mine'\n")
     assert resolve_template_path(str(mine), rt) == mine
-    assert resolve_template_path("/Users/x/templates/overlays/no-such/no-such.jsx", rt) is None
+    assert resolve_template_path("/Users/x/render/templates/overlays/no-such/no-such.jsx", rt) is None

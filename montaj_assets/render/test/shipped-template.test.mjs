@@ -67,8 +67,10 @@ test('shippedTemplateKey names a shipped overlay the same on every Mac, and noth
   const b = 'C:\\Users\\B\\AppData\\Roaming\\Montaj\\runtime-home\\.cache\\montaj\\render\\templates\\overlays\\static-text\\static-text.jsx'
   assert.equal(shippedTemplateKey(a), 'templates/overlays/static-text/static-text.jsx')
   assert.equal(shippedTemplateKey(b), shippedTemplateKey(a))
-  assert.equal(shippedTemplateKey('/x/templates/overlays/lyric-phrase.jsx'), 'templates/overlays/lyric-phrase.jsx')
+  assert.equal(shippedTemplateKey('/x/render/templates/overlays/lyric-phrase.jsx'), 'templates/overlays/lyric-phrase.jsx')
+  assert.equal(shippedTemplateKey('/Users/x/.montaj/profiles/templates/overlays/static-text/static-text.jsx'), null)
+  assert.equal(shippedTemplateKey('/x/templates/overlays/static-text/static-text.jsx'), null)
   assert.equal(shippedTemplateKey('/x/.montaj/overlays/static-text/static-text.jsx'), null)
-  assert.equal(shippedTemplateKey('/x/templates/overlays/static-text/other.jsx'), null)
+  assert.equal(shippedTemplateKey('/x/render/templates/overlays/static-text/other.jsx'), null)
   assert.equal(shippedTemplateKey(42), null)
 })

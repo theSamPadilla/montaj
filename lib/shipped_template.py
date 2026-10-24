@@ -2,8 +2,8 @@
 
 The editor's "+ Text" (and the slides step) store a carousel overlay's `template` as the jsxPath serve listed: the
 shipped overlay inside the maker's own runtime. The same project opened on another Mac (another user name, or Windows)
-names a path that is not there. So a path that is MISSING and ends in `templates/overlays/<name>/<name>.jsx` (or the
-flat `templates/overlays/<name>.jsx`) is read from the shipped copy of that name in this runtime. A path that exists is
+names a path that is not there. So a path that is MISSING and ends in `render/templates/overlays/<name>/<name>.jsx` (or
+the flat `render/templates/overlays/<name>.jsx`) is read from the shipped copy of that name in this runtime. A path that exists is
 always used as it is. The render side is montaj_assets/render/shipped-template.js, with the same rule.
 """
 import re
@@ -26,9 +26,10 @@ def shipped_template_key(path) -> "str | None":
     name = file[: -len(".jsx")]
     if not _NAME.match(name):
         return None
-    if n >= 4 and segs[n - 4] == "templates" and segs[n - 3] == "overlays" and segs[n - 2] == name:
+    # `render/` before `templates/` too: only the engine's own render folder, never e.g. a profile named `templates`
+    if n >= 5 and segs[n - 5] == "render" and segs[n - 4] == "templates" and segs[n - 3] == "overlays" and segs[n - 2] == name:
         return f"templates/overlays/{name}/{name}.jsx"
-    if n >= 3 and segs[n - 3] == "templates" and segs[n - 2] == "overlays":
+    if n >= 4 and segs[n - 4] == "render" and segs[n - 3] == "templates" and segs[n - 2] == "overlays":
         return f"templates/overlays/{name}.jsx"
     return None
 
