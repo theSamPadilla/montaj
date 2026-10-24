@@ -460,3 +460,19 @@ def test_order_can_swap_two_slides(tmp_path):
     ids = [s["id"] for s in proj(d)["slides"]]
     out = run(d, order=json.dumps({"swap": [2, 4]}))
     assert out["order"] is True and [s["id"] for s in proj(d)["slides"]] == [ids[0], ids[3], ids[2], ids[1], ids[4]]
+
+
+# ── §558 land review ──────────────────────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("damage", [
+    lambda el: el.pop("id"),
+    lambda el: el.update(id=12345),
+    lambda el: el.update(w=float("nan")),
+    lambda el: el.update(frame="soon"),
+])
+def test_a_damaged_headline_is_skipped_by_the_check_not_a_traceback(tmp_path, damage):
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS))
+    slides = proj(d)["slides"]
+    damage(headline(slides[0]))
+    sl._check(slides, {slides[0]["id"]}, str(d), fake_measure())

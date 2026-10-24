@@ -37,9 +37,10 @@ def _check(slides, changed_ids, project_dir, measure_fn):
     for n, s in enumerate(slides, start=1):
         if s.get("id") not in changed_ids:
             continue
-        for el in s.get("elements", []):
+        for k, el in enumerate(s.get("elements", [])):
             if slide_text._is_headline(el):
-                todo.append((n, el))
+                if slide_check.box_ints(el) is not None:
+                    todo.append((n, el, k))
                 if slide_check.word_too_long(el):
                     issues.append(f"slide {n}: a word is too long for the box: shorten it")
                 if slide_check.hard_to_read(s, el, project_dir):
@@ -50,9 +51,9 @@ def _check(slides, changed_ids, project_dir, measure_fn):
     os.makedirs(samples, exist_ok=True)
 
     def one(entry):
-        n, el = entry
-        w, h = int(el["w"]), int(el["h"])
-        m, why = slide_check.measure_element(measure_fn, el, os.path.join(samples, f"slide-{n}-{el['id'][:8]}.png"))
+        n, el, k = entry
+        _, w, h = slide_check.box_ints(el)
+        m, why = slide_check.measure_element(measure_fn, el, os.path.join(samples, slide_check.sample_name(n, el, k)))
         if m is None:
             return [f"slide {n}: {why}"]
         if any(outside or clipped for _, _, outside, clipped in slide_check.text_in_box(m, w, h)):

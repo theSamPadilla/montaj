@@ -33,10 +33,26 @@ def word_too_long(el):
     return longest * CHAR_EM * floor > float(el.get("w") or 0)
 
 
+def box_ints(el):
+    """(frame, w, h) as whole numbers, or None when the element's numbers are missing, NaN, infinite or not numbers."""
+    try:
+        return int(el.get("frame") or 0), int(el["w"]), int(el["h"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def sample_name(n, el, k):
+    """The file name of slide n's element k in a samples folder: its id (cut to 8, path characters replaced), else k."""
+    ident = el.get("id") if isinstance(el, dict) else None
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(ident or k))[:8]
+    return f"slide-{n}-{safe}.png"
+
+
 def measure_element(measure_fn, el, out):
     """(measurements of the element at its own box size, why not)."""
-    item = {"id": el["id"], "props": el["overlay"]["props"]}
-    return measure_fn(item, el["overlay"]["template"], int(el.get("frame") or 0), 1, 30, int(el["w"]), int(el["h"]), out)
+    frame, w, h = box_ints(el) or (0, 1, 1)
+    item = {"id": str(el.get("id") or "text"), "props": el["overlay"]["props"]}
+    return measure_fn(item, el["overlay"]["template"], frame, 1, 30, w, h, out)
 
 
 def text_in_box(m, w, h):

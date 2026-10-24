@@ -165,3 +165,41 @@ def test_the_real_renderer_makes_the_composite(tmp_path):
     assert out["ok"] is True, out
     with Image.open(out["sheet"]) as im:
         assert im.size[0] == 768
+
+
+# ── §558 land review ──────────────────────────────────────────────────────────────────────────────────────────────
+
+def _damage(d, fn):
+    p = proj(d)
+    fn(p["slides"][0]["elements"][-1])
+    (d / "project.json").write_text(json.dumps(p))
+
+
+@pytest.mark.parametrize("damage", [
+    lambda el: el.pop("id"),
+    lambda el: el.update(id=12345),
+    lambda el: el.update(w=float("nan")),
+    lambda el: el.update(h=float("inf")),
+    lambda el: el.update(frame="soon"),
+])
+def test_a_damaged_text_element_never_stops_the_check(tmp_path, damage):
+    d = make_carousel(tmp_path)
+    _damage(d, damage)
+    out = run(d)
+    assert out["slides"] == 5 and out["overlays"] >= 4
+
+
+def test_slide_pictures_are_rendered_outside_the_project_and_removed(tmp_path):
+    d = make_carousel(tmp_path)
+    dirs = []
+    inner = fake_render()
+
+    def spy(project_path, numbers, out_dir):
+        dirs.append(out_dir)
+        return inner(project_path, numbers, out_dir)
+
+    out = run(d, image=True, render_fn=spy)
+    assert dirs and not any(Path(x).resolve().is_relative_to(d.resolve()) for x in dirs)
+    assert not any(os.path.exists(x) for x in dirs)
+    assert Path(out["sheet"]).parent == d / "render" / "samples"
+    assert not (d / "render" / "samples" / "look-slides").exists()

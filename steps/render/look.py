@@ -7,7 +7,7 @@ contact_sheet of at most IMAGE_TIMES of those times. The text answer checks the 
 measured: it renders no frame. Writes nothing in project.json; the measure PNGs and the sheet go under
 render/samples.
 """
-import argparse, hashlib, json, os, re, shutil, signal, subprocess, sys, time
+import argparse, hashlib, json, os, re, shutil, signal, subprocess, sys, tempfile, time
 from concurrent.futures import ThreadPoolExecutor
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -312,18 +312,20 @@ def carousel_run(project_path, project, *, at, image, detail, measure_fn, render
         s = slides[n - 1]
         if not any(isinstance(el, dict) and el.get("type") == "image" for el in s.get("elements") or []):
             add(n, "no image")
-        for el in _text_overlays(s):
+        for k, el in enumerate(_text_overlays(s)):
             try:
                 float(el["x"]), float(el["y"]), float(el["w"]), float(el["h"])
             except (KeyError, TypeError, ValueError):
                 continue
-            todo.append((n, s, el))
+            if slide_check.box_ints(el) is None:
+                continue
+            todo.append((n, s, el, k))
     skipped = max(0, len(todo) - MAX_SLIDE_MEASURES)
     todo = todo[:MAX_SLIDE_MEASURES]
 
     def one(entry):
-        n, s, el = entry
-        m, why = slide_check.measure_element(measure_fn, el, os.path.join(work, f"slide-{n}-{el['id'][:8]}.png"))
+        n, s, el, k = entry
+        m, why = slide_check.measure_element(measure_fn, el, os.path.join(work, slide_check.sample_name(n, el, k)))
         return n, s, el, m, why
 
     with ThreadPoolExecutor(max_workers=MEASURE_WORKERS) as pool:
@@ -368,8 +370,9 @@ def carousel_run(project_path, project, *, at, image, detail, measure_fn, render
         extra["unmeasured"] = skipped
     if image:
         out = os.path.join(samples, f"look-slides-{hashlib.sha1(json.dumps([numbers, slides], sort_keys=True).encode()).hexdigest()[:8]}.png")
-        render_dir = os.path.join(samples, "look-slides")
-        shutil.rmtree(render_dir, ignore_errors=True)
+        # outside the project: concurrent looks never share it, a link in the project cannot redirect it, and the
+        # manifest render-carousel writes never reaches the project's watcher
+        render_dir = tempfile.mkdtemp(prefix="montaj-look-slides-")
         try:
             made, why = render_fn(project_path, numbers, render_dir)
             if made:
