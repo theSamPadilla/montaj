@@ -383,7 +383,15 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   const setSelectedElementId = useCallback((id: string | null) => {
     setSelectedElementIds(id ? [id] : [])
   }, [setSelectedElementIds])
-  const [cropElementId, setCropElementId] = useState<string | null>(null)
+  const [cropElementId, setCropElementIdState] = useState<string | null>(null)
+  // The ref mirrors the state, written with it, so a handler that runs before
+  // the next render (an upload that lands, a second entry in the same tick)
+  // sees the crop that is on now.
+  const cropElementIdRef = useRef<string | null>(null)
+  const setCropElementId = useCallback((id: string | null) => {
+    cropElementIdRef.current = id
+    setCropElementIdState(id)
+  }, [])
 
   // ── Crop mode (§556 M4) ──
   // The canvas holds the window being picked. Every way out of crop mode but
@@ -395,16 +403,19 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     const left = cropControlRef.current?.leave(how) ?? Promise.resolve()
     setCropElementId(null)
     return left
-  }, [])
+  }, [setCropElementId])
   /** Leaves crop mode keeping what was picked. A save that fails is rolled back and shown by `state.lastError`. */
   const applyCrop = useCallback(() => {
     leaveCrop('apply').catch(() => {})
   }, [leaveCrop])
-  /** Crop mode for an image: its panel button, or a double-click on it. */
+  /** Crop mode for an image: its panel button, or a double-click on it. The
+   *  crop of another image in progress is applied first, so moving on does not
+   *  drop what was picked. */
   const enterCrop = useCallback((elementId: string) => {
+    if (cropElementIdRef.current && cropElementIdRef.current !== elementId) applyCrop()
     setSelectedElementId(elementId)
     setCropElementId(elementId)
-  }, [setSelectedElementId])
+  }, [setSelectedElementId, setCropElementId, applyCrop])
 
   const selectedSlide = slides.find(s => s.id === selectedSlideId)
   // Only ids still on the selected slide count: a removed element leaves the set.
@@ -1079,7 +1090,7 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   // the OS) and the host's `addImage` each put images on a slide, shaped like
   // themselves (`newImageElement`). Several go in ONE slide write, so one undo
   // step takes them all back. Only a slide on show, in a project that can be
-  // edited, and not in crop mode: a write there would reset the crop in progress.
+  // edited, and not in crop mode: the image being cropped keeps the selection.
   const canAddImages = slideLive && canEdit
   const selectedSlideIdRef = useRef(selectedSlideId)
   selectedSlideIdRef.current = selectedSlideId
@@ -1087,7 +1098,8 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
   /** Adds an image to `slideId` for each source, a function that gives the
    *  image's host path (an upload, or a path the host already named), centred
    *  on `at` (slide units) or on the slide. Each one after the first sits 20 px
-   *  further down and right. The new images become the selection. One that
+   *  further down and right. The new images become the selection, unless the
+   *  person has gone to another slide or into crop mode meanwhile. One that
    *  cannot be uploaded is reported once and the rest are still added. */
   async function addImages(slideId: string, sources: Array<() => Promise<string>>, at?: { x: number; y: number }) {
     const resolution = project.settings.resolution as [number, number]
@@ -1106,9 +1118,10 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     flushNudge()
     const placed = added.map((el, i) => ({ ...el, x: el.x + i * COPY_OFFSET, y: el.y + i * COPY_OFFSET }))
     const saved = state.editElements(slideId, (els) => [...els, ...placed])
-    // Selected, unless the user has gone to another slide meanwhile: their
-    // selection there is theirs.
-    if (selectedSlideIdRef.current === slideId) setSelectedElementIds(placed.map((el) => el.id))
+    // Selected, unless the user has gone to another slide meanwhile, or into
+    // crop mode: their selection is theirs, and moving it off the image being
+    // cropped would leave the crop on one image and the selection on another.
+    if (selectedSlideIdRef.current === slideId && !cropElementIdRef.current) setSelectedElementIds(placed.map((el) => el.id))
     // A save that fails is rolled back and shown by `state.lastError`.
     await saved.catch(() => {})
   }

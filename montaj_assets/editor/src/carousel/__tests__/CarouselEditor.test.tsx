@@ -3379,6 +3379,22 @@ describe('CarouselEditor: a crop that keeps what you picked (§556 M4)', () => {
     expect(outlined(copy.id)).toBe(true)
   })
 
+  it('asking for crop mode on another image applies the crop in progress first, as its own undo step (§556 review)', async () => {
+    const { adapter, r } = await mount()
+    await pickCrop(r)
+    // The press that comes before a double-click is not sent: only the entry.
+    await act(async () => { fireEvent.doubleClick(findInteractiveWrapper('el-b')) })
+    await waitFor(() => expectCropApplied(elementsOf(lastSave(adapter))[0]))
+    expect(inCrop('el-img')).toBe(false)
+    expect(inCrop('el-b')).toBe(true)
+    expect(outlined('el-b')).toBe(true)
+    expect(outlined('el-img')).toBe(false)
+
+    // Nothing was picked on el-b, so leaving it writes nothing, and one undo step takes the crop back.
+    await key('Escape')
+    await expectOneUndoStep(adapter, r)
+  })
+
   it('deleting the image being cropped drops the crop with it: one undo brings the image back as it was', async () => {
     const { r, onProjectChange } = await mount()
     await pickCrop(r)

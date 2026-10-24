@@ -132,6 +132,41 @@ function handlesOn(id: string): boolean {
   return findInteractiveWrapper(id).querySelector('[data-testid="resize-handle-nw"]') !== null
 }
 
+// This jsdom has no PointerEvent: a MouseEvent named for the pointer event carries the point.
+function pointer(target: EventTarget, type: 'pointerdown' | 'pointermove' | 'pointerup', init: MouseEventInit = {}) {
+  target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, ...init }))
+}
+
+// jsdom never loads an image: give it a size and fire its load.
+function loadImage(img: HTMLImageElement, w: number, h: number) {
+  Object.defineProperty(img, 'naturalWidth', { configurable: true, value: w })
+  Object.defineProperty(img, 'naturalHeight', { configurable: true, value: h })
+  fireEvent.load(img)
+}
+
+function inCrop(id = 'el-img'): boolean {
+  return findInteractiveWrapper(id).querySelector('img[alt="Crop source"]') !== null
+}
+
+/** Crop mode on the selected el-img by its panel button, its source loaded as a
+ *  400 x 200 image, and its window's right edge dragged in by 50 px of the slide
+ *  (a quarter of the 200 wide box), so the window is {0, 0, 0.75, 1}. */
+async function pickCrop(r: { getByTitle: (title: string) => HTMLElement }) {
+  await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
+  const source = findInteractiveWrapper('el-img').querySelector<HTMLImageElement>('img[alt="Crop source"]')
+  if (!source) throw new Error('el-img is not in crop mode')
+  await act(async () => { loadImage(source, 400, 200) })
+  const handle = findInteractiveWrapper('el-img').querySelector('[data-testid="crop-handle-e"]') as HTMLElement
+  const d = 50 * (parseFloat((document.querySelector('[data-interactive]') as HTMLElement).style.width) / 1080)
+  await act(async () => {
+    pointer(handle, 'pointerdown', { clientX: 0, clientY: 0 })
+    pointer(handle, 'pointermove', { clientX: -d, clientY: 0 })
+    pointer(handle, 'pointerup', { clientX: -d, clientY: 0 })
+    // The click the browser sends after the release, to the handle that took the pointer.
+    fireEvent.click(handle)
+  })
+}
+
 async function selectSlide(id: string) {
   await act(async () => { fireEvent.click(document.querySelector(`[data-slide-thumb="${id}"]`) as HTMLElement) })
 }
@@ -653,6 +688,65 @@ describe('Images on the canvas: files from the OS', () => {
     expect(elementsOf(lastSave(adapter)).map((e) => (e as ImageElement).src)).toEqual(['a.png', 'ai.png', '/proj/assets/a.png', '/proj/assets/b.png'])
   })
 
+  describe('while the person crops', () => {
+    // jsdom has no pointer capture; the crop window and its handles take the pointer.
+    const pointerCapture = Object.getOwnPropertyDescriptor(Element.prototype, 'setPointerCapture')
+    beforeEach(() => {
+      Element.prototype.setPointerCapture = vi.fn()
+    })
+    afterEach(() => {
+      if (pointerCapture) Object.defineProperty(Element.prototype, 'setPointerCapture', pointerCapture)
+      else delete (Element.prototype as { setPointerCapture?: unknown }).setPointerCapture
+    })
+
+    it('an add that lands in crop mode is written but does not take the selection: Esc then writes the crop, as one undo step (§556 review)', async () => {
+      const gate = deferred<string>()
+      const adapter = makeFakeAdapter()
+      ;(adapter.uploadFile as ReturnType<typeof vi.fn>).mockImplementation(() => gate.promise)
+      const r = await mount(adapter)
+      const { box, at } = pinCanvas()
+      await fire(box, dragEvent('drop', at(540, 675), transfer({ files: [png('a.png')] })))
+
+      // While it uploads, the person crops el-img.
+      await plainClick('el-img')
+      await pickCrop(r)
+      expect(inCrop()).toBe(true)
+
+      await act(async () => { gate.resolve('/proj/assets/a.png') })
+      await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+      const els = elementsOf(lastSave(adapter))
+      expect(els.map((e) => (e as ImageElement).src)).toEqual(['a.png', '/proj/assets/a.png'])
+
+      // The selection and crop mode stayed with el-img.
+      expect(inCrop()).toBe(true)
+      expect(outlined('el-img')).toBe(true)
+      expect(outlined(els[1].id)).toBe(false)
+      expect(handlesOn(els[1].id)).toBe(false)
+
+      // Esc applies the window picked: 3:2 of the 200 wide box is 133 tall.
+      await key('Escape')
+      await waitFor(() => expect((elementsOf(lastSave(adapter))[0] as ImageElement).crop).toBeDefined())
+      const cropped = elementsOf(lastSave(adapter))[0] as ImageElement
+      expect([cropped.x, cropped.y, cropped.w, cropped.h]).toEqual([100, 100, 200, 133])
+      expect(cropped.crop!.w).toBeCloseTo(0.75, 9)
+      expect(inCrop()).toBe(false)
+      expect(outlined('el-img')).toBe(true)
+      expect(handlesOn('el-img')).toBe(true)
+      expect(outlined(els[1].id)).toBe(false)
+
+      // The crop is one undo step, then the image added is the next, then nothing.
+      await undo()
+      await waitFor(() => expect((elementsOf(lastSave(adapter))[0] as ImageElement).crop).toBeUndefined())
+      expect(elementsOf(lastSave(adapter)).map((e) => e.id)).toEqual(['el-img', els[1].id])
+      expect(elementsOf(lastSave(adapter))[0]).toMatchObject({ w: 200, h: 200 })
+      await undo()
+      await waitFor(() => expect(elementsOf(lastSave(adapter)).map((e) => e.id)).toEqual(['el-img']))
+      const saves = adapter.saveCalls.length
+      await undo()
+      expect(adapter.saveCalls).toHaveLength(saves)
+    })
+  })
+
   it('writes nothing when the slide is deleted meanwhile', async () => {
     const gate = deferred<string>()
     const adapter = makeFakeAdapter()
@@ -803,7 +897,7 @@ describe('Images on the canvas: the host API', () => {
     expect(adapter.saveProject).not.toHaveBeenCalled()
   })
 
-  it('does nothing in crop mode, where a write would reset the crop in progress', async () => {
+  it('does nothing in crop mode, where the image being cropped keeps the selection', async () => {
     const adapter = makeFakeAdapter()
     const { r, api } = await mountWithApi(adapter)
     await plainClick('el-img')
