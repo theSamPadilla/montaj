@@ -42,6 +42,7 @@ import { toFileHref, propFilePath } from './file-url.js'
 import { pMap } from './p-map.js'
 import { FFMPEG } from './ffmpeg-bin.js'
 import { ffSeconds } from './ff-seconds.js'
+import { finiteNumber } from './filter-number.js'
 import { ffmpegErrorTail } from './ffmpeg-error.js'
 import { externalizeFilterGraph } from './filter-script.js'
 import { isHdr } from './color-space.js'
@@ -1138,22 +1139,8 @@ export async function sampleFrame({
     // frame is composited (Step 3). So nothing is ever padded before the
     // conversion, which is the property encode-segment's ordering protects.
     const vfParts = []
-    const sc = ri.geometry.sourceCrop
-    if (sc && ri.geometry.sourceWidth && ri.geometry.sourceHeight) {
-      if (useProxy) {
-        // The proxy is smaller than the master, so a crop in master pixels
-        // falls outside it. Same rounding as below, from the decoded size.
-        const cw = `2*round(iw*${sc.w}/2)`   // even: x264 needs even dims
-        const ch = `2*round(ih*${sc.h}/2)`
-        vfParts.push(`crop=w=${cw}:h=${ch}:x=round(iw*${sc.x}):y=round(ih*${sc.y})`)
-      } else {
-        const cw = Math.round(ri.geometry.sourceWidth  * sc.w / 2) * 2  // even: x264 needs even dims
-        const ch = Math.round(ri.geometry.sourceHeight * sc.h / 2) * 2  // even: x264 needs even dims
-        const cx = Math.round(ri.geometry.sourceWidth  * sc.x)          // origin NOT even-rounded
-        const cy = Math.round(ri.geometry.sourceHeight * sc.y)          // origin NOT even-rounded
-        vfParts.push(`crop=${cw}:${ch}:${cx}:${cy}`)
-      }
-    }
+    const crop = sourceCropFilter(ri.geometry, useProxy)
+    if (crop) vfParts.push(crop)
     // The proxy is ungraded SDR. One built from an untagged source by an older
     // montaj is untagged too, and ffmpeg would decode it as BT.601 where the
     // export reads its source as BT.709. Read it as the export does, in HDR and
@@ -1553,6 +1540,27 @@ function resolveProjectPaths(projectJson, projectDir) {
   for (const track of projectJson.audio?.tracks ?? []) {
     if (track.src) track.src = resolveProjectSrc(track.src, projectDir)
   }
+}
+
+/** The source-crop filter for one video item's frame extract, or null when the item has no crop (or not both
+ *  source dimensions). The proxy form splices the crop fractions into ffmpeg expressions as text, so each must be
+ *  a finite number (§563). */
+export function sourceCropFilter(geometry, useProxy) {
+  const sc = geometry.sourceCrop
+  if (!(sc && geometry.sourceWidth && geometry.sourceHeight)) return null
+  if (useProxy) {
+    // The proxy is smaller than the master, so a crop in master pixels
+    // falls outside it. Same rounding as below, from the decoded size.
+    const [x, y, w, h] = ['x', 'y', 'w', 'h'].map(k => finiteNumber(sc[k], `sourceCrop.${k}`))
+    const cw = `2*round(iw*${w}/2)`   // even: x264 needs even dims
+    const ch = `2*round(ih*${h}/2)`
+    return `crop=w=${cw}:h=${ch}:x=round(iw*${x}):y=round(ih*${y})`
+  }
+  const cw = Math.round(geometry.sourceWidth  * sc.w / 2) * 2  // even: x264 needs even dims
+  const ch = Math.round(geometry.sourceHeight * sc.h / 2) * 2  // even: x264 needs even dims
+  const cx = Math.round(geometry.sourceWidth  * sc.x)          // origin NOT even-rounded
+  const cy = Math.round(geometry.sourceHeight * sc.y)          // origin NOT even-rounded
+  return `crop=${cw}:${ch}:${cx}:${cy}`
 }
 
 /**
