@@ -38,7 +38,8 @@ SCRIPT = ("Start by, um, picking the clip you want. "
           "Finally export it for your phone today. "
           "Thanks everyone.").split()
 KEPT = ["Start by picking the clip you want.", "Then drag it onto the timeline.",
-        "Trim the start so it opens on the action.", "Finally export it for your phone today.",
+        # the truncated take run into the next sentence stays: only offered (abandoned?), "Trim" could be a name
+        "Then drag it onto Trim the start so it opens on the action.", "Finally export it for your phone today.",
         "Thanks everyone."]
 
 
@@ -182,19 +183,21 @@ def test_the_plan_writes_nothing_to_the_project(tmp_path, stub_transcribe, monke
     assert calls == [{"input": str(d / "speech.mp4"), "model": "large-v3-turbo-q5_0", "language": "auto"}]
     assert (d / "speech.json").is_file() and not (d / "speech.srt").exists()
 
-    assert set(out) == {"project", "mode", "plan", "kept", "removed", "duration", "layers", "cut", "next",
-                        "transcribed"}
+    assert set(out) == {"project", "mode", "plan", "kept", "removed", "suggested", "duration", "layers", "cut",
+                        "next", "transcribed"}
     assert out["layers"] == {} and out["next"].startswith(f'Apply: cut with plan "{d / "cut-plan.md"}".')
     assert out["mode"] == "plan" and out["transcribed"] == ["clip-0"]
     cut_rows, unused_rows = sections((d / "cut-plan.md").read_text())
     assert out["kept"]["lines"] == len(cut_rows)                    # rows of the plan, as removed counts rows
     unused_part = (d / "cut-plan.md").read_text().split("\n## Unused\n", 1)[1].strip()
-    assert sum(out["removed"]["lines"].values()) == len(unused_part.split("\n\n"))   # one group per take
-    assert out["removed"]["lines"] == {"retake": 2, "false-start": 1, "abandoned": 1}
+    groups = unused_part.split("\n\n")
+    assert sum(out["removed"]["lines"].values()) == sum(1 for g in groups if "?]" not in g)   # one group per take
+    assert out["removed"]["lines"] == {"retake": 2, "false-start": 1}
+    assert out["suggested"] == {"abandoned?": 1}
     assert out["removed"]["fillers"] == 1 and out["removed"]["seconds"] > 0
     assert out["removed"]["seconds"] == pytest.approx(SOURCE_S - out["kept"]["seconds"], abs=0.02)
     lines = out["cut"].splitlines()
-    assert all(ln.rsplit(" [", 1)[1].rstrip("]") in cc.WHYS for ln in lines)
+    assert all(ln.rsplit(" [", 1)[1].rstrip("]").rstrip("?") in cc.WHYS for ln in lines)
     assert any(ln.endswith("[false-start]") and "Start by..." in ln for ln in lines)
     assert len(raw) < 1500
 
@@ -211,7 +214,8 @@ def test_the_plan_is_speech_edit_text_with_removed_rows_tagged(tmp_path, stub_tr
     kept_words = " ".join(" ".join(t for t in r.tokens) for r in rows if r.kind == "speech")
     assert kept_words == " ".join(KEPT)
     assert all(cc._TAG.search(r) for r in cut + unused)
-    assert {cc._TAG.search(r).group(2) for r in unused} == {"retake", "false-start", "abandoned"}
+    assert {cc._TAG.search(r).group(2) + (cc._TAG.search(r).group(3) or "") for r in unused} == \
+        {"retake", "false-start", "abandoned?"}
 
 
 def test_the_same_transcript_gives_the_same_plan(tmp_path, stub_transcribe, monkeypatch):
@@ -248,7 +252,7 @@ def test_the_apply_cuts_through_the_speech_edit_save(tmp_path, stub_transcribe, 
                    "duration": plan["duration"], "undo": 'Restore the version "version: before cut".',
                    "layers": {}}
     marker = json.loads((d / "project.json").read_text())["cleanCut"]
-    assert marker["removed"]["lines"] == {"retake": 2, "false-start": 1, "abandoned": 1}
+    assert marker["removed"]["lines"] == {"retake": 2, "false-start": 1}
     assert marker["maxPause"] == 0.45 and marker["kept"]["seconds"] == plan["kept"]["seconds"]
     assert len(raw) < 300
     assert marker["planStamp"] == speech_text.parse(cc._untagged((d / "cut-plan.md").read_text())[0])[0]["stamp"]
@@ -397,7 +401,7 @@ def test_planning_a_cut_project_answers_already_cut(tmp_path, stub_transcribe, m
     plan, _ = plan_and_apply(d, monkeypatch)
     marker = json.loads((d / "project.json").read_text())["cleanCut"]
     assert set(marker) == {"at", "maxPause", "stepVersion", "mode", "kept", "removed", "duration", "tracksRev",
-                           "planStamp"}
+                           "planStamp", "planHash"}
     plan_file = (d / "cut-plan.md").read_bytes()
     again, _ = run(d, monkeypatch=monkeypatch)
     assert again == {"project": "cut-fixture", "mode": "already-cut", "cutAt": marker["at"], "kept": marker["kept"],
@@ -682,7 +686,7 @@ def test_a_partly_kept_row_is_listed_whole_and_marked(tmp_path):
     """A kept take's row that loses some words (a restart) is listed whole under ## Unused, marked *."""
     from lib.take_select import Unit, select
     from lib.speech_lines import Word
-    words = "Start by, start by picking the clip you want.".split()
+    words = "Start by picking, start by picking the clip you want.".split()
     ws = [Word(i, w, w.lower().strip(",."), i * 0.5, i * 0.5 + 0.4) for i, w in enumerate(words)]
     row = speech_text.Row("speech", line="A1", words=ws, pauses={}, item_ids=["it"])
     units = [(Unit(words), [(0, row)], [])]
@@ -697,8 +701,8 @@ def test_a_partly_kept_row_is_listed_whole_and_marked(tmp_path):
         speech_text.render = monkey_render
     cut, unused = sections(text)
     assert cut == ["A1 start by picking the clip you want. [0.0]"]
-    assert unused == ["*A1 Start by, start by picking the clip you want. [0.0 restart]"]
-    assert removed == [("A1", 0.0, "Start by,", "restart")]
+    assert unused == ["*A1 Start by picking, start by picking the clip you want. [0.0 restart]"]
+    assert removed == [("A1", 0.0, "Start by picking,", "restart")]
 
 
 # ── re-review: suggestions, layers, the plan file, b-roll ───────────────────
@@ -718,10 +722,10 @@ def test_an_uncertain_retake_stays_kept_and_is_offered(tmp_path, stub_transcribe
     stub_transcribe(_scripted(sentences))
     d = make_project(tmp_path)
     plan, _ = run(d, monkeypatch=monkeypatch)
-    assert plan["removed"]["lines"] == {} and plan["suggested"] == {"retake?": 1}
+    assert plan["removed"]["lines"] == {} and plan["suggested"]["retake?"] >= 1
     assert "I love this app. [retake?]" in plan["cut"]
     cut, unused = sections((d / "cut-plan.md").read_text())
-    assert unused and all(r.endswith("retake?]") for r in unused)
+    assert unused and all(r.endswith("?]") for r in unused)
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
     assert phrases(d) == sentences                       # nothing uncertain was cut
     assert json.loads((d / "project.json").read_text())["cleanCut"]["removed"]["lines"] == {}
@@ -777,5 +781,113 @@ def test_a_clip_that_is_not_speech_is_kept_whole(tmp_path, stub_transcribe, monk
     stub_transcribe({**real, "transcription": [{**w[0], "text": " Thank"}, {**w[1], "text": " you."}]})
     d = make_project(tmp_path)
     plan, _ = run(d, monkeypatch=monkeypatch)
-    assert any("almost no speech" in x for x in plan["warnings"])
+    assert any("too few words to be speech" in x for x in plan["warnings"])
     assert plan["kept"]["seconds"] == pytest.approx(SOURCE_S, abs=0.05)
+
+
+# ── pass 3: b-roll, the plan file, a recut, the next step ────────────────────
+
+def synthetic(spec, start=0.2, word=0.3, gap=0.08, end_gap=0.7, lang="en"):
+    """A transcript of `spec` on the fixture media with even word times; sentences end with . ? !"""
+    real = json.loads((FIX / "speech.json").read_text())
+    out, t = [], start
+    for tok in spec.split():
+        out.append({"timestamps": {"from": "", "to": ""}, "offsets": {"from": int(t * 1000), "to": int((t + word) * 1000)},
+                    "text": " " + tok})
+        t += word + (end_gap if tok.rstrip("\"'").endswith((".", "?", "!")) else gap)
+    assert t < SOURCE_S
+    return {**real, "result": {"language": lang}, "transcription": out}
+
+
+def clips_project(tmp_path, clips):
+    """A fresh project of several clips of the fixture media, each [(name, transcript)], its own git repo."""
+    d = tmp_path / "proj"
+    d.mkdir()
+    base = json.loads((FIX / "project.json").read_text())
+    p = {k: base[k] for k in ("version", "settings", "status", "workflow", "editingPrompt")}
+    items = []
+    for n, (name, tr) in enumerate(clips):
+        shutil.copy(FIX / "speech.mp4", d / f"{name}.mp4")
+        (d / f"{name}.json").write_text(json.dumps(tr))
+        items.append({"id": f"clip-{n}", "type": "video", "src": str(d / f"{name}.mp4"), "start": 0.0, "end": 0.0,
+                      "sourceDuration": SOURCE_S, "sourceWidth": 64, "sourceHeight": 64})
+    p.update({"id": "cut-fixture", "name": "Cut", "tracks": [{"id": "trk-0", "items": items}]})
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    git(d, "init", "-q")
+    git(d, "add", "project.json")
+    git(d, "commit", "-q", "-m", "init")
+    return d
+
+
+SPEECH = ("Hey everyone, welcome back. Today we're making pasta from scratch. "
+          "It only takes twenty minutes. Thanks for watching!")
+
+
+@pytest.mark.parametrize("order", ["after", "before"])
+def test_b_roll_words_never_take_part(tmp_path, monkeypatch, order):
+    """B1: the made-up line on b-roll is not a retake of the speaker's, and the b-roll is not cut."""
+    clips = [("speech", synthetic(SPEECH)), ("broll", synthetic("Thanks for watching!", start=12.0))]
+    d = clips_project(tmp_path, clips if order == "after" else clips[::-1])
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert plan["removed"]["lines"] == {} and "suggested" not in plan
+    assert any("too few words" in w for w in plan["warnings"])
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    items = json.loads((d / "project.json").read_text())["tracks"][0]["items"]
+    broll = [it for it in items if it["src"].endswith("broll.mp4")]
+    assert len(broll) == 1 and broll[0]["outPoint"] - broll[0]["inPoint"] == pytest.approx(SOURCE_S, abs=0.05)
+    assert "Thanks for watching!" in " ".join(phrases(d))
+    speech_first = order == "after"
+    assert items[0]["src"].endswith("speech.mp4") == speech_first      # nothing moved across the b-roll
+
+
+def test_a_short_real_line_is_still_cut(tmp_path, stub_transcribe, monkeypatch):
+    """Should-fix 5: six real words, then the camera left running: dense enough to be speech."""
+    stub_transcribe(synthetic("Hey everyone, today we cook pasta."))
+    d = make_project(tmp_path)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    assert not any("too few words" in w for w in plan.get("warnings", []))
+    assert plan["kept"]["seconds"] < 10
+
+
+def test_an_unedited_plan_is_replaced_and_every_edit_is_kept(tmp_path, stub_transcribe, monkeypatch):
+    d = make_project(tmp_path, transcript=retake_transcript())
+    run(d, monkeypatch=monkeypatch)
+    again, _ = run(d, "--max-pause", "0.6", monkeypatch=monkeypatch)     # nobody edited it: no backup
+    assert "previous" not in again and not (d / "cut-plan.prev.md").exists()
+    edit1 = (d / "cut-plan.md").read_text().replace("A14 Thanks everyone.", "A14")
+    (d / "cut-plan.md").write_text(edit1)
+    out, _ = run(d, monkeypatch=monkeypatch)
+    assert out["previous"] == str(d / "cut-plan.prev.md") and (d / "cut-plan.prev.md").read_text() == edit1
+    out, _ = run(d, "--max-pause", "0.3", monkeypatch=monkeypatch)       # the new plan is unedited: replaced
+    assert "previous" not in out and (d / "cut-plan.prev.md").read_text() == edit1
+    edit2 = (d / "cut-plan.md").read_text().replace("A14 Thanks everyone.", "A14")
+    (d / "cut-plan.md").write_text(edit2)
+    out, _ = run(d, monkeypatch=monkeypatch)                             # a second edit: its own file
+    assert out["previous"].startswith(str(d / "cut-plan.prev-")) and Path(out["previous"]).read_text() == edit2
+    assert (d / "cut-plan.prev.md").read_text() == edit1
+
+
+def test_already_applied_needs_the_same_plan_not_only_the_same_stamp(tmp_path, stub_transcribe, monkeypatch, capsys):
+    d = make_project(tmp_path, transcript=retake_transcript())
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    text = (d / "cut-plan.md").read_text()
+    stamp = speech_text.parse(cc._untagged(text)[0])[0]["stamp"]
+    p = json.loads((d / "project.json").read_text())
+    p["cleanCut"] = {"planStamp": stamp, "planHash": "000000000000"}   # a cut from another plan of the same base
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    out, _ = run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    assert out["mode"] == "applied"
+    p = json.loads((d / "project.json").read_text())
+    p["cleanCut"].update(planStamp=stamp, planHash=cc._plan_hash(text))
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    assert refused(d, "--plan", plan["plan"], monkeypatch=monkeypatch, capsys=capsys) == "already_applied"
+
+
+def test_next_says_how_to_take_a_suggestion(tmp_path, stub_transcribe, monkeypatch):
+    d = make_project(tmp_path, transcript=retake_transcript())
+    out, _ = run(d, monkeypatch=monkeypatch)
+    assert "To take a ? suggestion, delete its row from ## Cut" in out["next"]
+    (tmp_path / "s").mkdir()
+    silent = clips_project(tmp_path / "s", [("speech", {**retake_transcript(), "transcription": []})])
+    out, _ = run(silent, monkeypatch=monkeypatch)
+    assert out["next"] == f'Apply: cut with plan "{silent / "cut-plan.md"}".'

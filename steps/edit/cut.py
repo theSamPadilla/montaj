@@ -51,7 +51,8 @@ REMOVED_CAP_BYTES = 1500
 PREV_PLAN_FILE = "cut-plan.prev.md"
 # A clip whose transcript covers this little of it is not speech (b-roll, with a word whisper made up).
 MIN_WORDS_PER_S = 0.2
-MIN_SPEECH_SHARE = 0.15
+DENSE_WINDOW_S = 10.0       # ... unless some DENSE_WINDOW_S of it holds DENSE_WORDS words: a real short line
+DENSE_WORDS = 5
 # What the carry report flags about the other layers, by kind, in the answers.
 LAYER_FLAGS = ("overlay_", "linked_", "caption_", "audio_", "marker_", "bed_check_timing")
 # The marker a cut leaves on the project, written in the same guarded write as the cut. A project carrying it
@@ -236,6 +237,16 @@ def _in_window(keeps, lo, hi):
     return [[max(s, lo), min(e, hi)] for s, e in keeps if min(e, hi) - max(s, lo) > 0]
 
 
+def _hardly_speech(words, span):
+    """A clip whose words are too few and too spread out to be speech: b-roll, with words whisper made up
+    ("Thank you." over music). Fewer than MIN_WORDS_PER_S over the clip, and no DENSE_WINDOW_S of it with
+    DENSE_WORDS words."""
+    if len(words) >= MIN_WORDS_PER_S * span:
+        return False
+    starts = sorted(w["start"] for w in words)
+    return not any(sum(1 for x in starts if s0 <= x < s0 + DENSE_WINDOW_S) >= DENSE_WORDS for s0 in starts)
+
+
 def _cut(work, project_path, ti, cid, src, keeps, lineage):
     """jump_cut one clip in memory; each new piece's lineage is the clip it came from (as on disk)."""
     before = {x["id"] for x in work["tracks"][ti]["items"]}
@@ -266,8 +277,8 @@ def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=Non
         lo, hi = _window(it, r["src"])
         inside = [w for w in words if lo <= (w["start"] + w["end"]) / 2 < hi]
         span = max(hi - lo, 1e-6)
-        if len(inside) < MIN_WORDS_PER_S * span or sum(w["end"] - w["start"] for w in inside) < MIN_SPEECH_SHARE * span:
-            warnings.append(f"kept {cid} whole: it holds almost no speech")
+        if _hardly_speech(inside, span):
+            warnings.append(f"kept {cid} whole: it has too few words to be speech (b-roll?)")
             if whole is not None:
                 whole.add(cid)
             continue
@@ -480,7 +491,7 @@ def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, pr
     head = speech_text.render(d, title, "none").split("\n")
     cut_at = head.index("## Cut")
     out = [head[0], f"<!-- montaj cut plan v1 · language {language} · max-pause {max_pause:.2f} -->",
-           f"<!-- {PLAN_HELP} -->"] + head[1:cut_at + 1] + [""]
+           PLAN_HASH_LINE, f"<!-- {PLAN_HELP} -->"] + head[1:cut_at + 1] + [""]
     kept, groups = [], []          # groups: (t, why, [plan rows], answer words or None)
 
     def t_of(row):
@@ -555,11 +566,34 @@ def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, pr
         groups2 = sorted(suggested, key=lambda g: (g[0], g[2][0] if g[2] else ""))
         for _, _, rows, _ in groups2:
             out += [""] + rows
-    return ("\n".join(out) + "\n", kept, removed,
+    return (_seal("\n".join(out) + "\n"), kept, removed,
             [(ans[0], t, ans[1], why) for t, why, _, ans in sorted(suggested, key=lambda g: g[0])])
 
 
 _TAG = re.compile(r"\s\[(\d+(?:\.\d+)?)?(?:\s?(" + "|".join(WHYS) + r")(\?)?)?\]\s*$")
+
+
+PLAN_HASH_LINE = "<!-- plan hash - -->"
+_HASH_RE = re.compile(r"<!-- plan hash ([0-9a-f]{12}) -->")
+
+
+def _seal(text):
+    """The plan with its own hash in it, so a later run can tell an unedited plan from an edited one."""
+    h = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    return text.replace(PLAN_HASH_LINE, f"<!-- plan hash {h} -->", 1)
+
+
+def _unedited(text):
+    """The plan is as cut wrote it: its sealed hash still matches."""
+    m = _HASH_RE.search(text)
+    if not m:
+        return False
+    return hashlib.sha256(text.replace(m.group(0), PLAN_HASH_LINE, 1).encode("utf-8")).hexdigest()[:12] == m.group(1)
+
+
+def _plan_hash(text):
+    """The hash of the plan as the apply reads it (tags gone): two plans that apply the same edit match."""
+    return hashlib.sha256(_untagged(text)[0].encode("utf-8")).hexdigest()[:12]
 
 
 def _plan_meta(text):
@@ -616,18 +650,29 @@ def _write_plan(project_path, project_id, text):
     out_path = os.path.join(project_dir, PLAN_FILE)
 
     def write():
-        """A plan already there that differs is kept as cut-plan.prev.md (an edit is never lost). The new one
-        lands by a rename of a new temp file, so a link at either name is replaced, never followed."""
-        prev_kept = False
+        """A plan already there that cut wrote and nobody edited is replaced. An edited one (or a link) is kept:
+        as cut-plan.prev.md, or, when that holds another edit, as cut-plan.prev-<UTC time>.md, so no edit is
+        lost. The new plan lands by a rename of a new temp file, so a link at either name is replaced, never
+        followed. Returns the path an edited plan was kept at, or None."""
+        kept_at = None
         if os.path.lexists(out_path):
-            same = False
+            old = None
             if not os.path.islink(out_path) and os.path.isfile(out_path):
                 with open(out_path, encoding="utf-8", errors="replace") as f:
-                    same = f.read() == text
-            if same:
-                return False
-            os.replace(out_path, os.path.join(project_dir, PREV_PLAN_FILE))
-            prev_kept = True
+                    old = f.read()
+            if old == text:
+                return None
+            if old is None or not _unedited(old):
+                kept_at = os.path.join(project_dir, PREV_PLAN_FILE)
+                if os.path.lexists(kept_at):
+                    prev = None
+                    if not os.path.islink(kept_at) and os.path.isfile(kept_at):
+                        with open(kept_at, encoding="utf-8", errors="replace") as f:
+                            prev = f.read()
+                    if prev != old:
+                        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                        kept_at = os.path.join(project_dir, f"cut-plan.prev-{stamp}.md")
+                os.replace(out_path, kept_at)
         tmp = os.path.join(project_dir, f"{PLAN_FILE}.tmp-{os.getpid()}")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         try:
@@ -637,12 +682,12 @@ def _write_plan(project_path, project_id, text):
         finally:
             if os.path.lexists(tmp):
                 os.remove(tmp)
-        return prev_kept
+        return kept_at
     if not sync_clash.state_dir():
         return out_path, write()
     with project_lock_or_fail(project_path, fail):
         try:
-            sync_clash.check_step_write(project_id, files=[PLAN_FILE, PREV_PLAN_FILE])
+            sync_clash.check_step_write(project_id, files=[PLAN_FILE, PREV_PLAN_FILE, "cut-plan.prev-"])
         except sync_clash.SyncConflict as e:
             sync_clash.exit_refused(e.body)
         return out_path, write()
@@ -682,12 +727,13 @@ def _tracks_rev(project):
     return project_revisions.revision_of(normalize_tracks(copy.deepcopy(project)).get("tracks"))
 
 
-def _marker(mode, kept, removed, duration, max_pause, written, plan_stamp):
+def _marker(mode, kept, removed, duration, max_pause, written, plan_stamp, plan_hash=None):
     """The record of a cut. tracksRev: the revision of the tracks it wrote, to tell a later change; planStamp:
     the stamp of the plan it applied, so the same plan is not applied twice."""
     return {"at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "maxPause": max_pause,
             "stepVersion": STEP_VERSION, "mode": mode, "kept": kept, "removed": removed,
-            "duration": duration, "tracksRev": _tracks_rev(written), "planStamp": plan_stamp}
+            "duration": duration, "tracksRev": _tracks_rev(written), "planStamp": plan_stamp,
+            "planHash": plan_hash}
 
 
 def _already_cut(project):
@@ -702,20 +748,26 @@ def _already_cut(project):
 
 
 def _language(arg, track, project_dir):
-    """The speech language: the param, else (auto or none) what whisper detected in a transcript."""
+    """The speech language: the param, else (auto or none) what whisper detected in the transcript of the clip
+    with the most words, b-roll left out (music is often detected as some other language)."""
     if arg and arg != "auto":
         return arg
+    best, best_n = None, -1
     for it in _media(track):
-        sc = sidecar_for(_resolved(it, project_dir))
-        if sc:
-            try:
-                with open(sc, encoding="utf-8") as f:
-                    lang = ((json.load(f).get("result") or {}).get("language") or "").strip()
-                if lang:
-                    return lang
-            except (OSError, ValueError):
-                pass
-    return arg or "en"
+        r = _resolved(it, project_dir)
+        sc = sidecar_for(r)
+        if not sc:
+            continue
+        try:
+            with open(sc, encoding="utf-8") as f:
+                lang = ((json.load(f).get("result") or {}).get("language") or "").strip()
+        except (OSError, ValueError):
+            continue
+        words = [{"start": w.start} for w in load_words(sc)]
+        span = max(float(it.get("outPoint", 0)) - float(it.get("inPoint", 0)), float(it.get("sourceDuration") or 0), 1e-6)
+        if lang and not _hardly_speech(words, span) and len(words) > best_n:
+            best, best_n = lang, len(words)
+    return best or "en"
 
 
 # ── the run ──────────────────────────────────────────────────────────────────
@@ -741,6 +793,9 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
         warnings += _silence_cut(work, project_path, ti, project_dir, b["lineage"], untranscribed_only=True)
         d = speech_text.derive(work, project_dir, track_id)
         units, trailing = _units(d, is_filler)
+        for u, rows, _ in units:
+            # a clip kept whole (b-roll): its made-up words are never a take, a loser or a suggestion
+            u.fixed = bool(rows) and all(r.item_ids and r.item_ids[0] in b["whole"] for _, r in rows)
         if units:
             b.update(d=d, units=units, trailing=trailing)
             if language.split("-")[0].lower() in NON_SPACED:
@@ -766,10 +821,12 @@ def _silence_stamp(b, track_id):
 
 def _silence_plan(b, track_id, title, marker):
     _, track = _track(b["work"], track_id)
-    rows = [f"-- {it['id']} {float(it.get('inPoint', 0)):.2f}-{float(it.get('outPoint', 0)):.2f} keep" for it in _media(track)]
-    return "\n".join([f"<!-- montaj cut plan v1 · silence · track {track_id} · stamp {_silence_stamp(b, track_id)} · "
-                      f"marker {'yes' if marker else 'no'} -->", f"# {title}", "",
-                      "No usable speech: this plan removes silences only. Apply it as it is.", "", "## Cut", "", *rows]) + "\n"
+    rows = [f"-- {os.path.basename(it['src'])} {float(it.get('inPoint', 0)):.2f}-{float(it.get('outPoint', 0)):.2f} keep"
+            for it in _media(track)]
+    return _seal("\n".join([f"<!-- montaj cut plan v1 · silence · track {track_id} · stamp {_silence_stamp(b, track_id)} · "
+                            f"marker {'yes' if marker else 'no'} -->", PLAN_HASH_LINE, f"# {title}", "",
+                            "No usable speech: this plan removes silences only. Apply it as it is.", "", "## Cut", "",
+                            *rows]) + "\n")
 
 
 _SILENCE_HEADER = re.compile(r"^<!--\s*montaj cut plan v1 · silence · track (\S+) · stamp (\S+) · marker (yes|no)\s*-->\s*$")
@@ -822,7 +879,7 @@ def _make_plan(args, project_path, project_dir):
         path, prev = _write_plan(project_path, disk.get("id"), _silence_plan(b, track_id, title, marker=not failed))
         answer.update(plan=path, silence=True,
                       kept={"lines": 0, "seconds": kept_s},
-                      removed={"seconds": round(b["before_s"] - kept_s, 2)}, duration=duration,
+                      removed={"seconds": (round(b["before_s"] - kept_s, 2) + 0.0)}, duration=duration,
                       layers=_layers(rep.get("flagged")),
                       note=("Transcription failed: the plan removes silences only." if failed else
                             "No usable speech: the plan removes silences only."))
@@ -842,7 +899,7 @@ def _make_plan(args, project_path, project_dir):
         for *_, why in suggested:
             maybe[why] = maybe.get(why, 0) + 1
         answer.update(plan=path, kept={"lines": len(kept), "seconds": kept_s},
-                      removed={"lines": by, "fillers": b["fillers"], "seconds": round(b["before_s"] - kept_s, 2)},
+                      removed={"lines": by, "fillers": b["fillers"], "seconds": (round(b["before_s"] - kept_s, 2) + 0.0)},
                       duration=duration)
         if maybe:
             answer["suggested"] = maybe
@@ -852,10 +909,14 @@ def _make_plan(args, project_path, project_dir):
         if args.detail:
             answer["keep"] = _capped([f"{i} {t:.1f} {txt}" for i, t, txt in kept], TEXT_CAP_BYTES)
         warnings += [w for w in res.get("warnings", []) if w not in warnings]
-    answer["next"] = (f'Apply: cut with plan "{path}". To keep a removed line, move its row from ## Unused '
-                      "into ## Cut.")
+    if b["d"] is None:
+        answer["next"] = f'Apply: cut with plan "{path}".'
+    else:
+        answer["next"] = (f'Apply: cut with plan "{path}". To keep a removed line, move its row from ## Unused '
+                          "into ## Cut. To take a ? suggestion, delete its row from ## Cut (a repeat? row replaces "
+                          "its row there).")
     if prev:
-        answer["previous"] = os.path.join(project_dir, PREV_PLAN_FILE)
+        answer["previous"] = prev
     answer["transcribed"] = transcribed
     if warnings:
         answer["warnings"] = warnings[:5]
@@ -873,7 +934,8 @@ def _apply_plan(args, project_path, project_dir):
         header, _ = speech_text.parse(text)
         track_id, plan_stamp = header["track"], header["stamp"]
     marker = disk.get(MARKER_KEY)
-    if isinstance(marker, dict) and marker.get("planStamp") == plan_stamp:
+    plan_hash = _plan_hash(text)
+    if isinstance(marker, dict) and marker.get("planStamp") == plan_stamp and marker.get("planHash") == plan_hash:
         fail("already_applied", "This plan is already applied. Run cut with recut for a new plan.")
     _track(normalize_tracks(copy.deepcopy(disk)), track_id)
     plan_lang, plan_pause = _plan_meta(text)
@@ -890,7 +952,8 @@ def _apply_plan(args, project_path, project_dir):
         if b["d"] is not None or _silence_stamp(b, track_id) != plan_stamp:
             fail("stale_plan", stale)
         version, layers = _write_silence(project_path, project_dir, disk, b, track_id, max_pause,
-                                         marker=sil.group(3) == "yes", warnings=warnings, plan_stamp=plan_stamp)
+                                         marker=sil.group(3) == "yes", warnings=warnings, plan_stamp=plan_stamp,
+                                         plan_hash=plan_hash)
         wrote = "Nothing to cut." not in warnings
         final = _load(project_path)
     else:
@@ -902,8 +965,8 @@ def _apply_plan(args, project_path, project_dir):
             kept_s, duration = _sums(candidate, track_id)
             candidate[MARKER_KEY] = _marker(
                 "speech", {"seconds": kept_s},
-                {"lines": why_left, "fillers": b["fillers"], "seconds": round(b["before_s"] - kept_s, 2)},
-                duration, max_pause, candidate, plan_stamp)
+                {"lines": why_left, "fillers": b["fillers"], "seconds": (round(b["before_s"] - kept_s, 2) + 0.0)},
+                duration, max_pause, candidate, plan_stamp, plan_hash)
         res = apply(project_path, plain, preview=False, max_pause=max_pause, feel=DEFAULT_FEEL,
                     base=b["work"], base_of=disk, version_message=VERSION_MESSAGE, want_project=True, amend=mark,
                     carry_from=b["origin"], lineage=b["lineage"], guard_keys=(MARKER_KEY,))
@@ -928,7 +991,8 @@ def _apply_plan(args, project_path, project_dir):
     print(json.dumps(answer, ensure_ascii=False))
 
 
-def _write_silence(project_path, project_dir, disk, b, track_id, max_pause, marker, warnings, plan_stamp):
+def _write_silence(project_path, project_dir, disk, b, track_id, max_pause, marker, warnings, plan_stamp,
+                   plan_hash=None):
     """The silence cut's write, with the speech path's guards: the other layers carried by the one map, the
     sync check, validation, a version, and the locked stale check over every key it writes.
     Returns (version saved, layer flags)."""
@@ -944,8 +1008,8 @@ def _write_silence(project_path, project_dir, disk, b, track_id, max_pause, mark
     if marker:
         # A cut after a failed transcription leaves no marker, so the real cut can still run once it works.
         candidate[MARKER_KEY] = _marker("silence", {"seconds": kept_s},
-                                        {"seconds": round(b["before_s"] - kept_s, 2)},
-                                        duration, max_pause, candidate, plan_stamp)
+                                        {"seconds": (round(b["before_s"] - kept_s, 2) + 0.0)},
+                                        duration, max_pause, candidate, plan_stamp, plan_hash)
     try:
         sync_clash.check_step_document(disk, candidate, files=[])
     except sync_clash.SyncConflict as e:

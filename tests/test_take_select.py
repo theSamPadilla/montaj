@@ -37,7 +37,26 @@ def restart_take(line):
 
 
 def units(*texts):
-    return [Unit(t.split()) for t in texts]
+    """Units from sentences. "##" starts the next clip; "|" inside a sentence is a timing break before the next
+    word."""
+    us, clip = [], "A"
+    for t in texts:
+        if t == "##":
+            clip = chr(ord(clip) + 1)
+            continue
+        words, breaks = [], set()
+        for tok in t.split():
+            if tok == "|":
+                breaks.add(len(words))
+            else:
+                words.append(tok)
+        us.append(Unit(words, clip=clip, breaks=breaks))
+    return us
+
+
+def plain(texts):
+    """The sentences as said: no clip or break marks."""
+    return [" ".join(w for w in t.split() if w != "|") for t in texts if t != "##"]
 
 
 def suggested(texts, sel):
@@ -92,10 +111,17 @@ def test_a_take_ending_in_an_ellipsis_is_truncated():
 
 
 def test_last_attempt_wins_a_tie():
-    """A B A across two clips: a retake of A in the second clip; the last attempt wins."""
+    """A A said again at once: the last attempt wins."""
+    texts = [LINES[0], LINES[0], LINES[1]]
+    sel = select(units(*texts), is_filler)
+    assert sel.kept == [1, 2]
+
+
+def test_a_b_a_across_two_clips_is_only_suggested():
     us = [Unit(LINES[0].split(), clip="A"), Unit(LINES[1].split(), clip="A"), Unit(LINES[0].split(), clip="B")]
     sel = select(us, is_filler)
-    assert sel.kept == [2, 1]     # narrative order: the section of LINES[0] came first
+    assert sel.kept == [0, 1, 2] and sel.losers == []
+    assert [(i, w) for i, _, w in sel.suggest] == [(0, "retake?")]
 
 
 def test_the_same_sentence_twice_in_one_clip_is_not_a_retake():
@@ -104,9 +130,17 @@ def test_the_same_sentence_twice_in_one_clip_is_not_a_retake():
     assert kept_text(texts, sel) == texts and sel.losers == []
 
 
-def test_a_block_retake_keeps_only_the_second_block():
+def test_a_block_retake_with_a_change_is_only_suggested():
     texts = ["Start by picking the clip you want.", "Then drag it onto the timeline.",
              "Start by picking the clip you want.", "Then drag it onto the timeline below."]
+    sel = select(units(*texts), is_filler)
+    assert kept_text(texts, sel) == texts and sel.losers == []
+    assert [(i, w) for i, _, w in sel.suggest] == [(0, "retake?"), (1, "retake?")]
+
+
+def test_an_identical_block_retake_keeps_only_the_second_block():
+    texts = ["Start by picking the clip you want.", "Then drag it onto the timeline.",
+             "Start by picking the clip you want.", "Then drag it onto the timeline."]
     sel = select(units(*texts), is_filler)
     assert kept_text(texts, sel) == texts[2:]
 
@@ -126,8 +160,15 @@ def test_within_take_repeat_keeps_the_final_occurrence():
     assert suggested([text], sel) == [(0, "and always on mode called Kyros", "repeat?")]
 
 
-def test_within_take_restart_from_the_opening_is_cut():
+def test_a_short_restart_is_only_suggested():
     text = "Start by, start by picking the clip you want to edit."
+    sel = select(units(text), is_filler)
+    assert kept_text([text], sel) == [text]
+    assert suggested([text], sel) == [(0, "start by picking the clip you want to edit.", "restart?")]
+
+
+def test_a_restart_after_a_cut_off_word_is_cut():
+    text = "Start by... start by picking the clip you want to edit."
     sel = select(units(text), is_filler)
     assert kept_text([text], sel) == ["start by picking the clip you want to edit."]
 
@@ -148,10 +189,11 @@ def test_unrelated_lines_are_never_merged():
     assert sel.losers == []
 
 
-def test_short_lines_merge_only_when_adjacent():
+def test_short_lines_said_again_are_only_suggested():
     texts = ['"Tom!"', '"Tom!"', '"Tom!"', '"No answer."', LINES[0], '"No answer."']
     sel = select(units(*texts), is_filler)
-    assert sel.kept == [2, 3, 4, 5]
+    assert sel.kept == list(range(6)) and sel.losers == []
+    assert [(i, w) for i, _, w in sel.suggest] == [(0, "retake?"), (1, "retake?")]
 
 
 def test_a_filler_only_unit_is_dropped():
@@ -164,8 +206,8 @@ def test_an_abandoned_opening_run_into_the_next_sentence_is_deleted():
     us = units(*texts)
     us[1].breaks = {4}                      # a pause before "Trim"
     sel = select(us, is_filler)
-    assert kept_text(texts, sel) == texts[:1] + ["Trim the start so it opens on the action."]
-    assert sel.abandoned == [1]
+    assert kept_text(texts, sel) == texts and sel.losers == []    # only offered: "Trim" might be a name
+    assert suggested(texts, sel) == [(1, "Trim the start so it opens on the action.", "abandoned?")]
 
 
 def test_a_shared_opener_of_two_sentences_is_not_an_abandoned_take():
@@ -254,15 +296,230 @@ NEVER_CUT = {
     "if then": ["If it works for me it works for you."],
     "rule of three": ["Faster to cut faster to caption faster to post."],
     "two numbers": ["We grew to ten thousand users in May.", "We grew to twenty thousand users in June."],
+    # pass 3 (5 languages): everything below is kept; the real retakes among them are only suggested (SUGGESTED)
+    "tut ordinal list": ["First, open the Settings tab.", "Second, open the Privacy tab.", "Third, open the Advanced tab."],
+    "tut click save again": ["Click save.", "Wait for it to load.", "Click save again."],
+    "tut before/after": ["Make sure you hit save before you close the app.", "Make sure you hit save after every change too."],
+    "tut gonna retake": ["So the first thing you gonna do is open the project.",
+                         "So the first thing you want to do is open your project."],
+    "tut false start period": ["Now go to the.", "Now go to the export menu and pick MP4."],
+    "tut block retake": ["Open the app.", "Tap the plus.", "Open the app.", "Tap the plus button at the bottom."],
+    "tut block across clips": ["Hey guys, welcome back to the channel.", "Today we're making pasta.", "##",
+                               "Hey guys, welcome back to the channel.", "Today we're making fresh pasta from scratch."],
+    "tut 4K comma": ["You can export it in 4K, you can export it in 1080p."],
+    "tut 4K nocomma": ["You can export it in 4K you can export it in 1080p."],
+    "tut unpunct": ["so the first thing you do is open the app and the first thing you do after that is pick a clip"],
+    "vlog lake": ["We woke up at six.", "We drove to the lake.", "We swam in the lake.", "We drove home."],
+    "vlog callback": ["Remember the lake?", "We got lost twice.", "We ate tacos.", "Remember the lake from this morning?"],
+    "vlog worth it": ["Was it worth it?", "Absolutely, it was worth it."],
+    "vlog so cold": ["It was cold, so cold, so so cold."],
+    "vlog correction money": ["We spent three hundred dollars.", "No wait, we spent four hundred dollars."],
+    "vlog days": ["Day one.", "Day two.", "Day three."],
+    "pitch anaphora": ["Montaj cuts your video.", "Montaj captions your video.", "Montaj posts your video."],
+    "pitch not toy": ["It's not a toy, it's a tool."],
+    "pitch not just": ["It's not just faster, it's better."],
+    "pitch hours minutes": ["Other apps take hours.", "Montaj takes minutes."],
+    "pitch nine not ninety": ["Our price is nine dollars a month.", "That's nine dollars, not ninety."],
+    "pitch insert retake": ["Montaj is the fastest way to edit video.", "Montaj is honestly the fastest way to edit video."],
+    "pitch three plans": ["We have three plans.", "We have three plans and a free trial."],
+    "pitch free free!": ["It's free.", "It's free!"],
+    "pitch was wrong": ["I was wrong.", "I was so wrong."],
+    "int echo replace": ["What made you start?", "What made me start was boredom."],
+    "int think so": ["I think so.", "I think so, yes."],
+    "int quit": ["Did you ever want to quit?", "Every single day I wanted to quit."],
+    "int no no no": ["No, no, no, that's not what I meant."],
+    "int yes yes": ["Yes.", "Yes."],
+    "int two cams": ["You need two cameras.", "Actually, you only need one camera."],
+    "story knocked": ["He knocked once.", "He knocked twice.", "He knocked a third time."],
+    "story door": ["And then the door opened.", "A man walked in.", "And then the door closed."],
+    "story quote": ["She looked at me and said, 'You'll never make it.'", "And I said, 'Watch me.'",
+                    "'You'll never make it,' she said again."],
+    "story said": ["I said no.", "She said yes.", "We both said maybe."],
+    "story refrain 2 apart": ["And that's when it hit me.", "I was broke.", "And that's when it hit me."],
+    "story failed": ["The first time I failed.", "The second time I failed.", "The third time I won."],
+    "story this one": ["Not this one.", "This one."],
+    "story reworded super/really": ["The app is super easy to use.", "The app is really easy to use."],
+    "es magia": ["No es magia, es práctica."],
+    "es primero despues": ["Primero grabas el video.", "Después grabas el audio."],
+    "es retake period": ["Hoy les voy a enseñar a editar.", "Hoy les voy a enseñar a editar un video en un minuto."],
+    "es correction pasos": ["Son cinco pasos.", "Perdón, son seis pasos."],
+    "es q answer": ["¿Es difícil?", "No, no es difícil."],
+    "es movil y movil": ["Lo grabas en el móvil y lo editas en el móvil."],
+    "es retake reword": ["Hoy vamos a hacer una receta muy fácil.", "Hoy vamos a hacer una receta súper fácil."],
+    "fr pas difficile": ["Ce n'est pas difficile, c'est juste nouveau."],
+    "fr on ouvre": ["On ouvre l'application.", "On choisit la vidéo.", "On ouvre l'éditeur."],
+    "fr retake period": ["Alors aujourd'hui on va voir comment monter une vidéo.",
+                         "Alors aujourd'hui on va voir comment monter une vidéo en deux minutes."],
+    "fr vite loin": ["Tu veux aller vite ?", "Tu veux aller loin ?"],
+    "fr quote": ["Il a dit : « Je reviens. »", "Et il n'est jamais revenu."],
+    "de erst dann": ["Erst schneidest du das Video, dann schneidest du den Ton."],
+    "de nicht schwer": ["Das ist nicht schwer.", "Das ist nur neu."],
+    "de false start period": ["Heute zeige ich euch, wie man.", "Heute zeige ich euch, wie man ein Video schneidet."],
+    "de speichern": ["Drück auf Speichern.", "Warte kurz.", "Drück nochmal auf Speichern."],
+    "de views": ["Willst du mehr Views?", "Dann poste jeden Tag."],
+    "de nocomma parallel": ["Ich schneide das Video und ich schneide den Ton und ich lade alles hoch."],
+    "pt magica": ["Não é mágica, é prática."],
+    "pt primeiro depois": ["Primeiro você grava, depois você edita, depois você posta."],
+    "pt retake period": ["Hoje eu vou mostrar como editar.", "Hoje eu vou mostrar como editar um vídeo no celular."],
+    "pt crescer vender": ["Você quer crescer?", "Você quer vender?"],
+    "pt falei": ["Eu falei que não.", "Ela falou que sim."],
+    "pt nocomma": ["Você grava o vídeo você grava o áudio e pronto."],
+    "abandon rome paris": ["We flew to Rome on Monday.", "We flew to | Paris on Friday."],
+    "abandon talked john mary": ["I talked to John about it.", "I talked to | Mary about it later."],
+    "abandon de noun": ["Wir haben das Video geschnitten.", "Wir haben das | Audio auch geschnitten."],
+    "abandon de noun 2": ["Dann öffnest du die App.", "Dann öffnest du | Einstellungen und tippst auf Export."],
+    "abandon es city": ["Después fuimos a Roma.", "Después fuimos a | París."],
+    "abandon pt": ["Depois eu abri o Instagram.", "Depois eu abri | TikTok e postei."],
+    "abandon fr": ["Ensuite on est allés à Lyon.", "Ensuite on est allés | Marseille aussi."],
+    "hold on": ["Hold on.", "Hold on to your seat."],
+    "look out": ["Look out.", "Look out the window."],
+    "try it": ["Try it.", "Try it for free today."],
+    "es espera": ["Mira esto.", "Mira esto con calma."],
+    "aside sorry": ["Today I'm going to show you my morning routine.", "Sorry, let me do that again.",
+                    "Today I'm going to show you my morning routine."],
+    "aside wait": ["This lens costs two thousand dollars.", "Wait.", "This lens costs twelve hundred dollars."],
+    "aside okay again": ["So this is my whole setup for streaming.", "Okay, one more time.",
+                         "So this is my whole setup for streaming at home."],
+    "aside es": ["Hoy les traigo mi rutina de mañana.", "Perdón, otra vez.", "Hoy les traigo mi rutina de mañana."],
+    "block B' low ratio same clip": ["Welcome back to the channel.", "Today we're making pasta.",
+                                     "Welcome back to the channel.", "Today we're making fresh pasta from scratch."],
+    "cross clip refrain": ["Step one is to open the app.", "Now let's move on to the next step.", "##",
+                           "Step two is to pick a clip.", "Now let's move on to the next step.", "##",
+                           "Step three is to export it.", "Now let's move on to the next step."],
+    "cross clip tagline": ["My first tip is to post daily.", "Follow me for more tips like this.", "##",
+                           "My second tip is to use hooks.", "Follow me for more tips like this."],
+    "new york": ["New York, New York is my favorite song."],
+    "bora bora": ["We went to Bora Bora, Bora Bora is amazing."],
+    "tick tock": ["Tick tock, tick tock, the clock is ticking."],
+    "again and again": ["You fail again and again and again until you win."],
+    "numbers repeat": ["It costs ten dollars, ten dollars a month, that's it."],
+    "phone digits": ["Call five five five, five five five, one two three four."],
+    "years": ["In twenty twenty, twenty twenty one and twenty twenty two we grew."],
+    "rhet": ["Why does this matter?", "Why does this matter to you?"],
+    "rhet answer": ["What's the secret?", "The secret is consistency."],
+    "rhet same q twice": ["Is it worth it?", "Let me show you.", "Is it worth it?", "Yes."],
+    "not but": ["It's not about the camera, it's about the story."],
+    "not X but Y es": ["No se trata de la cámara, se trata de la historia."],
+    "not X but Y de": ["Es geht nicht um die Kamera, es geht um die Geschichte."],
+    "not X but Y fr": ["Il ne s'agit pas de la caméra, il s'agit de l'histoire."],
+    "not X but Y pt": ["Não se trata da câmera, se trata da história."],
+    "contrast sentences": ["Some creators post once a week.", "Some creators post three times a day."],
+    "list nocomma": ["You need a camera a microphone a light and a tripod."],
+    "list repeated verb nocomma": ["You open the app you pick a clip you trim it you export it."],
+    "list repeated long nocomma": ["We want people to feel safe we want people to feel seen and we want people to come back."],
+    "quote callback": ["My dad always said work hard.", "So I worked hard.", "And like my dad always said work hard."],
+    "quoted retake-like": ["He said I'm done.", "He said I'm done with this job."],
+    "correction insert": ["The app is available on iPhone.", "The app is available on iPhone and Android."],
+    "correction not": ["This works on Windows.", "This only works on Mac."],
+    "correction es insert": ["Funciona en iPhone.", "Funciona en iPhone y en Android."],
+    "correction de": ["Es kostet zehn Euro.", "Es kostet zehn Euro im Monat."],
+    "block story called": ["I called her again.", "She didn't answer.", "I called her again.",
+                           "She didn't answer that time either."],
+    "block story tried": ["We tried it once more.", "It failed.", "We tried it once more.", "It failed even worse this time."],
+    "block tutorial two songs": ["Tap the plus button.", "Pick a song.", "Tap the plus button.", "Pick a song for the outro."],
+    "block es llamé": ["La llamé por teléfono.", "No contestó.", "La llamé por teléfono.", "No contestó tampoco esa vez."],
+    "block de": ["Ich habe sie angerufen.", "Sie ging nicht ran.", "Ich habe sie angerufen.", "Sie ging wieder nicht ran."],
+    "block fr": ["Je l'ai appelée encore.", "Elle n'a pas répondu.", "Je l'ai appelée encore.",
+                 "Elle n'a pas répondu non plus."],
+    "block pt": ["Eu liguei pra ela.", "Ela não atendeu.", "Eu liguei pra ela.", "Ela não atendeu de novo."],
+    "block reworded B' (insert)": ["So let me show you the editor.", "It looks like this.", "So let me show you the editor.",
+                                   "It looks pretty much like this."],
+    "chorus": ["We will rise again.", "When the night is long.", "We will rise again.", "When the night is over."],
+    "he said no no": ["He said no, no, no, I won't do it."],
+    "run run run": ["I run, run, run every morning."],
+    "dash aside": ["This is the -", "Actually, let me show you the settings first."],
+    "dash list": ["You get speed —", "you get quality —", "and you get it all for free."],
+    "come on": ["Come on, come on, let's go."],
 }
+
+# Real retakes among NEVER_CUT: kept, and offered as (unit, why).
+SUGGESTED = {
+    "repeat with insert": [(0, "retake?")],
+    "build up": [(0, "false-start?")],
+    "correction drop": [(0, "retake?")],
+    "tut gonna retake": [(0, "retake?")],
+    "tut false start period": [(0, "false-start?")],
+    "tut block retake": [(0, "retake?"), (1, "retake?")],
+    "tut block across clips": [(0, "retake?"), (1, "retake?")],
+    "pitch insert retake": [(0, "retake?")],
+    "pitch three plans": [(0, "false-start?")],
+    "pitch was wrong": [(0, "retake?")],
+    "int think so": [(0, "false-start?")],
+    "int yes yes": [(0, "retake?")],
+    "story reworded super/really": [(0, "retake?")],
+    "es retake period": [(0, "false-start?")],
+    "es retake reword": [(0, "retake?")],
+    "fr retake period": [(0, "false-start?")],
+    "de false start period": [(0, "false-start?")],
+    "pt retake period": [(0, "false-start?")],
+    "abandon rome paris": [(1, "abandoned?")],
+    "abandon talked john mary": [(1, "abandoned?")],
+    "abandon de noun": [(1, "abandoned?")],
+    "abandon de noun 2": [(1, "abandoned?")],
+    "abandon es city": [(1, "abandoned?")],
+    "abandon pt": [(1, "abandoned?")],
+    "abandon fr": [(1, "abandoned?")],
+    "hold on": [(0, "false-start?")],
+    "look out": [(0, "false-start?")],
+    "try it": [(0, "false-start?")],
+    "es espera": [(0, "false-start?")],
+    "aside sorry": [(0, "retake?")],
+    "aside okay again": [(0, "retake?")],
+    "aside es": [(0, "retake?")],
+    "block B' low ratio same clip": [(0, "retake?"), (1, "retake?")],
+    "block story called": [(0, "retake?"), (1, "retake?")],
+    "block tutorial two songs": [(0, "retake?"), (1, "retake?")],
+    "block reworded B' (insert)": [(0, "retake?"), (1, "retake?")],
+    "come on": [(0, "restart?")],
+}
+SUGGESTED = {k: v for k, v in SUGGESTED.items() if v}
+
+# What the engine cuts for sure: the same words said again (REPEAT_MIN tokens or more), a take broken off and
+# said again in full. (texts, kept text)
+SURE_CUT = {
+    "identical retake": (["This place is unreal.", "This place is unreal."], ["This place is unreal."]),
+    "es identical retake": (["Bienvenidos a mi canal.", "Bienvenidos a mi canal."], ["Bienvenidos a mi canal."]),
+    "restart mid-word": (["You can drag the cl- you can drag the clip onto the timeline."],
+                         ["you can drag the clip onto the timeline."]),
+    "restart mid-word 2": (["This is the be- this is the best tool I've used."], ["this is the best tool I've used."]),
+    "fr restart": (["Donc on va, donc on va ouvrir le projet."], ["donc on va ouvrir le projet."]),
+    "truncated take": (["Montaj is the fastest way to |", "Montaj is the fastest way to edit any video."],
+                       ["Montaj is the fastest way to edit any video."]),
+    "full re-record across clips": (["##", "Hi, I'm Sam.", "This is my studio.", "I make videos here every", "##",
+                                     "Hi, I'm Sam.", "This is my studio.", "I make videos here every single day."],
+                                    ["Hi, I'm Sam.", "This is my studio.", "I make videos here every single day."]),
+    "ellipsis then in full": (["And then...", "And then the lights went out."], ["And then the lights went out."]),
+    "ellipsis trail": (["I waited...", "I waited for hours."], ["I waited for hours."]),
+    # accepted residual: a chant said word for word is cut like a stutter
+    "quoted chant": (["The crowd kept chanting one more song, one more song, one more song."],
+                     ["The crowd kept chanting one more song."]),
+}
+
 
 
 @pytest.mark.parametrize("name", sorted(NEVER_CUT))
 def test_never_cut(name):
     texts = NEVER_CUT[name]
+    us = units(*texts)
+    sel = select(us, is_filler)
+    assert kept_text(us, sel) == plain(texts), name
+    assert sel.losers == [] and sel.abandoned == [] and sel.drop == {}
+
+
+@pytest.mark.parametrize("name", sorted(SUGGESTED))
+def test_a_real_retake_is_suggested_not_cut(name):
+    texts = NEVER_CUT[name]
     sel = select(units(*texts), is_filler)
-    assert kept_text(texts, sel) == texts, name
-    assert sel.losers == [] and sel.abandoned == []
+    got = {(i, w) for i, _, w in sel.suggest}
+    assert set(SUGGESTED[name]) <= got, (name, got)
+
+
+@pytest.mark.parametrize("name", sorted(SURE_CUT))
+def test_only_what_is_certain_is_cut(name):
+    texts, kept = SURE_CUT[name]
+    us = units(*texts)
+    sel = select(us, is_filler)
+    assert kept_text(us, sel) == kept, name
 
 
 def test_a_stutter_of_a_whole_clause_is_cut_by_design():
@@ -282,16 +539,29 @@ def test_an_abandoned_opening_needs_a_break_before_the_new_sentence():
     texts = ["Then drag it onto the timeline.", "Then drag it onto Trim the start so it opens on the action."]
     no_break = select(units(*texts), is_filler)
     assert kept_text(texts, no_break) == texts
+    assert no_break.suggest == []
     us = units(*texts)
     us[1].breaks = {4}
     sel = select(us, is_filler)
-    assert kept_text(texts, sel) == texts[:1] + ["Trim the start so it opens on the action."]
+    assert kept_text(texts, sel) == texts and [w for _, _, w in sel.suggest] == ["abandoned?"]
 
 
-def test_a_retake_far_away_in_another_clip_still_joins():
+def test_a_line_far_away_in_another_clip_is_left_alone():
     us = [Unit(LINES[0].split(), clip="A"), *[Unit(t.split(), clip="A") for t in FILLERS], Unit(LINES[0].split(), clip="B")]
     sel = select(us, is_filler)
-    assert len(sel.kept) == 1 + len(FILLERS) and sel.kept[0] == len(us) - 1
+    assert sel.kept == list(range(len(us))) and sel.losers == []
+
+
+def test_a_clip_kept_whole_takes_no_part():
+    """B1: units of a clip kept whole (b-roll) are never a take, a loser or a suggestion."""
+    us = units("Thanks for watching!", "Thanks for watching!")
+    us[1].fixed = True
+    sel = select(us, is_filler)
+    assert sel.kept == [0, 1] and sel.losers == [] and sel.suggest == []
+    us = units("Thanks for watching!", "Thanks for watching!")
+    us[0].fixed = True
+    sel = select(us, is_filler)
+    assert sel.kept == [0, 1] and sel.losers == [] and sel.suggest == []
 
 
 def test_a_later_longer_take_wins_over_fewer_flaws():
@@ -319,7 +589,6 @@ def test_a_reworded_retake_is_only_suggested():
 
 # Doubles said word for word: a stutter, cut, and listed as removed (the caller shows sel.why).
 STUTTER_CUT = {
-    "come on": ("Come on, come on, let's go.", "come on, let's go."),
     "i love it": ("I love it, I love it so much.", "I love it so much."),
     "the thing is": ("The thing is the thing is hard to explain.", "the thing is hard to explain."),
 }
