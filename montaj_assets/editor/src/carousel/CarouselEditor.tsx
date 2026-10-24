@@ -1143,13 +1143,37 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     return () => onProvideCarouselApi(null)
   }, [onProvideCarouselApi, carouselApi])
 
-  /** Whether a drag with these `types` is of the canvas's kind: a host image,
-   *  or files, which it uploads. `getData` is unreadable until the drop, so
-   *  only `types` can say. */
+  // A host image (`IMAGE_DND_MIME`) is believed only while a drag that began in
+  // this document is under way. Any other page or app can put the same type on a
+  // drag, and its `src` (a remote address, or any local path) would be stored in
+  // the project and fetched. A dragstart in the document is put on record; a
+  // dragend or a drop clears it (the drop in the bubble phase, after the canvas
+  // has read it). Files from the OS are not affected.
+  const pageDragRef = useRef<Event | null>(null)
+  useEffect(() => {
+    const begin = (e: Event) => { pageDragRef.current = e }
+    const end = () => { pageDragRef.current = null }
+    document.addEventListener('dragstart', begin, true)
+    document.addEventListener('dragend', end, true)
+    document.addEventListener('drop', end)
+    return () => {
+      document.removeEventListener('dragstart', begin, true)
+      document.removeEventListener('dragend', end, true)
+      document.removeEventListener('drop', end)
+    }
+  }, [])
+  /** Whether a drag that began in this document is under way. A dragstart that
+   *  was cancelled (a note bubble cancels its own) starts no drag, so no dragend
+   *  would ever end it: it does not count. */
+  const pageDragOn = () => pageDragRef.current !== null && !pageDragRef.current.defaultPrevented
+
+  /** Whether a drag with these `types` is of the canvas's kind: a host image
+   *  from a drag that began in this page, or files, which it uploads.
+   *  `getData` is unreadable until the drop, so only `types` can say. */
   function isImageDrag(types: ArrayLike<string> | undefined): boolean {
     if (!types) return false
     const list = Array.from(types)
-    return list.includes(IMAGE_DND_MIME) || (list.includes('Files') && typeof adapter.uploadFile === 'function')
+    return (pageDragOn() && list.includes(IMAGE_DND_MIME)) || (list.includes('Files') && typeof adapter.uploadFile === 'function')
   }
 
   /** dragenter and dragover: an image drag the canvas can take now gets a copy
@@ -1168,8 +1192,9 @@ export default function CarouselEditor<P extends Project = Project>({ project: i
     // Whatever happens next, the browser must not also open what was dropped.
     e.preventDefault()
     if (!selectedSlide || !canAddImages) return
-    // A DataTransfer can only be read during its event.
-    const src = hostImageSrc(data)
+    // A DataTransfer can only be read during its event. A payload from a drag
+    // that did not begin in this page is not believed.
+    const src = pageDragOn() ? hostImageSrc(data) : null
     const sources = src !== null
       ? [() => Promise.resolve(src)]
       : Array.from(data.files ?? []).filter(isImageFile).map((file) => () => adapter.uploadFile(file, project.id, 'drop'))

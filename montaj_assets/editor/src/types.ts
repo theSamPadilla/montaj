@@ -566,9 +566,12 @@ export interface ImageDropPayload {
 /**
  * The custom drag-and-drop MIME type carrying an `ImageDropPayload` JSON
  * string from the host to the carousel canvas, which takes the drop with a
- * copy cursor (start the drag with `effectAllowed = 'copy'`). Real files from
- * the OS need no MIME of their own: the canvas takes a `Files` drag too and
- * uploads its images (`EditorAdapter.uploadFile`, `via: 'drop'`).
+ * copy cursor (start the drag with `effectAllowed = 'copy'`). The canvas
+ * believes the payload only for a drag that began in the same document (a
+ * `dragstart` there; a `dragend` or a drop ends it): any other page or app can
+ * put the same type on a drag. Real files from the OS need no MIME of their
+ * own: the canvas takes a `Files` drag too and uploads its images
+ * (`EditorAdapter.uploadFile`, `via: 'drop'`).
  */
 export const IMAGE_DND_MIME = 'application/x-montaj-image'
 

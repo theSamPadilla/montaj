@@ -231,12 +231,24 @@ async function fire(target: Element, e: Event) {
   return e
 }
 
+async function endHostDrag() {
+  await act(async () => { document.body.dispatchEvent(new Event('dragend', { bubbles: true })) })
+}
+
+/** A drag begins in the page itself, as one from the host's Media panel does:
+ *  only then is a host image (`IMAGE_DND_MIME`) believed. Any other page or app
+ *  can put the same type on a drag. */
+async function startHostDrag() {
+  await act(async () => { document.body.dispatchEvent(new Event('dragstart', { bubbles: true })) })
+}
+
 // ── what the canvas takes ────────────────────────────────────────────────────
 
 describe('Images on the canvas: which drags it claims', () => {
   it.each(['dragenter', 'dragover'] as const)('%s with a host image or with files is claimed, with a copy cursor', async (type) => {
     await mount(makeFakeAdapter())
     const { box, at } = pinCanvas()
+    await startHostDrag()
     // On dragover the browser lists `Files` but has no files to read yet, and `getData` is empty.
     for (const dt of [rawPayload('{}'), transfer({ types: ['Files'] })]) {
       const e = await fire(box, dragEvent(type, at(540, 675), dt))
@@ -277,6 +289,7 @@ describe('Images on the canvas: which drags it claims', () => {
     delete (adapter as { uploadFile?: unknown }).uploadFile
     await mount(adapter)
     const { box, at } = pinCanvas()
+    await startHostDrag()
 
     const files = transfer({ types: ['Files'] })
     const noFiles = await fire(box, dragEvent('dragover', at(540, 675), files))
@@ -293,6 +306,7 @@ describe('Images on the canvas: which drags it claims', () => {
     const adapter = makeFakeAdapter()
     await mount(adapter, makeProject({ status: 'storyboard_ready' }))
     const { box, at } = pinCanvas()
+    await startHostDrag()
     for (const mk of [() => payload('/media/pic.png'), () => transfer({ files: [png('a.png')] })]) {
       for (const type of ['dragenter', 'dragover'] as const) {
         const dt = mk()
@@ -317,6 +331,7 @@ describe('Images on the canvas: which drags it claims', () => {
     await act(async () => { fireEvent.click(r.getByTitle('Crop image')) })
     expect(findInteractiveWrapper('el-img').querySelector('img[alt="Crop source"]')).not.toBeNull()
     const { box, at } = pinCanvas()
+    await startHostDrag()
 
     for (const mk of [() => payload('/media/pic.png'), () => transfer({ files: [png('a.png')] })]) {
       for (const type of ['dragenter', 'dragover'] as const) {
@@ -340,6 +355,7 @@ describe('Images on the canvas: which drags it claims', () => {
     await mount(adapter)
     const thumb = document.querySelector('[data-slide-thumb="slide-1"] [data-element-id="el-s1"]') as HTMLElement
     expect(thumb).not.toBeNull()
+    await startHostDrag()
     await fire(thumb, dragEvent('drop', { clientX: 10, clientY: 10 }, payload('/media/pic.png')))
     await fire(thumb, dragEvent('drop', { clientX: 10, clientY: 10 }, transfer({ files: [png('a.png')] })))
     await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
@@ -374,6 +390,7 @@ describe('Images on the canvas: a drag from the host', () => {
     const adapter = makeFakeAdapter()
     const r = await mount(adapter)
     const { box, at } = pinCanvas()
+    await startHostDrag()
 
     const drop = await fire(box, dragEvent('drop', at(600, 700), payload('/media/pic.png', 'pic')))
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
@@ -410,6 +427,7 @@ describe('Images on the canvas: a drag from the host', () => {
     const adapter = makeFakeAdapter()
     await mount(adapter)
     const { at } = pinCanvas()
+    await startHostDrag()
     // (150, 150) is over el-img; the rect is read from the canvas, not the target.
     await fire(findInteractiveWrapper('el-img'), dragEvent('drop', at(600, 700), payload('/media/pic.png')))
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
@@ -424,6 +442,7 @@ describe('Images on the canvas: a drag from the host', () => {
     adapter.resolveImageSrc = (el) => (el.mediaId ? `media:${el.mediaId}` : `file:${el.src}`)
     await mount(adapter)
     const { box, at } = pinCanvas()
+    await startHostDrag()
     await fire(box, dragEvent('drop', at(540, 675), payload('/media/pic.png')))
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect(loadSize).toHaveBeenCalledTimes(1)
@@ -435,6 +454,7 @@ describe('Images on the canvas: a drag from the host', () => {
     const adapter = makeFakeAdapter()
     await mount(adapter)
     const { box, at } = pinCanvas()
+    await startHostDrag()
     await fire(box, dragEvent('drop', at(600, 700), payload('/media/pic.png')))
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect(elementsOf(lastSave(adapter))[1]).toMatchObject({ x: 168, y: 268, w: 864, h: 864 })
@@ -445,6 +465,7 @@ describe('Images on the canvas: a drag from the host', () => {
     const adapter = makeFakeAdapter()
     await mount(adapter)
     const { box, at } = pinCanvas()
+    await startHostDrag()
     await fire(box, dragEvent('drop', at(540, 675), payload('/media/tall.png')))
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect(elementsOf(lastSave(adapter))[1]).toMatchObject({ x: 270, y: 135, w: 540, h: 1080 })
@@ -454,6 +475,7 @@ describe('Images on the canvas: a drag from the host', () => {
     const adapter = makeFakeAdapter()
     await mount(adapter)
     const { box, scale } = pinCanvas()
+    await startHostDrag()
     const rect = box.getBoundingClientRect()
     // Slide point (270, 1012.5), reached by client coordinates from the rect's corner.
     await fire(box, dragEvent('drop', { clientX: rect.left + 270 * scale, clientY: rect.top + 1012.5 * scale }, payload('/media/pic.png')))
@@ -476,6 +498,7 @@ describe('Images on the canvas: a drag from the host', () => {
     const adapter = makeFakeAdapter()
     await mount(adapter)
     const { box, at } = pinCanvas()
+    await startHostDrag()
     const drop = await fire(box, dragEvent('drop', at(540, 675), rawPayload(raw)))
     await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
     expect(drop.defaultPrevented).toBe(true)
@@ -488,6 +511,7 @@ describe('Images on the canvas: a drag from the host', () => {
     const adapter = makeFakeAdapter()
     await mount(adapter)
     const { box, at } = pinCanvas()
+    await startHostDrag()
     const dt = transfer({ entries: { [IMAGE_DND_MIME]: JSON.stringify({ src: '/media/pic.png' }) }, files: [png('other.png')] })
     await fire(box, dragEvent('drop', at(540, 675), dt))
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
@@ -499,10 +523,127 @@ describe('Images on the canvas: a drag from the host', () => {
     const adapter = makeFakeAdapter()
     await mount(adapter)
     const { box, at } = pinCanvas()
+    await startHostDrag()
     const dt = transfer({ entries: { [IMAGE_DND_MIME]: '{ nope' }, files: [png('other.png')] })
     await fire(box, dragEvent('drop', at(540, 675), dt))
     await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
     expect(elementsOf(lastSave(adapter))[1]).toMatchObject({ src: '/proj/assets/other.png' })
+  })
+})
+
+// ── only a drag that started in this page is a host image (§556 review) ─────
+//
+// Any page or app can put `IMAGE_DND_MIME` on a drag, and its `src` (a remote
+// address, or any local path) would be stored in the project and fetched. So
+// the payload is believed only while a drag that began in this document is
+// under way: a dragstart sets it, a dragend or a drop clears it. Files from the
+// OS are unaffected.
+
+describe('Images on the canvas: only a drag that started in this page is a host image', () => {
+  const foreign = () => payload('https://example.com/pic.png')
+
+  it('the payload with no drag started in the page is not claimed on enter, over or drop, and adds, uploads and reads nothing', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+
+    for (const type of ['dragenter', 'dragover'] as const) {
+      const dt = foreign()
+      const e = await fire(box, dragEvent(type, at(540, 675), dt))
+      expect(e.defaultPrevented).toBe(false)
+      expect(dt.dropEffect).toBe('none')
+    }
+    const drop = await fire(box, dragEvent('drop', at(540, 675), foreign()))
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+    expect(drop.defaultPrevented).toBe(false)
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(adapter.uploadFile).not.toHaveBeenCalled()
+    expect(loadSize).not.toHaveBeenCalled()
+  })
+
+  it('after a dragstart in the page the same payload is claimed and added', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    await startHostDrag()
+
+    const over = foreign()
+    const e = await fire(box, dragEvent('dragover', at(540, 675), over))
+    expect(e.defaultPrevented).toBe(true)
+    expect(over.dropEffect).toBe('copy')
+    const drop = await fire(box, dragEvent('drop', at(540, 675), foreign()))
+    expect(drop.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(loadSize).toHaveBeenCalledWith('https://example.com/pic.png')
+    expect(elementsOf(lastSave(adapter))[1]).toMatchObject({ src: 'https://example.com/pic.png' })
+  })
+
+  it('the drag ending ends it: a payload dropped after the dragend is not claimed', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    await startHostDrag()
+    await endHostDrag()
+
+    const over = foreign()
+    expect((await fire(box, dragEvent('dragover', at(540, 675), over))).defaultPrevented).toBe(false)
+    const drop = await fire(box, dragEvent('drop', at(540, 675), foreign()))
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+    expect(drop.defaultPrevented).toBe(false)
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+  })
+
+  it('a dragstart that was cancelled starts no drag: the payload is not believed', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    // A draggable that cancels its own drag, as the note bubbles on the thumbnails do.
+    const cancel = (e: Event) => e.preventDefault()
+    document.body.addEventListener('dragstart', cancel)
+    try {
+      await act(async () => { document.body.dispatchEvent(new Event('dragstart', { bubbles: true, cancelable: true })) })
+    } finally {
+      document.body.removeEventListener('dragstart', cancel)
+    }
+
+    const over = await fire(box, dragEvent('dragover', at(540, 675), foreign()))
+    expect(over.defaultPrevented).toBe(false)
+    const drop = await fire(box, dragEvent('drop', at(540, 675), foreign()))
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+    expect(drop.defaultPrevented).toBe(false)
+    expect(adapter.saveProject).not.toHaveBeenCalled()
+    expect(loadSize).not.toHaveBeenCalled()
+  })
+
+  it('a drop ends it too: the next payload needs a drag of its own', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+    await startHostDrag()
+    await fire(box, dragEvent('drop', at(540, 675), payload('/media/one.png')))
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+
+    const second = await fire(box, dragEvent('drop', at(540, 675), payload('/media/two.png')))
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+    expect(second.defaultPrevented).toBe(false)
+    expect(adapter.saveCalls).toHaveLength(1)
+    expect(loadSize).toHaveBeenCalledTimes(1)
+  })
+
+  it('files are taken with no drag in the page, and a host payload that came with them is ignored', async () => {
+    const adapter = makeFakeAdapter()
+    await mount(adapter)
+    const { box, at } = pinCanvas()
+
+    const dt = transfer({ entries: { [IMAGE_DND_MIME]: JSON.stringify({ src: 'https://example.com/pic.png' }) }, files: [png('other.png')] })
+    const over = await fire(box, dragEvent('dragover', at(540, 675), transfer({ types: [IMAGE_DND_MIME, 'Files'] })))
+    expect(over.defaultPrevented).toBe(true)
+    const drop = await fire(box, dragEvent('drop', at(540, 675), dt))
+    expect(drop.defaultPrevented).toBe(true)
+    await waitFor(() => expect(adapter.saveCalls).toHaveLength(1))
+    expect(adapter.uploadFile).toHaveBeenCalledWith(expect.objectContaining({ name: 'other.png' }), 'proj-1', 'drop')
+    expect(elementsOf(lastSave(adapter)).map((e) => (e as ImageElement).src)).toEqual(['a.png', '/proj/assets/other.png'])
+    expect(loadSize).not.toHaveBeenCalledWith('https://example.com/pic.png')
   })
 })
 
@@ -788,6 +929,7 @@ describe('Images on the canvas: files from the OS', () => {
     expect(adapter.saveCalls).toHaveLength(0)
 
     const { box, at } = pinCanvas()
+    await startHostDrag()
     await fire(box, dragEvent('drop', at(540, 675), payload('/media/pic.png')))
     await waitFor(() => expect(adapter.saveCalls.length).toBeGreaterThanOrEqual(2))
     // The nudge was saved as its own step, then the drop.
