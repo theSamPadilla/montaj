@@ -515,6 +515,14 @@ def test_a_language_written_without_spaces_cuts_only_silences_and_fillers(tmp_pa
     assert "language ja" in (d / "cut-plan.md").read_text()
 
 
+@pytest.mark.parametrize("bad", ["../x", "en us", "english-language-long", "e", "en-"])
+def test_a_malformed_language_is_refused_before_anything_is_written(tmp_path, stub_transcribe, monkeypatch, capsys, bad):
+    d = make_project(tmp_path, transcript=retake_transcript())
+    before = (d / "project.json").read_bytes()
+    assert refused(d, "--language", bad, monkeypatch=monkeypatch, capsys=capsys) == "invalid_params"
+    assert (d / "project.json").read_bytes() == before and not (d / "cut-plan.md").exists()
+
+
 # ── where the transcript may be written (review B1, S4) ─────────────────────
 
 def _project_with_clip(tmp_path, clip_path):

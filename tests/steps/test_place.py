@@ -529,3 +529,43 @@ def test_the_lower_third_sits_above_the_captions_of_every_bottom_style(tmp_path,
     (d / "project.json").write_text(json.dumps(p))
     out = run(d, at="2", for_s=4, preset="lower_third", props='{"text": "Maya Chen", "subtitle": "Video Editor"}', measure_fn=look.measure)
     assert "issues" not in out, out
+
+
+# ── §558 land review ──────────────────────────────────────────────────────────────────────────────────────────────
+
+def test_an_id_with_path_parts_never_leaves_the_samples_folder(tmp_path):
+    d = make_project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 3}])
+    (d / "project.json").write_text((d / "project.json").read_text().replace('"ov-a"', '"../../../../escape/evil"'))
+    m = fake_measure()
+    outs = []
+    inner = m
+    def spy(item, path, frame, duration, fps, width, height, out):
+        outs.append(out)
+        return inner(item, path, frame, duration, fps, width, height, out)
+    run(d, item_id="../../../../escape/evil", at="5", measure_fn=spy)
+    samples = (d / "render" / "samples" / "look").resolve()
+    assert outs and all(Path(o).resolve().parent == samples for o in outs)
+
+
+def test_an_update_that_changes_nothing_writes_nothing_and_takes_no_version(tmp_path):
+    d = make_project(tmp_path, overlays=[{"id": "ov-a", "start": 1, "end": 3}])
+    _git(d, "init", "-q")
+    _git(d, "add", "project.json")
+    _git(d, "commit", "-q", "-m", "init")
+    before = (d / "project.json").read_text()
+    out = run(d, item_id="ov-a")
+    assert "version" not in out
+    assert (d / "project.json").read_text() == before
+    assert _git(d, "log", "--format=%s").strip() == "init"
+
+
+@pytest.mark.parametrize("bad", ["../x", "en us", "english-language-long", "e", "en-"])
+def test_a_malformed_language_is_refused(tmp_path, capsys, bad):
+    d = make_project(tmp_path)
+    assert refused(capsys, run, d, at="2", preset="callout", language=bad)["error"] == "invalid_params"
+
+
+@pytest.mark.parametrize("ok", ["auto", "en", "es-MX", "pt_BR", "yue"])
+def test_a_language_code_passes_the_check(tmp_path, ok):
+    d = make_project(tmp_path)
+    run(d, at="2", preset="callout", language=ok)

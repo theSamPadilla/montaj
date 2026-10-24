@@ -3,7 +3,7 @@
 Moved verbatim from steps/edit/cut.py, renamed public; `transcribe_missing` takes the transcriber as an argument
 (cut passes steps.speech.transcribe.transcribe, its tests a fake), and `filler_test` imports rm_fillers when called.
 """
-import contextlib, io, json, os, shutil, tempfile
+import contextlib, io, json, os, re, shutil, tempfile
 from pathlib import Path
 
 from lib import write_places
@@ -285,6 +285,14 @@ def broll_items(project, project_dir):
             if words and (made_up(words) or hardly_speech(words, span)):
                 out.add(it.get("id"))
     return out
+
+
+LANGUAGE_RE = re.compile(r"^(auto|[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8})?)$")
+
+
+def valid_language(arg) -> bool:
+    """True for None (not given) or a language code whisper takes: auto, es, pt-BR, yue."""
+    return arg is None or bool(LANGUAGE_RE.match(str(arg)))
 
 
 def language_of(arg, track, project_dir):

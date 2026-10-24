@@ -16,6 +16,7 @@
   text off the frame and the safe areas (lib/look_check.py), plus a span past the footage.
 Prints one short JSON: {id, start, end, track, take?, issues?}.
 """
+import copy
 import argparse, bisect, json, math, os, secrets, shutil, sys
 
 MONTAJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -227,6 +228,8 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
         fail("invalid_params", "Pass for or until, not both.")
     if preset and preset not in PRESETS:
         fail("invalid_params", f"preset is one of {', '.join(PRESETS)}.")
+    if not speech_units.valid_language(language):
+        fail("invalid_params", "language is a code such as en, es, pt-BR, or auto.")
     at_s, phrase, take = parse_at(at)
     extra_props = parse_props(props)
     on_disk = _load(project_path)
@@ -283,12 +286,6 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
         src = overlay_src(project_dir, overlay)
 
     version = None
-    if existing:
-        # an update changes an overlay a person may have made: a version first, as speech_edit takes one
-        version = commit_version(project_dir, VERSION_MESSAGE)
-        if not version and not is_own_repo(project_dir):
-            issues.append({"t": lc.r2(start), "id": item_id, "text": "no version saved: the project folder is not its own git repository"})
-
     written = {}
 
     def apply(fresh):
@@ -297,6 +294,7 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
                                     "Run place again.")
         doc = normalize_tracks(fresh)
         tracks = doc["tracks"]
+        before = copy.deepcopy(tracks)
         if existing:
             hit = find_item(doc, item_id)
             ti, k, item = hit
@@ -331,6 +329,15 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
         items.insert(at, item)
         tracks[dest]["items"] = items
         written.update(item=item, track=tracks[dest]["id"])
+        if existing and tracks == before:
+            return None   # an update that changes nothing writes nothing and takes no version
+        if existing:
+            # an update changes an overlay a person may have made: a version first, as speech_edit takes one
+            # (under the lock, so it holds exactly what is about to be replaced)
+            nonlocal version
+            version = commit_version(project_dir, VERSION_MESSAGE)
+            if not version and not is_own_repo(project_dir):
+                issues.append({"t": lc.r2(start), "id": item_id, "text": "no version saved: the project folder is not its own git repository"})
         fresh["tracks"] = tracks
         return fresh
 
@@ -350,8 +357,9 @@ def run(project_path, *, at=None, for_s=None, until=None, overlay=None, preset=N
     path = lc.overlay_path(item, project_dir)
     samples = os.path.join(project_dir, "render", "samples", "look")
     os.makedirs(samples, exist_ok=True)
+    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(item["id"]))[:40]
     frame, duration = int(round((mid - item["start"]) * fps)), max(1, int(round((item["end"] - item["start"]) * fps)))
-    m, why = measure_fn(item, path, frame, duration, fps, width, height, os.path.join(samples, f"{item['id']}-f{frame}.png"))
+    m, why = measure_fn(item, path, frame, duration, fps, width, height, os.path.join(samples, f"{safe_id}-f{frame}.png"))
     if m is None:
         issues.append({"t": lc.r2(mid), "id": item["id"], "text": why})
     else:

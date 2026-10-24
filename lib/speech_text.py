@@ -17,7 +17,7 @@ from lib.speech_lines import (SHOW_PAUSE_S, Line, Word, load_words, refine, side
                               uncertain_gaps)
 from lib.speech_pauses import silences
 
-STAMP_VERSION = "speech-text v1"
+STAMP_VERSION = "speech-text v2"
 _STAMP_CONSTANTS = (
     "MIN_SILENCE_S", "FLOOR_MARGIN_DB", "SHOW_PAUSE_S", "LINE_BREAK_PAUSE_S", "LINE_MAX_WORDS",
     "PAUSE_SPLIT_S", "EDGE_TOUCH_S",

@@ -314,3 +314,8 @@ def test_parse_emptied_speech_row_is_a_deleted_line():
         ("speech", "A12", []), ("speech", "A13", []), ("speech", "A14", [])]
     assert rows[1].pauses == {0: 0.30}
     assert rows[0].lineno == 3
+
+
+def test_the_stamp_version_moved_when_load_words_began_dropping_music_notes():
+    from lib import speech_text
+    assert speech_text.STAMP_VERSION == "speech-text v2"

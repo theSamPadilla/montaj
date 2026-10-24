@@ -631,6 +631,8 @@ def main():
     if not os.path.isfile(project_path):
         fail("not_found", f"Project not found: {project_path}")
     project_dir = os.path.dirname(project_path)
+    if not speech_units.valid_language(args.language):
+        fail("invalid_params", "language is a code such as en, es, pt-BR, or auto.")
     if args.plan is not None:
         _apply_plan(args, project_path, project_dir)
     else:
