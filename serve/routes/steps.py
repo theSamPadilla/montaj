@@ -724,6 +724,9 @@ STEP_WRITES = {
     "montage": (("tracks",), ()),
     "cross_cut": (("tracks",), ()),
     "speech_edit": (("tracks", "captions", "audio", "markers", "notes"), ("speech-text.md",)),
+    # clean_cut also writes a transcript `<stem>.json` beside each untranscribed clip (often outside the project,
+    # so not a project file here). out_guard does not see it: the step checks the place itself
+    # (lib/write_places.sidecar_folder_ok) and never replaces a file there.
     "clean_cut": (("tracks", "captions", "audio", "markers", "notes", "cleanCut"), ("speech-text.md",)),
     "generate_captions": (("captions",), ()),
     "kling_generate": (("tracks", "storyboard", "status"), ()),

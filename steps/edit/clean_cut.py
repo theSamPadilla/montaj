@@ -7,7 +7,7 @@ select-takes rules (lib/take_select.py), and applies the result through speech_e
 (lib/speech_apply.apply): one write, a version saved before it. With no usable speech, removes silences only
 (waveform_trim keeps through jump_cut). Prints one short JSON answer.
 """
-import argparse, contextlib, copy, io, json, os, sys
+import argparse, contextlib, copy, io, json, os, shutil, sys, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail, get_duration, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
 from ai_video import save_project_changes
-from lib import speech_text
+from lib import speech_text, write_places
 from lib.project_tracks import normalize_tracks
 from lib.project_versions import commit_version
 from lib.speech_apply import apply
@@ -103,27 +103,84 @@ def _track(project, track_id):
     fail("project_changed", f"Track {track_id} is gone from the project: run clean_cut again")
 
 
-def _transcribe_missing(project, track_id, project_dir, model, language):
-    """Transcribe every clip of the track with no transcript; the sidecar lands beside the clip's src as the
-    project holds it, where speech_text looks. (transcribed clip ids, warnings)."""
+def _stem_clash(track, project_dir):
+    """Fail when two clips of the track share a transcript name (`clip.mov` and `clip.mp4` both read
+    `clip.json`): one would be cut with the other's words."""
+    by_stem = {}
+    for it in _media(track):
+        src = os.path.abspath(_resolve(it["src"], project_dir))
+        by_stem.setdefault(os.path.normcase(os.path.splitext(src)[0]), set()).add(src)
+    for stem, srcs in by_stem.items():
+        if len(srcs) > 1:
+            names = ", ".join(sorted(os.path.basename(x) for x in srcs))
+            fail("transcript_name_clash", f"Clips {names} would share the transcript {os.path.basename(stem)}.json. "
+                                          "Rename one so each clip has its own name, then run clean_cut again.")
+
+
+def _sidecar_refusal(src, project_path, project_dir):
+    """Why the transcript of `src` may not be written at `<stem>.json`, or None."""
+    dest = os.path.splitext(src)[0] + ".json"
+    if write_places.real(dest) == write_places.real(project_path):
+        return "its transcript would replace project.json"
+    if os.path.lexists(dest):
+        return f"{os.path.basename(dest)} already exists and is not a transcript"
+    if not write_places.sidecar_folder_ok(os.path.dirname(dest) or ".", project_dir):
+        return "its folder is not a place a transcript may be written"
+    return None
+
+
+def _install_sidecar(tmp_json, dest):
+    """Put the transcript at dest, never over a file there (O_EXCL). False when one appeared meanwhile."""
+    data = Path(tmp_json).read_bytes()
+    try:
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    return True
+
+
+def _transcribe_missing(project, track_id, project_path, project_dir, model, language):
+    """Transcribe every clip of the track with no transcript. Whisper writes into a temp folder; only the
+    `.json` is installed, as `<stem>.json` beside the clip's src as the project holds it (where speech_text
+    looks), and never over an existing file. The `.srt` is never written. A clip whose transcript may not be
+    written there is left untranscribed, with a warning. (transcribed clip ids, failed clip ids, warnings)."""
     _, track = _track(normalize_tracks(project), track_id)
-    done, warnings, seen = [], [], {}
+    done, failed, warnings, seen, failed_srcs = [], [], [], {}, set()
     for it in _media(track):
         r = _resolved(it, project_dir)
         if sidecar_for(r):
             continue
         src = r["src"]
         if src not in seen:
-            ok, res = _quiet(transcribe_file, src, None, model, language)
-            seen[src] = ok
-            if not ok and res.get("error") not in FALLBACK_ERRORS:
-                # no model yet, a missing file, a full disk: the step fails as transcribe would
-                fail(res.get("error", "transcription_failed"), res.get("message", ""))
-            if not ok:
-                warnings.append(f"transcription failed for {os.path.basename(src)}: {res.get('message', '')}"[:300])
+            why = _sidecar_refusal(src, project_path, project_dir)
+            if why:
+                seen[src] = False
+                warnings.append(f"not transcribed {os.path.basename(src)}: {why}")
+            else:
+                tmp = tempfile.mkdtemp(prefix="clean-cut-")
+                try:
+                    prefix = os.path.join(tmp, "transcript")
+                    ok, res = _quiet(transcribe_file, src, prefix, model, language)
+                    if not ok and res.get("error") not in FALLBACK_ERRORS:
+                        # no model yet, a missing file, a full disk: the step fails as transcribe would
+                        fail(res.get("error", "transcription_failed"), res.get("message", ""))
+                    if not ok:
+                        warnings.append(f"transcription failed for {os.path.basename(src)}: {res.get('message', '')}"[:300])
+                    elif not _install_sidecar(prefix + ".json", os.path.splitext(src)[0] + ".json"):
+                        ok = False
+                        warnings.append(f"not transcribed {os.path.basename(src)}: its transcript file appeared meanwhile")
+                    seen[src] = ok
+                    if not ok and res.get("error") in FALLBACK_ERRORS:
+                        failed_srcs.add(src)
+                finally:
+                    shutil.rmtree(tmp, ignore_errors=True)
         if seen[src]:
             done.append(it["id"])
-    return done, warnings
+        elif src in failed_srcs:
+            failed.append(it["id"])
+    return done, failed, warnings
 
 
 def _window(item, src):
@@ -397,7 +454,9 @@ def main():
         return
 
     track_id = _speech_track_id(first, project_dir)
-    transcribed, warnings = _transcribe_missing(_load(project_path), track_id, project_dir, args.model, args.language)
+    _stem_clash(_track(normalize_tracks(first), track_id)[1], project_dir)
+    transcribed, failed, warnings = _transcribe_missing(_load(project_path), track_id, project_path, project_dir,
+                                                        args.model, args.language)
 
     # Read again after the long part: every write below is guarded against this read.
     disk = _load(project_path)

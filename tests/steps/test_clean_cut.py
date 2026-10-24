@@ -351,3 +351,68 @@ def test_silence_mode_leaves_the_marker_too(tmp_path, stub_transcribe, monkeypat
     assert json.loads((d / "project.json").read_text())["cleanCut"]["mode"] == "silence"
     again, _ = run(d, monkeypatch=monkeypatch)
     assert again["mode"] == "already-cut"
+
+
+# ── where the transcript may be written (review B1, S4) ─────────────────────
+
+def _project_with_clip(tmp_path, clip_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    d = make_project(tmp_path)
+    clip_path.parent.mkdir(parents=True, exist_ok=True)
+    if clip_path != d / "speech.mp4":
+        shutil.copy(FIX / "speech.mp4", clip_path)
+    p = json.loads((d / "project.json").read_text())
+    p["tracks"][0]["items"][0]["src"] = str(clip_path)
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    return d
+
+
+def test_a_clip_named_project_never_replaces_project_json(tmp_path, stub_transcribe, monkeypatch):
+    calls = stub_transcribe(retake_transcript())
+    d = _project_with_clip(tmp_path / "b", tmp_path / "b" / "proj" / "project.mp4")
+    out, _ = run(d, "--preview", monkeypatch=monkeypatch)
+    assert calls == []
+    assert any("project.json" in w for w in out["warnings"])
+    assert json.loads((d / "project.json").read_text())["tracks"][0]["items"][0]["id"] == "clip-0"
+
+
+def test_a_users_own_files_beside_the_clip_are_never_overwritten(tmp_path, stub_transcribe, monkeypatch):
+    stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    (d / "speech.srt").write_text("my own subtitles\n")
+    run(d, "--preview", monkeypatch=monkeypatch)
+    assert (d / "speech.srt").read_text() == "my own subtitles\n"     # the .srt is never written
+    assert "transcription" in json.loads((d / "speech.json").read_text())
+
+
+def test_an_existing_json_that_is_not_a_transcript_is_left_alone(tmp_path, stub_transcribe, monkeypatch):
+    calls = stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    (d / "speech.json").write_text('{"mine": true}')
+    out, _ = run(d, "--preview", monkeypatch=monkeypatch)
+    assert calls == [] and (d / "speech.json").read_text() == '{"mine": true}'
+    assert any("not a transcript" in w for w in out["warnings"])
+
+
+def test_a_clip_in_a_hidden_folder_outside_the_project_is_not_transcribed(tmp_path, stub_transcribe, monkeypatch):
+    calls = stub_transcribe(retake_transcript())
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(tmp_path / "ws"))
+    hidden = tmp_path / ".private" / "speech.mp4"
+    d = _project_with_clip(tmp_path / "c", hidden)
+    out, _ = run(d, "--preview", monkeypatch=monkeypatch)
+    assert calls == [] and not (hidden.parent / "speech.json").exists()
+    assert any("not a place" in w for w in out["warnings"])
+
+
+def test_two_clips_sharing_a_transcript_name_fail(tmp_path, stub_transcribe, monkeypatch, capsys):
+    stub_transcribe(retake_transcript())
+    d = make_project(tmp_path)
+    shutil.copy(FIX / "speech.mp4", d / "speech.mov")
+    p = json.loads((d / "project.json").read_text())
+    p["tracks"][0]["items"].append({**p["tracks"][0]["items"][0], "id": "clip-1", "src": str(d / "speech.mov")})
+    (d / "project.json").write_text(json.dumps(p, indent=2))
+    monkeypatch.setattr(sys, "argv", ["clean_cut.py", "--project", str(d / "project.json")])
+    with pytest.raises(SystemExit):
+        cc.main()
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == "transcript_name_clash"
+    assert not (d / "speech.json").exists()

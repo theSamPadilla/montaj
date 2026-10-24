@@ -86,6 +86,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from lib import write_places
 from serve.common import MONTAJ_ROOT, find_project_dir, resolve_workspace
 
 # Params a step writes to: these names on any step, and any param with an `outKind` ("write", or "export" for a
@@ -146,9 +147,8 @@ def _within(path: str, root: str, *, allow_equal: bool = True) -> bool:
 
 
 def _fold(path: str) -> str:
-    """For the export denylist only: case and Unicode folded, so `~/LIBRARY` on a case-insensitive disk (whose
-    real path keeps the spelling given) still counts as ~/Library."""
-    return unicodedata.normalize("NFKC", path).casefold()
+    """For the export denylist only: case and Unicode folded (lib/write_places.fold)."""
+    return write_places.fold(path)
 
 
 # `file:`, `http:`, `pipe:`, `concat:`, `subfile,` ...: ffmpeg opens such an output as a protocol URL
@@ -200,109 +200,35 @@ def _project_roots(body: dict) -> list[str]:
 
 
 def _ino(path: str):
-    """(st_dev, st_ino) of `path`, or None when it does not exist. The filesystem's own identity
-    for a folder, which a firmlink or a case-folding name cannot disguise."""
-    try:
-        st = os.stat(path)
-        return (st.st_dev, st.st_ino)
-    except OSError:
-        return None
+    """(st_dev, st_ino) of `path`, or None when it does not exist (lib/write_places.ino)."""
+    return write_places.ino(path)
 
 
 def _under_by_ino(real: str, root_id) -> bool:
-    """True when `real`, or any ancestor of it, is the folder identified by `root_id` (a dev:ino
-    pair). Compared by inode, not string prefix, so `/System/Volumes/Data/Users/u/Library` (the
-    firmlink form `realpath` leaves intact) is still recognised as `~/Library` (M8)."""
-    if root_id is None:
-        return False
-    p = Path(real)
-    for anc in (p, *p.parents):
-        if _ino(str(anc)) == root_id:
-            return True
-    return False
+    """True when `real`, or any ancestor of it, is the folder `root_id` names (lib/write_places.under_by_ino)."""
+    return write_places.under_by_ino(real, root_id)
 
 
 def _deny_root_paths() -> list[str]:
-    """Real paths an export may never go under. Compared by dev:ino (`_under_by_ino`), so the
-    firmlink twin of any of them is caught too. `~/Library` carries a cloud carve-out (see
-    `_export_folder_ok`)."""
-    home, real_home = _serve_home(), _real_home()
-    roots = [
-        os.path.join(real_home, "Library"),
-        os.path.join(real_home, "AppData"),
-        os.path.join(home, ".montaj"),
-        os.path.join(home, ".cache"),
-        str(MONTAJ_ROOT),
-        sys.prefix,
-        sys.base_prefix,
-        "/Applications",
-        "/usr/local",
-        "/opt/homebrew",
-    ]
-    return [_real(r) for r in roots]
+    """Real paths an export may never go under (lib/write_places.deny_root_paths), with this module's homes."""
+    return write_places.deny_root_paths(_real_home(), _serve_home(), str(MONTAJ_ROOT))
 
 
 def _cloud_roots() -> list[str]:
-    """The two cloud-storage subtrees of ~/Library an export may go in (macOS only, by real path):
-    iCloud Drive (`Library/Mobile Documents/com~apple~CloudDocs`) and each File Provider sync folder
-    (`Library/CloudStorage/<Provider>-<account>`: Dropbox, Google Drive, OneDrive, Box). Not `Mobile Documents`
-    itself (other apps' containers), not `CloudStorage` itself, nothing else in ~/Library.
-    Windows needs none: OneDrive lives under the home folder, not under AppData."""
-    if not _is_darwin():
-        return []
-    lib = os.path.join(_real_home(), "Library")
-    roots = [os.path.join(lib, "Mobile Documents", "com~apple~CloudDocs")]
-    cloud = os.path.join(lib, "CloudStorage")
-    try:
-        roots += [os.path.join(cloud, e) for e in os.listdir(cloud)]
-    except OSError:
-        pass
-    # An entry that is a link out of its parent (a CloudStorage/x pointing at ~/Library/LaunchAgents) opens nothing.
-    out = []
-    for r in roots:
-        parent_id = _ino(os.path.dirname(r))
-        real = _real(r)
-        if _ino(real) != parent_id and _under_by_ino(real, parent_id):
-            out.append(real)
-    return out
+    """The cloud-storage subtrees of ~/Library an export may go in (lib/write_places.cloud_roots)."""
+    return write_places.cloud_roots(_real_home(), _is_darwin())
 
 
 def _export_folder_ok(real: str) -> bool:
-    """An existing folder a user may pick for an export: not hidden, not under `/System/Volumes/`, not an
-    `.app` bundle, not a system or app folder (cloud-storage folders in ~/Library excepted, `_cloud_roots`;
-    their hidden folders are still refused). Deny roots compare by dev:ino (`_under_by_ino`), so a firmlink
-    form of `~/Library` is refused too (M8)."""
-    if not os.path.isdir(real):
-        return False
-    if any(part.startswith(".") for part in Path(real).parts):
-        return False
-    # The firmlink-canonical form of the data volume, and any `.app` bundle, are refused outright.
-    if _fold(real).startswith(_fold("/System/Volumes/")):
-        return False
-    if any(_fold(part).endswith(".app") for part in Path(real).parts):
-        return False
-    library_id = _ino(os.path.join(_real_home(), "Library"))
-    cloud_ids = [_ino(r) for r in _cloud_roots()]
-    cloud = any(_under_by_ino(real, cid) for cid in cloud_ids)
-    for root in _deny_root_paths():
-        root_id = _ino(root)
-        if root_id is None:
-            continue
-        if _under_by_ino(real, root_id) and not (cloud and root_id == library_id):
-            return False
-    return True
+    """An existing folder a user may pick for an export (lib/write_places.export_folder_ok, which steps use
+    too), with this module's homes and platform, so tests that patch them reach it."""
+    return write_places.export_folder_ok(real, real_home_dir=_real_home(), serve_home_dir=_serve_home(),
+                                         darwin=_is_darwin(), montaj_root=str(MONTAJ_ROOT))
 
 
 def _has_git_component(*values: str) -> bool:
-    """Any of `values` has a path component that folds to `.git` (H5): a project's own git dir, where a
-    written hook or config would run when serve shells git there."""
-    for value in values:
-        if not value:
-            continue
-        for part in re.split(r"[\\/]", value):
-            if part and _fold(part) == _fold(".git"):
-                return True
-    return False
+    """Any of `values` has a path component that folds to `.git` (H5; lib/write_places.has_git_component)."""
+    return write_places.has_git_component(*values)
 
 
 def _write_values(schema: dict, body: dict):
