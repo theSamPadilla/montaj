@@ -97,7 +97,7 @@ function makeVideoAdapter(): EditorAdapter<EditorProject> {
       if (args.piece === 'loudness') {
         return { piece: 'loudness', measuredI: -18, measuredTP: -1, measuredLRA: 5, targetI: -14, gainDb: 4 }
       }
-      return { piece: 'voice', vocalsPath: '/audio/vocals.wav', url: '/files?path=vocals.wav' }
+      throw new Error(`unsupported piece ${args.piece}`)
     },
   }
 }
@@ -160,15 +160,6 @@ describe('EditorAdapter video methods', () => {
     })
     if (loudness.piece === 'loudness') {
       expect(loudness).toMatchObject({ targetI: -14, gainDb: 4 })
-    }
-    const voice = await a.analyzeAudioPolish!({
-      projectId: 'p1',
-      piece: 'voice',
-      src: 'a.mp4',
-      window: { in: 0, out: 10 },
-    })
-    if (voice.piece === 'voice') {
-      expect(voice.url).toBe('/files?path=vocals.wav')
     }
   })
 

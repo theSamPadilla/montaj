@@ -1,9 +1,9 @@
 /**
- * AudioPolishModal — the one "Polish audio" surface over the four audio
- * cleanups (silence, fillers, loudness, voice isolation).
+ * AudioPolishModal — the one "Polish audio" surface over the three audio
+ * cleanups (silence, fillers, loudness).
  *
  * WHAT THIS FILE IS NOT. It is not a planner. Every piece of maths — source ↔
- * timeline mapping, the two safety guards, the loudness gain, the stem track,
+ * timeline mapping, the two safety guards, the loudness gain,
  * the apply order — lives in `audioPolish.ts` and is called from here. This file
  * owns three things and nothing else: which step calls to make, what the
  * operator sees, and what the operator has approved.
@@ -68,7 +68,7 @@ const MAX_INFLIGHT = 2
  *  banner. Not a block: the operator may well mean it. */
 const OVERCUT_FRACTION = 0.6
 
-type Piece = 'silence' | 'fillers' | 'loudness' | 'voice'
+type Piece = 'silence' | 'fillers' | 'loudness'
 type SpeechPiece = Extract<Piece, 'silence' | 'fillers'>
 
 const SPEECH_PIECES: SpeechPiece[] = ['silence', 'fillers']
@@ -77,18 +77,13 @@ const PIECES: Array<{ id: Piece; label: string; blurb: string }> = [
   { id: 'silence', label: 'Remove silence', blurb: 'Cut the gaps where nobody is speaking.' },
   { id: 'fillers', label: 'Remove filler words', blurb: 'Cut the ums, uhs and likes.' },
   { id: 'loudness', label: 'Match loudness', blurb: 'Level every clip to one target.' },
-  { id: 'voice', label: 'Isolate voice', blurb: 'Separate the voice from what is behind it.' },
 ]
 
-/** Voice isolation is off by default: it is the slowest of the four (a full
- *  Demucs pass over the source) and it mutes the clip's own audio, which is the
- *  most opinionated thing this modal can do. The other three are cheap and
- *  reversible, so they start on. */
+/** All three pieces are cheap and reversible, so they start on. */
 const DEFAULT_PIECES: Record<Piece, boolean> = {
   silence: true,
   fillers: true,
   loudness: true,
-  voice: false,
 }
 
 const LOUDNESS_TARGETS = [
@@ -147,8 +142,6 @@ interface ClipAnalysis {
   /** Target-independent, so changing the loudness target rebuilds the draft
    *  without re-analysing anything. */
   loudness?: { measuredI: number; measuredTP: number }
-  vocalsPath?: string
-  vocalsUrl?: string
   /** Per-piece failures, reported inline. A piece failing here leaves every
    *  other piece on this clip fully usable. */
   errors: Partial<Record<Piece, string>>
@@ -218,9 +211,8 @@ function messageOf(e: unknown): string {
  * Whether `piece` may run on `clip`.
  *
  * Every site that needs to know asks `pieceSupported` and nothing else: never
- * `clip.loop`, never `clip.speed`, never `voiceTrackFor` directly. The rules
- * (voice needs speed 1, the three mapping-dependent pieces need a non-looping
- * clip) and the wording that explains them both live in `audioPolish.ts`, so
+ * `clip.loop` directly. The rules
+ * (the mapping-dependent pieces need a non-looping clip) and the wording that explains them both live in `audioPolish.ts`, so
  * neither can drift from the other.
  */
 function supports(clip: VisualItem, piece: PolishPiece): boolean {
@@ -264,8 +256,8 @@ function sourceWindow(clip: VisualItem): { in: number; out: number } {
  * never windowed, so its timeline is 1:1 with the original and the timings come
  * back needing no rebasing, and it decodes far faster.
  *
- * Loudness measurement, stem separation and the silence cross-check all read
- * `src` instead — fidelity matters for the first two, and the third is only
+ * Loudness measurement and the silence cross-check all read
+ * `src` instead — fidelity matters for the first, and the second is only
  * worth anything as an INDEPENDENT check of the real audio.
  */
 function speechSrc(clip: VisualItem): string {
@@ -305,12 +297,7 @@ export default function AudioPolishModal<P extends Project = Project>({
   const baseline = baselineRef.current
 
   const [pieces, setPieces] = useState<Record<Piece, boolean>>(DEFAULT_PIECES)
-  // A host without stem separation sets `canIsolateVoice: false`, and the
-  // piece is never offered, so it can never be switched on either.
-  const shownPieces = useMemo(
-    () => PIECES.filter(p => p.id !== 'voice' || adapter.canIsolateVoice !== false),
-    [adapter],
-  )
+  const shownPieces = PIECES
   const [language, setLanguage] = useState('en')
   const [targetId, setTargetId] = useState<TargetId>('youtube')
   const [customLufs, setCustomLufs] = useState(-14)
@@ -321,7 +308,6 @@ export default function AudioPolishModal<P extends Project = Project>({
     silence: false,
     fillers: false,
     loudness: false,
-    voice: false,
   })
   const [approved, setApproved] = useState<Record<string, boolean>>({})
 
@@ -405,12 +391,8 @@ export default function AudioPolishModal<P extends Project = Project>({
       const cp: ClipPlan = {}
       if (removals.length > 0) cp.removals = removals
       if (pieces.loudness && a.loudness) cp.gainDb = loudnessGainDb(a.loudness, targetLufs)
-      // Ineligible clips are left out of the plan entirely rather than handed a
-      // path the planner will refuse: a clip listed as an owner but minting no
-      // stem would drop stems a previous run left on it.
-      if (pieces.voice && a.vocalsPath && supports(clip, 'voice')) cp.vocalsPath = a.vocalsPath
 
-      if (cp.removals || cp.gainDb !== undefined || cp.vocalsPath !== undefined) clips[clip.id] = cp
+      if (cp.removals || cp.gainDb !== undefined) clips[clip.id] = cp
     }
     return { clips }
   }, [targets, analysis, pieces, approved, targetLufs])
@@ -488,7 +470,7 @@ export default function AudioPolishModal<P extends Project = Project>({
     const raw: Record<string, { silence?: Removal[]; fillers?: Removal[]; loudness?: { measuredI: number; measuredTP: number }; errors: Partial<Record<Piece, string>> }> = {}
     for (const clip of targets) raw[clip.id] = { errors: {} }
 
-    const bySrc: Record<string, { keeps?: Array<[number, number]>; checkFailed?: boolean; vocalsPath?: string; url?: string; error?: string }> = {}
+    const bySrc: Record<string, { keeps?: Array<[number, number]>; checkFailed?: boolean }> = {}
     const srcOf = (clip: VisualItem) => clip.src ?? ''
     for (const clip of targets) bySrc[srcOf(clip)] ??= {}
 
@@ -559,19 +541,6 @@ export default function AudioPolishModal<P extends Project = Project>({
           }
         })
       }
-      if (pieces.voice && targets.some(c => srcOf(c) === src && supports(c, 'voice'))) {
-        push(`${basename(src)}: isolate voice`, async () => {
-          try {
-            const res: AudioPolishAnalysis = await analyze({ projectId, piece: 'voice', src })
-            if (res.piece === 'voice') {
-              bySrc[src].vocalsPath = res.vocalsPath
-              bySrc[src].url = res.url
-            }
-          } catch (e) {
-            bySrc[src].error = messageOf(e)
-          }
-        })
-      }
     }
 
     setProgress({ done: 0, total: jobs.length, label: '' })
@@ -623,13 +592,10 @@ export default function AudioPolishModal<P extends Project = Project>({
       if (pieces.silence && supports(clip, 'silence') && bySrc[src]?.checkFailed) notes.push(NO_SILENCE_CHECK_NOTE)
 
       const errors = { ...raw[clip.id].errors }
-      if (pieces.voice && supports(clip, 'voice') && bySrc[src]?.error) errors.voice = bySrc[src].error
 
       nextAnalysis[clip.id] = {
         rows,
         loudness: raw[clip.id].loudness,
-        vocalsPath: bySrc[src]?.vocalsPath,
-        vocalsUrl: bySrc[src]?.url,
         errors,
         notes,
       }
@@ -644,7 +610,6 @@ export default function AudioPolishModal<P extends Project = Project>({
       silence: pieces.silence,
       fillers: pieces.fillers,
       loudness: pieces.loudness,
-      voice: pieces.voice,
     })
     setPhase('review')
     runningRef.current = false
@@ -886,37 +851,6 @@ export default function AudioPolishModal<P extends Project = Project>({
                     {pieceSupported(clip, p.id).reason}
                   </p>
                 ))}
-
-                {/* Voice isolation A/B, when this clip can take it */}
-                {pieces.voice && supports(clip, 'voice') && (
-                  a?.vocalsUrl ? (
-                    <div className="flex flex-col gap-1.5">
-                      <span className="text-[11px] text-[color-mix(in_srgb,var(--editor-text)_70%,transparent)]">
-                        Isolated voice. Compare the two before you apply.
-                      </span>
-                      <div className="flex flex-wrap items-center gap-3">
-                        <span className="flex items-center gap-1.5">
-                          <span className="text-[10px] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">Original</span>
-                          <audio
-                            controls
-                            preload="none"
-                            src={adapter.fileUrl(clip.src ?? '')}
-                            aria-label={`Original audio for ${clipLabel(clip)}`}
-                          />
-                        </span>
-                        <span className="flex items-center gap-1.5">
-                          <span className="text-[10px] text-[color-mix(in_srgb,var(--editor-text)_55%,transparent)]">Isolated voice</span>
-                          <audio
-                            controls
-                            preload="none"
-                            src={a.vocalsUrl}
-                            aria-label={`Isolated voice for ${clipLabel(clip)}`}
-                          />
-                        </span>
-                      </div>
-                    </div>
-                  ) : null
-                )}
 
                 {/* Removals */}
                 {rows.length === 0 ? (
