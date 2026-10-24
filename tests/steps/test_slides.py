@@ -257,7 +257,7 @@ def test_a_headline_that_does_not_fit_is_said_short(tmp_path):
     m = fake_measure()
     run(d, headlines=json.dumps(HEADS), measure_fn=m)
     spill = {headline(s)["id"] for s in proj(d)["slides"]}
-    out = run(d, headlines=json.dumps(HEADS), measure_fn=fake_measure(spill))
+    out = run(d, headlines=json.dumps([h + "!" for h in HEADS]), measure_fn=fake_measure(spill))
     assert out["issues"][0] == "slide 1: the headline does not fit its box at its smallest size: shorten it"
     assert len(json.dumps(out)) <= 300 and out.get("more", 0) + len(out["issues"]) == 5
 
@@ -275,3 +275,118 @@ def test_a_real_headline_fits_its_box_through_the_real_measurer(tmp_path):
               measure_fn=look.measure, detail=True)
     assert "issues" not in out, out
     assert out["slides"][1]["headline"] == "Cut every pause"
+
+
+# ── gate review fixes ─────────────────────────────────────────────────────────────────────────────────────────────
+
+def _png(path, size, fill):
+    from PIL import Image
+    im = Image.new("RGB", size, "white" if fill == "checker" else fill)
+    if fill == "checker":
+        im = Image.new("RGB", size, "white")
+        px = im.load()
+        for x in range(size[0]):
+            for y in range(size[1]):
+                if (x // 40 + y // 40) % 2:
+                    px[x, y] = (0, 0, 0)
+    im.save(path)
+
+
+def test_resending_the_same_headlines_keeps_a_persons_size_edit(tmp_path):
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS))
+    p = proj(d)
+    headline(p["slides"][1])["overlay"]["props"].update({"fontSize": "64px", "minFontSize": "30.5"})
+    (d / "project.json").write_text(json.dumps(p))
+    out = run(d, headlines=json.dumps(HEADS))
+    assert out == {"changed": []} and proj(d) == p, "nothing to change, nothing written"
+    out = run(d, edit=json.dumps({"slide": 2, "size": "bigger"}))
+    props = headline(proj(d)["slides"][1])["overlay"]["props"]
+    assert out["changed"] == [2] and props["fontSize"] == "80" and props["minFontSize"] == "30", "the picker's 64px, read"
+
+
+def test_a_headline_the_person_retyped_is_kept_and_only_an_edit_replaces_it(tmp_path):
+    d = make_carousel(tmp_path)
+    run(d, headlines=json.dumps(HEADS))
+    p = proj(d)
+    headline(p["slides"][0])["overlay"]["props"]["text"] = "My own words"
+    (d / "project.json").write_text(json.dumps(p))
+    out = run(d, headlines=json.dumps(["New one", "Second new"]))
+    s = proj(d)["slides"]
+    assert headline(s[0])["overlay"]["props"]["text"] == "My own words"
+    assert headline(s[1])["overlay"]["props"]["text"] == "Second new" and out["changed"] == [2]
+    assert out["issues"][0] == "slide 1: kept your edited headline (use edit to change it)"
+    run(d, edit=json.dumps({"slide": 1, "headline": "Replaced on purpose"}))
+    props = headline(proj(d)["slides"][0])["overlay"]["props"]
+    assert props["text"] == props["montajText"] == "Replaced on purpose"
+
+
+def test_a_carousel_the_app_made_gets_one_slide_per_image_asset_then_its_headlines(tmp_path):
+    d = make_carousel(tmp_path)
+    p = proj(d)
+    sizes = [(1080, 1350), (2000, 1000), (800, 1600), (1080, 1080), (1350, 1080)]
+    p["assets"] = []
+    for i, size in enumerate(sizes):
+        _png(d / "assets" / f"img{i}.png", size, (20, 20, 20))
+        p["assets"].append({"id": f"asset-{i}", "src": str(d / "assets" / f"img{i}.png"), "type": "image", "name": f"img{i}.png"})
+    p["assets"].insert(2, {"id": "asset-v", "src": str(d / "assets" / "clip.mp4"), "type": "video", "name": "clip.mp4"})
+    p["slides"], p["notes"] = [], []
+    (d / "project.json").write_text(json.dumps(p))
+    out = run(d, headlines=json.dumps(HEADS))
+    slides = proj(d)["slides"]
+    assert out["made"] == 5 and out["changed"] == [1, 2, 3, 4, 5] and out["headlines"] == {"added": 5}
+    for s, size, text, a in zip(slides, sizes, HEADS, [x for x in p["assets"] if x["type"] == "image"]):
+        img = s["elements"][0]
+        assert img["type"] == "image" and img["src"] == a["src"] and (img["x"], img["y"], img["w"], img["h"]) == (0, 0, 1080, 1350)
+        assert img.get("crop") == slide_text.cover_crop(1080, 1350, *size)
+        assert headline(s)["overlay"]["props"]["text"] == text
+    assert "crop" not in slides[0]["elements"][0] and slides[1]["elements"][0]["crop"]["h"] == 1
+    assert v.validate_project(str(d / "project.json"))["valid"] is True
+
+
+def test_the_editors_cover_crop_is_ported_exactly():
+    # imageGeometry.ts coverCrop: a wider image keeps its height and the middle of its width, a taller its width
+    assert slide_text.cover_crop(1080, 1350, 2000, 1000) == {"x": (1 - 0.4) / 2, "y": 0, "w": 0.8 / 2, "h": 1}
+    assert slide_text.cover_crop(1080, 1350, 800, 1600) == {"x": 0, "y": (1 - 0.625) / 2, "w": 1, "h": 0.5 / 0.8}
+    assert slide_text.cover_crop(1080, 1350, 1081, 1350) is None and slide_text.cover_crop(1080, 1350, 0, 10) is None
+
+
+def test_lists_through_serve_and_the_cli_keep_every_item_and_the_nulls(tmp_path, monkeypatch, capsys):
+    from serve.routes.steps import build_cli_args, validate_params
+    d = make_carousel(tmp_path)
+    schema = json.loads((REPO_ROOT / "steps" / "edit" / "slides.json").read_text())
+    body = {"project": str(d / "project.json"), "headlines": ["Alpha", None, "Gamma"], "order": [1, 4, 3, 2, 5]}
+    validate_params(schema, body)
+    argv = build_cli_args(schema, {k: v_ for k, v_ in body.items()})
+    monkeypatch.setattr(sl.look_step, "measure", fake_measure())
+    monkeypatch.setattr(sl, "render_runtime_dir", lambda: RUNTIME)
+    monkeypatch.setattr(sys, "argv", ["slides.py", *argv])
+    before = proj(d)["slides"]
+    sl.main()
+    out = json.loads(capsys.readouterr().out)
+    after = proj(d)["slides"]
+    assert out["headlines"] == {"added": 2} and out["order"] is True
+    assert [s["id"] for s in after] == [before[k]["id"] for k in (0, 3, 2, 1, 4)]
+    assert headline(after[0])["overlay"]["props"]["text"] == "Alpha" and headline(after[2])["overlay"]["props"]["text"] == "Gamma"
+    assert headline(after[3]) is None, "null skipped slide 2 (now 4th)"
+    assert slide_text.parse_list(['["A", null]'], "headlines") == ["A", None]
+
+
+@pytest.mark.parametrize("fill,style", [((250, 250, 250), "clean"), ((5, 5, 5), "bold"), ((128, 128, 128), "label"),
+                                        ("checker", "label")])
+def test_auto_picks_the_style_from_the_image_under_the_box(tmp_path, fill, style):
+    d = make_carousel(tmp_path)
+    _png(d / "assets" / "img0.png", (1200, 1350), fill)
+    run(d, headlines=json.dumps(["A hook"]))
+    props = headline(proj(d)["slides"][0])["overlay"]["props"]
+    assert {k: props[k] for k in slide_text.PRESETS[style]} == slide_text.PRESETS[style]
+
+
+def test_a_headline_hard_to_read_on_its_image_is_said_and_its_colour_kept(tmp_path):
+    d = make_carousel(tmp_path)
+    _png(d / "assets" / "img0.png", (1200, 1350), (245, 245, 245))
+    out = run(d, headlines=json.dumps(["A hook"]), style="bold")
+    assert out["issues"] == ["slide 1: the headline is hard to read on its image: style label"]
+    assert headline(proj(d)["slides"][0])["overlay"]["props"]["color"] == "#ffffff"
+    out = run(d, edit=json.dumps({"slide": 1, "style": "label"}))
+    assert "issues" not in out, "the card is its own background"
