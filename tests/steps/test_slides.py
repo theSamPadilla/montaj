@@ -453,3 +453,10 @@ def test_a_headline_too_long_for_a_square_slide_does_not_fit_through_the_real_me
     long = " ".join(["WMWM MWMW"] * 27)    # 269 wide capitals: past the box even at the table's floor size
     out = run(d, headlines=json.dumps([long]), measure_fn=look.measure)
     assert "slide 1: the headline does not fit its box at its smallest size: shorten it" in out["issues"], out
+
+
+def test_order_can_swap_two_slides(tmp_path):
+    d = make_carousel(tmp_path)
+    ids = [s["id"] for s in proj(d)["slides"]]
+    out = run(d, order=json.dumps({"swap": [2, 4]}))
+    assert out["order"] is True and [s["id"] for s in proj(d)["slides"]] == [ids[0], ids[3], ids[2], ids[1], ids[4]]

@@ -518,6 +518,13 @@ def apply(slides, *, headlines=None, edit=None, order=None, style=None, width=10
             if out[i] != before and out[i].get("id") not in changed:
                 changed.append(out[i].get("id"))
     moved = False
+    if isinstance(new_order, dict):
+        pair = new_order.get("swap") if set(new_order) == {"swap"} else None
+        if not isinstance(pair, list) or len(pair) != 2:
+            raise SlideError('order is a list of every slide once, or {"swap": [2, 4]}.')
+        a, b = (_slide_index(slides, r, "order") for r in pair)
+        new_order = list(range(1, len(out) + 1))
+        new_order[a], new_order[b] = new_order[b], new_order[a]
     if new_order is not None:
         if not isinstance(new_order, list) or len(new_order) != len(out):
             raise SlideError(f"order lists every slide once: {len(out)} of them.")
