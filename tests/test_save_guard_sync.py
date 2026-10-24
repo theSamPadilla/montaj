@@ -712,6 +712,13 @@ def test_case8_cut_checks_its_kept_old_plans(ws, state, ran):
     assert ran == []
 
 
+def test_case8_cut_checks_its_kept_previous_plan(ws, state, ran):
+    d = _project(ws)
+    _sidecar(state, files=["cut-plan.prev.md"])
+    _refused(_step("cut", {"project": str(d)}), ["cut-plan.prev.md"])
+    assert ran == []
+
+
 def test_case8_a_step_the_table_does_not_know_is_refused_while_any_clash_is_open(ws, state, ran):
     _project(ws)
     _sidecar(state, fields=["markers"])
