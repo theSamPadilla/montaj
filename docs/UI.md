@@ -774,11 +774,8 @@ review rounds to get right, and a second copy in React would drift from it.
 
 **`pieceSupported(clip, piece)` is the single eligibility question**, returning
 `{ available, reason? }` so the badge text lives beside the rule that produces
-it rather than in the view. It covers both restrictions: `speed !== 1` blocks
-`voice` only; `loop` blocks `silence`, `fillers`, `silence-check` and `voice`,
-while `loudness` stays available. A clip that is both reports the loop reason,
-because loop explains every unavailable piece on that clip while speed explains
-one.
+it rather than in the view. Its one restriction is `loop`: it blocks `silence`,
+`fillers` and `silence-check`, while `loudness` stays available.
 
 **Cut composition is the subtle part.** `applyCutToTracks` ripples captions
 itself while clips lift, so `collapseGaps` is called with
