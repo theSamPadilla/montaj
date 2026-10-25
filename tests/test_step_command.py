@@ -107,7 +107,7 @@ PARITY = [
      ["/in.mp4"],
      ["--input", "/in.mp4", "--model", "large-v3-turbo-q5_0", "--language", "en"], False, False),
 
-    # ── --json variant rows: the six emit-quirk commands ─────────────────────
+    # ── --json variant rows: the three emit-quirk commands ───────────────────
     # These invoke minimally, so they ALSO lock the default-forwarding behavior:
     # a defaulted optional flag the user omits is forwarded to the child at its
     # schema default (== the step's own default, conformance-guaranteed).
@@ -176,14 +176,14 @@ def test_parity(monkeypatch, cli, argv, flags, as_json, quiet):
     assert cap["emit"] == {"as_json": as_json, "quiet": quiet}
 
 
-def test_parity_covers_all_16_commands():
+def test_parity_covers_every_quirk_command():
     assert {r[1] for r in PARITY} == set(QUIRKS)
 
 
-def test_json_variant_rows_present_for_the_six_emit_quirk_commands():
+def test_json_variant_rows_present_for_the_three_emit_quirk_commands():
     json_rows = {r[1] for r in PARITY if r[0].endswith("+json")}
-    six = {"transcribe", "generate-music", "generate-voiceover"}
-    assert six <= json_rows
+    three = {"transcribe", "generate-music", "generate-voiceover"}
+    assert three <= json_rows
 
 
 # ── flag-builder unit tests (build_cli_args semantics) ────────────────────────

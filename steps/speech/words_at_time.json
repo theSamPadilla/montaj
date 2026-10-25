@@ -1,0 +1,13 @@
+{
+  "name": "words_at_time",
+  "description": "Which words play at a timeline time, or in a timeline range, through the project's current cut. Reads the tracks and each source's word timings every call, so it is right after any edit; never reuse an older transcript's times. Read-only.",
+  "input": {"type": "project", "description": "The project id, its folder, or the absolute path of its project.json"},
+  "output": {"type": "json", "description": "{start, end, count, words: [{text, start, end, source, sourceStart, sourceEnd, item, track}]} with start/end in timeline seconds, ordered by start"},
+  "params": [
+    {"name": "project", "type": "path", "required": true, "description": "The project id, its folder, or the absolute path of its project.json"},
+    {"name": "t", "type": "float", "required": false, "min": 0, "description": "One timeline time in seconds. Use this or start and end."},
+    {"name": "start", "type": "float", "required": false, "min": 0, "description": "Range start on the timeline, in seconds. Needs end."},
+    {"name": "end", "type": "float", "required": false, "min": 0, "description": "Range end on the timeline, in seconds. Needs start."},
+    {"name": "track", "type": "string", "required": false, "description": "Only this track id. Leave out for every track."}
+  ]
+}

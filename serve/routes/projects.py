@@ -51,6 +51,7 @@ from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwarg
 from lib.overlay_validation import overlay_item_errors
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
 from lib.project_tracks import normalize_tracks, track_items
+from lib.project_migrate import converge
 from lib.item_ids import id_suffix
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from lib.youtube import (
@@ -3273,7 +3274,7 @@ async def get_project_revisions(project_id: str, response: Response,
             "error": "project_unreadable",
             "message": "This project's file could not be read",
         })
-    normalized = normalize_tracks(project)  # as a reader sees it; never written here
+    normalized = converge(project)  # as a reader sees it; never written here
     if normalized is project:
         revs = project_revisions.revisions_for_text(raw, project, names)
     else:
@@ -3319,8 +3320,11 @@ async def _open_project(project_id: str, request, project_dir: Path, seen: dict)
     # and re-persisting the legacy shape underneath it.
     # Under the project lock, on a fresh read, so a step's write in another
     # process is not undone by the copy read at the top of this handler (§467).
+    # The same pass converges the retired shapes (lib/project_migrate.py: the Lyric video's music_video type and
+    # ffmpeg-drawtext render mode) through the same lock and the same maintenance check: a field in an open Studio
+    # sync clash is served converged and written at the first open after it closes.
     text = None
-    if normalize_tracks(project) is not project:
+    if converge(project) is not project:
         # Only a project that is about to be rewritten takes the lock; an open
         # that writes nothing (the usual one, and any read-only folder) does not.
         try:
@@ -3331,7 +3335,7 @@ async def _open_project(project_id: str, request, project_dir: Path, seen: dict)
                     project = json.loads(fresh_raw)
                 except (OSError, ValueError):
                     pass
-                normalized = normalize_tracks(project)
+                normalized = converge(project)
                 if normalized is not project:
                     # §482: `tracks` in an open Studio sync clash is served converged, not written; the
                     # next open after the clash closes writes it.
@@ -3344,7 +3348,7 @@ async def _open_project(project_id: str, request, project_dir: Path, seen: dict)
                     project = normalized
         except ProjectLockTimeout:
             # A project must always open: serve the converged copy, write nothing.
-            project = normalize_tracks(project)
+            project = converge(project)
     if text is not None and broadcaster is not None:
         broadcaster.publish(project_id, _sse_data_frame(text))
 
@@ -4215,7 +4219,7 @@ def _merged_for_save(existing: dict, body: dict, *, drop_nulls: bool = False) ->
     # legacy tracks on disk: a no-op (same object back) when already
     # normalized or when `tracks` is absent/null, so the shallow-merge and
     # explicit-null-clears-a-field semantics above are untouched.
-    merged = normalize_tracks(merged)
+    merged = converge(merged)
     # A save that picks a resolution or fps is the user's (or an agent's) choice: pin it
     # so footage never overrides it. A body whose settings leave the
     # marker out keeps the stored one.

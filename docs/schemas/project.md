@@ -10,7 +10,7 @@
 |-------|--------------|-------------|
 | `pending` | `montaj run` or `montaj serve` (on `POST /run`) | Clip paths, editing prompt, workflow name. For `ai_video`, also the pre-seeded `storyboard` stub (raw intake references copied from the upload form). No agent work yet. |
 | `storyboard_ready` | agent (for `projectType: "ai_video"` only) | Agent has populated `storyboard.imageRefs[]` with anchors + reference images, written `storyboard.styleAnchor`, and populated `storyboard.scenes[]` with the editorial plan (each with a prompt, duration, and refImages). `tracks[0]` is still empty — real clips only appear after approval + generation. Awaiting user approval before scene videos are generated. |
-| `draft` | agent (for `editing`/`music_video`) or agent (for `ai_video` after all scene videos complete) | Trim points, ordering, captions, overlays. Complete edit — for `ai_video`, all `tracks[0]` items have non-empty `src`. |
+| `draft` | agent (for `editing`) or agent (for `ai_video` after all scene videos complete) | Trim points, ordering, captions, overlays. Complete edit — for `ai_video`, all `tracks[0]` items have non-empty `src`. |
 | `final` | human (via UI) | Reviewed and tweaked. Ready to render. |
 
 The status transition for `ai_video` is: `pending → storyboard_ready → draft → final`. For all other project types it remains `pending → draft → final`.
@@ -41,7 +41,7 @@ The agent writes project.json as it works — every write pushes to the browser 
 | `version` | string | Schema version — `"0.2"` |
 | `id` | string | UUID v4. Stable unique identifier for this project. Never changes. |
 | `status` | string | Pipeline state: `pending`, `storyboard_ready`, `draft`, `final` |
-| `projectType` | string | Inherited from the workflow's `project_type` at init time. One of `"editing"`, `"music_video"`, `"ai_video"`, `"carousel"`, `"broll"`. Default: `"editing"`. Never changes after creation. |
+| `projectType` | string | Inherited from the workflow's `project_type` at init time. One of `"editing"`, `"ai_video"`, `"carousel"`, `"broll"`. Default: `"editing"`. Never changes after creation, except that serve reads a retired type as its current one (`"music_video"`, the retired Lyric video, reads as `"editing"`; `lib/project_migrate.py`) and writes it at the next open or save. |
 | `name` | string \| null | Human-readable label set at init time. Optional. Does not need to be unique. |
 | `workflow` | string | Workflow used to produce this edit |
 | `editingPrompt` | string | The free-form prompt passed in |
@@ -1002,7 +1002,7 @@ The agent reads `profileSnapshot` as creative context: load `styleProfilePath` f
 
 ## Storyboard
 
-All `ai_video`-specific state lives under a single top-level `storyboard` object. Absent for `editing` and `music_video` projects. Distinct from the flat `assets` array (which is unrelated and used by all project types for user-uploaded logos/watermarks).
+All `ai_video`-specific state lives under a single top-level `storyboard` object. Absent for `editing` projects. Distinct from the flat `assets` array (which is unrelated and used by all project types for user-uploaded logos/watermarks).
 
 The `storyboard` holds four logical groups:
 
@@ -1250,7 +1250,6 @@ Per-clip regeneration queue. The UI (inspect modal, subcut tool) and CLI (`monta
 `tracks[0]` holds **real clips only** — items whose `src` is a file that exists on disk. There are no stubs, no placeholder items, no `src: ""` entries. This invariant is consistent across all project types:
 
 - `editing` projects populate `tracks[0].items` at intake with user-uploaded clips.
-- `music_video` projects start with `tracks[0].items = []` and get populated by the lyrics pipeline.
 - `ai_video` projects start with `tracks[0].items = []` and grow by append as each `kling_generate` call returns.
 
 For `ai_video`:
