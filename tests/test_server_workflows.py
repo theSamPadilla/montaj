@@ -47,7 +47,7 @@ def test_get_workflow_marks_real_step_entries():
     assert resp.status_code == 200
     steps = _steps_by_id(resp.json())
 
-    entry = steps["look_footage"]
+    entry = steps["probe"]
     assert entry["kind"] == "step"
     assert "skill" not in entry
 
@@ -63,7 +63,7 @@ def test_get_workflow_preserves_existing_fields():
     assert apply["needs"] == ["select-takes"]
     assert apply["params"] == {"plan": "cut-plan.md"}
     assert apply["kind"] == "step"
-    assert steps["look_footage"]["foreach"] == "clips"
+    assert steps["probe"]["foreach"] == "clips"
 
     select_takes = steps["select-takes"]
     assert select_takes["uses"] == "montaj/select-takes"

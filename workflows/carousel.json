@@ -6,6 +6,6 @@
   "steps": [
     { "id": "build", "uses": "montaj/carousel", "note": "The craft skill for slide design." },
     { "id": "slides", "uses": "montaj/slides", "needs": ["build"], "note": "Headlines, one-slide edits and the order in one call." },
-    { "id": "check", "uses": "montaj/look", "needs": ["slides"], "note": "Check before you finish." }
+    { "id": "check", "uses": "montaj/look", "needs": ["slides"], "note": "Check before you finish (image true only to see a frame), then save status draft." }
   ]
 }

@@ -202,7 +202,7 @@ AI-generated video. No source clips required. A director agent (the `ai-video-pl
 
 ### `blank`
 
-Empty editing project — no source footage and no steps. Hosts use it to open an editor with nothing in it; the user (or an agent following the user's direct instructions) builds the edit by hand. `project_type: "editing"`, `requires_clips: false`, `steps: []`.
+Empty editing project: footage is optional, and the user (or an agent following the user's direct instructions) builds the edit by hand. Its steps are look at the footage, cut (only if asked), place, captions and a check. `project_type: "editing"`, `requires_clips: false`.
 
 ### `carousel`
 

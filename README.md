@@ -123,7 +123,7 @@ See the [CLI Reference](https://docs.montaj.ag/cli) for the full documentation.
 | `overlays` | Trim, remove filler, then add overlays (the default) |
 | `ai_video` | Generate video from text via Kling + storyboard |
 | `carousel` | Image carousel of still slides, rendered to PNGs |
-| `blank` | Empty project with no steps; edit by hand |
+| `blank` | Empty editing project; footage optional, steps for looking, cutting (only if asked), placing, captions and a check |
 
 Custom steps and workflows are discovered automatically — no registration needed. See the [Steps Reference](https://docs.montaj.ag/steps) and [Core Concepts](https://docs.montaj.ag/concepts) for details.
 
