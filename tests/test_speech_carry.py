@@ -656,3 +656,36 @@ def test_a_3d_item_with_nothing_cut_inside_only_moves(fx):
     s = item(r.project, "s3d")
     assert s["end"] - s["start"] == pytest.approx(2.0) and s["start"] == pytest.approx(r.tmap.forward(12.0), abs=1e-5)
     assert flags(r.report, "scene3d_timing") == []
+
+
+def test_a_3d_items_map_says_where_each_kept_stretch_plays(fx):
+    r = run(fx, fx.text.replace(A1_CUT_FROM, A1_CUT_TO), project=_with_scene3d(fx, 2.0, 9.0))
+    (f,) = flags(r.report, "scene3d_timing")
+    kept = sum(hi - lo for lo, hi, _ in f["map"])
+    assert f["map"][0][2] == 0.0 and kept == pytest.approx(7.0 - sum(hi - lo for lo, hi in f["removed"]), abs=1e-3)
+    for (lo, hi, t), (_, _, t2) in zip(f["map"], f["map"][1:]):
+        assert t2 == pytest.approx(t + hi - lo, abs=1e-3)          # back to back, in order
+
+
+def test_a_3d_item_whose_kept_speech_is_moved_apart_is_flagged_reordered(fx):
+    """A cut inside it and a line moved to the end: its kept content no longer plays as one run. It is flagged
+    `scene3d_reordered` with where each stretch plays, never placed as if it were one run without saying so."""
+    text = move_to_end(fx.text.replace(A1_CUT_FROM, A1_CUT_TO), A4)
+    r = run(fx, text, project=_with_scene3d(fx, 2.0, 20.0))
+    assert flags(r.report, "scene3d_timing") == []
+    (f,) = flags(r.report, "scene3d_reordered")
+    s = item(r.project, "s3d")
+    starts = sorted(s["start"] + t for _, _, t in f["map"])
+    assert any(abs(r.tmap.forward(2.0 + lo) - (s["start"] + t)) < 1e-3 for lo, _, t in f["map"]) and starts
+
+
+def test_a_3d_items_keyframes_follow_its_kept_stretches(fx):
+    p = _with_scene3d(fx, 2.0, 9.0)
+    p["tracks"][-1]["items"][0]["keyframes"] = [{"prop": "opacity", "points": [
+        {"t": 0, "value": 0}, {"t": 0.5, "value": 1}, {"t": 6.5, "value": 1}, {"t": 7.0, "value": 0}]}]
+    r = run(fx, fx.text.replace(A1_CUT_FROM, A1_CUT_TO), project=p)
+    s = item(r.project, "s3d")
+    pts = s["keyframes"][0]["points"]
+    dur = s["end"] - s["start"]
+    assert pts[0]["t"] == 0 and pts[-1]["t"] == pytest.approx(dur, abs=1e-6) and pts[-1]["value"] == pytest.approx(0)
+    assert all(0 <= q["t"] <= dur + 1e-6 for q in pts) and [q["t"] for q in pts] == sorted(q["t"] for q in pts)

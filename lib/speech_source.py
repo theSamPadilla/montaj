@@ -24,6 +24,8 @@ VOICEOVER = "voiceover"
 # The fades a cut piece of narration gets at an edge the cut made (the Engineering Explainer's join fades), so the
 # join never clicks. An edge the cut did not move keeps the fade it had.
 JOIN_FADE_IN, JOIN_FADE_OUT = 0.008, 0.012
+# Items of one audio source may overlap by a crossfade at most; more is two voices at once.
+MAX_OVERLAP_S = 0.5
 _EPS = 1e-6
 
 
@@ -79,10 +81,10 @@ def _transcribed_seconds(entries, project_dir):
     for e in entries:
         if not sidecar_for(resolved_item(e, project_dir)):
             continue
-        if "inPoint" in e and "outPoint" in e:
-            total += max(0.0, float(e["outPoint"]) - float(e["inPoint"]))
-        elif "start" in e and "end" in e and float(e["end"]) > float(e["start"]):
-            total += float(e["end"]) - float(e["start"])
+        if e.get("outPoint") is not None:
+            total += max(0.0, float(e["outPoint"]) - float(e.get("inPoint") or 0))
+        elif e.get("end") is not None:
+            total += max(0.0, float(e["end"]) - float(e.get("start") or 0))
         else:
             total += float(e.get("sourceDuration") or 0)
     return total
@@ -121,6 +123,14 @@ def choose(project, project_dir, asked=None):
     for key, kind, _ in cands:
         if kind == VOICEOVER:
             return key
+    vo = _voiceover_src(project)
+    playing = [(_seconds(entries), key) for key, kind, entries in cands
+               if vo and kind == "audio" and any(_same_file(e["src"], vo, project_dir) for e in entries)]
+    if playing:
+        return max(playing)[1]
+    video = [key for key, kind, entries in cands if kind == "video" and entries]
+    if video:
+        return video[0]
     narration = [(_seconds(entries), key) for key, kind, entries in cands
                  if kind == "audio" and any(e.get("type") == VOICEOVER for e in entries)]
     if narration:
@@ -148,10 +158,17 @@ class Lift:
         tracks = out.get("tracks", [])
         k = next((i for i, t in enumerate(tracks) if t.get("id") == self.track_id), None)
         if k is None:
-            return out
+            raise ValueError(f"lower: the lifted track {self.track_id} is gone")   # never drop the narration silently
         lifted = tracks.pop(k)
-        entries = [self._entry(it) for it in sorted(lifted.get("items", []), key=lambda x: float(x.get("start", 0)))
-                   if it.get("src") and float(it.get("end", 0)) > float(it.get("start", 0))]
+        items = [it for it in sorted(lifted.get("items", []), key=lambda x: float(x.get("start", 0)))
+                 if it.get("src") and float(it.get("end", 0)) > float(it.get("start", 0))]
+        first, last = {}, {}
+        for it in items:
+            o = id(self._origin_of(it["id"], it))
+            first.setdefault(o, it["id"])
+            last[o] = it["id"]
+        entries = [self._entry(it, outer_in=first.get(id(self._origin_of(it["id"], it))) == it["id"],
+                               outer_out=last.get(id(self._origin_of(it["id"], it))) == it["id"]) for it in items]
         if not isinstance(out.get("audio"), dict):
             out["audio"] = {}
         rest = list(out["audio"].get("tracks") or [])
@@ -159,15 +176,24 @@ class Lift:
         out["audio"]["tracks"] = rest[:at] + entries + rest[at:]
         return out
 
-    def _origin_of(self, item_id):
-        """The stashed entry a piece was cut from: its own id, or the longest one it extends (`<id>-seg-..`)."""
+    def _origin_of(self, item_id, it=None):
+        """The stashed entry a piece was cut from: its own id, or the longest one it extends (`<id>-seg-..`); for a
+        piece with neither (an `sp-..` run), the entry of its file whose window holds most of it, else the first."""
         if item_id in self.stash:
             return self.stash[item_id]
         best = max((k for k in self.stash if str(item_id).startswith(f"{k}-")), key=len, default=None)
-        return self.stash.get(best) if best is not None else None
+        if best is not None:
+            return self.stash[best]
+        if it is not None:
+            def overlap(e):
+                return min(float(it["outPoint"]), e["_out"]) - max(float(it["inPoint"]), e["_in"])
+            same = [e for e in self.stash.values() if e.get("src") == it.get("src")]
+            if same:
+                return max(same, key=overlap)
+        return next(iter(self.stash.values()), None)
 
-    def _entry(self, it):
-        orig = self._origin_of(it["id"]) or {}
+    def _entry(self, it, outer_in=True, outer_out=True):
+        orig = self._origin_of(it["id"], it) or {}
         entry = {k: copy.deepcopy(v) for k, v in orig.items()
                  if k not in ("id", "start", "end", "inPoint", "outPoint", "fadeIn", "fadeOut", "_in", "_out")}
         entry.update({"id": it["id"], "src": orig.get("src", it["src"]), "start": it["start"], "end": it["end"],
@@ -177,9 +203,9 @@ class Lift:
         moved_out = o_out is None or abs(float(it["outPoint"]) - float(o_out)) > _EPS
         fade_in, fade_out = orig.get("fadeIn"), orig.get("fadeOut")
         if moved_in:
-            fade_in = max(float(fade_in or 0), JOIN_FADE_IN)
+            fade_in = max(float(fade_in or 0), JOIN_FADE_IN) if outer_in else JOIN_FADE_IN
         if moved_out:
-            fade_out = max(float(fade_out or 0), JOIN_FADE_OUT)
+            fade_out = max(float(fade_out or 0), JOIN_FADE_OUT) if outer_out else JOIN_FADE_OUT
         if fade_in:
             entry["fadeIn"] = fade_in
         if fade_out:
@@ -190,15 +216,14 @@ class Lift:
 def _window(e, project_dir):
     """(start, end, inPoint, outPoint) of an audio entry: no `end` plays to `outPoint`, else to the file's end."""
     start = float(e.get("start") or 0)
-    in_p = float(e.get("inPoint") or 0)
-    if "outPoint" in e and e["outPoint"] is not None:
-        out_p = float(e["outPoint"])
-    elif "end" in e and e["end"] is not None:
-        out_p = in_p + float(e["end"]) - start
-    else:
-        out_p = float(get_duration(resolve_path(e["src"], project_dir)))
-    end = float(e["end"]) if "end" in e and e["end"] is not None else start + (out_p - in_p)
-    return start, end, in_p, out_p
+    in_p = max(0.0, float(e.get("inPoint") or 0))
+    caps = [float(get_duration(resolve_path(e["src"], project_dir)))]
+    if e.get("outPoint") is not None and float(e["outPoint"]) > in_p:
+        caps.append(float(e["outPoint"]))
+    if e.get("end") is not None and float(e["end"]) > start:
+        caps.append(in_p + float(e["end"]) - start)
+    out_p = min(caps)
+    return start, start + (out_p - in_p), in_p, out_p
 
 
 def lift(project, key, project_dir):
@@ -208,17 +233,22 @@ def lift(project, key, project_dir):
         return lifted, Lift(key=key, track_id=key, kind="video")
     lift_ = Lift(key=key, track_id=LIFT_PREFIX + key, kind="audio" if key != VOICEOVER else VOICEOVER)
     items = []
+    used = {it.get("id") for t in lifted.get("tracks", []) for it in t.get("items", [])}
+    used |= {e.get("id") for e in _audio(lifted) if isinstance(e, dict)}
     if key == VOICEOVER:
         src = _voiceover_src(lifted)
         dur = float(get_duration(resolve_path(src, project_dir)))
-        items.append({"id": "vo", "type": "audio", "src": src, "start": 0.0, "end": dur, "inPoint": 0.0,
+        vid, n = "vo", 0
+        while vid in used:
+            n += 1
+            vid = f"vo-{n}"
+        items.append({"id": vid, "type": "audio", "src": src, "start": 0.0, "end": dur, "inPoint": 0.0,
                       "outPoint": dur, "sourceDuration": dur})
-        lift_.stash["vo"] = {"type": VOICEOVER, "src": src, "volume": 1, "_in": 0.0, "_out": dur}
+        lift_.stash[vid] = {"type": VOICEOVER, "src": src, "volume": 1, "_in": 0.0, "_out": dur}
         lift_.at = len(_audio(lifted))
     else:
         audio = _audio(lifted)
-        keep, taken, used = [], [], {it.get("id") for t in lifted.get("tracks", []) for it in t.get("items", [])}
-        used |= {e.get("id") for e in audio if isinstance(e, dict)}
+        keep, taken = [], []
         for i, e in enumerate(audio):
             if isinstance(e, dict) and isinstance(e.get("src"), str) and e["src"] and audio_key(e) == key:
                 if not taken:
@@ -240,6 +270,12 @@ def lift(project, key, project_dir):
             items.append({"id": iid, "type": "audio", "src": e["src"], "start": start, "end": end, "inPoint": in_p,
                           "outPoint": out_p})
             lift_.stash[iid] = {**e, "_in": in_p, "_out": out_p}
+        spans = sorted((it["start"], it["end"], it["id"]) for it in items)
+        for (a0, a1, ida), (b0, b1, idb) in zip(spans, spans[1:]):
+            if b0 < a1 - MAX_OVERLAP_S:
+                # two voices at once would be read as one speaker's takes of each other
+                fail("invalid_params", f"speech {key}: {ida} and {idb} play at the same time. Give each voice its own "
+                                       "lane (audio:lane-<n>) and cut them one at a time.")
         lifted["audio"]["tracks"] = keep
     lifted.setdefault("tracks", []).append({"id": lift_.track_id, "items": items})
     return lifted, lift_

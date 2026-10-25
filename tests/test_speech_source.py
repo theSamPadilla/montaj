@@ -54,3 +54,14 @@ def test_the_voiceover_is_a_source_only_while_nothing_plays_it(tmp_path):
 def test_an_unknown_source_fails(tmp_path):
     with pytest.raises(SystemExit):
         ss.choose(project(tmp_path), str(tmp_path), "audio:lane-3")
+
+
+def test_null_out_and_end_are_read_as_absent(tmp_path):
+    a = [{"id": "v1", "type": "voiceover", "src": str(tmp_path / "vo.mp4"), "start": 0.0, "end": None,
+          "inPoint": 0.0, "outPoint": None}]
+    p = project(tmp_path, a)
+    (tmp_path / "vo.json").write_text(json.dumps({"transcription": []}))
+    assert ss.choose(p, str(tmp_path)) == "audio:voiceover"
+    lifted, lift = ss.lift(p, "audio:voiceover", str(tmp_path))
+    (it,) = lifted["tracks"][-1]["items"]
+    assert it["outPoint"] > 0 and it["end"] == pytest.approx(it["outPoint"])
