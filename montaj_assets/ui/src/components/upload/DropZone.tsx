@@ -86,7 +86,6 @@ export function DropZone({ label, sublabel, icon, accept, files, uploading, onBr
   const defaultDropLabel =
     accept === 'video/' ? 'Drop video files here' :
     accept === 'audio/' ? 'Drop audio file here' :
-    accept === 'text/'  ? 'Drop lyrics file here' :
                           'Drop files here'
 
   const defaultFileIcon =

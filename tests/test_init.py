@@ -211,12 +211,12 @@ def test_multiple_clips_all_in_primary_track(tmp_path):
 # projectType propagation tests
 # ---------------------------------------------------------------------------
 
-def test_music_video_workflow_gets_music_video_type(tmp_path):
+def test_a_workflow_with_the_retired_music_video_type_makes_an_editing_project(tmp_path):
     result = run_init("--canvas", "--prompt", "test", "--workflow", "lyrics",
                       env_override=_user_workflow_env(tmp_path, "lyrics", "music_video"))
     assert result.returncode == 0, result.stderr
     project = json.loads(_project_path_from_stdout(result.stdout).read_text())
-    assert project["projectType"] == "music_video"
+    assert project["projectType"] == "editing"
     assert "storyboard" not in project
 
 

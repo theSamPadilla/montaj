@@ -1122,6 +1122,31 @@ def test_case12_an_open_heal_is_skipped_on_an_unsure_sidecar(ws, state):
     assert _disk(d) == before
 
 
+def test_case12_a_retired_project_type_is_served_current_and_written_only_once_its_clash_closes(ws, state):
+    """An old Lyric video project (projectType music_video, lib/project_migrate.py) in Studio sync: a clash open on
+    projectType keeps the open's write off the file (the person's pick decides), it is served as editing anyway,
+    and the write lands at the first open after the clash closes. No clash is ever opened by the heal itself."""
+    d = _project(ws, projectType="music_video")
+    side = _sidecar(state, fields=["projectType"])
+    before = _disk(d)
+    resp = _client().get(f"/api/projects/{PID}", headers=AI)
+    assert resp.status_code == 200
+    assert resp.json()["projectType"] == "editing"
+    assert _disk(d) == before
+    assert json.loads(side.read_text())["clashes"] == [{"id": "c1", "fields": ["projectType"], "files": []}]
+    side.unlink()
+    assert _client().get(f"/api/projects/{PID}", headers=AI).status_code == 200
+    assert json.loads(_disk(d))["projectType"] == "editing"
+    assert not (state / PID / "clash-set.json").exists()
+
+
+def test_case12_a_retired_project_type_heals_while_another_field_is_in_clash(ws, state):
+    d = _project(ws, projectType="music_video")
+    _sidecar(state, fields=["notes"])
+    assert _client().get(f"/api/projects/{PID}", headers=AI).status_code == 200
+    assert json.loads(_disk(d))["projectType"] == "editing"
+
+
 def test_case12_a_settings_write_back_canvas_size_skips_a_clashed_settings(ws, state):
     d = _project(ws, settings={"resolution": [1080, 1920]})
     side = _sidecar(state, fields=["settings"])

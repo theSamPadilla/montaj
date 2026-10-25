@@ -7,7 +7,6 @@ import { CAROUSEL_ASPECTS } from '@/lib/types/carousel'
 import AssetsPanel from '@/components/AssetsPanel'
 import { AIVideoUploadFields } from '@/components/upload/AIVideoUploadFields'
 import { ClipUploadFields } from '@/components/upload/ClipUploadFields'
-import { LyricsUploadFields } from '@/components/upload/LyricsUploadFields'
 import BrollUploadFields from '@/components/upload/BrollUploadFields'
 import { AspectRatioIcon, CarouselAspectIcon } from '@/app/editor/uploadConstants'
 import { useUploadForm } from '@/lib/useUploadForm'
@@ -18,7 +17,7 @@ export default function MobileUploadView() {
   const {
     name, setName, prompt, setPrompt, workflow, setWorkflow, profile, setProfile,
     workflows, profiles, clipData, setClipData, aiVideoData, setAiVideoData,
-    lyricsData, setLyricsData, carouselAssets, setCarouselAssets,
+    carouselAssets, setCarouselAssets,
     aiVideoAssets, setAiVideoAssets, voiceover, setVoiceover,
     carouselAspect, setCarouselAspect, aspectRatio, setAspectRatio,
     targetDuration, setTargetDuration, error, setError, runError, running,
@@ -154,10 +153,6 @@ export default function MobileUploadView() {
               </div>
             </div>
           </>
-        )}
-
-        {projectType === 'music_video' && (
-          <LyricsUploadFields data={lyricsData} onChange={setLyricsData} onError={setError} />
         )}
 
         {projectType === 'editing' && (

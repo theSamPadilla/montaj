@@ -7,7 +7,6 @@ import { normalizeProjectType, type ProjectType } from '@/lib/types/project'
 import { DEFAULT_ASPECT_RATIO, type AspectRatio } from '@/lib/types/kling'
 import { DEFAULT_CAROUSEL_ASPECT, type CarouselAspect } from '@/lib/types/carousel'
 import { type ClipUploadData } from '@/components/upload/ClipUploadFields'
-import { type LyricsUploadData } from '@/components/upload/LyricsUploadFields'
 import { type AIVideoUploadData } from '@/components/upload/AIVideoUploadFields'
 import { type VoiceoverFile } from '@/components/upload/BrollUploadFields'
 
@@ -32,7 +31,6 @@ export interface UseUploadFormReturn {
   profiles: Profile[]
   clipData: ClipUploadData; setClipData: (v: ClipUploadData) => void
   aiVideoData: AIVideoUploadData; setAiVideoData: (v: AIVideoUploadData) => void
-  lyricsData: LyricsUploadData; setLyricsData: (v: LyricsUploadData) => void
   carouselAssets: Asset[]; setCarouselAssets: (v: Asset[]) => void
   aiVideoAssets: Asset[]; setAiVideoAssets: (v: Asset[]) => void
   voiceover: VoiceoverFile[]; setVoiceover: (v: VoiceoverFile[]) => void
@@ -73,7 +71,6 @@ export function useUploadForm(): UseUploadFormReturn {
 
   // Per-branch state
   const [clipData, setClipData] = useState<ClipUploadData>({ clips: prefill?.clips ?? [], assets: [] })
-  const [lyricsData, setLyricsData] = useState<LyricsUploadData>({ audio: [], lyricsFile: [], bgVideo: [] })
   const [aiVideoData, setAiVideoData] = useState<AIVideoUploadData>(prefill?.aiVideoData ?? { imageRefs: [], styleRefs: [] })
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(prefill?.aspectRatio ?? DEFAULT_ASPECT_RATIO)
   const [targetDuration, setTargetDuration] = useState<number | null>(prefill?.targetDuration ?? null)
@@ -98,24 +95,6 @@ export function useUploadForm(): UseUploadFormReturn {
       let project: Project
 
       switch (projectType) {
-        case 'music_video': {
-          let finalPrompt = prompt.trim()
-          const finalClips = lyricsData.audio
-          if (lyricsData.lyricsFile[0]) {
-            finalPrompt = `Lyrics file: ${lyricsData.lyricsFile[0]}\n\n${finalPrompt}`
-          }
-          if (lyricsData.bgVideo[0]) {
-            finalPrompt = `Background video: ${lyricsData.bgVideo[0]}\n\n${finalPrompt}`
-          }
-          project = await api.createProject({
-            clips: finalClips,
-            name: name.trim() || undefined,
-            prompt: finalPrompt,
-            workflow,
-            profile: profile || undefined,
-          })
-          break
-        }
         case 'ai_video': {
           project = await api.createProject({
             workflow,
@@ -197,7 +176,6 @@ export function useUploadForm(): UseUploadFormReturn {
   const submitLabel = (() => {
     if (running) return 'Running...'
     switch (projectType) {
-      case 'music_video': return 'Generate lyrics video ⌘↵'
       case 'ai_video':    return 'Generate storyboard ⌘↵'
       case 'carousel':    return 'Create carousel ⌘↵'
       case 'broll':       return 'Assemble b-roll ⌘↵'
@@ -208,7 +186,6 @@ export function useUploadForm(): UseUploadFormReturn {
 
   const clipCount = (() => {
     switch (projectType) {
-      case 'music_video': return lyricsData.audio.length
       case 'ai_video':    return 0
       case 'carousel':    return 0
       case 'editing':
@@ -218,7 +195,6 @@ export function useUploadForm(): UseUploadFormReturn {
 
   const loadingTitle = (() => {
     switch (projectType) {
-      case 'music_video': return 'Preparing your lyrics video'
       case 'ai_video':    return 'Generating your storyboard'
       case 'carousel':    return 'Setting up your carousel'
       case 'broll':       return 'Assembling your b-roll edit'
@@ -229,8 +205,6 @@ export function useUploadForm(): UseUploadFormReturn {
 
   const loadingMessage = (() => {
     switch (projectType) {
-      case 'music_video':
-        return 'Importing audio and analyzing the track…'
       case 'ai_video':
         return 'Composing the storyboard from your references and prompt…'
       case 'carousel':
@@ -253,7 +227,6 @@ export function useUploadForm(): UseUploadFormReturn {
 
   const promptPlaceholder = (() => {
     switch (projectType) {
-      case 'music_video': return 'dark moody vibe, white text, center position…'
       case 'ai_video':    return 'Describe the video you want to create…'
       case 'carousel':    return 'Describe the carousel — topic, vibe, what each slide should cover…'
       case 'broll':       return 'pacing, mood, which shots to favor…'
@@ -264,7 +237,6 @@ export function useUploadForm(): UseUploadFormReturn {
 
   const headerDescription = (() => {
     switch (projectType) {
-      case 'music_video': return 'Add your audio and lyrics. Background video is optional.'
       case 'ai_video':    return 'Describe your video, add references, and generate a storyboard.'
       case 'carousel':    return 'Image carousel for Instagram/TikTok. Pick an aspect ratio and start designing.'
       case 'broll':       return 'Add raw footage and a voiceover. The agent selects and times the shots.'
@@ -282,7 +254,6 @@ export function useUploadForm(): UseUploadFormReturn {
     profiles,
     clipData, setClipData,
     aiVideoData, setAiVideoData,
-    lyricsData, setLyricsData,
     carouselAssets, setCarouselAssets,
     aiVideoAssets, setAiVideoAssets,
     voiceover, setVoiceover,

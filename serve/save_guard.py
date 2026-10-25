@@ -20,7 +20,7 @@ from collections import OrderedDict
 from fastapi import HTTPException
 
 from lib import project_revisions, sync_clash
-from lib.project_tracks import normalize_tracks
+from lib.project_migrate import converge
 
 GUARD_ENV = project_revisions.GUARD_ENV
 STDIN_ENV = "MONTAJ_SHELL_SECRET_STDIN"
@@ -245,10 +245,10 @@ def _read_header(headers):
 
 
 def current_revisions(raw_text, existing, fields) -> dict:
-    """Revisions of fields in the project as a reader gets it (normalize_tracks of the file).
+    """Revisions of fields in the project as a reader gets it (lib/project_migrate.py converge of the file).
     Cached by the file's text when the text already is that document; a legacy shape the
     reader sees normalised is hashed from its normalised form, uncached."""
-    normalized = normalize_tracks(existing)
+    normalized = converge(existing)
     if normalized is existing and raw_text is not None:
         return project_revisions.revisions_for_text(raw_text, existing, fields)
     return project_revisions.revisions_of(normalized, fields)
@@ -316,7 +316,7 @@ def check_save(headers, body: dict, raw_text, existing: dict, project=None):
     writer, trusted = writer_of(headers)
     advisory = trusted and writer == "editor" and headers.get("x-montaj-guard") == "advisory"
     changed = changed_fields(body)
-    base_text = raw_text if normalize_tracks(existing) is existing else None
+    base_text = raw_text if converge(existing) is existing else None
     verdict = Verdict(writer, advisory, changed, base_text, project)
     verdict.origin = sync_origin_of(headers)
     if all(f in OWNED_FIELDS for f in changed):
