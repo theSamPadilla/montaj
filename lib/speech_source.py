@@ -83,10 +83,10 @@ def _transcribed_seconds(entries, project_dir):
             continue
         if e.get("outPoint") is not None:
             total += max(0.0, float(e["outPoint"]) - float(e.get("inPoint") or 0))
-        elif e.get("end") is not None:
-            total += max(0.0, float(e["end"]) - float(e.get("start") or 0))
+        elif e.get("end") is not None and float(e["end"]) > float(e.get("start") or 0):
+            total += float(e["end"]) - float(e.get("start") or 0)
         else:
-            total += float(e.get("sourceDuration") or 0)
+            total += float(e.get("sourceDuration") or 0)      # a placeholder (end at its start) plays its whole file
     return total
 
 

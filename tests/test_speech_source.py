@@ -42,6 +42,16 @@ def test_auto_picks_the_transcribed_source_and_a_video_track_wins_a_tie(tmp_path
     assert ss.choose(p, str(tmp_path)) == "trk-0"
 
 
+def test_a_pending_projects_placeholder_clips_count_their_whole_file(tmp_path):
+    """A placeholder (end at its start) plays its whole file: a 5 s music item on the same file never outweighs it."""
+    a = [{"id": "music", "src": str(tmp_path / "vo.mp4"), "start": 0.0, "end": 5.0, "inPoint": 0.0, "outPoint": 5.0}]
+    p = project(tmp_path, a)
+    (tmp_path / "vo.json").write_text(json.dumps({"transcription": []}))
+    p["tracks"][0]["items"].append({"id": "c", "type": "video", "src": str(tmp_path / "vo.mp4"), "start": 0.0,
+                                    "end": 0.0, "sourceDuration": 8.8})
+    assert ss.choose(p, str(tmp_path)) == "trk-0"
+
+
 def test_the_voiceover_is_a_source_only_while_nothing_plays_it(tmp_path):
     p = project(tmp_path, voiceover=True)
     assert ss.choose(p, str(tmp_path)) == "voiceover"
