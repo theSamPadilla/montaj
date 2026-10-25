@@ -1367,3 +1367,36 @@ def test_a_line_said_in_three_clips_keeps_only_the_last_copy(tmp_path, monkeypat
     plan, _ = run(d, monkeypatch=monkeypatch)
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
     assert said_text(d) == "Hello there friends. the robot learns by falling down a lot."
+
+
+def _tail_project(tmp_path, tail, audible):
+    """A real line, then `tail` glued onto its end by whisper: its words fill the rest of the clip (gapless), over
+    silence unless `audible`."""
+    spans, words, end = spoken(["you learn it by doing it again and again"])
+    t, dur = end + 0.05, 0.25
+    words = list(words)
+    words[-1] = (words[-1][0], words[-1][1], t)
+    for k, tok in enumerate(tail.split()):
+        a = t + (1.4 * k if not audible else 0.3 * k)
+        b = a + (1.4 if not audible else dur)
+        words.append((tok, a, b))
+        if audible:
+            spans.append((a, a + dur, SPEECH_DB))
+    return tone_project(tmp_path, [("vo", spans, words[-1][2] + 0.5, words)])
+
+
+def test_a_made_up_tail_glued_to_the_last_line_is_dropped(tmp_path, monkeypatch):
+    """(c): whisper writes "Thank you." over the room tone at the end, appended to the last real line."""
+    d = _tail_project(tmp_path, "Thank you.", audible=False)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    cut, unused = sections((d / "cut-plan.md").read_text())
+    assert "Thank" not in " ".join(cut) and any(r.startswith("*A1 ") and r.endswith(" pause]") for r in unused)
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    assert said_text(d) == "you learn it by doing it again and again"
+
+
+def test_a_real_short_ending_is_kept(tmp_path, monkeypatch):
+    d = _tail_project(tmp_path, "thanks for watching", audible=True)
+    plan, _ = run(d, monkeypatch=monkeypatch)
+    run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    assert said_text(d) == "you learn it by doing it again and again thanks for watching"

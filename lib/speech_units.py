@@ -269,6 +269,30 @@ def mark_made_up_tails(units, inside=frozenset()):
             u.madeup = True
 
 
+def made_up_tail_words(units, inside=frozenset()):
+    """{unit: word positions}: the made-up tail whisper glued onto the end of a clip's last real line ("... i want
+    to find out Thank you." over room tone): its last three words or fewer, each inside a measured silence (`inside`)
+    or together stretched or of zero length (`made_up`), after a word that is neither. A last unit that is all
+    made up is mark_made_up_tails' (a pause), so it is left out here."""
+    last = {}
+    for n, (u, rows, _) in enumerate(units):
+        last[u.clip] = n
+    out = {}
+    for n in last.values():
+        u, rows, _ = units[n]
+        ws = [w for _, r in rows for w in r.words]
+        if u.fixed or u.madeup or len(ws) <= 3:
+            continue
+
+        def made(part):
+            return (all((u.clip, w.idx) in inside for w in part)
+                    or made_up([{"text": w.text, "start": w.start, "end": w.end} for w in part]))
+        k = max((k for k in (1, 2, 3) if made(ws[-k:])), default=0)
+        if k and not made(ws[-k - 1:-k]):
+            out[n] = set(range(len(ws) - k, len(ws)))
+    return out
+
+
 def broll_items(project, project_dir):
     """The ids of the media items whose source's transcript is b-roll: made up, or too few words to be speech
     (cut's own tests, over the whole source as language_of reads it, so a piece of a cut clip is judged by its

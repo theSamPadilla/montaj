@@ -604,6 +604,7 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
             else:
                 b["sel"] = select([u for u, _, _ in units], is_filler)
                 _phrases(b, units, is_filler)
+                _made_up_tails(b, speech_units.made_up_tail_words(units, d.inside_words))
             return b
     # no usable speech: waveform_trim keeps on a fresh copy
     work = copy.deepcopy(origin)
@@ -627,6 +628,15 @@ def _phrases(b, units, is_filler):
     sel.suggest[:] = [o for o in sel.suggest if not (o[1] and set(o[1]) & set(drops.get(o[0], ())))]
     offered = {o[0] for o in sel.suggest}
     sel.suggest += [o for o in offers if o[0] not in offered]
+
+
+def _made_up_tails(b, tails):
+    """A made-up tail glued onto a kept line (lib/speech_units.made_up_tail_words) goes as a pause, word for word."""
+    sel, why_at = b["sel"], b.setdefault("why_at", {})
+    for ui, pos in tails.items():
+        if ui in sel.kept:
+            sel.drop.setdefault(ui, set()).update(pos)
+            why_at.setdefault(ui, {}).update({k: "pause" for k in pos})
 
 
 def _silence_stamp(b, track_id):
