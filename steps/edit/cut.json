@@ -1,14 +1,14 @@
 {
   "name": "cut",
   "category": "edit",
-  "description": "Cut a talking head in two calls. Without plan: transcribes clips that have no transcript (the only file it writes beside a clip), cuts silences and fillers, removes only sure retakes, and writes the result as cut-plan.md in the project folder, changing nothing in the project; uncertain cuts stay in and are offered as suggestions. With plan: applies that plan, edited or not, through speech_edit's save (a version first). The language is detected unless you pass it.",
+  "description": "Cut a talking head in two calls. Without plan: transcribes clips that have no transcript (the only file it writes beside a clip), cuts silences, fillers and dead air, removes only clear retakes (the same words said again back to back after a break: the last take stays, the earlier one is listed as removed), and writes the result as cut-plan.md in the project folder, changing nothing in the project; possible repeats and quiet words stay in, both takes kept, offered as suggestions that name both places. With plan: applies that plan, edited or not, through speech_edit's save (a version first). The language is detected unless you pass it.",
   "input": {
     "type": "project",
     "description": "The project id, its folder, or the absolute path of its project.json"
   },
   "output": {
     "type": "json",
-    "description": "Plan: {project, mode: plan, plan, kept {lines, seconds}, removed {lines {why: n}, fillers, seconds, by {pause, deadAir, retake, inaudible, tail, fillers}, inaudible}, suggested?, duration, layers, cut, keep?, next, previous?, transcribed, silence?, note?, warnings?}. Apply: {project, mode: applied, version, duration, undo, layers}. A cut project: {mode: already-cut, ...}."
+    "description": "Plan: {project, mode: plan, plan, kept {lines, seconds}, removed {lines {why: n}, fillers, seconds, by {pause, deadAir, retake, inaudible, tail, fillers, silence}, inaudible}, suggested? {why?: n}, duration, layers, cut, keep?, next, previous?, transcribed, silence?, note?, warnings?}. Apply: {project, mode: applied, version, duration, undo, layers}. A cut project: {mode: already-cut, ...}."
   },
   "params": [
     {
@@ -44,7 +44,7 @@
       "default": 0.04,
       "min": 0.0,
       "max": 0.3,
-      "description": "Seconds of silence kept on each side of the words where a pause is dead air (every moment under the clip's speech level less 26 dB). Default 0.04; raise it for a slower read."
+      "description": "Seconds of silence kept on each side of the words where a pause is dead air (every moment under the clip's speech level less 26 dB); at a sentence end such a pause keeps up to 0.18 s. Used between 0.02 and half of max-pause. Default 0.04; raise it for a slower read."
     },
     {
       "name": "recut",
