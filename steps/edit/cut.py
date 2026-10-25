@@ -52,10 +52,10 @@ PLAN_FILE = "cut-plan.md"
 PLAN_HELP = ("Edit, then run cut with plan: move a row from ## Unused into ## Cut to keep it, delete a row "
              "from ## Cut to drop it, move rows to reorder. A line cut at a silence is a row of its own. A * row is "
              "the whole of a trimmed row: put it in place of that row. A tag ending in ? is a suggestion, not made, "
-             "and may name its other take's line and time. retake? and false-start? rows are still in ## Cut (delete them there to take it); a repeat?, "
-             "restart?, abandoned?, inaudible? or spliced group is the take trimmed (it replaces that take's rows in "
-             "## Cut). A * row tagged inaudible? holds the video's first or last word, too soft to play: put it in "
-             "place of its row to keep it.")
+             "and may name its other take's line and time. retake? and false-start? rows are still in ## Cut "
+             "(delete them there to take it); a repeat?, restart?, abandoned?, inaudible? or spliced group is the "
+             "take trimmed (it replaces that take's rows in ## Cut). A * row tagged inaudible? holds the video's "
+             "first or last word, too soft to play: put it in place of its row to keep it.")
 # Why a row is in a plan's ## Unused.
 WHYS = ("retake", "false-start", "repeat", "restart", "abandoned", "filler-only", "pause", "earlier", "inaudible")
 REMOVED_CAP_BYTES = 1500
