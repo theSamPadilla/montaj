@@ -165,13 +165,16 @@ def _ends_sentence(text: str) -> bool:
     return text.rstrip("\"'\u201d\u2019)]").endswith((".", "?", "!"))
 
 
-def split_lines(letter: str, words: list[Word]) -> list[Line]:
+def split_lines(letter: str, words: list[Word], breaks=frozenset()) -> list[Line]:
+    """Lines of `words`: split at a sentence end, a pause of LINE_BREAK_PAUSE_S or more, every LINE_MAX_WORDS words
+    (at the longest gap), and before each word index in `breaks` (cut's refiner: the first word after a silence it
+    cuts, so each piece of a line has an id of its own)."""
     groups: list[list[Word]] = []
     cur: list[Word] = []
     for w in words:
         if cur:
             prev = cur[-1]
-            if _ends_sentence(prev.text) or _gap(prev, w) >= LINE_BREAK_PAUSE_S:
+            if _ends_sentence(prev.text) or _gap(prev, w) >= LINE_BREAK_PAUSE_S or w.idx in breaks:
                 groups.append(cur)
                 cur = []
             elif len(cur) >= LINE_MAX_WORDS:

@@ -119,15 +119,16 @@ def test_the_second_half_moved_to_unused(tmp_path, monkeypatch):
 
 
 def test_a_plan_whose_rows_would_play_other_words_is_refused(tmp_path, monkeypatch, capsys):
-    """The backstop: _make_plan compares every row's played source words with the plan's; a mismatch is never
-    written."""
-    import lib.speech_build as sb
-    real = sb.align_row
+    """The backstop: _make_plan compares every row's played source words with the plan's; a preview that would not
+    play a kept word (here a tidy made to clip one off) is never written."""
+    real = se.Refiner.tidy
 
-    def other(line_id, tokens, lines):
-        got = real(line_id, tokens, lines)
-        return [k + 1 if k + 1 < 6 else k for k in got] if tokens and tokens[0] == "we" else got
-    monkeypatch.setattr(sb, "align_row", other)
+    def clip(self, runs, derived, report=None):
+        out = real(self, runs, derived, report)
+        first = next(r for r in out if r.kind == "speech")
+        first.s_out = first.s_in + 0.12                  # drops the row's later words' sound, keeps their indexes
+        return out
+    monkeypatch.setattr(se.Refiner, "tidy", clip)
     tones, words, total = line("we went home", "after the show.")
     d = v5.project(tmp_path, monkeypatch, [("vo", tones, total, words)], room=-75.0)
     assert tc.refused(d, monkeypatch=monkeypatch, capsys=capsys) == "plan_unsettled"
@@ -310,7 +311,8 @@ def test_audio_wholly_inside_a_cut_span_is_moved_never_removed(tmp_path, monkeyp
     assert [it["id"] for tr in after["tracks"][1:] for it in tr["items"]] == ["sfx-lane"]
     for it in [after["audio"]["tracks"][0]] + after["tracks"][1]["items"]:
         assert float(it["end"]) > float(it["start"]), it
-    assert any("sfx-lane" in w for w in applied.get("warnings", [])), applied.get("warnings")
+    if where == "retake":            # all of its span was cut: moved to the next kept moment, and said so
+        assert any("sfx-lane" in w for w in applied.get("warnings", [])), applied.get("warnings")
 
 
 # ── should-fix 1: take breaks read a soft tail as sound ───────────────────────────────────────────────────────
@@ -401,9 +403,10 @@ def test_a_smack_train_under_a_stretched_word_keeps_no_long_flat(tmp_path, monke
     v5.checked(d, plan, applied, before, v5.kept_tones("vo", tones))
 
 
-@pytest.mark.parametrize("pause", [8.0, 14.0, 30.0])
+@pytest.mark.parametrize("pause", [8.0, 14.0])
 def test_a_long_silent_ride_between_two_lines_is_cut(tmp_path, monkeypatch, pause):
-    """L-B5: under 5% speech, the plain 95th-percentile frame is the room; the gated level reads the speech."""
+    """L-B5: under 5% speech, the plain 95th-percentile frame is the room; the gated level reads the speech. (Review
+    B's 30 s case is six words in 32 s, which the b-roll rule keeps whole, warned: see the 6-word lines below.)"""
     a = [(0.30, 0.55, SP), (0.60, 0.85, SP), (0.90, 1.15, SP)]
     t2 = 1.15 + pause
     b = [(t2, t2 + 0.25, SP), (t2 + 0.30, t2 + 0.55, SP), (t2 + 0.60, t2 + 0.85, SP)]
@@ -413,6 +416,26 @@ def test_a_long_silent_ride_between_two_lines_is_cut(tmp_path, monkeypatch, paus
     plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
     assert sum(y - x for x, y in tc.kept_iv(d)) < 3.0, tc.kept_iv(d)
     v5.checked(d, plan, applied, before, v5.kept_tones("vo", a + b))
+
+
+@pytest.mark.parametrize("pause", [20.0, 30.0])
+def test_under_five_percent_speech_still_cuts_the_long_pause(tmp_path, monkeypatch, pause):
+    """Review B's probe 4b: two 6-word lines (speech by cut's own rule, not b-roll) 20-30 s apart, the first's last
+    word stretched over the ride."""
+    def said_line(t0, toks):
+        tones, words, t = [], [], t0
+        for w in toks:
+            tones.append((round(t, 3), round(t + 0.12, 3), SP))
+            words.append((w, round(t, 3), round(t + 0.15, 3)))
+            t += 0.15
+        return tones, words, t
+    ta, wa, ea = said_line(0.3, ["ok", "so", "here", "we", "go", "now."])
+    tb, wb, eb = said_line(ea + pause, ["and", "now", "we", "are", "back", "home."])
+    wa[-1] = (wa[-1][0], wa[-1][1], tb[0][0] - 0.3)
+    d = v5.project(tmp_path, monkeypatch, [("vo", ta + tb, eb + 1.0, wa + wb)], room=-62.0)
+    plan, text, applied, said_, before = v5.plan_apply(d, monkeypatch)
+    assert sum(y - x for x, y in tc.kept_iv(d)) < 3.5, tc.kept_iv(d)
+    v5.checked(d, plan, applied, before, v5.kept_tones("vo", ta + tb))
 
 
 def test_the_gated_speech_level():
@@ -531,3 +554,22 @@ def test_islands_are_strictly_at_least_0_35_s(dur):
     placed, kind = se.place(ws, lay, ref.breath)
     ref.layers["a"], ref.raw["a"], ref.placed["a"], ref.kinds["a"] = lay, ws, placed, kind
     assert all(b - a >= 0.35 for a, b in ref.keeps("a")), ref.keeps("a")
+
+
+# ── should-fix 4: the apply uses the plan's max-pause and breath, or refuses ───────────────────────────────────
+
+def test_an_apply_with_another_max_pause_or_breath_is_stale(tmp_path, monkeypatch, capsys):
+    tones, words, total = line("we went home", "after the show.")
+    d = v5.project(tmp_path, monkeypatch, [("vo", tones, total, words)], room=-75.0)
+    plan, _ = plan_only(d, monkeypatch)
+    assert tc.refused(d, "--plan", plan["plan"], "--max-pause", "0.3", monkeypatch=monkeypatch, capsys=capsys) == \
+        "stale_plan"
+    assert tc.refused(d, "--plan", plan["plan"], "--breath", "0.1", monkeypatch=monkeypatch, capsys=capsys) == \
+        "stale_plan"
+    applied, _ = tc.run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
+    assert applied["mode"] == "applied"
+
+
+def test_the_stamp_names_the_reading_constants():
+    for name in ("RATE", "_SILENT_DB", "GUARD_DB", "BURST_GAP_S", "ISLAND_TARGET_S", "ATTACHED_OVER_ROOM_DB"):
+        assert f"{name}=" in se.Refiner.stamp, name

@@ -142,6 +142,7 @@ def applied_checks(d, before, answer, extra=(), held=None):
     from tests import cut_checks
     if answer.get("mode") != "applied" or "--max-pause" in extra:
         return
+    mp = cc._plan_meta((d / "cut-plan.md").read_text())[1] if (d / "cut-plan.md").is_file() else None
     text = (d / "cut-plan.md").read_text() if (d / "cut-plan.md").is_file() else ""
     p = json.loads((d / "project.json").read_text())
     items = [it for it in p["tracks"][0]["items"] if it.get("type") in (None, "video", "audio")]
@@ -150,7 +151,7 @@ def applied_checks(d, before, answer, extra=(), held=None):
         return
     if any(w.startswith("kept ") and " whole" in w for w in answer.get("warnings", [])):
         return
-    fails = cut_checks.check(d, before, (), (answer,), held=held)
+    fails = cut_checks.check(d, before, (), (answer,), max_pause=mp or cut_checks.MAX_PAUSE, held=held)
     if os.environ.get("V5_CHECK_LOG"):
         with open(os.environ["V5_CHECK_LOG"], "a") as f:
             f.write(f"{os.environ.get('PYTEST_CURRENT_TEST', '').split(' ')[0]} {sorted(fails)} "
@@ -255,9 +256,9 @@ def test_the_plan_writes_nothing_to_the_project(tmp_path, stub_transcribe, monke
     offered = [g for g in groups if any((m := cc._TAG.search(r)) and m.group(3) for r in g.splitlines())]
     assert sum(out["removed"]["lines"].values()) == len(groups) - len(offered)    # one group per take
     assert out["removed"]["lines"] == {"retake": 2, "false-start": 1}
-    # F1 offers the earlier take (see KEPT); v5: "timeline." (whisper put it in the silence after "the", which holds
-    # its sound) is folded, kept and offered inaudible?
-    assert out["suggested"] == {"retake?": 1, "inaudible?": 1}
+    # F1 offers the earlier take (see KEPT); v5: words with no sound of their own ("timeline.", which whisper put in
+    # the silence after "the", and "want.") are kept and offered inaudible?, one offer per take
+    assert out["suggested"] == {"retake?": 1, "inaudible?": 2}
     assert out["removed"]["fillers"] == 1 and out["removed"]["seconds"] > 0
     assert out["removed"]["seconds"] == pytest.approx(SOURCE_S - out["kept"]["seconds"], abs=0.02)
     lines = out["cut"].splitlines()
@@ -1363,9 +1364,9 @@ def test_a_five_word_repeat_inside_one_line_is_removed_the_last_kept(tmp_path, m
     plan, _ = run(d, monkeypatch=monkeypatch)
     text = (d / "cut-plan.md").read_text()
     cut, unused = sections(text)
-    assert re.sub(r" \{[\d.]+\}", "", cut[0]).startswith("A1 so the frame went past straight and tipped over. [")
+    assert re.sub(r" \{[\d.]+\}", "", cut[0]).startswith("A2 so the frame went past straight and tipped over. [")
     # v5: the pause before the second saying is a silence the mechanical pass cut, so the first saying is a row of
-    # its own (the line cut there is two rows), removed whole
+    # its own, with its own id (review A-B1), removed whole
     assert unused == [next(r for r in unused if re.sub(r" \{[\d.]+\}", "", r).startswith(
         "A1 so the frame went past straight ["))]
     # with the pause before the second saying (D3), select's restart rule takes it before the phrase rule does
@@ -1378,11 +1379,11 @@ def test_a_removed_inline_retake_comes_back_by_putting_its_star_row_in_place(tmp
     d = spoken_project(tmp_path, ["so the frame went past straight | so the frame went past straight and tipped over."])
     run(d, monkeypatch=monkeypatch)
     lines = (d / "cut-plan.md").read_text().splitlines()
-    # v5: the removed saying is a row of its own (the line was cut at the silence before the second saying): moved
-    # back into ## Cut, before the row it was cut from
+    # v5: the removed saying is a row of its own (A1: the line was cut at the silence before the second saying, A2):
+    # moved back into ## Cut, before the row it was cut from
     gone = next(ln for ln in lines[lines.index("## Unused"):] if ln.startswith("A1 "))
     lines = [ln for ln in lines if ln is not gone]
-    at = next(i for i, ln in enumerate(lines) if ln.startswith("A1 "))
+    at = next(i for i, ln in enumerate(lines) if ln.startswith("A2 "))
     lines.insert(at, gone)
     (d / "cut-plan.md").write_text("\n".join(lines) + "\n")
     run(d, "--plan", str(d / "cut-plan.md"), monkeypatch=monkeypatch)
@@ -1474,7 +1475,8 @@ def test_a_made_up_tail_glued_to_the_last_line_is_dropped(tmp_path, monkeypatch)
     d = _tail_project(tmp_path, "Thank you.", audible=False)
     plan, _ = run(d, monkeypatch=monkeypatch)
     cut, unused = sections((d / "cut-plan.md").read_text())
-    assert "Thank" not in " ".join(cut) and any(r.startswith("*A1 ") and r.endswith(" pause]") for r in unused)
+    # review A should-fix 5: made-up words on a quiet end go on the audio's evidence: tagged inaudible, not pause
+    assert "Thank" not in " ".join(cut) and any(r.startswith("*A1 ") and r.endswith(" inaudible]") for r in unused)
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
     assert said_text(d) == "you learn it by doing it again and again"
 
@@ -1552,7 +1554,8 @@ def test_an_elongated_word_is_tightened_to_its_sound(tmp_path, monkeypatch):
     d = tone_project(tmp_path, [("vo", spans, 3.0, words)])
     plan, _ = run(d, monkeypatch=monkeypatch)
     # v5: cut at the silence, so the line is two rows, "you feel" and "lean now." (b7639ba5: "feel {0.08} lean")
-    assert "\nA1 you feel [" in (d / "cut-plan.md").read_text() and "\nA1 lean now. [" in (d / "cut-plan.md").read_text()
+    # review A-B1: each piece its own id
+    assert "\nA1 you feel [" in (d / "cut-plan.md").read_text() and "\nA2 lean now. [" in (d / "cut-plan.md").read_text()
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
     assert said_text(d) == "you feel lean now."
     assert max(_gaps(d)) <= 0.08 + 0.02
@@ -1913,7 +1916,8 @@ def test_the_breath_is_clamped(tmp_path, monkeypatch, breath, kept):
     plan, _ = run(d, "--breath", breath, monkeypatch=monkeypatch)
     assert f"breath {kept / 2:.3f}" in (d / "cut-plan.md").read_text()
     run(d, "--plan", plan["plan"], monkeypatch=monkeypatch)
-    assert max(_gaps(d)) == pytest.approx(kept, abs=0.02)
+    # the joined flat cap (L-B1) keeps a silence's pads within max-pause, so 0.45 of breaths can come out a little short
+    assert max(_gaps(d)) == pytest.approx(kept, abs=0.05)
 
 
 def test_dead_air_at_a_sentence_end_keeps_a_sentence_pause(tmp_path, monkeypatch):

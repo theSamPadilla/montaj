@@ -5,8 +5,10 @@ compare's lost-word and island columns:
 - FLAT, on the JOINED timeline (the speech items in timeline order, runs going on across cuts): each item's 10 ms RMS
   frames of its source (the engine's own envelope, lib/speech_energy.envelope: the louder channel of each frame),
   "flat" when under the source's speech level (waveform_trim.speech_level: the gated 95th percentile) less 30 dB, or
-  every frame of a source at or under -100 dB. No flat run longer than max-pause, and at most LEAD_S of flat before
-  the video's first sound and after its last. No exemption: a silence kept whole for an overlay (D2, `held`) and a
+  every frame of a source at or under -100 dB; one difference from flat.py: a frame of a soft word's burst (the
+  engine's, recomputed here) is sound (review B L-B2: frame by frame, never a whole run). No flat run longer than
+  max-pause, and at most LEAD_S of flat before the video's first sound and after its last (a burst included). No
+  run exemption: a silence kept whole for an overlay (D2, `held`) and a
   clip kept whole (b-roll, `whole`) are each reported in a column of their own, never hidden;
 - LOST: every word the person keeps (a test names its sound) whose peak is at or over LOUD_DB (absolute, as
   compare's guard) plays every one of its loud frames (those at or over LOUD_DB);
@@ -40,9 +42,30 @@ def frames_db(path):
     return _FRAMES[key]
 
 
-def flat_of(db, ref):
-    """flat.py v2's flat frames: under ref - 30, or every frame when the source is at or under -100 dB."""
-    return [True] * len(db) if ref <= -100 else [v < ref - 30 for v in db]
+def flat_of(db, ref, sound=()):
+    """flat.py v2's flat frames: under ref - 30, or every frame when the source is at or under -100 dB; but a frame of
+    a soft word's burst (`sound`, the engine's) is sound (L-B2: counted frame by frame, never a whole run exempt)."""
+    return [True] * len(db) if ref <= -100 else [v < ref - 30 and k not in sound for k, v in enumerate(db)]
+
+
+def burst_frames(d, project=None, max_pause=MAX_PAUSE):
+    """{media basename: set of frame indexes}: the soft words' bursts, as lib/speech_energy reads them on each
+    source's own transcript (the frames it keeps as a word's sound under the line)."""
+    from lib.speech_lines import load_words
+    project = project or _project(d)
+    out = {}
+    for it in _items(project):
+        f = os.path.basename(it["src"])
+        if f in out:
+            continue
+        side = os.path.splitext(_media(d, it))[0] + ".json"
+        if not os.path.isfile(side):
+            out[f] = set()
+            continue
+        ref = speech_energy.Refiner(max_pause)
+        ref(f, _media(d, it), load_words(side))
+        out[f] = set(ref.layers[f].attached)
+    return out
 
 
 def _project(d):
@@ -58,16 +81,17 @@ def _media(d, it):
     return os.path.join(str(d), os.path.basename(it["src"]))
 
 
-def _timeline(d, project, held=None, whole=()):
+def _timeline(d, project, held=None, whole=(), max_pause=MAX_PAUSE):
     """The joined timeline: [(media basename, source frame, flat, exempt)] per frame of every speech item in timeline
     order. exempt: "held" for a frame inside a silence kept for an overlay ({media: [(start, end)]}), "whole" for a
     frame of an item kept whole (b-roll: item ids), else None."""
     out = []
     held = held or {}
+    sound = burst_frames(d, project, max_pause)
     for it in sorted(_items(project), key=lambda it: float(it["start"])):
         f = os.path.basename(it["src"])
         db, ref = frames_db(_media(d, it))
-        flat = flat_of(db, ref)
+        flat = flat_of(db, ref, sound.get(f, ()))
         a, b = float(it["inPoint"]), float(it["outPoint"])
         lo, hi = int(a * 100), int(b * 100)
         for k in range(lo, min(hi, len(db))):
@@ -82,7 +106,7 @@ def flat_report(d, max_pause=MAX_PAUSE, held=None, whole=()):
     "over_max_pause", "runs", "held_runs", "whole_runs"}. A run over max-pause holding a frame of a held silence (D2)
     or of a whole-kept clip goes to its own column."""
     project = _project(d)
-    tl = _timeline(d, project, held, whole)
+    tl = _timeline(d, project, held, whole, max_pause)
     flags = [x[2] for x in tl]
     runs, held_runs, whole_runs, longest = [], [], [], 0.0
     for i, j in flat_runs([0.0 if f else 1.0 for f in flags], 0.5):
@@ -102,19 +126,37 @@ def flat_report(d, max_pause=MAX_PAUSE, held=None, whole=()):
 def wordless(d, max_pause=MAX_PAUSE):
     """Kept pieces standing alone on the timeline (L-B4) that hold no word (none of the source's words has its middle
     in it, by derive's reading) and under ISLAND_S of sound (frames not flat)."""
-    from tests.steps import test_cut as tc
+    from lib import speech_text
     project = _project(d)
-    der = tc.as_cut_reads(project, d)
+    der = speech_text.derive(project, str(d), project["tracks"][0]["id"], refiner=speech_energy.Refiner(max_pause))
     worded = {r.item_ids[0] for r in der.cut if r.kind == "speech" and r.words}
+    # the played words' whisper spans (their transcript's own times): sound inside one may be that word's (drift),
+    # so it is no lone piece (the engine's rule too)
+    from lib.speech_lines import load_words
+    spans, raw = {}, {}
+    for r in der.cut:
+        if r.kind == "speech":
+            src = next(s for s, lt in der.letters.items() if lt == r.line.rstrip("0123456789"))
+            if src not in raw:
+                side = os.path.splitext(src)[0] + ".json"
+                raw[src] = {w.idx: w for w in load_words(side)} if os.path.isfile(side) else {}
+            for w in r.words:
+                x = raw[src].get(w.idx)
+                if x is not None:
+                    spans.setdefault(os.path.basename(src), []).append((x.start, x.end))
     out = []
+    sound = burst_frames(d, project, max_pause)
     for it in _items(project):
         if it.get("id") in worded:
             continue
         db, ref = frames_db(_media(d, it))
-        flat = flat_of(db, ref)
+        flat = flat_of(db, ref, sound.get(os.path.basename(it["src"]), ()))
         a, b = float(it["inPoint"]), float(it["outPoint"])
-        sound = sum(1 for k in range(int(a * 100), min(int(b * 100), len(db))) if not flat[k]) / 100
-        if sound < ISLAND_S - 1e-9:
+        snd = [k for k in range(int(a * 100), min(int(b * 100), len(db))) if not flat[k]]
+        sound = len(snd) / 100
+        mine = spans.get(os.path.basename(it["src"]), [])
+        if sound < ISLAND_S - 1e-9 and not any(db[k] >= LOUD_DB and s0 - 1e-6 <= (k + 0.5) / 100 <= s1 + 1e-6
+                                               for k in snd for s0, s1 in mine):
             out.append((round(a, 3), round(b, 3), sound))
     return out
 

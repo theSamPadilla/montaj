@@ -249,7 +249,8 @@ def derive(project: dict, project_dir: str, track: str | None = None, sils: dict
             # fix pass 4: lines split where they split before the refiner's silence trim (see take_span); their
             # words are the trimmed ones, which the timeline is built on
             by_idx = {w.idx: w for w in refined}
-            lines[k] = [Line(ln.id, tuple(by_idx[w.idx] for w in ln.words)) for ln in split_lines(letter, before)]
+            lines[k] = [Line(ln.id, tuple(by_idx[w.idx] for w in ln.words))
+                        for ln in split_lines(letter, before, stats.get("line_breaks") or frozenset())]
             untrimmed.update(((letter, w.idx), (w.start, w.end)) for w in before)
     line_of = {k: {w.idx: ln for ln in lines[k] for w in ln.words} for k in keys}
 

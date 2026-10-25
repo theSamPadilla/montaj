@@ -50,11 +50,12 @@ from steps.speech.transcribe import transcribe as transcribe_file
 VERSION_MESSAGE = "version: before cut"
 PLAN_FILE = "cut-plan.md"
 PLAN_HELP = ("Edit, then run cut with plan: move a row from ## Unused into ## Cut to keep it, delete a row "
-             "from ## Cut to drop it, move rows to reorder. A line cut at a silence is two rows with one id. A * "
-             "row is the whole of a trimmed line: put it in place of that line's rows. A tag ending in ? is a "
-             "suggestion, not made: retake? and false-start? rows are still in ## Cut (delete them there to take "
-             "it); a repeat?, restart?, abandoned?, inaudible? or spliced group is the take trimmed (it replaces "
-             "that take's rows in ## Cut).")
+             "from ## Cut to drop it, move rows to reorder. A line cut at a silence is a row of its own. A * row is "
+             "the whole of a trimmed row: put it in place of that row. A tag ending in ? is a suggestion, not made: "
+             "retake? and false-start? rows are still in ## Cut (delete them there to take it); a repeat?, "
+             "restart?, abandoned?, inaudible? or spliced group is the take trimmed (it replaces that take's rows in "
+             "## Cut). A * row tagged inaudible? holds the video's first or last word, too soft to play: put it in "
+             "place of its row to keep it.")
 # Why a row is in a plan's ## Unused.
 WHYS = ("retake", "false-start", "repeat", "restart", "abandoned", "filler-only", "pause", "earlier", "inaudible")
 REMOVED_CAP_BYTES = 1500
@@ -160,12 +161,18 @@ def _mechanical(work, project_path, ti, project_dir, fillers, lineage, whole=Non
                     if held is not None:
                         held.append(f"{float(it.get('start', 0)) + s0 - lo:.1f} s")
         keeps = [list(k) for k in refiner.keeps(r["src"])]
-        # sound before the clip's first word or after its last belongs to no word (layer 2): not speech
-        mine = [p for p in placed if lo <= (p.start + p.end) / 2 < hi]
+        # sound before the clip's first word or after its last belongs to no word (layer 2): not speech; sound in the
+        # first word's whisper span before its placement (the last's after it) is that word's, drifted
+        mine = [(w, p) for w, p in zip(raw, placed) if lo <= (p.start + p.end) / 2 < hi]
         if mine:
-            w0, w1 = min(p.start for p in mine) - refiner.breath, max(p.end for p in mine) + refiner.breath
+            first, last = min(mine, key=lambda x: x[1].start), max(mine, key=lambda x: x[1].end)
+            w0 = min(first[1].start, first[0].start) - refiner.breath
+            w1 = max(last[1].end, last[0].end if any(c.isalnum() for c in last[0].text) else 0.0) + refiner.breath
             keeps = [[max(a, w0), min(b, w1)] for a, b in keeps if min(b, w1) - max(a, w0) > 1e-6]
         placed_words = [{"text": w.text, "start": p.start, "end": p.end} for w, p in zip(raw, placed)]
+        if mine:                   # rm_fillers snaps the head to the first word: to its drifted sound too
+            k0 = next(n for n, (w, p) in enumerate(zip(raw, placed)) if p is first[1])
+            placed_words[k0]["start"] = min(placed_words[k0]["start"], first[0].start)
         keeps, cuts, _ = rm_fillers.spec_keeps(keeps, placed_words, fillers)
         if not _window_has(keeps, lo, hi):
             continue
@@ -266,7 +273,7 @@ def _trimmed(row, drop):
 
 # ── the plan ─────────────────────────────────────────────────────────────────
 
-_WHY_ORDER = ("retake", "false-start", "repeat", "restart", "abandoned", "pause", "inaudible")
+_WHY_ORDER = ("retake", "false-start", "repeat", "restart", "abandoned", "pause", "inaudible", "inaudible?")
 SENTENCE_END_S = speech_energy.SENTENCE_END_S
 
 
@@ -685,9 +692,15 @@ def _build(project_path, project_dir, disk, track_id, language, warnings, max_pa
                 warnings.append(f"takes are not chosen for {language}: only silences and fillers are cut")
             else:
                 b["sel"] = select([u for u, _, _ in units], is_filler)
+                for ui in b["sel"].losers:
+                    # made-up words on a quiet end go on the audio's evidence (every word inaudible): tagged so
+                    # (review A should-fix 5), not as a pause
+                    if units[ui][0].madeup and b["sel"].why.get(ui) == "pause":
+                        b["sel"].why[ui] = "inaudible"
                 _made_up_tails(b, speech_units.made_up_tail_words(units, d.inaudible, durations=False))
                 _inaudible(b, units, d.inaudible)
                 _phrases(b, units, is_filler)          # on the words still heard
+                _edge_soft(b, units, d)
                 _quiet_offers(b, units, d)
                 _spliced(b, units)
             return b
@@ -730,12 +743,47 @@ def _phrases(b, units, is_filler):
 
 
 def _made_up_tails(b, tails):
-    """A made-up tail glued onto a kept line (lib/speech_units.made_up_tail_words) goes as a pause, word for word."""
+    """A made-up tail glued onto a kept line (lib/speech_units.made_up_tail_words, every word of it inaudible) goes,
+    word for word, tagged inaudible (review A should-fix 5)."""
     sel, why_at = b["sel"], b.setdefault("why_at", {})
     for ui, pos in tails.items():
         if ui in sel.kept:
             sel.drop.setdefault(ui, set()).update(pos)
-            why_at.setdefault(ui, {}).update({k: "pause" for k in pos})
+            why_at.setdefault(ui, {}).update({k: "inaudible" for k in pos})
+
+
+def _edge_soft(b, units, d):
+    """2b's (b), with the orchestrator's guard: the video's very first word and its very last, when soft (all its sound
+    under the line) and peaking under speech_energy.GUARD_DB, is not played: it goes to ## Unused tagged inaudible?,
+    and one move puts it back. A word the guard hears plays (its own burst)."""
+    sel, ref, why_at = b["sel"], b["refiner"], b.setdefault("why_at", {})
+    src_of = {letter: src for src, letter in d.letters.items()}
+    order = [sel.kept[s] for s in range(len(sel.sections)) if not units[sel.kept[s]][0].fixed]
+    if not order:
+        return
+
+    def keys(ui):
+        return [(_line_key(r.line)[0], w.idx) for _, r in units[ui][1] for w in r.words]
+
+    def soft(key):
+        pk = ref.soft.get(src_of.get(key[0]), {}).get(key[1])
+        return pk is not None and pk < speech_energy.GUARD_DB
+
+    for ui, step in ((order[0], 1), (order[-1], -1)):
+        ks, gone = keys(ui), sel.drop.get(ui, set())
+        pos = [k for k in (range(len(ks)) if step > 0 else range(len(ks) - 1, -1, -1))
+               if k not in gone and norm(units[ui][0].words[k])]
+        hit = pos[:1] if pos and soft(ks[pos[0]]) else []
+        for k in pos[len(hit):] if hit else pos:
+            # a word with no sound of its own beside it (offered, folded) goes with it: it would open (or end)
+            # the video on silence
+            if ks[k][1] in ref.soundless.get(src_of.get(ks[k][0]), ()) and soft(ks[k]):
+                hit.append(k)
+            else:
+                break
+        if hit and len(hit) < len(pos):
+            sel.drop.setdefault(ui, set()).update(hit)
+            why_at.setdefault(ui, {}).update({k: "inaudible?" for k in hit})
 
 
 def _inaudible(b, units, inaudible):
@@ -802,8 +850,8 @@ def _spliced(b, units):
 
 
 _CATEGORY = {"retake": "retake", "false-start": "retake", "repeat": "retake", "restart": "retake",
-             "abandoned": "retake", "earlier": "retake", "inaudible": "inaudible", "pause": "tail",
-             "filler-only": "fillers"}
+             "abandoned": "retake", "earlier": "retake", "inaudible": "inaudible", "inaudible?": "inaudible",
+             "pause": "tail", "filler-only": "fillers"}
 
 
 def _spans(project, ti, project_dir):
@@ -978,7 +1026,7 @@ def _plan_warnings(b, final, project_dir, held):
         if kept < LOSES_MOST * (hi - lo):
             out.append(f"{it['id']} keeps only {round(100 * kept / (hi - lo))}% of its length")
     d, units, why_at = b["d"], b["units"], b.get("why_at", {})
-    lost, total = {}, {}
+    lost, total, seen = {}, {}, set()
     for ui, (u, rows, _) in enumerate(units):
         if u.fixed:
             continue
@@ -986,10 +1034,15 @@ def _plan_warnings(b, final, project_dir, held):
         for _, r in rows:
             lt = _line_key(r.line)[0]
             total[lt] = total.get(lt, 0) + len(r.words)
-            for _w in r.words:
+            for w in r.words:
+                seen.add((lt, w.idx))
                 if why_at.get(ui, {}).get(n) == "inaudible":
                     lost[lt] = lost.get(lt, 0) + 1
                 n += 1
+    for lt, i in getattr(d, "inaudible", ()):            # cut with their silence, never played: in no take
+        if (lt, i) not in seen:
+            lost[lt] = lost.get(lt, 0) + 1
+            total[lt] = total.get(lt, 0) + 1
     names = {letter: os.path.basename(src) for src, letter in d.letters.items()}
     for lt, n in sorted(lost.items()):
         if n >= INAUDIBLE_WARN_WORDS and n >= INAUDIBLE_WARN_SHARE * total.get(lt, 1):
@@ -1008,15 +1061,60 @@ def _piece_warnings(d, flagged, slivers=True):
     line_of = {(_line_key(ln.id)[0], w.idx): ln.id for ln in d.lines.values() for w in ln.words}
     out = []
     for kind, say in (("island", "kept {n} short piece(s) with a heard word, under {s:.2f} s: {w}"),
-                      ("sliver", "dropped {n} short piece(s) with no heard word: {w}")):
+                      ("sliver", "dropped {n} short piece(s) with no heard word: {w}"),
+                      ("wordless", "dropped {n} short piece(s) of sound with no word: {w}")):
         if kind == "sliver" and not slivers:
             continue
         hits = [f for f in flagged or [] if f.get("kind") == kind]
         if hits:
-            where = [f"{line_of.get((f['letter'], (f.get('idx') or [None])[0]), f['letter'])} {f['seconds']:.2f} s"
+            where = [f"{f['letter']} at {f['at']:.2f} s" if kind == "wordless" else
+                     f"{line_of.get((f['letter'], (f.get('idx') or [None])[0]), f['letter'])} {f['seconds']:.2f} s"
                      for f in hits]
             out.append(say.format(n=len(hits), s=speech_energy.ISLAND_S, w=", ".join(where[:8])))
     return out
+
+
+def _layer1_warnings(b):
+    """What layer 1 says for an answer: pieces of sound with no word it dropped (L-B4), and a room so loud its pauses
+    can't be trimmed (review B should-fix 2)."""
+    ref, out = b["refiner"], []
+    letters = b["d"].letters if b.get("d") is not None else {}
+    hits = [f"{letters.get(src, os.path.basename(src))} at {a:.2f} s" for src, iv in ref.dropped.items() for a, _ in iv]
+    if hits:
+        out.append(f"dropped {len(hits)} short piece(s) of sound with no word: {', '.join(hits[:8])}")
+    for src, speech, room in ref.loud_room():
+        out.append(f"the room is loud in {os.path.basename(src)} ({speech - room:.0f} dB under the speech): its pauses "
+                   "can't be trimmed")
+    return out
+
+
+def _played_mismatch(b, res, project_dir, text):
+    """The backstop (review A-B1): the plan's rows against what its preview plays, word for word, in source words:
+    the kept rows' words (as the apply reads them) that do not play, and the words that play but no kept row holds.
+    Returns a short description of the first mismatch, or None."""
+    d = b["d"]
+    header, rows = speech_text.parse(_untagged(text)[0])
+    want = set()
+    by_line = {ln.id: ln for ln in d.lines.values()}
+    for r in rows:
+        if r.kind != "speech" or not r.tokens or r.line not in by_line:
+            continue
+        ln = by_line[r.line]
+        toks = [norm(t) for t in r.tokens]
+        ws = [w for w in ln.words if norm(w.text)]
+        k = 0
+        for w in ws:                       # the row's words in its line, in order
+            if k < len(toks) and norm(w.text) == toks[k]:
+                want.add((r.letter, w.idx))
+                k += 1
+    d2 = speech_text.derive(res.get("_lifted", res["_project"]), project_dir, track=d.track_id, refiner=b["refiner"])
+    letter_of = {d2.letters[src]: d.letters.get(src) for src in d2.letters}
+    played = {(letter_of.get(_line_key(r.line)[0]), w.idx) for r in d2.cut if r.kind == "speech"
+              for w in r.words if norm(w.text)}
+    extra, missing = sorted(played - want), sorted(want - played)
+    if extra or missing:
+        return f"plays {extra[:3]} it does not keep, and keeps {missing[:3]} it does not play"
+    return None
 
 
 def _silence_stamp(b, track_id):
@@ -1118,9 +1216,14 @@ def _make_plan(args, project_path, project_dir):
             # the plan would not say what its apply does (R3 should-fix 2): never write one that may not
             fail("plan_unsettled", "cut could not settle its plan: each preview changed it again, so nothing was "
                                    "written. Run cut again, and report it if this repeats.")
+        wrong = _played_mismatch(b, res, project_dir, text)
+        if wrong:
+            # every row plays exactly its own words (review A-B1's backstop): never write a plan that would not
+            fail("plan_unsettled", f"cut's plan would not play what it says ({wrong}), so nothing was written. "
+                                   "Report it, with the project.")
         warnings[:] = [w for w in warnings if " keeps only " not in w] + _plan_warnings(b, res["_project"], project_dir,
                                                                                          held) \
-            + _piece_warnings(b["d"], res.get("flagged"), slivers=False)
+            + _piece_warnings(b["d"], res.get("flagged"), slivers=False) + _layer1_warnings(b)
         kept_s, duration = _sums(res["_project"], track_id)
         by_cause, inaudible = _removed_by(b, res["_project"], project_dir, max_pause, b["units"])
         path, prev = _write_plan(project_path, disk.get("id"), text)
@@ -1175,8 +1278,16 @@ def _apply_plan(args, project_path, project_dir):
     _track(normalize_tracks(copy.deepcopy(disk)), track_id)
     plan_lang, plan_pause, plan_breath = _plan_meta(text)
     language = args.language or plan_lang or "en"
-    max_pause = args.max_pause if args.max_pause is not None else (
-        plan_pause if plan_pause is not None else FEELS[DEFAULT_FEEL].max_pause)
+    asked_pause = plan_pause if args.max_pause is None else args.max_pause
+    pause_off = plan_pause is not None and abs(asked_pause - plan_pause) > 1e-6
+    breath_off = (plan_breath is not None and args.breath != speech_energy.BREATH_S
+                  and abs(min(max(args.breath, BREATH_MIN_S), asked_pause / 2) - plan_breath) > 1e-6)
+    if pause_off or breath_off:
+        # the plan was made with another max-pause or breath: its base is another (review A should-fix 4)
+        fail("stale_plan", "This plan was made with another max-pause or breath. Run cut again with them, or apply "
+                           "it without them (your edited plan is kept).")
+    max_pause = plan_pause if plan_pause is not None else (
+        args.max_pause if args.max_pause is not None else FEELS[DEFAULT_FEEL].max_pause)
     breath = plan_breath if plan_breath is not None else min(max(args.breath, BREATH_MIN_S), max_pause / 2)
     warnings = []
     b = _build(project_path, project_dir, disk, track_id, language, warnings, max_pause, breath)
@@ -1217,7 +1328,7 @@ def _apply_plan(args, project_path, project_dir):
         final = res["_project"]
         layers = _layers(res.get("flagged"))
         warnings[:0] = _audio_warnings(res.get("flagged"))
-        warnings += _piece_warnings(b["d"], res.get("flagged"))
+        warnings += _piece_warnings(b["d"], res.get("flagged")) + _layer1_warnings(b)
         warnings += [w for w in res.get("warnings", []) if w not in warnings]
     _, duration = _sums(final, track_id)
     if version:

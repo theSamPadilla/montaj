@@ -316,14 +316,16 @@ def test_the_fixture_keeps_a6s_offer_and_timeline_and_passes_the_checks(tmp_path
 
 
 def test_the_second_half_of_a_split_row_deletes_alone(tmp_path, monkeypatch):
-    """A line cut at a silence is two rows with one id: deleting the second row removes only its words."""
+    """A line cut at a silence is a row per piece, each its own id (review A-B1): deleting the second removes only
+    its words."""
     tones = [(0.30, 0.55, SP), (0.60, 0.85, SP), (1.40, 1.65, SP), (1.70, 1.95, SP)]
     words = [("you", 0.30, 0.60), ("feel", 0.60, 0.90), ("lean", 0.90, 1.70), ("now.", 1.70, 1.95)]
     d = project(tmp_path, monkeypatch, [("vo", tones, 2.6, words)])
     tc.run(d, monkeypatch=monkeypatch)
     text = (d / "cut-plan.md").read_text()
-    rows = [ln for ln in text.splitlines() if ln.startswith("A1 ")]
-    assert len(rows) == 2 and rows[0].startswith("A1 you feel ["), rows
+    rows = [ln for ln in text.split("\n## Cut\n")[1].split("\n## Unused")[0].splitlines() if re.match(r"A\d+ ", ln)]
+    # review A-B1: each piece of the line has its own id
+    assert len(rows) == 2 and rows[0].startswith("A1 you feel [") and rows[1].startswith("A2 lean now. ["), rows
     (d / "cut-plan.md").write_text(text.replace(rows[1] + "\n", ""))
     tc.run(d, "--plan", str(d / "cut-plan.md"), monkeypatch=monkeypatch)
     assert tc.said_text(d) == "you feel", tc.said_text(d)
@@ -406,5 +408,7 @@ def test_the_drift_fuzz_passes_every_check(tmp_path, monkeypatch, seed):
     ref = se.Refiner(0.45)
     raw = load_words(str(d / "vo.json"))
     ref("vo", str(d / "vo.mov"), raw)
-    heard = [raw[i].text for i in range(len(raw)) if ref.kinds["vo"][i] == "heard"]
-    assert all(w in said for w in heard), (heard, said, text)
+    heard = [i for i in range(len(raw)) if ref.kinds["vo"][i] == "heard"]
+    # 2b's (b): the video's very first and last words, soft and under the -46 guard, go to ## Unused (inaudible?)
+    edge = {i for i in heard[:1] + heard[-1:] if ref.soft["vo"].get(raw[i].idx, 0.0) < se.GUARD_DB}
+    assert all(raw[i].text in said for i in heard if i not in edge), ([raw[i].text for i in heard], said, text)

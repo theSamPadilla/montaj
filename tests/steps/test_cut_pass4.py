@@ -159,9 +159,10 @@ def test_a_clips_flat_tail_is_trimmed(tmp_path, monkeypatch):
 def a6_offer(unused):
     """The fuzzy retake? offer of A6's take ("Then drag it onto the timeline.", at 10.7, naming the later take at
     17.8): its rows, which v5 cuts at the take's silences, so the line ids are the ones its words have now."""
-    rows = [r for r in unused if r.endswith(" retake? A7 17.8]")]
+    rows = [r for r in unused if re.search(r" retake\? A\d+ 17\.8\]$", r)]
     text = " ".join(re.sub(r"\{[\d.]+\}|\[[^]]*\]", "", r).split(None, 1)[1] for r in rows)
-    return " ".join(text.split()) == "Then drag it onto the timeline." and rows[0].endswith("[10.7 retake? A7 17.8]")
+    return " ".join(text.split()) == "Then drag it onto the timeline." and bool(re.search(r"\[10\.7 retake\? A\d+ 17\.8\]$",
+                                                                                            rows[0]))
 
 
 # ── the take rules read the spans as they were (fix pass 4 is the timeline only) ───────────────────────────────
@@ -175,5 +176,5 @@ def test_the_trim_leaves_the_take_rules_their_offer(tmp_path, stub_transcribe, m
     tc.run(d, monkeypatch=monkeypatch)
     text = (d / "cut-plan.md").read_text()
     cut, unused = tc.sections(text)
-    assert BASE_A6 not in cut and any(r.startswith("A5 drag it [") for r in cut), cut     # the trim is on
+    assert BASE_A6 not in cut and any(re.match(r"A\d+ drag it \[", r) for r in cut), cut     # the trim is on
     assert a6_offer(unused), unused

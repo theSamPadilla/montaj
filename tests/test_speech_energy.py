@@ -144,7 +144,7 @@ def test_a_short_keep_widens_into_its_own_silence_away_from_the_source_edge():
     env = env_of(4.0, (0.1, 0.15, SP), (2.5, 3.5, SP))
     ref = refiner({"a": (env, words(("I", 0.1, 0.15), ("two", 2.5, 3.5)))})
     first = ref.keeps("a")[0]
-    assert first[1] - first[0] == pytest.approx(se.ISLAND_S) and first[0] >= 0.1 - se.VIDEO_EDGE_S - 1e-9
+    assert first[1] - first[0] == pytest.approx(se.ISLAND_TARGET_S) and first[0] >= 0.1 - se.VIDEO_EDGE_S - 1e-9
 
 
 def test_sound_after_the_last_word_is_not_kept():
@@ -169,18 +169,30 @@ def test_a_short_run_of_the_next_words_sound_at_a_spans_end_goes_to_it():
 
 def test_a_soft_word_whose_span_takes_in_a_neighbours_onset_keeps_its_own_sound():
     """R3-B1: 'pigeon' at -55 (35 dB under the speech, under the line) between kept words, its span running 20 ms
-    into 'pepper': the 20 ms are pepper's; pigeon is attached, so its own frames play."""
+    into 'pepper': the 20 ms are pepper's; pigeon is attached, so its own sound plays as one burst, capped at
+    max-pause less two breaths (v5 fix pass: a burst never hides an empty stretch), inside its own 0.6 s."""
     env = env_of(3.2, (0.30, 0.55, SP), (0.60, 0.85, SP), (0.95, 1.55, -55.0), (1.60, 1.85, SP), (1.90, 2.15, SP))
     ws = words(("so", 0.30, 0.60), ("the", 0.60, 0.95), ("pigeon", 0.95, 1.62), ("pepper", 1.62, 1.90),
                ("hot.", 1.90, 2.15))
     out = placed_of(env, ws)
-    assert out[2] == ("pigeon", 0.95, 1.55, "heard") and out[3][1] == 1.6, out
+    _, a, b, k = out[2]
+    assert k == "heard" and 0.95 <= a and b <= 1.55 + 1e-9 and b - a == pytest.approx(0.45 - 2 * se.BREATH_S), out
+    assert out[3][1] == 1.6, out
 
 
-def test_an_attached_word_needs_kept_words_beside_it_and_never_opens_the_video():
+def test_a_soft_word_at_the_lead_or_tail_is_never_attached_but_keeps_its_burst():
+    """Attached needs kept words beside it, so the lead and tail are never attached; but a word 15 dB over the room
+    is never auto-removed (L-B3): it keeps its burst, soft, for cut to send to ## Unused (2b's (b))."""
     env = env_of(3.0, (0.30, 0.50, -55.0), (1.20, 1.50, SP), (2.40, 2.60, -55.0))
-    out = placed_of(env, words(("faint", 0.3, 0.5), ("loud", 1.2, 1.5), ("faint.", 2.4, 2.6)))
-    assert [k for *_, k in out] == ["inaudible", "heard", "inaudible"], out
+    ws = words(("faint", 0.3, 0.5), ("loud", 1.2, 1.5), ("faint.", 2.4, 2.6))
+    ref = refiner({"a": (env, ws)})
+    assert ref.kinds["a"] == ["heard", "heard", "heard"]
+    ref.soft["a"] = {}
+    ref("a", MEDIA, ws) if False else None
+    lay = ref.layers["a"]
+    assert all(max(env[int(p.start / F):int(p.end / F)]) < lay.threshold for p in (ref.placed["a"][0], ref.placed["a"][2]))
+    env = env_of(3.0, (0.30, 0.50, -66.0), (1.20, 1.50, SP), (2.40, 2.60, -66.0))
+    assert [k for *_, k in placed_of(env, ws)] == ["inaudible", "heard", "inaudible"]      # within 6 dB of the room
 
 
 def test_a_breath_with_no_word_stays_silence():
@@ -257,7 +269,7 @@ def test_an_island_widens_into_its_own_silence_and_a_sliver_goes():
     rep = Report()
     out = se.tidy([run_of("a", 0.26, 0.64, [0]), run_of("a", 1.46, 1.64, [1]), run_of("a", 2.2, 2.3),
                    run_of("a", 2.86, 3.24, [2])], _Derived({"a": ws}), ref, rep)
-    assert spans(out)[1] == ("a", 1.375, 1.725, [1]) and len(out) == 3
+    assert spans(out)[1] == ("a", 1.37, 1.73, [1]) and len(out) == 3
     assert not [f for f in rep.flagged if f["kind"] == "island"]
 
 
@@ -283,3 +295,29 @@ def test_the_video_opens_and_ends_on_sound():
     ref.layers["a"].keeps = [[0.0, 4.0]]                                 # as a held silence would leave it
     out = se.tidy([run_of("a", 0.4, 3.0, [0, 1])], _Derived({"a": ws}), ref)
     assert spans(out) == [("a", 0.96, 2.44, [0, 1])]
+
+
+# ── v5 fix pass: a soft word's burst (v5a fix 2, L-B2): capped, never into a heard word ─────────────────────
+
+def test_a_soft_words_burst_is_capped_so_it_never_hides_an_empty_stretch():
+    """A soft 'so' stretched over 1.5 s of even sub-line noise (35 dB under) between heard words: its burst is one
+    run of at most min(LETTER_S x letters + WORD_BASE_S, max-pause - 2 breaths), never the 1.5 s."""
+    env = env_of(4.0, (0.30, 0.60, SP), (0.65, 0.95, SP), (1.0, 2.5, SP - 35.0), (2.80, 3.10, SP), (3.15, 3.45, SP),
+                 noise=-75.0)
+    ws = words(("this", 0.30, 0.65), ("is", 0.65, 0.98), ("so", 0.98, 2.60), ("very", 2.80, 3.15), ("good.", 3.15, 3.45))
+    ref = refiner({"a": (env, ws)})
+    att = sorted(ref.layers["a"].attached)
+    cap = min(se.LETTER_S * 2 + se.WORD_BASE_S, 0.45 - 2 * se.BREATH_S)
+    assert att and len(att) * F <= cap + 1e-9 and att[-1] - att[0] + 1 == len(att), (len(att), cap)
+
+
+def test_a_soft_words_burst_never_reaches_into_a_heard_words_sound():
+    """'the' (soft, at -55) right before 'bike' (heard): its burst, DRIFT_S wide of its span, stops at bike's placed
+    sound, and so does the word before's."""
+    env = env_of(3.0, (0.30, 0.60, SP), (0.70, 0.90, -55.0), (0.92, 1.30, SP), (1.40, 1.70, SP))
+    ws = words(("we", 0.30, 0.68), ("the", 0.68, 0.92), ("bike", 0.92, 1.30), ("now.", 1.40, 1.70))
+    ref = refiner({"a": (env, ws)})
+    p = ref.placed["a"]
+    att = ref.layers["a"].attached
+    assert att and all(not (p[k].start / F - 1e-6 <= f < p[k].end / F - 1e-6) for f in att for k in (0, 2)), \
+        (sorted(att), [(w.start, w.end) for w in p])

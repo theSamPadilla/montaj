@@ -23,10 +23,12 @@ Layer 2, WHAT TO REMOVE, is whisper's words (cut's take rules). Here each word i
   of DRIFT_S or less at its start that goes on from the sound the word before is placed on is that word's, and one
   at its end that goes on into the next word's span is the next word's; of what is left, the run with the most
   voiced frames is its own. So removing a word removes exactly its voiced regions;
-- ATTACHED (the orchestrator's rule, binding): a word with no voiced frame between the source's first and last heard
-  words, with a heard word on each side or within max-pause of one, keeps its own sound under the line: the frames
-  of its span at or over the speech level less ATTACHED_BELOW_SPEECH_DB are voiced for layer 1 (layer 1 is read
-  again with them), so it is heard. Never the lead or tail, and never sound with no word attached (a breath);
+- SOFT words (_attached_frames): a word with no voiced frame keeps ONE BURST of its own sound under the line (the
+  run around its loudest frame, a 0.1 s dip ending it, at least BURST_MIN_S, at most its expected length and max-pause
+  less two breaths, never into a heard word's sound): ATTACHED (the orchestrator's rule) between kept words, at
+  max(speech - 40 dB, room + 10 dB); PROTECTED anywhere when it peaks at GUARD_DB or more than PROTECT_OVER_ROOM_DB
+  over the room (never auto-removed, review B L-B3). The room is the 10th-percentile flat frame. Layer 1 is read again
+  with the bursts as sound until nothing changes. Never sound with no word attached (a breath between words);
 - a word with no voiced frame is OFFERED (stats["quiet"]: cut tags it `inaudible?`) and kept: where its span meets a
   voiced run (a pause inside the keeps), it is placed there;
 - a word whose span lies wholly in a silence is INAUDIBLE (stats["inaudible"]), unless whisper misplaced it (the
@@ -40,13 +42,11 @@ its last. The placed spans are what the take, break and F1 rules read too (stats
 speech_text.take_span): the silence trim never moves them.
 
 The silence trim is a pure function of the kept source intervals and layer 1 (`tidy`): every kept speech run is cut
-to layer 1's keeps, so a silence over max-pause inside it keeps only its breaths, and it never touches a voiced
-frame. Then no kept piece shorter than ISLAND_S stands alone: (a) it joins its neighbour across a pause cut when no
-word lies between and the joined piece holds no flat run over max-pause; (b) else it widens into its own silence
-(flat frames, never a removed word or another piece, and never past VIDEO_EDGE_S of flat at the video's edges); (c) a
-piece with no voiced frame goes (a sliver); (d) any other stays and is named. The video's first piece opens a breath
-before its first voiced frame, and its last ends a breath after its last. A clip kept whole (cut's b-roll,
-Refiner.whole) is left as it is.
+to layer 1's keeps, the video's edges get a breath, islands join or widen, then on the JOINED timeline no flat stretch
+(a soft word's burst counted as sound) runs over max-pause across a cut (_cap: the pause rule and the kept words in
+it), and no lone piece with no sound or with no word and under ISLAND_S of sound stays (L-B4: sound a kept word's
+whisper span holds, at the guard's level, is that word's and stays). Layer 1 drops the same wordless pieces up front
+(Refiner.dropped). A clip kept whole (cut's b-roll, Refiner.whole) is left as it is.
 
 cut uses this through `Refiner`, which speech_text.derive calls in place of speech_lines.refine (in the plan and in
 its apply alike) and whose `tidy` cleans the apply's runs. speech_edit is unchanged.
@@ -71,7 +71,16 @@ FRAME_S = waveform_trim.FRAME_S
 RATE = 16000
 SPEECH_PERCENTILE = waveform_trim.SPEECH_PERCENTILE
 SILENCE_BELOW_SPEECH_DB = 30.0   # a frame this far under the source's speech level is flat (silence)
-ATTACHED_BELOW_SPEECH_DB = 40.0  # ... but an attached word's own frames down to this far under it are its sound
+ATTACHED_BELOW_SPEECH_DB = 40.0  # ... but an attached word's own frames down to this far under it are its sound,
+ATTACHED_OVER_ROOM_DB = 10.0     # ... and this far over the room (v5a fix 1)
+GUARD_DB = -46.0                 # a word peaking at or over this is never auto-removed (compare's guard, L-B3) ...
+PROTECT_OVER_ROOM_DB = 6.0       # ... nor one this far over the room
+BURST_UNDER_PEAK_DB = 6.0        # a protected word's burst: its frames down to this far under its peak
+BURST_GAP_S = 0.1                # a dip under the line this long ends a word's burst (v5a fix 2)
+BURST_MIN_S = 0.03               # a burst shorter than this is no word's sound (L-B2)
+ISLAND_TARGET_S = 0.36           # what an island widens to: strictly over ISLAND_S, float edges and all (v5a)
+ROOM_NEAR_SPEECH_DB = 33.0       # a room this close under the speech is loud: its pauses can't be trimmed (B sf 2)
+ROOM_DENSE_PERCENTILE = 1        # the room of a source with no flat frame: its 1st-percentile frame
 BREATH_S = 0.04                  # what a silence keeps beside the sound, each side
 SENTENCE_END_S = 0.18            # what a silence after a sentence end keeps in all, at most (D1)
 ISLAND_S = 0.35                  # no kept piece shorter than this stands alone
@@ -86,6 +95,7 @@ WORD_BASE_S = 0.2
 MISPLACED_SHARE = 0.5            # ... the run's letters' share of LETTER_S it must have to spare to hold them
 MIN_KEEP_S = 0.0                 # process_one's min_keep: no keep of sound is ever too short to keep
 MEASURED_SILENCE_S = 0.06        # flat runs this long are the "measured silences" speech_build snaps a cut into
+ATTACH_ROUNDS = 6                # layer 1 read again with the attached frames until nothing changes
 DECODE_TIMEOUT_S = 600
 DEFAULT_MAX_PAUSE_S = 0.45       # speech_build's natural feel, when the refiner was given none
 _SILENT_DB = -120.0
@@ -160,6 +170,8 @@ class Layer:
     keeps: list | None = None
     held: set = field(default_factory=set)
     attached: set = field(default_factory=set)
+    room: float = _SILENT_DB
+    raw_flat: bytearray = field(default_factory=bytearray)    # flat.py's flat frames: the attached ones too
 
 
 def layer1(media, env, max_pause, attached=frozenset()):
@@ -169,7 +181,17 @@ def layer1(media, env, max_pause, attached=frozenset()):
     if not env:
         return Layer(env, _SILENT_DB, _SILENT_DB, bytearray(), [], [[0.0, end]], end)
     speech = waveform_trim.speech_level(env)
+    # the room: the 10th-percentile frame of the flat ones (under the line), so a soft aside filling a tenth of a
+    # dense clip is never read as the room; with none flat, the 1st percentile of all
+    quiet = [v for v in env if v < speech - SILENCE_BELOW_SPEECH_DB]
+    room = waveform_trim.room_level(quiet) if quiet else waveform_trim.percentile(env, ROOM_DENSE_PERCENTILE)
+    if speech <= waveform_trim.DIGITAL_SILENCE_DB:
+        # digital silence: every frame is flat (review B should-fix 4)
+        ones = bytearray(b"\x01" * len(env))
+        return Layer(env, speech, speech, ones, [(0.0, round(end, 6))], [], end, [(0.0, round(end, 6))],
+                     room=room, raw_flat=bytearray(ones))
     thr = speech - SILENCE_BELOW_SPEECH_DB
+    raw_flat = bytearray(1 if v < thr else 0 for v in env)
     flat = bytearray(1 if v < thr and k not in attached else 0 for k, v in enumerate(env))
     reading = [v if flat[k] else max(v, thr) for k, v in enumerate(env)]    # an attached frame reads as sound
     sils = waveform_trim.envelope_silences(reading, thr, max_pause)
@@ -185,32 +207,104 @@ def layer1(media, env, max_pause, attached=frozenset()):
                                            duration=end)["keeps"]
     measured = [(round(a * FRAME_S, 6), round(b * FRAME_S, 6)) for a, b in runs
                 if (b - a) * FRAME_S >= MEASURED_SILENCE_S - 1e-9]
-    return Layer(env, speech, thr, flat, sils, [list(k) for k in voiced], end, measured, attached=set(attached))
+    return Layer(env, speech, thr, flat, sils, [list(k) for k in voiced], end, measured, attached=set(attached),
+                 room=room, raw_flat=raw_flat)
 
 
-def _attached_frames(words, placed, kind, lay, max_pause):
-    """The orchestrator's attached-word rule (binding, 2026-10-24): a word with no voiced frame is ATTACHED when it
-    lies between the source's first and last heard words and has a heard word on each side, or sits within
-    max-pause of a heard word's voiced sound. Its own sound under the line, the frames of its span (between the
-    heard words beside it) at or over the speech level less ATTACHED_BELOW_SPEECH_DB, is kept: those frames are
-    voiced for layer 1. Never before the first heard word or after the last (the lead and tail), and never sound
-    no word is attached to (a breath between words stays silence)."""
+def _protected(lay, peak):
+    """A word with no voiced frame is never auto-removed when its peak reaches GUARD_DB or lies more than
+    PROTECT_OVER_ROOM_DB over the room (review B L-B3; review A A-B2's max(speech - 40, room + 10) is within it)."""
+    return peak >= GUARD_DB or peak > lay.room + PROTECT_OVER_ROOM_DB
+
+
+def _burst_run(lay, k, a, b, line):
+    """The run of frames around frame k, within [a, b), at or over `line`: a dip under it of BURST_GAP_S or more
+    ends it; (first, end) frames, trimmed to frames over the line."""
+    env, gap = lay.env, int(round(BURST_GAP_S / FRAME_S))
+    lo = hi = k
+    for step in (-1, 1):
+        under, f = 0, k + step
+        while a <= f < b:
+            under = under + 1 if env[f] < line else 0
+            if under >= gap:
+                break
+            if env[f] >= line:
+                lo, hi = min(lo, f), max(hi, f)
+            f += step
+    return lo, hi + 1
+
+
+def _attached_frames(words, placed, kind, lay, max_pause, breath=BREATH_S):
+    """The frames layer 1 reads as sound for words with no voiced frame of their own: one BURST each, the run of
+    frames over its line around its loudest frame (in its own span when it has one there), a dip under the line of
+    BURST_GAP_S or more ending it (v5a fix 2, L-B2):
+    - ATTACHED (the orchestrator's rule, binding): a word between the source's first and last heard words with a heard
+      word on each side, or within max-pause of a heard word's sound, at the line max(speech - ATTACHED_BELOW_SPEECH_DB,
+      room + ATTACHED_OVER_ROOM_DB) (v5a fix 1: never at the room);
+    - PROTECTED (L-B3, A-B2): any other word never auto-removed (_protected), at max(room + PROTECT_OVER_ROOM_DB,
+      min(that line, its peak - BURST_UNDER_PEAK_DB)).
+    A burst looks in the word's span and DRIFT_S beside it, never into a heard word's placed sound; two soft words'
+    bursts that meet split at the longest dip between them; each is at most LETTER_S a letter plus WORD_BASE_S and
+    at most max-pause less two breaths (so a burst never hides an empty stretch), and at least BURST_MIN_S. Never
+    sound no word is attached to: a breath between words stays silence."""
     heard = [i for i in range(len(words)) if kind[i] == "heard"]
-    if len(heard) < 2:
-        return set()
-    out = set()
-    floor = lay.speech - ATTACHED_BELOW_SPEECH_DB
-    for i in range(heard[0] + 1, heard[-1]):
+    env = lay.env
+    line0 = max(lay.speech - ATTACHED_BELOW_SPEECH_DB, lay.room + ATTACHED_OVER_ROOM_DB)
+    raw = []                                  # [anchor, lo, hi, line, cap]
+    for i, w in enumerate(words):
         if kind[i] == "heard":
             continue
-        prev = max(h for h in heard if h < i)
-        nxt = min(h for h in heard if h > i)
-        w = words[i]
-        near = min(w.start - placed[prev].end, placed[nxt].start - w.end)
-        if not ((prev == i - 1 and nxt == i + 1) or near <= max_pause + _EPS):
+        prev = max((h for h in heard if h < i), default=None)
+        nxt = min((h for h in heard if h > i), default=None)
+        lo_t = max(w.start - DRIFT_S, placed[prev].end) if prev is not None else max(0.0, w.start - DRIFT_S)
+        hi_t = min(w.end + DRIFT_S, placed[nxt].start) if nxt is not None else min(lay.end, w.end + DRIFT_S)
+        if hi_t <= lo_t:
             continue
-        a, b = _frames(lay.env, max(w.start, placed[prev].end), min(w.end, placed[nxt].start))
-        out.update(k for k in range(a, b) if lay.env[k] >= floor)
+        a, b = _frames(env, lo_t, hi_t)
+        own = range(*_frames(env, max(lo_t, w.start), min(hi_t, max(w.end, w.start + FRAME_S))))
+        cap = max(1, int(min(LETTER_S * _letters(w.text) + WORD_BASE_S, max_pause - 2 * breath) / FRAME_S + 1e-9))
+        attached = prev is not None and nxt is not None and (
+            (prev == i - 1 and nxt == i + 1)
+            or min(w.start - placed[prev].end, placed[nxt].start - w.end) <= max_pause + _EPS)
+        lines = [line0] if attached else []
+        pk = max(env[a:b], default=_SILENT_DB)
+        if _protected(lay, pk):
+            lines.append(max(lay.room + PROTECT_OVER_ROOM_DB, min(line0, pk - BURST_UNDER_PEAK_DB)))
+        for line in lines:
+            cand = [f for f in own if env[f] >= line] or [f for f in range(a, b) if env[f] >= line]
+            if not cand:
+                continue
+            k = max(cand, key=lambda f: (env[f], -f))
+            lo, hi = _burst_run(lay, k, a, b, line)
+            raw.append([k, lo, hi, line, cap])
+            break
+    raw.sort()
+    for x, y in zip(raw, raw[1:]):            # two bursts that meet split at the longest dip between their anchors
+        if y[1] < x[2]:
+            dips, f = [], x[0]
+            low = min(x[3], y[3])
+            while f < y[0]:
+                if env[f] < low:
+                    g = f
+                    while g < y[0] and env[g] < low:
+                        g += 1
+                    dips.append((g - f, f, g))
+                    f = g
+                else:
+                    f += 1
+            if dips:
+                _, d0, d1 = max(dips)
+                x[2], y[1] = min(x[2], d0), max(y[1], d1)
+            else:
+                mid = (x[0] + y[0] + 1) // 2
+                x[2], y[1] = min(x[2], mid), max(y[1], mid)
+    out = set()
+    for k, lo, hi, line, cap in raw:
+        if hi - lo > cap:
+            lo = max(lo, min(k - cap // 2, hi - cap))
+            hi = lo + cap
+        if (hi - lo) * FRAME_S >= BURST_MIN_S - 1e-9:
+            out.update(f for f in range(lo, hi) if env[f] < lay.threshold)    # its frames under the line only
     return out
 
 
@@ -231,7 +325,7 @@ def _silence_pads(lay, words, placed, kind, breath):
     return out
 
 
-def _keeps(lay, words, placed, kind, breath):
+def _keeps(lay, words, placed, kind, breath, bounds=None):
     """Layer 1's keeps: the voiced runs widened by their breaths (_silence_pads) into the silences beside them, a
     held silence kept whole, then each keep under ISLAND_S widened into its own silences (half each side, the side
     away from a source edge first), always leaving some of each silence cut."""
@@ -255,19 +349,29 @@ def _keeps(lay, words, placed, kind, breath):
             keeps[0][0] = 0.0
         if s1 >= lay.end - _EPS and keeps and keeps[-1][1] < s1:
             keeps[-1][1] = lay.end
+    lo_b, hi_b = (0.0, lay.end) if bounds is None else (max(0.0, bounds[0]), min(lay.end, bounds[1]))
+    keeps = [[round(max(a, lo_b), 6), round(min(b, hi_b), 6)] for a, b in keeps if min(b, hi_b) - max(a, lo_b) > _EPS]
+
+    def sound_edge(kp, side):
+        fa, fb = _frames(lay.env, kp[0], kp[1])
+        hits = [f for f in range(fa, fb) if not lay.flat[f]]
+        if not hits:
+            return kp[0] if side < 0 else kp[1]
+        return hits[0] * FRAME_S if side < 0 else (hits[-1] + 1) * FRAME_S
     # islands: widened into their own silence, leaving MIN_CUT_S of it cut
     for k, kp in enumerate(keeps):
-        need = ISLAND_S - (kp[1] - kp[0])
+        need = ISLAND_TARGET_S - (kp[1] - kp[0])
         if need <= _EPS:
             continue
-        left_room = kp[0] - (keeps[k - 1][1] + MIN_CUT_S if k else 0.0)
-        right_room = (keeps[k + 1][0] - MIN_CUT_S if k + 1 < len(keeps) else lay.end) - kp[1]
+        left_room = kp[0] - (keeps[k - 1][1] + MIN_CUT_S if k else lo_b)
+        right_room = (keeps[k + 1][0] - MIN_CUT_S if k + 1 < len(keeps) else hi_b) - kp[1]
         if k == 0:              # never more than VIDEO_EDGE_S of flat before a source's first sound
-            left_room = min(left_room, kp[0] - (lay.voiced[0][0] - VIDEO_EDGE_S))
+            left_room = min(left_room, kp[0] - (sound_edge(kp, -1) - VIDEO_EDGE_S))
         if k + 1 == len(keeps):
-            right_room = min(right_room, lay.voiced[-1][1] + VIDEO_EDGE_S - kp[1])
+            right_room = min(right_room, sound_edge(kp, 1) + VIDEO_EDGE_S - kp[1])
         left_room, right_room = max(0.0, left_room), max(0.0, right_room)
-        at_start, at_end = k == 0 and kp[0] - left_room <= _EPS, k + 1 == len(keeps) and kp[1] + right_room >= lay.end - _EPS
+        at_start = k == 0 and left_room <= need / 2
+        at_end = k + 1 == len(keeps) and right_room <= need / 2
         if at_start and not at_end:
             right = min(need, right_room)
             left = min(need - right, left_room)
@@ -311,6 +415,7 @@ def place(words, lay, breath=BREATH_S):
             if owner[k] < 0 and w.start - _EPS <= (k + 0.5) * FRAME_S <= w.end + _EPS:
                 owner[k] = i
     drift = int(round(DRIFT_S / FRAME_S))
+    prom = lay.attached                    # frames of a soft word's burst: sound, but never a neighbour's onset
 
     def clusters(a, b):
         out = []
@@ -332,13 +437,26 @@ def place(words, lay, breath=BREATH_S):
         # a neighbour's edge (R3-B1: gapless spans take in 10-30 ms of the word beside): EDGE_BLEED_FRAMES or fewer
         # voiced frames at its span's end (start), after (before) a flat frame of its own span, that go on into the
         # neighbour's span at least as far as they lie in this one, are the neighbour's
-        m = _voiced_run(flat, b - 1, -1, n_fr) if b > a else 0
-        if (i + 1 < n and 0 < m <= EDGE_BLEED_FRAMES and b - m - 1 >= a and flat[b - m - 1] and b < n_fr
+        # Up to DRIFT_S of it when the word keeps sound of its own before (after) that flat frame (review A should-fix
+        # 3: a filler's span over the next word's onset never takes it)
+        def own_sound(lo, hi):
+            return any(not flat[f] for f in range(max(a, lo), min(b, hi)))
+
+        def nat_run(k, step):
+            """Voiced frames in a row from k, natural ones only (not a soft word's burst)."""
+            m2 = 0
+            while 0 <= k < n_fr and not flat[k] and k not in prom:
+                m2, k = m2 + 1, k + step
+            return m2
+        m = nat_run(b - 1, -1) if b > a else 0
+        if (i + 1 < n and 0 < m and b - m - 1 >= a and (flat[b - m - 1] or b - m - 1 in prom) and b < n_fr
+                and (m <= EDGE_BLEED_FRAMES or m <= drift and own_sound(a, b - m - 1))
                 and not flat[b] and _voiced_run(flat, b, 1, n_fr) >= m):
             given[i + 1] = (b - m, b, m)
             b -= m
         m = _voiced_run(flat, a, 1, n_fr) if b > a else 0
-        if (g is None and i > 0 and kind[i - 1] == "heard" and 0 < m <= EDGE_BLEED_FRAMES and a + m < b
+        if (g is None and i > 0 and kind[i - 1] == "heard" and 0 < m and a + m < b
+                and (m <= EDGE_BLEED_FRAMES or m <= drift and own_sound(a + m + 1, b))
                 and flat[a + m] and a > 0 and not flat[a - 1] and _voiced_run(flat, a - 1, -1, n_fr) >= m
                 and placed[i - 1].end >= (a - 1) * FRAME_S - _EPS):        # the sound the word before is placed on
             placed[i - 1] = replace(placed[i - 1], end=round(max(placed[i - 1].end, (a + m) * FRAME_S), 6))
@@ -374,19 +492,56 @@ def place(words, lay, breath=BREATH_S):
             placed[i] = replace(w, start=round(k0 * FRAME_S, 6), end=round(k1 * FRAME_S, 6))
             kind[i] = "heard"
             continue
-        # no voiced frame
-        over = [(min(w.end, v1) - max(w.start, v0), v0, v1) for v0, v1 in lay.voiced
-                if v0 - _EPS <= w.end and w.start <= v1 + _EPS]
-        over = [x for x in over if x[0] > _EPS or (w.end - w.start <= _EPS and x[1] - _EPS <= w.start <= x[2] + _EPS)]
+        # no voiced frame (of its span, less what it gave its neighbours)
+        ws0, we0 = (w.start, w.end) if w.end - w.start <= _EPS else (max(w.start, a * FRAME_S), min(w.end, b * FRAME_S))
+        over = [(min(we0, v1) - max(ws0, v0), v0, v1) for v0, v1 in lay.voiced
+                if v0 - _EPS <= we0 and ws0 <= v1 + _EPS]
+        over = [x for x in over if x[0] > _EPS or (we0 - ws0 <= _EPS and x[1] - _EPS <= ws0 <= x[2] + _EPS)]
         if over:
             _, v0, v1 = max(over)
-            placed[i] = replace(w, start=round(max(w.start, v0), 6), end=round(max(max(w.start, v0), min(w.end, v1)), 6))
+            placed[i] = replace(w, start=round(max(ws0, v0), 6), end=round(max(max(ws0, v0), min(we0, v1)), 6))
             kind[i] = "quiet"
             continue
         mid = round((w.start + w.end) / 2, 6)
         placed[i] = replace(w, start=mid, end=mid)
         kind[i] = "inaudible"
     _misplaced(words, placed, kind, flat)
+    # a word never auto-removed (L-B3, A-B2: its peak at the guard or over the room) is folded against the nearest
+    # placed word and offered, like a misplaced one; its burst, if it has one, makes it heard on the next reading
+    for i in range(n):
+        if kind[i] != "inaudible":
+            continue
+        a, b = _frames(env, words[i].start, words[i].end)
+        if not _protected(lay, max(env[a:b], default=_SILENT_DB)):
+            continue
+        before = next((k for k in range(i - 1, -1, -1) if kind[k] != "inaudible"), None)
+        after = next((k for k in range(i + 1, n) if kind[k] != "inaudible"), None)
+        cands = [(words[i].start - placed[k].end, k, "after") for k in [before] if k is not None] + \
+                [(placed[k].start - words[i].end, k, "before") for k in [after] if k is not None]
+        if not cands:
+            continue
+        _, host, side = min(cands)
+        t = placed[host].end if side == "after" else placed[host].start
+        if isinstance(kind[host], tuple):
+            t = kind[host][2]
+            side = kind[host][1]
+        kind[i] = ("folded", side, t)
+    # a run of silent words holding a folded one folds whole, against one edge, so their order holds (an inaudible
+    # word on either side of a kept one could not be placed in order)
+    i = 0
+    while i < n:
+        if not (kind[i] == "inaudible" or isinstance(kind[i], tuple)):
+            i += 1
+            continue
+        j = i
+        while j < n and (kind[j] == "inaudible" or isinstance(kind[j], tuple)):
+            j += 1
+        folds = [kind[k] for k in range(i, j) if isinstance(kind[k], tuple)]
+        if folds and len(set(folds)) > 1 or folds and any(kind[k] == "inaudible" for k in range(i, j)):
+            anchor = folds[0]
+            for k in range(i, j):
+                kind[k] = anchor
+        i = j
     # folded words: FOLD_S each against their sound's edge, inside its breath, in order
     i = 0
     while i < n:
@@ -419,17 +574,20 @@ def place(words, lay, breath=BREATH_S):
         j = i
         while j < n and kind[j] == "inaudible":
             j += 1
-        h = max((k for k in range(i) if kind[k] == "heard"), default=None)
+        h = max((k for k in range(i) if kind[k] != "inaudible"), default=None)
         nxt = min((placed[k].start for k in range(j, n) if kind[k] != "inaudible"), default=lay.end)
+        need = (j - i) * INAUDIBLE_S
         t = None
         if h is not None:
             piece = [kp for kp in keeps if kp[1] >= placed[h].end - _EPS and kp[0] <= placed[h].end + _EPS]
-            if piece and piece[0][1] <= nxt + _EPS:
-                t = piece[0][1] - (j - i) * INAUDIBLE_S
-        if t is None:
-            after = [kp for kp in keeps if kp[0] >= (placed[h].end if h is not None else 0.0) - _EPS]
-            if after:
-                t = after[0][0]
+            if piece and piece[0][1] <= nxt + _EPS and piece[0][1] - need >= placed[h].end - _EPS:
+                t = piece[0][1] - need
+            elif piece and placed[h].end + need <= min(nxt, piece[0][1]) + _EPS:
+                t = placed[h].end
+        elif keeps and keeps[0][0] + need <= nxt + _EPS:
+            t = keeps[0][0]
+        # with no room in order inside the kept sound, it stays where whisper put it: in the silence, never played,
+        # and the plan lists it tagged inaudible
         if t is not None:
             for k in range(i, j):
                 placed[k] = replace(placed[k], start=round(t, 6), end=round(t + INAUDIBLE_S, 6))
@@ -509,9 +667,32 @@ def _misplaced(words, placed, kind, flat=None):
         i = j
 
 
+def _take_spans(placed, lay):
+    """The spans the take, break and F1 rules read (review A should-fix 1): each placed word widened over the frames
+    beside it at or over the speech level less ATTACHED_BELOW_SPEECH_DB (a soft tail or onset is sound), never into
+    the next or previous word's span."""
+    line = lay.speech - ATTACHED_BELOW_SPEECH_DB
+    env, n = lay.env, len(lay.env)
+    out = list(placed)
+    for i, w in enumerate(placed):
+        if w.end - w.start <= _EPS:
+            continue
+        lo = placed[i - 1].end if i else 0.0
+        hi = placed[i + 1].start if i + 1 < len(placed) else n * FRAME_S
+        a, b = int(round(w.start / FRAME_S)), int(round(w.end / FRAME_S))
+        while a - 1 >= 0 and (a - 1) * FRAME_S >= lo - _EPS and env[a - 1] >= line:
+            a -= 1
+        while b < n and (b + 1) * FRAME_S <= hi + _EPS and env[b] >= line:
+            b += 1
+        out[i] = replace(w, start=round(min(w.start, a * FRAME_S), 6), end=round(max(w.end, b * FRAME_S), 6))
+    return out
+
+
 # ── what speech_text.derive and cut call ────────────────────────────────────────────────────────────────────
 
-_STAMPED = ("FRAME_S", "SPEECH_PERCENTILE", "SILENCE_BELOW_SPEECH_DB", "ATTACHED_BELOW_SPEECH_DB", "BREATH_S",
+_STAMPED = ("FRAME_S", "RATE", "_SILENT_DB", "SPEECH_PERCENTILE", "SILENCE_BELOW_SPEECH_DB",
+            "ATTACHED_BELOW_SPEECH_DB", "ATTACHED_OVER_ROOM_DB", "GUARD_DB", "PROTECT_OVER_ROOM_DB",
+            "BURST_UNDER_PEAK_DB", "BURST_GAP_S", "BURST_MIN_S", "ISLAND_TARGET_S", "ROOM_DENSE_PERCENTILE", "BREATH_S",
             "VIDEO_EDGE_S", "SENTENCE_END_S", "ISLAND_S",
             "DRIFT_S", "EDGE_BLEED_FRAMES", "FOLD_S", "INAUDIBLE_S", "LETTER_S", "WORD_BASE_S", "MISPLACED_SHARE", "MIN_KEEP_S", "MIN_CUT_S",
             "MEASURED_SILENCE_S")
@@ -529,8 +710,9 @@ class Refiner:
 
     def __init__(self, max_pause=None, breath=BREATH_S):
         self.layers, self.placed, self.kinds, self.raw = {}, {}, {}, {}
-        self.quiet_words, self.heard, self.inaudible = {}, {}, {}
+        self.quiet_words, self.heard, self.inaudible, self.soft, self.soundless = {}, {}, {}, {}, {}
         self.whole = set()          # item ids of clips kept whole (cut sets it): tidy leaves their pieces
+        self.dropped = {}           # source -> [(start, end)] pieces of sound with no word layer 1 dropped (L-B4)
         self.max_pause = max_pause
         self.breath = breath
 
@@ -546,8 +728,12 @@ class Refiner:
             env = envelope(media)
             lay = layer1(media, env, self._pause())
             placed, kind = place(raw, lay, self.breath)
-            attached = _attached_frames(raw, placed, kind, lay, self._pause())
-            if attached:
+            attached = set()
+            for _ in range(ATTACH_ROUNDS):       # until nothing changes (A-B2): a word attached makes its neighbour's
+                more = attached | _attached_frames(raw, placed, kind, lay, self._pause(), self.breath)
+                if more == attached:
+                    break
+                attached = more
                 lay = layer1(media, env, self._pause(), attached)
                 placed, kind = place(raw, lay, self.breath)
             self.layers[key], self.raw[key] = lay, list(raw)
@@ -555,12 +741,42 @@ class Refiner:
             self.quiet_words[key] = {raw[i].idx for i in range(len(raw)) if kind[i] in ("quiet", "folded")}
             self.heard[key] = {raw[i].idx for i in range(len(raw)) if kind[i] == "heard"}
             self.inaudible[key] = {raw[i].idx for i in range(len(raw)) if kind[i] == "inaudible"}
+            self.soundless[key] = {raw[i].idx for i in range(len(raw)) if kind[i] in ("quiet", "folded")}
+            # soft: a word whose sound is all under the line (an attached or protected burst, or none): {idx: peak}
+            self.soft[key] = {}
+            for i, w in enumerate(raw):
+                if kind[i] == "inaudible":
+                    continue
+                span = placed[i]
+                fa, fb = _frames(lay.env, span.start, span.end)
+                pk = max(lay.env[fa:fb], default=_SILENT_DB)
+                if kind[i] != "heard" or pk < lay.threshold:
+                    self.soft[key][w.idx] = pk
         lay, placed, kind = self.layers[key], self.placed[key], self.kinds[key]
         stats = {"inaudible": sorted(self.inaudible[key]), "quiet": sorted(self.quiet_words[key]),
                  "folded": [placed[i].idx for i in range(len(placed)) if kind[i] == "folded"],
                  "heard": sorted(self.heard[key]), "inside_words": [], "inside": 0, "attached": 0, "orphan": 0,
-                 "untrimmed": list(placed)}
+                 "untrimmed": _take_spans(placed, lay), "line_breaks": self._line_breaks(key)}
         return list(placed), stats, list(lay.measured)
+
+    def _line_breaks(self, key):
+        """Word indexes that open a new line: the first word after a cut silence (layer 1's keeps), so each piece of
+        a line cut at a silence has an id of its own (review A-B1)."""
+        keeps = self.keeps(key)
+        out, prev = set(), None
+        for w in self.placed[key]:
+            m = (w.start + w.end) / 2
+            piece = next((n for n, (a, b) in enumerate(keeps) if a - _EPS <= m <= b + _EPS), -1 - w.idx)
+            if prev is not None and piece != prev:
+                out.add(w.idx)
+            prev = piece
+        return out
+
+    def loud_room(self):
+        """[(source, speech, room)] of the sources whose room is within ROOM_NEAR_SPEECH_DB of their speech: their
+        pauses can't be trimmed (review B should-fix 2)."""
+        return [(k, lay.speech, lay.room) for k, lay in self.layers.items()
+                if lay.speech > waveform_trim.DIGITAL_SILENCE_DB and lay.speech - lay.room < ROOM_NEAR_SPEECH_DB]
 
     def silences(self, key):
         """Layer 1's silences of a source read already: [(start, end)]."""
@@ -576,13 +792,38 @@ class Refiner:
         """Layer 1's keeps of a source (its voiced runs, their breaths, held silences, islands widened)."""
         lay = self.layers[key]
         if lay.keeps is None:
-            keeps = _keeps(lay, self.raw[key], self.placed[key], self.kinds[key], self.breath)
             # sound before the source's first word or after its last belongs to no word: not speech (layer 2)
             ws = list(self.placed[key])          # inaudible words too: they sit inside a piece of sound
+            bounds = None
             if ws:
                 lo, hi = min(w.start for w in ws) - self.breath, max(w.end for w in ws) + self.breath
-                keeps = [[round(max(a, lo), 6), round(min(b, hi), 6)] for a, b in keeps if min(b, hi) - max(a, lo) > _EPS]
-            lay.keeps = keeps
+                # ... and sound inside the first word's whisper span before its placement (or the last's after) is
+                # that word's, drifted
+                first = min(range(len(ws)), key=lambda k: ws[k].start)
+                last = max(range(len(ws)), key=lambda k: ws[k].end)
+                lo = min(lo, self.raw[key][first].start - self.breath)
+                hi = max(hi, self.raw[key][last].end + self.breath) if _letters(self.raw[key][last].text) else hi
+                bounds = (lo, hi)
+            keeps = _keeps(lay, self.raw[key], self.placed[key], self.kinds[key], self.breath, bounds)
+            # a piece of sound with no word, standing alone, under ISLAND_S of sound (a lip smack in a pause) goes,
+            # and the answer names it (L-B4); one touching a word's sound is part of that word's piece
+            self.dropped[key] = []
+            kept = []
+            spans = [(w.start, w.end) for w, k in zip(self.raw[key], self.kinds[key]) if k != "inaudible"]
+            for a, b in keeps:
+                if any(a - _EPS <= (w.start + w.end) / 2 <= b + _EPS for w in ws):
+                    kept.append([a, b])
+                    continue
+                fa, fb = _frames(lay.env, a, b)
+                snd = [f for f in range(fa, fb) if not lay.flat[f]]
+                # loud sound (the guard hears it) inside a word's whisper span may be that word's (drift): it stays
+                if len(snd) * FRAME_S >= ISLAND_S - _EPS or any(
+                        lay.env[f] >= GUARD_DB and s0 - _EPS <= (f + 0.5) * FRAME_S <= s1 + _EPS
+                        for f in snd for s0, s1 in spans):
+                    kept.append([a, b])
+                    continue
+                self.dropped[key].append((a, b))
+            lay.keeps = kept
         return lay.keeps
 
     def end(self, key) -> float:
@@ -617,14 +858,17 @@ def _cut_to(r, keeps, placed_of):
 
 
 def tidy(runs, derived, refiner, report=None):
-    """The speech runs of an apply: every one cut to layer 1's keeps (the silence trim), the video's lead and tail a
-    breath of flat, then no island or sliver (see the module docstring). report.flagged gets {"kind": "sliver",
-    "letter", "idx", "seconds"} for each dropped piece with no voiced frame that held words, and {"kind": "island",
-    "letter", "idx", "seconds"} for each piece left under ISLAND_S. Returns the runs."""
+    """The speech runs of an apply (see the module docstring): every one cut to layer 1's keeps (the silence trim),
+    the video's lead and tail a breath of flat, short pieces joined or widened (islands), then on the JOINED timeline
+    no flat run (flat.py's, a soft word's burst counted as its sound: L-B2) over max-pause, across every joint (L-B1),
+    and no lone piece with no sound (a sliver) or with no word and under ISLAND_S of sound (L-B4). report.flagged
+    gets {"kind": "sliver" | "wordless" | "island", "letter", "idx", "seconds"}. Returns the runs."""
     layers = refiner.layers
     whole = getattr(refiner, "whole", None) or ()
     max_pause = refiner._pause()
+    breath = getattr(refiner, "breath", BREATH_S)
     placed_of = {src: {w.idx: w for w in refiner.placed[src]} for src in layers}
+    letter_of = derived.letters
     out = []
     for r in runs:
         if r.kind != "speech" or r.src not in layers or r.item_id in whole:
@@ -635,18 +879,132 @@ def tidy(runs, derived, refiner, report=None):
     def mine(r):
         return r.kind == "speech" and r.src in layers and r.item_id not in whole
 
-    def voiced(r):
+    def sound(r):
         lay = layers[r.src]
         a, b = _frames(lay.env, r.s_in, r.s_out)
-        return any(not lay.flat[k] for k in range(a, b))
+        return sum(1 for k in range(a, b) if not lay.flat[k]) * FRAME_S
 
     def kept_span(r):
         ws = [placed_of[r.src][i] for i in r.words if i in placed_of[r.src]]
         return (min(w.start for w in ws), max(w.end for w in ws)) if ws else None
 
-    _video_edges(out, layers, kept_span, mine)
-    letter_of = derived.letters
+    kept_words = {}
+    for r in out:
+        if mine(r):
+            kept_words.setdefault(r.src, set()).update(r.words)
+    spans_of = {src: [(w.start, w.end) for w in refiner.raw[src] if w.idx in kept_words.get(src, ())]
+                for src in layers}
 
+    def in_kept_span(r):
+        """Its sound lies in a kept word's whisper span (that word's, drifted): never a lone smack."""
+        lay = layers[r.src]
+        a, b = _frames(lay.env, r.s_in, r.s_out)
+        return any(s0 - _EPS <= (f + 0.5) * FRAME_S <= s1 + _EPS for f in range(a, b)
+                   if not lay.flat[f] and lay.env[f] >= GUARD_DB for s0, s1 in spans_of.get(r.src, ()))
+
+    _video_edges(out, layers, kept_span, mine, breath)
+    j = _Joined(out, layers, mine, max_pause)
+    _islands(out, j, layers, placed_of, mine, max_pause)
+    for _ in range(4):
+        changed = _cap(out, j, layers, placed_of, derived, mine, max_pause, breath)
+        k = 0
+        while k < len(out):
+            r = out[k]
+            touching = any(0 <= n < len(out) and mine(out[n]) and out[n].src == r.src and out[n].words
+                           and min(abs(out[n].s_out - r.s_in), abs(r.s_out - out[n].s_in)) <= 0.001
+                           for n in (k - 1, k + 1))
+            wordless = mine(r) and not r.words and sound(r) < ISLAND_S - _EPS and not touching \
+                and not in_kept_span(r)
+            sliver = mine(r) and r.words and sound(r) <= _EPS and r.s_out - r.s_in < ISLAND_S - _EPS
+            if wordless or sliver:
+                kind = "sliver" if sliver else "wordless"
+                if report is not None and (r.words or kind == "wordless"):
+                    report.flagged.append({"kind": kind, "letter": letter_of.get(r.src), "idx": list(r.words),
+                                           "seconds": round(r.s_out - r.s_in, 3), "at": round(r.s_in, 2)})
+                del out[k]
+                changed = True
+                continue
+            k += 1
+        if not changed:
+            break
+    _video_edges(out, layers, kept_span, mine, breath, strict=True)
+    if report is not None:
+        for r in out:
+            if mine(r) and r.s_out - r.s_in < ISLAND_S - _EPS:
+                report.flagged.append({"kind": "island", "letter": letter_of.get(r.src), "idx": list(r.words),
+                                       "seconds": round(r.s_out - r.s_in, 3)})
+    merged = []
+    for r in out:
+        p = merged[-1] if merged else None
+        if (p is not None and p.kind == r.kind == "speech" and p.src == r.src and abs(p.s_out - r.s_in) <= 0.001
+                and not (p.old_out and r.old_in)):
+            p.s_out, p.old_out, p.hard_out = r.s_out, r.old_out, r.hard_out
+            p.words.extend(r.words)
+            continue
+        merged.append(r)
+    return merged
+
+
+class _Joined:
+    """The joined timeline's flat at the runs' edges (flat.py's, a soft word's burst counted as its sound)."""
+
+    def __init__(self, out, layers, mine, max_pause):
+        self.out, self.layers, self.mine, self.max_pause = out, layers, mine, max_pause
+
+    def lead(self, r):
+        lay = self.layers[r.src]
+        a, b = _frames(lay.env, r.s_in, r.s_out)
+        k = a
+        while k < b and lay.flat[k]:
+            k += 1
+        return min(r.s_out - r.s_in, (k - a) * FRAME_S)
+
+    def trail(self, r):
+        lay = self.layers[r.src]
+        a, b = _frames(lay.env, r.s_in, r.s_out)
+        k = b
+        while k > a and lay.flat[k - 1]:
+            k -= 1
+        return min(r.s_out - r.s_in, (b - k) * FRAME_S)
+
+    def all_flat(self, r):
+        return self.lead(r) >= r.s_out - r.s_in - _EPS
+
+    def stretch(self, i):
+        """(first index, last index, length) of the flat stretch across the joint after run i (runs i and i + 1),
+        going on through runs that are all flat; None when either side is not the joined speech."""
+        out = self.out
+        if not (0 <= i < len(out) - 1 and self.mine(out[i]) and self.mine(out[i + 1])):
+            return None
+        a, length = i, self.trail(out[i])
+        while self.all_flat(out[a]) and a - 1 >= 0 and self.mine(out[a - 1]):
+            a -= 1
+            length += self.trail(out[a])
+        b = i + 1
+        length += self.lead(out[b])
+        while self.all_flat(out[b]) and b + 1 < len(out) and self.mine(out[b + 1]):
+            b += 1
+            length += self.lead(out[b])
+        return a, b, length
+
+    def room(self, r, side):
+        """How much more flat run r's edge (side -1: its start, 1: its end) may take before the joined stretch there
+        goes over max-pause."""
+        k = self.out.index(r)
+        if side > 0:
+            st = self.stretch(k)
+            length = st[2] if st else self.trail(r)
+        else:
+            st = self.stretch(k - 1) if k else None
+            length = st[2] if st else self.lead(r)
+        return max(0.0, self.max_pause - length)
+
+
+def _islands(out, j, layers, placed_of, mine, max_pause):
+    """A piece shorter than ISLAND_S joins its neighbour across a pause cut (no word between, and the joined piece
+    holds no flat run over max-pause), else widens into its own silence to ISLAND_TARGET_S: flat frames only, never a
+    removed word or another piece, never past max-pause of flat on the joined timeline, never past VIDEO_EDGE_S of
+    flat at the video's edges."""
     def word_between(src, a, b, keep):
         return any(i not in keep and min(w.end, b) - max(w.start, a) > _EPS for i, w in placed_of[src].items())
 
@@ -665,17 +1023,10 @@ def tidy(runs, derived, refiner, report=None):
         if not mine(r) or r.s_out - r.s_in >= ISLAND_S - _EPS:
             k += 1
             continue
-        if not voiced(r):
-            # a sliver: no sound, so it goes (its words had none either)
-            if report is not None and r.words:
-                report.flagged.append({"kind": "sliver", "letter": letter_of.get(r.src), "idx": list(r.words),
-                                       "seconds": round(r.s_out - r.s_in, 3)})
-            del out[k]
-            continue
         joined = False
         for side in (-1, 1):
-            j = k + side
-            o = out[j] if 0 <= j < len(out) else None
+            n = k + side
+            o = out[n] if 0 <= n < len(out) else None
             if o is None or not mine(o) or o.src != r.src:
                 continue
             first, last = (o, r) if side < 0 else (r, o)
@@ -692,7 +1043,6 @@ def tidy(runs, derived, refiner, report=None):
             break
         if joined:
             continue
-        # widened into its own silence: flat frames, never another piece or a word it does not keep
         lay = layers[r.src]
         others = [o for o in out if o is not r and o.kind == "speech" and o.src == r.src]
         lo_lim = max([0.0] + [o.s_out for o in others if o.s_out <= r.s_in + _EPS]
@@ -712,7 +1062,7 @@ def tidy(runs, derived, refiner, report=None):
                 f += 1
             return min(limit, f * FRAME_S)
         lo, hi = reach(r.s_in, -1, lo_lim), reach(r.s_out, 1, hi_lim)
-        # the video's first piece never widens to more than VIDEO_EDGE_S of flat before its sound, its last after it
+        lo, hi = max(lo, r.s_in - j.room(r, -1)), min(hi, r.s_out + j.room(r, 1))
         speech_runs = [o for o in out if o.kind == "speech"]
         a0, b0 = _frames(lay.env, r.s_in, r.s_out)
         hits = [f for f in range(a0, b0) if not lay.flat[f]]
@@ -720,7 +1070,7 @@ def tidy(runs, derived, refiner, report=None):
             lo = max(lo, min(r.s_in, hits[0] * FRAME_S - VIDEO_EDGE_S))
         if hits and speech_runs and r is speech_runs[-1]:
             hi = min(hi, max(r.s_out, (hits[-1] + 1) * FRAME_S + VIDEO_EDGE_S))
-        need = ISLAND_S - (r.s_out - r.s_in)
+        need = ISLAND_TARGET_S - (r.s_out - r.s_in)
         left = min(need / 2, max(0.0, r.s_in - lo))
         right = min(need - left, max(0.0, hi - r.s_out))
         left = min(need - right, max(0.0, r.s_in - lo))
@@ -728,25 +1078,91 @@ def tidy(runs, derived, refiner, report=None):
             r.s_in, r.old_in, r.hard_in = round(r.s_in - left, 6), None, False
         if right > _EPS:
             r.s_out, r.old_out, r.hard_out = round(r.s_out + right, 6), None, False
-        if r.s_out - r.s_in < ISLAND_S - _EPS and report is not None:
-            report.flagged.append({"kind": "island", "letter": letter_of.get(r.src), "idx": list(r.words),
-                                   "seconds": round(r.s_out - r.s_in, 3)})
         k += 1
-    merged = []
-    for r in out:
-        p = merged[-1] if merged else None
-        if (p is not None and p.kind == r.kind == "speech" and p.src == r.src and abs(p.s_out - r.s_in) <= 0.001
-                and not (p.old_out and r.old_in)):
-            p.s_out, p.old_out, p.hard_out = r.s_out, r.old_out, r.hard_out
-            p.words.extend(r.words)
+
+
+def _cap(out, j, layers, placed_of, derived, mine, max_pause, breath):
+    """No flat stretch on the joined timeline over max-pause (v5a fix 3, L-B1): across every joint, the trailing flat
+    of one piece, any piece that is all flat, and the leading flat of the next keep only the pause rule (a breath
+    each side, half of min(stretch, SENTENCE_END_S) each after a sentence end) and the kept words' own spans in
+    them (a soft word's burst), within max-pause in all. A silence kept whole for an overlay (D2) is left as it is.
+    Returns whether it changed anything."""
+    changed = False
+    i = 0
+    while i < len(out) - 1:
+        st = j.stretch(i)
+        if st is None or st[2] <= max_pause + _EPS:
+            i += 1
             continue
-        merged.append(r)
-    return merged
+        a, b, length = st
+        segs = []
+        for n in range(a, b + 1):
+            r = out[n]
+            lo = r.s_out - j.trail(r) if n == a else r.s_in
+            hi = r.s_in + j.lead(r) if n == b else r.s_out
+            segs.append((r, lo, hi))
+        if any(_held(layers[r.src], lo, hi) for r, lo, hi in segs):
+            i = b
+            continue
+        prot = []
+        for r, lo, hi in segs:
+            for x in r.words:
+                w = placed_of[r.src].get(x)
+                if w is not None and min(w.end, hi) - max(w.start, lo) > _EPS:
+                    prot.append((r, max(lo, w.start), min(hi, w.end)))
+        last = [w for r, _, _ in segs[:1] for x in r.words for w in [placed_of[r.src].get(x)] if w is not None]
+        pad = breath
+        if last and _ends_sentence(max(last, key=lambda w: w.end).text):
+            pad = max(breath, min(length, SENTENCE_END_S) / 2)
+        allow = max(0.0, max_pause - 2 * FRAME_S - sum(e - s0 for _, s0, e in prot))
+        pad_h = min(pad, allow / 2, segs[0][2] - segs[0][1])
+        pad_t = min(pad, allow - pad_h, segs[-1][2] - segs[-1][1])
+        new = []
+        for n, (r, lo, hi) in enumerate(segs):
+            keep = [(s0, e) for rr, s0, e in prot if rr is r]
+            if n == 0:
+                keep.append((lo, lo + pad_h))
+            if n == len(segs) - 1:
+                keep.append((hi - pad_t, hi))
+            keep = sorted((max(lo, s0), min(hi, e)) for s0, e in keep if min(hi, e) - max(lo, s0) > _EPS)
+            parts = []
+            if n == 0 and lo > r.s_in + _EPS:
+                parts.append((r.s_in, lo))
+            for s0, e in keep:
+                if parts and s0 <= parts[-1][1] + _EPS:
+                    parts[-1] = (parts[-1][0], max(parts[-1][1], e))
+                else:
+                    parts.append((s0, e))
+            if n == len(segs) - 1 and hi < r.s_out - _EPS:
+                if parts and hi <= parts[-1][1] + _EPS:
+                    parts[-1] = (parts[-1][0], r.s_out)
+                else:
+                    parts.append((hi, r.s_out))
+            for s0, e in parts:
+                p = replace(r, s_in=round(s0, 6), s_out=round(e, 6), words=[
+                    x for x in r.words if x in placed_of[r.src]
+                    and s0 - _EPS <= (placed_of[r.src][x].start + placed_of[r.src][x].end) / 2 <= e + _EPS])
+                if abs(s0 - r.s_in) > _EPS:
+                    p.old_in, p.hard_in = None, False
+                if abs(e - r.s_out) > _EPS:
+                    p.old_out, p.hard_out = None, False
+                new.append(p)
+        out[a:b + 1] = new
+        changed = True
+        i = a + max(1, len(new) - 1)
+    return changed
 
 
-def _video_edges(runs, layers, kept_span, mine):
-    """The video opens and ends on sound: its first speech piece starts at most a breath before its first voiced
-    frame, its last ends at most a breath after its last, never inside a word it keeps and never under ISLAND_S."""
+def _held(lay, lo, hi):
+    """[lo, hi] lies in a silence kept whole for an overlay (D2)."""
+    return any(lay.silences[n][0] - _EPS <= lo and hi <= lay.silences[n][1] + _EPS for n in lay.held)
+
+
+def _video_edges(runs, layers, kept_span, mine, breath=BREATH_S, strict=False):
+    """The video opens and ends on sound (a burst of a soft word counts): its first speech piece starts at most a
+    breath before its first sound, its last ends at most a breath after its last, never inside a word it keeps and
+    never under ISLAND_S. strict (the last pass): at most VIDEO_EDGE_S of flat there, an island or not (the lead and
+    tail bars hold; a piece left short is named)."""
     speech = [r for r in runs if r.kind == "speech"]
     if not speech:
         return
@@ -761,11 +1177,15 @@ def _video_edges(runs, layers, kept_span, mine):
         span = kept_span(r)
         if side < 0:
             t = min([hits[0] * FRAME_S] + ([span[0]] if span else []))
-            to = min(max(r.s_in, t - BREATH_S), r.s_out - ISLAND_S)
+            to = max(r.s_in, t - (VIDEO_EDGE_S if strict else breath))
+            if not strict:
+                to = min(to, r.s_out - ISLAND_S)
             if to > r.s_in + _EPS:
                 r.s_in, r.old_in, r.hard_in = round(to, 6), None, False
         else:
             t = max([(hits[-1] + 1) * FRAME_S] + ([span[1]] if span else []))
-            to = max(min(r.s_out, t + BREATH_S), r.s_in + ISLAND_S)
+            to = min(r.s_out, t + (VIDEO_EDGE_S if strict else breath))
+            if not strict:
+                to = max(to, r.s_in + ISLAND_S)
             if to < r.s_out - _EPS:
                 r.s_out, r.old_out, r.hard_out = round(to, 6), None, False
