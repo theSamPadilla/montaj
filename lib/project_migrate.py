@@ -6,6 +6,9 @@ save writes it too. Every other reader already copes: ``lib.types.project.normal
 type as ``editing``.
 
 - ``projectType: "music_video"`` (the retired Lyric video) reads as ``"editing"``.
+- A project from a 3D template (``workflow`` model-3d or toy-world-3d) typed ``"editing"``, or with no type, reads as
+  ``"3d"``: the explicit type replaced "editing plus the template's id". Only the template decides: ``model3d`` is no
+  sign of it, because ``save_model`` sets it on any project, and a 3D overlay is allowed in every video.
 - ``renderMode: "ffmpeg-drawtext"`` (retired with the ``lyrics_render`` step) goes. That render burned the captions in
   and skipped the overlay tracks, which held only ``lyric-phrase.jsx`` overlays as an editor preview of them. Each
   such track is turned off (``enabled: false``; nothing is deleted), so the captions draw once, as before.
@@ -19,6 +22,7 @@ Pure: never mutates its input, and returns the SAME object when nothing changes.
 from lib.project_tracks import normalize_tracks
 
 RETIRED_PROJECT_TYPES = {"music_video": "editing"}
+THREE_D_WORKFLOWS = frozenset({"model-3d", "toy-world-3d"})
 RETIRED_RENDER_MODE = "ffmpeg-drawtext"
 _LYRIC_PREVIEW_TEMPLATE = "lyric-phrase.jsx"
 
@@ -47,6 +51,10 @@ def migrate_project(project):
     if isinstance(retired_type, str) and retired_type in RETIRED_PROJECT_TYPES:
         out = dict(project)
         out["projectType"] = RETIRED_PROJECT_TYPES[retired_type]
+    current_type = (out if out is not None else project).get("projectType")
+    if project.get("workflow") in THREE_D_WORKFLOWS and current_type in (None, "editing"):
+        out = out if out is not None else dict(project)
+        out["projectType"] = "3d"
     if project.get("renderMode") == RETIRED_RENDER_MODE:
         out = out if out is not None else dict(project)
         del out["renderMode"]

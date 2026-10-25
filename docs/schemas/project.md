@@ -41,7 +41,7 @@ The agent writes project.json as it works — every write pushes to the browser 
 | `version` | string | Schema version — `"0.2"` |
 | `id` | string | UUID v4. Stable unique identifier for this project. Never changes. |
 | `status` | string | Pipeline state: `pending`, `storyboard_ready`, `draft`, `final` |
-| `projectType` | string | Inherited from the workflow's `project_type` at init time. One of `"editing"`, `"ai_video"`, `"carousel"`, `"broll"`. Default: `"editing"`. Never changes after creation, except that serve reads a retired type as its current one (`"music_video"`, the retired Lyric video, reads as `"editing"`; `lib/project_migrate.py`) and writes it at the next open or save. |
+| `projectType` | string | Inherited from the workflow's `project_type` at init time. One of `"editing"`, `"ai_video"`, `"carousel"`, `"broll"`, `"3d"`. Default: `"editing"`. Never changes after creation, except that serve reads a retired shape as its current one (`lib/project_migrate.py`: `"music_video"`, the retired Lyric video, reads as `"editing"`; an `"editing"` or untyped project from a 3D template, `workflow` model-3d or toy-world-3d, reads as `"3d"`) and writes it at the next open or save. |
 | `name` | string \| null | Human-readable label set at init time. Optional. Does not need to be unique. |
 | `workflow` | string | Workflow used to produce this edit |
 | `editingPrompt` | string | The free-form prompt passed in |

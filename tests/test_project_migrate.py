@@ -277,3 +277,58 @@ def test_restoring_a_version_from_before_the_retirement_writes_it_converged(tmp_
     on_disk = json.loads((project_dir / "project.json").read_text())
     assert on_disk == converge(old)
     assert resp.json()["projectType"] == "editing" and "renderMode" not in resp.json()
+
+
+# ── §3d: the explicit '3d' type ────────────────────────────────────────────────
+
+def old_3d_project(workflow="model-3d", project_type="editing"):
+    """A model-3d project as the app made it before the '3d' type: an editing project from the model-3d template, its
+    model3d pointer, the template's model3d_stage overlay over the whole duration."""
+    doc = {
+        "version": "0.2", "id": PID, "name": "Robot arm", "status": "draft", "workflow": workflow,
+        "settings": {"resolution": [1080, 1920], "fps": 30},
+        "model3d": {"slug": "robot-arm", "approved": True},
+        "tracks": [
+            {"id": "trk-0", "items": []},
+            {"id": "trk-1", "items": [{"id": "stage", "type": "overlay", "src": "/Users/someone/Montaj/robot-arm/overlays/model3d_stage.jsx", "start": 0, "end": 6}]},
+        ],
+        "assets": [],
+    }
+    if project_type is not None:
+        doc["projectType"] = project_type
+    return doc
+
+
+@pytest.mark.parametrize("workflow", ["model-3d", "toy-world-3d"])
+@pytest.mark.parametrize("project_type", ["editing", None])
+def test_an_old_3d_project_reads_as_the_3d_type(workflow, project_type):
+    old = old_3d_project(workflow, project_type)
+    kept = copy.deepcopy(old)
+    new = migrate_project(old)
+    assert old == kept
+    assert new["projectType"] == "3d"
+    assert {k: v for k, v in new.items() if k != "projectType"} == {k: v for k, v in old.items() if k != "projectType"}
+    assert migrate_project(new) is new, "a '3d' project is current"
+
+
+def test_a_3d_overlay_in_an_editing_project_keeps_it_editing():
+    """save_model on any project sets model3d (a 3D overlay is allowed in every project): only the 3D templates make a
+    project '3d', so an editing video with a 3D overlay stays an editing video."""
+    p = {**old_3d_project(), "workflow": "overlays"}
+    assert migrate_project(p) is p
+    q = {**old_3d_project(), "workflow": "blank", "projectType": None}
+    del q["projectType"]
+    assert migrate_project(q) is q
+
+
+@pytest.mark.parametrize("ptype", ["ai_video", "carousel", "broll"])
+def test_another_type_from_a_3d_workflow_is_left_alone(ptype):
+    p = old_3d_project(project_type=ptype)
+    assert migrate_project(p) is p
+
+
+def test_opening_an_old_3d_project_serves_and_writes_3d(ws):
+    path = _write(ws, old_3d_project())
+    body = TestClient(app, raise_server_exceptions=False).get(f"/api/projects/{PID}").json()
+    assert body["projectType"] == "3d"
+    assert json.loads(path.read_text())["projectType"] == "3d"

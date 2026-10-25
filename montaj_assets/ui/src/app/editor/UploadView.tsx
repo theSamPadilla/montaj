@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Sparkles, Layers, Clapperboard, Film, ChevronDown, Check } from 'lucide-react'
+import { Sparkles, Layers, Clapperboard, Film, Box, ChevronDown, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { LoadingModal } from '@/components/ui/loading-modal'
@@ -31,6 +31,7 @@ const TYPE_META: Record<ProjectType, { icon: ReactNode; eyebrow: string }> = {
   carousel:    { icon: <Layers size={17} />,       eyebrow: 'Carousel' },
   broll:       { icon: <Clapperboard size={17} />, eyebrow: 'B-roll' },
   editing:     { icon: <Film size={17} />,         eyebrow: 'Video Edit' },
+  '3d':        { icon: <Box size={17} />,          eyebrow: '3D' },
 }
 
 /** Intake header: an indigo icon chip, the project-type eyebrow, and the
@@ -106,6 +107,7 @@ const TYPE_EXPLAINERS: Record<ProjectType, string> = {
   broll: 'A voiceover-led edit built from your footage.',
   ai_video: 'An AI-generated video built from a prompt.',
   carousel: 'A multi-slide image carousel.',
+  '3d': 'A 3D video built from a model.',
 }
 
 function workflowExplainer(w: Workflow): string {
