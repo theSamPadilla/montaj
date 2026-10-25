@@ -698,6 +698,23 @@ def _layers(flagged):
     return out
 
 
+def _audio_warnings(flagged):
+    """One line for each audio track (music, an sfx, a bed) the cut moved or clipped. A cut never removes one:
+    only the person or the AI deletes audio, so the answer names each, to check."""
+    out = []
+    for f in flagged or []:
+        kind, iid = f.get("kind"), f.get("id")
+        if kind == "audio_moved":
+            out.append(f"Audio track {iid} moved from {f.get('from', 0):.2f} s to {f.get('to', 0):.2f} s: the cut "
+                       "took its moment. Check it still fits, or delete it.")
+        elif kind == "audio_clipped" and f.get("minimum"):
+            out.append(f"Audio track {iid} would have ended before it starts: kept at {f.get('seconds', 0):.2f} s. "
+                       "Check its length.")
+        elif kind == "audio_clipped":
+            out.append(f"Audio track {iid} was clipped by the cut. Check it still fits.")
+    return out
+
+
 def _tracks_rev(project):
     return project_revisions.revision_of(normalize_tracks(copy.deepcopy(project)).get("tracks"))
 
@@ -1181,6 +1198,7 @@ def _make_plan(args, project_path, project_dir):
         candidate, rep = _carried(b["origin"], b["work"], b["ti"], b["lineage"], project_dir)
         kept_s, duration = _sums(candidate, track_id)
         path, prev = _write_plan(project_path, disk.get("id"), _silence_plan(b, track_id, title, marker=not failed))
+        warnings[:0] = _audio_warnings(rep.get("flagged"))
         answer.update(plan=path, silence=True,
                       kept={"lines": 0, "seconds": kept_s},
                       removed={"seconds": (round(b["before_s"] - kept_s, 2) + 0.0)}, duration=duration,
@@ -1225,6 +1243,7 @@ def _make_plan(args, project_path, project_dir):
         if maybe:
             answer["suggested"] = maybe
         answer["layers"] = _layers(res.get("flagged"))
+        warnings[:0] = _audio_warnings(res.get("flagged"))
         answer["cut"] = _capped([f"{i} {t:.1f} {txt} [{why}]" for i, t, txt, why in removed + suggested],
                                 REMOVED_CAP_BYTES)
         if args.detail:
@@ -1304,6 +1323,7 @@ def _apply_plan(args, project_path, project_dir):
         wrote = bool(res.get("applied"))
         final = res["_project"]
         layers = _layers(res.get("flagged"))
+        warnings[:0] = _audio_warnings(res.get("flagged"))
         warnings += _piece_warnings(b["d"], res.get("flagged"))
         warnings += [w for w in res.get("warnings", []) if w not in warnings]
     _, duration = _sums(final, track_id)
@@ -1364,6 +1384,7 @@ def _write_silence(project_path, project_dir, disk, b, track_id, max_pause, mark
         keys = keys + ("status",)
         guard = guard + ("status",)
     save_project_changes(Path(project_path), disk, candidate, keys=keys, guard=guard)
+    warnings[:0] = _audio_warnings(rep.get("flagged"))
     return version, _layers(rep.get("flagged"))
 
 

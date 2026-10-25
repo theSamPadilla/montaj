@@ -312,8 +312,13 @@ def test_overlay_whose_line_is_deleted_comes_off_and_is_listed(fx):
     r = run(fx, edit(fx.text, a1(fx), None), project=project)
     assert [it["id"] for it in track(r.project, "trk-2")["items"]] == ["ov-2"]
     assert flags(r.report, "overlay_removed") == [{"kind": "overlay_removed", "id": "ov-1", "src": item(fx.project, "ov-1")["src"]}]
-    assert [a["id"] for a in r.project["audio"]["tracks"]] == ["aud-bed", "aud-line"]
-    assert flags(r.report, "audio_removed") == [{"kind": "audio_removed", "id": "sfx", "src": fx.src}]
+    # an sfx is audio too: never removed by a cut (orchestrator, §558 fix pass 4). All of it was cut, so it moves to
+    # the next kept moment at its full length, inPoint unchanged, and is flagged so the answer warns
+    assert [a["id"] for a in r.project["audio"]["tracks"]] == ["aud-bed", "aud-line", "sfx"]
+    sfx, to = r.project["audio"]["tracks"][2], r.tmap.next_kept(7.0)
+    assert (sfx["start"], sfx["end"], sfx["inPoint"], sfx["outPoint"]) == (pytest.approx(to), pytest.approx(to + 1.0),
+                                                                           1.0, 2.0)
+    assert flags(r.report, "audio_moved") == [{"kind": "audio_moved", "id": "sfx", "from": 7.0, "to": round(to, 2)}]
 
 
 def _with_overlays(fx, *spans):
@@ -448,6 +453,46 @@ def test_bed_end_follows_the_new_end_and_is_listed(fx):
     assert (bed["start"], bed["end"]) == (0, pytest.approx(new_end))
     assert bed["outPoint"] == pytest.approx(28.8 - (28.8 - new_end))
     assert flags(r.report, "bed_check_timing") == [{"kind": "bed_check_timing", "id": "aud-bed"}]
+
+
+def _only_last_row(fx):
+    cut = fx.text.split("## Cut")[1].split("## Unused")[0]
+    rows = [x for x in cut.split("\n") if x.startswith("A")]
+    text = fx.text
+    for row in rows[:-1]:
+        text = edit(text, row, None)
+    return text
+
+
+def test_a_bed_survives_a_cut_of_nearly_all_it_covered(fx):
+    """Only the last line is kept: the bed's start stays and its end follows the new end; it is never removed."""
+    r = run(fx, _only_last_row(fx))
+    bed = r.project["audio"]["tracks"][0]
+    new_end = max(it["end"] for it in r.items)
+    assert bed["id"] == "aud-bed" and (bed["start"], bed["end"]) == (0, pytest.approx(new_end))
+    assert flags(r.report, "audio_clipped") == []
+
+
+def test_a_bed_whose_end_would_shift_to_its_start_is_kept_at_a_minimum_and_flagged(fx):
+    """A bed from 2.0 s to the old end (over 90% of the cut): with only the last line kept, the new end falls
+    before its start. It stays, BED_MIN_S long, flagged for the answer's warning."""
+    project = copy.deepcopy(fx.project)
+    project["audio"]["tracks"].append({"id": "bed-2", "src": fx.src, "start": 2.0, "end": 28.8, "inPoint": 0.0,
+                                       "outPoint": 26.8})
+    r = run(fx, _only_last_row(fx), project=project)
+    new_end = max(it["end"] for it in r.items)
+    assert new_end < 2.0
+    bed = next(a for a in r.project["audio"]["tracks"] if a["id"] == "bed-2")
+    assert (bed["start"], bed["end"], bed["inPoint"], bed["outPoint"]) == (2.0, 2.0 + speech_carry.BED_MIN_S,
+                                                                           0.0, speech_carry.BED_MIN_S)
+    assert flags(r.report, "audio_clipped") == [{"kind": "audio_clipped", "id": "bed-2", "minimum": True,
+                                                 "seconds": speech_carry.BED_MIN_S}]
+
+
+def test_carry_never_removes_an_audio_track():
+    """No path of the audio carry drops a track: the flag that named a drop is gone from the code."""
+    src = open(speech_carry.__file__).read()
+    assert "audio_removed" not in src
 
 
 def test_voice_line_moves_with_item_3(fx):

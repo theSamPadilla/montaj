@@ -89,10 +89,13 @@ Rules (`carry`)
 4. **`audio.tracks`.** A track covering at least `BED_SHARE` of the old cut (first item start to
    last item end) is a bed: its start stays; when its end (its `end`, else the end of its slice)
    was at or after the old end, its `end` and its `outPoint` move by `new_end - old_end`. Every bed
-   is flagged `bed_check_timing` when the speech changed. Any other track is anchored like an
-   overlay (rule 2): `inPoint`/`outPoint` follow any clipping (`audio_moved`, `audio_clipped`,
-   `audio_removed`). A track with neither `end` nor `outPoint` has no known length: its start moves
-   like a marker (`audio_moved` when its moment was cut) and it is never removed.
+   is flagged `bed_check_timing` when the speech changed. A bed whose end would move to its start or
+   before it keeps BED_MIN_S from its start, or to the new end when that is later (`audio_clipped`,
+   `minimum`). Any other track (music, an sfx) is anchored like an overlay (rule 2):
+   `inPoint`/`outPoint` follow any clipping (`audio_moved`, `audio_clipped`); when all of it was cut it
+   moves to `next_kept(start)` at its full length, `inPoint` unchanged (`audio_moved`). A track with
+   neither `end` nor `outPoint` has no known length: its start moves like a marker (`audio_moved` when
+   its moment was cut). No audio track is ever removed: only the person or the AI deletes audio.
 5. **`markers`, `notes`.** `t = forward(t)`; a cut moment moves to `next_kept(t)`, flagged
    `marker_moved` (notes too). A note with `tEnd` carries `[t, tEnd)` by rule 2, and is never
    removed: when nothing in its range survives, `t = next_kept(t)` and `tEnd = t`. Both lists are
@@ -115,6 +118,7 @@ from lib.speech_build import Report
 from lib.speech_lines import norm
 
 BED_SHARE = 0.9
+BED_MIN_S = 1.0         # the least a bed keeps when the cut would shift its end to its start or before
 CAPTION_SPLIT_GAP_S = 0.5
 FOLD_ANCHOR_S = 1.0     # how far a caption word may be from the refined word saying it, when no refined word overlaps it
 
@@ -898,8 +902,8 @@ class _Carry:
                 end_eff = None
             cover = min(end_eff if end_eff is not None else math.inf, cut1) - max(start, cut0)
             if cut1 - cut0 > _EPS and cover >= BED_SHARE * (cut1 - cut0) - _EPS:
-                if self.bed(t, start, end_eff):
-                    out.append(t)
+                self.bed(t, start, end_eff)
+                out.append(t)
                 continue
             if end_eff is None:
                 nt = tm.forward(start)
@@ -913,7 +917,14 @@ class _Carry:
                 continue
             sp = _carry_span(tm, start, end_eff)
             if sp is None:
-                self.flag("audio_removed", t.get("id"), src=t.get("src"))
+                # all of it was cut: it moves to the next kept moment at its full length, never removed
+                nt = tm.next_kept(start)
+                t["start"] = round(nt, 6)
+                if _num(t.get("end")):
+                    t["end"] = round(nt + (end_eff - start), 6)
+                self.flag("audio_moved", t.get("id"), **{"from": round(start, 2), "to": round(nt, 2)})
+                self.counts["audio"] += 1
+                out.append(t)
                 continue
             dur = sp.end - sp.start
             changed = abs(sp.start - start) > _EPS or abs(dur - (end_eff - start)) > _EPS or sp.offset > _EPS
@@ -935,21 +946,28 @@ class _Carry:
         au["tracks"] = out
 
     def bed(self, t, start, end_eff):
-        """A bed keeps its start; an end at or after the old end follows the new end. False: removed."""
+        """A bed keeps its start; an end at or after the old end follows the new end. Never removed: an end that
+        would move to its start or before keeps BED_MIN_S from its start, or the new end when later."""
         tm = self.tm
         d = tm.new_end - tm.old_end
         if d and (end_eff is None or end_eff >= tm.old_end - _EPS):
+            short = None
             if _num(t.get("end")) and t["end"] > start:
                 t["end"] = round(t["end"] + d, 6)
                 if t["end"] <= start + _EPS:
-                    self.flag("audio_removed", t.get("id"), src=t.get("src"))
-                    return False
+                    t["end"] = round(max(start + BED_MIN_S, tm.new_end), 6)
+                    short = t["end"] - start
             if _num(t.get("outPoint")):
-                t["outPoint"] = round(max(float(t.get("inPoint", 0) or 0), t["outPoint"] + d), 6)
+                inp = float(t.get("inPoint", 0) or 0)
+                t["outPoint"] = round(t["outPoint"] + d, 6)
+                if short is not None or t["outPoint"] <= inp + _EPS:
+                    short = short if short is not None else max(BED_MIN_S, tm.new_end - start)
+                    t["outPoint"] = round(inp + short, 6)
+            if short is not None:
+                self.flag("audio_clipped", t.get("id"), minimum=True, seconds=round(short, 2))
         if tm.changed:
             self.flag("bed_check_timing", t.get("id"))
         self.counts["audio"] += 1
-        return True
 
     # -------------------------------------------------------- markers and notes
 

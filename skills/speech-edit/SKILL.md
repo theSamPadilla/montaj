@@ -115,7 +115,7 @@ The result lists what happened to everything else:
 | `clamped` | Pauses held to what the source has |
 | `hardCuts` | Cuts with no silence near, placed at the word edge, padded only into a gap |
 | `carried` | Overlays, captions, audio, markers that followed their content |
-| `flagged` | `overlay_removed`, `overlay_trimmed`, `overlay_moved`, `overlay_clipped`, `linked_removed`, `linked_clipped`, `caption_removed`, `audio_moved`, `audio_clipped`, `audio_removed`, `bed_check_timing`, `marker_moved`, `keyframes_merged`, `state_merged`, `fields_dropped`, `short_piece`, `no_gap` |
+| `flagged` | `overlay_removed`, `overlay_trimmed`, `overlay_moved`, `overlay_clipped`, `linked_removed`, `linked_clipped`, `caption_removed`, `audio_moved`, `audio_clipped`, `bed_check_timing`, `marker_moved`, `keyframes_merged`, `state_merged`, `fields_dropped`, `short_piece`, `no_gap` |
 | `no_gap` in `flagged` | A deleted word with no time of its own between its neighbours: nothing to cut, so it stays in the text. Not in `cut`. Leave it |
 
-Before saying it is done, check `flagged`. Look at every moved overlay and every hard cut with `sample_frame`. A `bed_check_timing` music or SFX bed was made for the old cut; confirm it still fits.
+Before saying it is done, check `flagged`. Look at every moved overlay and every hard cut with `sample_frame`. A `bed_check_timing` music or SFX bed was made for the old cut; confirm it still fits. An audio track is never removed by a cut: one whose whole span was cut is moved to the next kept moment at its full length (`audio_moved`), one partly cut is clipped (`audio_clipped`), and the answer warns about each. Check them, and delete one only if it no longer belongs.
