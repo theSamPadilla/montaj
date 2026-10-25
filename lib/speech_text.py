@@ -58,6 +58,7 @@ class Derived:
     inside_words: set = field(default_factory=set)   # (letter, i): words whisper placed inside a pause
     silences: dict = field(default_factory=dict)     # source key -> measured silences, kept so an apply measures once
     warnings: list = field(default_factory=list)
+    inaudible: set = field(default_factory=set)      # (letter, i): words with no audible frame (a `refiner`'s call)
 
 
 def _resolve(item: dict, project_dir: str | None) -> dict:
@@ -108,8 +109,9 @@ def speech_track_index(project: dict, override: str | None, project_dir: str | N
     return best
 
 
-def stamp(project: dict, track_index: int, sidecars: list) -> str:
-    """sha256 hex[:12] over the track's items, each sidecar's content hash and the format constants."""
+def stamp(project: dict, track_index: int, sidecars: list, extra: str | None = None) -> str:
+    """sha256 hex[:12] over the track's items, each sidecar's content hash and the format constants (and `extra`,
+    what a refiner says of its own constants, when one placed the words)."""
     tracks = normalize_tracks(project).get("tracks", [])
     items = sorted(tracks[track_index]["items"], key=lambda it: it.get("start", 0))
     rows = [[os.path.basename(it.get("src") or ""), it.get("inPoint"), it.get("outPoint"), it.get("start"), it.get("end"),
@@ -120,7 +122,8 @@ def stamp(project: dict, track_index: int, sidecars: list) -> str:
             sums.append(hashlib.sha256(f.read()).hexdigest())
     # only what changes the text: constants of speech_lines / speech_pauses (apply-only ones are left out)
     consts = {n: getattr(speech_lines, n, getattr(speech_pauses, n, None)) for n in _STAMP_CONSTANTS}
-    blob = json.dumps([rows, sums, STAMP_VERSION, consts], sort_keys=True, separators=(",", ":"), default=list)
+    parts = [rows, sums, STAMP_VERSION, consts] + ([extra] if extra is not None else [])
+    blob = json.dumps(parts, sort_keys=True, separators=(",", ":"), default=list)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 
@@ -186,8 +189,11 @@ def _fold_kept_silences(cut: list, wordless: dict, measured: dict, items_by_id: 
     return out
 
 
-def derive(project: dict, project_dir: str, track: str | None = None, sils: dict | None = None) -> Derived:
-    """`sils`: silences already measured per source key (a previous Derived.silences); reused, not measured again."""
+def derive(project: dict, project_dir: str, track: str | None = None, sils: dict | None = None,
+           refiner=None) -> Derived:
+    """`sils`: silences already measured per source key (a previous Derived.silences); reused, not measured again.
+    `refiner`: called as refiner(source key, media, whisper words) -> (words, stats, silences) in place of
+    speech_lines.refine on measured silences (cut's lib/speech_energy.Refiner); its `stamp` joins the stamp."""
     idx = speech_track_index(project, track, project_dir)
     tr = normalize_tracks(project)["tracks"][idx]
     items = _sorted_items(tr, project_dir)
@@ -216,15 +222,19 @@ def derive(project: dict, project_dir: str, track: str | None = None, sils: dict
             add(s["src"], sc, _media_for(s, sc))
     letters = {k: _letter(n) for n, k in enumerate(keys)}
 
-    words, lines, uncertain, inside, measured = {}, {}, set(), set(), {}
+    words, lines, uncertain, inside, measured, inaudible = {}, {}, set(), set(), {}, set()
     for k in keys:
         if sidecars[k] is None:
             words[k], lines[k] = [], []
             continue
         raw = load_words(sidecars[k])
-        sil = sils[k] if sils is not None and k in sils else silences(media[k])
+        if refiner is not None:
+            refined, stats, sil = refiner(k, media[k], raw)
+            inaudible.update((letters[k], i) for i in stats.get("inaudible", ()))
+        else:
+            sil = sils[k] if sils is not None and k in sils else silences(media[k])
+            refined, stats = refine(raw, sil)
         measured[k] = sil
-        refined, stats = refine(raw, sil)
         words[k] = refined
         letter = letters[k]
         for a, b in uncertain_gaps(stats):
@@ -294,7 +304,9 @@ def derive(project: dict, project_dir: str, track: str | None = None, sils: dict
                 if n_played:
                     partly.add(ln.id)
     used_sidecars = [sidecars[k] for k in keys if sidecars[k]]
-    return Derived(tr["id"], letters, all_lines, cut, unused, partly, stamp(project, idx, used_sidecars), uncertain, inside, measured, warnings)
+    return Derived(tr["id"], letters, all_lines, cut, unused, partly,
+                   stamp(project, idx, used_sidecars, getattr(refiner, "stamp", None) if refiner is not None else None),
+                   uncertain, inside, measured, warnings, inaudible)
 
 
 def _row_text(row: Row) -> str:

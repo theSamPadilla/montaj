@@ -8,7 +8,7 @@
   },
   "output": {
     "type": "json",
-    "description": "Plan: {project, mode: plan, plan, kept {lines, seconds}, removed {lines {why: n}, fillers, seconds}, suggested?, duration, layers, cut, keep?, next, previous?, transcribed, silence?, note?, warnings?}. Apply: {project, mode: applied, version, duration, undo, layers}. A cut project: {mode: already-cut, ...}."
+    "description": "Plan: {project, mode: plan, plan, kept {lines, seconds}, removed {lines {why: n}, fillers, seconds, by {pause, deadAir, retake, inaudible, tail, fillers}, inaudible}, suggested?, duration, layers, cut, keep?, next, previous?, transcribed, silence?, note?, warnings?}. Apply: {project, mode: applied, version, duration, undo, layers}. A cut project: {mode: already-cut, ...}."
   },
   "params": [
     {
@@ -36,6 +36,15 @@
       "min": 0.08,
       "max": 2.0,
       "description": "Cap every pause in seconds. Default 0.45, which suits a talking head; 0.5 or more for tutorials."
+    },
+    {
+      "name": "breath",
+      "type": "float",
+      "required": false,
+      "default": 0.04,
+      "min": 0.0,
+      "max": 0.3,
+      "description": "Seconds of silence kept on each side of the words where a pause is dead air (every moment under the clip's speech level less 26 dB). Default 0.04; raise it for a slower read."
     },
     {
       "name": "recut",

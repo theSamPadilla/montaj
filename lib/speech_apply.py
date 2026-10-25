@@ -112,7 +112,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
           feel: str = DEFAULT_FEEL, base: dict | None = None, base_of: dict | None = None,
           version_message: str = "version: before speech edit", want_project: bool = False,
           amend=None, carry_from: dict | None = None, lineage: dict | None = None,
-          guard_keys: tuple = ()) -> dict:
+          guard_keys: tuple = (), refiner=None) -> dict:
     """Apply `text` to the project at `project_path`.
 
     base (cut): the project as an in-memory step already changed it, and the one the text was read
@@ -130,6 +130,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     id to the carry_from item it was cut from (`<clip>-seg-*` -> clip), so the result's provenance names the
     items the layers were timed to.
     guard_keys: more top-level keys the stale check compares under the lock (cut: its marker).
+    refiner: places the words the text is read and built on (speech_text.derive's; cut's speech_energy.Refiner).
     """
     project_path = os.path.abspath(project_path)
     project_dir = os.path.dirname(project_path)
@@ -152,7 +153,8 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
         project = normalize_tracks(copy.deepcopy(base))
 
     header, rows = speech_text.parse(text)
-    derived = speech_text.derive(project, project_dir, track=header["track"])   # the track the text was read from
+    derived = speech_text.derive(project, project_dir, track=header["track"],   # the track the text was read from
+                                 refiner=refiner)
     if header["stamp"] != derived.stamp:
         fail("stale", "The project changed since this text was read. Read it again with speech_text.")
     tracks = project["tracks"]
@@ -160,6 +162,8 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     old_items = tracks[ti]["items"]
     fps = (project.get("settings") or {}).get("fps") or 30
 
+    # speech-text.md is speech_edit's text: derived as speech_edit derives it, never on a refiner's words
+    plain_sils = derived.silences if refiner is None else None
     runs, report = runs_from_rows(rows, derived, derived.silences,
                                   max_pause, old_items, project_dir, feel=feel)
     if not any(r.kind == "speech" for r in runs):
@@ -213,7 +217,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
 
     before, after = _summary(disk, ti), _summary(candidate, ti)
     if preview:
-        new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id, sils=derived.silences), _title(candidate))
+        new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id, sils=plain_sils), _title(candidate))
         out = _result(applied=False, preview=True, version=False, before=before, after=after,
                       report=report, warnings=derived.warnings, text=new_text)
         if want_project:
@@ -224,7 +228,7 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
     # version commit; the check runs again under the lock, on the fresh document.
     _check_sync(on_disk_as_read, candidate)
     # Everything that can fail runs before the write, so nothing fails after it.
-    new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id, sils=derived.silences), _title(candidate))
+    new_text = speech_text.render(speech_text.derive(candidate, project_dir, track=derived.track_id, sils=plain_sils), _title(candidate))
     version = commit_version(project_dir, version_message)
     warnings = list(derived.warnings)
     if not version and not is_own_repo(project_dir):

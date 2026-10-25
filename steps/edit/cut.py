@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "lib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from common import fail, get_duration, DEFAULT_WHISPER_MODEL, WHISPER_MODEL_CHOICES
 from ai_video import save_project_changes
-from lib import project_revisions, speech_apply, speech_text, sync_clash, write_places
+from lib import project_revisions, speech_apply, speech_energy, speech_text, sync_clash, write_places
 from lib.project_lock import project_lock_or_fail
 from lib.project_tracks import normalize_tracks
 from lib.project_versions import commit_version, is_own_repo
@@ -55,7 +55,7 @@ PLAN_HELP = ("Edit, then run cut with plan: move a row from ## Unused into ## Cu
              "still in ## Cut (delete them there to take it); a repeat?, restart? or abandoned? group is the take "
              "trimmed (it replaces that take's rows in ## Cut).")
 # Why a row is in a plan's ## Unused.
-WHYS = ("retake", "false-start", "repeat", "restart", "abandoned", "filler-only", "pause", "earlier")
+WHYS = ("retake", "false-start", "repeat", "restart", "abandoned", "filler-only", "pause", "earlier", "inaudible")
 REMOVED_CAP_BYTES = 1500
 PREV_PLAN_FILE = "cut-plan.prev.md"
 LOSES_MOST = 0.1            # warn when a clip keeps under this share of its length
@@ -245,6 +245,96 @@ def _trimmed(row, drop):
 
 # ── the plan ─────────────────────────────────────────────────────────────────
 
+_WHY_ORDER = ("retake", "false-start", "repeat", "restart", "abandoned", "pause", "inaudible")
+
+
+def _first_why(whys):
+    """Of the reasons a row or a take lost words, the one its tag names: a take rule first, then a made-up tail,
+    then inaudible words."""
+    whys = set(whys)
+    return next((w for w in _WHY_ORDER if w in whys), next(iter(sorted(whys)), "repeat"))
+
+
+def _dead_air(out, d, energy, breath, whole=frozenset()):
+    """The plan's lines, its kept rows ("row", Row, tag) written out. With `energy`, a pause between two kept words
+    that is dead air (every frame under the clip's floor, lib/speech_energy) is written as the pause it keeps: two
+    breaths where the words follow on in the source and it lasts DEAD_AIR_MIN_S or more, or where words were cut
+    between them (each side's silence all quiet); one breath before the first word or after the last of a run of
+    rows. The marker is the cut's own edit of the text, so the person sees it and can change it back; every other
+    pause keeps its marker, which max-pause caps on apply. A row of a clip kept whole is left as it is."""
+    if energy is None:
+        return [f"{_row_line(x[1])}{x[2]}" if isinstance(x, tuple) else x for x in out]
+    src_of = {letter: src for src, letter in d.letters.items()}
+    words_of = {}
+    for ln in d.lines.values():
+        words_of.setdefault(_line_key(ln.id)[0], {}).update({w.idx: w for w in ln.words})
+
+    def letter(row):
+        return _line_key(row.line)[0]
+
+    def quiet(lt, a, b):
+        return b - a <= 1e-6 or energy.quiet(src_of[lt], a, b)
+
+    def after(lt, w):
+        nxt = words_of[lt].get(w.idx + 1)
+        return w.end, max(w.end, nxt.start if nxt else energy.end(src_of[lt]))
+
+    def before(lt, w):
+        prv = words_of[lt].get(w.idx - 1)
+        return min(w.start, prv.end if prv else 0.0), w.start
+
+    def join(pl, a, lt, b):
+        """The pause to write between kept words a (source pl) and b (source lt), or None to leave it."""
+        if pl == lt and b.idx == a.idx + 1:
+            lo, hi = a.end, b.start
+            return round(2 * breath, 2) if hi - lo >= speech_energy.DEAD_AIR_MIN_S - 1e-9 and quiet(lt, lo, hi) else None
+        return round(2 * breath, 2) if quiet(pl, *after(pl, a)) and quiet(lt, *before(lt, b)) else None
+
+    def free(lt, lo, hi):
+        return round(breath, 2) if hi - lo >= speech_energy.DEAD_AIR_MIN_S - 1e-9 and quiet(lt, lo, hi) else None
+
+    rows = [x for x in out if isinstance(x, tuple)]
+    cut = {id(x): speech_text.Row("speech", line=x[1].line, words=list(x[1].words), pauses=dict(x[1].pauses),
+                                  item_ids=x[1].item_ids, folded=x[1].folded) for x in rows}
+    prev = None             # the kept row right before, with nothing but blank lines between
+    for x in out:
+        if not isinstance(x, tuple):
+            if x.strip():
+                if prev is not None and not (prev[1].item_ids and prev[1].item_ids[0] in whole):
+                    r = cut[id(prev)]
+                    m = free(letter(r), *after(letter(r), r.words[-1]))
+                    if m is not None:
+                        r.pauses[len(r.words)] = m
+                prev = None
+            continue
+        r = cut[id(x)]
+        mine = r.item_ids and r.item_ids[0] in whole
+        if not mine:
+            lt = letter(r)
+            if prev is None:
+                m = free(lt, *before(lt, r.words[0]))
+            elif prev[1].item_ids and prev[1].item_ids[0] in whole:
+                m = None
+            else:
+                p = cut[id(prev)]
+                m = join(letter(p), p.words[-1], lt, r.words[0])
+                if m is not None:
+                    p.pauses.pop(len(p.words), None)
+            if m is not None:
+                r.pauses[0] = m
+            for q in range(1, len(r.words)):
+                m = join(lt, r.words[q - 1], lt, r.words[q])
+                if m is not None:
+                    r.pauses[q] = m
+        prev = x
+    if prev is not None and not (prev[1].item_ids and prev[1].item_ids[0] in whole):
+        r = cut[id(prev)]
+        m = free(letter(r), *after(letter(r), r.words[-1]))
+        if m is not None:
+            r.pauses[len(r.words)] = m
+    return [f"{_row_line(cut[id(x)])}{x[2]}" if isinstance(x, tuple) else x for x in out]
+
+
 def _row_line(row, star=False):
     body = speech_text._row_text(row)
     return f"{'*' if star else ''}{row.line}{' ' + body if body else ''}"
@@ -278,7 +368,7 @@ def _kept_whole(row):
 
 
 def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, project_dir, is_filler,
-          whole=frozenset(), why_at=None):
+          whole=frozenset(), why_at=None, energy=None, breath=speech_energy.BREATH_S):
     """The plan: speech_edit's text format. `## Cut` holds the kept rows in narrative order (each kept take at
     its section's first appearance, its repeated or restarted words deleted), each tagged [time]; `## Unused`
     every removed take, one group of rows per take (a blank line between), each row tagged [time why]. A row
@@ -286,7 +376,8 @@ def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, pr
     Line ids are the source's (lib/speech_lines), so the same transcript gives the same ids.
     Uncertain cuts (sel.suggest) are not made: the take stays in `## Cut` and `## Unused` offers the cut, tagged
     with a `?` reason. why_at: {unit: {word position: why}} for words a kept take lost to a rule of its own (a phrase
-    retake): each trimmed row is tagged with the why of its first lost word. Returns (text, kept rows [(id, t, words)], removed takes [(id, t, words, why)],
+    retake): each trimmed row is tagged with the why of its first lost word. energy (cut's speech_energy.Refiner):
+    dead air between kept words is written as the pause it keeps, `breath` a side (see _dead_air). Returns (text, kept rows [(id, t, words)], removed takes [(id, t, words, why)],
     suggestions [(id, t, words, why?)])."""
     home = {ui: s_i for s_i, section in enumerate(sel.sections) for ui in section}
     for ui in range(len(units) - 1, -1, -1):
@@ -311,10 +402,10 @@ def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, pr
         ui = sel.kept[s_i]
         drop, pos, lost = sel.drop.get(ui, set()), 0, []
         mine_why = (why_at or {}).get(ui, {})
-        unit_why = mine_why[min(drop)] if drop and min(drop) in mine_why else sel.why.get(ui, "repeat")
+        unit_why = _first_why(mine_why.get(k, sel.why.get(ui, "repeat")) for k in drop)
         for _, row in units[ui][1]:
             mine = {k - pos for k in drop if pos <= k < pos + len(row.words)}
-            row_why = mine_why.get(min(mine) + pos, sel.why.get(ui, "repeat")) if mine else None
+            row_why = _first_why(mine_why.get(k + pos, sel.why.get(ui, "repeat")) for k in mine) if mine else None
             pos += len(row.words)
             trimmed = _trimmed(row, mine) if mine else row
             if mine:
@@ -322,13 +413,14 @@ def _plan(d, title, units, trailing, sel, at, of_source, language, max_pause, pr
             if trimmed is not None:
                 if row.item_ids and row.item_ids[0] in whole:
                     trimmed = _kept_whole(trimmed)
-                out.append(f"{_row_line(trimmed)} [{t_of(row):.1f}]")
+                out.append(("row", trimmed, f" [{t_of(row):.1f}]"))
                 kept.append((row.line, t_of(row), " ".join(w.text for w in trimmed.words)))
         if lost:
             gone = [w for k, w in enumerate(units[ui][0].words) if k in drop]
             groups.append((t_of(units[ui][1][0][1]), unit_why, lost,
                            (units[ui][1][0][1].line, " ".join(gone))))
     out += [_other_row(r) for r in trailing]
+    out = _dead_air(out, d, energy, breath, whole)
 
     for ui in sel.losers:
         rows = [r for _, r in units[ui][1]]
@@ -581,7 +673,7 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
     work = copy.deepcopy(origin)
     ti, track = _track(work, track_id)
     b = {"work": work, "ti": ti, "before_s": _seconds(track, project_dir),
-         "origin": origin, "lineage": {}, "d": None, "fillers": 0}
+         "origin": origin, "lineage": {}, "d": None, "fillers": 0, "refiner": speech_energy.Refiner()}
     has_words = any((sc := sidecar_for(_resolved(it, project_dir))) and load_words(sc) for it in _media(track))
     if has_words:
         is_filler = _filler_test(language)
@@ -590,7 +682,7 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
                                       b["lineage"], b["whole"])
         warnings += w
         warnings += _silence_cut(work, project_path, ti, project_dir, b["lineage"], untranscribed_only=True)
-        d = speech_text.derive(work, project_dir, track_id)
+        d = speech_text.derive(work, project_dir, track_id, refiner=b["refiner"])   # words where the audio is
         units, trailing = _units(d, is_filler)
         for u, rows, _ in units:
             # a clip kept whole (b-roll): its made-up words are never a take, a loser or a suggestion
@@ -604,7 +696,8 @@ def _build(project_path, project_dir, disk, track_id, language, warnings):
             else:
                 b["sel"] = select([u for u, _, _ in units], is_filler)
                 _phrases(b, units, is_filler)
-                _made_up_tails(b, speech_units.made_up_tail_words(units, d.inside_words))
+                _made_up_tails(b, speech_units.made_up_tail_words(units, set(d.inside_words) | d.inaudible))
+                _inaudible(b, units, d.inaudible)
             return b
     # no usable speech: waveform_trim keeps on a fresh copy
     work = copy.deepcopy(origin)
@@ -639,6 +732,97 @@ def _made_up_tails(b, tails):
             why_at.setdefault(ui, {}).update({k: "pause" for k in pos})
 
 
+def _inaudible(b, units, inaudible):
+    """A kept word with no audible frame (lib/speech_energy) goes, word for word, tagged inaudible."""
+    sel, why_at = b["sel"], b.setdefault("why_at", {})
+    for ui in sel.kept:
+        u, rows, _ = units[ui]
+        if u.fixed:
+            continue
+        ws = [(_line_key(r.line)[0], w.idx) for _, r in rows for w in r.words]
+        gone = sel.drop.get(ui, set())
+        pos = {k for k, key in enumerate(ws) if key in inaudible and k not in gone}
+        if pos:
+            sel.drop.setdefault(ui, set()).update(pos)
+            why_at.setdefault(ui, {}).update({k: "inaudible" for k in pos})
+
+
+_CATEGORY = {"retake": "retake", "false-start": "retake", "repeat": "retake", "restart": "retake",
+             "abandoned": "retake", "inaudible": "inaudible", "pause": "tail", "filler-only": "fillers"}
+
+
+def _spans(project, ti, project_dir):
+    """{source: [(inPoint, outPoint)]} of the media items of track ti."""
+    out = {}
+    for it in _media(normalize_tracks(copy.deepcopy(project))["tracks"][ti]):
+        if "inPoint" in it and "outPoint" in it:
+            out.setdefault(_resolve(it["src"], project_dir), []).append((float(it["inPoint"]), float(it["outPoint"])))
+    return out
+
+
+def _minus(a, b):
+    """The parts of intervals a not in intervals b."""
+    out = []
+    for s0, e0 in a:
+        cur = [(s0, e0)]
+        for s1, e1 in b:
+            cur = [p for x0, x1 in cur for p in ((x0, min(x1, s1)), (max(x0, e1), x1)) if p[1] - p[0] > 1e-6]
+        out += cur
+    return out
+
+
+def _removed_by(b, final, project_dir, max_pause, units):
+    """Seconds the cut removes, by cause: fillers (the mechanical pass, and filler-only lines), retake (every take
+    rule), inaudible, tail (made-up words at a clip's end), and the silence between words: pause (what max-pause alone
+    would take) and deadAir (the rest, trimmed to the breaths). Plus the count of inaudible words removed."""
+    d, sel, ti = b["d"], b["sel"], b["ti"]
+    origin, base, after = (_spans(p, ti, project_dir) for p in (b["origin"], b["work"], final))
+    out = {"pause": 0.0, "deadAir": 0.0, "retake": 0.0, "inaudible": 0.0, "tail": 0.0, "fillers": 0.0}
+    for src, iv in origin.items():
+        out["fillers"] += sum(e - s0 for s0, e in _minus(iv, base.get(src, [])))
+    why = {}                                    # (letter, word index) -> why it went
+    for ui in sel.losers:
+        for _, r in units[ui][1]:
+            for w in r.words:
+                why[(_line_key(r.line)[0], w.idx)] = sel.why.get(ui, "retake")
+    for ui, drop in sel.drop.items():
+        at = (b.get("why_at") or {}).get(ui, {})
+        ws = [(_line_key(r.line)[0], w.idx) for _, r in units[ui][1] for w in r.words]
+        for k in drop:
+            if k < len(ws):
+                why[ws[k]] = at.get(k, sel.why.get(ui, "repeat"))
+    words_of = {}
+    for ln in d.lines.values():
+        words_of.setdefault(_line_key(ln.id)[0], []).extend(ln.words)
+    inaudible = 0
+    for src, letter in d.letters.items():
+        ws = sorted(words_of.get(letter, []), key=lambda w: w.idx)
+        gone = _minus(base.get(src, []), after.get(src, []))
+        if not gone:
+            continue
+        cat = {w.idx: _CATEGORY.get(why.get((letter, w.idx)), "") for w in ws}
+        inaudible += sum(1 for w in ws if why.get((letter, w.idx)) == "inaudible")
+        edges = [0.0] + [t for w in ws for t in (w.start, w.end)] + [float("inf")]
+        for n in range(len(edges) - 1):
+            lo, hi = edges[n], edges[n + 1]
+            cut = sum(max(0.0, min(e, hi) - max(s0, lo)) for s0, e in gone)
+            if cut <= 1e-6:
+                continue
+            if n % 2 == 1:                       # inside word n // 2
+                out[cat[ws[n // 2].idx] or "pause"] += cut
+                continue
+            left = cat.get(ws[n // 2 - 1].idx) if n // 2 >= 1 else None
+            right = cat.get(ws[n // 2].idx) if n // 2 < len(ws) else None
+            if left or right:                    # the silence beside a removed word goes with it
+                out[left or right] += cut
+                continue
+            span = (min(hi, b["refiner"].end(src) or hi) - lo)
+            capped = min(cut, max(0.0, span - max_pause))
+            out["pause"] += capped
+            out["deadAir"] += cut - capped
+    return {k: round(v, 2) for k, v in out.items()}, inaudible
+
+
 def _silence_stamp(b, track_id):
     items = b["work"]["tracks"][b["ti"]]["items"]
     rows = [[os.path.basename(it.get("src") or ""), it.get("inPoint"), it.get("outPoint"), it.get("start"), it.get("end")]
@@ -665,6 +849,8 @@ def main():
     parser.add_argument("--project", required=True, help="Absolute path to project.json")
     parser.add_argument("--plan", default=None, help="Apply this plan: its text, or the path of the plan file")
     parser.add_argument("--max-pause", type=float, default=None, help="Cap unchanged pauses, in seconds")
+    parser.add_argument("--breath", type=float, default=speech_energy.BREATH_S,
+                        help="Seconds of a dead-air pause kept on each side of the words")
     parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL, choices=list(WHISPER_MODEL_CHOICES),
                         help="Whisper model for clips with no transcript")
     parser.add_argument("--language", default=None, help="The speaker's language (e.g. es), or 'auto' (the default)")
@@ -720,11 +906,12 @@ def _make_plan(args, project_path, project_dir):
         at, of_source = _timer(b["origin"], b["work"], b["ti"], b["lineage"])
         text, kept, removed, suggested = _plan(b["d"], title, b["units"], b["trailing"], b["sel"], at, of_source,
                                                language, max_pause, project_dir, _filler_test(language),
-                                               b.get("whole", frozenset()), b.get("why_at"))
+                                               b.get("whole", frozenset()), b.get("why_at"), b["refiner"], args.breath)
         res = apply(project_path, _untagged(text)[0], preview=True, max_pause=max_pause, feel=DEFAULT_FEEL,
                     base=b["work"], base_of=disk, want_project=True, carry_from=b["origin"], lineage=b["lineage"],
-                    guard_keys=(MARKER_KEY,))
+                    guard_keys=(MARKER_KEY,), refiner=b["refiner"])
         kept_s, duration = _sums(res["_project"], track_id)
+        by_cause, inaudible = _removed_by(b, res["_project"], project_dir, max_pause, b["units"])
         path, prev = _write_plan(project_path, disk.get("id"), text)
         by, maybe = {}, {}
         for *_, why in removed:
@@ -732,7 +919,8 @@ def _make_plan(args, project_path, project_dir):
         for *_, why in suggested:
             maybe[why] = maybe.get(why, 0) + 1
         answer.update(plan=path, kept={"lines": len(kept), "seconds": kept_s},
-                      removed={"lines": by, "fillers": b["fillers"], "seconds": (round(b["before_s"] - kept_s, 2) + 0.0)},
+                      removed={"lines": by, "fillers": b["fillers"], "seconds": (round(b["before_s"] - kept_s, 2) + 0.0),
+                               "by": by_cause, "inaudible": inaudible},
                       duration=duration)
         if maybe:
             answer["suggested"] = maybe
@@ -805,7 +993,7 @@ def _apply_plan(args, project_path, project_dir):
             _start(candidate)
         res = apply(project_path, plain, preview=False, max_pause=max_pause, feel=DEFAULT_FEEL,
                     base=b["work"], base_of=disk, version_message=VERSION_MESSAGE, want_project=True, amend=mark,
-                    carry_from=b["origin"], lineage=b["lineage"],
+                    carry_from=b["origin"], lineage=b["lineage"], refiner=b["refiner"],
                     # status is guarded when this write starts a pending project, so a status the person set
                     # meanwhile refuses the apply rather than being overwritten with draft.
                     guard_keys=(MARKER_KEY,) + (("status",) if disk.get("status") == "pending" else ()))
