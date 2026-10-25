@@ -141,29 +141,17 @@ def main():
     parser.add_argument("--min-silence", type=float, default=0.3, help="Minimum silence duration to remove in seconds (default: 0.3)")
     parser.add_argument("-P", "--parallel", type=int, default=0, help="Max parallel workers (default and ceiling: what the machine can hold, at most 4)")
     parser.add_argument("--out",
-                        help="Write the trim spec JSON to this file (single --input only) instead of "
-                             "printing it, and print {\"path\": \"<abs path>\"} instead. Pass that path "
-                             "as --input to a downstream step (e.g. rm_nonspeech) to chain without an "
-                             "intermediate write_file.")
+                        help="Write the JSON it would print to this file instead (the trim spec, or with "
+                             "--inputs the array of trim specs), and print {\"path\": \"<abs path>\"} instead. "
+                             "Pass a single spec's path as --input to a downstream step (e.g. rm_nonspeech) to "
+                             "chain without an intermediate write_file.")
     args = parser.parse_args()
     if not (math.isfinite(args.threshold) and math.isfinite(args.min_silence)):
         fail("invalid_args", "--threshold and --min-silence must be finite numbers")
 
     if args.input:
-        spec = process_one(args.input, args.threshold, args.min_silence)
-        if args.out:
-            out_path = os.path.abspath(args.out)
-            out_dir = os.path.dirname(out_path)
-            if out_dir:
-                os.makedirs(out_dir, exist_ok=True)
-            with open(out_path, "w") as f:
-                json.dump(spec, f)
-            print(json.dumps({"path": out_path}))
-        else:
-            print(json.dumps(spec))
+        _emit(process_one(args.input, args.threshold, args.min_silence), args.out)
     else:
-        if args.out:
-            fail("invalid_args", "--out is not supported with --inputs (batch mode produces multiple specs)")
         # One ffmpeg per worker, about 600 MB each: capped by cores and free memory (§338).
         workers = batch_workers(len(args.inputs), args.parallel)
         results: dict[int, dict] = {}
@@ -175,7 +163,22 @@ def main():
             for future in as_completed(futures):
                 idx = futures[future]
                 results[idx] = future.result()
-        print(json.dumps([results[i] for i in range(len(args.inputs))]))
+        # with --out (serve adds one to a project's call), the same array goes to the file (§577)
+        _emit([results[i] for i in range(len(args.inputs))], args.out)
+
+
+def _emit(result, out=None):
+    """Print the JSON result, or write it to `out` and print {"path": <abs path>}."""
+    if not out:
+        print(json.dumps(result))
+        return
+    out_path = os.path.abspath(out)
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(result, f)
+    print(json.dumps({"path": out_path}))
 
 
 if __name__ == "__main__":

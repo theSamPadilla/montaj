@@ -179,11 +179,11 @@ def wordless(d, max_pause=MAX_PAUSE):
         flat = flat_of(db, ref, sound.get(os.path.basename(it["src"]), ()))
         a, b = float(it["inPoint"]), float(it["outPoint"])
         snd = [k for k in range(int(a * 100), min(int(b * 100), len(db))) if not flat[k]]
-        sound = len(snd) / 100
+        secs = len(snd) / 100            # (never `sound`: that is the bursts of every item, read again next item)
         mine = spans.get(os.path.basename(it["src"]), [])
-        if sound < ISLAND_S - 1e-9 and not any(db[k] >= LOUD_DB and s0 - 1e-6 <= (k + 0.5) / 100 <= s1 + 1e-6
+        if secs < ISLAND_S - 1e-9 and not any(db[k] >= LOUD_DB and s0 - 1e-6 <= (k + 0.5) / 100 <= s1 + 1e-6
                                                for k in snd for s0, s1 in mine):
-            out.append((round(a, 3), round(b, 3), sound))
+            out.append((round(a, 3), round(b, 3), secs))
     return out
 
 

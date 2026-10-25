@@ -69,6 +69,8 @@ MARKER_KEY = "cleanCut"
 STEP_VERSION = 1
 TEXT_CAP_BYTES = 3000
 SILENCE_THRESHOLD_DB = -30.0  # waveform_trim's defaults; `silence-threshold` overrides the level
+THRESHOLD_SPEECH_WARNING = ("silence-threshold only changes clips with no transcript; speech clips use their own "
+                            "speech level.")
 SILENCE_THRESHOLD_RANGE = (-60.0, -10.0)
 SILENCE_MIN_S = 0.3
 
@@ -781,7 +783,8 @@ def _made_up_tails(b, tails):
 def _edge_soft(b, units, d):
     """2b's (b), with the orchestrator's guard: the video's very first word and its very last, when soft (all its sound
     under the line) and peaking under speech_energy.GUARD_DB, is not played: it goes to ## Unused tagged inaudible?,
-    and one move puts it back. A word the guard hears plays (its own burst)."""
+    and one move puts it back. A word the guard hears plays (its own burst). Never a folded word (offered in ## Cut)
+    or one whose whisper span holds a frame at the line (§577)."""
     sel, ref, why_at = b["sel"], b["refiner"], b.setdefault("why_at", {})
     src_of = {letter: src for src, letter in d.letters.items()}
     order = [sel.kept[s] for s in range(len(sel.sections)) if not units[sel.kept[s]][0].fixed]
@@ -792,7 +795,10 @@ def _edge_soft(b, units, d):
         return [(_line_key(r.line)[0], w.idx) for _, r in units[ui][1] for w in r.words]
 
     def soft(key):
-        pk = ref.soft.get(src_of.get(key[0]), {}).get(key[1])
+        src = src_of.get(key[0])
+        if key[1] in getattr(ref, "folded", {}).get(src, ()) or key[1] in getattr(ref, "loud", {}).get(src, ()):
+            return False            # §577: a folded word, or one whose whisper span holds sound, is never sent away
+        pk = ref.soft.get(src, {}).get(key[1])
         return pk is not None and pk < speech_energy.GUARD_DB
 
     for ui, step in ((order[0], 1), (order[-1], -1)):
@@ -1004,7 +1010,8 @@ def _settle(b, res, project_dir):
     for f in res.get("flagged") or []:
         if f.get("kind") != "sliver":
             continue
-        heard = b["refiner"].heard.get(src_of.get(f["letter"]), set())
+        heard = b["refiner"].heard.get(src_of.get(f["letter"]), set()) | \
+            getattr(b["refiner"], "loud", {}).get(src_of.get(f["letter"]), set())     # §577 (b)
         for idx in f.get("idx", ()):
             if idx in heard:
                 continue
@@ -1165,7 +1172,7 @@ def main():
     parser.add_argument("--breath", type=float, default=speech_energy.BREATH_S,
                         help="Seconds of a silence over max-pause kept on each side of the sound")
     parser.add_argument("--silence-threshold", type=float, default=None,
-                        help="The silence pass's level in dB (default -30); lower for a quiet speaker")
+                        help="The silence pass's level in dB (default -30), for clips with no transcript; lower for a quiet speaker")
     parser.add_argument("--model", default=DEFAULT_WHISPER_MODEL, choices=list(WHISPER_MODEL_CHOICES),
                         help="Whisper model for clips with no transcript")
     parser.add_argument("--language", default=None, help="The speaker's language (e.g. es), or 'auto' (the default)")
@@ -1217,6 +1224,8 @@ def _make_plan(args, project_path, project_dir):
     title = disk.get("name") or disk.get("id") or os.path.basename(project_dir)
     threshold = args.silence_threshold if args.silence_threshold is not None else SILENCE_THRESHOLD_DB
     b = _build(project_path, project_dir, disk_l, track_id, language, warnings, max_pause, breath, threshold)
+    if args.silence_threshold is not None and b["d"] is not None:
+        warnings.insert(0, THRESHOLD_SPEECH_WARNING)       # §577: it never reaches a clip with a transcript
     answer = {"project": disk.get("id"), "mode": "plan", "speech": key}
 
     if b["d"] is None:

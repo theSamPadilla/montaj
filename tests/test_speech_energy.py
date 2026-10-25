@@ -213,7 +213,9 @@ def test_a_run_a_long_neighbour_holds_is_kept():
     env = env_of(4.0, (0.3, 0.55, SP), (0.6, 1.65, SP), (2.4, 2.65, SP))
     out = placed_of(env, words(("we", 0.3, 0.6), ("ride", 0.6, 1.7), ("the", 1.7, 2.05), ("bike", 2.05, 2.4),
                                ("all.", 2.4, 2.65)))
-    assert [k for *_, k in out] == ["heard", "heard", "folded", "folded", "heard"], out
+    # §577 (A): "ride" (0.6-1.65) is long for its own text, so "the bike" take the tail of its sound by letters, in order
+    assert [k for *_, k in out] == ["heard"] * 5, out
+    assert 0.6 <= out[1][1] < out[1][2] <= out[2][1] < out[2][2] <= out[3][1] < out[3][2] <= 1.65 + 1e-6, out
 
 
 def test_an_inaudible_word_sits_in_the_breath_of_the_sound_before_it():

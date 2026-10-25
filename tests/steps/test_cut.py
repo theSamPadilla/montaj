@@ -257,9 +257,10 @@ def test_the_plan_writes_nothing_to_the_project(tmp_path, stub_transcribe, monke
     offered = [g for g in groups if any((m := cc._TAG.search(r)) and m.group(3) for r in g.splitlines())]
     assert sum(out["removed"]["lines"].values()) == len(groups) - len(offered)    # one group per take
     assert out["removed"]["lines"] == {"retake": 2, "false-start": 1}
-    # F1 offers the earlier take (see KEPT); v5: words with no sound of their own ("timeline.", which whisper put in
-    # the silence after "the", "want.", "so") are kept and offered inaudible?, one offer per take
-    assert out["suggested"] == {"retake?": 1, "inaudible?": 3}
+    # F1 offers the earlier take (see KEPT); v5: words with no sound of their own are kept and offered inaudible?, one
+    # offer per take. §577: "timeline." (whisper put it in the silence after "the"), the first two "want." and "so"
+    # take the sound no word held between their neighbours, in order, so only the third take's "want." is offered
+    assert out["suggested"] == {"retake?": 1, "inaudible?": 1}
     assert out["removed"]["fillers"] == 1 and out["removed"]["seconds"] > 0
     assert out["removed"]["seconds"] == pytest.approx(SOURCE_S - out["kept"]["seconds"], abs=0.02)
     lines = out["cut"].splitlines()
@@ -1908,8 +1909,9 @@ def test_misplaced_words_whose_sound_is_in_a_long_neighbour_are_kept(tmp_path, m
     d = tone_project(tmp_path, [("vo", spans, 3.6, words)])
     plan, text, said = plan_apply_said(d, monkeypatch)
     assert said == "we ride the bike all day." and plan["removed"]["inaudible"] == 0
-    # v5: folded into "ride" and kept, but with no sound of their own they are offered inaudible? (never removed)
-    assert " inaudible]" not in text.split("\n## Unused\n")[1] and plan["suggested"] == {"inaudible?": 1}
+    # §577 (A): "ride" is long for its own text, so the two words take their letter share of its sound's tail, in order:
+    # heard, never removed and no longer offered (v5 folded them and offered inaudible?)
+    assert " inaudible]" not in text.split("\n## Unused\n")[1] and "inaudible?" not in (plan.get("suggested") or {})
 
 
 def test_a_truly_silent_run_between_two_short_words_is_still_removed(tmp_path, monkeypatch):

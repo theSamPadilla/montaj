@@ -99,12 +99,41 @@ def test_waveform_trim_no_out_is_unchanged(test_video):
     assert "input" in spec and "keeps" in spec
 
 
-def test_waveform_trim_out_rejected_with_inputs(test_video, tmp_path):
-    out = tmp_path / "should-not-write.json"
-    proc = run_step("waveform_trim.py", "--inputs", str(test_video), str(test_video),
-                    "--out", str(out))
-    assert_error(proc, "invalid_args")
-    assert not out.exists()
+def test_waveform_trim_out_with_inputs_writes_the_batch_array(test_video, tmp_path):
+    """§577: serve adds --out to a project's call, so a batch call writes its array there (the same JSON it prints
+    without --out) and prints {"path"}."""
+    out = tmp_path / "sub" / "batch.json"
+    proc = run_step("waveform_trim.py", "--inputs", str(test_video), str(test_video), "--out", str(out))
+    assert proc.returncode == 0, f"stderr: {proc.stderr}"
+    assert json.loads(proc.stdout) == {"path": str(out)}
+    printed = run_step("waveform_trim.py", "--inputs", str(test_video), str(test_video))
+    assert json.loads(out.read_text()) == json.loads(printed.stdout)
+    assert [s["input"] for s in json.loads(out.read_text())] == [str(test_video)] * 2
+
+
+def test_waveform_trim_batch_through_serve_with_a_project(test_video, tmp_path, monkeypatch):
+    """A project-scoped batch call through serve (which adds --out in the project's assets) runs, and its file holds
+    the array."""
+    import shutil
+    import uuid
+    from starlette.testclient import TestClient
+    import serve.routes.steps as steps_mod
+    from serve.server import app
+    ws = tmp_path / "Montaj"
+    pdir = ws / "2026-10-25-batch"
+    pdir.mkdir(parents=True)
+    pid = str(uuid.uuid4())
+    (pdir / "project.json").write_text(json.dumps({"id": pid, "tracks": []}))
+    clips = [pdir / "a.mp4", pdir / "b.mp4"]
+    for c in clips:
+        shutil.copy(test_video, c)
+    monkeypatch.setenv("MONTAJ_WORKSPACE_DIR", str(ws))
+    steps_mod._RESERVED_OUTS.clear()
+    r = TestClient(app).post("/api/steps/waveform_trim", json={"inputs": [str(c) for c in clips], "_project": pid})
+    assert r.status_code == 200, r.text
+    path = r.json()["path"]
+    assert path.startswith(str(pdir / "assets")) and path.endswith(".json"), path
+    assert [s["input"] for s in json.loads(open(path).read())] == [str(c) for c in clips]
 
 
 # --- threshold is a number (§563) --------------------------------------------

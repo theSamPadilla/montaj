@@ -31,7 +31,7 @@
       "name": "out",
       "type": "path",
       "required": false,
-      "description": "Write the trim spec JSON to this file (single input only) instead of printing it, and print {\"path\": \"<abs path>\"} instead. Pass that path as --input to a downstream step (e.g. rm_nonspeech) to chain. Not supported with 'inputs' (batch mode produces multiple specs)."
+      "description": "Write the JSON it would print to this file instead (the trim spec, or with 'inputs' the array of trim specs), and print {\"path\": \"<abs path>\"} instead. Pass a single spec's path as --input to a downstream step (e.g. rm_nonspeech) to chain."
     }
   ]
 }
