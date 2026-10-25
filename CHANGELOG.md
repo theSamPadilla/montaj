@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Changed (skills): `select-takes` reviews a cut plan in the plan only (§577).** Its plan section is the whole job: read `cut-plan.md`, pick one take per section, edit the plan, write it back; a plan that looks wrong is told to the person, never rebuilt with `waveform_trim`, `jump_cut`, `speech_text`, `speech_edit` or `crop_spec`. It no longer points into the steps for a project already cut. (`skills/select-takes/SKILL.md`)
+
 ## v5.36.0
 
 - **Changed (steps): a cut never removes a music or audio track; it moves it and says so (§558).** A cut or a speech edit no longer drops an audio track whose span it removed: a track that is not a bed moves to the next kept moment at its full length, its `inPoint` unchanged (`audio_moved`); one partly cut is clipped as before (`audio_clipped`); a bed whose end would move to its start or before keeps 1 s from its start, or up to the new end when that is later (`audio_clipped` with `minimum`). The `audio_removed` flag is gone. An `audio` item on another track (an sfx lane) whose whole span was cut moves the same way (`audio_moved`), never removed as an overlay would be. `cut`'s plan and apply answers warn about each moved or clipped audio track, by id. Only the person or the AI deletes audio. (`lib/speech_carry.py`, `steps/edit/cut.py`, `skills/speech-edit/SKILL.md`)
