@@ -124,7 +124,6 @@ export interface Project extends EditorProject {
   assets: Asset[]
   audio?: { tracks: AudioTrack[] }
   profile?: string
-  renderMode?: 'ffmpeg-drawtext'
   history?: RunSnapshot[]
   storyboard?: Storyboard
   regenQueue?: RegenQueueEntry[]

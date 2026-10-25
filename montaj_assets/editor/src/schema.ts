@@ -65,9 +65,6 @@ export interface CaptionSegment {
   // Per-segment override of the track-level `Captions.color` (base text color
   // only — not the per-style accent fields below). CSS color (hex or named).
   // Absent → inherits the track-level color → the template's own default.
-  // Honored only by the JSX browser preview / Puppeteer render path; the
-  // ffmpeg `drawtext` render branch has no per-segment concept and keeps
-  // reading only the track-level `color`.
   color?: string
   // Vertical row this segment renders in. Captions in different lanes may be
   // simultaneous and all render, each getting its own row in the timeline and
@@ -94,9 +91,8 @@ export interface CaptionSegment {
   // one caption by the Format tab when "Apply to all" is off. Precedence:
   // the segment's value, else the track's, else the style's own default, so a
   // segment without them renders exactly as before. Read by the JSX caption
-  // templates only (each resolves them per segment, see `segmentTheme` in
-  // render/templates/captions/*.jsx); the ffmpeg `drawtext` branch ignores
-  // them, as it ignores `color` above. `fontSize` is camelCase here, unlike
+  // templates (each resolves them per segment, see `segmentTheme` in
+  // render/templates/captions/*.jsx). `fontSize` is camelCase here, unlike
   // the track's legacy `fontsize`. `googleFonts` travels with `fontFamily`, as
   // on the track: both renderers fetch the union of the track's and every
   // segment's specs. Listed in `video/captionSegmentStyle.ts`.
@@ -141,14 +137,12 @@ export interface Captions {
   // Editing and the caption list always see every row; only drawing is filtered
   // (captionSegmentsToShow in @bycrux/timeline-core). A list that matches no row shows every row.
   showLangs?: string[]
-  // `color` and `fontsize` are read by BOTH paths: the JSX browser preview /
-  // Puppeteer render (spread into the caption template props; `fontsize`→`fontSize`)
-  // and the ffmpeg-drawtext render branch. `position` and `bgColor` are consumed
-  // only by the ffmpeg-drawtext branch and ignored by the JSX preview.
-  position?: 'center' | 'top-left' | 'bottom-left'
+  // `color` and `fontsize` are spread into the caption template props
+  // (`fontsize`→`fontSize`). `position` and `bgColor` were read only by the
+  // retired ffmpeg-drawtext render mode, so they are no longer typed here; a
+  // project that still carries them (or `renderMode`) loads and renders as usual.
   color?: string          // base caption text color
   fontsize?: number
-  bgColor?: string
   // Per-style accent color fields, each read by the matching JSX caption template.
   // A single UI control writes whichever one the active style uses (see CaptionListPanel).
   accentColor?: string    // active-word/box accent — highlight-box, outline, accent
@@ -161,8 +155,7 @@ export interface Captions {
   platePadding?: number
   plateRadius?: number
   googleFonts?: string[]  // Google Fonts family specs for the caption template (e.g. ["Figtree:wght@700"])
-  // Text-styling fields, honoured by the JSX caption templates only (NOT the ffmpeg
-  // drawtext render branch). `fontFamily` and `googleFonts` travel together: a family
+  // Text-styling fields, honoured by the JSX caption templates. `fontFamily` and `googleFonts` travel together: a family
   // whose font file isn't also fetched via `googleFonts` renders as the fallback face,
   // in both the editor preview and the export.
   fontFamily?: string      // CSS font-family stack (e.g. '"Baloo 2", system-ui, sans-serif')

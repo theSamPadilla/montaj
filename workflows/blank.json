@@ -1,7 +1,16 @@
 {
   "name": "blank",
-  "description": "Empty editing project — no source footage and no automated steps. The user builds the edit by hand in the editor. An agent working on a blank project follows the user's instructions directly; there is no workflow to run.",
+  "description": "Empty editing project. Footage is optional and the edit is built by hand in the editor, following the user's instructions directly.",
   "project_type": "editing",
   "requires_clips": false,
-  "steps": []
+  "steps": [
+    { "id": "probe",   "uses": "montaj/probe",             "foreach": "clips", "note": "Look at the footage." },
+    { "id": "snapshot",       "uses": "montaj/snapshot",          "foreach": "clips", "needs": ["probe"], "note": "Look at the footage." },
+    { "id": "cut_plan",       "uses": "montaj/cut",               "needs": ["snapshot"], "note": "Only if asked to cut or clean the talk, or for a fresh edit of raw footage. Makes a plan of what to remove; read it and adjust it if needed." },
+    { "id": "cut_apply",      "uses": "montaj/cut",               "needs": ["cut_plan"], "params": { "plan": "cut-plan.md" }, "note": "Only after the plan step ran: applies the plan." },
+    { "id": "place",          "uses": "montaj/place",             "note": "Only if asked: a preset (lower_third, callout) or your own JSX (write_project_overlay first), at seconds or a spoken phrase." },
+    { "id": "captions_make",  "uses": "montaj/generate_captions", "note": "Only if asked." },
+    { "id": "captions_style", "uses": "montaj/captions",          "needs": ["captions_make"], "note": "Only if asked." },
+    { "id": "check",          "uses": "montaj/look",              "note": "Check before you finish (image true only to see a frame), then save status draft." }
+  ]
 }

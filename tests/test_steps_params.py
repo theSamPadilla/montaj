@@ -321,9 +321,6 @@ class TestWaveformTrimThreshold:
 # ── number params are typed so serve checks them (§563) ──────────────────────
 
 @pytest.mark.parametrize("rel, name, good, bad", [
-    ("edit/cross_cut.json", "segment-duration", 1.5, "1.5,x"),
-    ("edit/montage.json", "beat-duration", 0.5, "0.5;x"),
-    ("edit/montage.json", "offset", -0.25, "0[x]"),
     ("transform/materialize_cut.json", "workers", 3, "3:x"),
 ])
 def test_a_number_param_is_validated_as_one(rel, name, good, bad):

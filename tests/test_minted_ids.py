@@ -15,9 +15,7 @@ REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "lib"))
 
-import steps.edit.cross_cut as cross_cut  # noqa: E402
 import steps.edit.jump_cut as jump_cut  # noqa: E402
-import steps.edit.montage as montage  # noqa: E402
 from lib.item_ids import id_suffix  # noqa: E402
 from lib.project_tracks import normalize_tracks, replace_track_items  # noqa: E402
 
@@ -45,8 +43,6 @@ def _run(monkeypatch, tmp_path, module, argv):
 
 
 JUMP = ["jump_cut.py", "--project-id", "p1", "--clip-id", "a", "--cuts", json.dumps([[1.0, 2.0]])]
-CROSS = ["cross_cut.py", "--project-id", "p1", "--clip-a", "a", "--clip-b", "b", "--segment-duration", "1.0"]
-MONT = ["montage.py", "--project-id", "p1", "--clips", json.dumps(["a", "b"]), "--beat-duration", "1.0"]
 
 
 def test_id_suffix_is_six_lower_case_hex():
@@ -56,8 +52,6 @@ def test_id_suffix_is_six_lower_case_hex():
 
 @pytest.mark.parametrize("module,argv,stem", [
     (jump_cut, JUMP, r"a-seg-\d+"),
-    (cross_cut, CROSS, r"[ab]-x-\d+"),
-    (montage, MONT, r"[ab]-m-\d+"),
 ])
 def test_a_cut_keeps_its_readable_stem_and_one_random_part_per_run(module, argv, stem, tmp_path, monkeypatch):
     ids = [i for i in _run(monkeypatch, tmp_path, module, argv) if i != "b"]   # jump_cut leaves b alone
@@ -67,7 +61,7 @@ def test_a_cut_keeps_its_readable_stem_and_one_random_part_per_run(module, argv,
     assert len(set(ids)) == len(ids)
 
 
-@pytest.mark.parametrize("module,argv", [(jump_cut, JUMP), (cross_cut, CROSS), (montage, MONT)])
+@pytest.mark.parametrize("module,argv", [(jump_cut, JUMP)])
 def test_two_runs_of_a_cut_on_one_base_mint_different_ids(module, argv, tmp_path, monkeypatch):
     first = _run(monkeypatch, tmp_path, module, argv)
     second = _run(monkeypatch, tmp_path, module, argv)

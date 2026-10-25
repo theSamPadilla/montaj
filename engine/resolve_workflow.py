@@ -148,14 +148,17 @@ def main():
 
             params = merge_params(schema.get("params", []), workflow_params)
 
-            resolved.append({
+            entry = {
                 "id": step_id,
                 "uses": uses,
                 "kind": "step",
                 "executable": ref["executable"],
                 "schema": schema,
                 "params": params,
-            })
+            }
+            if "note" in step_entry:
+                entry["note"] = step_entry["note"]
+            resolved.append(entry)
         else:  # skill
             # Skill-backed step: no param schema, no executable. The agent
             # loads the skill and follows its contract. Any workflow-declared
@@ -173,6 +176,8 @@ def main():
                 entry["remote"] = True
             else:
                 entry["skill_path"] = ref["skill_path"]
+            if "note" in step_entry:
+                entry["note"] = step_entry["note"]
             resolved.append(entry)
 
     print(json.dumps(resolved, indent=2))

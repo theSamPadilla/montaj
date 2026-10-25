@@ -1,4 +1,4 @@
-"""The edit steps (montage / jump_cut / cross_cut) rewrite ONLY tracks[0].
+"""The edit step (jump_cut) rewrites ONLY tracks[0].
 
 Before tracks became objects these steps did `project["tracks"] = [tracks0]`,
 which silently destroyed every overlay track. They now replace track 0's items
@@ -24,9 +24,7 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "lib"))
 
-import steps.edit.montage as montage
 import steps.edit.jump_cut as jump_cut
-import steps.edit.cross_cut as cross_cut
 from lib.project_tracks import track_items
 
 
@@ -95,15 +93,9 @@ def run_step(module, argv, project, monkeypatch, tmp_path):
 
 
 STEPS = {
-    "montage": (montage, ["montage.py", "--project-id", "p1",
-                          "--clips", json.dumps(["clip-a", "clip-b"]),
-                          "--beat-duration", "1.0"]),
     "jump_cut": (jump_cut, ["jump_cut.py", "--project-id", "p1",
                             "--clip-id", "clip-a",
                             "--cuts", json.dumps([[1.0, 2.0]])]),
-    "cross_cut": (cross_cut, ["cross_cut.py", "--project-id", "p1",
-                              "--clip-a", "clip-a", "--clip-b", "clip-b",
-                              "--segment-duration", "1.5"]),
 }
 STEP_NAMES = sorted(STEPS)
 

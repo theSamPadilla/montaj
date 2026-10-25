@@ -25,7 +25,6 @@ def register(subparsers):
                                 f"The default weight is always added too.")
 
     sub.add_parser("rvm",    help="onnxruntime/av + RVM model")
-    sub.add_parser("demucs", help="Demucs stem separation + htdemucs model weights")
     sub.add_parser("connectors", help="pyjwt + requests + google-genai for external API steps")
     sub.add_parser("ui",     help="npm deps + UI build")
     sub.add_parser("ffmpeg", help="Download the pinned static ffmpeg/ffprobe with zscale (libzimg) support")
@@ -42,7 +41,6 @@ def handle(args):
     if args.component == "all":
         ok &= _ensure_whisper([DEFAULT_WHISPER_MODEL])
         ok &= _ensure_rvm()
-        ok &= _ensure_demucs()
         ok &= _ensure_connectors()
         ok &= _ensure_ui()
         ok &= _ensure_ffmpeg_managed()
@@ -50,8 +48,6 @@ def handle(args):
         ok &= _ensure_whisper(getattr(args, "model", DEFAULT_WHISPER_MODEL))
     elif args.component == "rvm":
         ok &= _ensure_rvm()
-    elif args.component == "demucs":
-        ok &= _ensure_demucs()
     elif args.component == "connectors":
         ok &= _ensure_connectors()
     elif args.component == "ui":
@@ -132,26 +128,6 @@ def _ensure_whisper_binary() -> bool:
     print(f"  Then re-run: {cyan('montaj install whisper')}", file=sys.stderr)
     return False
 
-
-
-def _ensure_demucs() -> bool:
-    print(f"{cyan('→')} installing {bold('demucs')} deps\u2026")
-    # Resolve extras via the installed package metadata, not via `-e .`, so this
-    # works whether MONTAJ_ROOT is a working tree or site-packages (no pyproject).
-    r = subprocess.run([sys.executable, "-m", "pip", "install", "montaj[demucs]"])
-    if r.returncode != 0:
-        print(f"{red('error:')} {dim('pip install montaj[demucs]')} failed", file=sys.stderr)
-        return False
-    print(f"{green('✓')} demucs deps installed")
-    # Pre-warm: downloads htdemucs model weights on first use
-    print(f"{cyan('→')} downloading {bold('htdemucs')} model weights\u2026")
-    try:
-        from demucs.pretrained import get_model
-        get_model("htdemucs")
-        print(f"{green('✓')} htdemucs model ready")
-    except Exception as e:
-        print(f"{yellow('warning:')} could not pre-warm demucs model: {e}", file=sys.stderr)
-    return True
 
 
 def _ensure_rvm() -> bool:

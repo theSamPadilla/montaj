@@ -416,7 +416,7 @@ Install the optional deps with `montaj install connectors`.
 | `overlays` | Multi-clip edit — silence trim, transcribe, select best takes, remove fillers, overlays. No captions. |
 | `ai_video` | AI-generated video: storyboard, approval gate, Kling scene generation. No source footage required. |
 | `carousel` | Still slides at one fixed aspect ratio, rendered to PNGs. |
-| `blank` | Empty project with no steps. The user edits by hand. |
+| `blank` | Empty editing project. Footage is optional; the steps are look, cut (only if asked), place, captions and check. |
 
 `workflows/overlays.json` is used by `montaj run` when no `--workflow` is specified. All workflow files are equal — fork any of them, save under a new name, and it becomes available immediately.
 

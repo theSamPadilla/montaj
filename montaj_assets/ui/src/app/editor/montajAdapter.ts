@@ -72,16 +72,14 @@ const peaksCache = new Map<string, Promise<PeaksData>>()
 const filmstripCache = new Map<string, Promise<FilmstripIndex>>()
 
 // Per (projectId, src) cache of pending whole-source audio-polish job
-// promises — `voice` (vocal isolation) and `silence-check` (the dry-run
-// keeps preview), the two EXPENSIVE, whole-source pieces `analyzeAudioPolish`
-// can be asked for. Multiple clips routinely share one source, so this
+// promises — `silence-check` (the dry-run keeps preview), the one EXPENSIVE,
+// whole-source piece `analyzeAudioPolish` can be asked for. Multiple clips routinely share one source, so this
 // dedupes concurrent/repeat callers the same way `peaksCache`/`filmstripCache`
-// do above (cache the *promise*, not the resolved value). The other three
+// do above (cache the *promise*, not the resolved value). The other
 // pieces (`silence`, `fillers`, `loudness`) are per-clip WINDOWED calls and
 // are deliberately not cached anywhere: caching by src alone would return a
 // different clip's window, and a cache key spanning the full window would
 // dedupe next to nothing.
-const voiceCache = new Map<string, Promise<Extract<AudioPolishAnalysis, { piece: 'voice' }>>>()
 const silenceCheckCache = new Map<string, Promise<Extract<AudioPolishAnalysis, { piece: 'silence-check' }>>>()
 
 /**
@@ -98,28 +96,6 @@ function srcCacheKey(src: string): string {
     h = (Math.imul(31, h) + src.charCodeAt(i)) | 0
   }
   return (h >>> 0).toString(36)
-}
-
-/**
- * Strips the extension off a path — used to derive `stem_separation`'s
- * default output directory without reading anything back from the server
- * (see the `voice` case below). Only the last dot IN THE BASENAME counts: a
- * dot in a directory segment is ignored, and a basename that starts with a
- * dot (a dotfile, e.g. `.bashrc`) is left untouched.
- *
- * Parity with Python's `os.path.splitext` is a COMPATIBILITY REQUIREMENT
- * here, not defensive coding: `steps/audio/stem_separation.py` computes its
- * own output dir with `os.path.splitext(args.input)[0]`, and this is the
- * client-side reimplementation that has to agree with it bit-for-bit — any
- * divergence produces a `vocalsPath` that doesn't point at the file the step
- * actually wrote. See `montajAdapter.audioPolish.test.ts`'s dedicated
- * edge-case tests (dot-in-directory, extensionless, dotfile, dotfile+ext).
- */
-function stripExtension(path: string): string {
-  const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
-  const dot = path.lastIndexOf('.')
-  if (dot <= slash + 1) return path
-  return path.slice(0, dot)
 }
 
 /**
@@ -590,44 +566,6 @@ export function createMontajAdapter(): EditorAdapter<Project> {
             targetI,
             gainDb,
           }
-        }
-
-        case 'voice': {
-          const key = `${projectId}:${src}`
-          const existing = voiceCache.get(key)
-          if (existing) return existing
-
-          // stem_separation prints only the manifest JSON's path (wrapped by
-          // the server as `{path, type}`, not its content — unlike
-          // rm_nonspeech/rm_fillers/normalize, which print their JSON result
-          // directly). We still don't need to read it: NO --out-dir is sent
-          // here, deliberately unlike getFilmstrip's `.cache/filmstrips/...`
-          // convention — do not "harmonise" these. A filmstrip is a
-          // disposable, regenerable preview asset; a vocals stem is not — its
-          // path is persisted into `project.audio.tracks[].src` and later
-          // read by the RENDERER (a separate process with no guaranteed cwd),
-          // which feeds it to ffmpeg as `-i`. A relative `.cache/...` path
-          // would work in preview and break at export. Omitting --out-dir
-          // instead lets the step fall back to its own default — `<source
-          // without extension>_stems/`, next to the source (see
-          // steps/audio/stem_separation.py: `out_dir = args.out_dir or
-          // f"{base}_stems"`) — which is already ABSOLUTE, since `src` always
-          // is. `--stems vocals` also means only vocals.wav is written there
-          // (`separate()` skips every stem not requested), so the path is
-          // fully deterministic.
-          const promise = (async () => {
-            await api.runStepAsync<{ path: string }>('stem_separation', {
-              input: src,
-              stems: 'vocals',
-            })
-            const vocalsPath = `${stripExtension(src)}_stems/vocals.wav`
-            return { piece, vocalsPath, url: fileUrl(vocalsPath) } as const
-          })()
-          promise.catch(() => {
-            if (voiceCache.get(key) === promise) voiceCache.delete(key)
-          })
-          voiceCache.set(key, promise)
-          return promise
         }
 
         case 'silence-check': {

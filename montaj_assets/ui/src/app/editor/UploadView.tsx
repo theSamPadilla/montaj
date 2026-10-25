@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Sparkles, Layers, Music, Clapperboard, Film, ChevronDown, Check } from 'lucide-react'
+import { Sparkles, Layers, Clapperboard, Film, ChevronDown, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { LoadingModal } from '@/components/ui/loading-modal'
@@ -8,7 +8,6 @@ import { CAROUSEL_ASPECTS, type CarouselAspect } from '@/lib/types/carousel'
 import type { ProjectType } from '@/lib/types/project'
 import type { Workflow } from '@/lib/types/schema'
 import { ClipUploadFields } from '@/components/upload/ClipUploadFields'
-import { LyricsUploadFields } from '@/components/upload/LyricsUploadFields'
 import { AIVideoUploadFields } from '@/components/upload/AIVideoUploadFields'
 import BrollUploadFields from '@/components/upload/BrollUploadFields'
 import AssetsPanel from '@/components/AssetsPanel'
@@ -30,7 +29,6 @@ const RUN_BUTTON = 'w-full bg-indigo-600 hover:bg-indigo-700 focus-visible:ring-
 const TYPE_META: Record<ProjectType, { icon: ReactNode; eyebrow: string }> = {
   ai_video:    { icon: <Sparkles size={17} />,     eyebrow: 'AI Video' },
   carousel:    { icon: <Layers size={17} />,       eyebrow: 'Carousel' },
-  music_video: { icon: <Music size={17} />,        eyebrow: 'Lyrics Video' },
   broll:       { icon: <Clapperboard size={17} />, eyebrow: 'B-roll' },
   editing:     { icon: <Film size={17} />,         eyebrow: 'Video Edit' },
 }
@@ -106,7 +104,6 @@ const WORKFLOW_EXPLAINERS: Record<string, string> = {
 const TYPE_EXPLAINERS: Record<ProjectType, string> = {
   editing: 'Edits your uploaded footage into a finished video.',
   broll: 'A voiceover-led edit built from your footage.',
-  music_video: 'A lyric video synced to your song.',
   ai_video: 'An AI-generated video built from a prompt.',
   carousel: 'A multi-slide image carousel.',
 }
@@ -199,7 +196,7 @@ export default function UploadView() {
   const {
     name, setName, prompt, setPrompt, workflow, setWorkflow, profile, setProfile,
     workflows, profiles, clipData, setClipData, aiVideoData, setAiVideoData,
-    lyricsData, setLyricsData, carouselAssets, setCarouselAssets,
+    carouselAssets, setCarouselAssets,
     aiVideoAssets, setAiVideoAssets, voiceover, setVoiceover,
     carouselAspect, setCarouselAspect, aspectRatio, setAspectRatio,
     targetDuration, setTargetDuration, error, setError, runError, running,
@@ -391,7 +388,7 @@ export default function UploadView() {
     )
   }
 
-  // --- Default single-column, centered layout (editing, music_video, broll) ---
+  // --- Default single-column, centered layout (editing, broll) ---
   return (
     <div className="h-full overflow-y-auto">
       <div className="max-w-3xl mx-auto p-6 md:p-8 flex flex-col gap-6">
@@ -403,9 +400,7 @@ export default function UploadView() {
         <WorkflowPicker workflows={workflows} value={workflow} onChange={setWorkflow} />
 
         {/* Content per project type */}
-        {projectType === 'music_video' ? (
-          <LyricsUploadFields data={lyricsData} onChange={setLyricsData} onError={setError} />
-        ) : projectType === 'broll' ? (
+        {projectType === 'broll' ? (
           <BrollUploadFields
             clips={clipData.clips} setClips={clips => setClipData({ ...clipData, clips })}
             assets={clipData.assets} setAssets={assets => setClipData({ ...clipData, assets })}

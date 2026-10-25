@@ -58,15 +58,16 @@ def test_get_workflow_preserves_existing_fields():
     assert resp.status_code == 200
     steps = _steps_by_id(resp.json())
 
-    silence = steps["silence"]
-    assert silence["uses"] == "montaj/waveform_trim"
-    assert silence["foreach"] == "clips"
-    assert silence["params"] == {"threshold": "-30", "min-silence": 0.3}
-    assert silence["kind"] == "step"
+    apply = steps["cut_apply"]
+    assert apply["uses"] == "montaj/cut"
+    assert apply["needs"] == ["select-takes"]
+    assert apply["params"] == {"plan": "cut-plan.md"}
+    assert apply["kind"] == "step"
+    assert steps["probe"]["foreach"] == "clips"
 
     select_takes = steps["select-takes"]
     assert select_takes["uses"] == "montaj/select-takes"
-    assert select_takes["needs"] == ["transcribe"]
+    assert select_takes["needs"] == ["cut_plan"]
 
 
 def test_get_workflow_unknown_scope_prefix_does_not_500(tmp_path, monkeypatch):

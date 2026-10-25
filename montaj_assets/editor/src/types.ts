@@ -393,7 +393,7 @@ export interface GetFilmstripArgs {
 /**
  * Args for `EditorAdapter.analyzeAudioPolish`. `projectId` scopes the host's
  * job/output cache (mirrors `getWaveformPeaks`/`getFilmstrip`); `piece`
- * selects which of Montaj's four audio-polish steps to run (or the
+ * selects which of Montaj's audio-polish steps to run (or the
  * `'silence-check'` dry run — see `AudioPolishAnalysis`); `src` is the
  * source-identity path being analyzed. `window`, when given, restricts
  * analysis to a slice of the source — in **source** seconds, not timeline
@@ -405,7 +405,7 @@ export interface GetFilmstripArgs {
  */
 export interface AnalyzeAudioPolishArgs {
   projectId: string
-  piece: 'silence' | 'fillers' | 'loudness' | 'voice' | 'silence-check'
+  piece: 'silence' | 'fillers' | 'loudness' | 'silence-check'
   src: string
   window?: { in: number; out: number }
   options?: {
@@ -438,9 +438,6 @@ export interface AnalyzeAudioPolishArgs {
  *    `'silence'`, for previewing a threshold before committing to it.
  *  - `'loudness'` — the measured integrated/true-peak/LRA loudness, the
  *    requested target, and the gain in dB needed to reach it.
- *  - `'voice'` — the isolated vocal track: `vocalsPath` is the host path,
- *    `url` a directly displayable/fetchable URL for it (same convention as
- *    `getSampleFrame`'s `url`).
  */
 export type AudioPolishAnalysis =
   | { piece: 'silence' | 'fillers'; removals: Array<{ start: number; end: number; text?: string }> }
@@ -453,7 +450,6 @@ export type AudioPolishAnalysis =
       targetI: number
       gainDb: number
     }
-  | { piece: 'voice'; vocalsPath: string; url: string }
 
 // ── Media (optional capability) ───────────────────────────────────────────────
 
@@ -1114,11 +1110,11 @@ export interface EditorAdapter<P extends Project = Project> {
   reportContext?(id: string, context: EditorContext): Promise<void>
 
   /**
-   * Optional: analyze a clip's audio for one of four cleanup pieces (or a
+   * Optional: analyze a clip's audio for one of three cleanup pieces (or a
    * `'silence-check'` dry run) and return proposed edits for the user to
    * review before applying — detect silence/filler words to trim, measure
-   * loudness and the gain needed to hit a target, or isolate vocals. Maps to
-   * Montaj's four underlying audio-polish steps.
+   * loudness and the gain needed to hit a target. Maps to
+   * Montaj's underlying audio-polish steps.
    *
    * Promise-based, not an async iterable, and deliberately so: these are
    * polled jobs with no log stream, unlike `generateCaptions`'s streaming
@@ -1136,13 +1132,6 @@ export interface EditorAdapter<P extends Project = Project> {
    * removal/keep to the project.
    */
   analyzeAudioPolish?(args: AnalyzeAudioPolishArgs): Promise<AudioPolishAnalysis>
-
-  /**
-   * False when this host cannot separate a voice from what is behind it (it
-   * has no stem separation): Audio polish then never offers Isolate voice.
-   * Omitted keeps it.
-   */
-  canIsolateVoice?: boolean
 }
 
 // ── Theme ────────────────────────────────────────────────────────────────────

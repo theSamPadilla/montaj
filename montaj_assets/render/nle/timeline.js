@@ -319,22 +319,11 @@ export function buildNleTimeline(project, { projectDir } = /** @type {any} */ ({
     linkedAudioTracks.push(...audioLanes)
   })
 
-  // `renderMode: 'ffmpeg-drawtext'` bypasses the overlay and caption pages
-  // altogether (render.js, "ffmpeg drawtext path"): the render draws no
-  // overlays and its captions are ffmpeg text with no alpha. The editor
-  // timeline matches the render, so neither is in it (the .srt still goes).
-  const drawtext = project?.renderMode === 'ffmpeg-drawtext'
-  const droppedGraphics = drawtext ? graphicTracks.reduce((n, t) => n + t.clips.length, 0) : 0
-  if (droppedGraphics > 0) {
-    warnings.push(`renderMode ffmpeg-drawtext draws no overlays; ${droppedGraphics} graphic${droppedGraphics === 1 ? '' : 's'} not exported`)
-  }
-  const videoTracks = [...clipTracks, ...(drawtext ? [] : graphicTracks)].map((t, index) => ({ index, ...t }))
+  // A project.json still carrying the retired `renderMode: 'ffmpeg-drawtext'`
+  // is not looked at: the field is ignored and the project builds as usual.
+  const videoTracks = [...clipTracks, ...graphicTracks].map((t, index) => ({ index, ...t }))
 
-  let captionsTrack = buildCaptions(project?.captions, durationFrames, ctx)
-  if (drawtext && captionsTrack) {
-    warnings.push('renderMode ffmpeg-drawtext draws captions with ffmpeg, which writes no alpha; the caption layer is not exported (captions.srt is)')
-    captionsTrack = null
-  }
+  const captionsTrack = buildCaptions(project?.captions, durationFrames, ctx)
 
   const audioTracks = [
     ...linkedAudioTracks,

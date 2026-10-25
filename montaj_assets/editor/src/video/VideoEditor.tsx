@@ -2700,7 +2700,7 @@ function ReviewSurface<P extends Project>({
             shows its props in the right column's Content tab, so a button whose
             only job was "open the thing that is already open" had nothing left
             to do. */}
-        {/* Audio polish — silence/fillers/loudness/voice cleanup. Hidden when the
+        {/* Audio polish — silence/fillers/loudness cleanup. Hidden when the
             host adapter doesn't implement `analyzeAudioPolish`, exactly like the
             caption-regen entry point above. */}
         {handleAudioPolish && (

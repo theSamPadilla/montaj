@@ -15,6 +15,7 @@ from validate_step import validate as validate_step  # noqa: F401
 from validate_step import resolve_step_path  # noqa: F401
 
 VALID_USES_PREFIXES = {"montaj/", "user/", "./steps/"}
+STEP_NOTE_MAX = 160  # an optional one-line `note` on a workflow step
 
 # `foreach` accepts any dotted identifier path — `"clips"`, `"storyboard.scenes"`,
 # `"storyboard.imageRefs"`, etc. No whitelist and no predicate grammar; the agent
@@ -709,6 +710,14 @@ def validate_workflow(path):
                     f"Step '{step['id']}': input must be a dotted identifier path "
                     f"(e.g. 'clips', 'voiceover.src'); got {value!r}",
                 )
+        if "note" in step:
+            note = step["note"]
+            if not isinstance(note, str) or not note:
+                fail("invalid_note", f"Step '{step['id']}': note must be a non-empty string; got {note!r}")
+            if "\n" in note or "\r" in note:
+                fail("invalid_note", f"Step '{step['id']}': note must be one line")
+            if len(note) > STEP_NOTE_MAX:
+                fail("invalid_note", f"Step '{step['id']}': note is {len(note)} characters; the limit is {STEP_NOTE_MAX}")
         step_ids.add(step["id"])
 
     # Validate needs references

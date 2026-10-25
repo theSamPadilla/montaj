@@ -4,6 +4,7 @@ import contextlib
 import errno
 import io
 import json
+import tempfile
 import logging
 import math
 import mimetypes
@@ -51,6 +52,7 @@ from lib.proc import kill_tree as _kill_tree, detached_kwargs as _detached_kwarg
 from lib.overlay_validation import overlay_item_errors
 from lib.caption_translation import TranslationError, apply_show, apply_translation, show_new_language, finish_regenerated_track, is_translation, merge_caption_theme as _lib_merge_caption_theme, record_source_language
 from lib.project_tracks import normalize_tracks, track_items
+from lib.project_migrate import converge
 from lib.item_ids import id_suffix
 from lib.remote_io import fetch_to_disk_async, push_from_disk_async, parse_allowed_hosts
 from lib.youtube import (
@@ -3273,7 +3275,7 @@ async def get_project_revisions(project_id: str, response: Response,
             "error": "project_unreadable",
             "message": "This project's file could not be read",
         })
-    normalized = normalize_tracks(project)  # as a reader sees it; never written here
+    normalized = converge(project)  # as a reader sees it; never written here
     if normalized is project:
         revs = project_revisions.revisions_for_text(raw, project, names)
     else:
@@ -3319,8 +3321,11 @@ async def _open_project(project_id: str, request, project_dir: Path, seen: dict)
     # and re-persisting the legacy shape underneath it.
     # Under the project lock, on a fresh read, so a step's write in another
     # process is not undone by the copy read at the top of this handler (§467).
+    # The same pass converges the retired shapes (lib/project_migrate.py: the Lyric video's music_video type and
+    # ffmpeg-drawtext render mode) through the same lock and the same maintenance check: a field in an open Studio
+    # sync clash is served converged and written at the first open after it closes.
     text = None
-    if normalize_tracks(project) is not project:
+    if converge(project) is not project:
         # Only a project that is about to be rewritten takes the lock; an open
         # that writes nothing (the usual one, and any read-only folder) does not.
         try:
@@ -3331,7 +3336,7 @@ async def _open_project(project_id: str, request, project_dir: Path, seen: dict)
                     project = json.loads(fresh_raw)
                 except (OSError, ValueError):
                     pass
-                normalized = normalize_tracks(project)
+                normalized = converge(project)
                 if normalized is not project:
                     # §482: `tracks` in an open Studio sync clash is served converged, not written; the
                     # next open after the clash closes writes it.
@@ -3344,7 +3349,7 @@ async def _open_project(project_id: str, request, project_dir: Path, seen: dict)
                     project = normalized
         except ProjectLockTimeout:
             # A project must always open: serve the converged copy, write nothing.
-            project = normalize_tracks(project)
+            project = converge(project)
     if text is not None and broadcaster is not None:
         broadcaster.publish(project_id, _sse_data_frame(text))
 
@@ -4215,7 +4220,7 @@ def _merged_for_save(existing: dict, body: dict, *, drop_nulls: bool = False) ->
     # legacy tracks on disk: a no-op (same object back) when already
     # normalized or when `tracks` is absent/null, so the shallow-merge and
     # explicit-null-clears-a-field semantics above are untouched.
-    merged = normalize_tracks(merged)
+    merged = converge(merged)
     # A save that picks a resolution or fps is the user's (or an agent's) choice: pin it
     # so footage never overrides it. A body whose settings leave the
     # marker out keeps the stored one.
@@ -4545,8 +4550,9 @@ async def restore_version(project_id: str, commit: str, request: Request, projec
     # A version from before the track-shape migration is legacy-shaped on disk
     # in that commit. Normalize before writing/broadcasting so a restore never
     # leaves legacy tracks on disk — a no-op (same object back) when the
-    # restored version is already normalized, matching save_project's rule.
-    restored = normalize_tracks(restored)
+    # restored version is already normalized, matching save_project's rule. The retired shapes converge too
+    # (lib/project_migrate.py): every old Lyric video project's history predates their retirement.
+    restored = converge(restored)
     # One lock hold, off the event loop: read the project, commit it as the "autosave before
     # restore" version (in the current run's history), then write the restored one. A
     # commit taken before the lock would let an edit land between the two and be lost from
@@ -5579,6 +5585,22 @@ def _validate_render_body(body: dict, *, overrides: bool = True) -> None:
         _render_motion_blur(body)
 
 
+def _converged_render_input(project_dir: Path, project) -> "Path | None":
+    """A copy of `project` converged (lib/project_migrate.py) beside its project.json, for render.js, when the file
+    is still in a retired shape (never opened since, or its open's write skipped for a Studio sync clash); None when
+    it already is current. Beside it, so relative paths resolve and render.js's default output places are
+    unchanged; the detached run removes it, as the carousel path's normalized copy."""
+    if not isinstance(project, dict):
+        return None
+    converged = converge(project)
+    if converged is project:
+        return None
+    fd, tmp_name = tempfile.mkstemp(prefix=".render-input-", suffix=".json", dir=str(project_dir))
+    with os.fdopen(fd, "w") as f:
+        json.dump(converged, f)
+    return Path(tmp_name)
+
+
 def _render_js_args(project_dir: Path, project_path: Path, body: dict, *, overrides: bool = True) -> tuple[list[str], Path]:
     """render.js's arguments for a video render from a validated render body,
     and the MP4 it writes: the project, ``--out output/<name>.mp4`` (the
@@ -5855,6 +5877,14 @@ async def render_project(project_id: str, request: Request, project_dir: Path = 
     # is a pure *viewer* — a disconnect just stops viewing; the render keeps going,
     # the output lands, and clients reconnect / poll /outputs for it. An actual stop
     # goes through POST /render/cancel.
+    # A project still in a retired shape on disk renders converged (see _converged_render_input), never with an old
+    # Lyric video's preview overlays drawn over its captions.
+    if project_type != "carousel":
+        converged_input = _converged_render_input(project_dir, project)
+        if converged_input is not None:
+            render_input = converged_input
+            script_args = [str(converged_input), *script_args[1:]]
+
     _active_renders.add(project_id)
     cmd = [node_bin, str(render_script), *script_args]
     job = _RenderJob()

@@ -1,12 +1,13 @@
 {
   "name": "ai_video",
-  "description": "AI-generated video — director agent writes a storyboard from your prompt and references, you review and approve, then scenes are generated via Kling.",
+  "description": "AI-generated video: director agent writes a storyboard from your prompt and references, you review and approve, then scenes are generated via Kling.",
   "project_type": "ai_video",
   "requires_clips": false,
   "steps": [
     {
       "id": "plan",
       "uses": "montaj/ai-video-plan",
+      "note": "Skill ai-video-plan (Phases 0-2). The storyboard is pre-seeded; tracks[0] stays empty until generation.",
       "description": "Director skill. Story clarification, storyboard writes (scenes, imageRefs, styleAnchor), approval gate."
     },
     {
@@ -27,6 +28,7 @@
       "id": "generate",
       "uses": "montaj/ai-video-generate",
       "needs": ["plan", "analyze_style", "generate_ref"],
+      "note": "Skill ai-video-generate (Phases 6-7). Never load it or call kling_generate before storyboard.approval is set.",
       "description": "Generation orchestration. Dispatch mode selection, scene generation via kling_generate, audio assembly. Runs after storyboard approval."
     },
     {
@@ -34,7 +36,8 @@
       "uses": "montaj/kling_generate",
       "foreach": "storyboard.scenes",
       "needs": ["generate"],
-      "description": "Per scene (post-approval only): Kling generates the clip. Appends result to tracks[0]. May be batched (multi-shot) — up to 6 scenes per call."
+      "note": "Append-only to tracks[0]: real clips, no stubs. Set status draft only when every scene has a clip (or batchShots entry).",
+      "description": "Per scene (post-approval only): Kling generates the clip. Appends result to tracks[0]. May be batched (multi-shot): up to 6 scenes per call."
     },
     {
       "id": "eval-scenes",
@@ -45,9 +48,7 @@
     }
   ],
   "agent_notes": [
-    "PIPELINE: Director-driven. Two skills: ai-video-plan (Phases 0-2) and ai-video-generate (Phases 6-7). analyze_media, generate_image, kling_generate are the agent's tools, invoked from within these flows.",
-    "INTAKE: project.storyboard is pre-seeded by init.py. project.tracks[0] is empty at intake and stays empty until post-approval generation.",
-    "APPROVAL GATE: Do not load ai-video-generate or call kling_generate until storyboard.approval is set.",
-    "TRACKS[0]: Append-only; real clips only, no stubs. Flip status to 'draft' only when every storyboard.scenes[i] has a matching clip (or batchShots entry)."
+    "Director-driven: the agent writes the storyboard from the prompt and references, the user approves it, and only then are scenes generated.",
+    "The agent's own tools (media analysis, image generation, video generation) are invoked from within those two flows."
   ]
 }

@@ -1,9 +1,11 @@
 {
   "name": "carousel",
-  "description": "Image carousel for Instagram/TikTok. Slide-based design with image and overlay elements; renders to N PNGs. Build is delegated to the montaj/carousel skill.",
+  "description": "Image carousel for Instagram/TikTok. Slide-based design with image and overlay elements; renders to N PNGs.",
   "project_type": "carousel",
   "requires_clips": false,
   "steps": [
-    { "id": "build", "uses": "montaj/carousel" }
+    { "id": "build", "uses": "montaj/carousel", "note": "The craft skill for slide design." },
+    { "id": "slides", "uses": "montaj/slides", "needs": ["build"], "note": "Headlines, one-slide edits and the order in one call." },
+    { "id": "check", "uses": "montaj/look", "needs": ["slides"], "note": "Check before you finish (image true only to see a frame), then save status draft." }
   ]
 }

@@ -54,17 +54,16 @@ The workflow gives the agent a sensible starting point and encodes domain knowle
 | `description` | string | yes | One or two sentences. Agent reads this to understand when to use this workflow. |
 | `steps` | array | yes | Ordered list of step entries |
 | `requires_clips` | boolean | no | When `false`, no source footage is needed. Default: `true`. The UI warns if clips are missing for a workflow that requires them. |
-| `project_type` | string | no | One of `"editing"`, `"music_video"`, `"ai_video"`, `"carousel"`, `"broll"`. Drives UI branching (upload flow, player actions). Default: `"editing"`. Canonical list: `schema/enums.yaml`. |
+| `project_type` | string | no | One of `"editing"`, `"ai_video"`, `"carousel"`, `"broll"`. Drives UI branching (upload flow, player actions). Default: `"editing"`. Canonical list: `schema/enums.yaml`. |
 | `notes` | string | no | Extra guidance for the agent — conventions, track ordering rules, or input semantics specific to this workflow. Read alongside the description before the agent begins execution. |
 
 ### Project types
 
-`project_type` is a coarse UI hint. It does not affect workflow execution. Five values are defined — `schema/enums.yaml` is the single source of truth, and this table must be kept in step with it:
+`project_type` is a coarse UI hint. It does not affect workflow execution. Four values are defined — `schema/enums.yaml` is the single source of truth, and this table must be kept in step with it:
 
 | Value | Upload UI | Review phase before timeline | Player actions added |
 |-------|-----------|------------------------------|----------------------|
 | `editing` (default) | Video clip drop zone + prompt + workflow picker | None | None (universal actions only) |
-| `music_video` | Song file + optional bg video + optional lyrics file + prompt | None | Music-specific actions (swap lyrics timing, etc.) — future |
 | `ai_video` | Prompt + image references (image or text per slot) + style references (up to 2) + settings | **StoryboardView** — review + approve the storyboard before videos are generated | "Regenerate section" (per-clip) and future generation actions |
 | `carousel` | Aspect picker (square / portrait / vertical) + image assets + prompt + workflow picker | N/A — carousel projects have no timeline; review happens in the slide editor | None (no video player) |
 | `broll` | Footage drop zone + image assets + voiceover file (audio or video; audio only is used) + prompt | None | None |
@@ -114,7 +113,7 @@ Workflows are discovered the same way steps are. Resolution order: project-local
 
 ## Built-in workflows
 
-The `clean_cut`, `broll`, `clips`, `animations`, `explainer`, `floating_head` and `lyrics_video` workflows moved to the Montaj app. Their skills (`broll`, `find_clips`, `lyrics-video`, `animation-sections`) moved with them and are served by the app; their project types stay in montaj.
+The `clean_cut`, `broll`, `clips`, `animations`, `explainer` and `floating_head` workflows moved to the Montaj app (`lyrics_video` moved too, and is retired). Their skills (`broll`, `find_clips`, `animation-sections`) moved with them and are served by the app; their project types stay in montaj.
 
 ### `overlays`
 
@@ -203,7 +202,7 @@ AI-generated video. No source clips required. A director agent (the `ai-video-pl
 
 ### `blank`
 
-Empty editing project — no source footage and no steps. Hosts use it to open an editor with nothing in it; the user (or an agent following the user's direct instructions) builds the edit by hand. `project_type: "editing"`, `requires_clips: false`, `steps: []`.
+Empty editing project: footage is optional, and the user (or an agent following the user's direct instructions) builds the edit by hand. Its steps are look at the footage, cut (only if asked), place, captions and a check. `project_type: "editing"`, `requires_clips: false`.
 
 ### `carousel`
 

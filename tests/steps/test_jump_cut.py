@@ -1,10 +1,10 @@
-"""jump_cut / cross_cut / montage fail cleanly on clips that have not been
+"""jump_cut fails cleanly on clips that have not been
 probed yet.
 
 project/init.py creates fresh clips with only {id, type, src, start, end} —
 no inPoint/outPoint (skills/SKILL.md tells the agent to run probe and set
 those fields before editing). Before this guard, a raw
-clip["outPoint"] - clip["inPoint"] index in each of these three steps
+clip["outPoint"] - clip["inPoint"] index in this step
 surfaced as an uncaught KeyError traceback instead of a structured fail().
 """
 import json
@@ -18,8 +18,6 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "lib"))
 
 import steps.edit.jump_cut as jump_cut
-import steps.edit.cross_cut as cross_cut
-import steps.edit.montage as montage
 
 
 def unprobed_clip(cid, start=0.0, end=0.0):
@@ -90,54 +88,6 @@ def test_jump_cut_still_works_on_a_probed_clip(monkeypatch, tmp_path, capsys):
     items = out["tracks"][0]["items"]
     # cut [1,2] out of a 4s clip leaves two kept segments: [0,1] and [2,4]
     assert len(items) == 2
-
-
-# ── cross_cut ──────────────────────────────────────────────────────────────
-
-def test_cross_cut_fails_cleanly_when_clip_a_is_unprobed(monkeypatch, tmp_path, capsys):
-    project = project_with(unprobed_clip("clip-a"), probed_clip("clip-b", 4.0, dur=4.0))
-    argv = ["cross_cut.py", "--project-id", "p1", "--clip-a", "clip-a",
-            "--clip-b", "clip-b", "--segment-duration", "1.5"]
-    expect_missing_fields_fail(cross_cut, argv, project, monkeypatch, tmp_path, capsys,
-                                "clip-a", "cross_cut")
-
-
-def test_cross_cut_fails_cleanly_when_clip_b_is_unprobed(monkeypatch, tmp_path, capsys):
-    project = project_with(probed_clip("clip-a", 0.0, dur=4.0), unprobed_clip("clip-b", start=4.0, end=4.0))
-    argv = ["cross_cut.py", "--project-id", "p1", "--clip-a", "clip-a",
-            "--clip-b", "clip-b", "--segment-duration", "1.5"]
-    expect_missing_fields_fail(cross_cut, argv, project, monkeypatch, tmp_path, capsys,
-                                "clip-b", "cross_cut")
-
-
-def test_cross_cut_still_works_on_probed_clips(monkeypatch, tmp_path, capsys):
-    project = project_with(probed_clip("clip-a", 0.0, dur=4.0), probed_clip("clip-b", 4.0, dur=4.0))
-    argv = ["cross_cut.py", "--project-id", "p1", "--clip-a", "clip-a",
-            "--clip-b", "clip-b", "--segment-duration", "1.5"]
-    out = run_step(cross_cut, argv, project, monkeypatch, tmp_path)
-
-    items = out["tracks"][0]["items"]
-    assert len(items) > 0
-
-
-# ── montage ────────────────────────────────────────────────────────────────
-
-def test_montage_fails_cleanly_on_an_unprobed_clip(monkeypatch, tmp_path, capsys):
-    project = project_with(unprobed_clip("clip-a"), probed_clip("clip-b", 4.0, dur=4.0))
-    argv = ["montage.py", "--project-id", "p1",
-            "--clips", json.dumps(["clip-a", "clip-b"]), "--beat-duration", "1.0"]
-    expect_missing_fields_fail(montage, argv, project, monkeypatch, tmp_path, capsys,
-                                "clip-a", "montage")
-
-
-def test_montage_still_works_on_probed_clips(monkeypatch, tmp_path, capsys):
-    project = project_with(probed_clip("clip-a", 0.0, dur=4.0), probed_clip("clip-b", 4.0, dur=4.0))
-    argv = ["montage.py", "--project-id", "p1",
-            "--clips", json.dumps(["clip-a", "clip-b"]), "--beat-duration", "1.0"]
-    out = run_step(montage, argv, project, monkeypatch, tmp_path)
-
-    items = out["tracks"][0]["items"]
-    assert len(items) > 0
 
 
 # ── jump_cut --spec and carried fields (§558 U1) ───────────────────────────

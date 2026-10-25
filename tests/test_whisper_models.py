@@ -44,7 +44,7 @@ ENUM_PARAMS = [(n, s, p) for n, s, p in WHISPER_PARAMS if p.get("type") == "enum
 
 def test_the_whisper_steps_are_found():
     names = {n for n, _, _ in WHISPER_PARAMS}
-    assert {"transcribe", "rm_fillers", "rm_nonspeech", "lyrics_sync", "generate_captions"} <= names
+    assert {"transcribe", "rm_fillers", "rm_nonspeech", "generate_captions"} <= names
 
 
 @pytest.mark.parametrize("name,schema,param", ENUM_PARAMS, ids=[n for n, _, _ in ENUM_PARAMS])

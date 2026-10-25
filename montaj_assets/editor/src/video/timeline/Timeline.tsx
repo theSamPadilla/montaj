@@ -1044,12 +1044,6 @@ export default function Timeline({ project, clock, onProjectChange, onOverlayEdi
 
       {/* ── Tracks ── */}
       <div className="flex flex-col gap-1">
-        {project.renderMode === 'ffmpeg-drawtext' && (
-          <div className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] select-none ${mode === 'light' ? 'bg-amber-50 border border-amber-300 text-amber-800' : 'bg-amber-500/10 border border-amber-500/20 text-amber-400/70'}`}>
-            <span>⚡</span>
-            <span>ffmpeg render — overlays are preview only, final text is burned by ffmpeg</span>
-          </div>
-        )}
         {/* The gutter is a sibling COLUMN, not an overlay: it takes width from
             the canvas (which measures its own container) instead of painting
             over the clips at t=0. Captions have their own row PAINTED inside

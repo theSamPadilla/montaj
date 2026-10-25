@@ -12,7 +12,7 @@ GOLDENS_DIR = REPO_ROOT / "tests" / "goldens" / "cli_help"
 # Exact hyphenation as it appears in cli.main._COMMANDS.
 COMMANDS = (
     "probe", "transcribe", "caption", "extract-audio", "resize",
-    "rm-nonspeech", "stem-separation", "lyrics-sync", "lyrics-render",
+    "rm-nonspeech",
     "generate-image", "generate-music", "generate-voiceover",
     "kling-generate", "analyze-media", "snapshot", "filler",
 )
@@ -44,8 +44,8 @@ def _normalize_usage(text: str) -> str:
     argparse's usage-line wrapping is Python-version dependent: 3.13+ breaks
     lines by option+metavar pairs where 3.11 packed them tighter, so the same
     CLI surface renders differently under different interpreters (CI runs
-    3.11; local venvs are on 3.13). Only `lyrics-render` is long enough to
-    cross the boundary today, but any command could.
+    3.11; local venvs are on 3.13). Any long command could
+    cross the boundary.
 
     Collapsing runs of whitespace to single spaces *inside the usage block*
     makes the comparison wrap-insensitive while every other line — option

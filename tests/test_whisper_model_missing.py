@@ -27,7 +27,7 @@ from serve.server import app
 from tests.conftest import assert_error, run_step_env
 
 REPO_ROOT = Path(__file__).parent.parent
-WHISPER_STEPS = {"transcribe", "rm_nonspeech", "rm_fillers", "lyrics_sync", "generate_captions", "cut", "place"}
+WHISPER_STEPS = {"transcribe", "rm_nonspeech", "rm_fillers", "generate_captions", "cut", "place"}
 PID = "66666666-6666-4666-8666-666666666666"
 
 
@@ -89,14 +89,6 @@ def test_rm_nonspeech_without_the_model(test_video, no_model_env):
 
 def test_rm_fillers_without_the_model(test_video, no_model_env):
     proc = run_step_env("rm_fillers.py", no_model_env, "--input", str(test_video))
-    _assert_model_missing(proc)
-
-
-def test_lyrics_sync_without_the_model(test_video, no_model_env, tmp_path):
-    lyrics = tmp_path / "lyrics.txt"
-    lyrics.write_text("hello world\n")
-    proc = run_step_env("lyrics_sync.py", no_model_env,
-                        "--input", str(test_video), "--lyrics", str(lyrics))
     _assert_model_missing(proc)
 
 
