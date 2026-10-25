@@ -1,7 +1,7 @@
 {
   "name": "cut",
   "category": "edit",
-  "description": "Cut a talking head in two calls. Without plan: transcribes clips that have no transcript (the only file it writes beside a clip), cuts silences, fillers and dead air, removes only clear retakes (the same words said again back to back after a break: the last take stays, the earlier one is listed as removed), and writes the result as cut-plan.md in the project folder, changing nothing in the project; possible repeats and quiet words stay in, both takes kept, offered as suggestions that name both places. With plan: applies that plan, edited or not, through speech_edit's save (a version first). The language is detected unless you pass it.",
+  "description": "Cut a talking head in two calls. Without plan: transcribes clips that have no transcript (the only file it writes beside a clip), cuts silences (read on each clip's own audio), fillers and dead air, removes only clear retakes (the same words said again back to back after a break: the last take stays, the earlier one is listed as removed), and writes the result as cut-plan.md in the project folder, changing nothing in the project; possible repeats and quiet words stay in, both takes kept, offered as suggestions that name both places. With plan: applies that plan, edited or not, through speech_edit's save (a version first). The language is detected unless you pass it.",
   "input": {
     "type": "project",
     "description": "The project id, its folder, or the absolute path of its project.json"
@@ -35,7 +35,7 @@
       "required": false,
       "min": 0.08,
       "max": 2.0,
-      "description": "Cap every pause in seconds. Default 0.45, which suits a talking head; 0.5 or more for tutorials."
+      "description": "The longest pause kept as it is, in seconds: a silence longer than this (every moment 30 dB or more under the clip's own speech level) is cut to a breath each side. Default 0.45, which suits a talking head; 0.5 or more for tutorials."
     },
     {
       "name": "breath",
@@ -44,7 +44,7 @@
       "default": 0.04,
       "min": 0.0,
       "max": 0.3,
-      "description": "Seconds of silence kept on each side of the words where a pause is dead air (every moment under the clip's speech level less 26 dB); at a sentence end such a pause keeps up to 0.18 s. Used between 0.02 and half of max-pause. Default 0.04; raise it for a slower read."
+      "description": "Seconds of silence kept on each side of the sound where a silence longer than max-pause is cut (and at the video's start and end); at a sentence end such a silence keeps up to 0.18 s in all. Used between 0.02 and half of max-pause. Default 0.04; raise it for a slower read."
     },
     {
       "name": "recut",
