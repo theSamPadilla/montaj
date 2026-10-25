@@ -183,17 +183,9 @@ def _fuzz(seed, levels=(-20, -30, -45, -55, -58), drift=0.25, durs=(0.03, 0.05, 
     return tones, words, end
 
 
-@pytest.mark.parametrize("seed", range(80))
-def test_every_heard_tone_plays_whole_with_drift(tmp_path, monkeypatch, seed):
-    """No heard word is ever removed by an unedited plan: every tone 12 dB or more over the room plays whole, and
-    every word is still said."""
-    tones, words, end = _fuzz(seed)
-    d = tc.tone_project(tmp_path, [("vo", tones, end, words)])
-    plan, text, applied, said = plan_apply(d, monkeypatch)
-    lost = [(w[0], a, b, db) for w, (a, b, db) in zip(words, tones) if not tc.plays_whole(d, a, b)]
-    assert not lost, f"lost={lost}\nsaid={said}\niv={tc.kept_iv(d)}\nwords={words}\ntones={tones}\n{text}"
-    assert said == [w[0] for w in words], f"said={said}\niv={tc.kept_iv(d)}\nwords={words}\ntones={tones}\n{text}"
-    assert_no_unwarned_island(d, plan, applied)
+# its test is test_cut_v5's drift fuzz, judged by tests/cut_checks.py: v5 cuts the -55 and -58 dB tones under -20 dB
+# speech as silence (35 dB or more under it) unless a word is attached to them, so "every tone plays whole" is no
+# longer the bar; compare's -46 dB guard is
 
 
 # ── the conservative inaudible rule (2b, binding) ──────────────────────────────────────────────────────────
@@ -208,12 +200,15 @@ def _room_run(db):
     return spans, words
 
 
-def test_a_run_seven_db_over_the_room_is_offered_and_stays(tmp_path, monkeypatch):
+def test_a_run_seven_db_over_the_room_in_a_silence_goes_with_it(tmp_path, monkeypatch):
+    """v5 (the plan's inaudible rule): 'the bike' at 7 dB over the room is 43 dB under the speech, wholly inside a
+    silence of layer 1 (0.9 s), and 'ride' is too short to hold them: they go with the silence, tagged inaudible.
+    b7639ba5 offered them (2b's conservative rule, now reduced to this)."""
     spans, words = _room_run(tc.NOISE_DB + 7)
     d = tc.tone_project(tmp_path, [("vo", spans, 3.2, words)])
     plan, text, _, said = plan_apply(d, monkeypatch)
-    assert said == ["we", "ride", "the", "bike", "all", "day."], (said, text)
-    assert plan["removed"]["inaudible"] == 0 and plan.get("suggested", {}).get("inaudible?"), plan
+    assert said == ["we", "ride", "all", "day."], (said, text)
+    assert plan["removed"]["inaudible"] == 2, plan
 
 
 def test_a_run_three_db_over_the_room_for_its_whole_span_is_removed(tmp_path, monkeypatch):
@@ -225,9 +220,10 @@ def test_a_run_three_db_over_the_room_for_its_whole_span_is_removed(tmp_path, mo
     assert any(r.endswith(" inaudible]") for r in unused_rows(text)), text
 
 
-def test_a_dense_source_removes_nothing_as_inaudible(tmp_path, monkeypatch):
-    """Too few frames outside the words to trust the room's reading: nothing goes as inaudible, even two words at
-    the room's own level."""
+def test_two_words_at_the_rooms_level_in_dense_speech_go_with_their_silence(tmp_path, monkeypatch):
+    """v5: no noise reading, so no trust: two words at the room's own level make a silence over max-pause (0.52 s),
+    and lie wholly inside it, so they go with it, tagged inaudible. b7639ba5 removed nothing (an untrusted
+    reading)."""
     toks = [f"w{k}" for k in range(24)]
     spans, words, t = [], [], 0.0
     for k, tok in enumerate(toks):
@@ -237,20 +233,8 @@ def test_a_dense_source_removes_nothing_as_inaudible(tmp_path, monkeypatch):
         t = round(t + 0.26, 2)
     d = tc.tone_project(tmp_path, [("vo", spans, t, words)])
     plan, text, _, said = plan_apply(d, monkeypatch)
-    assert plan["removed"]["inaudible"] == 0 and len(said) == len(toks), (said, plan, text)
-
-
-def test_the_noise_reading_says_whether_it_is_trusted():
-    env = [-70.0] * 50 + [-20.0] * 100 + [-70.0] * 50
-    W = type("W", (), {})
-
-    def word(a, b):
-        w = W()
-        w.start, w.end = a, b
-        return w
-    assert speech_energy.noise_reading([word(0.5, 1.5)], env)[1] is True
-    assert speech_energy.noise_reading([word(0.0, 2.0)], env)[1] is False
-    assert speech_energy.noise_reading([word(0.0, 2.0)], env)[0] <= -69.0      # the fallback finds the room
+    assert plan["removed"]["inaudible"] == 2 and len(said) == len(toks) - 2, (said, plan, text)
+    assert all(cover(d, a, b) > 0.99 for k, (a, b, _) in enumerate(spans) if k not in (10, 11)), tc.kept_iv(d)
 
 
 # ── P3-1 islands ────────────────────────────────────────────────────────────────────────────────────────────
@@ -269,7 +253,7 @@ def test_faint_words_between_pause_cuts_join_their_neighbours(tmp_path, monkeypa
     assert all(cover(d, a, b) > 0.99 for a, b, _ in spans), tc.kept_iv(d)
     assert not short_items(d), (tc.kept_iv(d), text)
     cut = " ".join(tc.sections(text)[0])
-    assert re.search(r"so \{0\.2\d\} how \{0\.2\d\} much", cut), cut          # the plan shows the pauses kept
+    assert re.search(r"so \{0\.\d\d\} how \{0\.\d\d\} much", cut), cut      # the plan shows the pauses kept
     assert plan["duration"] == applied["duration"], (plan, applied)
 
 
@@ -391,8 +375,9 @@ def test_the_kungfu_shape_with_the_last_take_trimmed_by_tidy_is_still_whole(tmp_
 # ── review #3 should-fix 2 and 3 ────────────────────────────────────────────────────────────────────────────
 
 def test_the_stamp_names_every_constant_that_changes_a_cut():
-    for name in ("ISLAND_S", "NOISE_MIN_FRAMES", "NOISE_FALLBACK_PERCENTILE", "AT_NOISE_DB", "AT_NOISE_PAD_S",
-                 "EDGE_REACH_S", "FLOOR_BELOW_SPEECH_DB", "RELEASE_S"):
+    for name in ("ISLAND_S", "SILENCE_BELOW_SPEECH_DB", "ATTACHED_BELOW_SPEECH_DB", "BREATH_S", "SENTENCE_END_S",
+                 "DRIFT_S", "EDGE_BLEED_FRAMES", "LETTER_S", "WORD_BASE_S", "MISPLACED_SHARE", "VIDEO_EDGE_S",
+                 "SPEECH_PERCENTILE", "MIN_KEEP_S"):
         assert f"{name}={getattr(speech_energy, name)}" in speech_energy.Refiner.stamp, name
 
 
@@ -403,18 +388,7 @@ def test_a_plan_that_never_settles_fails_loudly(tmp_path, monkeypatch, capsys):
     assert tc.refused(d, monkeypatch=monkeypatch, capsys=capsys) == "plan_unsettled"
 
 
-def test_an_island_that_can_neither_join_nor_widen_is_kept_and_named():
-    """(d): removed words hug 'Yes.' on both sides, so it can only stay as it is, and the answer names it."""
-    from steps.edit import cut as cc
-    from tests import test_speech_energy as tse
-    ws = tse.words(("x", 0.9, 0.98), ("Yes.", 1.0, 1.15), ("z", 1.18, 1.3))
-    d = tse._Derived({"a": ws})
-    rep = tse.Report()
-    out = speech_energy.tidy([tse.run_of("a", 0.98, 1.18, [1]), tse.run_of("b", 0.0, 2.0)], d,
-                             tse._Heard({"a": {0, 1, 2}}), rep)
-    assert tse.spans(out)[0] == ("a", 0.98, 1.18, [1])                      # never shortened, never dropped
-    assert {"kind": "island", "letter": "A", "idx": [1], "seconds": 0.2} in rep.flagged
-    assert cc._piece_warnings(d, rep.flagged) == ["kept 1 short piece(s) with a heard word, under 0.35 s: A1 0.20 s"]
+# test_an_island_that_can_neither_join_nor_widen_is_kept_and_named: in tests/test_speech_energy.py, on v5's tidy
 
 
 def test_the_apply_answer_names_a_sliver_it_dropped():

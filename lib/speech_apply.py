@@ -164,10 +164,11 @@ def apply(project_path: str, text: str, *, preview: bool, max_pause: float | Non
 
     # speech-text.md is speech_edit's text: derived as speech_edit derives it, never on a refiner's words
     plain_sils = derived.silences if refiner is None else None
+    # cut's refiner cuts silences on the sound (its layer 1), so it gives speech_build no cap of its own: pause_cap
     runs, report = runs_from_rows(rows, derived, derived.silences,
-                                  max_pause, old_items, project_dir, feel=feel)
+                                  getattr(refiner, "pause_cap", max_pause), old_items, project_dir, feel=feel)
     if hasattr(refiner, "tidy"):
-        runs = refiner.tidy(runs, derived, report)     # cut: no partial word, no sliver (lib/speech_energy.tidy)
+        runs = refiner.tidy(runs, derived, report)     # cut: the silence trim, no island, no sliver (speech_energy.tidy)
     if not any(r.kind == "speech" for r in runs):
         fail("empty_cut", "The edit leaves no speech in the cut. Delete words or rows, but keep some speech.")
     reserved = {it["id"] for i, t in enumerate(tracks) if i != ti for it in t["items"]}

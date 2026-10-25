@@ -1,9 +1,6 @@
-"""§558 cut: lib/speech_energy places whisper's words by the audio's level (two reviews' probes, pass 2).
-
-Synthetic only: envelopes written frame by frame (dB per 10 ms) and media generated here, with invented words.
-"""
-import contextlib
-import io
+"""§558 cut v5: lib/speech_energy's two layers (layer 1, where the sound is; layer 2, whisper's words placed on it) and
+the silence trim of the apply's runs. Synthetic only: envelopes written frame by frame (dB per 10 ms) and media
+generated here, with invented words."""
 import json
 import math
 import struct
@@ -20,10 +17,13 @@ sys.path.insert(0, str(REPO_ROOT / "lib"))
 
 from lib import speech_energy as se  # noqa: E402
 from lib.common import ffmpeg_bin  # noqa: E402
-from lib.speech_lines import Word, norm  # noqa: E402
+from lib.speech_build import Report, Run  # noqa: E402
+from lib.speech_lines import Line, Word, norm  # noqa: E402
 
 F = se.FRAME_S
 NOISE = -70.0
+SP = -20.0
+MEDIA = __file__            # layer 1 is given its silences, so process_one only checks the media exists
 
 
 def env_of(total, *parts, noise=NOISE):
@@ -40,133 +40,27 @@ def words(*spec):
     return [Word(i, t, norm(t), a, b) for i, (t, a, b) in enumerate(spec)]
 
 
-def refined(ws, env, floor=None, noise=None):
-    noise = se.noise_db(ws, env) if noise is None else noise
-    floor = se.floor_db(ws, env, noise) if floor is None else floor
-    return se.refine(ws, env, floor, noise)
+def refiner(by_src, max_pause=0.45):
+    """A real Refiner over envelopes: {src: (env, words)}."""
+    ref = se.Refiner(max_pause)
+    for src, (env, ws) in by_src.items():
+        lay = se.layer1(MEDIA, env, max_pause)
+        placed, kind = se.place(ws, lay, ref.breath)
+        att = se._attached_frames(ws, placed, kind, lay, max_pause)
+        if att:
+            lay = se.layer1(MEDIA, env, max_pause, att)
+            placed, kind = se.place(ws, lay, ref.breath)
+        ref.layers[src], ref.raw[src], ref.placed[src], ref.kinds[src] = lay, ws, placed, kind
+        ref.heard[src] = {w.idx for w, k in zip(ws, kind) if k == "heard"}
+    return ref
 
 
-# ── the two levels: the room's noise and the speech-relative floor ──────────────────────────────────────────
-
-def test_the_floor_is_no_longer_clamped_at_minus_48():
-    """B3: speech at -40 dB has its floor at -66, not -48."""
-    ws = words(("one", 0.3, 0.6), ("two", 0.6, 0.9), ("three", 0.9, 1.2))
-    env = env_of(2.0, (0.3, 0.55, -40.0), (0.6, 0.85, -40.0), (0.9, 1.15, -40.0))
-    assert se.floor_db(ws, env) == pytest.approx(-66.0)
+def placed_of(env, ws, max_pause=0.45):
+    ref = refiner({"a": (env, ws)}, max_pause)
+    return [(w.text, round(p.start, 3), round(p.end, 3), k) for w, p, k in zip(ws, ref.placed["a"], ref.kinds["a"])]
 
 
-def test_the_noise_is_the_tenth_percentile_outside_the_words():
-    ws = words(("one", 0.5, 0.8))
-    env = env_of(3.0, (0.5, 0.75, -20.0), noise=-72.0)
-    env[250:260] = [-30.0] * 10                       # a door slam outside the words is not the room
-    assert se.noise_db(ws, env) == pytest.approx(-72.0)
-    assert se.noise_db(ws, env) == se.noise_db(ws, list(env))          # deterministic
-
-
-def test_the_floor_reads_the_heard_words_only():
-    """A clip of mostly silent (made-up) words keeps its speech's floor, not the room's."""
-    ws = words(*[(f"w{k}", 0.3 * k, 0.3 * k + 0.3) for k in range(10)])
-    env = env_of(4.0, (0.0, 0.25, -20.0), (0.3, 0.55, -20.0))
-    assert se.floor_db(ws, env, se.noise_db(ws, env)) == pytest.approx(-46.0)
-
-
-def test_soft_words_in_a_quiet_recording_are_heard():
-    """B3: speech at -40, two words at -50 over a -70 room: kept, not inaudible."""
-    ws = words(("you", 0.3, 0.6), ("feel", 0.6, 0.9), ("a", 0.9, 1.2), ("slight", 1.2, 1.5), ("lean.", 1.5, 1.8))
-    env = env_of(2.5, (0.3, 0.55, -40.0), (0.6, 0.85, -40.0), (0.9, 1.15, -50.0), (1.2, 1.45, -50.0),
-                 (1.5, 1.75, -40.0))
-    out, stats, _ = refined(ws, env)
-    assert stats["inaudible"] == [] and stats["quiet"] == []
-
-
-def test_a_word_within_ten_db_of_the_room_is_inaudible_a_quieter_heard_one_is_only_quiet():
-    """R2-Q2: removal needs the peak within 10 dB of the noise; under the floor but over that, it is quiet."""
-    ws = words(("so", 0.3, 0.6), ("just", 0.6, 0.9), ("between", 0.9, 1.2), ("us", 1.2, 1.5), ("now.", 1.5, 1.8))
-    aside = env_of(2.5, (0.3, 0.55, -20.0), (0.6, 0.85, -48.0), (0.9, 1.15, -48.0), (1.2, 1.45, -20.0),
-                   (1.5, 1.75, -20.0))
-    _, stats, _ = refined(ws, aside)
-    assert stats["inaudible"] == [] and stats["quiet"] == [1, 2]
-    # 2b's conservative rule: only words within AT_NOISE_DB of the room over their whole span and 40 ms beside
-    # it go ("between" ends where "us" starts: kept, offered); 6 dB over the room is heard enough to stay
-    gone = env_of(2.5, (0.3, 0.55, -20.0), (0.6, 0.85, -67.0), (0.9, 1.15, -67.0), (1.2, 1.45, -20.0),
-                  (1.5, 1.75, -20.0))
-    _, stats, _ = refined(ws, gone)
-    assert stats["inaudible"] == [1] and stats["quiet"] == [2]
-    faint = env_of(2.5, (0.3, 0.55, -20.0), (0.6, 0.85, -63.0), (0.9, 1.15, -63.0), (1.2, 1.45, -20.0),
-                   (1.5, 1.75, -20.0))
-    _, stats, _ = refined(ws, faint)
-    assert stats["inaudible"] == [] and stats["quiet"] == [1, 2]
-
-
-# ── B4: hysteresis edges and the release ───────────────────────────────────────────────────────────────────
-
-def test_a_weak_fricative_decay_is_kept():
-    ws = words(("you", 0.3, 0.6), ("laugh", 0.6, 1.7), ("now.", 1.7, 1.95))
-    env = env_of(2.5, (0.3, 0.55, -20.0), (0.6, 0.85, -20.0), (0.85, 0.97, -48.0), (1.7, 1.95, -20.0))
-    out, _, _ = refined(ws, env)
-    assert out[1].start == pytest.approx(0.6) and out[1].end >= 0.97 - 1e-6       # the whole decay
-
-
-def test_a_weak_onset_is_kept():
-    ws = words(("you", 0.3, 0.6), ("feel", 0.6, 1.55), ("happy.", 1.55, 1.92))
-    env = env_of(2.5, (0.3, 0.55, -20.0), (0.6, 0.85, -20.0), (1.55, 1.67, -48.0), (1.67, 1.92, -20.0))
-    out, _, _ = refined(ws, env)
-    assert out[2].start == pytest.approx(1.55)
-
-
-def test_a_sharp_ending_keeps_the_release():
-    ws = words(("one", 0.3, 1.0), ("two.", 1.0, 1.3))
-    env = env_of(2.0, (0.3, 0.55, -20.0), (1.0, 1.25, -20.0))
-    out, _, _ = refined(ws, env)
-    assert out[0].end == pytest.approx(0.55 + se.RELEASE_S)
-
-
-def test_a_zero_length_last_word_keeps_its_own_sound():
-    """B2: whisper's zero-length last word over its own sound: its span reaches over the sound after it."""
-    ws = words(("that's", 0.3, 0.8), ("it.", 0.8, 0.8))
-    env = env_of(2.0, (0.3, 0.55, -20.0), (0.7, 0.95, -20.0))
-    out, stats, _ = refined(ws, env)
-    assert out[1].end >= 0.95 and 1 in stats["heard"] and stats["inaudible"] == []
-
-
-# ── silent words: inaudible runs, whisper's timing, misplaced words ─────────────────────────────────────────
-
-def test_a_lone_silent_word_is_folded_against_its_neighbour():
-    ws = words(("and", 0.3, 0.6), ("that", 0.6, 0.9), ("is", 0.9, 1.2), ("what", 1.2, 1.5), ("we", 1.5, 1.8))
-    env = env_of(2.5, (0.3, 0.55, -20.0), (0.6, 0.85, -20.0), (1.2, 1.45, -20.0), (1.5, 1.75, -20.0))
-    out, stats, _ = refined(ws, env)
-    assert stats["inaudible"] == [] and stats["folded"] == [2]
-    assert out[2].start == pytest.approx(out[1].end) and out[2].end - out[2].start == pytest.approx(se.LONE_WORD_S)
-
-
-def test_misplaced_words_whose_sound_is_in_a_long_neighbour_are_kept():
-    """"ride the bike": whisper put "the bike" in the pause, and "ride"'s span holds the sound of all three."""
-    ws = words(("we", 0.1, 0.3), ("ride", 0.3, 1.5), ("the", 1.5, 1.9), ("bike", 1.9, 2.3), ("now.", 2.3, 2.6))
-    env = env_of(3.0, (0.1, 0.28, -20.0), (0.3, 1.35, -20.0), (2.3, 2.55, -20.0))
-    out, stats, _ = refined(ws, env)
-    assert stats["inaudible"] == [] and stats["folded"] == [2, 3]
-    assert out[2].start == pytest.approx(out[1].end)
-
-
-def test_a_truly_silent_run_between_two_short_words_is_inaudible():
-    ws = words(("we", 0.1, 0.3), ("ride", 0.3, 0.8), ("the", 0.8, 1.2), ("bike", 1.2, 1.6), ("now.", 1.6, 1.9))
-    env = env_of(2.5, (0.1, 0.28, -20.0), (0.3, 0.6, -20.0), (1.6, 1.85, -20.0))
-    _, stats, _ = refined(ws, env)
-    # "bike" ends where "now." starts (2b: within 40 ms of a sound it is kept, folded and offered)
-    assert stats["inaudible"] == [2] and stats["quiet"] == [3] and 3 in stats["folded"]
-
-
-def test_a_silent_run_just_before_an_over_long_word_is_kept():
-    """#2 should-fix 5: whisper starts the line early, in the pause: "and so" over silence, "we" spans their sound."""
-    ws = words(("one.", 1.2, 1.5), ("and", 1.9, 2.2), ("so", 2.2, 2.5), ("we", 2.5, 3.85), ("went", 3.9, 4.2))
-    env = env_of(5.0, (1.2, 1.45, -20.0), (3.0, 3.25, -20.0), (3.3, 3.55, -20.0), (3.6, 3.85, -20.0),
-                 (3.9, 4.15, -20.0))
-    out, stats, _ = refined(ws, env)
-    assert stats["inaudible"] == [] and stats["folded"] == [1, 2]
-    assert out[2].end == pytest.approx(out[3].start)
-
-
-# ── the envelope ──────────────────────────────────────────────────────────────────────────────────────────
+# ── the envelope ────────────────────────────────────────────────────────────────────────────────────────────
 
 def _stereo(path, total, anti_phase=True):
     rate = 16000
@@ -209,24 +103,126 @@ def test_a_decode_over_the_limit_answers_clearly(monkeypatch, tmp_path, capsys):
     assert err["error"] == "audio_timeout" and "600 s" in err["message"]
 
 
-# ── tidy: no partial word, no sliver (dead slivers, word fragments) ────────────────────────────────────────
+# ── layer 1 ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-from lib.speech_build import Report, Run  # noqa: E402
-from lib.speech_lines import Line  # noqa: E402
+def test_layer_1_reads_each_source_on_its_own_speech_level():
+    """Speech at -50 over a -78 room: the line is -80, so the room is sound and nothing is cut (gain down)."""
+    env = env_of(4.0, (0.5, 3.5, -50.0), noise=-78.0)
+    lay = se.layer1(MEDIA, env, 0.45)
+    assert lay.speech == pytest.approx(-50.0) and lay.threshold == pytest.approx(-80.0) and lay.silences == []
+    env = env_of(4.0, (0.5, 1.5, SP), (2.5, 3.5, SP))
+    lay = se.layer1(MEDIA, env, 0.45)
+    assert lay.silences == [(0.0, 0.5), (1.5, 2.5), (3.5, 4.0)] and lay.voiced == [[0.5, 1.5], [2.5, 3.5]]
+
+
+def test_a_pause_under_max_pause_stays_and_any_sound_is_kept():
+    env = env_of(3.0, (0.5, 1.0, SP), (1.5, 1.53, SP), (2.0, 2.5, SP))
+    lay = se.layer1(MEDIA, env, 0.45)
+    assert [1.5, 1.53] in lay.voiced                    # 30 ms of sound between two silences: kept (min_keep 0)
+    env = env_of(3.0, (0.5, 1.0, SP), (1.4, 2.4, SP))
+    assert se.layer1(MEDIA, env, 0.45).voiced == [[0.5, 2.4]]       # a 0.4 s pause stays
+
+
+def test_the_keeps_take_a_breath_each_side_and_a_sentence_end_takes_more():
+    env = env_of(4.0, (0.5, 1.5, SP), (2.5, 3.5, SP))
+    ws = words(("one", 0.5, 1.5), ("two", 2.5, 3.5))
+    ref = refiner({"a": (env, ws)})
+    assert ref.keeps("a") == [[0.46, 1.54], [2.46, 3.54]]
+    ws = words(("one.", 0.5, 1.5), ("two", 2.5, 3.5))
+    ref = refiner({"a": (env, ws)})
+    assert ref.keeps("a") == [[0.46, 1.59], [2.41, 3.54]]          # min(1.0, 0.18) at a sentence end, half a side
+
+
+def test_a_held_silence_is_kept_whole():
+    env = env_of(4.0, (0.5, 1.5, SP), (2.5, 3.5, SP))
+    ref = refiner({"a": (env, words(("one", 0.5, 1.5), ("two", 2.5, 3.5)))})
+    ref.hold("a", 1)
+    assert ref.keeps("a") == [[0.46, 3.54]]
+
+
+def test_a_short_keep_widens_into_its_own_silence_away_from_the_source_edge():
+    env = env_of(4.0, (0.1, 0.15, SP), (2.5, 3.5, SP))
+    ref = refiner({"a": (env, words(("I", 0.1, 0.15), ("two", 2.5, 3.5)))})
+    first = ref.keeps("a")[0]
+    assert first[1] - first[0] == pytest.approx(se.ISLAND_S) and first[0] >= 0.1 - se.VIDEO_EDGE_S - 1e-9
+
+
+def test_sound_after_the_last_word_is_not_kept():
+    env = env_of(6.0, (0.5, 1.5, SP), (3.0, 5.0, SP))
+    ref = refiner({"a": (env, words(("one", 0.5, 1.5)))})
+    assert ref.keeps("a") == [[0.46, 1.54]]
+
+
+# ── layer 2: the words on the sound ─────────────────────────────────────────────────────────────────────────
+
+def test_a_stretched_word_is_placed_on_its_sound():
+    env = env_of(4.0, (2.8, 3.1, SP), (3.15, 3.45, SP))
+    assert placed_of(env, words(("you", 0.0, 3.15), ("are.", 3.15, 3.45)))[0] == ("you", 2.8, 3.1, "heard")
+
+
+def test_a_short_run_of_the_next_words_sound_at_a_spans_end_goes_to_it():
+    """Whisper drift: 'is' ends 0.2 s inside 'bike's sound, after a silence in its own span."""
+    env = env_of(4.0, (0.3, 0.6, SP), (1.6, 2.0, SP))
+    out = placed_of(env, words(("is", 0.3, 1.8), ("bike.", 1.8, 2.0)))
+    assert out == [("is", 0.3, 0.6, "heard"), ("bike.", 1.6, 2.0, "heard")]
+
+
+def test_a_soft_word_whose_span_takes_in_a_neighbours_onset_keeps_its_own_sound():
+    """R3-B1: 'pigeon' at -55 (35 dB under the speech, under the line) between kept words, its span running 20 ms
+    into 'pepper': the 20 ms are pepper's; pigeon is attached, so its own frames play."""
+    env = env_of(3.2, (0.30, 0.55, SP), (0.60, 0.85, SP), (0.95, 1.55, -55.0), (1.60, 1.85, SP), (1.90, 2.15, SP))
+    ws = words(("so", 0.30, 0.60), ("the", 0.60, 0.95), ("pigeon", 0.95, 1.62), ("pepper", 1.62, 1.90),
+               ("hot.", 1.90, 2.15))
+    out = placed_of(env, ws)
+    assert out[2] == ("pigeon", 0.95, 1.55, "heard") and out[3][1] == 1.6, out
+
+
+def test_an_attached_word_needs_kept_words_beside_it_and_never_opens_the_video():
+    env = env_of(3.0, (0.30, 0.50, -55.0), (1.20, 1.50, SP), (2.40, 2.60, -55.0))
+    out = placed_of(env, words(("faint", 0.3, 0.5), ("loud", 1.2, 1.5), ("faint.", 2.4, 2.6)))
+    assert [k for *_, k in out] == ["inaudible", "heard", "inaudible"], out
+
+
+def test_a_breath_with_no_word_stays_silence():
+    env = env_of(3.3, (0.30, 0.60, -13.0), (0.65, 0.95, -13.0), (1.40, 1.55, -50.0), (1.95, 2.25, -13.0))
+    ref = refiner({"a": (env, words(("we", 0.3, 0.65), ("went", 0.65, 1.95), ("back.", 1.95, 2.25)))})
+    assert not ref.layers["a"].attached and not any(a < 1.5 < b for a, b in ref.keeps("a"))
+
+
+def test_a_word_with_no_sound_in_a_pause_is_offered_and_one_in_a_silence_is_inaudible():
+    env = env_of(4.0, (0.3, 0.6, SP), (0.9, 1.2, SP), (2.9, 3.2, SP))
+    out = placed_of(env, words(("a", 0.3, 0.6), ("x", 0.65, 0.85), ("b", 0.9, 1.2), ("y", 1.6, 1.8),
+                               ("z", 2.0, 2.2), ("c.", 2.9, 3.2)))
+    assert [k for *_, k in out] == ["heard", "quiet", "heard", "inaudible", "inaudible", "heard"], out
+
+
+def test_a_lone_word_in_a_silence_is_whispers_timing_and_kept():
+    env = env_of(4.0, (0.3, 0.6, SP), (2.9, 3.2, SP))
+    out = placed_of(env, words(("a", 0.3, 0.6), ("x", 1.6, 1.8), ("c.", 2.9, 3.2)))
+    assert out[1][3] == "folded" and 0.6 <= out[1][1] <= 0.64, out
+
+
+def test_a_run_a_long_neighbour_holds_is_kept():
+    env = env_of(4.0, (0.3, 0.55, SP), (0.6, 1.65, SP), (2.4, 2.65, SP))
+    out = placed_of(env, words(("we", 0.3, 0.6), ("ride", 0.6, 1.7), ("the", 1.7, 2.05), ("bike", 2.05, 2.4),
+                               ("all.", 2.4, 2.65)))
+    assert [k for *_, k in out] == ["heard", "heard", "folded", "folded", "heard"], out
+
+
+def test_an_inaudible_word_sits_in_the_breath_of_the_sound_before_it():
+    env = env_of(4.0, (0.3, 0.6, SP), (2.9, 3.2, SP))
+    ref = refiner({"a": (env, words(("a", 0.3, 0.6), ("x", 1.4, 1.6), ("y", 1.6, 1.8), ("c.", 2.9, 3.2)))})
+    p = ref.placed["a"]
+    assert all(0.6 < (w.start + w.end) / 2 < ref.keeps("a")[0][1] for w in p[1:3]), p
+
+
+# ── the silence trim and the island rule on the apply's runs ────────────────────────────────────────────────
 
 
 class _Derived:
     def __init__(self, by_src):
         self.letters = {src: chr(ord("A") + n) for n, src in enumerate(by_src)}
         self.lines = {f"{self.letters[src]}1": Line(f"{self.letters[src]}1", tuple(ws)) for src, ws in by_src.items()}
-
-
-class _Heard:
-    def __init__(self, heard, end=60.0):
-        self.heard, self._end = heard, end
-
-    def end(self, src):
-        return self._end
 
 
 def run_of(src, a, b, ws=()):
@@ -237,105 +233,53 @@ def spans(runs):
     return [(r.src, round(r.s_in, 3), round(r.s_out, 3), r.words) for r in runs]
 
 
-def test_a_breath_left_alone_between_removed_words_is_dropped():
-    ws = words(("we", 0.3, 0.6), ("lean", 0.6, 0.9), ("is", 1.5, 1.54), ("so", 2.4, 2.7))
-    d = _Derived({"a": ws})
-    runs = [run_of("a", 0.26, 0.94, [0, 1]), Run("", 0, 0, 0, None, kind="gap", dur=0.5),
-            run_of("a", 1.46, 1.58, [2]), Run("", 0, 0, 0, None, kind="gap", dur=0.5), run_of("a", 2.36, 2.74, [3])]
+def test_a_kept_run_is_cut_to_layer_1s_keeps():
+    env = env_of(4.0, (0.5, 1.5, SP), (2.5, 3.5, SP))
+    ws = words(("one", 0.5, 1.5), ("two", 2.5, 3.5))
+    ref = refiner({"a": (env, ws)})
+    out = se.tidy([run_of("a", 0.0, 4.0, [0, 1])], _Derived({"a": ws}), ref)
+    assert spans(out) == [("a", 0.46, 1.54, [0]), ("a", 2.46, 3.54, [1])]
+
+
+def test_an_island_joins_its_neighbour_across_a_pause_cut():
+    env = env_of(3.0, (0.3, 0.6, SP), (0.9, 1.0, SP), (1.3, 1.9, SP))
+    ws = words(("so", 0.3, 0.6), ("how", 0.9, 1.0), ("much.", 1.3, 1.9))
+    ref = refiner({"a": (env, ws)})
+    out = se.tidy([run_of("a", 0.26, 0.64, [0]), run_of("a", 0.86, 1.04, [1]), run_of("a", 1.26, 1.94, [2])],
+                  _Derived({"a": ws}), ref)
+    assert spans(out) == [("a", 0.26, 1.04, [0, 1]), ("a", 1.26, 1.94, [2])]
+
+
+def test_an_island_widens_into_its_own_silence_and_a_sliver_goes():
+    env = env_of(4.0, (0.3, 0.6, SP), (1.5, 1.6, SP), (2.9, 3.2, SP))
+    ws = words(("a", 0.3, 0.6), ("Yes.", 1.5, 1.6), ("c.", 2.9, 3.2))
+    ref = refiner({"a": (env, ws)})
     rep = Report()
-    out = se.tidy(runs, d, _Heard({"a": {0, 1, 3}}), rep)
-    assert [r for r in out if r.kind == "speech" and r.s_out - r.s_in < se.ISLAND_S] == []
-    assert {"kind": "sliver", "letter": "A", "idx": [2], "seconds": 0.12} in rep.flagged
+    out = se.tidy([run_of("a", 0.26, 0.64, [0]), run_of("a", 1.46, 1.64, [1]), run_of("a", 2.2, 2.3),
+                   run_of("a", 2.86, 3.24, [2])], _Derived({"a": ws}), ref, rep)
+    assert spans(out)[1] == ("a", 1.375, 1.725, [1]) and len(out) == 3
+    assert not [f for f in rep.flagged if f["kind"] == "island"]
 
 
-def test_a_sliver_that_follows_on_in_the_source_is_merged_into_its_neighbour():
-    ws = words(("we", 0.3, 0.6), ("lean.", 0.6, 0.9), ("so", 2.4, 2.7))
+def test_an_island_that_can_neither_join_nor_widen_is_kept_and_named():
+    """(d): removed words hug 'Yes.' on both sides, so it can only stay as it is, and the answer names it."""
+    from steps.edit import cut as cc
+    env = env_of(3.0, (0.3, 0.6, SP), (0.9, 0.98, SP), (1.0, 1.15, SP), (1.18, 1.3, SP), (2.4, 2.7, SP))
+    ws = words(("a", 0.3, 0.6), ("x", 0.9, 0.98), ("Yes.", 1.0, 1.15), ("z", 1.18, 1.3), ("b.", 2.4, 2.7))
+    ref = refiner({"a": (env, ws)})
+    rep = Report()
     d = _Derived({"a": ws})
-    runs = [run_of("a", 0.26, 0.94, [0, 1]), run_of("a", 1.2, 1.32), run_of("b", 0.0, 2.0)]
-    out = se.tidy(runs, d, _Heard({"a": {0, 1, 2}}))
-    assert spans(out)[:1] == [("a", 0.26, 1.06, [0, 1])] and len(out) == 2
+    out = se.tidy([run_of("a", 0.26, 0.64, [0]), run_of("a", 0.98, 1.18, [2]), run_of("a", 2.36, 2.74, [4])], d, ref,
+                  rep)
+    assert spans(out)[1] == ("a", 0.98, 1.18, [2])                      # never shortened, never dropped
+    assert {"kind": "island", "letter": "A", "idx": [2], "seconds": 0.2} in rep.flagged
+    assert cc._piece_warnings(d, rep.flagged) == ["kept 1 short piece(s) with a heard word, under 0.35 s: A1 0.20 s"]
 
 
-def test_a_short_whole_word_is_kept_and_widened_to_an_island():
-    ws = words(("Yes.", 1.0, 1.15))
-    d = _Derived({"a": ws})
-    # P3-1 / R3-B2: a short piece holding a heard word is never dropped: alone between cuts, it is widened into
-    # its own silence to ISLAND_S, half on each side
-    keep = se.tidy([run_of("a", 0.98, 1.18, [0]), run_of("b", 0.0, 2.0)], d, _Heard({"a": {0}}))
-    assert spans(keep)[0] == ("a", 0.905, 1.255, [0])
-    ws = words(("a", 1.0, 1.05))
-    short = se.tidy([run_of("a", 1.0, 1.06, [0]), run_of("b", 0.0, 2.0)], _Derived({"a": ws}), _Heard({"a": {0}}))
-    assert spans(short)[0] == ("a", 0.855, 1.205, [0])
-
-
-def test_a_breath_opening_a_clip_before_a_removed_retake_is_dropped():
-    """The kungfu case: the first kept piece of a clip, 0.13 s of breath, with nothing of its source before it."""
-    ws = words(("um", 0.0, 0.1), ("so", 0.2, 0.5), ("go", 0.5, 0.8), ("now.", 2.0, 2.3))
-    d = _Derived({"b": ws})
-    out = se.tidy([run_of("a", 0.0, 3.0), run_of("b", 0.07, 0.2), run_of("b", 1.96, 2.34, [3])], d,
-                  _Heard({"b": {1, 2, 3}}))
-    assert spans(out) == [("a", 0.0, 3.0, []), ("b", 1.96, 2.34, [3])]
-
-
-def test_a_removed_words_fragment_is_trimmed_off_a_kept_word_clipped_is_restored():
-    ws = words(("cut", 0.9, 1.1), ("keep", 1.1, 1.5), ("this", 1.5, 1.9))
-    d = _Derived({"a": ws})
-    out = se.tidy([run_of("a", 1.0, 1.95, [1, 2])], d, _Heard({"a": {0, 1, 2}}))
-    assert spans(out) == [("a", 1.1, 1.95, [1, 2])]            # (a): none of "cut" plays
-    out = se.tidy([run_of("a", 1.2, 1.95, [1, 2])], d, _Heard({"a": {0, 1, 2}}))
-    assert spans(out) == [("a", 1.1, 1.95, [1, 2])]            # (b): "keep" plays whole
-    out = se.tidy([run_of("a", 0.5, 1.15), run_of("a", 1.2, 1.95, [1, 2])], d, _Heard({"a": {1, 2}}))
-    assert spans(out) == [("a", 0.5, 1.95, [1, 2])]              # never over another piece: up to it, then one
-
-
-# ── fix pass 4: the silence trim inside word spans (timeline only) ─────────────────────────────────────────────
-
-def _dip(env, t0, t1, db=-90.0):
-    for k in range(int(round(t0 / F)), int(round(t1 / F))):
-        env[k] = db
-    return env
-
-
-def test_a_stretched_word_keeps_only_its_sound_whatever_the_room_reading():
-    """A camera's quiet first frames read the room 20 dB low, so every room frame counts as heard: the span is
-    still trimmed to the sound (plus the release), measured on the speech level."""
-    ws = words(("so", 0.3, 2.1), ("then", 2.1, 2.45), ("go.", 2.45, 2.75))
-    env = _dip(env_of(3.4, (0.3, 0.6, -20.0), (2.1, 2.4, -20.0), (2.45, 2.75, -20.0), noise=-65.0), 0.0, 0.25)
-    out, _, _ = refined(ws, env)
-    assert out[0].start == pytest.approx(0.3) and out[0].end == pytest.approx(0.6 + se.RELEASE_S)
-    noise, trusted = se.noise_reading(ws, env)
-    stats = se.refine(ws, env, se.floor_db(ws, env, noise), noise, trusted)[1]
-    assert stats["untrimmed"][0].end == pytest.approx(2.1)              # as placed before: it held the silence
-
-
-def test_a_soft_words_own_sound_is_never_trimmed():
-    """R3-B1 kept: a soft word (-55, 15 dB over the room, 35 under the speech) keeps its whole sound; only the
-    silence whisper stretched it over goes."""
-    ws = words(("the", 0.3, 0.6), ("pigeon", 0.6, 2.0), ("flew.", 2.0, 2.3))
-    env = env_of(3.0, (0.3, 0.55, -20.0), (0.9, 1.5, -55.0), (2.0, 2.3, -20.0))
-    out, _, _ = refined(ws, env)
-    assert out[1].start <= 0.9 + 1e-6 and out[1].end >= 1.5 - 1e-6 and out[1].end <= 1.5 + se.RELEASE_S + 1e-6
-
-
-def test_a_late_neighbours_sound_goes_to_it_and_the_silence_between_is_a_gap():
-    """Whisper is late on "pepper": its sound sits at the end of "lantern"'s span, after 0.6 s of silence. It
-    goes to "pepper", so the silence is a gap between the two words (dead air), not inside one."""
-    ws = words(("lantern", 0.3, 1.6), ("pepper", 1.6, 2.6), ("now.", 2.6, 2.9))
-    env = env_of(3.4, (0.3, 0.6, -20.0), (1.2, 1.5, -20.0), (2.6, 2.9, -20.0))
-    out, _, _ = refined(ws, env)
-    assert out[0].end <= 0.6 + se.RELEASE_S + 1e-6 and out[1].start == pytest.approx(1.2), out
-
-
-@pytest.mark.parametrize("case", range(4))
-def test_the_trim_never_changes_what_is_removed_or_offered(case):
-    """Rule (a): the classification reads the untrimmed spans, so inaudible, offered and heard are what they were."""
-    ws = words(("so", 0.3, 0.6), ("just", 0.6, 0.9), ("between", 0.9, 1.2), ("us", 1.2, 2.5), ("now.", 2.5, 2.8))
-    level = (-48.0, -67.0, -63.0, -58.0)[case]
-    env = env_of(3.4, (0.3, 0.55, -20.0), (0.6, 0.85, level), (0.9, 1.15, level), (1.2, 1.45, -20.0),
-                 (2.5, 2.75, -20.0))
-    noise, trusted = se.noise_reading(ws, env)
-    floor = se.floor_db(ws, env, noise)
-    _, before, _ = se._refine(ws, env, floor, noise, trusted, None, None, trim=False)
-    _, after, _ = se.refine(ws, env, floor, noise, trusted)
-    assert {k: after[k] for k in ("inaudible", "quiet")} == {k: before[k] for k in ("inaudible", "quiet")}
-    assert set(before["heard"]) <= set(after["heard"])
+def test_the_video_opens_and_ends_on_sound():
+    env = env_of(4.0, (1.0, 1.5, SP), (1.6, 2.4, SP))
+    ws = words(("one", 1.0, 1.5), ("two.", 1.6, 2.4))
+    ref = refiner({"a": (env, ws)})
+    ref.layers["a"].keeps = [[0.0, 4.0]]                                 # as a held silence would leave it
+    out = se.tidy([run_of("a", 0.4, 3.0, [0, 1])], _Derived({"a": ws}), ref)
+    assert spans(out) == [("a", 0.96, 2.44, [0, 1])]
